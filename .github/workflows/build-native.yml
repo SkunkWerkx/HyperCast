@@ -7,10 +7,11 @@ name: Build native libraries and test every binding
 # pattern) join when the publishing round starts; until then this workflow is the proof.
 #
 # Two additions over the HyperUuid original, because HyperCast's bindings grew them first:
-# the Python (PyO3) and Ruby (Magnus) native-extension backends are built and tested here
-# too, on the unix legs — each suite runs twice, once forced onto the pure ctypes/Fiddle
-# fallback (HYPERCAST_PURE=1) and once with the extension staged, so both backends stay
-# green rather than only the one a developer's machine happens to select.
+# the Python (PyO3) native-extension backend is built and tested on every leg (Windows
+# included — the Python-on-Windows audience is too large to leave on the fallback), and
+# the Ruby (Magnus) one on the unix legs. Each suite runs twice, once forced onto the
+# pure ctypes/Fiddle fallback (HYPERCAST_PURE=1) and once with the extension staged, so
+# both backends stay green rather than only the one a developer's machine selects.
 
 on:
   workflow_dispatch:
@@ -248,23 +249,26 @@ jobs:
           python -m pip install pytest
           pytest
 
-      # CPython accepts the .so suffix for extension modules on macOS too, so one staged
-      # name covers both unix legs.
+      # The PyO3 extension builds on every leg, Windows included — Python-on-Windows is
+      # too large an audience to leave on the ctypes fallback. Windows needs no extra
+      # toolchain: the MSVC linker the Rust core already uses plus CPython's own import
+      # library (shipped inside the setup-python installation, found by PyO3's build
+      # script via the interpreter on PATH). Staging is just the platform's spelling of
+      # "extension module": CPython accepts .so on Linux and macOS alike, and .pyd (a
+      # renamed DLL) on Windows.
       - name: Build PyO3 extension
-        if: runner.os != 'Windows'
         working-directory: python/native
         run: cargo build --release
 
       - name: Stage PyO3 extension
-        if: runner.os != 'Windows'
         shell: bash
         run: |
           case "${{ runner.os }}" in
-            macOS) cp python/native/target/release/libhypercast_native.dylib python/src/hypercast_native.so ;;
-            Linux) cp python/native/target/release/libhypercast_native.so python/src/hypercast_native.so ;;
+            macOS)   cp python/native/target/release/libhypercast_native.dylib python/src/hypercast_native.so ;;
+            Linux)   cp python/native/target/release/libhypercast_native.so python/src/hypercast_native.so ;;
+            Windows) cp python/native/target/release/hypercast_native.dll python/src/hypercast_native.pyd ;;
           esac
 
       - name: Test Python bindings (PyO3 backend)
-        if: runner.os != 'Windows'
         working-directory: python
         run: pytest
