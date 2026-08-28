@@ -54,12 +54,16 @@ Culture never lives in the core: numeric doors take a caller-declared format (se
   \* BDN flags the BCL boolean lane `ZeroMeasurement` — the JIT hoists/folds `bool.TryParse` of a loop-invariant string into nothing, which an FFI call structurally can't match. The loss is real either way and is printed as one.
 
   Read the table the way it's meant: the wins land exactly where the BCL runs culture machinery, the washes come while *also* carrying notations the BCL has no knob for at any price, and every number crosses a native boundary the BCL doesn't. Per-scalar this is parity-or-better; the round-three tabular layer crosses once per chunk and makes the same doors a landslide.
+- **Java binding on JDK 22+, union-native the JVM way** — `Verdict<T>` is a `sealed interface` over two records, so a two-arm switch with no default is proven exhaustive by `javac`: an unhandled disposition is a compile failure, the same guarantee the C# binding gets from CS8509-as-error, in Java's own idiom. 21 tests green including the full corpus replay through real FFM downcalls with byte-exact fault spans; and **full nanosecond fidelity** — `Instant`/`LocalTime`/`Duration` keep all nine fractional digits, making the JVM the one platform with zero truncation of what the core parses.
+- **Java AOT, proven** — the GraalVM Native Image smoke test builds and runs every door plus the exhaustive union switch as a true native binary. FFM downcalls need explicit Native Image registration; the binding ships its `reachability-metadata.json` in `META-INF` so every consumer inherits it — the non-negotiable, delivered on both managed platforms.
+- **Java vs. the JDK, first look** — JMH, honest caveat up front: a deliberately shortened run (wide error bars), so these are directional, not final. The direction is unambiguous where it matters: `Cast.timestamp` **~172 ns vs ~667 ns `Instant.parse`** and **~740 ns `DateTimeFormatter.ISO_OFFSET_DATE_TIME`**, time-of-day ~146 vs ~417 ns `LocalTime.parse`, ISO duration ~163 vs ~267 ns `Duration.parse`. The lean doors (f64/uuid/i32) currently lose — not structurally, but to ~100 ns of per-call `Arena.ofConfined()` setup, the documented next tuning target (thread-local scratch) before a full-length run replaces this table. Losses printed here in the meantime, per house rules.
 
 ## Aspirations — the queue that turns into receipts
 
 Stated the way this project states things: each of these becomes a measured table or a CI matrix row, or it gets cut. Details in [docs/roadmap.md](docs/roadmap.md).
 
-- **The binding roster** — Java (FFM, GraalVM Native Image proven like HyperUuid's), Python, Go, Swift, Ruby, PHP: each folding the verdict code + span into its platform's union idiom, each replaying the corpus in CI before it ships. HyperUuid's 6-platform × N-language matrix is the template.
+- **The binding roster** — Python, Go, Swift, Ruby, PHP: each folding the verdict code + span into its platform's union idiom, each replaying the corpus in CI before it ships. HyperUuid's 6-platform × N-language matrix is the template.
+- **Java's full-length benchmark table** — the thread-local scratch-arena pass, then an unshortened JMH run to graduate the first-look numbers above into final receipts.
 - **The wasm legs beyond the core** — dotnet browser-wasm (the `NativeFileReference` pattern HyperUuid proved end-to-end in Blazor) and Pyodide (Emscripten side module). Server-side bindings stay native.
 - **The payoff: tabular ingestion** — CSV/TSV/delimited and XLSX parsing *on top of* these doors, so the FFI boundary is crossed once per chunk instead of once per cell. A million-row, 20-column file is 20M scalar casts; per-cell that's real crossing overhead, per-chunk it rounds to zero while 15–35 ns doors run in a tight native loop. HyperUuid already measured this exact amortization at 19.6x on its batch API. Column buffers in, parallel verdict arrays out — the reason every fault is a span and never an allocation.
 
@@ -71,6 +75,7 @@ Stated the way this project states things: each of these becomes a measured tabl
 corpus/     the shared conformance vectors — the cross-language contract
 rust/       the core: one cdylib, 17 cast_* exports, zero runtime dependencies
 csharp/     the .NET 11 binding: Verdict<T> union, LibraryImport, corpus replay, AOT smoke test
+java/       the JDK 22+ binding: sealed-interface union, FFM, corpus replay, Native Image smoke test
 docs/       roadmap — where this goes and what's deliberately parked
 ```
 
