@@ -6,3 +6,5 @@ build/
 .gradle/
 __pycache__/
 .pytest_cache/
+swift/Sources/HyperCast/NativeLibs/*/
+.build/
