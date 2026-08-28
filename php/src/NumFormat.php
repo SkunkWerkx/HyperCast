@@ -1,0 +1,59 @@
+<?php
+
+declare(strict_types=1);
+
+namespace HyperCast;
+
+/**
+ * Caller-declared numeric notation for the integer and real doors. The native core carries
+ * no culture data — a call site parsing culture-sensitive text declares its format out
+ * loud ({@see NumFormat::invariant()}, or a constructed instance); there is no default,
+ * the same stance every binding in this repo takes. Equal separators are a caller bug
+ * (InvalidArgumentException), never a verdict.
+ */
+final readonly class NumFormat
+{
+    /** Permit the group separator between digits (sizes not validated — between digits is the rule). */
+    public const GROUPING = 1;
+    /** Permit accounting parentheses as negation: (1,234) is -1234. */
+    public const PARENTHESES = 1 << 1;
+    /** Permit exponent notation. Integer doors reject a negative exponent. */
+    public const EXPONENT = 1 << 2;
+    /** Permit 0x/&H/0b two's-complement radix prefixes (0xFF is -1 for an i8). */
+    public const RADIX_PREFIXES = 1 << 3;
+    /** Permit a trailing %, dividing by 100. Real doors only. */
+    public const PERCENT = 1 << 4;
+    /** Every lenience on. */
+    public const ALL = self::GROUPING | self::PARENTHESES | self::EXPONENT | self::RADIX_PREFIXES | self::PERCENT;
+
+    public function __construct(
+        public string $decimalSep,
+        public string $groupSep,
+        public int $flags,
+    ) {
+        if (mb_strlen($decimalSep, 'UTF-8') !== 1 || mb_strlen($groupSep, 'UTF-8') !== 1) {
+            throw new \InvalidArgumentException('Separators must be single characters');
+        }
+        if ($decimalSep === $groupSep) {
+            throw new \InvalidArgumentException(
+                "Decimal and group separators must differ; both are '{$decimalSep}'"
+            );
+        }
+    }
+
+    /** The invariant profile — '.' decimal, ',' grouping, every lenience on. */
+    public static function invariant(): self
+    {
+        static $invariant = null;
+        return $invariant ??= new self('.', ',', self::ALL);
+    }
+
+    /** The separators as Unicode code points, the core's own field encoding. */
+    public function codePoints(): array
+    {
+        return [
+            mb_ord($this->decimalSep, 'UTF-8'),
+            mb_ord($this->groupSep, 'UTF-8'),
+        ];
+    }
+}

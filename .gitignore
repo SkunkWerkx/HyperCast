@@ -10,3 +10,6 @@ swift/Sources/HyperCast/NativeLibs/*/
 .build/
 go/native/*/
 ruby/lib/hypercast/native/*/
+php/vendor/
+php/src/native/*/
+.phpunit.result.cache
