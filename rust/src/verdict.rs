@@ -34,6 +34,35 @@ pub struct Fault {
     pub len: u32,
 }
 
+impl core::fmt::Display for Reason {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Reason::Empty => "empty",
+            Reason::Malformed => "malformed",
+            Reason::OutOfRange => "out of range",
+        })
+    }
+}
+
+impl core::fmt::Display for Fault {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self.reason {
+            Reason::Empty => f.write_str("empty input"),
+            reason => write!(
+                f,
+                "{reason} input at bytes {}..{}",
+                self.offset,
+                self.offset + self.len
+            ),
+        }
+    }
+}
+
+/// A `Fault` composes with ordinary Rust error handling (`?` into `Box<dyn Error>`,
+/// `anyhow`, `thiserror` chains) — the same first-class citizenship every binding's fault
+/// type has in its own platform's error culture.
+impl core::error::Error for Fault {}
+
 impl Fault {
     pub(crate) const EMPTY: Fault = Fault { reason: Reason::Empty, offset: 0, len: 0 };
 

@@ -20,7 +20,8 @@ const MAX_NORMALIZED: usize = 256;
 macro_rules! real_doors {
     ($($(#[$doc:meta])* $door:ident => $ty:ty),+ $(,)?) => {$(
         $(#[$doc])*
-        pub fn $door(input: &[u8], format: &NumFormat) -> Result<$ty, Fault> {
+        pub fn $door(input: impl AsRef<[u8]>, format: &NumFormat) -> Result<$ty, Fault> {
+            let input = input.as_ref();
             let (text, start) = trim(input);
             if text.is_empty() {
                 return Err(Fault::EMPTY);

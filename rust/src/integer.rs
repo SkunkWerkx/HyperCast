@@ -281,7 +281,8 @@ fn parse_int(
 macro_rules! integer_doors {
     ($($(#[$doc:meta])* $door:ident => $ty:ty),+ $(,)?) => {$(
         $(#[$doc])*
-        pub fn $door(input: &[u8], format: &NumFormat) -> Result<$ty, Fault> {
+        pub fn $door(input: impl AsRef<[u8]>, format: &NumFormat) -> Result<$ty, Fault> {
+            let input = input.as_ref();
             parse_int(input, format, <$ty>::MIN as i128, <$ty>::MAX as i128, <$ty>::BITS)
                 .map(|value| value as $ty)
         }

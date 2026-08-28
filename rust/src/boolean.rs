@@ -12,7 +12,8 @@ use crate::verdict::{trim, Fault};
 
 /// Casts boolean text. Empty or whitespace input ⇒ `Empty`; unrecognized input ⇒
 /// `Malformed` spanning the trimmed token.
-pub fn cast_bool(input: &[u8]) -> Result<bool, Fault> {
+pub fn cast_bool(input: impl AsRef<[u8]>) -> Result<bool, Fault> {
+    let input = input.as_ref();
     let (text, start) = trim(input);
     if text.is_empty() {
         return Err(Fault::EMPTY);

@@ -13,8 +13,11 @@
 //! - [`cast_date`] / [`cast_time`] / [`cast_duration`] — the remaining temporal shapes,
 //!   likewise protobuf-formed
 //!
-//! Text comes in as UTF-8 bytes; each door trims ASCII whitespace and treats trimmed-empty
-//! input as [`Reason::Empty`], which bindings surface as absent on their optional doors.
+//! Text comes in as anything byte-viewable — `&str`, `String`, `&[u8]`, `Vec<u8>` — read
+//! as UTF-8 bytes; each door trims ASCII whitespace and treats trimmed-empty input as
+//! [`Reason::Empty`], which [`optional`] (and every binding's optional door) surfaces as
+//! absent. [`Fault`] implements [`core::error::Error`], so a verdict composes with `?`
+//! and ordinary error chains when propagate-on-failure is the caller's idiom.
 
 mod boolean;
 mod ffi;
@@ -33,6 +36,18 @@ pub use temporal::{
 };
 pub use uuid::cast_uuid;
 pub use verdict::{Date, Duration, Fault, NumFormat, Reason, Timestamp};
+
+/// Presents a verdict optionally: an [`Reason::Empty`] fault becomes `Ok(None)` — Rust's
+/// absent — and everything else flows through untouched. The same presentation helper
+/// every binding ships (`optional`/`Optional`), for callers whose absent-is-fine doors
+/// shouldn't treat missing input as a failure.
+pub fn optional<T>(verdict: Result<T, Fault>) -> Result<Option<T>, Fault> {
+    match verdict {
+        Ok(value) => Ok(Some(value)),
+        Err(Fault { reason: Reason::Empty, .. }) => Ok(None),
+        Err(fault) => Err(fault),
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -467,5 +482,43 @@ mod tests {
     fn duration_colon_hours_cap_at_23_without_a_day_part() {
         assert_eq!(reason(cast_duration(b"25:00:00")), Reason::Malformed);
         assert_eq!(cast_duration(b"1.01:00:00"), Ok(Duration { seconds: 90_000, nanos: 0 }));
+    }
+
+    // --- first-class Rust citizenship: the same end-user surface the bindings present ---
+
+    #[test]
+    fn doors_accept_anything_byte_viewable() {
+        assert_eq!(cast_bool("yes"), Ok(true));
+        assert_eq!(cast_bool(String::from("off")), Ok(false));
+        assert_eq!(cast_i32("(1,234)", &INVARIANT), Ok(-1234));
+        let owned: Vec<u8> = String::from("6ba7b810-9dad-11d1-80b4-00c04fd430c8").into_bytes();
+        assert!(cast_uuid(owned).is_ok());
+        assert_eq!(cast_time("23:59:59"), Ok(86_399_000_000_000));
+    }
+
+    #[test]
+    fn faults_display_the_reason_and_span() {
+        assert_eq!(cast_bool("   ").unwrap_err().to_string(), "empty input");
+        assert_eq!(cast_bool("maybe").unwrap_err().to_string(), "malformed input at bytes 0..5");
+        assert_eq!(cast_u8("256", &INVARIANT).unwrap_err().to_string(), "out of range input at bytes 0..3");
+    }
+
+    #[test]
+    fn faults_compose_with_ordinary_error_propagation() {
+        fn parse_pair(a: &str, b: &str) -> Result<(bool, i32), Box<dyn core::error::Error>> {
+            Ok((cast_bool(a)?, cast_i32(b, &INVARIANT)?))
+        }
+        assert_eq!(parse_pair("on", "42").unwrap(), (true, 42));
+        // The integer door's span points precisely at the offending byte, not the token.
+        let err = parse_pair("on", "4x2").unwrap_err();
+        assert_eq!(err.to_string(), "malformed input at bytes 1..2");
+        assert_eq!(err.downcast_ref::<Fault>().unwrap().reason, Reason::Malformed);
+    }
+
+    #[test]
+    fn optional_presents_empty_as_absent_and_nothing_else() {
+        assert_eq!(optional(cast_bool("  ")), Ok(None));
+        assert_eq!(optional(cast_bool("true")), Ok(Some(true)));
+        assert_eq!(optional(cast_bool("maybe")).unwrap_err().reason, Reason::Malformed);
     }
 }

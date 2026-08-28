@@ -14,7 +14,8 @@ const PREFIXES: [&[u8]; 3] = [b"urn:uuid:", b"guid:", b"uuid:"];
 
 /// Casts UUID text to 16 bytes in RFC 9562 order. Empty ⇒ `Empty`; unrecognized ⇒
 /// `Malformed` at the first offending byte (or spanning the token for structural failures).
-pub fn cast_uuid(input: &[u8]) -> Result<[u8; 16], Fault> {
+pub fn cast_uuid(input: impl AsRef<[u8]>) -> Result<[u8; 16], Fault> {
+    let input = input.as_ref();
     let (outer, outer_start) = trim(input);
     if outer.is_empty() {
         return Err(Fault::EMPTY);

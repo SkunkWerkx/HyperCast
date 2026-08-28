@@ -147,7 +147,8 @@ fn read_date(text: &[u8], start: usize) -> Result<(u32, u32, u32), Fault> {
 
 /// Casts a strict ISO 8601 `yyyy-MM-dd` calendar date. Empty ⇒ `Empty`; anything
 /// time-bearing or non-ISO ⇒ `Malformed`; year 0000 ⇒ `OutOfRange`.
-pub fn cast_date(input: &[u8]) -> Result<Date, Fault> {
+pub fn cast_date(input: impl AsRef<[u8]>) -> Result<Date, Fault> {
+    let input = input.as_ref();
     let (text, start) = trim(input);
     if text.is_empty() {
         return Err(Fault::EMPTY);
@@ -163,7 +164,8 @@ pub fn cast_date(input: &[u8]) -> Result<Date, Fault> {
 /// to nanoseconds since midnight. Midnight and `23:59:59.999999999` are both real clock
 /// readings, so there is no range failure on this door: empty ⇒ `Empty`, everything else
 /// wrong ⇒ `Malformed`.
-pub fn cast_time(input: &[u8]) -> Result<u64, Fault> {
+pub fn cast_time(input: impl AsRef<[u8]>) -> Result<u64, Fault> {
+    let input = input.as_ref();
     let (text, start) = trim(input);
     if text.is_empty() {
         return Err(Fault::EMPTY);
@@ -216,7 +218,8 @@ fn read_time(text: &[u8], at: usize, start: usize) -> Result<(u64, usize), Fault
 /// case-insensitive; seconds are mandatory; `:60` leap seconds are `Malformed`. A
 /// well-formed instant outside the window (year 0000, or an offset pushing past an edge)
 /// ⇒ `OutOfRange` spanning the token.
-pub fn cast_timestamp(input: &[u8]) -> Result<Timestamp, Fault> {
+pub fn cast_timestamp(input: impl AsRef<[u8]>) -> Result<Timestamp, Fault> {
+    let input = input.as_ref();
     let (text, start) = trim(input);
     if text.is_empty() {
         return Err(Fault::EMPTY);
@@ -281,7 +284,8 @@ pub fn cast_timestamp(input: &[u8]) -> Result<Timestamp, Fault> {
 /// [`Timestamp`]. Negatives (pre-1970) are allowed; a fractional or non-integer value ⇒
 /// `Malformed`; outside the window ⇒ `OutOfRange`. Sub-second units land in `nanos`, which
 /// stays non-negative even before the epoch (seconds floor toward -∞, protobuf convention).
-pub fn cast_unix(input: &[u8], precision: UnixPrecision) -> Result<Timestamp, Fault> {
+pub fn cast_unix(input: impl AsRef<[u8]>, precision: UnixPrecision) -> Result<Timestamp, Fault> {
+    let input = input.as_ref();
     let (text, start) = trim(input);
     if text.is_empty() {
         return Err(Fault::EMPTY);
@@ -348,7 +352,8 @@ const MAX_DURATION_DIGITS: usize = 18;
 /// `Malformed`); a token containing `:` is the invariant colon form `[-][d.]hh:mm[:ss[.f]]`;
 /// `[-]digits[.f{1..9}]s` is the protobuf JSON form. Beyond ±10,000 years of whole seconds
 /// ⇒ `OutOfRange`. `seconds` and `nanos` come out same-signed.
-pub fn cast_duration(input: &[u8]) -> Result<Duration, Fault> {
+pub fn cast_duration(input: impl AsRef<[u8]>) -> Result<Duration, Fault> {
+    let input = input.as_ref();
     let (text, start) = trim(input);
     if text.is_empty() {
         return Err(Fault::EMPTY);

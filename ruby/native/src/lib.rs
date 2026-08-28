@@ -53,9 +53,9 @@ fn success(ruby: &Ruby, value: impl magnus::IntoValue) -> Result<Value, Error> {
 
 fn fault(ruby: &Ruby, failed: core::Fault) -> Result<Value, Error> {
     let reason = match failed.reason {
-        core::Reason::Empty => Symbol::new("empty"),
-        core::Reason::Malformed => Symbol::new("malformed"),
-        core::Reason::OutOfRange => Symbol::new("out_of_range"),
+        core::Reason::Empty => ruby.to_symbol("empty"),
+        core::Reason::Malformed => ruby.to_symbol("malformed"),
+        core::Reason::OutOfRange => ruby.to_symbol("out_of_range"),
     };
     ruby.get_inner(cached().fault)
         .funcall("new", (reason, failed.offset, failed.len))
@@ -94,7 +94,7 @@ fn with_bytes<T>(text: RString, parse: impl FnOnce(&[u8]) -> T) -> T {
 }
 
 fn bool_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
-    verdict(ruby, with_bytes(text, core::cast_bool))
+    verdict(ruby, with_bytes(text, |bytes| core::cast_bool(bytes)))
 }
 
 macro_rules! numeric_doors {
@@ -120,7 +120,7 @@ numeric_doors! {
 }
 
 fn uuid_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
-    match with_bytes(text, core::cast_uuid) {
+    match with_bytes(text, |bytes| core::cast_uuid(bytes)) {
         Ok(bytes) => {
             let mut hyphenated = String::with_capacity(36);
             for (index, byte) in bytes.iter().enumerate() {
@@ -146,7 +146,7 @@ fn utc_time(ruby: &Ruby, ts: core::Timestamp) -> Result<Value, Error> {
 }
 
 fn timestamp_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
-    match with_bytes(text, core::cast_timestamp) {
+    match with_bytes(text, |bytes| core::cast_timestamp(bytes)) {
         Ok(ts) => utc_time(ruby, ts),
         Err(failed) => fault(ruby, failed),
     }
@@ -173,7 +173,7 @@ fn unix_door(ruby: &Ruby, text: RString, precision: Symbol) -> Result<Value, Err
 }
 
 fn date_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
-    match with_bytes(text, core::cast_date) {
+    match with_bytes(text, |bytes| core::cast_date(bytes)) {
         Ok(date) => {
             let class = ruby.get_inner(cached().date_class);
             success(ruby, class.funcall::<_, _, Value>("new", (date.year, date.month, date.day))?)
@@ -183,11 +183,11 @@ fn date_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
 }
 
 fn time_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
-    verdict(ruby, with_bytes(text, core::cast_time))
+    verdict(ruby, with_bytes(text, |bytes| core::cast_time(bytes)))
 }
 
 fn duration_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
-    match with_bytes(text, core::cast_duration) {
+    match with_bytes(text, |bytes| core::cast_duration(bytes)) {
         Ok(span) => {
             // Exact Rational seconds, no float anywhere: nanos.quo(1e9) + whole seconds.
             // (Rational + Integer stays Rational; the parts each fit i64 where the total
