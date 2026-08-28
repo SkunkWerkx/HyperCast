@@ -92,10 +92,13 @@ jobs:
 
       # Java: the real FFM downcall path per OS. build.gradle.kts's stageNativeLibrary task
       # stages ../rust/target/release into the classpath resource layout itself.
+      # 23, not newer: Temurin ships Windows ARM64 builds for 21 and 23 only (confirmed
+      # against the Adoptium API — 24/25 have no win-arm64 asset), and 23 clears this
+      # binding's JDK 22 FFM floor. The same reason HyperUuid's workflow pins 23.
       - uses: actions/setup-java@v6
         with:
           distribution: "temurin"
-          java-version: "25"
+          java-version: "23"
 
       - name: Test Java bindings against this platform's native lib
         working-directory: java
@@ -233,13 +236,16 @@ jobs:
         shell: bash
         run: cp "out/${{ matrix.lib_name }}" "python/src/hypercast/libhypercast.so"
 
+      # pytest installed directly rather than via `pip install -e ".[test]"`: the suite's
+      # conftest.py puts src/ on sys.path itself (the package's documented dev loop), and
+      # the editable install currently fails metadata generation on the readme declared in
+      # pyproject.toml — a wheel-packaging concern that belongs to the publishing round.
       - name: Test Python bindings (ctypes backend) against this platform's native lib
         working-directory: python
         env:
           HYPERCAST_PURE: "1"
         run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[test]"
+          python -m pip install pytest
           pytest
 
       # CPython accepts the .so suffix for extension modules on macOS too, so one staged

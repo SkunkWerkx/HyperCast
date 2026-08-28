@@ -3,6 +3,12 @@ import PackageDescription
 
 let package = Package(
     name: "HyperCast",
+    // macOS 13 floor: the duration door presents Swift's own Duration type, which (with
+    // its .seconds/.nanoseconds arithmetic) is macOS 13+. Linux builds carry no such
+    // availability gate — this only sets the Darwin deployment target.
+    platforms: [
+        .macOS(.v13)
+    ],
     products: [
         .library(name: "HyperCast", targets: ["HyperCast"])
     ],
