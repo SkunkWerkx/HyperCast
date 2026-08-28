@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace HyperCast;
 
 use DateTimeImmutable;
-use DateTimeZone;
 use FFI;
 
 /**
@@ -19,7 +18,15 @@ use FFI;
  * reads identically across bindings. PHP strings are raw bytes, so inputs cross verbatim
  * and fault offsets need no mapping.
  *
- * PHP-flavored fidelity, stated honestly: int is 64-bit signed, so u64 comes back as the
+ * Performance shape, measured not assumed: PHP's raw ext-ffi call floor is ~105 ns —
+ * already extension-class — so every avoidable nanosecond here was wrapper, and the
+ * wrapper is written accordingly: doors are flat (one FFI call, no helper or closure
+ * indirection on the hot path), out-params are typed cdef structs read as fields (no
+ * string round trips), scratch CData is allocated once (PHP's request model makes static
+ * scratch safe), and instants build through createFromTimestamp/setMicrosecond on PHP
+ * 8.4+ instead of a date-string parse (older PHP falls back automatically).
+ *
+ * PHP-flavored fidelity, stated honestly: int is 64-bit signed, so u64 carries the
  * two's-complement bit pattern (render with sprintf('%u', ...)); DateTimeImmutable tops
  * out at microseconds, so the core's nanoseconds truncate by three digits on the instant
  * doors; time-of-day is an exact int of nanoseconds since midnight; durations come back as
@@ -28,13 +35,22 @@ use FFI;
 final class Cast
 {
     private static ?FFI $ffi = null;
-    // Reused scratch CData — FFI::new is a measured microsecond-scale allocation, and PHP's
-    // request model makes static scratch safe (one request per thread; ZTS statics are
-    // thread-local anyway). out16 covers every door's out-value.
-    private static ?FFI\CData $scratchOut = null;
-    private static ?FFI\CData $scratchFault = null;
-    private static ?FFI\CData $scratchFormat = null;
-    private static ?NumFormat $scratchFormatKey = null;
+    private static ?FFI\CData $out16 = null;
+    private static ?FFI\CData $outPair = null;
+    private static ?FFI\CData $outDate = null;
+    private static ?FFI\CData $outI64 = null;
+    private static ?FFI\CData $outReal = null;
+    private static ?FFI\CData $fault = null;
+    private static ?FFI\CData $format = null;
+    // Pre-taken addresses: FFI auto-decays arrays to pointers but not scalars/structs, and
+    // FFI::addr() per call would be a fresh CData allocation on the hot path.
+    private static ?FFI\CData $outPairPtr = null;
+    private static ?FFI\CData $outDatePtr = null;
+    private static ?FFI\CData $outI64Ptr = null;
+    private static ?FFI\CData $outRealPtr = null;
+    private static ?FFI\CData $faultPtr = null;
+    private static ?NumFormat $formatKey = null;
+    private static bool $fastInstants = false;
 
     private function __construct()
     {
@@ -49,6 +65,29 @@ final class Cast
         return $verdict instanceof Fault && $verdict->reason === CastFailure::Empty ? null : $verdict;
     }
 
+    /** The cold path: assembles a Fault from the scratch span, or reports a binding bug. */
+    private static function fail(int $rc): Fault
+    {
+        if ($rc === -1) {
+            throw new \RuntimeException(
+                'hypercast: libhypercast reported a contract violation — a binding bug, please report it'
+            );
+        }
+        return new Fault(CastFailure::from($rc), self::$fault->offset, self::$fault->length);
+    }
+
+    /** Re-stores the declared format only when it actually changes (identity check). */
+    private static function declare(NumFormat $format): void
+    {
+        if (self::$formatKey !== $format) {
+            [$decimal, $group] = $format->codePoints();
+            self::$format[0] = $decimal;
+            self::$format[1] = $group;
+            self::$format[2] = $format->flags;
+            self::$formatKey = $format;
+        }
+    }
+
     /**
      * Casts boolean text: true/false plus the conventions untrusted sources actually send
      * (t/f, yes/no, y/n, 1/0, on/off, enabled/disabled, active/inactive,
@@ -56,46 +95,50 @@ final class Cast
      */
     public static function bool(string $text): Success|Fault
     {
-        return self::rawOut('cast_bool', $text, 1, static fn(string $bytes) => $bytes !== "\0");
+        $ffi = self::$ffi ?? self::load();
+        $rc = $ffi->cast_bool($text === '' ? null : $text, \strlen($text), self::$out16, self::$faultPtr);
+        return $rc === 0 ? new Success(self::$out16[0] !== 0) : self::fail($rc);
     }
 
     /**
      * Integer doors: the target type's own range, declared grouping, accounting parens,
-     * non-negative exponent, and 0x/&H/0b two's-complement radix prefixes.
+     * non-negative exponent, and 0x/&H/0b two's-complement radix prefixes. Every width
+     * funnels through one zeroed 64-bit scratch slot (the supported RIDs are all
+     * little-endian); narrow signed widths sign-extend on readback.
      */
     public static function i8(string $text, NumFormat $format): Success|Fault
     {
-        return self::numeric('cast_i8', $text, $format, 'int8_t[1]', static fn($out) => $out[0]);
+        return self::integer('cast_i8', $text, $format);
     }
 
     public static function i16(string $text, NumFormat $format): Success|Fault
     {
-        return self::numeric('cast_i16', $text, $format, 'int16_t[1]', static fn($out) => $out[0]);
+        return self::integer('cast_i16', $text, $format);
     }
 
     public static function i32(string $text, NumFormat $format): Success|Fault
     {
-        return self::numeric('cast_i32', $text, $format, 'int32_t[1]', static fn($out) => $out[0]);
+        return self::integer('cast_i32', $text, $format);
     }
 
     public static function i64(string $text, NumFormat $format): Success|Fault
     {
-        return self::numeric('cast_i64', $text, $format, 'int64_t[1]', static fn($out) => $out[0]);
+        return self::integer('cast_i64', $text, $format);
     }
 
     public static function u8(string $text, NumFormat $format): Success|Fault
     {
-        return self::numeric('cast_u8', $text, $format, 'uint8_t[1]', static fn($out) => $out[0]);
+        return self::integer('cast_u8', $text, $format);
     }
 
     public static function u16(string $text, NumFormat $format): Success|Fault
     {
-        return self::numeric('cast_u16', $text, $format, 'uint16_t[1]', static fn($out) => $out[0]);
+        return self::integer('cast_u16', $text, $format);
     }
 
     public static function u32(string $text, NumFormat $format): Success|Fault
     {
-        return self::numeric('cast_u32', $text, $format, 'uint32_t[1]', static fn($out) => $out[0]);
+        return self::integer('cast_u32', $text, $format);
     }
 
     /**
@@ -104,18 +147,48 @@ final class Cast
      */
     public static function u64(string $text, NumFormat $format): Success|Fault
     {
-        return self::numeric('cast_u64', $text, $format, 'uint64_t[1]', static fn($out) => $out[0]);
+        return self::integer('cast_u64', $text, $format);
+    }
+
+    private static function integer(string $symbol, string $text, NumFormat $format): Success|Fault
+    {
+        $ffi = self::$ffi ?? self::load();
+        self::declare($format);
+        self::$outI64->cdata = 0;
+        $rc = $ffi->{$symbol}(
+            $text === '' ? null : $text, \strlen($text), self::$format, self::$outI64Ptr, self::$faultPtr
+        );
+        if ($rc !== 0) {
+            return self::fail($rc);
+        }
+        $raw = self::$outI64->cdata;
+        return new Success(match ($symbol) {
+            'cast_i8' => $raw << 56 >> 56,
+            'cast_i16' => $raw << 48 >> 48,
+            'cast_i32' => $raw << 32 >> 32,
+            default => $raw,
+        });
     }
 
     /** Real doors: finite values only, declared separators, parens, exponent, percent. */
     public static function f32(string $text, NumFormat $format): Success|Fault
     {
-        return self::numeric('cast_f32', $text, $format, 'float[1]', static fn($out) => $out[0]);
+        $ffi = self::$ffi ?? self::load();
+        self::declare($format);
+        $rc = $ffi->cast_f32(
+            $text === '' ? null : $text, \strlen($text), self::$format, self::$outRealPtr, self::$faultPtr
+        );
+        return $rc === 0 ? new Success(self::$outReal->f32) : self::fail($rc);
     }
 
     public static function f64(string $text, NumFormat $format): Success|Fault
     {
-        return self::numeric('cast_f64', $text, $format, 'double[1]', static fn($out) => $out[0]);
+        $ffi = self::$ffi ?? self::load();
+        self::declare($format);
+        $rc = $ffi->cast_f64(
+            $text === '' ? null : $text, \strlen($text), self::$format, self::$outRealPtr, self::$faultPtr
+        );
+        return $rc === 0 ? new Success(self::$outReal->f64) : self::fail($rc);
     }
 
     /**
@@ -124,17 +197,28 @@ final class Cast
      */
     public static function uuid(string $text): Success|Fault
     {
-        return self::rawOut('cast_uuid', $text, 16, static function (string $bytes) {
-            $hex = bin2hex($bytes);
-            return sprintf(
-                '%s-%s-%s-%s-%s',
-                substr($hex, 0, 8),
-                substr($hex, 8, 4),
-                substr($hex, 12, 4),
-                substr($hex, 16, 4),
-                substr($hex, 20, 12)
-            );
-        });
+        $ffi = self::$ffi ?? self::load();
+        $rc = $ffi->cast_uuid($text === '' ? null : $text, \strlen($text), self::$out16, self::$faultPtr);
+        if ($rc !== 0) {
+            return self::fail($rc);
+        }
+        $hex = bin2hex(FFI::string(self::$out16, 16));
+        return new Success(
+            substr($hex, 0, 8) . '-' . substr($hex, 8, 4) . '-' . substr($hex, 12, 4)
+            . '-' . substr($hex, 16, 4) . '-' . substr($hex, 20)
+        );
+    }
+
+    private static function instant(): DateTimeImmutable
+    {
+        $seconds = self::$outPair->seconds;
+        $micros = intdiv(self::$outPair->nanos, 1000);
+        if (self::$fastInstants) {
+            $instant = DateTimeImmutable::createFromTimestamp($seconds);
+            return $micros === 0 ? $instant : $instant->setMicrosecond($micros);
+        }
+        $instant = new DateTimeImmutable("@{$seconds}");
+        return $micros === 0 ? $instant : $instant->modify("+{$micros} microseconds");
     }
 
     /**
@@ -143,39 +227,47 @@ final class Cast
      */
     public static function timestamp(string $text): Success|Fault
     {
-        return self::rawOut('cast_timestamp', $text, 16, self::instant(...));
+        $ffi = self::$ffi ?? self::load();
+        $rc = $ffi->cast_timestamp($text === '' ? null : $text, \strlen($text), self::$outPairPtr, self::$faultPtr);
+        return $rc === 0 ? new Success(self::instant()) : self::fail($rc);
     }
 
     /** Casts an integer Unix-epoch value under a caller-declared unit to a UTC DateTimeImmutable. */
     public static function unix(string $text, UnixPrecision $precision): Success|Fault
     {
-        self::ffi();
-        $out = self::$scratchOut;
-        $fault = self::$scratchFault;
-        $rc = self::$ffi->cast_unix(
-            $text === '' ? null : $text,
-            \strlen($text),
-            $precision->value,
-            $out,
-            $fault
+        $ffi = self::$ffi ?? self::load();
+        $rc = $ffi->cast_unix(
+            $text === '' ? null : $text, \strlen($text), $precision->value, self::$outPairPtr, self::$faultPtr
         );
-        return self::verdict($rc, $fault, static fn() => self::instant(FFI::string($out, 16)));
+        return $rc === 0 ? new Success(self::instant()) : self::fail($rc);
     }
 
     /**
      * Casts a strict ISO 8601 yyyy-MM-dd calendar date to a UTC DateTimeImmutable at
-     * midnight (PHP has no date-only type).
+     * midnight (PHP has no date-only type). Built from epoch arithmetic — Hinnant's
+     * days_from_civil, the same math the core itself uses — not a date-string parse.
      */
     public static function date(string $text): Success|Fault
     {
-        return self::rawOut('cast_date', $text, 4, static function (string $bytes) {
-            ['year' => $year, 'month' => $month, 'day' => $day] =
-                unpack('vyear/Cmonth/Cday', $bytes);
-            return new DateTimeImmutable(
-                sprintf('%04d-%02d-%02d 00:00:00', $year, $month, $day),
-                new DateTimeZone('UTC')
-            );
-        });
+        $ffi = self::$ffi ?? self::load();
+        $rc = $ffi->cast_date($text === '' ? null : $text, \strlen($text), self::$outDatePtr, self::$faultPtr);
+        if ($rc !== 0) {
+            return self::fail($rc);
+        }
+        $year = self::$outDate->year;
+        $month = self::$outDate->month;
+        $day = self::$outDate->day;
+        $shifted = $month <= 2 ? $year - 1 : $year;
+        $era = intdiv($shifted >= 0 ? $shifted : $shifted - 399, 400);
+        $yearOfEra = $shifted - $era * 400;
+        $dayOfYear = intdiv(153 * ($month + ($month > 2 ? -3 : 9)) + 2, 5) + $day - 1;
+        $dayOfEra = $yearOfEra * 365 + intdiv($yearOfEra, 4) - intdiv($yearOfEra, 100) + $dayOfYear;
+        $seconds = ($era * 146_097 + $dayOfEra - 719_468) * 86_400;
+        return new Success(
+            self::$fastInstants
+                ? DateTimeImmutable::createFromTimestamp($seconds)
+                : new DateTimeImmutable("@{$seconds}")
+        );
     }
 
     /**
@@ -184,7 +276,9 @@ final class Cast
      */
     public static function time(string $text): Success|Fault
     {
-        return self::rawOut('cast_time', $text, 8, static fn(string $bytes) => unpack('Pnanos', $bytes)['nanos']);
+        $ffi = self::$ffi ?? self::load();
+        $rc = $ffi->cast_time($text === '' ? null : $text, \strlen($text), self::$outI64Ptr, self::$faultPtr);
+        return $rc === 0 ? new Success(self::$outI64->cdata) : self::fail($rc);
     }
 
     /**
@@ -193,80 +287,15 @@ final class Cast
      */
     public static function duration(string $text): Success|Fault
     {
-        return self::rawOut('cast_duration', $text, 16, static function (string $bytes) {
-            ['seconds' => $seconds, 'nanos' => $nanos] = unpack('qseconds/lnanos', $bytes);
-            return new Duration($seconds, $nanos);
-        });
+        $ffi = self::$ffi ?? self::load();
+        $rc = $ffi->cast_duration($text === '' ? null : $text, \strlen($text), self::$outPairPtr, self::$faultPtr);
+        return $rc === 0
+            ? new Success(new Duration(self::$outPair->seconds, self::$outPair->nanos))
+            : self::fail($rc);
     }
 
-    private static function instant(string $bytes): DateTimeImmutable
+    private static function load(): FFI
     {
-        ['seconds' => $seconds, 'nanos' => $nanos] = unpack('qseconds/lnanos', $bytes);
-        $base = new DateTimeImmutable("@{$seconds}");
-        $micros = intdiv($nanos, 1000);
-        return $micros === 0 ? $base : $base->modify("+{$micros} microseconds");
-    }
-
-    private static function verdict(int $rc, $fault, callable $read): Success|Fault
-    {
-        if ($rc === 0) {
-            return new Success($read());
-        }
-        if ($rc === -1) {
-            throw new \RuntimeException(
-                'hypercast: libhypercast reported a contract violation — a binding bug, please report it'
-            );
-        }
-        return new Fault(CastFailure::from($rc), $fault[0], $fault[1]);
-    }
-
-    private static function rawOut(string $symbol, string $text, int $outBytes, callable $read): Success|Fault
-    {
-        self::ffi();
-        $out = self::$scratchOut;
-        $fault = self::$scratchFault;
-        $rc = self::$ffi->{$symbol}($text === '' ? null : $text, \strlen($text), $out, $fault);
-        return self::verdict($rc, $fault, static fn() => $read(FFI::string($out, $outBytes)));
-    }
-
-    private static function numericRaw(string $symbol, string $text, NumFormat $format): int
-    {
-        self::ffi();
-        if (self::$scratchFormatKey !== $format) {
-            [$decimal, $group] = $format->codePoints();
-            $raw = self::$scratchFormat;
-            $raw[0] = $decimal;
-            $raw[1] = $group;
-            $raw[2] = $format->flags;
-            self::$scratchFormatKey = $format;
-        }
-        return self::$ffi->{$symbol}(
-            $text === '' ? null : $text,
-            \strlen($text),
-            self::$scratchFormat,
-            self::$scratchOut,
-            self::$scratchFault
-        );
-    }
-
-    private static function numeric(
-        string $symbol,
-        string $text,
-        NumFormat $format,
-        string $outType,
-        callable $read,
-    ): Success|Fault {
-        $rc = self::numericRaw($symbol, $text, $format);
-        return self::verdict($rc, self::$scratchFault,
-            static fn() => $read(FFI::cast($outType, self::$scratchOut)));
-    }
-
-    private static function ffi(): FFI
-    {
-        if (self::$ffi !== null) {
-            return self::$ffi;
-        }
-
         [$rid, $libName] = NativePlatform::ridAndLibraryName();
         $path = __DIR__ . "/native/{$rid}/{$libName}";
         if (!is_file($path)) {
@@ -287,7 +316,11 @@ final class Cast
         $numeric = '(const char *ptr, size_t len, const void *format, void *out, void *fault)';
         $plain = '(const char *ptr, size_t len, void *out, void *fault)';
         self::$ffi = FFI::cdef(
-            "int cast_bool{$plain};"
+            'typedef struct { uint32_t offset; uint32_t length; } hc_fault;'
+            . 'typedef struct { int64_t seconds; int32_t nanos; } hc_pair;'
+            . 'typedef struct { uint16_t year; uint8_t month; uint8_t day; } hc_date;'
+            . 'typedef union { float f32; double f64; } hc_real;'
+            . "int cast_bool{$plain};"
             . "int cast_i8{$numeric}; int cast_i16{$numeric}; int cast_i32{$numeric}; int cast_i64{$numeric};"
             . "int cast_u8{$numeric}; int cast_u16{$numeric}; int cast_u32{$numeric}; int cast_u64{$numeric};"
             . "int cast_f32{$numeric}; int cast_f64{$numeric};"
@@ -299,9 +332,20 @@ final class Cast
             . "int cast_duration{$plain};",
             $path
         );
-        self::$scratchOut = self::$ffi->new('uint8_t[16]');
-        self::$scratchFault = self::$ffi->new('uint32_t[2]');
-        self::$scratchFormat = self::$ffi->new('uint32_t[3]');
+        self::$out16 = self::$ffi->new('uint8_t[16]');
+        self::$outPair = self::$ffi->new('hc_pair');
+        self::$outDate = self::$ffi->new('hc_date');
+        self::$outI64 = self::$ffi->new('int64_t');
+        self::$outReal = self::$ffi->new('hc_real');
+        self::$fault = self::$ffi->new('hc_fault');
+        self::$format = self::$ffi->new('uint32_t[3]');
+        self::$outPairPtr = FFI::addr(self::$outPair);
+        self::$outDatePtr = FFI::addr(self::$outDate);
+        self::$outI64Ptr = FFI::addr(self::$outI64);
+        self::$outRealPtr = FFI::addr(self::$outReal);
+        self::$faultPtr = FFI::addr(self::$fault);
+        self::$fastInstants = method_exists(DateTimeImmutable::class, 'createFromTimestamp')
+            && method_exists(DateTimeImmutable::class, 'setMicrosecond');
         return self::$ffi;
     }
 }

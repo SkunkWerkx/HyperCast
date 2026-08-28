@@ -1,0 +1,17 @@
+[package]
+name = "hypercast-ruby-native"
+version = "0.1.0"
+edition = "2024"
+description = "Ruby native-extension backend for hypercast — the Rust core linked directly into a Ruby extension (Magnus), bypassing Fiddle's measured 1.6 µs per-call floor. The pure-Fiddle gem remains the universal zero-compile fallback."
+license = "MIT"
+repository = "https://github.com/SkunkWerkx/HyperCast"
+publish = false
+
+[lib]
+name = "hypercast_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+hypercast = { path = "../../rust" }
+magnus = { version = "0.8", features = ["rb-sys"] }
+rb-sys = "0.9"

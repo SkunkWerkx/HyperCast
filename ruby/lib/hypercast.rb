@@ -218,3 +218,20 @@ module HyperCast
     end
   end
 end
+
+# --- backend selection: the Magnus extension, when present, replaces the doors above in
+# place on this module (no delegation layer) — Fiddle's measured 1.6 µs per-call floor
+# drops to an ordinary extension call. The pure-Fiddle definitions stay the universal
+# zero-compile fallback; precompiled platform gems are how the extension ships without
+# ever making a consumer compile anything. Set HYPERCAST_PURE=1 to force Fiddle.
+HyperCast::BACKEND =
+  if ENV["HYPERCAST_PURE"]
+    :fiddle
+  else
+    begin
+      require "hypercast_native"
+      :native
+    rescue LoadError
+      :fiddle
+    end
+  end
