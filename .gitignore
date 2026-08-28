@@ -13,3 +13,4 @@ ruby/lib/hypercast/native/*/
 php/vendor/
 php/src/native/*/
 .phpunit.result.cache
+python/src/hypercast_native.so

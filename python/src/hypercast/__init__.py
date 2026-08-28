@@ -343,3 +343,43 @@ def cast_duration(text: str | bytes) -> Verdict[_dt.timedelta]:
     nanos = out.nanos
     micros = nanos // 1000 if nanos >= 0 else -((-nanos) // 1000)
     return Success(_dt.timedelta(seconds=out.seconds, microseconds=micros))
+
+
+# --- backend selection: HyperUuid's Go dual-backend pattern, transplanted -----------------
+# The PyO3 extension (hypercast_native) links the Rust core straight into a CPython
+# extension module — no ctypes marshalling, ~10x per call. When importable it *becomes*
+# this package's Success/Fault/NumFormat and doors; the pure-ctypes definitions above stay
+# the universal fallback (and the Pyodide/wasm path). Set HYPERCAST_PURE=1 to force ctypes.
+
+BACKEND = "ctypes"
+
+import os as _os
+
+if not _os.environ.get("HYPERCAST_PURE"):
+    try:
+        import hypercast_native as _native
+    except ImportError:
+        _native = None
+    if _native is not None:
+        _native._bind(CastFailure)
+        Success = _native.Success  # noqa: F811
+        Fault = _native.Fault  # noqa: F811
+        NumFormat = _native.NumFormat  # noqa: F811
+        cast_bool = _native.cast_bool  # noqa: F811
+        cast_i8 = _native.cast_i8  # noqa: F811
+        cast_i16 = _native.cast_i16  # noqa: F811
+        cast_i32 = _native.cast_i32  # noqa: F811
+        cast_i64 = _native.cast_i64  # noqa: F811
+        cast_u8 = _native.cast_u8  # noqa: F811
+        cast_u16 = _native.cast_u16  # noqa: F811
+        cast_u32 = _native.cast_u32  # noqa: F811
+        cast_u64 = _native.cast_u64  # noqa: F811
+        cast_f32 = _native.cast_f32  # noqa: F811
+        cast_f64 = _native.cast_f64  # noqa: F811
+        cast_uuid = _native.cast_uuid  # noqa: F811
+        cast_timestamp = _native.cast_timestamp  # noqa: F811
+        cast_unix = _native.cast_unix  # noqa: F811
+        cast_date = _native.cast_date  # noqa: F811
+        cast_time = _native.cast_time  # noqa: F811
+        cast_duration = _native.cast_duration  # noqa: F811
+        BACKEND = "native"
