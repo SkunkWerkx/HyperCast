@@ -1,0 +1,264 @@
+name: Build native libraries and test every binding
+
+# HyperUuid's proven CI story (build-packages.yml there), ported: build the Rust core fresh
+# on each of 6 real-hardware legs, then run every binding's actual test suite against that
+# leg's freshly-built native library — proving the real FFI load/marshalling path per OS,
+# which cargo test alone cannot exercise. Packaging jobs (HyperUuid's pack-nuget/pack-maven
+# pattern) join when the publishing round starts; until then this workflow is the proof.
+#
+# Two additions over the HyperUuid original, because HyperCast's bindings grew them first:
+# the Python (PyO3) and Ruby (Magnus) native-extension backends are built and tested here
+# too, on the unix legs — each suite runs twice, once forced onto the pure ctypes/Fiddle
+# fallback (HYPERCAST_PURE=1) and once with the extension staged, so both backends stay
+# green rather than only the one a developer's machine happens to select.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+
+jobs:
+  build-native:
+    strategy:
+      fail-fast: false
+      # Runner labels carried over from HyperUuid's matrix (checked there against GitHub's
+      # retirement schedule as of Aug 2026): macos-26-intel is the current osx-x64 label
+      # with a shelf life (GitHub winds down x86_64 macOS by Fall 2027); windows-11-arm is
+      # GA and free for public repos.
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+            lib_name: libhypercast.so
+          - os: ubuntu-24.04-arm
+            rid: linux-arm64
+            lib_name: libhypercast.so
+          - os: macos-26-intel
+            rid: osx-x64
+            lib_name: libhypercast.dylib
+          - os: macos-latest
+            rid: osx-arm64
+            lib_name: libhypercast.dylib
+          - os: windows-latest
+            rid: win-x64
+            lib_name: hypercast.dll
+          - os: windows-11-arm
+            rid: win-arm64
+            lib_name: hypercast.dll
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build libhypercast (release)
+        working-directory: rust
+        run: cargo build --release
+
+      # Unit tests, the shared conformance corpus (corpus/*.json replayed through the
+      # public API), and the counting-allocator allocation-free proof, all per leg.
+      - name: Run Rust test suite
+        working-directory: rust
+        run: cargo test --release
+
+      - name: Collect native artifact
+        shell: bash
+        run: |
+          mkdir -p out
+          case "${{ runner.os }}" in
+            Windows) cp rust/target/release/hypercast.dll "out/${{ matrix.lib_name }}" ;;
+            macOS)   cp rust/target/release/libhypercast.dylib "out/${{ matrix.lib_name }}" ;;
+            Linux)   cp rust/target/release/libhypercast.so "out/${{ matrix.lib_name }}" ;;
+          esac
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-${{ matrix.rid }}
+          path: out/${{ matrix.lib_name }}
+
+      # C#: the real [LibraryImport] resolution/marshalling path per OS. No placement step
+      # needed — HyperCast.csproj's dev-loop items copy the freshly-built native library
+      # from rust/target/release into the test output (all three platform names declared
+      # conditionally). net11.0 is the deliberate floor (native discriminated unions), so
+      # this pulls the preview SDK channel until 11.0 GAs.
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "11.0.x"
+          dotnet-quality: "preview"
+
+      - name: Test C# bindings against this platform's native lib
+        run: dotnet test --project csharp/HyperCast.Tests/HyperCast.Tests.csproj -c Release
+
+      # Java: the real FFM downcall path per OS. build.gradle.kts's stageNativeLibrary task
+      # stages ../rust/target/release into the classpath resource layout itself.
+      - uses: actions/setup-java@v6
+        with:
+          distribution: "temurin"
+          java-version: "25"
+
+      - name: Test Java bindings against this platform's native lib
+        working-directory: java
+        shell: bash
+        run: |
+          chmod +x gradlew
+          ./gradlew test --console=plain
+
+      # Go: the real cgo dlopen/dlsym path. Skipped on both Windows legs — the cgo backend
+      # is deliberately darwin/linux-only (//go:build cgo && (darwin || linux)); the purego
+      # fallback that will carry Windows and CGO_ENABLED=0 builds is the queued next round,
+      # mirroring HyperUuid's backend pair (see go/backend_cgo.go's own doc comment).
+      - uses: actions/setup-go@v7
+        if: runner.os != 'Windows'
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      - name: Place native lib for Go in-repo testing
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p "go/native/${{ matrix.rid }}"
+          cp "out/${{ matrix.lib_name }}" "go/native/${{ matrix.rid }}/"
+
+      - name: Test Go bindings against this platform's native lib
+        if: runner.os != 'Windows'
+        working-directory: go
+        run: go test ./...
+
+      # Swift: dlopen/dlsym (LoadLibraryW/GetProcAddress on Windows) + @convention(c).
+      # SwiftyLab/setup-swift over swift-actions/setup-swift for its verified windows-11-arm
+      # support, HyperUuid's own footnoted reason.
+      - uses: SwiftyLab/setup-swift@v1.14.0
+        with:
+          swift-version: "6.3"
+
+      - name: Place native lib for Swift in-repo testing
+        shell: bash
+        run: |
+          mkdir -p "swift/Sources/HyperCast/NativeLibs/${{ matrix.rid }}"
+          cp "out/${{ matrix.lib_name }}" "swift/Sources/HyperCast/NativeLibs/${{ matrix.rid }}/"
+
+      - name: Test Swift bindings against this platform's native lib
+        working-directory: swift
+        run: swift test
+
+      # Defensive no-op carried over from HyperUuid: GHA macOS runners have hit
+      # xcode-select-not-pointed-at-full-Xcode failures in Ruby native-extension builds.
+      - name: Point Xcode at a full toolchain (works around a Ruby native-extension mkmf issue)
+        if: runner.os == 'macOS'
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+          working-directory: ruby
+
+      - name: Place native lib for Ruby in-repo testing
+        shell: bash
+        run: |
+          mkdir -p "ruby/lib/hypercast/native/${{ matrix.rid }}"
+          cp "out/${{ matrix.lib_name }}" "ruby/lib/hypercast/native/${{ matrix.rid }}/"
+
+      # The Fiddle backend, forced explicitly — the universal zero-compile path every
+      # platform must keep green regardless of whether the Magnus extension exists there.
+      - name: Test Ruby bindings (Fiddle backend) against this platform's native lib
+        working-directory: ruby
+        env:
+          HYPERCAST_PURE: "1"
+        run: bundle exec rspec
+
+      # The Magnus extension backend, unix legs: build the extension crate against this
+      # leg's Ruby, stage it under the require name (DLEXT is .so on Linux, .bundle on
+      # macOS), and run the same suite again with auto-selection picking it up.
+      - name: Build Magnus extension
+        if: runner.os != 'Windows'
+        working-directory: ruby/native
+        run: cargo build --release
+
+      - name: Stage Magnus extension
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          case "${{ runner.os }}" in
+            macOS) cp ruby/native/target/release/libhypercast_native.dylib ruby/lib/hypercast_native.bundle ;;
+            Linux) cp ruby/native/target/release/libhypercast_native.so ruby/lib/hypercast_native.so ;;
+          esac
+
+      - name: Test Ruby bindings (Magnus backend)
+        if: runner.os != 'Windows'
+        working-directory: ruby
+        run: bundle exec rspec
+
+      # PHP: the built-in ext-ffi path. Skipped on win-arm64 for HyperUuid's documented
+      # reason: PHP has never shipped a native Windows ARM64 build — it runs under x64
+      # emulation there, which can never load an ARM64 hypercast.dll, and the real
+      # PHP-as-x64 story is already covered by the windows-latest leg.
+      - uses: shivammathur/setup-php@v2
+        if: matrix.rid != 'win-arm64'
+        with:
+          php-version: "8.5"
+          extensions: ffi
+          tools: composer
+
+      - name: Install PHP dependencies
+        if: matrix.rid != 'win-arm64'
+        working-directory: php
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Place native lib for PHP in-repo testing
+        if: matrix.rid != 'win-arm64'
+        shell: bash
+        run: |
+          mkdir -p "php/src/native/${{ matrix.rid }}"
+          cp "out/${{ matrix.lib_name }}" "php/src/native/${{ matrix.rid }}/"
+
+      - name: Test PHP bindings against this platform's native lib
+        if: matrix.rid != 'win-arm64'
+        working-directory: php
+        # `php vendor/bin/phpunit`, not bare `vendor/bin/phpunit` — the shebang-proxy
+        # script isn't directly executable under the Windows legs' default pwsh shell.
+        run: php vendor/bin/phpunit
+
+      # Python: the ctypes fallback everywhere (forced, same rationale as Ruby's Fiddle
+      # run), then the PyO3 extension on the unix legs. The single fixed resource name
+      # libhypercast.so is deliberate — ctypes loads by path, not extension, so a renamed
+      # .dylib/.dll loads identically (HyperUuid's documented trick).
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Place native lib for Python in-repo testing
+        shell: bash
+        run: cp "out/${{ matrix.lib_name }}" "python/src/hypercast/libhypercast.so"
+
+      - name: Test Python bindings (ctypes backend) against this platform's native lib
+        working-directory: python
+        env:
+          HYPERCAST_PURE: "1"
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+          pytest
+
+      # CPython accepts the .so suffix for extension modules on macOS too, so one staged
+      # name covers both unix legs.
+      - name: Build PyO3 extension
+        if: runner.os != 'Windows'
+        working-directory: python/native
+        run: cargo build --release
+
+      - name: Stage PyO3 extension
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          case "${{ runner.os }}" in
+            macOS) cp python/native/target/release/libhypercast_native.dylib python/src/hypercast_native.so ;;
+            Linux) cp python/native/target/release/libhypercast_native.so python/src/hypercast_native.so ;;
+          esac
+
+      - name: Test Python bindings (PyO3 backend)
+        if: runner.os != 'Windows'
+        working-directory: python
+        run: pytest

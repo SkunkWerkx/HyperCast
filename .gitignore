@@ -14,4 +14,7 @@ php/vendor/
 php/src/native/*/
 .phpunit.result.cache
 python/src/hypercast_native.so
+python/src/hypercast/libhypercast.so
 ruby/lib/hypercast_native.so
+ruby/lib/hypercast_native.bundle
+ruby/Gemfile.lock
