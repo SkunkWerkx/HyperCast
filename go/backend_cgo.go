@@ -44,7 +44,8 @@ var (
 	initOnce sync.Once
 	initErr  error
 
-	symbols map[string]unsafe.Pointer
+	symBool, symI8, symI16, symI32, symI64, symU8, symU16, symU32, symU64,
+	symF32, symF64, symUuid, symTimestamp, symUnix, symDate, symTime, symDuration unsafe.Pointer
 )
 
 // ensureLoaded extracts this platform's embedded native library to a temp file and
@@ -65,34 +66,36 @@ func ensureLoaded() error {
 			return
 		}
 
-		symbols = make(map[string]unsafe.Pointer, 17)
-		for _, name := range []string{
-			"cast_bool", "cast_i8", "cast_i16", "cast_i32", "cast_i64",
-			"cast_u8", "cast_u16", "cast_u32", "cast_u64", "cast_f32", "cast_f64",
-			"cast_uuid", "cast_timestamp", "cast_unix", "cast_date", "cast_time",
-			"cast_duration",
-		} {
-			cName := C.CString(name)
-			sym := C.dlsym(handle, cName)
-			C.free(unsafe.Pointer(cName))
-			if sym == nil {
-				initErr = fmt.Errorf("hypercast: symbol %s not found in native library: %s", name, C.GoString(C.dlerror()))
-				return
+		sym := func(name string) unsafe.Pointer {
+			if initErr != nil {
+				return nil
 			}
-			symbols[name] = sym
+			cName := C.CString(name)
+			defer C.free(unsafe.Pointer(cName))
+			p := C.dlsym(handle, cName)
+			if p == nil {
+				initErr = fmt.Errorf("hypercast: symbol %s not found in native library: %s", name, C.GoString(C.dlerror()))
+			}
+			return p
 		}
+		symBool, symUuid = sym("cast_bool"), sym("cast_uuid")
+		symI8, symI16, symI32, symI64 = sym("cast_i8"), sym("cast_i16"), sym("cast_i32"), sym("cast_i64")
+		symU8, symU16, symU32, symU64 = sym("cast_u8"), sym("cast_u16"), sym("cast_u32"), sym("cast_u64")
+		symF32, symF64 = sym("cast_f32"), sym("cast_f64")
+		symTimestamp, symUnix = sym("cast_timestamp"), sym("cast_unix")
+		symDate, symTime, symDuration = sym("cast_date"), sym("cast_time"), sym("cast_duration")
 	})
 	return initErr
 }
 
-func callPlain(symbol string, ptr unsafe.Pointer, length uintptr, out, fault unsafe.Pointer) int32 {
-	return int32(C.call_plain(symbols[symbol], (*C.uint8_t)(ptr), C.size_t(length), out, fault))
+func callPlain(sym unsafe.Pointer, ptr unsafe.Pointer, length uintptr, out, fault unsafe.Pointer) int32 {
+	return int32(C.call_plain(sym, (*C.uint8_t)(ptr), C.size_t(length), out, fault))
 }
 
-func callNumeric(symbol string, ptr unsafe.Pointer, length uintptr, format, out, fault unsafe.Pointer) int32 {
-	return int32(C.call_numeric(symbols[symbol], (*C.uint8_t)(ptr), C.size_t(length), format, out, fault))
+func callNumeric(sym unsafe.Pointer, ptr unsafe.Pointer, length uintptr, format, out, fault unsafe.Pointer) int32 {
+	return int32(C.call_numeric(sym, (*C.uint8_t)(ptr), C.size_t(length), format, out, fault))
 }
 
 func callUnix(ptr unsafe.Pointer, length uintptr, precision uint32, out, fault unsafe.Pointer) int32 {
-	return int32(C.call_unix(symbols["cast_unix"], (*C.uint8_t)(ptr), C.size_t(length), C.uint32_t(precision), out, fault))
+	return int32(C.call_unix(symUnix, (*C.uint8_t)(ptr), C.size_t(length), C.uint32_t(precision), out, fault))
 }

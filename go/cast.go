@@ -207,19 +207,21 @@ func Bool[T Text](text T) (bool, *Fault) {
 	ptr, length := textPtr(text)
 	var out uint8
 	var fault rawFault
-	code := callPlain("cast_bool", ptr, length, unsafe.Pointer(&out), unsafe.Pointer(&fault))
+	code := callPlain(symBool, ptr, length, unsafe.Pointer(&out), unsafe.Pointer(&fault))
 	if code != 0 {
 		return false, failed(code, &fault)
 	}
 	return out != 0, nil
 }
 
-func numericDoor[T Text, V any](symbol string, text T, format NumFormat, out *V) *Fault {
+func numericDoor[T Text, V any](sym *unsafe.Pointer, text T, format NumFormat, out *V) *Fault {
+	// sym is an address, not a value: the caller evaluates it before mustLoad has
+	// resolved the symbols, so the dereference must happen after.
 	mustLoad()
 	raw := format.raw()
 	ptr, length := textPtr(text)
 	var fault rawFault
-	code := callNumeric(symbol, ptr, length, unsafe.Pointer(&raw), unsafe.Pointer(out), unsafe.Pointer(&fault))
+	code := callNumeric(*sym, ptr, length, unsafe.Pointer(&raw), unsafe.Pointer(out), unsafe.Pointer(&fault))
 	if code != 0 {
 		return failed(code, &fault)
 	}
@@ -232,56 +234,56 @@ func numericDoor[T Text, V any](symbol string, text T, format NumFormat, out *V)
 // integer doors share these rules at their own widths.
 func I8[T Text](text T, format NumFormat) (int8, *Fault) {
 	var out int8
-	fault := numericDoor("cast_i8", text, format, &out)
+	fault := numericDoor(&symI8, text, format, &out)
 	return out, fault
 }
 
 // I16 casts integer text to int16. Rules as I8.
 func I16[T Text](text T, format NumFormat) (int16, *Fault) {
 	var out int16
-	fault := numericDoor("cast_i16", text, format, &out)
+	fault := numericDoor(&symI16, text, format, &out)
 	return out, fault
 }
 
 // I32 casts integer text to int32. Rules as I8.
 func I32[T Text](text T, format NumFormat) (int32, *Fault) {
 	var out int32
-	fault := numericDoor("cast_i32", text, format, &out)
+	fault := numericDoor(&symI32, text, format, &out)
 	return out, fault
 }
 
 // I64 casts integer text to int64. Rules as I8.
 func I64[T Text](text T, format NumFormat) (int64, *Fault) {
 	var out int64
-	fault := numericDoor("cast_i64", text, format, &out)
+	fault := numericDoor(&symI64, text, format, &out)
 	return out, fault
 }
 
 // U8 casts integer text to uint8. Rules as I8.
 func U8[T Text](text T, format NumFormat) (uint8, *Fault) {
 	var out uint8
-	fault := numericDoor("cast_u8", text, format, &out)
+	fault := numericDoor(&symU8, text, format, &out)
 	return out, fault
 }
 
 // U16 casts integer text to uint16. Rules as I8.
 func U16[T Text](text T, format NumFormat) (uint16, *Fault) {
 	var out uint16
-	fault := numericDoor("cast_u16", text, format, &out)
+	fault := numericDoor(&symU16, text, format, &out)
 	return out, fault
 }
 
 // U32 casts integer text to uint32. Rules as I8.
 func U32[T Text](text T, format NumFormat) (uint32, *Fault) {
 	var out uint32
-	fault := numericDoor("cast_u32", text, format, &out)
+	fault := numericDoor(&symU32, text, format, &out)
 	return out, fault
 }
 
 // U64 casts integer text to uint64 — natively unsigned, no widening games. Rules as I8.
 func U64[T Text](text T, format NumFormat) (uint64, *Fault) {
 	var out uint64
-	fault := numericDoor("cast_u64", text, format, &out)
+	fault := numericDoor(&symU64, text, format, &out)
 	return out, fault
 }
 
@@ -290,14 +292,14 @@ func U64[T Text](text T, format NumFormat) (uint64, *Fault) {
 // accounting parentheses, exponent, and trailing percent (50% is 0.5).
 func F32[T Text](text T, format NumFormat) (float32, *Fault) {
 	var out float32
-	fault := numericDoor("cast_f32", text, format, &out)
+	fault := numericDoor(&symF32, text, format, &out)
 	return out, fault
 }
 
 // F64 casts real text to float64. Rules as F32.
 func F64[T Text](text T, format NumFormat) (float64, *Fault) {
 	var out float64
-	fault := numericDoor("cast_f64", text, format, &out)
+	fault := numericDoor(&symF64, text, format, &out)
 	return out, fault
 }
 
@@ -309,21 +311,21 @@ func Uuid[T Text](text T) (uuid.UUID, *Fault) {
 	ptr, length := textPtr(text)
 	var out uuid.UUID
 	var fault rawFault
-	code := callPlain("cast_uuid", ptr, length, unsafe.Pointer(&out), unsafe.Pointer(&fault))
+	code := callPlain(symUuid, ptr, length, unsafe.Pointer(&out), unsafe.Pointer(&fault))
 	if code != 0 {
 		return uuid.UUID{}, failed(code, &fault)
 	}
 	return out, nil
 }
 
-func instantDoor[T Text](symbol string, text T, precision UnixPrecision) (time.Time, *Fault) {
+func instantDoor[T Text](sym *unsafe.Pointer, text T, precision UnixPrecision) (time.Time, *Fault) {
 	mustLoad()
 	ptr, length := textPtr(text)
 	var out rawTimestamp
 	var fault rawFault
 	var code int32
 	if precision == 0 {
-		code = callPlain(symbol, ptr, length, unsafe.Pointer(&out), unsafe.Pointer(&fault))
+		code = callPlain(*sym, ptr, length, unsafe.Pointer(&out), unsafe.Pointer(&fault))
 	} else {
 		code = callUnix(ptr, length, uint32(precision), unsafe.Pointer(&out), unsafe.Pointer(&fault))
 	}
@@ -336,7 +338,7 @@ func instantDoor[T Text](symbol string, text T, precision UnixPrecision) (time.T
 // Timestamp casts an RFC 3339 instant — zone mandatory — to a UTC time.Time at full
 // nanosecond fidelity across the whole 0001–9999 window.
 func Timestamp[T Text](text T) (time.Time, *Fault) {
-	return instantDoor[T]("cast_timestamp", text, 0)
+	return instantDoor[T](&symTimestamp, text, 0)
 }
 
 // Unix casts an integer Unix-epoch value under a caller-declared unit to a UTC time.Time.
@@ -345,7 +347,7 @@ func Unix[T Text](text T, precision UnixPrecision) (time.Time, *Fault) {
 	if precision < Seconds || precision > Nanoseconds {
 		panic(fmt.Sprintf("hypercast: undefined UnixPrecision %d", precision))
 	}
-	return instantDoor[T]("cast_unix", text, precision)
+	return instantDoor[T](&symUnix, text, precision)
 }
 
 // DateOnly casts a strict ISO 8601 yyyy-MM-dd calendar date.
@@ -354,7 +356,7 @@ func DateOnly[T Text](text T) (Date, *Fault) {
 	ptr, length := textPtr(text)
 	var out rawDate
 	var fault rawFault
-	code := callPlain("cast_date", ptr, length, unsafe.Pointer(&out), unsafe.Pointer(&fault))
+	code := callPlain(symDate, ptr, length, unsafe.Pointer(&out), unsafe.Pointer(&fault))
 	if code != 0 {
 		return Date{}, failed(code, &fault)
 	}
@@ -368,7 +370,7 @@ func TimeOfDay[T Text](text T) (time.Duration, *Fault) {
 	ptr, length := textPtr(text)
 	var out uint64
 	var fault rawFault
-	code := callPlain("cast_time", ptr, length, unsafe.Pointer(&out), unsafe.Pointer(&fault))
+	code := callPlain(symTime, ptr, length, unsafe.Pointer(&out), unsafe.Pointer(&fault))
 	if code != 0 {
 		return 0, failed(code, &fault)
 	}
@@ -382,7 +384,7 @@ func Span[T Text](text T) (Duration, *Fault) {
 	ptr, length := textPtr(text)
 	var out rawTimestamp
 	var fault rawFault
-	code := callPlain("cast_duration", ptr, length, unsafe.Pointer(&out), unsafe.Pointer(&fault))
+	code := callPlain(symDuration, ptr, length, unsafe.Pointer(&out), unsafe.Pointer(&fault))
 	if code != 0 {
 		return Duration{}, failed(code, &fault)
 	}

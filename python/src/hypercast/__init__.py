@@ -31,6 +31,7 @@ import locale as _locale
 import uuid as _uuid
 from ctypes import byref, c_double, c_float, c_int8, c_int16, c_int32, c_int64, c_ubyte, \
     c_uint8, c_uint16, c_uint32, c_uint64
+import threading as _threading
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import ClassVar, Generic, TypeVar, Union
@@ -157,38 +158,81 @@ def _failed(code: int, fault: _runtime.RawFault) -> Fault:
     return Fault(CastFailure(code), fault.offset, fault.length)
 
 
-def _raw_format(fmt: NumFormat) -> _runtime.RawNumFormat:
-    return _runtime.RawNumFormat(ord(fmt.decimal_sep), ord(fmt.group_sep), fmt.flags)
+# ctypes' per-call boxing is the mechanism floor (~1 µs measured); everything the wrapper
+# adds on top is recoverable, so it's all hoisted: bound function objects cached once,
+# out-params and byrefs prebuilt per thread (ctypes releases the GIL during the call, so
+# module-level scratch would race), and the NumFormat fields re-stored only when the
+# declared format actually changes (identity check — formats are reused constants).
+class _Scratch(_threading.local):
+    def __init__(self) -> None:
+        self.fault = _runtime.RawFault()
+        self.fault_ref = byref(self.fault)
+        self.fmt = _runtime.RawNumFormat()
+        self.fmt_ref = byref(self.fmt)
+        self.fmt_key: NumFormat | None = None
+        self.bool_out = c_ubyte()
+        self.bool_ref = byref(self.bool_out)
+        self.uuid_out = (c_ubyte * 16)()
+        self.uuid_ref = byref(self.uuid_out)
+        self.ts = _runtime.RawTimestamp()
+        self.ts_ref = byref(self.ts)
+        self.date = _runtime.RawDate()
+        self.date_ref = byref(self.date)
+        self.time_out = c_uint64()
+        self.time_ref = byref(self.time_out)
+        self.duration = _runtime.RawDuration()
+        self.duration_ref = byref(self.duration)
+        self.numeric_out: dict[str, tuple] = {}
 
 
-def _plain(symbol: str, text: str | bytes, out) -> tuple[int, _runtime.RawFault]:
+_local = _Scratch()
+_fns: dict = {}
+
+
+def _fn(symbol: str):
+    fn = _fns.get(symbol)
+    if fn is None:
+        fn = _fns[symbol] = getattr(_runtime.get_lib(), symbol)
+    return fn
+
+
+def _plain(symbol: str, text: str | bytes, out_ref) -> tuple[int, _runtime.RawFault]:
     data = _utf8(text)
-    fault = _runtime.RawFault()
-    code = getattr(_runtime.get_lib(), symbol)(data or None, len(data), byref(out), byref(fault))
-    return code, fault
+    scratch = _local
+    code = _fn(symbol)(data or None, len(data), out_ref, scratch.fault_ref)
+    return code, scratch.fault
 
 
-def _numeric(symbol: str, text: str | bytes, fmt: NumFormat, out) -> tuple[int, _runtime.RawFault]:
+def _numeric(symbol: str, text: str | bytes, fmt: NumFormat, ctype) -> tuple[int, object, _runtime.RawFault]:
     data = _utf8(text)
-    fault = _runtime.RawFault()
-    code = getattr(_runtime.get_lib(), symbol)(
-        data or None, len(data), byref(_raw_format(fmt)), byref(out), byref(fault))
-    return code, fault
+    scratch = _local
+    if scratch.fmt_key is not fmt:
+        raw = scratch.fmt
+        raw.decimal_sep = ord(fmt.decimal_sep)
+        raw.group_sep = ord(fmt.group_sep)
+        raw.flags = fmt.flags
+        scratch.fmt_key = fmt
+    pair = scratch.numeric_out.get(symbol)
+    if pair is None:
+        out = ctype()
+        pair = scratch.numeric_out[symbol] = (out, byref(out))
+    out, out_ref = pair
+    code = _fn(symbol)(data or None, len(data), scratch.fmt_ref, out_ref, scratch.fault_ref)
+    return code, out, scratch.fault
 
 
 def cast_bool(text: str | bytes) -> Verdict[bool]:
     """Casts boolean text: ``true``/``false`` plus the conventions untrusted sources actually
     send (``t/f``, ``yes/no``, ``y/n``, ``1/0``, ``on/off``, ``enabled/disabled``,
     ``active/inactive``, ``checked/unchecked``, ``in/out``), ASCII case-insensitive."""
-    out = c_ubyte()
-    code, fault = _plain("cast_bool", text, out)
-    return Success(bool(out.value)) if code == 0 else _failed(code, fault)
+    scratch = _local
+    code, fault = _plain("cast_bool", text, scratch.bool_ref)
+    return Success(scratch.bool_out.value != 0) if code == 0 else _failed(code, fault)
 
 
 def _int_door(symbol: str, ctype):
     def door(text: str | bytes, fmt: NumFormat) -> Verdict[int]:
-        out = ctype()
-        code, fault = _numeric(symbol, text, fmt, out)
+        code, out, fault = _numeric(symbol, text, fmt, ctype)
         return Success(out.value) if code == 0 else _failed(code, fault)
 
     door.__name__ = symbol
@@ -215,24 +259,22 @@ cast_u64 = _int_door("cast_u64", c_uint64)
 def cast_f32(text: str | bytes, fmt: NumFormat) -> Verdict[float]:
     """Casts real text to an IEEE single (widened losslessly to Python's float): finite
     values only, declared separators, parentheses, exponent, and trailing percent."""
-    out = c_float()
-    code, fault = _numeric("cast_f32", text, fmt, out)
+    code, out, fault = _numeric("cast_f32", text, fmt, c_float)
     return Success(out.value) if code == 0 else _failed(code, fault)
 
 
 def cast_f64(text: str | bytes, fmt: NumFormat) -> Verdict[float]:
     """Casts real text to an IEEE double. Notation rules as :func:`cast_f32`."""
-    out = c_double()
-    code, fault = _numeric("cast_f64", text, fmt, out)
+    code, out, fault = _numeric("cast_f64", text, fmt, c_double)
     return Success(out.value) if code == 0 else _failed(code, fault)
 
 
 def cast_uuid(text: str | bytes) -> Verdict[_uuid.UUID]:
     """Casts UUID text — all five .NET ``Guid`` formats (D/N/B/P/X) plus
     ``urn:uuid:``/``GUID:``/``UUID:`` prefixes — to a :class:`uuid.UUID`."""
-    out = (c_ubyte * 16)()
-    code, fault = _plain("cast_uuid", text, out)
-    return Success(_uuid.UUID(bytes=bytes(out))) if code == 0 else _failed(code, fault)
+    scratch = _local
+    code, fault = _plain("cast_uuid", text, scratch.uuid_ref)
+    return Success(_uuid.UUID(bytes=bytes(scratch.uuid_out))) if code == 0 else _failed(code, fault)
 
 
 _EPOCH = _dt.datetime(1970, 1, 1, tzinfo=_dt.timezone.utc)
@@ -248,9 +290,9 @@ def _instant(raw: _runtime.RawTimestamp) -> _dt.datetime:
 def cast_timestamp(text: str | bytes) -> Verdict[_dt.datetime]:
     """Casts an RFC 3339 instant — zone **mandatory** — to an aware UTC
     :class:`datetime.datetime`. Sub-microsecond nanoseconds truncate."""
-    out = _runtime.RawTimestamp()
-    code, fault = _plain("cast_timestamp", text, out)
-    return Success(_instant(out)) if code == 0 else _failed(code, fault)
+    scratch = _local
+    code, fault = _plain("cast_timestamp", text, scratch.ts_ref)
+    return Success(_instant(scratch.ts)) if code == 0 else _failed(code, fault)
 
 
 def cast_unix(text: str | bytes, precision: UnixPrecision) -> Verdict[_dt.datetime]:
@@ -259,28 +301,28 @@ def cast_unix(text: str | bytes, precision: UnixPrecision) -> Verdict[_dt.dateti
     if not isinstance(precision, UnixPrecision):
         raise TypeError("precision must be a UnixPrecision")
     data = _utf8(text)
-    out = _runtime.RawTimestamp()
-    fault = _runtime.RawFault()
-    code = _runtime.get_lib().cast_unix(
-        data or None, len(data), int(precision), byref(out), byref(fault))
-    return Success(_instant(out)) if code == 0 else _failed(code, fault)
+    scratch = _local
+    code = _fn("cast_unix")(
+        data or None, len(data), int(precision), scratch.ts_ref, scratch.fault_ref)
+    return Success(_instant(scratch.ts)) if code == 0 else _failed(code, scratch.fault)
 
 
 def cast_date(text: str | bytes) -> Verdict[_dt.date]:
     """Casts a strict ISO 8601 ``yyyy-MM-dd`` calendar date to a :class:`datetime.date`."""
-    out = _runtime.RawDate()
-    code, fault = _plain("cast_date", text, out)
+    scratch = _local
+    code, fault = _plain("cast_date", text, scratch.date_ref)
+    out = scratch.date
     return Success(_dt.date(out.year, out.month, out.day)) if code == 0 else _failed(code, fault)
 
 
 def cast_time(text: str | bytes) -> Verdict[_dt.time]:
     """Casts an ISO 24-hour time-of-day to a :class:`datetime.time`. Sub-microsecond
     nanoseconds truncate."""
-    out = c_uint64()
-    code, fault = _plain("cast_time", text, out)
+    scratch = _local
+    code, fault = _plain("cast_time", text, scratch.time_ref)
     if code != 0:
         return _failed(code, fault)
-    nanos = out.value
+    nanos = scratch.time_out.value
     second_of_day, nano_of_second = divmod(nanos, 1_000_000_000)
     hour, rest = divmod(second_of_day, 3600)
     minute, second = divmod(rest, 60)
@@ -290,10 +332,11 @@ def cast_time(text: str | bytes) -> Verdict[_dt.time]:
 def cast_duration(text: str | bytes) -> Verdict[_dt.timedelta]:
     """Casts a duration (ISO 8601 fixed components, invariant colon form, or protobuf JSON
     seconds) to a :class:`datetime.timedelta`. Sub-microsecond nanoseconds truncate."""
-    out = _runtime.RawDuration()
-    code, fault = _plain("cast_duration", text, out)
+    scratch = _local
+    code, fault = _plain("cast_duration", text, scratch.duration_ref)
     if code != 0:
         return _failed(code, fault)
+    out = scratch.duration
     # Same-signed seconds/nanos normalize correctly through timedelta's own arithmetic.
     # Truncate toward zero (// floors toward -inf) so sub-microsecond digits drop the same
     # way on both signs, matching the other bindings' truncation.

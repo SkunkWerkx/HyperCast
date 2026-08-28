@@ -28,6 +28,13 @@ use FFI;
 final class Cast
 {
     private static ?FFI $ffi = null;
+    // Reused scratch CData — FFI::new is a measured microsecond-scale allocation, and PHP's
+    // request model makes static scratch safe (one request per thread; ZTS statics are
+    // thread-local anyway). out16 covers every door's out-value.
+    private static ?FFI\CData $scratchOut = null;
+    private static ?FFI\CData $scratchFault = null;
+    private static ?FFI\CData $scratchFormat = null;
+    private static ?NumFormat $scratchFormatKey = null;
 
     private function __construct()
     {
@@ -49,7 +56,7 @@ final class Cast
      */
     public static function bool(string $text): Success|Fault
     {
-        return self::plain('cast_bool', $text, 'uint8_t', static fn($out) => $out->cdata !== 0);
+        return self::rawOut('cast_bool', $text, 1, static fn(string $bytes) => $bytes !== "\0");
     }
 
     /**
@@ -58,37 +65,37 @@ final class Cast
      */
     public static function i8(string $text, NumFormat $format): Success|Fault
     {
-        return self::numeric('cast_i8', $text, $format, 'int8_t', static fn($out) => $out->cdata);
+        return self::numeric('cast_i8', $text, $format, 'int8_t[1]', static fn($out) => $out[0]);
     }
 
     public static function i16(string $text, NumFormat $format): Success|Fault
     {
-        return self::numeric('cast_i16', $text, $format, 'int16_t', static fn($out) => $out->cdata);
+        return self::numeric('cast_i16', $text, $format, 'int16_t[1]', static fn($out) => $out[0]);
     }
 
     public static function i32(string $text, NumFormat $format): Success|Fault
     {
-        return self::numeric('cast_i32', $text, $format, 'int32_t', static fn($out) => $out->cdata);
+        return self::numeric('cast_i32', $text, $format, 'int32_t[1]', static fn($out) => $out[0]);
     }
 
     public static function i64(string $text, NumFormat $format): Success|Fault
     {
-        return self::numeric('cast_i64', $text, $format, 'int64_t', static fn($out) => $out->cdata);
+        return self::numeric('cast_i64', $text, $format, 'int64_t[1]', static fn($out) => $out[0]);
     }
 
     public static function u8(string $text, NumFormat $format): Success|Fault
     {
-        return self::numeric('cast_u8', $text, $format, 'uint8_t', static fn($out) => $out->cdata);
+        return self::numeric('cast_u8', $text, $format, 'uint8_t[1]', static fn($out) => $out[0]);
     }
 
     public static function u16(string $text, NumFormat $format): Success|Fault
     {
-        return self::numeric('cast_u16', $text, $format, 'uint16_t', static fn($out) => $out->cdata);
+        return self::numeric('cast_u16', $text, $format, 'uint16_t[1]', static fn($out) => $out[0]);
     }
 
     public static function u32(string $text, NumFormat $format): Success|Fault
     {
-        return self::numeric('cast_u32', $text, $format, 'uint32_t', static fn($out) => $out->cdata);
+        return self::numeric('cast_u32', $text, $format, 'uint32_t[1]', static fn($out) => $out[0]);
     }
 
     /**
@@ -97,18 +104,18 @@ final class Cast
      */
     public static function u64(string $text, NumFormat $format): Success|Fault
     {
-        return self::numeric('cast_u64', $text, $format, 'uint64_t', static fn($out) => $out->cdata);
+        return self::numeric('cast_u64', $text, $format, 'uint64_t[1]', static fn($out) => $out[0]);
     }
 
     /** Real doors: finite values only, declared separators, parens, exponent, percent. */
     public static function f32(string $text, NumFormat $format): Success|Fault
     {
-        return self::numeric('cast_f32', $text, $format, 'float', static fn($out) => $out->cdata);
+        return self::numeric('cast_f32', $text, $format, 'float[1]', static fn($out) => $out[0]);
     }
 
     public static function f64(string $text, NumFormat $format): Success|Fault
     {
-        return self::numeric('cast_f64', $text, $format, 'double', static fn($out) => $out->cdata);
+        return self::numeric('cast_f64', $text, $format, 'double[1]', static fn($out) => $out[0]);
     }
 
     /**
@@ -142,16 +149,17 @@ final class Cast
     /** Casts an integer Unix-epoch value under a caller-declared unit to a UTC DateTimeImmutable. */
     public static function unix(string $text, UnixPrecision $precision): Success|Fault
     {
-        $out = self::ffi()->new('uint8_t[16]');
-        $fault = self::ffi()->new('uint32_t[2]');
-        $rc = self::ffi()->cast_unix(
+        self::ffi();
+        $out = self::$scratchOut;
+        $fault = self::$scratchFault;
+        $rc = self::$ffi->cast_unix(
             $text === '' ? null : $text,
             \strlen($text),
             $precision->value,
             $out,
             $fault
         );
-        return self::verdict($rc, $fault, fn() => self::instant(FFI::string($out, 16)));
+        return self::verdict($rc, $fault, static fn() => self::instant(FFI::string($out, 16)));
     }
 
     /**
@@ -212,20 +220,33 @@ final class Cast
         return new Fault(CastFailure::from($rc), $fault[0], $fault[1]);
     }
 
-    private static function plain(string $symbol, string $text, string $outType, callable $read): Success|Fault
-    {
-        $out = self::ffi()->new($outType);
-        $fault = self::ffi()->new('uint32_t[2]');
-        $rc = self::ffi()->{$symbol}($text === '' ? null : $text, \strlen($text), FFI::addr($out), $fault);
-        return self::verdict($rc, $fault, static fn() => $read($out));
-    }
-
     private static function rawOut(string $symbol, string $text, int $outBytes, callable $read): Success|Fault
     {
-        $out = self::ffi()->new("uint8_t[{$outBytes}]");
-        $fault = self::ffi()->new('uint32_t[2]');
-        $rc = self::ffi()->{$symbol}($text === '' ? null : $text, \strlen($text), $out, $fault);
+        self::ffi();
+        $out = self::$scratchOut;
+        $fault = self::$scratchFault;
+        $rc = self::$ffi->{$symbol}($text === '' ? null : $text, \strlen($text), $out, $fault);
         return self::verdict($rc, $fault, static fn() => $read(FFI::string($out, $outBytes)));
+    }
+
+    private static function numericRaw(string $symbol, string $text, NumFormat $format): int
+    {
+        self::ffi();
+        if (self::$scratchFormatKey !== $format) {
+            [$decimal, $group] = $format->codePoints();
+            $raw = self::$scratchFormat;
+            $raw[0] = $decimal;
+            $raw[1] = $group;
+            $raw[2] = $format->flags;
+            self::$scratchFormatKey = $format;
+        }
+        return self::$ffi->{$symbol}(
+            $text === '' ? null : $text,
+            \strlen($text),
+            self::$scratchFormat,
+            self::$scratchOut,
+            self::$scratchFault
+        );
     }
 
     private static function numeric(
@@ -235,21 +256,9 @@ final class Cast
         string $outType,
         callable $read,
     ): Success|Fault {
-        [$decimal, $group] = $format->codePoints();
-        $raw = self::ffi()->new('uint32_t[3]');
-        $raw[0] = $decimal;
-        $raw[1] = $group;
-        $raw[2] = $format->flags;
-        $out = self::ffi()->new($outType);
-        $fault = self::ffi()->new('uint32_t[2]');
-        $rc = self::ffi()->{$symbol}(
-            $text === '' ? null : $text,
-            \strlen($text),
-            $raw,
-            FFI::addr($out),
-            $fault
-        );
-        return self::verdict($rc, $fault, static fn() => $read($out));
+        $rc = self::numericRaw($symbol, $text, $format);
+        return self::verdict($rc, self::$scratchFault,
+            static fn() => $read(FFI::cast($outType, self::$scratchOut)));
     }
 
     private static function ffi(): FFI
@@ -277,7 +286,7 @@ final class Cast
 
         $numeric = '(const char *ptr, size_t len, const void *format, void *out, void *fault)';
         $plain = '(const char *ptr, size_t len, void *out, void *fault)';
-        return self::$ffi = FFI::cdef(
+        self::$ffi = FFI::cdef(
             "int cast_bool{$plain};"
             . "int cast_i8{$numeric}; int cast_i16{$numeric}; int cast_i32{$numeric}; int cast_i64{$numeric};"
             . "int cast_u8{$numeric}; int cast_u16{$numeric}; int cast_u32{$numeric}; int cast_u64{$numeric};"
@@ -290,5 +299,9 @@ final class Cast
             . "int cast_duration{$plain};",
             $path
         );
+        self::$scratchOut = self::$ffi->new('uint8_t[16]');
+        self::$scratchFault = self::$ffi->new('uint32_t[2]');
+        self::$scratchFormat = self::$ffi->new('uint32_t[3]');
+        return self::$ffi;
     }
 }

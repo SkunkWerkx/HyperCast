@@ -35,9 +35,11 @@ module HyperCast
       private
 
       # Loaded lazily and exactly once; the native library and its function pointers live
-      # for the process's lifetime, same as every other binding (never dlclose'd).
+      # for the process's lifetime, same as every other binding (never dlclose'd). The
+      # unsynchronized read is the fast path — a per-call mutex acquisition measured as a
+      # real slice of the door cost; the benign race re-checks under the lock.
       def functions
-        @mutex.synchronize { @functions ||= load_functions }
+        @functions || @mutex.synchronize { @functions ||= load_functions }
       end
 
       def load_functions

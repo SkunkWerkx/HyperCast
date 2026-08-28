@@ -126,8 +126,7 @@ module HyperCast
     def unix(text, precision)
       code = UNIX_PRECISIONS.fetch(precision)
       bytes = utf8(text)
-      out = Fiddle::Pointer.malloc(16, Fiddle::RUBY_FREE)
-      fault = Fiddle::Pointer.malloc(8, Fiddle::RUBY_FREE)
+      out, fault, = scratch
       rc = Runtime.call(:cast_unix, input_ptr(bytes), bytes.bytesize, code, out, fault)
       verdict(rc, fault) { instant(out[0, 16]) }
     end
@@ -158,12 +157,27 @@ module HyperCast
 
     private
 
+    BYTE_COMPATIBLE = [Encoding::UTF_8, Encoding::US_ASCII, Encoding::ASCII_8BIT].freeze
+
     def utf8(text)
-      text.encode(Encoding::UTF_8).b
+      # Already-UTF-8 text crosses as-is (Fiddle passes a String's bytes for void*
+      # directly — no Pointer wrapper, no dup); only foreign encodings pay a transcode.
+      BYTE_COMPATIBLE.include?(text.encoding) ? text : text.encode(Encoding::UTF_8)
     end
 
     def input_ptr(bytes)
-      bytes.empty? ? nil : Fiddle::Pointer.to_ptr(bytes)
+      bytes.empty? ? nil : bytes
+    end
+
+    # One 36-byte scratch allocation per thread, reused by every call: out-value at 0
+    # (16 bytes covers every door), fault span at 16, NumFormat at 24. Two
+    # Fiddle::Pointer.malloc(..., RUBY_FREE) calls per cast — each registering a GC
+    # finalizer — measured as the dominant per-call cost by an order of magnitude.
+    def scratch
+      Thread.current[:hypercast_scratch] ||= begin
+        base = Fiddle::Pointer.malloc(36, Fiddle::RUBY_FREE)
+        [base, base + 16, base + 24]
+      end
     end
 
     def verdict(rc, fault)
@@ -179,20 +193,23 @@ module HyperCast
 
     def plain(symbol, text, out_size)
       bytes = utf8(text)
-      out = Fiddle::Pointer.malloc(out_size, Fiddle::RUBY_FREE)
-      fault = Fiddle::Pointer.malloc(8, Fiddle::RUBY_FREE)
+      out, fault, = scratch
       rc = Runtime.call(symbol, input_ptr(bytes), bytes.bytesize, out, fault)
       verdict(rc, fault) { yield(out[0, out_size]) }
     end
 
     def numeric(symbol, text, format, out_size)
       bytes = utf8(text)
-      raw_format = format.packed
-      out = Fiddle::Pointer.malloc(out_size, Fiddle::RUBY_FREE)
-      fault = Fiddle::Pointer.malloc(8, Fiddle::RUBY_FREE)
-      rc = Runtime.call(symbol, input_ptr(bytes), bytes.bytesize,
-                        Fiddle::Pointer.to_ptr(raw_format), out, fault)
+      out, fault, raw_format = scratch
+      raw_format[0, 12] = packed_cache[format]
+      rc = Runtime.call(symbol, input_ptr(bytes), bytes.bytesize, raw_format, out, fault)
       verdict(rc, fault) { yield(out[0, out_size]) }
+    end
+
+    # Identity-keyed memo of NumFormat#packed — formats are reused constants in practice,
+    # and re-packing per call is a measurable allocation. The race is benign (idempotent).
+    def packed_cache
+      @packed_cache ||= Hash.new { |cache, format| cache[format] = format.packed }
     end
 
     def instant(bytes)
