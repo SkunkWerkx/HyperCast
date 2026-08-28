@@ -1,0 +1,21 @@
+[
+  { "input": "2026-01-02", "expect": "ok", "year": 2026, "month": 1, "day": 2 },
+  { "input": "  2026-01-02  ", "expect": "ok", "year": 2026, "month": 1, "day": 2 },
+  { "input": "2024-02-29", "expect": "ok", "year": 2024, "month": 2, "day": 29 },
+  { "input": "2000-02-29", "expect": "ok", "year": 2000, "month": 2, "day": 29 },
+  { "input": "0001-01-01", "expect": "ok", "year": 1, "month": 1, "day": 1 },
+  { "input": "9999-12-31", "expect": "ok", "year": 9999, "month": 12, "day": 31 },
+  { "input": "1/2/2026", "expect": "malformed" },
+  { "input": "2026-01-02T00:00:00", "expect": "malformed" },
+  { "input": "2026/01/02", "expect": "malformed" },
+  { "input": "garbage", "expect": "malformed" },
+  { "input": "2026-02-29", "expect": "malformed", "fault": [8, 2] },
+  { "input": "1900-02-29", "expect": "malformed", "fault": [8, 2] },
+  { "input": "2026-00-01", "expect": "malformed", "fault": [5, 2] },
+  { "input": "2026-13-01", "expect": "malformed", "fault": [5, 2] },
+  { "input": "2026-01-00", "expect": "malformed", "fault": [8, 2] },
+  { "input": "2026-01-32", "expect": "malformed", "fault": [8, 2] },
+  { "input": "0000-01-01", "expect": "out_of_range", "fault": [0, 10] },
+  { "input": "", "expect": "empty" },
+  { "input": " \t\r\n\f ", "expect": "empty" }
+]

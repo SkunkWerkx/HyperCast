@@ -1,0 +1,20 @@
+[
+  { "input": "15:04:05", "expect": "ok", "nanos": 54245000000000 },
+  { "input": "15:04:05.123", "expect": "ok", "nanos": 54245123000000 },
+  { "input": "15:04", "expect": "ok", "nanos": 54240000000000 },
+  { "input": "  15:04:05  ", "expect": "ok", "nanos": 54245000000000 },
+  { "input": "00:00:00", "expect": "ok", "nanos": 0 },
+  { "input": "00:00", "expect": "ok", "nanos": 0 },
+  { "input": "23:59:59.9999999", "expect": "ok", "nanos": 86399999999900 },
+  { "input": "23:59:59.999999999", "expect": "ok", "nanos": 86399999999999 },
+  { "input": "3:04:05 PM", "expect": "malformed" },
+  { "input": "25:00", "expect": "malformed", "fault": [0, 2] },
+  { "input": "noon", "expect": "malformed" },
+  { "input": "15:60", "expect": "malformed", "fault": [3, 2] },
+  { "input": "15:04:60", "expect": "malformed", "fault": [6, 2] },
+  { "input": "15:04:05.", "expect": "malformed", "fault": [8, 1] },
+  { "input": "15:04:05.0000000001", "expect": "malformed", "fault": [18, 1] },
+  { "input": "15:04.5", "expect": "malformed", "fault": [5, 1] },
+  { "input": "", "expect": "empty" },
+  { "input": " \t\r\n\f ", "expect": "empty" }
+]

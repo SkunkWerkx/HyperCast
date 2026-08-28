@@ -1,0 +1,26 @@
+[package]
+name = "hypercast"
+version = "0.1.0"
+edition = "2024"
+description = "Allocation-free parsers for scalars from untrusted text — booleans, numerics, UUIDs, and temporals. Every parse returns a verdict (the value, or a closed reason code with the offending span), never throws, never allocates — wrapped as a native library (libhypercast) for direct FFI from every host language."
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/SkunkWerkx/HyperCast"
+keywords = ["parser", "ffi", "allocation-free", "rfc3339", "protobuf"]
+categories = ["parsing", "no-std"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Deliberately none — the core is pure parsing over caller-supplied bytes.
+
+[dev-dependencies]
+criterion = "0.8.2"
+serde_json = "1"
+uuid = "1"
+time = { version = "0.3", features = ["parsing"] }
+
+[[bench]]
+name = "cast_benchmarks"
+harness = false
