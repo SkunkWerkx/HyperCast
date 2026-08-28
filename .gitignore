@@ -2,3 +2,5 @@ target/
 bin/
 obj/
 BenchmarkDotNet.Artifacts/
+build/
+.gradle/
