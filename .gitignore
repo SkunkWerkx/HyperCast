@@ -4,3 +4,5 @@ obj/
 BenchmarkDotNet.Artifacts/
 build/
 .gradle/
+__pycache__/
+.pytest_cache/
