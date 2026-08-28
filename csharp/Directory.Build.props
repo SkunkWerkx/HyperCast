@@ -1,0 +1,16 @@
+<Project>
+
+	<PropertyGroup>
+		<!-- .NET 11 is the floor for HyperCast deliberately: native discriminated-union
+		     support ([Union]/IUnion + case-type pattern matching) is what makes a Verdict's
+		     disposition handling compiler-checked. CS8509 (non-exhaustive switch expression)
+		     is elevated to an error so an unhandled verdict case is a build failure, not a
+		     review nit — the entire point of returning a union instead of throwing. -->
+		<TargetFramework>net11.0</TargetFramework>
+		<LangVersion>preview</LangVersion>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+		<WarningsAsErrors>$(WarningsAsErrors);CS8509</WarningsAsErrors>
+	</PropertyGroup>
+
+</Project>

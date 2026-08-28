@@ -1,0 +1,57 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- TargetFramework (net11.0 floor), LangVersion preview, and CS8509-as-error come from
+       csharp/Directory.Build.props — the native-union settings shared by every project here. -->
+  <PropertyGroup>
+    <PackageId>HyperCast</PackageId>
+    <!-- Windows filesystems are case-insensitive: the managed assembly's default filename
+         (HyperCast.dll) and the native library's (hypercast.dll, from
+         [LibraryImport("hypercast")]'s auto-resolution) differ only by case, so one silently
+         overwrites the other in the shared output directory — the exact trap HyperUuid
+         already documented and renamed its way out of. Same rename here. -->
+    <AssemblyName>HyperCast.Managed</AssemblyName>
+    <RootNamespace>HyperCast</RootNamespace>
+    <Description>Allocation-free scalar parsing — booleans, numerics, UUIDs, temporals — as a discriminated-union Verdict (value or reason + offending span, never an exception), AOT/trim-friendly P/Invoke bindings straight into a native Rust core (libhypercast). No runtime bridge, no reflection.</Description>
+    <Authors>Brian Buvinghausen</Authors>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/SkunkWerkx/HyperCast</RepositoryUrl>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Source-generated LibraryImport P/Invoke only, no reflection anywhere in this assembly:
+         opts into (and fails the build on) the trim and Native AOT analyzers. -->
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+
+  <!-- Second build of this exact source for browser-wasm, HyperUuid's proven pattern: a
+       statically-linked WASM native has no separate module to dlopen, so the BROWSER-gated
+       NativeLibraryName switches from "hypercast" to "*" (resolve against the current
+       module). Invoked separately, e.g. `dotnet build -p:HyperCastBrowserBuild=true`. -->
+  <PropertyGroup Condition="'$(HyperCastBrowserBuild)' == 'true'">
+    <DefineConstants>$(DefineConstants);BROWSER</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <SupportedPlatform Include="browser" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Standard NuGet RID-specific native asset layout — populated by CI before packing,
+         exactly as HyperUuid's build-packages.yml does. -->
+    <None Include="runtimes/**" Pack="true" PackagePath="runtimes" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="runtimes/**/native/*" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Local dev loop: when the Rust core has been built in-repo (a release-profile cargo
+         build in rust/), copy that fresh native library straight to the output so tests and
+         benchmarks run against it without any packaging step. CI's runtimes/ layout above
+         takes over for real packages; both patterns copy to the output root, where native
+         library resolution always probes. -->
+    <None Include="../../rust/target/release/libhypercast.so"
+          Condition="Exists('../../rust/target/release/libhypercast.so')"
+          Link="libhypercast.so" CopyToOutputDirectory="PreserveNewest" Visible="false" />
+    <None Include="../../rust/target/release/libhypercast.dylib"
+          Condition="Exists('../../rust/target/release/libhypercast.dylib')"
+          Link="libhypercast.dylib" CopyToOutputDirectory="PreserveNewest" Visible="false" />
+    <None Include="../../rust/target/release/hypercast.dll"
+          Condition="Exists('../../rust/target/release/hypercast.dll')"
+          Link="hypercast.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" />
+  </ItemGroup>
+
+</Project>
