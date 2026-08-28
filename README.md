@@ -57,13 +57,14 @@ Culture never lives in the core: numeric doors take a caller-declared format (se
 - **Java binding on JDK 22+, union-native the JVM way** — `Verdict<T>` is a `sealed interface` over two records, so a two-arm switch with no default is proven exhaustive by `javac`: an unhandled disposition is a compile failure, the same guarantee the C# binding gets from CS8509-as-error, in Java's own idiom. 21 tests green including the full corpus replay through real FFM downcalls with byte-exact fault spans; and **full nanosecond fidelity** — `Instant`/`LocalTime`/`Duration` keep all nine fractional digits, making the JVM the one platform with zero truncation of what the core parses.
 - **Java AOT, proven** — the GraalVM Native Image smoke test builds and runs every door plus the exhaustive union switch as a true native binary. FFM downcalls need explicit Native Image registration; the binding ships its `reachability-metadata.json` in `META-INF` so every consumer inherits it — the non-negotiable, delivered on both managed platforms.
 - **Java vs. the JDK, first look** — JMH, honest caveat up front: a deliberately shortened run (wide error bars), so these are directional, not final. The direction is unambiguous where it matters: `Cast.timestamp` **~172 ns vs ~667 ns `Instant.parse`** and **~740 ns `DateTimeFormatter.ISO_OFFSET_DATE_TIME`**, time-of-day ~146 vs ~417 ns `LocalTime.parse`, ISO duration ~163 vs ~267 ns `Duration.parse`. The lean doors (f64/uuid/i32) currently lose — not structurally, but to ~100 ns of per-call `Arena.ofConfined()` setup, the documented next tuning target (thread-local scratch) before a full-length run replaces this table. Losses printed here in the meantime, per house rules.
+- **The full seven-binding roster, corpus-green** — Python (ctypes, `match`/`case` over frozen `Success`/`Fault` dataclasses), Swift (`dlopen` + `@convention(c)`, and the strongest union in the roster — a real enum where exhaustive switch is *compiler-mandatory*, no opt-in flag), Go (cgo, the `(value, *Fault)` idiom with `*Fault` as `error`), Ruby (Fiddle, pattern-matched `Data` classes with Symbol reasons), and PHP (ext-ffi, `Success|Fault` union types over a backed enum). Every one replays all nine corpus files with byte-exact fault spans — **100 binding tests across the five, green on this machine today** — and every one presents its platform's honest fidelity: Ruby and the JVM keep every nanosecond (Ruby's durations are exact `Rational` seconds across the whole ±10,000-year window), Python and PHP truncate to microseconds and say so, Swift's `Duration` is attosecond-backed, and Go returns the protobuf pair because `time.Duration`'s ±292-year ceiling can't hold the window — stated, not wrapped.
 
 ## Aspirations — the queue that turns into receipts
 
 Stated the way this project states things: each of these becomes a measured table or a CI matrix row, or it gets cut. Details in [docs/roadmap.md](docs/roadmap.md).
 
-- **The binding roster** — Python, Go, Swift, Ruby, PHP: each folding the verdict code + span into its platform's union idiom, each replaying the corpus in CI before it ships. HyperUuid's 6-platform × N-language matrix is the template.
-- **Java's full-length benchmark table** — the thread-local scratch-arena pass, then an unshortened JMH run to graduate the first-look numbers above into final receipts.
+- **The CI matrix** — every binding is corpus-green locally on linux-arm64; HyperUuid's 6-platform × N-language matrix is the template for proving each of them on every RID, plus the Go purego fallback for Windows/`CGO_ENABLED=0` builds.
+- **Java's full-length benchmark table** — the thread-local scratch-arena pass, then an unshortened JMH run to graduate the first-look numbers above into final receipts. Per-binding benchmark passes for the rest of the roster follow the same discipline: no number enters this file from a rushed run.
 - **The wasm legs beyond the core** — dotnet browser-wasm (the `NativeFileReference` pattern HyperUuid proved end-to-end in Blazor) and Pyodide (Emscripten side module). Server-side bindings stay native.
 - **The payoff: tabular ingestion** — CSV/TSV/delimited and XLSX parsing *on top of* these doors, so the FFI boundary is crossed once per chunk instead of once per cell. A million-row, 20-column file is 20M scalar casts; per-cell that's real crossing overhead, per-chunk it rounds to zero while 15–35 ns doors run in a tight native loop. HyperUuid already measured this exact amortization at 19.6x on its batch API. Column buffers in, parallel verdict arrays out — the reason every fault is a span and never an allocation.
 
@@ -76,6 +77,11 @@ corpus/     the shared conformance vectors — the cross-language contract
 rust/       the core: one cdylib, 17 cast_* exports, zero runtime dependencies
 csharp/     the .NET 11 binding: Verdict<T> union, LibraryImport, corpus replay, AOT smoke test
 java/       the JDK 22+ binding: sealed-interface union, FFM, corpus replay, Native Image smoke test
+python/     the 3.10+ binding: match/case dataclass verdicts over ctypes
+swift/      the SwiftPM binding: enum verdicts (mandatory-exhaustive switch) over dlopen
+go/         the Go binding: (value, *Fault) verdicts over cgo, google/uuid lingua franca
+ruby/       the 3.2+ binding: pattern-matched Data verdicts over Fiddle
+php/        the 8.1+ binding: Success|Fault union types over ext-ffi
 docs/       roadmap — where this goes and what's deliberately parked
 ```
 
