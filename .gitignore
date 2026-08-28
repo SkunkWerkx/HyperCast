@@ -9,3 +9,4 @@ __pycache__/
 swift/Sources/HyperCast/NativeLibs/*/
 .build/
 go/native/*/
+ruby/lib/hypercast/native/*/
