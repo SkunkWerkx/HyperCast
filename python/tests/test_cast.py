@@ -1,0 +1,88 @@
+"""Binding-level behavior the corpus can't express: match/case consumption, str-door
+transcoding, localeconv bridging, datetime fidelity mapping (microsecond truncation —
+Python's honest ceiling), the unbounded-int u64 story, and the caller-bug guards."""
+
+from __future__ import annotations
+
+import datetime as dt
+import uuid as uuidlib
+
+import pytest
+
+import hypercast
+from hypercast import CastFailure, Fault, NumFormat, Success, UnixPrecision
+
+
+def test_match_case_consumes_the_union():
+    match hypercast.cast_i32("42", NumFormat.INVARIANT):
+        case Success(value):
+            assert value == 42
+        case Fault():
+            pytest.fail("42 should parse")
+
+
+def test_fault_span_points_at_the_offending_byte():
+    assert hypercast.cast_i32("  12x4", NumFormat.INVARIANT) == Fault(CastFailure.MALFORMED, 4, 1)
+
+
+def test_str_doors_transcode_non_ascii_separators():
+    french = NumFormat(",", " ", NumFormat.ALL)
+    assert hypercast.cast_f64("1 234,5", french) == Success(1234.5)
+
+
+def test_localeconv_bridge():
+    fmt = NumFormat.from_localeconv({"decimal_point": ",", "thousands_sep": "."})
+    assert hypercast.cast_f64("1.234,5", fmt) == Success(1234.5)
+
+
+def test_uuid_agrees_with_the_platforms_own_parser():
+    text = "01020304-0506-0708-090a-0b0c0d0e0f10"
+    assert hypercast.cast_uuid(text) == Success(uuidlib.UUID(text))
+    assert hypercast.cast_uuid(f"urn:uuid:{text}") == Success(uuidlib.UUID(text))
+
+
+def test_timestamp_is_aware_utc_with_microsecond_truncation():
+    verdict = hypercast.cast_timestamp("2026-01-02T15:04:05.123456789Z")
+    expected = dt.datetime(2026, 1, 2, 15, 4, 5, 123456, tzinfo=dt.timezone.utc)
+    assert verdict == Success(expected)
+    # Offset input normalizes to UTC.
+    assert hypercast.cast_timestamp("2026-01-02T15:04:05+05:00") == Success(
+        dt.datetime(2026, 1, 2, 10, 4, 5, tzinfo=dt.timezone.utc))
+    # The full protobuf window survives timedelta arithmetic.
+    assert hypercast.cast_timestamp("0001-01-01T00:00:00Z") == Success(
+        dt.datetime(1, 1, 1, tzinfo=dt.timezone.utc))
+
+
+def test_unix_maps_the_declared_precision():
+    assert hypercast.cast_unix("-1", UnixPrecision.SECONDS) == Success(
+        dt.datetime(1969, 12, 31, 23, 59, 59, tzinfo=dt.timezone.utc))
+    assert hypercast.cast_unix("1700000000123", UnixPrecision.MILLISECONDS) == Success(
+        dt.datetime.fromtimestamp(1700000000.0, dt.timezone.utc) + dt.timedelta(milliseconds=123))
+
+
+def test_u64_comes_back_as_the_true_unsigned_value():
+    assert hypercast.cast_u64("18446744073709551615", NumFormat.INVARIANT) == Success(2**64 - 1)
+
+
+def test_date_time_and_duration_map_to_their_stdlib_types():
+    assert hypercast.cast_date("2026-01-02") == Success(dt.date(2026, 1, 2))
+    assert hypercast.cast_time("15:04:05.123456789") == Success(dt.time(15, 4, 5, 123456))
+    assert hypercast.cast_duration("P1DT6H") == Success(dt.timedelta(hours=30))
+    assert hypercast.cast_duration("-1.5s") == Success(dt.timedelta(seconds=-1.5))
+    assert hypercast.cast_duration("01:30") == Success(dt.timedelta(minutes=90))
+
+
+def test_optional_presents_empty_as_none():
+    assert hypercast.optional(hypercast.cast_i32("   ", NumFormat.INVARIANT)) is None
+    assert hypercast.optional(hypercast.cast_i32("42", NumFormat.INVARIANT)) == Success(42)
+    assert hypercast.optional(hypercast.cast_i32("abc", NumFormat.INVARIANT)) == Fault(
+        CastFailure.MALFORMED, 0, 1)
+
+
+def test_equal_separators_are_a_caller_bug():
+    with pytest.raises(ValueError):
+        NumFormat(".", ".", NumFormat.ALL)
+
+
+def test_bytes_and_str_doors_agree():
+    assert hypercast.cast_bool("yes") == hypercast.cast_bool(b"yes") == Success(True)
