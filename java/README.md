@@ -37,19 +37,44 @@ keep all nine fractional digits, zero truncation of anything the core parses.
 2. **The vocabulary untrusted sources actually send** — twenty boolean lexemes, accounting
    parentheses, radix prefixes, all five .NET `Guid` text forms, protobuf JSON durations.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
-   held by the shared corpus (all 21 tests green, full nine-file corpus replay through real
+   held by the shared corpus (all 27 tests green, full nine-file corpus replay through real
    FFM downcalls with byte-exact fault spans).
-4. **Faster where it matters** — JMH (`./gradlew :benchmarks:jmh`), with the honest caveat
-   that these came from a deliberately shortened run (wide error bars, directional not
-   final): `Cast.timestamp` **~172 ns vs ~667 ns `Instant.parse`** (and ~740 ns
-   `DateTimeFormatter.ISO_OFFSET_DATE_TIME`), time-of-day ~146 vs ~417 ns
-   `LocalTime.parse`, ISO duration ~163 vs ~267 ns `Duration.parse`.
+4. **Faster where it matters.** JMH, full-length this time — 2 forks, 5 warmup + 10
+   measurement iterations, 20 samples per row, error bars narrow enough to publish
+   (linux-arm64, JDK 23). Reproduce: `./gradlew :benchmarks:jmh`.
 
-**The honest trade-off:** the lean doors (f64/uuid/i32) currently lose — not structurally,
-but to ~100 ns of per-call `Arena.ofConfined()` setup, the documented next tuning target
-(thread-local scratch) before a full-length run replaces the numbers above. And it's a
-native dependency: for plain invariant integers, `Integer.parseInt` is the reasonable
-choice.
+   | Door | HyperCast | JDK | Verdict |
+   | --- | ---: | ---: | --- |
+   | `Cast.timestamp` vs `Instant.parse` | 62.9 ± 1.2 ns | 561.2 ± 11.9 ns | **8.9x faster** |
+   | `Cast.timestamp` (offset) vs `DateTimeFormatter.ISO_OFFSET_DATE_TIME` | 77.3 ± 1.8 ns | 690.1 ± 11.0 ns | **8.9x faster** |
+   | `Cast.dateTime` vs `LocalDateTime.parse` (ISO) | 91.4 ± 4.0 ns | 506.8 ± 20.3 ns | **5.5x faster** |
+   | `Cast.dateTime` vs a `M/d/yyyy h:mm a` formatter | 81.8 ± 12.6 ns | 334.9 ± 2.4 ns | **4.1x faster** |
+   | `Cast.date` (declared order) vs a `M/d/yyyy` formatter | 44.2 ± 1.8 ns | 167.8 ± 12.3 ns | **3.8x faster** |
+   | `Cast.time` vs `LocalTime.parse` | 66.4 ± 0.8 ns | 360.4 ± 7.3 ns | **5.4x faster** |
+   | `Cast.duration` vs `Duration.parse` | 73.8 ± 2.2 ns | 247.7 ± 5.8 ns | **3.4x faster** |
+   | `Cast.i32` (grouped) vs `NumberFormat` | 67.4 ± 2.9 ns | 87.0 ± 2.0 ns | **1.3x faster** |
+   | `Cast.f64` vs `Double.parseDouble` | 60.5 ± 6.4 ns | 63.9 ± 1.3 ns | parity, slightly ahead |
+   | `Cast.f64` (eurozone) vs `NumberFormat` (de-DE) | 106.0 ± 3.3 ns | 142.6 ± 2.0 ns | **1.3x faster** |
+   | `Cast.uuid` vs `UUID.fromString` | 53.8 ± 3.5 ns | 41.7 ± 1.4 ns | 1.3x slower |
+   | `Cast.bool` vs `Boolean.parseBoolean` | 26.3 ± 1.0 ns | 0.43 ns | honest loss — see below |
+
+   **Separator detection is free**: `NumFormat.DETECT` on `1.234.567,89` measures
+   105.1 ± 3.0 ns against 106.0 ± 3.3 ns for the same text under a declared eurozone
+   format — the structural resolution pass disappears inside the FFM crossing.
+
+**What changed:** every one of those numbers is roughly 100 ns faster than the first
+(shortened) run, because the doors no longer open an `Arena.ofConfined()` per call — one
+`ThreadLocal` now holds the out/fault/format segments and a reusable input buffer for the
+life of the thread. That was the documented next tuning target, and paying it flipped
+`f64` and grouped `i32` from losses into wins.
+
+**The honest trade-off:** two rows still lose. `UUID.fromString` beats this door by ~12 ns
+— it's pure bit-twiddling with no boundary to cross, and this door also accepts N/B/P/X
+forms and `urn:uuid:` prefixes it doesn't. And `Boolean.parseBoolean` is unbeatable by
+construction: JIT folds a loop-invariant `parseBoolean` into nothing, which an FFM downcall
+structurally can't match — the twenty-lexeme vocabulary is why anyone calls this door. It's
+also a native dependency: for plain invariant integers, `Integer.parseInt` is the
+reasonable choice.
 
 ## AOT
 

@@ -23,6 +23,20 @@ let benchmarks: @Sendable () -> Void = {
     let isoSpan = "PT1H30M15.5S"
     let iso8601 = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
 
+    // The messy civil shape and the Foundation parser that accepts it: a DateFormatter
+    // with an explicit en-US pattern. Built once, outside the loop — constructing one per
+    // call would measure DateFormatter's notorious setup cost, not its parse.
+    let messyDateTimeText = "1/7/2026 3:04 PM"
+    let messyDateText = "1/7/2026"
+    let euroNumberText = "1.234.567,89"
+    let usDateTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "M/d/yyyy h:mm a"
+        return formatter
+    }()
+    let eurozone = NumFormat(decimalSeparator: ",", groupSeparator: ".", styles: .all)
+
     Benchmark("Cast.bool") { benchmark in
         for _ in benchmark.scaledIterations {
             blackHole(try Cast.bool("true"))
@@ -88,4 +102,34 @@ let benchmarks: @Sendable () -> Void = {
             blackHole(try Cast.duration(isoSpan))
         }
     }
+    Benchmark("Cast.dateTime (messy civil shape)") { benchmark in
+        for _ in benchmark.scaledIterations {
+            blackHole(try Cast.dateTime(messyDateTimeText, order: .monthDayYear))
+        }
+    }
+
+    Benchmark("DateFormatter.date (M/d/yyyy h:mm a)") { benchmark in
+        for _ in benchmark.scaledIterations {
+            blackHole(usDateTimeFormatter.date(from: messyDateTimeText))
+        }
+    }
+
+    Benchmark("Cast.date (declared order)") { benchmark in
+        for _ in benchmark.scaledIterations {
+            blackHole(try Cast.date(messyDateText, order: .monthDayYear))
+        }
+    }
+
+    Benchmark("Cast.f64 (separator detection)") { benchmark in
+        for _ in benchmark.scaledIterations {
+            blackHole(try Cast.f64(euroNumberText, format: .detect))
+        }
+    }
+
+    Benchmark("Cast.f64 (declared eurozone format)") { benchmark in
+        for _ in benchmark.scaledIterations {
+            blackHole(try Cast.f64(euroNumberText, format: eurozone))
+        }
+    }
+
 }

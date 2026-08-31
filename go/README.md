@@ -47,7 +47,7 @@ rather than silently wrapping.
    parentheses, declared separators, radix prefixes, all five .NET `Guid` text forms plus
    `urn:uuid:` prefixes, protobuf JSON durations.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other
-   binding, held by the shared corpus (17 tests green on both backends, full nine-file
+   binding, held by the shared corpus (21 tests green on both backends, full nine-file
    corpus replay).
 
 **The honest trade-off, stated as plainly as the wins elsewhere: every Go door loses
@@ -72,6 +72,11 @@ Measured on the same linux-arm64 machine, same run:
 | `Uuid` | 148 ns, 2 allocs | 599 ns, 6 allocs | 35 ns `google/uuid.Parse` |
 | `Span` (ISO) | 172 ns, 2 allocs | 623 ns, 6 allocs | 71 ns `ParseDuration` (Go dialect — different grammar) |
 | `Bool` | 115 ns, 1 alloc | 553 ns, 5 allocs | 4 ns `strconv.ParseBool` |
+| `DateTime` (`1/7/2026 3:04 PM`) | 157 ns, 2 allocs | — | 135 ns `time.Parse` w/ layout |
+| `DateOnlyOrdered` (`1/7/2026`) | 118 ns, 1 alloc | — | 78 ns `time.Parse` w/ layout |
+
+Separator detection costs ~10 ns: `1.234.567,89` under `Detect` is 226 ns against 215 ns
+for the same text under a declared eurozone format (cgo backend).
 
 cgo's 3.5-4.8x per-call win over purego is why it stays the default wherever it's
 available; purego's zero-toolchain story is why it carries Windows, `CGO_ENABLED=0`, and

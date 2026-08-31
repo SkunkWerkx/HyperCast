@@ -36,7 +36,7 @@ core's nanoseconds truncate by three digits; durations come back as the protobuf
    parentheses, declared separators, radix prefixes, all five .NET `Guid` text forms plus
    `urn:uuid:` prefixes, protobuf JSON durations.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
-   held by the shared corpus (19 tests green, full nine-file corpus replay with byte-exact
+   held by the shared corpus (23 tests green, full nine-file corpus replay with byte-exact
    fault spans).
 4. **Faster than the platform's own parser** — phpbench
    (`XDEBUG_MODE=off vendor/bin/phpbench run --report=aggregate`, linux-arm64): timestamp
@@ -45,7 +45,10 @@ core's nanoseconds truncate by three digits; durations come back as the protobuf
    a wrapper diet: flat doors (one FFI call, no closure indirection), typed cdef structs
    read as fields, static scratch `CData` with pre-taken addresses (PHP's request model
    makes static scratch safe), and `createFromTimestamp`/`setMicrosecond` on PHP 8.4+
-   instead of a date-string parse.
+   instead of a date-string parse. The messy civil shape lands the same way: `Cast::datetime`
+   on `1/7/2026 3:04 PM` is **620 ns vs 1.36 µs** for `DateTimeImmutable::createFromFormat`
+   with the equivalent pattern (2.2x), and the declared-order date door is 539 ns.
+   Separator detection costs ~22 ns (385 ns vs 363 ns declared).
 
 **The honest trade-off:** a native library shipped inside the package and an FFI call per
 door — for plain invariant integers, `(int)` casts and `ctype_digit` are the reasonable

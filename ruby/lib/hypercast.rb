@@ -185,9 +185,12 @@ module HyperCast
 
     # Casts a zone-less civil date-time — the shape untrusted feeds actually send
     # ("1/7/2026 3:04 PM", "2026-01-07 15:04:05") — under a declared order Symbol to a
-    # stdlib DateTime with exact Rational seconds. No zone is read and none is invented
-    # (the text named no instant); fusing a zone is the caller's job, and timestamp stays
-    # the strict RFC 3339 instant door. An unknown order is a caller bug (KeyError).
+    # stdlib DateTime with exact Rational seconds. No zone is *read*: the text names no
+    # instant, and the parse applies no offset. Ruby has no zone-less date-time type, so
+    # the value rides a DateTime, whose offset defaults to +00:00 — that zero is a carrier
+    # artifact, not data (the same caveat PHP's UTC-labeled DateTimeImmutable carries);
+    # fusing a real zone is the caller's job, and timestamp stays the strict RFC 3339
+    # instant door. An unknown order is a caller bug (KeyError).
     def datetime(text, order)
       code = DATE_ORDERS.fetch(order)
       bytes = utf8(text)

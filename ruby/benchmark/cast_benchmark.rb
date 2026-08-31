@@ -10,6 +10,7 @@
 $LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
 
 require "benchmark/ips"
+require "date"
 require "time"
 require "hypercast"
 
@@ -26,6 +27,11 @@ Benchmark.ips do |x|
   x.report("HyperCast.bool") { HyperCast.bool("true") }
   x.compare!
 end
+
+MESSY_DATETIME = "1/7/2026 3:04 PM"
+MESSY_DATE = "1/7/2026"
+EURO_NUMBER = "1.234.567,89"
+EUROZONE = HyperCast::NumFormat.new(decimal_sep: ",", group_sep: ".", flags: HyperCast::ALL_STYLES)
 
 puts "== integer =="
 Benchmark.ips do |x|
@@ -58,5 +64,27 @@ end
 puts "== duration (no stdlib ISO-8601 parser to pair against) =="
 Benchmark.ips do |x|
   x.report("HyperCast.duration") { HyperCast.duration(ISO_SPAN) }
+  x.compare!
+end
+
+puts "== datetime (messy civil shape) =="
+Benchmark.ips do |x|
+  # DateTime.strptime is the stdlib parser that accepts this text at all.
+  x.report("DateTime.strptime") { DateTime.strptime(MESSY_DATETIME, "%m/%d/%Y %l:%M %p") }
+  x.report("HyperCast.datetime") { HyperCast.datetime(MESSY_DATETIME, :month_day_year) }
+  x.compare!
+end
+
+puts "== date (declared order) =="
+Benchmark.ips do |x|
+  x.report("Date.strptime") { Date.strptime(MESSY_DATE, "%m/%d/%Y") }
+  x.report("HyperCast.date ordered") { HyperCast.date(MESSY_DATE, :month_day_year) }
+  x.compare!
+end
+
+puts "== separator detection vs a declared format =="
+Benchmark.ips do |x|
+  x.report("HyperCast.f64 DETECT") { HyperCast.f64(EURO_NUMBER, HyperCast::NumFormat::DETECT) }
+  x.report("HyperCast.f64 declared") { HyperCast.f64(EURO_NUMBER, EUROZONE) }
   x.compare!
 end

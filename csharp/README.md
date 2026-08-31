@@ -36,7 +36,7 @@ truncate (the core carries full nanosecond fidelity; .NET's clock types don't).
    parentheses, radix prefixes, all five `Guid` formats *plus* `urn:uuid:` prefixes,
    protobuf JSON durations — much of it grammar the BCL has no knob for at any price.
 3. **One engine across a polyglot system** — the same Rust core, bit-for-bit verdicts,
-   proven by the shared conformance corpus every binding replays (all 24 of this binding's
+   proven by the shared conformance corpus every binding replays (all 28 of this binding's
    tests include the full nine-file corpus through real P/Invoke).
 4. **Not slower — mostly faster.** BenchmarkDotNet, `[MemoryDiagnoser]`, lenience matched
    where the BCL has the knob, FFI crossing and UTF-16→UTF-8 transcode *included* in every
@@ -51,13 +51,22 @@ truncate (the core carries full nanosecond fidelity; .NET's clock types don't).
    | `Cast.Uuid` vs `Guid.TryParse` | 54.8 ns | 51.9 ns | wash — while also taking N/B/P/X and `urn:uuid:` |
    | `Cast.Int32` (grouped) vs `int.TryParse` | 64.5 ns | 54.0 ns | 1.2x slower — the crossing tax, paid honestly |
    | `Cast.Boolean` vs `bool.TryParse` | 18.5 ns | JIT-folded | honest loss — the twenty-lexeme vocabulary is why anyone calls this door |
+   | `Cast.DateTime` (`1/7/2026 3:04 PM`) vs `DateTime.TryParse` (en-US) | 61.2 ns | 222.9 ns | **3.6x faster** |
+   | `Cast.Date` (declared order) vs `DateOnly.TryParse` (en-US) | 33.7 ns | 132.3 ns | **3.9x faster** |
+   | `Cast.Double` (eurozone) vs `double.TryParse` (de-DE) | 98.7 ns | 65.9 ns | 1.5x slower — see below |
 
    Reproduce: `dotnet run -c Release --project HyperCast.Benchmarks`.
 
-**The honest trade-off:** a native dependency (shipped per-RID inside the package) and a
-~15–65 ns FFI crossing on every call. For plain invariant integers the BCL is already
-excellent; these doors earn their keep on the culture-machinery parsers, the closed error
-contract, and cross-language agreement.
+   **Separator detection is nearly free**: `NumFormat.Detect` on `1.234.567,89` costs
+   104.4 ns against 98.7 ns for the same text under a declared eurozone format — ~6 ns for
+   resolving the `.`/`,` roles structurally instead of being told them.
+
+**The honest trade-off:** the eurozone `double` row is a real loss — `double.TryParse`
+under de-DE beats this door by ~33 ns, because non-invariant separators take the door's
+normalize-then-parse path rather than its invariant fast lane. And it's a native dependency
+(shipped per-RID inside the package) with a ~15–65 ns FFI crossing on every call. For plain
+invariant integers the BCL is already excellent; these doors earn their keep on the
+culture-machinery parsers, the closed error contract, and cross-language agreement.
 
 ## AOT
 

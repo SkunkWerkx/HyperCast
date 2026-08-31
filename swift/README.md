@@ -35,12 +35,18 @@ has no availability gates — this only sets the Darwin deployment target).
    parentheses, declared separators, radix prefixes, all five .NET `Guid` text forms plus
    `urn:uuid:` prefixes, protobuf JSON durations.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
-   held by the shared corpus (20 tests green, full nine-file corpus replay with byte-exact
+   held by the shared corpus (24 tests green, full nine-file corpus replay with byte-exact
    fault spans).
-4. **Faster on the culture-machinery doors** — first-wave numbers from ordo-one's
-   package-benchmark (linux-arm64, `swift package benchmark run` in `Benchmarks/`):
-   timestamp **293 ns vs 837 ns `Date.ISO8601FormatStyle`** (2.9x), uuid **227 ns vs
-   629 ns `UUID(uuidString:)`** (2.8x).
+4. **Faster on the culture-machinery doors** — numbers from ordo-one's package-benchmark
+   (linux-arm64, p50, `swift package benchmark run` in `Benchmarks/`): timestamp **278 ns
+   vs 837 ns `Date.ISO8601FormatStyle`** (3.0x), uuid **225 ns vs 629 ns
+   `UUID(uuidString:)`** (2.8x), and the messy civil shape **326 ns vs 810 ns** for a
+   `DateFormatter` with the equivalent `M/d/yyyy h:mm a` pattern (2.5x — and that
+   formatter is hoisted out of the loop, so its notorious construction cost isn't in the
+   number). The declared-order date door is 287 ns.
+
+   Separator detection is free: `1.234.567,89` under `.detect` is 399 ns against 406 ns
+   for the same text under a declared eurozone format.
 
 **The honest trade-off:** a native dependency carried as a package resource, a dlopen at
 first use, and an FFI crossing per call — for plain invariant integers, `Int32("...")` is

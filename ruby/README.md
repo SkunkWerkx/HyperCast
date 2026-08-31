@@ -37,16 +37,29 @@ midnight, and durations come back as exact `Rational` seconds across the core's 
    parentheses, declared separators, radix prefixes, all five .NET `Guid` text forms plus
    `urn:uuid:` prefixes, protobuf JSON durations.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
-   held by the shared corpus (19 examples green on *both* backends, full nine-file corpus
+   held by the shared corpus (23 examples green on *both* backends, full nine-file corpus
    replay; a cross-backend agreement spec compares Magnus and Fiddle outputs across a
    subprocess boundary).
-4. **Faster than the stdlib on the Magnus backend** — benchmark-ips
-   (`ruby benchmark/cast_benchmark.rb`, linux-arm64): timestamp **748 ns vs 3.2 µs
-   `Time.iso8601`** (4.3x) — while returning exact `Rational` durations on the duration
-   door. The Fiddle fallback lands at ~3.5 µs: parity with `Time.iso8601`, sitting on
-   Fiddle's measured 1.6 µs per-call marshalling floor.
+4. **Faster than the stdlib on the Magnus backend, where the carrier is cheap** —
+   benchmark-ips (`ruby benchmark/cast_benchmark.rb`, linux-arm64): timestamp **713 ns vs
+   2.88 µs `Time.iso8601`** (4.0x) — while returning exact `Rational` durations on the
+   duration door. The Fiddle fallback lands at ~3.5 µs: parity with `Time.iso8601`, sitting
+   on Fiddle's measured 1.6 µs per-call marshalling floor.
 
-**The honest trade-off:** on the Fiddle fallback the doors are parity-at-best — Fiddle's
+   Separator detection is free here: `1.234.567,89` under `NumFormat::DETECT` runs
+   1.073M i/s against 1.092M i/s for the same text under a declared eurozone format —
+   inside the error bars.
+
+**The honest trade-off, and Ruby's one real loss:** the civil date-time door is *slower*
+than `strptime` — 1.30 µs against `DateTime.strptime`'s 1.02 µs, and the date door 1.04 µs
+against `Date.strptime`'s 619 ns. The parse isn't the problem; the carrier is. Building a
+stdlib `DateTime` with an exact `Rational` second costs more than the whole native call,
+where the timestamp door's `Time` is built by a single cheap `rb_time_nano_new`. Printed
+because it's real: if you want Ruby's fastest civil parse and don't need the verdict or the
+declared order, `strptime` wins. Also note the carrier's other caveat — `DateTime`'s offset
+defaults to `+00:00`, which is an artifact of the type, not a zone the parse assigned.
+
+On the Fiddle fallback the doors are parity-at-best — Fiddle's
 per-call floor is the mechanism's price, kept because it's the universal zero-compile
 path. (Benchmark forensics worth knowing: the doors read 4.3 µs until per-call
 `Fiddle::Pointer.malloc` finalizers were hoisted to thread-local scratch — receipts

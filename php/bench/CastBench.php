@@ -6,6 +6,7 @@ namespace HyperCast\Bench;
 
 use DateTimeImmutable;
 use HyperCast\Cast;
+use HyperCast\DateOrder;
 use HyperCast\NumFormat;
 use PhpBench\Attributes as Bench;
 
@@ -94,4 +95,40 @@ final class CastBench
         // PHP has; PT1H30M15S here vs our PT1H30M15.5S is as close as its grammar goes.
         new \DateInterval('PT1H30M15S');
     }
+    public function benchCastDateTimeMessy(): void
+    {
+        Cast::datetime('1/7/2026 3:04 PM', DateOrder::Mdy);
+    }
+
+    public function benchDateTimeImmutableCreateFromFormat(): void
+    {
+        // The PHP parse that accepts the same text: an explicit format, since
+        // new DateTimeImmutable() reads "1/7/2026" as m/d/Y by its own convention only
+        // when the separators say so — this is the like-for-like.
+        DateTimeImmutable::createFromFormat('n/j/Y g:i A', '1/7/2026 3:04 PM');
+    }
+
+    public function benchCastDateOrdered(): void
+    {
+        Cast::date('1/7/2026', DateOrder::Mdy);
+    }
+
+    public function benchCastF64Detect(): void
+    {
+        Cast::f64('1.234.567,89', NumFormat::detect());
+    }
+
+    public function benchCastF64Declared(): void
+    {
+        // Hoisted, not constructed per call: a fresh NumFormat would measure object
+        // construction *and* defeat Cast's identity memo on the packed format struct.
+        Cast::f64('1.234.567,89', self::eurozone());
+    }
+
+    private static function eurozone(): NumFormat
+    {
+        static $eurozone = null;
+        return $eurozone ??= new NumFormat(',', '.', NumFormat::ALL);
+    }
+
 }

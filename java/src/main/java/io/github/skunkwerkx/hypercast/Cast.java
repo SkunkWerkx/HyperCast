@@ -113,18 +113,65 @@ public final class Cast {
     /** Fault span out-param: {@code {u32 offset, u32 length}}. */
     private static final long FAULT_BYTES = 8;
 
-    private static MemorySegment input(Arena arena, byte[] utf8) {
-        // len == 0 never dereferences the pointer, per the ABI contract.
-        return utf8.length == 0 ? MemorySegment.NULL : arena.allocateFrom(ValueLayout.JAVA_BYTE, utf8);
+    /**
+     * Per-thread scratch for the downcall out-params. Every door used to open its own
+     * {@link Arena#ofConfined()} — a fresh native allocation plus a scope teardown on every
+     * single cast, measured at roughly 100 ns and the dominant cost of the lean doors.
+     * Confined arenas are thread-confined by design, so the replacement is thread-confined
+     * too: one {@link ThreadLocal} holding segments that live as long as the thread does.
+     *
+     * <p>{@code out} is sized for the widest out-param (16 bytes — a protobuf timestamp or
+     * a civil date-time) and each door reads only its own prefix, after the native side has
+     * written it; a failing call never reads it at all. Nothing is shared between threads,
+     * so no door needs locking, and doors never nest, so no call can observe another's
+     * scratch mid-flight.
+     */
+    private static final class Scratch {
+        /** Reused input staging buffer; grown only when a call actually outgrows it. */
+        private static final long INITIAL_INPUT_BYTES = 512;
+
+        // Explicit alignment rather than allocate(size)'s implicit 1: the temporal doors
+        // read JAVA_LONG out of `out`, which a 1-byte-aligned segment rejects outright.
+        private final Arena fixed = Arena.ofAuto();
+        final MemorySegment out = fixed.allocate(16, 8);
+        final MemorySegment fault = fixed.allocate(FAULT_BYTES, 4);
+        private final MemorySegment formatSegment = fixed.allocate(12, 4);
+        private NumFormat formatKey;
+
+        // Deliberately a *separate* arena from `fixed`: a segment keeps its whole arena
+        // alive, so sharing one would retain every buffer this thread ever outgrew.
+        // Replacing this field on growth drops the old buffer for the collector.
+        private Arena inputArena = Arena.ofAuto();
+        private MemorySegment inputBuffer = inputArena.allocate(INITIAL_INPUT_BYTES, 1);
+
+        MemorySegment input(byte[] utf8) {
+            // len == 0 never dereferences the pointer, per the ABI contract.
+            if (utf8.length == 0) {
+                return MemorySegment.NULL;
+            }
+            if (utf8.length > inputBuffer.byteSize()) {
+                inputArena = Arena.ofAuto();
+                inputBuffer = inputArena.allocate(Long.highestOneBit(utf8.length - 1) << 1, 1);
+            }
+            MemorySegment.copy(utf8, 0, inputBuffer, ValueLayout.JAVA_BYTE, 0, utf8.length);
+            return inputBuffer;
+        }
+
+        MemorySegment format(NumFormat declared) {
+            // Formats are reused constants in practice (INVARIANT, DETECT, a per-locale
+            // instance), so an identity check skips three stores on the overwhelming
+            // majority of calls — the same memo the Python and Ruby bindings keep.
+            if (formatKey != declared) {
+                formatSegment.set(ValueLayout.JAVA_INT, 0, declared.decimalSeparator());
+                formatSegment.set(ValueLayout.JAVA_INT, 4, declared.groupSeparator());
+                formatSegment.set(ValueLayout.JAVA_INT, 8, declared.styles());
+                formatKey = declared;
+            }
+            return formatSegment;
+        }
     }
 
-    private static MemorySegment format(Arena arena, NumFormat format) {
-        MemorySegment segment = arena.allocate(12);
-        segment.set(ValueLayout.JAVA_INT, 0, format.decimalSeparator());
-        segment.set(ValueLayout.JAVA_INT, 4, format.groupSeparator());
-        segment.set(ValueLayout.JAVA_INT, 8, format.styles());
-        return segment;
-    }
+    private static final ThreadLocal<Scratch> SCRATCH = ThreadLocal.withInitial(Scratch::new);
 
     private static <T> Verdict<T> failed(int code, MemorySegment fault) {
         if (code == -1) {
@@ -180,19 +227,18 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Boolean> bool(byte[] utf8) {
-        try (Arena arena = Arena.ofConfined()) {
-            MemorySegment out = arena.allocate(ValueLayout.JAVA_BYTE);
-            MemorySegment fault = arena.allocate(FAULT_BYTES);
-            int code;
-            try {
-                code = (int) CAST_BOOL.invokeExact(input(arena, utf8), (long) utf8.length, out, fault);
-            } catch (Throwable t) {
-                throw new AssertionError("hypercast: cast_bool downcall failed unexpectedly", t);
-            }
-            return code == 0
-                    ? new Success<>(out.get(ValueLayout.JAVA_BYTE, 0) != 0)
-                    : failed(code, fault);
+        Scratch scratch = SCRATCH.get();
+        MemorySegment out = scratch.out;
+        MemorySegment fault = scratch.fault;
+        int code;
+        try {
+            code = (int) CAST_BOOL.invokeExact(scratch.input(utf8), (long) utf8.length, out, fault);
+        } catch (Throwable t) {
+            throw new AssertionError("hypercast: cast_bool downcall failed unexpectedly", t);
         }
+        return code == 0
+                ? new Success<>(out.get(ValueLayout.JAVA_BYTE, 0) != 0)
+                : failed(code, fault);
     }
 
     // --- integers ---
@@ -202,19 +248,18 @@ public final class Cast {
     }
 
     private static <T> Verdict<T> numeric(
-            MethodHandle door, String symbol, byte[] utf8, NumFormat format, long outBytes, IntReader<T> reader) {
-        try (Arena arena = Arena.ofConfined()) {
-            MemorySegment out = arena.allocate(outBytes);
-            MemorySegment fault = arena.allocate(FAULT_BYTES);
-            int code;
-            try {
-                code = (int) door.invokeExact(
-                        input(arena, utf8), (long) utf8.length, format(arena, format), out, fault);
-            } catch (Throwable t) {
-                throw new AssertionError("hypercast: " + symbol + " downcall failed unexpectedly", t);
-            }
-            return code == 0 ? new Success<>(reader.read(out)) : failed(code, fault);
+            MethodHandle door, String symbol, byte[] utf8, NumFormat format, IntReader<T> reader) {
+        Scratch scratch = SCRATCH.get();
+        MemorySegment out = scratch.out;
+        MemorySegment fault = scratch.fault;
+        int code;
+        try {
+            code = (int) door.invokeExact(
+                    scratch.input(utf8), (long) utf8.length, scratch.format(format), out, fault);
+        } catch (Throwable t) {
+            throw new AssertionError("hypercast: " + symbol + " downcall failed unexpectedly", t);
         }
+        return code == 0 ? new Success<>(reader.read(out)) : failed(code, fault);
     }
 
     /**
@@ -239,7 +284,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Byte> i8(byte[] utf8, NumFormat format) {
-        return numeric(CAST_I8, "cast_i8", utf8, format, 1, out -> out.get(ValueLayout.JAVA_BYTE, 0));
+        return numeric(CAST_I8, "cast_i8", utf8, format, out -> out.get(ValueLayout.JAVA_BYTE, 0));
     }
 
     /**
@@ -261,7 +306,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Short> i16(byte[] utf8, NumFormat format) {
-        return numeric(CAST_I16, "cast_i16", utf8, format, 2, out -> out.get(ValueLayout.JAVA_SHORT, 0));
+        return numeric(CAST_I16, "cast_i16", utf8, format, out -> out.get(ValueLayout.JAVA_SHORT, 0));
     }
 
     /**
@@ -283,7 +328,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Integer> i32(byte[] utf8, NumFormat format) {
-        return numeric(CAST_I32, "cast_i32", utf8, format, 4, out -> out.get(ValueLayout.JAVA_INT, 0));
+        return numeric(CAST_I32, "cast_i32", utf8, format, out -> out.get(ValueLayout.JAVA_INT, 0));
     }
 
     /**
@@ -305,7 +350,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Long> i64(byte[] utf8, NumFormat format) {
-        return numeric(CAST_I64, "cast_i64", utf8, format, 8, out -> out.get(ValueLayout.JAVA_LONG, 0));
+        return numeric(CAST_I64, "cast_i64", utf8, format, out -> out.get(ValueLayout.JAVA_LONG, 0));
     }
 
     /**
@@ -328,7 +373,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Integer> u8(byte[] utf8, NumFormat format) {
-        return numeric(CAST_U8, "cast_u8", utf8, format, 1,
+        return numeric(CAST_U8, "cast_u8", utf8, format,
                 out -> Byte.toUnsignedInt(out.get(ValueLayout.JAVA_BYTE, 0)));
     }
 
@@ -351,7 +396,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Integer> u16(byte[] utf8, NumFormat format) {
-        return numeric(CAST_U16, "cast_u16", utf8, format, 2,
+        return numeric(CAST_U16, "cast_u16", utf8, format,
                 out -> Short.toUnsignedInt(out.get(ValueLayout.JAVA_SHORT, 0)));
     }
 
@@ -374,7 +419,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Long> u32(byte[] utf8, NumFormat format) {
-        return numeric(CAST_U32, "cast_u32", utf8, format, 4,
+        return numeric(CAST_U32, "cast_u32", utf8, format,
                 out -> Integer.toUnsignedLong(out.get(ValueLayout.JAVA_INT, 0)));
     }
 
@@ -399,7 +444,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Long> u64(byte[] utf8, NumFormat format) {
-        return numeric(CAST_U64, "cast_u64", utf8, format, 8, out -> out.get(ValueLayout.JAVA_LONG, 0));
+        return numeric(CAST_U64, "cast_u64", utf8, format, out -> out.get(ValueLayout.JAVA_LONG, 0));
     }
 
     // --- reals ---
@@ -426,7 +471,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Float> f32(byte[] utf8, NumFormat format) {
-        return numeric(CAST_F32, "cast_f32", utf8, format, 4, out -> out.get(ValueLayout.JAVA_FLOAT, 0));
+        return numeric(CAST_F32, "cast_f32", utf8, format, out -> out.get(ValueLayout.JAVA_FLOAT, 0));
     }
 
     /**
@@ -448,7 +493,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Double> f64(byte[] utf8, NumFormat format) {
-        return numeric(CAST_F64, "cast_f64", utf8, format, 8, out -> out.get(ValueLayout.JAVA_DOUBLE, 0));
+        return numeric(CAST_F64, "cast_f64", utf8, format, out -> out.get(ValueLayout.JAVA_DOUBLE, 0));
     }
 
     // --- uuid ---
@@ -472,27 +517,26 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<UUID> uuid(byte[] utf8) {
-        try (Arena arena = Arena.ofConfined()) {
-            MemorySegment out = arena.allocate(16);
-            MemorySegment fault = arena.allocate(FAULT_BYTES);
-            int code;
-            try {
-                code = (int) CAST_UUID.invokeExact(input(arena, utf8), (long) utf8.length, out, fault);
-            } catch (Throwable t) {
-                throw new AssertionError("hypercast: cast_uuid downcall failed unexpectedly", t);
-            }
-            if (code != 0) {
-                return failed(code, fault);
-            }
-            // RFC 9562 order is exactly UUID's msb/lsb decomposition — no swapping, unlike Guid.
-            long msb = 0;
-            long lsb = 0;
-            for (int i = 0; i < 8; i++) {
-                msb = (msb << 8) | (out.get(ValueLayout.JAVA_BYTE, i) & 0xFFL);
-                lsb = (lsb << 8) | (out.get(ValueLayout.JAVA_BYTE, i + 8) & 0xFFL);
-            }
-            return new Success<>(new UUID(msb, lsb));
+        Scratch scratch = SCRATCH.get();
+        MemorySegment out = scratch.out;
+        MemorySegment fault = scratch.fault;
+        int code;
+        try {
+            code = (int) CAST_UUID.invokeExact(scratch.input(utf8), (long) utf8.length, out, fault);
+        } catch (Throwable t) {
+            throw new AssertionError("hypercast: cast_uuid downcall failed unexpectedly", t);
         }
+        if (code != 0) {
+            return failed(code, fault);
+        }
+        // RFC 9562 order is exactly UUID's msb/lsb decomposition — no swapping, unlike Guid.
+        long msb = 0;
+        long lsb = 0;
+        for (int i = 0; i < 8; i++) {
+            msb = (msb << 8) | (out.get(ValueLayout.JAVA_BYTE, i) & 0xFFL);
+            lsb = (lsb << 8) | (out.get(ValueLayout.JAVA_BYTE, i + 8) & 0xFFL);
+        }
+        return new Success<>(new UUID(msb, lsb));
     }
 
     // --- temporals ---
@@ -504,22 +548,22 @@ public final class Cast {
     private static final long CIVIL_BYTES = 16;
 
     private static Verdict<Instant> instantDoor(MethodHandle door, String symbol, byte[] utf8, int precision) {
-        try (Arena arena = Arena.ofConfined()) {
-            MemorySegment out = arena.allocate(TIMESTAMP_BYTES);
-            MemorySegment fault = arena.allocate(FAULT_BYTES);
-            int code;
-            try {
-                code = precision == 0
-                        ? (int) door.invokeExact(input(arena, utf8), (long) utf8.length, out, fault)
-                        : (int) door.invokeExact(input(arena, utf8), (long) utf8.length, precision, out, fault);
-            } catch (Throwable t) {
-                throw new AssertionError("hypercast: " + symbol + " downcall failed unexpectedly", t);
-            }
-            return code == 0
-                    ? new Success<>(Instant.ofEpochSecond(
-                            out.get(ValueLayout.JAVA_LONG, 0), out.get(ValueLayout.JAVA_INT, 8)))
-                    : failed(code, fault);
+        Scratch scratch = SCRATCH.get();
+        MemorySegment out = scratch.out;
+        MemorySegment fault = scratch.fault;
+        MemorySegment in = scratch.input(utf8);
+        int code;
+        try {
+            code = precision == 0
+                    ? (int) door.invokeExact(in, (long) utf8.length, out, fault)
+                    : (int) door.invokeExact(in, (long) utf8.length, precision, out, fault);
+        } catch (Throwable t) {
+            throw new AssertionError("hypercast: " + symbol + " downcall failed unexpectedly", t);
         }
+        return code == 0
+                ? new Success<>(Instant.ofEpochSecond(
+                        out.get(ValueLayout.JAVA_LONG, 0), out.get(ValueLayout.JAVA_INT, 8)))
+                : failed(code, fault);
     }
 
     /**
@@ -589,22 +633,21 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<LocalDate> date(byte[] utf8) {
-        try (Arena arena = Arena.ofConfined()) {
-            MemorySegment out = arena.allocate(4);
-            MemorySegment fault = arena.allocate(FAULT_BYTES);
-            int code;
-            try {
-                code = (int) CAST_DATE.invokeExact(input(arena, utf8), (long) utf8.length, out, fault);
-            } catch (Throwable t) {
-                throw new AssertionError("hypercast: cast_date downcall failed unexpectedly", t);
-            }
-            return code == 0
-                    ? new Success<>(LocalDate.of(
-                            Short.toUnsignedInt(out.get(ValueLayout.JAVA_SHORT, 0)),
-                            out.get(ValueLayout.JAVA_BYTE, 2),
-                            out.get(ValueLayout.JAVA_BYTE, 3)))
-                    : failed(code, fault);
+        Scratch scratch = SCRATCH.get();
+        MemorySegment out = scratch.out;
+        MemorySegment fault = scratch.fault;
+        int code;
+        try {
+            code = (int) CAST_DATE.invokeExact(scratch.input(utf8), (long) utf8.length, out, fault);
+        } catch (Throwable t) {
+            throw new AssertionError("hypercast: cast_date downcall failed unexpectedly", t);
         }
+        return code == 0
+                ? new Success<>(LocalDate.of(
+                        Short.toUnsignedInt(out.get(ValueLayout.JAVA_SHORT, 0)),
+                        out.get(ValueLayout.JAVA_BYTE, 2),
+                        out.get(ValueLayout.JAVA_BYTE, 3)))
+                : failed(code, fault);
     }
 
     /**
@@ -632,23 +675,22 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<LocalDate> date(byte[] utf8, DateOrder order) {
-        try (Arena arena = Arena.ofConfined()) {
-            MemorySegment out = arena.allocate(4);
-            MemorySegment fault = arena.allocate(FAULT_BYTES);
-            int code;
-            try {
-                code = (int) CAST_DATE_ORDERED.invokeExact(
-                        input(arena, utf8), (long) utf8.length, order.code(), out, fault);
-            } catch (Throwable t) {
-                throw new AssertionError("hypercast: cast_date_ordered downcall failed unexpectedly", t);
-            }
-            return code == 0
-                    ? new Success<>(LocalDate.of(
-                            Short.toUnsignedInt(out.get(ValueLayout.JAVA_SHORT, 0)),
-                            out.get(ValueLayout.JAVA_BYTE, 2),
-                            out.get(ValueLayout.JAVA_BYTE, 3)))
-                    : failed(code, fault);
+        Scratch scratch = SCRATCH.get();
+        MemorySegment out = scratch.out;
+        MemorySegment fault = scratch.fault;
+        int code;
+        try {
+            code = (int) CAST_DATE_ORDERED.invokeExact(
+                    scratch.input(utf8), (long) utf8.length, order.code(), out, fault);
+        } catch (Throwable t) {
+            throw new AssertionError("hypercast: cast_date_ordered downcall failed unexpectedly", t);
         }
+        return code == 0
+                ? new Success<>(LocalDate.of(
+                        Short.toUnsignedInt(out.get(ValueLayout.JAVA_SHORT, 0)),
+                        out.get(ValueLayout.JAVA_BYTE, 2),
+                        out.get(ValueLayout.JAVA_BYTE, 3)))
+                : failed(code, fault);
     }
 
     /**
@@ -678,25 +720,24 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<LocalDateTime> dateTime(byte[] utf8, DateOrder order) {
-        try (Arena arena = Arena.ofConfined()) {
-            MemorySegment out = arena.allocate(CIVIL_BYTES);
-            MemorySegment fault = arena.allocate(FAULT_BYTES);
-            int code;
-            try {
-                code = (int) CAST_DATETIME.invokeExact(
-                        input(arena, utf8), (long) utf8.length, order.code(), out, fault);
-            } catch (Throwable t) {
-                throw new AssertionError("hypercast: cast_datetime downcall failed unexpectedly", t);
-            }
-            return code == 0
-                    ? new Success<>(LocalDateTime.of(
-                            LocalDate.of(
-                                    Short.toUnsignedInt(out.get(ValueLayout.JAVA_SHORT, 0)),
-                                    out.get(ValueLayout.JAVA_BYTE, 2),
-                                    out.get(ValueLayout.JAVA_BYTE, 3)),
-                            LocalTime.ofNanoOfDay(out.get(ValueLayout.JAVA_LONG, 8))))
-                    : failed(code, fault);
+        Scratch scratch = SCRATCH.get();
+        MemorySegment out = scratch.out;
+        MemorySegment fault = scratch.fault;
+        int code;
+        try {
+            code = (int) CAST_DATETIME.invokeExact(
+                    scratch.input(utf8), (long) utf8.length, order.code(), out, fault);
+        } catch (Throwable t) {
+            throw new AssertionError("hypercast: cast_datetime downcall failed unexpectedly", t);
         }
+        return code == 0
+                ? new Success<>(LocalDateTime.of(
+                        LocalDate.of(
+                                Short.toUnsignedInt(out.get(ValueLayout.JAVA_SHORT, 0)),
+                                out.get(ValueLayout.JAVA_BYTE, 2),
+                                out.get(ValueLayout.JAVA_BYTE, 3)),
+                        LocalTime.ofNanoOfDay(out.get(ValueLayout.JAVA_LONG, 8))))
+                : failed(code, fault);
     }
 
     /**
@@ -719,19 +760,18 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<LocalTime> time(byte[] utf8) {
-        try (Arena arena = Arena.ofConfined()) {
-            MemorySegment out = arena.allocate(ValueLayout.JAVA_LONG);
-            MemorySegment fault = arena.allocate(FAULT_BYTES);
-            int code;
-            try {
-                code = (int) CAST_TIME.invokeExact(input(arena, utf8), (long) utf8.length, out, fault);
-            } catch (Throwable t) {
-                throw new AssertionError("hypercast: cast_time downcall failed unexpectedly", t);
-            }
-            return code == 0
-                    ? new Success<>(LocalTime.ofNanoOfDay(out.get(ValueLayout.JAVA_LONG, 0)))
-                    : failed(code, fault);
+        Scratch scratch = SCRATCH.get();
+        MemorySegment out = scratch.out;
+        MemorySegment fault = scratch.fault;
+        int code;
+        try {
+            code = (int) CAST_TIME.invokeExact(scratch.input(utf8), (long) utf8.length, out, fault);
+        } catch (Throwable t) {
+            throw new AssertionError("hypercast: cast_time downcall failed unexpectedly", t);
         }
+        return code == 0
+                ? new Success<>(LocalTime.ofNanoOfDay(out.get(ValueLayout.JAVA_LONG, 0)))
+                : failed(code, fault);
     }
 
     /**
@@ -756,20 +796,19 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Duration> duration(byte[] utf8) {
-        try (Arena arena = Arena.ofConfined()) {
-            MemorySegment out = arena.allocate(TIMESTAMP_BYTES);
-            MemorySegment fault = arena.allocate(FAULT_BYTES);
-            int code;
-            try {
-                code = (int) CAST_DURATION.invokeExact(input(arena, utf8), (long) utf8.length, out, fault);
-            } catch (Throwable t) {
-                throw new AssertionError("hypercast: cast_duration downcall failed unexpectedly", t);
-            }
-            // Duration.ofSeconds normalizes the core's same-signed nanos adjustment correctly.
-            return code == 0
-                    ? new Success<>(Duration.ofSeconds(
-                            out.get(ValueLayout.JAVA_LONG, 0), out.get(ValueLayout.JAVA_INT, 8)))
-                    : failed(code, fault);
+        Scratch scratch = SCRATCH.get();
+        MemorySegment out = scratch.out;
+        MemorySegment fault = scratch.fault;
+        int code;
+        try {
+            code = (int) CAST_DURATION.invokeExact(scratch.input(utf8), (long) utf8.length, out, fault);
+        } catch (Throwable t) {
+            throw new AssertionError("hypercast: cast_duration downcall failed unexpectedly", t);
         }
+        // Duration.ofSeconds normalizes the core's same-signed nanos adjustment correctly.
+        return code == 0
+                ? new Success<>(Duration.ofSeconds(
+                        out.get(ValueLayout.JAVA_LONG, 0), out.get(ValueLayout.JAVA_INT, 8)))
+                : failed(code, fault);
     }
 }

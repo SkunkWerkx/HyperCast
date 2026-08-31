@@ -1,6 +1,7 @@
 package io.github.skunkwerkx.hypercast.benchmarks;
 
 import io.github.skunkwerkx.hypercast.Cast;
+import io.github.skunkwerkx.hypercast.DateOrder;
 import io.github.skunkwerkx.hypercast.NumFormat;
 import io.github.skunkwerkx.hypercast.Verdict;
 import java.nio.charset.StandardCharsets;
@@ -8,6 +9,8 @@ import java.text.NumberFormat;
 import java.text.ParseException;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
@@ -139,4 +142,70 @@ public class CastBenchmarks {
     public LocalTime jdkLocalTimeParse() {
         return LocalTime.parse(timeText);
     }
+    // --- the declared-order doors, vs the JDK pattern formatter that could accept the
+    // same text. This is the messy-feed shape the doors exist for: "1/7/2026 3:04 PM"
+    // has no java.time parser of its own, only a hand-built formatter.
+
+    private static final DateTimeFormatter US_DATE_TIME =
+            DateTimeFormatter.ofPattern("M/d/yyyy h:mm a", Locale.US);
+    private static final DateTimeFormatter US_DATE = DateTimeFormatter.ofPattern("M/d/yyyy", Locale.US);
+
+    private final String messyDateTimeText = "1/7/2026 3:04 PM";
+    private final String isoDateTimeText = "2026-01-07T15:04:05";
+    private final String messyDateText = "1/7/2026";
+
+    @Benchmark
+    public Verdict<LocalDateTime> castDateTimeMessy() {
+        return Cast.dateTime(messyDateTimeText, DateOrder.MONTH_DAY_YEAR);
+    }
+
+    @Benchmark
+    public LocalDateTime jdkPatternDateTimeParse() {
+        return LocalDateTime.parse(messyDateTimeText, US_DATE_TIME);
+    }
+
+    @Benchmark
+    public Verdict<LocalDateTime> castDateTimeIso() {
+        return Cast.dateTime(isoDateTimeText, DateOrder.YEAR_MONTH_DAY);
+    }
+
+    @Benchmark
+    public LocalDateTime jdkLocalDateTimeParse() {
+        return LocalDateTime.parse(isoDateTimeText);
+    }
+
+    @Benchmark
+    public Verdict<LocalDate> castDateOrdered() {
+        return Cast.date(messyDateText, DateOrder.MONTH_DAY_YEAR);
+    }
+
+    @Benchmark
+    public LocalDate jdkPatternDateParse() {
+        return LocalDate.parse(messyDateText, US_DATE);
+    }
+
+    // --- separator detection, vs the same text under a declared eurozone format and vs
+    // the JDK's own locale machinery. Detection's cost is one extra scan for '.'/','.
+
+    private static final NumFormat EUROZONE =
+            new NumFormat(',', '.', NumFormat.STYLE_ALL);
+    private static final NumberFormat JDK_GERMAN = NumberFormat.getInstance(Locale.GERMANY);
+
+    private final String euroNumberText = "1.234.567,89";
+
+    @Benchmark
+    public Verdict<Double> castF64Detect() {
+        return Cast.f64(euroNumberText, NumFormat.DETECT);
+    }
+
+    @Benchmark
+    public Verdict<Double> castF64Declared() {
+        return Cast.f64(euroNumberText, EUROZONE);
+    }
+
+    @Benchmark
+    public Number jdkNumberFormatGerman() throws ParseException {
+        return JDK_GERMAN.parse(euroNumberText);
+    }
+
 }

@@ -112,3 +112,42 @@ func BenchmarkCastTimeOfDay(b *testing.B) {
 		TimeOfDay("15:04:05.123456789")
 	}
 }
+
+func BenchmarkCastDateTimeMessy(b *testing.B) {
+	// No stdlib parser takes "1/7/2026 3:04 PM" without a layout; time.Parse with the
+	// equivalent layout is the honest pairing.
+	for b.Loop() {
+		DateTime("1/7/2026 3:04 PM", MonthDayYear)
+	}
+}
+
+func BenchmarkStdTimeParseUSLayout(b *testing.B) {
+	for b.Loop() {
+		_, _ = time.Parse("1/2/2006 3:04 PM", "1/7/2026 3:04 PM")
+	}
+}
+
+func BenchmarkCastDateOrdered(b *testing.B) {
+	for b.Loop() {
+		DateOnlyOrdered("1/7/2026", MonthDayYear)
+	}
+}
+
+func BenchmarkStdTimeParseUSDateLayout(b *testing.B) {
+	for b.Loop() {
+		_, _ = time.Parse("1/2/2006", "1/7/2026")
+	}
+}
+
+func BenchmarkCastF64Detect(b *testing.B) {
+	for b.Loop() {
+		F64("1.234.567,89", Detect)
+	}
+}
+
+func BenchmarkCastF64Declared(b *testing.B) {
+	declared := NumFormat{DecimalSep: ',', GroupSep: '.', Styles: AllStyles}
+	for b.Loop() {
+		F64("1.234.567,89", declared)
+	}
+}

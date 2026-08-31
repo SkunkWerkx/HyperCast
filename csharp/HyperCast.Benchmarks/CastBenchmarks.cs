@@ -74,4 +74,55 @@ public class CastBenchmarks
 	[Benchmark]
 	public TimeSpan BclTimeSpanTryParse() =>
 		TimeSpan.TryParse(DurationText, _invariantCulture, out var value) ? value : default;
+	// --- the declared-order doors, vs the BCL parse that accepts the same text. This is
+	// the messy-feed shape: "1/7/2026 3:04 PM" needs a culture (or an exact format) in the
+	// BCL, and gets one here — en-US, matching the declared MonthDayYear order.
+
+	const string MessyDateTimeText = "1/7/2026 3:04 PM";
+	const string MessyDateText = "1/7/2026";
+	const string EuroNumberText = "1.234.567,89";
+
+	static readonly CultureInfo _enUs = CultureInfo.GetCultureInfo("en-US");
+	static readonly CultureInfo _deDe = CultureInfo.GetCultureInfo("de-DE");
+	static readonly NumFormat _eurozone = new(',', '.', NumStyles.All);
+
+	[Benchmark]
+	public DateTime CastDateTimeMessy() =>
+		Cast.DateTime(MessyDateTimeText, DateOrder.MonthDayYear).TryGetValue(out Success<DateTime> s)
+			? s.Value
+			: default;
+
+	[Benchmark]
+	public DateTime BclDateTimeTryParseMessy() =>
+		System.DateTime.TryParse(MessyDateTimeText, _enUs, DateTimeStyles.None, out var value)
+			? value
+			: default;
+
+	[Benchmark]
+	public DateOnly CastDateOrdered() =>
+		Cast.Date(MessyDateText, DateOrder.MonthDayYear).TryGetValue(out Success<DateOnly> s)
+			? s.Value
+			: default;
+
+	[Benchmark]
+	public DateOnly BclDateOnlyTryParse() =>
+		DateOnly.TryParse(MessyDateText, _enUs, DateTimeStyles.None, out var value) ? value : default;
+
+	// --- separator detection, vs the same text under a declared format and vs the BCL's
+	// own culture machinery.
+
+	[Benchmark]
+	public double CastDoubleDetect() =>
+		Cast.Double(EuroNumberText, NumFormat.Detect).TryGetValue(out Success<double> s) ? s.Value : default;
+
+	[Benchmark]
+	public double CastDoubleDeclared() =>
+		Cast.Double(EuroNumberText, _eurozone).TryGetValue(out Success<double> s) ? s.Value : default;
+
+	[Benchmark]
+	public double BclDoubleTryParseGerman() =>
+		double.TryParse(EuroNumberText, NumberStyles.Float | NumberStyles.AllowThousands, _deDe, out var value)
+			? value
+			: default;
+
 }

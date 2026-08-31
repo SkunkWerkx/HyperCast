@@ -59,10 +59,34 @@ browser-wasm packaging consumes, on every PR.
 ## Benchmarks
 
 `cargo bench` — Criterion, `rust/benches/cast_benchmarks.rs`. Measured on linux-arm64
-against Rust's own best-in-class: D-format UUID parsing runs **faster than the `uuid`
-crate's parser** (15.4 vs 17.4 ns), and i64/f64 land within the cost of the
-trim + span + range contract of `str::parse`. Plain-shaped input takes allocation-free
-fast lanes; only text that actually uses the forgiveness pays for it.
+against Rust's own best-in-class. In-process, with no FFI boundary in the way, these are
+the doors' raw cost:
+
+| Door | HyperCast | Closest Rust parser |
+| --- | ---: | --- |
+| `cast_date_ordered` (`1/7/2026`) | 17.8 ns | no stdlib parser takes it |
+| `cast_uuid` (D format) | 15.8 ns | 11.8 ns — `uuid` crate |
+| `cast_i64` | 15.5 ns | 9.7 ns — `str::parse` |
+| `cast_f64` | 26.6 ns | 14.6 ns — `str::parse` |
+| `cast_datetime` (`1/7/2026 3:04 PM`) | 30.1 ns | no stdlib parser takes it |
+| `cast_timestamp` (RFC 3339) | 30.3 ns | 21.9 ns — `time` crate |
+| `cast_datetime` (ISO) | 34.6 ns | — |
+| `cast_duration` (ISO 8601) | 42.1 ns | no stdlib parser takes it |
+
+Separator detection costs one extra scan and nothing more: `1.234.567,89` under
+`NumFormat::DETECT` is 71.1 ns against 59.9 ns for the same text under a declared eurozone
+format — ~11 ns, and invisible behind any FFI boundary (the Java and Swift bindings measure
+detection as free at their crossing).
+
+**Correction, and the reason this file carries a table instead of a boast:** an earlier
+version of this README claimed `cast_uuid` beat the `uuid` crate (15.4 vs 17.4 ns). It
+doesn't anymore — our number is unchanged, and `uuid` 1.26 got materially faster. Against
+in-process Rust parsers these doors trade raw speed for what they return (a verdict with a
+span, not a panic or a bare `Option`) and what they accept (five `Guid` text forms, declared
+grouping and separators, three duration grammars). The speed story belongs to the *bindings*,
+where the competition is culture-machinery parsers rather than `str::parse`. Plain-shaped
+input still takes allocation-free fast lanes; only text that actually uses the forgiveness
+pays for it.
 
 ## Install
 

@@ -10,8 +10,13 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -147,6 +152,56 @@ final class CastTest {
                 Cast.dateTime("1/7/2026 3:04 PM", DateOrder.from(Locale.UK)));
         // A zone suffix is not this door's business — timestamp is the instant door.
         assertInstanceOf(Fault.class, Cast.dateTime("1/7/2026 15:04:05Z", DateOrder.MONTH_DAY_YEAR));
+    }
+
+    @Test
+    void doorsStayCorrectAcrossThreadsOnPerThreadScratch() throws Exception {
+        // The per-call confined arena became per-thread scratch (Cast.Scratch), which turns
+        // "thread-confined" from a structural guarantee into a claim — so prove it. Each
+        // thread casts values only it knows, thousands of times; any cross-thread bleed of
+        // the shared out/fault/input segments surfaces as a wrong value or a stray fault.
+        int threads = 8;
+        int iterations = 2_000;
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        List<Future<?>> running = new ArrayList<>();
+        try {
+            for (int t = 0; t < threads; t++) {
+                int id = t;
+                running.add(pool.submit(() -> {
+                    for (int i = 0; i < iterations; i++) {
+                        int mine = id * 1_000_000 + i;
+                        assertEquals(new Success<>(mine),
+                                Cast.i32(Integer.toString(mine), NumFormat.INVARIANT));
+                        assertEquals(new Success<>(LocalDateTime.of(2026, 1, 7, 15, 4)),
+                                Cast.dateTime("1/7/2026 3:04 PM", DateOrder.MONTH_DAY_YEAR));
+                    }
+                }));
+            }
+            for (Future<?> task : running) {
+                task.get();
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void inputsPastTheScratchBufferStillCast() {
+        // The scratch input buffer starts at 512 bytes and grows on demand; a token past
+        // that boundary must cast identically, and the grown buffer must keep working for
+        // the short inputs that follow it.
+        String padded = " ".repeat(600) + "1234" + " ".repeat(600);
+        assertEquals(new Success<>(1234), Cast.i32(padded, NumFormat.INVARIANT));
+        assertEquals(new Success<>(7), Cast.i32("7", NumFormat.INVARIANT));
+
+        // Long, and genuinely malformed: the fault span still indexes the caller's input.
+        String longJunk = "x".repeat(1_000);
+        switch (Cast.i32(longJunk, NumFormat.INVARIANT)) {
+            case Fault<Integer> fault ->
+                assertTrue(fault.offset() + fault.length() <= longJunk.length(),
+                        "fault span escaped a " + longJunk.length() + "-byte input");
+            case Success<Integer> success -> throw new AssertionError("junk parsed: " + success);
+        }
     }
 
 }

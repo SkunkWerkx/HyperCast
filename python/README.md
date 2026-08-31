@@ -42,7 +42,7 @@ Python's honest ceiling).
    `urn:uuid:` prefixes, protobuf JSON durations — with each lenience individually
    declared, never guessed.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
-   held by the shared corpus (21 tests green, full nine-file corpus replay).
+   held by the shared corpus (25 tests green, full nine-file corpus replay).
 4. **Native-extension speed** — the escape from the interpreted tier is this binding's own
    receipt: the old losses were never "Python calling native code," they were *ctypes*
    (~1 µs of interpreted marshalling per call, measured). With the mechanism replaced,
@@ -51,6 +51,17 @@ Python's honest ceiling).
    returning verdicts instead of exceptions; i32 at **146 ns** vs `int()`'s 88; uuid at
    parity with `uuid.UUID()` (both sides bounded by `UUID.__init__` itself); and the
    forgiveness doors at ~180 ns for grammar the stdlib doesn't sell at any price.
+
+   The messy-feed doors are where the gap is widest, because `strptime` is the only stdlib
+   parser that accepts their input at all — and it is *slow*:
+
+   | Door | HyperCast | stdlib | Verdict |
+   | --- | ---: | ---: | --- |
+   | `cast_datetime("1/7/2026 3:04 PM", MONTH_DAY_YEAR)` | 409 ns | 5.19 µs `datetime.strptime` | **12.7x faster** |
+   | `cast_date("1/7/2026", MONTH_DAY_YEAR)` | 292 ns | 3.86 µs `datetime.strptime` | **13.2x faster** |
+
+   Separator detection costs ~18 ns: `1.234.567,89` under `NumFormat.DETECT` is 216 ns
+   against 198 ns for the same text under a declared eurozone format.
    Reproduce: `python bench_cast.py --fast` (pyperf, in the `bench` extra).
 
 **The honest trade-off:** for plain invariant integers `int()` still wins — it's a
