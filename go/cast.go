@@ -214,7 +214,7 @@ func Bool[T Text](text T) (bool, *Fault) {
 	return out != 0, nil
 }
 
-func numericDoor[T Text, V any](sym *unsafe.Pointer, text T, format NumFormat, out *V) *Fault {
+func numericDoor[T Text, V any](sym *numericSymbol, text T, format NumFormat, out *V) *Fault {
 	// sym is an address, not a value: the caller evaluates it before mustLoad has
 	// resolved the symbols, so the dereference must happen after.
 	mustLoad()
@@ -318,14 +318,16 @@ func Uuid[T Text](text T) (uuid.UUID, *Fault) {
 	return out, nil
 }
 
-func instantDoor[T Text](sym *unsafe.Pointer, text T, precision UnixPrecision) (time.Time, *Fault) {
+// instantDoor serves both instant-shaped doors: a zero precision means the RFC 3339 door
+// (symTimestamp, read after mustLoad has resolved it), anything else the Unix-epoch door.
+func instantDoor[T Text](text T, precision UnixPrecision) (time.Time, *Fault) {
 	mustLoad()
 	ptr, length := textPtr(text)
 	var out rawTimestamp
 	var fault rawFault
 	var code int32
 	if precision == 0 {
-		code = callPlain(*sym, ptr, length, unsafe.Pointer(&out), unsafe.Pointer(&fault))
+		code = callPlain(symTimestamp, ptr, length, unsafe.Pointer(&out), unsafe.Pointer(&fault))
 	} else {
 		code = callUnix(ptr, length, uint32(precision), unsafe.Pointer(&out), unsafe.Pointer(&fault))
 	}
@@ -338,7 +340,7 @@ func instantDoor[T Text](sym *unsafe.Pointer, text T, precision UnixPrecision) (
 // Timestamp casts an RFC 3339 instant — zone mandatory — to a UTC time.Time at full
 // nanosecond fidelity across the whole 0001–9999 window.
 func Timestamp[T Text](text T) (time.Time, *Fault) {
-	return instantDoor[T](&symTimestamp, text, 0)
+	return instantDoor(text, 0)
 }
 
 // Unix casts an integer Unix-epoch value under a caller-declared unit to a UTC time.Time.
@@ -347,7 +349,7 @@ func Unix[T Text](text T, precision UnixPrecision) (time.Time, *Fault) {
 	if precision < Seconds || precision > Nanoseconds {
 		panic(fmt.Sprintf("hypercast: undefined UnixPrecision %d", precision))
 	}
-	return instantDoor[T](&symUnix, text, precision)
+	return instantDoor(text, precision)
 }
 
 // DateOnly casts a strict ISO 8601 yyyy-MM-dd calendar date.

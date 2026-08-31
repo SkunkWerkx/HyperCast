@@ -2,10 +2,9 @@
 
 // The cgo backend — HyperUuid's measured lesson applied from day one: purego's per-call
 // trampoline allocations would eat scalar parsing alive (its batch API was 19.6x faster
-// than per-call precisely because of that overhead), so scalar-per-call HyperCast starts
-// on real C calls. A purego fallback for Windows and CGO_ENABLED=0 builds lands with the
-// CI round, mirroring HyperUuid's backend pair; until then this module requires cgo on
-// darwin/linux.
+// than per-call precisely because of that overhead), so scalar-per-call HyperCast runs
+// on real C calls wherever cgo is available. backend_purego.go is the fallback half of
+// the pair — Windows, CGO_ENABLED=0, and cross-compiles land there automatically.
 //
 // cgo can't call an opaquely-typed void* function pointer directly — it needs a real,
 // statically-typed C call site — hence the three per-signature shims below, one per ABI
@@ -38,6 +37,14 @@ import (
 	"fmt"
 	"sync"
 	"unsafe"
+)
+
+// The backend-defined symbol types cast.go's shared doors are written against: here both
+// alias a raw dlsym pointer and the calls go through the statically-typed C shims above;
+// in backend_purego.go each symbol is a purego-registered typed trampoline instead.
+type (
+	plainSymbol   = unsafe.Pointer
+	numericSymbol = unsafe.Pointer
 )
 
 var (
@@ -88,11 +95,11 @@ func ensureLoaded() error {
 	return initErr
 }
 
-func callPlain(sym unsafe.Pointer, ptr unsafe.Pointer, length uintptr, out, fault unsafe.Pointer) int32 {
+func callPlain(sym plainSymbol, ptr unsafe.Pointer, length uintptr, out, fault unsafe.Pointer) int32 {
 	return int32(C.call_plain(sym, (*C.uint8_t)(ptr), C.size_t(length), out, fault))
 }
 
-func callNumeric(sym unsafe.Pointer, ptr unsafe.Pointer, length uintptr, format, out, fault unsafe.Pointer) int32 {
+func callNumeric(sym numericSymbol, ptr unsafe.Pointer, length uintptr, format, out, fault unsafe.Pointer) int32 {
 	return int32(C.call_numeric(sym, (*C.uint8_t)(ptr), C.size_t(length), format, out, fault))
 }
 
