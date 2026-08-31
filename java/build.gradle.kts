@@ -57,6 +57,20 @@ tasks.processResources {
     dependsOn(stageNativeLibrary)
 }
 
+// sourcesJar packages the main source set, and `generated-resources` is one of its resource
+// dirs (above) — so it reads stageNativeLibrary's output too, and Gradle fails the build
+// outright on the undeclared dependency rather than risk a task-order-dependent jar. Only
+// the publish path builds sourcesJar (`./gradlew test` never does), which is why this first
+// surfaced against Maven Central and not in CI.
+//
+// withType/configureEach rather than tasks.named("sourcesJar"): the sources and javadoc jars
+// are registered by the vanniktech publish plugin, so they don't exist yet at this point in
+// configuration and named() fails outright with "Task with name 'sourcesJar' not found".
+// configureEach is lazy and picks them up whenever they appear.
+tasks.withType<Jar>().configureEach {
+    dependsOn(stageNativeLibrary)
+}
+
 // Ships the license text and this binding's README inside the jar, under META-INF/ (the
 // conventional home for both). Gradle copies from anywhere on disk, so the repo root's
 // LICENSE is referenced directly — no local copy, unlike the gem and the wheel, whose
