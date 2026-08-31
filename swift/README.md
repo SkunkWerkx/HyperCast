@@ -2,9 +2,9 @@
 
 [![CI](https://github.com/SkunkWerkx/HyperCast/actions/workflows/ci.yml/badge.svg)](https://github.com/SkunkWerkx/HyperCast/actions/workflows/ci.yml)
 
-**The strongest union in this roster: `Verdict<T>` is a real Swift `enum`, and an
-exhaustive `switch` over it is *compiler-mandatory* — not an opt-in analyzer flag, not a
-review convention. The value, or a closed reason plus the exact byte span that offended.**
+**`Verdict<T>` is a real Swift `enum`, so an exhaustive `switch` over it is
+*compiler-mandatory* — not an opt-in analyzer flag, not a review convention. The value, or a
+closed reason plus the exact byte span that offended.**
 
 Allocation-lean scalar casts — booleans, the full integer family, reals, UUIDs, temporals —
 calling directly into the native `libhypercast` Rust core via `dlopen`/`dlsym`

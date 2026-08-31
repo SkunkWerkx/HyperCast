@@ -9,8 +9,8 @@ extension. No dlopen, no ctypes marshalling, no runtime bridge.**
 Allocation-lean scalar casts — booleans, the full integer family, reals, UUIDs, temporals.
 The PyO3 extension (`hypercast._native`) is the *only* backend — a door is an ordinary
 `METH_FASTCALL` extension call into a direct Rust call, and the wheel maturin builds is
-the whole package (HyperUuid's PyO3-wheels-are-the-whole-story consolidation; the interim
-ctypes fallback is gone). Python 3.10 is the floor (`match`/`case` is the consumption
+the whole package (the interim ctypes fallback is gone). Python 3.10 is the floor
+(`match`/`case` is the consumption
 idiom); wheels are abi3-py310, one per platform covering every CPython from there up, no
 compiler needed to install.
 
@@ -30,8 +30,8 @@ pair the two cases with `typing.assert_never` under mypy/pyright for the compile
 guarantee the static bindings get natively. Python-flavored fidelity, stated honestly:
 `int` is unbounded, so `cast_u64` returns the true unsigned value with no bit-pattern
 games; `datetime`'s resolution is microseconds, so the core's nanoseconds truncate by
-three digits on the temporal doors (the JVM and Ruby are the fidelity kings; this is
-Python's honest ceiling).
+three digits on the temporal doors — `datetime`'s own ceiling, not the parser's, and said
+out loud rather than discovered later.
 
 ## Why not `int()` / `fromisoformat` / `dateutil`?
 
@@ -68,7 +68,7 @@ Python's honest ceiling).
 C-accelerated builtin with no boundary to cross. These doors earn their keep on the
 culture-machinery parsers, the closed error contract, and cross-language agreement. And
 dropping ctypes means dropping the Pyodide/wasm path Python briefly had — the wheels are
-real native extensions; wasm coverage stays with the core and the C# browser-wasm leg.
+real native extensions, and a native extension has no browser story.
 
 ## Install
 

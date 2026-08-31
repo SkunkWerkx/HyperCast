@@ -13,7 +13,7 @@ JDK 22 is the floor: FFM is stable, non-preview only from JDK 22 (JEP 454), and 
 Verdict union's whole point — sealed interface + record patterns + exhaustive switch — is
 stable since 21. The jar bundles a native build for every supported platform
 (linux/macOS/Windows × x64/arm64) under `/native/{rid}/` and picks the right one at
-runtime, the same trick the Go binding's `go:embed` uses.
+runtime, so a consumer adds one dependency and nothing else.
 
 ```java
 String message = switch (Cast.i32("(1,234)", NumFormat.INVARIANT)) {
@@ -25,9 +25,9 @@ String message = switch (Cast.i32("(1,234)", NumFormat.INVARIANT)) {
 Door names mirror the native ABI (`i32`, `f64`, `timestamp`, …) so the polyglot surface
 reads identically across bindings; every door also takes raw UTF-8 `byte[]` for callers
 already holding bytes. `NumFormat.from(Locale)` bridges Java's own locale machinery to the
-caller-declared format the native side reads. JVM-flavored fidelity, stated proudly: this
-is one of the two fidelity kings of the roster — `Instant`, `LocalTime`, and `Duration`
-keep all nine fractional digits, zero truncation of anything the core parses.
+caller-declared format the native side reads. JVM-flavored fidelity, stated proudly:
+`Instant`, `LocalTime`, and `Duration` keep all nine fractional digits, so nothing the core
+parses is truncated on the way out — full nanosecond precision, end to end.
 
 ## Why not `Integer.parseInt` / `Instant.parse` / the formatter zoo?
 
@@ -87,8 +87,8 @@ it.
 ## Install
 
 Not on Maven Central yet — the release pipeline is staged
-(`.github/workflows/release.yml`; the `io.github.skunkwerkx` namespace is already approved,
-proven by HyperUuid's publishes) and the artifact ships with the first coordinated tag as
+(`.github/workflows/release.yml`; the `io.github.skunkwerkx` Central Portal namespace is
+already approved) and the artifact ships with the first coordinated tag as
 `io.github.skunkwerkx:hypercast`. Until then: clone the repo, `cargo build --release` in
 `rust/`, and `./gradlew test` — the build stages the fresh native library automatically.
 

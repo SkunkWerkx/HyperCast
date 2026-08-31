@@ -23,7 +23,7 @@ end
 ```
 
 Door names mirror the native ABI (`i32`, `f64`, `timestamp`, …). Ruby-flavored fidelity,
-stated proudly: this is one of the two fidelity kings of the roster — `Integer` is
+stated proudly — nothing the core parses is lost on the way out: `Integer` is
 unbounded (u64 comes back as the true unsigned value), `Time` carries full nanoseconds
 across the whole 0001–9999 window, time-of-day is an exact Integer of nanoseconds since
 midnight, and durations come back as exact `Rational` seconds across the core's whole
