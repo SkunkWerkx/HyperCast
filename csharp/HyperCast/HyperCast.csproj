@@ -18,6 +18,9 @@
     <Authors>Brian Buvinghausen</Authors>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/SkunkWerkx/HyperCast</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>parsing;verdict;union;rfc3339;pinvoke;native-aot</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- Source-generated LibraryImport P/Invoke only, no reflection anywhere in this assembly:
          opts into (and fails the build on) the trim and Native AOT analyzers. -->
@@ -44,8 +47,12 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Standard NuGet RID-specific native asset layout — populated by CI before packing,
-         exactly as HyperUuid's build-packages.yml does. -->
+    <!-- Shows up as the package page's description on GitHub Packages/NuGet — sourced from
+         csharp/README.md (this project's own, not the repo root's) so the exact same content
+         that lives in the repo also ships inside the .nupkg. -->
+    <None Include="../README.md" Pack="true" PackagePath="\" />
+    <!-- Standard NuGet RID-specific native asset layout — populated by CI before packing
+         (hyper-pack-nuget.yml arranges runtimes/{rid}/native/ from the ci.yml artifacts). -->
     <None Include="runtimes/**" Pack="true" PackagePath="runtimes" CopyToOutputDirectory="PreserveNewest" />
     <None Include="runtimes/**/native/*" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <!-- Local dev loop: when the Rust core has been built in-repo (a release-profile cargo
