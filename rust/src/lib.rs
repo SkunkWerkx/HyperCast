@@ -14,6 +14,9 @@
 //!   likewise protobuf-formed
 //! - [`cast_date_ordered`] — separated calendar dates under a caller-declared [`DateOrder`]
 //!   (`1/7/2026` is January 7th or July 1st only because the caller said which)
+//! - [`cast_datetime`] — zone-less civil date-times under a declared [`DateOrder`]
+//!   (`1/7/2026 3:04 PM`, `2026-01-07 15:04:05`) to a [`CivilDateTime`]; no zone is read
+//!   and none is invented
 //!
 //! Text comes in as anything byte-viewable — `&str`, `String`, `&[u8]`, `Vec<u8>` — read
 //! as UTF-8 bytes; each door trims ASCII whitespace and treats trimmed-empty input as
@@ -40,12 +43,12 @@ pub use boolean::cast_bool;
 pub use integer::{cast_i8, cast_i16, cast_i32, cast_i64, cast_u8, cast_u16, cast_u32, cast_u64};
 pub use real::{cast_f32, cast_f64};
 pub use temporal::{
-    cast_date, cast_date_ordered, cast_duration, cast_time, cast_timestamp, cast_unix,
-    DateOrder, UnixPrecision, MAX_DURATION_SECONDS, MAX_TIMESTAMP_SECONDS,
+    cast_date, cast_date_ordered, cast_datetime, cast_duration, cast_time, cast_timestamp,
+    cast_unix, DateOrder, UnixPrecision, MAX_DURATION_SECONDS, MAX_TIMESTAMP_SECONDS,
     MIN_TIMESTAMP_SECONDS,
 };
 pub use uuid::cast_uuid;
-pub use verdict::{Date, Duration, Fault, NumFormat, Reason, Timestamp};
+pub use verdict::{CivilDateTime, Date, Duration, Fault, NumFormat, Reason, Timestamp};
 
 /// Presents a verdict optionally: an [`Reason::Empty`] fault becomes `Ok(None)` — Rust's
 /// absent — and everything else flows through untouched. The same presentation helper
@@ -452,6 +455,12 @@ mod tests {
             cast_date_ordered(b"2026-01-07", DateOrder::YearMonthDay),
             Ok(Date { year: 2026, month: 1, day: 7 })
         );
+        // A four-digit FIRST field can only be a year — year-first forms parse under any
+        // declared order (width detection, not value sniffing).
+        assert_eq!(
+            cast_date_ordered(b"2026/1/7", DateOrder::MonthDayYear),
+            Ok(Date { year: 2026, month: 1, day: 7 })
+        );
         // 13 can only be a day — valid day-first, malformed month-first, span on the field.
         assert_eq!(
             cast_date_ordered(b"13/1/2026", DateOrder::DayMonthYear),
@@ -470,8 +479,8 @@ mod tests {
     fn date_ordered_rejects_ambiguity_reintroducers() {
         // Two-digit years mean century guessing — never.
         assert_eq!(reason(cast_date_ordered(b"1/7/26", DateOrder::MonthDayYear)), Reason::Malformed);
-        // A four-digit month is a misdeclared order, pointed at the misfit field.
-        assert_eq!(reason(cast_date_ordered(b"2026/1/7", DateOrder::MonthDayYear)), Reason::Malformed);
+        // A three-digit field fits no order — faulted at its own digits.
+        assert_eq!(reason(cast_date_ordered(b"123/4/2026", DateOrder::MonthDayYear)), Reason::Malformed);
         // Mixed separators, trailing junk, missing fields.
         for text in ["1-7/2026", "1/7/2026 extra", "1/7", "1//2026", "garbage"] {
             assert_eq!(
@@ -482,6 +491,81 @@ mod tests {
         }
         assert_eq!(reason(cast_date_ordered(b"1/7/0000", DateOrder::MonthDayYear)), Reason::OutOfRange);
         assert_eq!(reason(cast_date_ordered(b"   ", DateOrder::DayMonthYear)), Reason::Empty);
+    }
+
+    #[test]
+    fn datetime_reads_civil_wall_clock_under_the_declared_order() {
+        const NANOS_PER_MINUTE: u64 = 60 * 1_000_000_000;
+        // The messy shapes untrusted feeds actually send, AM/PM included.
+        assert_eq!(
+            cast_datetime(b"1/7/2026 3:04 PM", DateOrder::MonthDayYear),
+            Ok(CivilDateTime {
+                date: Date { year: 2026, month: 1, day: 7 },
+                nanos_of_day: (15 * 60 + 4) * NANOS_PER_MINUTE,
+            })
+        );
+        assert_eq!(
+            cast_datetime(b"1/7/2026 3:04 pm", DateOrder::DayMonthYear),
+            Ok(CivilDateTime {
+                date: Date { year: 2026, month: 7, day: 1 },
+                nanos_of_day: (15 * 60 + 4) * NANOS_PER_MINUTE,
+            })
+        );
+        // Hour-only with a meridiem; 12 AM is midnight, 12 PM is noon.
+        assert_eq!(
+            cast_datetime(b"1/7/2026 3PM", DateOrder::MonthDayYear).unwrap().nanos_of_day,
+            15 * 60 * NANOS_PER_MINUTE
+        );
+        assert_eq!(
+            cast_datetime(b"1/7/2026 12:00 AM", DateOrder::MonthDayYear).unwrap().nanos_of_day,
+            0
+        );
+        assert_eq!(
+            cast_datetime(b"1/7/2026 12:30 PM", DateOrder::MonthDayYear).unwrap().nanos_of_day,
+            (12 * 60 + 30) * NANOS_PER_MINUTE
+        );
+        // 24-hour, single-digit hour, seconds and fraction; ISO date part and T separator
+        // parse under any declared order (four-digit first field is structurally a year).
+        assert_eq!(
+            cast_datetime(b"2026-01-07T15:04:05.123456789", DateOrder::MonthDayYear),
+            Ok(CivilDateTime {
+                date: Date { year: 2026, month: 1, day: 7 },
+                nanos_of_day: ((15 * 60 + 4) * 60 + 5) * 1_000_000_000 + 123_456_789,
+            })
+        );
+        assert_eq!(
+            cast_datetime(b"1/7/2026 9:05", DateOrder::MonthDayYear).unwrap().nanos_of_day,
+            (9 * 60 + 5) * NANOS_PER_MINUTE
+        );
+        // Date-only means midnight — one door covers the mixed column.
+        assert_eq!(
+            cast_datetime(b"1/7/2026", DateOrder::MonthDayYear),
+            Ok(CivilDateTime { date: Date { year: 2026, month: 1, day: 7 }, nanos_of_day: 0 })
+        );
+    }
+
+    #[test]
+    fn datetime_rejects_what_names_no_civil_time() {
+        // A meridiem hour past 12, a 24-hour hour past 23, a bare trailing number, and a
+        // zone suffix (this door reads no zone and invents none — RFC 3339 instants go
+        // through cast_timestamp).
+        for text in [
+            "1/7/2026 13:04 PM",
+            "1/7/2026 25:04",
+            "1/7/2026 3",
+            "1/7/2026 3:04 XM",
+            "1/7/2026 3:04 PM +05:00",
+            "1/7/2026 15:04:05Z",
+            "1/7/2026  3:04 PM",
+        ] {
+            assert_eq!(
+                reason(cast_datetime(text.as_bytes(), DateOrder::MonthDayYear)),
+                Reason::Malformed,
+                "{text}"
+            );
+        }
+        assert_eq!(reason(cast_datetime(b"1/7/0000 3:04 PM", DateOrder::MonthDayYear)), Reason::OutOfRange);
+        assert_eq!(reason(cast_datetime(b"", DateOrder::MonthDayYear)), Reason::Empty);
     }
 
     // --- time ---

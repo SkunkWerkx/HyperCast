@@ -127,6 +127,21 @@ public sealed class CastTests
 	}
 
 	[Fact]
+	void Datetime_reads_the_messy_civil_shapes()
+	{
+		// The AM/PM world, zone-less: Kind is honestly Unspecified because the text named
+		// no zone — fusing one is the caller's job, never the parser's guess.
+		var enUs = DateOrders.From(CultureInfo.GetCultureInfo("en-US"));
+		(Cast.DateTime("1/7/2026 3:04 PM", enUs) is Success<DateTime>
+			{ Value: { Kind: DateTimeKind.Unspecified } value } && value == new DateTime(2026, 1, 7, 15, 4, 0))
+			.ShouldBeTrue();
+		(Cast.DateTime("1/7/2026 3:04 PM", DateOrder.DayMonthYear) is Success<DateTime> { Value: var gb }
+			&& gb == new DateTime(2026, 7, 1, 15, 4, 0)).ShouldBeTrue();
+		// A zone suffix is not this door's business — Timestamp is the instant door.
+		(Cast.DateTime("1/7/2026 15:04:05Z", enUs) is Fault { Reason: CastFailure.Malformed }).ShouldBeTrue();
+	}
+
+	[Fact]
 	void Date_time_and_duration_map_to_their_dotnet_types()
 	{
 		Cast.Date("2026-01-02").ShouldBe(new(new Success<DateOnly>(new(2026, 1, 2))));

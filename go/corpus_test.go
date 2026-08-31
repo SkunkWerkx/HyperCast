@@ -25,6 +25,7 @@ type vector struct {
 	FaultSpan []int           `json:"fault"`
 	Precision uint32          `json:"precision"`
 	Order     uint32          `json:"order"`
+	NanosDay  uint64          `json:"nanos_of_day"`
 	Seconds   *int64          `json:"seconds"`
 	Nanos     int64           `json:"nanos"`
 	Year      *int            `json:"year"`
@@ -244,6 +245,20 @@ func TestDateCorpus(t *testing.T) {
 		}
 		value, fault := DateOnly(v.Input)
 		assertVerdict(t, "date", &v, value, fault, expected)
+	}
+}
+
+func TestDateTimeCorpus(t *testing.T) {
+	for _, v := range corpus(t, "datetime.json") {
+		var expected CivilDateTime
+		if v.Year != nil {
+			expected = CivilDateTime{
+				Date:      Date{Year: *v.Year, Month: time.Month(v.Month), Day: v.Day},
+				TimeOfDay: time.Duration(v.NanosDay),
+			}
+		}
+		value, fault := DateTime(v.Input, DateOrder(v.Order))
+		assertVerdict(t, "datetime", &v, value, fault, expected)
 	}
 }
 

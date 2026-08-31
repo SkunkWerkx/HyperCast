@@ -15,6 +15,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -218,6 +219,28 @@ final class CorpusTest {
                             vector.get("day").getAsInt())
                     : null;
             assertVerdict("date_order", vector, Cast.date(inputBytes(vector), order), expected);
+        }
+    }
+
+    @Test
+    void dateTimeCorpus() {
+        for (JsonElement element : corpus("datetime.json")) {
+            JsonObject vector = element.getAsJsonObject();
+            DateOrder order = switch (vector.get("order").getAsInt()) {
+                case 1 -> DateOrder.YEAR_MONTH_DAY;
+                case 2 -> DateOrder.MONTH_DAY_YEAR;
+                case 3 -> DateOrder.DAY_MONTH_YEAR;
+                default -> throw new AssertionError("datetime: unknown order");
+            };
+            LocalDateTime expected = vector.has("year")
+                    ? LocalDateTime.of(
+                            LocalDate.of(
+                                    vector.get("year").getAsInt(),
+                                    vector.get("month").getAsInt(),
+                                    vector.get("day").getAsInt()),
+                            LocalTime.ofNanoOfDay(vector.get("nanos_of_day").getAsLong()))
+                    : null;
+            assertVerdict("datetime", vector, Cast.dateTime(inputBytes(vector), order), expected);
         }
     }
 

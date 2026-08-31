@@ -13,7 +13,7 @@
 //! input; on success and contract violation it is left untouched. A `len` of 0 never
 //! dereferences `ptr`.
 
-use crate::verdict::{Date, Duration, Fault, NumFormat, Timestamp};
+use crate::verdict::{CivilDateTime, Date, Duration, Fault, NumFormat, Timestamp};
 use crate::{boolean, integer, real, temporal, uuid, DateOrder, UnixPrecision};
 use core::slice;
 
@@ -189,6 +189,27 @@ pub extern "C" fn cast_date_ordered(
     };
     // SAFETY: caller guarantees the pointer contracts, per the module doc.
     unsafe { finish(temporal::cast_date_ordered(text(ptr, len), order), out, fault) }
+}
+
+/// Casts a zone-less civil date-time at `ptr`/`len` under the caller-declared field
+/// `order` (1 year-month-day, 2 month-day-year, 3 day-month-year — anything else is a
+/// contract violation) into `out`. See [`temporal::cast_datetime`].
+#[unsafe(no_mangle)]
+pub extern "C" fn cast_datetime(
+    ptr: *const u8,
+    len: usize,
+    order: u32,
+    out: *mut CivilDateTime,
+    fault: *mut RawFault,
+) -> i32 {
+    let order = match order {
+        1 => DateOrder::YearMonthDay,
+        2 => DateOrder::MonthDayYear,
+        3 => DateOrder::DayMonthYear,
+        _ => return CONTRACT_VIOLATION,
+    };
+    // SAFETY: caller guarantees the pointer contracts, per the module doc.
+    unsafe { finish(temporal::cast_datetime(text(ptr, len), order), out, fault) }
 }
 
 /// Casts a strict `yyyy-MM-dd` date at `ptr`/`len` into `out`. See [`temporal::cast_date`].

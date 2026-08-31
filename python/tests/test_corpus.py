@@ -136,6 +136,20 @@ def test_date_order_corpus():
         _assert_verdict("date_order", vector, hypercast.cast_date(_input(vector), order), expected)
 
 
+def test_datetime_corpus():
+    for vector in _corpus("datetime.json"):
+        order = hypercast.DateOrder(vector["order"])
+        expected = None
+        if "year" in vector:
+            second_of_day, nano = divmod(vector["nanos_of_day"], 1_000_000_000)
+            hour, rest = divmod(second_of_day, 3600)
+            minute, second = divmod(rest, 60)
+            expected = dt.datetime(
+                vector["year"], vector["month"], vector["day"],
+                hour, minute, second, nano // 1000)
+        _assert_verdict("datetime", vector, hypercast.cast_datetime(_input(vector), order), expected)
+
+
 def test_time_corpus():
     for vector in _corpus("time.json"):
         expected = None

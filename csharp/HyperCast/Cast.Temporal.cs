@@ -180,6 +180,52 @@ public static partial class Cast
 	}
 
 	/// <summary>
+	/// Casts a zone-less civil date-time — the shape untrusted feeds actually send
+	/// (<c>1/7/2026 3:04 PM</c>, <c>2026-01-07 15:04:05</c>) — under the caller-declared
+	/// <see cref="DateOrder"/> to a <see cref="System.DateTime"/> with
+	/// <see cref="DateTimeKind.Unspecified"/>. The date part follows
+	/// <see cref="Date(ReadOnlySpan{byte}, DateOrder)"/>'s grammar; the optional time part
+	/// (one space or <c>T</c> after the date) is 24-hour <c>h:mm[:ss[.f{1..9}]]</c> or
+	/// 12-hour with an <c>AM</c>/<c>PM</c> marker; absent, the time is midnight. No zone is
+	/// read and none is invented — the text named no instant, so the Kind is honestly
+	/// Unspecified and fusing a zone is the caller's job
+	/// (<see cref="Timestamp(ReadOnlySpan{byte})"/> stays the strict RFC 3339 instant
+	/// door). Sub-tick nanoseconds truncate.
+	/// </summary>
+	/// <param name="utf8">The raw scalar text as UTF-8 bytes.</param>
+	/// <param name="order">The declared field order. Never <see cref="DateOrder.Unspecified"/>.</param>
+	/// <exception cref="ArgumentOutOfRangeException"><paramref name="order"/> is undefined — a caller bug, not a data verdict.</exception>
+	public static unsafe Verdict<System.DateTime> DateTime(ReadOnlySpan<byte> utf8, DateOrder order)
+	{
+		GuardOrder(order);
+		RawCivil value = default;
+		RawFault fault = default;
+		int code;
+		fixed (byte* ptr = utf8)
+			code = cast_datetime(ptr, (nuint)utf8.Length, (uint)order, &value, &fault);
+		return code == 0
+			? new System.DateTime(value.Year, value.Month, value.Day, 0, 0, 0, DateTimeKind.Unspecified)
+				.AddTicks((long)(value.NanosOfDay / 100))
+			: Failed<System.DateTime>(code, fault);
+	}
+
+	/// <inheritdoc cref="DateTime(ReadOnlySpan{byte}, DateOrder)"/>
+	/// <param name="input">The raw scalar text.</param>
+	/// <param name="order">The declared field order. Never <see cref="DateOrder.Unspecified"/>.</param>
+	public static Verdict<System.DateTime> DateTime(ReadOnlySpan<char> input, DateOrder order)
+	{
+		byte[]? rented = null;
+		try
+		{
+			return DateTime(Utf8(input, stackalloc byte[Utf8StackBytes], ref rented), order);
+		}
+		finally
+		{
+			Recycle(rented);
+		}
+	}
+
+	/// <summary>
 	/// Casts an ISO 8601 24-hour time-of-day — <c>HH:mm</c>, <c>HH:mm:ss</c>, or
 	/// <c>HH:mm:ss.f{1..9}</c> — to a <see cref="TimeOnly"/>. Midnight and
 	/// <c>23:59:59.999…</c> are real clock readings, so this door has no range failure.

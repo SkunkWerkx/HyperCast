@@ -13,7 +13,7 @@
 //! exactly as HyperUuid left the wall clock to the host.
 
 use crate::integer::char_len;
-use crate::verdict::{trim, Date, Duration, Fault, Timestamp};
+use crate::verdict::{trim, CivilDateTime, Date, Duration, Fault, Timestamp};
 
 /// `0001-01-01T00:00:00Z` — the floor of the protobuf timestamp window.
 pub const MIN_TIMESTAMP_SECONDS: i64 = -62_135_596_800;
@@ -189,18 +189,14 @@ fn read_date_field(text: &[u8], at: usize, start: usize) -> Result<(u32, usize),
     Ok((value as u32, after))
 }
 
-/// Casts a separated calendar date — three digit fields joined by one consistent separator
-/// (`/`, `-`, or `.`) — under the caller-declared [`DateOrder`]. The year field must be
-/// four digits wherever the order puts it (two-digit years mean century guessing, which
-/// this core never does — `Malformed`); month and day take one or two. Empty ⇒ `Empty`;
-/// year 0000 ⇒ `OutOfRange`; an impossible month or day ⇒ `Malformed` at its own digits.
-pub fn cast_date_ordered(input: impl AsRef<[u8]>, order: DateOrder) -> Result<Date, Fault> {
-    let input = input.as_ref();
-    let (text, start) = trim(input);
-    if text.is_empty() {
-        return Err(Fault::EMPTY);
-    }
-
+/// Parses a separated calendar date at the head of `text` under the declared order,
+/// returning the [`Date`] and the index after it. Shared by [`cast_date_ordered`] (which
+/// then demands end-of-input) and [`cast_datetime`] (which continues into the time part).
+fn read_ordered_date(
+    text: &[u8],
+    start: usize,
+    order: DateOrder,
+) -> Result<(Date, usize), Fault> {
     let (first, first_end) = read_date_field(text, 0, start)?;
     let sep = match text.get(first_end) {
         Some(&sep @ (b'/' | b'-' | b'.')) => sep,
@@ -211,9 +207,6 @@ pub fn cast_date_ordered(input: impl AsRef<[u8]>, order: DateOrder) -> Result<Da
         return Err(Fault::malformed(start + second_end, 1));
     }
     let (third, third_end) = read_date_field(text, second_end + 1, start)?;
-    if third_end != text.len() {
-        return Err(Fault::malformed(start + third_end, char_len(text[third_end])));
-    }
 
     // Field spans, for pointing a fault at the offending digits.
     let spans = [
@@ -221,7 +214,14 @@ pub fn cast_date_ordered(input: impl AsRef<[u8]>, order: DateOrder) -> Result<Da
         (first_end + 1, second_end - first_end - 1),
         (second_end + 1, third_end - second_end - 1),
     ];
-    let (fields, year_at, month_at, day_at) = match order {
+    // A four-digit FIRST field can only be a year (month and day never exceed two digits),
+    // so a year-first date is structurally unambiguous under any declared order —
+    // "2026/1/7" and ISO "2026-01-07" read year-month-day even when the declaration says
+    // month- or day-first. This is width detection, not value sniffing: the genuinely
+    // ambiguous forms ("1/7/2026" under a wrong declaration) still parse exactly as
+    // declared, because no structure distinguishes them.
+    let effective = if spans[0].1 == 4 { DateOrder::YearMonthDay } else { order };
+    let (fields, year_at, month_at, day_at) = match effective {
         DateOrder::YearMonthDay => ([first, second, third], 0, 1, 2),
         DateOrder::MonthDayYear => ([first, second, third], 2, 0, 1),
         DateOrder::DayMonthYear => ([first, second, third], 2, 1, 0),
@@ -230,10 +230,8 @@ pub fn cast_date_ordered(input: impl AsRef<[u8]>, order: DateOrder) -> Result<Da
 
     let (year, month, day) = (fields[year_at], fields[month_at], fields[day_at]);
     // The year field is four digits wherever the order puts it; month and day are one or
-    // two. A four-digit month is almost certainly a misdeclared order ("2026/1/7" under
-    // MonthDayYear) — checked before the year width so the fault points at that misfit
-    // field, the most diagnostic span. A two-digit year would mean century guessing, which
-    // this core never does.
+    // two (a three-digit field faults at its own digits). A two-digit year would mean
+    // century guessing, which this core never does.
     if spans[month_at].1 > 2 {
         return Err(field_fault(month_at));
     }
@@ -244,7 +242,7 @@ pub fn cast_date_ordered(input: impl AsRef<[u8]>, order: DateOrder) -> Result<Da
         return Err(field_fault(year_at));
     }
     if year == 0 {
-        return Err(Fault::out_of_range(start, text.len()));
+        return Err(Fault::out_of_range(start, third_end));
     }
     if !(1..=12).contains(&month) {
         return Err(field_fault(month_at));
@@ -252,7 +250,131 @@ pub fn cast_date_ordered(input: impl AsRef<[u8]>, order: DateOrder) -> Result<Da
     if day == 0 || day > days_in_month(i64::from(year), month) {
         return Err(field_fault(day_at));
     }
-    Ok(Date { year: year as u16, month: month as u8, day: day as u8 })
+    Ok((Date { year: year as u16, month: month as u8, day: day as u8 }, third_end))
+}
+
+/// Casts a separated calendar date — three digit fields joined by one consistent separator
+/// (`/`, `-`, or `.`) — under the caller-declared [`DateOrder`]. The year field must be
+/// four digits wherever the order puts it (two-digit years mean century guessing, which
+/// this core never does — `Malformed`); month and day take one or two; a four-digit
+/// *first* field is structurally a year, so year-first dates parse under any declared
+/// order. Empty ⇒ `Empty`; year 0000 ⇒ `OutOfRange`; an impossible month or day ⇒
+/// `Malformed` at its own digits.
+pub fn cast_date_ordered(input: impl AsRef<[u8]>, order: DateOrder) -> Result<Date, Fault> {
+    let input = input.as_ref();
+    let (text, start) = trim(input);
+    if text.is_empty() {
+        return Err(Fault::EMPTY);
+    }
+    let (date, end) = read_ordered_date(text, start, order)?;
+    if end != text.len() {
+        return Err(Fault::malformed(start + end, char_len(text[end])));
+    }
+    Ok(date)
+}
+
+/// Reads the civil time part of [`cast_datetime`] at `at`: `h[:mm[:ss[.f{1..9}]]]`, hour
+/// one or two digits, with an optional case-insensitive `AM`/`PM` marker (preceding space
+/// optional). With a marker the hour is `1..=12` (`12 AM` is midnight, `12 PM` noon);
+/// without one the time is 24-hour and minutes are mandatory (a bare trailing number is
+/// not a time). Returns nanos-since-midnight and the index after the time.
+fn read_civil_time(text: &[u8], at: usize, start: usize) -> Result<(u64, usize), Fault> {
+    let (hour_value, hour_digits, mut i) = read_digit_run(text, at, start)?;
+    if hour_digits == 0 || hour_digits > 2 {
+        return Err(Fault::malformed(start + at, hour_digits.max(1)));
+    }
+    let hour_span = (at, hour_digits);
+    let mut hour = hour_value as u32;
+    let mut minute = 0;
+    let mut second = 0;
+    let mut nanos = 0;
+    let mut has_minutes = false;
+    if text.get(i) == Some(&b':') {
+        minute = read2(text, i + 1).ok_or(Fault::malformed(start + i + 1, 2))?;
+        if minute > 59 {
+            return Err(Fault::malformed(start + i + 1, 2));
+        }
+        has_minutes = true;
+        i += 3;
+        if text.get(i) == Some(&b':') {
+            second = read2(text, i + 1).ok_or(Fault::malformed(start + i + 1, 2))?;
+            // Leap seconds rejected, same as every other temporal door.
+            if second > 59 {
+                return Err(Fault::malformed(start + i + 1, 2));
+            }
+            i += 3;
+            let (fraction, after) = read_fraction(text, i, start)?;
+            nanos = fraction;
+            i = after;
+        }
+    }
+    // Optional meridiem: [space] AM/PM, ASCII case-insensitive.
+    let mut meridiem_at = i;
+    if text.get(meridiem_at) == Some(&b' ') {
+        meridiem_at += 1;
+    }
+    let marker = match (
+        text.get(meridiem_at).map(u8::to_ascii_lowercase),
+        text.get(meridiem_at + 1).map(u8::to_ascii_lowercase),
+    ) {
+        (Some(b'a'), Some(b'm')) => Some(false),
+        (Some(b'p'), Some(b'm')) => Some(true),
+        _ => None,
+    };
+    match marker {
+        Some(pm) => {
+            if !(1..=12).contains(&hour) {
+                return Err(Fault::malformed(start + hour_span.0, hour_span.1));
+            }
+            if hour == 12 {
+                hour = 0;
+            }
+            if pm {
+                hour += 12;
+            }
+            i = meridiem_at + 2;
+        }
+        None => {
+            if !has_minutes {
+                // A bare trailing number is only a time when a meridiem names it one.
+                return Err(Fault::malformed(start + hour_span.0, hour_span.1));
+            }
+            if hour > 23 {
+                return Err(Fault::malformed(start + hour_span.0, hour_span.1));
+            }
+        }
+    }
+    let total = u64::from(hour) * 3_600 + u64::from(minute) * 60 + u64::from(second);
+    Ok((total * 1_000_000_000 + u64::from(nanos), i))
+}
+
+/// Casts a civil (wall-clock) date and time with **no zone** — the shape untrusted feeds
+/// actually send (`1/7/2026 3:04 PM`, `2026-01-07 15:04:05`, `1.7.2026`) — under the
+/// caller-declared [`DateOrder`], to a [`CivilDateTime`]. The date part follows
+/// [`cast_date_ordered`]'s grammar (year-first forms, ISO included, parse under any
+/// declared order); the optional time part — separated by one space or `T` — is 24-hour
+/// `h:mm[:ss[.f{1..9}]]` or 12-hour with an `AM`/`PM` marker (`3 PM` allowed, `12 AM` is
+/// midnight); absent, the time is midnight. No zone is read and none is invented — a
+/// zone-less text names no instant, so fusing a zone is the caller's job
+/// ([`cast_timestamp`] remains the strict RFC 3339 instant door).
+pub fn cast_datetime(input: impl AsRef<[u8]>, order: DateOrder) -> Result<CivilDateTime, Fault> {
+    let input = input.as_ref();
+    let (text, start) = trim(input);
+    if text.is_empty() {
+        return Err(Fault::EMPTY);
+    }
+    let (date, date_end) = read_ordered_date(text, start, order)?;
+    if date_end == text.len() {
+        return Ok(CivilDateTime { date, nanos_of_day: 0 });
+    }
+    if !matches!(text[date_end], b' ' | b'T' | b't') {
+        return Err(Fault::malformed(start + date_end, char_len(text[date_end])));
+    }
+    let (nanos_of_day, end) = read_civil_time(text, date_end + 1, start)?;
+    if end != text.len() {
+        return Err(Fault::malformed(start + end, char_len(text[end])));
+    }
+    Ok(CivilDateTime { date, nanos_of_day })
 }
 
 /// Casts an ISO 8601 24-hour time-of-day — `HH:mm`, `HH:mm:ss`, or `HH:mm:ss.f{1..9}` —

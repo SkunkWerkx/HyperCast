@@ -38,6 +38,7 @@ final class Cast
     private static ?FFI\CData $out16 = null;
     private static ?FFI\CData $outPair = null;
     private static ?FFI\CData $outDate = null;
+    private static ?FFI\CData $outCivil = null;
     private static ?FFI\CData $outI64 = null;
     private static ?FFI\CData $outReal = null;
     private static ?FFI\CData $fault = null;
@@ -46,6 +47,7 @@ final class Cast
     // FFI::addr() per call would be a fresh CData allocation on the hot path.
     private static ?FFI\CData $outPairPtr = null;
     private static ?FFI\CData $outDatePtr = null;
+    private static ?FFI\CData $outCivilPtr = null;
     private static ?FFI\CData $outI64Ptr = null;
     private static ?FFI\CData $outRealPtr = null;
     private static ?FFI\CData $faultPtr = null;
@@ -390,6 +392,61 @@ final class Cast
     }
 
     /**
+     * Epoch seconds at midnight of a civil date — Hinnant's days_from_civil, the same
+     * math the core itself uses.
+     *
+     * @param int $year the civil year
+     * @param int $month the civil month
+     * @param int $day the civil day
+     * @return int seconds since the epoch at that date's midnight
+     */
+    private static function epochSeconds(int $year, int $month, int $day): int
+    {
+        $shifted = $month <= 2 ? $year - 1 : $year;
+        $era = intdiv($shifted >= 0 ? $shifted : $shifted - 399, 400);
+        $yearOfEra = $shifted - $era * 400;
+        $dayOfYear = intdiv(153 * ($month + ($month > 2 ? -3 : 9)) + 2, 5) + $day - 1;
+        $dayOfEra = $yearOfEra * 365 + intdiv($yearOfEra, 4) - intdiv($yearOfEra, 100) + $dayOfYear;
+        return ($era * 146_097 + $dayOfEra - 719_468) * 86_400;
+    }
+
+    /**
+     * Casts a zone-less civil date-time — the shape untrusted feeds actually send
+     * ("1/7/2026 3:04 PM", "2026-01-07 15:04:05") — under the caller-declared DateOrder.
+     * The date part follows date()'s declared-order grammar; the optional time part (one
+     * space or T after the date) is 24-hour h:mm[:ss[.f]] or 12-hour with an AM/PM
+     * marker; absent, the time is midnight. PHP has no zone-less datetime type, so the
+     * civil value rides a UTC-labeled DateTimeImmutable — the label is a carrier
+     * artifact, not data: no zone was read and none was applied, and fusing a real zone
+     * is the caller's job (timestamp() stays the strict RFC 3339 instant door).
+     * Sub-microsecond nanoseconds truncate (PHP's ceiling).
+     *
+     * @param string $text the text to cast
+     * @param DateOrder $order the declared field order
+     * @return Success|Fault the verdict: a Success carrying the cast value, or a Fault
+     */
+    public static function datetime(string $text, DateOrder $order): Success|Fault
+    {
+        $ffi = self::$ffi ?? self::load();
+        $rc = $ffi->cast_datetime(
+            $text === '' ? null : $text, \strlen($text), $order->value, self::$outCivilPtr, self::$faultPtr
+        );
+        if ($rc !== 0) {
+            return self::fail($rc);
+        }
+        $nanos = self::$outCivil->nanos;
+        $seconds = self::epochSeconds(self::$outCivil->year, self::$outCivil->month, self::$outCivil->day)
+            + intdiv($nanos, 1_000_000_000);
+        $micros = intdiv($nanos % 1_000_000_000, 1000);
+        if (self::$fastInstants) {
+            $instant = DateTimeImmutable::createFromTimestamp($seconds);
+            return new Success($micros === 0 ? $instant : $instant->setMicrosecond($micros));
+        }
+        $instant = new DateTimeImmutable("@{$seconds}");
+        return new Success($micros === 0 ? $instant : $instant->modify("+{$micros} microseconds"));
+    }
+
+    /**
      * Casts an ISO 24-hour time-of-day to an exact int of nanoseconds since midnight
      * (PHP has no time-only type; the integer keeps every digit).
      *
@@ -449,6 +506,7 @@ final class Cast
             'typedef struct { uint32_t offset; uint32_t length; } hc_fault;'
             . 'typedef struct { int64_t seconds; int32_t nanos; } hc_pair;'
             . 'typedef struct { uint16_t year; uint8_t month; uint8_t day; } hc_date;'
+            . 'typedef struct { uint16_t year; uint8_t month; uint8_t day; uint32_t pad; uint64_t nanos; } hc_civil;'
             . 'typedef union { float f32; double f64; } hc_real;'
             . "int cast_bool{$plain};"
             . "int cast_i8{$numeric}; int cast_i16{$numeric}; int cast_i32{$numeric}; int cast_i64{$numeric};"
@@ -459,6 +517,7 @@ final class Cast
             . 'int cast_unix(const char *ptr, size_t len, uint32_t precision, void *out, void *fault);'
             . "int cast_date{$plain};"
             . 'int cast_date_ordered(const char *ptr, size_t len, uint32_t order, void *out, void *fault);'
+            . 'int cast_datetime(const char *ptr, size_t len, uint32_t order, void *out, void *fault);'
             . "int cast_time{$plain};"
             . "int cast_duration{$plain};",
             $path
@@ -466,12 +525,14 @@ final class Cast
         self::$out16 = self::$ffi->new('uint8_t[16]');
         self::$outPair = self::$ffi->new('hc_pair');
         self::$outDate = self::$ffi->new('hc_date');
+        self::$outCivil = self::$ffi->new('hc_civil');
         self::$outI64 = self::$ffi->new('int64_t');
         self::$outReal = self::$ffi->new('hc_real');
         self::$fault = self::$ffi->new('hc_fault');
         self::$format = self::$ffi->new('uint32_t[3]');
         self::$outPairPtr = FFI::addr(self::$outPair);
         self::$outDatePtr = FFI::addr(self::$outDate);
+        self::$outCivilPtr = FFI::addr(self::$outCivil);
         self::$outI64Ptr = FFI::addr(self::$outI64);
         self::$outRealPtr = FFI::addr(self::$outReal);
         self::$faultPtr = FFI::addr(self::$fault);

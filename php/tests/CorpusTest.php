@@ -200,6 +200,32 @@ final class CorpusTest extends TestCase
         }
     }
 
+    public function testDateTimeCorpus(): void
+    {
+        foreach (self::corpus('datetime.json') as $vector) {
+            $order = DateOrder::from($vector['order']);
+            $expected = null;
+            if (isset($vector['year'])) {
+                $secondOfDay = intdiv($vector['nanos_of_day'], 1_000_000_000);
+                $micros = intdiv($vector['nanos_of_day'] % 1_000_000_000, 1000);
+                $expected = new DateTimeImmutable(
+                    sprintf(
+                        '%04d-%02d-%02d %02d:%02d:%02d.%06d',
+                        $vector['year'],
+                        $vector['month'],
+                        $vector['day'],
+                        intdiv($secondOfDay, 3600),
+                        intdiv($secondOfDay % 3600, 60),
+                        $secondOfDay % 60,
+                        $micros
+                    ),
+                    new \DateTimeZone('UTC')
+                );
+            }
+            $this->assertVerdict('datetime', $vector, Cast::datetime($vector['input'], $order), $expected);
+        }
+    }
+
     public function testTimeCorpus(): void
     {
         foreach (self::corpus('time.json') as $vector) {

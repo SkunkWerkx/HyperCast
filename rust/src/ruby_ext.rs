@@ -25,6 +25,7 @@ struct Cached {
     success: Opaque<Value>,
     fault: Opaque<Value>,
     date_class: Opaque<Value>,
+    datetime_class: Opaque<Value>,
     invariant_raw: u64,
 }
 
@@ -42,6 +43,9 @@ fn build_cache(ruby: &Ruby, hypercast: RModule) -> Result<Cached, Error> {
         fault: Opaque::from(hypercast.const_get::<_, Value>("Fault")?),
         date_class: Opaque::from(
             ruby.class_object().funcall::<_, _, Value>("const_get", ("Date",))?,
+        ),
+        datetime_class: Opaque::from(
+            ruby.class_object().funcall::<_, _, Value>("const_get", ("DateTime",))?,
         ),
         invariant_raw: invariant.as_raw(),
     })
@@ -182,18 +186,7 @@ fn date_door(ruby: &Ruby, args: &[Value]) -> Result<Value, Error> {
     let verdict = match order {
         None => with_bytes(text, |bytes| core::cast_date(bytes)),
         Some(order) => {
-            let name = order.name()?;
-            let order = match &*name {
-                "year_month_day" => core::DateOrder::YearMonthDay,
-                "month_day_year" => core::DateOrder::MonthDayYear,
-                "day_month_year" => core::DateOrder::DayMonthYear,
-                other => {
-                    return Err(Error::new(
-                        ruby.exception_key_error(),
-                        format!("unknown DateOrder {other:?}"),
-                    ))
-                }
-            };
+            let order = resolve_order(ruby, order)?;
             with_bytes(text, |bytes| core::cast_date_ordered(bytes, order))
         }
     };
@@ -201,6 +194,46 @@ fn date_door(ruby: &Ruby, args: &[Value]) -> Result<Value, Error> {
         Ok(date) => {
             let class = ruby.get_inner(cached().date_class);
             success(ruby, class.funcall::<_, _, Value>("new", (date.year, date.month, date.day))?)
+        }
+        Err(failed) => fault(ruby, failed),
+    }
+}
+
+fn resolve_order(ruby: &Ruby, order: Symbol) -> Result<core::DateOrder, Error> {
+    let name = order.name()?;
+    match &*name {
+        "year_month_day" => Ok(core::DateOrder::YearMonthDay),
+        "month_day_year" => Ok(core::DateOrder::MonthDayYear),
+        "day_month_year" => Ok(core::DateOrder::DayMonthYear),
+        other => Err(Error::new(
+            ruby.exception_key_error(),
+            format!("unknown DateOrder {other:?}"),
+        )),
+    }
+}
+
+fn datetime_door(ruby: &Ruby, text: RString, order: Symbol) -> Result<Value, Error> {
+    let order = resolve_order(ruby, order)?;
+    match with_bytes(text, |bytes| core::cast_datetime(bytes, order)) {
+        Ok(civil) => {
+            // Zone-less civil value on stdlib DateTime with exact Rational seconds — the
+            // text named no zone, so none is invented; fusing one is the caller's job.
+            let (second_of_day, frac) =
+                (civil.nanos_of_day / 1_000_000_000, civil.nanos_of_day % 1_000_000_000);
+            let (hour, rest) = (second_of_day / 3_600, second_of_day % 3_600);
+            let (minute, second) = (rest / 60, rest % 60);
+            let fraction: Value = (frac as i64)
+                .into_value_with(ruby)
+                .funcall("quo", (1_000_000_000i64,))?;
+            let seconds: Value = fraction.funcall("+", (second as i64,))?;
+            let class = ruby.get_inner(cached().datetime_class);
+            success(
+                ruby,
+                class.funcall::<_, _, Value>(
+                    "new",
+                    (civil.date.year, civil.date.month, civil.date.day, hour, minute, seconds),
+                )?,
+            )
         }
         Err(failed) => fault(ruby, failed),
     }
@@ -247,6 +280,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     hypercast.define_singleton_method("timestamp", function!(timestamp_door, 1))?;
     hypercast.define_singleton_method("unix", function!(unix_door, 2))?;
     hypercast.define_singleton_method("date", function!(date_door, -1))?;
+    hypercast.define_singleton_method("datetime", function!(datetime_door, 2))?;
     hypercast.define_singleton_method("time", function!(time_door, 1))?;
     hypercast.define_singleton_method("duration", function!(duration_door, 1))?;
     Ok(())

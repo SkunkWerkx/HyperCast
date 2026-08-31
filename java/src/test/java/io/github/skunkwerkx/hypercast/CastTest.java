@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.Locale;
 import java.util.UUID;
@@ -134,6 +135,18 @@ final class CastTest {
         assertEquals(new Success<>(LocalDate.of(2026, 7, 1)), Cast.date("1/7/2026", enGb));
         // Undeclared, the door stays strict ISO — the ambiguity is never guessed at.
         assertEquals(new Fault<LocalDate>(CastFailure.MALFORMED, 0, 8), Cast.date("1/7/2026"));
+    }
+
+    @Test
+    void dateTimeReadsTheMessyCivilShapes() {
+        // The AM/PM world, zone-less: LocalDateTime because the text named no zone —
+        // fusing one is the caller's job, never the parser's guess.
+        assertEquals(new Success<>(LocalDateTime.of(2026, 1, 7, 15, 4)),
+                Cast.dateTime("1/7/2026 3:04 PM", DateOrder.from(Locale.US)));
+        assertEquals(new Success<>(LocalDateTime.of(2026, 7, 1, 15, 4)),
+                Cast.dateTime("1/7/2026 3:04 PM", DateOrder.from(Locale.UK)));
+        // A zone suffix is not this door's business — timestamp is the instant door.
+        assertInstanceOf(Fault.class, Cast.dateTime("1/7/2026 15:04:05Z", DateOrder.MONTH_DAY_YEAR));
     }
 
 }

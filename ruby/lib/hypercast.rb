@@ -169,6 +169,25 @@ module HyperCast
       end
     end
 
+    # Casts a zone-less civil date-time — the shape untrusted feeds actually send
+    # ("1/7/2026 3:04 PM", "2026-01-07 15:04:05") — under a declared order Symbol to a
+    # stdlib DateTime with exact Rational seconds. No zone is read and none is invented
+    # (the text named no instant); fusing a zone is the caller's job, and timestamp stays
+    # the strict RFC 3339 instant door. An unknown order is a caller bug (KeyError).
+    def datetime(text, order)
+      code = DATE_ORDERS.fetch(order)
+      bytes = utf8(text)
+      out, fault, = scratch
+      rc = Runtime.call(:cast_datetime, input_ptr(bytes), bytes.bytesize, code, out, fault)
+      verdict(rc, fault) do
+        year, month, day, nanos = out[0, 16].unpack("S<CCx4Q<")
+        second_of_day, frac = nanos.divmod(1_000_000_000)
+        hour, rest = second_of_day.divmod(3600)
+        minute, second = rest.divmod(60)
+        DateTime.new(year, month, day, hour, minute, second + Rational(frac, 1_000_000_000))
+      end
+    end
+
     # Casts an ISO 24-hour time-of-day to an exact Integer of nanoseconds since midnight
     # (Ruby has no time-of-day type; the integer keeps every digit).
     def time(text)

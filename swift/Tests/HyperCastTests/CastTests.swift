@@ -112,4 +112,25 @@ final class CastTests: XCTestCase {
         XCTAssertEqual(fault.reason, .malformed)
     }
 
+    func testDateTimeReadsTheMessyCivilShapes() throws {
+        // The AM/PM world, zone-less: no timeZone component because the text named no
+        // zone — fusing one is the caller's job, never the parser's guess.
+        guard case .success(let us) = try Cast.dateTime("1/7/2026 3:04 PM", order: .monthDayYear) else {
+            return XCTFail("en-US order should parse")
+        }
+        XCTAssertEqual(
+            us, DateComponents(year: 2026, month: 1, day: 7, hour: 15, minute: 4, second: 0, nanosecond: 0))
+        XCTAssertNil(us.timeZone)
+        guard case .success(let gb) = try Cast.dateTime("1/7/2026 3:04 PM", order: .dayMonthYear) else {
+            return XCTFail("en-GB order should parse")
+        }
+        XCTAssertEqual(gb.month, 7)
+        XCTAssertEqual(gb.day, 1)
+        // A zone suffix is not this door's business — timestamp is the instant door.
+        guard case .fault(let fault) = try Cast.dateTime("1/7/2026 15:04:05Z", order: .monthDayYear) else {
+            return XCTFail("zoned text should be malformed through the civil door")
+        }
+        XCTAssertEqual(fault.reason, .malformed)
+    }
+
 }

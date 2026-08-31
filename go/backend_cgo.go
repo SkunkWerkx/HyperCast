@@ -53,7 +53,7 @@ var (
 
 	symBool, symI8, symI16, symI32, symI64, symU8, symU16, symU32, symU64,
 	symF32, symF64, symUuid, symTimestamp, symUnix, symDate, symDateOrdered,
-	symTime, symDuration unsafe.Pointer
+	symDateTime, symTime, symDuration unsafe.Pointer
 )
 
 // ensureLoaded extracts this platform's embedded native library to a temp file and
@@ -92,6 +92,7 @@ func ensureLoaded() error {
 		symF32, symF64 = sym("cast_f32"), sym("cast_f64")
 		symTimestamp, symUnix = sym("cast_timestamp"), sym("cast_unix")
 		symDate, symDateOrdered = sym("cast_date"), sym("cast_date_ordered")
+		symDateTime = sym("cast_datetime")
 		symTime, symDuration = sym("cast_time"), sym("cast_duration")
 	})
 	return initErr
@@ -109,7 +110,12 @@ func callUnix(ptr unsafe.Pointer, length uintptr, precision uint32, out, fault u
 	return int32(C.call_unix(symUnix, (*C.uint8_t)(ptr), C.size_t(length), C.uint32_t(precision), out, fault))
 }
 
-// cast_date_ordered shares the unix ABI shape (ptr, len, u32, out, fault) — same C shim.
+// cast_date_ordered and cast_datetime share the unix ABI shape (ptr, len, u32, out,
+// fault) — same C shim.
 func callDateOrdered(ptr unsafe.Pointer, length uintptr, order uint32, out, fault unsafe.Pointer) int32 {
 	return int32(C.call_unix(symDateOrdered, (*C.uint8_t)(ptr), C.size_t(length), C.uint32_t(order), out, fault))
+}
+
+func callDateTime(ptr unsafe.Pointer, length uintptr, order uint32, out, fault unsafe.Pointer) int32 {
+	return int32(C.call_unix(symDateTime, (*C.uint8_t)(ptr), C.size_t(length), C.uint32_t(order), out, fault))
 }

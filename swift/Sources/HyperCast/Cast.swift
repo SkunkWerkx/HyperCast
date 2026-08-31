@@ -42,8 +42,9 @@ public enum Cast {
         let timestamp: PlainFn
         let unix: UnixFn
         let date: PlainFn
-        // cast_date_ordered shares the unix ABI shape (ptr, len, u32, out, fault).
+        // cast_date_ordered and cast_datetime share the unix ABI shape (ptr, len, u32, out, fault).
         let dateOrdered: UnixFn
+        let dateTime: UnixFn
         let time: PlainFn
         let duration: PlainFn
     }
@@ -73,6 +74,7 @@ public enum Cast {
             unix: unsafeBitCast(try library.symbol("cast_unix"), to: UnixFn.self),
             date: try plain("cast_date"),
             dateOrdered: unsafeBitCast(try library.symbol("cast_date_ordered"), to: UnixFn.self),
+            dateTime: unsafeBitCast(try library.symbol("cast_datetime"), to: UnixFn.self),
             time: try plain("cast_time"),
             duration: try plain("cast_duration"))
     }
@@ -374,6 +376,49 @@ public enum Cast {
                     year: Int(raw.load(fromByteOffset: 0, as: UInt16.self)),
                     month: Int(raw.load(fromByteOffset: 2, as: UInt8.self)),
                     day: Int(raw.load(fromByteOffset: 3, as: UInt8.self)))
+            })
+        }
+        return .fault(faultOut.withUnsafeBytes { fault(code, $0) })
+    }
+
+    /// Casts a zone-less civil date-time — the shape untrusted feeds actually send
+    /// (`1/7/2026 3:04 PM`, `2026-01-07 15:04:05`) — under the caller-declared
+    /// ``DateOrder`` to `DateComponents` (year through nanosecond, no zone). The date part
+    /// follows ``date(_:order:)-swift.type.method``'s grammar; the optional time part (one
+    /// space or `T` after the date) is 24-hour `h:mm[:ss[.f{1..9}]]` or 12-hour with an
+    /// `AM`/`PM` marker; absent, the time is midnight. No zone is read and none is
+    /// invented — the text named no instant, so no `timeZone` component is set; fusing one
+    /// is the caller's job (``timestamp(_:)-swift.type.method`` stays the strict RFC 3339
+    /// instant door).
+    public static func dateTime(_ text: String, order: DateOrder) throws -> Verdict<DateComponents> {
+        try dateTime(Array(text.utf8), order: order)
+    }
+
+    /// See ``dateTime(_:order:)-swift.type.method``; input as raw UTF-8 bytes.
+    public static func dateTime(_ utf8: [UInt8], order: DateOrder) throws -> Verdict<DateComponents> {
+        let fn = try loaded().dateTime
+        var out = [UInt8](repeating: 0, count: 16)
+        var faultOut = [UInt8](repeating: 0, count: 8)
+        let code = out.withUnsafeMutableBytes { outRaw in
+            faultOut.withUnsafeMutableBytes { faultRaw in
+                utf8.withUnsafeBufferPointer { input in
+                    fn(input.baseAddress, UInt(utf8.count), order.rawValue,
+                       outRaw.baseAddress, faultRaw.baseAddress)
+                }
+            }
+        }
+        if code == 0 {
+            return .success(out.withUnsafeBytes { raw in
+                let nanos = raw.load(fromByteOffset: 8, as: UInt64.self)
+                let secondOfDay = nanos / 1_000_000_000
+                return DateComponents(
+                    year: Int(raw.load(fromByteOffset: 0, as: UInt16.self)),
+                    month: Int(raw.load(fromByteOffset: 2, as: UInt8.self)),
+                    day: Int(raw.load(fromByteOffset: 3, as: UInt8.self)),
+                    hour: Int(secondOfDay / 3_600),
+                    minute: Int(secondOfDay % 3_600 / 60),
+                    second: Int(secondOfDay % 60),
+                    nanosecond: Int(nanos % 1_000_000_000))
             })
         }
         return .fault(faultOut.withUnsafeBytes { fault(code, $0) })

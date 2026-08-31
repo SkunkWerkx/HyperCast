@@ -17,6 +17,7 @@ import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.UUID;
 
@@ -78,8 +79,9 @@ public final class Cast {
     private static final MethodHandle CAST_TIMESTAMP = handle("cast_timestamp", PLAIN);
     private static final MethodHandle CAST_UNIX = handle("cast_unix", UNIX);
     private static final MethodHandle CAST_DATE = handle("cast_date", PLAIN);
-    // cast_date_ordered shares the unix ABI shape (ptr, len, u32, out, fault).
+    // cast_date_ordered and cast_datetime share the unix ABI shape (ptr, len, u32, out, fault).
     private static final MethodHandle CAST_DATE_ORDERED = handle("cast_date_ordered", UNIX);
+    private static final MethodHandle CAST_DATETIME = handle("cast_datetime", UNIX);
     private static final MethodHandle CAST_TIME = handle("cast_time", PLAIN);
     private static final MethodHandle CAST_DURATION = handle("cast_duration", PLAIN);
 
@@ -498,6 +500,9 @@ public final class Cast {
     /** Timestamp out-param: {@code {i64 seconds, i32 nanos}} (protobuf layout, 16 bytes with padding). */
     private static final long TIMESTAMP_BYTES = 16;
 
+    /** CivilDateTime out-param: {@code {u16 y, u8 m, u8 d, pad, u64 nanos-of-day}} (16 bytes). */
+    private static final long CIVIL_BYTES = 16;
+
     private static Verdict<Instant> instantDoor(MethodHandle door, String symbol, byte[] utf8, int precision) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment out = arena.allocate(TIMESTAMP_BYTES);
@@ -642,6 +647,54 @@ public final class Cast {
                             Short.toUnsignedInt(out.get(ValueLayout.JAVA_SHORT, 0)),
                             out.get(ValueLayout.JAVA_BYTE, 2),
                             out.get(ValueLayout.JAVA_BYTE, 3)))
+                    : failed(code, fault);
+        }
+    }
+
+    /**
+     * Casts a zone-less civil date-time — the shape untrusted feeds actually send
+     * ({@code 1/7/2026 3:04 PM}, {@code 2026-01-07 15:04:05}) — under the caller-declared
+     * {@link DateOrder} to a {@link LocalDateTime} at full nanosecond fidelity. The date
+     * part follows {@link #date(String, DateOrder)}'s grammar; the optional time part (one
+     * space or {@code T} after the date) is 24-hour {@code h:mm[:ss[.f{1..9}]]} or 12-hour
+     * with an {@code AM}/{@code PM} marker; absent, the time is midnight. No zone is read
+     * and none is invented — the text named no instant, which is exactly what
+     * {@link LocalDateTime} says; fusing a zone is the caller's job
+     * ({@link #timestamp(String)} stays the strict RFC 3339 instant door).
+     *
+     * @param text the text to cast
+     * @param order the declared field order
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<LocalDateTime> dateTime(String text, DateOrder order) {
+        return dateTime(utf8(text), order);
+    }
+
+    /**
+     * See {@link #dateTime(String, DateOrder)}; input as raw UTF-8 bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param order the declared field order
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<LocalDateTime> dateTime(byte[] utf8, DateOrder order) {
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment out = arena.allocate(CIVIL_BYTES);
+            MemorySegment fault = arena.allocate(FAULT_BYTES);
+            int code;
+            try {
+                code = (int) CAST_DATETIME.invokeExact(
+                        input(arena, utf8), (long) utf8.length, order.code(), out, fault);
+            } catch (Throwable t) {
+                throw new AssertionError("hypercast: cast_datetime downcall failed unexpectedly", t);
+            }
+            return code == 0
+                    ? new Success<>(LocalDateTime.of(
+                            LocalDate.of(
+                                    Short.toUnsignedInt(out.get(ValueLayout.JAVA_SHORT, 0)),
+                                    out.get(ValueLayout.JAVA_BYTE, 2),
+                                    out.get(ValueLayout.JAVA_BYTE, 3)),
+                            LocalTime.ofNanoOfDay(out.get(ValueLayout.JAVA_LONG, 8))))
                     : failed(code, fault);
         }
     }

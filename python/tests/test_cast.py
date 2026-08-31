@@ -101,3 +101,22 @@ def test_date_order_disambiguates_like_the_cultures_do():
             assert reason is hypercast.CastFailure.MALFORMED
         case other:
             raise AssertionError(f"undeclared slash date parsed: {other!r}")
+
+
+def test_datetime_reads_the_messy_civil_shapes():
+    # The AM/PM world, zone-less: the value is naive because the text named no zone —
+    # fusing one is the caller's job, never the parser's guess.
+    verdict = hypercast.cast_datetime("1/7/2026 3:04 PM", hypercast.DateOrder.MONTH_DAY_YEAR)
+    assert verdict == hypercast.Success(dt.datetime(2026, 1, 7, 15, 4))
+    assert verdict.value.tzinfo is None
+    assert hypercast.cast_datetime("1/7/2026 3:04 PM", hypercast.DateOrder.DAY_MONTH_YEAR) == \
+        hypercast.Success(dt.datetime(2026, 7, 1, 15, 4))
+    # ISO forms ride through the same door (a four-digit first field is structurally a year).
+    assert hypercast.cast_datetime("2026-01-07T15:04:05", hypercast.DateOrder.MONTH_DAY_YEAR) == \
+        hypercast.Success(dt.datetime(2026, 1, 7, 15, 4, 5))
+    # A zone suffix is not this door's business — cast_timestamp is the instant door.
+    match hypercast.cast_datetime("1/7/2026 15:04:05Z", hypercast.DateOrder.MONTH_DAY_YEAR):
+        case hypercast.Fault(reason, _, _):
+            assert reason is hypercast.CastFailure.MALFORMED
+        case other:
+            raise AssertionError(f"zoned text parsed through the civil door: {other!r}")

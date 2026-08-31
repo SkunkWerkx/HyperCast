@@ -108,3 +108,24 @@ func TestDateOrderDisambiguatesLikeTheCulturesDo(t *testing.T) {
 		t.Fatalf("undeclared slash date should be Malformed, got %v", fault)
 	}
 }
+
+func TestDateTimeReadsTheMessyCivilShapes(t *testing.T) {
+	// The AM/PM world, zone-less: the value is a CivilDateTime because the text named no
+	// zone — fusing one is the caller's job, never the parser's guess.
+	value, fault := DateTime("1/7/2026 3:04 PM", MonthDayYear)
+	want := CivilDateTime{
+		Date:      Date{Year: 2026, Month: time.January, Day: 7},
+		TimeOfDay: 15*time.Hour + 4*time.Minute,
+	}
+	if fault != nil || value != want {
+		t.Fatalf("MonthDayYear: %v, %v", value, fault)
+	}
+	value, fault = DateTime("1/7/2026 3:04 PM", DayMonthYear)
+	if fault != nil || value.Date.Month != time.July || value.Date.Day != 1 {
+		t.Fatalf("DayMonthYear: %v, %v", value, fault)
+	}
+	// A zone suffix is not this door's business — Timestamp is the instant door.
+	if _, fault := DateTime("1/7/2026 15:04:05Z", MonthDayYear); fault == nil || fault.Reason != Malformed {
+		t.Fatalf("zoned text should be Malformed through the civil door, got %v", fault)
+	}
+}

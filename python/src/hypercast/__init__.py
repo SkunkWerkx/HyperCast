@@ -41,7 +41,8 @@ __all__ = [
     "optional",
     "cast_bool", "cast_i8", "cast_i16", "cast_i32", "cast_i64",
     "cast_u8", "cast_u16", "cast_u32", "cast_u64", "cast_f32", "cast_f64",
-    "cast_uuid", "cast_timestamp", "cast_unix", "cast_date", "cast_time", "cast_duration",
+    "cast_uuid", "cast_timestamp", "cast_unix", "cast_date", "cast_datetime", "cast_time",
+    "cast_duration",
 ]
 
 
@@ -103,6 +104,7 @@ cast_uuid = _native.cast_uuid
 cast_timestamp = _native.cast_timestamp
 cast_unix = _native.cast_unix
 cast_date = _native.cast_date
+cast_datetime = _native.cast_datetime
 cast_time = _native.cast_time
 cast_duration = _native.cast_duration
 

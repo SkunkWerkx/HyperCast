@@ -370,6 +370,36 @@ fn cast_date(py: Python<'_>, text: Text<'_>, order: Option<u32>) -> PyResult<Py<
 }
 
 #[pyfunction]
+fn cast_datetime(py: Python<'_>, text: Text<'_>, order: u32) -> PyResult<Py<PyAny>> {
+    let order = match order {
+        1 => core::DateOrder::YearMonthDay,
+        2 => core::DateOrder::MonthDayYear,
+        3 => core::DateOrder::DayMonthYear,
+        _ => return Err(PyValueError::new_err("order must be a DateOrder")),
+    };
+    verdict(py, core::cast_datetime(text.bytes()?, order), |py, civil| {
+        // Naive datetime — the text named no zone, so the value carries none; fusing a
+        // zone is the caller's job. Sub-microsecond nanoseconds truncate (Python's ceiling).
+        let (second_of_day, nano) = (civil.nanos_of_day / 1_000_000_000, civil.nanos_of_day % 1_000_000_000);
+        let (hour, rest) = (second_of_day / 3_600, second_of_day % 3_600);
+        let (minute, second) = (rest / 60, rest % 60);
+        Ok(PyDateTime::new(
+            py,
+            i32::from(civil.date.year),
+            civil.date.month,
+            civil.date.day,
+            hour as u8,
+            minute as u8,
+            second as u8,
+            (nano / 1_000) as u32,
+            None,
+        )?
+        .into_any()
+        .unbind())
+    })
+}
+
+#[pyfunction]
 fn cast_time(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
     verdict(py, core::cast_time(text.bytes()?), |py, nanos| {
         let (second_of_day, nano) = (nanos / 1_000_000_000, nanos % 1_000_000_000);
@@ -438,6 +468,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cast_timestamp, m)?)?;
     m.add_function(wrap_pyfunction!(cast_unix, m)?)?;
     m.add_function(wrap_pyfunction!(cast_date, m)?)?;
+    m.add_function(wrap_pyfunction!(cast_datetime, m)?)?;
     m.add_function(wrap_pyfunction!(cast_time, m)?)?;
     m.add_function(wrap_pyfunction!(cast_duration, m)?)?;
     m.add_function(wrap_pyfunction!(_bind, m)?)?;

@@ -60,6 +60,21 @@ RSpec.describe HyperCast do
     expect { described_class.date("1/7/2026", :little_endian) }.to raise_error(KeyError)
   end
 
+  it "reads messy civil date-times without inventing a zone" do
+    # The AM/PM world: a zone-less text names no instant, so the value comes back as a
+    # stdlib DateTime (exact Rational seconds), never a zone-guessed Time.
+    expect(described_class.datetime("1/7/2026 3:04 PM", :month_day_year))
+      .to eq(HyperCast::Success.new(value: DateTime.new(2026, 1, 7, 15, 4, 0)))
+    expect(described_class.datetime("1/7/2026 3:04 PM", :day_month_year))
+      .to eq(HyperCast::Success.new(value: DateTime.new(2026, 7, 1, 15, 4, 0)))
+    expect(described_class.datetime("2026-01-07T15:04:05.123456789", :month_day_year))
+      .to eq(HyperCast::Success.new(value: DateTime.new(2026, 1, 7, 15, 4,
+                                                        5 + Rational(123_456_789, 1_000_000_000))))
+    # A zone suffix is not this door's business — timestamp is the instant door.
+    expect(described_class.datetime("1/7/2026 15:04:05Z", :month_day_year))
+      .to be_a(HyperCast::Fault)
+  end
+
   it "returns durations as exact Rational seconds across the full window" do
     expect(described_class.duration("PT1.5S")).to eq(HyperCast::Success.new(value: Rational(3, 2)))
     expect(described_class.duration("-1.5s")).to eq(HyperCast::Success.new(value: Rational(-3, 2)))

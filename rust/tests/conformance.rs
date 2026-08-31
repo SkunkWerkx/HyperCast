@@ -196,6 +196,27 @@ fn date_corpus() {
 }
 
 #[test]
+fn datetime_corpus() {
+    for vector in corpus("datetime.json") {
+        let order = match vector["order"].as_u64().expect("order") {
+            1 => DateOrder::YearMonthDay,
+            2 => DateOrder::MonthDayYear,
+            3 => DateOrder::DayMonthYear,
+            other => panic!("datetime: unknown order {other}"),
+        };
+        let verdict = hypercast::cast_datetime(input(&vector).as_bytes(), order);
+        assert_verdict("datetime", &vector, verdict, |v| hypercast::CivilDateTime {
+            date: hypercast::Date {
+                year: v["year"].as_u64().expect("year") as u16,
+                month: v["month"].as_u64().expect("month") as u8,
+                day: v["day"].as_u64().expect("day") as u8,
+            },
+            nanos_of_day: v["nanos_of_day"].as_u64().expect("nanos_of_day"),
+        });
+    }
+}
+
+#[test]
 fn date_order_corpus() {
     for vector in corpus("date_order.json") {
         let order = match vector["order"].as_u64().expect("order") {

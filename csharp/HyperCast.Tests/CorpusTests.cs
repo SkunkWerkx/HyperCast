@@ -202,6 +202,24 @@ public sealed class CorpusTests
 	}
 
 	[Fact]
+	void Datetime_corpus()
+	{
+		foreach (var vector in Corpus("datetime.json"))
+			AssertVerdict("datetime", vector,
+				Cast.DateTime(InputBytes(vector), (DateOrder)vector.GetProperty("order").GetUInt32()),
+				static v =>
+				{
+					var nanos = v.GetProperty("nanos_of_day").GetUInt64();
+					return new DateTime(
+							v.GetProperty("year").GetInt32(),
+							v.GetProperty("month").GetInt32(),
+							v.GetProperty("day").GetInt32(),
+							0, 0, 0, DateTimeKind.Unspecified)
+						.AddTicks((long)(nanos / 100));
+				});
+	}
+
+	[Fact]
 	void Time_corpus()
 	{
 		foreach (var vector in Corpus("time.json"))

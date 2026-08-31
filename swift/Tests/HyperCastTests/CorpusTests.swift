@@ -178,6 +178,27 @@ final class CorpusTests: XCTestCase {
         }
     }
 
+    func testDateTimeCorpus() throws {
+        for vector in try corpus("datetime.json") {
+            guard let order = DateOrder(rawValue: UInt32(vector["order"] as! Int)) else {
+                XCTFail("datetime: unknown order")
+                continue
+            }
+            var expected: DateComponents?
+            if let year = vector["year"] as? Int {
+                let nanos = UInt64(vector["nanos_of_day"] as! Int)
+                let secondOfDay = nanos / 1_000_000_000
+                expected = DateComponents(
+                    year: year, month: (vector["month"] as! Int), day: (vector["day"] as! Int),
+                    hour: Int(secondOfDay / 3_600),
+                    minute: Int(secondOfDay % 3_600 / 60),
+                    second: Int(secondOfDay % 60),
+                    nanosecond: Int(nanos % 1_000_000_000))
+            }
+            assertVerdict("datetime", vector, try Cast.dateTime(inputBytes(vector), order: order), expected)
+        }
+    }
+
     func testTimeCorpus() throws {
         for vector in try corpus("time.json") {
             var expected: DateComponents?

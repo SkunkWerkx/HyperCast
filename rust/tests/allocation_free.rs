@@ -73,6 +73,10 @@ fn allocation_free() {
     assert_allocation_free("cast_date_ordered", || {
         hypercast::cast_date_ordered(b"1/7/2026", hypercast::DateOrder::MonthDayYear).unwrap()
     });
+    assert_allocation_free("cast_datetime", || {
+        hypercast::cast_datetime(b"1/7/2026 3:04:05.123 PM", hypercast::DateOrder::MonthDayYear)
+            .unwrap()
+    });
     assert_allocation_free("cast_time", || hypercast::cast_time(b"15:04:05.123456789").unwrap());
     assert_allocation_free("cast_duration iso", || {
         hypercast::cast_duration(b"P1DT6H30M15.5S").unwrap()

@@ -160,6 +160,21 @@ pub struct Date {
     pub day: u8,
 }
 
+/// A civil (wall-clock) date and time with **no zone** — exactly what zone-less text like
+/// `1/7/2026 3:04 PM` actually names. Deliberately not a [`Timestamp`]: without a zone
+/// there is no instant, and inventing one (assuming UTC, say) would be a silent value
+/// error of up to ±14 hours. Fusing a zone is the caller's job, per the module doctrine.
+/// ABI layout: the [`Date`] fields at offset 0, `nanos_of_day` at offset 8 (after C
+/// struct padding).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CivilDateTime {
+    /// The calendar date.
+    pub date: Date,
+    /// Nanoseconds since that date's midnight, `0..86_400_000_000_000`.
+    pub nanos_of_day: u64,
+}
+
 /// A signed span of time — protobuf's `google.protobuf.Duration` layout exactly.
 /// `seconds` is bounded to ±315_576_000_000 (±10,000 years); `nanos` carries the same sign
 /// as `seconds` (unlike [`Timestamp`], whose nanos always count forward).

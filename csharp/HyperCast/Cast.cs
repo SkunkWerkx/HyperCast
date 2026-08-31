@@ -79,6 +79,17 @@ public static partial class Cast
 	}
 
 	[StructLayout(LayoutKind.Sequential)]
+	readonly struct RawCivil
+	{
+		public readonly ushort Year;
+		public readonly byte Month;
+		public readonly byte Day;
+		// 4 bytes of C-struct padding sit here; Sequential layout reproduces them because
+		// the ulong below demands 8-byte alignment.
+		public readonly ulong NanosOfDay;
+	}
+
+	[StructLayout(LayoutKind.Sequential)]
 	readonly struct RawDuration
 	{
 		public readonly long Seconds;
@@ -196,6 +207,13 @@ public static partial class Cast
 	private static unsafe partial int cast_date_ordered_browser(byte* ptr, nuint len, uint order, RawDate* value, RawFault* fault);
 	private static unsafe int cast_date_ordered(byte* ptr, nuint len, uint order, RawDate* value, RawFault* fault) =>
 		OperatingSystem.IsBrowser() ? cast_date_ordered_browser(ptr, len, order, value, fault) : cast_date_ordered_native(ptr, len, order, value, fault);
+
+	[LibraryImport("hypercast", EntryPoint = "cast_datetime")]
+	private static unsafe partial int cast_datetime_native(byte* ptr, nuint len, uint order, RawCivil* value, RawFault* fault);
+	[LibraryImport("*", EntryPoint = "cast_datetime")]
+	private static unsafe partial int cast_datetime_browser(byte* ptr, nuint len, uint order, RawCivil* value, RawFault* fault);
+	private static unsafe int cast_datetime(byte* ptr, nuint len, uint order, RawCivil* value, RawFault* fault) =>
+		OperatingSystem.IsBrowser() ? cast_datetime_browser(ptr, len, order, value, fault) : cast_datetime_native(ptr, len, order, value, fault);
 
 	[LibraryImport("hypercast", EntryPoint = "cast_time")]
 	private static unsafe partial int cast_time_native(byte* ptr, nuint len, ulong* value, RawFault* fault);

@@ -114,4 +114,18 @@ final class CastTest extends TestCase
         self::assertSame(CastFailure::Malformed, $undeclared->reason);
     }
 
+    public function testDateTimeReadsTheMessyCivilShapes(): void
+    {
+        // The AM/PM world, zone-less: the UTC label on the carrier is an artifact, not
+        // data — no zone was read and none was applied.
+        $enUs = Cast::datetime('1/7/2026 3:04 PM', DateOrder::Mdy);
+        $enGb = Cast::datetime('1/7/2026 3:04 PM', DateOrder::Dmy);
+        self::assertInstanceOf(Success::class, $enUs);
+        self::assertInstanceOf(Success::class, $enGb);
+        self::assertSame('2026-01-07 15:04:00', $enUs->value->format('Y-m-d H:i:s'));
+        self::assertSame('2026-07-01 15:04:00', $enGb->value->format('Y-m-d H:i:s'));
+        // A zone suffix is not this door's business — timestamp() is the instant door.
+        self::assertInstanceOf(Fault::class, Cast::datetime('1/7/2026 15:04:05Z', DateOrder::Mdy));
+    }
+
 }

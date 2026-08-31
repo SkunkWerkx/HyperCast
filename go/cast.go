@@ -111,6 +111,14 @@ type rawDate struct {
 	Day   uint8
 }
 
+type rawCivil struct {
+	Year  uint16
+	Month uint8
+	Day   uint8
+	_     [4]byte // tail padding before the u64, matching the repr(C) layout
+	Nanos uint64
+}
+
 // NumStyles are the lenience flags of NumFormat — bit-for-bit the native core's flags.
 type NumStyles uint32
 
@@ -179,6 +187,16 @@ type Date struct {
 	Year  int
 	Month time.Month
 	Day   int
+}
+
+// CivilDateTime is a wall-clock date and time with no zone — exactly what zone-less text
+// like "1/7/2026 3:04 PM" actually names. Deliberately not a time.Time: without a zone
+// there is no instant, and inventing one (assuming UTC, say) would be a silent value error
+// of up to ±14 hours. Fuse a zone yourself when you know it:
+// time.Date(d.Date.Year, d.Date.Month, d.Date.Day, 0, 0, 0, 0, loc).Add(d.TimeOfDay).
+type CivilDateTime struct {
+	Date      Date
+	TimeOfDay time.Duration
 }
 
 // Duration is the protobuf pair — whole seconds plus same-signed nanoseconds. Returned
@@ -396,6 +414,30 @@ func DateOnlyOrdered[T Text](text T, order DateOrder) (Date, *Fault) {
 		return Date{}, failed(code, &fault)
 	}
 	return Date{Year: int(out.Year), Month: time.Month(out.Month), Day: int(out.Day)}, nil
+}
+
+// DateTime casts a zone-less civil date-time — the shape untrusted feeds actually send
+// ("1/7/2026 3:04 PM", "2026-01-07 15:04:05") — under the caller-declared DateOrder. The
+// date part follows DateOnlyOrdered's grammar; the optional time part (one space or 'T'
+// after the date) is 24-hour h:mm[:ss[.f]] or 12-hour with an AM/PM marker; absent, the
+// time is midnight. No zone is read and none is invented — Timestamp stays the strict
+// RFC 3339 instant door. An undefined order is a caller bug and panics, never a verdict.
+func DateTime[T Text](text T, order DateOrder) (CivilDateTime, *Fault) {
+	if order < YearMonthDay || order > DayMonthYear {
+		panic(fmt.Sprintf("hypercast: undefined DateOrder %d", order))
+	}
+	mustLoad()
+	ptr, length := textPtr(text)
+	var out rawCivil
+	var fault rawFault
+	code := callDateTime(ptr, length, uint32(order), unsafe.Pointer(&out), unsafe.Pointer(&fault))
+	if code != 0 {
+		return CivilDateTime{}, failed(code, &fault)
+	}
+	return CivilDateTime{
+		Date:      Date{Year: int(out.Year), Month: time.Month(out.Month), Day: int(out.Day)},
+		TimeOfDay: time.Duration(out.Nanos),
+	}, nil
 }
 
 // TimeOfDay casts an ISO 24-hour time-of-day to a time.Duration since midnight —
