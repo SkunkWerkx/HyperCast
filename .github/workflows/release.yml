@@ -3,35 +3,28 @@ name: Release — publish to real, public registries
 # PR -> ci (see ci.yml), tag -> release: this file is the only place a real, permanent,
 # public publish can happen. Ported whole from HyperUuid's proven v0.1.0 pipeline.
 #
-# STATUS after the real v0.0.1 sweep (run 33419045992): four of five legs published for
-# real, one failed. Exactly the protocol below — the four that landed are re-gated
-# `if: false` so a re-run cannot double-publish where a publish already succeeded, and
-# maven-publish stays live because it is the only thing left to prove.
+# STATUS: every leg has run green against its real registry at v0.0.1 — crates.io, PyPI
+# (6 wheels), RubyGems (5 gems), nuget.org all confirmed live, and Maven's bundle accepted
+# and released by the Central Portal (deployment eca12925-2ee7-42fb-9832-304edc86347e).
+# Central's own mirror to repo1.maven.org lags the Portal by tens of minutes, so a 404 there
+# shortly after a run is propagation, not failure. No `if: false` gates remain, and none
+# should be added except to record "this leg already published at the current version"
+# mid-recovery.
 #
-#   crates.io   0.0.1 published        -> gated
-#   PyPI        0.0.1, 6 wheels        -> gated
-#   RubyGems    0.0.1, 5 gems          -> gated
-#   nuget.org   0.0.1 published        -> gated
-#   Maven       nothing (repo1 404)    -> LIVE, 0.0.1 still free there
-#
-# The Maven failure was ours, not Central's — it never reached the registry. Gradle failed
-# the build at `:sourcesJar`, which packages the main source set and therefore reads
+# It took two runs, and the reason is worth keeping. The first (33419045992) landed four of
+# five; maven-publish failed, and not at Central — it never reached the registry. Gradle
+# failed the build at `:sourcesJar`, which packages the main source set and so reads
 # `build/generated-resources` (stageNativeLibrary's output) without declaring the dependency.
 # `ci.yml` runs `./gradlew test`, which never builds sourcesJar, so the publish path was the
-# only place it could surface. Fixed in java/build.gradle.kts.
+# only place that could ever surface. Fixed in java/build.gradle.kts; run 33420548734 then
+# published Maven on its own with the other four gated off.
 #
-# The pack/build jobs feeding a gated publish (nuget-org-pack, pypi-build-wheels) are gated
-# alongside it — nothing consumes their output while the publish is off, and pypi-build-wheels
-# is a six-leg matrix. Only find-ci-run and maven-publish run until Maven is proven.
-#
-# Re-run by deleting and recreating the v0.0.1 tag: no new ci.yml run is needed or wanted,
-# because the fix is confined to the publish path (ci.yml runs `./gradlew test`, which never
-# builds sourcesJar) and find-ci-run walks back to the same already-green run 33415842410.
-# The version comes from the checked-out manifests, which say 0.0.1, so Central receives the
-# same version the other four already carry.
-#
-# Once Maven publishes, un-gate all six again — the gates here record "already published at
-# 0.0.1", not a permanent decision, and the next release needs every leg live.
+# That recovery IS the protocol, and it worked exactly as written below: gate the legs that
+# published (plus any pack/build job feeding them — nothing consumes their output, and
+# pypi-build-wheels is a six-leg matrix), fix the one that failed, retag. No new ci.yml run
+# was needed: the fix was confined to the publish path, and find-ci-run walked back to the
+# same already-green run. A version is only ever burned on registries that actually accepted
+# it, which is why the gating matters — none of these five permits reusing one.
 #
 # The repo-side setup each leg needs is in place, and all of it is org-level at SkunkWerkx
 # (shared to public repositories), not per-repo:
@@ -141,7 +134,6 @@ jobs:
   # prerequisite "prepare release" is responsible for, not automatic just because this job
   # runs.
   nuget-org-pack:
-    if: false  # gated with its publish leg — nothing consumes it while that is off.
     needs: find-ci-run
     uses: SkunkWerkx/.github/.github/workflows/hyper-pack-nuget.yml@master
     with:
@@ -158,7 +150,6 @@ jobs:
   # repo's own workflow, never from the shared forge (see hyper-pack-nuget.yml's header for
   # the confirmed 401s behind that).
   nuget-org-publish:
-    if: false  # PUBLISHED at v0.0.1 — re-gated so a re-run cannot double-publish. See header.
     needs: nuget-org-pack
     runs-on: ubuntu-latest
     permissions:
@@ -196,7 +187,6 @@ jobs:
   # exchange release-gem uses internally, called directly so a plain `gem push` per file
   # picks up the resulting credentials.
   rubygems-publish:
-    if: false  # PUBLISHED at v0.0.1 — re-gated so a re-run cannot double-publish. See header.
     needs: find-ci-run
     runs-on: ubuntu-latest
     permissions:
@@ -286,7 +276,6 @@ jobs:
   # So this is the one registry that pays for a second, small compile — same 6
   # real-hardware legs build-native already uses, and only at actual release time.
   pypi-build-wheels:
-    if: false  # gated with its publish leg — nothing consumes it while that is off.
     strategy:
       fail-fast: false
       matrix:
@@ -338,7 +327,6 @@ jobs:
           path: python/dist/*.whl
 
   pypi-publish:
-    if: false  # PUBLISHED at v0.0.1 — re-gated so a re-run cannot double-publish. See header.
     needs: pypi-build-wheels
     runs-on: ubuntu-latest
     permissions:
@@ -361,7 +349,6 @@ jobs:
   # regenerated: cargo publish --locked fails on a stale self-referential entry) is a real
   # prerequisite.
   pack-crates:
-    if: false  # PUBLISHED at v0.0.1 — re-gated so a re-run cannot double-publish. See header.
     uses: SkunkWerkx/.github/.github/workflows/hyper-publish-crate.yml@master
     secrets:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
