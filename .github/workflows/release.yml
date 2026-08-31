@@ -1,26 +1,31 @@
 name: Release — publish to real, public registries
 
 # PR -> ci (see ci.yml), tag -> release: this file is the only place a real, permanent,
-# public publish can happen. Ported whole from HyperUuid's proven v0.1.0 pipeline, with one
-# deliberate difference: every job that actually pushes to a registry is gated `if: false`
-# until that registry's credentials/Trusted Publishing policy exist for THIS repo (HyperUuid
-# staged its own launch exactly this way — gates on first, removed leg by leg as each
-# registry was proven, all off for the coordinated v0.1.0 tag). The pack/build jobs run
-# ungated so a tag push proves the version-baking half end to end from day one.
+# public publish can happen. Ported whole from HyperUuid's proven v0.1.0 pipeline.
 #
-# Un-gating checklist, per leg (each needs its repo-side setup first):
-#   - nuget-org-publish: nuget.org Trusted Publishing policy for SkunkWerkx/HyperCast
-#     (pointing at THIS repo's release.yml) + vars.NUGET_TRUSTED_PUBLISHER_USER.
+# Every leg is live as of v0.0.1 — no `if: false` gates anywhere in this file. The repo-side
+# setup each leg needs is in place, and all of it is org-level at SkunkWerkx (shared to
+# public repositories), not per-repo:
+#   - nuget-org-publish: nuget.org Trusted Publishing policy pointing at this repo's
+#     release.yml, plus the account name in vars.NUGET_TRUSTED_PUBLISHER_USER. It's an org
+#     *variable* rather than a literal here specifically so the account can change without a
+#     pipeline-code push.
 #   - rubygems-publish: rubygems.org Trusted Publishing policy for this repo/workflow.
 #   - pypi-publish: PyPI Trusted Publishing (pending publisher) for hypercast.
 #   - pack-crates: crates.io token in secrets.CARGO_REGISTRY_TOKEN.
 #   - maven-publish: Central Portal token + GPG key in the four MAVEN_* secrets
 #     (io.github.skunkwerkx namespace is already approved, proven by HyperUuid).
 #
-# workflow_dispatch stays enabled while legs are being proven — Trusted Publishing has no
-# local test path at all (the OIDC exchange only exists inside an Actions runner). Once
-# every leg is proven, workflow_dispatch comes off this file entirely so a public publish
-# can only ever happen from a deliberate tag push.
+# Why all five at once, and why at v0.0.1: Trusted Publishing has no local test path
+# whatsoever — the OIDC exchange only exists inside an Actions runner — so the only way to
+# prove a leg is to run it against the real registry. v0.0.1 is the deliberately cheap
+# version to find that out on. If a leg blows up, re-gate the ones that succeeded (`if: false`
+# on those, so a retag can't double-publish where a publish already landed) and debug the
+# failure on its own; the failure is then the only thing a retag exercises.
+#
+# workflow_dispatch stays enabled while legs are being proven. Once every leg has published
+# for real, it comes off this file entirely so a public publish can only ever happen from a
+# deliberate tag push.
 
 on:
   push:
@@ -123,7 +128,6 @@ jobs:
   # repo's own workflow, never from the shared forge (see hyper-pack-nuget.yml's header for
   # the confirmed 401s behind that).
   nuget-org-publish:
-    if: false  # un-gate once the nuget.org Trusted Publishing policy for this repo exists
     needs: nuget-org-pack
     runs-on: ubuntu-latest
     permissions:
@@ -161,7 +165,6 @@ jobs:
   # exchange release-gem uses internally, called directly so a plain `gem push` per file
   # picks up the resulting credentials.
   rubygems-publish:
-    if: false  # un-gate once the rubygems.org Trusted Publishing policy for this repo exists
     needs: find-ci-run
     runs-on: ubuntu-latest
     permissions:
@@ -302,7 +305,6 @@ jobs:
           path: python/dist/*.whl
 
   pypi-publish:
-    if: false  # un-gate once PyPI Trusted Publishing (pending publisher) for hypercast exists
     needs: pypi-build-wheels
     runs-on: ubuntu-latest
     permissions:
@@ -325,7 +327,6 @@ jobs:
   # regenerated: cargo publish --locked fails on a stale self-referential entry) is a real
   # prerequisite.
   pack-crates:
-    if: false  # un-gate once secrets.CARGO_REGISTRY_TOKEN exists for this repo
     uses: SkunkWerkx/.github/.github/workflows/hyper-publish-crate.yml@master
     secrets:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -334,7 +335,6 @@ jobs:
   # upload, and auto-release in one un-splittable task, so unlike NuGet there's no
   # pack-here/push-there split — the whole leg runs in the forge with this repo's secrets.
   maven-publish:
-    if: false  # un-gate once the four MAVEN_* secrets exist for this repo
     needs: find-ci-run
     uses: SkunkWerkx/.github/.github/workflows/hyper-publish-maven.yml@master
     with:
