@@ -106,6 +106,15 @@ RSpec.describe "conformance corpus" do
     end
   end
 
+  it "replays date_order.json" do
+    orders = HyperCast::DATE_ORDERS.invert
+    corpus("date_order.json").each do |vector|
+      order = orders.fetch(vector["order"])
+      expected = vector.key?("year") ? Date.new(vector["year"], vector["month"], vector["day"]) : nil
+      assert_verdict("date_order", vector, HyperCast.date(vector["input"], order), expected)
+    end
+  end
+
   it "replays time.json" do
     corpus("time.json").each do |vector|
       assert_verdict("time", vector, HyperCast.time(vector["input"]), vector["nanos"])

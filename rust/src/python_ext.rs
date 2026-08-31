@@ -348,13 +348,25 @@ fn cast_unix(py: Python<'_>, text: Text<'_>, precision: u32) -> PyResult<Py<PyAn
     verdict(py, core::cast_unix(text.bytes()?, precision), instant)
 }
 
+fn date_value(py: Python<'_>, date: core::Date) -> PyResult<Py<PyAny>> {
+    Ok(PyDate::new(py, i32::from(date.year), date.month, date.day)?
+        .into_any()
+        .unbind())
+}
+
 #[pyfunction]
-fn cast_date(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
-    verdict(py, core::cast_date(text.bytes()?), |py, date| {
-        Ok(PyDate::new(py, i32::from(date.year), date.month, date.day)?
-            .into_any()
-            .unbind())
-    })
+#[pyo3(signature = (text, order = None))]
+fn cast_date(py: Python<'_>, text: Text<'_>, order: Option<u32>) -> PyResult<Py<PyAny>> {
+    let Some(order) = order else {
+        return verdict(py, core::cast_date(text.bytes()?), date_value);
+    };
+    let order = match order {
+        1 => core::DateOrder::YearMonthDay,
+        2 => core::DateOrder::MonthDayYear,
+        3 => core::DateOrder::DayMonthYear,
+        _ => return Err(PyValueError::new_err("order must be a DateOrder")),
+    };
+    verdict(py, core::cast_date_ordered(text.bytes()?, order), date_value)
 }
 
 #[pyfunction]

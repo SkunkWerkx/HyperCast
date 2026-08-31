@@ -76,6 +76,11 @@ module HyperCast
   # The declared unit of a Unix-epoch value — no magnitude guessing, ever.
   UNIX_PRECISIONS = { seconds: 1, milliseconds: 2, microseconds: 3, nanoseconds: 4 }.freeze
 
+  # The declared field order of a separated calendar date — no guessing, ever: "1/7/2026"
+  # is January 7th (:month_day_year, the en-US order) or July 1st (:day_month_year, the
+  # en-GB order) only because the caller said which.
+  DATE_ORDERS = { year_month_day: 1, month_day_year: 2, day_month_year: 3 }.freeze
+
   class << self
     # Presents a verdict optionally: an :empty fault becomes nil (Ruby's absent),
     # everything else flows through untouched.
@@ -141,11 +146,26 @@ module HyperCast
       verdict(rc, fault) { instant(out[0, 16]) }
     end
 
-    # Casts a strict ISO 8601 yyyy-MM-dd calendar date to a Date.
-    def date(text)
-      plain(:cast_date, text, 4) do |out|
-        year, month, day = out.unpack("S<CC")
-        Date.new(year, month, day)
+    # Casts a calendar date to a Date. With no order declared: the strict ISO 8601
+    # yyyy-MM-dd form only. With a declared order Symbol (:year_month_day,
+    # :month_day_year, :day_month_year), also the separated forms — "1/7/2026" is
+    # January 7th or July 1st only because the caller said which; an unknown order is a
+    # caller bug (KeyError), never a verdict.
+    def date(text, order = nil)
+      if order.nil?
+        plain(:cast_date, text, 4) do |out|
+          year, month, day = out.unpack("S<CC")
+          Date.new(year, month, day)
+        end
+      else
+        code = DATE_ORDERS.fetch(order)
+        bytes = utf8(text)
+        out, fault, = scratch
+        rc = Runtime.call(:cast_date_ordered, input_ptr(bytes), bytes.bytesize, code, out, fault)
+        verdict(rc, fault) do
+          year, month, day = out[0, 4].unpack("S<CC")
+          Date.new(year, month, day)
+        end
       end
     end
 

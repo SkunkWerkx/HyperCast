@@ -139,6 +139,47 @@ public static partial class Cast
 	}
 
 	/// <summary>
+	/// Casts a separated calendar date — three digit fields joined by one consistent
+	/// separator (<c>/</c>, <c>-</c>, or <c>.</c>) — under the caller-declared
+	/// <see cref="DateOrder"/> to a <see cref="DateOnly"/>: <c>1/7/2026</c> is January 7th
+	/// or July 1st only because <paramref name="order"/> said which. The year field is four
+	/// digits wherever the order puts it (two-digit years mean century guessing, which
+	/// never happens — <see cref="CastFailure.Malformed"/>); the order-less
+	/// <see cref="Date(ReadOnlySpan{byte})"/> overload stays strict ISO.
+	/// </summary>
+	/// <param name="utf8">The raw scalar text as UTF-8 bytes.</param>
+	/// <param name="order">The declared field order. Never <see cref="DateOrder.Unspecified"/>.</param>
+	/// <exception cref="ArgumentOutOfRangeException"><paramref name="order"/> is undefined — a caller bug, not a data verdict.</exception>
+	public static unsafe Verdict<DateOnly> Date(ReadOnlySpan<byte> utf8, DateOrder order)
+	{
+		GuardOrder(order);
+		RawDate value = default;
+		RawFault fault = default;
+		int code;
+		fixed (byte* ptr = utf8)
+			code = cast_date_ordered(ptr, (nuint)utf8.Length, (uint)order, &value, &fault);
+		return code == 0
+			? new DateOnly(value.Year, value.Month, value.Day)
+			: Failed<DateOnly>(code, fault);
+	}
+
+	/// <inheritdoc cref="Date(ReadOnlySpan{byte}, DateOrder)"/>
+	/// <param name="input">The raw scalar text.</param>
+	/// <param name="order">The declared field order. Never <see cref="DateOrder.Unspecified"/>.</param>
+	public static Verdict<DateOnly> Date(ReadOnlySpan<char> input, DateOrder order)
+	{
+		byte[]? rented = null;
+		try
+		{
+			return Date(Utf8(input, stackalloc byte[Utf8StackBytes], ref rented), order);
+		}
+		finally
+		{
+			Recycle(rented);
+		}
+	}
+
+	/// <summary>
 	/// Casts an ISO 8601 24-hour time-of-day — <c>HH:mm</c>, <c>HH:mm:ss</c>, or
 	/// <c>HH:mm:ss.f{1..9}</c> — to a <see cref="TimeOnly"/>. Midnight and
 	/// <c>23:59:59.999…</c> are real clock readings, so this door has no range failure.
@@ -209,6 +250,13 @@ public static partial class Cast
 	static DateTimeOffset ToDateTimeOffset(in RawTimestamp timestamp) =>
 		new(UnixEpochTicks + timestamp.Seconds * TimeSpan.TicksPerSecond + timestamp.Nanos / 100,
 			TimeSpan.Zero);
+
+	static void GuardOrder(DateOrder order)
+	{
+		if (order is not (DateOrder.YearMonthDay or DateOrder.MonthDayYear or DateOrder.DayMonthYear))
+			throw new ArgumentOutOfRangeException(nameof(order), order,
+				"Order must be YearMonthDay, MonthDayYear, or DayMonthYear.");
+	}
 
 	static void GuardPrecision(UnixPrecision precision)
 	{

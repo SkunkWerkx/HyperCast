@@ -7,6 +7,7 @@ namespace HyperCast\Tests;
 use DateTimeImmutable;
 use HyperCast\Cast;
 use HyperCast\CastFailure;
+use HyperCast\DateOrder;
 use HyperCast\Duration;
 use HyperCast\Fault;
 use HyperCast\NumFormat;
@@ -97,4 +98,20 @@ final class CastTest extends TestCase
         $this->expectException(\InvalidArgumentException::class);
         new NumFormat('.', '.', NumFormat::ALL);
     }
+    public function testDateOrderDisambiguatesLikeTheCulturesDo(): void
+    {
+        // The canonical ambiguity: 1/7/2026 is January 7th under en-US's month-first short
+        // dates and July 1st under en-GB's day-first ones — resolved only by declaration.
+        $enUs = Cast::date('1/7/2026', DateOrder::Mdy);
+        $enGb = Cast::date('1/7/2026', DateOrder::Dmy);
+        self::assertInstanceOf(Success::class, $enUs);
+        self::assertInstanceOf(Success::class, $enGb);
+        self::assertSame('2026-01-07', $enUs->value->format('Y-m-d'));
+        self::assertSame('2026-07-01', $enGb->value->format('Y-m-d'));
+        // Undeclared, the door stays strict ISO — the ambiguity is never guessed at.
+        $undeclared = Cast::date('1/7/2026');
+        self::assertInstanceOf(Fault::class, $undeclared);
+        self::assertSame(CastFailure::Malformed, $undeclared->reason);
+    }
+
 }

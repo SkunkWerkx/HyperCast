@@ -351,17 +351,25 @@ final class Cast
     }
 
     /**
-     * Casts a strict ISO 8601 yyyy-MM-dd calendar date to a UTC DateTimeImmutable at
-     * midnight (PHP has no date-only type). Built from epoch arithmetic — Hinnant's
-     * days_from_civil, the same math the core itself uses — not a date-string parse.
+     * Casts a calendar date to a UTC DateTimeImmutable at midnight (PHP has no date-only
+     * type). With no order declared: the strict ISO 8601 yyyy-MM-dd form only. With a
+     * declared DateOrder, also the separated forms — "1/7/2026" is January 7th (Mdy, the
+     * en-US order) or July 1st (Dmy, the en-GB order) only because the caller said which.
+     * Built from epoch arithmetic — Hinnant's days_from_civil, the same math the core
+     * itself uses — not a date-string parse.
      *
      * @param string $text the text to cast
+     * @param DateOrder|null $order the declared field order; null keeps the strict ISO door
      * @return Success|Fault the verdict: a Success carrying the cast value, or a Fault
      */
-    public static function date(string $text): Success|Fault
+    public static function date(string $text, ?DateOrder $order = null): Success|Fault
     {
         $ffi = self::$ffi ?? self::load();
-        $rc = $ffi->cast_date($text === '' ? null : $text, \strlen($text), self::$outDatePtr, self::$faultPtr);
+        $rc = $order === null
+            ? $ffi->cast_date($text === '' ? null : $text, \strlen($text), self::$outDatePtr, self::$faultPtr)
+            : $ffi->cast_date_ordered(
+                $text === '' ? null : $text, \strlen($text), $order->value, self::$outDatePtr, self::$faultPtr
+            );
         if ($rc !== 0) {
             return self::fail($rc);
         }
@@ -450,6 +458,7 @@ final class Cast
             . "int cast_timestamp{$plain};"
             . 'int cast_unix(const char *ptr, size_t len, uint32_t precision, void *out, void *fault);'
             . "int cast_date{$plain};"
+            . 'int cast_date_ordered(const char *ptr, size_t len, uint32_t order, void *out, void *fault);'
             . "int cast_time{$plain};"
             . "int cast_duration{$plain};",
             $path

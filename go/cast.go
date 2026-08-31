@@ -161,6 +161,18 @@ const (
 	Nanoseconds  UnixPrecision = 4
 )
 
+// DateOrder is the caller-declared field order of a separated calendar date — no
+// guessing, ever: "1/7/2026" is January 7th (MonthDayYear, the en-US order) or July 1st
+// (DayMonthYear, the en-GB order) only because the caller said which.
+type DateOrder uint32
+
+// The declared field orders — the native core's codes, verbatim.
+const (
+	YearMonthDay DateOrder = 1
+	MonthDayYear DateOrder = 2
+	DayMonthYear DateOrder = 3
+)
+
 // Date is a calendar date with no time or zone — the protobuf google.type.Date fields.
 // Go has no standard date-only type; this keeps the core's digits exactly.
 type Date struct {
@@ -360,6 +372,26 @@ func DateOnly[T Text](text T) (Date, *Fault) {
 	var out rawDate
 	var fault rawFault
 	code := callPlain(symDate, ptr, length, unsafe.Pointer(&out), unsafe.Pointer(&fault))
+	if code != 0 {
+		return Date{}, failed(code, &fault)
+	}
+	return Date{Year: int(out.Year), Month: time.Month(out.Month), Day: int(out.Day)}, nil
+}
+
+// DateOnlyOrdered casts a separated calendar date — three digit fields joined by one
+// consistent separator (/, -, or .) — under the caller-declared DateOrder. The year field
+// is four digits wherever the order puts it (two-digit years mean century guessing, which
+// never happens here); an undefined order is a caller bug and panics, never a verdict.
+// The strict DateOnly door keeps rejecting every separated form.
+func DateOnlyOrdered[T Text](text T, order DateOrder) (Date, *Fault) {
+	if order < YearMonthDay || order > DayMonthYear {
+		panic(fmt.Sprintf("hypercast: undefined DateOrder %d", order))
+	}
+	mustLoad()
+	ptr, length := textPtr(text)
+	var out rawDate
+	var fault rawFault
+	code := callDateOrdered(ptr, length, uint32(order), unsafe.Pointer(&out), unsafe.Pointer(&fault))
 	if code != 0 {
 		return Date{}, failed(code, &fault)
 	}

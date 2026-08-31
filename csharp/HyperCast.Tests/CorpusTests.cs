@@ -190,6 +190,18 @@ public sealed class CorpusTests
 	}
 
 	[Fact]
+	void Date_order_corpus()
+	{
+		foreach (var vector in Corpus("date_order.json"))
+			AssertVerdict("date_order", vector,
+				Cast.Date(InputBytes(vector), (DateOrder)vector.GetProperty("order").GetUInt32()),
+				static v => new DateOnly(
+					v.GetProperty("year").GetInt32(),
+					v.GetProperty("month").GetInt32(),
+					v.GetProperty("day").GetInt32()));
+	}
+
+	[Fact]
 	void Time_corpus()
 	{
 		foreach (var vector in Corpus("time.json"))

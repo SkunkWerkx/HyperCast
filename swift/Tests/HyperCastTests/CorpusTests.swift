@@ -163,6 +163,21 @@ final class CorpusTests: XCTestCase {
         }
     }
 
+    func testDateOrderCorpus() throws {
+        for vector in try corpus("date_order.json") {
+            guard let order = DateOrder(rawValue: UInt32(vector["order"] as! Int)) else {
+                XCTFail("date_order: unknown order")
+                continue
+            }
+            var expected: DateComponents?
+            if let year = vector["year"] as? Int {
+                expected = DateComponents(
+                    year: year, month: (vector["month"] as! Int), day: (vector["day"] as! Int))
+            }
+            assertVerdict("date_order", vector, try Cast.date(inputBytes(vector), order: order), expected)
+        }
+    }
+
     func testTimeCorpus() throws {
         for vector in try corpus("time.json") {
             var expected: DateComponents?

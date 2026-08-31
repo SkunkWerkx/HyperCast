@@ -78,6 +78,8 @@ public final class Cast {
     private static final MethodHandle CAST_TIMESTAMP = handle("cast_timestamp", PLAIN);
     private static final MethodHandle CAST_UNIX = handle("cast_unix", UNIX);
     private static final MethodHandle CAST_DATE = handle("cast_date", PLAIN);
+    // cast_date_ordered shares the unix ABI shape (ptr, len, u32, out, fault).
+    private static final MethodHandle CAST_DATE_ORDERED = handle("cast_date_ordered", UNIX);
     private static final MethodHandle CAST_TIME = handle("cast_time", PLAIN);
     private static final MethodHandle CAST_DURATION = handle("cast_duration", PLAIN);
 
@@ -590,6 +592,50 @@ public final class Cast {
                 code = (int) CAST_DATE.invokeExact(input(arena, utf8), (long) utf8.length, out, fault);
             } catch (Throwable t) {
                 throw new AssertionError("hypercast: cast_date downcall failed unexpectedly", t);
+            }
+            return code == 0
+                    ? new Success<>(LocalDate.of(
+                            Short.toUnsignedInt(out.get(ValueLayout.JAVA_SHORT, 0)),
+                            out.get(ValueLayout.JAVA_BYTE, 2),
+                            out.get(ValueLayout.JAVA_BYTE, 3)))
+                    : failed(code, fault);
+        }
+    }
+
+    /**
+     * Casts a separated calendar date — three digit fields joined by one consistent
+     * separator ({@code /}, {@code -}, or {@code .}) — under the caller-declared
+     * {@link DateOrder} to a {@link LocalDate}: {@code 1/7/2026} is January 7th or July 1st
+     * only because {@code order} said which. The year field is four digits wherever the
+     * order puts it (two-digit years mean century guessing, which never happens —
+     * {@link CastFailure#MALFORMED}); the order-less {@link #date(String)} overload stays
+     * strict ISO.
+     *
+     * @param text the text to cast
+     * @param order the declared field order
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<LocalDate> date(String text, DateOrder order) {
+        return date(utf8(text), order);
+    }
+
+    /**
+     * See {@link #date(String, DateOrder)}; input as raw UTF-8 bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param order the declared field order
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<LocalDate> date(byte[] utf8, DateOrder order) {
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment out = arena.allocate(4);
+            MemorySegment fault = arena.allocate(FAULT_BYTES);
+            int code;
+            try {
+                code = (int) CAST_DATE_ORDERED.invokeExact(
+                        input(arena, utf8), (long) utf8.length, order.code(), out, fault);
+            } catch (Throwable t) {
+                throw new AssertionError("hypercast: cast_date_ordered downcall failed unexpectedly", t);
             }
             return code == 0
                     ? new Success<>(LocalDate.of(

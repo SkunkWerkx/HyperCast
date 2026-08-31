@@ -24,6 +24,7 @@ type vector struct {
 	Format    *formatSpec     `json:"format"`
 	FaultSpan []int           `json:"fault"`
 	Precision uint32          `json:"precision"`
+	Order     uint32          `json:"order"`
 	Seconds   *int64          `json:"seconds"`
 	Nanos     int64           `json:"nanos"`
 	Year      *int            `json:"year"`
@@ -243,6 +244,17 @@ func TestDateCorpus(t *testing.T) {
 		}
 		value, fault := DateOnly(v.Input)
 		assertVerdict(t, "date", &v, value, fault, expected)
+	}
+}
+
+func TestDateOrderCorpus(t *testing.T) {
+	for _, v := range corpus(t, "date_order.json") {
+		var expected Date
+		if v.Year != nil {
+			expected = Date{Year: *v.Year, Month: time.Month(v.Month), Day: v.Day}
+		}
+		value, fault := DateOnlyOrdered(v.Input, DateOrder(v.Order))
+		assertVerdict(t, "date_order", &v, value, fault, expected)
 	}
 }
 

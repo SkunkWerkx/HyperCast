@@ -7,7 +7,7 @@
 //! plus a per-domain value shape on "ok" vectors, an optional `"fault": [offset, len]`
 //! span assertion on failures, and `"type"`/`"format"`/`"precision"` where a door takes one.
 
-use hypercast::{Fault, NumFormat, Reason, UnixPrecision};
+use hypercast::{DateOrder, Fault, NumFormat, Reason, UnixPrecision};
 use serde_json::Value;
 use std::path::PathBuf;
 
@@ -188,6 +188,24 @@ fn date_corpus() {
     for vector in corpus("date.json") {
         let verdict = hypercast::cast_date(input(&vector).as_bytes());
         assert_verdict("date", &vector, verdict, |v| hypercast::Date {
+            year: v["year"].as_u64().expect("year") as u16,
+            month: v["month"].as_u64().expect("month") as u8,
+            day: v["day"].as_u64().expect("day") as u8,
+        });
+    }
+}
+
+#[test]
+fn date_order_corpus() {
+    for vector in corpus("date_order.json") {
+        let order = match vector["order"].as_u64().expect("order") {
+            1 => DateOrder::YearMonthDay,
+            2 => DateOrder::MonthDayYear,
+            3 => DateOrder::DayMonthYear,
+            other => panic!("date_order: unknown order {other}"),
+        };
+        let verdict = hypercast::cast_date_ordered(input(&vector).as_bytes(), order);
+        assert_verdict("date_order", &vector, verdict, |v| hypercast::Date {
             year: v["year"].as_u64().expect("year") as u16,
             month: v["month"].as_u64().expect("month") as u8,
             day: v["day"].as_u64().expect("day") as u8,

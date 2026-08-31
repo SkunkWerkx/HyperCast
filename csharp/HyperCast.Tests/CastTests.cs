@@ -106,6 +106,27 @@ public sealed class CastTests
 	}
 
 	[Fact]
+	void Date_order_disambiguates_like_the_cultures_do()
+	{
+		// The canonical ambiguity: 1/7/2026 is January 7th under en-US's month-first short
+		// dates and July 1st under en-GB's day-first ones — resolved only by declaration,
+		// with the declaration derived from the real cultures' own short-date patterns.
+		var enUs = DateOrders.From(CultureInfo.GetCultureInfo("en-US"));
+		var enGb = DateOrders.From(CultureInfo.GetCultureInfo("en-GB"));
+		enUs.ShouldBe(DateOrder.MonthDayYear);
+		enGb.ShouldBe(DateOrder.DayMonthYear);
+		(Cast.Date("1/7/2026", enUs) is Success<DateOnly> { Value: var us } && us == new DateOnly(2026, 1, 7))
+			.ShouldBeTrue();
+		(Cast.Date("1/7/2026", enGb) is Success<DateOnly> { Value: var gb } && gb == new DateOnly(2026, 7, 1))
+			.ShouldBeTrue();
+		// ISO-order cultures land on YearMonthDay; the ISO form is that order's subset.
+		DateOrders.From(CultureInfo.GetCultureInfo("ja-JP")).ShouldBe(DateOrder.YearMonthDay);
+		// Undeclared, the door stays strict ISO — the ambiguity is never guessed at.
+		(Cast.Date("1/7/2026") is Fault { Reason: CastFailure.Malformed }).ShouldBeTrue();
+		Should.Throw<ArgumentOutOfRangeException>(() => Cast.Date("1/7/2026", DateOrder.Unspecified));
+	}
+
+	[Fact]
 	void Date_time_and_duration_map_to_their_dotnet_types()
 	{
 		Cast.Date("2026-01-02").ShouldBe(new(new Success<DateOnly>(new(2026, 1, 2))));

@@ -89,4 +89,27 @@ final class CastTests: XCTestCase {
         XCTAssertEqual(try Cast.bool("yes"), try Cast.bool(Array("yes".utf8)))
         XCTAssertEqual(try Cast.bool("yes"), .success(true))
     }
+    func testDateOrderDisambiguatesLikeTheCulturesDo() throws {
+        // The canonical ambiguity: 1/7/2026 is January 7th under en-US's month-first short
+        // dates and July 1st under en-GB's day-first ones — resolved only by declaration,
+        // with the declaration derived from the real locales' own short-date patterns.
+        let enUs = DateOrder.from(locale: Locale(identifier: "en_US"))
+        let enGb = DateOrder.from(locale: Locale(identifier: "en_GB"))
+        XCTAssertEqual(enUs, .monthDayYear)
+        XCTAssertEqual(enGb, .dayMonthYear)
+        guard case .success(let us) = try Cast.date("1/7/2026", order: enUs) else {
+            return XCTFail("en-US order should parse")
+        }
+        XCTAssertEqual(us, DateComponents(year: 2026, month: 1, day: 7))
+        guard case .success(let gb) = try Cast.date("1/7/2026", order: enGb) else {
+            return XCTFail("en-GB order should parse")
+        }
+        XCTAssertEqual(gb, DateComponents(year: 2026, month: 7, day: 1))
+        // Undeclared, the door stays strict ISO — the ambiguity is never guessed at.
+        guard case .fault(let fault) = try Cast.date("1/7/2026") else {
+            return XCTFail("undeclared slash date should be malformed")
+        }
+        XCTAssertEqual(fault.reason, .malformed)
+    }
+
 }

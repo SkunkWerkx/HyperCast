@@ -129,6 +129,13 @@ def test_date_corpus():
         _assert_verdict("date", vector, hypercast.cast_date(_input(vector)), expected)
 
 
+def test_date_order_corpus():
+    for vector in _corpus("date_order.json"):
+        order = hypercast.DateOrder(vector["order"])
+        expected = dt.date(vector["year"], vector["month"], vector["day"]) if "year" in vector else None
+        _assert_verdict("date_order", vector, hypercast.cast_date(_input(vector), order), expected)
+
+
 def test_time_corpus():
     for vector in _corpus("time.json"):
         expected = None

@@ -202,6 +202,26 @@ final class CorpusTest {
     }
 
     @Test
+    void dateOrderCorpus() {
+        for (JsonElement element : corpus("date_order.json")) {
+            JsonObject vector = element.getAsJsonObject();
+            DateOrder order = switch (vector.get("order").getAsInt()) {
+                case 1 -> DateOrder.YEAR_MONTH_DAY;
+                case 2 -> DateOrder.MONTH_DAY_YEAR;
+                case 3 -> DateOrder.DAY_MONTH_YEAR;
+                default -> throw new AssertionError("date_order: unknown order");
+            };
+            LocalDate expected = vector.has("year")
+                    ? LocalDate.of(
+                            vector.get("year").getAsInt(),
+                            vector.get("month").getAsInt(),
+                            vector.get("day").getAsInt())
+                    : null;
+            assertVerdict("date_order", vector, Cast.date(inputBytes(vector), order), expected);
+        }
+    }
+
+    @Test
     void timeCorpus() {
         for (JsonElement element : corpus("time.json")) {
             JsonObject vector = element.getAsJsonObject();

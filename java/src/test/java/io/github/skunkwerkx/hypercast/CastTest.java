@@ -121,4 +121,19 @@ final class CastTest {
     void equalSeparatorsAreACallerBugNotAVerdict() {
         assertThrows(IllegalArgumentException.class, () -> new NumFormat('.', '.', NumFormat.STYLE_ALL));
     }
+    @Test
+    void dateOrderDisambiguatesLikeTheCulturesDo() {
+        // The canonical ambiguity: 1/7/2026 is January 7th under en-US's month-first short
+        // dates and July 1st under en-GB's day-first ones — resolved only by declaration,
+        // with the declaration derived from the real locales' own short-date patterns.
+        DateOrder enUs = DateOrder.from(Locale.US);
+        DateOrder enGb = DateOrder.from(Locale.UK);
+        assertEquals(DateOrder.MONTH_DAY_YEAR, enUs);
+        assertEquals(DateOrder.DAY_MONTH_YEAR, enGb);
+        assertEquals(new Success<>(LocalDate.of(2026, 1, 7)), Cast.date("1/7/2026", enUs));
+        assertEquals(new Success<>(LocalDate.of(2026, 7, 1)), Cast.date("1/7/2026", enGb));
+        // Undeclared, the door stays strict ISO — the ambiguity is never guessed at.
+        assertEquals(new Fault<LocalDate>(CastFailure.MALFORMED, 0, 8), Cast.date("1/7/2026"));
+    }
+
 }

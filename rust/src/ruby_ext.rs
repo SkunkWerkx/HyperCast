@@ -13,6 +13,7 @@
 use std::sync::OnceLock;
 
 use magnus::rb_sys::{AsRawValue, FromRawValue};
+use magnus::scan_args::scan_args;
 use magnus::value::{Opaque, ReprValue};
 use magnus::{function, prelude::*, Error, IntoValue, RModule, RString, Ruby, Symbol, Value};
 
@@ -172,8 +173,31 @@ fn unix_door(ruby: &Ruby, text: RString, precision: Symbol) -> Result<Value, Err
     }
 }
 
-fn date_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
-    match with_bytes(text, |bytes| core::cast_date(bytes)) {
+// Variadic (arity -1) because the order argument is optional — magnus's fixed-arity
+// function! would demand both; scan_args gives Ruby's own required-then-optional shape.
+fn date_door(ruby: &Ruby, args: &[Value]) -> Result<Value, Error> {
+    let args = scan_args::<(RString,), (Option<Symbol>,), (), (), (), ()>(args)?;
+    let (text,) = args.required;
+    let (order,) = args.optional;
+    let verdict = match order {
+        None => with_bytes(text, |bytes| core::cast_date(bytes)),
+        Some(order) => {
+            let name = order.name()?;
+            let order = match &*name {
+                "year_month_day" => core::DateOrder::YearMonthDay,
+                "month_day_year" => core::DateOrder::MonthDayYear,
+                "day_month_year" => core::DateOrder::DayMonthYear,
+                other => {
+                    return Err(Error::new(
+                        ruby.exception_key_error(),
+                        format!("unknown DateOrder {other:?}"),
+                    ))
+                }
+            };
+            with_bytes(text, |bytes| core::cast_date_ordered(bytes, order))
+        }
+    };
+    match verdict {
         Ok(date) => {
             let class = ruby.get_inner(cached().date_class);
             success(ruby, class.funcall::<_, _, Value>("new", (date.year, date.month, date.day))?)
@@ -222,7 +246,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     hypercast.define_singleton_method("uuid", function!(uuid_door, 1))?;
     hypercast.define_singleton_method("timestamp", function!(timestamp_door, 1))?;
     hypercast.define_singleton_method("unix", function!(unix_door, 2))?;
-    hypercast.define_singleton_method("date", function!(date_door, 1))?;
+    hypercast.define_singleton_method("date", function!(date_door, -1))?;
     hypercast.define_singleton_method("time", function!(time_door, 1))?;
     hypercast.define_singleton_method("duration", function!(duration_door, 1))?;
     Ok(())

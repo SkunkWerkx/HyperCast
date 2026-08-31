@@ -31,10 +31,10 @@ let verdict = hypercast::cast_timestamp(b"2026-01-02T15:04:05.123456789+05:00");
 | **reals** f32/f64 | declared separators (eurozone `1.234,5`, French NBSP grouping), parens, exponent, percent (`50%` ⇒ 0.5) — finite values only | IEEE, overflow-to-∞ is `OutOfRange`, `NaN` text is `Malformed` |
 | **uuid** | all five .NET `Guid` formats (D/N/B/P/X) plus `urn:uuid:` / `GUID:` / `UUID:` prefixes | 16 bytes, RFC 9562 order |
 | **timestamp** | RFC 3339 with **mandatory** zone, normalized to UTC; separate Unix-epoch door with *declared* precision (s/ms/µs/ns — no magnitude guessing) | protobuf `{seconds: i64, nanos: i32}` — bindings present platform fidelity |
-| **date / time** | strict `yyyy-MM-dd` (real calendar, leap days); 24-hour `HH:mm[:ss[.f≤9]]` | `{y, m, d}` / nanos-since-midnight |
+| **date / time** | strict `yyyy-MM-dd` (real calendar, leap days); separated dates (`1/7/2026`, `1.7.2026`) under a **caller-declared field order** — Jan 7th or Jul 1st only because you said which, never guessed, and undeclared slash dates stay `Malformed`; 24-hour `HH:mm[:ss[.f≤9]]` | `{y, m, d}` / nanos-since-midnight |
 | **duration** | ISO 8601 fixed components (`P1DT6H30M15.5S` — years/months rejected: not fixed durations), invariant colon form, protobuf JSON seconds (`3.5s`) | protobuf `{seconds, nanos}`, ±10,000-year window |
 
-Culture never lives in the core: numeric doors take a caller-declared format (separators + lenience flags), and each binding bridges its platform's culture machinery to it (`NumFormat.From(CultureInfo)` in C#). Optionality is presentation: `Empty` is a verdict, and the optional doors map it to absent.
+Culture never lives in the core: numeric doors take a caller-declared format (separators + lenience flags), separated dates take a caller-declared field order (`DateOrder` — the en-US/en-GB `1/7/2026` ambiguity is resolved by declaration, never sniffed), and each binding bridges its platform's culture machinery to both (`NumFormat.From(CultureInfo)` / `DateOrders.From(CultureInfo)` in C#, `DateOrder.from(Locale)` in Java, `DateOrder.from(locale:)` in Swift). Optionality is presentation: `Empty` is a verdict, and the optional doors map it to absent.
 
 ## Receipts — proven today, on this repo's own tests
 

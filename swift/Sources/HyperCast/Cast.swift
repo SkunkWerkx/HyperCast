@@ -42,6 +42,8 @@ public enum Cast {
         let timestamp: PlainFn
         let unix: UnixFn
         let date: PlainFn
+        // cast_date_ordered shares the unix ABI shape (ptr, len, u32, out, fault).
+        let dateOrdered: UnixFn
         let time: PlainFn
         let duration: PlainFn
     }
@@ -70,6 +72,7 @@ public enum Cast {
             timestamp: try plain("cast_timestamp"),
             unix: unsafeBitCast(try library.symbol("cast_unix"), to: UnixFn.self),
             date: try plain("cast_date"),
+            dateOrdered: unsafeBitCast(try library.symbol("cast_date_ordered"), to: UnixFn.self),
             time: try plain("cast_time"),
             duration: try plain("cast_duration"))
     }
@@ -340,6 +343,40 @@ public enum Cast {
                 month: Int(raw.load(fromByteOffset: 2, as: UInt8.self)),
                 day: Int(raw.load(fromByteOffset: 3, as: UInt8.self)))
         }
+    }
+
+    /// Casts a separated calendar date — three digit fields joined by one consistent
+    /// separator (`/`, `-`, or `.`) — under the caller-declared ``DateOrder`` to
+    /// `DateComponents`: `1/7/2026` is January 7th or July 1st only because `order` said
+    /// which. The year field is four digits wherever the order puts it (two-digit years
+    /// mean century guessing, which never happens — malformed); the order-less
+    /// ``date(_:)-swift.type.method`` overload stays strict ISO.
+    public static func date(_ text: String, order: DateOrder) throws -> Verdict<DateComponents> {
+        try date(Array(text.utf8), order: order)
+    }
+
+    /// See ``date(_:order:)-swift.type.method``; input as raw UTF-8 bytes.
+    public static func date(_ utf8: [UInt8], order: DateOrder) throws -> Verdict<DateComponents> {
+        let fn = try loaded().dateOrdered
+        var out = [UInt8](repeating: 0, count: 4)
+        var faultOut = [UInt8](repeating: 0, count: 8)
+        let code = out.withUnsafeMutableBytes { outRaw in
+            faultOut.withUnsafeMutableBytes { faultRaw in
+                utf8.withUnsafeBufferPointer { input in
+                    fn(input.baseAddress, UInt(utf8.count), order.rawValue,
+                       outRaw.baseAddress, faultRaw.baseAddress)
+                }
+            }
+        }
+        if code == 0 {
+            return .success(out.withUnsafeBytes { raw in
+                DateComponents(
+                    year: Int(raw.load(fromByteOffset: 0, as: UInt16.self)),
+                    month: Int(raw.load(fromByteOffset: 2, as: UInt8.self)),
+                    day: Int(raw.load(fromByteOffset: 3, as: UInt8.self)))
+            })
+        }
+        return .fault(faultOut.withUnsafeBytes { fault(code, $0) })
     }
 
     /// Casts an ISO 24-hour time-of-day to `DateComponents` (hour, minute, second,

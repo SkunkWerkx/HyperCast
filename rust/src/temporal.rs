@@ -160,6 +160,101 @@ pub fn cast_date(input: impl AsRef<[u8]>) -> Result<Date, Fault> {
     Ok(Date { year: year as u16, month: month as u8, day: day as u8 })
 }
 
+/// The caller-declared field order of a separated calendar date. There is no guessing —
+/// `1/7/2026` is January 7th or July 1st only because the caller said which (en-US short
+/// dates are month-first, en-GB and most of the world day-first, ISO year-first), the same
+/// declare-don't-sniff stance [`NumFormat`](crate::NumFormat) takes for numeric notation
+/// and [`UnixPrecision`] takes for epoch magnitude. The strict [`cast_date`] door keeps
+/// rejecting every separated form: an *undeclared* `1/7/2026` stays `Malformed` everywhere.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DateOrder {
+    /// Year, month, day — ISO's order with any accepted separator (`2026/1/7`, `2026.1.7`;
+    /// strict `2026-01-07` is a subset).
+    YearMonthDay = 1,
+    /// Month, day, year — the en-US short-date order (`1/7/2026` is January 7th).
+    MonthDayYear = 2,
+    /// Day, month, year — the en-GB/most-of-the-world order (`1/7/2026` is July 1st).
+    DayMonthYear = 3,
+}
+
+/// Reads a run of 1..=4 ASCII digits at `at` (a calendar date field), returning the value
+/// and the index after the run. A zero-length or five-plus-digit run faults at the run
+/// itself. Thin wrapper over the duration parser's [`read_digit_run`].
+fn read_date_field(text: &[u8], at: usize, start: usize) -> Result<(u32, usize), Fault> {
+    let (value, digits, after) = read_digit_run(text, at, start)?;
+    if digits == 0 || digits > 4 {
+        return Err(Fault::malformed(start + at, digits.max(1)));
+    }
+    Ok((value as u32, after))
+}
+
+/// Casts a separated calendar date — three digit fields joined by one consistent separator
+/// (`/`, `-`, or `.`) — under the caller-declared [`DateOrder`]. The year field must be
+/// four digits wherever the order puts it (two-digit years mean century guessing, which
+/// this core never does — `Malformed`); month and day take one or two. Empty ⇒ `Empty`;
+/// year 0000 ⇒ `OutOfRange`; an impossible month or day ⇒ `Malformed` at its own digits.
+pub fn cast_date_ordered(input: impl AsRef<[u8]>, order: DateOrder) -> Result<Date, Fault> {
+    let input = input.as_ref();
+    let (text, start) = trim(input);
+    if text.is_empty() {
+        return Err(Fault::EMPTY);
+    }
+
+    let (first, first_end) = read_date_field(text, 0, start)?;
+    let sep = match text.get(first_end) {
+        Some(&sep @ (b'/' | b'-' | b'.')) => sep,
+        _ => return Err(Fault::malformed(start + first_end, 1)),
+    };
+    let (second, second_end) = read_date_field(text, first_end + 1, start)?;
+    if text.get(second_end) != Some(&sep) {
+        return Err(Fault::malformed(start + second_end, 1));
+    }
+    let (third, third_end) = read_date_field(text, second_end + 1, start)?;
+    if third_end != text.len() {
+        return Err(Fault::malformed(start + third_end, char_len(text[third_end])));
+    }
+
+    // Field spans, for pointing a fault at the offending digits.
+    let spans = [
+        (0, first_end),
+        (first_end + 1, second_end - first_end - 1),
+        (second_end + 1, third_end - second_end - 1),
+    ];
+    let (fields, year_at, month_at, day_at) = match order {
+        DateOrder::YearMonthDay => ([first, second, third], 0, 1, 2),
+        DateOrder::MonthDayYear => ([first, second, third], 2, 0, 1),
+        DateOrder::DayMonthYear => ([first, second, third], 2, 1, 0),
+    };
+    let field_fault = |at: usize| Fault::malformed(start + spans[at].0, spans[at].1);
+
+    let (year, month, day) = (fields[year_at], fields[month_at], fields[day_at]);
+    // The year field is four digits wherever the order puts it; month and day are one or
+    // two. A four-digit month is almost certainly a misdeclared order ("2026/1/7" under
+    // MonthDayYear) — checked before the year width so the fault points at that misfit
+    // field, the most diagnostic span. A two-digit year would mean century guessing, which
+    // this core never does.
+    if spans[month_at].1 > 2 {
+        return Err(field_fault(month_at));
+    }
+    if spans[day_at].1 > 2 {
+        return Err(field_fault(day_at));
+    }
+    if spans[year_at].1 != 4 {
+        return Err(field_fault(year_at));
+    }
+    if year == 0 {
+        return Err(Fault::out_of_range(start, text.len()));
+    }
+    if !(1..=12).contains(&month) {
+        return Err(field_fault(month_at));
+    }
+    if day == 0 || day > days_in_month(i64::from(year), month) {
+        return Err(field_fault(day_at));
+    }
+    Ok(Date { year: year as u16, month: month as u8, day: day as u8 })
+}
+
 /// Casts an ISO 8601 24-hour time-of-day — `HH:mm`, `HH:mm:ss`, or `HH:mm:ss.f{1..9}` —
 /// to nanoseconds since midnight. Midnight and `23:59:59.999999999` are both real clock
 /// readings, so there is no range failure on this door: empty ⇒ `Empty`, everything else

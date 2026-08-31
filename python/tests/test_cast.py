@@ -86,3 +86,18 @@ def test_equal_separators_are_a_caller_bug():
 
 def test_bytes_and_str_doors_agree():
     assert hypercast.cast_bool("yes") == hypercast.cast_bool(b"yes") == Success(True)
+
+
+def test_date_order_disambiguates_like_the_cultures_do():
+    # The canonical ambiguity: 1/7/2026 is January 7th under en-US's month-first short
+    # dates and July 1st under en-GB's day-first ones — resolved only by declaration.
+    assert hypercast.cast_date("1/7/2026", hypercast.DateOrder.MONTH_DAY_YEAR) == \
+        hypercast.Success(dt.date(2026, 1, 7))
+    assert hypercast.cast_date("1/7/2026", hypercast.DateOrder.DAY_MONTH_YEAR) == \
+        hypercast.Success(dt.date(2026, 7, 1))
+    # Undeclared, the door stays strict ISO — the ambiguity is never guessed at.
+    match hypercast.cast_date("1/7/2026"):
+        case hypercast.Fault(reason, _, _):
+            assert reason is hypercast.CastFailure.MALFORMED
+        case other:
+            raise AssertionError(f"undeclared slash date parsed: {other!r}")

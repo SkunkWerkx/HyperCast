@@ -91,3 +91,20 @@ func TestEqualSeparatorsPanic(t *testing.T) {
 	}()
 	I32("42", NumFormat{DecimalSep: '.', GroupSep: '.', Styles: AllStyles})
 }
+
+func TestDateOrderDisambiguatesLikeTheCulturesDo(t *testing.T) {
+	// 1/7/2026 is January 7th under en-US's month-first short dates and July 1st under
+	// en-GB's day-first ones — resolved only by what the caller declared.
+	value, fault := DateOnlyOrdered("1/7/2026", MonthDayYear)
+	if fault != nil || value != (Date{Year: 2026, Month: time.January, Day: 7}) {
+		t.Fatalf("MonthDayYear: %v, %v", value, fault)
+	}
+	value, fault = DateOnlyOrdered("1/7/2026", DayMonthYear)
+	if fault != nil || value != (Date{Year: 2026, Month: time.July, Day: 1}) {
+		t.Fatalf("DayMonthYear: %v, %v", value, fault)
+	}
+	// Undeclared, the strict door stays strict — the ambiguity is never guessed at.
+	if _, fault := DateOnly("1/7/2026"); fault == nil || fault.Reason != Malformed {
+		t.Fatalf("undeclared slash date should be Malformed, got %v", fault)
+	}
+}

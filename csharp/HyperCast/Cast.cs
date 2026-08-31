@@ -190,6 +190,13 @@ public static partial class Cast
 	private static unsafe int cast_date(byte* ptr, nuint len, RawDate* value, RawFault* fault) =>
 		OperatingSystem.IsBrowser() ? cast_date_browser(ptr, len, value, fault) : cast_date_native(ptr, len, value, fault);
 
+	[LibraryImport("hypercast", EntryPoint = "cast_date_ordered")]
+	private static unsafe partial int cast_date_ordered_native(byte* ptr, nuint len, uint order, RawDate* value, RawFault* fault);
+	[LibraryImport("*", EntryPoint = "cast_date_ordered")]
+	private static unsafe partial int cast_date_ordered_browser(byte* ptr, nuint len, uint order, RawDate* value, RawFault* fault);
+	private static unsafe int cast_date_ordered(byte* ptr, nuint len, uint order, RawDate* value, RawFault* fault) =>
+		OperatingSystem.IsBrowser() ? cast_date_ordered_browser(ptr, len, order, value, fault) : cast_date_ordered_native(ptr, len, order, value, fault);
+
 	[LibraryImport("hypercast", EntryPoint = "cast_time")]
 	private static unsafe partial int cast_time_native(byte* ptr, nuint len, ulong* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_time")]

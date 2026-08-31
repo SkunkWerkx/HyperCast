@@ -12,6 +12,8 @@
 //! - [`cast_timestamp`] / [`cast_unix`] — instants to protobuf's `{seconds, nanos}` pair
 //! - [`cast_date`] / [`cast_time`] / [`cast_duration`] — the remaining temporal shapes,
 //!   likewise protobuf-formed
+//! - [`cast_date_ordered`] — separated calendar dates under a caller-declared [`DateOrder`]
+//!   (`1/7/2026` is January 7th or July 1st only because the caller said which)
 //!
 //! Text comes in as anything byte-viewable — `&str`, `String`, `&[u8]`, `Vec<u8>` — read
 //! as UTF-8 bytes; each door trims ASCII whitespace and treats trimmed-empty input as
@@ -38,8 +40,9 @@ pub use boolean::cast_bool;
 pub use integer::{cast_i8, cast_i16, cast_i32, cast_i64, cast_u8, cast_u16, cast_u32, cast_u64};
 pub use real::{cast_f32, cast_f64};
 pub use temporal::{
-    cast_date, cast_duration, cast_time, cast_timestamp, cast_unix, UnixPrecision,
-    MAX_DURATION_SECONDS, MAX_TIMESTAMP_SECONDS, MIN_TIMESTAMP_SECONDS,
+    cast_date, cast_date_ordered, cast_duration, cast_time, cast_timestamp, cast_unix,
+    DateOrder, UnixPrecision, MAX_DURATION_SECONDS, MAX_TIMESTAMP_SECONDS,
+    MIN_TIMESTAMP_SECONDS,
 };
 pub use uuid::cast_uuid;
 pub use verdict::{Date, Duration, Fault, NumFormat, Reason, Timestamp};
@@ -418,6 +421,67 @@ mod tests {
         }
         assert_eq!(reason(cast_date(b"0000-01-01")), Reason::OutOfRange);
         assert_eq!(reason(cast_date(b"")), Reason::Empty);
+    }
+
+    #[test]
+    fn date_ordered_disambiguates_by_declaration_never_by_guessing() {
+        // The canonical ambiguity: 1/7/2026 is January 7th in en-US (month-first) and
+        // July 1st in en-GB (day-first) — resolved only by what the caller declared.
+        assert_eq!(
+            cast_date_ordered(b"1/7/2026", DateOrder::MonthDayYear),
+            Ok(Date { year: 2026, month: 1, day: 7 })
+        );
+        assert_eq!(
+            cast_date_ordered(b"1/7/2026", DateOrder::DayMonthYear),
+            Ok(Date { year: 2026, month: 7, day: 1 })
+        );
+        assert_eq!(
+            cast_date_ordered(b"2026/1/7", DateOrder::YearMonthDay),
+            Ok(Date { year: 2026, month: 1, day: 7 })
+        );
+        // Zero-padding, dot and dash separators, and the strict ISO form as YMD's subset.
+        assert_eq!(
+            cast_date_ordered(b"01/07/2026", DateOrder::MonthDayYear),
+            Ok(Date { year: 2026, month: 1, day: 7 })
+        );
+        assert_eq!(
+            cast_date_ordered(b"1.7.2026", DateOrder::DayMonthYear),
+            Ok(Date { year: 2026, month: 7, day: 1 })
+        );
+        assert_eq!(
+            cast_date_ordered(b"2026-01-07", DateOrder::YearMonthDay),
+            Ok(Date { year: 2026, month: 1, day: 7 })
+        );
+        // 13 can only be a day — valid day-first, malformed month-first, span on the field.
+        assert_eq!(
+            cast_date_ordered(b"13/1/2026", DateOrder::DayMonthYear),
+            Ok(Date { year: 2026, month: 1, day: 13 })
+        );
+        assert_eq!(reason(cast_date_ordered(b"13/1/2026", DateOrder::MonthDayYear)), Reason::Malformed);
+        // Real calendar, same as the strict door.
+        assert_eq!(
+            cast_date_ordered(b"29/2/2024", DateOrder::DayMonthYear),
+            Ok(Date { year: 2024, month: 2, day: 29 })
+        );
+        assert_eq!(reason(cast_date_ordered(b"29/2/2026", DateOrder::DayMonthYear)), Reason::Malformed);
+    }
+
+    #[test]
+    fn date_ordered_rejects_ambiguity_reintroducers() {
+        // Two-digit years mean century guessing — never.
+        assert_eq!(reason(cast_date_ordered(b"1/7/26", DateOrder::MonthDayYear)), Reason::Malformed);
+        // A four-digit month is a misdeclared order, pointed at the misfit field.
+        assert_eq!(reason(cast_date_ordered(b"2026/1/7", DateOrder::MonthDayYear)), Reason::Malformed);
+        // Mixed separators, trailing junk, missing fields.
+        for text in ["1-7/2026", "1/7/2026 extra", "1/7", "1//2026", "garbage"] {
+            assert_eq!(
+                reason(cast_date_ordered(text.as_bytes(), DateOrder::MonthDayYear)),
+                Reason::Malformed,
+                "{text}"
+            );
+        }
+        assert_eq!(reason(cast_date_ordered(b"1/7/0000", DateOrder::MonthDayYear)), Reason::OutOfRange);
+        assert_eq!(reason(cast_date_ordered(b"   ", DateOrder::DayMonthYear)), Reason::Empty);
     }
 
     // --- time ---

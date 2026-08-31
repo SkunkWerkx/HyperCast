@@ -14,7 +14,7 @@
 //! dereferences `ptr`.
 
 use crate::verdict::{Date, Duration, Fault, NumFormat, Timestamp};
-use crate::{boolean, integer, real, temporal, uuid, UnixPrecision};
+use crate::{boolean, integer, real, temporal, uuid, DateOrder, UnixPrecision};
 use core::slice;
 
 const CONTRACT_VIOLATION: i32 = -1;
@@ -168,6 +168,27 @@ pub extern "C" fn cast_unix(
     };
     // SAFETY: caller guarantees the pointer contracts, per the module doc.
     unsafe { finish(temporal::cast_unix(text(ptr, len), precision), out, fault) }
+}
+
+/// Casts a separated calendar date at `ptr`/`len` under the caller-declared field `order`
+/// (1 year-month-day, 2 month-day-year, 3 day-month-year — anything else is a contract
+/// violation) into `out`. See [`temporal::cast_date_ordered`].
+#[unsafe(no_mangle)]
+pub extern "C" fn cast_date_ordered(
+    ptr: *const u8,
+    len: usize,
+    order: u32,
+    out: *mut Date,
+    fault: *mut RawFault,
+) -> i32 {
+    let order = match order {
+        1 => DateOrder::YearMonthDay,
+        2 => DateOrder::MonthDayYear,
+        3 => DateOrder::DayMonthYear,
+        _ => return CONTRACT_VIOLATION,
+    };
+    // SAFETY: caller guarantees the pointer contracts, per the module doc.
+    unsafe { finish(temporal::cast_date_ordered(text(ptr, len), order), out, fault) }
 }
 
 /// Casts a strict `yyyy-MM-dd` date at `ptr`/`len` into `out`. See [`temporal::cast_date`].

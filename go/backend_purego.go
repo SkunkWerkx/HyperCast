@@ -38,7 +38,8 @@ var (
 	symI8, symI16, symI32, symI64, symU8, symU16, symU32, symU64,
 	symF32, symF64 numericSymbol
 
-	symUnix unixSymbol
+	// cast_date_ordered shares the unix ABI shape (ptr, len, u32, out, fault).
+	symUnix, symDateOrdered unixSymbol
 )
 
 // ensureLoaded extracts this platform's embedded native library to a temp file and
@@ -74,6 +75,7 @@ func ensureLoaded() error {
 		purego.RegisterLibFunc(&symF32, handle, "cast_f32")
 		purego.RegisterLibFunc(&symF64, handle, "cast_f64")
 		purego.RegisterLibFunc(&symUnix, handle, "cast_unix")
+		purego.RegisterLibFunc(&symDateOrdered, handle, "cast_date_ordered")
 	})
 	return initErr
 }
@@ -88,4 +90,8 @@ func callNumeric(sym numericSymbol, ptr unsafe.Pointer, length uintptr, format, 
 
 func callUnix(ptr unsafe.Pointer, length uintptr, precision uint32, out, fault unsafe.Pointer) int32 {
 	return symUnix(ptr, length, precision, out, fault)
+}
+
+func callDateOrdered(ptr unsafe.Pointer, length uintptr, order uint32, out, fault unsafe.Pointer) int32 {
+	return symDateOrdered(ptr, length, order, out, fault)
 }

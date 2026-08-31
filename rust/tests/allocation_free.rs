@@ -70,6 +70,9 @@ fn allocation_free() {
         hypercast::cast_unix(b"1700000000123", UnixPrecision::Millis).unwrap()
     });
     assert_allocation_free("cast_date", || hypercast::cast_date(b"2026-01-02").unwrap());
+    assert_allocation_free("cast_date_ordered", || {
+        hypercast::cast_date_ordered(b"1/7/2026", hypercast::DateOrder::MonthDayYear).unwrap()
+    });
     assert_allocation_free("cast_time", || hypercast::cast_time(b"15:04:05.123456789").unwrap());
     assert_allocation_free("cast_duration iso", || {
         hypercast::cast_duration(b"P1DT6H30M15.5S").unwrap()

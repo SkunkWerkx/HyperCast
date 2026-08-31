@@ -47,6 +47,19 @@ RSpec.describe HyperCast do
     expect { described_class.unix("1", :fortnights) }.to raise_error(KeyError)
   end
 
+  it "disambiguates separated dates by declared order, never by guessing" do
+    # 1/7/2026 is January 7th under en-US's month-first short dates and July 1st under
+    # en-GB's day-first ones — resolved only by what the caller declared.
+    expect(described_class.date("1/7/2026", :month_day_year))
+      .to eq(HyperCast::Success.new(value: Date.new(2026, 1, 7)))
+    expect(described_class.date("1/7/2026", :day_month_year))
+      .to eq(HyperCast::Success.new(value: Date.new(2026, 7, 1)))
+    # Undeclared, the door stays strict ISO — the ambiguity is never guessed at.
+    expect(described_class.date("1/7/2026"))
+      .to eq(HyperCast::Fault.new(reason: :malformed, offset: 0, length: 8))
+    expect { described_class.date("1/7/2026", :little_endian) }.to raise_error(KeyError)
+  end
+
   it "returns durations as exact Rational seconds across the full window" do
     expect(described_class.duration("PT1.5S")).to eq(HyperCast::Success.new(value: Rational(3, 2)))
     expect(described_class.duration("-1.5s")).to eq(HyperCast::Success.new(value: Rational(-3, 2)))

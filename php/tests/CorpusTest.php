@@ -6,6 +6,7 @@ namespace HyperCast\Tests;
 
 use DateTimeImmutable;
 use HyperCast\Cast;
+use HyperCast\DateOrder;
 use HyperCast\CastFailure;
 use HyperCast\Duration;
 use HyperCast\Fault;
@@ -181,6 +182,21 @@ final class CorpusTest extends TestCase
                 );
             }
             $this->assertVerdict('date', $vector, Cast::date($vector['input']), $expected);
+        }
+    }
+
+    public function testDateOrderCorpus(): void
+    {
+        foreach (self::corpus('date_order.json') as $vector) {
+            $order = DateOrder::from($vector['order']);
+            $expected = null;
+            if (isset($vector['year'])) {
+                $expected = new DateTimeImmutable(
+                    sprintf('%04d-%02d-%02d 00:00:00', $vector['year'], $vector['month'], $vector['day']),
+                    new \DateTimeZone('UTC')
+                );
+            }
+            $this->assertVerdict('date_order', $vector, Cast::date($vector['input'], $order), $expected);
         }
     }
 

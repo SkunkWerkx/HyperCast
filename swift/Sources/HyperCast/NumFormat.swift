@@ -56,6 +56,46 @@ public struct NumFormat: Equatable, Sendable {
     }
 }
 
+/// The caller-declared field order of a separated calendar date — no guessing, ever:
+/// `1/7/2026` is January 7th (``monthDayYear``, the en-US order) or July 1st
+/// (``dayMonthYear``, the en-GB order) only because the caller said which. Values match
+/// the native core's discriminants.
+public enum DateOrder: UInt32, Sendable {
+    /// Year, month, day — ISO's order with any accepted separator.
+    case yearMonthDay = 1
+    /// Month, day, year — the en-US short-date order (`1/7/2026` is January 7th).
+    case monthDayYear = 2
+    /// Day, month, year — the en-GB/most-of-the-world order (`1/7/2026` is July 1st).
+    case dayMonthYear = 3
+
+    /// Derives the field order from a locale's own short-date pattern: the first of
+    /// `y`/`M`/`d` to appear decides (quoted literals skipped). Prefer declaring
+    /// explicitly when the text's origin is known — a locale is process/user state; the
+    /// text's dialect is a property of the text. Falls back to ``yearMonthDay`` if the
+    /// pattern names none of the fields.
+    public static func from(locale: Locale) -> DateOrder {
+        let formatter = DateFormatter()
+        formatter.locale = locale
+        formatter.dateStyle = .short
+        formatter.timeStyle = .none
+        var inLiteral = false
+        for ch in formatter.dateFormat ?? "" {
+            if ch == "'" {
+                inLiteral.toggle()
+                continue
+            }
+            if inLiteral { continue }
+            switch ch {
+            case "y", "u": return .yearMonthDay
+            case "M", "L": return .monthDayYear
+            case "d": return .dayMonthYear
+            default: break
+            }
+        }
+        return .yearMonthDay
+    }
+}
+
 /// The declared unit of a Unix-epoch value — no magnitude guessing, ever. Values match the
 /// native core's discriminants.
 public enum UnixPrecision: UInt32, Sendable {

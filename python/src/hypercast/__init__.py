@@ -37,7 +37,8 @@ from typing import Union
 from . import _native
 
 __all__ = [
-    "CastFailure", "Success", "Fault", "Verdict", "NumFormat", "UnixPrecision", "optional",
+    "CastFailure", "Success", "Fault", "Verdict", "NumFormat", "UnixPrecision", "DateOrder",
+    "optional",
     "cast_bool", "cast_i8", "cast_i16", "cast_i32", "cast_i64",
     "cast_u8", "cast_u16", "cast_u32", "cast_u64", "cast_f32", "cast_f64",
     "cast_uuid", "cast_timestamp", "cast_unix", "cast_date", "cast_time", "cast_duration",
@@ -62,6 +63,19 @@ class UnixPrecision(IntEnum):
     MILLISECONDS = 2
     MICROSECONDS = 3
     NANOSECONDS = 4
+
+
+class DateOrder(IntEnum):
+    """The declared field order of a separated calendar date — no guessing, ever:
+    ``"1/7/2026"`` is January 7th (:data:`MONTH_DAY_YEAR`, the en-US order) or July 1st
+    (:data:`DAY_MONTH_YEAR`, the en-GB order) only because the caller said which. Passed
+    as :func:`cast_date`'s optional second argument; without it, the door stays strict
+    ISO ``yyyy-MM-dd`` only.
+    """
+
+    YEAR_MONTH_DAY = 1
+    MONTH_DAY_YEAR = 2
+    DAY_MONTH_YEAR = 3
 
 
 # The extension's own types and doors ARE the package surface — no delegation defs, no
