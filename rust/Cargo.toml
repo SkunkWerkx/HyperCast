@@ -7,7 +7,7 @@ license = "MIT"
 readme = "README.md"
 repository = "https://github.com/SkunkWerkx/HyperCast"
 keywords = ["parser", "ffi", "allocation-free", "rfc3339", "protobuf"]
-categories = ["parsing", "no-std"]
+categories = ["parsing", "no-std", "no-std::no-alloc"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
