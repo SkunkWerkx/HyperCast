@@ -36,20 +36,31 @@ Zero runtime dependencies either way.
 
 ## `no_std`
 
-The parsing core touches nothing outside `core` — no `String`, no `Vec`, no allocator at
-all — so `default-features = false` gives a genuine `#![no_std]` rlib:
+The parsing core touches nothing outside `core` — so `default-features = false` gives a
+genuine `#![no_std]` rlib:
 
-```toml
-hypercast = { version = "...", default-features = false }
+```sh
+cargo add hypercast --no-default-features
 ```
 
-Proven against a real bare-metal target rather than asserted:
-`cargo check --no-default-features --target thumbv7em-none-eabi` builds clean.
+**And no `alloc`, either.** The crate never declares `extern crate alloc`, so there is no
+`String`, no `Vec`, no `Box` anywhere in it and nothing for a `#[global_allocator]` to serve.
+A bare-metal consumer supplies a `#[panic_handler]` and stops there — no allocator, no
+scratch buffer, no hidden heap in a batch path, because there is no batch path. The doors
+write into buffers you already own; that is the same property the counting-allocator test
+(`tests/allocation_free.rs`) asserts at runtime, stated here as a dependency fact rather than
+a benchmark result.
+
+Both halves are guarded in CI (`check-no-std`), not left to convention:
+`cargo check --no-default-features --target thumbv7em-none-eabi` compiles the crate for a
+real Cortex-M target, and the job additionally fails if `extern crate alloc` ever appears in
+the core. Nothing else in the pipeline would notice either regression — every other cargo
+invocation builds the default `std` configuration, where a stray `use std::` or a `Vec`
+compiles perfectly cleanly.
 
 The `std` feature is on by default and stays that way for the shared-library build, because
 a `cdylib` is a final linked artifact and needs a `#[panic_handler]` that only `std`
-supplies — declaring `#![no_std]` unconditionally fails the release build outright. A
-bare-metal consumer brings its own panic handler, as such a consumer must anyway.
+supplies — declaring `#![no_std]` unconditionally fails the release build outright.
 
 ## Excel date serials
 

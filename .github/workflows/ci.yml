@@ -57,6 +57,56 @@ jobs:
     with:
       crate: hypercast
 
+  # rust/Cargo.toml publishes categories = ["no-std"], and rust/src/lib.rs is #![no_std]
+  # whenever its default-on `std` feature is off. `default = ["std"]` means every other cargo
+  # invocation in this pipeline compiles the *std* configuration — HyperForge's
+  # `cargo build --release`, its `cargo test --release`, and both `--features` extension
+  # builds. Not one of them would notice a `use std::` creeping back into the core: it
+  # compiles clean under std, at worst an unused-import warning nothing fails on, and the
+  # published claim quietly stops being true with the whole matrix green.
+  # `--no-default-features` against a real bare-metal target is the only invocation that
+  # compiles the other configuration at all — see lib.rs's own comment for why the feature
+  # has to stay default-on (the cdylib every binding dlopens needs std's panic handler).
+  #
+  # Ported from HyperUuid, which had the claim live and false at its own v0.1.0. The one
+  # difference is that this job needs no RUSTFLAGS: HyperUuid points `getrandom` at a custom
+  # entropy backend because off std there's no OS to read from, and this crate has no runtime
+  # dependencies at all — the core is pure parsing over caller-supplied bytes, so there is
+  # nothing to feed. If a dependency ever does arrive here, this is where it will surface.
+  #
+  # Static analysis only, no native build needed, so this doesn't depend on build-native.
+  check-no-std:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabi
+      - name: cargo check (no_std, bare metal)
+        working-directory: rust
+        run: cargo check --no-default-features --target thumbv7em-none-eabi
+
+      # The stronger half of the claim: this crate needs no `alloc` either, so a bare-metal
+      # consumer supplies a panic handler and nothing else — no `#[global_allocator]`. The
+      # cargo check above does NOT cover that. Without `extern crate alloc` declared, `Vec`
+      # and friends aren't in scope and any accidental use already fails it; but adding the
+      # declaration deliberately would compile clean, because `cargo check` never links and
+      # a missing allocator only ever surfaces at link time — which for an rlib never comes.
+      # So the regression to guard is the declaration itself, and grepping for it is a
+      # complete guard for exactly that, rather than an approximation of something better.
+      #
+      # python_ext/ruby_ext are excluded: both sit behind features that pull in std anyway,
+      # so neither can affect the no_std configuration this job exists to protect.
+      - name: assert the core links no allocator
+        working-directory: rust
+        run: |
+          set -euo pipefail
+          if grep -rn 'extern crate alloc' src --exclude=python_ext.rs --exclude=ruby_ext.rs; then
+            echo '::error::The core declared "extern crate alloc". hypercast documents that a bare-metal consumer needs a panic handler and no global allocator (see rust/README.md no_std section) — either drop the allocation or update that claim.' >&2
+            exit 1
+          fi
+          echo "no allocator dependency in the core"
+
   # Doc-comment coverage on every real public API surface, every PR — the same bar
   # C#/Java/Rust get from a compiler flag (CS1591+TreatWarningsAsErrors, javadoc -Xwerror,
   # #![deny(missing_docs)]), applied here with the closest per-language equivalent. Each is
