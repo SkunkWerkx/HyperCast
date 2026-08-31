@@ -25,6 +25,19 @@
 //! and ordinary error chains when propagate-on-failure is the caller's idiom.
 
 #![deny(missing_docs)]
+// The crate publishes the `no-std` category, and the core has always been core-only in
+// fact — no `std::`, `String`, `Vec`, `Box`, or `format!` in any parsing module. This makes
+// that compiler-enforced rather than a claim nobody checks.
+//
+// Gated on the default-on `std` feature rather than unconditional, because this crate also
+// ships a `cdylib`: a final linked artifact needs a `#[panic_handler]`, which only std
+// supplies (proven, not assumed — dropping `no_std` in unconditionally fails the release
+// build with "`#[panic_handler]` function required, but not found" plus "unwinding panics
+// are not supported without std"). So the shared library every binding dlopens builds with
+// std as it always has, and a bare-metal consumer takes the crate with
+// `default-features = false` and brings its own panic handler, the way such a consumer
+// must anyway. Nothing in the parsing modules ever touches std either way.
+#![cfg_attr(not(feature = "std"), no_std)]
 
 mod boolean;
 mod ffi;
