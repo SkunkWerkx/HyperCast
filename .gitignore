@@ -1,21 +1,84 @@
-target/
-bin/
-obj/
-BenchmarkDotNet.Artifacts/
-build/
-.gradle/
-__pycache__/
-.pytest_cache/
-swift/Sources/HyperCast/NativeLibs/*/
-.build/
-go/native/*/
-ruby/lib/hypercast/native/*/
-php/vendor/
-php/src/native/*/
-.phpunit.result.cache
+# Rust
+**/target/
+
+# .NET
+**/bin/
+**/obj/
+**/TestResults/
+# CI (hyper-pack-nuget.yml) arranges and packs these per-RID at pack time; regenerable
+# locally via `cargo build --release` (the csproj's runtimes/**/native/* wildcard item).
+csharp/HyperCast/runtimes/
+
+# Gradle / Java
+**/.gradle/
+**/build/
+# CI (hyper-publish-maven.yml) bundles all platforms' natives here at publish time; the
+# local dev loop stages into build/generated-resources instead (already covered by
+# **/build/ above), so anything here is regenerable via `cargo build --release`.
+java/src/main/resources/native/
+
+# Python
+**/__pycache__/
+**/*.egg-info/
+**/.venv/
+**/dist/
+**/.pytest_cache/
+# The staged PyO3 extension for local dev/test — nested at hypercast._native (the maturin
+# module-name), built from the core crate's python feature. abi3 wheels carry one build per
+# platform regardless of Python version (hence the plain and .abi3 spellings, not a
+# per-version-tagged glob); .pyd covers Windows.
 python/src/hypercast/_native.so
 python/src/hypercast/_native.abi3.so
 python/src/hypercast/_native.pyd
+
+# Go
+# Native libs under go/native/{rid}/ are committed, not ignored — see go/native/README.md
+# for why (a go:embed consumer has no packing step, unlike the registries with real
+# packing; stage-native-binaries.yml keeps them fresh).
+
+# Swift
+# Native libs under swift/Sources/HyperCast/NativeLibs/{rid}/ are committed, not ignored —
+# see swift/Sources/HyperCast/NativeLibs/README.md for why (SwiftPM has no packing step for
+# a git-URL dependency).
+**/.build/
+
+# Ruby
+# CI places each leg's native lib here for `bundle exec rspec` at build-native time, and
+# rubygems-publish stages all six at gem-build time; regenerable locally via
+# `cargo build --release`. Unlike php/swift/go above, the gem build is a real packing step,
+# so nothing here needs committing.
+ruby/lib/hypercast/native/*/
+ruby/Gemfile.lock
+ruby/pkg/
+ruby/.yardoc/
+# Staged Magnus extension for local dev/test (built from the core crate's ruby feature;
+# precompiled platform gems carry the real artifact).
 ruby/lib/hypercast_native.so
 ruby/lib/hypercast_native.bundle
-ruby/Gemfile.lock
+
+# PHP
+# Native libs under php/src/native/{rid}/ are committed, not ignored — see
+# php/src/native/README.md for why (Packagist has no packing step: the git tree at the tag
+# IS the package).
+php/vendor/
+php/composer.lock
+php/.phpunit.result.cache
+# Root-level composer.json exists only for Packagist (see php/README.md's Install section) —
+# nothing actually runs `composer install` from the repo root except a consumer's own build,
+# but a stray local one shouldn't get committed either.
+/vendor/
+/composer.lock
+
+# Node
+**/node_modules/
+
+# BenchmarkDotNet
+# Writes output relative to the process's working directory when invoked via `dotnet run`
+# rather than the project directory, so this can land almost anywhere in the tree — not just
+# csharp/HyperCast.Benchmarks/. Criterion's own output already lands under rust/target/,
+# covered by the **/target/ rule above.
+**/BenchmarkDotNet.Artifacts/
+
+# IDE
+.idea/
+.vs/

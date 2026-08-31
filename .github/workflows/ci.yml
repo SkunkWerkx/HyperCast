@@ -1,0 +1,146 @@
+name: CI — build native, build wasm, test every binding
+
+# The build/test matrix lives in HyperForge (SkunkWerkx/.github) as the canonical Hyper*
+# pipeline — 6 real-hardware legs, the Rust core built fresh per leg, every binding's
+# suite run against it. Ruby's suite runs twice (forced Fiddle fallback + Magnus extension
+# backend); Python has no fallback — PyO3 only, staged and tested per leg.
+#
+# CI's job is build, test, and upload reusable artifacts — nothing version-specific. Every
+# native leg builds+tests fresh, and the raw, version-agnostic outputs (the plain FFI
+# libhypercast.so/.dylib/.dll, the compiled Ruby Magnus extension) get uploaded here for
+# later reuse. What deliberately does NOT happen here: anything that bakes a version number
+# into a shippable package (a PyPI wheel's own filename/metadata, a .nupkg, a .gem) — CI runs
+# long before any release tag exists, so there's no correct version to bake in yet. That
+# packing happens once, for real, in release.yml, at actual tag time, when the version is
+# genuinely known — see release.yml's own header for the full shape.
+#
+# No push trigger, deliberately: stage-native-binaries.yml and prepare-release.yml both
+# direct-push mechanical bot commits, and a stray matrix run rebuilding/retesting on each
+# of those would be wasted compute for a result nobody's waiting on (HyperUuid checked the
+# branch-protection theory against reality — master isn't protected; the trigger choice is
+# the whole mechanism).
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-native:
+    uses: SkunkWerkx/.github/.github/workflows/hyper-build-native.yml@master
+    with:
+      project: HyperCast
+      crate: hypercast
+      pure_env: HYPERCAST_PURE
+      csharp_test_project: csharp/HyperCast.Tests/HyperCast.Tests.csproj
+      # .NET 11 is HyperCast's floor for the native [Union] Verdict types — preview quality
+      # until the pinned SDK GAs (HyperForge's own default stays 8.0/ga for other repos).
+      dotnet_version: "11.0.x"
+      dotnet_quality: "preview"
+      # go_windows stays default-true: the purego fallback carries the Windows legs.
+      # No ext-php-rs benchmark spike in this crate (the shipped PHP package is ext-ffi,
+      # and PHP's ~105 ns raw ext-ffi call floor never justified the spike here the way
+      # HyperUuid's measurements did) — skip the php-feature compile check.
+      php_native_spike: false
+
+  # The C#/NuGet browser-wasm staticlib — built on every PR, not just at release time, so
+  # a wasm-breaking core change surfaces immediately.
+  build-wasm:
+    uses: SkunkWerkx/.github/.github/workflows/hyper-build-wasm.yml@master
+    with:
+      crate: hypercast
+
+  # Doc-comment coverage on every real public API surface, every PR — the same bar
+  # C#/Java/Rust get from a compiler flag (CS1591+TreatWarningsAsErrors, javadoc -Xwerror,
+  # #![deny(missing_docs)]), applied here with the closest per-language equivalent. Each is
+  # scoped to the language's own actual public surface, excluding internal FFI plumbing
+  # (Runtime/NativePlatform-style helpers) that isn't part of the documented API — the same
+  # public/internal boundary those three languages get for free from the compiler. Static
+  # analysis only, no native build needed, so these don't depend on build-native.
+  lint-docs-go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go/go.mod
+          # go-version-file only tells setup-go where to read the Go version from — its
+          # built-in module cache separately needs cache-dependency-path pointed at go.sum,
+          # or it searches the repo root by default and finds nothing (go.mod/go.sum both
+          # live under go/, not the root) — real "Restore cache failed" warning otherwise.
+          cache-dependency-path: go/go.sum
+      - run: go install github.com/mgechev/revive@v1.16.0
+      - working-directory: go
+        run: revive -config revive.toml ./...
+
+  lint-docs-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: pip install ruff==0.16.5
+      - working-directory: python
+        run: ruff check src
+
+  lint-docs-php:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.5"
+          extensions: ffi
+      - working-directory: php
+        run: composer install --no-progress --prefer-dist
+      - working-directory: php
+        run: vendor/bin/phpcs
+
+  lint-docs-ruby:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+          working-directory: ruby
+      - working-directory: ruby
+        run: bundle exec rake docs:check
+
+  lint-docs-swift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: SwiftyLab/setup-swift@v1.14.0
+        with:
+          swift-version: "6.3"
+      - name: Install SwiftLint
+        run: |
+          set -euo pipefail
+          curl -sL -o swiftlint.zip \
+            https://github.com/realm/SwiftLint/releases/download/0.65.1/swiftlint_linux_amd64.zip
+          mkdir swiftlint_bin
+          unzip -q swiftlint.zip -d swiftlint_bin
+      - name: Lint
+        working-directory: swift
+        run: |
+          set -euo pipefail
+          # swiftlint's precompiled binary needs the installed toolchain's own
+          # libsourcekitdInProc.so — its path isn't a fixed, documented convention across
+          # setup-swift installs, so locate it relative to the swift binary SwiftyLab/setup-swift
+          # actually put on PATH (confirmed from a real HyperUuid run's log) rather than a blind
+          # whole-filesystem `find /`, which hung for minutes scanning a GH-hosted runner's huge
+          # preinstalled toolchain set.
+          swift_bin="$(command -v swift)"
+          echo "swift binary: $swift_bin"
+          toolchain_usr="$(dirname "$(dirname "$swift_bin")")"
+          echo "toolchain usr dir: $toolchain_usr"
+          lib_path="$(find "$toolchain_usr" -name libsourcekitdInProc.so 2>/dev/null | head -1)"
+          echo "libsourcekitdInProc.so: ${lib_path:-not found}"
+          if [ -z "$lib_path" ]; then
+            echo "::error::libsourcekitdInProc.so not found under $toolchain_usr" >&2
+            exit 1
+          fi
+          export LINUX_SOURCEKIT_LIB_PATH="$(dirname "$lib_path")"
+          ../swiftlint_bin/swiftlint lint --strict Sources
