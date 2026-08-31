@@ -37,7 +37,7 @@ keep all nine fractional digits, zero truncation of anything the core parses.
 2. **The vocabulary untrusted sources actually send** — twenty boolean lexemes, accounting
    parentheses, radix prefixes, all five .NET `Guid` text forms, protobuf JSON durations.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
-   held by the shared corpus (all 27 tests green, full nine-file corpus replay through real
+   held by the shared corpus (all 27 tests green, full eleven-file corpus replay through real
    FFM downcalls with byte-exact fault spans).
 4. **Faster where it matters.** JMH, full-length this time — 2 forks, 5 warmup + 10
    measurement iterations, 20 samples per row, error bars narrow enough to publish

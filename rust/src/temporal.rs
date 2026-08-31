@@ -509,7 +509,7 @@ pub fn cast_timestamp(input: impl AsRef<[u8]>) -> Result<Timestamp, Fault> {
             let magnitude = i64::from(hours) * 3_600 + i64::from(minutes) * 60;
             if sign == b'-' { -magnitude } else { magnitude }
         }
-        Some(&other) => {
+        Some(_) => {
             return Err(Fault::malformed(start + after_time, char_len_at(text, after_time)));
         }
     };

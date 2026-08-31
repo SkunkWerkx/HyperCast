@@ -27,7 +27,7 @@ let ts = cast_timestamp(b"2026-01-02T15:04:05.123456789+05:00");
 ```
 
 The crate is simultaneously the engine under every binding in this repo — built as a
-`cdylib` (`libhypercast`) with 17 `cast_*` C-ABI exports, dlopen'd or linked by the
+`cdylib` (`libhypercast`) with 19 `cast_*` C-ABI exports, dlopen'd or linked by the
 C#/Java/Go/Swift/Ruby/PHP/Python bindings, all held to byte-identical verdicts by the
 shared `corpus/*.json` conformance vectors — and an ordinary `rlib` for plain Rust use.
 Zero runtime dependencies either way.
@@ -51,7 +51,7 @@ extension module needs (the host runtime's symbols resolve at load time, not lin
 
 ## WebAssembly
 
-The full test suite — unit tests, the allocation proof, and all nine corpus replays —
+The full test suite — unit tests, the allocation proof, and all eleven corpus replays —
 passes under `wasmtime` on `wasm32-wasip1`: no clock, no randomness, no dependencies to
 stub. CI also builds the `wasm32-unknown-emscripten` staticlib the C# binding's
 browser-wasm packaging consumes, on every PR.

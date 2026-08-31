@@ -35,7 +35,7 @@ has no availability gates — this only sets the Darwin deployment target).
    parentheses, declared separators, radix prefixes, all five .NET `Guid` text forms plus
    `urn:uuid:` prefixes, protobuf JSON durations.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
-   held by the shared corpus (24 tests green, full nine-file corpus replay with byte-exact
+   held by the shared corpus (24 tests green, full eleven-file corpus replay with byte-exact
    fault spans).
 4. **Faster on the culture-machinery doors** — numbers from ordo-one's package-benchmark
    (linux-arm64, p50, `swift package benchmark run` in `Benchmarks/`): timestamp **278 ns
