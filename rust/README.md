@@ -1,6 +1,8 @@
 # hypercast
 
 [![CI](https://github.com/SkunkWerkx/HyperCast/actions/workflows/ci.yml/badge.svg)](https://github.com/SkunkWerkx/HyperCast/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/hypercast.svg)](https://crates.io/crates/hypercast)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/SkunkWerkx/HyperCast/blob/master/LICENSE)
 
 **The core itself: allocation-free parsers for scalars from untrusted text — booleans, the
 full integer family, reals, UUIDs, and temporals — where every parse returns a verdict (the
@@ -137,14 +139,13 @@ pays for it.
 
 ## Install
 
-Not on crates.io yet — the release pipeline is staged (`.github/workflows/release.yml`)
-and the crate publishes with the first coordinated tag. Until then, use it as a git
-dependency:
-
 ```toml
 [dependencies]
-hypercast = { git = "https://github.com/SkunkWerkx/HyperCast" }
+hypercast = "0.0.1"
 ```
+
+Zero runtime dependencies. `default-features = false` gives the `#![no_std]` rlib described
+above; the default build additionally produces the `cdylib` every other binding loads.
 
 See [the repo root README](../README.md) for the full door table, the receipts, and the
 state of every other language binding.

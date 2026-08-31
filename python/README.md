@@ -1,6 +1,8 @@
 # hypercast
 
 [![CI](https://github.com/SkunkWerkx/HyperCast/actions/workflows/ci.yml/badge.svg)](https://github.com/SkunkWerkx/HyperCast/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/hypercast.svg)](https://pypi.org/project/hypercast/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/SkunkWerkx/HyperCast/blob/master/LICENSE)
 
 **`match`/`case` over a two-case verdict — the value, or a closed reason plus the exact
 byte span that offended — with the Rust core linked straight into CPython as a native
@@ -72,12 +74,13 @@ real native extensions, and a native extension has no browser story.
 
 ## Install
 
-Not on PyPI yet — the release pipeline is staged (`.github/workflows/release.yml`,
-Trusted Publishing pending) and the wheels ship with the first coordinated tag. Until
-then: clone the repo, `cargo build --release --features python` in `rust/`, copy
-`libhypercast.so` to `python/src/hypercast/_native.abi3.so` (CI's own staging step, by
-hand), and `pytest` — `tests/conftest.py` puts the in-repo package on the path with no
-install step.
+```sh
+pip install hypercast
+```
+
+abi3 wheels for all six platforms, so one wheel per platform covers every CPython 3.10+.
+No compiler needed to install and no dependencies at all — the PyO3 extension *is* the
+package.
 
 See [the repo root README](../README.md) for the full door table, the receipts, and the
 state of every other language binding.

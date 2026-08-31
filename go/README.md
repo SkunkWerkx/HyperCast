@@ -1,6 +1,8 @@
 # hypercast
 
 [![CI](https://github.com/SkunkWerkx/HyperCast/actions/workflows/ci.yml/badge.svg)](https://github.com/SkunkWerkx/HyperCast/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/SkunkWerkx/HyperCast/go.svg)](https://pkg.go.dev/github.com/SkunkWerkx/HyperCast/go)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/SkunkWerkx/HyperCast/blob/master/LICENSE)
 
 **Go's own union idiom — `(value, *Fault)` — carrying the verdict of every cast: the value,
 or a closed reason plus the exact byte span that offended. `*Fault` implements `error` for
@@ -91,13 +93,11 @@ purego fallback anywhere.
 go get github.com/SkunkWerkx/HyperCast/go
 ```
 
-Go modules have no separate registry — `go get` resolves straight from a git tag (this
-module lives in a monorepo subdirectory, so its tags are prefixed: `go/v0.1.0`). No tags
-exist yet; the native libraries under `native/{rid}/` are committed to git by
-`stage-native-binaries.yml` (a `go:embed` consumer has no packing step — see
-`native/README.md`), and the first `go/v*` tag is the publish. Until then: clone the repo,
-`cargo build --release` in `rust/`, copy the library into `native/{rid}/`, and
-`go test ./...`.
+Go modules have no separate registry — `go get` resolves straight from a git tag, and because
+this module lives in a monorepo subdirectory its tags are prefixed (`go/v0.0.1`). The native
+libraries under `native/{rid}/` are committed to git and kept fresh by
+`stage-native-binaries.yml`: a `go:embed` consumer has no packing step, so whatever is
+literally in the tree at the resolved tag is what gets embedded (see `native/README.md`).
 
 See [the repo root README](../README.md) for the full door table, the receipts, and the
 state of every other language binding.

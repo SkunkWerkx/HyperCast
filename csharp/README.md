@@ -1,6 +1,8 @@
 # HyperCast
 
 [![CI](https://github.com/SkunkWerkx/HyperCast/actions/workflows/ci.yml/badge.svg)](https://github.com/SkunkWerkx/HyperCast/actions/workflows/ci.yml)
+[![NuGet](https://img.shields.io/nuget/v/HyperCast.svg)](https://www.nuget.org/packages/HyperCast)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/SkunkWerkx/HyperCast/blob/master/LICENSE)
 
 **`TryParse` hands back a `bool` and a shrug. These doors hand back a native discriminated
 union — the value, or `Empty`/`Malformed`/`OutOfRange` plus the exact byte span that
@@ -84,12 +86,12 @@ PR; the release pack stages it under `runtimes/browser-wasm/nativeassets/`.
 
 ## Install
 
-Not on nuget.org yet — the release pipeline is staged (`.github/workflows/release.yml`,
-Trusted Publishing pending) and the package ships with the first coordinated tag as
-`HyperCast`, with per-RID natives under `runtimes/` and this README inside the package.
-Until then: clone the repo, `cargo build --release` in `rust/`, and reference
-`csharp/HyperCast/HyperCast.csproj` — the csproj stages the fresh native build into the
-output automatically.
+```sh
+dotnet add package HyperCast
+```
+
+Per-RID native libraries ship inside the package under `runtimes/`, so a consumer adds one
+reference and nothing else — no build step, no manual native staging.
 
 See [the repo root README](https://github.com/SkunkWerkx/HyperCast/blob/master/README.md)
 for the full door table, the receipts, and the state of every other language binding.

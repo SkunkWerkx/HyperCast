@@ -1,6 +1,8 @@
 # hypercast
 
 [![CI](https://github.com/SkunkWerkx/HyperCast/actions/workflows/ci.yml/badge.svg)](https://github.com/SkunkWerkx/HyperCast/actions/workflows/ci.yml)
+[![Gem](https://img.shields.io/gem/v/hypercast.svg)](https://rubygems.org/gems/hypercast)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/SkunkWerkx/HyperCast/blob/master/LICENSE)
 
 **Ruby's own pattern matching over two `Data` case types — the value, or a closed reason
 Symbol plus the exact byte span that offended. Two backends, one public surface: a Magnus
@@ -67,13 +69,15 @@ include their own archaeology.)
 
 ## Install
 
-Not on RubyGems yet — the release pipeline is staged (`.github/workflows/release.yml`,
-Trusted Publishing pending): one universal `ruby`-platform gem (pure Fiddle, all six
-platforms' natives bundled) plus four precompiled Magnus platform gems
-(`x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, `arm64-darwin`) that `gem install`
-auto-selects when they match — nobody ever compiles anything. Until the first tag: clone
-the repo, `cargo build --release` in `rust/` (plus `--features ruby`, staged to
-`lib/hypercast_native.so`, for the Magnus backend), and `bundle exec rspec`.
+```sh
+gem install hypercast
+```
+
+Five gems are published per release: one universal `ruby`-platform gem (pure Fiddle, all six
+platforms' natives bundled) plus four precompiled Magnus platform gems (`x86_64-linux`,
+`aarch64-linux`, `x86_64-darwin`, `arm64-darwin`) that `gem install` auto-selects when they
+match. Nobody ever compiles anything; Windows and any unmatched platform land on the
+universal gem's Fiddle backend, which replays the same corpus green.
 
 See [the repo root README](../README.md) for the full door table, the receipts, and the
 state of every other language binding.

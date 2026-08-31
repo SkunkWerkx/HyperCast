@@ -1,6 +1,8 @@
 # hypercast
 
 [![CI](https://github.com/SkunkWerkx/HyperCast/actions/workflows/ci.yml/badge.svg)](https://github.com/SkunkWerkx/HyperCast/actions/workflows/ci.yml)
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.skunkwerkx/hypercast.svg)](https://central.sonatype.com/artifact/io.github.skunkwerkx/hypercast)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/SkunkWerkx/HyperCast/blob/master/LICENSE)
 
 **Java's own discriminated union — a `sealed interface` over two records — carrying the
 verdict of every cast: the value, or a closed reason plus the exact byte span that
@@ -86,11 +88,17 @@ it.
 
 ## Install
 
-Not on Maven Central yet — the release pipeline is staged
-(`.github/workflows/release.yml`; the `io.github.skunkwerkx` Central Portal namespace is
-already approved) and the artifact ships with the first coordinated tag as
-`io.github.skunkwerkx:hypercast`. Until then: clone the repo, `cargo build --release` in
-`rust/`, and `./gradlew test` — the build stages the fresh native library automatically.
+Published to [Maven Central](https://central.sonatype.com/artifact/io.github.skunkwerkx/hypercast)
+— no extra repository configuration, since `mavenCentral()` is already in virtually every
+Gradle/Maven build:
+
+```kotlin
+dependencies {
+    implementation("io.github.skunkwerkx:hypercast:0.0.1")
+}
+```
+
+The jar bundles a native build for all six platforms and picks the right one at runtime.
 
 See [the repo root README](../README.md) for the full door table, the receipts, and the
 state of every other language binding.

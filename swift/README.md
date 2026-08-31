@@ -1,6 +1,8 @@
 # HyperCast
 
 [![CI](https://github.com/SkunkWerkx/HyperCast/actions/workflows/ci.yml/badge.svg)](https://github.com/SkunkWerkx/HyperCast/actions/workflows/ci.yml)
+[![Swift Package](https://img.shields.io/github/v/tag/SkunkWerkx/HyperCast?label=swift%20package&sort=semver)](https://github.com/SkunkWerkx/HyperCast/tags)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/SkunkWerkx/HyperCast/blob/master/LICENSE)
 
 **`Verdict<T>` is a real Swift `enum`, so an exhaustive `switch` over it is
 *compiler-mandatory* — not an opt-in analyzer flag, not a review convention. The value, or a
@@ -56,13 +58,18 @@ own archaeology.)
 
 ## Install
 
-SwiftPM resolves a `.package(url:)` dependency straight from a git tag — that will be the
-whole publish story here (the repo-root `Package.swift` exists exactly for this; SwiftPM
-has no monorepo-subdirectory support). No tags exist yet, and the native libraries under
-`Sources/HyperCast/NativeLibs/{rid}/` are committed by `stage-native-binaries.yml` (SwiftPM
-has no packing step — see `NativeLibs/README.md`). Until the first tag: clone the repo,
-`cargo build --release` in `rust/`, copy the library into `NativeLibs/{rid}/`, and
-`swift test` in `swift/`.
+```swift
+.package(url: "https://github.com/SkunkWerkx/HyperCast", from: "0.0.1")
+```
+
+SwiftPM has no separate registry to publish to — `.package(url:from:)` resolves straight from
+a git tag, which *is* the complete publish story here rather than a placeholder for one. It
+requires `Package.swift` at the repository root with no monorepo-subdirectory support, which
+is why [the root's own `Package.swift`](../Package.swift) exists, with its targets pointed at
+the real sources under `swift/` via `path:`. The native libraries under
+`Sources/HyperCast/NativeLibs/{rid}/` are committed straight to git for the same reason as
+the tag itself: SwiftPM has no packing step, so the tree at the resolved tag is what a
+consumer's build bundles as resources.
 
 See [the repo root README](../README.md) for the full door table, the receipts, and the
 state of every other language binding.

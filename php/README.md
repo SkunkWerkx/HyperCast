@@ -1,6 +1,8 @@
 # hypercast
 
 [![CI](https://github.com/SkunkWerkx/HyperCast/actions/workflows/ci.yml/badge.svg)](https://github.com/SkunkWerkx/HyperCast/actions/workflows/ci.yml)
+[![Packagist](https://img.shields.io/packagist/v/skunkwerkx/hypercast.svg)](https://packagist.org/packages/skunkwerkx/hypercast)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/SkunkWerkx/HyperCast/blob/master/LICENSE)
 
 **A real `Success|Fault` union type on every door — the value, or a closed backed-enum
 reason plus the exact byte span that offended — over PHP's own built-in ext-ffi. Zero
@@ -57,13 +59,15 @@ caught inflating everything uniformly ~14x — `XDEBUG_MODE=off` for every recor
 
 ## Install
 
-Not on Packagist yet. The publish story, when the first tag lands: Packagist has no
-packing step — the git tree at the tag *is* the package — which is why the six per-RID
-native libraries under `src/native/` are committed to git (kept fresh automatically by
-`stage-native-binaries.yml`; see `src/native/README.md`) and why the repo root carries the
-`composer.json` Packagist requires (kept in sync with this directory's by hand). Until
-then: clone the repo, `cargo build --release` in `rust/` (the loader's dev fallback finds
-the in-repo build), `composer install` in `php/`, and `php vendor/bin/phpunit`.
+```sh
+composer require skunkwerkx/hypercast
+```
+
+Packagist has no packing step — the git tree at the tag *is* the package. That is why the six
+per-RID native libraries under `src/native/` are committed to git (kept fresh automatically
+by `stage-native-binaries.yml`; see `src/native/README.md`), and why the repository root
+carries the `composer.json` Packagist requires, since Packagist has no monorepo-subdirectory
+support.
 
 See [the repo root README](../README.md) for the full door table, the receipts, and the
 state of every other language binding.
