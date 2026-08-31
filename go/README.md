@@ -94,7 +94,7 @@ go get github.com/SkunkWerkx/HyperCast/go
 ```
 
 Go modules have no separate registry — `go get` resolves straight from a git tag, and because
-this module lives in a monorepo subdirectory its tags are prefixed (`go/v0.0.1`). The native
+this module lives in a monorepo subdirectory its tags are prefixed (`go/vX.Y.Z`). The native
 libraries under `native/{rid}/` are committed to git and kept fresh by
 `stage-native-binaries.yml`: a `go:embed` consumer has no packing step, so whatever is
 literally in the tree at the resolved tag is what gets embedded (see `native/README.md`).

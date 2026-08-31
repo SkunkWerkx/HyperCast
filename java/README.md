@@ -104,11 +104,12 @@ Gradle/Maven build:
 
 ```kotlin
 dependencies {
-    implementation("io.github.skunkwerkx:hypercast:0.0.1")
+    implementation("io.github.skunkwerkx:hypercast:<version>")
 }
 ```
 
-The jar bundles a native build for all six platforms and picks the right one at runtime.
+The current version is the one on the Maven Central badge above. The jar bundles a native
+build for all six platforms and picks the right one at runtime.
 
 See [the repo root README](../README.md) for the full door table, the receipts, and the
 state of every other language binding.

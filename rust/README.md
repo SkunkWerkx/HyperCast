@@ -139,9 +139,8 @@ pays for it.
 
 ## Install
 
-```toml
-[dependencies]
-hypercast = "0.0.1"
+```sh
+cargo add hypercast
 ```
 
 Zero runtime dependencies. `default-features = false` gives the `#![no_std]` rlib described

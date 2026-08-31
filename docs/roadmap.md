@@ -17,8 +17,8 @@ Requirements that hold across every round, stated up front so no layer designs t
   `NativeFileReference` static linking, Python via an Emscripten side module in Pyodide.
   HyperCast's core is strictly easier freight than HyperUuid's here — pure computation
   over caller bytes, zero dependencies, no WASI clock or randomness imports at all — and
-  the core leg is already proven, not projected: the full test suite (37 unit + the
-  counting-allocator proof + all 9 corpus replays) passes under `wasmtime` on
+  the core leg is already proven, not projected: the full test suite (51 unit + the
+  counting-allocator proof + all 12 corpus replays) passes under `wasmtime` on
   `wasm32-wasip1` today (`CARGO_TARGET_WASM32_WASIP1_RUNNER="wasmtime --dir <repo>" cargo
   test --target wasm32-wasip1`; the preopen is only so the conformance test can read
   `corpus/`).
@@ -28,7 +28,7 @@ Requirements that hold across every round, stated up front so no layer designs t
 
 ## Round one — the scalar core (done)
 
-One Rust `cdylib` (`rust/`, `libhypercast`), HyperUuid's proven FFI mechanics: 17 `cast_*`
+One Rust `cdylib` (`rust/`, `libhypercast`), HyperUuid's proven FFI mechanics: 20 `cast_*`
 exports over UTF-8 bytes and caller-owned out-buffers, verdict codes (`0` ok, `1` empty,
 `2` malformed, `3` out of range) with the offending byte span through a nullable fault
 out-param. Semantics ported from Svartalfheim's `Norse.Primitives` parser family; temporals
@@ -38,9 +38,11 @@ fidelity. Allocation-free on success *and* failure paths, asserted by a counting
 allocator, and `corpus/*.json` is the byte-for-byte conformance contract every binding
 replays.
 
-## Round two — language bindings
+## Round two — language bindings (done)
 
-The HyperUuid playbook, re-run: C# (`P/Invoke`), Java (FFM), Go, Swift, Ruby, PHP, Python,
+All seven shipped and published — crates.io, nuget.org, PyPI, RubyGems, Maven Central and
+Packagist, with Go and Swift resolving from the tag. The HyperUuid
+playbook, re-run: C# (`P/Invoke`), Java (FFM), Go, Swift, Ruby, PHP, Python,
 each folding the verdict code + fault span into its platform's discriminated-union idiom
 (a `Result`-shaped type, never an exception) and each replaying the shared corpus in its
 own test suite before it ships. C# first — shortest path to a headline benchmark against

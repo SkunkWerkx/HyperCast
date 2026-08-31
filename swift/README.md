@@ -58,9 +58,15 @@ own archaeology.)
 
 ## Install
 
-```swift
-.package(url: "https://github.com/SkunkWerkx/HyperCast", from: "0.0.1")
+Add the package URL as a dependency:
+
 ```
+https://github.com/SkunkWerkx/HyperCast
+```
+
+In Xcode that's File ▸ Add Package Dependencies; in a `Package.swift` it's a `.package(url:)`
+entry with whatever version requirement suits you. SwiftPM resolves the newest release that
+satisfies it, so there is no version to copy from here and none to go stale.
 
 SwiftPM has no separate registry to publish to — `.package(url:from:)` resolves straight from
 a git tag, which *is* the complete publish story here rather than a placeholder for one. It

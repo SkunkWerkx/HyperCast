@@ -3,13 +3,16 @@ name: Release — publish to real, public registries
 # PR -> ci (see ci.yml), tag -> release: this file is the only place a real, permanent,
 # public publish can happen. Ported whole from HyperUuid's proven v0.1.0 pipeline.
 #
-# STATUS: every leg has run green against its real registry at v0.0.1 — crates.io, PyPI
-# (6 wheels), RubyGems (5 gems), nuget.org all confirmed live, and Maven's bundle accepted
-# and released by the Central Portal (deployment eca12925-2ee7-42fb-9832-304edc86347e).
-# Central's own mirror to repo1.maven.org lags the Portal by tens of minutes, so a 404 there
-# shortly after a run is propagation, not failure. No `if: false` gates remain, and none
-# should be added except to record "this leg already published at the current version"
-# mid-recovery.
+# STATUS: every leg publishes cleanly. v0.0.2 (run 33425431665) shipped all five in a single
+# green run and each is confirmed served: crates.io, nuget.org, PyPI (6 wheels), RubyGems
+# (5 gems) and Maven Central, with Go/Swift resolving from the tag and PHP from Packagist.
+# No `if: false` gates remain, and none should be added except to record "this leg already
+# published at the current version" mid-recovery.
+#
+# Propagation is not failure: nuget.org's index and Central's mirror to repo1.maven.org both
+# lag their publish by tens of minutes (v0.0.2 measured ~5 and ~6), and search.maven.org's
+# Solr index — which the README's Maven badge queries — lags further still. A 404 shortly
+# after a green run means waiting, not debugging.
 #
 # It took two runs, and the reason is worth keeping. The first (33419045992) landed four of
 # five; maven-publish failed, and not at Central — it never reached the registry. Gradle
