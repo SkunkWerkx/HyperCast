@@ -53,7 +53,7 @@ var (
 
 	symBool, symI8, symI16, symI32, symI64, symU8, symU16, symU32, symU64,
 	symF32, symF64, symUuid, symTimestamp, symUnix, symDate, symDateOrdered,
-	symDateTime, symTime, symDuration unsafe.Pointer
+	symDateTime, symTime, symDuration, symExcelSerial unsafe.Pointer
 )
 
 // ensureLoaded extracts this platform's embedded native library to a temp file and
@@ -94,6 +94,7 @@ func ensureLoaded() error {
 		symDate, symDateOrdered = sym("cast_date"), sym("cast_date_ordered")
 		symDateTime = sym("cast_datetime")
 		symTime, symDuration = sym("cast_time"), sym("cast_duration")
+		symExcelSerial = sym("cast_excel_serial")
 	})
 	return initErr
 }
@@ -118,4 +119,8 @@ func callDateOrdered(ptr unsafe.Pointer, length uintptr, order uint32, out, faul
 
 func callDateTime(ptr unsafe.Pointer, length uintptr, order uint32, out, fault unsafe.Pointer) int32 {
 	return int32(C.call_unix(symDateTime, (*C.uint8_t)(ptr), C.size_t(length), C.uint32_t(order), out, fault))
+}
+
+func callExcelSerial(ptr unsafe.Pointer, length uintptr, epoch uint32, out, fault unsafe.Pointer) int32 {
+	return int32(C.call_unix(symExcelSerial, (*C.uint8_t)(ptr), C.size_t(length), C.uint32_t(epoch), out, fault))
 }

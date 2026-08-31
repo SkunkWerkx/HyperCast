@@ -42,7 +42,7 @@ out loud rather than discovered later.
    `urn:uuid:` prefixes, protobuf JSON durations — with each lenience individually
    declared, never guessed.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
-   held by the shared corpus (25 tests green, full eleven-file corpus replay).
+   held by the shared corpus (26 tests green, full twelve-file corpus replay).
 4. **Native-extension speed** — the escape from the interpreted tier is this binding's own
    receipt: the old losses were never "Python calling native code," they were *ctypes*
    (~1 µs of interpreted marshalling per call, measured). With the mechanism replaced,

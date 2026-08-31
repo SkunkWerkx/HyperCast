@@ -194,6 +194,13 @@ public static partial class Cast
 	private static unsafe int cast_unix(byte* ptr, nuint len, uint precision, RawTimestamp* value, RawFault* fault) =>
 		OperatingSystem.IsBrowser() ? cast_unix_browser(ptr, len, precision, value, fault) : cast_unix_native(ptr, len, precision, value, fault);
 
+	[LibraryImport("hypercast", EntryPoint = "cast_excel_serial")]
+	private static unsafe partial int cast_excel_serial_native(byte* ptr, nuint len, uint epoch, RawTimestamp* value, RawFault* fault);
+	[LibraryImport("*", EntryPoint = "cast_excel_serial")]
+	private static unsafe partial int cast_excel_serial_browser(byte* ptr, nuint len, uint epoch, RawTimestamp* value, RawFault* fault);
+	private static unsafe int cast_excel_serial(byte* ptr, nuint len, uint epoch, RawTimestamp* value, RawFault* fault) =>
+		OperatingSystem.IsBrowser() ? cast_excel_serial_browser(ptr, len, epoch, value, fault) : cast_excel_serial_native(ptr, len, epoch, value, fault);
+
 	[LibraryImport("hypercast", EntryPoint = "cast_date")]
 	private static unsafe partial int cast_date_native(byte* ptr, nuint len, RawDate* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_date")]

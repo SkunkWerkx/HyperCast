@@ -99,6 +99,14 @@ RSpec.describe "conformance corpus" do
     end
   end
 
+  it "replays excel_serial.json" do
+    epochs = HyperCast::EXCEL_EPOCHS.invert
+    corpus("excel_serial.json").each do |vector|
+      verdict = HyperCast.excel_serial(vector["input"], epochs.fetch(vector["epoch"]))
+      assert_verdict("excel_serial", vector, verdict, expected_instant(vector))
+    end
+  end
+
   it "replays date.json" do
     corpus("date.json").each do |vector|
       expected = vector.key?("year") ? Date.new(vector["year"], vector["month"], vector["day"]) : nil

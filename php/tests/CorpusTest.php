@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use HyperCast\Cast;
 use HyperCast\DateOrder;
 use HyperCast\CastFailure;
+use HyperCast\ExcelEpoch;
 use HyperCast\Duration;
 use HyperCast\Fault;
 use HyperCast\NumFormat;
@@ -168,6 +169,14 @@ final class CorpusTest extends TestCase
         foreach (self::corpus('unix.json') as $vector) {
             $verdict = Cast::unix($vector['input'], UnixPrecision::from($vector['precision']));
             $this->assertVerdict('unix', $vector, $verdict, self::expectedInstant($vector));
+        }
+    }
+
+    public function testExcelSerialCorpus(): void
+    {
+        foreach (self::corpus('excel_serial.json') as $vector) {
+            $verdict = Cast::excelSerial($vector['input'], ExcelEpoch::from($vector['epoch']));
+            $this->assertVerdict('excel_serial', $vector, $verdict, self::expectedInstant($vector));
         }
     }
 

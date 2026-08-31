@@ -20,7 +20,7 @@ module HyperCast
       cast_u8: NUMERIC, cast_u16: NUMERIC, cast_u32: NUMERIC, cast_u64: NUMERIC,
       cast_f32: NUMERIC, cast_f64: NUMERIC,
       cast_uuid: PLAIN,
-      cast_timestamp: PLAIN, cast_unix: UNIX,
+      cast_timestamp: PLAIN, cast_unix: UNIX, cast_excel_serial: UNIX,
       cast_date: PLAIN, cast_date_ordered: UNIX, cast_datetime: UNIX,
       cast_time: PLAIN, cast_duration: PLAIN
     }.freeze

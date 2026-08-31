@@ -177,6 +177,24 @@ fn unix_door(ruby: &Ruby, text: RString, precision: Symbol) -> Result<Value, Err
     }
 }
 
+fn excel_serial_door(ruby: &Ruby, text: RString, epoch: Symbol) -> Result<Value, Error> {
+    let name = epoch.name()?;
+    let epoch = match &*name {
+        "y1900" => core::ExcelEpoch::Y1900,
+        "y1904" => core::ExcelEpoch::Y1904,
+        other => {
+            return Err(Error::new(
+                ruby.exception_key_error(),
+                format!("unknown ExcelEpoch {other:?}"),
+            ))
+        }
+    };
+    match with_bytes(text, |bytes| core::cast_excel_serial(bytes, epoch)) {
+        Ok(ts) => utc_time(ruby, ts),
+        Err(failed) => fault(ruby, failed),
+    }
+}
+
 // Variadic (arity -1) because the order argument is optional — magnus's fixed-arity
 // function! would demand both; scan_args gives Ruby's own required-then-optional shape.
 fn date_door(ruby: &Ruby, args: &[Value]) -> Result<Value, Error> {
@@ -279,6 +297,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     hypercast.define_singleton_method("uuid", function!(uuid_door, 1))?;
     hypercast.define_singleton_method("timestamp", function!(timestamp_door, 1))?;
     hypercast.define_singleton_method("unix", function!(unix_door, 2))?;
+    hypercast.define_singleton_method("excel_serial", function!(excel_serial_door, 2))?;
     hypercast.define_singleton_method("date", function!(date_door, -1))?;
     hypercast.define_singleton_method("datetime", function!(datetime_door, 2))?;
     hypercast.define_singleton_method("time", function!(time_door, 1))?;

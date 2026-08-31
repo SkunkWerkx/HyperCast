@@ -353,6 +353,31 @@ final class Cast
     }
 
     /**
+     * Casts an Excel date serial under a caller-declared epoch to a UTC DateTimeImmutable.
+     * The whole part counts days from the system's own day zero and the fraction is the
+     * time of day, so "45292.75" is 2024-01-01T18:00:00Z. A cell carries no zone and none
+     * is invented.
+     *
+     * The 1900 system contains a day that never existed: serial 60 is 1900-02-29, kept
+     * deliberately because Lotus 1-2-3 wrongly treated 1900 as a leap year and Excel copied
+     * the bug for file compatibility. It is Malformed here — the same verdict date() gives
+     * the text "1900-02-29" — so every serial above it is shifted one day against a naive
+     * count, which is the arithmetic hand-rolled conversions get wrong.
+     *
+     * @param string $text the text to cast
+     * @param ExcelEpoch $epoch the declared date system
+     * @return Success|Fault the verdict: a Success carrying the cast value, or a Fault
+     */
+    public static function excelSerial(string $text, ExcelEpoch $epoch): Success|Fault
+    {
+        $ffi = self::$ffi ?? self::load();
+        $rc = $ffi->cast_excel_serial(
+            $text === '' ? null : $text, \strlen($text), $epoch->value, self::$outPairPtr, self::$faultPtr
+        );
+        return $rc === 0 ? new Success(self::instant()) : self::fail($rc);
+    }
+
+    /**
      * Casts a calendar date to a UTC DateTimeImmutable at midnight (PHP has no date-only
      * type). With no order declared: the strict ISO 8601 yyyy-MM-dd form only. With a
      * declared DateOrder, also the separated forms — "1/7/2026" is January 7th (Mdy, the
@@ -515,6 +540,7 @@ final class Cast
             . "int cast_uuid{$plain};"
             . "int cast_timestamp{$plain};"
             . 'int cast_unix(const char *ptr, size_t len, uint32_t precision, void *out, void *fault);'
+            . 'int cast_excel_serial(const char *ptr, size_t len, uint32_t epoch, void *out, void *fault);'
             . "int cast_date{$plain};"
             . 'int cast_date_ordered(const char *ptr, size_t len, uint32_t order, void *out, void *fault);'
             . 'int cast_datetime(const char *ptr, size_t len, uint32_t order, void *out, void *fault);'

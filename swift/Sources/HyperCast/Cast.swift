@@ -41,6 +41,8 @@ public enum Cast {
         let uuid: PlainFn
         let timestamp: PlainFn
         let unix: UnixFn
+        // cast_excel_serial shares the unix ABI shape too.
+        let excelSerial: UnixFn
         let date: PlainFn
         // cast_date_ordered and cast_datetime share the unix ABI shape (ptr, len, u32, out, fault).
         let dateOrdered: UnixFn
@@ -72,6 +74,7 @@ public enum Cast {
             uuid: try plain("cast_uuid"),
             timestamp: try plain("cast_timestamp"),
             unix: unsafeBitCast(try library.symbol("cast_unix"), to: UnixFn.self),
+            excelSerial: unsafeBitCast(try library.symbol("cast_excel_serial"), to: UnixFn.self),
             date: try plain("cast_date"),
             dateOrdered: unsafeBitCast(try library.symbol("cast_date_ordered"), to: UnixFn.self),
             dateTime: unsafeBitCast(try library.symbol("cast_datetime"), to: UnixFn.self),
@@ -345,6 +348,39 @@ public enum Cast {
             faultOut.withUnsafeMutableBytes { faultRaw in
                 utf8.withUnsafeBufferPointer { input in
                     fn(input.baseAddress, UInt(utf8.count), precision.rawValue,
+                       outRaw.baseAddress, faultRaw.baseAddress)
+                }
+            }
+        }
+        if code == 0 {
+            return .success(out.withUnsafeBytes(instant))
+        }
+        return .fault(faultOut.withUnsafeBytes { fault(code, $0) })
+    }
+
+    /// Casts an Excel date serial under a caller-declared ``ExcelEpoch`` to a `Date`. The
+    /// whole part counts days from the system's own day zero and the fraction is the time
+    /// of day, so `45292.75` is 2024-01-01T18:00:00Z. A cell carries no zone and none is
+    /// invented.
+    ///
+    /// The 1900 system contains a day that never existed: serial `60` is 1900-02-29, kept
+    /// deliberately because Lotus 1-2-3 wrongly treated 1900 as a leap year and Excel
+    /// copied the bug for file compatibility. It is `.malformed` here — the same verdict
+    /// ``date(_:)-swift.type.method`` gives the text `1900-02-29` — so every serial above
+    /// it is shifted one day against a naive count.
+    public static func excelSerial(_ text: String, epoch: ExcelEpoch) throws -> Verdict<Date> {
+        try excelSerial(Array(text.utf8), epoch: epoch)
+    }
+
+    /// See ``excelSerial(_:epoch:)-swift.type.method``; input as raw UTF-8 bytes.
+    public static func excelSerial(_ utf8: [UInt8], epoch: ExcelEpoch) throws -> Verdict<Date> {
+        let fn = try loaded().excelSerial
+        var out = [UInt8](repeating: 0, count: 16)
+        var faultOut = [UInt8](repeating: 0, count: 8)
+        let code = out.withUnsafeMutableBytes { outRaw in
+            faultOut.withUnsafeMutableBytes { faultRaw in
+                utf8.withUnsafeBufferPointer { input in
+                    fn(input.baseAddress, UInt(utf8.count), epoch.rawValue,
                        outRaw.baseAddress, faultRaw.baseAddress)
                 }
             }

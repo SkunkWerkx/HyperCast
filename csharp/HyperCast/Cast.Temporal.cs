@@ -106,6 +106,50 @@ public static partial class Cast
 	}
 
 	/// <summary>
+	/// Casts an Excel date serial under a caller-declared <see cref="ExcelEpoch"/> to a UTC
+	/// <see cref="DateTimeOffset"/>. The whole part counts days from the system's own day
+	/// zero and the fraction is the time of day, so <c>45292.75</c> is 2024-01-01T18:00:00Z.
+	/// A spreadsheet cell carries no zone and none is invented.
+	/// <para>
+	/// The 1900 system contains a day that never existed: serial <c>60</c> is 1900-02-29,
+	/// kept deliberately because Lotus 1-2-3 wrongly treated 1900 as a leap year and Excel
+	/// copied the bug for file compatibility. It is <see cref="CastFailure.Malformed"/>
+	/// here — the same verdict <see cref="Date(ReadOnlySpan{byte})"/> gives the text
+	/// <c>1900-02-29</c> — so every serial above it is shifted one day against a naive
+	/// count, which is the arithmetic hand-rolled conversions get wrong.
+	/// </para>
+	/// </summary>
+	/// <param name="utf8">The raw scalar text as UTF-8 bytes.</param>
+	/// <param name="epoch">The declared date system. Never <see cref="ExcelEpoch.Unspecified"/>.</param>
+	/// <exception cref="ArgumentOutOfRangeException"><paramref name="epoch"/> is undefined — a caller bug, not a data verdict.</exception>
+	public static unsafe Verdict<DateTimeOffset> ExcelSerial(ReadOnlySpan<byte> utf8, ExcelEpoch epoch)
+	{
+		GuardEpoch(epoch);
+		RawTimestamp value = default;
+		RawFault fault = default;
+		int code;
+		fixed (byte* ptr = utf8)
+			code = cast_excel_serial(ptr, (nuint)utf8.Length, (uint)epoch, &value, &fault);
+		return code == 0 ? ToDateTimeOffset(value) : Failed<DateTimeOffset>(code, fault);
+	}
+
+	/// <inheritdoc cref="ExcelSerial(ReadOnlySpan{byte}, ExcelEpoch)"/>
+	/// <param name="input">The raw scalar text.</param>
+	/// <param name="epoch">The declared date system. Never <see cref="ExcelEpoch.Unspecified"/>.</param>
+	public static Verdict<DateTimeOffset> ExcelSerial(ReadOnlySpan<char> input, ExcelEpoch epoch)
+	{
+		byte[]? rented = null;
+		try
+		{
+			return ExcelSerial(Utf8(input, stackalloc byte[Utf8StackBytes], ref rented), epoch);
+		}
+		finally
+		{
+			Recycle(rented);
+		}
+	}
+
+	/// <summary>
 	/// Casts a strict ISO 8601 <c>yyyy-MM-dd</c> calendar date to a <see cref="DateOnly"/>.
 	/// Anything time-bearing or non-ISO is <see cref="CastFailure.Malformed"/>; year 0000 is
 	/// <see cref="CastFailure.OutOfRange"/>.
@@ -310,5 +354,12 @@ public static partial class Cast
 			or UnixPrecision.Microseconds or UnixPrecision.Nanoseconds))
 			throw new ArgumentOutOfRangeException(nameof(precision), precision,
 				"Precision must be Seconds, Milliseconds, Microseconds, or Nanoseconds.");
+	}
+
+	static void GuardEpoch(ExcelEpoch epoch)
+	{
+		if (epoch is not (ExcelEpoch.Y1900 or ExcelEpoch.Y1904))
+			throw new ArgumentOutOfRangeException(nameof(epoch), epoch,
+				"Epoch must be Y1900 or Y1904.");
 	}
 }

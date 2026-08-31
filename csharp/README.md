@@ -37,7 +37,7 @@ truncate (the core carries full nanosecond fidelity; .NET's clock types don't).
    protobuf JSON durations — much of it grammar the BCL has no knob for at any price.
 3. **One engine across a polyglot system** — the same Rust core, bit-for-bit verdicts,
    proven by the shared conformance corpus every binding replays (all 28 of this binding's
-   tests include the full eleven-file corpus through real P/Invoke).
+   tests include the full twelve-file corpus through real P/Invoke).
 4. **Not slower — mostly faster.** BenchmarkDotNet, `[MemoryDiagnoser]`, lenience matched
    where the BCL has the knob, FFI crossing and UTF-16→UTF-8 transcode *included* in every
    HyperCast number; zero managed allocation on every row, both sides (linux-arm64,

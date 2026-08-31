@@ -182,6 +182,21 @@ const (
 	Nanoseconds  UnixPrecision = 4
 )
 
+// ExcelEpoch is the date system an Excel serial number is expressed in. Spreadsheets carry
+// no marker for this — it is a workbook-level setting — so the caller states it, the same
+// way UnixPrecision and DateOrder are declared rather than guessed.
+type ExcelEpoch uint32
+
+// The declared Excel date systems — the native core's codes, verbatim.
+const (
+	// Excel1900 is the Windows default: serial 1 is 1900-01-01, and serial 60 is a
+	// February 29th that never existed.
+	Excel1900 ExcelEpoch = 1
+	// Excel1904 is the legacy Macintosh system, still selectable today: serial 0 is
+	// 1904-01-01, with no phantom day anywhere in it.
+	Excel1904 ExcelEpoch = 2
+)
+
 // DateOrder is the caller-declared field order of a separated calendar date — no
 // guessing, ever: "1/7/2026" is January 7th (MonthDayYear, the en-US order) or July 1st
 // (DayMonthYear, the en-GB order) only because the caller said which.
@@ -394,6 +409,33 @@ func Unix[T Text](text T, precision UnixPrecision) (time.Time, *Fault) {
 		panic(fmt.Sprintf("hypercast: undefined UnixPrecision %d", precision))
 	}
 	return instantDoor(text, precision)
+}
+
+// ExcelSerial casts an Excel date serial under a caller-declared ExcelEpoch to a UTC
+// time.Time. The whole part counts days from the system's own day zero and the fraction is
+// the time of day, so "45292.75" is 2024-01-01T18:00:00Z. A spreadsheet cell carries no
+// zone and none is invented.
+//
+// The 1900 system contains a day that never existed: serial 60 is 1900-02-29, kept
+// deliberately because Lotus 1-2-3 wrongly treated 1900 as a leap year and Excel copied the
+// bug for file compatibility. It is Malformed here — the same verdict DateOnly gives the
+// text "1900-02-29" — so every serial above it is shifted one day against a naive count,
+// which is the arithmetic hand-rolled conversions get wrong.
+//
+// An undefined epoch is a caller bug and panics, never a verdict.
+func ExcelSerial[T Text](text T, epoch ExcelEpoch) (time.Time, *Fault) {
+	if epoch != Excel1900 && epoch != Excel1904 {
+		panic(fmt.Sprintf("hypercast: undefined ExcelEpoch %d", epoch))
+	}
+	mustLoad()
+	ptr, length := textPtr(text)
+	var out rawTimestamp
+	var fault rawFault
+	code := callExcelSerial(ptr, length, uint32(epoch), unsafe.Pointer(&out), unsafe.Pointer(&fault))
+	if code != 0 {
+		return time.Time{}, failed(code, &fault)
+	}
+	return time.Unix(out.Seconds, int64(out.Nanos)).UTC(), nil
 }
 
 // DateOnly casts a strict ISO 8601 yyyy-MM-dd calendar date.
