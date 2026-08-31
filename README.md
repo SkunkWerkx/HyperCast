@@ -103,7 +103,7 @@ swift/      the SwiftPM binding: enum verdicts (mandatory-exhaustive switch) ove
 go/         the Go binding: (value, *Fault) verdicts, cgo + purego dual backend
 ruby/       the 3.2+ binding: pattern-matched Data verdicts, Fiddle + Magnus dual backend
 php/        the 8.1+ binding: Success|Fault union types over ext-ffi
-docs/       roadmap — where this goes and what's deliberately parked
+docs/       roadmap and parked designs — where this goes, and what's deliberately not built yet
 ```
 
 ## Why "Hyper"
