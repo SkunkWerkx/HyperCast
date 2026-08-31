@@ -1,4 +1,4 @@
-package io.github.buvinghausen.hypercast;
+package io.github.skunkwerkx.hypercast;
 
 /**
  * The outcome of a cast: exactly one of {@link Success} or {@link Fault}, as Java's native

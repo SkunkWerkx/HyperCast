@@ -1,8 +1,8 @@
-package io.github.buvinghausen.hypercast.benchmarks;
+package io.github.skunkwerkx.hypercast.benchmarks;
 
-import io.github.buvinghausen.hypercast.Cast;
-import io.github.buvinghausen.hypercast.NumFormat;
-import io.github.buvinghausen.hypercast.Verdict;
+import io.github.skunkwerkx.hypercast.Cast;
+import io.github.skunkwerkx.hypercast.NumFormat;
+import io.github.skunkwerkx.hypercast.Verdict;
 import java.nio.charset.StandardCharsets;
 import java.text.NumberFormat;
 import java.text.ParseException;

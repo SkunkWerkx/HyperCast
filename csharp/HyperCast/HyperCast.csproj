@@ -4,6 +4,9 @@
        csharp/Directory.Build.props — the native-union settings shared by every project here. -->
   <PropertyGroup>
     <PackageId>HyperCast</PackageId>
+    <!-- The committed version prepare-release.yml bumps — the same single mechanical sweep
+         that keeps every binding's manifest in lockstep with rust/Cargo.toml. -->
+    <Version>0.1.0</Version>
     <!-- Windows filesystems are case-insensitive: the managed assembly's default filename
          (HyperCast.dll) and the native library's (hypercast.dll, from
          [LibraryImport("hypercast")]'s auto-resolution) differ only by case, so one silently
@@ -19,14 +22,21 @@
     <!-- Source-generated LibraryImport P/Invoke only, no reflection anywhere in this assembly:
          opts into (and fails the build on) the trim and Native AOT analyzers. -->
     <IsAotCompatible>true</IsAotCompatible>
-  </PropertyGroup>
-
-  <!-- Second build of this exact source for browser-wasm, HyperUuid's proven pattern: a
-       statically-linked WASM native has no separate module to dlopen, so the BROWSER-gated
-       NativeLibraryName switches from "hypercast" to "*" (resolve against the current
-       module). Invoked separately, e.g. `dotnet build -p:HyperCastBrowserBuild=true`. -->
-  <PropertyGroup Condition="'$(HyperCastBrowserBuild)' == 'true'">
-    <DefineConstants>$(DefineConstants);BROWSER</DefineConstants>
+    <!-- Deterministic, source-linked package builds with a companion symbol package —
+         HyperUuid's publish-readiness block, verbatim in spirit. -->
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <!-- Ships the .xml doc file inside the .nupkg (NuGet's own PackageId.xml convention) so
+         IntelliSense/Rider/etc. show every method's real doc comment for a consumer, not just
+         its signature. Every P/Invoke declaration here is private, so CS1591 (missing XML
+         comment on a publicly visible member) only ever fires on this binding's real public
+         surface — which is exactly what TreatWarningsAsErrors is here to enforce: an
+         undocumented public member fails the build instead of silently shipping undocumented. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
 
   <ItemGroup>

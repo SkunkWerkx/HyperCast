@@ -19,6 +19,8 @@
 //! absent. [`Fault`] implements [`core::error::Error`], so a verdict composes with `?`
 //! and ordinary error chains when propagate-on-failure is the caller's idiom.
 
+#![deny(missing_docs)]
+
 mod boolean;
 mod ffi;
 mod integer;

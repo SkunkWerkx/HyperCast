@@ -1,4 +1,4 @@
-package io.github.buvinghausen.hypercast;
+package io.github.skunkwerkx.hypercast;
 
 /**
  * The closed set of reasons a cast can fail — the native core's verdict codes, verbatim.
@@ -24,7 +24,11 @@ public enum CastFailure {
         this.code = code;
     }
 
-    /** The native verdict code ({@code 0} is "Ok" at the ABI and is never a failure). */
+    /**
+     * The native verdict code ({@code 0} is "Ok" at the ABI and is never a failure).
+     *
+     * @return the native failure code this constant maps
+     */
     public int code() {
         return code;
     }

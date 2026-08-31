@@ -1,0 +1,54 @@
+require "bundler/gem_tasks"
+require "yard"
+
+GEMSPEC = Bundler.load_gemspec("hypercast.gemspec")
+
+# Doc-comment enforcement for the real public API surface (hypercast.rb — the whole module,
+# doors and verdict types included) — native_platform.rb and runtime.rb are internal FFI
+# plumbing, the same public/internal boundary the Java binding gets from language-level
+# package-private. `yard stats`/`YARD::CLI::Stats` always rediscovers files from lib/**/*.rb
+# on its own regardless of what's parsed into the registry beforehand, so this walks the
+# registry directly instead of going through that CLI, and exits non-zero on any
+# undocumented object.
+task :"docs:check" do
+  YARD::Registry.clear
+  YARD.parse(["lib/hypercast.rb"])
+
+  undocumented = YARD::Registry.all.select { |obj| obj.docstring.nil? || obj.docstring.empty? }
+  total = YARD::Registry.all.size
+  puts "#{total - undocumented.size}/#{total} documented"
+
+  unless undocumented.empty?
+    warn "\nUndocumented objects:"
+    undocumented.each { |obj| warn "  #{obj.path}" }
+    exit 1
+  end
+end
+
+# Builds a platform-tagged precompiled gem for the Magnus native extension — real RubyGems
+# "platform gem" mechanism (`bundle`/`gem install` auto-selects it over the plain "ruby"
+# platform gem when it matches, falling back to that universal Fiddle build otherwise).
+# Deliberately NOT RbSys::ExtensionTask/rake-compiler: those assume ext/{gem}/ lives inside
+# the gem's own directory tree so `cargo metadata`'s plain CWD-based lookup finds it — this
+# repo's rust/ and ruby/ are siblings in a shared monorepo, not that layout, and CI's own
+# `build-native` job already runs `cargo build --release --features ruby` for Magnus testing
+# (hyper-build-native.yml), producing the exact same artifact this needs — so this task just
+# expects that binary already staged at lib/hypercast_native.{so,bundle} (by an earlier CI
+# step, or by hand locally) and packages a real platform gem around it directly via plain
+# RubyGems stdlib (Gem::Platform/Gem::Package), no extra build-tool dependency at all.
+namespace :native do
+  task :gem, [:platform] do |_t, args|
+    platform = args[:platform] or abort "usage: rake native:gem[<platform>], e.g. native:gem[aarch64-linux]"
+    ext = platform.include?("darwin") ? "bundle" : "so"
+    native_lib = "lib/hypercast_native.#{ext}"
+    File.exist?(native_lib) or abort "#{native_lib} not found — stage the compiled Magnus extension there first"
+
+    spec = GEMSPEC.dup
+    spec.platform = Gem::Platform.new(platform)
+    spec.files = spec.files + [native_lib]
+
+    require "rubygems/package"
+    mkdir_p "pkg"
+    Gem::Package.build(spec, false, false, "pkg/#{spec.full_name}.gem")
+  end
+end

@@ -1,4 +1,4 @@
-package io.github.buvinghausen.hypercast;
+package io.github.skunkwerkx.hypercast;
 
 /**
  * The failure case of {@link Verdict}: a closed conversion reason plus the offending span,
@@ -20,6 +20,7 @@ package io.github.buvinghausen.hypercast;
  * @param length byte length of the offending span; zero for {@link CastFailure#EMPTY}
  */
 public record Fault<T>(CastFailure reason, int offset, int length) implements Verdict<T> {
+    /** Rejects a {@code null} reason up front — a fault with no reason is a caller bug. */
     public Fault {
         if (reason == null) {
             throw new IllegalArgumentException("Fault must carry a real reason");

@@ -1,4 +1,4 @@
-package io.github.buvinghausen.hypercast;
+package io.github.skunkwerkx.hypercast;
 
 import java.text.DecimalFormatSymbols;
 import java.util.Locale;
@@ -46,6 +46,10 @@ public record NumFormat(char decimalSeparator, char groupSeparator, int styles) 
     /** The invariant profile — {@code .} decimal, {@code ,} grouping, every lenience on. */
     public static final NumFormat INVARIANT = new NumFormat('.', ',', STYLE_ALL);
 
+    /**
+     * Validates the declared separators up front — distinct, and whole code points — so a
+     * malformed format fails loudly as the caller bug it is, never as a verdict.
+     */
     public NumFormat {
         if (decimalSeparator == groupSeparator) {
             throw new IllegalArgumentException(
@@ -60,6 +64,7 @@ public record NumFormat(char decimalSeparator, char groupSeparator, int styles) 
      * Derives a format from a locale's number formatting symbols, with every lenience on.
      *
      * @param locale the locale to derive from, never null
+     * @return the locale's separators with every lenience style enabled
      */
     public static NumFormat from(Locale locale) {
         DecimalFormatSymbols symbols = DecimalFormatSymbols.getInstance(locale);

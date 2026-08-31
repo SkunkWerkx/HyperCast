@@ -12,6 +12,11 @@ namespace HyperCast;
  */
 final readonly class Success
 {
+    /**
+     * Wraps the cast value — nothing else travels on the success case.
+     *
+     * @param mixed $value the cast value, in the door's own PHP carrier type
+     */
     public function __construct(public mixed $value)
     {
     }

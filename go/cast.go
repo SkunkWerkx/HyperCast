@@ -153,6 +153,7 @@ func (f NumFormat) raw() rawNumFormat {
 // UnixPrecision is the declared unit of a Unix-epoch value — no magnitude guessing, ever.
 type UnixPrecision uint32
 
+// The declared units a Unix-epoch value can carry — the native core's codes, verbatim.
 const (
 	Seconds      UnixPrecision = 1
 	Milliseconds UnixPrecision = 2

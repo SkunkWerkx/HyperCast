@@ -1,4 +1,4 @@
-package io.github.buvinghausen.hypercast;
+package io.github.skunkwerkx.hypercast;
 
 /**
  * The success case of {@link Verdict}: a cast value.

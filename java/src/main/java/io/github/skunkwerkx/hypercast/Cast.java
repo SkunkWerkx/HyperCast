@@ -1,4 +1,4 @@
-package io.github.buvinghausen.hypercast;
+package io.github.skunkwerkx.hypercast;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -141,6 +141,10 @@ public final class Cast {
      * Presents a verdict optionally: an {@link CastFailure#EMPTY} fault becomes absent
      * ({@link java.util.Optional#empty()}); every other outcome flows through untouched —
      * each binding maps absence to its platform's own idiom, and Java's is {@code Optional}.
+     *
+     * @param <T> the verdict's value type
+     * @param verdict the verdict to present
+     * @return empty for an EMPTY fault; the untouched verdict otherwise
      */
     public static <T> java.util.Optional<Verdict<T>> optional(Verdict<T> verdict) {
         return verdict instanceof Fault<T> fault && fault.reason() == CastFailure.EMPTY
@@ -157,12 +161,20 @@ public final class Cast {
      * {@code enabled}/{@code disabled}, {@code active}/{@code inactive},
      * {@code checked}/{@code unchecked}, {@code in}/{@code out}), ASCII case-insensitive.
      * Culture-insensitive — no {@link NumFormat}.
+     *
+     * @param text the text to cast
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Boolean> bool(String text) {
         return bool(utf8(text));
     }
 
-    /** See {@link #bool(String)}; input as raw UTF-8 bytes. */
+    /**
+     * See {@link #bool(String)}; input as raw UTF-8 bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
     public static Verdict<Boolean> bool(byte[] utf8) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment out = arena.allocate(ValueLayout.JAVA_BYTE);
@@ -206,42 +218,88 @@ public final class Cast {
      * range, declared grouping, accounting parentheses, non-negative exponent ({@code 1e3}
      * is 1000; a decimal point is never accepted), and {@code 0x}/{@code &H}/{@code 0b}
      * two's-complement radix prefixes ({@code 0xFF} is -1).
+     *
+     * @param text the text to cast
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Byte> i8(String text, NumFormat format) {
         return i8(utf8(text), format);
     }
 
-    /** See {@link #i8(String, NumFormat)}; input as raw UTF-8 bytes. */
+    /**
+     * See {@link #i8(String, NumFormat)}; input as raw UTF-8 bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
     public static Verdict<Byte> i8(byte[] utf8, NumFormat format) {
         return numeric(CAST_I8, "cast_i8", utf8, format, 1, out -> out.get(ValueLayout.JAVA_BYTE, 0));
     }
 
-    /** Casts integer text to a signed 16-bit value. Notation rules as {@link #i8(String, NumFormat)}. */
+    /**
+     * Casts integer text to a signed 16-bit value. Notation rules as {@link #i8(String, NumFormat)}.
+     *
+     * @param text the text to cast
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
     public static Verdict<Short> i16(String text, NumFormat format) {
         return i16(utf8(text), format);
     }
 
-    /** See {@link #i16(String, NumFormat)}; input as raw UTF-8 bytes. */
+    /**
+     * See {@link #i16(String, NumFormat)}; input as raw UTF-8 bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
     public static Verdict<Short> i16(byte[] utf8, NumFormat format) {
         return numeric(CAST_I16, "cast_i16", utf8, format, 2, out -> out.get(ValueLayout.JAVA_SHORT, 0));
     }
 
-    /** Casts integer text to a signed 32-bit value. Notation rules as {@link #i8(String, NumFormat)}. */
+    /**
+     * Casts integer text to a signed 32-bit value. Notation rules as {@link #i8(String, NumFormat)}.
+     *
+     * @param text the text to cast
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
     public static Verdict<Integer> i32(String text, NumFormat format) {
         return i32(utf8(text), format);
     }
 
-    /** See {@link #i32(String, NumFormat)}; input as raw UTF-8 bytes. */
+    /**
+     * See {@link #i32(String, NumFormat)}; input as raw UTF-8 bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
     public static Verdict<Integer> i32(byte[] utf8, NumFormat format) {
         return numeric(CAST_I32, "cast_i32", utf8, format, 4, out -> out.get(ValueLayout.JAVA_INT, 0));
     }
 
-    /** Casts integer text to a signed 64-bit value. Notation rules as {@link #i8(String, NumFormat)}. */
+    /**
+     * Casts integer text to a signed 64-bit value. Notation rules as {@link #i8(String, NumFormat)}.
+     *
+     * @param text the text to cast
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
     public static Verdict<Long> i64(String text, NumFormat format) {
         return i64(utf8(text), format);
     }
 
-    /** See {@link #i64(String, NumFormat)}; input as raw UTF-8 bytes. */
+    /**
+     * See {@link #i64(String, NumFormat)}; input as raw UTF-8 bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
     public static Verdict<Long> i64(byte[] utf8, NumFormat format) {
         return numeric(CAST_I64, "cast_i64", utf8, format, 8, out -> out.get(ValueLayout.JAVA_LONG, 0));
     }
@@ -249,34 +307,68 @@ public final class Cast {
     /**
      * Casts integer text to an unsigned 8-bit value, widened to {@code int} ({@code 0..255})
      * — Java has no unsigned primitives. Notation rules as {@link #i8(String, NumFormat)}.
+     *
+     * @param text the text to cast
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Integer> u8(String text, NumFormat format) {
         return u8(utf8(text), format);
     }
 
-    /** See {@link #u8(String, NumFormat)}; input as raw UTF-8 bytes. */
+    /**
+     * See {@link #u8(String, NumFormat)}; input as raw UTF-8 bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
     public static Verdict<Integer> u8(byte[] utf8, NumFormat format) {
         return numeric(CAST_U8, "cast_u8", utf8, format, 1,
                 out -> Byte.toUnsignedInt(out.get(ValueLayout.JAVA_BYTE, 0)));
     }
 
-    /** Casts integer text to an unsigned 16-bit value, widened to {@code int} ({@code 0..65535}). */
+    /**
+     * Casts integer text to an unsigned 16-bit value, widened to {@code int} ({@code 0..65535}).
+     *
+     * @param text the text to cast
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
     public static Verdict<Integer> u16(String text, NumFormat format) {
         return u16(utf8(text), format);
     }
 
-    /** See {@link #u16(String, NumFormat)}; input as raw UTF-8 bytes. */
+    /**
+     * See {@link #u16(String, NumFormat)}; input as raw UTF-8 bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
     public static Verdict<Integer> u16(byte[] utf8, NumFormat format) {
         return numeric(CAST_U16, "cast_u16", utf8, format, 2,
                 out -> Short.toUnsignedInt(out.get(ValueLayout.JAVA_SHORT, 0)));
     }
 
-    /** Casts integer text to an unsigned 32-bit value, widened to {@code long}. */
+    /**
+     * Casts integer text to an unsigned 32-bit value, widened to {@code long}.
+     *
+     * @param text the text to cast
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
     public static Verdict<Long> u32(String text, NumFormat format) {
         return u32(utf8(text), format);
     }
 
-    /** See {@link #u32(String, NumFormat)}; input as raw UTF-8 bytes. */
+    /**
+     * See {@link #u32(String, NumFormat)}; input as raw UTF-8 bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
     public static Verdict<Long> u32(byte[] utf8, NumFormat format) {
         return numeric(CAST_U32, "cast_u32", utf8, format, 4,
                 out -> Integer.toUnsignedLong(out.get(ValueLayout.JAVA_INT, 0)));
@@ -286,12 +378,22 @@ public final class Cast {
      * Casts integer text to an unsigned 64-bit value, carried as {@code long}'s
      * two's-complement bit pattern — render with {@link Long#toUnsignedString(long)} and
      * compare with {@link Long#compareUnsigned(long, long)}.
+     *
+     * @param text the text to cast
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Long> u64(String text, NumFormat format) {
         return u64(utf8(text), format);
     }
 
-    /** See {@link #u64(String, NumFormat)}; input as raw UTF-8 bytes. */
+    /**
+     * See {@link #u64(String, NumFormat)}; input as raw UTF-8 bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
     public static Verdict<Long> u64(byte[] utf8, NumFormat format) {
         return numeric(CAST_U64, "cast_u64", utf8, format, 8, out -> out.get(ValueLayout.JAVA_LONG, 0));
     }
@@ -303,22 +405,44 @@ public final class Cast {
      * ({@code NaN}/{@code Infinity} literals are {@link CastFailure#MALFORMED}, overflow to
      * infinity is {@link CastFailure#OUT_OF_RANGE}), declared separators and grouping,
      * accounting parentheses, exponent, and trailing percent ({@code 50%} is 0.5).
+     *
+     * @param text the text to cast
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Float> f32(String text, NumFormat format) {
         return f32(utf8(text), format);
     }
 
-    /** See {@link #f32(String, NumFormat)}; input as raw UTF-8 bytes. */
+    /**
+     * See {@link #f32(String, NumFormat)}; input as raw UTF-8 bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
     public static Verdict<Float> f32(byte[] utf8, NumFormat format) {
         return numeric(CAST_F32, "cast_f32", utf8, format, 4, out -> out.get(ValueLayout.JAVA_FLOAT, 0));
     }
 
-    /** Casts real text to {@code double}. Notation rules as {@link #f32(String, NumFormat)}. */
+    /**
+     * Casts real text to {@code double}. Notation rules as {@link #f32(String, NumFormat)}.
+     *
+     * @param text the text to cast
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
     public static Verdict<Double> f64(String text, NumFormat format) {
         return f64(utf8(text), format);
     }
 
-    /** See {@link #f64(String, NumFormat)}; input as raw UTF-8 bytes. */
+    /**
+     * See {@link #f64(String, NumFormat)}; input as raw UTF-8 bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
     public static Verdict<Double> f64(byte[] utf8, NumFormat format) {
         return numeric(CAST_F64, "cast_f64", utf8, format, 8, out -> out.get(ValueLayout.JAVA_DOUBLE, 0));
     }
@@ -329,12 +453,20 @@ public final class Cast {
      * Casts UUID text to a {@link UUID}: every format .NET's {@code Guid} accepts (D, N, B,
      * P, X), after stripping a case-insensitive {@code urn:uuid:}/{@code GUID:}/{@code UUID:}
      * prefix. Culture-insensitive.
+     *
+     * @param text the text to cast
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<UUID> uuid(String text) {
         return uuid(utf8(text));
     }
 
-    /** See {@link #uuid(String)}; input as raw UTF-8 bytes. */
+    /**
+     * See {@link #uuid(String)}; input as raw UTF-8 bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
     public static Verdict<UUID> uuid(byte[] utf8) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment out = arena.allocate(16);
@@ -388,12 +520,20 @@ public final class Cast {
      * <b>mandatory</b> — to an {@link Instant}, normalized to UTC at full nanosecond
      * fidelity. A zone-less or space-separated form is {@link CastFailure#MALFORMED}; an
      * instant outside 0001-01-01 to 9999-12-31 UTC is {@link CastFailure#OUT_OF_RANGE}.
+     *
+     * @param text the text to cast
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Instant> timestamp(String text) {
         return timestamp(utf8(text));
     }
 
-    /** See {@link #timestamp(String)}; input as raw UTF-8 bytes. */
+    /**
+     * See {@link #timestamp(String)}; input as raw UTF-8 bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
     public static Verdict<Instant> timestamp(byte[] utf8) {
         return instantDoor(CAST_TIMESTAMP, "cast_timestamp", utf8, 0);
     }
@@ -403,12 +543,22 @@ public final class Cast {
      * Negatives (pre-1970) are allowed; a fractional or non-integer value is
      * {@link CastFailure#MALFORMED}; outside the 0001–9999 window is
      * {@link CastFailure#OUT_OF_RANGE}.
+     *
+     * @param text the text to cast
+     * @param precision the declared unit of the epoch value
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Instant> unix(String text, UnixPrecision precision) {
         return unix(utf8(text), precision);
     }
 
-    /** See {@link #unix(String, UnixPrecision)}; input as raw UTF-8 bytes. */
+    /**
+     * See {@link #unix(String, UnixPrecision)}; input as raw UTF-8 bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param precision the declared unit of the epoch value
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
     public static Verdict<Instant> unix(byte[] utf8, UnixPrecision precision) {
         return instantDoor(CAST_UNIX, "cast_unix", utf8, precision.code());
     }
@@ -417,12 +567,20 @@ public final class Cast {
      * Casts a strict ISO 8601 {@code yyyy-MM-dd} calendar date to a {@link LocalDate}.
      * Anything time-bearing or non-ISO is {@link CastFailure#MALFORMED}; year 0000 is
      * {@link CastFailure#OUT_OF_RANGE}.
+     *
+     * @param text the text to cast
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<LocalDate> date(String text) {
         return date(utf8(text));
     }
 
-    /** See {@link #date(String)}; input as raw UTF-8 bytes. */
+    /**
+     * See {@link #date(String)}; input as raw UTF-8 bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
     public static Verdict<LocalDate> date(byte[] utf8) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment out = arena.allocate(4);
@@ -447,12 +605,20 @@ public final class Cast {
      * {@code HH:mm:ss.f{1..9}} — to a {@link LocalTime} at full nanosecond fidelity.
      * Midnight and {@code 23:59:59.999999999} are real clock readings, so this door has no
      * range failure.
+     *
+     * @param text the text to cast
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<LocalTime> time(String text) {
         return time(utf8(text));
     }
 
-    /** See {@link #time(String)}; input as raw UTF-8 bytes. */
+    /**
+     * See {@link #time(String)}; input as raw UTF-8 bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
     public static Verdict<LocalTime> time(byte[] utf8) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment out = arena.allocate(ValueLayout.JAVA_LONG);
@@ -476,12 +642,20 @@ public final class Cast {
      * {@link CastFailure#MALFORMED}), the invariant colon form
      * ({@code [-][d.]hh:mm[:ss[.f]]}), or protobuf JSON seconds ({@code 3.5s}). Beyond
      * ±10,000 years is {@link CastFailure#OUT_OF_RANGE}.
+     *
+     * @param text the text to cast
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Duration> duration(String text) {
         return duration(utf8(text));
     }
 
-    /** See {@link #duration(String)}; input as raw UTF-8 bytes. */
+    /**
+     * See {@link #duration(String)}; input as raw UTF-8 bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
     public static Verdict<Duration> duration(byte[] utf8) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment out = arena.allocate(TIMESTAMP_BYTES);

@@ -11,6 +11,13 @@ namespace HyperCast;
  */
 final readonly class Fault
 {
+    /**
+     * Carries the reason and span verbatim from the native core's fault out-param.
+     *
+     * @param CastFailure $reason the closed-set conversion reason
+     * @param int $offset byte offset of the offending span in the input
+     * @param int $length byte length of the offending span; zero for Empty
+     */
     public function __construct(
         public CastFailure $reason,
         public int $offset,

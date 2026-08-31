@@ -52,6 +52,7 @@ final class Cast
     private static ?NumFormat $formatKey = null;
     private static bool $fastInstants = false;
 
+    /** Static-only facade — never instantiated. */
     private function __construct()
     {
     }
@@ -59,13 +60,21 @@ final class Cast
     /**
      * Presents a verdict optionally: an Empty fault becomes null (PHP's absent),
      * everything else flows through untouched.
+     *
+     * @param Success|Fault $verdict the verdict to present
+     * @return Success|Fault|null null for an Empty fault; the untouched verdict otherwise
      */
     public static function optional(Success|Fault $verdict): Success|Fault|null
     {
         return $verdict instanceof Fault && $verdict->reason === CastFailure::Empty ? null : $verdict;
     }
 
-    /** The cold path: assembles a Fault from the scratch span, or reports a binding bug. */
+    /**
+     * The cold path: assembles a Fault from the scratch span, or reports a binding bug.
+     *
+     * @param int $rc the native failure code
+     * @return Fault the assembled fault
+     */
     private static function fail(int $rc): Fault
     {
         if ($rc === -1) {
@@ -76,7 +85,12 @@ final class Cast
         return new Fault(CastFailure::from($rc), self::$fault->offset, self::$fault->length);
     }
 
-    /** Re-stores the declared format only when it actually changes (identity check). */
+    /**
+     * Re-stores the declared format only when it actually changes (identity check).
+     *
+     * @param NumFormat $format the caller-declared numeric notation
+     * @return void
+     */
     private static function declare(NumFormat $format): void
     {
         if (self::$formatKey !== $format) {
@@ -92,6 +106,9 @@ final class Cast
      * Casts boolean text: true/false plus the conventions untrusted sources actually send
      * (t/f, yes/no, y/n, 1/0, on/off, enabled/disabled, active/inactive,
      * checked/unchecked, in/out), ASCII case-insensitive.
+     *
+     * @param string $text the text to cast
+     * @return Success|Fault the verdict: a Success carrying the cast value, or a Fault
      */
     public static function bool(string $text): Success|Fault
     {
@@ -105,37 +122,83 @@ final class Cast
      * non-negative exponent, and 0x/&H/0b two's-complement radix prefixes. Every width
      * funnels through one zeroed 64-bit scratch slot (the supported RIDs are all
      * little-endian); narrow signed widths sign-extend on readback.
+     *
+     * @param string $text the text to cast
+     * @param NumFormat $format the caller-declared numeric notation
+     * @return Success|Fault the verdict: a Success carrying the cast value, or a Fault
      */
     public static function i8(string $text, NumFormat $format): Success|Fault
     {
         return self::integer('cast_i8', $text, $format);
     }
 
+    /**
+     * Casts integer text to a signed 16-bit value. Notation rules as {@see i8()}.
+     *
+     * @param string $text the text to cast
+     * @param NumFormat $format the caller-declared numeric notation
+     * @return Success|Fault the verdict: a Success carrying the cast value, or a Fault
+     */
     public static function i16(string $text, NumFormat $format): Success|Fault
     {
         return self::integer('cast_i16', $text, $format);
     }
 
+    /**
+     * Casts integer text to a signed 32-bit value. Notation rules as {@see i8()}.
+     *
+     * @param string $text the text to cast
+     * @param NumFormat $format the caller-declared numeric notation
+     * @return Success|Fault the verdict: a Success carrying the cast value, or a Fault
+     */
     public static function i32(string $text, NumFormat $format): Success|Fault
     {
         return self::integer('cast_i32', $text, $format);
     }
 
+    /**
+     * Casts integer text to a signed 64-bit value. Notation rules as {@see i8()}.
+     *
+     * @param string $text the text to cast
+     * @param NumFormat $format the caller-declared numeric notation
+     * @return Success|Fault the verdict: a Success carrying the cast value, or a Fault
+     */
     public static function i64(string $text, NumFormat $format): Success|Fault
     {
         return self::integer('cast_i64', $text, $format);
     }
 
+    /**
+     * Casts integer text to an unsigned 8-bit value. Notation rules as {@see i8()}.
+     *
+     * @param string $text the text to cast
+     * @param NumFormat $format the caller-declared numeric notation
+     * @return Success|Fault the verdict: a Success carrying the cast value, or a Fault
+     */
     public static function u8(string $text, NumFormat $format): Success|Fault
     {
         return self::integer('cast_u8', $text, $format);
     }
 
+    /**
+     * Casts integer text to an unsigned 16-bit value. Notation rules as {@see i8()}.
+     *
+     * @param string $text the text to cast
+     * @param NumFormat $format the caller-declared numeric notation
+     * @return Success|Fault the verdict: a Success carrying the cast value, or a Fault
+     */
     public static function u16(string $text, NumFormat $format): Success|Fault
     {
         return self::integer('cast_u16', $text, $format);
     }
 
+    /**
+     * Casts integer text to an unsigned 32-bit value. Notation rules as {@see i8()}.
+     *
+     * @param string $text the text to cast
+     * @param NumFormat $format the caller-declared numeric notation
+     * @return Success|Fault the verdict: a Success carrying the cast value, or a Fault
+     */
     public static function u32(string $text, NumFormat $format): Success|Fault
     {
         return self::integer('cast_u32', $text, $format);
@@ -144,12 +207,24 @@ final class Cast
     /**
      * u64 comes back as PHP int's two's-complement bit pattern (PHP has no unsigned 64) —
      * render with sprintf('%u', ...), the same carrier choice as the Java binding.
+     *
+     * @param string $text the text to cast
+     * @param NumFormat $format the caller-declared numeric notation
+     * @return Success|Fault the verdict: a Success carrying the cast value, or a Fault
      */
     public static function u64(string $text, NumFormat $format): Success|Fault
     {
         return self::integer('cast_u64', $text, $format);
     }
 
+    /**
+     * The shared body of the integer doors: one zeroed 64-bit scratch slot, one FFI call.
+     *
+     * @param string $symbol the native door symbol
+     * @param string $text the text to cast
+     * @param NumFormat $format the caller-declared numeric notation
+     * @return Success|Fault the verdict: a Success carrying the cast value, or a Fault
+     */
     private static function integer(string $symbol, string $text, NumFormat $format): Success|Fault
     {
         $ffi = self::$ffi ?? self::load();
@@ -170,7 +245,14 @@ final class Cast
         });
     }
 
-    /** Real doors: finite values only, declared separators, parens, exponent, percent. */
+    /**
+     * Casts real text to an IEEE single (widened losslessly on readback): finite values
+     * only, declared separators and grouping, parens, exponent, and trailing percent.
+     *
+     * @param string $text the text to cast
+     * @param NumFormat $format the caller-declared numeric notation
+     * @return Success|Fault the verdict: a Success carrying the cast value, or a Fault
+     */
     public static function f32(string $text, NumFormat $format): Success|Fault
     {
         $ffi = self::$ffi ?? self::load();
@@ -181,6 +263,13 @@ final class Cast
         return $rc === 0 ? new Success(self::$outReal->f32) : self::fail($rc);
     }
 
+    /**
+     * Casts real text to an IEEE double. Notation rules as {@see f32()}.
+     *
+     * @param string $text the text to cast
+     * @param NumFormat $format the caller-declared numeric notation
+     * @return Success|Fault the verdict: a Success carrying the cast value, or a Fault
+     */
     public static function f64(string $text, NumFormat $format): Success|Fault
     {
         $ffi = self::$ffi ?? self::load();
@@ -194,6 +283,9 @@ final class Cast
     /**
      * Casts UUID text — all five .NET Guid formats (D/N/B/P/X) plus urn:uuid:/GUID:/UUID:
      * prefixes — to PHP's UUID lingua franca: the lowercase hyphenated string.
+     *
+     * @param string $text the text to cast
+     * @return Success|Fault the verdict: a Success carrying the cast value, or a Fault
      */
     public static function uuid(string $text): Success|Fault
     {
@@ -209,6 +301,12 @@ final class Cast
         );
     }
 
+    /**
+     * Builds the scratch pair's instant — createFromTimestamp/setMicrosecond on PHP 8.4+,
+     * the date-string fallback below it.
+     *
+     * @return DateTimeImmutable the UTC instant, nanoseconds truncated to microseconds
+     */
     private static function instant(): DateTimeImmutable
     {
         $seconds = self::$outPair->seconds;
@@ -224,6 +322,9 @@ final class Cast
     /**
      * Casts an RFC 3339 instant — zone mandatory — to a UTC DateTimeImmutable.
      * Sub-microsecond nanoseconds truncate (PHP's ceiling).
+     *
+     * @param string $text the text to cast
+     * @return Success|Fault the verdict: a Success carrying the cast value, or a Fault
      */
     public static function timestamp(string $text): Success|Fault
     {
@@ -232,7 +333,14 @@ final class Cast
         return $rc === 0 ? new Success(self::instant()) : self::fail($rc);
     }
 
-    /** Casts an integer Unix-epoch value under a caller-declared unit to a UTC DateTimeImmutable. */
+    /**
+     * Casts an integer Unix-epoch value under a caller-declared unit to a UTC
+     * DateTimeImmutable.
+     *
+     * @param string $text the text to cast
+     * @param UnixPrecision $precision the declared unit of the epoch value
+     * @return Success|Fault the verdict: a Success carrying the cast value, or a Fault
+     */
     public static function unix(string $text, UnixPrecision $precision): Success|Fault
     {
         $ffi = self::$ffi ?? self::load();
@@ -246,6 +354,9 @@ final class Cast
      * Casts a strict ISO 8601 yyyy-MM-dd calendar date to a UTC DateTimeImmutable at
      * midnight (PHP has no date-only type). Built from epoch arithmetic — Hinnant's
      * days_from_civil, the same math the core itself uses — not a date-string parse.
+     *
+     * @param string $text the text to cast
+     * @return Success|Fault the verdict: a Success carrying the cast value, or a Fault
      */
     public static function date(string $text): Success|Fault
     {
@@ -273,6 +384,9 @@ final class Cast
     /**
      * Casts an ISO 24-hour time-of-day to an exact int of nanoseconds since midnight
      * (PHP has no time-only type; the integer keeps every digit).
+     *
+     * @param string $text the text to cast
+     * @return Success|Fault the verdict: a Success carrying the cast value, or a Fault
      */
     public static function time(string $text): Success|Fault
     {
@@ -284,6 +398,9 @@ final class Cast
     /**
      * Casts a duration (ISO 8601 fixed components, invariant colon form, or protobuf JSON
      * seconds) to the protobuf pair — see {@see Duration} for why not DateInterval.
+     *
+     * @param string $text the text to cast
+     * @return Success|Fault the verdict: a Success carrying the cast value, or a Fault
      */
     public static function duration(string $text): Success|Fault
     {
@@ -294,6 +411,11 @@ final class Cast
             : self::fail($rc);
     }
 
+    /**
+     * One-time cdef load plus the static scratch allocations every door reuses.
+     *
+     * @return FFI the bound library handle
+     */
     private static function load(): FFI
     {
         [$rid, $libName] = NativePlatform::ridAndLibraryName();

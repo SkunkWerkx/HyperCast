@@ -1,3 +1,7 @@
+require "date"
+require_relative "hypercast/native_platform"
+require_relative "hypercast/runtime"
+
 # Allocation-lean scalar casts — booleans, numerics, UUIDs, temporals — calling directly
 # into the native libhypercast shared library via Fiddle. Every door returns a verdict:
 # Success or Fault (a closed reason plus the offending byte span), never an exception for
@@ -16,12 +20,11 @@
 # window, time-of-day is an exact Integer of nanoseconds since midnight, and durations come
 # back as exact Rational seconds — no truncation anywhere, and no wrapping: Ruby and the
 # JVM are the fidelity kings of this roster.
-
-require "date"
-require_relative "hypercast/native_platform"
-require_relative "hypercast/runtime"
-
 module HyperCast
+  # This gem's own version — kept in lockstep with hypercast.gemspec by the
+  # prepare-release workflow, so the two can never drift apart again.
+  VERSION = "0.1.0"
+
   # The success case of a verdict: a cast value.
   Success = Data.define(:value)
 
@@ -30,12 +33,15 @@ module HyperCast
   # offending text out of the input is the caller's choice.
   Fault = Data.define(:reason, :offset, :length)
 
+  # The native core's failure codes, mapped to the closed reason Symbols a Fault carries.
   REASONS = { 1 => :empty, 2 => :malformed, 3 => :out_of_range }.freeze
 
   # Caller-declared numeric notation for the integer and real doors — declared out loud
   # (INVARIANT, or a literal), never defaulted, the same stance every binding takes.
   # Equal separators are a caller bug (ArgumentError), never a verdict.
   NumFormat = Data.define(:decimal_sep, :group_sep, :flags) do
+    # Validates the declared separators up front — single characters, and distinct from
+    # each other — so a malformed format fails loudly as the caller bug it is.
     def initialize(decimal_sep:, group_sep:, flags:)
       raise ArgumentError, "separators must be single characters" unless
         decimal_sep.is_a?(String) && decimal_sep.length == 1 &&
@@ -45,6 +51,7 @@ module HyperCast
       super
     end
 
+    # The 12-byte little-endian form the native ABI's NumFormat struct expects.
     def packed
       [decimal_sep.ord, group_sep.ord, flags].pack("L<L<L<")
     end
@@ -63,6 +70,7 @@ module HyperCast
   # Every lenience on.
   ALL_STYLES = GROUPING | PARENTHESES | EXPONENT | RADIX_PREFIXES | PERCENT
 
+  # The invariant profile — '.' decimal, ',' grouping, every lenience on.
   NumFormat::INVARIANT = NumFormat.new(decimal_sep: ".", group_sep: ",", flags: ALL_STYLES)
 
   # The declared unit of a Unix-epoch value — no magnitude guessing, ever.
@@ -96,11 +104,13 @@ module HyperCast
       end
     end
 
-    # Real doors: finite values only, declared separators, parens, exponent, percent.
+    # Casts real text to an IEEE single (widened losslessly on the way out): finite values
+    # only, declared separators and grouping, parens, exponent, and trailing percent.
     def f32(text, format)
       numeric(:cast_f32, text, format, 4) { |out| out.unpack1("e") }
     end
 
+    # Casts real text to an IEEE double. Notation rules as f32.
     def f64(text, format)
       numeric(:cast_f64, text, format, 8) { |out| out.unpack1("E") }
     end
@@ -157,14 +167,17 @@ module HyperCast
 
     private
 
+    # Encodings whose bytes already are the UTF-8 (or byte-identical) form the core reads.
     BYTE_COMPATIBLE = [Encoding::UTF_8, Encoding::US_ASCII, Encoding::ASCII_8BIT].freeze
 
+    # Presents the input as UTF-8 bytes: already-compatible text crosses as-is (Fiddle
+    # passes a String's bytes for void* directly — no Pointer wrapper, no dup); only
+    # foreign encodings pay a transcode.
     def utf8(text)
-      # Already-UTF-8 text crosses as-is (Fiddle passes a String's bytes for void*
-      # directly — no Pointer wrapper, no dup); only foreign encodings pay a transcode.
       BYTE_COMPATIBLE.include?(text.encoding) ? text : text.encode(Encoding::UTF_8)
     end
 
+    # Fiddle spells a null pointer as nil — the core's contract for empty input.
     def input_ptr(bytes)
       bytes.empty? ? nil : bytes
     end
@@ -180,6 +193,8 @@ module HyperCast
       end
     end
 
+    # Presents a native return code as the verdict union: 0 yields a Success, a failure
+    # code becomes a Fault, and -1 (contract violation) is a binding bug that raises.
     def verdict(rc, fault)
       if rc.zero?
         Success.new(value: yield)
@@ -191,6 +206,7 @@ module HyperCast
       end
     end
 
+    # The shared body of every format-free door: one native call over the scratch buffers.
     def plain(symbol, text, out_size)
       bytes = utf8(text)
       out, fault, = scratch
@@ -198,6 +214,7 @@ module HyperCast
       verdict(rc, fault) { yield(out[0, out_size]) }
     end
 
+    # The shared body of the integer/real doors: plain, plus the packed NumFormat.
     def numeric(symbol, text, format, out_size)
       bytes = utf8(text)
       out, fault, raw_format = scratch
@@ -212,6 +229,7 @@ module HyperCast
       @packed_cache ||= Hash.new { |cache, format| cache[format] = format.packed }
     end
 
+    # Builds a UTC Time from the core's protobuf-shaped {seconds, nanos} pair, exactly.
     def instant(bytes)
       seconds, nanos = bytes.unpack("q<l<")
       Time.at(seconds, nanos, :nanosecond, in: "UTC")

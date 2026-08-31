@@ -1,12 +1,12 @@
-package io.github.buvinghausen.hypercast.aotsmoketest;
+package io.github.skunkwerkx.hypercast.aotsmoketest;
 
-import io.github.buvinghausen.hypercast.Cast;
-import io.github.buvinghausen.hypercast.CastFailure;
-import io.github.buvinghausen.hypercast.Fault;
-import io.github.buvinghausen.hypercast.NumFormat;
-import io.github.buvinghausen.hypercast.Success;
-import io.github.buvinghausen.hypercast.UnixPrecision;
-import io.github.buvinghausen.hypercast.Verdict;
+import io.github.skunkwerkx.hypercast.Cast;
+import io.github.skunkwerkx.hypercast.CastFailure;
+import io.github.skunkwerkx.hypercast.Fault;
+import io.github.skunkwerkx.hypercast.NumFormat;
+import io.github.skunkwerkx.hypercast.Success;
+import io.github.skunkwerkx.hypercast.UnixPrecision;
+import io.github.skunkwerkx.hypercast.Verdict;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;

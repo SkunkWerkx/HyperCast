@@ -12,13 +12,23 @@ namespace HyperCast;
  */
 final readonly class Duration
 {
+    /**
+     * Carries the pair verbatim from the native core — no normalization, no validation.
+     *
+     * @param int $seconds whole seconds, signed
+     * @param int $nanos same-signed nanoseconds, |nanos| < 1e9
+     */
     public function __construct(
         public int $seconds,
         public int $nanos,
     ) {
     }
 
-    /** Approximate float seconds — convenient, and lossy exactly the way floats are. */
+    /**
+     * Approximate float seconds — convenient, and lossy exactly the way floats are.
+     *
+     * @return float the span in seconds, to float precision
+     */
     public function toSeconds(): float
     {
         return $this->seconds + $this->nanos / 1_000_000_000;

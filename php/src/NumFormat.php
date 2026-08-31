@@ -26,6 +26,14 @@ final readonly class NumFormat
     /** Every lenience on. */
     public const ALL = self::GROUPING | self::PARENTHESES | self::EXPONENT | self::RADIX_PREFIXES | self::PERCENT;
 
+    /**
+     * Declares a format: single-character separators, distinct from each other, plus the
+     * lenience flags. A malformed format fails loudly as the caller bug it is.
+     *
+     * @param string $decimalSep the decimal separator, exactly one character
+     * @param string $groupSep the group separator, exactly one character
+     * @param int $flags the lenience flags (GROUPING | PARENTHESES | ...)
+     */
     public function __construct(
         public string $decimalSep,
         public string $groupSep,
@@ -41,14 +49,22 @@ final readonly class NumFormat
         }
     }
 
-    /** The invariant profile — '.' decimal, ',' grouping, every lenience on. */
+    /**
+     * The invariant profile — '.' decimal, ',' grouping, every lenience on.
+     *
+     * @return self the shared invariant instance
+     */
     public static function invariant(): self
     {
         static $invariant = null;
         return $invariant ??= new self('.', ',', self::ALL);
     }
 
-    /** The separators as Unicode code points, the core's own field encoding. */
+    /**
+     * The separators as Unicode code points, the core's own field encoding.
+     *
+     * @return array{int, int} decimal separator code point, then group separator
+     */
     public function codePoints(): array
     {
         return [

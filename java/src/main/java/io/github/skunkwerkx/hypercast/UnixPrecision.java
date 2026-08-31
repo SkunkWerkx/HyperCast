@@ -1,4 +1,4 @@
-package io.github.buvinghausen.hypercast;
+package io.github.skunkwerkx.hypercast;
 
 /**
  * The declared unit of a Unix-epoch value. There is no magnitude guessing — the caller

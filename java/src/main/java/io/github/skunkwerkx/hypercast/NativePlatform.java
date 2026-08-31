@@ -1,4 +1,4 @@
-package io.github.buvinghausen.hypercast;
+package io.github.skunkwerkx.hypercast;
 
 /**
  * Maps the running JVM's OS/arch to the RID-style directory (matching the C# binding's

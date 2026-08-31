@@ -20,13 +20,13 @@
     },
     "autoload": {
         "psr-4": {
-            "HyperCast\\": "src/"
+            "HyperCast\\": "php/src/"
         }
     },
     "autoload-dev": {
         "psr-4": {
-            "HyperCast\\Tests\\": "tests/",
-            "HyperCast\\Bench\\": "bench/"
+            "HyperCast\\Tests\\": "php/tests/",
+            "HyperCast\\Bench\\": "php/bench/"
         }
     }
 }

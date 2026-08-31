@@ -11,7 +11,7 @@ dependencies {
 }
 
 application {
-    mainClass.set("io.github.buvinghausen.hypercast.aotsmoketest.Main")
+    mainClass.set("io.github.skunkwerkx.hypercast.aotsmoketest.Main")
 }
 
 java {

@@ -16,4 +16,8 @@ Gem::Specification.new do |spec|
   spec.require_paths = ["lib"]
 
   spec.add_dependency "fiddle"
+  spec.add_development_dependency "rake", "~> 13.0"
+  spec.add_development_dependency "yard", "~> 0.9"
+
+  spec.metadata["source_code_uri"] = spec.homepage
 end
