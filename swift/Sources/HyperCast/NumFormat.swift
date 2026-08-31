@@ -20,6 +20,16 @@ public struct NumStyles: OptionSet, Sendable {
     /// Permit a trailing `%`, dividing by 100. Real doors only.
     public static let percent = NumStyles(rawValue: 1 << 4)
     /// Every lenience on.
+    /// Resolve the `.`/`,` roles per input from structure instead of the declared
+    /// separators (which are ignored while this flag is set). Detection, not sniffing: a
+    /// repeated separator is grouping (`1.234.567,89`); with both present the rightmost is
+    /// the decimal; a single separator with a non-3-digit right run is the decimal
+    /// (`3,1415`); with exactly 3 digits right, only a `0` integer part proves decimal
+    /// (`0,785`). Genuinely ambiguous input (`12.185`, `1,000`) is malformed at the
+    /// separator, never guessed.
+    public static let separatorDetect = NumStyles(rawValue: 1 << 5)
+    /// Every lenience on (`separatorDetect` is a separator policy, not a lenience, and is
+    /// deliberately not included).
     public static let all: NumStyles = [.grouping, .parentheses, .exponent, .radixPrefixes, .percent]
 }
 
@@ -46,6 +56,11 @@ public struct NumFormat: Equatable, Sendable {
 
     /// The invariant profile — `.` decimal, `,` grouping, every lenience on.
     public static let invariant = NumFormat(decimalSeparator: ".", groupSeparator: ",", styles: .all)
+
+    /// The detection profile — every lenience on, `.`/`,` roles resolved per input by
+    /// ``NumStyles/separatorDetect``'s structural rules.
+    public static let detect = NumFormat(
+        decimalSeparator: ".", groupSeparator: ",", styles: [.all, .separatorDetect])
 
     /// Derives a format from a locale's separators (first scalar of each), with every
     /// lenience on. Falls back to the invariant separators where the locale doesn't say.

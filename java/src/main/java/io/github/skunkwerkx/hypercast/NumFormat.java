@@ -40,11 +40,28 @@ public record NumFormat(char decimalSeparator, char groupSeparator, int styles) 
     /** Permit a trailing {@code %}, dividing by 100 ({@code 50%} is 0.5). Real doors only. */
     public static final int STYLE_PERCENT = 1 << 4;
     /** Every lenience on. */
+    /**
+     * Resolve the {@code .}/{@code ,} roles per input from structure instead of the
+     * declared separators (which are ignored while this style is set). Detection, not
+     * sniffing: a repeated separator is grouping ({@code 1.234.567,89}); with both present
+     * the rightmost is the decimal; a single separator with a non-3-digit right run is the
+     * decimal ({@code 3,1415}); with exactly 3 digits right, only a {@code 0} integer part
+     * proves decimal ({@code 0,785}). Genuinely ambiguous input ({@code 12.185},
+     * {@code 1,000}) is {@link CastFailure#MALFORMED} at the separator, never guessed.
+     */
+    public static final int STYLE_SEPARATOR_DETECT = 1 << 5;
+
     public static final int STYLE_ALL =
             STYLE_GROUPING | STYLE_PARENTHESES | STYLE_EXPONENT | STYLE_RADIX_PREFIXES | STYLE_PERCENT;
 
     /** The invariant profile — {@code .} decimal, {@code ,} grouping, every lenience on. */
     public static final NumFormat INVARIANT = new NumFormat('.', ',', STYLE_ALL);
+
+    /**
+     * The detection profile — every lenience on, {@code .}/{@code ,} roles resolved per
+     * input by {@link #STYLE_SEPARATOR_DETECT}'s structural rules.
+     */
+    public static final NumFormat DETECT = new NumFormat('.', ',', STYLE_ALL | STYLE_SEPARATOR_DETECT);
 
     /**
      * Validates the declared separators up front — distinct, and whole code points — so a

@@ -40,5 +40,8 @@
   { "input": "01:60:00", "expect": "malformed" },
   { "input": "01:30:60", "expect": "malformed" },
   { "input": "", "expect": "empty" },
-  { "input": " \t\r\n\f ", "expect": "empty" }
+  { "input": " \t\r\n\f ", "expect": "empty" },
+  {"input": "PT1,5S", "expect": "ok", "seconds": 1, "nanos": 500000000},
+  {"input": "0:00:01,5", "expect": "ok", "seconds": 1, "nanos": 500000000},
+  {"input": "-1,5s", "expect": "ok", "seconds": -1, "nanos": -500000000}
 ]

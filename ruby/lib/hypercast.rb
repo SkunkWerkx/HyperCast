@@ -67,11 +67,25 @@ module HyperCast
   RADIX_PREFIXES = 1 << 3
   # Permit a trailing %, dividing by 100. Real doors only.
   PERCENT = 1 << 4
-  # Every lenience on.
+  # Resolve the ./, roles per input from structure instead of the declared separators
+  # (which are ignored while this flag is set). Detection, not sniffing: a repeated
+  # separator is grouping ("1.234.567,89"); with both present the rightmost is the
+  # decimal; a single separator with a non-3-digit right run is the decimal ("3,1415");
+  # with exactly 3 digits right, only a 0 integer part proves decimal ("0,785").
+  # Genuinely ambiguous input ("12.185", "1,000") is a :malformed Fault at the separator,
+  # never guessed.
+  SEPARATOR_DETECT = 1 << 5
+  # Every lenience on (SEPARATOR_DETECT is a separator policy, not a lenience, and is
+  # deliberately not included).
   ALL_STYLES = GROUPING | PARENTHESES | EXPONENT | RADIX_PREFIXES | PERCENT
 
   # The invariant profile — '.' decimal, ',' grouping, every lenience on.
   NumFormat::INVARIANT = NumFormat.new(decimal_sep: ".", group_sep: ",", flags: ALL_STYLES)
+
+  # The detection profile — every lenience on, ./, roles resolved per input by
+  # SEPARATOR_DETECT's structural rules.
+  NumFormat::DETECT = NumFormat.new(decimal_sep: ".", group_sep: ",",
+                                    flags: ALL_STYLES | SEPARATOR_DETECT)
 
   # The declared unit of a Unix-epoch value — no magnitude guessing, ever.
   UNIX_PRECISIONS = { seconds: 1, milliseconds: 2, microseconds: 3, nanoseconds: 4 }.freeze

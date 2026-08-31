@@ -122,12 +122,21 @@ impl NumFormat {
     const PERCENT: u32 = core::NumFormat::PERCENT;
     #[classattr]
     const ALL: u32 = core::NumFormat::ALL;
+    #[classattr]
+    const SEPARATOR_DETECT: u32 = core::NumFormat::SEPARATOR_DETECT;
 
     // Python's own spelling — the constant-style name is the API.
     #[allow(non_snake_case)]
     #[classattr]
     fn INVARIANT() -> NumFormat {
         NumFormat { resolved: core::NumFormat::INVARIANT }
+    }
+
+    // Python's own spelling, as with INVARIANT above.
+    #[allow(non_snake_case)]
+    #[classattr]
+    fn DETECT() -> NumFormat {
+        NumFormat { resolved: core::NumFormat::DETECT }
     }
 
     #[new]

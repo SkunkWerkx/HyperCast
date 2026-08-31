@@ -77,6 +77,12 @@ fn allocation_free() {
         hypercast::cast_datetime(b"1/7/2026 3:04:05.123 PM", hypercast::DateOrder::MonthDayYear)
             .unwrap()
     });
+    assert_allocation_free("cast_f64 (separator detection)", || {
+        hypercast::cast_f64(b"1.234.567,89", &hypercast::NumFormat::DETECT).unwrap()
+    });
+    assert_allocation_free("cast_duration (comma decimal mark)", || {
+        hypercast::cast_duration(b"0:00:01,5").unwrap()
+    });
     assert_allocation_free("cast_time", || hypercast::cast_time(b"15:04:05.123456789").unwrap());
     assert_allocation_free("cast_duration iso", || {
         hypercast::cast_duration(b"P1DT6H30M15.5S").unwrap()

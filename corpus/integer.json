@@ -50,5 +50,8 @@
   { "type": "u64", "input": "18446744073709551615", "expect": "ok", "value": 18446744073709551615 },
   { "type": "i64", "input": "99999999999999999999999", "expect": "out_of_range" },
   { "type": "i32", "input": "5e40", "expect": "out_of_range" },
-  { "type": "i32", "input": "0e999999", "expect": "ok", "value": 0 }
+  { "type": "i32", "input": "0e999999", "expect": "ok", "value": 0 },
+  {"input": "1,234,567", "type": "i32", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 63}, "expect": "ok", "value": 1234567},
+  {"input": "1.234.567", "type": "i32", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 63}, "expect": "ok", "value": 1234567},
+  {"input": "12,345", "type": "i32", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 63}, "expect": "malformed", "fault": [2, 1]}
 ]

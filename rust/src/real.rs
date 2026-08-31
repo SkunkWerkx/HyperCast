@@ -26,6 +26,16 @@ macro_rules! real_doors {
             if text.is_empty() {
                 return Err(Fault::EMPTY);
             }
+            // Separator detection resolves the '.'/',' roles from structure before either
+            // path runs — it must precede is_plain, or "1.234" (ambiguous under
+            // detection) would slip through the invariant fast lane as 1.234.
+            let resolved;
+            let format = if format.allows(NumFormat::SEPARATOR_DETECT) {
+                resolved = format.resolve_detected(text, start)?;
+                &resolved
+            } else {
+                format
+            };
             // Fast path: a token already in the invariant shape needs no normalization —
             // hand the caller's own bytes straight to core's dec2flt, no scratch buffer.
             // Non-plain input (declared separators, grouping, parens, percent, or any

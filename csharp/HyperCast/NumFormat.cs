@@ -23,6 +23,12 @@ public readonly record struct NumFormat(char DecimalSeparator, char GroupSeparat
 	public static readonly NumFormat Invariant = new('.', ',', NumStyles.All);
 
 	/// <summary>
+	/// The detection profile — every lenience on, <c>.</c>/<c>,</c> roles resolved per
+	/// input by <see cref="NumStyles.SeparatorDetect"/>'s structural rules.
+	/// </summary>
+	public static readonly NumFormat Detect = new('.', ',', NumStyles.All | NumStyles.SeparatorDetect);
+
+	/// <summary>
 	/// Derives a format from a culture's number formatting: the first code unit of its
 	/// decimal and group separators, with every lenience on. For cultures whose group
 	/// separator is a multi-unit string, only the first unit is used — declare explicitly if

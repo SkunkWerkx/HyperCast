@@ -222,6 +222,40 @@ mod tests {
     }
 
     #[test]
+    fn separator_detection_resolves_structure_and_refuses_ambiguity() {
+        const DETECT: NumFormat = NumFormat::DETECT;
+        // Both separators present: the rightmost is the decimal.
+        assert_eq!(cast_f64(b"1.234,5", &DETECT), Ok(1234.5));
+        assert_eq!(cast_f64(b"1,234.5", &DETECT), Ok(1234.5));
+        assert_eq!(cast_f64(b"1.234.567,89", &DETECT), Ok(1_234_567.89));
+        // A repeated separator can only be grouping.
+        assert_eq!(cast_f64(b"1,234,567", &DETECT), Ok(1_234_567.0));
+        assert_eq!(cast_i64(b"1.234.567", &DETECT), Ok(1_234_567));
+        // One separator, non-3-digit right run: decimal.
+        assert_eq!(cast_f64(b"1,23", &DETECT), Ok(1.23));
+        assert_eq!(cast_f64(b"3,1415", &DETECT), Ok(3.1415));
+        assert_eq!(cast_f64(b"1,5e3", &DETECT), Ok(1500.0));
+        // One separator, 3 digits right, zero-led integer part: decimal ("0785" would be
+        // no number at all).
+        assert_eq!(cast_f64(b"0,785", &DETECT), Ok(0.785));
+        assert_eq!(cast_f64(b"0,785%", &DETECT), Ok(0.785 / 100.0));
+        assert_eq!(cast_f64(b"(0.785)", &DETECT), Ok(-0.785));
+        // Genuinely ambiguous: one separator, 3 digits right, non-zero integer part —
+        // Malformed at the undecidable separator, never guessed.
+        for text in ["12.185", "1,000", "12,185", "1,500e3"] {
+            assert_eq!(reason(cast_f64(text.as_bytes(), &DETECT)), Reason::Malformed, "{text}");
+            assert_eq!(reason(cast_i32(text.as_bytes(), &DETECT)), Reason::Malformed, "{text}");
+        }
+        // The fault span points at the separator itself.
+        assert_eq!(cast_f64(b"12.185", &DETECT).unwrap_err().offset, 2);
+        // No separators at all: nothing to detect, nothing changes.
+        assert_eq!(cast_i32(b"1234", &DETECT), Ok(1234));
+        assert_eq!(cast_f64(b"-2.5", &DETECT), Ok(-2.5));
+        // Declared formats are untouched: 12.185 parses under an explicit declaration.
+        assert_eq!(cast_f64(b"12.185", &INVARIANT), Ok(12.185));
+    }
+
+    #[test]
     fn real_admits_only_finite_values() {
         // The literals Rust's own parser would accept are Malformed here by construction...
         assert_eq!(reason(cast_f64(b"NaN", &INVARIANT)), Reason::Malformed);
@@ -609,6 +643,20 @@ mod tests {
         assert_eq!(cast_duration(b"3.000000001s"), Ok(Duration { seconds: 3, nanos: 1 }));
         assert_eq!(cast_duration(b"-00:00:00.5"), Ok(Duration { seconds: 0, nanos: -500_000_000 }));
         assert_eq!(cast_duration(b"00:00:00"), Ok(Duration { seconds: 0, nanos: 0 }));
+    }
+
+    #[test]
+    fn duration_accepts_iso_8601_comma_decimal_marks() {
+        // ISO 8601 permits the comma as the decimal mark, and eurozone feeds send it in
+        // all three shapes. Unambiguous — durations have no digit grouping, so a comma
+        // here can only be a decimal mark.
+        let second_and_a_half = Duration { seconds: 1, nanos: 500_000_000 };
+        assert_eq!(cast_duration(b"PT1,5S"), Ok(second_and_a_half));
+        assert_eq!(cast_duration(b"0:00:01,5"), Ok(second_and_a_half));
+        assert_eq!(cast_duration(b"1,5s"), Ok(second_and_a_half));
+        assert_eq!(cast_duration(b"-1,5s"), Ok(Duration { seconds: -1, nanos: -500_000_000 }));
+        // A comma with nothing after it is still no fraction.
+        assert_eq!(reason(cast_duration(b"PT1,S")), Reason::Malformed);
     }
 
     #[test]

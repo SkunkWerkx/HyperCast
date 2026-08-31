@@ -26,5 +26,12 @@
   { "type": "f64", "input": "1,234.5,6", "expect": "malformed" },
   { "type": "f64", "input": "", "expect": "empty" },
   { "type": "f64", "input": " \t\r\n\f ", "expect": "empty" },
-  { "type": "f64", "input": "50%", "format": { "decimal_sep": ".", "group_sep": ",", "flags": 0 }, "expect": "malformed" }
+  { "type": "f64", "input": "50%", "format": { "decimal_sep": ".", "group_sep": ",", "flags": 0 }, "expect": "malformed" },
+  {"input": "1.234,5", "type": "f64", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 63}, "expect": "ok", "value": 1234.5},
+  {"input": "1,234.5", "type": "f64", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 63}, "expect": "ok", "value": 1234.5},
+  {"input": "1.234.567,89", "type": "f64", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 63}, "expect": "ok", "value": 1234567.89},
+  {"input": "0,785", "type": "f64", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 63}, "expect": "ok", "value": 0.785},
+  {"input": "3,1415", "type": "f64", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 63}, "expect": "ok", "value": 3.1415},
+  {"input": "12.185", "type": "f64", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 63}, "expect": "malformed", "fault": [2, 1]},
+  {"input": "1,000", "type": "f64", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 63}, "expect": "malformed", "fault": [1, 1]}
 ]

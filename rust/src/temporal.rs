@@ -90,14 +90,28 @@ fn read4(text: &[u8], at: usize) -> Option<u32> {
 
 /// Reads `.f{1..=9}` at `at` when present, returning the value widened to nanoseconds and
 /// the index after the fraction. A tenth fractional digit is `Malformed` — nanos is the
-/// core's full fidelity.
+/// core's full fidelity. The RFC 3339/ISO-time doors: dot only.
 fn read_fraction(
     text: &[u8],
     at: usize,
     start: usize,
 ) -> Result<(u32, usize), Fault> {
-    if text.get(at) != Some(&b'.') {
-        return Ok((0, at));
+    read_fraction_marked(text, at, start, b".")
+}
+
+/// [`read_fraction`] with the accepted decimal marks parameterized: the duration door
+/// takes ISO 8601's comma alongside the dot (`PT1,5S`, `0:00:01,5`, `1,5s` — eurozone
+/// feeds really send these), unambiguously — durations have no digit grouping, so a
+/// comma there can only be a decimal mark. RFC 3339 timestamps stay dot-only per spec.
+fn read_fraction_marked(
+    text: &[u8],
+    at: usize,
+    start: usize,
+    marks: &[u8],
+) -> Result<(u32, usize), Fault> {
+    match text.get(at) {
+        Some(byte) if marks.contains(byte) => {}
+        _ => return Ok((0, at)),
     }
     let mut i = at + 1;
     let mut nanos: u32 = 0;
@@ -646,9 +660,9 @@ fn parse_iso_duration(text: &[u8], start: usize) -> Result<i128, Fault> {
         }
         let mut fraction_nanos: i128 = 0;
         let mut has_fraction = false;
-        if text.get(i) == Some(&b'.') {
+        if matches!(text.get(i), Some(&b'.') | Some(&b',')) {
             has_fraction = true;
-            let (nanos, after_fraction) = read_fraction(text, i, start)?;
+            let (nanos, after_fraction) = read_fraction_marked(text, i, start, b".,")?;
             fraction_nanos = nanos as i128;
             i = after_fraction;
         }
@@ -749,7 +763,7 @@ fn parse_colon_duration(text: &[u8], start: usize) -> Result<i128, Fault> {
         }
         seconds = s;
         i = after_seconds;
-        let (nanos, after_fraction) = read_fraction(text, i, start)?;
+        let (nanos, after_fraction) = read_fraction_marked(text, i, start, b".,")?;
         fraction_nanos = nanos as i128;
         i = after_fraction;
     }
@@ -778,7 +792,7 @@ fn parse_protobuf_duration(text: &[u8], start: usize) -> Result<i128, Fault> {
     if digits == 0 {
         return Err(Fault::malformed(start, text.len()));
     }
-    let (nanos, after_fraction) = read_fraction(body, after, start)?;
+    let (nanos, after_fraction) = read_fraction_marked(body, after, start, b".,")?;
     if after_fraction != body.len() {
         return Err(Fault::malformed(start + after_fraction, char_len(body[after_fraction])));
     }

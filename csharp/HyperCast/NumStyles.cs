@@ -35,6 +35,17 @@ public enum NumStyles : uint
 	/// <summary>Permit a trailing <c>%</c>, dividing by 100 (<c>50%</c> is 0.5). Real doors only.</summary>
 	Percent = 16,
 
+	/// <summary>
+	/// Resolve the <c>.</c>/<c>,</c> roles per input from structure instead of the declared
+	/// separators (which are ignored while this flag is set). Detection, not sniffing: a
+	/// repeated separator is grouping (<c>1.234.567,89</c>); with both present the rightmost
+	/// is the decimal; a single separator with a non-3-digit right run is the decimal
+	/// (<c>3,1415</c>); with exactly 3 digits right, only a <c>0</c> integer part proves
+	/// decimal (<c>0,785</c>). Genuinely ambiguous input (<c>12.185</c>, <c>1,000</c>) is
+	/// <see cref="CastFailure.Malformed"/> at the separator, never guessed.
+	/// </summary>
+	SeparatorDetect = 32,
+
 	/// <summary>Every lenience on.</summary>
 	All = Grouping | Parentheses | Exponent | RadixPrefixes | Percent
 }

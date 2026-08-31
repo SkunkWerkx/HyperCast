@@ -111,7 +111,20 @@ impl NumFormat {
     pub const RADIX_PREFIX: u32 = 1 << 3;
     /// Permit a trailing `%`, dividing by 100 (`50%` is 0.5). Real doors only.
     pub const PERCENT: u32 = 1 << 4;
-    /// Every flag set.
+    /// Resolve the `.`/`,` roles per input from structure instead of the declared fields
+    /// (which are ignored while this flag is set). Detection, not sniffing — only
+    /// structurally unambiguous inputs resolve, by exactly these rules: a separator
+    /// appearing twice or more is grouping (`1.234.567,89`); when both appear, the
+    /// rightmost is the decimal (`1,234.5` vs `1.234,5`); a single separator with a
+    /// non-3-digit run to its right is the decimal (`3,1415`); a single separator with
+    /// exactly 3 digits right is the decimal only when the integer part is exactly `0`
+    /// (`0,785` is 0.785 — `0785` would be no number at all). Everything else — `12.185`,
+    /// `1,000` — is genuinely ambiguous between dialects and comes back `Malformed` at the
+    /// undecidable separator, never guessed. Covers the `.`/`,` pair only; space/NBSP
+    /// grouping still needs a declared format.
+    pub const SEPARATOR_DETECT: u32 = 1 << 5;
+    /// Every lenience flag set (the declared-separator flags — [`SEPARATOR_DETECT`](Self::SEPARATOR_DETECT)
+    /// is a separator *policy*, not a lenience, and is deliberately not included).
     pub const ALL: u32 =
         Self::GROUPING | Self::PARENS | Self::EXPONENT | Self::RADIX_PREFIX | Self::PERCENT;
 
@@ -120,9 +133,65 @@ impl NumFormat {
     pub const INVARIANT: NumFormat =
         NumFormat { decimal_sep: '.', group_sep: ',', flags: Self::ALL };
 
+    /// The detection profile — every lenience on, `.`/`,` roles resolved per input by
+    /// [`SEPARATOR_DETECT`](Self::SEPARATOR_DETECT)'s structural rules.
+    pub const DETECT: NumFormat =
+        NumFormat { decimal_sep: '.', group_sep: ',', flags: Self::ALL | Self::SEPARATOR_DETECT };
+
     pub(crate) fn allows(&self, flag: u32) -> bool {
         self.flags & flag != 0
     }
+
+    /// Resolves this format's `.`/`,` roles for `text` (trimmed, offset `start` in the
+    /// caller's input) under [`SEPARATOR_DETECT`](Self::SEPARATOR_DETECT)'s rules,
+    /// returning a concrete declared-separator format for the ordinary engines to run
+    /// with. The one fault detection itself can produce: `Malformed` at a structurally
+    /// undecidable separator.
+    pub(crate) fn resolve_detected(&self, text: &[u8], start: usize) -> Result<NumFormat, Fault> {
+        let flags = self.flags & !Self::SEPARATOR_DETECT;
+        let (mut dots, mut commas) = (0usize, 0usize);
+        let (mut last_dot, mut last_comma) = (0usize, 0usize);
+        for (i, &byte) in text.iter().enumerate() {
+            match byte {
+                b'.' => (dots, last_dot) = (dots + 1, i),
+                b',' => (commas, last_comma) = (commas + 1, i),
+                _ => {}
+            }
+        }
+        let (decimal_sep, group_sep) = match (dots, commas) {
+            (0, 0) => ('.', ','),
+            (_, 0) => resolve_single_sep(text, start, last_dot, dots, '.', ',')?,
+            (0, _) => resolve_single_sep(text, start, last_comma, commas, ',', '.')?,
+            _ if last_dot > last_comma => ('.', ','),
+            _ => (',', '.'),
+        };
+        Ok(NumFormat { decimal_sep, group_sep, flags })
+    }
+}
+
+/// The single-separator-kind arm of separator detection: repeated ⇒ grouping; a
+/// non-3-digit right run ⇒ decimal; a 3-digit right run with a `0` integer part ⇒
+/// decimal; anything else is undecidable.
+fn resolve_single_sep(
+    text: &[u8],
+    start: usize,
+    at: usize,
+    count: usize,
+    sep: char,
+    other: char,
+) -> Result<(char, char), Fault> {
+    if count >= 2 {
+        return Ok((other, sep));
+    }
+    let right = text[at + 1..].iter().take_while(|byte| byte.is_ascii_digit()).count();
+    if right != 3 {
+        return Ok((sep, other));
+    }
+    let left = text[..at].iter().rev().take_while(|byte| byte.is_ascii_digit()).count();
+    if left == 1 && text[at - 1] == b'0' {
+        return Ok((sep, other));
+    }
+    Err(Fault::malformed(start + at, 1))
 }
 
 impl Default for NumFormat {

@@ -167,6 +167,17 @@ fn parse_int(
         }
     }
 
+    // Separator detection resolves the '.'/',' roles from structure before the engine
+    // runs; a token with no separators (the fast path above included) resolves to the
+    // invariant roles and nothing changes.
+    let resolved;
+    let format = if format.allows(NumFormat::SEPARATOR_DETECT) {
+        resolved = format.resolve_detected(text, start)?;
+        &resolved
+    } else {
+        format
+    };
+
     if format.allows(NumFormat::RADIX_PREFIX)
         && let Some(radix) = radix_prefix(text)
     {

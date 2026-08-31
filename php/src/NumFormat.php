@@ -23,7 +23,17 @@ final readonly class NumFormat
     public const RADIX_PREFIXES = 1 << 3;
     /** Permit a trailing %, dividing by 100. Real doors only. */
     public const PERCENT = 1 << 4;
-    /** Every lenience on. */
+    /**
+     * Resolve the ./, roles per input from structure instead of the declared separators
+     * (which are ignored while this flag is set). Detection, not sniffing: a repeated
+     * separator is grouping ("1.234.567,89"); with both present the rightmost is the
+     * decimal; a single separator with a non-3-digit right run is the decimal ("3,1415");
+     * with exactly 3 digits right, only a 0 integer part proves decimal ("0,785").
+     * Genuinely ambiguous input ("12.185", "1,000") is a Malformed Fault at the
+     * separator, never guessed.
+     */
+    public const SEPARATOR_DETECT = 1 << 5;
+    /** Every lenience on (SEPARATOR_DETECT is a separator policy, deliberately excluded). */
     public const ALL = self::GROUPING | self::PARENTHESES | self::EXPONENT | self::RADIX_PREFIXES | self::PERCENT;
 
     /**
@@ -58,6 +68,18 @@ final readonly class NumFormat
     {
         static $invariant = null;
         return $invariant ??= new self('.', ',', self::ALL);
+    }
+
+    /**
+     * The detection profile — every lenience on, ./, roles resolved per input by
+     * SEPARATOR_DETECT's structural rules.
+     *
+     * @return self the shared detection instance
+     */
+    public static function detect(): self
+    {
+        static $detect = null;
+        return $detect ??= new self('.', ',', self::ALL | self::SEPARATOR_DETECT);
     }
 
     /**

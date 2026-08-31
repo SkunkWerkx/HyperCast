@@ -134,6 +134,15 @@ const (
 	RadixPrefixes
 	// Percent permits a trailing %, dividing by 100. Real doors only.
 	Percent
+	// SeparatorDetect resolves the './,' roles per input from structure instead of the
+	// declared separators (which are ignored while this flag is set). Detection, not
+	// sniffing: a repeated separator is grouping (1.234.567,89); with both present the
+	// rightmost is the decimal; a single separator with a non-3-digit right run is the
+	// decimal (3,1415); with exactly 3 digits right, only a 0 integer part proves decimal
+	// (0,785). Genuinely ambiguous input (12.185, 1,000) is Malformed at the separator,
+	// never guessed.
+	SeparatorDetect NumStyles = 1 << 5
+
 	// AllStyles is every lenience on.
 	AllStyles = Grouping | Parentheses | Exponent | RadixPrefixes | Percent
 )
@@ -150,6 +159,10 @@ type NumFormat struct {
 
 // Invariant is the invariant profile — '.' decimal, ',' grouping, every lenience on.
 var Invariant = NumFormat{DecimalSep: '.', GroupSep: ',', Styles: AllStyles}
+
+// Detect is the detection profile — every lenience on, './,' roles resolved per input by
+// SeparatorDetect's structural rules.
+var Detect = NumFormat{DecimalSep: '.', GroupSep: ',', Styles: AllStyles | SeparatorDetect}
 
 func (f NumFormat) raw() rawNumFormat {
 	if f.DecimalSep == f.GroupSep {
