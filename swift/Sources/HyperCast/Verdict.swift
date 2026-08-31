@@ -41,7 +41,9 @@ public struct Fault: Equatable, Sendable {
 /// }   // no third case exists, and the compiler knows it
 /// ```
 public enum Verdict<T> {
+    /// The success case: the cast value.
     case success(T)
+    /// The failure case: a closed reason plus the offending byte span.
     case fault(Fault)
 }
 

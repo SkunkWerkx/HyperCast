@@ -188,84 +188,114 @@ public enum Cast {
 
     // MARK: - integers (the type's own range; grouping, parens, exponent, radix prefixes per format)
 
+    /// Casts integer text to a signed 8-bit value under the declared format: the type's own
+    /// range, declared grouping, accounting parentheses, non-negative exponent, and
+    /// `0x`/`&H`/`0b` two's-complement radix prefixes.
     public static func i8(_ text: String, format: NumFormat) throws -> Verdict<Int8> {
         try i8(Array(text.utf8), format: format)
     }
 
+    /// See ``i8(_:format:)-swift.type.method``; input as raw UTF-8 bytes.
     public static func i8(_ utf8: [UInt8], format: NumFormat) throws -> Verdict<Int8> {
         try numericDoor({ $0.i8 }, utf8, format, outBytes: 1) { $0.load(as: Int8.self) }
     }
 
+    /// Casts integer text to a signed 16-bit value. Notation rules as
+    /// ``i8(_:format:)-swift.type.method``.
     public static func i16(_ text: String, format: NumFormat) throws -> Verdict<Int16> {
         try i16(Array(text.utf8), format: format)
     }
 
+    /// See ``i16(_:format:)-swift.type.method``; input as raw UTF-8 bytes.
     public static func i16(_ utf8: [UInt8], format: NumFormat) throws -> Verdict<Int16> {
         try numericDoor({ $0.i16 }, utf8, format, outBytes: 2) { $0.load(as: Int16.self) }
     }
 
+    /// Casts integer text to a signed 32-bit value. Notation rules as
+    /// ``i8(_:format:)-swift.type.method``.
     public static func i32(_ text: String, format: NumFormat) throws -> Verdict<Int32> {
         try i32(Array(text.utf8), format: format)
     }
 
+    /// See ``i32(_:format:)-swift.type.method``; input as raw UTF-8 bytes.
     public static func i32(_ utf8: [UInt8], format: NumFormat) throws -> Verdict<Int32> {
         try numericDoor({ $0.i32 }, utf8, format, outBytes: 4) { $0.load(as: Int32.self) }
     }
 
+    /// Casts integer text to a signed 64-bit value. Notation rules as
+    /// ``i8(_:format:)-swift.type.method``.
     public static func i64(_ text: String, format: NumFormat) throws -> Verdict<Int64> {
         try i64(Array(text.utf8), format: format)
     }
 
+    /// See ``i64(_:format:)-swift.type.method``; input as raw UTF-8 bytes.
     public static func i64(_ utf8: [UInt8], format: NumFormat) throws -> Verdict<Int64> {
         try numericDoor({ $0.i64 }, utf8, format, outBytes: 8) { $0.load(as: Int64.self) }
     }
 
+    /// Casts integer text to an unsigned 8-bit value. Notation rules as
+    /// ``i8(_:format:)-swift.type.method``.
     public static func u8(_ text: String, format: NumFormat) throws -> Verdict<UInt8> {
         try u8(Array(text.utf8), format: format)
     }
 
+    /// See ``u8(_:format:)-swift.type.method``; input as raw UTF-8 bytes.
     public static func u8(_ utf8: [UInt8], format: NumFormat) throws -> Verdict<UInt8> {
         try numericDoor({ $0.u8 }, utf8, format, outBytes: 1) { $0.load(as: UInt8.self) }
     }
 
+    /// Casts integer text to an unsigned 16-bit value. Notation rules as
+    /// ``i8(_:format:)-swift.type.method``.
     public static func u16(_ text: String, format: NumFormat) throws -> Verdict<UInt16> {
         try u16(Array(text.utf8), format: format)
     }
 
+    /// See ``u16(_:format:)-swift.type.method``; input as raw UTF-8 bytes.
     public static func u16(_ utf8: [UInt8], format: NumFormat) throws -> Verdict<UInt16> {
         try numericDoor({ $0.u16 }, utf8, format, outBytes: 2) { $0.load(as: UInt16.self) }
     }
 
+    /// Casts integer text to an unsigned 32-bit value. Notation rules as
+    /// ``i8(_:format:)-swift.type.method``.
     public static func u32(_ text: String, format: NumFormat) throws -> Verdict<UInt32> {
         try u32(Array(text.utf8), format: format)
     }
 
+    /// See ``u32(_:format:)-swift.type.method``; input as raw UTF-8 bytes.
     public static func u32(_ utf8: [UInt8], format: NumFormat) throws -> Verdict<UInt32> {
         try numericDoor({ $0.u32 }, utf8, format, outBytes: 4) { $0.load(as: UInt32.self) }
     }
 
+    /// Casts integer text to an unsigned 64-bit value — natively unsigned, no widening games.
+    /// Notation rules as ``i8(_:format:)-swift.type.method``.
     public static func u64(_ text: String, format: NumFormat) throws -> Verdict<UInt64> {
         try u64(Array(text.utf8), format: format)
     }
 
+    /// See ``u64(_:format:)-swift.type.method``; input as raw UTF-8 bytes.
     public static func u64(_ utf8: [UInt8], format: NumFormat) throws -> Verdict<UInt64> {
         try numericDoor({ $0.u64 }, utf8, format, outBytes: 8) { $0.load(as: UInt64.self) }
     }
 
     // MARK: - reals (finite only; separators, parens, exponent, percent per format)
 
+    /// Casts real text to a `Float` under the declared format: finite values only, declared
+    /// separators and grouping, parentheses, exponent, and trailing percent (`50%` is 0.5).
     public static func f32(_ text: String, format: NumFormat) throws -> Verdict<Float> {
         try f32(Array(text.utf8), format: format)
     }
 
+    /// See ``f32(_:format:)-swift.type.method``; input as raw UTF-8 bytes.
     public static func f32(_ utf8: [UInt8], format: NumFormat) throws -> Verdict<Float> {
         try numericDoor({ $0.f32 }, utf8, format, outBytes: 4) { $0.load(as: Float.self) }
     }
 
+    /// Casts real text to a `Double`. Notation rules as ``f32(_:format:)-swift.type.method``.
     public static func f64(_ text: String, format: NumFormat) throws -> Verdict<Double> {
         try f64(Array(text.utf8), format: format)
     }
 
+    /// See ``f64(_:format:)-swift.type.method``; input as raw UTF-8 bytes.
     public static func f64(_ utf8: [UInt8], format: NumFormat) throws -> Verdict<Double> {
         try numericDoor({ $0.f64 }, utf8, format, outBytes: 8) { $0.load(as: Double.self) }
     }
