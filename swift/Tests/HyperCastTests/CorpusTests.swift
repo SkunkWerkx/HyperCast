@@ -152,6 +152,14 @@ final class CorpusTests: XCTestCase {
         }
     }
 
+    func testExcelSerialCorpus() throws {
+        for vector in try corpus("excel_serial.json") {
+            let epoch = ExcelEpoch(rawValue: UInt32(vector["epoch"] as! Int))!
+            assertVerdict("excel_serial", vector, try Cast.excelSerial(inputBytes(vector), epoch: epoch),
+                          expectedInstant(vector))
+        }
+    }
+
     func testDateCorpus() throws {
         for vector in try corpus("date.json") {
             var expected: DateComponents?

@@ -26,8 +26,15 @@ rb-sys = { version = "0.9", optional = true }
 # build invocation (each produces a different C entry point — PyInit__native,
 # Init_hypercast_native — under the same crate, not meant to coexist in one binary).
 [features]
-python = ["dep:pyo3"]
-ruby = ["dep:magnus", "dep:rb-sys"]
+# On by default so `cargo build` keeps producing the ordinary cdylib every binding dlopens
+# (a linked artifact needs std's panic handler). The parsing core itself is core-only —
+# `default-features = false` gives a genuine `#![no_std]` rlib, which is what the crate's
+# published `no-std` category means. The extension backends both require std through their
+# own dependencies, so they name it explicitly rather than relying on the default.
+default = ["std"]
+std = []
+python = ["dep:pyo3", "std"]
+ruby = ["dep:magnus", "dep:rb-sys", "std"]
 
 [dev-dependencies]
 # default-features off drops rayon/plotters, which cannot build for wasm32-wasip1 —

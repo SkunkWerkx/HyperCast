@@ -90,6 +90,11 @@ module HyperCast
   # The declared unit of a Unix-epoch value — no magnitude guessing, ever.
   UNIX_PRECISIONS = { seconds: 1, milliseconds: 2, microseconds: 3, nanoseconds: 4 }.freeze
 
+  # The date system an Excel serial number is expressed in. Spreadsheets carry no marker
+  # for this — it is a workbook-level setting — so the caller states it, the same way
+  # UNIX_PRECISIONS and DATE_ORDERS are declared rather than guessed.
+  EXCEL_EPOCHS = { y1900: 1, y1904: 2 }.freeze
+
   # The declared field order of a separated calendar date — no guessing, ever: "1/7/2026"
   # is January 7th (:month_day_year, the en-US order) or July 1st (:day_month_year, the
   # en-GB order) only because the caller said which.
@@ -157,6 +162,24 @@ module HyperCast
       bytes = utf8(text)
       out, fault, = scratch
       rc = Runtime.call(:cast_unix, input_ptr(bytes), bytes.bytesize, code, out, fault)
+      verdict(rc, fault) { instant(out[0, 16]) }
+    end
+
+    # Casts an Excel date serial under a caller-declared epoch Symbol (:y1900/:y1904) to a
+    # UTC Time. The whole part counts days from the system's own day zero and the fraction
+    # is the time of day, so "45292.75" is 2024-01-01T18:00:00Z; a cell carries no zone and
+    # none is invented.
+    #
+    # The 1900 system contains a day that never existed: serial 60 is 1900-02-29, kept
+    # deliberately because Lotus 1-2-3 wrongly treated 1900 as a leap year and Excel copied
+    # the bug for file compatibility. It is :malformed here — the same verdict .date gives
+    # the text "1900-02-29" — so every serial above it is shifted one day against a naive
+    # count. An unknown epoch is a caller bug (KeyError), never a verdict.
+    def excel_serial(text, epoch)
+      code = EXCEL_EPOCHS.fetch(epoch)
+      bytes = utf8(text)
+      out, fault, = scratch
+      rc = Runtime.call(:cast_excel_serial, input_ptr(bytes), bytes.bytesize, code, out, fault)
       verdict(rc, fault) { instant(out[0, 16]) }
     end
 

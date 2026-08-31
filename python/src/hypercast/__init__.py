@@ -38,10 +38,12 @@ from . import _native
 
 __all__ = [
     "CastFailure", "Success", "Fault", "Verdict", "NumFormat", "UnixPrecision", "DateOrder",
+    "ExcelEpoch",
     "optional",
     "cast_bool", "cast_i8", "cast_i16", "cast_i32", "cast_i64",
     "cast_u8", "cast_u16", "cast_u32", "cast_u64", "cast_f32", "cast_f64",
-    "cast_uuid", "cast_timestamp", "cast_unix", "cast_date", "cast_datetime", "cast_time",
+    "cast_uuid", "cast_timestamp", "cast_unix", "cast_excel_serial", "cast_date",
+    "cast_datetime", "cast_time",
     "cast_duration",
 ]
 
@@ -64,6 +66,20 @@ class UnixPrecision(IntEnum):
     MILLISECONDS = 2
     MICROSECONDS = 3
     NANOSECONDS = 4
+
+
+class ExcelEpoch(IntEnum):
+    """The date system an Excel serial number is expressed in. Spreadsheets carry no marker
+    for this — it is a workbook-level setting — so the caller states it, the same way
+    :class:`UnixPrecision` and :class:`DateOrder` are declared rather than guessed.
+    """
+
+    Y1900 = 1
+    """The Windows default: serial ``1`` is 1900-01-01, and serial ``60`` is a February 29th
+    that never existed."""
+    Y1904 = 2
+    """The legacy Macintosh system, still selectable today: serial ``0`` is 1904-01-01, with
+    no phantom day anywhere in it."""
 
 
 class DateOrder(IntEnum):
@@ -103,6 +119,7 @@ cast_f64 = _native.cast_f64
 cast_uuid = _native.cast_uuid
 cast_timestamp = _native.cast_timestamp
 cast_unix = _native.cast_unix
+cast_excel_serial = _native.cast_excel_serial
 cast_date = _native.cast_date
 cast_datetime = _native.cast_datetime
 cast_time = _native.cast_time

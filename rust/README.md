@@ -27,10 +27,48 @@ let ts = cast_timestamp(b"2026-01-02T15:04:05.123456789+05:00");
 ```
 
 The crate is simultaneously the engine under every binding in this repo — built as a
-`cdylib` (`libhypercast`) with 19 `cast_*` C-ABI exports, dlopen'd or linked by the
+`cdylib` (`libhypercast`) with 20 `cast_*` C-ABI exports, dlopen'd or linked by the
 C#/Java/Go/Swift/Ruby/PHP/Python bindings, all held to byte-identical verdicts by the
 shared `corpus/*.json` conformance vectors — and an ordinary `rlib` for plain Rust use.
 Zero runtime dependencies either way.
+
+## `no_std`
+
+The parsing core touches nothing outside `core` — no `String`, no `Vec`, no allocator at
+all — so `default-features = false` gives a genuine `#![no_std]` rlib:
+
+```toml
+hypercast = { version = "...", default-features = false }
+```
+
+Proven against a real bare-metal target rather than asserted:
+`cargo check --no-default-features --target thumbv7em-none-eabi` builds clean.
+
+The `std` feature is on by default and stays that way for the shared-library build, because
+a `cdylib` is a final linked artifact and needs a `#[panic_handler]` that only `std`
+supplies — declaring `#![no_std]` unconditionally fails the release build outright. A
+bare-metal consumer brings its own panic handler, as such a consumer must anyway.
+
+## Excel date serials
+
+`cast_excel_serial` reads a spreadsheet's own date encoding — days since the workbook's
+epoch, fraction as time of day — under a caller-declared `ExcelEpoch`, because nothing in
+a cell says which system it is:
+
+```rust
+use hypercast::{cast_excel_serial, ExcelEpoch};
+
+cast_excel_serial("45292.75", ExcelEpoch::Y1900);
+// Ok(Timestamp { .. }) — 2024-01-01T18:00:00Z
+```
+
+The 1900 system contains a **February 29th that never existed**: Lotus 1-2-3 wrongly treated
+1900 as a leap year, Excel copied the bug for file compatibility, and serial `60` has named
+that phantom day ever since. This door rejects it as `Malformed` — the same verdict
+`cast_date` already gives the text `1900-02-29` — so both doors agree that day is not a
+date. Every serial above 60 is therefore shifted one day against a naive count, which is
+precisely the arithmetic hand-rolled conversions get wrong. `ExcelEpoch::Y1904` (legacy
+Macintosh workbooks, still selectable today) has no phantom anywhere in it.
 
 ## Optional native-extension features
 
@@ -60,7 +98,7 @@ hits this — each leg builds in its own job.
 
 ## WebAssembly
 
-The full test suite — unit tests, the allocation proof, and all eleven corpus replays —
+The full test suite — unit tests, the allocation proof, and all twelve corpus replays —
 passes under `wasmtime` on `wasm32-wasip1`: no clock, no randomness, no dependencies to
 stub. CI also builds the `wasm32-unknown-emscripten` staticlib the C# binding's
 browser-wasm packaging consumes, on every PR.

@@ -14,7 +14,7 @@ import uuid as uuidlib
 from pathlib import Path
 
 import hypercast
-from hypercast import CastFailure, Fault, NumFormat, Success, UnixPrecision
+from hypercast import CastFailure, ExcelEpoch, Fault, NumFormat, Success, UnixPrecision
 
 
 def _corpus_dir() -> Path:
@@ -120,6 +120,14 @@ def test_unix_corpus():
     for vector in _corpus("unix.json"):
         precision = UnixPrecision(vector["precision"])
         _assert_verdict("unix", vector, hypercast.cast_unix(_input(vector), precision),
+                        _expected_instant(vector))
+
+
+def test_excel_serial_corpus():
+    for vector in _corpus("excel_serial.json"):
+        epoch = ExcelEpoch(vector["epoch"])
+        _assert_verdict("excel_serial", vector,
+                        hypercast.cast_excel_serial(_input(vector), epoch),
                         _expected_instant(vector))
 
 

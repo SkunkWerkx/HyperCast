@@ -12,9 +12,10 @@
 #![no_main]
 
 use hypercast::{
-    cast_bool, cast_date, cast_date_ordered, cast_datetime, cast_duration, cast_f32, cast_f64,
-    cast_i16, cast_i32, cast_i64, cast_i8, cast_time, cast_timestamp, cast_u16, cast_u32,
-    cast_u64, cast_u8, cast_unix, cast_uuid, DateOrder, Fault, NumFormat, UnixPrecision,
+    cast_bool, cast_date, cast_date_ordered, cast_datetime, cast_duration, cast_excel_serial,
+    cast_f32, cast_f64, cast_i16, cast_i32, cast_i64, cast_i8, cast_time, cast_timestamp,
+    cast_u16, cast_u32, cast_u64, cast_u8, cast_unix, cast_uuid, DateOrder, ExcelEpoch, Fault,
+    NumFormat, UnixPrecision,
 };
 use libfuzzer_sys::fuzz_target;
 
@@ -51,6 +52,7 @@ fuzz_target!(|data: &[u8]| {
         1 => DateOrder::MonthDayYear,
         _ => DateOrder::DayMonthYear,
     };
+    let epoch = if order_sel % 2 == 0 { ExcelEpoch::Y1900 } else { ExcelEpoch::Y1904 };
     let precision = match order_sel % 4 {
         0 => UnixPrecision::Seconds,
         1 => UnixPrecision::Millis,
@@ -58,7 +60,7 @@ fuzz_target!(|data: &[u8]| {
         _ => UnixPrecision::Nanos,
     };
 
-    match door % 19 {
+    match door % 20 {
         0 => check(input, cast_bool(input)),
         1 => check(input, cast_i8(input, &format)),
         2 => check(input, cast_i16(input, &format)),
@@ -77,6 +79,7 @@ fuzz_target!(|data: &[u8]| {
         15 => check(input, cast_date_ordered(input, order)),
         16 => check(input, cast_datetime(input, order)),
         17 => check(input, cast_time(input)),
+        18 => check(input, cast_excel_serial(input, epoch)),
         _ => check(input, cast_duration(input)),
     }
 });

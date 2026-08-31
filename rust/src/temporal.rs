@@ -42,6 +42,36 @@ pub enum UnixPrecision {
     Nanos = 4,
 }
 
+/// The date system an Excel serial number is expressed in. Spreadsheets carry no marker for
+/// this — it is a workbook-level setting — so the caller states it, the same way
+/// [`UnixPrecision`] and [`DateOrder`] are declared rather than guessed.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExcelEpoch {
+    /// The 1900 system (the Windows default): serial `1` is `1900-01-01`, and serial `60`
+    /// is a February 29th that never existed. See [`cast_excel_serial`].
+    Y1900 = 1,
+    /// The 1904 system (legacy Macintosh workbooks, still selectable today): serial `0` is
+    /// `1904-01-01`, with no phantom day anywhere in it.
+    Y1904 = 2,
+}
+
+/// Serial `0` of the 1900 system as days from the Unix epoch: `1899-12-30`, which is *two*
+/// days before `1900-01-01` rather than one, precisely because the phantom `1900-02-29`
+/// occupies a slot later in the same year.
+const EXCEL_1900_ANCHOR_DAYS: i64 = days_from_civil(1899, 12, 30);
+/// Serial `0` of the 1904 system as days from the Unix epoch: `1904-01-01`.
+const EXCEL_1904_ANCHOR_DAYS: i64 = days_from_civil(1904, 1, 1);
+/// The slot the 1900 system gives the nonexistent `1900-02-29`.
+const EXCEL_1900_PHANTOM_SERIAL: i64 = 60;
+/// Highest whole serial still inside the [`Timestamp`] window (`9999-12-31`), per system.
+const MAX_EXCEL_1900_SERIAL: i64 = days_from_civil(9999, 12, 31) - EXCEL_1900_ANCHOR_DAYS;
+const MAX_EXCEL_1904_SERIAL: i64 = days_from_civil(9999, 12, 31) - EXCEL_1904_ANCHOR_DAYS;
+/// Fraction digits beyond this cannot move the nanosecond result — a day is 86,400 × 10⁹
+/// nanoseconds, so 14 digits already resolves below 1 ns. Extra digits are consumed and
+/// validated, just no longer accumulated, which keeps the i128 scaling far from overflow.
+const MAX_EXCEL_FRACTION_DIGITS: usize = 14;
+
 fn is_leap_year(year: i64) -> bool {
     year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
 }
@@ -62,8 +92,10 @@ fn days_in_month(year: i64, month: u32) -> u32 {
 
 /// Days since 1970-01-01 for a proleptic-Gregorian civil date — Howard Hinnant's
 /// `days_from_civil`, pure integer math.
-fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
-    let adjusted_year = year - i64::from(month <= 2);
+const fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+    // `as` rather than `i64::from`: identical value, but `From` is not const-stable and this
+    // fn is const so the Excel anchors below can be computed rather than hardcoded.
+    let adjusted_year = year - (month <= 2) as i64;
     let era = adjusted_year.div_euclid(400);
     let year_of_era = adjusted_year.rem_euclid(400);
     let month_shift: i64 = if month > 2 { -3 } else { 9 };
@@ -583,6 +615,104 @@ pub fn cast_unix(input: impl AsRef<[u8]>, precision: UnixPrecision) -> Result<Ti
         return Err(Fault::out_of_range(start, text.len()));
     }
     Ok(Timestamp { seconds: seconds as i64, nanos: nanos as i32 })
+}
+
+/// Casts an Excel date serial under a caller-declared [`ExcelEpoch`] to a protobuf
+/// [`Timestamp`]. The whole part counts days from the system's own day zero; the fraction
+/// is the time of day (`0.5` is noon), so `45292.75` is `2024-01-01T18:00:00Z`. The result
+/// is a wall-clock instant read as UTC — a spreadsheet cell carries no zone, and this door
+/// invents none.
+///
+/// **The 1900 system contains a day that never existed.** Serial `60` is `1900-02-29`, kept
+/// deliberately since Lotus 1-2-3 wrongly treated 1900 as a leap year and Excel copied the
+/// bug for file compatibility. It is rejected as `Malformed` here — the same verdict
+/// [`cast_date`] already gives the text `1900-02-29`, so both doors agree that day is not a
+/// date. Every serial above it is therefore shifted one day against a naive count, which is
+/// the arithmetic hand-rolled conversions get wrong.
+///
+/// Non-numeric text, a bare or trailing `.`, or a sign ⇒ `Malformed`; a serial below the
+/// system's first real day (`1` for 1900, `0` for 1904) or beyond `9999-12-31` ⇒
+/// `OutOfRange`. A negative is never a date in either system, so it is `Malformed` at the
+/// sign rather than silently reflected. Time-only cells — Excel writes those as a bare
+/// fraction below `1` — are not instants; use [`cast_time`] for those.
+pub fn cast_excel_serial(input: impl AsRef<[u8]>, epoch: ExcelEpoch) -> Result<Timestamp, Fault> {
+    let input = input.as_ref();
+    let (text, start) = trim(input);
+    if text.is_empty() {
+        return Err(Fault::EMPTY);
+    }
+
+    let mut i = 0;
+    let mut days: i64 = 0;
+    let mut over = false;
+    while i < text.len() && text[i].is_ascii_digit() {
+        days = match days
+            .checked_mul(10)
+            .and_then(|shifted| shifted.checked_add((text[i] - b'0') as i64))
+        {
+            Some(next) => next,
+            None => {
+                over = true;
+                days
+            }
+        };
+        i += 1;
+    }
+    if i == 0 {
+        return Err(Fault::malformed(start, char_len_at(text, 0)));
+    }
+
+    let mut nanos_of_day: i128 = 0;
+    if i < text.len() && text[i] == b'.' {
+        i += 1;
+        let fraction_start = i;
+        let mut scaled: i128 = 0;
+        let mut scale: i128 = 1;
+        while i < text.len() && text[i].is_ascii_digit() {
+            if i - fraction_start < MAX_EXCEL_FRACTION_DIGITS {
+                scaled = scaled * 10 + (text[i] - b'0') as i128;
+                scale *= 10;
+            }
+            i += 1;
+        }
+        if i == fraction_start {
+            // Point at the `.` itself: a trailing separator has nothing after it to span,
+            // and `char_len_at` indexes the byte directly so `text.len()` would panic.
+            return Err(Fault::malformed(start + fraction_start - 1, 1));
+        }
+        nanos_of_day = scaled * 86_400 * NANOS_PER_SECOND / scale;
+    }
+    if i != text.len() {
+        return Err(Fault::malformed(start + i, char_len_at(text, i)));
+    }
+
+    let (anchor, first_serial, max_serial) = match epoch {
+        ExcelEpoch::Y1900 => (EXCEL_1900_ANCHOR_DAYS, 1, MAX_EXCEL_1900_SERIAL),
+        ExcelEpoch::Y1904 => (EXCEL_1904_ANCHOR_DAYS, 0, MAX_EXCEL_1904_SERIAL),
+    };
+    if over || days < first_serial || days > max_serial {
+        return Err(Fault::out_of_range(start, text.len()));
+    }
+
+    let day_number = match epoch {
+        // Below the phantom the 1900 system counts true days from 1899-12-31; at it, the
+        // serial names nothing; above it, every serial has absorbed the extra day.
+        ExcelEpoch::Y1900 => match days.cmp(&EXCEL_1900_PHANTOM_SERIAL) {
+            core::cmp::Ordering::Less => anchor + days + 1,
+            core::cmp::Ordering::Equal => {
+                return Err(Fault::malformed(start, text.len()));
+            }
+            core::cmp::Ordering::Greater => anchor + days,
+        },
+        ExcelEpoch::Y1904 => anchor + days,
+    };
+
+    let seconds = day_number * 86_400 + (nanos_of_day / NANOS_PER_SECOND) as i64;
+    let nanos = (nanos_of_day % NANOS_PER_SECOND) as i32;
+    if !(MIN_TIMESTAMP_SECONDS..=MAX_TIMESTAMP_SECONDS).contains(&seconds) {
+        return Err(Fault::out_of_range(start, text.len()));
+    }
+    Ok(Timestamp { seconds, nanos })
 }
 
 /// Parse-sanity bound on any single digit run in a duration — Svartalfheim's `MaxDigits`.

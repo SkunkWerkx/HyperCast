@@ -69,6 +69,9 @@ fn allocation_free() {
     assert_allocation_free("cast_unix", || {
         hypercast::cast_unix(b"1700000000123", UnixPrecision::Millis).unwrap()
     });
+    assert_allocation_free("cast_excel_serial", || {
+        hypercast::cast_excel_serial(b"45292.75", hypercast::ExcelEpoch::Y1900).unwrap()
+    });
     assert_allocation_free("cast_date", || hypercast::cast_date(b"2026-01-02").unwrap());
     assert_allocation_free("cast_date_ordered", || {
         hypercast::cast_date_ordered(b"1/7/2026", hypercast::DateOrder::MonthDayYear).unwrap()

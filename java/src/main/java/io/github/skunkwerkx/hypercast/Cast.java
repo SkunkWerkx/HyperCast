@@ -78,6 +78,8 @@ public final class Cast {
     private static final MethodHandle CAST_UUID = handle("cast_uuid", PLAIN);
     private static final MethodHandle CAST_TIMESTAMP = handle("cast_timestamp", PLAIN);
     private static final MethodHandle CAST_UNIX = handle("cast_unix", UNIX);
+    // cast_excel_serial shares the unix ABI shape too — a u32 discriminant, timestamp out.
+    private static final MethodHandle CAST_EXCEL_SERIAL = handle("cast_excel_serial", UNIX);
     private static final MethodHandle CAST_DATE = handle("cast_date", PLAIN);
     // cast_date_ordered and cast_datetime share the unix ABI shape (ptr, len, u32, out, fault).
     private static final MethodHandle CAST_DATE_ORDERED = handle("cast_date_ordered", UNIX);
@@ -612,6 +614,38 @@ public final class Cast {
      */
     public static Verdict<Instant> unix(byte[] utf8, UnixPrecision precision) {
         return instantDoor(CAST_UNIX, "cast_unix", utf8, precision.code());
+    }
+
+    /**
+     * Casts an Excel date serial under a caller-declared {@link ExcelEpoch} to an
+     * {@link Instant}. The whole part counts days from the system's own day zero and the
+     * fraction is the time of day, so {@code 45292.75} is 2024-01-01T18:00:00Z. A
+     * spreadsheet cell carries no zone and none is invented.
+     *
+     * <p>The 1900 system contains a day that never existed: serial {@code 60} is
+     * 1900-02-29, kept deliberately because Lotus 1-2-3 wrongly treated 1900 as a leap year
+     * and Excel copied the bug for file compatibility. It is {@link CastFailure#MALFORMED}
+     * here — the same verdict {@link #date(String)} gives the text {@code 1900-02-29} — so
+     * every serial above it is shifted one day against a naive count, which is the
+     * arithmetic hand-rolled conversions get wrong.
+     *
+     * @param text the text to cast
+     * @param epoch the declared date system
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<Instant> excelSerial(String text, ExcelEpoch epoch) {
+        return excelSerial(utf8(text), epoch);
+    }
+
+    /**
+     * See {@link #excelSerial(String, ExcelEpoch)}; input as raw UTF-8 bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param epoch the declared date system
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<Instant> excelSerial(byte[] utf8, ExcelEpoch epoch) {
+        return instantDoor(CAST_EXCEL_SERIAL, "cast_excel_serial", utf8, epoch.code());
     }
 
     /**

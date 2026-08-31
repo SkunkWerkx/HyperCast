@@ -189,6 +189,19 @@ final class CorpusTest {
     }
 
     @Test
+    void excelSerialCorpus() {
+        for (JsonElement element : corpus("excel_serial.json")) {
+            JsonObject vector = element.getAsJsonObject();
+            ExcelEpoch epoch = switch (vector.get("epoch").getAsInt()) {
+                case 1 -> ExcelEpoch.Y1900;
+                case 2 -> ExcelEpoch.Y1904;
+                default -> throw new IllegalStateException("excel_serial: unknown epoch " + vector.get("epoch"));
+            };
+            assertVerdict("excel_serial", vector, Cast.excelSerial(inputBytes(vector), epoch), expectedInstant(vector));
+        }
+    }
+
+    @Test
     void dateCorpus() {
         for (JsonElement element : corpus("date.json")) {
             JsonObject vector = element.getAsJsonObject();

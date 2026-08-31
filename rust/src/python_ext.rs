@@ -357,6 +357,16 @@ fn cast_unix(py: Python<'_>, text: Text<'_>, precision: u32) -> PyResult<Py<PyAn
     verdict(py, core::cast_unix(text.bytes()?, precision), instant)
 }
 
+#[pyfunction]
+fn cast_excel_serial(py: Python<'_>, text: Text<'_>, epoch: u32) -> PyResult<Py<PyAny>> {
+    let epoch = match epoch {
+        1 => core::ExcelEpoch::Y1900,
+        2 => core::ExcelEpoch::Y1904,
+        _ => return Err(PyValueError::new_err("epoch must be an ExcelEpoch")),
+    };
+    verdict(py, core::cast_excel_serial(text.bytes()?, epoch), instant)
+}
+
 fn date_value(py: Python<'_>, date: core::Date) -> PyResult<Py<PyAny>> {
     Ok(PyDate::new(py, i32::from(date.year), date.month, date.day)?
         .into_any()
@@ -476,6 +486,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cast_uuid, m)?)?;
     m.add_function(wrap_pyfunction!(cast_timestamp, m)?)?;
     m.add_function(wrap_pyfunction!(cast_unix, m)?)?;
+    m.add_function(wrap_pyfunction!(cast_excel_serial, m)?)?;
     m.add_function(wrap_pyfunction!(cast_date, m)?)?;
     m.add_function(wrap_pyfunction!(cast_datetime, m)?)?;
     m.add_function(wrap_pyfunction!(cast_time, m)?)?;

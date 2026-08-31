@@ -10,7 +10,7 @@
 //! The fuzzer explores; this pins what it found so a regression fails `cargo test`, not
 //! just a nightly fuzz session.
 
-use hypercast::{DateOrder, Fault, NumFormat, UnixPrecision};
+use hypercast::{DateOrder, ExcelEpoch, Fault, NumFormat, UnixPrecision};
 use serde_json::Value;
 use std::path::PathBuf;
 
@@ -67,6 +67,9 @@ fn every_door(input: &[u8]) {
     for order in [DateOrder::YearMonthDay, DateOrder::MonthDayYear, DateOrder::DayMonthYear] {
         assert_span(input, hypercast::cast_date_ordered(input, order), "cast_date_ordered");
         assert_span(input, hypercast::cast_datetime(input, order), "cast_datetime");
+    }
+    for epoch in [ExcelEpoch::Y1900, ExcelEpoch::Y1904] {
+        assert_span(input, hypercast::cast_excel_serial(input, epoch), "cast_excel_serial");
     }
 }
 

@@ -37,7 +37,7 @@ midnight, and durations come back as exact `Rational` seconds across the core's 
    parentheses, declared separators, radix prefixes, all five .NET `Guid` text forms plus
    `urn:uuid:` prefixes, protobuf JSON durations.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
-   held by the shared corpus (23 examples green on *both* backends, full eleven-file corpus
+   held by the shared corpus (24 examples green on *both* backends, full twelve-file corpus
    replay; a cross-backend agreement spec compares Magnus and Fiddle outputs across a
    subprocess boundary).
 4. **Faster than the stdlib on the Magnus backend, where the carrier is cheap** —

@@ -180,6 +180,16 @@ public sealed class CorpusTests
 	}
 
 	[Fact]
+	void ExcelSerial_corpus()
+	{
+		foreach (var vector in Corpus("excel_serial.json"))
+		{
+			var epoch = (ExcelEpoch)vector.GetProperty("epoch").GetUInt32();
+			AssertVerdict("excel_serial", vector, Cast.ExcelSerial(InputBytes(vector), epoch), ExpectedInstant);
+		}
+	}
+
+	[Fact]
 	void Date_corpus()
 	{
 		foreach (var vector in Corpus("date.json"))

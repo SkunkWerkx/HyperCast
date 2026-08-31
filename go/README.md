@@ -47,7 +47,7 @@ rather than silently wrapping.
    parentheses, declared separators, radix prefixes, all five .NET `Guid` text forms plus
    `urn:uuid:` prefixes, protobuf JSON durations.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other
-   binding, held by the shared corpus (21 tests green on both backends, full eleven-file
+   binding, held by the shared corpus (22 tests green on both backends, full twelve-file
    corpus replay).
 
 **The honest trade-off, stated as plainly as the wins elsewhere: every Go door loses

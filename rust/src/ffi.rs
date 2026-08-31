@@ -14,7 +14,7 @@
 //! dereferences `ptr`.
 
 use crate::verdict::{CivilDateTime, Date, Duration, Fault, NumFormat, Timestamp};
-use crate::{boolean, integer, real, temporal, uuid, DateOrder, UnixPrecision};
+use crate::{boolean, integer, real, temporal, uuid, DateOrder, ExcelEpoch, UnixPrecision};
 use core::slice;
 
 const CONTRACT_VIOLATION: i32 = -1;
@@ -168,6 +168,26 @@ pub extern "C" fn cast_unix(
     };
     // SAFETY: caller guarantees the pointer contracts, per the module doc.
     unsafe { finish(temporal::cast_unix(text(ptr, len), precision), out, fault) }
+}
+
+/// Casts an Excel date serial at `ptr`/`len` under the declared `epoch` (1 the 1900 system,
+/// 2 the 1904 system — anything else is a contract violation) into `out`. See
+/// [`temporal::cast_excel_serial`].
+#[unsafe(no_mangle)]
+pub extern "C" fn cast_excel_serial(
+    ptr: *const u8,
+    len: usize,
+    epoch: u32,
+    out: *mut Timestamp,
+    fault: *mut RawFault,
+) -> i32 {
+    let epoch = match epoch {
+        1 => ExcelEpoch::Y1900,
+        2 => ExcelEpoch::Y1904,
+        _ => return CONTRACT_VIOLATION,
+    };
+    // SAFETY: caller guarantees the pointer contracts, per the module doc.
+    unsafe { finish(temporal::cast_excel_serial(text(ptr, len), epoch), out, fault) }
 }
 
 /// Casts a separated calendar date at `ptr`/`len` under the caller-declared field `order`

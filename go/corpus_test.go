@@ -24,6 +24,7 @@ type vector struct {
 	Format    *formatSpec     `json:"format"`
 	FaultSpan []int           `json:"fault"`
 	Precision uint32          `json:"precision"`
+	Epoch     uint32          `json:"epoch"`
 	Order     uint32          `json:"order"`
 	NanosDay  uint64          `json:"nanos_of_day"`
 	Seconds   *int64          `json:"seconds"`
@@ -234,6 +235,13 @@ func TestUnixCorpus(t *testing.T) {
 	for _, v := range corpus(t, "unix.json") {
 		value, fault := Unix(v.Input, UnixPrecision(v.Precision))
 		assertVerdict(t, "unix", &v, value, fault, expectedInstant(&v))
+	}
+}
+
+func TestExcelSerialCorpus(t *testing.T) {
+	for _, v := range corpus(t, "excel_serial.json") {
+		value, fault := ExcelSerial(v.Input, ExcelEpoch(v.Epoch))
+		assertVerdict(t, "excel_serial", &v, value, fault, expectedInstant(&v))
 	}
 }
 
