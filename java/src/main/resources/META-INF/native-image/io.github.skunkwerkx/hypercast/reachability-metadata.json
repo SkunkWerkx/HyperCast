@@ -1,4 +1,7 @@
 {
+  "resources": [
+    { "glob": "native/*/*" }
+  ],
   "foreign": {
     "downcalls": [
       { "returnType": "jint", "parameterTypes": ["void*", "jlong", "void*", "void*"] },

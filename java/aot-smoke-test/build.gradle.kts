@@ -26,11 +26,21 @@ graalvmNative {
             // report so a failed reachability/linking analysis is diagnosable.
             buildArgs.add("--enable-native-access=ALL-UNNAMED")
             buildArgs.add("-H:+ReportExceptionStackTraces")
-            // Native Image doesn't embed classpath resources by default — without this,
-            // Cast's getResourceAsStream("/native/{rid}/{lib}") finds nothing at runtime.
-            resources {
-                includedPatterns.add("native/.*")
-            }
+            // Deliberately NO `resources { includedPatterns.add("native/.*") }` here.
+            //
+            // Native Image doesn't embed classpath resources by default, so without that
+            // glob somewhere, Cast's getResourceAsStream("/native/{rid}/{lib}") finds
+            // nothing at runtime — the binary builds clean and dies on first call. It used
+            // to live here, which meant this smoke test proved only that *this project*
+            // could be configured to work, never that a consumer's own native-image build
+            // could. Found by building a real native image against the published 0.0.1 jar
+            // from Maven Central: it failed with "classpath resource not found" while this
+            // test was green.
+            //
+            // The glob now ships inside the library, in its own reachability-metadata.json
+            // alongside the FFM downcall signatures, so a consumer inherits it with zero
+            // configuration. This test is the thing that proves that, and it can only prove
+            // it by not configuring it itself.
         }
     }
 }

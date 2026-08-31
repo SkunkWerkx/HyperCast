@@ -82,7 +82,17 @@ One compiled assembly covers browser-wasm too — every native entry point is de
 (`"hypercast"` for dlopen platforms, `"*"` for the statically-linked wasm module), sharing
 the same `EntryPoint`, with `OperatingSystem.IsBrowser()` picked at the call site and
 constant-folded by the linker. CI builds the `wasm32-unknown-emscripten` staticlib on every
-PR; the release pack stages it under `runtimes/browser-wasm/nativeassets/`.
+PR; the release pack stages it under `runtimes/browser-wasm/nativeassets/`, and
+`build/net11.0/HyperCast.targets` ships inside the package to wire it up for a consumer with
+no configuration at all.
+
+That targets file is load-bearing, and both halves of it are: a `NativeFileReference` hands
+the staticlib to the linker (restore never populates `@(NativeLibrary)` from a plain
+`PackageReference`'s `nativeassets/` folder the way it does `runtimes/{rid}/native/`), and an
+`EmccExportedFunction` per door makes the linked-in symbols resolvable through
+`LibraryImport("*")` at runtime — the WASM SDK exports only its own baseline set and never
+scans P/Invoke declarations to find the rest. v0.0.1 shipped without that file, and a real
+Blazor consumer's publish died at `wasm-ld` with `undefined symbol: cast_i32`.
 
 ## Install
 

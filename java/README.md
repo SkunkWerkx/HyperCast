@@ -81,10 +81,20 @@ reasonable choice.
 ## AOT
 
 The GraalVM Native Image smoke test (`./gradlew :aot-smoke-test:nativeRun`) builds and
-runs every door plus the exhaustive union switch as a true native binary. FFM downcalls
-need explicit Native Image registration; the jar ships its `reachability-metadata.json`
-under `META-INF/native-image/io.github.skunkwerkx/hypercast/` so every consumer inherits
-it.
+runs every door plus the exhaustive union switch as a true native binary. Native Image needs two separate registrations
+and the jar ships both in its `reachability-metadata.json` under
+`META-INF/native-image/io.github.skunkwerkx/hypercast/`, so a consumer inherits them with no
+configuration: the FFM downcall *signatures* (reachability is per-signature, not per-function
+— four methods here share `(ADDRESS)void`), and a `resources` glob covering `native/*/*`.
+
+The resources half was missing from v0.0.1, and the failure mode is worth knowing because
+nothing catches it at build time: Native Image doesn't embed classpath resources unless they
+are registered, so `Cast`'s `getResourceAsStream("/native/{rid}/{lib}")` returned null and a
+consumer's binary compiled clean, then died on its first call with "classpath resource not
+found". The in-repo smoke test was green throughout, because it declared the glob in its own
+build file — so it proved only that *this repo* could be configured to work. That override is
+gone now; the test passes on the packaged metadata alone, which is the only thing that
+actually proves a consumer is fine.
 
 ## Install
 

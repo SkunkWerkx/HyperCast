@@ -61,6 +61,15 @@
          (hyper-pack-nuget.yml arranges runtimes/{rid}/native/ from the ci.yml artifacts). -->
     <None Include="runtimes/**" Pack="true" PackagePath="runtimes" CopyToOutputDirectory="PreserveNewest" />
     <None Include="runtimes/**/native/*" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Auto-imported into every consuming project via NuGet's build/{tfm}/{PackageId}.targets
+         convention — see the file itself for why browser-wasm needs it and no other RID does.
+         Two pieces, both required: the NativeFileReference that actually hands the staticlib
+         to the linker (restore never populates @(NativeLibrary) from a plain
+         PackageReference's nativeassets folder), and an EmccExportedFunction per door
+         (linking alone leaves the functions invisible to LibraryImport("*") at runtime).
+         HyperUuid learned both the hard way; HyperCast's v0.0.1 shipped without this file and
+         a real Blazor consumer failed at wasm-ld. -->
+    <None Include="build/**" Pack="true" PackagePath="build" />
     <!-- Local dev loop: when the Rust core has been built in-repo (a release-profile cargo
          build in rust/), copy that fresh native library straight to the output so tests and
          benchmarks run against it without any packaging step. CI's runtimes/ layout above
