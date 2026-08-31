@@ -1,21 +1,24 @@
-//! The fast Python backend: the hypercast core linked straight into a CPython extension
-//! module. Where the ctypes binding pays ~1 µs of interpreted marshalling per call (its
-//! measured mechanism floor), a door here is an ordinary extension call — the same
-//! `METH_FASTCALL` path the builtins walk — into a direct Rust call. No dlopen, no C-ABI
-//! hop, no per-call boxing.
+//! The Python backend: the hypercast core linked straight into a CPython extension module
+//! via PyO3 — and the *only* Python backend: the wheel maturin builds from this feature is
+//! the whole package (HyperUuid's PyO3-wheels-are-the-whole-story consolidation, ported
+//! home; the interim ctypes fallback is gone). A door here is an ordinary extension call —
+//! the same `METH_FASTCALL` path the builtins walk — into a direct Rust call. No dlopen,
+//! no C-ABI hop, no per-call boxing.
 //!
-//! The Python package (`hypercast/__init__.py`) prefers this module when importable and
-//! falls back to pure ctypes otherwise (the Pyodide/wasm-compatible path) — HyperUuid's
-//! Go dual-backend pattern, transplanted. Both backends present the identical surface:
-//! `Success`/`Fault`/`NumFormat` here are the package's own types whenever this backend
-//! is active, `__match_args__` included, so `match`/`case` and equality behave the same.
+//! The Python package (`hypercast/__init__.py`) re-exports everything here directly:
+//! `Success`/`Fault`/`NumFormat` are the package's own types, `__match_args__` included,
+//! so `match`/`case` and equality behave exactly as the docstrings promise. Built
+//! abi3-py310, so one wheel per platform covers every CPython from the package's 3.10
+//! floor up.
 
+use std::borrow::Cow;
 use std::sync::OnceLock;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDate, PyDateTime, PyDelta, PyDict, PyTime, PyTuple};
-use hypercast as core;
+use pyo3::types::{PyBytes, PyDate, PyDateTime, PyDelta, PyDict, PyTime, PyTuple, PyTzInfo};
+
+use crate as core;
 
 /// Cached Python-side companions: the three CastFailure members (the package's own
 /// IntEnum, handed over via `_bind`) and `uuid.UUID`.
@@ -33,6 +36,8 @@ struct Success {
 
 #[pymethods]
 impl Success {
+    // Python's own spelling — the dunder is the API, not a Rust constant.
+    #[allow(non_upper_case_globals)]
     #[classattr]
     const __match_args__: (&'static str,) = ("value",);
 
@@ -42,7 +47,7 @@ impl Success {
     }
 
     fn __eq__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<bool> {
-        let Ok(other) = other.downcast::<Success>() else {
+        let Ok(other) = other.cast::<Success>() else {
             return Ok(false);
         };
         self.value.bind(py).eq(other.get().value.bind(py))
@@ -66,6 +71,7 @@ struct Fault {
 
 #[pymethods]
 impl Fault {
+    #[allow(non_upper_case_globals)]
     #[classattr]
     const __match_args__: (&'static str, &'static str, &'static str) =
         ("reason", "offset", "length");
@@ -76,7 +82,7 @@ impl Fault {
     }
 
     fn __eq__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<bool> {
-        let Ok(other) = other.downcast::<Fault>() else {
+        let Ok(other) = other.cast::<Fault>() else {
             return Ok(false);
         };
         let other = other.get();
@@ -95,8 +101,8 @@ impl Fault {
     }
 }
 
-/// Caller-declared numeric notation — the same surface as the ctypes backend's dataclass,
-/// with the core's `NumFormat` held pre-resolved so the hot path pays zero conversion.
+/// Caller-declared numeric notation, held pre-resolved as the core's `NumFormat` so the
+/// hot path pays zero conversion.
 #[pyclass(frozen, module = "hypercast")]
 struct NumFormat {
     resolved: core::NumFormat,
@@ -117,6 +123,8 @@ impl NumFormat {
     #[classattr]
     const ALL: u32 = core::NumFormat::ALL;
 
+    // Python's own spelling — the constant-style name is the API.
+    #[allow(non_snake_case)]
     #[classattr]
     fn INVARIANT() -> NumFormat {
         NumFormat { resolved: core::NumFormat::INVARIANT }
@@ -156,7 +164,7 @@ impl NumFormat {
             None => py
                 .import("locale")?
                 .call_method0("localeconv")?
-                .downcast_into::<PyDict>()?,
+                .cast_into::<PyDict>()?,
         };
         let field = |name: &str, fallback: char| -> PyResult<char> {
             match conv.get_item(name)? {
@@ -187,8 +195,8 @@ fn single_char(text: &str) -> PyResult<char> {
     }
 }
 
-/// Door input: str (borrowed as UTF-8 directly — CPython caches the encoding) or bytes,
-/// both zero-copy views into the caller's own object.
+/// Door input: str (borrowed as UTF-8 where CPython's cached encoding allows) or bytes,
+/// zero-copy views into the caller's own object.
 #[derive(FromPyObject)]
 enum Text<'py> {
     #[pyo3(transparent)]
@@ -198,10 +206,16 @@ enum Text<'py> {
 }
 
 impl Text<'_> {
-    fn bytes(&self) -> PyResult<&[u8]> {
+    // to_str() needs non-limited-API access, unavailable under abi3; to_cow() is the
+    // abi3-safe equivalent — still borrowed for the ASCII/UTF-8-cached common case, owned
+    // only when the limited API forces a copy (same trade HyperUuid made).
+    fn bytes(&self) -> PyResult<Cow<'_, [u8]>> {
         match self {
-            Text::Str(text) => Ok(text.to_str()?.as_bytes()),
-            Text::Bytes(bytes) => Ok(bytes.as_bytes()),
+            Text::Str(text) => Ok(match text.to_cow()? {
+                Cow::Borrowed(text) => Cow::Borrowed(text.as_bytes()),
+                Cow::Owned(text) => Cow::Owned(text.into_bytes()),
+            }),
+            Text::Bytes(bytes) => Ok(Cow::Borrowed(bytes.as_bytes())),
         }
     }
 }
@@ -214,7 +228,7 @@ fn fault(py: Python<'_>, failed: core::Fault) -> PyResult<Py<PyAny>> {
     };
     let reason = member
         .get()
-        .ok_or_else(|| PyValueError::new_err("hypercast_native used before _bind"))?
+        .ok_or_else(|| PyValueError::new_err("hypercast._native used before _bind"))?
         .clone_ref(py);
     Ok(Py::new(py, Fault { reason, offset: failed.offset, length: failed.len })?.into_any())
 }
@@ -269,7 +283,7 @@ fn cast_uuid(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
     verdict(py, core::cast_uuid(text.bytes()?), |py, bytes| {
         let class = UUID_CLASS
             .get()
-            .ok_or_else(|| PyValueError::new_err("hypercast_native used before _bind"))?;
+            .ok_or_else(|| PyValueError::new_err("hypercast._native used before _bind"))?;
         let kwargs = PyDict::new(py);
         kwargs.set_item("bytes", PyBytes::new(py, &bytes))?;
         Ok(class
@@ -301,6 +315,7 @@ fn instant<'py>(py: Python<'py>, ts: core::Timestamp) -> PyResult<Py<PyAny>> {
     let (year, month, day) = civil_from_days(days);
     let (hour, rest) = (second_of_day / 3_600, second_of_day % 3_600);
     let (minute, second) = (rest / 60, rest % 60);
+    let utc = PyTzInfo::utc(py)?;
     Ok(PyDateTime::new(
         py,
         year,
@@ -310,7 +325,7 @@ fn instant<'py>(py: Python<'py>, ts: core::Timestamp) -> PyResult<Py<PyAny>> {
         minute as u8,
         second as u8,
         (ts.nanos / 1_000) as u32,
-        Some(&pyo3::types::timezone_utc(py)),
+        Some(&utc),
     )?
     .into_any()
     .unbind())
@@ -364,8 +379,8 @@ fn cast_time(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
 #[pyfunction]
 fn cast_duration(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
     verdict(py, core::cast_duration(text.bytes()?), |py, span| {
-        // Truncate sub-microsecond digits toward zero on both signs, matching the ctypes
-        // backend; PyDelta normalizes the mixed-sign pieces.
+        // Truncate sub-microsecond digits toward zero on both signs, matching every other
+        // binding's truncation; PyDelta normalizes the mixed-sign pieces.
         let nanos = i64::from(span.nanos);
         let micros = if nanos >= 0 { nanos / 1_000 } else { -((-nanos) / 1_000) };
         let days = span.seconds.div_euclid(86_400);
@@ -387,8 +402,12 @@ fn _bind(py: Python<'_>, cast_failure: Bound<'_, PyAny>) -> PyResult<()> {
     Ok(())
 }
 
+// Name must match module-name's last segment in pyproject.toml ("hypercast._native") —
+// PyO3 generates a PyInit_<name> symbol from this function's own name, and maturin/Python's
+// import machinery look for PyInit__native specifically (confirmed in HyperUuid via a real
+// build warning, not assumed).
 #[pymodule]
-fn hypercast_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Success>()?;
     m.add_class::<Fault>()?;
     m.add_class::<NumFormat>()?;

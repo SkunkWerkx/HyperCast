@@ -1,27 +1,49 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
 
 [project]
 name = "hypercast"
-version = "0.1.0"
-description = "Allocation-free scalar parsing — booleans, numerics, UUIDs, temporals — as a Success/Fault verdict union (value or reason + offending span, never an exception), ctypes bindings straight into a native Rust core (libhypercast). No runtime bridge, no dependencies."
+# Baked from rust/Cargo.toml at build time by maturin (manifest-path below) — the one
+# version source of truth, no second literal to drift.
+dynamic = ["version"]
+description = "Allocation-free scalar parsing — booleans, numerics, UUIDs, temporals — as a Success/Fault verdict union (value or reason + offending span, never an exception). A PyO3 native extension linking a Rust core directly into CPython — no runtime bridge, no compiler needed to install, no dependencies."
 readme = "README.md"
 license = "MIT"
 authors = [{ name = "Brian Buvinghausen" }]
 # 3.10 floor deliberately: match/case over the Success | Fault union is the consumption
-# idiom, the Python answer to C#'s native union and Java's sealed interface.
+# idiom, the Python answer to C#'s native union and Java's sealed interface. The wheel is
+# built abi3-py310, so one wheel per platform covers the whole floor-and-up range.
 requires-python = ">=3.10"
 dependencies = []
+keywords = ["parsing", "ffi", "verdict", "rfc3339", "pyo3"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 
 [project.urls]
+Homepage = "https://github.com/SkunkWerkx/HyperCast"
 Repository = "https://github.com/SkunkWerkx/HyperCast"
+Issues = "https://github.com/SkunkWerkx/HyperCast/issues"
 
 [project.optional-dependencies]
 test = ["pytest>=8.0"]
+bench = ["pyperf>=2.6"]
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/hypercast"]
+[tool.maturin]
+manifest-path = "../rust/Cargo.toml"
+python-source = "src"
+module-name = "hypercast._native"
+features = ["python"]
 
-[tool.hatch.build.targets.wheel.force-include]
-"src/hypercast/libhypercast.so" = "hypercast/libhypercast.so"
+[tool.ruff.lint]
+# Doc-comment enforcement only — the "missing docstring" family of pydocstyle rules
+# (D100-D107), not the full pydocstyle convention (imperative mood, blank-line placement,
+# etc.), which isn't this project's existing comment style and isn't what "force
+# documentation" is asking for.
+select = ["D100", "D101", "D102", "D103", "D104", "D105", "D106", "D107"]

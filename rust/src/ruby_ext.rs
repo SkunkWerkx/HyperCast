@@ -16,7 +16,7 @@ use magnus::rb_sys::{AsRawValue, FromRawValue};
 use magnus::value::{Opaque, ReprValue};
 use magnus::{function, prelude::*, Error, IntoValue, RModule, RString, Ruby, Symbol, Value};
 
-use hypercast as core;
+use crate as core;
 
 /// Constant-referenced objects (classes, INVARIANT) are anchored by Ruby constants and
 /// never collected, so caching them by raw VALUE is GC-safe.

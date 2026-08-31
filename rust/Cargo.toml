@@ -13,7 +13,21 @@ categories = ["parsing", "no-std"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# Deliberately none — the core is pure parsing over caller-supplied bytes.
+# Deliberately none for the plain build — the core is pure parsing over caller-supplied
+# bytes. The extension backends below are additive and off by default.
+pyo3 = { version = "0.27", features = ["extension-module", "abi3-py310"], optional = true }
+magnus = { version = "0.8", features = ["rb-sys"], optional = true }
+rb-sys = { version = "0.9", optional = true }
+
+# One crate, two optional native-extension entry points instead of two satellite crates
+# each path-depending back on this one (HyperUuid's consolidation, ported home). Nothing
+# in a plain `cargo build` (the Fiddle/ext-ffi-consumed cdylib every non-extension binding
+# dlopens) changes — these are additive, off by default, and only one is ever enabled per
+# build invocation (each produces a different C entry point — PyInit__native,
+# Init_hypercast_native — under the same crate, not meant to coexist in one binary).
+[features]
+python = ["dep:pyo3"]
+ruby = ["dep:magnus", "dep:rb-sys"]
 
 [dev-dependencies]
 # default-features off drops rayon/plotters, which cannot build for wasm32-wasip1 —

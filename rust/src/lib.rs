@@ -27,6 +27,11 @@ mod temporal;
 mod uuid;
 mod verdict;
 
+#[cfg(feature = "python")]
+mod python_ext;
+#[cfg(feature = "ruby")]
+mod ruby_ext;
+
 pub use boolean::cast_bool;
 pub use integer::{cast_i8, cast_i16, cast_i32, cast_i64, cast_u8, cast_u16, cast_u32, cast_u64};
 pub use real::{cast_f32, cast_f64};

@@ -1,0 +1,16 @@
+# macOS: a Python/Ruby extension module must not link the host runtime (libpython,
+# libruby) — the Py*/rb_* symbols resolve from the host process when the extension loads,
+# so the linker has to be told to leave them undefined (`dynamic_lookup`). maturin
+# arranges this itself for the python feature's release wheel build; a plain `cargo build`
+# (this repo's dev loop, CI, and the ruby feature, which has no maturin-equivalent
+# wrapper) does not, so it's declared here. Harmless for the default (no extension
+# feature) build too — a cdylib with no undefined symbols is unaffected by the flag either
+# way. Linux permits undefined symbols in shared libraries by default, which is why only
+# the Darwin targets need this. (Learned the hard way in this repo's own CI bring-up —
+# the fix originally lived in the satellite extension crates' .cargo/config.toml files;
+# it moved here when the extensions were consolidated into the core crate as features.)
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-undefined,dynamic_lookup"]
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-undefined,dynamic_lookup"]

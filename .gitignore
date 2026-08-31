@@ -13,9 +13,9 @@ ruby/lib/hypercast/native/*/
 php/vendor/
 php/src/native/*/
 .phpunit.result.cache
-python/src/hypercast_native.so
-python/src/hypercast_native.pyd
-python/src/hypercast/libhypercast.so
+python/src/hypercast/_native.so
+python/src/hypercast/_native.abi3.so
+python/src/hypercast/_native.pyd
 ruby/lib/hypercast_native.so
 ruby/lib/hypercast_native.bundle
 ruby/Gemfile.lock
