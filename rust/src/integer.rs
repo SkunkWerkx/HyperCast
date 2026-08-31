@@ -11,9 +11,17 @@
 
 use crate::verdict::{trim, Fault, NumFormat};
 
-/// The UTF-8 length of the character starting with `byte` — so a fault span covers the
-/// whole offending character, not just its leading byte.
-pub(crate) fn char_len(byte: u8) -> usize {
+/// The UTF-8 length of the character starting at `text[at]`, clamped to the text — so a
+/// fault span covers the whole offending character without ever running past the input
+/// when the text ends mid-character (arbitrary bytes are a legal input; the fuzz target
+/// caught a lead byte at the last position producing a span one past the end).
+pub(crate) fn char_len_at(text: &[u8], at: usize) -> usize {
+    char_len(text[at]).min(text.len() - at)
+}
+
+/// The UTF-8 length of the character starting with `byte` (unclamped — span builders use
+/// [`char_len_at`]).
+fn char_len(byte: u8) -> usize {
     match byte {
         b if b >= 0xF0 => 4,
         b if b >= 0xE0 => 3,
@@ -99,7 +107,7 @@ fn parse_radix(
     let mut over = false;
     for (index, &byte) in digits.iter().enumerate() {
         let Some(digit) = digit_value(byte, radix) else {
-            return Err(Fault::malformed(start + 2 + index, char_len(byte)));
+            return Err(Fault::malformed(start + 2 + index, char_len_at(digits, index)));
         };
         pattern = match pattern
             .checked_mul(radix as u128)
@@ -260,10 +268,10 @@ fn parse_int(
                 i += 1;
             }
             if i != body.len() {
-                return Err(Fault::malformed(base + i, char_len(body[i])));
+                return Err(Fault::malformed(base + i, char_len_at(body, i)));
             }
         } else {
-            return Err(Fault::malformed(base + i, char_len(byte)));
+            return Err(Fault::malformed(base + i, char_len_at(body, i)));
         }
     }
 

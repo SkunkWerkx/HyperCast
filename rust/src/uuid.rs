@@ -7,7 +7,7 @@
 //! games — .NET `Guid`'s little-endian first three fields, SQL Server sort order — stay in
 //! the bindings, exactly where HyperUuid already put them.
 
-use crate::integer::char_len;
+use crate::integer::char_len_at;
 use crate::verdict::{trim, Fault};
 
 const PREFIXES: [&[u8]; 3] = [b"urn:uuid:", b"guid:", b"uuid:"];
@@ -81,7 +81,7 @@ fn hex_pair(text: &[u8], at: usize, start: usize) -> Result<u8, Fault> {
     let lo = HEX[text[at + 1] as usize];
     if hi | lo == 0xFF {
         let bad = if hi == 0xFF { at } else { at + 1 };
-        return Err(Fault::malformed(start + bad, char_len(text[bad])));
+        return Err(Fault::malformed(start + bad, char_len_at(text, bad)));
     }
     Ok((hi << 4) | lo)
 }
@@ -96,7 +96,7 @@ fn parse_d(text: &[u8], start: usize) -> Result<[u8; 16], Fault> {
     }
     for hyphen in [8usize, 13, 18, 23] {
         if text[hyphen] != b'-' {
-            return Err(Fault::malformed(start + hyphen, char_len(text[hyphen])));
+            return Err(Fault::malformed(start + hyphen, char_len_at(text, hyphen)));
         }
     }
     let mut out = [0u8; 16];
@@ -121,7 +121,7 @@ fn parse_wrapped(text: &[u8], start: usize, close: u8) -> Result<[u8; 16], Fault
         return Err(Fault::malformed(start, text.len()));
     }
     if *text.last().unwrap() != close {
-        return Err(Fault::malformed(start + 37, char_len(text[37])));
+        return Err(Fault::malformed(start + 37, char_len_at(text, 37)));
     }
     parse_d(&text[1..37], start + 1)
 }
@@ -136,7 +136,7 @@ fn parse_x(text: &[u8], start: usize) -> Result<[u8; 16], Fault> {
             *i += 1;
             Ok(())
         } else if *i < text.len() {
-            Err(Fault::malformed(start + *i, char_len(text[*i])))
+            Err(Fault::malformed(start + *i, char_len_at(text, *i)))
         } else {
             Err(Fault::malformed(start, text.len()))
         }
@@ -150,7 +150,7 @@ fn parse_x(text: &[u8], start: usize) -> Result<[u8; 16], Fault> {
                 || (text[*i + 1] | 0x20) != b'x'
             {
                 let bad = (*i).min(text.len().saturating_sub(1));
-                return Err(Fault::malformed(start + bad, char_len(text[bad])));
+                return Err(Fault::malformed(start + bad, char_len_at(text, bad)));
             }
             *i += 2;
             let mut value: u64 = 0;
@@ -159,7 +159,7 @@ fn parse_x(text: &[u8], start: usize) -> Result<[u8; 16], Fault> {
                 && let Some(nibble) = hex(text[*i])
             {
                 if digits == width * 2 {
-                    return Err(Fault::malformed(start + *i, char_len(text[*i])));
+                    return Err(Fault::malformed(start + *i, char_len_at(text, *i)));
                 }
                 value = (value << 4) | nibble as u64;
                 digits += 1;
@@ -167,7 +167,7 @@ fn parse_x(text: &[u8], start: usize) -> Result<[u8; 16], Fault> {
             }
             if digits == 0 {
                 let bad = (*i).min(text.len().saturating_sub(1));
-                return Err(Fault::malformed(start + bad, char_len(text[bad])));
+                return Err(Fault::malformed(start + bad, char_len_at(text, bad)));
             }
             for slot in 0..width {
                 out[at + slot] = (value >> ((width - 1 - slot) * 8)) as u8;
@@ -192,7 +192,7 @@ fn parse_x(text: &[u8], start: usize) -> Result<[u8; 16], Fault> {
     expect(b'}', &mut i)?;
     expect(b'}', &mut i)?;
     if i != text.len() {
-        return Err(Fault::malformed(start + i, char_len(text[i])));
+        return Err(Fault::malformed(start + i, char_len_at(text, i)));
     }
     Ok(out)
 }

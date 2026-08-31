@@ -9,7 +9,7 @@
 //! stack buffer holding the normalized ASCII (declared separators swapped to invariant,
 //! grouping stripped): `core` cannot allocate, so neither can this door.
 
-use crate::integer::{char_len, strip_parens, Sep};
+use crate::integer::{char_len_at, strip_parens, Sep};
 use crate::verdict::{trim, Fault, NumFormat};
 
 /// Upper bound on the normalized numeric text — Svartalfheim's decimal digit guard
@@ -225,10 +225,10 @@ fn normalize(
                 i += 1;
             }
             if i != body.len() {
-                return Err(Fault::malformed(base + i, char_len(body[i])));
+                return Err(Fault::malformed(base + i, char_len_at(body, i)));
             }
         } else {
-            return Err(Fault::malformed(base + i, char_len(byte)));
+            return Err(Fault::malformed(base + i, char_len_at(body, i)));
         }
     }
 

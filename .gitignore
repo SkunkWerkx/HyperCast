@@ -82,3 +82,10 @@ php/.phpunit.result.cache
 # IDE
 .idea/
 .vs/
+
+# cargo-fuzz working state — the targets and Cargo.toml are tracked; the evolving corpus
+# and any crash artifacts are machine-local (a reproducing crash gets minimized and
+# committed as a regression test, not as a raw artifact).
+rust/fuzz/corpus/
+rust/fuzz/artifacts/
+rust/fuzz/coverage/

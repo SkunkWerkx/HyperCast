@@ -12,7 +12,7 @@
 //! No tzdb lives in the core: IANA zone resolution and DST fusion are host concerns,
 //! exactly as HyperUuid left the wall clock to the host.
 
-use crate::integer::char_len;
+use crate::integer::char_len_at;
 use crate::verdict::{trim, CivilDateTime, Date, Duration, Fault, Timestamp};
 
 /// `0001-01-01T00:00:00Z` — the floor of the protobuf timestamp window.
@@ -134,6 +134,18 @@ fn read_fraction_marked(
     Ok((nanos, i))
 }
 
+/// A `Malformed` fault at `at`, clamped to the trimmed text: a span that would start or
+/// run past the end — the "input ended too soon" faults — becomes a zero-length span at
+/// the truncation point, so `offset + len <= input.len()` holds for every fault a binding
+/// might slice with (the invariant the fuzz target pins; found by it, not assumed).
+fn malformed_at(text: &[u8], start: usize, at: usize, len: usize) -> Fault {
+    if at >= text.len() {
+        Fault::malformed(start + text.len(), 0)
+    } else {
+        Fault::malformed(start + at, len.min(text.len() - at))
+    }
+}
+
 /// Parses the strict date prefix `yyyy-MM-dd` at the head of `text`, faulting into the
 /// caller's coordinates. Year 0000 is well-formed but unrepresentable ⇒ `OutOfRange`;
 /// an impossible month or day ⇒ `Malformed` at its digits.
@@ -198,7 +210,7 @@ pub enum DateOrder {
 fn read_date_field(text: &[u8], at: usize, start: usize) -> Result<(u32, usize), Fault> {
     let (value, digits, after) = read_digit_run(text, at, start)?;
     if digits == 0 || digits > 4 {
-        return Err(Fault::malformed(start + at, digits.max(1)));
+        return Err(malformed_at(text, start, at, digits.max(1)));
     }
     Ok((value as u32, after))
 }
@@ -214,11 +226,11 @@ fn read_ordered_date(
     let (first, first_end) = read_date_field(text, 0, start)?;
     let sep = match text.get(first_end) {
         Some(&sep @ (b'/' | b'-' | b'.')) => sep,
-        _ => return Err(Fault::malformed(start + first_end, 1)),
+        _ => return Err(malformed_at(text, start, first_end, 1)),
     };
     let (second, second_end) = read_date_field(text, first_end + 1, start)?;
     if text.get(second_end) != Some(&sep) {
-        return Err(Fault::malformed(start + second_end, 1));
+        return Err(malformed_at(text, start, second_end, 1));
     }
     let (third, third_end) = read_date_field(text, second_end + 1, start)?;
 
@@ -282,7 +294,7 @@ pub fn cast_date_ordered(input: impl AsRef<[u8]>, order: DateOrder) -> Result<Da
     }
     let (date, end) = read_ordered_date(text, start, order)?;
     if end != text.len() {
-        return Err(Fault::malformed(start + end, char_len(text[end])));
+        return Err(Fault::malformed(start + end, char_len_at(text, end)));
     }
     Ok(date)
 }
@@ -295,7 +307,7 @@ pub fn cast_date_ordered(input: impl AsRef<[u8]>, order: DateOrder) -> Result<Da
 fn read_civil_time(text: &[u8], at: usize, start: usize) -> Result<(u64, usize), Fault> {
     let (hour_value, hour_digits, mut i) = read_digit_run(text, at, start)?;
     if hour_digits == 0 || hour_digits > 2 {
-        return Err(Fault::malformed(start + at, hour_digits.max(1)));
+        return Err(malformed_at(text, start, at, hour_digits.max(1)));
     }
     let hour_span = (at, hour_digits);
     let mut hour = hour_value as u32;
@@ -304,14 +316,14 @@ fn read_civil_time(text: &[u8], at: usize, start: usize) -> Result<(u64, usize),
     let mut nanos = 0;
     let mut has_minutes = false;
     if text.get(i) == Some(&b':') {
-        minute = read2(text, i + 1).ok_or(Fault::malformed(start + i + 1, 2))?;
+        minute = read2(text, i + 1).ok_or_else(|| malformed_at(text, start, i + 1, 2))?;
         if minute > 59 {
             return Err(Fault::malformed(start + i + 1, 2));
         }
         has_minutes = true;
         i += 3;
         if text.get(i) == Some(&b':') {
-            second = read2(text, i + 1).ok_or(Fault::malformed(start + i + 1, 2))?;
+            second = read2(text, i + 1).ok_or_else(|| malformed_at(text, start, i + 1, 2))?;
             // Leap seconds rejected, same as every other temporal door.
             if second > 59 {
                 return Err(Fault::malformed(start + i + 1, 2));
@@ -382,11 +394,11 @@ pub fn cast_datetime(input: impl AsRef<[u8]>, order: DateOrder) -> Result<CivilD
         return Ok(CivilDateTime { date, nanos_of_day: 0 });
     }
     if !matches!(text[date_end], b' ' | b'T' | b't') {
-        return Err(Fault::malformed(start + date_end, char_len(text[date_end])));
+        return Err(Fault::malformed(start + date_end, char_len_at(text, date_end)));
     }
     let (nanos_of_day, end) = read_civil_time(text, date_end + 1, start)?;
     if end != text.len() {
-        return Err(Fault::malformed(start + end, char_len(text[end])));
+        return Err(Fault::malformed(start + end, char_len_at(text, end)));
     }
     Ok(CivilDateTime { date, nanos_of_day })
 }
@@ -403,7 +415,7 @@ pub fn cast_time(input: impl AsRef<[u8]>) -> Result<u64, Fault> {
     }
     let (nanos, end) = read_time(text, 0, start)?;
     if end != text.len() {
-        return Err(Fault::malformed(start + end, char_len(text[end])));
+        return Err(Fault::malformed(start + end, char_len_at(text, end)));
     }
     Ok(nanos)
 }
@@ -418,9 +430,9 @@ fn read_time(text: &[u8], at: usize, start: usize) -> Result<(u64, usize), Fault
         return Err(Fault::malformed(start + at, 2));
     }
     if text.get(at + 2) != Some(&b':') {
-        return Err(Fault::malformed(start + at + 2, 1));
+        return Err(malformed_at(text, start, at + 2, 1));
     }
-    let minute = read2(text, at + 3).ok_or(Fault::malformed(start + at + 3, 2))?;
+    let minute = read2(text, at + 3).ok_or_else(|| malformed_at(text, start, at + 3, 2))?;
     if minute > 59 {
         return Err(Fault::malformed(start + at + 3, 2));
     }
@@ -428,7 +440,7 @@ fn read_time(text: &[u8], at: usize, start: usize) -> Result<(u64, usize), Fault
     let mut i = at + 5;
     let mut nanos = 0;
     if text.get(i) == Some(&b':') {
-        second = read2(text, i + 1).ok_or(Fault::malformed(start + i + 1, 2))?;
+        second = read2(text, i + 1).ok_or_else(|| malformed_at(text, start, i + 1, 2))?;
         // A leap second (:60) is deliberately rejected — protobuf timestamps have no
         // representation for it, and a deterministic core doesn't smear.
         if second > 59 {
@@ -460,7 +472,7 @@ pub fn cast_timestamp(input: impl AsRef<[u8]>) -> Result<Timestamp, Fault> {
     }
     let (year, month, day) = read_date(&text[..10], start)?;
     if !matches!(text[10], b'T' | b't') {
-        return Err(Fault::malformed(start + 10, char_len(text[10])));
+        return Err(Fault::malformed(start + 10, char_len_at(text, 10)));
     }
 
     // The time segment reuses read_time's grammar but with seconds mandatory.
@@ -476,29 +488,29 @@ pub fn cast_timestamp(input: impl AsRef<[u8]>) -> Result<Timestamp, Fault> {
         }
         Some(&(b'Z' | b'z')) => {
             if after_time + 1 != text.len() {
-                return Err(Fault::malformed(start + after_time + 1, char_len(text[after_time + 1])));
+                return Err(Fault::malformed(start + after_time + 1, char_len_at(text, after_time + 1)));
             }
             0i64
         }
         Some(&sign @ (b'+' | b'-')) => {
             let hours = read2(text, after_time + 1)
-                .ok_or(Fault::malformed(start + after_time + 1, 2))?;
+                .ok_or_else(|| malformed_at(text, start, after_time + 1, 2))?;
             if text.get(after_time + 3) != Some(&b':') {
-                return Err(Fault::malformed(start + after_time + 3, 1));
+                return Err(malformed_at(text, start, after_time + 3, 1));
             }
             let minutes = read2(text, after_time + 4)
-                .ok_or(Fault::malformed(start + after_time + 4, 2))?;
+                .ok_or_else(|| malformed_at(text, start, after_time + 4, 2))?;
             if hours > 23 || minutes > 59 {
                 return Err(Fault::malformed(start + after_time + 1, 5));
             }
             if after_time + 6 != text.len() {
-                return Err(Fault::malformed(start + after_time + 6, char_len(text[after_time + 6])));
+                return Err(Fault::malformed(start + after_time + 6, char_len_at(text, after_time + 6)));
             }
             let magnitude = i64::from(hours) * 3_600 + i64::from(minutes) * 60;
             if sign == b'-' { -magnitude } else { magnitude }
         }
         Some(&other) => {
-            return Err(Fault::malformed(start + after_time, char_len(other)));
+            return Err(Fault::malformed(start + after_time, char_len_at(text, after_time)));
         }
     };
 
@@ -541,7 +553,7 @@ pub fn cast_unix(input: impl AsRef<[u8]>, precision: UnixPrecision) -> Result<Ti
     while i < text.len() {
         let byte = text[i];
         if !byte.is_ascii_digit() {
-            return Err(Fault::malformed(start + i, char_len(byte)));
+            return Err(Fault::malformed(start + i, char_len_at(text, i)));
         }
         magnitude = match magnitude
             .checked_mul(10)
@@ -656,7 +668,7 @@ fn parse_iso_duration(text: &[u8], start: usize) -> Result<i128, Fault> {
         i = after;
         if digits == 0 {
             let bad = i.min(text.len() - 1);
-            return Err(Fault::malformed(start + bad, char_len(text[bad])));
+            return Err(Fault::malformed(start + bad, char_len_at(text, bad)));
         }
         let mut fraction_nanos: i128 = 0;
         let mut has_fraction = false;
@@ -681,7 +693,7 @@ fn parse_iso_duration(text: &[u8], start: usize) -> Result<i128, Fault> {
             b'M' | b'm' if in_time => 60 * NANOS_PER_SECOND,
             b'S' | b's' if in_time => NANOS_PER_SECOND,
             // Y, M-before-T (months), or a misplaced unit.
-            _ => return Err(Fault::malformed(start + unit_pos, char_len(unit))),
+            _ => return Err(Fault::malformed(start + unit_pos, char_len_at(text, unit_pos))),
         };
         if has_fraction && nanos_per_unit != NANOS_PER_SECOND {
             return Err(Fault::malformed(start + run_start, unit_pos - run_start + 1));
@@ -717,7 +729,7 @@ fn parse_colon_duration(text: &[u8], start: usize) -> Result<i128, Fault> {
     let (first, first_digits, after_first) = read_digit_run(text, i, start)?;
     if first_digits == 0 {
         let bad = after_first.min(text.len() - 1);
-        return Err(Fault::malformed(start + bad, char_len(text[bad])));
+        return Err(Fault::malformed(start + bad, char_len_at(text, bad)));
     }
     i = after_first;
 
@@ -728,7 +740,7 @@ fn parse_colon_duration(text: &[u8], start: usize) -> Result<i128, Fault> {
         i += 1;
         let (h, h_digits, after_hours) = read_digit_run(text, i, start)?;
         if h_digits == 0 || h_digits > 2 {
-            return Err(Fault::malformed(start + i, (after_hours - i).max(1)));
+            return Err(malformed_at(text, start, i, (after_hours - i).max(1)));
         }
         hours = h;
         i = after_hours;
@@ -744,12 +756,12 @@ fn parse_colon_duration(text: &[u8], start: usize) -> Result<i128, Fault> {
 
     if text.get(i) != Some(&b':') {
         let bad = i.min(text.len() - 1);
-        return Err(Fault::malformed(start + bad, char_len(text[bad])));
+        return Err(Fault::malformed(start + bad, char_len_at(text, bad)));
     }
     i += 1;
     let (minutes, m_digits, after_minutes) = read_digit_run(text, i, start)?;
     if m_digits == 0 || m_digits > 2 || minutes > 59 {
-        return Err(Fault::malformed(start + i, (after_minutes - i).max(1)));
+        return Err(malformed_at(text, start, i, (after_minutes - i).max(1)));
     }
     i = after_minutes;
 
@@ -759,7 +771,7 @@ fn parse_colon_duration(text: &[u8], start: usize) -> Result<i128, Fault> {
         i += 1;
         let (s, s_digits, after_seconds) = read_digit_run(text, i, start)?;
         if s_digits == 0 || s_digits > 2 || s > 59 {
-            return Err(Fault::malformed(start + i, (after_seconds - i).max(1)));
+            return Err(malformed_at(text, start, i, (after_seconds - i).max(1)));
         }
         seconds = s;
         i = after_seconds;
@@ -768,7 +780,7 @@ fn parse_colon_duration(text: &[u8], start: usize) -> Result<i128, Fault> {
         i = after_fraction;
     }
     if i != text.len() {
-        return Err(Fault::malformed(start + i, char_len(text[i])));
+        return Err(Fault::malformed(start + i, char_len_at(text, i)));
     }
 
     let total = ((days * 86_400 + hours * 3_600 + minutes * 60 + seconds) * NANOS_PER_SECOND)
@@ -794,7 +806,7 @@ fn parse_protobuf_duration(text: &[u8], start: usize) -> Result<i128, Fault> {
     }
     let (nanos, after_fraction) = read_fraction_marked(body, after, start, b".,")?;
     if after_fraction != body.len() {
-        return Err(Fault::malformed(start + after_fraction, char_len(body[after_fraction])));
+        return Err(Fault::malformed(start + after_fraction, char_len_at(body, after_fraction)));
     }
     let total = seconds * NANOS_PER_SECOND + nanos as i128;
     Ok(if negative { -total } else { total })
