@@ -18,10 +18,10 @@ Requirements that hold across every round, stated up front so no layer designs t
   HyperCast's core is strictly easier freight than HyperUuid's here — pure computation
   over caller bytes, zero dependencies, no WASI clock or randomness imports at all — and
   the core leg is already proven, not projected: the full test suite (51 unit + the
-  counting-allocator proof + all 12 corpus replays) passes under `wasmtime` on
-  `wasm32-wasip1` today (`CARGO_TARGET_WASM32_WASIP1_RUNNER="wasmtime --dir <repo>" cargo
-  test --target wasm32-wasip1`; the preopen is only so the conformance test can read
-  `corpus/`).
+  counting-allocator proof + all 12 corpus replays + both fault-span invariant sweeps —
+  66 tests) passes under `wasmtime` on `wasm32-wasip1` today
+  (`CARGO_TARGET_WASM32_WASIP1_RUNNER="wasmtime --dir <repo>" cargo test --target
+  wasm32-wasip1`; the preopen is only so the conformance test can read `corpus/`).
 - **The tabular layer is server domain.** CSV/TSV/XLSX ingestion must be AOT-clean like
   everything else, but wasm is explicitly out of scope at that layer — no design
   contortions to keep zip/XML streaming sandbox-friendly.
@@ -79,12 +79,20 @@ Design constraints round one already locked in on purpose:
 - **The batch entry point is additive.** Nothing about the scalar ABI changes; the tabular
   layer is new exports beside it, not a rework beneath it.
 
-Known design work for this round, parked deliberately:
+One piece of this round already landed, ahead of schedule and on purpose:
 
-- **Excel serial dates.** XLSX cells don't carry RFC 3339 — dates are serial numbers
-  (1900/1904 epochs, plus the deliberate 1900 leap-year bug kept for Lotus 1-2-3
-  compatibility). An "Excel serial → Timestamp" door is a natural, tiny addition to
-  `temporal.rs` when this round starts.
+- **Excel serial dates — done.** XLSX cells don't carry RFC 3339: dates are serial numbers
+  under a workbook-level epoch (1900 or 1904), plus the deliberate `1900-02-29` phantom at
+  serial 60 that Excel keeps for Lotus 1-2-3 file compatibility. This was parked here as "a
+  natural, tiny addition to `temporal.rs` when this round starts" — it turned out to be
+  exactly that, so it was built early rather than left to block the tabular layer. The door
+  ships in every binding today (`cast_excel_serial`, a caller-declared `ExcelEpoch`, the
+  phantom serial `Malformed` exactly as the text `1900-02-29` already is), with
+  `corpus/excel_serial.json` holding it byte-identical across all eight languages. Nothing
+  below depends on it any more — the XLSX reader will call a door that already exists.
+
+Known design work still parked deliberately:
+
 - **XLSX container handling.** XLSX is zip + XML (inflate, shared-strings table, cell-type
   attributes). Streaming decompression versus caller-buffer protocols is the real design
   conversation, because it's the first place "never allocates" needs a deliberate,

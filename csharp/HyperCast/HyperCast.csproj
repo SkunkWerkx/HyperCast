@@ -17,6 +17,7 @@
     <Description>Allocation-free scalar parsing — booleans, numerics, UUIDs, temporals — as a discriminated-union Verdict (value or reason + offending span, never an exception), AOT/trim-friendly P/Invoke bindings straight into a native Rust core (libhypercast). No runtime bridge, no reflection.</Description>
     <Authors>Brian Buvinghausen</Authors>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/SkunkWerkx/HyperCast</PackageProjectUrl>
     <RepositoryUrl>https://github.com/SkunkWerkx/HyperCast</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageTags>parsing;verdict;union;rfc3339;pinvoke;native-aot</PackageTags>
