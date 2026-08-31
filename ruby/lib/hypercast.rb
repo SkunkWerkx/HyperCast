@@ -23,7 +23,7 @@ require_relative "hypercast/runtime"
 module HyperCast
   # This gem's own version — kept in lockstep with hypercast.gemspec by the
   # prepare-release workflow, so the two can never drift apart again.
-  VERSION = "0.0.2"
+  VERSION = "0.1.0"
 
   # The success case of a verdict: a cast value.
   Success = Data.define(:value)
