@@ -1,6 +1,6 @@
 [package]
 name = "hypercast"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 description = "Allocation-free parsers for scalars from untrusted text — booleans, numerics, UUIDs, and temporals. Every parse returns a verdict (the value, or a closed reason code with the offending span), never throws, never allocates — wrapped as a native library (libhypercast) for direct FFI from every host language."
 license = "MIT"

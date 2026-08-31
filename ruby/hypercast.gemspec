@@ -1,6 +1,6 @@
 Gem::Specification.new do |spec|
   spec.name = "hypercast"
-  spec.version = "0.0.1"
+  spec.version = "0.0.2"
   spec.authors = ["Brian Buvinghausen"]
   spec.summary = "Allocation-free scalar parsing as Success/Fault verdicts over a native Rust core"
   spec.description = "Booleans, numerics, UUIDs, and temporals cast from untrusted text by a " \
