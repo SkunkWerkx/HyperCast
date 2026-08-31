@@ -49,6 +49,15 @@ point (`PyInit__native`, `Init_hypercast_native`) under the same crate. On macOS
 crate's own `.cargo/config.toml` supplies the `-undefined dynamic_lookup` link flag an
 extension module needs (the host runtime's symbols resolve at load time, not link time).
 
+**Local dev trap worth knowing:** all three builds write the *same* file —
+`target/release/libhypercast.so` — so a `--features python` build (or a `maturin build` in
+`python/`, which is one) silently replaces the plain cdylib that every other binding's dev
+loop loads. The extension build still exports all 19 `cast_*` symbols, but it also carries
+~95 undefined `Py*` symbols that only resolve inside a CPython process, so the next
+`./gradlew test` or `dotnet test` fails at native load with something unhelpful about a
+missing symbol. Nothing is broken; a plain `cargo build --release` puts it back. CI never
+hits this — each leg builds in its own job.
+
 ## WebAssembly
 
 The full test suite — unit tests, the allocation proof, and all eleven corpus replays —

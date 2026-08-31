@@ -14,7 +14,11 @@ Gem::Specification.new do |spec|
   # 3.2 floor: Data.define for the verdict case types (pattern-matchable value objects).
   spec.required_ruby_version = ">= 3.2"
 
-  spec.files = Dir["lib/**/*.rb"] + Dir["lib/hypercast/native/*/*"] + ["README.md"]
+  # LICENSE is a local copy of the repo root's, not a reference to it: RubyGems stores a
+  # "../LICENSE" entry with the `..` intact (a path-traversal entry no installer accepts),
+  # and a symlink is stored *as* a symlink — `gem build` warns, and it dangles once the gem
+  # is unpacked somewhere else entirely. Same reason rust/ and python/ carry their own.
+  spec.files = Dir["lib/**/*.rb"] + Dir["lib/hypercast/native/*/*"] + ["README.md", "LICENSE"]
   spec.require_paths = ["lib"]
 
   spec.add_dependency "fiddle"

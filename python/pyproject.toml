@@ -10,6 +10,10 @@ dynamic = ["version"]
 description = "Allocation-free scalar parsing — booleans, numerics, UUIDs, temporals — as a Success/Fault verdict union (value or reason + offending span, never an exception). A PyO3 native extension linking a Rust core directly into CPython — no runtime bridge, no compiler needed to install, no dependencies."
 readme = "README.md"
 license = "MIT"
+# A local copy, not a path up to the repo root: PEP 639 globs forbid `..` outright
+# ("the parent directory operator (`..`) at position 0 is not allowed"), and a symlink is
+# no better. Same reason rust/ carries its own — git stores one blob for all of them.
+license-files = ["LICENSE"]
 authors = [{ name = "Brian Buvinghausen" }]
 # 3.10 floor deliberately: match/case over the Success | Fault union is the consumption
 # idiom, the Python answer to C#'s native union and Java's sealed interface. The wheel is
