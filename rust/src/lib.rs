@@ -10,6 +10,8 @@
 //! - [`cast_uuid`] — every .NET `Guid` text format plus `urn:uuid:`-style prefixes,
 //!   16 RFC 9562-ordered bytes out
 //! - [`cast_timestamp`] / [`cast_unix`] — instants to protobuf's `{seconds, nanos}` pair
+//! - [`cast_excel_serial`] — spreadsheet date serials under a declared [`ExcelEpoch`],
+//!   phantom `1900-02-29` and all
 //! - [`cast_date`] / [`cast_time`] / [`cast_duration`] — the remaining temporal shapes,
 //!   likewise protobuf-formed
 //! - [`cast_date_ordered`] — separated calendar dates under a caller-declared [`DateOrder`]
@@ -56,9 +58,9 @@ pub use boolean::cast_bool;
 pub use integer::{cast_i8, cast_i16, cast_i32, cast_i64, cast_u8, cast_u16, cast_u32, cast_u64};
 pub use real::{cast_f32, cast_f64};
 pub use temporal::{
-    cast_date, cast_date_ordered, cast_datetime, cast_duration, cast_time, cast_timestamp,
-    cast_unix, DateOrder, UnixPrecision, MAX_DURATION_SECONDS, MAX_TIMESTAMP_SECONDS,
-    MIN_TIMESTAMP_SECONDS,
+    cast_date, cast_date_ordered, cast_datetime, cast_duration, cast_excel_serial, cast_time,
+    cast_timestamp, cast_unix, DateOrder, ExcelEpoch, UnixPrecision, MAX_DURATION_SECONDS,
+    MAX_TIMESTAMP_SECONDS, MIN_TIMESTAMP_SECONDS,
 };
 pub use uuid::cast_uuid;
 pub use verdict::{CivilDateTime, Date, Duration, Fault, NumFormat, Reason, Timestamp};
@@ -451,6 +453,75 @@ mod tests {
         assert_eq!(reason(cast_unix(b"253402300800", UnixPrecision::Seconds)), Reason::OutOfRange);
         assert_eq!(reason(cast_unix(b"-62135596801", UnixPrecision::Seconds)), Reason::OutOfRange);
         assert_eq!(cast_unix(b"253402300799", UnixPrecision::Seconds).unwrap().seconds, MAX_TIMESTAMP_SECONDS);
+    }
+
+    // --- excel serial ---
+
+    /// The anchors are computed from `days_from_civil`, so these assertions are what pins
+    /// them to the values Excel actually uses rather than to whatever the arithmetic
+    /// happened to produce. 25569 is the well-known 1900-system serial for the Unix epoch.
+    #[test]
+    fn excel_serial_agrees_with_the_well_known_anchor_serials() {
+        let epoch_1900 = cast_excel_serial(b"25569", ExcelEpoch::Y1900).unwrap();
+        assert_eq!(epoch_1900, Timestamp { seconds: 0, nanos: 0 });
+        let epoch_1904 = cast_excel_serial(b"24107", ExcelEpoch::Y1904).unwrap();
+        assert_eq!(epoch_1904, Timestamp { seconds: 0, nanos: 0 });
+
+        // First real day of each system.
+        assert_eq!(cast_excel_serial(b"1", ExcelEpoch::Y1900).unwrap().seconds, -2_208_988_800);
+        assert_eq!(cast_excel_serial(b"0", ExcelEpoch::Y1904).unwrap().seconds, -2_082_844_800);
+    }
+
+    /// The whole point of the door: serial 60 is Excel's phantom 1900-02-29, so 59 and 61
+    /// are consecutive real days one 86,400-second step apart despite the gap in serials.
+    #[test]
+    fn excel_serial_rejects_the_phantom_leap_day_and_shifts_everything_after_it() {
+        assert_eq!(reason(cast_excel_serial(b"60", ExcelEpoch::Y1900)), Reason::Malformed);
+
+        let feb28 = cast_excel_serial(b"59", ExcelEpoch::Y1900).unwrap().seconds;
+        let mar01 = cast_excel_serial(b"61", ExcelEpoch::Y1900).unwrap().seconds;
+        assert_eq!(mar01 - feb28, 86_400, "59 and 61 are adjacent real days");
+
+        // The same date reached through the text door, which already calls 1900-02-29
+        // malformed — the two doors agree that day does not exist.
+        assert_eq!(cast_date(b"1900-02-28"), Ok(Date { year: 1900, month: 2, day: 28 }));
+        assert_eq!(reason(cast_date(b"1900-02-29")), Reason::Malformed);
+
+        // 1904 has no phantom: its serial 60 is an ordinary day.
+        assert!(cast_excel_serial(b"60", ExcelEpoch::Y1904).is_ok());
+    }
+
+    #[test]
+    fn excel_serial_reads_the_fraction_as_time_of_day() {
+        // 45292 is 2024-01-01 in the 1900 system; .75 is 18:00.
+        let midnight = cast_excel_serial(b"45292", ExcelEpoch::Y1900).unwrap();
+        let evening = cast_excel_serial(b"45292.75", ExcelEpoch::Y1900).unwrap();
+        assert_eq!(evening.seconds - midnight.seconds, 64_800);
+        assert_eq!(evening.nanos, 0);
+
+        assert_eq!(cast_excel_serial(b"1.5", ExcelEpoch::Y1900).unwrap().nanos, 0);
+        // A fraction that lands off a whole second still resolves into nanos:
+        // 0.0000001 of a day is 0.00864 s.
+        let odd = cast_excel_serial(b"1.0000001", ExcelEpoch::Y1900).unwrap();
+        assert_eq!(odd.nanos, 8_640_000);
+    }
+
+    #[test]
+    fn excel_serial_rejects_malformed_text_and_the_out_of_window() {
+        assert_eq!(reason(cast_excel_serial(b"", ExcelEpoch::Y1900)), Reason::Empty);
+        assert_eq!(reason(cast_excel_serial(b"not-a-number", ExcelEpoch::Y1900)), Reason::Malformed);
+        assert_eq!(reason(cast_excel_serial(b"45292.", ExcelEpoch::Y1900)), Reason::Malformed);
+        assert_eq!(reason(cast_excel_serial(b".5", ExcelEpoch::Y1900)), Reason::Malformed);
+        // A date serial is never signed — no silent reflection into pre-1900.
+        assert_eq!(reason(cast_excel_serial(b"-1", ExcelEpoch::Y1900)), Reason::Malformed);
+        assert_eq!(reason(cast_excel_serial(b"+1", ExcelEpoch::Y1900)), Reason::Malformed);
+        // Below each system's own first real day.
+        assert_eq!(reason(cast_excel_serial(b"0", ExcelEpoch::Y1900)), Reason::OutOfRange);
+        // Past 9999-12-31.
+        assert_eq!(reason(cast_excel_serial(b"2958466", ExcelEpoch::Y1900)), Reason::OutOfRange);
+        assert_eq!(reason(cast_excel_serial(b"2957004", ExcelEpoch::Y1904)), Reason::OutOfRange);
+        assert!(cast_excel_serial(b"2958465", ExcelEpoch::Y1900).is_ok());
+        assert!(cast_excel_serial(b"2957003", ExcelEpoch::Y1904).is_ok());
     }
 
     // --- date ---

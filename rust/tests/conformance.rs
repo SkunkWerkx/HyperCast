@@ -7,7 +7,7 @@
 //! plus a per-domain value shape on "ok" vectors, an optional `"fault": [offset, len]`
 //! span assertion on failures, and `"type"`/`"format"`/`"precision"` where a door takes one.
 
-use hypercast::{DateOrder, Fault, NumFormat, Reason, UnixPrecision};
+use hypercast::{DateOrder, ExcelEpoch, Fault, NumFormat, Reason, UnixPrecision};
 use serde_json::Value;
 use std::path::PathBuf;
 
@@ -180,6 +180,19 @@ fn unix_corpus() {
         };
         let verdict = hypercast::cast_unix(input(&vector).as_bytes(), precision);
         assert_verdict("unix", &vector, verdict, timestamp_of);
+    }
+}
+
+#[test]
+fn excel_serial_corpus() {
+    for vector in corpus("excel_serial.json") {
+        let epoch = match vector["epoch"].as_u64().expect("epoch") {
+            1 => ExcelEpoch::Y1900,
+            2 => ExcelEpoch::Y1904,
+            other => panic!("excel_serial: unknown epoch {other}"),
+        };
+        let verdict = hypercast::cast_excel_serial(input(&vector).as_bytes(), epoch);
+        assert_verdict("excel_serial", &vector, verdict, timestamp_of);
     }
 }
 
