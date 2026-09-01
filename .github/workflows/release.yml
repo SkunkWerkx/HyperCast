@@ -309,6 +309,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       id-token: write
+      # gh attestation verify reads this repo's attestations before any downloaded binary
+      # is packed into a gem and pushed.
+      attestations: read
     steps:
       - uses: actions/checkout@v7
 
@@ -327,6 +330,36 @@ jobs:
           merge-multiple: false
           run-id: ${{ needs.find-ci-run.outputs.run_id }}
           github-token: ${{ github.token }}
+
+      # Nothing downloaded above is inspectable, and nothing here gets rebuilt — the six
+      # plain FFI libs go verbatim into the universal "ruby" platform gem and each Magnus
+      # extension goes verbatim into its own precompiled platform gem — so `gem push` is
+      # the last moment these bytes can still be rejected, and it is irreversible
+      # (RubyGems has no unpublish and no duplicate-version overwrite). ci.yml attested all
+      # ten at build time via hyper-build-native.yml; this is the gate that actually spends
+      # those attestations instead of just producing them.
+      #
+      # --signer-repo is not optional. `--repo X` alone asserts BOTH that the artifact's
+      # source repo is X and that the workflow which signed it lives in X. Only the first
+      # is true — the attest step is in hyper-build-native.yml, which physically lives in
+      # the shared SkunkWerkx/.github forge, and that job_workflow_ref is what Fulcio
+      # records as the build signer. Omit it and all ten fail with a bare `verifying with
+      # issuer "sigstore.dev"` that reads like a bad signature but is only an identity
+      # mismatch. Same flag, same reason as stage-native-binaries.yml's gate.
+      - name: Verify build provenance of every binary about to be packed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for f in artifacts/native/native-*/* artifacts/ruby-native/ruby-native-*/*; do
+            echo "::group::verify $f"
+            if ! gh attestation verify "$f" \
+                 --repo "$GITHUB_REPOSITORY" --signer-repo SkunkWerkx/.github; then
+              echo "::error::No valid build provenance for $f — refusing to publish a gem containing it."
+              exit 1
+            fi
+            echo "::endgroup::"
+          done
 
       - uses: ruby/setup-ruby@v1
         with:
