@@ -308,10 +308,13 @@ jobs:
     needs: find-ci-run
     runs-on: ubuntu-latest
     permissions:
+      # Explicit, so checkout keeps working if this repo ever stops being public — a
+      # permissions block sets every unlisted scope to none.
+      contents: read
       id-token: write
-      # gh attestation verify reads this repo's attestations before any downloaded binary
-      # is packed into a gem and pushed.
-      attestations: read
+      # read: gh attestation verify checks every downloaded binary before it is packed.
+      # write: the gems built from them are themselves attested below.
+      attestations: write
     steps:
       - uses: actions/checkout@v7
 
@@ -407,6 +410,22 @@ jobs:
           done
 
       # @main per configure-rubygems-credentials' own README — no v2 floating tag exists.
+
+      # Attested BEFORE the push, over ruby/pkg/*.gem — these exact files are what `gem
+      # push` uploads, with no repack in between, so the attested digest is the published
+      # digest. Ordering it first is the whole point: a failure here stops the release
+      # while it is still reversible, unlike NuGet, where nuget.org rewrites the package
+      # and forces a second attestation after an irreversible push.
+      #
+      # No --signer-repo when verifying: this signing step lives in this repo's own
+      # release.yml, so Fulcio records one identity for source and signer alike.
+      #
+      #     gh attestation verify <gem>-<version>[-<platform>].gem --repo <owner>/<repo>
+      - name: Attest the built gems
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: ruby/pkg/*.gem
+
       - uses: rubygems/configure-rubygems-credentials@main
 
       - name: Publish to rubygems.org
@@ -416,6 +435,43 @@ jobs:
           for gem in pkg/*.gem; do
             gem push "$gem"
           done
+
+      # Turns "rubygems.org stores an uploaded .gem verbatim" from a reasonable belief into
+      # a per-release measurement: re-fetch each gem from the CDN and compare it to the
+      # bytes just attested. Non-fatal — the push above is irreversible, and a CDN that has
+      # not caught up yet must not turn a good release red — but a genuine mismatch would
+      # mean the attestation no longer describes what a consumer downloads, which is worth
+      # a loud warning rather than silence.
+      - name: Confirm rubygems.org serves the attested bytes
+        continue-on-error: true
+        working-directory: ruby
+        run: |
+          set -uo pipefail
+          {
+            echo "### RubyGems package attestations"
+            echo ""
+            echo "| gem | attested sha256 | served by rubygems.org |"
+            echo "| --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for gem in pkg/*.gem; do
+            name=$(basename "$gem")
+            attested=$(sha256sum "$gem" | cut -d' ' -f1)
+            served="(not available within 150s)"
+            for attempt in $(seq 1 10); do
+              if curl -fsSL -o served.gem "https://rubygems.org/downloads/$name"; then
+                served=$(sha256sum served.gem | cut -d' ' -f1)
+                break
+              fi
+              sleep 15
+            done
+            if [ "$attested" = "$served" ]; then
+              echo "| \`$name\` | \`$attested\` | identical |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "| \`$name\` | \`$attested\` | \`$served\` |" >> "$GITHUB_STEP_SUMMARY"
+              echo "::warning::rubygems.org is not serving the attested bytes for $name."
+            fi
+          done
+          rm -f served.gem
 
   # PyPI leg: real multi-platform PyO3 native wheels, abi3-py310 — one wheel per platform
   # (not per Python version), so 6 legs covers every supported CPython 3.10+ everywhere.
@@ -533,6 +589,12 @@ jobs:
   # prerequisite.
   pack-crates:
     uses: SkunkWerkx/.github/.github/workflows/hyper-publish-crate.yml@master
+    # Handed down to the reusable workflow, which attests what it publishes and cannot
+    # escalate past what this job was granted.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     secrets:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -542,6 +604,12 @@ jobs:
   maven-publish:
     needs: find-ci-run
     uses: SkunkWerkx/.github/.github/workflows/hyper-publish-maven.yml@master
+    # Handed down to the reusable workflow, which attests what it publishes and cannot
+    # escalate past what this job was granted.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     with:
       crate: hypercast
       java_resources_dir: java/src/main/resources/native
