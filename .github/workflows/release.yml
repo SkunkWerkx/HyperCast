@@ -456,6 +456,13 @@ jobs:
             target: aarch64-pc-windows-msvc
             manylinux: ""
     runs-on: ${{ matrix.os }}
+    # attest-build-provenance mints an OIDC token to sign with and records the result.
+    # A permissions block sets every unlisted scope to none, so contents has to be spelled
+    # out too for checkout.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v7
 
@@ -471,6 +478,31 @@ jobs:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux != '' && matrix.manylinux || 'off' }}
           args: --release --out dist
+
+      # Unlike every other artifact in this file, the wheel needs no verification gate
+      # anywhere downstream — it is built right here, in this workflow, from this tagged
+      # checkout, and pypi-publish consumes it directly. There is nothing to re-verify
+      # because nothing was inherited. What it does need is an attestation, for the
+      # consumer's sake: `pip download` hands over a wheel with a compiled extension module
+      # inside it, and this is the only compiled artifact in the repo that a consumer
+      # receives sealed inside the package rather than as a file of its own.
+      #
+      # This does not duplicate what pypi-publish already does. gh-action-pypi-publish
+      # emits PEP 740 attestations, which live on PyPI and are checked by PyPI-side
+      # tooling; this is a GitHub/Sigstore build-provenance attestation in the transparency
+      # log, checked with `gh attestation verify` — the same route every other artifact
+      # here uses, so one command covers the whole repo instead of two per ecosystem.
+      #
+      # Note the verifying command has no --signer-repo, and that is not an oversight. The
+      # signing step is right here in this repo's own release.yml, so Fulcio records this
+      # repo as both source and build signer — the two halves agree, unlike everything
+      # hyper-build-native.yml signs from the forge:
+      #
+      #     gh attestation verify <wheel> --repo <owner>/<repo>
+      - name: Attest wheel build provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: python/dist/*.whl
 
       - uses: actions/upload-artifact@v7
         with:
