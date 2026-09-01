@@ -27,6 +27,13 @@ on:
 jobs:
   build-native:
     uses: SkunkWerkx/.github/.github/workflows/hyper-build-native.yml@master
+    # attest-build-provenance signs with an OIDC token and records the result, and a reusable
+    # workflow can never escalate beyond what its caller was granted — so these two scopes have
+    # to be handed down from here. contents stays read: nothing in the called workflow writes.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     with:
       project: HyperCast
       crate: hypercast
