@@ -325,10 +325,24 @@ HyperCast::BACKEND =
   if ENV["HYPERCAST_PURE"]
     :fiddle
   else
+    # Two layouts, and both have to work. A released platform gem is a "fat" gem carrying one
+    # extension per supported Ruby ABI under lib/hypercast/<minor>/ (see the Rakefile's
+    # native:gem task for why an ABI-per-file is unavoidable — Magnus has no `abi3`
+    # equivalent). CI's in-job staging and a local `cargo build --release --features ruby`
+    # instead drop a single extension flat at lib/. Trying the versioned path first and the
+    # flat one second means neither has to know the other exists.
+    #
+    # A miss on both is not an error: it means this Ruby/platform combination has no
+    # precompiled extension, which is precisely what the Fiddle backend is for.
     begin
-      require "hypercast_native"
+      require "hypercast/#{RUBY_VERSION[/\d+\.\d+/]}/hypercast_native"
       :native
     rescue LoadError
-      :fiddle
+      begin
+        require "hypercast_native"
+        :native
+      rescue LoadError
+        :fiddle
+      end
     end
   end

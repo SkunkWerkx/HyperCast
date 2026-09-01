@@ -66,6 +66,12 @@ ruby/.yardoc/
 # precompiled platform gems carry the real artifact).
 ruby/lib/hypercast_native.so
 ruby/lib/hypercast_native.bundle
+# The per-ABI staging the fat platform gem is packed from (lib/hypercast/<minor>/), written
+# by release.yml from CI artifacts. Same story as the flat pair above: build output, never
+# committed. Scoped to the extension filename rather than the whole directory so it can't
+# swallow a real lib/hypercast/*.rb source file if a minor-version-shaped one ever appears.
+ruby/lib/hypercast/*/hypercast_native.so
+ruby/lib/hypercast/*/hypercast_native.bundle
 
 # PHP
 # Native libs under php/src/native/{rid}/ are committed, not ignored — see

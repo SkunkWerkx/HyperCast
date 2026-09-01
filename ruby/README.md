@@ -73,11 +73,37 @@ include their own archaeology.)
 gem install hypercast
 ```
 
-Five gems are published per release: one universal `ruby`-platform gem (pure Fiddle, all six
-platforms' natives bundled) plus four precompiled Magnus platform gems (`x86_64-linux`,
-`aarch64-linux`, `x86_64-darwin`, `arm64-darwin`) that `gem install` auto-selects when they
-match. Nobody ever compiles anything; Windows and any unmatched platform land on the
-universal gem's Fiddle backend, which replays the same corpus green.
+Six gems are published per release: one universal `ruby`-platform gem (pure Fiddle, all six
+platforms' natives bundled) plus five precompiled Magnus platform gems (`x86_64-linux`,
+`aarch64-linux`, `x86_64-darwin`, `arm64-darwin`, `x64-mingw-ucrt`) that `gem install`
+auto-selects when they match. Nobody ever compiles anything.
+
+Selection has **two** axes here, unlike every other binding in this repo. A Magnus extension
+is bound to one Ruby minor ABI — there is no `abi3` equivalent to collapse the version axis
+the way [the Python binding's](../python/) wheels do — so each platform gem is a "fat" gem
+carrying one compiled extension per supported Ruby, under `lib/hypercast/<minor>/`, and picks
+one at `require` time:
+
+| Ruby | the five platforms above | anywhere else (musl/Alpine, win-arm64, …) |
+| --- | --- | --- |
+| 4.0 (primary) | Magnus, `backend: :native` | Fiddle |
+| 3.4 (floor, until its EOL 2028-03-31) | Magnus, `backend: :native` | Fiddle |
+| 3.2 / 3.3 | Fiddle | Fiddle |
+
+The platform gems declare `required_ruby_version >= 3.4, < 4.1` precisely so RubyGems
+*declines* them outside that range and resolves the universal gem instead — a wrong-ABI
+extension must never be installed in the first place. On Windows it would at least fail to
+load cleanly (the extension imports `x64-ucrt-ruby<minor>.dll` by name), but Linux extensions
+don't link libruby at all, so one can load successfully against the wrong ABI and misbehave
+later. Every cell in that table replays the same corpus green.
+
+Windows-on-x64 gained a Magnus gem once it turned out the long-standing "Magnus doesn't target
+RubyInstaller's MinGW rubies" reasoning was backwards: MinGW is the *only* Windows flavour
+`rb-sys` targets (`x64-mingw-ucrt` → `x86_64-pc-windows-gnu`, `supported: true` in its own
+`data/toolchains.json`); the one it has no support for is `x86_64-pc-windows-msvc`. Windows is
+also where the Fiddle fallback cost the most, so it was the most worthwhile gem in the set.
+Windows-on-ARM stays on Fiddle for now — RubyInstaller ships `aarch64-mingw-ucrt` and `rb-sys`
+lists it supported, but it hasn't been built or tested here yet.
 
 See [the repo root README](../README.md) for the full door table, the receipts, and the
 state of every other language binding.

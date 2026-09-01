@@ -395,18 +395,32 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # win-x64 maps to x64-mingw-ucrt, RubyInstaller's own platform string — the
+          # `ext=so` default below is already right for it (mingw Ruby's DLEXT is `so`, not
+          # `dll`). No win-arm64 entry: the forge doesn't build a Magnus extension there yet,
+          # and naming a RID with no matching ruby-native-* artifact fails this loop at `cp`.
           declare -A PLATFORMS=(
             [linux-x64]=x86_64-linux
             [linux-arm64]=aarch64-linux
             [osx-x64]=x86_64-darwin
             [osx-arm64]=arm64-darwin
+            [win-x64]=x64-mingw-ucrt
           )
+          # One extension per Ruby ABI per platform — a Magnus extension is bound to a single
+          # Ruby minor, so a platform gem has to be "fat" to cover more than one. Keep this
+          # list in step with ruby/Rakefile's ABIS and ci.yml's ruby_compat_version; the rake
+          # task aborts naming the missing file if they drift apart.
+          ABIS=(3.4 4.0)
           for rid in "${!PLATFORMS[@]}"; do
             ext=so
             [[ "$rid" == osx-* ]] && ext=bundle
-            cp "../artifacts/ruby-native/ruby-native-$rid/hypercast_native.$ext" "lib/hypercast_native.$ext"
+            for abi in "${ABIS[@]}"; do
+              mkdir -p "lib/hypercast/$abi"
+              cp "../artifacts/ruby-native/ruby-native-$rid-$abi/hypercast_native.$ext" \
+                 "lib/hypercast/$abi/hypercast_native.$ext"
+            done
             bundle exec rake "native:gem[${PLATFORMS[$rid]}]"
-            rm "lib/hypercast_native.$ext"
+            for abi in "${ABIS[@]}"; do rm -rf "lib/hypercast/$abi"; done
           done
 
       # @main per configure-rubygems-credentials' own README — no v2 floating tag exists.

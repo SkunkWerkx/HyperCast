@@ -59,6 +59,14 @@ jobs:
       # point; falling back to the flat copy would still pass while proving less.
       csharp_runtimes_dir: csharp/HyperCast/runtimes
       java_resources_dir: java/src/main/resources/native
+      # The forge's ruby_version default (4.0, the current release) is the primary ABI; this
+      # adds a second Magnus build+suite against 3.4 so each platform gem can ship both. A
+      # Magnus extension is bound to one Ruby minor — unlike PyO3's abi3 wheels, which is why
+      # Python needs no equivalent input. Keep this in step with ruby/Rakefile's ABIS and
+      # release.yml's own ABIS list; the rake task aborts naming the missing file if they
+      # drift. Ruby 3.4 goes EOL 2028-03-31 — clear this line then and 3.4 consumers fall
+      # back to the universal Fiddle gem, which is exactly what it's there for.
+      ruby_compat_version: "3.4"
       # go_windows stays default-true: the purego fallback carries the Windows legs.
       # No ext-php-rs benchmark spike in this crate (the shipped PHP package is ext-ffi,
       # and PHP's ~105 ns raw ext-ffi call floor never justified the spike here the way
