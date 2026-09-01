@@ -43,12 +43,20 @@ jobs:
       # until the pinned SDK GAs (HyperForge's own default stays 8.0/ga for other repos).
       dotnet_version: "11.0.x"
       dotnet_quality: "preview"
-      # Both explicit-placement inputs are required in practice, HyperUuid-style: the
-      # phase-2 test jobs download the native artifact but never run cargo, so the
-      # csproj/Gradle dev-loop staging from rust/target/release has nothing to stage —
-      # leaving these empty meant DllNotFoundException on every C# leg and an
-      # ExceptionInInitializerError on every Java leg (found by this repo's first real
-      # matrix run, not assumed).
+      # Both explicit-placement inputs stay set. The original reason no longer holds — it
+      # was that the separate per-binding test jobs downloaded the native artifact but
+      # never ran cargo, so the csproj/Gradle dev-loop staging from rust/target/release
+      # had nothing to stage, and leaving these empty meant DllNotFoundException on every
+      # C# leg and an ExceptionInInitializerError on every Java leg (found by this repo's
+      # first real matrix run, not assumed). Since the forge collapsed those jobs into
+      # build-native (2026-09), cargo runs in the same job and rust/target/release is
+      # populated, so the dev-loop staging would now find it.
+      #
+      # Kept anyway, deliberately: explicit placement puts the library at
+      # runtimes/{rid}/native/ and src/main/resources/native/{rid}/ — the same layouts the
+      # shipped NuGet package and jar actually use — whereas the dev-loop staging only
+      # produces a flat copy beside the assembly. Testing the layout consumers get is the
+      # point; falling back to the flat copy would still pass while proving less.
       csharp_runtimes_dir: csharp/HyperCast/runtimes
       java_resources_dir: java/src/main/resources/native
       # go_windows stays default-true: the purego fallback carries the Windows legs.

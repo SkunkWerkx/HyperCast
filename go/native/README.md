@@ -8,6 +8,6 @@ here for real, not be staged in transiently by CI (the same real bug HyperUuid f
 fixed for its PHP/Swift/Go bindings — see `php/src/native/README.md` for the origin story).
 `stage-native-binaries.yml` refreshes them automatically on every rust/-touching merge.
 Regenerate locally with `cargo build --release` in `rust/` and copy the result in if you need
-to update one by hand; CI's own `test-go` job does the same per-leg during in-repo testing,
+to update one by hand; CI's own `build-native` job does the same per-leg during in-repo testing,
 overwriting whichever platform's file matches that leg — harmless, since it's the same build
 either way.
