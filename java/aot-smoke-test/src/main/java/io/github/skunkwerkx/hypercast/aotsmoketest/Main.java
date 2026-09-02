@@ -38,6 +38,12 @@ public final class Main {
         }
     }
 
+    /**
+     * Exercises a door from every family plus the union switch and exits non-zero on the
+     * first wrong answer.
+     *
+     * @param args ignored
+     */
     public static void main(String[] args) {
         check("bool", Cast.bool("enabled"), true);
         check("i32", Cast.i32("(1,234)", NumFormat.INVARIANT), -1234);
