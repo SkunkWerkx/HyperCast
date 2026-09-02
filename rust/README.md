@@ -85,18 +85,26 @@ Macintosh workbooks, still selectable today) has no phantom anywhere in it.
 
 ## Optional native-extension features
 
-Two additive cargo features link this same core straight into an interpreter as a real
-native extension — one crate, two extra entry points, instead of satellite crates
+Three additive cargo features link this same core straight into an interpreter as a real
+native extension — one crate, three extra entry points, instead of satellite crates
 path-depending back here:
 
 ```sh
 cargo build --release                    # the plain cdylib + rlib every FFI binding uses
 cargo build --release --features python  # the CPython extension module (PyO3, abi3-py310)
 cargo build --release --features ruby    # the Ruby extension (Magnus)
+cargo build --release --features php     # the Zend extension (ext-php-rs) — benchmark spike only
 ```
 
+The `php` one is not a shipped backend. PHP's ext-ffi crossing measured ~105 ns — already
+extension-class, which is why Python and Ruby got a native backend and PHP didn't — and
+this spike exists to keep that reasoning checkable against real numbers rather than
+asserted, exactly as in HyperUuid. CI builds and load-checks it on every darwin/linux leg
+so it cannot bit-rot; no phpunit runs against it, and the Composer package never loads it.
+
 Only one feature is ever enabled per build invocation — each produces a different C entry
-point (`PyInit__native`, `Init_hypercast_native`) under the same crate. On macOS the
+point (`PyInit__native`, `Init_hypercast_native`, PHP's module struct) under the same
+crate. On macOS the
 crate's own `.cargo/config.toml` supplies the `-undefined dynamic_lookup` link flag an
 extension module needs (the host runtime's symbols resolve at load time, not link time).
 

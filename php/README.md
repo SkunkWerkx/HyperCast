@@ -59,6 +59,14 @@ core's nanoseconds truncate by three digits; durations come back as the protobuf
    call each, no shared helper doing a dynamic symbol lookup and a string match to find
    the width's sign-extension shift.
 
+**Why no native extension, when Python and Ruby got one:** the ~105 ns ext-ffi floor
+above is already extension-class, so there is no mechanism tax left for a Zend extension
+to remove. That reasoning is kept checkable rather than asserted: the core crate carries
+an `ext-php-rs` build behind its `php` cargo feature (`rust/src/php_ext.rs`), the same
+benchmark-only spike HyperUuid carries, exposing every door at the raw layer this package's
+own FFI calls sit at. CI builds and load-checks it on every darwin/linux leg so it cannot
+bit-rot; nothing in this Composer package loads it, and no phpunit runs against it.
+
 **The honest trade-off:** a native library shipped inside the package and an FFI call per
 door — for plain invariant integers, `(int)` casts and `ctype_digit` are the reasonable
 choice. (Benchmark forensics worth knowing: PHP read 20x slow until a loaded Xdebug was

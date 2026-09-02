@@ -48,9 +48,17 @@ midnight, and durations come back as exact `Rational` seconds across the core's 
    duration door. The Fiddle fallback lands at ~3.5 µs: parity with `Time.iso8601`, sitting
    on Fiddle's measured 1.6 µs per-call marshalling floor.
 
-   Separator detection is free here: `1.234.567,89` under `NumFormat::DETECT` runs
-   1.073M i/s against 1.092M i/s for the same text under a declared eurozone format —
-   inside the error bars.
+   Separator detection is free here: `1.234.567,89` under `NumFormat::DETECT` runs at
+   591 ns against 570 ns for the same text under a declared eurozone format — inside the
+   error bars. Both of those were ~990 ns in 0.1.0, for a reason that had nothing to do
+   with parsing: every format other than `INVARIANT` paid three method dispatches and two
+   `String` allocations per call to read its separators back out of the `Data`. `DETECT`
+   is now identity-matched like `INVARIANT`, and any other format is resolved once per
+   thread and memoized by identity — anchored in a thread-variable so the memo's key can
+   never be a recycled address — which turned the per-call cost into one pointer compare.
+   The three reason Symbols and the option Symbols (`:seconds`, `:month_day_year`, …) are
+   cached the same way, so a fault or a declared option is a pointer compare too, never a
+   `Symbol#name` materialization.
 
 **The honest trade-off, and Ruby's one real loss:** the civil date-time door is *slower*
 than `strptime` — 1.30 µs against `DateTime.strptime`'s 1.02 µs, and the date door 1.04 µs
@@ -63,9 +71,14 @@ defaults to `+00:00`, which is an artifact of the type, not a zone the parse ass
 
 On the Fiddle fallback the doors are parity-at-best — Fiddle's
 per-call floor is the mechanism's price, kept because it's the universal zero-compile
-path. (Benchmark forensics worth knowing: the doors read 4.3 µs until per-call
-`Fiddle::Pointer.malloc` finalizers were hoisted to thread-local scratch — receipts
-include their own archaeology.)
+path. 0.2.0 still took ~20% off its numeric doors (`i32` 3.37 → 2.62 µs, `f64` 3.31 →
+2.76 µs, same session) by not building things per call that never changed: the integer
+doors interpolated and interned their `:cast_*` Symbol on every call, every door went
+through a splat-and-resplat dispatcher, and every numeric call copied the format's 12
+packed bytes into scratch — each format now owns one native pointer, memoized by identity,
+passed straight through. (Benchmark forensics worth knowing: the doors read 4.3 µs until
+per-call `Fiddle::Pointer.malloc` finalizers were hoisted to thread-local scratch —
+receipts include their own archaeology.)
 
 ## Verifying provenance
 

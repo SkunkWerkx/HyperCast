@@ -18,23 +18,27 @@ crate-type = ["cdylib", "rlib"]
 pyo3 = { version = "0.27", features = ["extension-module", "abi3-py310"], optional = true }
 magnus = { version = "0.8", features = ["rb-sys"], optional = true }
 rb-sys = { version = "0.9", optional = true }
+ext-php-rs = { version = "0.15", optional = true }
 
-# One crate, two optional native-extension entry points instead of two satellite crates
+# One crate, three optional native-extension entry points instead of three satellite crates
 # each path-depending back on this one (HyperUuid's consolidation, ported home). Nothing
 # in a plain `cargo build` (the Fiddle/ext-ffi-consumed cdylib every non-extension binding
 # dlopens) changes — these are additive, off by default, and only one is ever enabled per
 # build invocation (each produces a different C entry point — PyInit__native,
-# Init_hypercast_native — under the same crate, not meant to coexist in one binary).
+# Init_hypercast_native, PHP's module struct — under the same crate, not meant to coexist
+# in one binary). The php one is a benchmark spike, exactly as in HyperUuid: the shipped
+# PHP package is ext-ffi; see src/php_ext.rs.
 [features]
 # On by default so `cargo build` keeps producing the ordinary cdylib every binding dlopens
 # (a linked artifact needs std's panic handler). The parsing core itself is core-only —
 # `default-features = false` gives a genuine `#![no_std]` rlib, which is what the crate's
-# published `no-std` category means. The extension backends both require std through their
+# published `no-std` category means. The extension backends all require std through their
 # own dependencies, so they name it explicitly rather than relying on the default.
 default = ["std"]
 std = []
 python = ["dep:pyo3", "std"]
 ruby = ["dep:magnus", "dep:rb-sys", "std"]
+php = ["dep:ext-php-rs", "std"]
 
 [dev-dependencies]
 # default-features off drops rayon/plotters, which cannot build for wasm32-wasip1 —

@@ -59,6 +59,23 @@ truncate (the core carries full nanosecond fidelity; .NET's clock types don't).
 
    Reproduce: `dotnet run -c Release --project HyperCast.Benchmarks`.
 
+   Every row above is the `string` door, transcode included. The `ReadOnlySpan<byte>`
+   doors are the primary surface — a caller holding UTF-8 already (a file, a wire buffer,
+   one field of a delimited line) never pays that transcode — and 0.2.0 measures them on
+   their own, same machine, same run, BCL rows re-measured alongside:
+
+   | Door (UTF-8 in hand) | HyperCast | `string` door | BCL, same run |
+   | --- | ---: | ---: | ---: |
+   | `Cast.Timestamp` | **51.2 ns** | 76.9 ns | 282.0 ns `DateTimeOffset.TryParse` |
+   | `Cast.Uuid` | **36.9 ns** | 47.6 ns | 51.2 ns `Guid.TryParse` — the wash becomes a win |
+   | `Cast.Double` | **32.3 ns** | 45.9 ns | 66.8 ns `double.TryParse` |
+   | `Cast.Int32` (grouped) | 52.9 ns | 64.1 ns | 49.3 ns `int.TryParse` — still a loss, by 3.5 ns now |
+
+   The UTF-16 doors themselves changed in one small way: they try the stack buffer first
+   and rent from the pool only when the encoder says the text did not fit, instead of
+   sizing by the 3-bytes-per-char worst case — which had sent any text past ~170 chars to
+   the pool even when it was plain ASCII that fit with room to spare.
+
    **Separator detection is nearly free**: `NumFormat.Detect` on `1.234.567,89` costs
    104.4 ns against 98.7 ns for the same text under a declared eurozone format — ~6 ns for
    resolving the `.`/`,` roles structurally instead of being told them.
