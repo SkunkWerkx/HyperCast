@@ -39,4 +39,14 @@ identity mismatch.
 
 That reports the exact commit and workflow run the binary was built from. Verification is by
 content digest, so it holds for these committed copies even though they were produced as CI
-artifacts — the bytes are identical.
+artifacts — the bytes are identical. The same set of binaries is committed under `go/native/`,
+`php/src/native/` and `swift/Sources/HyperCast/NativeLibs/`; git stores each one as a single
+shared blob, so the three copies cost no extra repository space, and one attestation covers
+all three.
+
+If you would rather not trust a binary at all, build the core from source instead — it is a
+plain Rust crate with no build-time codegen:
+
+```shell
+cd rust && cargo build --release
+```

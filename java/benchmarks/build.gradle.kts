@@ -29,6 +29,9 @@ jmh {
     fork.set(2)
     timeOnIteration.set("1s")
     warmup.set("1s")
+    // Allocation per call is a receipt here, not a claim — the same role [MemoryDiagnoser]
+    // plays for the C# suite. gc.alloc.rate.norm is the B/op column the README quotes.
+    profilers.set(listOf("gc"))
     // Cast's FFM downcalls are a "restricted method" — the JMH-forked JVM needs the same
     // opt-in the library's own test task already sets.
     jvmArgsAppend.add("--enable-native-access=ALL-UNNAMED")

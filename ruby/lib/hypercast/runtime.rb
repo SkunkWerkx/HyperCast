@@ -29,8 +29,10 @@ module HyperCast
     @functions = nil
 
     class << self
-      def call(symbol, *args)
-        functions.fetch(symbol).call(*args)
+      # The door's Fiddle::Function, for the caller to invoke directly — a splat-through
+      # `call(symbol, *args)` here built and re-splatted an Array on every cast.
+      def function(symbol)
+        functions.fetch(symbol)
       end
 
       private

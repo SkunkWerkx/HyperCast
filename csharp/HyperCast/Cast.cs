@@ -240,11 +240,15 @@ public static partial class Cast
 
 	static ReadOnlySpan<byte> Utf8(ReadOnlySpan<char> chars, Span<byte> stack, ref byte[]? rented)
 	{
+		// Try the stack first and let the encoder say whether it fit, rather than sizing by
+		// GetMaxByteCount (3 bytes per char plus 3): that worst case sent any text past
+		// ~170 chars to the pool even when it was plain ASCII that fit with room to spare.
+		// Scalar text is almost always ASCII, so the rent is now genuinely the rare path.
+		if (Encoding.UTF8.TryGetBytes(chars, stack, out var written))
+			return stack[..written];
 		var maxBytes = Encoding.UTF8.GetMaxByteCount(chars.Length);
-		var target = maxBytes <= stack.Length
-			? stack
-			: (rented = ArrayPool<byte>.Shared.Rent(maxBytes)).AsSpan();
-		var written = Encoding.UTF8.GetBytes(chars, target);
+		var target = (rented = ArrayPool<byte>.Shared.Rent(maxBytes)).AsSpan();
+		written = Encoding.UTF8.GetBytes(chars, target);
 		return target[..written];
 	}
 

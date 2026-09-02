@@ -50,9 +50,13 @@ out loud rather than discovered later.
    (~1 µs of interpreted marshalling per call, measured). With the mechanism replaced,
    every door runs 10-18x faster than it did over ctypes (pyperf, linux-arm64): timestamp
    3.07 µs → **201 ns** — near-parity with C-accelerated `fromisoformat` (163 ns) while
-   returning verdicts instead of exceptions; i32 at **146 ns** vs `int()`'s 88; uuid at
-   parity with `uuid.UUID()` (both sides bounded by `UUID.__init__` itself); and the
-   forgiveness doors at ~180 ns for grammar the stdlib doesn't sell at any price.
+   returning verdicts instead of exceptions; i32 at **146 ns** vs `int()`'s 88; and the
+   forgiveness doors at ~180 ns for grammar the stdlib doesn't sell at any price. The uuid
+   door used to sit at parity with `uuid.UUID()` because both were bounded by
+   `UUID.__init__`; it now builds the instance the way HyperUuid pinned — `UUID.__new__`
+   plus `object.__setattr__` of the `int` and `is_safe` slots, skipping an `__init__` whose
+   validation the core has already done — and measures **730 ns against 1.18 µs** before
+   the change, same machine, same session, ahead of `uuid.UUID()`'s 979 ns.
 
    The messy-feed doors are where the gap is widest, because `strptime` is the only stdlib
    parser that accepts their input at all — and it is *slow*:
@@ -71,6 +75,24 @@ C-accelerated builtin with no boundary to cross. These doors earn their keep on 
 culture-machinery parsers, the closed error contract, and cross-language agreement. And
 dropping ctypes means dropping the Pyodide/wasm path Python briefly had — the wheels are
 real native extensions, and a native extension has no browser story.
+
+## Verifying provenance
+
+Every wheel PyPI serves carries a GitHub build-provenance attestation, signed directly by
+this repo's own `release.yml` (the `pypi-build-wheels` job attests each platform wheel
+right where it's built, no reusable workflow in between), so plain `--repo` verifies it:
+
+```sh
+pip download hypercast==X.Y.Z --no-deps -d .
+gh attestation verify hypercast-X.Y.Z-*.whl --repo SkunkWerkx/HyperCast
+```
+
+This is a separate thing from the [PEP 740](https://peps.python.org/pep-0740/) attestations
+`gh-action-pypi-publish` already sends to PyPI itself, which PyPI-side tooling checks on its
+own — this is the GitHub/Sigstore transparency-log route, checked with `gh attestation
+verify`, the same route every other artifact in this project uses. See
+[csharp/README.md's provenance section](../csharp/README.md#native-binary-provenance) for why
+some artifacts here need `--signer-repo` and this one doesn't.
 
 ## Install
 

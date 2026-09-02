@@ -148,6 +148,33 @@ where the competition is culture-machinery parsers rather than `str::parse`. Pla
 input still takes allocation-free fast lanes; only text that actually uses the forgiveness
 pays for it.
 
+## Verifying provenance
+
+The published `.crate` carries a GitHub build-provenance attestation, but not one signed by
+this repo directly — `release.yml`'s `pack-crates` job hands off to a reusable workflow
+(`hyper-publish-crate.yml`) that physically lives in `SkunkWerkx/.github`, and that's the
+identity Fulcio records as the signer. `--repo` alone isn't enough; add `--signer-repo`,
+or use `--owner` in place of both:
+
+```sh
+curl -LO https://static.crates.io/crates/hypercast/hypercast-X.Y.Z.crate
+gh attestation verify hypercast-X.Y.Z.crate \
+  --repo SkunkWerkx/HyperCast --signer-repo SkunkWerkx/.github
+# or: gh attestation verify hypercast-X.Y.Z.crate --owner SkunkWerkx
+```
+
+The crate is packaged and attested *before* `cargo publish` runs, so an attestation failure
+stops the release while it is still reversible — a crates.io version can be yanked but never
+deleted or reused. One attestation covers the bytes a consumer downloads: a `.crate` is
+byte-identical wherever `cargo package --locked` produces it, and cargo verifies every
+download against the index checksum, so crates.io cannot rewrite it the way nuget.org
+rewrites a `.nupkg`.
+
+Get the signer-repo wrong and `gh` reports a bare `verifying with issuer "sigstore.dev"`,
+which reads like a bad signature but is only an identity mismatch — see
+[csharp/README.md's provenance section](../csharp/README.md#native-binary-provenance) for the
+full breakdown of which artifacts in this project are signed from which repo and why.
+
 ## Install
 
 ```sh

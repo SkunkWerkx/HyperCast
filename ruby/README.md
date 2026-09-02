@@ -67,16 +67,40 @@ path. (Benchmark forensics worth knowing: the doors read 4.3 µs until per-call
 `Fiddle::Pointer.malloc` finalizers were hoisted to thread-local scratch — receipts
 include their own archaeology.)
 
+## Verifying provenance
+
+Every gem RubyGems.org serves — the universal fallback and each of the six precompiled
+platform gems — carries its own GitHub build-provenance attestation, signed directly by
+this repo's own `release.yml` (the `rubygems-publish` job attests `ruby/pkg/*.gem` right
+before the push), so plain `--repo` verifies any of them:
+
+```sh
+gem fetch hypercast -v X.Y.Z --platform <platform>   # or omit --platform for the universal gem
+gh attestation verify hypercast-X.Y.Z-<platform>.gem --repo SkunkWerkx/HyperCast
+```
+
+That's the release's second layer of checking, not the only one: before any gem gets built,
+the same job verifies every native binary it packs (six FFI libs, twelve Magnus extensions —
+two ABIs per platform) against *their own* attestations — those are signed from
+`SkunkWerkx/.github` by `hyper-build-native.yml`, so that check needs
+`--signer-repo SkunkWerkx/.github` added — and refuses to proceed on an unverified one.
+RubyGems.org has no unpublish and no duplicate-version overwrite, so this all happens while a
+bad artifact is still reversible. The release run's job summary then re-fetches every gem
+from the CDN and records attested-vs-served digests, turning "rubygems.org stores an upload
+verbatim" into a per-release measurement rather than an assumption — see
+[csharp/README.md's provenance section](../csharp/README.md#native-binary-provenance) for
+more on why `--signer-repo` is needed for some artifacts here and not others.
+
 ## Install
 
 ```sh
 gem install hypercast
 ```
 
-Six gems are published per release: one universal `ruby`-platform gem (pure Fiddle, all six
-platforms' natives bundled) plus five precompiled Magnus platform gems (`x86_64-linux`,
-`aarch64-linux`, `x86_64-darwin`, `arm64-darwin`, `x64-mingw-ucrt`) that `gem install`
-auto-selects when they match. Nobody ever compiles anything.
+Seven gems are published per release: one universal `ruby`-platform gem (pure Fiddle, all
+six platforms' natives bundled) plus six precompiled Magnus platform gems (`x86_64-linux`,
+`aarch64-linux`, `x86_64-darwin`, `arm64-darwin`, `x64-mingw-ucrt`, `aarch64-mingw-ucrt`)
+that `gem install` auto-selects when they match. Nobody ever compiles anything.
 
 Selection has **two** axes here, unlike every other binding in this repo. A Magnus extension
 is bound to one Ruby minor ABI — there is no `abi3` equivalent to collapse the version axis
@@ -84,7 +108,7 @@ the way [the Python binding's](../python/) wheels do — so each platform gem is
 carrying one compiled extension per supported Ruby, under `lib/hypercast/<minor>/`, and picks
 one at `require` time:
 
-| Ruby | the five platforms above | anywhere else (musl/Alpine, win-arm64, …) |
+| Ruby | the six platforms above | anywhere else (musl/Alpine, …) |
 | --- | --- | --- |
 | 4.0 (primary) | Magnus, `backend: :native` | Fiddle |
 | 3.4 (floor, until its EOL 2028-03-31) | Magnus, `backend: :native` | Fiddle |
@@ -93,17 +117,21 @@ one at `require` time:
 The platform gems declare `required_ruby_version >= 3.4, < 4.1` precisely so RubyGems
 *declines* them outside that range and resolves the universal gem instead — a wrong-ABI
 extension must never be installed in the first place. On Windows it would at least fail to
-load cleanly (the extension imports `x64-ucrt-ruby<minor>.dll` by name), but Linux extensions
-don't link libruby at all, so one can load successfully against the wrong ABI and misbehave
-later. Every cell in that table replays the same corpus green.
+load cleanly (the extension imports `<arch>-ucrt-ruby<minor>.dll` by name —
+`x64-ucrt-ruby400.dll` on x64, `aarch64-ucrt-ruby400.dll` on ARM), but Linux extensions don't
+link libruby at all, so one can load successfully against the wrong ABI and misbehave later.
+Every cell in that table replays the same corpus green.
 
-Windows-on-x64 gained a Magnus gem once it turned out the long-standing "Magnus doesn't target
-RubyInstaller's MinGW rubies" reasoning was backwards: MinGW is the *only* Windows flavour
-`rb-sys` targets (`x64-mingw-ucrt` → `x86_64-pc-windows-gnu`, `supported: true` in its own
-`data/toolchains.json`); the one it has no support for is `x86_64-pc-windows-msvc`. Windows is
-also where the Fiddle fallback cost the most, so it was the most worthwhile gem in the set.
-Windows-on-ARM stays on Fiddle for now — RubyInstaller ships `aarch64-mingw-ucrt` and `rb-sys`
-lists it supported, but it hasn't been built or tested here yet.
+Both Windows architectures get a Magnus gem, and the reasoning that once kept them on Fiddle
+was backwards: MinGW is the *only* Windows flavour `rb-sys` targets (`x64-mingw-ucrt` and
+`aarch64-mingw-ucrt`, both `supported: true` in its own `data/toolchains.json`); the one it
+has no support for is MSVC. Windows is also where the Fiddle fallback cost the most, so these
+are the most worthwhile gems in the set. Both extensions are built for the `gnullvm` Rust
+targets rather than `gnu` — the same mingw-w64/UCRT ABI RubyInstaller's Ruby uses, linked
+with LLVM and compiler-rt instead of GCC and a statically-linked libgcc, which is what keeps
+the shipped extension small. The build script, and the two flags that are load-bearing on
+the ARM leg (a static libunwind, and a clang-spelled `--target` for bindgen), live in the
+forge's `hyper-build-native.yml`, shared with every other Hyper* repo.
 
 See [the repo root README](../README.md) for the full door table, the receipts, and the
 state of every other language binding.

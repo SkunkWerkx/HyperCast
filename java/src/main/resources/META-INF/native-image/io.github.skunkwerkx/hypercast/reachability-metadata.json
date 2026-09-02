@@ -4,9 +4,12 @@
   ],
   "foreign": {
     "downcalls": [
-      { "returnType": "jint", "parameterTypes": ["void*", "jlong", "void*", "void*"] },
-      { "returnType": "jint", "parameterTypes": ["void*", "jlong", "void*", "void*", "void*"] },
-      { "returnType": "jint", "parameterTypes": ["void*", "jlong", "jint", "void*", "void*"] }
+      { "returnType": "jint", "parameterTypes": ["void*", "jlong", "void*", "void*"],
+        "options": { "critical": { "allowHeapAccess": true } } },
+      { "returnType": "jint", "parameterTypes": ["void*", "jlong", "void*", "void*", "void*"],
+        "options": { "critical": { "allowHeapAccess": true } } },
+      { "returnType": "jint", "parameterTypes": ["void*", "jlong", "jint", "void*", "void*"],
+        "options": { "critical": { "allowHeapAccess": true } } }
     ]
   }
 }

@@ -10,6 +10,7 @@
 //! with `INVARIANT` recognized by identity so the overwhelmingly common format costs zero
 //! attribute reads per call. `HYPERCAST_PURE=1` (checked Ruby-side) keeps Fiddle.
 
+use std::cell::RefCell;
 use std::sync::OnceLock;
 
 use magnus::rb_sys::{AsRawValue, FromRawValue};
@@ -19,14 +20,23 @@ use magnus::{function, prelude::*, Error, IntoValue, RModule, RString, Ruby, Sym
 
 use crate as core;
 
-/// Constant-referenced objects (classes, INVARIANT) are anchored by Ruby constants and
-/// never collected, so caching them by raw VALUE is GC-safe.
+/// Constant-referenced objects (classes, INVARIANT, DETECT) are anchored by Ruby constants
+/// and never collected, so caching them by raw VALUE is GC-safe. The Symbols are static
+/// symbols — interned once, immortal — so their raw VALUEs are stable too: every `:seconds`
+/// a caller writes is the same VALUE, and a pointer compare resolves it.
 struct Cached {
     success: Opaque<Value>,
     fault: Opaque<Value>,
     date_class: Opaque<Value>,
     datetime_class: Opaque<Value>,
     invariant_raw: u64,
+    detect_raw: u64,
+    empty: Opaque<Symbol>,
+    malformed: Opaque<Symbol>,
+    out_of_range: Opaque<Symbol>,
+    precisions: [(u64, core::UnixPrecision); 4],
+    epochs: [(u64, core::ExcelEpoch); 2],
+    orders: [(u64, core::DateOrder); 3],
 }
 
 static CACHED: OnceLock<Cached> = OnceLock::new();
@@ -38,6 +48,8 @@ fn cached() -> &'static Cached {
 fn build_cache(ruby: &Ruby, hypercast: RModule) -> Result<Cached, Error> {
     let num_format: Value = hypercast.const_get("NumFormat")?;
     let invariant: Value = num_format.funcall("const_get", ("INVARIANT",))?;
+    let detect: Value = num_format.funcall("const_get", ("DETECT",))?;
+    let sym = |name: &str| ruby.to_symbol(name).as_raw();
     Ok(Cached {
         success: Opaque::from(hypercast.const_get::<_, Value>("Success")?),
         fault: Opaque::from(hypercast.const_get::<_, Value>("Fault")?),
@@ -48,7 +60,32 @@ fn build_cache(ruby: &Ruby, hypercast: RModule) -> Result<Cached, Error> {
             ruby.class_object().funcall::<_, _, Value>("const_get", ("DateTime",))?,
         ),
         invariant_raw: invariant.as_raw(),
+        detect_raw: detect.as_raw(),
+        empty: Opaque::from(ruby.to_symbol("empty")),
+        malformed: Opaque::from(ruby.to_symbol("malformed")),
+        out_of_range: Opaque::from(ruby.to_symbol("out_of_range")),
+        precisions: [
+            (sym("seconds"), core::UnixPrecision::Seconds),
+            (sym("milliseconds"), core::UnixPrecision::Millis),
+            (sym("microseconds"), core::UnixPrecision::Micros),
+            (sym("nanoseconds"), core::UnixPrecision::Nanos),
+        ],
+        epochs: [(sym("y1900"), core::ExcelEpoch::Y1900), (sym("y1904"), core::ExcelEpoch::Y1904)],
+        orders: [
+            (sym("year_month_day"), core::DateOrder::YearMonthDay),
+            (sym("month_day_year"), core::DateOrder::MonthDayYear),
+            (sym("day_month_year"), core::DateOrder::DayMonthYear),
+        ],
     })
+}
+
+/// Resolves a declared option Symbol against its static-symbol table by raw VALUE — a
+/// pointer compare per entry, no `Symbol#name` materialization. A dynamic Symbol that
+/// spells the same name (rare: `"seconds".to_sym` where no static one existed) misses
+/// here and is resolved by name in the caller's slow path.
+fn lookup<T: Copy, const N: usize>(table: &[(u64, T); N], symbol: Symbol) -> Option<T> {
+    let raw = symbol.as_raw();
+    table.iter().find(|(known, _)| *known == raw).map(|(_, value)| *value)
 }
 
 fn success(ruby: &Ruby, value: impl magnus::IntoValue) -> Result<Value, Error> {
@@ -57,11 +94,12 @@ fn success(ruby: &Ruby, value: impl magnus::IntoValue) -> Result<Value, Error> {
 }
 
 fn fault(ruby: &Ruby, failed: core::Fault) -> Result<Value, Error> {
-    let reason = match failed.reason {
-        core::Reason::Empty => ruby.to_symbol("empty"),
-        core::Reason::Malformed => ruby.to_symbol("malformed"),
-        core::Reason::OutOfRange => ruby.to_symbol("out_of_range"),
-    };
+    let cache = cached();
+    let reason = ruby.get_inner(match failed.reason {
+        core::Reason::Empty => cache.empty,
+        core::Reason::Malformed => cache.malformed,
+        core::Reason::OutOfRange => cache.out_of_range,
+    });
     ruby.get_inner(cached().fault)
         .funcall("new", (reason, failed.offset, failed.len))
 }
@@ -76,20 +114,63 @@ fn verdict<T: magnus::IntoValue>(
     }
 }
 
-/// Resolves the declared format: identity-matched INVARIANT costs nothing; any other
-/// format pays three attribute reads.
+thread_local! {
+    /// The last non-constant format this thread resolved, keyed by the object's raw VALUE.
+    /// Formats are reused constants in practice — a per-locale instance built once — so
+    /// this turns three method dispatches per numeric call into one pointer compare, the
+    /// same memo the Java, PHP and Python bindings keep. `NumFormat` is an immutable,
+    /// frozen `Data`, which is what makes an identity memo sound at all — provided the key
+    /// can never be a recycled address: the memoized object is anchored in a Ruby
+    /// thread-variable (below) for exactly as long as this entry names it. Only plain data
+    /// lives here, deliberately — a GC-registered handle in a thread-local would try to
+    /// unregister itself from a VM that has already shut down when the thread exits.
+    static LAST_FORMAT: RefCell<Option<(u64, core::NumFormat)>> = const { RefCell::new(None) };
+}
+
+/// Keeps `format` alive for as long as `LAST_FORMAT` keys on it: one Ruby thread-variable
+/// per thread, replaced on every miss, so the previous format becomes collectable and the
+/// current one cannot be. `thread_variable_set` is thread-local (not fiber-local, unlike
+/// `Thread#[]=`), matching the Rust thread-local it guards.
+fn anchor_format(ruby: &Ruby, format: Value) -> Result<(), Error> {
+    let _: Value = ruby
+        .thread_current()
+        .funcall("thread_variable_set", (ruby.to_symbol("__hypercast_last_format"), format))?;
+    Ok(())
+}
+
+/// Resolves the declared format: INVARIANT and DETECT are identity-matched constants and
+/// cost a pointer compare; any other format costs three attribute reads the first time
+/// this thread sees it and a pointer compare after that.
 fn resolve_format(ruby: &Ruby, format: Value) -> Result<core::NumFormat, Error> {
-    let _ = ruby;
-    if format.as_raw() == cached().invariant_raw {
+    let raw = format.as_raw();
+    let cache = cached();
+    if raw == cache.invariant_raw {
         return Ok(core::NumFormat::INVARIANT);
     }
-    let decimal: String = format.funcall("decimal_sep", ())?;
-    let group: String = format.funcall("group_sep", ())?;
+    if raw == cache.detect_raw {
+        return Ok(core::NumFormat::DETECT);
+    }
+    let memo = LAST_FORMAT.with(|last| {
+        last.borrow().as_ref().filter(|(key, _)| *key == raw).map(|(_, resolved)| *resolved)
+    });
+    if let Some(resolved) = memo {
+        return Ok(resolved);
+    }
+    let decimal: RString = format.funcall("decimal_sep", ())?;
+    let group: RString = format.funcall("group_sep", ())?;
     let flags: u32 = format.funcall("flags", ())?;
-    let (Some(decimal), Some(group)) = (decimal.chars().next(), group.chars().next()) else {
+    // The Data class validated single characters at construction; read each as a str
+    // straight from the RString's bytes — no Ruby call happens inside either borrow.
+    let first_char = |text: RString| -> Option<char> {
+        std::str::from_utf8(unsafe { text.as_slice() }).ok()?.chars().next()
+    };
+    let (Some(decimal), Some(group)) = (first_char(decimal), first_char(group)) else {
         return Err(Error::new(ruby.exception_arg_error(), "separators must be single characters"));
     };
-    Ok(core::NumFormat { decimal_sep: decimal, group_sep: group, flags })
+    let resolved = core::NumFormat { decimal_sep: decimal, group_sep: group, flags };
+    anchor_format(ruby, format)?;
+    LAST_FORMAT.with(|last| *last.borrow_mut() = Some((raw, resolved)));
+    Ok(resolved)
 }
 
 /// Borrows the RString's bytes for the duration of the parse only — no Ruby calls happen
@@ -158,18 +239,20 @@ fn timestamp_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
 }
 
 fn unix_door(ruby: &Ruby, text: RString, precision: Symbol) -> Result<Value, Error> {
-    let name = precision.name()?;
-    let precision = match &*name {
-        "seconds" => core::UnixPrecision::Seconds,
-        "milliseconds" => core::UnixPrecision::Millis,
-        "microseconds" => core::UnixPrecision::Micros,
-        "nanoseconds" => core::UnixPrecision::Nanos,
-        other => {
-            return Err(Error::new(
-                ruby.exception_key_error(),
-                format!("unknown UnixPrecision {other:?}"),
-            ))
-        }
+    let precision = match lookup(&cached().precisions, precision) {
+        Some(known) => known,
+        None => match &*precision.name()? {
+            "seconds" => core::UnixPrecision::Seconds,
+            "milliseconds" => core::UnixPrecision::Millis,
+            "microseconds" => core::UnixPrecision::Micros,
+            "nanoseconds" => core::UnixPrecision::Nanos,
+            other => {
+                return Err(Error::new(
+                    ruby.exception_key_error(),
+                    format!("unknown UnixPrecision {other:?}"),
+                ))
+            }
+        },
     };
     match with_bytes(text, |bytes| core::cast_unix(bytes, precision)) {
         Ok(ts) => utc_time(ruby, ts),
@@ -178,16 +261,18 @@ fn unix_door(ruby: &Ruby, text: RString, precision: Symbol) -> Result<Value, Err
 }
 
 fn excel_serial_door(ruby: &Ruby, text: RString, epoch: Symbol) -> Result<Value, Error> {
-    let name = epoch.name()?;
-    let epoch = match &*name {
-        "y1900" => core::ExcelEpoch::Y1900,
-        "y1904" => core::ExcelEpoch::Y1904,
-        other => {
-            return Err(Error::new(
-                ruby.exception_key_error(),
-                format!("unknown ExcelEpoch {other:?}"),
-            ))
-        }
+    let epoch = match lookup(&cached().epochs, epoch) {
+        Some(known) => known,
+        None => match &*epoch.name()? {
+            "y1900" => core::ExcelEpoch::Y1900,
+            "y1904" => core::ExcelEpoch::Y1904,
+            other => {
+                return Err(Error::new(
+                    ruby.exception_key_error(),
+                    format!("unknown ExcelEpoch {other:?}"),
+                ))
+            }
+        },
     };
     match with_bytes(text, |bytes| core::cast_excel_serial(bytes, epoch)) {
         Ok(ts) => utc_time(ruby, ts),
@@ -218,6 +303,9 @@ fn date_door(ruby: &Ruby, args: &[Value]) -> Result<Value, Error> {
 }
 
 fn resolve_order(ruby: &Ruby, order: Symbol) -> Result<core::DateOrder, Error> {
+    if let Some(known) = lookup(&cached().orders, order) {
+        return Ok(known);
+    }
     let name = order.name()?;
     match &*name {
         "year_month_day" => Ok(core::DateOrder::YearMonthDay),

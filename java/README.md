@@ -96,6 +96,26 @@ build file — so it proved only that *this repo* could be configured to work. T
 gone now; the test passes on the packaged metadata alone, which is the only thing that
 actually proves a consumer is fine.
 
+## Verifying provenance
+
+The published jar carries a GitHub build-provenance attestation, but not one signed by this
+repo directly — `release.yml`'s `maven-publish` job hands off to a reusable workflow
+(`hyper-publish-maven.yml`) that physically lives in `SkunkWerkx/.github`, and that's the
+identity Fulcio records as the signer. `--repo` alone isn't enough; add `--signer-repo`,
+or use `--owner` in place of both:
+
+```sh
+curl -LO https://repo1.maven.org/maven2/io/github/skunkwerkx/hypercast/X.Y.Z/hypercast-X.Y.Z.jar
+gh attestation verify hypercast-X.Y.Z.jar \
+  --repo SkunkWerkx/HyperCast --signer-repo SkunkWerkx/.github
+# or: gh attestation verify hypercast-X.Y.Z.jar --owner SkunkWerkx
+```
+
+Get the signer-repo wrong and `gh` reports a bare `verifying with issuer "sigstore.dev"`,
+which reads like a bad signature but is only an identity mismatch — see
+[csharp/README.md's provenance section](../csharp/README.md#native-binary-provenance) for the
+full breakdown of which artifacts in this project are signed from which repo and why.
+
 ## Install
 
 Published to [Maven Central](https://central.sonatype.com/artifact/io.github.skunkwerkx/hypercast)
