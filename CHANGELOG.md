@@ -7,14 +7,15 @@ entry marks which packages it actually affects.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] — 2026-09-02
 
 The theme is *stop paying for the carrier*. Every binding already made exactly one native
 call per cast; what cost real time was what each language wrapped around it — a copied
-input, heap scratch for a 16-byte out-value, an object built to be thrown away. This
-release measures each of those before and after on one machine in one session, and brings
-the repository back in step with what HyperUuid's 0.1.1 → 0.2.1 taught about the release
-pipeline.
+input, heap scratch for a 16-byte out-value, an object built to be thrown away. Each of
+those is measured before and after on one machine in one session, and the repository is
+back in step with what HyperUuid's 0.1.1 → 0.2.1 taught about the release pipeline. No
+door changed its verdict on any input: the corpus replays byte-identical through all
+eight packages, as it did at 0.1.0.
 
 ### Added
 
@@ -31,9 +32,10 @@ pipeline.
   without the UTF-16 transcode every `string` row includes: `Cast.Uuid` 36.9 ns against
   `Guid.TryParse`'s 51.2, which the string row had reported as a wash. *(docs only)*
 - **The seventh Ruby gem**, `aarch64-mingw-ucrt`, with the Magnus extension for both
-  ABIs — the forge now builds it on win-arm64, so Windows-on-ARM leaves the Fiddle
-  fallback like every other mainstream platform. Both Windows extensions build the
-  `gnullvm` targets. *(RubyGems)*
+  ABIs — the forge now builds and tests it on win-arm64, so Windows-on-ARM leaves the
+  Fiddle fallback like every other mainstream platform. Both Windows extensions build the
+  `gnullvm` targets. CI's receipt only, so far: no Magnus-versus-Fiddle numbers have been
+  taken on Windows-on-ARM hardware for this crate. *(RubyGems)*
 - **Per-platform Native AOT receipts.** CI publishes `HyperCast.AotSmokeTest` under
   `PublishAot` on all six RIDs, fails on any trim diagnostic, runs the binary, and uploads
   each leg's log as `aot-report-{rid}`. *(CI only)*
@@ -90,23 +92,32 @@ pipeline.
 - **C#: the UTF-16 doors try the stack buffer first** and rent from the pool only when the
   encoder says the text did not fit, instead of sizing by the 3-bytes-per-char worst case
   that sent any text past ~170 chars to the pool. *(NuGet)*
-- **`ci.yml` no longer passes the retired `php_native_spike` input** and hands the forge
-  `csharp_aot_project`; the Ruby/Python tool pins move to 4.0/3.14. Both bindings' local
-  dev-loop native staging (the csproj's flat copy, Gradle's `stageNativeLibrary`) now
-  yields whenever CI has placed the library explicitly — the forge's single per-platform
-  job builds the PyO3 extension into `rust/target/release/` before it tests C# and Java,
-  and the first run under it failed every Linux leg on `undefined symbol:
-  PyExc_SystemError` before that gate existed. *(CI only)*
+- **CI conforms to the forge's collapsed per-platform job**: the retired
+  `php_native_spike` input is gone, `csharp_aot_project` is handed over, the Ruby/Python
+  tool pins move to 4.0/3.14, and the C#/Java local dev-loop native staging yields whenever
+  CI has placed the library explicitly (the forge builds the PyO3 extension into
+  `rust/target/release/` before it tests C# and Java — `rust/README.md` records the trap).
+  *(CI only)*
 - **`release.yml` drops the `CARGO_REGISTRY_TOKEN` hand-off** — the crate publishes
   tokenless through Trusted Publishing, and is packaged and attested before the
   irreversible push. *(crates.io)*
+
+### Upgrade note
+
+Drop-in for every binding. Nothing is removed or renamed; every new door is an overload or
+a sibling beside the existing surface, and the verdict types are untouched. Two things a
+consumer may notice: the Java jar's downcalls are now `critical`, so a consumer's own
+GraalVM Native Image build inherits that option through the bundled
+`reachability-metadata.json` with no configuration (verified by the smoke test), and the
+Go module's cgo backend no longer allocates on any door, which a `-benchmem` row in a
+consumer's suite will show as 0 allocs where it showed 1–3.
 
 ### Notes
 
 - **Not in this release, deliberately: a batch door.** `docs/roadmap.md` places it in round
   three as new exports beside the scalar ABI. A binding-level loop over N crossings would
   be a fake win, and every change above is the per-call shape that layer will inherit.
-- **Two Foundation controls moved between toolchains and are reported as measured.** The
+- **Two platform controls moved between toolchains and are reported as measured.** The
   Swift `DateFormatter` control read 810 ns on 0.1.0's tape and 28 µs on Swift 6.3.3; the
   JDK's `ISO_OFFSET_DATE_TIME` control was unstable in the full-length run and is not
   quoted. The doors' own before/after numbers are the claim in both cases.
@@ -196,5 +207,5 @@ notes: [v0.1.0 release](https://github.com/SkunkWerkx/HyperCast/releases/tag/v0.
   found in that window, in the gap between "the publish succeeded" and "a consumer can use it",
   and none of them could have failed a build in this repository.
 
-[Unreleased]: https://github.com/SkunkWerkx/HyperCast/compare/v0.1.0...HEAD
+[0.2.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/SkunkWerkx/HyperCast/releases/tag/v0.1.0
