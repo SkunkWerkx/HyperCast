@@ -5,6 +5,13 @@ name: CI — build native, build wasm, test every binding
 # suite run against it. Ruby's suite runs twice (forced Fiddle fallback + Magnus extension
 # backend); Python has no fallback — PyO3 only, staged and tested per leg.
 #
+# The forge is one canonical pipeline, and this repo conforms to it rather than the other
+# way round. When the forge assumes something HyperUuid's crate has and this one lacks,
+# this crate gets the same thing — never a forge input, opt-out, or auto-detection to
+# route around the difference. The receipt: the forge builds `--features php` on every
+# darwin/linux leg, this crate had no such feature, and the fix was carrying HyperUuid's
+# ext-php-rs spike behind a `php` feature (rust/src/php_ext.rs), not gating the forge.
+#
 # CI's job is build, test, and upload reusable artifacts — nothing version-specific. Every
 # native leg builds+tests fresh, and the raw, version-agnostic outputs (the plain FFI
 # libhypercast.so/.dylib/.dll, the compiled Ruby Magnus extension) get uploaded here for

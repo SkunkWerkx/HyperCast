@@ -38,7 +38,7 @@ core's nanoseconds truncate by three digits; durations come back as the protobuf
    parentheses, declared separators, radix prefixes, all five .NET `Guid` text forms plus
    `urn:uuid:` prefixes, protobuf JSON durations.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
-   held by the shared corpus (24 tests green, full twelve-file corpus replay with byte-exact
+   held by the shared corpus (25 tests green, full twelve-file corpus replay with byte-exact
    fault spans).
 4. **Faster than the platform's own parser** — phpbench
    (`XDEBUG_MODE=off vendor/bin/phpbench run --report=aggregate`, linux-arm64): timestamp
