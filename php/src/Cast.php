@@ -123,7 +123,9 @@ final class Cast
      * Integer doors: the target type's own range, declared grouping, accounting parens,
      * non-negative exponent, and 0x/&H/0b two's-complement radix prefixes. Every width
      * funnels through one zeroed 64-bit scratch slot (the supported RIDs are all
-     * little-endian); narrow signed widths sign-extend on readback.
+     * little-endian); narrow signed widths sign-extend on readback. Each door is written
+     * out flat — one literal FFI call, no shared helper — the same rule the real doors
+     * follow, so no width pays a dynamic symbol lookup or a string match to find its shift.
      *
      * @param string $text the text to cast
      * @param NumFormat $format the caller-declared numeric notation
@@ -131,7 +133,17 @@ final class Cast
      */
     public static function i8(string $text, NumFormat $format): Success|Fault
     {
-        return self::integer('cast_i8', $text, $format);
+        $ffi = self::$ffi ?? self::load();
+        self::declare($format);
+        self::$outI64->cdata = 0;
+        $rc = $ffi->cast_i8(
+            $text === '' ? null : $text, \strlen($text), self::$format, self::$outI64Ptr, self::$faultPtr
+        );
+        if ($rc !== 0) {
+            return self::fail($rc);
+        }
+        $raw = self::$outI64->cdata;
+        return new Success($raw << 56 >> 56);
     }
 
     /**
@@ -143,7 +155,17 @@ final class Cast
      */
     public static function i16(string $text, NumFormat $format): Success|Fault
     {
-        return self::integer('cast_i16', $text, $format);
+        $ffi = self::$ffi ?? self::load();
+        self::declare($format);
+        self::$outI64->cdata = 0;
+        $rc = $ffi->cast_i16(
+            $text === '' ? null : $text, \strlen($text), self::$format, self::$outI64Ptr, self::$faultPtr
+        );
+        if ($rc !== 0) {
+            return self::fail($rc);
+        }
+        $raw = self::$outI64->cdata;
+        return new Success($raw << 48 >> 48);
     }
 
     /**
@@ -155,7 +177,17 @@ final class Cast
      */
     public static function i32(string $text, NumFormat $format): Success|Fault
     {
-        return self::integer('cast_i32', $text, $format);
+        $ffi = self::$ffi ?? self::load();
+        self::declare($format);
+        self::$outI64->cdata = 0;
+        $rc = $ffi->cast_i32(
+            $text === '' ? null : $text, \strlen($text), self::$format, self::$outI64Ptr, self::$faultPtr
+        );
+        if ($rc !== 0) {
+            return self::fail($rc);
+        }
+        $raw = self::$outI64->cdata;
+        return new Success($raw << 32 >> 32);
     }
 
     /**
@@ -167,7 +199,13 @@ final class Cast
      */
     public static function i64(string $text, NumFormat $format): Success|Fault
     {
-        return self::integer('cast_i64', $text, $format);
+        $ffi = self::$ffi ?? self::load();
+        self::declare($format);
+        self::$outI64->cdata = 0;
+        $rc = $ffi->cast_i64(
+            $text === '' ? null : $text, \strlen($text), self::$format, self::$outI64Ptr, self::$faultPtr
+        );
+        return $rc === 0 ? new Success(self::$outI64->cdata) : self::fail($rc);
     }
 
     /**
@@ -179,7 +217,13 @@ final class Cast
      */
     public static function u8(string $text, NumFormat $format): Success|Fault
     {
-        return self::integer('cast_u8', $text, $format);
+        $ffi = self::$ffi ?? self::load();
+        self::declare($format);
+        self::$outI64->cdata = 0;
+        $rc = $ffi->cast_u8(
+            $text === '' ? null : $text, \strlen($text), self::$format, self::$outI64Ptr, self::$faultPtr
+        );
+        return $rc === 0 ? new Success(self::$outI64->cdata) : self::fail($rc);
     }
 
     /**
@@ -191,7 +235,13 @@ final class Cast
      */
     public static function u16(string $text, NumFormat $format): Success|Fault
     {
-        return self::integer('cast_u16', $text, $format);
+        $ffi = self::$ffi ?? self::load();
+        self::declare($format);
+        self::$outI64->cdata = 0;
+        $rc = $ffi->cast_u16(
+            $text === '' ? null : $text, \strlen($text), self::$format, self::$outI64Ptr, self::$faultPtr
+        );
+        return $rc === 0 ? new Success(self::$outI64->cdata) : self::fail($rc);
     }
 
     /**
@@ -203,7 +253,13 @@ final class Cast
      */
     public static function u32(string $text, NumFormat $format): Success|Fault
     {
-        return self::integer('cast_u32', $text, $format);
+        $ffi = self::$ffi ?? self::load();
+        self::declare($format);
+        self::$outI64->cdata = 0;
+        $rc = $ffi->cast_u32(
+            $text === '' ? null : $text, \strlen($text), self::$format, self::$outI64Ptr, self::$faultPtr
+        );
+        return $rc === 0 ? new Success(self::$outI64->cdata) : self::fail($rc);
     }
 
     /**
@@ -216,35 +272,13 @@ final class Cast
      */
     public static function u64(string $text, NumFormat $format): Success|Fault
     {
-        return self::integer('cast_u64', $text, $format);
-    }
-
-    /**
-     * The shared body of the integer doors: one zeroed 64-bit scratch slot, one FFI call.
-     *
-     * @param string $symbol the native door symbol
-     * @param string $text the text to cast
-     * @param NumFormat $format the caller-declared numeric notation
-     * @return Success|Fault the verdict: a Success carrying the cast value, or a Fault
-     */
-    private static function integer(string $symbol, string $text, NumFormat $format): Success|Fault
-    {
         $ffi = self::$ffi ?? self::load();
         self::declare($format);
         self::$outI64->cdata = 0;
-        $rc = $ffi->{$symbol}(
+        $rc = $ffi->cast_u64(
             $text === '' ? null : $text, \strlen($text), self::$format, self::$outI64Ptr, self::$faultPtr
         );
-        if ($rc !== 0) {
-            return self::fail($rc);
-        }
-        $raw = self::$outI64->cdata;
-        return new Success(match ($symbol) {
-            'cast_i8' => $raw << 56 >> 56,
-            'cast_i16' => $raw << 48 >> 48,
-            'cast_i32' => $raw << 32 >> 32,
-            default => $raw,
-        });
+        return $rc === 0 ? new Success(self::$outI64->cdata) : self::fail($rc);
     }
 
     /**
@@ -301,6 +335,22 @@ final class Cast
             substr($hex, 0, 8) . '-' . substr($hex, 8, 4) . '-' . substr($hex, 12, 4)
             . '-' . substr($hex, 16, 4) . '-' . substr($hex, 20)
         );
+    }
+
+    /**
+     * Casts UUID text — the same grammar as {@see uuid()} — to its 16 RFC 9562-ordered
+     * bytes as a binary string, for a BINARY(16) column bind or a wire format. Skips the
+     * hex encoding and hyphen assembly {@see uuid()} does to build the canonical string;
+     * when bytes are the destination, that string is work you did not ask for.
+     *
+     * @param string $text the text to cast
+     * @return Success|Fault the verdict: a Success carrying the 16 raw bytes, or a Fault
+     */
+    public static function uuidBytes(string $text): Success|Fault
+    {
+        $ffi = self::$ffi ?? self::load();
+        $rc = $ffi->cast_uuid($text === '' ? null : $text, \strlen($text), self::$out16, self::$faultPtr);
+        return $rc === 0 ? new Success(FFI::string(self::$out16, 16)) : self::fail($rc);
     }
 
     /**

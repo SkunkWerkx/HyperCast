@@ -1,3 +1,4 @@
+using System.Text;
 using System.Globalization;
 using BenchmarkDotNet.Attributes;
 
@@ -27,6 +28,28 @@ public class CastBenchmarks
 		GuidText = "01020304-0506-0708-090a-0b0c0d0e0f10",
 		TimestampText = "2026-01-02T15:04:05.1234567Z",
 		DurationText = "1.06:30:15.5";
+
+	// The UTF-8 doors, for a caller that already holds bytes (a file, a wire buffer, one
+	// field of a delimited line): the same doors minus the UTF-16 transcode the string rows
+	// include. Every string row above pays that transcode; these show the crossing alone.
+	static readonly byte[]
+		IntUtf8 = Encoding.UTF8.GetBytes(IntText),
+		DoubleUtf8 = Encoding.UTF8.GetBytes(DoubleText),
+		GuidUtf8 = Encoding.UTF8.GetBytes(GuidText),
+		TimestampUtf8 = Encoding.UTF8.GetBytes(TimestampText);
+
+	[Benchmark]
+	public int CastInt32Utf8() => Cast.Int32(IntUtf8, _invariant).TryGetValue(out Success<int> s) ? s.Value : 0;
+
+	[Benchmark]
+	public double CastDoubleUtf8() => Cast.Double(DoubleUtf8, _invariant).TryGetValue(out Success<double> s) ? s.Value : 0;
+
+	[Benchmark]
+	public Guid CastUuidUtf8() => Cast.Uuid(GuidUtf8).TryGetValue(out Success<Guid> s) ? s.Value : default;
+
+	[Benchmark]
+	public DateTimeOffset CastTimestampUtf8() =>
+		Cast.Timestamp(TimestampUtf8).TryGetValue(out Success<DateTimeOffset> s) ? s.Value : default;
 
 	[Benchmark]
 	public bool CastBoolean() => Cast.Boolean(BoolText).TryGetValue(out Success<bool> s) && s.Value;

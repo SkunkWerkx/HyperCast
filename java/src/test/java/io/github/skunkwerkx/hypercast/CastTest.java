@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -186,10 +188,10 @@ final class CastTest {
     }
 
     @Test
-    void inputsPastTheScratchBufferStillCast() {
-        // The scratch input buffer starts at 512 bytes and grows on demand; a token past
-        // that boundary must cast identically, and the grown buffer must keep working for
-        // the short inputs that follow it.
+    void longInputsStillCast() {
+        // The input crosses as a pinned view of the caller's own array, whatever its size —
+        // there is no staging buffer to outgrow — so a token far past any plausible scratch
+        // size must cast identically, and short inputs after it must keep working.
         String padded = " ".repeat(600) + "1234" + " ".repeat(600);
         assertEquals(new Success<>(1234), Cast.i32(padded, NumFormat.INVARIANT));
         assertEquals(new Success<>(7), Cast.i32("7", NumFormat.INVARIANT));
@@ -202,6 +204,37 @@ final class CastTest {
                         "fault span escaped a " + longJunk.length() + "-byte input");
             case Success<Integer> success -> throw new AssertionError("junk parsed: " + success);
         }
+    }
+
+    @Test
+    void memorySegmentDoorsCastASliceWithoutCopying() {
+        // One buffer holding several values — the round-three shape — with each door handed
+        // a heap slice, not a copied-out array. Fault spans index the slice, not the buffer.
+        byte[] line = "1,234|2026-01-07T15:04:05Z|not-a-uuid|true".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        MemorySegment whole = MemorySegment.ofArray(line);
+        assertEquals(new Success<>(1234), Cast.i32(whole.asSlice(0, 5), NumFormat.INVARIANT));
+        assertEquals(new Success<>(Instant.parse("2026-01-07T15:04:05Z")),
+                Cast.timestamp(whole.asSlice(6, 20)));
+        assertEquals(new Fault<>(CastFailure.MALFORMED, 0, 10), Cast.uuid(whole.asSlice(27, 10)));
+        assertEquals(new Success<>(true), Cast.bool(whole.asSlice(38, 4)));
+    }
+
+    @Test
+    void memorySegmentDoorsAcceptNativeMemoryAndEmptySlices() {
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment off = arena.allocateFrom("42.5");
+            // allocateFrom appends a NUL terminator; the door gets exactly the text's bytes.
+            assertEquals(new Success<>(42.5), Cast.f64(off.asSlice(0, 4), NumFormat.INVARIANT));
+            assertEquals(new Fault<>(CastFailure.EMPTY, 0, 0), Cast.f64(off.asSlice(0, 0), NumFormat.INVARIANT));
+        }
+    }
+
+    @Test
+    void uuidDoorReadsTheSixteenBytesInRfcOrder() {
+        // Two big-endian long reads must produce the same UUID as the byte-at-a-time
+        // decomposition did, including the top bit set in both halves.
+        assertEquals(new Success<>(UUID.fromString("f1e2d3c4-b5a6-9788-8968-5a4b3c2d1e0f")),
+                Cast.uuid("f1e2d3c4-b5a6-9788-8968-5a4b3c2d1e0f"));
     }
 
 }

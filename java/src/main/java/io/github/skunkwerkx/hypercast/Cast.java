@@ -31,8 +31,11 @@ import java.util.UUID;
  *
  * <p>Door names mirror the native ABI ({@code i32}, {@code f64}, {@code timestamp}, …) so
  * the polyglot surface reads identically across bindings. Each door takes a {@link String}
- * (UTF-8-encoded into a confined {@link Arena} scratch segment) or raw UTF-8 {@code byte[]}
- * — the native contract, and the form whose {@link Fault} offsets need no mapping.
+ * (UTF-8-encoded into a fresh {@code byte[]}), raw UTF-8 {@code byte[]} — the native
+ * contract, and the form whose {@link Fault} offsets need no mapping — or a
+ * {@link MemorySegment} view of UTF-8 bytes, heap or native, for a caller that already
+ * holds one buffer of many values (a mapped file, a direct buffer, one line of a CSV) and
+ * wants to cast a slice of it without copying it out first.
  *
  * <p>Temporal doors come out at {@code java.time}'s full fidelity: {@link Instant},
  * {@link LocalTime}, and {@link Duration} all carry nanoseconds, so unlike the C# binding
@@ -40,8 +43,13 @@ import java.util.UUID;
  * parses.
  *
  * <p>The native library rides inside the jar under {@code /native/{rid}/} and is picked by
- * platform at runtime (see {@link NativePlatform}); the beyond-scalar cost per call is the
- * verdict record and the arena scratch — the Rust core itself never allocates.
+ * platform at runtime (see {@link NativePlatform}). The input crosses without a copy: every
+ * downcall is linked with {@link Linker.Option#critical(boolean) critical(true)}, so the
+ * caller's own heap array or segment is handed to the native side directly — sound because
+ * each door is a short, non-blocking parse over those bytes that never calls back into
+ * Java, which is the exact profile that option exists for. What remains per call is the
+ * verdict record, the boxed value it carries, and (for the {@link String} doors) the UTF-8
+ * encode; the Rust core itself never allocates.
  */
 public final class Cast {
     private Cast() {}
@@ -87,8 +95,14 @@ public final class Cast {
     private static final MethodHandle CAST_TIME = handle("cast_time", PLAIN);
     private static final MethodHandle CAST_DURATION = handle("cast_duration", PLAIN);
 
+    // critical(true) is what lets a heap segment (MemorySegment.ofArray over the caller's
+    // byte[]) cross without being copied into native memory first: the array is pinned for
+    // the duration of the call instead. The contract in exchange — the callee must be short,
+    // must not block, and must never upcall into Java — is exactly what every door is: a
+    // bounded parse over the bytes it was handed, with no callbacks and no allocation.
     private static MethodHandle handle(String symbol, FunctionDescriptor descriptor) {
-        return LINKER.downcallHandle(LOOKUP.find(symbol).orElseThrow(), descriptor);
+        return LINKER.downcallHandle(
+                LOOKUP.find(symbol).orElseThrow(), descriptor, Linker.Option.critical(true));
     }
 
     // The library must outlive every downcall made through it, so it's loaded into the
@@ -126,12 +140,16 @@ public final class Cast {
      * a civil date-time) and each door reads only its own prefix, after the native side has
      * written it; a failing call never reads it at all. Nothing is shared between threads,
      * so no door needs locking, and doors never nest, so no call can observe another's
-     * scratch mid-flight.
+     * scratch mid-flight. Under virtual threads that is one small off-heap footprint per
+     * <em>virtual</em> thread, not per carrier — a few dozen bytes each, but scaling with
+     * however many a server runs.
+     *
+     * <p>There is deliberately no input buffer here any more. The input used to be copied
+     * into a per-thread native staging segment on every call; the downcalls are now linked
+     * {@code critical(true)}, so the caller's own array crosses as a pinned heap segment and
+     * the copy — and the growable buffer behind it — went with it.
      */
     private static final class Scratch {
-        /** Reused input staging buffer; grown only when a call actually outgrows it. */
-        private static final long INITIAL_INPUT_BYTES = 512;
-
         // Explicit alignment rather than allocate(size)'s implicit 1: the temporal doors
         // read JAVA_LONG out of `out`, which a 1-byte-aligned segment rejects outright.
         private final Arena fixed = Arena.ofAuto();
@@ -139,25 +157,6 @@ public final class Cast {
         final MemorySegment fault = fixed.allocate(FAULT_BYTES, 4);
         private final MemorySegment formatSegment = fixed.allocate(12, 4);
         private NumFormat formatKey;
-
-        // Deliberately a *separate* arena from `fixed`: a segment keeps its whole arena
-        // alive, so sharing one would retain every buffer this thread ever outgrew.
-        // Replacing this field on growth drops the old buffer for the collector.
-        private Arena inputArena = Arena.ofAuto();
-        private MemorySegment inputBuffer = inputArena.allocate(INITIAL_INPUT_BYTES, 1);
-
-        MemorySegment input(byte[] utf8) {
-            // len == 0 never dereferences the pointer, per the ABI contract.
-            if (utf8.length == 0) {
-                return MemorySegment.NULL;
-            }
-            if (utf8.length > inputBuffer.byteSize()) {
-                inputArena = Arena.ofAuto();
-                inputBuffer = inputArena.allocate(Long.highestOneBit(utf8.length - 1) << 1, 1);
-            }
-            MemorySegment.copy(utf8, 0, inputBuffer, ValueLayout.JAVA_BYTE, 0, utf8.length);
-            return inputBuffer;
-        }
 
         MemorySegment format(NumFormat declared) {
             // Formats are reused constants in practice (INVARIANT, DETECT, a per-locale
@@ -188,6 +187,17 @@ public final class Cast {
 
     private static byte[] utf8(String text) {
         return text.getBytes(StandardCharsets.UTF_8);
+    }
+
+    // A zero-copy view over the caller's array. len == 0 never dereferences the pointer,
+    // per the ABI contract, so an empty input crosses as NULL rather than a zero-length
+    // heap view.
+    private static MemorySegment input(byte[] utf8) {
+        return utf8.length == 0 ? MemorySegment.NULL : MemorySegment.ofArray(utf8);
+    }
+
+    private static MemorySegment input(MemorySegment utf8) {
+        return utf8.byteSize() == 0 ? MemorySegment.NULL : utf8;
     }
 
     /**
@@ -229,12 +239,27 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Boolean> bool(byte[] utf8) {
+        return boolDoor(input(utf8), utf8.length);
+    }
+
+    /**
+     * See {@link #bool(String)}; input as a {@link MemorySegment} view of UTF-8 bytes —
+     * heap or native — crossing without a copy.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<Boolean> bool(MemorySegment utf8) {
+        return boolDoor(input(utf8), utf8.byteSize());
+    }
+
+    private static Verdict<Boolean> boolDoor(MemorySegment in, long len) {
         Scratch scratch = SCRATCH.get();
         MemorySegment out = scratch.out;
         MemorySegment fault = scratch.fault;
         int code;
         try {
-            code = (int) CAST_BOOL.invokeExact(scratch.input(utf8), (long) utf8.length, out, fault);
+            code = (int) CAST_BOOL.invokeExact(in, len, out, fault);
         } catch (Throwable t) {
             throw new AssertionError("hypercast: cast_bool downcall failed unexpectedly", t);
         }
@@ -250,14 +275,14 @@ public final class Cast {
     }
 
     private static <T> Verdict<T> numeric(
-            MethodHandle door, String symbol, byte[] utf8, NumFormat format, IntReader<T> reader) {
+            MethodHandle door, String symbol, MemorySegment in, long len, NumFormat format,
+            IntReader<T> reader) {
         Scratch scratch = SCRATCH.get();
         MemorySegment out = scratch.out;
         MemorySegment fault = scratch.fault;
         int code;
         try {
-            code = (int) door.invokeExact(
-                    scratch.input(utf8), (long) utf8.length, scratch.format(format), out, fault);
+            code = (int) door.invokeExact(in, len, scratch.format(format), out, fault);
         } catch (Throwable t) {
             throw new AssertionError("hypercast: " + symbol + " downcall failed unexpectedly", t);
         }
@@ -286,7 +311,20 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Byte> i8(byte[] utf8, NumFormat format) {
-        return numeric(CAST_I8, "cast_i8", utf8, format, out -> out.get(ValueLayout.JAVA_BYTE, 0));
+        return numeric(CAST_I8, "cast_i8", input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_BYTE, 0));
+    }
+
+    /**
+     * See {@link #i8(String, NumFormat)}; input as a {@link MemorySegment} view of UTF-8
+     * bytes — heap or native — crossing without a copy. Slice a larger buffer to cast one
+     * value out of it.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<Byte> i8(MemorySegment utf8, NumFormat format) {
+        return numeric(CAST_I8, "cast_i8", input(utf8), utf8.byteSize(), format, out -> out.get(ValueLayout.JAVA_BYTE, 0));
     }
 
     /**
@@ -308,7 +346,20 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Short> i16(byte[] utf8, NumFormat format) {
-        return numeric(CAST_I16, "cast_i16", utf8, format, out -> out.get(ValueLayout.JAVA_SHORT, 0));
+        return numeric(CAST_I16, "cast_i16", input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_SHORT, 0));
+    }
+
+    /**
+     * See {@link #i16(String, NumFormat)}; input as a {@link MemorySegment} view of UTF-8
+     * bytes — heap or native — crossing without a copy. Slice a larger buffer to cast one
+     * value out of it.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<Short> i16(MemorySegment utf8, NumFormat format) {
+        return numeric(CAST_I16, "cast_i16", input(utf8), utf8.byteSize(), format, out -> out.get(ValueLayout.JAVA_SHORT, 0));
     }
 
     /**
@@ -330,7 +381,20 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Integer> i32(byte[] utf8, NumFormat format) {
-        return numeric(CAST_I32, "cast_i32", utf8, format, out -> out.get(ValueLayout.JAVA_INT, 0));
+        return numeric(CAST_I32, "cast_i32", input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_INT, 0));
+    }
+
+    /**
+     * See {@link #i32(String, NumFormat)}; input as a {@link MemorySegment} view of UTF-8
+     * bytes — heap or native — crossing without a copy. Slice a larger buffer to cast one
+     * value out of it.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<Integer> i32(MemorySegment utf8, NumFormat format) {
+        return numeric(CAST_I32, "cast_i32", input(utf8), utf8.byteSize(), format, out -> out.get(ValueLayout.JAVA_INT, 0));
     }
 
     /**
@@ -352,7 +416,20 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Long> i64(byte[] utf8, NumFormat format) {
-        return numeric(CAST_I64, "cast_i64", utf8, format, out -> out.get(ValueLayout.JAVA_LONG, 0));
+        return numeric(CAST_I64, "cast_i64", input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_LONG, 0));
+    }
+
+    /**
+     * See {@link #i64(String, NumFormat)}; input as a {@link MemorySegment} view of UTF-8
+     * bytes — heap or native — crossing without a copy. Slice a larger buffer to cast one
+     * value out of it.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<Long> i64(MemorySegment utf8, NumFormat format) {
+        return numeric(CAST_I64, "cast_i64", input(utf8), utf8.byteSize(), format, out -> out.get(ValueLayout.JAVA_LONG, 0));
     }
 
     /**
@@ -375,7 +452,21 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Integer> u8(byte[] utf8, NumFormat format) {
-        return numeric(CAST_U8, "cast_u8", utf8, format,
+        return numeric(CAST_U8, "cast_u8", input(utf8), utf8.length, format,
+                out -> Byte.toUnsignedInt(out.get(ValueLayout.JAVA_BYTE, 0)));
+    }
+
+    /**
+     * See {@link #u8(String, NumFormat)}; input as a {@link MemorySegment} view of UTF-8
+     * bytes — heap or native — crossing without a copy. Slice a larger buffer to cast one
+     * value out of it.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<Integer> u8(MemorySegment utf8, NumFormat format) {
+        return numeric(CAST_U8, "cast_u8", input(utf8), utf8.byteSize(), format,
                 out -> Byte.toUnsignedInt(out.get(ValueLayout.JAVA_BYTE, 0)));
     }
 
@@ -398,7 +489,21 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Integer> u16(byte[] utf8, NumFormat format) {
-        return numeric(CAST_U16, "cast_u16", utf8, format,
+        return numeric(CAST_U16, "cast_u16", input(utf8), utf8.length, format,
+                out -> Short.toUnsignedInt(out.get(ValueLayout.JAVA_SHORT, 0)));
+    }
+
+    /**
+     * See {@link #u16(String, NumFormat)}; input as a {@link MemorySegment} view of UTF-8
+     * bytes — heap or native — crossing without a copy. Slice a larger buffer to cast one
+     * value out of it.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<Integer> u16(MemorySegment utf8, NumFormat format) {
+        return numeric(CAST_U16, "cast_u16", input(utf8), utf8.byteSize(), format,
                 out -> Short.toUnsignedInt(out.get(ValueLayout.JAVA_SHORT, 0)));
     }
 
@@ -421,7 +526,21 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Long> u32(byte[] utf8, NumFormat format) {
-        return numeric(CAST_U32, "cast_u32", utf8, format,
+        return numeric(CAST_U32, "cast_u32", input(utf8), utf8.length, format,
+                out -> Integer.toUnsignedLong(out.get(ValueLayout.JAVA_INT, 0)));
+    }
+
+    /**
+     * See {@link #u32(String, NumFormat)}; input as a {@link MemorySegment} view of UTF-8
+     * bytes — heap or native — crossing without a copy. Slice a larger buffer to cast one
+     * value out of it.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<Long> u32(MemorySegment utf8, NumFormat format) {
+        return numeric(CAST_U32, "cast_u32", input(utf8), utf8.byteSize(), format,
                 out -> Integer.toUnsignedLong(out.get(ValueLayout.JAVA_INT, 0)));
     }
 
@@ -446,7 +565,20 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Long> u64(byte[] utf8, NumFormat format) {
-        return numeric(CAST_U64, "cast_u64", utf8, format, out -> out.get(ValueLayout.JAVA_LONG, 0));
+        return numeric(CAST_U64, "cast_u64", input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_LONG, 0));
+    }
+
+    /**
+     * See {@link #u64(String, NumFormat)}; input as a {@link MemorySegment} view of UTF-8
+     * bytes — heap or native — crossing without a copy. Slice a larger buffer to cast one
+     * value out of it.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<Long> u64(MemorySegment utf8, NumFormat format) {
+        return numeric(CAST_U64, "cast_u64", input(utf8), utf8.byteSize(), format, out -> out.get(ValueLayout.JAVA_LONG, 0));
     }
 
     // --- reals ---
@@ -473,7 +605,20 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Float> f32(byte[] utf8, NumFormat format) {
-        return numeric(CAST_F32, "cast_f32", utf8, format, out -> out.get(ValueLayout.JAVA_FLOAT, 0));
+        return numeric(CAST_F32, "cast_f32", input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_FLOAT, 0));
+    }
+
+    /**
+     * See {@link #f32(String, NumFormat)}; input as a {@link MemorySegment} view of UTF-8
+     * bytes — heap or native — crossing without a copy. Slice a larger buffer to cast one
+     * value out of it.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<Float> f32(MemorySegment utf8, NumFormat format) {
+        return numeric(CAST_F32, "cast_f32", input(utf8), utf8.byteSize(), format, out -> out.get(ValueLayout.JAVA_FLOAT, 0));
     }
 
     /**
@@ -495,7 +640,20 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Double> f64(byte[] utf8, NumFormat format) {
-        return numeric(CAST_F64, "cast_f64", utf8, format, out -> out.get(ValueLayout.JAVA_DOUBLE, 0));
+        return numeric(CAST_F64, "cast_f64", input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_DOUBLE, 0));
+    }
+
+    /**
+     * See {@link #f64(String, NumFormat)}; input as a {@link MemorySegment} view of UTF-8
+     * bytes — heap or native — crossing without a copy. Slice a larger buffer to cast one
+     * value out of it.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<Double> f64(MemorySegment utf8, NumFormat format) {
+        return numeric(CAST_F64, "cast_f64", input(utf8), utf8.byteSize(), format, out -> out.get(ValueLayout.JAVA_DOUBLE, 0));
     }
 
     // --- uuid ---
@@ -519,29 +677,42 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<UUID> uuid(byte[] utf8) {
+        return uuidDoor(input(utf8), utf8.length);
+    }
+
+    /**
+     * See {@link #uuid(String)}; input as a {@link MemorySegment} view of UTF-8 bytes —
+     * heap or native — crossing without a copy.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<UUID> uuid(MemorySegment utf8) {
+        return uuidDoor(input(utf8), utf8.byteSize());
+    }
+
+    private static Verdict<UUID> uuidDoor(MemorySegment in, long len) {
         Scratch scratch = SCRATCH.get();
         MemorySegment out = scratch.out;
         MemorySegment fault = scratch.fault;
         int code;
         try {
-            code = (int) CAST_UUID.invokeExact(scratch.input(utf8), (long) utf8.length, out, fault);
+            code = (int) CAST_UUID.invokeExact(in, len, out, fault);
         } catch (Throwable t) {
             throw new AssertionError("hypercast: cast_uuid downcall failed unexpectedly", t);
         }
         if (code != 0) {
             return failed(code, fault);
         }
-        // RFC 9562 order is exactly UUID's msb/lsb decomposition — no swapping, unlike Guid.
-        long msb = 0;
-        long lsb = 0;
-        for (int i = 0; i < 8; i++) {
-            msb = (msb << 8) | (out.get(ValueLayout.JAVA_BYTE, i) & 0xFFL);
-            lsb = (lsb << 8) | (out.get(ValueLayout.JAVA_BYTE, i + 8) & 0xFFL);
-        }
-        return new Success<>(new UUID(msb, lsb));
+        // RFC 9562 order is exactly UUID's msb/lsb decomposition — no swapping, unlike Guid —
+        // so the 16 bytes are two big-endian longs, read as such; `out` is 8-aligned for it.
+        return new Success<>(new UUID(out.get(BIG_ENDIAN_LONG, 0), out.get(BIG_ENDIAN_LONG, 8)));
     }
 
     // --- temporals ---
+
+    private static final ValueLayout.OfLong BIG_ENDIAN_LONG =
+            ValueLayout.JAVA_LONG.withOrder(java.nio.ByteOrder.BIG_ENDIAN);
 
     /** Timestamp out-param: {@code {i64 seconds, i32 nanos}} (protobuf layout, 16 bytes with padding). */
     private static final long TIMESTAMP_BYTES = 16;
@@ -549,16 +720,16 @@ public final class Cast {
     /** CivilDateTime out-param: {@code {u16 y, u8 m, u8 d, pad, u64 nanos-of-day}} (16 bytes). */
     private static final long CIVIL_BYTES = 16;
 
-    private static Verdict<Instant> instantDoor(MethodHandle door, String symbol, byte[] utf8, int precision) {
+    private static Verdict<Instant> instantDoor(
+            MethodHandle door, String symbol, MemorySegment in, long len, int precision) {
         Scratch scratch = SCRATCH.get();
         MemorySegment out = scratch.out;
         MemorySegment fault = scratch.fault;
-        MemorySegment in = scratch.input(utf8);
         int code;
         try {
             code = precision == 0
-                    ? (int) door.invokeExact(in, (long) utf8.length, out, fault)
-                    : (int) door.invokeExact(in, (long) utf8.length, precision, out, fault);
+                    ? (int) door.invokeExact(in, len, out, fault)
+                    : (int) door.invokeExact(in, len, precision, out, fault);
         } catch (Throwable t) {
             throw new AssertionError("hypercast: " + symbol + " downcall failed unexpectedly", t);
         }
@@ -588,7 +759,18 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Instant> timestamp(byte[] utf8) {
-        return instantDoor(CAST_TIMESTAMP, "cast_timestamp", utf8, 0);
+        return instantDoor(CAST_TIMESTAMP, "cast_timestamp", input(utf8), utf8.length, 0);
+    }
+
+    /**
+     * See {@link #timestamp(String)}; input as a {@link MemorySegment} view of UTF-8 bytes —
+     * heap or native — crossing without a copy.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<Instant> timestamp(MemorySegment utf8) {
+        return instantDoor(CAST_TIMESTAMP, "cast_timestamp", input(utf8), utf8.byteSize(), 0);
     }
 
     /**
@@ -613,7 +795,19 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Instant> unix(byte[] utf8, UnixPrecision precision) {
-        return instantDoor(CAST_UNIX, "cast_unix", utf8, precision.code());
+        return instantDoor(CAST_UNIX, "cast_unix", input(utf8), utf8.length, precision.code());
+    }
+
+    /**
+     * See {@link #unix(String, UnixPrecision)}; input as a {@link MemorySegment} view of UTF-8 bytes —
+     * heap or native — crossing without a copy.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param precision the declared unit of the epoch value
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<Instant> unix(MemorySegment utf8, UnixPrecision precision) {
+        return instantDoor(CAST_UNIX, "cast_unix", input(utf8), utf8.byteSize(), precision.code());
     }
 
     /**
@@ -645,7 +839,19 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Instant> excelSerial(byte[] utf8, ExcelEpoch epoch) {
-        return instantDoor(CAST_EXCEL_SERIAL, "cast_excel_serial", utf8, epoch.code());
+        return instantDoor(CAST_EXCEL_SERIAL, "cast_excel_serial", input(utf8), utf8.length, epoch.code());
+    }
+
+    /**
+     * See {@link #excelSerial(String, ExcelEpoch)}; input as a {@link MemorySegment} view of UTF-8 bytes —
+     * heap or native — crossing without a copy.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param epoch the declared date system
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<Instant> excelSerial(MemorySegment utf8, ExcelEpoch epoch) {
+        return instantDoor(CAST_EXCEL_SERIAL, "cast_excel_serial", input(utf8), utf8.byteSize(), epoch.code());
     }
 
     /**
@@ -667,12 +873,27 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<LocalDate> date(byte[] utf8) {
+        return dateDoor(input(utf8), utf8.length);
+    }
+
+    /**
+     * See {@link #date(String)}; input as a {@link MemorySegment} view of UTF-8 bytes —
+     * heap or native — crossing without a copy.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<LocalDate> date(MemorySegment utf8) {
+        return dateDoor(input(utf8), utf8.byteSize());
+    }
+
+    private static Verdict<LocalDate> dateDoor(MemorySegment in, long len) {
         Scratch scratch = SCRATCH.get();
         MemorySegment out = scratch.out;
         MemorySegment fault = scratch.fault;
         int code;
         try {
-            code = (int) CAST_DATE.invokeExact(scratch.input(utf8), (long) utf8.length, out, fault);
+            code = (int) CAST_DATE.invokeExact(in, len, out, fault);
         } catch (Throwable t) {
             throw new AssertionError("hypercast: cast_date downcall failed unexpectedly", t);
         }
@@ -709,13 +930,29 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<LocalDate> date(byte[] utf8, DateOrder order) {
+        return dateOrderedDoor(input(utf8), utf8.length, order);
+    }
+
+    /**
+     * See {@link #date(String, DateOrder)}; input as a {@link MemorySegment} view of UTF-8 bytes —
+     * heap or native — crossing without a copy.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param order the declared field order
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<LocalDate> date(MemorySegment utf8, DateOrder order) {
+        return dateOrderedDoor(input(utf8), utf8.byteSize(), order);
+    }
+
+    private static Verdict<LocalDate> dateOrderedDoor(MemorySegment in, long len, DateOrder order) {
         Scratch scratch = SCRATCH.get();
         MemorySegment out = scratch.out;
         MemorySegment fault = scratch.fault;
         int code;
         try {
             code = (int) CAST_DATE_ORDERED.invokeExact(
-                    scratch.input(utf8), (long) utf8.length, order.code(), out, fault);
+                    in, len, order.code(), out, fault);
         } catch (Throwable t) {
             throw new AssertionError("hypercast: cast_date_ordered downcall failed unexpectedly", t);
         }
@@ -754,13 +991,29 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<LocalDateTime> dateTime(byte[] utf8, DateOrder order) {
+        return dateTimeDoor(input(utf8), utf8.length, order);
+    }
+
+    /**
+     * See {@link #dateTime(String, DateOrder)}; input as a {@link MemorySegment} view of UTF-8 bytes —
+     * heap or native — crossing without a copy.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param order the declared field order
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<LocalDateTime> dateTime(MemorySegment utf8, DateOrder order) {
+        return dateTimeDoor(input(utf8), utf8.byteSize(), order);
+    }
+
+    private static Verdict<LocalDateTime> dateTimeDoor(MemorySegment in, long len, DateOrder order) {
         Scratch scratch = SCRATCH.get();
         MemorySegment out = scratch.out;
         MemorySegment fault = scratch.fault;
         int code;
         try {
             code = (int) CAST_DATETIME.invokeExact(
-                    scratch.input(utf8), (long) utf8.length, order.code(), out, fault);
+                    in, len, order.code(), out, fault);
         } catch (Throwable t) {
             throw new AssertionError("hypercast: cast_datetime downcall failed unexpectedly", t);
         }
@@ -794,12 +1047,27 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<LocalTime> time(byte[] utf8) {
+        return timeDoor(input(utf8), utf8.length);
+    }
+
+    /**
+     * See {@link #time(String)}; input as a {@link MemorySegment} view of UTF-8 bytes —
+     * heap or native — crossing without a copy.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<LocalTime> time(MemorySegment utf8) {
+        return timeDoor(input(utf8), utf8.byteSize());
+    }
+
+    private static Verdict<LocalTime> timeDoor(MemorySegment in, long len) {
         Scratch scratch = SCRATCH.get();
         MemorySegment out = scratch.out;
         MemorySegment fault = scratch.fault;
         int code;
         try {
-            code = (int) CAST_TIME.invokeExact(scratch.input(utf8), (long) utf8.length, out, fault);
+            code = (int) CAST_TIME.invokeExact(in, len, out, fault);
         } catch (Throwable t) {
             throw new AssertionError("hypercast: cast_time downcall failed unexpectedly", t);
         }
@@ -830,12 +1098,27 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Duration> duration(byte[] utf8) {
+        return durationDoor(input(utf8), utf8.length);
+    }
+
+    /**
+     * See {@link #duration(String)}; input as a {@link MemorySegment} view of UTF-8 bytes —
+     * heap or native — crossing without a copy.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<Duration> duration(MemorySegment utf8) {
+        return durationDoor(input(utf8), utf8.byteSize());
+    }
+
+    private static Verdict<Duration> durationDoor(MemorySegment in, long len) {
         Scratch scratch = SCRATCH.get();
         MemorySegment out = scratch.out;
         MemorySegment fault = scratch.fault;
         int code;
         try {
-            code = (int) CAST_DURATION.invokeExact(scratch.input(utf8), (long) utf8.length, out, fault);
+            code = (int) CAST_DURATION.invokeExact(in, len, out, fault);
         } catch (Throwable t) {
             throw new AssertionError("hypercast: cast_duration downcall failed unexpectedly", t);
         }

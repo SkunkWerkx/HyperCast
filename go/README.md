@@ -54,38 +54,65 @@ rather than silently wrapping.
 
 **The honest trade-off, stated as plainly as the wins elsewhere: every Go door loses
 per-call to Go's stdlib.** Go's parsers are simply excellent (`time.Parse(RFC3339Nano)` at
-~67 ns, `strconv.Atoi` at ~11 ns), and every HyperCast call pays a cgo crossing plus a
-structural heap allocation (any pointer crossing into opaque foreign code is excluded from
-escape analysis — a floor for this call shape, not an FFI-library choice). In Go
-specifically, this binding earns its keep on the vocabulary, the closed error contract,
-and cross-language agreement — not per-call speed. The batch/tabular layer (round three)
-is where the crossing amortizes to zero.
+~67 ns, `strconv.Atoi` at ~11 ns), and every HyperCast call pays a cgo crossing. It no
+longer pays a heap allocation on top: 0.1.0's doors passed `&out` and `&fault` into the
+foreign call, and any Go pointer handed to cgo escapes to the heap — which the README then
+called "a floor for this call shape". It was a floor for *that* shape, not for the ABI.
+The C shims now declare the out-value, fault span and format on their own stack and return
+the verdict by value as one struct, so no Go pointer crosses at all: **0 B, 0 allocs on
+every door**, and 30–50% off each one. In Go specifically, this binding still earns its
+keep on the vocabulary, the closed error contract, and cross-language agreement — not
+per-call speed. The batch/tabular layer (round three) is where the crossing amortizes to
+zero.
 
 ## Benchmarks
 
 `go test -bench=. -benchmem ./...` for cgo, the same with `CGO_ENABLED=0` for purego.
-Measured on the same linux-arm64 machine, same run:
+Measured on the same linux-arm64 machine, same session, median of three runs — 0.1.0's
+pointer-passing doors against 0.2.0's by-value shims:
 
-| Door | cgo | purego | stdlib |
-| --- | ---: | ---: | ---: |
-| `Timestamp` | 175 ns, 2 allocs | 619 ns, 6 allocs | 67 ns `time.Parse(RFC3339Nano)` |
-| `I32` | 177 ns, 3 allocs | 613 ns, 7 allocs | 11 ns `strconv.Atoi` |
-| `F64` | 206 ns, 3 allocs | 617 ns, 7 allocs | 39 ns `strconv.ParseFloat` |
-| `Uuid` | 148 ns, 2 allocs | 599 ns, 6 allocs | 35 ns `google/uuid.Parse` |
-| `Span` (ISO) | 172 ns, 2 allocs | 623 ns, 6 allocs | 71 ns `ParseDuration` (Go dialect — different grammar) |
-| `Bool` | 115 ns, 1 alloc | 553 ns, 5 allocs | 4 ns `strconv.ParseBool` |
-| `DateTime` (`1/7/2026 3:04 PM`) | 157 ns, 2 allocs | — | 135 ns `time.Parse` w/ layout |
-| `DateOnlyOrdered` (`1/7/2026`) | 118 ns, 1 alloc | — | 78 ns `time.Parse` w/ layout |
+| Door | cgo 0.1.0 | cgo 0.2.0 | purego | stdlib |
+| --- | ---: | ---: | ---: | ---: |
+| `Timestamp` | 174 ns, 2 allocs | **112 ns, 0 allocs** | 596 ns, 5 allocs | 67 ns `time.Parse(RFC3339Nano)` |
+| `I32` | 172 ns, 3 allocs | **87 ns, 0 allocs** | — | 11 ns `strconv.Atoi` |
+| `I32` (grouped) | 224 ns, 3 allocs | **125 ns, 0 allocs** | 652 ns, 6 allocs | — |
+| `F64` | 218 ns, 3 allocs | **106 ns, 0 allocs** | — | 39 ns `strconv.ParseFloat` |
+| `Uuid` | 155 ns, 2 allocs | **99 ns, 0 allocs** | 590 ns, 5 allocs | 35 ns `google/uuid.Parse` |
+| `Span` (ISO) | 172 ns, 2 allocs | **120 ns, 0 allocs** | — | 71 ns `ParseDuration` (Go dialect — different grammar) |
+| `Bool` | 111 ns, 1 alloc | **78 ns, 0 allocs** | 560 ns, 5 allocs | 4 ns `strconv.ParseBool` |
+| `TimeOfDay` | 115 ns, 1 alloc | **81 ns, 0 allocs** | — | — |
+| `DateTime` (`1/7/2026 3:04 PM`) | 173 ns, 2 allocs | **122 ns, 0 allocs** | — | 135 ns `time.Parse` w/ layout |
+| `DateOnlyOrdered` (`1/7/2026`) | 129 ns, 1 alloc | **95 ns, 0 allocs** | — | 78 ns `time.Parse` w/ layout |
 
-Separator detection costs ~10 ns: `1.234.567,89` under `Detect` is 226 ns against 215 ns
-for the same text under a declared eurozone format (cgo backend).
+The purego column barely moves, as expected: its allocations are the trampoline's own
+argument boxing, not the out-params, and its doors fill the same by-value result through
+pointers because that cost is already paid. Separator detection costs ~9 ns: `1.234.567,89`
+under `Detect` is 172 ns against 164 ns for the same text under a declared eurozone format
+(cgo backend).
 
-cgo's 3.5-4.8x per-call win over purego is why it stays the default wherever it's
+cgo's 4.5-7x per-call win over purego is why it stays the default wherever it's
 available; purego's zero-toolchain story is why it carries Windows, `CGO_ENABLED=0`, and
 every cross-compile automatically. One caveat inherited with cgo-by-default: a *native*
 darwin/linux build on a machine with no C compiler at all (distroless-style container,
 macOS without Xcode CLT) now fails to build — `CGO_ENABLED=0 go build ./...` forces the
 purego fallback anywhere.
+
+## Verifying build provenance
+
+Go has no package registry to attest — `go get` resolves straight from the `go/vX.Y.Z` git
+tag against this repo. The native libraries committed under `go/native/` (staged by
+`stage-native-binaries.yml`) each carry their own build-provenance attestation from
+`hyper-build-native.yml`, which physically lives in `SkunkWerkx/.github` — so verifying
+needs `--signer-repo` alongside `--repo`, or `gh` reports a bare `verifying with issuer
+"sigstore.dev"` that reads like a bad signature but is only an identity mismatch:
+
+```sh
+gh attestation verify go/native/linux-x64/libhypercast.so \
+  --repo SkunkWerkx/HyperCast --signer-repo SkunkWerkx/.github
+```
+
+See [csharp/README.md's provenance section](../csharp/README.md#native-binary-provenance)
+for more on why `--signer-repo` is needed for some artifacts here and not others.
 
 ## Install
 

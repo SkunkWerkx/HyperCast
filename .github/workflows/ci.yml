@@ -5,6 +5,13 @@ name: CI — build native, build wasm, test every binding
 # suite run against it. Ruby's suite runs twice (forced Fiddle fallback + Magnus extension
 # backend); Python has no fallback — PyO3 only, staged and tested per leg.
 #
+# The forge is one canonical pipeline, and this repo conforms to it rather than the other
+# way round. When the forge assumes something HyperUuid's crate has and this one lacks,
+# this crate gets the same thing — never a forge input, opt-out, or auto-detection to
+# route around the difference. The receipt: the forge builds `--features php` on every
+# darwin/linux leg, this crate had no such feature, and the fix was carrying HyperUuid's
+# ext-php-rs spike behind a `php` feature (rust/src/php_ext.rs), not gating the forge.
+#
 # CI's job is build, test, and upload reusable artifacts — nothing version-specific. Every
 # native leg builds+tests fresh, and the raw, version-agnostic outputs (the plain FFI
 # libhypercast.so/.dylib/.dll, the compiled Ruby Magnus extension) get uploaded here for
@@ -43,6 +50,12 @@ jobs:
       # until the pinned SDK GAs (HyperForge's own default stays 8.0/ga for other repos).
       dotnet_version: "11.0.x"
       dotnet_quality: "preview"
+      # Turns the package's Native AOT claim into a per-platform receipt: the forge publishes
+      # this project under PublishAot on all six legs, fails on any ILxxxx/AOTxxxx trim
+      # diagnostic, then runs the produced binary and requires exit 0. The log uploads as
+      # aot-report-{rid}. The smoke test exercises a door from every family plus the union's
+      # compile-checked consumption, so it covers the AOT-sensitive surface, not one call.
+      csharp_aot_project: csharp/HyperCast.AotSmokeTest/HyperCast.AotSmokeTest.csproj
       # Both explicit-placement inputs stay set. The original reason no longer holds — it
       # was that the separate per-binding test jobs downloaded the native artifact but
       # never ran cargo, so the csproj/Gradle dev-loop staging from rust/target/release
@@ -68,10 +81,6 @@ jobs:
       # back to the universal Fiddle gem, which is exactly what it's there for.
       ruby_compat_version: "3.4"
       # go_windows stays default-true: the purego fallback carries the Windows legs.
-      # No ext-php-rs benchmark spike in this crate (the shipped PHP package is ext-ffi,
-      # and PHP's ~105 ns raw ext-ffi call floor never justified the spike here the way
-      # HyperUuid's measurements did) — skip the php-feature compile check.
-      php_native_spike: false
 
   # The C#/NuGet browser-wasm staticlib — built on every PR, not just at release time, so
   # a wasm-breaking core change surfaces immediately.
@@ -159,7 +168,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.13"
+          python-version: "3.14"
       - run: pip install ruff==0.16.5
       - working-directory: python
         run: ruff check src
@@ -183,7 +192,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "3.4"
+          ruby-version: "4.0"
           bundler-cache: true
           working-directory: ruby
       - working-directory: ruby

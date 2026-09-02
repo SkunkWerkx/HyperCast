@@ -4,6 +4,7 @@ import io.github.skunkwerkx.hypercast.Cast;
 import io.github.skunkwerkx.hypercast.DateOrder;
 import io.github.skunkwerkx.hypercast.NumFormat;
 import io.github.skunkwerkx.hypercast.Verdict;
+import java.lang.foreign.MemorySegment;
 import java.nio.charset.StandardCharsets;
 import java.text.NumberFormat;
 import java.text.ParseException;
@@ -49,6 +50,12 @@ public class CastBenchmarks {
     private final String timeText = "15:04:05.123456789";
     private final byte[] timestampBytes = timestampText.getBytes(StandardCharsets.UTF_8);
     private final byte[] intBytes = intText.getBytes(StandardCharsets.UTF_8);
+    private final byte[] uuidBytes = uuidText.getBytes(StandardCharsets.UTF_8);
+    // The round-three shape: one buffer holding many values, each door handed a heap slice.
+    private final MemorySegment line = MemorySegment.ofArray(
+            (intText + "|" + timestampText).getBytes(StandardCharsets.UTF_8));
+    private final MemorySegment intSlice = line.asSlice(0, intBytes.length);
+    private final MemorySegment timestampSlice = line.asSlice(intBytes.length + 1, timestampBytes.length);
 
     @Benchmark
     public Verdict<Boolean> castBool() {
@@ -73,6 +80,11 @@ public class CastBenchmarks {
     }
 
     @Benchmark
+    public Verdict<Integer> castI32GroupedSlice() {
+        return Cast.i32(intSlice, INVARIANT);
+    }
+
+    @Benchmark
     public Number jdkNumberFormatGrouped() throws ParseException {
         // The JDK's own grouped-integer door. Stateful and not thread-safe, unlike Cast.
         return JDK_GROUPED.parse(intText);
@@ -94,6 +106,11 @@ public class CastBenchmarks {
     }
 
     @Benchmark
+    public Verdict<UUID> castUuidBytes() {
+        return Cast.uuid(uuidBytes);
+    }
+
+    @Benchmark
     public UUID jdkUuidFromString() {
         return UUID.fromString(uuidText);
     }
@@ -106,6 +123,11 @@ public class CastBenchmarks {
     @Benchmark
     public Verdict<Instant> castTimestampBytes() {
         return Cast.timestamp(timestampBytes);
+    }
+
+    @Benchmark
+    public Verdict<Instant> castTimestampSlice() {
+        return Cast.timestamp(timestampSlice);
     }
 
     @Benchmark

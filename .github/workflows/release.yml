@@ -37,7 +37,8 @@ name: Release — publish to real, public registries
 #     pipeline-code push.
 #   - rubygems-publish: rubygems.org Trusted Publishing policy for this repo/workflow.
 #   - pypi-publish: PyPI Trusted Publishing (pending publisher) for hypercast.
-#   - pack-crates: crates.io token in secrets.CARGO_REGISTRY_TOKEN.
+#   - pack-crates: crates.io Trusted Publishing for hypercast — tokenless OIDC, like the
+#     three above; the crate is configured to accept trusted publishing only.
 #   - maven-publish: Central Portal token + GPG key in the four MAVEN_* secrets
 #     (io.github.skunkwerkx namespace is already approved, proven by HyperUuid).
 #
@@ -338,15 +339,15 @@ jobs:
       # plain FFI libs go verbatim into the universal "ruby" platform gem and each Magnus
       # extension goes verbatim into its own precompiled platform gem — so `gem push` is
       # the last moment these bytes can still be rejected, and it is irreversible
-      # (RubyGems has no unpublish and no duplicate-version overwrite). ci.yml attested all
-      # ten at build time via hyper-build-native.yml; this is the gate that actually spends
-      # those attestations instead of just producing them.
+      # (RubyGems has no unpublish and no duplicate-version overwrite). ci.yml attested every
+      # one of them at build time via hyper-build-native.yml; this is the gate that actually
+      # spends those attestations instead of just producing them.
       #
       # --signer-repo is not optional. `--repo X` alone asserts BOTH that the artifact's
       # source repo is X and that the workflow which signed it lives in X. Only the first
       # is true — the attest step is in hyper-build-native.yml, which physically lives in
       # the shared SkunkWerkx/.github forge, and that job_workflow_ref is what Fulcio
-      # records as the build signer. Omit it and all ten fail with a bare `verifying with
+      # records as the build signer. Omit it and every one fails with a bare `verifying with
       # issuer "sigstore.dev"` that reads like a bad signature but is only an identity
       # mismatch. Same flag, same reason as stage-native-binaries.yml's gate.
       - name: Verify build provenance of every binary about to be packed
@@ -366,7 +367,7 @@ jobs:
 
       - uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "3.4"
+          ruby-version: "4.0"
           bundler-cache: true
           working-directory: ruby
 
@@ -395,21 +396,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # win-x64 maps to x64-mingw-ucrt, RubyInstaller's own platform string — the
-          # `ext=so` default below is already right for it (mingw Ruby's DLEXT is `so`, not
-          # `dll`). No win-arm64 entry: the forge doesn't build a Magnus extension there yet,
-          # and naming a RID with no matching ruby-native-* artifact fails this loop at `cp`.
+          # Both Windows RIDs map to RubyInstaller's own platform strings, and the `ext=so`
+          # default below is already right for both — mingw Ruby's DLEXT is `so`, not `dll`,
+          # on either architecture. Every RID named here must have a matching ruby-native-*
+          # artifact from the forge or this loop fails at the `cp`, which is the intended
+          # failure: a missing extension should stop the release, not silently ship a gem
+          # that claims a platform it has no code for.
           declare -A PLATFORMS=(
             [linux-x64]=x86_64-linux
             [linux-arm64]=aarch64-linux
             [osx-x64]=x86_64-darwin
             [osx-arm64]=arm64-darwin
             [win-x64]=x64-mingw-ucrt
+            [win-arm64]=aarch64-mingw-ucrt
           )
           # One extension per Ruby ABI per platform — a Magnus extension is bound to a single
           # Ruby minor, so a platform gem has to be "fat" to cover more than one. Keep this
-          # list in step with ruby/Rakefile's ABIS and ci.yml's ruby_compat_version; the rake
-          # task aborts naming the missing file if they drift apart.
+          # list in step with ruby/Rakefile's ABIS and the forge's per-ABI Ruby trios; the
+          # rake task aborts naming the missing file if they drift apart.
           ABIS=(3.4 4.0)
           for rid in "${!PLATFORMS[@]}"; do
             ext=so
@@ -540,7 +544,7 @@ jobs:
 
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
+          python-version: "3.14"
 
       - uses: PyO3/maturin-action@v1
         with:
@@ -601,6 +605,11 @@ jobs:
   # duplicate-version skip either — a hard failure — so a version bump (with Cargo.lock
   # regenerated: cargo publish --locked fails on a stale self-referential entry) is a real
   # prerequisite.
+  #
+  # Tokenless: the forge packages, attests, then exchanges this job's OIDC identity for a
+  # short-lived crates.io token scoped to the crate and revoked when the job ends. No secret
+  # is handed down — id-token: write is the whole credential, the same scope the
+  # attestation already needed.
   pack-crates:
     uses: SkunkWerkx/.github/.github/workflows/hyper-publish-crate.yml@master
     # Handed down to the reusable workflow, which attests what it publishes and cannot
@@ -609,8 +618,6 @@ jobs:
       contents: read
       id-token: write
       attestations: write
-    secrets:
-      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   # Java leg: gradle-maven-publish's publishAndReleaseToMavenCentral does pack, sign,
   # upload, and auto-release in one un-splittable task, so unlike NuGet there's no

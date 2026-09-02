@@ -7,6 +7,121 @@ entry marks which packages it actually affects.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — 2026-09-02
+
+The theme is *stop paying for the carrier*. Every binding already made exactly one native
+call per cast; what cost real time was what each language wrapped around it — a copied
+input, heap scratch for a 16-byte out-value, an object built to be thrown away. Each of
+those is measured before and after on one machine in one session, and the repository is
+back in step with what HyperUuid's 0.1.1 → 0.2.1 taught about the release pipeline. No
+door changed its verdict on any input: the corpus replays byte-identical through all
+eight packages, as it did at 0.1.0.
+
+### Added
+
+- **`MemorySegment` overloads on every Java door.** Slice one buffer holding many values —
+  a mapped file, a direct buffer, one line of a CSV — and cast a value out of it with
+  nothing copied. This is the shape round three's chunk layer will hand down. *(Maven
+  Central)*
+- **`UnsafeRawBufferPointer` overloads on every Swift door** — the primitive the `String`
+  and `[UInt8]` forms now wrap. *(`.package(url:)`)*
+- **`Cast::uuidBytes` in PHP** — the sixteen RFC-ordered octets as a binary string for a
+  `BINARY(16)` bind, skipping the hex encoding and hyphen assembly the string door does.
+  *(Packagist)*
+- **UTF-8 rows in the C# benchmark suite**, measuring the `ReadOnlySpan<byte>` doors
+  without the UTF-16 transcode every `string` row includes: `Cast.Uuid` 36.9 ns against
+  `Guid.TryParse`'s 51.2, which the string row had reported as a wash. *(docs only)*
+- **The seventh Ruby gem**, `aarch64-mingw-ucrt`, with the Magnus extension for both
+  ABIs — the forge now builds and tests it on win-arm64, so Windows-on-ARM leaves the
+  Fiddle fallback like every other mainstream platform. Both Windows extensions build the
+  `gnullvm` targets. CI's receipt only, so far: no Magnus-versus-Fiddle numbers have been
+  taken on Windows-on-ARM hardware for this crate. *(RubyGems)*
+- **Per-platform Native AOT receipts.** CI publishes `HyperCast.AotSmokeTest` under
+  `PublishAot` on all six RIDs, fails on any trim diagnostic, runs the binary, and uploads
+  each leg's log as `aot-report-{rid}`. *(CI only)*
+- **A *Verifying provenance* section in every README** — which artifact, which signer,
+  and why `--signer-repo SkunkWerkx/.github` is needed on some and not others. The C#
+  README carries the full three-attestation story. *(docs only)*
+- **The ext-php-rs benchmark spike behind a `php` cargo feature**, exactly as HyperUuid
+  carries it: twenty functions at `Cast.php`'s raw layer, built and load-checked by CI on
+  every darwin/linux leg, never loaded by the Composer package. It exists so "ext-ffi is
+  already extension-class" stays checkable rather than asserted. *(`hypercast` crate,
+  off by default)*
+
+### Changed
+
+- **Java: the input crosses without a copy.** Every downcall is linked
+  `Linker.Option.critical(true)`, so the caller's `byte[]` is pinned and handed to the
+  native side directly; the per-thread native staging buffer and its arena are gone.
+  `reachability-metadata.json` registers the option and the GraalVM Native Image smoke
+  test passes on it. The UUID door reads two big-endian longs instead of sixteen bytes.
+  Full-length JMH: `timestamp` 62.9 → **52.5 ns**, `uuid` 53.8 → **38.3 ns** (now ahead of
+  `UUID.fromString` at 45.9), `time` 66.4 → **45.1 ns**. *(Maven Central)*
+- **Go: the verdict comes back by value.** The cgo shims declare the out-value, fault span
+  and format on their own stack and return one struct, so no Go pointer crosses and
+  nothing escapes — **0 B, 0 allocs on every door** (was 1–3), `Bool` 111 → **78 ns**,
+  `I32` 172 → **87 ns**, `Timestamp` 174 → **112 ns**, `DateTime` 173 → **122 ns** (now at
+  parity with `time.Parse`). The README's "a floor for this call shape" claim was a floor
+  for the pointer-passing shape, not the ABI, and is corrected. `runtime.KeepAlive` pins
+  the input explicitly rather than by FFI-library internals. purego is unchanged within
+  noise. *(`go get`)*
+- **Swift: zero mallocs per door.** `String` doors hand the string's own UTF-8 across via
+  `withUTF8` instead of copying into an `Array`; out/fault/format scratch are stack tuples
+  instead of three heap arrays; the library handle is a class reference instead of a
+  21-field struct copied per call. 3–4 mallocs → **0** on every door: `timestamp` 281 →
+  **55 ns**, `uuid` 222 → **37 ns**, `f64` 354 → **45 ns**, `i32` 349 → **33 ns**.
+  *(`.package(url:)`)*
+- **Python: `cast_uuid` builds `uuid.UUID` the way HyperUuid pinned** — `UUID.__new__` plus
+  `object.__setattr__` of the `int` and `is_safe` slots, skipping an `__init__` whose
+  validation the core had already done: **1.18 µs → 730 ns**, ahead of `uuid.UUID()`'s
+  979 ns. *(PyPI)*
+- **Ruby (Magnus): options and formats resolve by pointer compare.** The three reason
+  Symbols and the option-symbol tables are cached; `DETECT` is identity-matched like
+  `INVARIANT`; any other format is resolved once per thread and memoized by identity,
+  anchored in a thread-variable so the key can never be a recycled address. The numeric
+  doors under a declared eurozone format or `DETECT` drop from ~990 to **~580 ns**; the
+  rest are within noise. *(RubyGems)*
+- **Ruby (Fiddle): ~20% off the numeric doors** (`i32` 3.37 → 2.62 µs, `f64` 3.31 →
+  2.76 µs) by not building per call what never changes — the integer doors' interpolated
+  `:cast_*` Symbol, the splat-and-resplat dispatcher, and the 12-byte format copy into
+  scratch (each format now owns one native pointer, memoized by identity). *(RubyGems)*
+- **PHP: the eight integer doors are flat** — one literal FFI call each, no shared helper
+  doing a dynamic symbol lookup and a string match per call — the rule the real doors
+  already followed. Within noise on phpbench; recorded as structure, not speed.
+  *(Packagist)*
+- **C#: the UTF-16 doors try the stack buffer first** and rent from the pool only when the
+  encoder says the text did not fit, instead of sizing by the 3-bytes-per-char worst case
+  that sent any text past ~170 chars to the pool. *(NuGet)*
+- **CI conforms to the forge's collapsed per-platform job**: the retired
+  `php_native_spike` input is gone, `csharp_aot_project` is handed over, the Ruby/Python
+  tool pins move to 4.0/3.14, and the C#/Java local dev-loop native staging yields whenever
+  CI has placed the library explicitly (the forge builds the PyO3 extension into
+  `rust/target/release/` before it tests C# and Java — `rust/README.md` records the trap).
+  *(CI only)*
+- **`release.yml` drops the `CARGO_REGISTRY_TOKEN` hand-off** — the crate publishes
+  tokenless through Trusted Publishing, and is packaged and attested before the
+  irreversible push. *(crates.io)*
+
+### Upgrade note
+
+Drop-in for every binding. Nothing is removed or renamed; every new door is an overload or
+a sibling beside the existing surface, and the verdict types are untouched. Two things a
+consumer may notice: the Java jar's downcalls are now `critical`, so a consumer's own
+GraalVM Native Image build inherits that option through the bundled
+`reachability-metadata.json` with no configuration (verified by the smoke test), and the
+Go module's cgo backend no longer allocates on any door, which a `-benchmem` row in a
+consumer's suite will show as 0 allocs where it showed 1–3.
+
+### Notes
+
+- **Not in this release, deliberately: a batch door.** `docs/roadmap.md` places it in round
+  three as new exports beside the scalar ABI. A binding-level loop over N crossings would
+  be a fake win, and every change above is the per-call shape that layer will inherit.
+- **Two platform controls moved between toolchains and are reported as measured.** The
+  Swift `DateFormatter` control read 810 ns on 0.1.0's tape and 28 µs on Swift 6.3.3; the
+  JDK's `ISO_OFFSET_DATE_TIME` control was unstable in the full-length run and is not
+  quoted. The doors' own before/after numbers are the claim in both cases.
+
 ## [0.1.0] — 2026-08-31
 
 First coordinated release — all eight packages published together from one tag, each verified by
@@ -92,5 +207,5 @@ notes: [v0.1.0 release](https://github.com/SkunkWerkx/HyperCast/releases/tag/v0.
   found in that window, in the gap between "the publish succeeded" and "a consumer can use it",
   and none of them could have failed a build in this repository.
 
-[Unreleased]: https://github.com/SkunkWerkx/HyperCast/compare/v0.1.0...HEAD
+[0.2.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/SkunkWerkx/HyperCast/releases/tag/v0.1.0

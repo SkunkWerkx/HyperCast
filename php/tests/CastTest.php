@@ -56,6 +56,15 @@ final class CastTest extends TestCase
         $this->assertSame('18446744073709551615', sprintf('%u', $verdict->value));
     }
 
+    /** The bytes door hands back the sixteen RFC-ordered octets, nothing rendered. */
+    public function testUuidBytesAreTheRfcOrderedSixteen(): void
+    {
+        $verdict = Cast::uuidBytes('urn:uuid:01020304-0506-0708-090A-0B0C0D0E0F10');
+        self::assertInstanceOf(Success::class, $verdict);
+        self::assertSame(hex2bin('0102030405060708090a0b0c0d0e0f10'), $verdict->value);
+        self::assertInstanceOf(Fault::class, Cast::uuidBytes('not-a-uuid'));
+    }
+
     public function testUuidMatchesTheCanonicalShape(): void
     {
         $this->assertEquals(

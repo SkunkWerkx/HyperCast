@@ -85,29 +85,41 @@ Macintosh workbooks, still selectable today) has no phantom anywhere in it.
 
 ## Optional native-extension features
 
-Two additive cargo features link this same core straight into an interpreter as a real
-native extension — one crate, two extra entry points, instead of satellite crates
+Three additive cargo features link this same core straight into an interpreter as a real
+native extension — one crate, three extra entry points, instead of satellite crates
 path-depending back here:
 
 ```sh
 cargo build --release                    # the plain cdylib + rlib every FFI binding uses
 cargo build --release --features python  # the CPython extension module (PyO3, abi3-py310)
 cargo build --release --features ruby    # the Ruby extension (Magnus)
+cargo build --release --features php     # the Zend extension (ext-php-rs) — benchmark spike only
 ```
 
+The `php` one is not a shipped backend. PHP's ext-ffi crossing measured ~105 ns — already
+extension-class, which is why Python and Ruby got a native backend and PHP didn't — and
+this spike exists to keep that reasoning checkable against real numbers rather than
+asserted, exactly as in HyperUuid. CI builds and load-checks it on every darwin/linux leg
+so it cannot bit-rot; no phpunit runs against it, and the Composer package never loads it.
+
 Only one feature is ever enabled per build invocation — each produces a different C entry
-point (`PyInit__native`, `Init_hypercast_native`) under the same crate. On macOS the
+point (`PyInit__native`, `Init_hypercast_native`, PHP's module struct) under the same
+crate. On macOS the
 crate's own `.cargo/config.toml` supplies the `-undefined dynamic_lookup` link flag an
 extension module needs (the host runtime's symbols resolve at load time, not link time).
 
 **Local dev trap worth knowing:** all three builds write the *same* file —
 `target/release/libhypercast.so` — so a `--features python` build (or a `maturin build` in
 `python/`, which is one) silently replaces the plain cdylib that every other binding's dev
-loop loads. The extension build still exports all 19 `cast_*` symbols, but it also carries
+loop loads. The extension build still exports all 20 `cast_*` symbols, but it also carries
 ~95 undefined `Py*` symbols that only resolve inside a CPython process, so the next
 `./gradlew test` or `dotnet test` fails at native load with something unhelpful about a
-missing symbol. Nothing is broken; a plain `cargo build --release` puts it back. CI never
-hits this — each leg builds in its own job.
+missing symbol. Nothing is broken; a plain `cargo build --release` puts it back. CI hits
+exactly this ordering — the forge's single per-platform job builds the PyO3 extension
+before it tests C# and Java — which is why both bindings' dev-loop staging yields whenever
+CI has already placed the library explicitly (`runtimes/<rid>/native/`,
+`src/main/resources/native/<rid>/`); the first collapsed-job run failed every Linux leg on
+`undefined symbol: PyExc_SystemError` before that gate existed.
 
 ## WebAssembly
 
@@ -147,6 +159,33 @@ grouping and separators, three duration grammars). The speed story belongs to th
 where the competition is culture-machinery parsers rather than `str::parse`. Plain-shaped
 input still takes allocation-free fast lanes; only text that actually uses the forgiveness
 pays for it.
+
+## Verifying provenance
+
+The published `.crate` carries a GitHub build-provenance attestation, but not one signed by
+this repo directly — `release.yml`'s `pack-crates` job hands off to a reusable workflow
+(`hyper-publish-crate.yml`) that physically lives in `SkunkWerkx/.github`, and that's the
+identity Fulcio records as the signer. `--repo` alone isn't enough; add `--signer-repo`,
+or use `--owner` in place of both:
+
+```sh
+curl -LO https://static.crates.io/crates/hypercast/hypercast-X.Y.Z.crate
+gh attestation verify hypercast-X.Y.Z.crate \
+  --repo SkunkWerkx/HyperCast --signer-repo SkunkWerkx/.github
+# or: gh attestation verify hypercast-X.Y.Z.crate --owner SkunkWerkx
+```
+
+The crate is packaged and attested *before* `cargo publish` runs, so an attestation failure
+stops the release while it is still reversible — a crates.io version can be yanked but never
+deleted or reused. One attestation covers the bytes a consumer downloads: a `.crate` is
+byte-identical wherever `cargo package --locked` produces it, and cargo verifies every
+download against the index checksum, so crates.io cannot rewrite it the way nuget.org
+rewrites a `.nupkg`.
+
+Get the signer-repo wrong and `gh` reports a bare `verifying with issuer "sigstore.dev"`,
+which reads like a bad signature but is only an identity mismatch — see
+[csharp/README.md's provenance section](../csharp/README.md#native-binary-provenance) for the
+full breakdown of which artifacts in this project are signed from which repo and why.
 
 ## Install
 

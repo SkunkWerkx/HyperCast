@@ -120,11 +120,14 @@ module HyperCast
       .each do |door, unpack|
       sizes = { "c" => 1, "C" => 1, "s<" => 2, "S<" => 2, "l<" => 4, "L<" => 4, "q<" => 8, "Q<" => 8 }
       size = sizes.fetch(unpack)
+      # Resolved once here, not inside the method: interpolating a Symbol per call built a
+      # String and interned it on every integer cast.
+      symbol = :"cast_#{door}"
       # Integer doors: the target type's own range, declared grouping, accounting parens,
       # non-negative exponent, and 0x/&H/0b two's-complement radix prefixes. Ruby Integer
       # is unbounded, so u64 comes back as the true unsigned value.
       define_method(door) do |text, format|
-        numeric(:"cast_#{door}", text, format, size) { |out| out.unpack1(unpack) }
+        numeric(symbol, text, format, size) { |out| out.unpack1(unpack) }
       end
     end
 
@@ -161,7 +164,7 @@ module HyperCast
       code = UNIX_PRECISIONS.fetch(precision)
       bytes = utf8(text)
       out, fault, = scratch
-      rc = Runtime.call(:cast_unix, input_ptr(bytes), bytes.bytesize, code, out, fault)
+      rc = Runtime.function(:cast_unix).call(input_ptr(bytes), bytes.bytesize, code, out, fault)
       verdict(rc, fault) { instant(out[0, 16]) }
     end
 
@@ -179,7 +182,7 @@ module HyperCast
       code = EXCEL_EPOCHS.fetch(epoch)
       bytes = utf8(text)
       out, fault, = scratch
-      rc = Runtime.call(:cast_excel_serial, input_ptr(bytes), bytes.bytesize, code, out, fault)
+      rc = Runtime.function(:cast_excel_serial).call(input_ptr(bytes), bytes.bytesize, code, out, fault)
       verdict(rc, fault) { instant(out[0, 16]) }
     end
 
@@ -198,7 +201,7 @@ module HyperCast
         code = DATE_ORDERS.fetch(order)
         bytes = utf8(text)
         out, fault, = scratch
-        rc = Runtime.call(:cast_date_ordered, input_ptr(bytes), bytes.bytesize, code, out, fault)
+        rc = Runtime.function(:cast_date_ordered).call(input_ptr(bytes), bytes.bytesize, code, out, fault)
         verdict(rc, fault) do
           year, month, day = out[0, 4].unpack("S<CC")
           Date.new(year, month, day)
@@ -218,7 +221,7 @@ module HyperCast
       code = DATE_ORDERS.fetch(order)
       bytes = utf8(text)
       out, fault, = scratch
-      rc = Runtime.call(:cast_datetime, input_ptr(bytes), bytes.bytesize, code, out, fault)
+      rc = Runtime.function(:cast_datetime).call(input_ptr(bytes), bytes.bytesize, code, out, fault)
       verdict(rc, fault) do
         year, month, day, nanos = out[0, 16].unpack("S<CCx4Q<")
         second_of_day, frac = nanos.divmod(1_000_000_000)
@@ -261,14 +264,16 @@ module HyperCast
       bytes.empty? ? nil : bytes
     end
 
-    # One 36-byte scratch allocation per thread, reused by every call: out-value at 0
-    # (16 bytes covers every door), fault span at 16, NumFormat at 24. Two
-    # Fiddle::Pointer.malloc(..., RUBY_FREE) calls per cast — each registering a GC
-    # finalizer — measured as the dominant per-call cost by an order of magnitude.
+    # One 24-byte scratch allocation per thread, reused by every call: out-value at 0
+    # (16 bytes covers every door), fault span at 16. Two Fiddle::Pointer.malloc(...,
+    # RUBY_FREE) calls per cast — each registering a GC finalizer — measured as the
+    # dominant per-call cost by an order of magnitude. The NumFormat no longer lives here:
+    # each format owns its own packed pointer (see packed_cache), so a numeric call copies
+    # nothing into scratch before crossing.
     def scratch
       Thread.current[:hypercast_scratch] ||= begin
-        base = Fiddle::Pointer.malloc(36, Fiddle::RUBY_FREE)
-        [base, base + 16, base + 24]
+        base = Fiddle::Pointer.malloc(24, Fiddle::RUBY_FREE)
+        [base, base + 16]
       end
     end
 
@@ -288,24 +293,31 @@ module HyperCast
     # The shared body of every format-free door: one native call over the scratch buffers.
     def plain(symbol, text, out_size)
       bytes = utf8(text)
-      out, fault, = scratch
-      rc = Runtime.call(symbol, input_ptr(bytes), bytes.bytesize, out, fault)
+      out, fault = scratch
+      rc = Runtime.function(symbol).call(input_ptr(bytes), bytes.bytesize, out, fault)
       verdict(rc, fault) { yield(out[0, out_size]) }
     end
 
-    # The shared body of the integer/real doors: plain, plus the packed NumFormat.
+    # The shared body of the integer/real doors: plain, plus the format's own packed
+    # pointer, passed straight through — no per-call copy of the 12 bytes into scratch.
     def numeric(symbol, text, format, out_size)
       bytes = utf8(text)
-      out, fault, raw_format = scratch
-      raw_format[0, 12] = packed_cache[format]
-      rc = Runtime.call(symbol, input_ptr(bytes), bytes.bytesize, raw_format, out, fault)
+      out, fault = scratch
+      rc = Runtime.function(symbol).call(input_ptr(bytes), bytes.bytesize, packed_cache[format], out, fault)
       verdict(rc, fault) { yield(out[0, out_size]) }
     end
 
-    # Identity-keyed memo of NumFormat#packed — formats are reused constants in practice,
-    # and re-packing per call is a measurable allocation. The race is benign (idempotent).
+    # Identity-keyed memo (compare_by_identity — a pointer hash, not Data's structural
+    # #hash over two Strings and an Integer) of a native 12-byte RawNumFormat per format
+    # object, filled once from NumFormat#packed. Formats are reused constants in practice,
+    # so the common call finds its pointer in one lookup and packs nothing. The Hash holds
+    # the format, so a key can never be a recycled address; the race is benign (idempotent).
     def packed_cache
-      @packed_cache ||= Hash.new { |cache, format| cache[format] = format.packed }
+      @packed_cache ||= Hash.new do |cache, format|
+        pointer = Fiddle::Pointer.malloc(12, Fiddle::RUBY_FREE)
+        pointer[0, 12] = format.packed
+        cache[format] = pointer
+      end.compare_by_identity
     end
 
     # Builds a UTC Time from the core's protobuf-shaped {seconds, nanos} pair, exactly.

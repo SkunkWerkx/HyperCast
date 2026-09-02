@@ -16,7 +16,7 @@ use std::sync::OnceLock;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDate, PyDateTime, PyDelta, PyDict, PyTime, PyTuple, PyTzInfo};
+use pyo3::types::{PyBytes, PyDate, PyDateTime, PyDelta, PyDict, PyTime, PyTzInfo};
 
 use crate as core;
 
@@ -26,6 +26,18 @@ static EMPTY: OnceLock<Py<PyAny>> = OnceLock::new();
 static MALFORMED: OnceLock<Py<PyAny>> = OnceLock::new();
 static OUT_OF_RANGE: OnceLock<Py<PyAny>> = OnceLock::new();
 static UUID_CLASS: OnceLock<Py<PyAny>> = OnceLock::new();
+// The fastuuid-style constructor HyperUuid pinned: `UUID.__new__` plus `object.__setattr__`
+// of the `int` and `is_safe` slots, skipping `UUID.__init__` — whose validation the core
+// already performed on the text, and whose cost was the whole of this door's carrier.
+static UUID_NEW: OnceLock<Py<PyAny>> = OnceLock::new();
+static OBJECT_SETATTR: OnceLock<Py<PyAny>> = OnceLock::new();
+static IS_SAFE_UNKNOWN: OnceLock<Py<PyAny>> = OnceLock::new();
+
+fn cached<'py>(py: Python<'py>, cell: &'static OnceLock<Py<PyAny>>) -> PyResult<&'py Bound<'py, PyAny>> {
+    cell.get()
+        .map(|value| value.bind(py))
+        .ok_or_else(|| PyValueError::new_err("hypercast._native used before _bind"))
+}
 
 /// The success case of a verdict: a cast value.
 #[pyclass(frozen, module = "hypercast")]
@@ -290,15 +302,16 @@ fn cast_bool(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
 #[pyfunction]
 fn cast_uuid(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
     verdict(py, core::cast_uuid(text.bytes()?), |py, bytes| {
-        let class = UUID_CLASS
-            .get()
-            .ok_or_else(|| PyValueError::new_err("hypercast._native used before _bind"))?;
-        let kwargs = PyDict::new(py);
-        kwargs.set_item("bytes", PyBytes::new(py, &bytes))?;
-        Ok(class
-            .bind(py)
-            .call(PyTuple::empty(py), Some(&kwargs))?
-            .unbind())
+        // The core has already validated the text; `UUID.__init__` would only re-check a
+        // value it cannot reject, so the instance is built the way `uuid.UUID` itself
+        // stores it — the 128-bit `int` slot, big-endian from the RFC-ordered bytes, and
+        // `is_safe` left at `SafeUUID.unknown`, exactly what `UUID(bytes=...)` would set.
+        let class = cached(py, &UUID_CLASS)?;
+        let instance = cached(py, &UUID_NEW)?.call1((class,))?;
+        let setattr = cached(py, &OBJECT_SETATTR)?;
+        setattr.call1((&instance, "int", u128::from_be_bytes(bytes)))?;
+        setattr.call1((&instance, "is_safe", cached(py, &IS_SAFE_UNKNOWN)?))?;
+        Ok(instance.unbind())
     })
 }
 
@@ -459,7 +472,14 @@ fn _bind(py: Python<'_>, cast_failure: Bound<'_, PyAny>) -> PyResult<()> {
     let _ = EMPTY.set(cast_failure.getattr("EMPTY")?.unbind());
     let _ = MALFORMED.set(cast_failure.getattr("MALFORMED")?.unbind());
     let _ = OUT_OF_RANGE.set(cast_failure.getattr("OUT_OF_RANGE")?.unbind());
-    let _ = UUID_CLASS.set(py.import("uuid")?.getattr("UUID")?.unbind());
+    let uuid_module = py.import("uuid")?;
+    let class = uuid_module.getattr("UUID")?;
+    let _ = UUID_NEW.set(class.getattr("__new__")?.unbind());
+    let _ = UUID_CLASS.set(class.unbind());
+    let _ = OBJECT_SETATTR.set(
+        py.import("builtins")?.getattr("object")?.getattr("__setattr__")?.unbind(),
+    );
+    let _ = IS_SAFE_UNKNOWN.set(uuid_module.getattr("SafeUUID")?.getattr("unknown")?.unbind());
     Ok(())
 }
 

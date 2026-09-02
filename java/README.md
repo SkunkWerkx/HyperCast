@@ -39,36 +39,54 @@ parses is truncated on the way out — full nanosecond precision, end to end.
 2. **The vocabulary untrusted sources actually send** — twenty boolean lexemes, accounting
    parentheses, radix prefixes, all five .NET `Guid` text forms, protobuf JSON durations.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
-   held by the shared corpus (all 28 tests green, full twelve-file corpus replay through real
+   held by the shared corpus (all 31 tests green, full twelve-file corpus replay through real
    FFM downcalls with byte-exact fault spans).
-4. **Faster where it matters.** JMH, full-length this time — 2 forks, 5 warmup + 10
-   measurement iterations, 20 samples per row, error bars narrow enough to publish
-   (linux-arm64, JDK 23). Reproduce: `./gradlew :benchmarks:jmh`.
+4. **Faster where it matters, and the input no longer copies.** JMH, full-length — 2 forks,
+   5 warmup + 10 measurement iterations, 20 samples per row, `-prof gc` for the allocation
+   column (linux-arm64, JDK 25). Reproduce: `./gradlew :benchmarks:jmh`.
 
    | Door | HyperCast | JDK | Verdict |
    | --- | ---: | ---: | --- |
-   | `Cast.timestamp` vs `Instant.parse` | 62.9 ± 1.2 ns | 561.2 ± 11.9 ns | **8.9x faster** |
-   | `Cast.timestamp` (offset) vs `DateTimeFormatter.ISO_OFFSET_DATE_TIME` | 77.3 ± 1.8 ns | 690.1 ± 11.0 ns | **8.9x faster** |
-   | `Cast.dateTime` vs `LocalDateTime.parse` (ISO) | 91.4 ± 4.0 ns | 506.8 ± 20.3 ns | **5.5x faster** |
-   | `Cast.dateTime` vs a `M/d/yyyy h:mm a` formatter | 81.8 ± 12.6 ns | 334.9 ± 2.4 ns | **4.1x faster** |
-   | `Cast.date` (declared order) vs a `M/d/yyyy` formatter | 44.2 ± 1.8 ns | 167.8 ± 12.3 ns | **3.8x faster** |
-   | `Cast.time` vs `LocalTime.parse` | 66.4 ± 0.8 ns | 360.4 ± 7.3 ns | **5.4x faster** |
-   | `Cast.duration` vs `Duration.parse` | 73.8 ± 2.2 ns | 247.7 ± 5.8 ns | **3.4x faster** |
-   | `Cast.i32` (grouped) vs `NumberFormat` | 67.4 ± 2.9 ns | 87.0 ± 2.0 ns | **1.3x faster** |
-   | `Cast.f64` vs `Double.parseDouble` | 60.5 ± 6.4 ns | 63.9 ± 1.3 ns | parity, slightly ahead |
-   | `Cast.f64` (eurozone) vs `NumberFormat` (de-DE) | 106.0 ± 3.3 ns | 142.6 ± 2.0 ns | **1.3x faster** |
-   | `Cast.uuid` vs `UUID.fromString` | 53.8 ± 3.5 ns | 41.7 ± 1.4 ns | 1.3x slower |
-   | `Cast.bool` vs `Boolean.parseBoolean` | 26.3 ± 1.0 ns | 0.43 ns | honest loss — see below |
+   | `Cast.timestamp` vs `Instant.parse` | 52.5 ± 1.7 ns | 595.9 ± 16.8 ns | **11.4x faster** |
+   | `Cast.dateTime` vs `LocalDateTime.parse` (ISO) | 67.5 ± 1.9 ns | 535.0 ± 13.9 ns | **7.9x faster** |
+   | `Cast.dateTime` vs a `M/d/yyyy h:mm a` formatter | 64.9 ± 1.3 ns | 386.2 ± 15.7 ns | **6.0x faster** |
+   | `Cast.date` (declared order) vs a `M/d/yyyy` formatter | 39.5 ± 2.1 ns | 176.4 ± 9.0 ns | **4.5x faster** |
+   | `Cast.time` vs `LocalTime.parse` | 45.1 ± 1.3 ns | 393.4 ± 18.0 ns | **8.7x faster** |
+   | `Cast.duration` vs `Duration.parse` | 60.9 ± 5.1 ns | 268.8 ± 16.2 ns | **4.4x faster** |
+   | `Cast.i32` (grouped) vs `NumberFormat` | 65.2 ± 2.9 ns | 94.7 ± 3.5 ns | **1.5x faster** |
+   | `Cast.f64` vs `Double.parseDouble` | 50.5 ± 1.3 ns | 67.4 ± 6.7 ns | **1.3x faster** |
+   | `Cast.f64` (eurozone) vs `NumberFormat` (de-DE) | 86.5 ± 3.3 ns | 157.5 ± 4.0 ns | **1.8x faster** |
+   | `Cast.uuid` vs `UUID.fromString` | 38.3 ± 2.5 ns | 45.9 ± 1.5 ns | **1.2x faster** — was a 1.3x loss |
+   | `Cast.bool` vs `Boolean.parseBoolean` | 17.7 ± 0.4 ns | 0.61 ns | honest loss — see below |
 
-   **Separator detection is free**: `NumFormat.DETECT` on `1.234.567,89` measures
-   105.1 ± 3.0 ns against 106.0 ± 3.3 ns for the same text under a declared eurozone
-   format — the structural resolution pass disappears inside the FFM crossing.
+   The `String` rows above include the UTF-8 encode. A caller already holding bytes skips
+   it, and the raw crossing is what round three's chunk layer will pay per cell:
 
-**What changed:** every one of those numbers is roughly 100 ns faster than the first
-(shortened) run, because the doors no longer open an `Arena.ofConfined()` per call — one
-`ThreadLocal` now holds the out/fault/format segments and a reusable input buffer for the
-life of the thread. That was the documented next tuning target, and paying it flipped
-`f64` and grouped `i32` from losses into wins.
+   | Door (UTF-8 in hand) | `byte[]` | `MemorySegment` slice | allocation |
+   | --- | ---: | ---: | ---: |
+   | `Cast.timestamp` | 46.2 ± 1.7 ns | 49.1 ± 2.0 ns | 40 B (the `Instant` + record) |
+   | `Cast.i32` (grouped) | 58.7 ± 2.2 ns | 62.7 ± 2.0 ns | 32 B (the `Integer` + record) |
+   | `Cast.uuid` | 30.2 ± 1.2 ns | — | 48 B (the `UUID` + record) |
+
+   Separator detection costs what the core says it costs: `NumFormat.DETECT` on
+   `1.234.567,89` measures 100.1 ± 9.0 ns against 86.5 ± 3.3 ns declared — the structural
+   resolution pass, now visible because the carrier around it got thin. The
+   `DateTimeFormatter.ISO_OFFSET_DATE_TIME` control was unstable in this run (29 µs ± 61 µs
+   across forks) and is not quoted; the 0.1.0 tape had it at 690 ns.
+
+**What changed, twice.** 0.1.0's first tuning removed the `Arena.ofConfined()` every door
+used to open per call — one `ThreadLocal` holds the out/fault/format segments for the life
+of the thread — worth ~100 ns a call. 0.2.0 removed the copy that was left: every downcall
+is now linked `Linker.Option.critical(true)`, so the caller's own `byte[]` crosses as a
+pinned heap segment instead of being copied into a per-thread native staging buffer, and
+that buffer and its arena are gone. Sound because every door is a short, non-blocking
+parse over those bytes that never calls back into Java — the profile that option exists
+for — and `reachability-metadata.json` registers the option, so the GraalVM Native Image
+smoke test proves it under AOT too. Every door also gained a `MemorySegment` overload: slice
+one buffer holding many values (a mapped file, a direct buffer, one line of a CSV) and cast
+a value out of it with nothing copied. The UUID door reads its sixteen bytes as two
+big-endian longs instead of one byte at a time, which is what turned that row from a loss
+into a win.
 
 **The honest trade-off:** two rows still lose. `UUID.fromString` beats this door by ~12 ns
 — it's pure bit-twiddling with no boundary to cross, and this door also accepts N/B/P/X
@@ -95,6 +113,26 @@ found". The in-repo smoke test was green throughout, because it declared the glo
 build file — so it proved only that *this repo* could be configured to work. That override is
 gone now; the test passes on the packaged metadata alone, which is the only thing that
 actually proves a consumer is fine.
+
+## Verifying provenance
+
+The published jar carries a GitHub build-provenance attestation, but not one signed by this
+repo directly — `release.yml`'s `maven-publish` job hands off to a reusable workflow
+(`hyper-publish-maven.yml`) that physically lives in `SkunkWerkx/.github`, and that's the
+identity Fulcio records as the signer. `--repo` alone isn't enough; add `--signer-repo`,
+or use `--owner` in place of both:
+
+```sh
+curl -LO https://repo1.maven.org/maven2/io/github/skunkwerkx/hypercast/X.Y.Z/hypercast-X.Y.Z.jar
+gh attestation verify hypercast-X.Y.Z.jar \
+  --repo SkunkWerkx/HyperCast --signer-repo SkunkWerkx/.github
+# or: gh attestation verify hypercast-X.Y.Z.jar --owner SkunkWerkx
+```
+
+Get the signer-repo wrong and `gh` reports a bare `verifying with issuer "sigstore.dev"`,
+which reads like a bad signature but is only an identity mismatch — see
+[csharp/README.md's provenance section](../csharp/README.md#native-binary-provenance) for the
+full breakdown of which artifacts in this project are signed from which repo and why.
 
 ## Install
 
