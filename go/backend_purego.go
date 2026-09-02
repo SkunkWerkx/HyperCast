@@ -83,26 +83,41 @@ func ensureLoaded() error {
 	return initErr
 }
 
-func callPlain(sym plainSymbol, ptr unsafe.Pointer, length uintptr, out, fault unsafe.Pointer) int32 {
-	return sym(ptr, length, out, fault)
+// The same by-value result shape the cgo backend returns, filled through pointers here:
+// purego's trampoline boxes its arguments per call regardless, so the heap escape the
+// cgo shims exist to avoid is not the cost that dominates this backend.
+func callPlain(sym plainSymbol, ptr unsafe.Pointer, length uintptr) result {
+	var r result
+	r.code = sym(ptr, length, unsafe.Pointer(&r.out), unsafe.Pointer(&r.fault))
+	return r
 }
 
-func callNumeric(sym numericSymbol, ptr unsafe.Pointer, length uintptr, format, out, fault unsafe.Pointer) int32 {
-	return sym(ptr, length, format, out, fault)
+func callNumeric(sym numericSymbol, ptr unsafe.Pointer, length uintptr, format rawNumFormat) result {
+	var r result
+	r.code = sym(ptr, length, unsafe.Pointer(&format), unsafe.Pointer(&r.out), unsafe.Pointer(&r.fault))
+	return r
 }
 
-func callUnix(ptr unsafe.Pointer, length uintptr, precision uint32, out, fault unsafe.Pointer) int32 {
-	return symUnix(ptr, length, precision, out, fault)
+func callUnix(ptr unsafe.Pointer, length uintptr, precision uint32) result {
+	var r result
+	r.code = symUnix(ptr, length, precision, unsafe.Pointer(&r.out), unsafe.Pointer(&r.fault))
+	return r
 }
 
-func callDateOrdered(ptr unsafe.Pointer, length uintptr, order uint32, out, fault unsafe.Pointer) int32 {
-	return symDateOrdered(ptr, length, order, out, fault)
+func callDateOrdered(ptr unsafe.Pointer, length uintptr, order uint32) result {
+	var r result
+	r.code = symDateOrdered(ptr, length, order, unsafe.Pointer(&r.out), unsafe.Pointer(&r.fault))
+	return r
 }
 
-func callExcelSerial(ptr unsafe.Pointer, length uintptr, epoch uint32, out, fault unsafe.Pointer) int32 {
-	return symExcelSerial(ptr, length, epoch, out, fault)
+func callExcelSerial(ptr unsafe.Pointer, length uintptr, epoch uint32) result {
+	var r result
+	r.code = symExcelSerial(ptr, length, epoch, unsafe.Pointer(&r.out), unsafe.Pointer(&r.fault))
+	return r
 }
 
-func callDateTime(ptr unsafe.Pointer, length uintptr, order uint32, out, fault unsafe.Pointer) int32 {
-	return symDateTime(ptr, length, order, out, fault)
+func callDateTime(ptr unsafe.Pointer, length uintptr, order uint32) result {
+	var r result
+	r.code = symDateTime(ptr, length, order, unsafe.Pointer(&r.out), unsafe.Pointer(&r.fault))
+	return r
 }

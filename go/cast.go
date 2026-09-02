@@ -19,6 +19,7 @@ package hypercast
 
 import (
 	"fmt"
+	"runtime"
 	"time"
 	"unsafe"
 
@@ -91,6 +92,21 @@ func textPtr[T Text](text T) (unsafe.Pointer, uintptr) {
 type rawFault struct {
 	Offset uint32
 	Length uint32
+}
+
+// The verdict as the backends hand it back, by value: 16 bytes of out-value (8-aligned,
+// the widest door's size — every door reads its own prefix through a typed view), the
+// native code, and the fault span. Returning this rather than filling caller pointers is
+// what keeps the cgo backend's doors allocation-free — see backend_cgo.go.
+type result struct {
+	out   [2]uint64
+	code  int32
+	fault rawFault
+}
+
+// A typed view of the out-value; V is one of the repr(C) shapes the core writes.
+func read[V any](r *result) V {
+	return *(*V)(unsafe.Pointer(&r.out))
 }
 
 type rawNumFormat struct {
@@ -264,27 +280,27 @@ func mustLoad() {
 func Bool[T Text](text T) (bool, *Fault) {
 	mustLoad()
 	ptr, length := textPtr(text)
-	var out uint8
-	var fault rawFault
-	code := callPlain(symBool, ptr, length, unsafe.Pointer(&out), unsafe.Pointer(&fault))
-	if code != 0 {
-		return false, failed(code, &fault)
+	r := callPlain(symBool, ptr, length)
+	runtime.KeepAlive(text)
+	if r.code != 0 {
+		return false, failed(r.code, &r.fault)
 	}
-	return out != 0, nil
+	return read[uint8](&r) != 0, nil
 }
 
-func numericDoor[T Text, V any](sym *numericSymbol, text T, format NumFormat, out *V) *Fault {
+func numericDoor[T Text, V any](sym *numericSymbol, text T, format NumFormat) (V, *Fault) {
 	// sym is an address, not a value: the caller evaluates it before mustLoad has
 	// resolved the symbols, so the dereference must happen after.
 	mustLoad()
 	raw := format.raw()
 	ptr, length := textPtr(text)
-	var fault rawFault
-	code := callNumeric(*sym, ptr, length, unsafe.Pointer(&raw), unsafe.Pointer(out), unsafe.Pointer(&fault))
-	if code != 0 {
-		return failed(code, &fault)
+	r := callNumeric(*sym, ptr, length, raw)
+	runtime.KeepAlive(text)
+	if r.code != 0 {
+		var zero V
+		return zero, failed(r.code, &r.fault)
 	}
-	return nil
+	return read[V](&r), nil
 }
 
 // I8 casts integer text under the declared format: the type's own range, declared
@@ -292,74 +308,54 @@ func numericDoor[T Text, V any](sym *numericSymbol, text T, format NumFormat, ou
 // never accepted), and 0x/&H/0b two's-complement radix prefixes (0xFF is -1). The other
 // integer doors share these rules at their own widths.
 func I8[T Text](text T, format NumFormat) (int8, *Fault) {
-	var out int8
-	fault := numericDoor(&symI8, text, format, &out)
-	return out, fault
+	return numericDoor[T, int8](&symI8, text, format)
 }
 
 // I16 casts integer text to int16. Rules as I8.
 func I16[T Text](text T, format NumFormat) (int16, *Fault) {
-	var out int16
-	fault := numericDoor(&symI16, text, format, &out)
-	return out, fault
+	return numericDoor[T, int16](&symI16, text, format)
 }
 
 // I32 casts integer text to int32. Rules as I8.
 func I32[T Text](text T, format NumFormat) (int32, *Fault) {
-	var out int32
-	fault := numericDoor(&symI32, text, format, &out)
-	return out, fault
+	return numericDoor[T, int32](&symI32, text, format)
 }
 
 // I64 casts integer text to int64. Rules as I8.
 func I64[T Text](text T, format NumFormat) (int64, *Fault) {
-	var out int64
-	fault := numericDoor(&symI64, text, format, &out)
-	return out, fault
+	return numericDoor[T, int64](&symI64, text, format)
 }
 
 // U8 casts integer text to uint8. Rules as I8.
 func U8[T Text](text T, format NumFormat) (uint8, *Fault) {
-	var out uint8
-	fault := numericDoor(&symU8, text, format, &out)
-	return out, fault
+	return numericDoor[T, uint8](&symU8, text, format)
 }
 
 // U16 casts integer text to uint16. Rules as I8.
 func U16[T Text](text T, format NumFormat) (uint16, *Fault) {
-	var out uint16
-	fault := numericDoor(&symU16, text, format, &out)
-	return out, fault
+	return numericDoor[T, uint16](&symU16, text, format)
 }
 
 // U32 casts integer text to uint32. Rules as I8.
 func U32[T Text](text T, format NumFormat) (uint32, *Fault) {
-	var out uint32
-	fault := numericDoor(&symU32, text, format, &out)
-	return out, fault
+	return numericDoor[T, uint32](&symU32, text, format)
 }
 
 // U64 casts integer text to uint64 — natively unsigned, no widening games. Rules as I8.
 func U64[T Text](text T, format NumFormat) (uint64, *Fault) {
-	var out uint64
-	fault := numericDoor(&symU64, text, format, &out)
-	return out, fault
+	return numericDoor[T, uint64](&symU64, text, format)
 }
 
 // F32 casts real text under the declared format: finite values only (NaN/Infinity literals
 // are Malformed, overflow to infinity is OutOfRange), declared separators and grouping,
 // accounting parentheses, exponent, and trailing percent (50% is 0.5).
 func F32[T Text](text T, format NumFormat) (float32, *Fault) {
-	var out float32
-	fault := numericDoor(&symF32, text, format, &out)
-	return out, fault
+	return numericDoor[T, float32](&symF32, text, format)
 }
 
 // F64 casts real text to float64. Rules as F32.
 func F64[T Text](text T, format NumFormat) (float64, *Fault) {
-	var out float64
-	fault := numericDoor(&symF64, text, format, &out)
-	return out, fault
+	return numericDoor[T, float64](&symF64, text, format)
 }
 
 // Uuid casts UUID text — all five .NET Guid formats (D/N/B/P/X) plus
@@ -368,13 +364,12 @@ func F64[T Text](text T, format NumFormat) (float64, *Fault) {
 func Uuid[T Text](text T) (uuid.UUID, *Fault) {
 	mustLoad()
 	ptr, length := textPtr(text)
-	var out uuid.UUID
-	var fault rawFault
-	code := callPlain(symUuid, ptr, length, unsafe.Pointer(&out), unsafe.Pointer(&fault))
-	if code != 0 {
-		return uuid.UUID{}, failed(code, &fault)
+	r := callPlain(symUuid, ptr, length)
+	runtime.KeepAlive(text)
+	if r.code != 0 {
+		return uuid.UUID{}, failed(r.code, &r.fault)
 	}
-	return out, nil
+	return read[uuid.UUID](&r), nil
 }
 
 // instantDoor serves both instant-shaped doors: a zero precision means the RFC 3339 door
@@ -382,17 +377,17 @@ func Uuid[T Text](text T) (uuid.UUID, *Fault) {
 func instantDoor[T Text](text T, precision UnixPrecision) (time.Time, *Fault) {
 	mustLoad()
 	ptr, length := textPtr(text)
-	var out rawTimestamp
-	var fault rawFault
-	var code int32
+	var r result
 	if precision == 0 {
-		code = callPlain(symTimestamp, ptr, length, unsafe.Pointer(&out), unsafe.Pointer(&fault))
+		r = callPlain(symTimestamp, ptr, length)
 	} else {
-		code = callUnix(ptr, length, uint32(precision), unsafe.Pointer(&out), unsafe.Pointer(&fault))
+		r = callUnix(ptr, length, uint32(precision))
 	}
-	if code != 0 {
-		return time.Time{}, failed(code, &fault)
+	runtime.KeepAlive(text)
+	if r.code != 0 {
+		return time.Time{}, failed(r.code, &r.fault)
 	}
+	out := read[rawTimestamp](&r)
 	return time.Unix(out.Seconds, int64(out.Nanos)).UTC(), nil
 }
 
@@ -429,12 +424,12 @@ func ExcelSerial[T Text](text T, epoch ExcelEpoch) (time.Time, *Fault) {
 	}
 	mustLoad()
 	ptr, length := textPtr(text)
-	var out rawTimestamp
-	var fault rawFault
-	code := callExcelSerial(ptr, length, uint32(epoch), unsafe.Pointer(&out), unsafe.Pointer(&fault))
-	if code != 0 {
-		return time.Time{}, failed(code, &fault)
+	r := callExcelSerial(ptr, length, uint32(epoch))
+	runtime.KeepAlive(text)
+	if r.code != 0 {
+		return time.Time{}, failed(r.code, &r.fault)
 	}
+	out := read[rawTimestamp](&r)
 	return time.Unix(out.Seconds, int64(out.Nanos)).UTC(), nil
 }
 
@@ -442,12 +437,12 @@ func ExcelSerial[T Text](text T, epoch ExcelEpoch) (time.Time, *Fault) {
 func DateOnly[T Text](text T) (Date, *Fault) {
 	mustLoad()
 	ptr, length := textPtr(text)
-	var out rawDate
-	var fault rawFault
-	code := callPlain(symDate, ptr, length, unsafe.Pointer(&out), unsafe.Pointer(&fault))
-	if code != 0 {
-		return Date{}, failed(code, &fault)
+	r := callPlain(symDate, ptr, length)
+	runtime.KeepAlive(text)
+	if r.code != 0 {
+		return Date{}, failed(r.code, &r.fault)
 	}
+	out := read[rawDate](&r)
 	return Date{Year: int(out.Year), Month: time.Month(out.Month), Day: int(out.Day)}, nil
 }
 
@@ -462,12 +457,12 @@ func DateOnlyOrdered[T Text](text T, order DateOrder) (Date, *Fault) {
 	}
 	mustLoad()
 	ptr, length := textPtr(text)
-	var out rawDate
-	var fault rawFault
-	code := callDateOrdered(ptr, length, uint32(order), unsafe.Pointer(&out), unsafe.Pointer(&fault))
-	if code != 0 {
-		return Date{}, failed(code, &fault)
+	r := callDateOrdered(ptr, length, uint32(order))
+	runtime.KeepAlive(text)
+	if r.code != 0 {
+		return Date{}, failed(r.code, &r.fault)
 	}
+	out := read[rawDate](&r)
 	return Date{Year: int(out.Year), Month: time.Month(out.Month), Day: int(out.Day)}, nil
 }
 
@@ -483,12 +478,12 @@ func DateTime[T Text](text T, order DateOrder) (CivilDateTime, *Fault) {
 	}
 	mustLoad()
 	ptr, length := textPtr(text)
-	var out rawCivil
-	var fault rawFault
-	code := callDateTime(ptr, length, uint32(order), unsafe.Pointer(&out), unsafe.Pointer(&fault))
-	if code != 0 {
-		return CivilDateTime{}, failed(code, &fault)
+	r := callDateTime(ptr, length, uint32(order))
+	runtime.KeepAlive(text)
+	if r.code != 0 {
+		return CivilDateTime{}, failed(r.code, &r.fault)
 	}
+	out := read[rawCivil](&r)
 	return CivilDateTime{
 		Date:      Date{Year: int(out.Year), Month: time.Month(out.Month), Day: int(out.Day)},
 		TimeOfDay: time.Duration(out.Nanos),
@@ -500,13 +495,12 @@ func DateTime[T Text](text T, order DateOrder) (CivilDateTime, *Fault) {
 func TimeOfDay[T Text](text T) (time.Duration, *Fault) {
 	mustLoad()
 	ptr, length := textPtr(text)
-	var out uint64
-	var fault rawFault
-	code := callPlain(symTime, ptr, length, unsafe.Pointer(&out), unsafe.Pointer(&fault))
-	if code != 0 {
-		return 0, failed(code, &fault)
+	r := callPlain(symTime, ptr, length)
+	runtime.KeepAlive(text)
+	if r.code != 0 {
+		return 0, failed(r.code, &r.fault)
 	}
-	return time.Duration(out), nil
+	return time.Duration(read[uint64](&r)), nil
 }
 
 // Span casts a duration (ISO 8601 fixed components, invariant colon form, or protobuf JSON
@@ -514,11 +508,11 @@ func TimeOfDay[T Text](text T) (time.Duration, *Fault) {
 func Span[T Text](text T) (Duration, *Fault) {
 	mustLoad()
 	ptr, length := textPtr(text)
-	var out rawTimestamp
-	var fault rawFault
-	code := callPlain(symDuration, ptr, length, unsafe.Pointer(&out), unsafe.Pointer(&fault))
-	if code != 0 {
-		return Duration{}, failed(code, &fault)
+	r := callPlain(symDuration, ptr, length)
+	runtime.KeepAlive(text)
+	if r.code != 0 {
+		return Duration{}, failed(r.code, &r.fault)
 	}
+	out := read[rawTimestamp](&r)
 	return Duration{Seconds: out.Seconds, Nanos: out.Nanos}, nil
 }
