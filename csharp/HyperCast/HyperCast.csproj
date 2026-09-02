@@ -75,15 +75,25 @@
          build in rust/), copy that fresh native library straight to the output so tests and
          benchmarks run against it without any packaging step. CI's runtimes/ layout above
          takes over for real packages; both patterns copy to the output root, where native
-         library resolution always probes. -->
+         library resolution always probes.
+
+         Only when this SDK's own RID has NOT been placed under runtimes/ explicitly. Both
+         items link to the same output filename, and PreserveNewest lets the newer one win —
+         which in CI is the wrong one: the forge builds the PyO3 extension (a cargo build
+         with the python feature on) into the same rust/target/release/ BEFORE the C# leg
+         runs, so
+         this copy overwrote the correctly placed library with an extension whose Py* imports
+         are unresolved outside CPython (DllNotFoundException: undefined symbol
+         PyExc_SystemError, on every Linux leg of the first collapsed-job run). Explicit
+         placement is the signal that someone else already staged the right bytes. -->
     <None Include="../../rust/target/release/libhypercast.so"
-          Condition="Exists('../../rust/target/release/libhypercast.so')"
+          Condition="Exists('../../rust/target/release/libhypercast.so') And !Exists('runtimes/$(NETCoreSdkRuntimeIdentifier)/native/libhypercast.so')"
           Link="libhypercast.so" CopyToOutputDirectory="PreserveNewest" Visible="false" />
     <None Include="../../rust/target/release/libhypercast.dylib"
-          Condition="Exists('../../rust/target/release/libhypercast.dylib')"
+          Condition="Exists('../../rust/target/release/libhypercast.dylib') And !Exists('runtimes/$(NETCoreSdkRuntimeIdentifier)/native/libhypercast.dylib')"
           Link="libhypercast.dylib" CopyToOutputDirectory="PreserveNewest" Visible="false" />
     <None Include="../../rust/target/release/hypercast.dll"
-          Condition="Exists('../../rust/target/release/hypercast.dll')"
+          Condition="Exists('../../rust/target/release/hypercast.dll') And !Exists('runtimes/$(NETCoreSdkRuntimeIdentifier)/native/hypercast.dll')"
           Link="hypercast.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" />
   </ItemGroup>
 

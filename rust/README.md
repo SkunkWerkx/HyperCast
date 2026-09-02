@@ -103,11 +103,15 @@ extension module needs (the host runtime's symbols resolve at load time, not lin
 **Local dev trap worth knowing:** all three builds write the *same* file —
 `target/release/libhypercast.so` — so a `--features python` build (or a `maturin build` in
 `python/`, which is one) silently replaces the plain cdylib that every other binding's dev
-loop loads. The extension build still exports all 19 `cast_*` symbols, but it also carries
+loop loads. The extension build still exports all 20 `cast_*` symbols, but it also carries
 ~95 undefined `Py*` symbols that only resolve inside a CPython process, so the next
 `./gradlew test` or `dotnet test` fails at native load with something unhelpful about a
-missing symbol. Nothing is broken; a plain `cargo build --release` puts it back. CI never
-hits this — each leg builds in its own job.
+missing symbol. Nothing is broken; a plain `cargo build --release` puts it back. CI hits
+exactly this ordering — the forge's single per-platform job builds the PyO3 extension
+before it tests C# and Java — which is why both bindings' dev-loop staging yields whenever
+CI has already placed the library explicitly (`runtimes/<rid>/native/`,
+`src/main/resources/native/<rid>/`); the first collapsed-job run failed every Linux leg on
+`undefined symbol: PyExc_SystemError` before that gate existed.
 
 ## WebAssembly
 

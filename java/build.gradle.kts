@@ -43,6 +43,13 @@ val nativeRid = run {
 }
 
 val stageNativeLibrary = tasks.register<Copy>("stageNativeLibrary") {
+    // Only when this platform's library has NOT been placed under src/main/resources
+    // explicitly. The forge builds the PyO3 extension (cargo build --features python) into
+    // the same rust/target/release/ BEFORE the Java leg runs, so staging from there in CI
+    // put an extension with unresolved Py* imports beside the correctly placed one and the
+    // suite failed at native load. Explicit placement is the signal that the right bytes
+    // are already on the classpath.
+    onlyIf { !file("src/main/resources/native/$nativeRid").exists() }
     from("../rust/target/release") {
         include("libhypercast.so", "libhypercast.dylib", "hypercast.dll")
     }
