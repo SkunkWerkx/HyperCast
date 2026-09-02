@@ -43,7 +43,10 @@ parses is truncated on the way out — full nanosecond precision, end to end.
    FFM downcalls with byte-exact fault spans).
 4. **Faster where it matters, and the input no longer copies.** JMH, full-length — 2 forks,
    5 warmup + 10 measurement iterations, 20 samples per row, `-prof gc` for the allocation
-   column (linux-arm64, JDK 25). Reproduce: `./gradlew :benchmarks:jmh`.
+   column (linux-arm64, JDK 25). Reproduce: `./gradlew :benchmarks:jmh` — which now runs
+   HyperUuid's short profile (1 fork, 3 + 5 iterations of one second) and lands within a
+   few percent of the table in under two minutes; the full-length numbers are the ones
+   printed.
 
    | Door | HyperCast | JDK | Verdict |
    | --- | ---: | ---: | --- |
