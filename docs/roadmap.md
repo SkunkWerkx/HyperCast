@@ -70,14 +70,34 @@ collapsing ~5,000 crossings into one. Svartalfheim already sketched the consumer
 too — `Primitives.Ingestion`'s `TabularReader`/`SepTabularReader`/`ExcelTabularReader` are
 the origin blueprint for what this layer's binding surface looks like.
 
+This round lives in three repositories of its own, not in this one, and each has a Rust
+crate with a green test suite against this repo's master today:
+
+- **[HyperTabular](https://github.com/SkunkWerkx/HyperTabular)** — the contract every
+  provider speaks: the format-neutral `Cell`, the caller-declared `Plan` of doors, the cast
+  engine, the column-major `Batch`, and the `#[repr(C)]` shapes the bindings share. An
+  rlib; it consumes `hypercast` as a git dependency on this repo's master. Its
+  `docs/design.md` and `docs/prior-art.md` are the design record for all three.
+- **[HyperDelimited](https://github.com/SkunkWerkx/HyperDelimited)** — CSV/TSV/any
+  single-byte ASCII separator, with the SIMD structural scanner. A cdylib.
+- **[HyperWorkbook](https://github.com/SkunkWerkx/HyperWorkbook)** — XLSX and ODS: the zip
+  container, streaming inflate, a sheet-XML tokenizer, styles and shared strings. A cdylib.
+
+Not there yet: the seven bindings, and the conformance corpus (HyperTabular's `corpus/`
+directory is empty of xlsx and ods fixtures; HyperWorkbook's tests run on synthetic
+fixtures built by openpyxl and by hand).
+
 Design constraints round one already locked in on purpose:
 
 - **The scalar doors are the inner loop.** Zero allocation per cast and verdict-as-span
   (`{code, offset, len}` into the caller's buffer) mean per-cell faults in a batch cost
   nothing and need no string materialization — a failed cell is a row/column index plus a
   span, reported in a parallel verdict array.
-- **The batch entry point is additive.** Nothing about the scalar ABI changes; the tabular
-  layer is new exports beside it, not a rework beneath it.
+- **The batch entry point is additive.** Nothing about the scalar ABI changes. The batch
+  lives beside it, not beneath it: `hypertabular` links `hypercast` as an rlib and each
+  provider's cdylib exports the batch surface, so `libhypercast` itself never gains a batch
+  export — and because the link is static, each provider's library also carries the 20
+  `cast_*` exports.
 
 One piece of this round already landed, ahead of schedule and on purpose:
 
@@ -88,20 +108,26 @@ One piece of this round already landed, ahead of schedule and on purpose:
   exactly that, so it was built early rather than left to block the tabular layer. The door
   ships in every binding today (`cast_excel_serial`, a caller-declared `ExcelEpoch`, the
   phantom serial `Malformed` exactly as the text `1900-02-29` already is), with
-  `corpus/excel_serial.json` holding it byte-identical across all eight languages. Nothing
-  below depends on it any more — the XLSX reader will call a door that already exists.
+  `corpus/excel_serial.json` holding it byte-identical across all eight languages. The door
+  reads serial *text* — a CSV column of serials. HyperWorkbook's reader starts from the
+  `f64` the file stores and converts it in `hypertabular::serial`, which carries the same
+  rules (epoch, phantom 60, fraction as time of day) independently; nothing yet pins the
+  two to agree.
 
-Known design work still parked deliberately:
+Two designs this file once parked are now recorded and built:
 
-- **XLSX container handling.** XLSX is zip + XML (inflate, shared-strings table, cell-type
-  attributes). Streaming decompression versus caller-buffer protocols is the real design
-  conversation, because it's the first place "never allocates" needs a deliberate,
-  documented boundary — the same way HyperUuid's batch scratch buffer is its one
-  documented allocating path.
-- **Delimited-text dialect surface.** Quoting, embedded newlines, separator declaration —
-  the same caller-declares-everything philosophy as `NumFormat`: no sniffing, no guessing.
+- **XLSX container handling** — HyperWorkbook's `docs/design.md`, "Container and
+  streaming": a hand-rolled central-directory zip reader, streaming inflate through
+  `flate2` on the `zlib-rs` backend (the one external crate in the three repositories),
+  and the shared-string preload as the documented allocating boundary — the same way
+  HyperUuid's batch scratch buffer is its one documented allocating path.
+- **Delimited-text dialect surface** — HyperDelimited's `docs/design.md`: one ASCII byte
+  as separator, `"` as the only quote with RFC 4180 doubling, `\n`/`\r\n`/`\r` terminators,
+  column count fixed by the first record. The same caller-declares-everything philosophy
+  as `NumFormat`: no sniffing, no guessing.
 
-Pattern prior art, studied deliberately: **nietras/Sep** is the model for what an
+Pattern prior art, studied and recorded in HyperTabular's `docs/prior-art.md` (direct
+reads of each project's source, 2026-08-28): **nietras/Sep** is the model for what an
 allocation-free, span-first C# tabular surface looks like (Svartalfheim's
 `SepTabularReader` already sits on it), and that lesson then carries to
 **Sylvan.Data.Excel** for the XLSX reader shape. Public flowers — the README
