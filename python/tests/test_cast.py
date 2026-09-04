@@ -5,7 +5,11 @@ Python's honest ceiling), the unbounded-int u64 story, and the caller-bug guards
 from __future__ import annotations
 
 import datetime as dt
+import importlib.metadata
+import re
 import uuid as uuidlib
+from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -30,9 +34,103 @@ def test_str_doors_transcode_non_ascii_separators():
     assert hypercast.cast_f64("1 234,5", french) == Success(1234.5)
 
 
+def test_fault_spans_come_back_in_the_callers_own_units():
+    # The core reports byte spans into the UTF-8 it saw; a str caller's unit is the code
+    # point, so the same text faults at the same place in either unit and slices back out.
+    assert hypercast.cast_i32("€x", NumFormat.INVARIANT) == Fault(CastFailure.MALFORMED, 0, 1)
+    assert hypercast.cast_i32("€x".encode(), NumFormat.INVARIANT) == Fault(CastFailure.MALFORMED, 0, 3)
+    assert hypercast.cast_i32("1€", NumFormat.INVARIANT) == Fault(CastFailure.MALFORMED, 1, 1)
+    assert hypercast.cast_i32("1€".encode(), NumFormat.INVARIANT) == Fault(CastFailure.MALFORMED, 1, 3)
+    text = "12€4"
+    for passed in (text, text.encode()):
+        match hypercast.cast_f64(passed, NumFormat.INVARIANT):
+            case Fault(_, offset, length):
+                assert passed[offset:offset + length] == ("€" if isinstance(passed, str) else "€".encode())
+            case other:
+                raise AssertionError(f"{passed!r} parsed: {other!r}")
+    # A non-ASCII input that succeeds, and an ASCII fault, are untouched by the mapping.
+    assert hypercast.cast_f64("1\u00a0234,5", NumFormat(",", "\u00a0", NumFormat.ALL)) == Success(1234.5)
+    assert hypercast.cast_i32("  12x4", NumFormat.INVARIANT) == Fault(CastFailure.MALFORMED, 4, 1)
+
+
 def test_localeconv_bridge():
     fmt = NumFormat.from_localeconv({"decimal_point": ",", "thousands_sep": "."})
+    assert fmt.currency == ""
     assert hypercast.cast_f64("1.234,5", fmt) == Success(1234.5)
+    euro = NumFormat.from_localeconv({"decimal_point": ",", "thousands_sep": ".", "currency_symbol": "€"})
+    assert euro.currency == "€"
+    assert hypercast.cast_f64("1.234,5 €", euro) == Success(1234.5)
+
+
+def test_currency_symbol_is_declared_never_guessed():
+    dollars = NumFormat(".", ",", NumFormat.ALL, "$")
+    assert dollars.currency == "$"
+    assert NumFormat.ALL & NumFormat.CURRENCY
+    assert hypercast.cast_i32("$1,234", dollars) == Success(1234)
+    assert hypercast.cast_i32("-$5", dollars) == Success(-5)
+    assert hypercast.cast_i32("$ -5", dollars) == Success(-5)
+    assert hypercast.cast_i32("($5)", dollars) == Success(-5)
+    assert hypercast.cast_f64("$2.50", dollars) == Success(2.5)
+    krone = NumFormat(",", ".", NumFormat.ALL, currency="kr.")
+    assert hypercast.cast_decimal("1.234,50 kr.", krone) == Success(Decimal("1234.5"))
+    # Declared but with the lenience off: the symbol is simply the first offending byte.
+    off = NumFormat(".", ",", NumFormat.ALL & ~NumFormat.CURRENCY, "$")
+    assert hypercast.cast_i32("$5", off) == Fault(CastFailure.MALFORMED, 0, 1)
+    # Nothing declared (INVARIANT declares no symbol): the flag matches nothing.
+    assert NumFormat.INVARIANT.currency == ""
+    assert hypercast.cast_i32("$5", NumFormat.INVARIANT) == Fault(CastFailure.MALFORMED, 0, 1)
+
+
+def test_currency_symbol_rules_are_a_caller_bug():
+    # 1 to 16 UTF-8 bytes, no ASCII digit or whitespace — the core's CurrencySymbol rule,
+    # enforced at construction like equal separators, identically on both backends.
+    for bad in ("$5", "US D", "x" * 17, "€" * 6):
+        with pytest.raises(ValueError):
+            NumFormat(".", ",", NumFormat.ALL, bad)
+    assert NumFormat(".", ",", NumFormat.ALL, "€" * 5).currency == "€" * 5  # 15 bytes
+
+
+def test_decimal_is_exact_and_canonical():
+    assert hypercast.cast_decimal("0.1", NumFormat.INVARIANT) == Success(Decimal("0.1"))
+    verdict = hypercast.cast_decimal("1.10", NumFormat.INVARIANT)
+    assert isinstance(verdict.value, Decimal)
+    assert verdict == Success(Decimal("1.1"))
+    # Equality would also accept Decimal("1.10"); the tuple pins the canonical scale: exact
+    # trailing zeros in the fraction are trimmed, so "1.10", "1.1" and "1.1000" are one value.
+    assert verdict.value.as_tuple() == (0, (1, 1), -1)
+    for text in ("1.1", "1.1000"):
+        assert hypercast.cast_decimal(text, NumFormat.INVARIANT).value.as_tuple() == (0, (1, 1), -1)
+    assert hypercast.cast_decimal("50%", NumFormat.INVARIANT).value.as_tuple() == (0, (5,), -1)
+    assert hypercast.cast_decimal("100", NumFormat.INVARIANT).value.as_tuple() == (0, (1, 0, 0), 0)
+    # Zero is scale 0 and never negative.
+    assert hypercast.cast_decimal("-0.00", NumFormat.INVARIANT).value.as_tuple() == (0, (0,), 0)
+    # 96 bits of magnitude, exactly: one past the ceiling is out of range, never rounded.
+    top = 2**96 - 1
+    assert hypercast.cast_decimal(str(top), NumFormat.INVARIANT) == Success(Decimal(top))
+    assert hypercast.cast_decimal(str(top + 1), NumFormat.INVARIANT) == Fault(
+        CastFailure.OUT_OF_RANGE, 0, len(str(top + 1)))
+
+
+def _expected_version() -> str:
+    # The one version source is rust/Cargo.toml: maturin bakes it into the package metadata,
+    # and the crate bakes it into hypercast_version — so the expectation is derived, never a
+    # literal that goes stale on the next bump. The metadata is absent when the suite runs
+    # off the source tree with no install, so fall back to the manifest itself.
+    try:
+        return importlib.metadata.version("hypercast")
+    except importlib.metadata.PackageNotFoundError:
+        pass
+    for parent in Path(__file__).resolve().parents:
+        manifest = parent / "rust" / "Cargo.toml"
+        if manifest.is_file():
+            found = re.search(r'^version\s*=\s*"([^"]+)"', manifest.read_text(encoding="utf-8"), re.MULTILINE)
+            assert found, f"no version in {manifest}"
+            return found.group(1)
+    raise FileNotFoundError("rust/Cargo.toml not found")
+
+
+def test_native_version_names_the_loaded_core():
+    assert hypercast.native_version() == _expected_version()
 
 
 def test_uuid_agrees_with_the_platforms_own_parser():
