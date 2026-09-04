@@ -621,7 +621,7 @@ final class Cast
      * before making the first cast. Throws when no library resolves; {@see isAvailable()}
      * is the non-throwing form.
      *
-     * @return string the native library's semantic version, e.g. "0.2.0"
+     * @return string the native library's semantic version as "major.minor.patch"
      */
     public static function nativeVersion(): string
     {

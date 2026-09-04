@@ -120,10 +120,10 @@ d, fault := hypercast.Exact("($1,234.50)", hypercast.NumFormat{
 ### NumFormat and currency symbols
 
 Every numeric door takes a `NumFormat` — the caller's declared notation, never a guess:
-the decimal and group separators, the `NumStyles` lenience flags, and, new in 0.2.0, an
-optional `Currency` symbol. `Invariant` is `'.'`/`','` with `AllStyles` and no symbol;
+the decimal and group separators, the `NumStyles` lenience flags, and an optional
+`Currency` symbol. `Invariant` is `'.'`/`','` with `AllStyles` and no symbol;
 `Detect` adds `SeparatorDetect`. `AllStyles` is every lenience including `CurrencySymbol`
-(and excluding `SeparatorDetect`), so keyed literals written against 0.1.0 keep compiling
+(and excluding `SeparatorDetect`), so keyed literals that predate the symbol keep compiling
 and keep their meaning.
 
 With `CurrencySymbol` set and a `Currency` declared, the symbol is accepted once, whole, at

@@ -296,7 +296,7 @@ public final class Cast {
      * resolved is the one this binding was built against, before making the first cast;
      * takes nothing, touches nothing, cannot fail.
      *
-     * @return the loaded core's version, e.g. {@code "0.2.0"}
+     * @return the loaded core's version as {@code "major.minor.patch"}
      */
     public static String nativeVersion() {
         int packed;

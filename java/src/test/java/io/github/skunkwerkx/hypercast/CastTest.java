@@ -197,7 +197,7 @@ final class CastTest {
         // platform library or the wasm module — which must be the one this binding is built
         // against: build.gradle.kts hands its own version to the test JVM, and rust/Cargo.toml
         // moves with it.
-        // A CI override may append a prerelease tag (0.2.0-ci.N, per build.gradle.kts); the
+        // A CI override may append a prerelease tag (a -ci.N suffix, per build.gradle.kts); the
         // core carries only major.minor.patch, so compare that much.
         var expected = System.getProperty("hypercast.version").split("-", 2)[0];
         assertEquals(expected, Cast.nativeVersion());
