@@ -81,6 +81,12 @@ jobs:
       # back to the universal Fiddle gem, which is exactly what it's there for.
       ruby_compat_version: "3.4"
       # go_windows stays default-true: the purego fallback carries the Windows legs.
+      # The core as a wasm32-wasip1 module too, and every binding's suite a second time
+      # through its in-process wasm backend (GraalWasm for Java, wasmtime for Ruby, Python
+      # and Go). The module is what the jar, the gems and the wheels carry beside the native
+      # libraries so a platform with no native build still has a working backend.
+      wasip1_module: true
+      wasm_env: HYPERCAST_WASM
 
   # The C#/NuGet browser-wasm staticlib — built on every PR, not just at release time, so
   # a wasm-breaking core change surfaces immediately.

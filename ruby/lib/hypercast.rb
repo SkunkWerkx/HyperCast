@@ -161,11 +161,7 @@ module HyperCast
     # (:seconds/:milliseconds/:microseconds/:nanoseconds) to a UTC Time. An unknown unit
     # is a caller bug (KeyError), never a verdict.
     def unix(text, precision)
-      code = UNIX_PRECISIONS.fetch(precision)
-      bytes = utf8(text)
-      out, fault, = scratch
-      rc = Runtime.function(:cast_unix).call(input_ptr(bytes), bytes.bytesize, code, out, fault)
-      verdict(rc, fault) { instant(out[0, 16]) }
+      declared(:cast_unix, text, UNIX_PRECISIONS.fetch(precision), 16) { |out| instant(out) }
     end
 
     # Casts an Excel date serial under a caller-declared epoch Symbol (:y1900/:y1904) to a
@@ -179,11 +175,7 @@ module HyperCast
     # the text "1900-02-29" — so every serial above it is shifted one day against a naive
     # count. An unknown epoch is a caller bug (KeyError), never a verdict.
     def excel_serial(text, epoch)
-      code = EXCEL_EPOCHS.fetch(epoch)
-      bytes = utf8(text)
-      out, fault, = scratch
-      rc = Runtime.function(:cast_excel_serial).call(input_ptr(bytes), bytes.bytesize, code, out, fault)
-      verdict(rc, fault) { instant(out[0, 16]) }
+      declared(:cast_excel_serial, text, EXCEL_EPOCHS.fetch(epoch), 16) { |out| instant(out) }
     end
 
     # Casts a calendar date to a Date. With no order declared: the strict ISO 8601
@@ -198,12 +190,8 @@ module HyperCast
           Date.new(year, month, day)
         end
       else
-        code = DATE_ORDERS.fetch(order)
-        bytes = utf8(text)
-        out, fault, = scratch
-        rc = Runtime.function(:cast_date_ordered).call(input_ptr(bytes), bytes.bytesize, code, out, fault)
-        verdict(rc, fault) do
-          year, month, day = out[0, 4].unpack("S<CC")
+        declared(:cast_date_ordered, text, DATE_ORDERS.fetch(order), 4) do |out|
+          year, month, day = out.unpack("S<CC")
           Date.new(year, month, day)
         end
       end
@@ -218,12 +206,8 @@ module HyperCast
     # fusing a real zone is the caller's job, and timestamp stays the strict RFC 3339
     # instant door. An unknown order is a caller bug (KeyError).
     def datetime(text, order)
-      code = DATE_ORDERS.fetch(order)
-      bytes = utf8(text)
-      out, fault, = scratch
-      rc = Runtime.function(:cast_datetime).call(input_ptr(bytes), bytes.bytesize, code, out, fault)
-      verdict(rc, fault) do
-        year, month, day, nanos = out[0, 16].unpack("S<CCx4Q<")
+      declared(:cast_datetime, text, DATE_ORDERS.fetch(order), 16) do |out|
+        year, month, day, nanos = out.unpack("S<CCx4Q<")
         second_of_day, frac = nanos.divmod(1_000_000_000)
         hour, rest = second_of_day.divmod(3600)
         minute, second = rest.divmod(60)
@@ -307,6 +291,17 @@ module HyperCast
       verdict(rc, fault) { yield(out[0, out_size]) }
     end
 
+    # The shared body of the four doors that take a caller-declared u32 — a precision, an
+    # epoch, or a field order — already resolved from its Symbol by the door. These three
+    # bodies (plain, numeric, declared) are the whole native crossing: the wasm backend
+    # (wasm_runtime.rb) redefines exactly these three in place and nothing above them.
+    def declared(symbol, text, code, out_size)
+      bytes = utf8(text)
+      out, fault = scratch
+      rc = Runtime.function(symbol).call(input_ptr(bytes), bytes.bytesize, code, out, fault)
+      verdict(rc, fault) { yield(out[0, out_size]) }
+    end
+
     # Identity-keyed memo (compare_by_identity — a pointer hash, not Data's structural
     # #hash over two Strings and an Integer) of a native 12-byte RawNumFormat per format
     # object, filled once from NumFormat#packed. Formats are reused constants in practice,
@@ -333,8 +328,24 @@ end
 # drops to an ordinary extension call. The pure-Fiddle definitions stay the universal
 # zero-compile fallback; precompiled platform gems are how the extension ships without
 # ever making a consumer compile anything. Set HYPERCAST_PURE=1 to force Fiddle.
+#
+# The third backend is WebAssembly (lib/hypercast/wasm_runtime.rb): the same core as a
+# wasm32-wasip1 module, run in-process by the `wasmtime` gem, which is deliberately not a
+# runtime dependency of this gem — a consumer who wants it installs it. HYPERCAST_WASM=1
+# forces it (and fails loudly if wasmtime is missing); otherwise it is only ever chosen when
+# there is no native library for this platform at all and wasmtime happens to be available,
+# so no supported platform's behavior changes by its existence.
 HyperCast::BACKEND =
-  if ENV["HYPERCAST_PURE"]
+  if ENV["HYPERCAST_WASM"]
+    begin
+      require "wasmtime"
+    rescue LoadError
+      raise LoadError,
+            "hypercast: HYPERCAST_WASM=1 needs the wasmtime gem — `gem install wasmtime` (or add it to your Gemfile)"
+    end
+    require_relative "hypercast/wasm_runtime"
+    :wasm
+  elsif ENV["HYPERCAST_PURE"]
     :fiddle
   else
     # Two layouts, and both have to work. A released platform gem is a "fat" gem carrying one
@@ -354,7 +365,21 @@ HyperCast::BACKEND =
         require "hypercast_native"
         :native
       rescue LoadError
-        :fiddle
+        if HyperCast::Runtime.fiddle_library_available?
+          :fiddle
+        else
+          # No shared library for this platform either. wasmtime, if the consumer has it,
+          # is the only backend left that can run here; without it, stay on Fiddle so the
+          # first call raises its own precise "not found" LoadError rather than a vaguer one
+          # from here.
+          begin
+            require "wasmtime"
+            require_relative "hypercast/wasm_runtime"
+            :wasm
+          rescue LoadError
+            :fiddle
+          end
+        end
       end
     end
   end

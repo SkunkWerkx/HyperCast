@@ -8,3 +8,14 @@ group :development do
   gem "benchmark-ips"
   gem "rspec"
 end
+
+# The WebAssembly backend's engine, and nothing else needs it: HYPERCAST_WASM=1 runs the
+# suite through lib/hypercast/wasm_runtime.rb, which requires this gem. Its own group rather
+# than a gemspec development dependency so an install that will never run that suite can
+# skip it — `BUNDLE_WITHOUT=wasm bundle install` — which the forge does for the compat-ABI
+# Magnus build, where the gem was 25 s of every Windows `bundle install` for nothing. A
+# consumer of the gem never sees this file; they install wasmtime themselves if they want
+# the backend, and the gem itself stays at zero third-party dependencies.
+group :wasm do
+  gem "wasmtime", "~> 48.0"
+end

@@ -45,6 +45,9 @@ public final class Main {
      * @param args ignored
      */
     public static void main(String[] args) {
+        // Which interop path this binary took — "native" (FFM) or "wasm" (GraalWasm) — so a
+        // -Dhypercast.backend=wasm run is visibly proving the path it claims to.
+        System.out.println("backend: " + Cast.backend());
         check("bool", Cast.bool("enabled"), true);
         check("i32", Cast.i32("(1,234)", NumFormat.INVARIANT), -1234);
         check("f64", Cast.f64("25.5%", NumFormat.INVARIANT), 0.255);

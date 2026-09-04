@@ -128,6 +128,30 @@ passes under `wasmtime` on `wasm32-wasip1`: no clock, no randomness, no dependen
 stub. CI also builds the `wasm32-unknown-emscripten` staticlib the C# binding's
 browser-wasm packaging consumes, on every PR.
 
+One wasm build of this crate is not left to the consumer, because four bindings in this repo
+ship it: the `cdylib` for `wasm32-wasip1`, built from inside this directory so that
+`.cargo/config.toml` applies —
+
+```sh
+cargo build --release --target wasm32-wasip1
+# rust/target/wasm32-wasip1/release/hypercast.wasm
+```
+
+That config adds two linker flags for this target only, `--export=malloc` and
+`--export=free`, so the module's exports are the twenty `cast_*` functions from `ffi.rs`
+plus wasi-libc's allocator. A wasm host cannot hand this library a pointer into its own
+memory, so every embedder — GraalWasm inside the Java binding, wasmtime inside the Ruby,
+Python and Go ones — copies the input text into a guest buffer, points the door at guest
+buffers for the out-value, the fault span and the `NumFormat`, and reads the result back out
+of the exported `memory`. The exported allocator is what makes that safe: dlmalloc claims
+the tail of the initial linear memory on its first use, so a host-chosen offset past the
+data segments is not free, and HyperUuid observed a buffer written there corrupted by the
+next allocation. The module imports four `wasi_snapshot_preview1` functions — wasi-libc's
+`environ_get`, `environ_sizes_get`, `fd_write` and `proc_exit`, from its startup and panic
+paths — and nothing else: no clock and no entropy, because the core is pure computation
+over the bytes it is handed. `ffi.rs` itself is untouched by any of this; on every native
+target the C ABI is still exactly the twenty exports.
+
 ## Benchmarks
 
 `cargo bench` — Criterion, `rust/benches/cast_benchmarks.rs`. Measured on linux-arm64

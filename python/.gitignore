@@ -1,0 +1,5 @@
+# Staged by CI (and by `cargo build --release --target wasm32-wasip1` locally) from the Rust
+# core, the same way java/src/main/resources/native/ and ruby/lib/hypercast/native/ carry
+# their per-platform builds without committing them. The wheel and sdist pick it up from here;
+# the dev loop falls back to rust/target/wasm32-wasip1/release/ when nothing is staged.
+src/hypercast/native/

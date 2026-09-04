@@ -9,12 +9,14 @@ byte span that offended — with the Rust core linked straight into CPython as a
 extension. No dlopen, no ctypes marshalling, no runtime bridge.**
 
 Allocation-lean scalar casts — booleans, the full integer family, reals, UUIDs, temporals.
-The PyO3 extension (`hypercast._native`) is the *only* backend — a door is an ordinary
-`METH_FASTCALL` extension call into a direct Rust call, and the wheel maturin builds is
-the whole package (the interim ctypes fallback is gone). Python 3.10 is the floor
-(`match`/`case` is the consumption
-idiom); wheels are abi3-py310, one per platform covering every CPython from there up, no
-compiler needed to install.
+The PyO3 extension (`hypercast._native`) is the backend every wheel ships — a door is an
+ordinary `METH_FASTCALL` extension call into a direct Rust call, and the wheel maturin
+builds is the whole package (the interim ctypes fallback is gone). A second backend runs the
+same core as a `wasm32-wasip1` module inside CPython through `wasmtime-py`, opt-in via
+`pip install hypercast[wasm]` and `HYPERCAST_WASM=1` — see
+[WebAssembly (wasmtime)](#webassembly-wasmtime). Python 3.10 is the floor (`match`/`case`
+is the consumption idiom); wheels are abi3-py310, one per platform covering every CPython
+from there up, no compiler needed to install.
 
 ```python
 import hypercast
@@ -44,7 +46,8 @@ out loud rather than discovered later.
    `urn:uuid:` prefixes, protobuf JSON durations — with each lenience individually
    declared, never guessed.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
-   held by the shared corpus (26 tests green, full twelve-file corpus replay).
+   held by the shared corpus (the whole suite green on both backends, full twelve-file
+   corpus replay).
 4. **Native-extension speed** — the escape from the interpreted tier is this binding's own
    receipt: the old losses were never "Python calling native code," they were *ctypes*
    (~1 µs of interpreted marshalling per call, measured). With the mechanism replaced,
@@ -73,8 +76,74 @@ out loud rather than discovered later.
 **The honest trade-off:** for plain invariant integers `int()` still wins — it's a
 C-accelerated builtin with no boundary to cross. These doors earn their keep on the
 culture-machinery parsers, the closed error contract, and cross-language agreement. And
-dropping ctypes means dropping the Pyodide/wasm path Python briefly had — the wheels are
-real native extensions, and a native extension has no browser story.
+dropping ctypes means dropping the Pyodide path Python briefly had — the wheels are real
+native extensions, and a native extension has no browser story. The wasm backend below is
+the other direction entirely: the core as wasm inside an ordinary CPython, not CPython
+inside a browser.
+
+## WebAssembly (wasmtime)
+
+The same Rust core, compiled to `wasm32-wasip1`, run *inside* CPython by
+[`wasmtime-py`](https://github.com/bytecodealliance/wasmtime-py) — the inverse of the Pyodide
+experiment this package once carried (CPython itself in the browser, loading the core as an
+Emscripten side module). Nothing is reimplemented: `hypercast._wasm` calls the identical
+twenty `cast_*` C-ABI exports the PyO3 extension does, across a guest/host memory boundary
+instead of a direct call, and presents the same `Success`/`Fault`/`NumFormat` types with the
+same `__match_args__`, equality, `repr` and error messages. The whole test suite runs against
+it, corpus replay included, and `tests/test_wasm_backend.py` pins its outputs against the
+extension across a subprocess boundary.
+
+```sh
+pip install hypercast[wasm]        # adds wasmtime; the .wasm module ships inside every wheel and the sdist
+HYPERCAST_WASM=1 python app.py     # force it; hypercast.BACKEND reports "wasm" or "native"
+```
+
+Without the variable, `_native` is used whenever it imports, and `_wasm` is the fallback when it
+does not and `wasmtime` is installed — an install whose extension cannot load keeps working
+instead of failing at import. One honest limit on that story today: pip still resolves an
+interpreter with no matching wheel to the sdist, and the sdist builds the PyO3 extension, so it
+needs a Rust toolchain either way. A pure-Python wheel carrying only the wasm backend is what
+would make `pip install hypercast[wasm]` land with nothing to compile anywhere; it is not built
+yet.
+
+Three things about the crossing decide the numbers below:
+
+- **Buffers come from the guest.** A wasm module only sees its own linear memory, so this backend
+  asks the module's exported `malloc` for every buffer it touches — the input text (a grow-only
+  buffer), the 16-byte out-value, the fault span, the `NumFormat` — rather than picking an offset
+  itself. That is load-bearing, not tidiness: the guest's own allocator (dlmalloc, which claims
+  the tail of the initial memory on first use) corrupted a host-chosen buffer in HyperUuid.
+- **Calls are serialized.** A wasmtime `Store` is not thread-safe, so one process-wide lock
+  guards every call. Uncontended under the GIL; on a free-threaded build it is what keeps two
+  threads out of one store.
+- **The call path sidesteps wasmtime-py's per-call type lookup.** `Func.__call__` re-fetches the
+  function's type from the engine and builds and frees a `FuncType` plus one `ValType` wrapper per
+  parameter and result on *every* call. This backend builds the argument and result arrays once
+  and hands them to the same `wasmtime_func_call` C entry point the library reaches after that
+  bookkeeping. That touches `wasmtime._ffi`, which is not public API, so it is bound inside a
+  `try` at load time and degrades to the public call — slow, never broken — if a wasmtime release
+  moves it.
+
+Measured end to end on CPython 3.14.7, linux-arm64 (WSL2), `timeit` best of five, same session
+as the native column:
+
+| Door | wasm backend | native (`_native`) |
+| --- | ---: | ---: |
+| `cast_bool` | 6.0 µs | 99 ns |
+| `cast_i32` | 6.4 µs | 139 ns |
+| `cast_f64` | 6.4 µs | 153 ns |
+| `cast_uuid` | 6.9 µs | 681 ns |
+| `cast_timestamp` | 7.7 µs | 423 ns |
+| `cast_datetime` (`1/7/2026 3:04 PM`) | 7.2 µs | 407 ns |
+| `cast_duration` (ISO) | 7.5 µs | 662 ns |
+| `cast_i32`, a fault | 6.8 µs | 138 ns |
+
+Read it the way the rest of this README reads: every door pays the crossing — roughly 6 µs of
+lock, argument packing, guest memory copies and the call itself — and the parse underneath is
+invisible next to it. There is no batch door here to amortize that behind, so this backend is
+the answer to "no wheel for this interpreter", not a speed option; the object-building doors
+(`uuid`, `timestamp`) close the gap a little only because their native carrier is already the
+expensive part.
 
 ## Verifying provenance
 

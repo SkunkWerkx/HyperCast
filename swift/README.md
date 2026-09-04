@@ -87,6 +87,18 @@ Every door also takes an `UnsafeRawBufferPointer` — the primitive the `String`
 `[UInt8]` forms wrap — so a caller already holding a buffer (a mapped file, one field of a
 delimited line) casts a slice of it without copying anything out first.
 
+## WebAssembly
+
+None today, in either direction. Compiling *this binding* to wasm: swift.org ships real WASM
+SDKs since Swift 6.2, but its own docs say dynamic linking "is not formally specified for
+`wasip1` triples and tooling for it is not available yet," and there is no documented path
+to link a Rust `.a` statically either — this binding is `dlopen`/`@convention(c)` all the
+way down. Running the core as wasm *inside* Swift, the way the Java, Ruby, Python and Go
+bindings now do: no wasm engine ships as a Swift package with a stable API today, so there
+is nothing to embed. The root README's [WebAssembly section](../README.md#webassembly)
+tracks both directions for every binding; if either changes for Swift, this section is
+where it lands.
+
 ## Verifying provenance
 
 Like PHP, there's no separate package registry to attest here — SwiftPM resolves a git tag

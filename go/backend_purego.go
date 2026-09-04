@@ -1,4 +1,4 @@
-//go:build !(cgo && (darwin || linux))
+//go:build !(cgo && (darwin || linux)) && !hypercast_wasm
 
 // This backend calls libhypercast through github.com/ebitengine/purego — dlopen/dlsym plus
 // per-arch call trampolines, no cgo and no C compiler required. It's the only backend on

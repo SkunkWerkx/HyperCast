@@ -5,9 +5,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/SkunkWerkx/HyperCast/blob/master/LICENSE)
 
 **Ruby's own pattern matching over two `Data` case types — the value, or a closed reason
-Symbol plus the exact byte span that offended. Two backends, one public surface: a Magnus
+Symbol plus the exact byte span that offended. Three backends, one public surface: a Magnus
 native extension where a precompiled platform gem covers you, stdlib Fiddle everywhere
-else — selected automatically, zero compiles either way.**
+else — selected automatically, zero compiles either way — and the same core as a
+WebAssembly module inside the `wasmtime` gem for any platform with no native build at all.**
 
 Allocation-lean scalar casts — booleans, the full integer family, reals, UUIDs, temporals —
 calling directly into the native `libhypercast` Rust core. Ruby 3.2 is the floor
@@ -15,7 +16,8 @@ calling directly into the native `libhypercast` Rust core. Ruby 3.2 is the floor
 Ruby extension (Magnus): on require it redefines the doors in place on the `HyperCast`
 module — no delegation layer, no second surface, which is exactly what keeps the backends
 provably in agreement. `HyperCast::BACKEND` reports which is live; `HYPERCAST_PURE=1`
-forces Fiddle.
+forces Fiddle, `HYPERCAST_WASM=1` the wasm module — see
+[WebAssembly (wasmtime)](#webassembly-wasmtime).
 
 ```ruby
 case HyperCast.i32("(1,234)", HyperCast::NumFormat::INVARIANT)
@@ -39,9 +41,9 @@ midnight, and durations come back as exact `Rational` seconds across the core's 
    parentheses, declared separators, radix prefixes, all five .NET `Guid` text forms plus
    `urn:uuid:` prefixes, protobuf JSON durations.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
-   held by the shared corpus (24 examples green on *both* backends, full twelve-file corpus
-   replay; a cross-backend agreement spec compares Magnus and Fiddle outputs across a
-   subprocess boundary).
+   held by the shared corpus (the whole suite green on *all three* backends, full
+   twelve-file corpus replay; cross-backend agreement specs compare Magnus against Fiddle
+   and wasm against Fiddle across a subprocess boundary).
 4. **Faster than the stdlib on the Magnus backend, where the carrier is cheap** —
    benchmark-ips (`ruby benchmark/cast_benchmark.rb`, linux-arm64): timestamp **713 ns vs
    2.88 µs `Time.iso8601`** (4.0x) — while returning exact `Rational` durations on the
@@ -79,6 +81,62 @@ packed bytes into scratch — each format now owns one native pointer, memoized 
 passed straight through. (Benchmark forensics worth knowing: the doors read 4.3 µs until
 per-call `Fiddle::Pointer.malloc` finalizers were hoisted to thread-local scratch —
 receipts include their own archaeology.)
+
+## WebAssembly (wasmtime)
+
+The Rust core also ships inside this gem as a `wasm32-wasip1` module
+(`lib/hypercast/native/wasm32-wasip1/hypercast.wasm`), and the
+[`wasmtime`](https://rubygems.org/gems/wasmtime) gem can run it in-process. This is the
+inverse of ruby.wasm — not Ruby inside a wasm sandbox, but a wasm module inside Ruby — and
+it is the one backend that needs no shared library for the platform it runs on: no
+`dlopen`, no Magnus extension, nothing compiled against this Ruby's ABI. The Magnus
+extension replaces the twenty public doors in place; this backend replaces only the three
+private bodies underneath them (`plain`, `numeric`, `declared` — the whole native crossing),
+so every door, both verdict `Data` types, the Symbol tables and the `Time`/`DateTime`/
+`Rational` carriers are the exact code the other two backends run. `spec/wasm_backend_spec.rb`
+pins that the outputs agree with the Fiddle backend byte for byte.
+
+`wasmtime` is deliberately **not** a dependency of this gem; a consumer who wants this path
+installs it:
+
+```sh
+gem install wasmtime
+HYPERCAST_WASM=1 ruby -rhypercast -e 'p HyperCast::BACKEND'   # => :wasm
+```
+
+`HYPERCAST_WASM=1` forces the backend (and raises a `LoadError` naming the gem if it is
+missing). Without it, the wasm backend is only ever chosen automatically when there is no
+native library for this platform at all — no Magnus extension and no `libhypercast` for the
+RID — and `wasmtime` happens to be installed. No supported platform's behavior changes just
+because this backend exists.
+
+Two things are different under the sandbox, both by necessity. A wasm guest only sees its own
+linear memory, so the input is copied into a grow-only guest buffer and the out-value, fault
+span and `NumFormat` live in guest allocations made once at load — all from the module's own
+exported `malloc` (the same wasi-libc allocator Rust's std uses on that target), read back
+with `Memory#read`; using the guest's allocator rather than a host-picked offset is what keeps
+a buffer from being clobbered by the guest's next allocation. And a `Wasmtime::Store` is
+single-threaded, so every call is serialized under one Mutex around one shared instance.
+
+Measured, same box as the benchmarks above (Ruby 4.0.6, linux-arm64 under WSL2, wasmtime
+48.0.1, `benchmark-ips`, same session, all three backends):
+
+| Door | Magnus | Fiddle | wasmtime |
+|---|---:|---:|---:|
+| `bool` | 484 ns | 2.55 µs | 2.07 µs |
+| `i32` | 555 ns | 2.78 µs | 2.65 µs |
+| `f64` | 529 ns | 2.72 µs | 2.73 µs |
+| `uuid` | 640 ns | 3.32 µs | 3.53 µs |
+| `timestamp` | 769 ns | 3.12 µs | 3.10 µs |
+| `datetime` (`1/7/2026 3:04 PM`) | 1.36 µs | 3.97 µs | 3.66 µs |
+| `duration` (ISO) | 975 ns | 2.84 µs | 2.47 µs |
+| `i32`, a fault | 658 ns | 2.89 µs | 2.42 µs |
+
+The finding worth stating: in Ruby the wasm backend lands at Fiddle parity, door for door.
+Fiddle's per-call floor is interpreted marshalling; wasmtime's is the host-to-guest crossing
+plus the guest memory copies; on this box they cost the same, and both sit 4-5x behind the
+Magnus extension. So on a platform with no native build, the fallback costs a consumer
+nothing they were not already paying on the universal gem.
 
 ## Verifying provenance
 

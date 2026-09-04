@@ -26,17 +26,52 @@ three digits on the temporal doors (the JVM binding is the fidelity king; this i
 honest ceiling).
 
 Ships as real platform-specific abi3 wheels (linux/macOS/Windows, x64/arm64) built by
-``maturin`` — no compiler needed to install.
+``maturin`` — no compiler needed to install. The same core also rides inside every wheel
+as a ``wasm32-wasip1`` module, which ``wasmtime-py`` can run in-process for an interpreter
+no wheel matches (``pip install hypercast[wasm]``, ``HYPERCAST_WASM=1``); see ``_wasm``.
 """
 
 from __future__ import annotations
 
+import os as _os
 from enum import IntEnum
 from typing import Union
 
-from . import _native
+# --- backend selection -----------------------------------------------------------------
+# `_native` is the PyO3 extension: the Rust core linked straight into CPython, the backend
+# every published wheel ships. `_wasm` is the same core compiled to wasm32-wasip1 and run
+# inside this process by wasmtime-py (see `_wasm.py` for how the crossing works and what it
+# costs). HYPERCAST_WASM=1 forces the wasm backend; otherwise it is the fallback for an
+# interpreter no wheel matches, taken only when `wasmtime` is importable — a plain
+# `pip install hypercast[wasm]` on an unsupported platform is the whole opt-in.
+if _os.environ.get("HYPERCAST_WASM"):
+    from . import _wasm as _native
+
+    BACKEND = "wasm"
+else:
+    try:
+        from . import _native
+
+        BACKEND = "native"
+    except ImportError as _native_error:
+        try:
+            import wasmtime as _wasmtime  # noqa: F401
+        except ImportError:
+            raise ImportError(
+                f"{_native_error}. No hypercast._native extension for this interpreter; the "
+                "wasm backend can stand in if wasmtime is installed: pip install hypercast[wasm]"
+            ) from _native_error
+        from . import _wasm as _native
+
+        BACKEND = "wasm"
+
+#: Which backend this process loaded: ``"native"`` (the PyO3 extension) or ``"wasm"`` (the
+#: same core as a wasm32-wasip1 module under wasmtime-py). Informational — every door in
+#: this module behaves identically on both; the test suite runs against each.
+BACKEND: str
 
 __all__ = [
+    "BACKEND",
     "CastFailure", "Success", "Fault", "Verdict", "NumFormat", "UnixPrecision", "DateOrder",
     "ExcelEpoch",
     "optional",
@@ -95,10 +130,12 @@ class DateOrder(IntEnum):
     DAY_MONTH_YEAR = 3
 
 
-# The extension's own types and doors ARE the package surface — no delegation defs, no
+# The backend's own types and doors ARE the package surface — no delegation defs, no
 # per-call Python frame on top (their docstrings live on the PyO3 functions/classes
-# themselves). _bind hands over the CastFailure members so faults carry the exact enum
-# members callers compare with `is`, plus uuid.UUID for cast_uuid's construction.
+# themselves, and on `_wasm`'s twins). _bind hands over the CastFailure members so faults
+# carry the exact enum members callers compare with `is`, plus uuid.UUID for cast_uuid's
+# construction; on the wasm backend it also instantiates the module, so a missing engine or
+# module fails here, at import, where the extension's own import failure would.
 _native._bind(CastFailure)
 
 Success = _native.Success

@@ -22,6 +22,10 @@ Gem::Specification.new do |spec|
   spec.require_paths = ["lib"]
 
   spec.add_dependency "fiddle"
+  # wasmtime — the engine behind the WebAssembly backend (lib/hypercast/wasm_runtime.rb) —
+  # is deliberately absent here. It is never a dependency of this gem, and it is not a
+  # development dependency either: it lives in the Gemfile's own `:wasm` group, so CI can
+  # install it only where the wasm suite actually runs. See the Gemfile.
   spec.add_development_dependency "rake", "~> 13.0"
   spec.add_development_dependency "yard", "~> 0.9"
 
