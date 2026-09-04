@@ -2,8 +2,9 @@
 
 // This backend runs the Rust core as a WebAssembly module inside the Go process, through
 // github.com/bytecodealliance/wasmtime-go, instead of dlopen'ing a native build. The module
-// is the same C-ABI surface ffi.rs exports — the twenty cast_* doors — compiled for
-// wasm32-wasip1 and embedded from native/wasm32-wasip1/hypercast.wasm alongside the
+// is the same C-ABI surface ffi.rs exports — the twenty-one cast_* doors plus
+// hypercast_version — compiled for wasm32-wasip1 and embedded from
+// native/wasm32-wasip1/hypercast.wasm alongside the
 // per-platform shared libraries. It is the inverse of the direction the root README's
 // WebAssembly table calls Go's structural blocker: that row is about compiling *this Go
 // module* to wasm, which neither cgo nor purego can do; this file is wasm running *inside*
@@ -27,7 +28,7 @@
 //
 // Memory protocol: a wasm guest sees only its own linear memory, so nothing here passes a Go
 // pointer across. The input text is copied into a grow-only guest buffer, and the three
-// out-params the doors fill — the 16-byte out-value, the 8-byte fault span, the 12-byte
+// out-params the doors fill — the 16-byte out-value, the 8-byte fault span, the 32-byte
 // NumFormat — are guest allocations made once at load. All of it comes from the module's
 // exported malloc (wasi-libc's, which Rust's std allocator on this target already sits on),
 // never a host-picked offset past the data segments: dlmalloc claims the tail of the initial
@@ -78,7 +79,7 @@ type wasmCore struct {
 
 	// The format currently written at `format`. Formats are reused values in practice
 	// (Invariant, Detect, a per-locale literal), so a stream of same-format numeric casts
-	// writes the 12 bytes once — the same memo the Java, Python and Ruby bindings keep.
+	// writes the 32 bytes once — the same memo the Java, Python and Ruby bindings keep.
 	lastFormat  rawNumFormat
 	formatValid bool
 }
@@ -91,7 +92,10 @@ var (
 	symBool, symUuid, symTimestamp, symDate, symTime, symDuration plainSymbol
 
 	symI8, symI16, symI32, symI64, symU8, symU16, symU32, symU64,
-	symF32, symF64 numericSymbol
+	symF32, symF64, symDecimal numericSymbol
+
+	// hypercast_version takes nothing and cannot fail.
+	symVersion *wasmtime.Func
 
 	// cast_unix, cast_excel_serial, cast_date_ordered and cast_datetime share the unix ABI
 	// shape (ptr, len, u32, out, fault).
@@ -103,6 +107,10 @@ var (
 func ensureLoaded() error {
 	initOnce.Do(func() {
 		core, initErr = newWasmCore()
+		if initErr == nil {
+			// One real call into the guest, so Available means "answered", not "resolved".
+			nativeVersion = callVersion()
+		}
 	})
 	return initErr
 }
@@ -147,7 +155,8 @@ func newWasmCore() (*wasmCore, error) {
 		{"cast_bool", &symBool}, {"cast_uuid", &symUuid},
 		{"cast_i8", &symI8}, {"cast_i16", &symI16}, {"cast_i32", &symI32}, {"cast_i64", &symI64},
 		{"cast_u8", &symU8}, {"cast_u16", &symU16}, {"cast_u32", &symU32}, {"cast_u64", &symU64},
-		{"cast_f32", &symF32}, {"cast_f64", &symF64},
+		{"cast_f32", &symF32}, {"cast_f64", &symF64}, {"cast_decimal", &symDecimal},
+		{"hypercast_version", &symVersion},
 		{"cast_timestamp", &symTimestamp}, {"cast_unix", &symUnix},
 		{"cast_excel_serial", &symExcelSerial},
 		{"cast_date", &symDate}, {"cast_date_ordered", &symDateOrdered},
@@ -168,7 +177,7 @@ func newWasmCore() (*wasmCore, error) {
 	if c.fault, err = c.alloc(8); err != nil {
 		return nil, err
 	}
-	if c.format, err = c.alloc(12); err != nil {
+	if c.format, err = c.alloc(32); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -225,7 +234,23 @@ func (c *wasmCore) writeFormat(format rawNumFormat) {
 	binary.LittleEndian.PutUint32(data[c.format:], format.DecimalSep)
 	binary.LittleEndian.PutUint32(data[c.format+4:], format.GroupSep)
 	binary.LittleEndian.PutUint32(data[c.format+8:], format.Flags)
+	binary.LittleEndian.PutUint32(data[c.format+12:], format.CurrencyLen)
+	copy(data[c.format+16:c.format+32], format.Currency[:])
 	c.lastFormat, c.formatValid = format, true
+}
+
+// callVersion reads the guest's packed version — a zero-argument export that cannot trap
+// short of a broken module, taken under the same lock every other guest call holds.
+func callVersion() uint32 {
+	c := core
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	v, err := symVersion.Call(c.store)
+	if err != nil {
+		panic(fmt.Sprintf("hypercast: hypercast_version trapped inside the wasm core: %v", err))
+	}
+	packed, _ := v.(int32)
+	return uint32(packed)
 }
 
 // call invokes a guest door and returns its verdict code. A trap here is a bug in the core

@@ -18,19 +18,25 @@ module HyperCast
       cast_bool: PLAIN,
       cast_i8: NUMERIC, cast_i16: NUMERIC, cast_i32: NUMERIC, cast_i64: NUMERIC,
       cast_u8: NUMERIC, cast_u16: NUMERIC, cast_u32: NUMERIC, cast_u64: NUMERIC,
-      cast_f32: NUMERIC, cast_f64: NUMERIC,
+      cast_f32: NUMERIC, cast_f64: NUMERIC, cast_decimal: NUMERIC,
       cast_uuid: PLAIN,
       cast_timestamp: PLAIN, cast_unix: UNIX, cast_excel_serial: UNIX,
       cast_date: PLAIN, cast_date_ordered: UNIX, cast_datetime: UNIX,
       cast_time: PLAIN, cast_duration: PLAIN
     }.freeze
 
+    # The one export that is not a door: the zero-argument version probe, returning the
+    # core's packed version word (major << 16 | minor << 8 | patch) rather than a verdict
+    # code — so it gets its own Fiddle signature beside DOORS instead of a row in it.
+    VERSION_PROBE = :hypercast_version
+
     @mutex = Mutex.new
     @functions = nil
 
     class << self
-      # The door's Fiddle::Function, for the caller to invoke directly — a splat-through
-      # `call(symbol, *args)` here built and re-splatted an Array on every cast.
+      # The door's (or VERSION_PROBE's) Fiddle::Function, for the caller to invoke directly
+      # — a splat-through `call(symbol, *args)` here built and re-splatted an Array on
+      # every cast.
       def function(symbol)
         functions.fetch(symbol)
       end
@@ -77,9 +83,12 @@ module HyperCast
         end
 
         handle = Fiddle.dlopen(path)
-        DOORS.to_h do |name, signature|
+        functions = DOORS.to_h do |name, signature|
           [name, Fiddle::Function.new(handle[name.to_s], signature, Fiddle::TYPE_INT32_T)]
         end
+        functions[VERSION_PROBE] =
+          Fiddle::Function.new(handle[VERSION_PROBE.to_s], [], Fiddle::TYPE_UINT32_T)
+        functions
       end
     end
   end

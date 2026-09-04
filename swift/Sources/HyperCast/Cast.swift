@@ -1,18 +1,22 @@
 import Foundation
 
-/// Allocation-lean scalar casts — booleans, numerics, UUIDs, temporals — calling directly
-/// into the native `libhypercast` shared library via `dlopen`/`dlsym` plus
-/// `@convention(c)` function-pointer casts (see `DynamicLibrary.swift`). Every door returns
-/// a ``Verdict``: the value, or a ``Fault`` with a closed reason and the offending byte
-/// span. Never throws for bad data — a `throws` here means the native library itself
-/// couldn't load, and a precondition failure means a caller bug, never data.
+/// Allocation-lean scalar casts — booleans, numerics (integers, reals, exact decimals),
+/// UUIDs, temporals — calling directly into the native `libhypercast` shared library via
+/// `dlopen`/`dlsym` plus `@convention(c)` function-pointer casts (see
+/// `DynamicLibrary.swift`). Every door returns a ``Verdict``: the value, or a ``Fault``
+/// with a closed reason and the offending byte span. Never throws for bad data — a
+/// `throws` here means the native library itself couldn't load, and a precondition
+/// failure means a caller bug, never data.
 ///
-/// Door names mirror the native ABI (`i32`, `f64`, `timestamp`, …) so the polyglot surface
+/// Door names mirror the native ABI (`i32`, `f64`, `decimal`, `timestamp`, …) so the polyglot surface
 /// reads identically across bindings. Swift-flavored fidelity: `UInt8`–`UInt64` are native
 /// (no widening games), `Duration` carries the core's nanoseconds exactly, and
 /// `DateComponents` keeps date/time-of-day digit-perfect; `Date` (the instant lingua
 /// franca) is a `Double` of seconds, so sub-microsecond fidelity degrades toward the
-/// window's edges — stated, not hidden.
+/// window's edges — stated, not hidden. Foundation's `Decimal` holds every value the
+/// decimal door produces exactly, and the door's result is canonical — exact trailing
+/// fraction zeros trimmed, so the scale is minimal — which is precisely what `Decimal`
+/// represents: nothing is lost between the core and the presentation.
 public enum Cast {
     private typealias PlainFn = @convention(c) (
         UnsafePointer<UInt8>?, UInt, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?
@@ -24,9 +28,11 @@ public enum Cast {
     private typealias UnixFn = @convention(c) (
         UnsafePointer<UInt8>?, UInt, UInt32, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?
     ) -> Int32
+    private typealias VersionFn = @convention(c) () -> UInt32
 
-    // A class, deliberately: `loaded()` used to copy this 21-field struct out of the
-    // `Result` on every single door call. A reference is one retain.
+    // A class, deliberately: `loaded()` used to copy this struct — one function pointer
+    // per native export — out of the `Result` on every single door call. A reference is
+    // one retain.
     private final class LoadedLibrary {
         let library: DynamicLibrary
         let bool: PlainFn
@@ -40,6 +46,7 @@ public enum Cast {
         let u64: NumericFn
         let f32: NumericFn
         let f64: NumericFn
+        let decimal: NumericFn
         let uuid: PlainFn
         let timestamp: PlainFn
         let unix: UnixFn
@@ -51,21 +58,23 @@ public enum Cast {
         let dateTime: UnixFn
         let time: PlainFn
         let duration: PlainFn
+        let version: VersionFn
 
         init(library: DynamicLibrary, bool: PlainFn, i8: NumericFn, i16: NumericFn, i32: NumericFn,
              i64: NumericFn, u8: NumericFn, u16: NumericFn, u32: NumericFn, u64: NumericFn,
-             f32: NumericFn, f64: NumericFn, uuid: PlainFn, timestamp: PlainFn, unix: UnixFn,
-             excelSerial: UnixFn, date: PlainFn, dateOrdered: UnixFn, dateTime: UnixFn,
-             time: PlainFn, duration: PlainFn) {
+             f32: NumericFn, f64: NumericFn, decimal: NumericFn, uuid: PlainFn, timestamp: PlainFn,
+             unix: UnixFn, excelSerial: UnixFn, date: PlainFn, dateOrdered: UnixFn, dateTime: UnixFn,
+             time: PlainFn, duration: PlainFn, version: VersionFn) {
             self.library = library
             self.bool = bool
             self.i8 = i8; self.i16 = i16; self.i32 = i32; self.i64 = i64
             self.u8 = u8; self.u16 = u16; self.u32 = u32; self.u64 = u64
-            self.f32 = f32; self.f64 = f64
+            self.f32 = f32; self.f64 = f64; self.decimal = decimal
             self.uuid = uuid
             self.timestamp = timestamp; self.unix = unix; self.excelSerial = excelSerial
             self.date = date; self.dateOrdered = dateOrdered; self.dateTime = dateTime
             self.time = time; self.duration = duration
+            self.version = version
         }
     }
 
@@ -89,6 +98,7 @@ public enum Cast {
             u8: try numeric("cast_u8"), u16: try numeric("cast_u16"),
             u32: try numeric("cast_u32"), u64: try numeric("cast_u64"),
             f32: try numeric("cast_f32"), f64: try numeric("cast_f64"),
+            decimal: try numeric("cast_decimal"),
             uuid: try plain("cast_uuid"),
             timestamp: try plain("cast_timestamp"),
             unix: unsafeBitCast(try library.symbol("cast_unix"), to: UnixFn.self),
@@ -97,7 +107,8 @@ public enum Cast {
             dateOrdered: unsafeBitCast(try library.symbol("cast_date_ordered"), to: UnixFn.self),
             dateTime: unsafeBitCast(try library.symbol("cast_datetime"), to: UnixFn.self),
             time: try plain("cast_time"),
-            duration: try plain("cast_duration"))
+            duration: try plain("cast_duration"),
+            version: unsafeBitCast(try library.symbol("hypercast_version"), to: VersionFn.self))
     }
 
     private static func loaded() throws -> LoadedLibrary {
@@ -105,6 +116,17 @@ public enum Cast {
         case .success(let library): return library
         case .failure(let error): throw error
         }
+    }
+
+    /// Whether the bundled native library loaded and exports the ABI this binding was
+    /// built against — the probe a consumer with a fallback gates on, so the doors' own
+    /// `throws` (which only ever means "the library couldn't load") never has to be caught
+    /// at a call site. Drives the same lazy, once-only load the doors do, so it costs
+    /// nothing after the first answer; never throws. `true` exactly when
+    /// ``nativeVersion()`` would succeed.
+    public static var isAvailable: Bool {
+        if case .success = loadResult { return true }
+        return false
     }
 
     /// Extracts this platform's bundled native library (an SPM resource) to a temp file —
@@ -149,6 +171,11 @@ public enum Cast {
     // fixed-width integers has no heap existence at all.
     private typealias OutScratch = (UInt64, UInt64)
     private typealias FaultScratch = (UInt32, UInt32)
+    // The native `RawNumFormat`, 32 bytes: decimal separator, group separator, flags and
+    // currency length as `u32`s at 0/4/8/12, then the symbol's 16 UTF-8 bytes at 16 —
+    // carried as two words whose in-memory bytes are the symbol's, in order (see
+    // `NumFormat`'s packing). Internal, not private, so the test suite can pin the size.
+    typealias RawNumFormat = (UInt32, UInt32, UInt32, UInt32, UInt64, UInt64)
 
     private static func inputPointer(_ utf8: UnsafeRawBufferPointer) -> UnsafePointer<UInt8>? {
         // An empty buffer may carry a nil base address; the ABI never dereferences at len 0.
@@ -177,8 +204,9 @@ public enum Cast {
         _ fn: NumericFn, _ utf8: UnsafeRawBufferPointer, _ format: NumFormat,
         read: (UnsafeRawBufferPointer) -> T
     ) -> Verdict<T> {
-        var rawFormat: (UInt32, UInt32, UInt32) = (
-            format.decimalSeparator.value, format.groupSeparator.value, format.styles.rawValue)
+        var rawFormat: RawNumFormat = (
+            format.decimalSeparator.value, format.groupSeparator.value, format.styles.rawValue,
+            format.currencyLength, format.currencyLow, format.currencyHigh)
         var out: OutScratch = (0, 0)
         var faultOut: FaultScratch = (0, 0)
         let code = withUnsafeMutableBytes(of: &out) { outRaw in
@@ -243,11 +271,11 @@ public enum Cast {
         plainDoor(try loaded().bool, utf8) { $0.load(as: UInt8.self) != 0 }
     }
 
-    // MARK: - integers (the type's own range; grouping, parens, exponent, radix prefixes per format)
+    // MARK: - integers (the type's own range; grouping, parens, exponent, radix prefixes, currency per format)
 
     /// Casts integer text to a signed 8-bit value under the declared format: the type's own
-    /// range, declared grouping, accounting parentheses, non-negative exponent, and
-    /// `0x`/`&H`/`0b` two's-complement radix prefixes.
+    /// range, declared grouping, accounting parentheses, non-negative exponent,
+    /// `0x`/`&H`/`0b` two's-complement radix prefixes, and the declared currency symbol.
     public static func i8(_ text: String, format: NumFormat) throws -> Verdict<Int8> {
         try withUTF8(text) { try i8($0, format: format) }
     }
@@ -390,10 +418,11 @@ public enum Cast {
         numericDoor(try loaded().u64, utf8, format) { $0.load(as: UInt64.self) }
     }
 
-    // MARK: - reals (finite only; separators, parens, exponent, percent per format)
+    // MARK: - reals (finite only; separators, parens, exponent, percent, currency per format)
 
     /// Casts real text to a `Float` under the declared format: finite values only, declared
-    /// separators and grouping, parentheses, exponent, and trailing percent (`50%` is 0.5).
+    /// separators and grouping, parentheses, exponent, trailing percent (`50%` is 0.5), and
+    /// the declared currency symbol.
     public static func f32(_ text: String, format: NumFormat) throws -> Verdict<Float> {
         try withUTF8(text) { try f32($0, format: format) }
     }
@@ -425,6 +454,74 @@ public enum Cast {
     /// buffer (or a slice of one) to cast out of without copying.
     public static func f64(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Double> {
         numericDoor(try loaded().f64, utf8, format) { $0.load(as: Double.self) }
+    }
+
+    // MARK: - decimal (exact; same grammar as the reals, never rounds)
+
+    /// Casts decimal text to Foundation's `Decimal` — exactly. Same grammar as
+    /// ``f64(_:format:)-swift.type.method`` (declared separators and grouping, parentheses,
+    /// exponent, percent, currency), but no float is ever formed: `0.1` is one tenth and
+    /// `50%` is exactly `0.5`. The core carries a sign, a 96-bit magnitude and a base-10
+    /// scale of 0 through 28 — the shape .NET's `decimal` stores — and never rounds: text
+    /// with more precision than that is ``CastFailure/outOfRange``, not approximated. The
+    /// result is canonical: exact trailing fraction zeros are trimmed, so `1.10`, `1.1` and
+    /// `1.1000` are all magnitude 11 at scale 1, and zero is scale 0 and never negative —
+    /// exactly what Foundation's `Decimal` represents, and its 38-digit mantissa holds every
+    /// such value exactly.
+    public static func decimal(_ text: String, format: NumFormat) throws -> Verdict<Decimal> {
+        try withUTF8(text) { try decimal($0, format: format) }
+    }
+
+    /// See ``decimal(_:format:)-swift.type.method``; input as raw UTF-8 bytes.
+    public static func decimal(_ utf8: [UInt8], format: NumFormat) throws -> Verdict<Decimal> {
+        try utf8.withUnsafeBytes { try decimal($0, format: format) }
+    }
+
+    /// See ``decimal(_:format:)-swift.type.method``; input as a raw view of UTF-8 bytes —
+    /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
+    /// buffer (or a slice of one) to cast out of without copying.
+    public static func decimal(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Decimal> {
+        numericDoor(try loaded().decimal, utf8, format, read: decimalValue)
+    }
+
+    /// 2⁶⁴ — the weight of the core's high word, exact in `Decimal`.
+    private static let highWordWeight = Decimal(UInt64.max) + Decimal(1)
+
+    /// The native `Decimal` out-struct: `lo: u64` at 0, `hi: u32` at 8, `scale: u8` at 12,
+    /// `negative: u8` at 13; value = ±(hi·2⁶⁴ + lo) × 10⁻ˢᶜᵃˡᵉ. The magnitude is at most
+    /// 2⁹⁶ − 1 (29 digits), so the arithmetic below stays inside `Decimal`'s 38-digit
+    /// mantissa and is exact.
+    private static func decimalValue(_ raw: UnsafeRawBufferPointer) -> Decimal {
+        let lo = raw.load(fromByteOffset: 0, as: UInt64.self)
+        let hi = raw.load(fromByteOffset: 8, as: UInt32.self)
+        let scale = raw.load(fromByteOffset: 12, as: UInt8.self)
+        let negative = raw.load(fromByteOffset: 13, as: UInt8.self) != 0
+        let magnitude = hi == 0 ? Decimal(lo) : Decimal(hi) * highWordWeight + Decimal(lo)
+        return Decimal(sign: negative ? .minus : .plus, exponent: -Int(scale), significand: magnitude)
+    }
+
+    // MARK: - generic numeric (for a caller that is itself generic over the target)
+
+    /// Casts numeric text to whichever of the eleven numeric targets `T` is — the door a
+    /// caller that is itself generic over its target reaches for. Resolved statically:
+    /// `Int8`/`Int16`/`Int32`/`Int64`, `UInt8`/`UInt16`/`UInt32`/`UInt64`, `Float`,
+    /// `Double` and `Decimal`, each through its own concrete door under that door's rules.
+    /// ``NumericCastTarget`` is closed to exactly those eleven, so any other `T` is refused
+    /// by the compiler, not at run time.
+    public static func numeric<T: NumericCastTarget>(_ text: String, format: NumFormat) throws -> Verdict<T> {
+        try withUTF8(text) { try numeric($0, format: format) }
+    }
+
+    /// See ``numeric(_:format:)-swift.type.method``; input as raw UTF-8 bytes.
+    public static func numeric<T: NumericCastTarget>(_ utf8: [UInt8], format: NumFormat) throws -> Verdict<T> {
+        try utf8.withUnsafeBytes { try numeric($0, format: format) }
+    }
+
+    /// See ``numeric(_:format:)-swift.type.method``; input as a raw view of UTF-8 bytes —
+    /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
+    /// buffer (or a slice of one) to cast out of without copying.
+    public static func numeric<T: NumericCastTarget>(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<T> {
+        try T.castNumeric(utf8, format: format)
     }
 
     // MARK: - uuid
@@ -662,5 +759,103 @@ public enum Cast {
             return nil
         }
         return verdict
+    }
+
+    // MARK: - the native library itself
+
+    /// The version of the native `libhypercast` this process actually loaded, as
+    /// `major.minor.patch` — the library's own answer (`hypercast_version`), not this
+    /// package's tag — so a caller can prove the two agree before the first cast and name
+    /// the mismatch when they don't. Throws only when the library itself couldn't load.
+    public static func nativeVersion() throws -> String {
+        let packed = try loaded().version()
+        return "\(packed >> 16).\(packed >> 8 & 0xFF).\(packed & 0xFF)"
+    }
+}
+
+/// The closed set of targets ``Cast/numeric(_:format:)-swift.type.method`` resolves over:
+/// exactly the eleven types the concrete numeric doors produce. The conformances are this
+/// binding's to declare — one per door, below — and a caller's own type has no door to
+/// route to, so conforming anything else is unsupported.
+public protocol NumericCastTarget {
+    /// Routes to this type's own door. ``Cast/numeric(_:format:)-swift.type.method`` is the
+    /// entry point; this is the hook it dispatches through.
+    static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Self>
+}
+
+extension Int8: NumericCastTarget {
+    /// ``Cast/i8(_:format:)-swift.type.method``, reached generically.
+    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Int8> {
+        try Cast.i8(utf8, format: format)
+    }
+}
+
+extension Int16: NumericCastTarget {
+    /// ``Cast/i16(_:format:)-swift.type.method``, reached generically.
+    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Int16> {
+        try Cast.i16(utf8, format: format)
+    }
+}
+
+extension Int32: NumericCastTarget {
+    /// ``Cast/i32(_:format:)-swift.type.method``, reached generically.
+    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Int32> {
+        try Cast.i32(utf8, format: format)
+    }
+}
+
+extension Int64: NumericCastTarget {
+    /// ``Cast/i64(_:format:)-swift.type.method``, reached generically.
+    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Int64> {
+        try Cast.i64(utf8, format: format)
+    }
+}
+
+extension UInt8: NumericCastTarget {
+    /// ``Cast/u8(_:format:)-swift.type.method``, reached generically.
+    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<UInt8> {
+        try Cast.u8(utf8, format: format)
+    }
+}
+
+extension UInt16: NumericCastTarget {
+    /// ``Cast/u16(_:format:)-swift.type.method``, reached generically.
+    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<UInt16> {
+        try Cast.u16(utf8, format: format)
+    }
+}
+
+extension UInt32: NumericCastTarget {
+    /// ``Cast/u32(_:format:)-swift.type.method``, reached generically.
+    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<UInt32> {
+        try Cast.u32(utf8, format: format)
+    }
+}
+
+extension UInt64: NumericCastTarget {
+    /// ``Cast/u64(_:format:)-swift.type.method``, reached generically.
+    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<UInt64> {
+        try Cast.u64(utf8, format: format)
+    }
+}
+
+extension Float: NumericCastTarget {
+    /// ``Cast/f32(_:format:)-swift.type.method``, reached generically.
+    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Float> {
+        try Cast.f32(utf8, format: format)
+    }
+}
+
+extension Double: NumericCastTarget {
+    /// ``Cast/f64(_:format:)-swift.type.method``, reached generically.
+    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Double> {
+        try Cast.f64(utf8, format: format)
+    }
+}
+
+extension Decimal: NumericCastTarget {
+    /// ``Cast/decimal(_:format:)-swift.type.method``, reached generically.
+    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Decimal> {
+        try Cast.decimal(utf8, format: format)
     }
 }

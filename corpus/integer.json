@@ -53,5 +53,18 @@
   { "type": "i32", "input": "0e999999", "expect": "ok", "value": 0 },
   {"input": "1,234,567", "type": "i32", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 63}, "expect": "ok", "value": 1234567},
   {"input": "1.234.567", "type": "i32", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 63}, "expect": "ok", "value": 1234567},
-  {"input": "12,345", "type": "i32", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 63}, "expect": "malformed", "fault": [2, 1]}
+  {"input": "12,345", "type": "i32", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 63}, "expect": "malformed", "fault": [2, 1]},
+  {"type": "i32", "input": "$1,234", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 95, "currency": "$"}, "expect": "ok", "value": 1234},
+  {"type": "i32", "input": "-$5", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 95, "currency": "$"}, "expect": "ok", "value": -5},
+  {"type": "i32", "input": "$ -5", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 95, "currency": "$"}, "expect": "ok", "value": -5},
+  {"type": "i32", "input": "($5)", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 95, "currency": "$"}, "expect": "ok", "value": -5},
+  {"type": "i32", "input": "(1.234 €)", "format": {"decimal_sep": ",", "group_sep": ".", "flags": 95, "currency": "€"}, "expect": "ok", "value": -1234},
+  {"type": "i32", "input": "1 234 kr", "format": {"decimal_sep": ",", "group_sep": " ", "flags": 95, "currency": "kr"}, "expect": "ok", "value": 1234},
+  {"type": "i64", "input": "1.234.567 kr.", "format": {"decimal_sep": ",", "group_sep": ".", "flags": 95, "currency": "kr."}, "expect": "ok", "value": 1234567},
+  {"type": "i32", "input": "$1,234", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 31, "currency": "$"}, "expect": "malformed", "fault": [0, 1]},
+  {"type": "i32", "input": "$", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 95, "currency": "$"}, "expect": "malformed", "fault": [0, 1]},
+  {"type": "i32", "input": "$1$", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 95, "currency": "$"}, "expect": "malformed", "fault": [2, 1]},
+  {"type": "i32", "input": "-$-5", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 95, "currency": "$"}, "expect": "malformed", "fault": [2, 1]},
+  {"type": "i32", "input": "$(5)", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 95, "currency": "$"}, "expect": "malformed", "fault": [1, 1]},
+  {"type": "i32", "input": "1,234", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 95, "currency": "$"}, "expect": "ok", "value": 1234}
 ]

@@ -8,10 +8,10 @@
 reason plus the exact byte span that offended — over PHP's own built-in ext-ffi. Zero
 Composer runtime dependencies, no extension to compile, no runtime bridge.**
 
-Allocation-lean scalar casts — booleans, the full integer family, reals, UUIDs, temporals —
-calling directly into the native `libhypercast` Rust core. PHP 8.1 is the floor (readonly
-classes, enums); both verdict classes are `final` and every door's return type declares
-the union, which is as closed as PHP's type system can state it.
+Allocation-lean scalar casts — booleans, the full integer family, reals, exact decimals,
+UUIDs, temporals — calling directly into the native `libhypercast` Rust core. PHP 8.1 is
+the floor (readonly classes, enums); both verdict classes are `final` and every door's
+return type declares the union, which is as closed as PHP's type system can state it.
 
 ```php
 use HyperCast\{Cast, NumFormat, Success, Fault};
@@ -28,7 +28,91 @@ bytes, so inputs cross verbatim and fault offsets need no mapping. PHP-flavored 
 stated honestly: `int` is 64-bit signed, so u64 carries the two's-complement bit pattern
 (render with `sprintf('%u', ...)`); `DateTimeImmutable` tops out at microseconds, so the
 core's nanoseconds truncate by three digits; durations come back as the protobuf pair
-(`Duration`) because `DateInterval` can't carry them.
+(`Duration`) because `DateInterval` can't carry them; decimals come back as the core's
+exact triple (`Decimal`) because PHP has no decimal type at all.
+
+## Doors
+
+| Door | Value on `Success` |
+| --- | --- |
+| `Cast::bool` | `bool` |
+| `Cast::i8` … `Cast::i64`, `Cast::u8` … `Cast::u64` | `int` (u64 as the bit pattern) |
+| `Cast::f32`, `Cast::f64` | `float` |
+| `Cast::decimal` | `Decimal` — exact sign, 96-bit magnitude, base-10 scale |
+| `Cast::uuid`, `Cast::uuidBytes` | canonical hyphenated string, or the 16 raw bytes |
+| `Cast::timestamp`, `Cast::unix`, `Cast::excelSerial` | `DateTimeImmutable` (UTC) |
+| `Cast::date`, `Cast::datetime` | `DateTimeImmutable` (UTC label, no zone read) |
+| `Cast::time` | `int` nanoseconds since midnight |
+| `Cast::duration` | `Duration` (the protobuf pair) |
+
+Every numeric door takes a `NumFormat`; `Cast::optional()` presents an `Empty` fault as
+`null`. `Cast::nativeVersion()` returns the loaded library's own `"major.minor.patch"` — a
+zero-argument probe, so a host can prove the `libhypercast` it resolved is the one this
+binding was written against before making the first cast. `Cast::isAvailable()` is its
+non-throwing form and what a consumer with a fallback gates on: it attempts the same load
+every door makes, answers `false` for a missing library, an unsupported platform, or a
+stale library lacking a symbol this binding declares, and caches the answer for the request.
+
+```php
+$total = Cast::isAvailable()
+    ? Cast::decimal($text, $format)
+    : $legacyParser->parse($text);
+```
+
+### Decimal
+
+`Cast::decimal` parses under the same grammar and `NumFormat` as the real doors but never
+rounds: only exact trailing zeros in the fraction are dropped, so the scale is canonical
+(`"1.10"`, `"1.1"` and `"1.1000"` are all magnitude `11` at scale `1`; zero is always scale
+`0`), and text carrying more precision than 96 bits and 28 places can hold is an
+`OutOfRange` fault, not an approximation. `Decimal` is a zero-dependency readonly carrier — `string $magnitude`
+(decimal digits, since the magnitude outgrows PHP's signed `int`), `int $scale`,
+`bool $negative` — whose `__toString()` renders the canonical text; hand that string to
+bcmath, GMP or ext-decimal when arithmetic is wanted, or take `toFloat()` when a lossy
+float is enough.
+
+```php
+$verdict = Cast::decimal('(1,234.50)', NumFormat::invariant());
+echo $verdict->value;                    // -1234.5
+echo $verdict->value->magnitude;         // 12345
+```
+
+### Currency symbols
+
+`NumFormat` takes an optional fourth argument, the currency symbol — up to 16 bytes of
+UTF-8 (`$`, `€`, `kr.`, `CHF`, `R$`, `руб.`) with no ASCII digit or whitespace, or the
+constructor throws as the caller bug it is. With `NumFormat::CURRENCY` set (it is part of
+`NumFormat::ALL`) the symbol is accepted once, leading (`$5`, `-$5`, `$ -5`) or trailing
+(`5 €`, `1.234,50 kr.`), with optional whitespace between it and the digits; accounting
+parentheses wrap symbol and digits together (`($5)`). A symbol declared with the flag off is
+a `Malformed` fault at the symbol, never silently ignored; the flag with no symbol matches
+nothing. Every integer, real and decimal door honors it.
+
+```php
+$usd = new NumFormat('.', ',', NumFormat::ALL, '$');
+Cast::i32('($1,234)', $usd);             // Success(-1234)
+Cast::decimal('$ 19.99', $usd);          // Success(Decimal 19.99)
+```
+
+### From locale data
+
+`NumFormat::fromLocaleconv(?array $conv = null)` is the platform-data factory the other
+bindings carry (C# `From(CultureInfo)`, Java `from(Locale)`, Python `from_localeconv`): it
+reads `decimal_point`, `thousands_sep` and `currency_symbol` from the given array, or from
+`localeconv()` when null, defaulting to `.`, `,` and no symbol wherever a field is empty,
+every lenience on. PHP's `localeconv()` reflects `setlocale(LC_NUMERIC | LC_MONETARY)`
+*process* state — shared across every request in the worker — so a caller that knows its
+notation should declare it explicitly; the factory is for the caller that genuinely wants
+whatever the process locale says.
+
+```php
+$format = NumFormat::fromLocaleconv(['decimal_point' => ',', 'thousands_sep' => '.', 'currency_symbol' => '€']);
+Cast::f64('1.234,50 €', $format);        // Success(1234.5)
+```
+
+The packed format the core reads is 32 bytes (two separator code points, the flags, the
+symbol length and 16 symbol bytes); `Cast` writes it once per distinct `NumFormat` instance,
+so hoist a format rather than constructing one per call.
 
 ## Why not `filter_var` / `DateTimeImmutable::createFromFormat`?
 
@@ -38,8 +122,8 @@ core's nanoseconds truncate by three digits; durations come back as the protobuf
    parentheses, declared separators, radix prefixes, all five .NET `Guid` text forms plus
    `urn:uuid:` prefixes, protobuf JSON durations.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
-   held by the shared corpus (25 tests green, full twelve-file corpus replay with byte-exact
-   fault spans).
+   held by the shared corpus (every corpus file replayed by phpunit, with byte-exact fault
+   spans).
 4. **Faster than the platform's own parser** — phpbench
    (`XDEBUG_MODE=off vendor/bin/phpbench run --report=aggregate`, linux-arm64): timestamp
    **487 ns vs 1.3 µs `new DateTimeImmutable`** (2.7x). No new mechanism was needed for

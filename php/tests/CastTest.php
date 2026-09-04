@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use HyperCast\Cast;
 use HyperCast\CastFailure;
 use HyperCast\DateOrder;
+use HyperCast\Decimal;
 use HyperCast\Duration;
 use HyperCast\Fault;
 use HyperCast\NumFormat;
@@ -106,6 +107,171 @@ final class CastTest extends TestCase
     {
         $this->expectException(\InvalidArgumentException::class);
         new NumFormat('.', '.', NumFormat::ALL);
+    }
+
+    public function testDeclaredCurrencySymbol(): void
+    {
+        $usd = new NumFormat('.', ',', NumFormat::ALL, '$');
+        $this->assertSame('$', $usd->currency);
+        $this->assertEquals(new Success(1234), Cast::i32('$1,234', $usd));
+        $this->assertEquals(new Success(-5), Cast::i32('-$5', $usd));
+        $this->assertEquals(new Success(-5), Cast::i32('$ -5', $usd));
+        $this->assertEquals(new Success(-5), Cast::i32('($5)', $usd));
+        $this->assertEquals(new Success(1234.5), Cast::f64('$1,234.50', $usd));
+        // Trailing, multi-byte, and a symbol that happens to contain the group separator.
+        $danish = new NumFormat(',', '.', NumFormat::ALL, 'kr.');
+        $this->assertEquals(new Success(1234.5), Cast::f64('1.234,50 kr.', $danish));
+        $euro = new NumFormat(',', '.', NumFormat::ALL, '€');
+        $this->assertEquals(new Success(-1234), Cast::i32('(1.234 €)', $euro));
+        // The symbol is accepted once; a second is data the grammar doesn't know.
+        $this->assertInstanceOf(Fault::class, Cast::i32('$$5', $usd));
+        // Without a declared symbol, the flag matches nothing — and "$" is just Malformed.
+        $this->assertInstanceOf(Fault::class, Cast::i32('$5', NumFormat::invariant()));
+    }
+
+    public function testDeclaredCurrencyWithoutTheFlagIsMalformedAtTheSymbol(): void
+    {
+        $flagOff = new NumFormat('.', ',', NumFormat::ALL & ~NumFormat::CURRENCY, '$');
+        $this->assertEquals(new Fault(CastFailure::Malformed, 0, 1), Cast::i32('$5', $flagOff));
+        $this->assertEquals(new Fault(CastFailure::Malformed, 0, 1), Cast::f64('$5', $flagOff));
+        $this->assertEquals(new Fault(CastFailure::Malformed, 0, 1), Cast::decimal('$5', $flagOff));
+    }
+
+    public function testFormatScratchClearsAShorterSymbolAfterALongerOne(): void
+    {
+        // The identity memo rewrites the packed struct per NumFormat instance; a 3-byte
+        // symbol followed by a 1-byte one must leave no stale tail behind the new length.
+        $danish = new NumFormat(',', '.', NumFormat::ALL, 'kr.');
+        $usd = new NumFormat('.', ',', NumFormat::ALL, '$');
+        $this->assertEquals(new Success(5), Cast::i32('5 kr.', $danish));
+        $this->assertEquals(new Success(5), Cast::i32('$5', $usd));
+        $this->assertInstanceOf(Fault::class, Cast::i32('5 kr.', $usd));
+        $this->assertEquals(new Success(5), Cast::i32('5 kr.', $danish));
+    }
+
+    public function testCurrencySymbolValidationIsACallerBug(): void
+    {
+        foreach (['$5', 'US D', "kr\t", str_repeat('€', 6), "\xFF"] as $bad) {
+            try {
+                new NumFormat('.', ',', NumFormat::ALL, $bad);
+                $this->fail("currency '{$bad}' should have been rejected");
+            } catch (\InvalidArgumentException) {
+                $this->addToAssertionCount(1);
+            }
+        }
+        // Sixteen bytes exactly is the ceiling, not over it.
+        $sixteen = str_repeat('€', 5) . 'k';
+        $this->assertSame($sixteen, (new NumFormat('.', ',', NumFormat::ALL, $sixteen))->currency);
+    }
+
+    public function testDecimalIsExactAndTheScaleIsCanonical(): void
+    {
+        // Exact trailing zeros in the fraction are trimmed, so the scale is minimal.
+        $verdict = Cast::decimal('1.10', NumFormat::invariant());
+        $this->assertEquals(new Success(new Decimal('11', 1, false)), $verdict);
+        $this->assertSame('1.1', (string) $verdict->value);
+        $this->assertEquals($verdict, Cast::decimal('1.1', NumFormat::invariant()));
+        $this->assertEquals($verdict, Cast::decimal('1.1000', NumFormat::invariant()));
+        $this->assertEquals(new Success(new Decimal('1', 1, false)), Cast::decimal('0.1', NumFormat::invariant()));
+        $this->assertEquals(new Success(new Decimal('1', 0, false)), Cast::decimal('1.0000', NumFormat::invariant()));
+        // Only zeros are ever dropped: a whole number keeps its digits.
+        $this->assertEquals(new Success(new Decimal('100', 0, false)), Cast::decimal('100', NumFormat::invariant()));
+        $accounting = Cast::decimal('(1,234.50)', NumFormat::invariant());
+        $this->assertEquals(new Success(new Decimal('12345', 1, true)), $accounting);
+        $this->assertSame('-1234.5', (string) $accounting->value);
+        $this->assertEquals(new Success(new Decimal('5', 1, false)), Cast::decimal('50%', NumFormat::invariant()));
+        $this->assertSame('-0.025', (string) Cast::decimal('(2.5)%', NumFormat::invariant())->value);
+        // Excess precision is a verdict, never a rounding.
+        $tooPrecise = Cast::decimal('0.' . str_repeat('1', 29), NumFormat::invariant());
+        $this->assertInstanceOf(Fault::class, $tooPrecise);
+        $this->assertSame(CastFailure::OutOfRange, $tooPrecise->reason);
+    }
+
+    public function testDecimalZeroIsNeverNegative(): void
+    {
+        // Zero is scale 0 as well as never negative.
+        $this->assertEquals(new Success(new Decimal('0', 0, false)), Cast::decimal('-0.00', NumFormat::invariant()));
+        $this->assertSame('0', (string) Cast::decimal('-0.00', NumFormat::invariant())->value);
+        $this->assertSame('0', (string) Cast::decimal('(0)', NumFormat::invariant())->value);
+    }
+
+    public function testDecimalMagnitudeRidesBeyondPhpIntAsDigits(): void
+    {
+        // 2^96 - 1: hi is all ones and lo's bit pattern is PHP's -1 — the two-limb renderer
+        // must produce the digits without float and without signed-int wraparound.
+        $max = '79228162514264337593543950335';
+        $this->assertEquals(new Success(new Decimal($max, 0, false)), Cast::decimal($max, NumFormat::invariant()));
+        $this->assertSame($max, Decimal::fromLimbs(-1, 0xFFFFFFFF, 0, false)->magnitude);
+        // Exactly 2^64: lo is zero, hi is one.
+        $this->assertSame('18446744073709551616', Decimal::fromLimbs(0, 1, 0, false)->magnitude);
+        $this->assertEquals(
+            new Success(new Decimal('18446744073709551616', 0, false)),
+            Cast::decimal('18446744073709551616', NumFormat::invariant())
+        );
+        // Just past PHP_INT_MAX: hi is zero but lo's sign bit is set.
+        $this->assertSame('9223372036854775808', Decimal::fromLimbs(PHP_INT_MIN, 0, 0, false)->magnitude);
+        $this->assertSame('0', Decimal::fromLimbs(0, 0, 0, false)->magnitude);
+        // With a scale the rendering pads the way the corpus pins it.
+        $this->assertSame('-792281625142643375935439.50335', (string) new Decimal($max, 5, true));
+        $this->assertSame('0.0000000000000000000000000001', (string) new Decimal('1', 28, false));
+    }
+
+    public function testDecimalToFloatIsTheLossyConvenience(): void
+    {
+        $this->assertSame(1234.5, Cast::decimal('1,234.50', NumFormat::invariant())->value->toFloat());
+        $this->assertSame(-0.025, (new Decimal('25', 3, true))->toFloat());
+    }
+
+    public function testNativeVersionNamesTheLoadedLibrary(): void
+    {
+        $this->assertSame(self::crateVersion(), Cast::nativeVersion());
+    }
+
+    public function testIsAvailableIsTheNonThrowingProbe(): void
+    {
+        $this->assertTrue(Cast::isAvailable());
+        // Cached and idempotent — the second answer is the first, no reload.
+        $this->assertTrue(Cast::isAvailable());
+    }
+
+    public function testFromLocaleconvReadsThePlatformShape(): void
+    {
+        // A de_DE-shaped localeconv(): comma decimal, point grouping, the euro.
+        $german = NumFormat::fromLocaleconv([
+            'decimal_point' => ',',
+            'thousands_sep' => '.',
+            'currency_symbol' => '€',
+        ]);
+        $this->assertSame([',', '.', NumFormat::ALL, '€'], [
+            $german->decimalSep, $german->groupSep, $german->flags, $german->currency,
+        ]);
+        $this->assertEquals(new Success(1234.5), Cast::f64('1.234,50 €', $german));
+        // The C locale: empty thousands_sep and currency_symbol fall back to ',' and none.
+        $c = NumFormat::fromLocaleconv(['decimal_point' => '.', 'thousands_sep' => '', 'currency_symbol' => '']);
+        $this->assertSame(['.', ',', NumFormat::ALL, ''], [$c->decimalSep, $c->groupSep, $c->flags, $c->currency]);
+        $this->assertEquals(new Success(1234), Cast::i32('1,234', $c));
+        // Missing keys default the same way as empty ones.
+        $bare = NumFormat::fromLocaleconv([]);
+        $this->assertSame(['.', ',', ''], [$bare->decimalSep, $bare->groupSep, $bare->currency]);
+    }
+
+    /** The crate's own manifest version — walked up from here the way CorpusTest finds corpus/. */
+    private static function crateVersion(): string
+    {
+        $dir = __DIR__;
+        // Stop when dirname() stops moving, not at '/': a Windows root is 'C:\\', never '/'.
+        for ($parent = \dirname($dir); $parent !== $dir; $dir = $parent, $parent = \dirname($dir)) {
+            $candidate = $dir . '/rust/Cargo.toml';
+            if (is_file($candidate)) {
+                self::assertSame(
+                    1,
+                    preg_match('/^version\s*=\s*"([^"]+)"/m', file_get_contents($candidate), $match),
+                    'rust/Cargo.toml carries no package version'
+                );
+                return $match[1];
+            }
+        }
+        self::fail('rust/Cargo.toml not found');
     }
     public function testDateOrderDisambiguatesLikeTheCulturesDo(): void
     {

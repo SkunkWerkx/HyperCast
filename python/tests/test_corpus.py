@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import uuid as uuidlib
+from decimal import Decimal
 from pathlib import Path
 
 import hypercast
@@ -40,7 +41,7 @@ def _format_of(vector: dict) -> NumFormat:
     fmt = vector.get("format")
     if fmt is None:
         return NumFormat.INVARIANT
-    return NumFormat(fmt["decimal_sep"], fmt["group_sep"], fmt["flags"])
+    return NumFormat(fmt["decimal_sep"], fmt["group_sep"], fmt["flags"], fmt.get("currency", ""))
 
 
 def _assert_verdict(domain: str, vector: dict, verdict, expected) -> None:
@@ -93,6 +94,21 @@ def test_real_corpus():
 
             expected = struct.unpack("f", struct.pack("f", expected))[0]
         _assert_verdict("real", vector, door(_input(vector), _format_of(vector)), expected)
+
+
+def test_decimal_corpus():
+    for vector in _corpus("decimal.json"):
+        verdict = hypercast.cast_decimal(_input(vector), _format_of(vector))
+        expected = Decimal(vector["value"]) if "value" in vector else None
+        _assert_verdict("decimal", vector, verdict, expected)
+        if isinstance(verdict, Success):
+            # Equality alone would let "1.10" pass for "1.1": pin the canonical scale the core
+            # produced, digit for digit, through Decimal's own (sign, digits, exponent) storage.
+            sign, digits, exponent = verdict.value.as_tuple()
+            text = vector["input"]
+            assert sign == int(vector["negative"]), f"decimal: {text!r} sign"
+            assert digits == tuple(int(d) for d in str(int(vector["magnitude"]))), f"decimal: {text!r} digits"
+            assert exponent == -vector["scale"], f"decimal: {text!r} scale"
 
 
 def test_uuid_corpus():

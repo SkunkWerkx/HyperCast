@@ -9,6 +9,8 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -60,7 +62,8 @@ final class CorpusTest {
         return new NumFormat(
                 format.get("decimal_sep").getAsString().charAt(0),
                 format.get("group_sep").getAsString().charAt(0),
-                format.get("flags").getAsInt());
+                format.get("flags").getAsInt(),
+                format.has("currency") ? format.get("currency").getAsString() : "");
     }
 
     private static <T> void assertVerdict(String domain, JsonObject vector, Verdict<T> verdict, T expected) {
@@ -140,6 +143,34 @@ final class CorpusTest {
                 case "f64" -> assertVerdict("real", vector, Cast.f64(input, format),
                         value == null ? null : value.getAsDouble());
                 default -> fail("real: unknown type " + vector.get("type"));
+            }
+        }
+    }
+
+    @Test
+    void decimalCorpus() {
+        for (JsonElement element : corpus("decimal.json")) {
+            JsonObject vector = element.getAsJsonObject();
+            String input = vector.get("input").getAsString();
+            BigDecimal expected = null;
+            if (vector.has("magnitude")) {
+                // The triple the core hands back — sign, 96-bit magnitude, scale — is
+                // exactly BigDecimal's own decomposition, so it is pinned field by field...
+                BigInteger magnitude = new BigInteger(vector.get("magnitude").getAsString());
+                expected = new BigDecimal(
+                        vector.get("negative").getAsBoolean() ? magnitude.negate() : magnitude,
+                        vector.get("scale").getAsInt());
+                // ...and the canonical text is the cross-binding check: same value, same scale.
+                BigDecimal canonical = new BigDecimal(vector.get("value").getAsString());
+                assertEquals(0, canonical.compareTo(expected), "decimal: '" + input + "' canonical value");
+                assertEquals(canonical.scale(), expected.scale(), "decimal: '" + input + "' canonical scale");
+            }
+            Verdict<BigDecimal> verdict = Cast.decimal(inputBytes(vector), formatOf(vector));
+            assertVerdict("decimal", vector, verdict, expected);
+            if (verdict instanceof Success<BigDecimal> success) {
+                assertEquals(expected.unscaledValue(), success.value().unscaledValue(), "decimal: '" + input + "' magnitude");
+                assertEquals(expected.scale(), success.value().scale(), "decimal: '" + input + "' scale");
+                assertEquals(expected.signum(), success.value().signum(), "decimal: '" + input + "' sign");
             }
         }
     }

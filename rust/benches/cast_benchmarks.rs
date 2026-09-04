@@ -38,6 +38,16 @@ fn benchmarks(c: &mut Criterion) {
     });
     group.finish();
 
+    let mut group = c.benchmark_group("decimal");
+    group.bench_function("hypercast", |b| {
+        b.iter(|| hypercast::cast_decimal(black_box(b"12345.6789"), &format).unwrap())
+    });
+    group.bench_function("hypercast grouped currency", |b| {
+        let usd = NumFormat::INVARIANT.with_currency(hypercast::CurrencySymbol::new("$").unwrap());
+        b.iter(|| hypercast::cast_decimal(black_box(b"$12,345.67"), &usd).unwrap())
+    });
+    group.finish();
+
     let mut group = c.benchmark_group("uuid");
     group.bench_function("hypercast", |b| {
         b.iter(|| hypercast::cast_uuid(black_box(b"01020304-0506-0708-090a-0b0c0d0e0f10")).unwrap())
@@ -86,7 +96,7 @@ fn benchmarks(c: &mut Criterion) {
     // structural resolution pass, isolated.
     let mut group = c.benchmark_group("separator-detection");
     const EUROZONE: NumFormat =
-        NumFormat { decimal_sep: ',', group_sep: '.', flags: NumFormat::ALL };
+        NumFormat::new(',', '.', NumFormat::ALL);
     group.bench_function("hypercast-detect", |b| {
         b.iter(|| hypercast::cast_f64(black_box(b"1.234.567,89"), &NumFormat::DETECT).unwrap())
     });

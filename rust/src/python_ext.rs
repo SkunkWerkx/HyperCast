@@ -21,7 +21,7 @@ use pyo3::types::{PyBytes, PyDate, PyDateTime, PyDelta, PyDict, PyTime, PyTzInfo
 use crate as core;
 
 /// Cached Python-side companions: the three CastFailure members (the package's own
-/// IntEnum, handed over via `_bind`) and `uuid.UUID`.
+/// IntEnum, handed over via `_bind`), `uuid.UUID`, and `decimal.Decimal`.
 static EMPTY: OnceLock<Py<PyAny>> = OnceLock::new();
 static MALFORMED: OnceLock<Py<PyAny>> = OnceLock::new();
 static OUT_OF_RANGE: OnceLock<Py<PyAny>> = OnceLock::new();
@@ -32,6 +32,9 @@ static UUID_CLASS: OnceLock<Py<PyAny>> = OnceLock::new();
 static UUID_NEW: OnceLock<Py<PyAny>> = OnceLock::new();
 static OBJECT_SETATTR: OnceLock<Py<PyAny>> = OnceLock::new();
 static IS_SAFE_UNKNOWN: OnceLock<Py<PyAny>> = OnceLock::new();
+// `decimal.Decimal` — the exact host type the decimal door builds, from the core's
+// canonical text through the C `_decimal` constructor.
+static DECIMAL_CLASS: OnceLock<Py<PyAny>> = OnceLock::new();
 
 fn cached<'py>(py: Python<'py>, cell: &'static OnceLock<Py<PyAny>>) -> PyResult<&'py Bound<'py, PyAny>> {
     cell.get()
@@ -70,7 +73,10 @@ impl Success {
     }
 }
 
-/// The failure case: a closed reason plus the offending byte span into the UTF-8 input.
+/// The failure case: a closed reason plus the offending span, in the caller's own units —
+/// byte offsets for `bytes` input, code-point offsets for `str` input — so slicing the
+/// offending text back out of what you passed (`text[offset:offset + length]`) needs no
+/// mapping.
 #[pyclass(frozen, module = "hypercast")]
 struct Fault {
     #[pyo3(get)]
@@ -133,6 +139,8 @@ impl NumFormat {
     #[classattr]
     const PERCENT: u32 = core::NumFormat::PERCENT;
     #[classattr]
+    const CURRENCY: u32 = core::NumFormat::CURRENCY;
+    #[classattr]
     const ALL: u32 = core::NumFormat::ALL;
     #[classattr]
     const SEPARATOR_DETECT: u32 = core::NumFormat::SEPARATOR_DETECT;
@@ -152,14 +160,18 @@ impl NumFormat {
     }
 
     #[new]
-    fn new(decimal_sep: &str, group_sep: &str, flags: u32) -> PyResult<Self> {
+    #[pyo3(signature = (decimal_sep, group_sep, flags, currency = ""))]
+    fn new(decimal_sep: &str, group_sep: &str, flags: u32, currency: &str) -> PyResult<Self> {
         let (decimal, group) = (single_char(decimal_sep)?, single_char(group_sep)?);
         if decimal == group {
             return Err(PyValueError::new_err(format!(
                 "Decimal and group separators must differ; both are {decimal_sep:?}"
             )));
         }
-        Ok(NumFormat { resolved: core::NumFormat { decimal_sep: decimal, group_sep: group, flags } })
+        Ok(NumFormat {
+            resolved: core::NumFormat::new(decimal, group, flags)
+                .with_currency(currency_symbol(currency)?),
+        })
     }
 
     #[getter]
@@ -175,6 +187,11 @@ impl NumFormat {
     #[getter]
     fn flags(&self) -> u32 {
         self.resolved.flags
+    }
+
+    #[getter]
+    fn currency(&self) -> String {
+        self.resolved.currency.as_str().to_string()
     }
 
     #[staticmethod]
@@ -198,14 +215,29 @@ impl NumFormat {
         };
         let decimal = field("decimal_point", '.')?;
         let group = field("thousands_sep", ',')?;
+        let currency = match conv.get_item("currency_symbol")? {
+            Some(value) => value.extract::<String>()?,
+            None => String::new(),
+        };
         Ok(NumFormat {
-            resolved: core::NumFormat {
-                decimal_sep: decimal,
-                group_sep: group,
-                flags: core::NumFormat::ALL,
-            },
+            resolved: core::NumFormat::new(decimal, group, core::NumFormat::ALL)
+                .with_currency(currency_symbol(&currency)?),
         })
     }
+}
+
+/// The declared currency symbol: `""` declares none; anything else must be a valid
+/// `CurrencySymbol` (1 to 16 UTF-8 bytes, no ASCII digit or whitespace), or it is a caller
+/// bug raised here, at construction, the way equal separators are.
+fn currency_symbol(text: &str) -> PyResult<core::CurrencySymbol> {
+    if text.is_empty() {
+        return Ok(core::CurrencySymbol::NONE);
+    }
+    core::CurrencySymbol::new(text).ok_or_else(|| {
+        PyValueError::new_err(format!(
+            "Currency symbol must be 1 to 16 UTF-8 bytes with no ASCII digit or whitespace; got {text:?}"
+        ))
+    })
 }
 
 fn single_char(text: &str) -> PyResult<char> {
@@ -239,6 +271,32 @@ impl Text<'_> {
             Text::Bytes(bytes) => Ok(Cow::Borrowed(bytes.as_bytes())),
         }
     }
+
+    /// Presents a fault in the caller's own units: the core's byte span as-is for `bytes`
+    /// input, remapped to code points for `str` input. An ASCII `str` needs no mapping and
+    /// pays one length comparison (code points equal bytes); only a non-ASCII `str`, and
+    /// only on the fault path, counts code points.
+    fn present(&self, failed: core::Fault) -> PyResult<core::Fault> {
+        let Text::Str(text) = self else {
+            return Ok(failed);
+        };
+        let bytes = self.bytes()?;
+        if bytes.len() == text.len()? {
+            return Ok(failed);
+        }
+        let offset = (failed.offset as usize).min(bytes.len());
+        let end = offset.saturating_add(failed.len as usize).min(bytes.len());
+        Ok(core::Fault {
+            reason: failed.reason,
+            offset: code_points(&bytes[..offset]),
+            len: code_points(&bytes[offset..end]),
+        })
+    }
+}
+
+/// Every code point starts with exactly one non-continuation byte.
+fn code_points(bytes: &[u8]) -> u32 {
+    bytes.iter().filter(|byte| **byte & 0xC0 != 0x80).count() as u32
 }
 
 fn fault(py: Python<'_>, failed: core::Fault) -> PyResult<Py<PyAny>> {
@@ -256,6 +314,7 @@ fn fault(py: Python<'_>, failed: core::Fault) -> PyResult<Py<PyAny>> {
 
 fn verdict<'py, T>(
     py: Python<'py>,
+    text: &Text<'py>,
     outcome: Result<T, core::Fault>,
     into: impl FnOnce(Python<'py>, T) -> PyResult<Py<PyAny>>,
 ) -> PyResult<Py<PyAny>> {
@@ -264,7 +323,7 @@ fn verdict<'py, T>(
             let value = into(py, value)?;
             Ok(Py::new(py, Success { value })?.into_any())
         }
-        Err(failed) => fault(py, failed),
+        Err(failed) => fault(py, text.present(failed)?),
     }
 }
 
@@ -272,7 +331,7 @@ macro_rules! numeric_doors {
     ($($door:ident => $core:ident),+ $(,)?) => {$(
         #[pyfunction]
         fn $door(py: Python<'_>, text: Text<'_>, fmt: PyRef<'_, NumFormat>) -> PyResult<Py<PyAny>> {
-            verdict(py, core::$core(text.bytes()?, &fmt.resolved), |py, value| {
+            verdict(py, &text, core::$core(text.bytes()?, &fmt.resolved), |py, value| {
                 Ok(value.into_pyobject(py)?.into_any().unbind())
             })
         }
@@ -292,16 +351,61 @@ numeric_doors! {
     cast_f64 => cast_f64,
 }
 
+/// The core's canonical decimal text (`Display`), rendered on the stack — at most a sign,
+/// 29 digits and a point — so the host `Decimal` comes straight out of `_decimal`'s C string
+/// constructor with nothing allocated on this side. Measured against the
+/// `(sign, digits, exponent)` tuple constructor (which has to build a Python int per digit):
+/// the text path was faster on every shape tried, `1234.50` at 405 ns vs 556 ns and the
+/// 29-digit ceiling at 788 ns vs 1189 ns (CPython 3.14, linux-arm64, timeit best of five).
+struct Canonical {
+    buf: [u8; 48],
+    len: usize,
+}
+
+impl std::fmt::Write for Canonical {
+    fn write_str(&mut self, piece: &str) -> std::fmt::Result {
+        let end = self.len + piece.len();
+        let slot = self.buf.get_mut(self.len..end).ok_or(std::fmt::Error)?;
+        slot.copy_from_slice(piece.as_bytes());
+        self.len = end;
+        Ok(())
+    }
+}
+
+/// Casts decimal text under the declared format to an exact, canonical
+/// `decimal.Decimal` — trailing fraction zeros trimmed, so `"1.10"` is `Decimal('1.1')`;
+/// never rounded.
+#[pyfunction]
+fn cast_decimal(py: Python<'_>, text: Text<'_>, fmt: PyRef<'_, NumFormat>) -> PyResult<Py<PyAny>> {
+    verdict(py, &text, core::cast_decimal(text.bytes()?, &fmt.resolved), |py, value| {
+        use std::fmt::Write;
+        let mut canonical = Canonical { buf: [0; 48], len: 0 };
+        write!(canonical, "{value}")
+            .map_err(|_| PyValueError::new_err("hypercast: decimal text overflowed its buffer"))?;
+        let text = std::str::from_utf8(&canonical.buf[..canonical.len])
+            .map_err(|_| PyValueError::new_err("hypercast: decimal text was not UTF-8"))?;
+        Ok(cached(py, &DECIMAL_CLASS)?.call1((text,))?.unbind())
+    })
+}
+
+/// This library's version as `"major.minor.patch"`, decoded from the same packed
+/// `hypercast_version` export every other binding probes.
+#[pyfunction]
+fn native_version() -> String {
+    let packed = core::hypercast_version();
+    format!("{}.{}.{}", packed >> 16, (packed >> 8) & 0xff, packed & 0xff)
+}
+
 #[pyfunction]
 fn cast_bool(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
-    verdict(py, core::cast_bool(text.bytes()?), |py, value| {
+    verdict(py, &text, core::cast_bool(text.bytes()?), |py, value| {
         Ok(value.into_pyobject(py)?.to_owned().into_any().unbind())
     })
 }
 
 #[pyfunction]
 fn cast_uuid(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
-    verdict(py, core::cast_uuid(text.bytes()?), |py, bytes| {
+    verdict(py, &text, core::cast_uuid(text.bytes()?), |py, bytes| {
         // The core has already validated the text; `UUID.__init__` would only re-check a
         // value it cannot reject, so the instance is built the way `uuid.UUID` itself
         // stores it — the 128-bit `int` slot, big-endian from the RFC-ordered bytes, and
@@ -355,7 +459,7 @@ fn instant<'py>(py: Python<'py>, ts: core::Timestamp) -> PyResult<Py<PyAny>> {
 
 #[pyfunction]
 fn cast_timestamp(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
-    verdict(py, core::cast_timestamp(text.bytes()?), instant)
+    verdict(py, &text, core::cast_timestamp(text.bytes()?), instant)
 }
 
 #[pyfunction]
@@ -367,7 +471,7 @@ fn cast_unix(py: Python<'_>, text: Text<'_>, precision: u32) -> PyResult<Py<PyAn
         4 => core::UnixPrecision::Nanos,
         _ => return Err(PyValueError::new_err("precision must be a UnixPrecision")),
     };
-    verdict(py, core::cast_unix(text.bytes()?, precision), instant)
+    verdict(py, &text, core::cast_unix(text.bytes()?, precision), instant)
 }
 
 #[pyfunction]
@@ -377,7 +481,7 @@ fn cast_excel_serial(py: Python<'_>, text: Text<'_>, epoch: u32) -> PyResult<Py<
         2 => core::ExcelEpoch::Y1904,
         _ => return Err(PyValueError::new_err("epoch must be an ExcelEpoch")),
     };
-    verdict(py, core::cast_excel_serial(text.bytes()?, epoch), instant)
+    verdict(py, &text, core::cast_excel_serial(text.bytes()?, epoch), instant)
 }
 
 fn date_value(py: Python<'_>, date: core::Date) -> PyResult<Py<PyAny>> {
@@ -390,7 +494,7 @@ fn date_value(py: Python<'_>, date: core::Date) -> PyResult<Py<PyAny>> {
 #[pyo3(signature = (text, order = None))]
 fn cast_date(py: Python<'_>, text: Text<'_>, order: Option<u32>) -> PyResult<Py<PyAny>> {
     let Some(order) = order else {
-        return verdict(py, core::cast_date(text.bytes()?), date_value);
+        return verdict(py, &text, core::cast_date(text.bytes()?), date_value);
     };
     let order = match order {
         1 => core::DateOrder::YearMonthDay,
@@ -398,7 +502,7 @@ fn cast_date(py: Python<'_>, text: Text<'_>, order: Option<u32>) -> PyResult<Py<
         3 => core::DateOrder::DayMonthYear,
         _ => return Err(PyValueError::new_err("order must be a DateOrder")),
     };
-    verdict(py, core::cast_date_ordered(text.bytes()?, order), date_value)
+    verdict(py, &text, core::cast_date_ordered(text.bytes()?, order), date_value)
 }
 
 #[pyfunction]
@@ -409,7 +513,7 @@ fn cast_datetime(py: Python<'_>, text: Text<'_>, order: u32) -> PyResult<Py<PyAn
         3 => core::DateOrder::DayMonthYear,
         _ => return Err(PyValueError::new_err("order must be a DateOrder")),
     };
-    verdict(py, core::cast_datetime(text.bytes()?, order), |py, civil| {
+    verdict(py, &text, core::cast_datetime(text.bytes()?, order), |py, civil| {
         // Naive datetime — the text named no zone, so the value carries none; fusing a
         // zone is the caller's job. Sub-microsecond nanoseconds truncate (Python's ceiling).
         let (second_of_day, nano) = (civil.nanos_of_day / 1_000_000_000, civil.nanos_of_day % 1_000_000_000);
@@ -433,7 +537,7 @@ fn cast_datetime(py: Python<'_>, text: Text<'_>, order: u32) -> PyResult<Py<PyAn
 
 #[pyfunction]
 fn cast_time(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
-    verdict(py, core::cast_time(text.bytes()?), |py, nanos| {
+    verdict(py, &text, core::cast_time(text.bytes()?), |py, nanos| {
         let (second_of_day, nano) = (nanos / 1_000_000_000, nanos % 1_000_000_000);
         let (hour, rest) = (second_of_day / 3_600, second_of_day % 3_600);
         let (minute, second) = (rest / 60, rest % 60);
@@ -452,7 +556,7 @@ fn cast_time(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
 
 #[pyfunction]
 fn cast_duration(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
-    verdict(py, core::cast_duration(text.bytes()?), |py, span| {
+    verdict(py, &text, core::cast_duration(text.bytes()?), |py, span| {
         // Truncate sub-microsecond digits toward zero on both signs, matching every other
         // binding's truncation; PyDelta normalizes the mixed-sign pieces.
         let nanos = i64::from(span.nanos);
@@ -465,8 +569,8 @@ fn cast_duration(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
     })
 }
 
-/// Hands the package's own `CastFailure` IntEnum (and `uuid.UUID`) to this backend so
-/// faults carry the exact members callers compare with `is`.
+/// Hands the package's own `CastFailure` IntEnum (plus `uuid.UUID` and `decimal.Decimal`)
+/// to this backend so faults carry the exact members callers compare with `is`.
 #[pyfunction]
 fn _bind(py: Python<'_>, cast_failure: Bound<'_, PyAny>) -> PyResult<()> {
     let _ = EMPTY.set(cast_failure.getattr("EMPTY")?.unbind());
@@ -480,6 +584,7 @@ fn _bind(py: Python<'_>, cast_failure: Bound<'_, PyAny>) -> PyResult<()> {
         py.import("builtins")?.getattr("object")?.getattr("__setattr__")?.unbind(),
     );
     let _ = IS_SAFE_UNKNOWN.set(uuid_module.getattr("SafeUUID")?.getattr("unknown")?.unbind());
+    let _ = DECIMAL_CLASS.set(py.import("decimal")?.getattr("Decimal")?.unbind());
     Ok(())
 }
 
@@ -503,6 +608,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cast_u64, m)?)?;
     m.add_function(wrap_pyfunction!(cast_f32, m)?)?;
     m.add_function(wrap_pyfunction!(cast_f64, m)?)?;
+    m.add_function(wrap_pyfunction!(cast_decimal, m)?)?;
     m.add_function(wrap_pyfunction!(cast_uuid, m)?)?;
     m.add_function(wrap_pyfunction!(cast_timestamp, m)?)?;
     m.add_function(wrap_pyfunction!(cast_unix, m)?)?;
@@ -511,6 +617,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cast_datetime, m)?)?;
     m.add_function(wrap_pyfunction!(cast_time, m)?)?;
     m.add_function(wrap_pyfunction!(cast_duration, m)?)?;
+    m.add_function(wrap_pyfunction!(native_version, m)?)?;
     m.add_function(wrap_pyfunction!(_bind, m)?)?;
     Ok(())
 }

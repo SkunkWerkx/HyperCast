@@ -8,13 +8,13 @@
 *compiler-mandatory* — not an opt-in analyzer flag, not a review convention. The value, or a
 closed reason plus the exact byte span that offended.**
 
-Allocation-lean scalar casts — booleans, the full integer family, reals, UUIDs, temporals —
-calling directly into the native `libhypercast` Rust core via `dlopen`/`dlsym`
-(`LoadLibraryW`/`GetProcAddress` on Windows) and `@convention(c)` function-pointer casts,
-no shim layer. The package bundles a native build for every supported platform as SwiftPM
-resources under `NativeLibs/{rid}/` — `binaryTarget`/XCFramework is Apple-only, so the
-resource-bundle approach is what covers Linux and Windows too — and `NativePlatform`
-resolves the RID at compile time.
+Allocation-lean scalar casts — booleans, the full integer family, reals, exact decimals,
+UUIDs, temporals — calling directly into the native `libhypercast` Rust core via
+`dlopen`/`dlsym` (`LoadLibraryW`/`GetProcAddress` on Windows) and `@convention(c)`
+function-pointer casts, no shim layer. The package bundles a native build for every
+supported platform as SwiftPM resources under `NativeLibs/{rid}/` — `binaryTarget`/XCFramework
+is Apple-only, so the resource-bundle approach is what covers Linux and Windows too — and
+`NativePlatform` resolves the RID at compile time.
 
 ```swift
 switch try Cast.i32("(1,234)", format: .invariant) {
@@ -23,11 +23,32 @@ case .fault(let fault): print("\(fault.reason) at byte \(fault.offset)")
 }   // no default: the compiler mandates both arms, and only both arms
 ```
 
-Door names mirror the native ABI (`i32`, `f64`, `timestamp`, …); every door also takes raw
-UTF-8 `[UInt8]` for callers already holding bytes. Swift-flavored fidelity: `Duration` is
-attosecond-backed, so the duration door keeps every nanosecond the core parses; the
-`Duration` presentation is also why `Package.swift` carries a `.macOS(.v13)` floor (Linux
-has no availability gates — this only sets the Darwin deployment target).
+Door names mirror the native ABI (`i32`, `f64`, `decimal`, `timestamp`, …); every door also
+takes raw UTF-8 `[UInt8]` for callers already holding bytes. Swift-flavored fidelity:
+`Duration` is attosecond-backed, so the duration door keeps every nanosecond the core
+parses; the `Duration` presentation is also why `Package.swift` carries a `.macOS(.v13)`
+floor (Linux has no availability gates — this only sets the Darwin deployment target).
+`Cast.decimal` presents Foundation's `Decimal`, whose 38-digit mantissa holds every value
+the core's 96-bit, 28-place decimal produces exactly — `0.1` is one tenth, `50%` is exactly
+`0.5`, and excess precision is `outOfRange` rather than rounded. The core's result is
+canonical — exact trailing fraction zeros are trimmed, so `1.10`, `1.1` and `1.1000` are all
+magnitude 11 at scale 1 — which is exactly what `Decimal` represents, so nothing is lost
+between the core and the presentation. `Cast.nativeVersion()` reports the loaded
+library's own `major.minor.patch` (`hypercast_version`), so a caller can prove the binary
+it resolved is the one this binding was built against before the first cast; `Cast.isAvailable`
+is the non-throwing form of the same question — the probe a consumer with a fallback gates
+on, so a door's `throws` (which only ever means "the library couldn't load") never has to be
+caught at a call site. A caller that is itself generic over its target uses
+`Cast.numeric<T>(_:format:)`, resolved statically over the closed `NumericCastTarget` set —
+exactly the eleven numeric targets (`Int8`…`Int64`, `UInt8`…`UInt64`, `Float`, `Double`,
+`Decimal`), each routed to its own door; any other `T` is a compile error, not a runtime
+one.
+
+```swift
+func column<T: NumericCastTarget>(_ cells: [String], as _: T.Type, format: NumFormat) throws -> [Verdict<T>] {
+    try cells.map { try Cast.numeric($0, format: format) }
+}
+```
 
 ## Why not `Int32("...")` / `ISO8601FormatStyle`?
 
@@ -37,8 +58,7 @@ has no availability gates — this only sets the Darwin deployment target).
    parentheses, declared separators, radix prefixes, all five .NET `Guid` text forms plus
    `urn:uuid:` prefixes, protobuf JSON durations.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
-   held by the shared corpus (25 tests green, full twelve-file corpus replay with byte-exact
-   fault spans).
+   held by the shared corpus (every corpus file replayed, with byte-exact fault spans).
 4. **Faster on the culture-machinery doors, and now allocation-free** — numbers from
    ordo-one's package-benchmark (linux-arm64, p50, `swift package benchmark run` in
    `Benchmarks/`, Swift 6.3.3), before and after the 0.2.0 carrier rewrite, same machine,
@@ -60,8 +80,9 @@ has no availability gates — this only sets the Darwin deployment target).
    input into a fresh `[UInt8]` (`Array(text.utf8)`) and every door then allocated three
    more heap arrays for the out-value, the fault span and the format — four mallocs before
    the native call. The input now crosses as a view of the string's own UTF-8 (`withUTF8`),
-   the scratch is a tuple of fixed-width integers on the stack, and the 21-function library
-   handle is a class reference rather than a struct copied out of a `Result` per call. The
+   the scratch is a tuple of fixed-width integers on the stack, and the library handle (one
+   function pointer per native export) is a class reference rather than a struct copied
+   out of a `Result` per call. The
    Foundation columns are the same run's controls, unchanged between the two tapes, which
    is what makes the comparison a receipt.
 
@@ -86,6 +107,31 @@ own archaeology.)
 Every door also takes an `UnsafeRawBufferPointer` — the primitive the `String` and
 `[UInt8]` forms wrap — so a caller already holding a buffer (a mapped file, one field of a
 delimited line) casts a slice of it without copying anything out first.
+
+## Declared formats and currency
+
+The numeric doors take a `NumFormat` — declared separators plus `NumStyles` lenience flags
+— with no default argument: `.invariant` (`.` decimal, `,` grouping, every lenience on) or
+`NumFormat.from(locale:)`, which reads the locale's separators and its currency symbol. The
+core carries no culture table, so the symbol is the one field a culture has to supply, and
+it is declared, never looked up. With `.currency` in the styles (part of `.all`) the
+declared symbol is accepted once at either edge of the number — leading, before or after a
+sign (`$5`, `-$5`, `$ -5`), or trailing (`5 €`, `1.234,50 kr.`) — with optional whitespace
+between symbol and digits, and accounting parentheses wrap the two together (`($5)`). A
+symbol declared with the flag off is `malformed` at the symbol; the flag with no symbol
+declared changes nothing. The symbol is at most 16 UTF-8 bytes with no digit or whitespace
+in it — anything else is a precondition failure, a caller bug the same way equal separators
+are.
+
+```swift
+let danish = NumFormat(decimalSeparator: ",", groupSeparator: ".", styles: .all, currencySymbol: "kr.")
+switch try Cast.decimal("(1.234,50 kr.)", format: danish) {
+case .success(let amount): print(amount)                   // -1234.5, exact — no double was ever formed
+case .fault(let fault): print("\(fault.reason) at byte \(fault.offset)")
+}
+let enUs = NumFormat.from(locale: Locale(identifier: "en_US"))   // "$", from the locale's own data
+try Cast.i32("-$5", format: enUs)                                  // .success(-5)
+```
 
 ## WebAssembly
 

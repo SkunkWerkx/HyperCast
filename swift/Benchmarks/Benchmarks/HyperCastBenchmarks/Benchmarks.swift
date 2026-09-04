@@ -73,6 +73,18 @@ let benchmarks: @Sendable () -> Void = {
         }
     }
 
+    Benchmark("Cast.decimal") { benchmark in
+        for _ in benchmark.scaledIterations {
+            blackHole(try Cast.decimal(floatText, format: invariant))
+        }
+    }
+
+    Benchmark("Decimal(string:)") { benchmark in
+        for _ in benchmark.scaledIterations {
+            blackHole(Decimal(string: floatText))
+        }
+    }
+
     Benchmark("Cast.uuid") { benchmark in
         for _ in benchmark.scaledIterations {
             blackHole(try Cast.uuid(uuidText))

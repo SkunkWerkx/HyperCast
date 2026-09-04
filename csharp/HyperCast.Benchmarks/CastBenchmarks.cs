@@ -73,6 +73,37 @@ public class CastBenchmarks
 	public double BclDoubleTryParse() =>
 		double.TryParse(DoubleText, NumberStyles.Float, _invariantCulture, out var value) ? value : 0;
 
+	// --- the exact decimal door vs decimal.TryParse, and the declared currency symbol vs
+	// NumberStyles.Currency under en-US: the two additions the first consumer asked for,
+	// measured the same way as every other row (string door, transcode included).
+
+	const string DecimalText = "12,345.6789";
+	const string CurrencyText = "($1,234.50)";
+
+	static readonly NumFormat _usd = NumFormat.From(CultureInfo.GetCultureInfo("en-US"));
+	static readonly CultureInfo _enUsCulture = CultureInfo.GetCultureInfo("en-US");
+
+	[Benchmark]
+	public decimal CastDecimal() => Cast.Decimal(DecimalText, _invariant).TryGetValue(out Success<decimal> s) ? s.Value : 0;
+
+	[Benchmark]
+	public decimal BclDecimalTryParse() =>
+		decimal.TryParse(DecimalText, NumberStyles.Number, _invariantCulture, out var value) ? value : 0;
+
+	[Benchmark]
+	public decimal CastDecimalCurrency() => Cast.Decimal(CurrencyText, _usd).TryGetValue(out Success<decimal> s) ? s.Value : 0;
+
+	[Benchmark]
+	public decimal BclDecimalTryParseCurrency() =>
+		decimal.TryParse(CurrencyText, NumberStyles.Currency, _enUsCulture, out var value) ? value : 0;
+
+	[Benchmark]
+	public double CastDoubleCurrency() => Cast.Double(CurrencyText, _usd).TryGetValue(out Success<double> s) ? s.Value : 0;
+
+	[Benchmark]
+	public double BclDoubleTryParseCurrency() =>
+		double.TryParse(CurrencyText, NumberStyles.Currency, _enUsCulture, out var value) ? value : 0;
+
 	[Benchmark]
 	public Guid CastUuid() => Cast.Uuid(GuidText).TryGetValue(out Success<Guid> s) ? s.Value : default;
 

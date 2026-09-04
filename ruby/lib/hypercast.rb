@@ -2,10 +2,11 @@ require "date"
 require_relative "hypercast/native_platform"
 require_relative "hypercast/runtime"
 
-# Allocation-lean scalar casts — booleans, numerics, UUIDs, temporals — calling directly
-# into the native libhypercast shared library via Fiddle. Every door returns a verdict:
-# Success or Fault (a closed reason plus the offending byte span), never an exception for
-# bad data — the only exceptions here are caller bugs (a malformed NumFormat), never data.
+# Allocation-lean scalar casts — booleans, numerics, exact decimals, UUIDs, temporals —
+# calling directly into the native libhypercast shared library via Fiddle. Every door
+# returns a verdict: Success or Fault (a closed reason plus the offending byte span), never
+# an exception for bad data — the only exceptions here are caller bugs (a malformed
+# NumFormat), never data.
 #
 # Consume with Ruby's own pattern matching over the two Data case types:
 #
@@ -17,9 +18,10 @@ require_relative "hypercast/runtime"
 # Door names mirror the native ABI (i32, f64, timestamp, ...) so the polyglot surface reads
 # identically across bindings. Ruby-flavored fidelity: Integer is unbounded (u64 comes back
 # as the true unsigned value), Time carries full nanoseconds across the whole 0001-9999
-# window, time-of-day is an exact Integer of nanoseconds since midnight, and durations come
-# back as exact Rational seconds — no truncation anywhere, and no wrapping: Ruby and the
-# JVM are the fidelity kings of this roster.
+# window, time-of-day is an exact Integer of nanoseconds since midnight, durations come
+# back as exact Rational seconds, and the decimal door returns an exact Decimal (sign,
+# 96-bit magnitude, base-10 scale) that never rounds — no truncation anywhere, and no
+# wrapping: Ruby and the JVM are the fidelity kings of this roster.
 module HyperCast
   # This gem's own version — kept in lockstep with hypercast.gemspec by the
   # prepare-release workflow, so the two can never drift apart again.
@@ -29,31 +31,55 @@ module HyperCast
   Success = Data.define(:value)
 
   # The failure case: a closed reason Symbol (:empty, :malformed, :out_of_range) plus the
-  # offending span as byte offsets into the UTF-8 input. Nothing is captured — slicing the
-  # offending text out of the input is the caller's choice.
+  # offending span, in the units String#[] slices by on the text you passed: character
+  # offsets for text (in any encoding — the core reads UTF-8 and the span is mapped back),
+  # byte offsets for a binary (ASCII-8BIT) String, whose characters are its bytes. Either
+  # way `text[offset, length]` is the offending text, with no mapping on your side.
+  # Nothing is captured — slicing it out of the input is the caller's choice.
   Fault = Data.define(:reason, :offset, :length)
 
   # The native core's failure codes, mapped to the closed reason Symbols a Fault carries.
   REASONS = { 1 => :empty, 2 => :malformed, 3 => :out_of_range }.freeze
 
-  # Caller-declared numeric notation for the integer and real doors — declared out loud
-  # (INVARIANT, or a literal), never defaulted, the same stance every binding takes.
-  # Equal separators are a caller bug (ArgumentError), never a verdict.
-  NumFormat = Data.define(:decimal_sep, :group_sep, :flags) do
+  # Caller-declared numeric notation for the integer, real and decimal doors — declared out
+  # loud (INVARIANT, or a literal), never defaulted, the same stance every binding takes.
+  # The currency symbol is the one field a culture table would fill in: it is declared
+  # here, never looked up, and honored only while the CURRENCY flag is set — declared with
+  # the flag off, the symbol is a :malformed Fault at the symbol, and the flag with no
+  # symbol ("" — the default) matches nothing. Equal separators, or a symbol longer than
+  # 16 UTF-8 bytes or carrying an ASCII digit or ASCII whitespace, are a caller bug
+  # (ArgumentError), never a verdict.
+  NumFormat = Data.define(:decimal_sep, :group_sep, :flags, :currency) do
+    # The widest currency symbol the native ABI carries inline, in UTF-8 bytes.
+    CURRENCY_MAX_BYTES = 16
+
     # Validates the declared separators up front — single characters, and distinct from
-    # each other — so a malformed format fails loudly as the caller bug it is.
-    def initialize(decimal_sep:, group_sep:, flags:)
+    # each other — and the currency symbol (a String of at most 16 UTF-8 bytes with no
+    # ASCII digit or ASCII whitespace, since those would collide with the digit scan and
+    # the trimming around the symbol), so a malformed format fails loudly as the caller bug
+    # it is. The symbol is stored transcoded to UTF-8, the encoding the core reads.
+    def initialize(decimal_sep:, group_sep:, flags:, currency: "")
       raise ArgumentError, "separators must be single characters" unless
         decimal_sep.is_a?(String) && decimal_sep.length == 1 &&
         group_sep.is_a?(String) && group_sep.length == 1
       raise ArgumentError, "decimal and group separators must differ; both are #{decimal_sep.inspect}" if
         decimal_sep == group_sep
-      super
+      raise ArgumentError, "currency symbol must be a String; got #{currency.inspect}" unless currency.is_a?(String)
+
+      symbol = currency.encode(Encoding::UTF_8)
+      raise ArgumentError, "currency symbol #{currency.inspect} exceeds #{CURRENCY_MAX_BYTES} UTF-8 bytes" if
+        symbol.bytesize > CURRENCY_MAX_BYTES
+      raise ArgumentError, "currency symbol #{currency.inspect} must not contain an ASCII digit or whitespace" if
+        symbol.match?(/[0-9\t\n\f\r ]/)
+
+      super(decimal_sep: decimal_sep, group_sep: group_sep, flags: flags, currency: symbol)
     end
 
-    # The 12-byte little-endian form the native ABI's NumFormat struct expects.
+    # The 32-byte little-endian form the native ABI's NumFormat struct expects: the two
+    # separators as code points, the flags, the symbol's byte length, then the symbol's
+    # UTF-8 bytes zero-padded to 16.
     def packed
-      [decimal_sep.ord, group_sep.ord, flags].pack("L<L<L<")
+      [decimal_sep.ord, group_sep.ord, flags, currency.bytesize].pack("L<L<L<L<") + [currency].pack("a16")
     end
   end
 
@@ -65,7 +91,7 @@ module HyperCast
   EXPONENT = 1 << 2
   # Permit 0x/&H/0b two's-complement radix prefixes (0xFF is -1 for an i8).
   RADIX_PREFIXES = 1 << 3
-  # Permit a trailing %, dividing by 100. Real doors only.
+  # Permit a trailing %, dividing by 100. Real and decimal doors only.
   PERCENT = 1 << 4
   # Resolve the ./, roles per input from structure instead of the declared separators
   # (which are ignored while this flag is set). Detection, not sniffing: a repeated
@@ -75,11 +101,18 @@ module HyperCast
   # Genuinely ambiguous input ("12.185", "1,000") is a :malformed Fault at the separator,
   # never guessed.
   SEPARATOR_DETECT = 1 << 5
+  # Permit the format's declared currency symbol at either edge of the numeric body —
+  # leading ("$5", "-$5", "$ -5") or trailing ("5 €", "1.234,50 kr."), once, with optional
+  # ASCII whitespace between symbol and digits; accounting parentheses wrap the symbol
+  # along with the digits ("($5)"). With no symbol declared the flag matches nothing.
+  # Integer, real and decimal doors.
+  CURRENCY = 1 << 6
   # Every lenience on (SEPARATOR_DETECT is a separator policy, not a lenience, and is
   # deliberately not included).
-  ALL_STYLES = GROUPING | PARENTHESES | EXPONENT | RADIX_PREFIXES | PERCENT
+  ALL_STYLES = GROUPING | PARENTHESES | EXPONENT | RADIX_PREFIXES | PERCENT | CURRENCY
 
-  # The invariant profile — '.' decimal, ',' grouping, every lenience on.
+  # The invariant profile — '.' decimal, ',' grouping, every lenience on, no currency
+  # symbol declared.
   NumFormat::INVARIANT = NumFormat.new(decimal_sep: ".", group_sep: ",", flags: ALL_STYLES)
 
   # The detection profile — every lenience on, ./, roles resolved per input by
@@ -100,6 +133,46 @@ module HyperCast
   # en-GB order) only because the caller said which.
   DATE_ORDERS = { year_month_day: 1, month_day_year: 2, day_month_year: 3 }.freeze
 
+  # An exact decimal, the decimal door's value: an unbounded Integer magnitude (the core's
+  # 96-bit unsigned, so at most 2**96 - 1), an Integer base-10 scale (0..28 — the number of
+  # places the magnitude is shifted right), and a negative flag. The value is
+  # (negative ? -1 : 1) * magnitude * 10**-scale. The triple is canonical: exact trailing
+  # zeros in the fraction are always trimmed, so the scale is minimal ("1.10", "1.1" and
+  # "1.1000" are all magnitude 11, scale 1; "100" stays magnitude 100, scale 0), and zero
+  # is scale 0 and never negative. Nothing but a zero is ever dropped — text carrying more
+  # precision than the core holds is an :out_of_range Fault, never an approximation.
+  # Convert with to_r (exact Rational), to_s (the canonical text), or to_d (BigDecimal).
+  Decimal = Data.define(:magnitude, :scale, :negative) do
+    # True for a negative value; zero is never negative.
+    def negative?
+      negative
+    end
+
+    # The value as an exact Rational.
+    def to_r
+      value = Rational(magnitude, 10**scale)
+      negative ? -value : value
+    end
+
+    # The canonical text form — "-1234.5", "-0.025", "0": the minimal scale rendered
+    # plainly, no exponent — the same string every binding renders and the conformance
+    # corpus pins as `value`.
+    def to_s
+      digits = magnitude.to_s.rjust(scale + 1, "0")
+      text = scale.zero? ? digits : "#{digits[0, digits.length - scale]}.#{digits[-scale, scale]}"
+      negative ? "-#{text}" : text
+    end
+
+    # The value as a BigDecimal, built exactly from the canonical text. Requires the
+    # bigdecimal gem (a bundled gem since Ruby 3.4, not a dependency of this one — add it
+    # to your Gemfile under Bundler), loaded lazily on first use so a consumer who never
+    # calls this pays nothing for it.
+    def to_d
+      require "bigdecimal"
+      BigDecimal(to_s)
+    end
+  end
+
   class << self
     # Presents a verdict optionally: an :empty fault becomes nil (Ruby's absent),
     # everything else flows through untouched.
@@ -107,6 +180,24 @@ module HyperCast
       return nil if verdict in Fault(reason: :empty)
 
       verdict
+    end
+
+    # Whether a backend actually loaded and exports the ABI this binding was built against
+    # — what a consumer with a fallback of its own checks before committing to these doors.
+    # Probed once (a native_version round trip: the cheapest call the core has), cached,
+    # and never raises: a missing shared library, an older core without the version
+    # export, or a wasm module the wasmtime gem cannot instantiate all answer false. The
+    # doors themselves keep their own behavior — the first call on an unavailable backend
+    # raises its precise LoadError, exactly as before — and so does require-time selection
+    # under HYPERCAST_WASM=1 without wasmtime; this only answers the question quietly.
+    def available?
+      return @available unless @available.nil?
+
+      @available = begin
+        native_version.is_a?(String)
+      rescue LoadError, StandardError
+        false
+      end
     end
 
     # Casts boolean text: true/false plus the conventions untrusted sources actually send
@@ -140,6 +231,19 @@ module HyperCast
     # Casts real text to an IEEE double. Notation rules as f32.
     def f64(text, format)
       numeric(:cast_f64, text, format, 8) { |out| out.unpack1("E") }
+    end
+
+    # Casts decimal text to an exact Decimal — the real doors' grammar (declared separators
+    # and grouping, parens, exponent, trailing percent, declared currency), but no float is
+    # ever formed: "0.1" is one tenth, "50%" is exactly 0.5 (magnitude 5, scale 1), and
+    # "1.10" is canonical magnitude 11, scale 1 — exact trailing zeros are always trimmed.
+    # A magnitude past 2**96 - 1, or more fractional precision than 28 places can hold, is
+    # an :out_of_range Fault — the door never rounds.
+    def decimal(text, format)
+      numeric(:cast_decimal, text, format, 16) do |out|
+        lo, hi, scale, negative = out.unpack("Q<L<CCx2")
+        Decimal.new(magnitude: (hi << 64) | lo, scale: scale, negative: negative != 0)
+      end
     end
 
     # Casts UUID text — all five .NET Guid formats (D/N/B/P/X) plus urn:uuid:/GUID:/UUID:
@@ -231,6 +335,16 @@ module HyperCast
       end
     end
 
+    # The version of the native core actually loaded, as "major.minor.patch" — read from
+    # the library itself, not from this gem, so a consumer can prove the core behind the
+    # doors is the one this binding was built against (and name the mismatch when it is
+    # not). The cheapest possible probe that the backend resolved at all: takes nothing,
+    # cannot fail.
+    def native_version
+      word = packed_version
+      "#{word >> 16}.#{(word >> 8) & 0xFF}.#{word & 0xFF}"
+    end
+
     private
 
     # Encodings whose bytes already are the UTF-8 (or byte-identical) form the core reads.
@@ -249,11 +363,12 @@ module HyperCast
     end
 
     # One 24-byte scratch allocation per thread, reused by every call: out-value at 0
-    # (16 bytes covers every door), fault span at 16. Two Fiddle::Pointer.malloc(...,
-    # RUBY_FREE) calls per cast — each registering a GC finalizer — measured as the
-    # dominant per-call cost by an order of magnitude. The NumFormat no longer lives here:
-    # each format owns its own packed pointer (see packed_cache), so a numeric call copies
-    # nothing into scratch before crossing.
+    # (16 bytes covers every door, and malloc's alignment covers the decimal's 8), fault
+    # span at 16. Two Fiddle::Pointer.malloc(..., RUBY_FREE) calls per cast — each
+    # registering a GC finalizer — measured as the dominant per-call cost by an order of
+    # magnitude. The NumFormat no longer lives here: each format owns its own packed
+    # pointer (see packed_cache), so a numeric call copies nothing into scratch before
+    # crossing.
     def scratch
       Thread.current[:hypercast_scratch] ||= begin
         base = Fiddle::Pointer.malloc(24, Fiddle::RUBY_FREE)
@@ -262,16 +377,28 @@ module HyperCast
     end
 
     # Presents a native return code as the verdict union: 0 yields a Success, a failure
-    # code becomes a Fault, and -1 (contract violation) is a binding bug that raises.
-    def verdict(rc, fault)
+    # code becomes a Fault over `bytes` (the UTF-8 the core read), and -1 (contract
+    # violation) is a binding bug that raises.
+    def verdict(rc, fault, bytes)
       if rc.zero?
         Success.new(value: yield)
       elsif rc == -1
         raise "hypercast: libhypercast reported a contract violation — a binding bug, please report it"
       else
-        offset, length = fault[0, 8].unpack("L<L<")
+        offset, length = characters(bytes, *fault[0, 8].unpack("L<L<"))
         Fault.new(reason: REASONS.fetch(rc), offset: offset, length: length)
       end
+    end
+
+    # The core's byte span in the units String#[] slices by: an identity for a binary
+    # String (its characters are its bytes) and for ASCII text (`ascii_only?` reads the
+    # cached coderange — no scan), a byte-to-character remap otherwise. Character counts
+    # survive transcoding, so a span mapped on the UTF-8 form indexes the caller's own
+    # String whatever encoding it arrived in. Failure path only: a Success never pays.
+    def characters(bytes, offset, length)
+      return [offset, length] if bytes.encoding == Encoding::ASCII_8BIT || bytes.ascii_only?
+
+      [bytes.byteslice(0, offset).length, bytes.byteslice(offset, length).length]
     end
 
     # The shared body of every format-free door: one native call over the scratch buffers.
@@ -279,38 +406,46 @@ module HyperCast
       bytes = utf8(text)
       out, fault = scratch
       rc = Runtime.function(symbol).call(input_ptr(bytes), bytes.bytesize, out, fault)
-      verdict(rc, fault) { yield(out[0, out_size]) }
+      verdict(rc, fault, bytes) { yield(out[0, out_size]) }
     end
 
-    # The shared body of the integer/real doors: plain, plus the format's own packed
-    # pointer, passed straight through — no per-call copy of the 12 bytes into scratch.
+    # The shared body of the integer/real/decimal doors: plain, plus the format's own
+    # packed pointer, passed straight through — no per-call copy of the 32 bytes into
+    # scratch.
     def numeric(symbol, text, format, out_size)
       bytes = utf8(text)
       out, fault = scratch
       rc = Runtime.function(symbol).call(input_ptr(bytes), bytes.bytesize, packed_cache[format], out, fault)
-      verdict(rc, fault) { yield(out[0, out_size]) }
+      verdict(rc, fault, bytes) { yield(out[0, out_size]) }
     end
 
     # The shared body of the four doors that take a caller-declared u32 — a precision, an
-    # epoch, or a field order — already resolved from its Symbol by the door. These three
-    # bodies (plain, numeric, declared) are the whole native crossing: the wasm backend
-    # (wasm_runtime.rb) redefines exactly these three in place and nothing above them.
+    # epoch, or a field order — already resolved from its Symbol by the door. These bodies
+    # (plain, numeric, declared, and packed_version below) are the whole native crossing:
+    # the wasm backend (wasm_runtime.rb) redefines exactly these four in place and nothing
+    # above them.
     def declared(symbol, text, code, out_size)
       bytes = utf8(text)
       out, fault = scratch
       rc = Runtime.function(symbol).call(input_ptr(bytes), bytes.bytesize, code, out, fault)
-      verdict(rc, fault) { yield(out[0, out_size]) }
+      verdict(rc, fault, bytes) { yield(out[0, out_size]) }
+    end
+
+    # The loaded core's version word, major << 16 | minor << 8 | patch, straight from the
+    # library's zero-argument hypercast_version export.
+    def packed_version
+      Runtime.function(:hypercast_version).call
     end
 
     # Identity-keyed memo (compare_by_identity — a pointer hash, not Data's structural
-    # #hash over two Strings and an Integer) of a native 12-byte RawNumFormat per format
+    # #hash over three Strings and an Integer) of a native 32-byte RawNumFormat per format
     # object, filled once from NumFormat#packed. Formats are reused constants in practice,
     # so the common call finds its pointer in one lookup and packs nothing. The Hash holds
     # the format, so a key can never be a recycled address; the race is benign (idempotent).
     def packed_cache
       @packed_cache ||= Hash.new do |cache, format|
-        pointer = Fiddle::Pointer.malloc(12, Fiddle::RUBY_FREE)
-        pointer[0, 12] = format.packed
+        pointer = Fiddle::Pointer.malloc(32, Fiddle::RUBY_FREE)
+        pointer[0, 32] = format.packed
         cache[format] = pointer
       end.compare_by_identity
     end

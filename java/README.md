@@ -9,8 +9,8 @@ verdict of every cast: the value, or a closed reason plus the exact byte span th
 offended. A two-arm switch with no default is proven exhaustive by `javac`; an unhandled
 disposition is a compile failure.**
 
-Allocation-lean scalar casts — booleans, the full integer family, reals, UUIDs, temporals —
-via `java.lang.foreign` (FFM) downcalls straight into the native `libhypercast` Rust core.
+Allocation-lean scalar casts — booleans, the full integer family, reals, exact decimals,
+UUIDs, temporals — via `java.lang.foreign` (FFM) downcalls straight into the native `libhypercast` Rust core.
 JDK 22 is the floor: FFM is stable, non-preview only from JDK 22 (JEP 454), and the
 Verdict union's whole point — sealed interface + record patterns + exhaustive switch — is
 stable since 21. The jar bundles a native build for every supported platform
@@ -26,10 +26,58 @@ String message = switch (Cast.i32("(1,234)", NumFormat.INVARIANT)) {
 
 Door names mirror the native ABI (`i32`, `f64`, `timestamp`, …) so the polyglot surface
 reads identically across bindings; every door also takes raw UTF-8 `byte[]` for callers
-already holding bytes. `NumFormat.from(Locale)` bridges Java's own locale machinery to the
-caller-declared format the native side reads. JVM-flavored fidelity, stated proudly:
-`Instant`, `LocalTime`, and `Duration` keep all nine fractional digits, so nothing the core
-parses is truncated on the way out — full nanosecond precision, end to end.
+already holding bytes. `NumFormat.from(Locale)` bridges Java's own locale machinery —
+separators and currency symbol — to the caller-declared format the native side reads.
+JVM-flavored fidelity, stated proudly: `Instant`, `LocalTime`, and `Duration` keep all nine
+fractional digits, so nothing the core parses is truncated on the way out — full nanosecond
+precision, end to end — and `Cast.decimal` lands in a `BigDecimal` built straight from the
+core's exact sign, magnitude and scale.
+
+## NumFormat: declared, never guessed
+
+Every integer, real and decimal door takes a `NumFormat`: the two separators, the `STYLE_*`
+lenience flags, and a currency symbol. `NumFormat.INVARIANT` is `.`/`,` with every lenience
+on and no symbol declared; `NumFormat.from(Locale)` reads all three from the locale's own
+`DecimalFormatSymbols`, so a US caller gets `$` and a German one `€`:
+
+```java
+NumFormat us = NumFormat.from(Locale.US);
+Cast.f64("$1,234.50", us);                                     // 1234.5
+Cast.i32("($5)", us);                                          // -5: parentheses wrap symbol and digits
+Cast.decimal("1.234,50 €", NumFormat.from(Locale.GERMANY));    // 1234.5 — scale 1, exact
+```
+
+The symbol is matched whole, once, at either edge of the numeric body — leading (`$5`,
+`-$5`, `$ -5`) or trailing (`5 €`, `1.234,50 kr.`) with optional whitespace between it and
+the digits — and only while `STYLE_CURRENCY` (part of `STYLE_ALL`) is set: declared without
+it, the symbol is the `MALFORMED` span. The three-argument constructor declares no symbol. A
+symbol longer than 16 UTF-8 bytes or carrying an ASCII digit or whitespace is a caller bug
+(`IllegalArgumentException` at construction), never a verdict.
+
+`Cast.decimal` is the exact door, and a canonical one. No `double` is formed on the way:
+`0.1` is one tenth and `50%` is exactly `0.5`. Exact trailing zeros in the fraction are
+trimmed, so the scale is minimal — `1.10`, `1.1` and `1.1000` all have a scale of 1, `100`
+stays `100` (integer zeros are never touched), and zero is scale 0, never negative. Nothing
+but a zero is ever dropped: precision past 2^96−1 or 28 places is `OUT_OF_RANGE`, never
+rounded.
+
+## Gating on the core, and what a span counts in
+
+Nothing loads until the first door is called. A consumer with a managed fallback gates on
+`Cast.isAvailable()` first: probed once, cached, never throws — `false` when the platform
+library will not open, the jar carries no core for this OS/arch, GraalWasm is missing on the
+wasm path, or an older core lacks an export this binding was built against. The doors do
+not fall back; a core that failed to load is thrown from every door as the failure it was.
+`Cast.nativeVersion()` reports the loaded core's `major.minor.patch`, and succeeds exactly
+when `isAvailable()` is `true` — the pair that proves the library that resolved is the one
+this jar was built against. `Cast.backend()` says which path won.
+
+A `Fault`'s `offset`/`length` count in the input's own unit. Through a `byte[]` or
+`MemorySegment` door they are the core's byte span into the UTF-8, verbatim. Through a
+`String` door they are UTF-16 code units — the byte span rebased, so
+`text.substring(f.offset(), f.offset() + f.length())` is the offending text even when the
+input is not ASCII: `Cast.i32("1€", …)` faults at `(1, 1)` as a `String` and `(1, 3)` as
+bytes. ASCII input is identical either way and is never touched.
 
 ## Why not `Integer.parseInt` / `Instant.parse` / the formatter zoo?
 
@@ -39,7 +87,7 @@ parses is truncated on the way out — full nanosecond precision, end to end.
 2. **The vocabulary untrusted sources actually send** — twenty boolean lexemes, accounting
    parentheses, radix prefixes, all five .NET `Guid` text forms, protobuf JSON durations.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
-   held by the shared corpus (the whole suite green, full twelve-file corpus replay through
+   held by the shared corpus (the whole suite green, full thirteen-file corpus replay through
    real FFM downcalls with byte-exact fault spans — and a second time through the GraalWasm
    backend, on every build).
 4. **Faster where it matters, and the input no longer copies.** JMH, full-length — 2 forks,
@@ -108,7 +156,8 @@ same through the GraalWasm backend (see [WebAssembly](#webassembly-graalwasm)). 
 and the jar ships both in its `reachability-metadata.json` under
 `META-INF/native-image/io.github.skunkwerkx/hypercast/`, so a consumer inherits them with no
 configuration: the FFM downcall *signatures* (reachability is per-signature, not per-function
-— four methods here share `(ADDRESS)void`), and a `resources` glob covering `native/*/*`.
+— the twenty-one doors share three shapes, and the version probe's `() -> int` is the fourth),
+and a `resources` glob covering `native/*/*`.
 
 The resources half was missing from v0.0.1, and the failure mode is worth knowing because
 nothing catches it at build time: Native Image doesn't embed classpath resources unless they
@@ -122,11 +171,13 @@ actually proves a consumer is fine.
 ## WebAssembly (GraalWasm)
 
 The jar carries the Rust core a second time, as `native/wasm32-wasip1/hypercast.wasm` — the
-exact same twenty `cast_*` C exports, compiled for WASI preview 1 instead of an OS.
+exact same twenty-one `cast_*` C exports (and the `hypercast_version` probe), compiled for
+WASI preview 1 instead of an OS.
 [GraalWasm](https://www.graalvm.org/webassembly/) runs that module inside the JVM, so `Cast`
 has a second interop path that needs no platform-specific binary and no FFM downcall: the
 polyglot API calls the exports, the input is copied into a guest buffer, and the guest's own
-exported `malloc` supplies the out-value, fault-span and `NumFormat` buffers the core fills.
+exported `malloc` supplies the 16-byte out-value, 8-byte fault-span and 32-byte `NumFormat`
+buffers the core fills.
 The seam is one level below the verdict (`Backend`): the wasm class performs the crossing and
 fills the same per-thread scratch segments the native call would, and everything above it —
 every door, every reader, every exception and message — is one implementation for both paths.

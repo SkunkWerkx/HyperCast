@@ -45,6 +45,7 @@
     <EmccExportedFunction Include="_cast_u64" />
     <EmccExportedFunction Include="_cast_f32" />
     <EmccExportedFunction Include="_cast_f64" />
+    <EmccExportedFunction Include="_cast_decimal" />
     <EmccExportedFunction Include="_cast_uuid" />
     <EmccExportedFunction Include="_cast_timestamp" />
     <EmccExportedFunction Include="_cast_unix" />
@@ -54,5 +55,6 @@
     <EmccExportedFunction Include="_cast_datetime" />
     <EmccExportedFunction Include="_cast_time" />
     <EmccExportedFunction Include="_cast_duration" />
+    <EmccExportedFunction Include="_hypercast_version" />
   </ItemGroup>
 </Project>

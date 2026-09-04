@@ -153,6 +153,39 @@ jobs:
       dotnet_version: "11.0.x"
       source_run_id: ${{ needs.find-ci-run.outputs.run_id }}
 
+  # The corpus content package rides the same train. It carries no native assets, so none
+  # of hyper-pack-nuget.yml's per-RID staging applies: packed straight from this tagged
+  # checkout, attested pre-push like the main package, and pushed by nuget-org-publish
+  # below from this repo's own OIDC login (the same job_workflow_ref constraint applies).
+  # Its <Version> is swept by prepare-release.yml together with HyperCast.csproj's, so the
+  # corpus a consumer replays is the one this exact core was proven against.
+  nuget-org-corpus-pack:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "11.0.x"
+          dotnet-quality: "preview"
+
+      - name: Pack HyperCast.Corpus
+        run: dotnet pack csharp/HyperCast.Corpus/HyperCast.Corpus.csproj -c Release -o nupkg-corpus
+
+      - name: Attest the packed .nupkg (pre-push bytes)
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: nupkg-corpus/*.nupkg
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nuget-org-corpus
+          path: nupkg-corpus/*.nupkg
+
   # No pack step here — nuget-org-pack (above) already produced the .nupkg, in this same
   # release.yml run. This job is purely auth -> download that artifact -> push. The split
   # exists because nuget.org Trusted Publishing validates job_workflow_ref against wherever
@@ -160,7 +193,7 @@ jobs:
   # repo's own workflow, never from the shared forge (see hyper-pack-nuget.yml's header for
   # the confirmed 401s behind that).
   nuget-org-publish:
-    needs: nuget-org-pack
+    needs: [nuget-org-pack, nuget-org-corpus-pack]
     runs-on: ubuntu-latest
     permissions:
       # id-token covers both OIDC exchanges this job makes: nuget.org Trusted Publishing for
@@ -180,6 +213,11 @@ jobs:
           name: nuget-org-package
           path: nupkg-org
 
+      - uses: actions/download-artifact@v8
+        with:
+          name: nuget-org-corpus
+          path: nupkg-corpus
+
       - name: NuGet login (OIDC -> temp API key)
         uses: NuGet/login@v1
         id: login
@@ -189,6 +227,16 @@ jobs:
       - name: Publish to nuget.org
         run: >
           dotnet nuget push "nupkg-org/*.nupkg"
+          --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
+          --source https://api.nuget.org/v3/index.json
+
+      # Same login, same push. The corpus package has no layer-2 attestation below: it is
+      # plain JSON content, its pre-push attestation from nuget-org-corpus-pack is
+      # recoverable the same way (strip .signature.p7s), and the digest table below is about
+      # the package that carries native code.
+      - name: Publish HyperCast.Corpus to nuget.org
+        run: >
+          dotnet nuget push "nupkg-corpus/*.nupkg"
           --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
           --source https://api.nuget.org/v3/index.json
 

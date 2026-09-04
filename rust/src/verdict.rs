@@ -79,10 +79,72 @@ fn clamp(value: usize) -> u32 {
     value.try_into().unwrap_or(u32::MAX)
 }
 
+/// A caller-declared currency symbol, held inline so a [`NumFormat`] stays `Copy` and
+/// crosses the ABI as plain bytes. Up to [`CurrencySymbol::MAX_BYTES`] bytes of UTF-8 —
+/// wide enough for every symbol a real culture declares (`$`, `€`, `kr.`, `CHF`, `R$`,
+/// `руб.`). Empty is [`CurrencySymbol::NONE`]: nothing declared, nothing matched.
+///
+/// The symbol is matched whole, at the edges of the numeric body — leading (before or
+/// after a sign) or trailing, with optional ASCII whitespace between it and the digits —
+/// and only while [`NumFormat::CURRENCY`] is set. It never participates in the digit scan,
+/// so a symbol that happens to contain a separator character (`kr.` under `.` grouping)
+/// is fine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CurrencySymbol {
+    bytes: [u8; Self::MAX_BYTES],
+    len: u8,
+}
+
+impl CurrencySymbol {
+    /// The inline capacity, in UTF-8 bytes.
+    pub const MAX_BYTES: usize = 16;
+
+    /// No symbol declared.
+    pub const NONE: CurrencySymbol = CurrencySymbol { bytes: [0; Self::MAX_BYTES], len: 0 };
+
+    /// Declares `symbol`. `None` when it is empty, longer than [`MAX_BYTES`](Self::MAX_BYTES)
+    /// bytes, or contains an ASCII digit or ASCII whitespace — those would collide with the
+    /// digit scan and the trimming the doors do around the symbol, so they are a caller
+    /// bug, not a symbol.
+    pub const fn new(symbol: &str) -> Option<CurrencySymbol> {
+        let source = symbol.as_bytes();
+        if source.is_empty() || source.len() > Self::MAX_BYTES {
+            return None;
+        }
+        let mut bytes = [0u8; Self::MAX_BYTES];
+        let mut i = 0;
+        while i < source.len() {
+            let byte = source[i];
+            if byte.is_ascii_digit() || byte.is_ascii_whitespace() {
+                return None;
+            }
+            bytes[i] = byte;
+            i += 1;
+        }
+        Some(CurrencySymbol { bytes, len: source.len() as u8 })
+    }
+
+    /// The symbol's UTF-8 bytes — empty for [`NONE`](Self::NONE).
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len as usize]
+    }
+
+    /// The symbol as text — empty for [`NONE`](Self::NONE).
+    pub fn as_str(&self) -> &str {
+        // SAFETY: `new` only ever stores the bytes of a `&str`, and `NONE` stores none.
+        unsafe { str::from_utf8_unchecked(self.as_bytes()) }
+    }
+
+    /// True when no symbol is declared.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
 /// Caller-declared numeric notation for the integer and real doors. The core carries no
-/// culture data — a binding maps its platform's culture to these three fields (Svartalfheim
-/// leaned on `IFormatProvider` here; currency symbols, the one notation that truly needs
-/// culture tables, are deliberately dropped).
+/// culture data — a binding maps its platform's culture to these fields (Svartalfheim
+/// leaned on `IFormatProvider` here). The currency symbol is the one field that needs a
+/// culture table to fill in; it is declared, never looked up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NumFormat {
     /// The declared decimal separator (`.` invariant, `,` in eurozone-style text).
@@ -92,8 +154,12 @@ pub struct NumFormat {
     /// caller passing equal separators gets decimal semantics — the FFI layer rejects the
     /// combination outright as a contract violation.
     pub group_sep: char,
-    /// Bitwise OR of the `GROUPING`/`PARENS`/`EXPONENT`/`RADIX_PREFIX`/`PERCENT` flags.
+    /// Bitwise OR of the `GROUPING`/`PARENS`/`EXPONENT`/`RADIX_PREFIX`/`PERCENT`/`CURRENCY`
+    /// flags, plus the `SEPARATOR_DETECT` policy.
     pub flags: u32,
+    /// The declared currency symbol, honored only while [`CURRENCY`](Self::CURRENCY) is
+    /// set. [`CurrencySymbol::NONE`] declares nothing.
+    pub currency: CurrencySymbol,
 }
 
 impl NumFormat {
@@ -123,20 +189,51 @@ impl NumFormat {
     /// undecidable separator, never guessed. Covers the `.`/`,` pair only; space/NBSP
     /// grouping still needs a declared format.
     pub const SEPARATOR_DETECT: u32 = 1 << 5;
+    /// Permit the declared [`currency`](Self::currency) symbol at either edge of the
+    /// numeric body — leading (`$5`, `-$5`, `$ -5`) or trailing (`5 €`, `1.234,50 kr.`),
+    /// once, with optional ASCII whitespace between symbol and digits; accounting
+    /// parentheses wrap the symbol along with the digits (`($5)`, `(1.234,50 kr.)`). With
+    /// [`CurrencySymbol::NONE`] declared the flag matches nothing and changes nothing.
+    /// Integer and real doors.
+    pub const CURRENCY: u32 = 1 << 6;
     /// Every lenience flag set (the declared-separator flags — [`SEPARATOR_DETECT`](Self::SEPARATOR_DETECT)
     /// is a separator *policy*, not a lenience, and is deliberately not included).
-    pub const ALL: u32 =
-        Self::GROUPING | Self::PARENS | Self::EXPONENT | Self::RADIX_PREFIX | Self::PERCENT;
+    pub const ALL: u32 = Self::GROUPING
+        | Self::PARENS
+        | Self::EXPONENT
+        | Self::RADIX_PREFIX
+        | Self::PERCENT
+        | Self::CURRENCY;
 
-    /// The invariant profile — `.` decimal, `,` grouping, every lenience on. This is what
-    /// the FFI doors use when the caller passes a null format.
-    pub const INVARIANT: NumFormat =
-        NumFormat { decimal_sep: '.', group_sep: ',', flags: Self::ALL };
+    /// The invariant profile — `.` decimal, `,` grouping, every lenience on, no currency
+    /// symbol declared. This is what the FFI doors use when the caller passes a null format.
+    pub const INVARIANT: NumFormat = NumFormat {
+        decimal_sep: '.',
+        group_sep: ',',
+        flags: Self::ALL,
+        currency: CurrencySymbol::NONE,
+    };
 
     /// The detection profile — every lenience on, `.`/`,` roles resolved per input by
     /// [`SEPARATOR_DETECT`](Self::SEPARATOR_DETECT)'s structural rules.
-    pub const DETECT: NumFormat =
-        NumFormat { decimal_sep: '.', group_sep: ',', flags: Self::ALL | Self::SEPARATOR_DETECT };
+    pub const DETECT: NumFormat = NumFormat {
+        decimal_sep: '.',
+        group_sep: ',',
+        flags: Self::ALL | Self::SEPARATOR_DETECT,
+        currency: CurrencySymbol::NONE,
+    };
+
+    /// Declares the separators and flags with no currency symbol — the three-field
+    /// constructor every binding's own format type maps onto.
+    pub const fn new(decimal_sep: char, group_sep: char, flags: u32) -> NumFormat {
+        NumFormat { decimal_sep, group_sep, flags, currency: CurrencySymbol::NONE }
+    }
+
+    /// The same format with `currency` declared. Pair with [`CURRENCY`](Self::CURRENCY)
+    /// in `flags` (already part of [`ALL`](Self::ALL)) for the symbol to be honored.
+    pub const fn with_currency(self, currency: CurrencySymbol) -> NumFormat {
+        NumFormat { currency, ..self }
+    }
 
     pub(crate) fn allows(&self, flag: u32) -> bool {
         self.flags & flag != 0
@@ -165,7 +262,69 @@ impl NumFormat {
             _ if last_dot > last_comma => ('.', ','),
             _ => (',', '.'),
         };
-        Ok(NumFormat { decimal_sep, group_sep, flags })
+        Ok(NumFormat { decimal_sep, group_sep, flags, currency: self.currency })
+    }
+}
+
+/// An exact decimal — a sign, a 96-bit unsigned magnitude, and a base-10 scale — the
+/// shape .NET's `decimal` stores natively and Java's `BigDecimal`, Python's `Decimal` and
+/// Ruby's `BigDecimal` build from directly. The value is `(-1)^negative × (hi·2⁶⁴ + lo) ×
+/// 10⁻ˢᶜᵃˡᵉ`, in canonical form — exact trailing zeros in the fraction are trimmed, so the
+/// scale is the smallest that represents the value and zero is scale 0. Never rounded:
+/// text carrying more nonzero precision than 96 bits and 28 places can hold is
+/// `OutOfRange`, not silently approximated. ABI layout: `lo` at offset 0, `hi` at 8,
+/// `scale` at 12, `negative` at 13, 16 bytes with 8-byte alignment.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Decimal {
+    /// The low 64 bits of the magnitude.
+    pub lo: u64,
+    /// The high 32 bits of the magnitude; the magnitude never exceeds 2⁹⁶ − 1.
+    pub hi: u32,
+    /// Base-10 scale, `0..=28`: the number of places the magnitude is shifted right. Minimal
+    /// by construction — the magnitude never ends in a zero while the scale is positive.
+    pub scale: u8,
+    /// True for a negative value. Zero is never negative.
+    pub negative: bool,
+}
+
+impl Decimal {
+    /// The magnitude as one integer.
+    pub fn magnitude(&self) -> u128 {
+        (u128::from(self.hi) << 64) | u128::from(self.lo)
+    }
+}
+
+/// Renders the canonical text form — `-1234.5`, no trailing fraction zeros — the same string the
+/// conformance corpus pins as `value`, so any binding's host decimal can be checked against
+/// it by parsing.
+impl core::fmt::Display for Decimal {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // 39 digits covers u128; one more for a leading zero when scale >= digit count.
+        let mut digits = [b'0'; 40];
+        let mut magnitude = self.magnitude();
+        let mut len = 0;
+        while magnitude > 0 || len == 0 {
+            digits[39 - len] = b'0' + (magnitude % 10) as u8;
+            magnitude /= 10;
+            len += 1;
+        }
+        let scale = usize::from(self.scale);
+        while len <= scale {
+            len += 1; // pad with leading zeros so at least one digit precedes the point
+        }
+        let text = &digits[40 - len..];
+        let (whole, fraction) = text.split_at(len - scale);
+        if self.negative {
+            f.write_str("-")?;
+        }
+        // SAFETY: only ASCII digits were written.
+        f.write_str(unsafe { str::from_utf8_unchecked(whole) })?;
+        if scale > 0 {
+            f.write_str(".")?;
+            f.write_str(unsafe { str::from_utf8_unchecked(fraction) })?;
+        }
+        Ok(())
     }
 }
 

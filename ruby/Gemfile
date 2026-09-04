@@ -6,6 +6,10 @@ gemspec
 
 group :development do
   gem "benchmark-ips"
+  # Bundled (not default) gem since Ruby 3.4, so Bundler only sees it when named here: the
+  # suite exercises Decimal#to_d, which requires it lazily. Consumers stay free of it —
+  # the gemspec declares nothing beyond Fiddle.
+  gem "bigdecimal"
   gem "rspec"
 end
 

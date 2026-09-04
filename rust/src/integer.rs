@@ -69,6 +69,41 @@ pub(crate) fn strip_parens<'t>(
     Ok((inner, start + 1 + inner_start, true))
 }
 
+/// Strips the declared currency symbol when the flag permits, from either edge of the
+/// (already paren-stripped) body: leading — before or after a sign — or trailing, once,
+/// with ASCII whitespace between symbol and digits trimmed away. Returns the remaining
+/// body, its base offset, and the sign byte consumed ahead of a leading symbol (`-$5`),
+/// which the caller applies exactly as it would a sign it read itself. Shared with the
+/// real and decimal doors.
+pub(crate) fn strip_currency<'t>(
+    body: &'t [u8],
+    base: usize,
+    format: &NumFormat,
+) -> Result<(&'t [u8], usize, Option<u8>), Fault> {
+    if !format.allows(NumFormat::CURRENCY) || format.currency.is_empty() {
+        return Ok((body, base, None));
+    }
+    let symbol = format.currency.as_bytes();
+    let sign_at = usize::from(matches!(body[0], b'+' | b'-'));
+    if body[sign_at..].starts_with(symbol) {
+        let sign = if sign_at == 1 { Some(body[0]) } else { None };
+        let after = sign_at + symbol.len();
+        let (rest, rest_start) = trim(&body[after..]);
+        if rest.is_empty() {
+            return Err(Fault::malformed(base, body.len()));
+        }
+        return Ok((rest, base + after + rest_start, sign));
+    }
+    if body.ends_with(symbol) {
+        let (rest, rest_start) = trim(&body[..body.len() - symbol.len()]);
+        if rest.is_empty() {
+            return Err(Fault::malformed(base, body.len()));
+        }
+        return Ok((rest, base + rest_start, None));
+    }
+    Ok((body, base, None))
+}
+
 fn digit_value(byte: u8, radix: u32) -> Option<u32> {
     (byte as char).to_digit(radix)
 }
@@ -193,10 +228,18 @@ fn parse_int(
     }
 
     let (body, base, parens) = strip_parens(text, start, format)?;
+    let (body, base, pre_sign) = strip_currency(body, base, format)?;
 
     let mut i = 0;
     let mut negative = parens;
-    if body[0] == b'+' || body[0] == b'-' {
+    if let Some(sign) = pre_sign {
+        // The sign sat ahead of a leading currency symbol (`-$5`); a second one after it,
+        // or one inside accounting parens, is double negation nonsense.
+        if parens || matches!(body[0], b'+' | b'-') {
+            return Err(Fault::malformed(base, 1));
+        }
+        negative = sign == b'-';
+    } else if body[0] == b'+' || body[0] == b'-' {
         if parens {
             // A sign inside accounting parens is double negation nonsense.
             return Err(Fault::malformed(base, 1));

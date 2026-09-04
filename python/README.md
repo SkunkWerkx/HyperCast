@@ -8,7 +8,8 @@
 byte span that offended — with the Rust core linked straight into CPython as a native
 extension. No dlopen, no ctypes marshalling, no runtime bridge.**
 
-Allocation-lean scalar casts — booleans, the full integer family, reals, UUIDs, temporals.
+Allocation-lean scalar casts — booleans, the full integer family, reals, exact decimals,
+UUIDs, temporals.
 The PyO3 extension (`hypercast._native`) is the backend every wheel ships — a door is an
 ordinary `METH_FASTCALL` extension call into a direct Rust call, and the wheel maturin
 builds is the whole package (the interim ctypes fallback is gone). A second backend runs the
@@ -28,26 +29,70 @@ match hypercast.cast_i32("(1,234)", hypercast.NumFormat.INVARIANT):
         print(reason.name, "at byte", offset)
 ```
 
-Door names mirror the native ABI (`cast_i32`, `cast_f64`, `cast_timestamp`, …); inputs are
-`str` or `bytes`, both zero-copy views. Exhaustiveness is the type checker's job here —
+Door names mirror the native ABI (`cast_i32`, `cast_f64`, `cast_decimal`, `cast_timestamp`,
+…); inputs are `str` or `bytes`, both zero-copy views, and a `Fault`'s span comes back in
+the caller's own units — byte offsets for `bytes`, code-point offsets for `str` — so
+`text[offset:offset + length]` slices the offending text back out of whatever you passed,
+no mapping needed. Exhaustiveness is the type checker's job here —
 pair the two cases with `typing.assert_never` under mypy/pyright for the compile-time
 guarantee the static bindings get natively. Python-flavored fidelity, stated honestly:
 `int` is unbounded, so `cast_u64` returns the true unsigned value with no bit-pattern
-games; `datetime`'s resolution is microseconds, so the core's nanoseconds truncate by
-three digits on the temporal doors — `datetime`'s own ceiling, not the parser's, and said
-out loud rather than discovered later.
+games; `cast_decimal` returns an exact, canonical `decimal.Decimal`; `datetime`'s
+resolution is microseconds, so the core's nanoseconds truncate by three digits on the
+temporal doors — `datetime`'s own ceiling, not the parser's, and said out loud rather than
+discovered later.
+
+## Declared formats: separators, lenience flags, currency
+
+Every numeric door — the integer family, `cast_f32`/`cast_f64`, and `cast_decimal` — takes
+a `NumFormat`: the decimal and group separators, a bitwise OR of the lenience flags
+(`GROUPING`, `PARENTHESES`, `EXPONENT`, `RADIX_PREFIXES`, `PERCENT`, `CURRENCY`; `ALL` is
+all six — `SEPARATOR_DETECT` is a separator *policy*, not a lenience, and is opted into
+separately), and an optional currency symbol. `NumFormat.INVARIANT` is `.`/`,` with every
+lenience on and no symbol; `NumFormat.from_localeconv()` bridges `locale.localeconv()` —
+`decimal_point`, `thousands_sep`, and `currency_symbol`.
+
+A currency symbol is declared, never guessed. With `CURRENCY` set and a symbol declared, the
+symbol is accepted once, leading (before or after the sign: `$5`, `-$5`, `$ -5`) or trailing
+(`5 €`, `1.234,50 kr.`), with optional whitespace between it and the digits, and accounting
+parentheses wrap the symbol along with the digits (`($5)`). Declared but with the flag off,
+the symbol is simply the first offending byte of a `MALFORMED` fault; with no symbol declared
+the flag matches nothing. A symbol is 1 to 16 UTF-8 bytes with no ASCII digit or whitespace —
+anything else is a `ValueError` at construction, a caller bug like equal separators, raised
+identically on both backends.
+
+```python
+dollars = hypercast.NumFormat(".", ",", hypercast.NumFormat.ALL, "$")
+hypercast.cast_i32("($1,234)", dollars)          # Success(value=-1234)
+hypercast.cast_decimal("$1,234.50", dollars)     # Success(value=Decimal('1234.5'))
+
+krone = hypercast.NumFormat(",", ".", hypercast.NumFormat.ALL, currency="kr.")
+hypercast.cast_decimal("1.234,50 kr.", krone)    # Success(value=Decimal('1234.5'))
+```
+
+`cast_decimal` is the real doors' grammar with an exact result: a `decimal.Decimal` built
+from the core's sign, 96-bit magnitude and base-10 scale, never a float in between. The
+result is canonical: exact trailing zeros in the fraction are trimmed, so `"0.1"` is one
+tenth, `"50%"` is `Decimal('0.5')`, `"1.10"`, `"1.1"` and `"1.1000"` are all `Decimal('1.1')`
+(`as_tuple()` gives digits `(1, 1)`, exponent `-1`), and zero is `Decimal('0')`, never negative.
+Text past 96 bits of magnitude or 28 nonzero places is `OUT_OF_RANGE` — nothing but a zero is
+ever dropped, never rounded, the one thing a caller who reached for a decimal is entitled to
+assume.
+
+`hypercast.native_version()` names the core actually loaded, `"major.minor.patch"`, decoded
+from the same packed `hypercast_version` export every other binding probes.
 
 ## Why not `int()` / `fromisoformat` / `dateutil`?
 
 1. **Verdicts, not exceptions** — bad data is the expected case for untrusted text, and a
    `Fault` is a reason plus a span, not a `ValueError` to catch and regex.
 2. **The vocabulary untrusted sources actually send** — twenty boolean lexemes, accounting
-   parentheses, declared separators, radix prefixes, all five .NET `Guid` text forms plus
-   `urn:uuid:` prefixes, protobuf JSON durations — with each lenience individually
-   declared, never guessed.
+   parentheses, declared separators and currency symbols, radix prefixes, all five .NET
+   `Guid` text forms plus `urn:uuid:` prefixes, protobuf JSON durations — with each
+   lenience individually declared, never guessed.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
-   held by the shared corpus (the whole suite green on both backends, full twelve-file
-   corpus replay).
+   held by the shared corpus (the whole suite green on both backends, the full corpus
+   replayed).
 4. **Native-extension speed** — the escape from the interpreted tier is this binding's own
    receipt: the old losses were never "Python calling native code," they were *ctypes*
    (~1 µs of interpreted marshalling per call, measured). With the mechanism replaced,
@@ -87,7 +132,7 @@ The same Rust core, compiled to `wasm32-wasip1`, run *inside* CPython by
 [`wasmtime-py`](https://github.com/bytecodealliance/wasmtime-py) — the inverse of the Pyodide
 experiment this package once carried (CPython itself in the browser, loading the core as an
 Emscripten side module). Nothing is reimplemented: `hypercast._wasm` calls the identical
-twenty `cast_*` C-ABI exports the PyO3 extension does, across a guest/host memory boundary
+`cast_*` C-ABI exports the PyO3 extension does, across a guest/host memory boundary
 instead of a direct call, and presents the same `Success`/`Fault`/`NumFormat` types with the
 same `__match_args__`, equality, `repr` and error messages. The whole test suite runs against
 it, corpus replay included, and `tests/test_wasm_backend.py` pins its outputs against the
@@ -110,8 +155,8 @@ Three things about the crossing decide the numbers below:
 
 - **Buffers come from the guest.** A wasm module only sees its own linear memory, so this backend
   asks the module's exported `malloc` for every buffer it touches — the input text (a grow-only
-  buffer), the 16-byte out-value, the fault span, the `NumFormat` — rather than picking an offset
-  itself. That is load-bearing, not tidiness: the guest's own allocator (dlmalloc, which claims
+  buffer), the 16-byte out-value, the fault span, the 32-byte `NumFormat` — rather than picking
+  an offset itself. That is load-bearing, not tidiness: the guest's own allocator (dlmalloc, which claims
   the tail of the initial memory on first use) corrupted a host-chosen buffer in HyperUuid.
 - **Calls are serialized.** A wasmtime `Store` is not thread-safe, so one process-wide lock
   guards every call. Uncontended under the GIL; on a free-threaded build it is what keeps two

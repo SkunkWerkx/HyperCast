@@ -19,11 +19,13 @@ compile-time guarantee the static bindings get natively)::
 
 Door names mirror the native ABI (``cast_i32``, ``cast_f64``, ``cast_timestamp``, …) so the
 polyglot surface reads identically across bindings. Inputs are ``str`` (read as UTF-8) or
-``bytes`` — the native contract, and the form whose fault offsets need no mapping. Python
-``int`` is unbounded, so ``cast_u64`` returns the true unsigned value with no bit-pattern
-games; ``datetime``'s resolution is microseconds, so the core's nanoseconds truncate by
-three digits on the temporal doors (the JVM binding is the fidelity king; this is Python's
-honest ceiling).
+``bytes``, and a :class:`Fault`'s span comes back in the caller's own units — byte offsets
+for ``bytes``, code-point offsets for ``str`` — so slicing the offending text back out of
+what you passed needs no mapping either way. Python ``int`` is unbounded, so ``cast_u64`` returns the true unsigned value with no bit-pattern
+games; ``cast_decimal`` returns an exact, canonical ``decimal.Decimal``;
+``datetime``'s resolution is microseconds, so the core's nanoseconds truncate by three
+digits on the temporal doors (the JVM binding is the fidelity king; this is Python's honest
+ceiling).
 
 Ships as real platform-specific abi3 wheels (linux/macOS/Windows, x64/arm64) built by
 ``maturin`` — no compiler needed to install. The same core also rides inside every wheel
@@ -76,10 +78,11 @@ __all__ = [
     "ExcelEpoch",
     "optional",
     "cast_bool", "cast_i8", "cast_i16", "cast_i32", "cast_i64",
-    "cast_u8", "cast_u16", "cast_u32", "cast_u64", "cast_f32", "cast_f64",
+    "cast_u8", "cast_u16", "cast_u32", "cast_u64", "cast_f32", "cast_f64", "cast_decimal",
     "cast_uuid", "cast_timestamp", "cast_unix", "cast_excel_serial", "cast_date",
     "cast_datetime", "cast_time",
     "cast_duration",
+    "native_version",
 ]
 
 
@@ -153,6 +156,7 @@ cast_u32 = _native.cast_u32
 cast_u64 = _native.cast_u64
 cast_f32 = _native.cast_f32
 cast_f64 = _native.cast_f64
+cast_decimal = _native.cast_decimal
 cast_uuid = _native.cast_uuid
 cast_timestamp = _native.cast_timestamp
 cast_unix = _native.cast_unix
@@ -161,6 +165,7 @@ cast_date = _native.cast_date
 cast_datetime = _native.cast_datetime
 cast_time = _native.cast_time
 cast_duration = _native.cast_duration
+native_version = _native.native_version
 
 Verdict = Union[Success, Fault]
 """The outcome of a cast: exactly one of :class:`Success` or :class:`Fault`."""

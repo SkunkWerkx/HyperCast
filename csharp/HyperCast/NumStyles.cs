@@ -32,7 +32,7 @@ public enum NumStyles : uint
 	/// </summary>
 	RadixPrefixes = 8,
 
-	/// <summary>Permit a trailing <c>%</c>, dividing by 100 (<c>50%</c> is 0.5). Real doors only.</summary>
+	/// <summary>Permit a trailing <c>%</c>, dividing by 100 (<c>50%</c> is 0.5). Real and decimal doors only.</summary>
 	Percent = 16,
 
 	/// <summary>
@@ -46,6 +46,15 @@ public enum NumStyles : uint
 	/// </summary>
 	SeparatorDetect = 32,
 
-	/// <summary>Every lenience on.</summary>
-	All = Grouping | Parentheses | Exponent | RadixPrefixes | Percent
+	/// <summary>
+	/// Permit the declared <see cref="NumFormat.CurrencySymbol"/> once, at either edge of the
+	/// numeric body — leading, before or after a sign (<c>$5</c>, <c>-$5</c>, <c>$ -5</c>), or
+	/// trailing (<c>5 €</c>, <c>1.234,50 kr.</c>) — with optional whitespace between symbol
+	/// and digits; accounting parentheses wrap symbol and digits together (<c>($5)</c>).
+	/// With no symbol declared the flag matches nothing and changes nothing.
+	/// </summary>
+	Currency = 64,
+
+	/// <summary>Every lenience on. <see cref="SeparatorDetect"/> is a separator policy, not a lenience, and is not included.</summary>
+	All = Grouping | Parentheses | Exponent | RadixPrefixes | Percent | Currency
 }

@@ -6,6 +6,7 @@ import java.io.UncheckedIOException;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
@@ -14,14 +15,15 @@ import org.graalvm.polyglot.io.ByteSequence;
 /**
  * The Rust core as a {@code wasm32-wasip1} module, run inside the JVM by
  * <a href="https://www.graalvm.org/webassembly/">GraalWasm</a>. No native binary, no
- * {@code java.lang.foreign} downcall: the same twenty {@code cast_*} exports {@link Cast}
- * downcalls into natively are called through the polyglot API instead, on the module bundled
- * at {@code /native/wasm32-wasip1/hypercast.wasm}.
+ * {@code java.lang.foreign} downcall: the same twenty-one {@code cast_*} exports (and the
+ * {@code hypercast_version} probe) {@link Cast} downcalls into natively are called through
+ * the polyglot API instead, on the module bundled at
+ * {@code /native/wasm32-wasip1/hypercast.wasm}.
  *
  * <p><b>Memory protocol.</b> A wasm guest only sees its own linear memory, so nothing here
  * can hand the core a pointer into a Java array the way the FFM path pins a {@code byte[]}.
  * The input text is copied into a grow-only guest buffer, and the three out-params the doors
- * fill — the 16-byte out-value, the 8-byte fault span, the 12-byte {@link NumFormat} — are
+ * fill — the 16-byte out-value, the 8-byte fault span, the 32-byte {@link NumFormat} — are
  * guest allocations made once at load. All of it comes from the module's own exported
  * {@code malloc} (wasi-libc's, which is also what Rust's allocator sits on for this target)
  * and is read back out through the exported {@code memory} into the caller's own scratch
@@ -64,6 +66,7 @@ final class WasmBackend implements Backend {
     // not the wasm.
     private final Value mallocFn;
     private final Value freeFn;
+    private final Value versionFn;
     private final Value[] doors = new Value[Door.values().length];
 
     // Sixteen bytes read back from the guest per door; guarded by the same monitor as
@@ -105,12 +108,13 @@ final class WasmBackend implements Backend {
         memory = exports.getMember("memory");
         mallocFn = export(exports, "malloc");
         freeFn = export(exports, "free");
+        versionFn = export(exports, "hypercast_version");
         for (Door door : Door.values()) {
             doors[door.ordinal()] = export(exports, door.symbol());
         }
         outPtr = malloc(16);
         faultPtr = malloc(8);
-        formatPtr = malloc(12);
+        formatPtr = malloc(32);
     }
 
     private static Value export(Value exports, String name) {
@@ -175,6 +179,13 @@ final class WasmBackend implements Backend {
             memory.writeBufferInt(LITTLE_ENDIAN, formatPtr, format.decimalSeparator());
             memory.writeBufferInt(LITTLE_ENDIAN, formatPtr + 4, format.groupSeparator());
             memory.writeBufferInt(LITTLE_ENDIAN, formatPtr + 8, format.styles());
+            byte[] symbol = format.currencySymbol().getBytes(StandardCharsets.UTF_8);
+            memory.writeBufferInt(LITTLE_ENDIAN, formatPtr + 12, symbol.length);
+            // All sixteen symbol bytes every time, zero past the declared length: the memo
+            // means a shorter symbol after a longer one must not leave the tail behind.
+            for (int i = 0; i < 16; i++) {
+                memory.writeBufferByte(formatPtr + 16 + i, i < symbol.length ? symbol[i] : (byte) 0);
+            }
             formatKey = format;
         }
         return formatPtr;
@@ -198,7 +209,7 @@ final class WasmBackend implements Backend {
         return code;
     }
 
-    // ---- the three ABI shapes -----------------------------------------------------------
+    // ---- the three ABI shapes, and the version probe ------------------------------------
 
     @Override
     public synchronized int plain(Door door, MemorySegment in, long len, MemorySegment out, MemorySegment fault) {
@@ -221,5 +232,10 @@ final class WasmBackend implements Backend {
         int input = stageInput(in, len);
         int code = doors[door.ordinal()].execute(input, (int) len, discriminant, outPtr, faultPtr).asInt();
         return finish(code, out, fault);
+    }
+
+    @Override
+    public synchronized int version() {
+        return versionFn.execute().asInt();
     }
 }

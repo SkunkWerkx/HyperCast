@@ -129,6 +129,10 @@ tasks.test {
     // Cast's FFM downcalls are a "restricted method" — silences the runtime warning today
     // and avoids them being blocked outright in a future JDK.
     jvmArgs("--enable-native-access=ALL-UNNAMED")
+    // This binding's own version, so the suite can pin Cast.nativeVersion() to it: the core
+    // and the jar move together (prepare-release.yml bumps both), and the probe exists to
+    // prove exactly that.
+    systemProperty("hypercast.version", version)
 }
 
 // The identical suite, forced through the GraalWasm backend (-Dhypercast.backend=wasm), so
@@ -145,6 +149,7 @@ val testWasm = tasks.register<Test>("testWasm") {
     useJUnitPlatform()
     jvmArgs("--enable-native-access=ALL-UNNAMED", "-Dpolyglot.engine.WarnInterpreterOnly=false")
     systemProperty("hypercast.backend", "wasm")
+    systemProperty("hypercast.version", version)
     shouldRunAfter(tasks.test)
 }
 

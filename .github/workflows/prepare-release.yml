@@ -59,6 +59,7 @@ jobs:
 
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" rust/Cargo.toml
           sed -i "s/<Version>.*<\/Version>/<Version>$VERSION<\/Version>/" csharp/HyperCast/HyperCast.csproj
+          sed -i "s/<Version>.*<\/Version>/<Version>$VERSION<\/Version>/" csharp/HyperCast.Corpus/HyperCast.Corpus.csproj
           sed -i "s/^version = System.getenv(\"HYPERCAST_VERSION\") ?: \".*\"/version = System.getenv(\"HYPERCAST_VERSION\") ?: \"$VERSION\"/" java/build.gradle.kts
           sed -i "s/spec\.version = \".*\"/spec.version = \"$VERSION\"/" ruby/hypercast.gemspec
           sed -i "s/VERSION = \".*\"/VERSION = \"$VERSION\"/" ruby/lib/hypercast.rb
@@ -78,6 +79,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add rust/Cargo.toml rust/Cargo.lock csharp/HyperCast/HyperCast.csproj \
+            csharp/HyperCast.Corpus/HyperCast.Corpus.csproj \
             java/build.gradle.kts ruby/hypercast.gemspec ruby/lib/hypercast.rb
           if git diff --cached --quiet; then
             echo "::notice::Every manifest already says $VERSION — nothing to commit."

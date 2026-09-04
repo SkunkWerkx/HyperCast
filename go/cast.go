@@ -19,8 +19,11 @@ package hypercast
 
 import (
 	"fmt"
+	"math/big"
+	"math/bits"
 	"runtime"
 	"time"
+	"unicode/utf8"
 	"unsafe"
 
 	"github.com/google/uuid"
@@ -109,10 +112,29 @@ func read[V any](r *result) V {
 	return *(*V)(unsafe.Pointer(&r.out))
 }
 
+// NumFormat as it crosses the ABI — 32 bytes, 4-aligned: the separators as code points,
+// the flags, and the currency symbol as CurrencyLen UTF-8 bytes held inline (zero-padded;
+// a zero length declares none). Stays comparable: the wasm backend memoizes the last one
+// written by value.
 type rawNumFormat struct {
-	DecimalSep uint32
-	GroupSep   uint32
-	Flags      uint32
+	DecimalSep  uint32
+	GroupSep    uint32
+	Flags       uint32
+	CurrencyLen uint32
+	Currency    [currencyMaxBytes]byte
+}
+
+// currencyMaxBytes is the inline capacity of the ABI's currency symbol, in UTF-8 bytes.
+const currencyMaxBytes = 16
+
+// The core's Decimal as it crosses the ABI: lo at 0, hi at 8, scale at 12, negative (0/1)
+// at 13, two tail bytes of padding — 16 bytes with 8-byte alignment.
+type rawDecimal struct {
+	Lo       uint64
+	Hi       uint32
+	Scale    uint8
+	Negative uint8
+	_        [2]byte
 }
 
 type rawTimestamp struct {
@@ -159,21 +181,36 @@ const (
 	// never guessed.
 	SeparatorDetect NumStyles = 1 << 5
 
+	// CurrencySymbol permits the format's declared Currency once, at either edge of the
+	// numeric body: leading, before or after a sign ("$5", "-$5", "$ -5"), or trailing
+	// ("5 €", "1.234,50 kr."), with optional ASCII whitespace between symbol and digits;
+	// accounting parentheses wrap symbol and digits together ("($5)"). With no Currency
+	// declared the flag matches nothing and changes nothing. A Currency declared while
+	// this flag is off is Malformed at the symbol. Every integer, real and decimal door.
+	CurrencySymbol NumStyles = 1 << 6
+
 	// AllStyles is every lenience on.
-	AllStyles = Grouping | Parentheses | Exponent | RadixPrefixes | Percent
+	AllStyles = Grouping | Parentheses | Exponent | RadixPrefixes | Percent | CurrencySymbol
 )
 
-// NumFormat is the caller-declared numeric notation for the integer and real doors. The
-// core carries no culture data — a call site parsing culture-sensitive text declares its
-// format out loud (Invariant, or a literal); there is no default, the same stance every
-// binding in this repo takes. Equal separators are a caller bug and panic, never a verdict.
+// NumFormat is the caller-declared numeric notation for the integer, real and decimal
+// doors. The core carries no culture data — a call site parsing culture-sensitive text
+// declares its format out loud (Invariant, or a literal); there is no default, the same
+// stance every binding in this repo takes. Equal separators are a caller bug and panic,
+// never a verdict; so is a Currency that is longer than 16 UTF-8 bytes, not valid UTF-8,
+// or carries an ASCII digit or ASCII whitespace.
 type NumFormat struct {
 	DecimalSep rune
 	GroupSep   rune
 	Styles     NumStyles
+	// Currency is the symbol the CurrencySymbol style accepts ("$", "€", "kr.", "CHF") —
+	// matched whole at the edges of the numeric body, never inside the digit scan, so a
+	// symbol containing a separator character is fine. Empty declares none.
+	Currency string
 }
 
-// Invariant is the invariant profile — '.' decimal, ',' grouping, every lenience on.
+// Invariant is the invariant profile — '.' decimal, ',' grouping, every lenience on, no
+// currency symbol declared.
 var Invariant = NumFormat{DecimalSep: '.', GroupSep: ',', Styles: AllStyles}
 
 // Detect is the detection profile — every lenience on, './,' roles resolved per input by
@@ -184,7 +221,92 @@ func (f NumFormat) raw() rawNumFormat {
 	if f.DecimalSep == f.GroupSep {
 		panic(fmt.Sprintf("hypercast: decimal and group separators must differ; both are %q", f.DecimalSep))
 	}
-	return rawNumFormat{DecimalSep: uint32(f.DecimalSep), GroupSep: uint32(f.GroupSep), Flags: uint32(f.Styles)}
+	raw := rawNumFormat{DecimalSep: uint32(f.DecimalSep), GroupSep: uint32(f.GroupSep), Flags: uint32(f.Styles)}
+	if len(f.Currency) > currencyMaxBytes {
+		panic(fmt.Sprintf("hypercast: currency symbol %q exceeds %d UTF-8 bytes", f.Currency, currencyMaxBytes))
+	}
+	if !utf8.ValidString(f.Currency) {
+		panic(fmt.Sprintf("hypercast: currency symbol %q is not valid UTF-8", f.Currency))
+	}
+	for i := 0; i < len(f.Currency); i++ {
+		// The core's rule verbatim: an ASCII digit or ASCII whitespace (space, \t, \n, \f,
+		// \r) would collide with the digit scan and the trimming around the symbol.
+		switch b := f.Currency[i]; {
+		case b >= '0' && b <= '9', b == ' ', b == '\t', b == '\n', b == '\f', b == '\r':
+			panic(fmt.Sprintf("hypercast: currency symbol %q must not contain an ASCII digit or whitespace", f.Currency))
+		}
+	}
+	raw.CurrencyLen = uint32(copy(raw.Currency[:], f.Currency))
+	return raw
+}
+
+// Decimal is an exact decimal — a sign, a 96-bit unsigned magnitude, and a base-10 scale —
+// the shape .NET's decimal stores natively and every arbitrary-precision decimal builds from
+// directly. The value is (-1)^Negative × (Hi·2^64 + Lo) × 10^-Scale, Scale 0..=28. Never
+// rounded: the Exact door reports text carrying more precision than that as OutOfRange
+// rather than silently approximating. Canonical: exact trailing zeros in the fraction are
+// trimmed so the scale is minimal ("1.10", "1.1" and "1.1000" are all magnitude 11, scale
+// 1; zero is scale 0), and zero is never negative. Comparable, so two Decimals are ==
+// exactly when their values agree.
+type Decimal struct {
+	// Lo is the low 64 bits of the magnitude.
+	Lo uint64
+	// Hi is the high 32 bits of the magnitude; the magnitude never exceeds 2^96 - 1.
+	Hi uint32
+	// Scale is the number of places the magnitude is shifted right, 0..=28.
+	Scale uint8
+	// Negative is true for a negative value; zero is never negative.
+	Negative bool
+}
+
+// String renders the canonical text form — "1234.5", "-0.025", "0" — the same string the
+// conformance corpus pins as value.
+func (d Decimal) String() string {
+	// 29 digits cover 2^96 - 1; one more for the leading zero when scale >= digit count,
+	// one for the point, one for the sign.
+	var buf [40]byte
+	n := len(buf)
+	hi, lo := uint64(d.Hi), d.Lo
+	digits := 0
+	for digits == 0 || hi != 0 || lo != 0 {
+		// 128-by-64 division by 10 in two halves, the remainder of the high half carried
+		// down: bits.Div64 requires its high word below the divisor, and hi < 2^32 < 10·2^64.
+		qHi, r := bits.Div64(0, hi, 10)
+		qLo, r := bits.Div64(r, lo, 10)
+		hi, lo = qHi, qLo
+		n--
+		buf[n] = byte('0' + r)
+		digits++
+	}
+	scale := int(d.Scale)
+	for digits <= scale {
+		n--
+		buf[n] = '0'
+		digits++
+	}
+	if scale > 0 {
+		point := len(buf) - scale
+		copy(buf[n-1:point-1], buf[n:point])
+		n--
+		buf[point-1] = '.'
+	}
+	if d.Negative {
+		n--
+		buf[n] = '-'
+	}
+	return string(buf[n:])
+}
+
+// Rat is the exact value as a big.Rat — magnitude over 10^Scale, signed.
+func (d Decimal) Rat() *big.Rat {
+	magnitude := new(big.Int).SetUint64(uint64(d.Hi))
+	magnitude.Lsh(magnitude, 64)
+	magnitude.Or(magnitude, new(big.Int).SetUint64(d.Lo))
+	if d.Negative {
+		magnitude.Neg(magnitude)
+	}
+	denominator := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(d.Scale)), nil)
+	return new(big.Rat).SetFrac(magnitude, denominator)
 }
 
 // UnixPrecision is the declared unit of a Unix-epoch value — no magnitude guessing, ever.
@@ -274,6 +396,21 @@ func mustLoad() {
 	}
 }
 
+// nativeVersion is the packed major<<16 | minor<<8 | patch the loaded core reported, set
+// by each backend's ensureLoaded as its final step — so a successful load has already
+// made one real call through the ABI, not merely resolved its symbols.
+var nativeVersion uint32
+
+// Available reports whether the native library (or, under the hypercast_wasm tag, the
+// wasm module) loaded and exports the ABI this binding was built against — every door's
+// symbol resolved and hypercast_version answered. Probed once and cached; a false is
+// permanent for the process. This is the one entry point that never panics on a load
+// failure: a consumer keeping a fallback for a platform this module does not cover gates
+// on it instead of recovering around its first cast.
+func Available() bool {
+	return ensureLoaded() == nil
+}
+
 // Bool casts boolean text: true/false plus the conventions untrusted sources actually send
 // (t/f, yes/no, y/n, 1/0, on/off, enabled/disabled, active/inactive, checked/unchecked,
 // in/out), ASCII case-insensitive.
@@ -356,6 +493,81 @@ func F32[T Text](text T, format NumFormat) (float32, *Fault) {
 // F64 casts real text to float64. Rules as F32.
 func F64[T Text](text T, format NumFormat) (float64, *Fault) {
 	return numericDoor[T, float64](&symF64, text, format)
+}
+
+// Exact casts decimal text to a Decimal under the declared format — the same grammar and
+// NumFormat as the real doors (declared separators and grouping, accounting parentheses,
+// exponent, trailing percent, currency symbol) — but never rounded: a magnitude past
+// 2^96 - 1 or a scale past 28 is OutOfRange, not approximated. Named Exact because the
+// result type already owns the identifier Decimal, the way Span returns a Duration.
+func Exact[T Text](text T, format NumFormat) (Decimal, *Fault) {
+	out, fault := numericDoor[T, rawDecimal](&symDecimal, text, format)
+	if fault != nil {
+		return Decimal{}, fault
+	}
+	return Decimal{Lo: out.Lo, Hi: out.Hi, Scale: out.Scale, Negative: out.Negative != 0}, nil
+}
+
+// NativeVersion reports the loaded core's own version as "major.minor.patch" — read from
+// the library itself, not from this module — so a deployment can name a mismatch between
+// the binary it resolved and the one this binding was built against before making its
+// first cast. Panics if the native library cannot be loaded, the same way every door does;
+// Available is the probe that does not.
+func NativeVersion() string {
+	mustLoad()
+	v := nativeVersion
+	return fmt.Sprintf("%d.%d.%d", v>>16, (v>>8)&0xFF, v&0xFF)
+}
+
+// Number is the closed set of targets the numeric doors cast to — exactly the eleven
+// types I8 through U64, F32, F64 and Exact return. It exists for Numeric: a caller that is
+// itself generic over the target names the type once instead of writing the door switch.
+type Number interface {
+	int8 | int16 | int32 | int64 | uint8 | uint16 | uint32 | uint64 | float32 | float64 | Decimal
+}
+
+// Numeric casts numeric text to V under the declared format by dispatching to V's own
+// door — Numeric[int32] is I32, Numeric[Decimal] is Exact — with T inferred from the
+// argument: hypercast.Numeric[int32]("42", format). The rules and verdicts are the
+// concrete door's, unchanged. An unsupported V is impossible by construction: Number lists
+// exactly the types that have a door, so the switch below is exhaustive and the compiler
+// rejects anything else at the call site.
+func Numeric[V Number, T Text](text T, format NumFormat) (V, *Fault) {
+	// Switching on a pointer to the out-value keeps the dispatch allocation-free: boxing
+	// the returned value into an interface would heap-allocate every int64 and float64.
+	var out V
+	var fault *Fault
+	switch p := any(&out).(type) {
+	case *int8:
+		*p, fault = I8(text, format)
+	case *int16:
+		*p, fault = I16(text, format)
+	case *int32:
+		*p, fault = I32(text, format)
+	case *int64:
+		*p, fault = I64(text, format)
+	case *uint8:
+		*p, fault = U8(text, format)
+	case *uint16:
+		*p, fault = U16(text, format)
+	case *uint32:
+		*p, fault = U32(text, format)
+	case *uint64:
+		*p, fault = U64(text, format)
+	case *float32:
+		*p, fault = F32(text, format)
+	case *float64:
+		*p, fault = F64(text, format)
+	case *Decimal:
+		*p, fault = Exact(text, format)
+	default:
+		panic("unreachable: Number admits no other type")
+	}
+	if fault != nil {
+		var zero V
+		return zero, fault
+	}
+	return out, nil
 }
 
 // Uuid casts UUID text — all five .NET Guid formats (D/N/B/P/X) plus

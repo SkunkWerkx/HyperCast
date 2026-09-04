@@ -8,8 +8,8 @@ Selected by ``hypercast`` itself (see ``__init__``): ``HYPERCAST_WASM=1`` forces
 the automatic fallback when no ``_native`` extension matches the running interpreter and
 ``wasmtime`` is importable. It exposes exactly the surface ``__init__`` consumes from
 ``_native`` — the same ``Success``/``Fault``/``NumFormat`` types (``__match_args__``,
-equality and ``repr`` included), the same twenty doors with the same argument shapes, the
-same exception types and messages — so the package above it never knows which one it got,
+equality and ``repr`` included), the same doors with the same argument shapes, the same
+exception types and messages — so the package above it never knows which one it got,
 and the whole test suite runs against both.
 
 Three things about the crossing are load-bearing:
@@ -17,8 +17,8 @@ Three things about the crossing are load-bearing:
 * **Buffers come from the guest.** A wasm module only sees its own linear memory, so the host
   cannot hand it a pointer the way every native binding does. The module exports wasi-libc's
   ``malloc``/``free`` (see ``rust/.cargo/config.toml``), and every buffer this backend touches
-  — the input text, the 16-byte out-value, the fault span, the ``NumFormat`` — is one the
-  guest's own allocator handed out. Picking a host-side offset past the data segments instead
+  — the input text, the 16-byte out-value, the fault span, the 32-byte ``NumFormat`` — is one
+  the guest's own allocator handed out. Picking a host-side offset past the data segments instead
   corrupts memory: dlmalloc claims the tail of the initial memory on its first allocation.
 * **Calls are serialized.** A wasmtime ``Store`` is not thread-safe, so one process-wide lock
   guards every call. Under the GIL that lock is uncontended; on a free-threaded build it is
@@ -39,6 +39,7 @@ import datetime
 import struct
 import threading
 import uuid as _uuid
+from decimal import Decimal
 from pathlib import Path
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
@@ -61,11 +62,12 @@ _SIGNATURES = {
     "cast_bool": _PLAIN,
     "cast_i8": _NUMERIC, "cast_i16": _NUMERIC, "cast_i32": _NUMERIC, "cast_i64": _NUMERIC,
     "cast_u8": _NUMERIC, "cast_u16": _NUMERIC, "cast_u32": _NUMERIC, "cast_u64": _NUMERIC,
-    "cast_f32": _NUMERIC, "cast_f64": _NUMERIC,
+    "cast_f32": _NUMERIC, "cast_f64": _NUMERIC, "cast_decimal": _NUMERIC,
     "cast_uuid": _PLAIN,
     "cast_timestamp": _PLAIN, "cast_unix": _DECLARED, "cast_excel_serial": _DECLARED,
     "cast_date": _PLAIN, "cast_date_ordered": _DECLARED, "cast_datetime": _DECLARED,
     "cast_time": _PLAIN, "cast_duration": _PLAIN,
+    "hypercast_version": ((), _I32),
     "malloc": ((_I32,), _I32),
     "free": ((_I32,), None),
 }
@@ -81,7 +83,10 @@ _TIMESTAMP = struct.Struct("<qi")
 _DATE = struct.Struct("<HBB")
 _CIVIL = struct.Struct("<HBB4xQ")
 _FAULT = struct.Struct("<II")
-_FORMAT = struct.Struct("<III")
+_DECIMAL = struct.Struct("<QIBB2x")
+# RawNumFormat: the separators as code points, the flags, then the currency symbol as
+# `currency_len` UTF-8 bytes held inline (zero-padded to 16) — 32 bytes, 4-byte alignment.
+_FORMAT = struct.Struct("<IIII16s")
 
 
 # --- the verdict types, shaped exactly as the PyO3 extension's --------------------------
@@ -109,7 +114,10 @@ class Success:
 
 
 class Fault:
-    """The failure case: a closed reason plus the offending byte span into the UTF-8 input."""
+    """The failure case: a closed reason plus the offending span, in the caller's own units —
+    byte offsets for ``bytes`` input, code-point offsets for ``str`` input — so slicing the
+    offending text back out of what you passed (``text[offset:offset + length]``) needs no
+    mapping."""
 
     __slots__ = ("reason", "offset", "length")
     __match_args__ = ("reason", "offset", "length")
@@ -142,11 +150,37 @@ def _single_char(text: str) -> str:
     return text
 
 
-class NumFormat:
-    """Caller-declared numeric notation, held pre-packed in the 12-byte form the core reads
-    so the hot path pays zero conversion."""
+# The bytes the core's ``CurrencySymbol::new`` rejects: ASCII digits and Rust's
+# ``is_ascii_whitespace`` set (space, tab, line feed, form feed, carriage return — not
+# vertical tab).
+_CURRENCY_FORBIDDEN = frozenset(b"0123456789 \t\n\x0c\r")
+_CURRENCY_MAX_BYTES = 16
 
-    __slots__ = ("_decimal_sep", "_group_sep", "_flags", "_packed")
+
+def _currency_bytes(currency: str) -> bytes:
+    """The declared symbol as the UTF-8 bytes the core reads — ``b""`` declares none.
+    Anything else must be a valid ``CurrencySymbol`` (1 to 16 UTF-8 bytes, no ASCII digit
+    or whitespace), or it is a caller bug raised here, at construction, the way equal
+    separators are — the same text the PyO3 extension raises."""
+    if not isinstance(currency, str):
+        raise TypeError("currency must be str")
+    if not currency:
+        return b""
+    encoded = currency.encode("utf-8")
+    if len(encoded) > _CURRENCY_MAX_BYTES or any(byte in _CURRENCY_FORBIDDEN for byte in encoded):
+        raise ValueError(
+            "Currency symbol must be 1 to 16 UTF-8 bytes with no ASCII digit or whitespace; "
+            f'got "{currency}"'
+        )
+    return encoded
+
+
+class NumFormat:
+    """Caller-declared numeric notation, held pre-packed in the 32-byte form the core reads
+    (separators, flags, and the currency symbol's UTF-8 bytes inline) so the hot path pays
+    zero conversion."""
+
+    __slots__ = ("_decimal_sep", "_group_sep", "_flags", "_currency", "_packed")
 
     GROUPING = 1 << 0
     PARENTHESES = 1 << 1
@@ -154,17 +188,22 @@ class NumFormat:
     RADIX_PREFIXES = 1 << 3
     PERCENT = 1 << 4
     SEPARATOR_DETECT = 1 << 5
-    ALL = GROUPING | PARENTHESES | EXPONENT | RADIX_PREFIXES | PERCENT
+    CURRENCY = 1 << 6
+    ALL = GROUPING | PARENTHESES | EXPONENT | RADIX_PREFIXES | PERCENT | CURRENCY
 
-    def __init__(self, decimal_sep: str, group_sep: str, flags: int):
+    def __init__(self, decimal_sep: str, group_sep: str, flags: int, currency: str = ""):
         decimal, group = _single_char(decimal_sep), _single_char(group_sep)
         if decimal == group:
             # The same text the PyO3 extension raises, Rust's {:?} quoting included.
             raise ValueError(f'Decimal and group separators must differ; both are "{decimal_sep}"')
+        symbol = _currency_bytes(currency)
         _OBJECT_SETATTR(self, "_decimal_sep", decimal)
         _OBJECT_SETATTR(self, "_group_sep", group)
         _OBJECT_SETATTR(self, "_flags", int(flags))
-        _OBJECT_SETATTR(self, "_packed", _FORMAT.pack(ord(decimal), ord(group), int(flags)))
+        _OBJECT_SETATTR(self, "_currency", currency)
+        _OBJECT_SETATTR(
+            self, "_packed", _FORMAT.pack(ord(decimal), ord(group), int(flags), len(symbol), symbol)
+        )
 
     def __setattr__(self, name, value):  # noqa: ANN001
         raise AttributeError(f"attribute '{name}' of 'hypercast.NumFormat' objects is not writable")
@@ -184,9 +223,15 @@ class NumFormat:
         """The bitwise OR of the lenience flags."""
         return self._flags
 
+    @property
+    def currency(self) -> str:
+        """The declared currency symbol — ``""`` when none is declared."""
+        return self._currency
+
     @staticmethod
     def from_localeconv(conv: dict | None = None) -> NumFormat:
-        """Bridges ``locale.localeconv()`` (or a dict shaped like it) to a declared format."""
+        """Bridges ``locale.localeconv()`` (or a dict shaped like it) to a declared format —
+        ``decimal_point``, ``thousands_sep``, and ``currency_symbol``."""
         if conv is None:
             import locale
 
@@ -199,7 +244,12 @@ class NumFormat:
             text = str(value)
             return text[0] if text else fallback
 
-        return NumFormat(field("decimal_point", "."), field("thousands_sep", ","), NumFormat.ALL)
+        return NumFormat(
+            field("decimal_point", "."),
+            field("thousands_sep", ","),
+            NumFormat.ALL,
+            conv.get("currency_symbol", ""),
+        )
 
 
 NumFormat.INVARIANT = NumFormat(".", ",", NumFormat.ALL)
@@ -235,18 +285,18 @@ class _Guest:
         self._call = {name: self._bind(exports[name], name) for name in _SIGNATURES}
 
         # Guest-allocated for the life of the process: the 16-byte out-value (every door
-        # reads its own prefix), the 8-byte fault span, the 12-byte NumFormat — the same
+        # reads its own prefix), the 8-byte fault span, the 32-byte NumFormat — the same
         # trio the Java binding keeps per thread, held once here because every call is
         # already serialized under the lock.
         self._out = self._malloc(16)
         self._fault = self._malloc(8)
-        self._format = self._malloc(12)
+        self._format = self._malloc(_FORMAT.size)
         # Grow-only buffer for the input text, so a steady stream of ordinary scalars never
         # touches the guest allocator again.
         self._in_ptr, self._in_cap = 0, 0
         # The format currently written at _format, memoized by identity: formats are reused
         # objects in practice (INVARIANT, DETECT, a per-locale instance), and NumFormat is
-        # immutable, so one `is` check skips the 12-byte write on the overwhelming majority
+        # immutable, so one `is` check skips the 32-byte write on the overwhelming majority
         # of numeric calls.
         self._last_format: NumFormat | None = None
 
@@ -386,7 +436,12 @@ def _text(text) -> bytes:  # noqa: ANN001
     raise TypeError("text must be str or bytes")
 
 
-def _verdict(guest: _Guest, rc: int, read):  # noqa: ANN001
+def _code_points(chunk: bytes) -> int:
+    # Every code point starts with exactly one non-continuation byte.
+    return sum(1 for byte in chunk if byte & 0xC0 != 0x80)
+
+
+def _verdict(guest: _Guest, rc: int, read, text, data: bytes):  # noqa: ANN001
     if rc == 0:
         return Success(read(guest._read(guest._out, 16)))
     if rc == -1:
@@ -394,6 +449,13 @@ def _verdict(guest: _Guest, rc: int, read):  # noqa: ANN001
             "hypercast: libhypercast reported a contract violation — a binding bug, please report it"
         )
     offset, length = _FAULT.unpack(guest._read(guest._fault, 8))
+    # The core's span is bytes into `data`; a `str` caller's unit is the code point. ASCII
+    # needs no mapping (code points equal bytes) and pays one length comparison — the same
+    # presentation the extension makes.
+    if isinstance(text, str) and len(data) != len(text):
+        offset = min(offset, len(data))
+        end = min(offset + length, len(data))
+        offset, length = _code_points(data[:offset]), _code_points(data[offset:end])
     return Fault(_REASONS[rc](), offset, length)
 
 
@@ -403,7 +465,7 @@ def _plain(name: str, text, read):  # noqa: ANN001
     with _lock:
         in_ptr = guest._stage_input(data)
         rc = guest._call[name](in_ptr, len(data), guest._out, guest._fault)
-        return _verdict(guest, rc, read)
+        return _verdict(guest, rc, read, text, data)
 
 
 def _numeric(name: str, text, fmt, read):  # noqa: ANN001
@@ -415,7 +477,7 @@ def _numeric(name: str, text, fmt, read):  # noqa: ANN001
         in_ptr = guest._stage_input(data)
         format_ptr = guest._stage_format(fmt)
         rc = guest._call[name](in_ptr, len(data), format_ptr, guest._out, guest._fault)
-        return _verdict(guest, rc, read)
+        return _verdict(guest, rc, read, text, data)
 
 
 def _declared(name: str, text, discriminant: int, read):  # noqa: ANN001
@@ -424,7 +486,7 @@ def _declared(name: str, text, discriminant: int, read):  # noqa: ANN001
     with _lock:
         in_ptr = guest._stage_input(data)
         rc = guest._call[name](in_ptr, len(data), discriminant, guest._out, guest._fault)
-        return _verdict(guest, rc, read)
+        return _verdict(guest, rc, read, text, data)
 
 
 def _reader(fmt: str):  # noqa: ANN202
@@ -436,6 +498,14 @@ _READ_BOOL = lambda out: out[0] != 0  # noqa: E731
 _READ_I8, _READ_I16, _READ_I32, _READ_I64 = (_reader(f) for f in ("<b", "<h", "<i", "<q"))
 _READ_U8, _READ_U16, _READ_U32, _READ_U64 = (_reader(f) for f in ("<B", "<H", "<I", "<Q"))
 _READ_F32, _READ_F64 = (_reader(f) for f in ("<f", "<d"))
+
+
+def _read_decimal(out: bytes) -> Decimal:
+    lo, hi, scale, negative = _DECIMAL.unpack_from(out)
+    magnitude = (hi << 64) | lo
+    # The (sign, digits, exponent) triple is Decimal's own storage, so the core's canonical
+    # scale ("1.10" is 11 at scale 1, trailing zeros trimmed) lands verbatim — no text round trip.
+    return Decimal((negative, tuple(map(int, str(magnitude))), -scale))
 
 
 def _read_uuid(out: bytes) -> _uuid.UUID:
@@ -558,6 +628,13 @@ def cast_f64(text, fmt):  # noqa: ANN001
     return _numeric("cast_f64", text, fmt, _READ_F64)
 
 
+def cast_decimal(text, fmt):  # noqa: ANN001
+    """Casts decimal text under the declared format to an exact, canonical
+    ``decimal.Decimal`` — trailing fraction zeros trimmed, so ``"1.10"`` is ``Decimal('1.1')``;
+    never rounded."""
+    return _numeric("cast_decimal", text, fmt, _read_decimal)
+
+
 def cast_uuid(text):  # noqa: ANN001
     """Casts UUID text — every .NET ``Guid`` form plus ``urn:uuid:``-style prefixes — to a
     ``uuid.UUID``."""
@@ -610,3 +687,12 @@ def cast_duration(text):  # noqa: ANN001
     """Casts a duration (ISO 8601, invariant colon form, or protobuf JSON seconds) to a
     ``timedelta`` (microsecond truncation toward zero)."""
     return _plain("cast_duration", text, _read_duration)
+
+
+def native_version() -> str:
+    """This library's version as ``"major.minor.patch"``, decoded from the packed
+    ``hypercast_version`` export of the wasm module actually loaded."""
+    guest = _get()
+    with _lock:
+        packed = guest._call["hypercast_version"]()
+    return f"{packed >> 16}.{(packed >> 8) & 0xFF}.{packed & 0xFF}"

@@ -9,8 +9,8 @@ or a closed reason plus the exact byte span that offended. `*Fault` implements `
 composition, but the doors never panic on input; a panic here means a caller bug, never
 data.**
 
-Allocation-lean scalar casts — booleans, the full integer family, reals, UUIDs, temporals —
-calling directly into the native `libhypercast` Rust core. Two native backends, chosen
+Allocation-lean scalar casts — booleans, the full integer family, reals, exact decimals,
+UUIDs, temporals — calling directly into the native `libhypercast` Rust core. Two native backends, chosen
 automatically by build tag, same public API either way: real cgo on darwin/linux
 (`backend_cgo.go`) — 3.5-4.8x faster per call, see Benchmarks — and
 [purego](https://github.com/ebitengine/purego) (`backend_purego.go`) — dlopen/dlsym plus
@@ -44,16 +44,113 @@ time-of-day comes back nanosecond-exact, but `time.Duration`'s int64-nanosecond 
 the protobuf pair (`Duration{Seconds, Nanos}`) with a checked `AsDuration()` converter
 rather than silently wrapping.
 
+## Doors
+
+| Door | Returns | Declares |
+| --- | --- | --- |
+| `Bool` | `bool` | — |
+| `I8` `I16` `I32` `I64` `U8` `U16` `U32` `U64` | the Go integer | `NumFormat` |
+| `F32` `F64` | `float32` / `float64` | `NumFormat` |
+| `Exact` | `Decimal` — sign, 96-bit magnitude, scale 0..=28 | `NumFormat` |
+| `Uuid` | `uuid.UUID` | — |
+| `Timestamp` | UTC `time.Time` | — |
+| `Unix` | UTC `time.Time` | `UnixPrecision` |
+| `ExcelSerial` | UTC `time.Time` | `ExcelEpoch` |
+| `DateOnly` | `Date` | — |
+| `DateOnlyOrdered` | `Date` | `DateOrder` |
+| `DateTime` | `CivilDateTime` | `DateOrder` |
+| `TimeOfDay` | `time.Duration` since midnight | — |
+| `Span` | `Duration{Seconds, Nanos}` | — |
+
+Plus two entry points that are not doors:
+
+- `Available()` — `true` when the native library (or, under `-tags hypercast_wasm`, the
+  wasm module) loaded and exports the ABI this binding was built against: every symbol
+  resolved and `hypercast_version` answered. Probed once and cached; a `false` is permanent
+  for the process. It is the one call that never panics on a load failure — a consumer
+  keeping a fallback for a platform this module does not cover gates on it instead of
+  recovering around its first cast.
+- `NativeVersion()` — `"major.minor.patch"` as the loaded core reports it, so a mismatch
+  against the version this module was built for can be named before the first cast. Panics
+  if the library did not load, like every door; `Available()` is the safe probe.
+
+### Numeric — one door generic over the target
+
+A caller that is itself generic over the target type would otherwise write the eleven-way
+door switch. `Numeric[V Number, T Text]` writes it once: `Number` is the closed set of
+types the numeric doors return — `int8` … `int64`, `uint8` … `uint64`, `float32`,
+`float64`, `Decimal` — and `Numeric[int32]` is `I32`, `Numeric[Decimal]` is `Exact`, verdict
+for verdict. `T` is inferred from the argument. An unsupported `V` is impossible by
+construction: the constraint is exactly the door list, so the compiler rejects anything
+else at the call site.
+
+```go
+func column[V hypercast.Number](cells []string, format hypercast.NumFormat) ([]V, *hypercast.Fault) {
+    out := make([]V, 0, len(cells))
+    for _, cell := range cells {
+        v, fault := hypercast.Numeric[V](cell, format)
+        if fault != nil {
+            return nil, fault
+        }
+        out = append(out, v)
+    }
+    return out, nil
+}
+```
+
+### Exact decimals
+
+`Exact` is the decimal door — named that way because the result type already owns the
+identifier `Decimal`, the same reason `Span` returns a `Duration`. It reads the real doors'
+grammar under the same `NumFormat` but never rounds: `Decimal{Lo, Hi, Scale, Negative}` is
+the .NET `decimal` shape, (−1)^Negative × (Hi·2⁶⁴ + Lo) × 10⁻ˢᶜᵃˡᵉ, and text carrying more
+than 96 bits or 28 places is `OutOfRange`, not approximated. The result is canonical:
+exact trailing zeros in the fraction are trimmed so the scale is minimal, so `"1.10"`,
+`"1.1"` and `"1.1000"` are all magnitude 11 at scale 1 and `String()` renders each as
+`"1.1"`; `Rat()` hands over the exact value as a `*big.Rat`. Zero is never negative and
+always scale 0.
+
+```go
+d, fault := hypercast.Exact("($1,234.50)", hypercast.NumFormat{
+    DecimalSep: '.', GroupSep: ',', Styles: hypercast.AllStyles, Currency: "$",
+})
+// d == Decimal{Lo: 12345, Scale: 1, Negative: true}; d.String() == "-1234.5"
+```
+
+### NumFormat and currency symbols
+
+Every numeric door takes a `NumFormat` — the caller's declared notation, never a guess:
+the decimal and group separators, the `NumStyles` lenience flags, and an optional
+`Currency` symbol. `Invariant` is `'.'`/`','` with `AllStyles` and no symbol;
+`Detect` adds `SeparatorDetect`. `AllStyles` is every lenience including `CurrencySymbol`
+(and excluding `SeparatorDetect`), so keyed literals that predate the symbol keep compiling
+and keep their meaning.
+
+With `CurrencySymbol` set and a `Currency` declared, the symbol is accepted once, whole, at
+either edge of the numeric body: leading, before or after a sign (`$5`, `-$5`, `$ -5`), or
+trailing (`5 €`, `1.234,50 kr.`), with optional ASCII whitespace between symbol and digits;
+accounting parentheses wrap symbol and digits together (`($5)`). It never takes part in
+the digit scan, so a symbol containing a separator character (`kr.` under `.` grouping) is
+fine. A symbol declared while the style is off is `Malformed` at the symbol; the style with
+no symbol declared is a no-op. The symbol is at most 16 UTF-8 bytes and may not contain an
+ASCII digit or ASCII whitespace — anything else is a caller bug and panics, the way equal
+separators do.
+
+```go
+euros := hypercast.NumFormat{DecimalSep: ',', GroupSep: '.', Styles: hypercast.AllStyles, Currency: "€"}
+value, fault := hypercast.F64("€ 1.234,50", euros) // 1234.5
+```
+
 ## Why not `strconv` / `time.Parse`?
 
 1. **Verdicts with location** — a closed reason plus the offending span, against
    `strconv.NumError`'s wrapped string.
 2. **The vocabulary untrusted sources actually send** — twenty boolean lexemes, accounting
-   parentheses, declared separators, radix prefixes, all five .NET `Guid` text forms plus
-   `urn:uuid:` prefixes, protobuf JSON durations.
+   parentheses, declared separators and currency symbols, radix prefixes, all five .NET
+   `Guid` text forms plus `urn:uuid:` prefixes, protobuf JSON durations.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other
    binding, held by the shared corpus (the whole suite green on all three backends, full
-   twelve-file corpus replay).
+   thirteen-file corpus replay).
 
 **The honest trade-off, stated as plainly as the wins elsewhere: every Go door loses
 per-call to Go's stdlib.** Go's parsers are simply excellent (`time.Parse(RFC3339Nano)` at

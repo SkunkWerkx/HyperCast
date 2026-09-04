@@ -7,15 +7,15 @@
 //! The leading three bytes select the door, the format profile, and the declared
 //! order/precision; the rest is the input. Formats cycle through the invariant profile,
 //! eurozone declarations, NBSP grouping, structural detection, fully fuzzed flag bits,
-//! and the documented-defined degenerate equal-separators case.
+//! the documented-defined degenerate equal-separators case, and declared currency symbols.
 
 #![no_main]
 
 use hypercast::{
-    cast_bool, cast_date, cast_date_ordered, cast_datetime, cast_duration, cast_excel_serial,
-    cast_f32, cast_f64, cast_i16, cast_i32, cast_i64, cast_i8, cast_time, cast_timestamp,
-    cast_u16, cast_u32, cast_u64, cast_u8, cast_unix, cast_uuid, DateOrder, ExcelEpoch, Fault,
-    NumFormat, UnixPrecision,
+    cast_bool, cast_date, cast_date_ordered, cast_datetime, cast_decimal, cast_duration,
+    cast_excel_serial, cast_f32, cast_f64, cast_i16, cast_i32, cast_i64, cast_i8, cast_time,
+    cast_timestamp, cast_u16, cast_u32, cast_u64, cast_u8, cast_unix, cast_uuid, CurrencySymbol,
+    DateOrder, ExcelEpoch, Fault, NumFormat, UnixPrecision,
 };
 use libfuzzer_sys::fuzz_target;
 
@@ -39,12 +39,16 @@ fuzz_target!(|data: &[u8]| {
     let formats = [
         NumFormat::INVARIANT,
         NumFormat::DETECT,
-        NumFormat { decimal_sep: ',', group_sep: '.', flags: NumFormat::ALL },
-        NumFormat { decimal_sep: ',', group_sep: '\u{a0}', flags: NumFormat::ALL },
-        NumFormat { decimal_sep: '.', group_sep: ',', flags: u32::from(*format_sel) },
+        NumFormat::new(',', '.', NumFormat::ALL),
+        NumFormat::new(',', '\u{a0}', NumFormat::ALL),
+        NumFormat::new('.', ',', u32::from(*format_sel)),
         // Equal separators: documented as defined (decimal wins) at the Rust level — the
         // FFI layer rejects them, but the core must still never panic.
-        NumFormat { decimal_sep: '.', group_sep: '.', flags: NumFormat::ALL },
+        NumFormat::new('.', '.', NumFormat::ALL),
+        // Declared currency symbols, at both edges and overlapping the separators.
+        NumFormat::INVARIANT.with_currency(CurrencySymbol::new("$").unwrap()),
+        NumFormat::new(',', '.', NumFormat::ALL).with_currency(CurrencySymbol::new("kr.").unwrap()),
+        NumFormat::DETECT.with_currency(CurrencySymbol::new("\u{20ac}").unwrap()),
     ];
     let format = formats[usize::from(*format_sel) % formats.len()];
     let order = match order_sel % 3 {
@@ -60,7 +64,7 @@ fuzz_target!(|data: &[u8]| {
         _ => UnixPrecision::Nanos,
     };
 
-    match door % 20 {
+    match door % 21 {
         0 => check(input, cast_bool(input)),
         1 => check(input, cast_i8(input, &format)),
         2 => check(input, cast_i16(input, &format)),
@@ -80,6 +84,7 @@ fuzz_target!(|data: &[u8]| {
         16 => check(input, cast_datetime(input, order)),
         17 => check(input, cast_time(input)),
         18 => check(input, cast_excel_serial(input, epoch)),
+        19 => check(input, cast_decimal(input, &format)),
         _ => check(input, cast_duration(input)),
     }
 });

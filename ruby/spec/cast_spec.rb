@@ -3,6 +3,7 @@
 # and the caller-bug guards.
 
 require "spec_helper"
+require "open3"
 
 RSpec.describe HyperCast do
   invariant = HyperCast::NumFormat::INVARIANT
@@ -20,9 +21,107 @@ RSpec.describe HyperCast do
       .to eq(HyperCast::Fault.new(reason: :malformed, offset: 4, length: 1))
   end
 
+  it "reports the fault span in the units String#[] slices by" do
+    # Text: character offsets, so text[offset, length] is the offending text as passed.
+    expect(described_class.i32("€x", invariant)).to eq(HyperCast::Fault.new(reason: :malformed, offset: 0, length: 1))
+    expect(described_class.i32("1€", invariant)).to eq(HyperCast::Fault.new(reason: :malformed, offset: 1, length: 1))
+    expect("1€"[1, 1]).to eq("€")
+    # The same bytes as a binary String: byte offsets, because its characters are its bytes.
+    expect(described_class.i32("€x".b, invariant)).to eq(HyperCast::Fault.new(reason: :malformed, offset: 0, length: 3))
+    expect(described_class.i32("1€".b, invariant)).to eq(HyperCast::Fault.new(reason: :malformed, offset: 1, length: 3))
+    expect("1€".b[1, 3]).to eq("€".b)
+    # A foreign encoding is transcoded for the core, and the span still indexes the String
+    # the caller passed — character counts survive transcoding.
+    utf16 = "1€x".encode(Encoding::UTF_16LE)
+    expect(described_class.i32(utf16, invariant)).to eq(HyperCast::Fault.new(reason: :malformed, offset: 1, length: 1))
+    # ASCII text is the identity either way.
+    expect(described_class.i32("  12x4".b, invariant)).to eq(HyperCast::Fault.new(reason: :malformed, offset: 4, length: 1))
+  end
+
   it "honors declared separators" do
     eurozone = HyperCast::NumFormat.new(decimal_sep: ",", group_sep: ".", flags: HyperCast::ALL_STYLES)
     expect(described_class.f64("1.234,5", eurozone)).to eq(HyperCast::Success.new(value: 1234.5))
+  end
+
+  it "honors a declared currency symbol at either edge, under the CURRENCY flag" do
+    dollars = HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",", flags: HyperCast::ALL_STYLES,
+                                       currency: "$")
+    expect(described_class.i32("$1,234", dollars)).to eq(HyperCast::Success.new(value: 1234))
+    expect(described_class.i32("-$5", dollars)).to eq(HyperCast::Success.new(value: -5))
+    expect(described_class.i32("($5)", dollars)).to eq(HyperCast::Success.new(value: -5))
+    expect(described_class.f64("$ -2.5", dollars)).to eq(HyperCast::Success.new(value: -2.5))
+    expect(described_class.decimal("($1,234.50)", dollars))
+      .to eq(HyperCast::Success.new(value: HyperCast::Decimal.new(magnitude: 12_345, scale: 1, negative: true)))
+    # A trailing, multi-byte symbol under eurozone separators.
+    kroner = HyperCast::NumFormat.new(decimal_sep: ",", group_sep: ".", flags: HyperCast::ALL_STYLES,
+                                      currency: "kr.")
+    expect(described_class.f64("1.234,50 kr.", kroner)).to eq(HyperCast::Success.new(value: 1234.5))
+    # Declared but with the flag off: the symbol is malformed input, at the symbol.
+    declared_off = HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",",
+                                            flags: HyperCast::ALL_STYLES & ~HyperCast::CURRENCY, currency: "$")
+    expect(described_class.i32("$5", declared_off)).to eq(HyperCast::Fault.new(reason: :malformed, offset: 0, length: 1))
+    # The flag with nothing declared (INVARIANT) is a no-op: a symbol is just malformed input.
+    expect(described_class.i32("$5", invariant)).to eq(HyperCast::Fault.new(reason: :malformed, offset: 0, length: 1))
+  end
+
+  it "casts decimals exactly and canonically, never rounding" do
+    # Exact trailing zeros in the fraction are always trimmed: the scale is minimal.
+    canonical = HyperCast::Success.new(value: HyperCast::Decimal.new(magnitude: 11, scale: 1, negative: false))
+    expect(described_class.decimal("1.10", invariant)).to eq(canonical)
+    expect(described_class.decimal("1.1", invariant)).to eq(canonical)
+    expect(described_class.decimal("1.1000", invariant)).to eq(canonical)
+    expect(described_class.decimal("1.0000", invariant))
+      .to eq(HyperCast::Success.new(value: HyperCast::Decimal.new(magnitude: 1, scale: 0, negative: false)))
+    # Only fraction zeros are shed: an integer's trailing zeros are significant.
+    expect(described_class.decimal("100", invariant))
+      .to eq(HyperCast::Success.new(value: HyperCast::Decimal.new(magnitude: 100, scale: 0, negative: false)))
+    expect(described_class.decimal("0.1", invariant).value.to_r).to eq(Rational(1, 10))
+    expect(described_class.decimal("50%", invariant))
+      .to eq(HyperCast::Success.new(value: HyperCast::Decimal.new(magnitude: 5, scale: 1, negative: false)))
+    expect(described_class.decimal("50%", invariant).value.to_s).to eq("0.5")
+    # Zero is scale 0 and never negative, whatever the text said.
+    expect(described_class.decimal("-0.00", invariant))
+      .to eq(HyperCast::Success.new(value: HyperCast::Decimal.new(magnitude: 0, scale: 0, negative: false)))
+    expect(described_class.decimal("-0.00", invariant).value.to_s).to eq("0")
+    # The 96-bit ceiling is a range, not a rounding opportunity.
+    expect(described_class.decimal("79228162514264337593543950335", invariant).value.magnitude).to eq(2**96 - 1)
+    expect(described_class.decimal("79228162514264337593543950336", invariant)).to be_a(HyperCast::Fault)
+    expect(described_class.decimal("79228162514264337593543950336", invariant).reason).to eq(:out_of_range)
+  end
+
+  it "converts a Decimal to Rational, canonical text and BigDecimal" do
+    value = described_class.decimal("-1,234.50", invariant).value
+    expect(value).to be_negative
+    expect(value.to_r).to eq(Rational(-12_345, 10))
+    expect(value.to_s).to eq("-1234.5")
+    expect(value.to_d).to eq(BigDecimal("-1234.5"))
+    expect(value.to_d).to be_a(BigDecimal)
+  end
+
+  it "reports the loaded core's version, pinned to this gem's own" do
+    # VERSION and rust/Cargo.toml are swept together by prepare-release.yml, so the loaded
+    # core must always report exactly this gem's version.
+    expect(described_class.native_version).to match(/\A\d+\.\d+\.\d+\z/)
+    expect(described_class.native_version).to eq(HyperCast::VERSION)
+  end
+
+  it "answers available? without raising, and consistently with native_version" do
+    expect(described_class.available?).to be(true)
+    expect(described_class.available?).to be(true) # cached
+    expect(described_class.native_version).to eq(HyperCast::VERSION)
+  end
+
+  it "answers available? false without raising when no library resolves, while the doors still raise" do
+    # A Fiddle subprocess with the library path stubbed away: the probe answers quietly,
+    # the first door call keeps its precise LoadError.
+    lib = File.expand_path("../lib", __dir__)
+    script = "HyperCast::Runtime.singleton_class.define_method(:library_path) { nil }; " \
+             "print HyperCast.available?; print ' '; " \
+             "begin; HyperCast.i32('1', HyperCast::NumFormat::INVARIANT); rescue LoadError; print 'raised'; end"
+    out, status = Open3.capture2({ "HYPERCAST_PURE" => "1", "HYPERCAST_WASM" => nil },
+                                 RbConfig.ruby, "-I", lib, "-r", "hypercast", "-e", script)
+    expect(status).to be_success
+    expect(out).to eq("false raised")
   end
 
   it "returns u64 as the true unsigned value — Integer is unbounded" do
@@ -92,5 +191,15 @@ RSpec.describe HyperCast do
   it "treats equal separators as a caller bug" do
     expect { HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ".", flags: HyperCast::ALL_STYLES) }
       .to raise_error(ArgumentError)
+  end
+
+  it "treats an invalid currency symbol as a caller bug" do
+    build = ->(currency) { HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",", flags: HyperCast::ALL_STYLES, currency: currency) }
+    expect { build.call("$1") }.to raise_error(ArgumentError)       # an ASCII digit
+    expect { build.call("US $") }.to raise_error(ArgumentError)     # ASCII whitespace
+    expect { build.call("€" * 6) }.to raise_error(ArgumentError)    # 18 UTF-8 bytes
+    expect { build.call(:usd) }.to raise_error(ArgumentError)       # not a String
+    expect(build.call("€" * 5).currency).to eq("€" * 5)             # 15 bytes: fine
+    expect(build.call("").currency).to eq("")                       # none declared
   end
 end

@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import threading
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -56,6 +57,15 @@ def test_agrees_with_the_native_backend_on_a_fault_span():
     assert native_eval('repr(hypercast.cast_i32("  12x4", hypercast.NumFormat.INVARIANT))') == repr(wasm)
 
 
+def test_agrees_with_the_native_backend_on_code_point_fault_spans():
+    wasm_str = hypercast.cast_i32("1€", NumFormat.INVARIANT)
+    wasm_bytes = hypercast.cast_i32("1€".encode(), NumFormat.INVARIANT)
+    assert wasm_str == Fault(CastFailure.MALFORMED, 1, 1)
+    assert wasm_bytes == Fault(CastFailure.MALFORMED, 1, 3)
+    assert native_eval('repr(hypercast.cast_i32("1€", hypercast.NumFormat.INVARIANT))') == repr(wasm_str)
+    assert native_eval('repr(hypercast.cast_i32("1€".encode(), hypercast.NumFormat.INVARIANT))') == repr(wasm_bytes)
+
+
 def test_agrees_with_the_native_backend_on_the_temporal_doors():
     text = "2026-01-02T15:04:05.123456789+05:00"
     wasm = hypercast.cast_timestamp(text)
@@ -65,6 +75,20 @@ def test_agrees_with_the_native_backend_on_the_temporal_doors():
     assert native_eval('str(hypercast.cast_time("15:04:05.123456789").value)') == str(
         hypercast.cast_time("15:04:05.123456789").value
     )
+
+
+def test_agrees_with_the_native_backend_on_the_decimal_door():
+    dollars = NumFormat(".", ",", NumFormat.ALL, "$")
+    wasm = hypercast.cast_decimal("($1,234.50)", dollars)
+    assert wasm == Success(Decimal("-1234.5"))
+    assert wasm.value.as_tuple() == (1, (1, 2, 3, 4, 5), -1)
+    assert native_eval(
+        'repr(hypercast.cast_decimal("($1,234.50)", hypercast.NumFormat(".", ",", hypercast.NumFormat.ALL, "$")))'
+    ) == repr(wasm)
+
+
+def test_agrees_with_the_native_backend_on_the_version():
+    assert native_eval("hypercast.native_version()") == hypercast.native_version()
 
 
 def test_agrees_with_the_native_backend_on_uuid_construction():

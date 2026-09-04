@@ -48,12 +48,22 @@ public static partial class Cast
 	/// <summary>UTF-16 doors encode through a stack buffer of this size before renting.</summary>
 	const int Utf8StackBytes = 512;
 
+	/// <summary>The native core's 32-byte format layout: four <c>u32</c>s, then the symbol's UTF-8 bytes inline.</summary>
 	[StructLayout(LayoutKind.Sequential)]
-	internal readonly struct RawNumFormat(uint decimalSep, uint groupSep, uint flags)
+	internal struct RawNumFormat
 	{
-		public readonly uint DecimalSep = decimalSep;
-		public readonly uint GroupSep = groupSep;
-		public readonly uint Flags = flags;
+		public uint DecimalSep;
+		public uint GroupSep;
+		public uint Flags;
+		public uint CurrencyLen;
+		public CurrencyBytes Currency;
+	}
+
+	/// <summary>The inline currency buffer — <see cref="NumFormat.MaxCurrencyBytes"/> bytes, zero-padded.</summary>
+	[InlineArray(NumFormat.MaxCurrencyBytes)]
+	internal struct CurrencyBytes
+	{
+		byte _element0;
 	}
 
 	[StructLayout(LayoutKind.Sequential)]
@@ -61,6 +71,17 @@ public static partial class Cast
 	{
 		public readonly uint Offset;
 		public readonly uint Length;
+	}
+
+	[StructLayout(LayoutKind.Sequential)]
+	readonly struct RawDecimal
+	{
+		public readonly ulong Lo;
+		public readonly uint Hi;
+		public readonly byte Scale;
+		public readonly byte Negative;
+		// 2 bytes of C-struct tail padding follow; Sequential layout reproduces them because
+		// the ulong demands 8-byte alignment.
 	}
 
 	[StructLayout(LayoutKind.Sequential)]
@@ -173,6 +194,20 @@ public static partial class Cast
 	private static unsafe int cast_f64(byte* ptr, nuint len, RawNumFormat* format, double* value, RawFault* fault) =>
 		OperatingSystem.IsBrowser() ? cast_f64_browser(ptr, len, format, value, fault) : cast_f64_native(ptr, len, format, value, fault);
 
+	[LibraryImport("hypercast", EntryPoint = "cast_decimal")]
+	private static unsafe partial int cast_decimal_native(byte* ptr, nuint len, RawNumFormat* format, RawDecimal* value, RawFault* fault);
+	[LibraryImport("*", EntryPoint = "cast_decimal")]
+	private static unsafe partial int cast_decimal_browser(byte* ptr, nuint len, RawNumFormat* format, RawDecimal* value, RawFault* fault);
+	private static unsafe int cast_decimal(byte* ptr, nuint len, RawNumFormat* format, RawDecimal* value, RawFault* fault) =>
+		OperatingSystem.IsBrowser() ? cast_decimal_browser(ptr, len, format, value, fault) : cast_decimal_native(ptr, len, format, value, fault);
+
+	[LibraryImport("hypercast", EntryPoint = "hypercast_version")]
+	private static partial uint hypercast_version_native();
+	[LibraryImport("*", EntryPoint = "hypercast_version")]
+	private static partial uint hypercast_version_browser();
+	private static uint hypercast_version() =>
+		OperatingSystem.IsBrowser() ? hypercast_version_browser() : hypercast_version_native();
+
 	[LibraryImport("hypercast", EntryPoint = "cast_uuid")]
 	private static unsafe partial int cast_uuid_native(byte* ptr, nuint len, byte* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_uuid")]
@@ -258,11 +293,62 @@ public static partial class Cast
 			ArrayPool<byte>.Shared.Return(rented);
 	}
 
+	/// <summary>
+	/// Re-expresses a fault's span in UTF-16 code units for the UTF-16 doors: the core
+	/// reports byte offsets into the transcoded UTF-8, which are identical to char offsets
+	/// only while the input is ASCII. Success, and any ASCII input, pass through untouched;
+	/// the prefix count runs only on the non-ASCII failure path.
+	/// </summary>
+	static Verdict<T> Remap<T>(Verdict<T> verdict, ReadOnlySpan<byte> utf8, int charCount) where T : struct
+	{
+		if (utf8.Length == charCount || !verdict.TryGetValue(out Fault fault) || fault.Length == 0 && fault.Offset == 0)
+			return verdict;
+		var offset = Encoding.UTF8.GetCharCount(utf8[..fault.Offset]);
+		var length = Encoding.UTF8.GetCharCount(utf8.Slice(fault.Offset, fault.Length));
+		return new(new Fault(fault.Reason, offset, length));
+	}
+
 	static Verdict<T> Failed<T>(int code, in RawFault fault) where T : struct =>
 		code == -1
 			? throw new InvalidOperationException(
 				"libhypercast reported a contract violation — a binding bug, please report it.")
 			: new(new Fault((CastFailure)code, (int)fault.Offset, (int)fault.Length));
+
+	static readonly Lazy<Version?> _nativeVersion = new(ProbeNativeVersion, LazyThreadSafetyMode.PublicationOnly);
+
+	// The one place the binding catches: loading is the caller's environment, not their
+	// data, and the point of the probe is to answer "did the native library resolve" without
+	// making the first real cast the thing that finds out. Every other door lets a load
+	// failure propagate, exactly as before.
+	static Version? ProbeNativeVersion()
+	{
+		try
+		{
+			var packed = hypercast_version();
+			return new Version((int)(packed >> 16), (int)((packed >> 8) & 0xFF), (int)(packed & 0xFF));
+		}
+		catch (Exception e) when (e is DllNotFoundException or EntryPointNotFoundException
+			or BadImageFormatException or PlatformNotSupportedException or TypeInitializationException)
+		{
+			return null;
+		}
+	}
+
+	/// <summary>
+	/// <see langword="true"/> when the native library resolved and exports the ABI this
+	/// binding was built against. Probed once, then cached; a <see langword="false"/> is
+	/// permanent for the process. A consumer keeping a managed fallback for platforms the
+	/// package does not cover gates on this instead of catching
+	/// <see cref="DllNotFoundException"/> around its first cast.
+	/// </summary>
+	public static bool IsAvailable => _nativeVersion.Value is not null;
+
+	/// <summary>
+	/// The native core's own version — <c>major.minor.patch</c> as the library reports it,
+	/// or <see langword="null"/> when it did not load (see <see cref="IsAvailable"/>).
+	/// Compare against this assembly's version to name a mismatch before the first cast.
+	/// </summary>
+	public static Version? NativeVersion => _nativeVersion.Value;
 
 	/// <summary>
 	/// Presents a verdict optionally: an <see cref="CastFailure.Empty"/> fault becomes
@@ -302,7 +388,8 @@ public static partial class Cast
 		byte[]? rented = null;
 		try
 		{
-			return Boolean(Utf8(input, stackalloc byte[Utf8StackBytes], ref rented));
+			var utf8 = Utf8(input, stackalloc byte[Utf8StackBytes], ref rented);
+			return Remap(Boolean(utf8), utf8, input.Length);
 		}
 		finally
 		{
