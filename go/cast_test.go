@@ -7,6 +7,9 @@ package hypercast
 import (
 	"math"
 	"math/big"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -178,8 +181,32 @@ func TestExactIsExact(t *testing.T) {
 }
 
 func TestNativeVersionMatchesTheCrate(t *testing.T) {
-	if got := NativeVersion(); got != "0.2.0" {
-		t.Fatalf("got %q", got)
+	// The expectation is the crate's own manifest, walked up to the way corpus_test.go finds
+	// corpus/, so a release bump never leaves a stale literal here.
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		text, readErr := os.ReadFile(filepath.Join(dir, "rust", "Cargo.toml"))
+		if readErr == nil {
+			for _, line := range strings.Split(string(text), "\n") {
+				line = strings.TrimRight(line, "\r")
+				if rest, ok := strings.CutPrefix(line, "version = \""); ok {
+					want := rest[:strings.IndexByte(rest, '"')]
+					if got := NativeVersion(); got != want {
+						t.Fatalf("got %q, rust/Cargo.toml says %q", got, want)
+					}
+					return
+				}
+			}
+			t.Fatal("no version line in rust/Cargo.toml")
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("rust/Cargo.toml not found above the test directory")
+		}
+		dir = parent
 	}
 }
 

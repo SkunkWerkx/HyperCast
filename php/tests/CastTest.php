@@ -259,7 +259,8 @@ final class CastTest extends TestCase
     private static function crateVersion(): string
     {
         $dir = __DIR__;
-        while ($dir !== '/') {
+        // Stop when dirname() stops moving, not at '/': a Windows root is 'C:\\', never '/'.
+        for ($parent = \dirname($dir); $parent !== $dir; $dir = $parent, $parent = \dirname($dir)) {
             $candidate = $dir . '/rust/Cargo.toml';
             if (is_file($candidate)) {
                 self::assertSame(
@@ -269,7 +270,6 @@ final class CastTest extends TestCase
                 );
                 return $match[1];
             }
-            $dir = \dirname($dir);
         }
         self::fail('rust/Cargo.toml not found');
     }
