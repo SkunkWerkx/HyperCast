@@ -15,7 +15,97 @@ ecosystem already has, so a platform with no native build in the package still h
 backend and nothing has to be `dlopen`'d at all. No door changed its verdict on any input:
 the corpus replays byte-identical through every backend, native and wasm alike.
 
+*What the first consumer asked for.* Svartalfheim's ingestion branch
+([NorseArchitecture/Svartalfheim#62](https://github.com/NorseArchitecture/Svartalfheim/pull/62))
+routed a whole scalar-parser family through the C# binding and surfaced, in one PR, every
+gap this section closes: a declared currency symbol (without it every non-invariant culture
+fell back to managed code), an exact decimal door, a way to prove the native library loaded
+before the first cast, and a handful of binding ergonomics. One coordinated ABI bump across
+the core and all seven bindings; `docs/roadmap.md` records the reasoning.
+
 ### Added
+
+- **A declared currency symbol on `NumFormat`, and a `CURRENCY` flag (now part of `ALL`).**
+  The core's format carries up to 16 UTF-8 bytes of symbol inline; with the flag set the
+  symbol is accepted once, leading — before or after a sign (`$5`, `-$5`, `$ -5`) — or
+  trailing (`5 €`, `1.234,50 kr.`), with optional whitespace between symbol and digits, and
+  accounting parentheses wrap symbol and digits together (`($5)`). Declared with the flag
+  off it is `Malformed` at the symbol; flag on with nothing declared changes nothing. A
+  symbol carrying an ASCII digit or whitespace, or longer than 16 bytes, is a contract
+  violation at the ABI and a caller-bug exception in every binding. Every culture bridge
+  fills it in from the platform's own data: C# `NumFormat.From(CultureInfo)`, Java
+  `NumFormat.from(Locale)`, Swift `NumFormat.from(locale:)`, Python and PHP
+  `from_localeconv`/`fromLocaleconv`. `corpus/integer.json` and `corpus/real.json` gained
+  currency vectors, and a `format` object may now carry `"currency"`. *(every package)*
+- **`cast_decimal` — an exact decimal door.** The real doors' grammar (declared separators
+  and grouping, parentheses, exponent, percent, currency, separator detection), but no
+  float is ever formed: the value is a sign, a 96-bit magnitude and a base-10 scale, so
+  `0.1` is one tenth and `50%` is exactly `0.5`. The result is canonical: exact trailing
+  zeros in the fraction are trimmed, so `1.10` and `1.1` come out the same (magnitude 11,
+  scale 1) and zero is scale 0, never negative. Precision is a range, not a rounding
+  opportunity: a magnitude past 2⁹⁶−1, or more than 28 nonzero places, is `OutOfRange` —
+  nothing but a zero is ever dropped. Presented as `decimal` (C#), `BigDecimal` (Java),
+  `decimal.Decimal` (Python), `Foundation.Decimal` (Swift), and an exact carrier type
+  where the platform has no
+  decimal: Go `Decimal` (door `Exact`), Ruby `HyperCast::Decimal` (with `to_r`, canonical
+  `to_s`, lazy `to_d`), PHP `HyperCast\Decimal` (magnitude as a numeric string). New
+  `corpus/decimal.json` pins the raw triple and the canonical text for every binding.
+  *(every package)*
+- **`hypercast_version` — the load probe.** A zero-argument export returning the core's
+  version packed `major << 16 | minor << 8 | patch`: the cheapest possible proof that the
+  library a host loaded is the one its binding was built against, before any door is the
+  thing that finds out. Every binding fronts it two ways — an availability check that
+  never throws (`Cast.IsAvailable`, `Cast.isAvailable()`, `Available()`,
+  `Cast.isAvailable`, `HyperCast.available?`, `Cast::isAvailable()`) and the loaded
+  version as text (`Cast.NativeVersion`, `nativeVersion()`, `NativeVersion()`,
+  `native_version`). A consumer keeping a managed fallback gates on the probe instead of
+  catching a load failure around its first real cast — the exact hole Codex's review found
+  in the consumer PR, where only the sibling library was probed. *(every package)*
+- **One numeric door generic over the target.** For a caller that is itself generic over
+  the target type — a parser family, a column mapper — so it need not write the type
+  dispatch: C# `Cast.Numeric<T>` over exactly the eleven numeric targets, Go
+  `Numeric[V Number]` with the eleven as a constraint, Swift `Cast.numeric<T>`. The
+  dispatch folds per instantiation; Go's stays allocation-free. Not in Java (no generics
+  over primitives) nor the dynamic bindings, where the per-width doors are the idiom.
+  *(NuGet, Go, Swift)*
+- **`NumFormat.From(IFormatProvider)` and `From(NumberFormatInfo)` in C#** — the shape
+  every BCL `TryParse` already takes, so an `IFormatProvider`-shaped caller needs no
+  `CultureInfo` cast; and **`NumFormat::fromLocaleconv()` in PHP**, the platform-data
+  bridge the other bindings already had. *(NuGet, Packagist)*
+- **`HyperCast.Corpus` on NuGet** — the thirteen corpus files as a content-only package,
+  versioned in lockstep with `HyperCast` and packed, attested and pushed by the same
+  release run, so a downstream suite replays the vectors its core was proven against
+  instead of vendoring them beside a snapshot SHA. NuGet only, on purpose: the corpus is a
+  receipt, and the other ecosystems' receipts are their own suites replaying it. *(NuGet)*
+- **Rust: `NumFormat::new`, `NumFormat::with_currency`, `CurrencySymbol`, `Decimal`** (with
+  `magnitude()` and a canonical `Display`), and `hypercast_version()` re-exported. The
+  fuzz target covers the decimal door and three currency profiles; the allocation proof and
+  the fault-span sweep cover both. *(`hypercast` crate)*
+
+### Changed
+
+- **`RawNumFormat` is 32 bytes.** Four `u32`s — `decimal_sep`, `group_sep`, `flags`,
+  `currency_len` — then the symbol's 16 bytes inline; alignment stays 4. Every binding's
+  crossing, native and wasm alike, was updated together; nothing else at the ABI moved.
+  *(every package)*
+- **`ALL` is 95, not 31** — the currency lenience joined it — in every binding's flag set
+  (`NumStyles.All`, `STYLE_ALL`, `AllStyles`, `.all`, `ALL_STYLES`, `NumFormat.ALL`).
+  `SEPARATOR_DETECT` stays excluded. A caller that spelled `31` keeps exactly the old
+  behavior. *(every package)*
+- **Fault spans come back in the caller's own units.** The core reports UTF-8 byte
+  offsets; the C# `string`/`ReadOnlySpan<char>` doors, Java `String` doors, Python `str`
+  input and Ruby text input now remap a fault's offset and length to char/code-point units
+  when the input was not ASCII, so slicing the offending text back out of what was passed
+  needs no mapping. Byte input, and ASCII text, are unchanged and pay nothing. Go, Swift
+  and PHP strings are already UTF-8 bytes. *(NuGet, Maven Central, PyPI, RubyGems)*
+- **Java: `NumFormat` is a four-component record** (`currencySymbol` last); the
+  three-argument constructor remains and declares no symbol. **Rust: `NumFormat` gained a
+  `currency` field** — a struct literal of the three old fields no longer compiles; use
+  `NumFormat::new(decimal_sep, group_sep, flags)` or `{ ..NumFormat::INVARIANT }`. *(Maven
+  Central, `hypercast` crate)*
+- **Go, purego backend:** a core missing an export is a reported load failure the probe
+  sees, instead of a panic escaping initialization — matching the cgo and wasm backends.
+  *(`go get`)*
 
 - **A wasm backend in Java, Ruby, Python and Go.** The core built as a `wasm32-wasip1`
   module, `hypercast.wasm`, ships beside the native libraries in the jar, the gems and the
@@ -73,7 +163,18 @@ the corpus replays byte-identical through every backend, native and wasm alike.
 
 ### Upgrade note
 
-Drop-in for every binding. Nothing is removed or renamed. The wasm backends are opt-in and
+Source-compatible for every binding's consumers with three things to know. The native
+library and the binding must move together — the format crossing is 32 bytes now, and a
+binding of this version on an older `libhypercast` fails at load (which the new probe
+reports rather than the first cast); the committed binaries under `go/native/`,
+`php/src/native/` and `swift/…/NativeLibs/` are restaged by CI, so those three suites are
+red on a checkout until that lands. `ALL` changed value: code that stored the number keeps
+the old lenience set, code that named the constant gains currency, which with no symbol
+declared changes nothing. Non-ASCII fault spans on the C#, Java, Python and Ruby text doors
+now index characters rather than bytes — the byte doors are untouched. In Rust, `NumFormat`
+struct literals need the new field or `NumFormat::new`.
+
+The wasm backends are opt-in and
 change nothing until asked for: no new runtime dependency in any package (Java's GraalWasm is
 `compileOnly`, Ruby's wasmtime a Gemfile group for the suite, Python's an extra, Go's behind a
 build tag — though wasmtime-go does now appear in `go.mod`, so it enters a consumer's module
