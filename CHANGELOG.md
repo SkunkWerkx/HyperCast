@@ -74,11 +74,6 @@ the core and all seven bindings; `docs/roadmap.md` records the reasoning.
   every BCL `TryParse` already takes, so an `IFormatProvider`-shaped caller needs no
   `CultureInfo` cast; and **`NumFormat::fromLocaleconv()` in PHP**, the platform-data
   bridge the other bindings already had. *(NuGet, Packagist)*
-- **`HyperCast.Corpus` on NuGet** — the thirteen corpus files as a content-only package,
-  versioned in lockstep with `HyperCast` and packed, attested and pushed by the same
-  release run, so a downstream suite replays the vectors its core was proven against
-  instead of vendoring them beside a snapshot SHA. NuGet only, on purpose: the corpus is a
-  receipt, and the other ecosystems' receipts are their own suites replaying it. *(NuGet)*
 - **Rust: `NumFormat::new`, `NumFormat::with_currency`, `CurrencySymbol`, `Decimal`** (with
   `magnitude()` and a canonical `Display`), and `hypercast_version()` re-exported. The
   fuzz target covers the decimal door and three currency profiles; the allocation proof and
@@ -159,6 +154,15 @@ the core and all seven bindings; `docs/roadmap.md` records the reasoning.
   allocations on its main thread — a join-handle map insert and a timeout push right after
   `spawn` — can no longer race the claim on a slow-to-schedule runner. HyperUuid saw exactly
   that flake on linux-arm64. *(`hypercast` crate, tests only)*
+
+### Notes
+
+- **`HyperCast.Corpus` 0.3.0 exists on nuget.org and should not.** This release's run pushed
+  a content-only package of `corpus/*.json` before the decision that the corpus is this
+  repository's receipt and not a product had been applied to the release train. The package
+  is unlisted, the project and its release steps are removed, and no later version will
+  follow. A downstream suite that wants the vectors takes them from this repository at the
+  tag it was built against.
 
 ### Upgrade note
 

@@ -1,7 +1,6 @@
 <Solution>
   <Project Path="HyperCast.AotSmokeTest/HyperCast.AotSmokeTest.csproj" />
   <Project Path="HyperCast.Benchmarks/HyperCast.Benchmarks.csproj" />
-  <Project Path="HyperCast.Corpus/HyperCast.Corpus.csproj" />
   <Project Path="HyperCast.Tests/HyperCast.Tests.csproj" />
   <Project Path="HyperCast/HyperCast.csproj" />
 </Solution>

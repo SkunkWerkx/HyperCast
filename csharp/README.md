@@ -51,9 +51,7 @@ gates on, instead of catching `DllNotFoundException` around its first real call.
    the BCL has no knob for at any price.
 3. **One engine across a polyglot system** — the same Rust core, bit-for-bit verdicts,
    proven by the shared conformance corpus every binding replays (the whole suite,
-   full corpus replay through real P/Invoke). The corpus also
-   ships as the `HyperCast.Corpus` content package, versioned in lockstep, for a downstream
-   suite that routes its own parsers through these doors.
+   full corpus replay through real P/Invoke).
 4. **Not slower — mostly faster.** BenchmarkDotNet, `[MemoryDiagnoser]`, lenience matched
    where the BCL has the knob, FFI crossing and UTF-16→UTF-8 transcode *included* in every
    HyperCast number; zero managed allocation on every row, both sides (linux-arm64,

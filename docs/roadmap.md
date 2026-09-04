@@ -196,10 +196,12 @@ the record of what shipped; this is the record of why.
    gap is the sole reason the PR carries several hundred lines of managed fallback grammar
    duplicating this core — RFC 3339, the three-shape duration grammar, separator detection.
    HyperForge work, shared with HyperUuid.
-5. **A corpus content package — built for NuGet only.** The consumer vendored the corpus
-   files plus a snapshot SHA by hand; `HyperCast.Corpus` ships them as content, versioned in
-   lockstep. Deliberately not replicated to the other registries — the corpus is a receipt,
-   not a product, and the other ecosystems' receipts are their own suites replaying it.
+5. **A corpus content package — declined.** The consumer vendored the corpus files plus a
+   snapshot SHA by hand and asked for a package. The ruling is that the corpus is this
+   repository's receipt, not a product: a downstream suite takes `corpus/*.json` from the
+   tag its core was built against, and the SHA it records is the pin. (One `HyperCast.Corpus`
+   version reached nuget.org before that ruling was applied to the release train; it is
+   unlisted and will not be followed.)
 
 ### Binding quality of life — built, system-wide
 
