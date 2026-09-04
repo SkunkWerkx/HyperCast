@@ -33,7 +33,8 @@ final class CorpusTests: XCTestCase {
         return NumFormat(
             decimalSeparator: (format["decimal_sep"] as! String).unicodeScalars.first!,
             groupSeparator: (format["group_sep"] as! String).unicodeScalars.first!,
-            styles: NumStyles(rawValue: UInt32(format["flags"] as! Int)))
+            styles: NumStyles(rawValue: UInt32(format["flags"] as! Int)),
+            currencySymbol: format["currency"] as? String ?? "")
     }
 
     private func assertVerdict<T: Equatable>(
@@ -112,6 +113,18 @@ final class CorpusTests: XCTestCase {
             case let other:
                 XCTFail("real: unknown type \(other)")
             }
+        }
+    }
+
+    func testDecimalCorpus() throws {
+        for vector in try corpus("decimal.json") {
+            // `value` is the core's canonical rendering (`-1234.5`, trailing fraction
+            // zeros trimmed) — exactly the form Foundation's Decimal represents, so it is
+            // the contract the presentation is held to; the raw triple
+            // (`magnitude`/`scale`/`negative`) is not exposed by this binding.
+            let expected = (vector["value"] as? String).map { Decimal(string: $0)! }
+            assertVerdict(
+                "decimal", vector, try Cast.decimal(inputBytes(vector), format: format(of: vector)), expected)
         }
     }
 
