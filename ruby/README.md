@@ -10,8 +10,8 @@ native extension where a precompiled platform gem covers you, stdlib Fiddle ever
 else — selected automatically, zero compiles either way — and the same core as a
 WebAssembly module inside the `wasmtime` gem for any platform with no native build at all.**
 
-Allocation-lean scalar casts — booleans, the full integer family, reals, UUIDs, temporals —
-calling directly into the native `libhypercast` Rust core. Ruby 3.2 is the floor
+Allocation-lean scalar casts — booleans, the full integer family, reals, exact decimals,
+UUIDs, temporals — calling directly into the native `libhypercast` Rust core. Ruby 3.2 is the floor
 (`Data.define` for the verdict case types). The fast path links the core straight into a
 Ruby extension (Magnus): on require it redefines the doors in place on the `HyperCast`
 module — no delegation layer, no second surface, which is exactly what keeps the backends
@@ -30,8 +30,99 @@ Door names mirror the native ABI (`i32`, `f64`, `timestamp`, …). Ruby-flavored
 stated proudly — nothing the core parses is lost on the way out: `Integer` is
 unbounded (u64 comes back as the true unsigned value), `Time` carries full nanoseconds
 across the whole 0001–9999 window, time-of-day is an exact Integer of nanoseconds since
-midnight, and durations come back as exact `Rational` seconds across the core's whole
-±10,000-year window — no truncation anywhere, no wrapping.
+midnight, durations come back as exact `Rational` seconds across the core's whole
+±10,000-year window, and `decimal` returns an exact `HyperCast::Decimal` that never rounds
+— no truncation anywhere, no wrapping.
+
+## The doors
+
+| Door | Value | Declares |
+|---|---|---|
+| `bool(text)` | `true`/`false` | — |
+| `i8` `i16` `i32` `i64` `u8` `u16` `u32` `u64` `(text, format)` | `Integer` (unbounded — u64 is the true unsigned value) | a `NumFormat` |
+| `f32` `f64` `(text, format)` | `Float` (f32 widened losslessly) | a `NumFormat` |
+| `decimal(text, format)` | `HyperCast::Decimal` — exact sign, 96-bit magnitude, base-10 scale | a `NumFormat` |
+| `uuid(text)` | lowercase hyphenated `String` (`SecureRandom.uuid`'s shape) | — |
+| `timestamp(text)` | UTC `Time`, full nanoseconds | — |
+| `unix(text, precision)` | UTC `Time` | `:seconds` / `:milliseconds` / `:microseconds` / `:nanoseconds` |
+| `excel_serial(text, epoch)` | UTC `Time` | `:y1900` / `:y1904` |
+| `date(text, order = nil)` | `Date` | strict ISO, or `:year_month_day` / `:month_day_year` / `:day_month_year` |
+| `datetime(text, order)` | zone-less `DateTime`, exact `Rational` seconds | a field order, as `date` |
+| `time(text)` | `Integer` nanoseconds since midnight | — |
+| `duration(text)` | exact `Rational` seconds | — |
+
+Every door returns a `Success` or a `Fault`; `HyperCast.optional(verdict)` folds `:empty`
+to `nil`. Beside the doors, `HyperCast.native_version` reads the loaded core's own version
+(`"major.minor.patch"`, from the library's `hypercast_version` export — the cheapest probe
+that the backend resolved at all, and the way to name a mismatch against
+`HyperCast::VERSION` before the first cast), and `HyperCast.available?` answers whether a
+backend loaded and exports that ABI at all — probed once, cached, never raising — for a
+consumer with a fallback of its own. (The doors keep raising their precise `LoadError` on an
+unavailable backend; `available?` only asks quietly.)
+
+### Fault spans index the String you passed
+
+A `Fault`'s `offset`/`length` are in the units `String#[]` slices by on your own input:
+character offsets for text — in any encoding; the core reads UTF-8, and the span is mapped
+back, an identity for ASCII — and byte offsets for a binary (`ASCII-8BIT`) String, whose
+characters are its bytes. Either way `text[offset, length]` is the offending text with no
+arithmetic on your side:
+
+```ruby
+HyperCast.i32("1€", HyperCast::NumFormat::INVARIANT)     # => Fault(reason: :malformed, offset: 1, length: 1)
+HyperCast.i32("1€".b, HyperCast::NumFormat::INVARIANT)   # => Fault(reason: :malformed, offset: 1, length: 3)
+```
+
+The mapping happens only on the failure path, so a `Success` never pays for it.
+
+### `decimal`: exact, never rounded
+
+`HyperCast::Decimal` is a `Data` of `magnitude` (an unbounded `Integer`, at most 2⁹⁶ − 1),
+`scale` (0–28: places the magnitude is shifted right) and `negative` — the shape .NET's
+`decimal` stores and `BigDecimal` builds from directly. No float is ever formed, so `"0.1"`
+is one tenth and `"50%"` is exactly `0.5`. The triple is canonical: exact trailing zeros in
+the fraction are always trimmed, so the scale is minimal — `"1.10"`, `"1.1"` and `"1.1000"`
+are all magnitude 11, scale 1, while `"100"` stays magnitude 100, scale 0 — and zero is
+scale 0 and never negative. Nothing but a zero is ever dropped: text carrying more precision
+than 96 bits and 28 places can hold is an `:out_of_range` `Fault`, not an approximation.
+
+```ruby
+value = HyperCast.decimal("-1,234.50", HyperCast::NumFormat::INVARIANT).value
+value.to_s   # => "-1234.5"  (the canonical text, every binding renders the same)
+value.to_r   # => (-2469/2)
+value.to_d   # => BigDecimal("-1234.5")
+```
+
+`to_d` requires the `bigdecimal` gem lazily on first call — a bundled gem since Ruby 3.4,
+deliberately not a dependency of this one, so under Bundler add it to your own Gemfile.
+
+### `NumFormat`: declared separators, and a declared currency
+
+```ruby
+HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",", flags: HyperCast::ALL_STYLES, currency: "$")
+```
+
+The flags are `GROUPING`, `PARENTHESES`, `EXPONENT`, `RADIX_PREFIXES`, `PERCENT` and
+`CURRENCY` (`ALL_STYLES` is all six), plus the `SEPARATOR_DETECT` policy. The currency
+symbol is the one field a culture table would fill in: it is declared, never looked up, and
+honored only while `CURRENCY` is set — once, leading (`$5`, `-$5`, `$ -5`) or trailing
+(`5 €`, `1.234,50 kr.`), with optional ASCII whitespace between symbol and digits, and
+accounting parentheses wrapping symbol and digits together (`($5)`). Declared with the
+flag off, the symbol is a `:malformed` `Fault` at the symbol; the flag with nothing declared
+(`currency: ""`, the default — `INVARIANT` and `DETECT` declare none) matches nothing. A
+symbol longer than 16 UTF-8 bytes, or carrying an ASCII digit or ASCII whitespace, is an
+`ArgumentError` at construction, the same caller-bug treatment equal separators get.
+
+```ruby
+dollars = HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",", flags: HyperCast::ALL_STYLES, currency: "$")
+HyperCast.i32("($1,234)", dollars)        # => Success(value: -1234)
+HyperCast.decimal("$1,234.50", dollars)   # => Success(value: Decimal(magnitude: 12345, scale: 1, negative: false))
+HyperCast.i32("$5", HyperCast::NumFormat::INVARIANT)   # => Fault(reason: :malformed, offset: 0, length: 1)
+```
+
+Across the ABI a `NumFormat` is a 32-byte struct — the two separators as code points, the
+flags, and the symbol's length and UTF-8 bytes held inline — packed once per format object
+and memoized by identity on every backend, so declaring a currency costs a cast nothing.
 
 ## Why not `Integer()` / `Time.iso8601` / `Float()`?
 
@@ -90,11 +181,12 @@ The Rust core also ships inside this gem as a `wasm32-wasip1` module
 inverse of ruby.wasm — not Ruby inside a wasm sandbox, but a wasm module inside Ruby — and
 it is the one backend that needs no shared library for the platform it runs on: no
 `dlopen`, no Magnus extension, nothing compiled against this Ruby's ABI. The Magnus
-extension replaces the twenty public doors in place; this backend replaces only the three
-private bodies underneath them (`plain`, `numeric`, `declared` — the whole native crossing),
-so every door, both verdict `Data` types, the Symbol tables and the `Time`/`DateTime`/
-`Rational` carriers are the exact code the other two backends run. `spec/wasm_backend_spec.rb`
-pins that the outputs agree with the Fiddle backend byte for byte.
+extension replaces every public door in place; this backend replaces only the four private
+bodies underneath them (`plain`, `numeric`, `declared`, `packed_version` — the whole native
+crossing), so every door, both verdict `Data` types, the Symbol tables and the
+`Time`/`DateTime`/`Rational`/`Decimal` carriers are the exact code the other two backends
+run. `spec/wasm_backend_spec.rb` pins that the outputs agree with the Fiddle backend byte for
+byte.
 
 `wasmtime` is deliberately **not** a dependency of this gem; a consumer who wants this path
 installs it:

@@ -13,6 +13,7 @@
 use std::cell::RefCell;
 use std::sync::OnceLock;
 
+use magnus::encoding::EncodingCapable;
 use magnus::rb_sys::{AsRawValue, FromRawValue};
 use magnus::scan_args::scan_args;
 use magnus::value::{Opaque, ReprValue};
@@ -29,6 +30,7 @@ struct Cached {
     fault: Opaque<Value>,
     date_class: Opaque<Value>,
     datetime_class: Opaque<Value>,
+    decimal_class: Opaque<Value>,
     invariant_raw: u64,
     detect_raw: u64,
     empty: Opaque<Symbol>,
@@ -59,6 +61,7 @@ fn build_cache(ruby: &Ruby, hypercast: RModule) -> Result<Cached, Error> {
         datetime_class: Opaque::from(
             ruby.class_object().funcall::<_, _, Value>("const_get", ("DateTime",))?,
         ),
+        decimal_class: Opaque::from(hypercast.const_get::<_, Value>("Decimal")?),
         invariant_raw: invariant.as_raw(),
         detect_raw: detect.as_raw(),
         empty: Opaque::from(ruby.to_symbol("empty")),
@@ -93,24 +96,56 @@ fn success(ruby: &Ruby, value: impl magnus::IntoValue) -> Result<Value, Error> {
         .funcall("new", (value.into_value_with(ruby),))
 }
 
-fn fault(ruby: &Ruby, failed: core::Fault) -> Result<Value, Error> {
+/// Builds the Fault over `text` — the UTF-8 the core read — with its span in the units
+/// `String#[]` slices by (see `character_span`).
+fn fault(ruby: &Ruby, text: RString, failed: core::Fault) -> Result<Value, Error> {
     let cache = cached();
     let reason = ruby.get_inner(match failed.reason {
         core::Reason::Empty => cache.empty,
         core::Reason::Malformed => cache.malformed,
         core::Reason::OutOfRange => cache.out_of_range,
     });
-    ruby.get_inner(cached().fault)
-        .funcall("new", (reason, failed.offset, failed.len))
+    let (offset, length) = character_span(text, failed.offset, failed.len);
+    ruby.get_inner(cached().fault).funcall("new", (reason, offset, length))
+}
+
+/// The core's byte span in the units `String#[]` slices by — the same rule as
+/// hypercast.rb's `characters`, through the routine Ruby itself uses to turn a byte
+/// position into a character position: an identity for a binary String and for 7-bit
+/// text (O(1) off the cached coderange), a character count otherwise. Failure path only.
+fn character_span(text: RString, offset: u32, len: u32) -> (i64, i64) {
+    let raw = text.as_raw();
+    // SAFETY: `text` is a live String; positions come from the core and never exceed its
+    // byte length (the fault-span invariant the core's own tests pin).
+    let start = unsafe { rb_sys::rb_str_sublen(raw, offset as std::ffi::c_long) };
+    let end = unsafe { rb_sys::rb_str_sublen(raw, (offset + len) as std::ffi::c_long) };
+    (start as i64, (end - start) as i64)
+}
+
+/// Presents the input as the UTF-8 the core reads — hypercast.rb's `utf8` rule: UTF-8,
+/// US-ASCII and binary cross as-is (one encoding-index read); any other encoding pays a
+/// transcode. Character offsets survive the transcode, so a fault span mapped on the
+/// UTF-8 form still indexes the caller's own String.
+fn utf8(ruby: &Ruby, text: RString) -> Result<RString, Error> {
+    let index = text.enc_get();
+    if index == ruby.utf8_encindex()
+        || index == ruby.usascii_encindex()
+        || index == ruby.ascii8bit_encindex()
+    {
+        Ok(text)
+    } else {
+        text.conv_enc(ruby.utf8_encoding())
+    }
 }
 
 fn verdict<T: magnus::IntoValue>(
     ruby: &Ruby,
+    text: RString,
     outcome: Result<T, core::Fault>,
 ) -> Result<Value, Error> {
     match outcome {
         Ok(value) => success(ruby, value),
-        Err(failed) => fault(ruby, failed),
+        Err(failed) => fault(ruby, text, failed),
     }
 }
 
@@ -139,7 +174,7 @@ fn anchor_format(ruby: &Ruby, format: Value) -> Result<(), Error> {
 }
 
 /// Resolves the declared format: INVARIANT and DETECT are identity-matched constants and
-/// cost a pointer compare; any other format costs three attribute reads the first time
+/// cost a pointer compare; any other format costs four attribute reads the first time
 /// this thread sees it and a pointer compare after that.
 fn resolve_format(ruby: &Ruby, format: Value) -> Result<core::NumFormat, Error> {
     let raw = format.as_raw();
@@ -159,6 +194,10 @@ fn resolve_format(ruby: &Ruby, format: Value) -> Result<core::NumFormat, Error> 
     let decimal: RString = format.funcall("decimal_sep", ())?;
     let group: RString = format.funcall("group_sep", ())?;
     let flags: u32 = format.funcall("flags", ())?;
+    // Copied out (once per format per thread — this is the memo's miss path): the symbol
+    // is re-validated against the core's own rule below, so a Ruby-side check that drifted
+    // would surface here as an ArgumentError rather than a silent contract violation.
+    let currency: String = format.funcall("currency", ())?;
     // The Data class validated single characters at construction; read each as a str
     // straight from the RString's bytes — no Ruby call happens inside either borrow.
     let first_char = |text: RString| -> Option<char> {
@@ -167,7 +206,20 @@ fn resolve_format(ruby: &Ruby, format: Value) -> Result<core::NumFormat, Error> 
     let (Some(decimal), Some(group)) = (first_char(decimal), first_char(group)) else {
         return Err(Error::new(ruby.exception_arg_error(), "separators must be single characters"));
     };
-    let resolved = core::NumFormat { decimal_sep: decimal, group_sep: group, flags };
+    let symbol = if currency.is_empty() {
+        core::CurrencySymbol::NONE
+    } else {
+        core::CurrencySymbol::new(&currency).ok_or_else(|| {
+            Error::new(
+                ruby.exception_arg_error(),
+                format!(
+                    "currency symbol {currency:?} must be at most {} UTF-8 bytes with no ASCII digit or whitespace",
+                    core::CurrencySymbol::MAX_BYTES
+                ),
+            )
+        })?
+    };
+    let resolved = core::NumFormat::new(decimal, group, flags).with_currency(symbol);
     anchor_format(ruby, format)?;
     LAST_FORMAT.with(|last| *last.borrow_mut() = Some((raw, resolved)));
     Ok(resolved)
@@ -180,14 +232,16 @@ fn with_bytes<T>(text: RString, parse: impl FnOnce(&[u8]) -> T) -> T {
 }
 
 fn bool_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
-    verdict(ruby, with_bytes(text, |bytes| core::cast_bool(bytes)))
+    let text = utf8(ruby, text)?;
+    verdict(ruby, text, with_bytes(text, |bytes| core::cast_bool(bytes)))
 }
 
 macro_rules! numeric_doors {
     ($($door:ident => $core:ident),+ $(,)?) => {$(
         fn $door(ruby: &Ruby, text: RString, format: Value) -> Result<Value, Error> {
+            let text = utf8(ruby, text)?;
             let resolved = resolve_format(ruby, format)?;
-            verdict(ruby, with_bytes(text, |bytes| core::$core(bytes, &resolved)))
+            verdict(ruby, text, with_bytes(text, |bytes| core::$core(bytes, &resolved)))
         }
     )+};
 }
@@ -205,7 +259,38 @@ numeric_doors! {
     f64_door => cast_f64,
 }
 
+/// The decimal door's value is the package's own `Decimal` Data (magnitude, scale,
+/// negative): the 96-bit magnitude becomes one Ruby Integer — a Fixnum while it fits,
+/// a Bignum past 2⁶⁴ — the scale a small Integer, and the sign a Boolean.
+fn decimal_door(ruby: &Ruby, text: RString, format: Value) -> Result<Value, Error> {
+    let text = utf8(ruby, text)?;
+    let resolved = resolve_format(ruby, format)?;
+    match with_bytes(text, |bytes| core::cast_decimal(bytes, &resolved)) {
+        Ok(decimal) => {
+            let class = ruby.get_inner(cached().decimal_class);
+            let magnitude = ruby.integer_from_u128(decimal.magnitude());
+            success(
+                ruby,
+                class.funcall::<_, _, Value>(
+                    "new",
+                    (magnitude, u32::from(decimal.scale), decimal.negative),
+                )?,
+            )
+        }
+        Err(failed) => fault(ruby, text, failed),
+    }
+}
+
+/// The loaded core's version as "major.minor.patch", unpacked from the same word the
+/// C-ABI `hypercast_version` export returns — here the core is linked in, so this is the
+/// version of the crate this very extension was compiled from.
+fn native_version() -> String {
+    let word = core::hypercast_version();
+    format!("{}.{}.{}", word >> 16, (word >> 8) & 0xFF, word & 0xFF)
+}
+
 fn uuid_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
+    let text = utf8(ruby, text)?;
     match with_bytes(text, |bytes| core::cast_uuid(bytes)) {
         Ok(bytes) => {
             let mut hyphenated = String::with_capacity(36);
@@ -218,7 +303,7 @@ fn uuid_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
             }
             success(ruby, hyphenated)
         }
-        Err(failed) => fault(ruby, failed),
+        Err(failed) => fault(ruby, text, failed),
     }
 }
 
@@ -232,13 +317,15 @@ fn utc_time(ruby: &Ruby, ts: core::Timestamp) -> Result<Value, Error> {
 }
 
 fn timestamp_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
+    let text = utf8(ruby, text)?;
     match with_bytes(text, |bytes| core::cast_timestamp(bytes)) {
         Ok(ts) => utc_time(ruby, ts),
-        Err(failed) => fault(ruby, failed),
+        Err(failed) => fault(ruby, text, failed),
     }
 }
 
 fn unix_door(ruby: &Ruby, text: RString, precision: Symbol) -> Result<Value, Error> {
+    let text = utf8(ruby, text)?;
     let precision = match lookup(&cached().precisions, precision) {
         Some(known) => known,
         None => match &*precision.name()? {
@@ -256,11 +343,12 @@ fn unix_door(ruby: &Ruby, text: RString, precision: Symbol) -> Result<Value, Err
     };
     match with_bytes(text, |bytes| core::cast_unix(bytes, precision)) {
         Ok(ts) => utc_time(ruby, ts),
-        Err(failed) => fault(ruby, failed),
+        Err(failed) => fault(ruby, text, failed),
     }
 }
 
 fn excel_serial_door(ruby: &Ruby, text: RString, epoch: Symbol) -> Result<Value, Error> {
+    let text = utf8(ruby, text)?;
     let epoch = match lookup(&cached().epochs, epoch) {
         Some(known) => known,
         None => match &*epoch.name()? {
@@ -276,7 +364,7 @@ fn excel_serial_door(ruby: &Ruby, text: RString, epoch: Symbol) -> Result<Value,
     };
     match with_bytes(text, |bytes| core::cast_excel_serial(bytes, epoch)) {
         Ok(ts) => utc_time(ruby, ts),
-        Err(failed) => fault(ruby, failed),
+        Err(failed) => fault(ruby, text, failed),
     }
 }
 
@@ -285,6 +373,7 @@ fn excel_serial_door(ruby: &Ruby, text: RString, epoch: Symbol) -> Result<Value,
 fn date_door(ruby: &Ruby, args: &[Value]) -> Result<Value, Error> {
     let args = scan_args::<(RString,), (Option<Symbol>,), (), (), (), ()>(args)?;
     let (text,) = args.required;
+    let text = utf8(ruby, text)?;
     let (order,) = args.optional;
     let verdict = match order {
         None => with_bytes(text, |bytes| core::cast_date(bytes)),
@@ -298,7 +387,7 @@ fn date_door(ruby: &Ruby, args: &[Value]) -> Result<Value, Error> {
             let class = ruby.get_inner(cached().date_class);
             success(ruby, class.funcall::<_, _, Value>("new", (date.year, date.month, date.day))?)
         }
-        Err(failed) => fault(ruby, failed),
+        Err(failed) => fault(ruby, text, failed),
     }
 }
 
@@ -319,6 +408,7 @@ fn resolve_order(ruby: &Ruby, order: Symbol) -> Result<core::DateOrder, Error> {
 }
 
 fn datetime_door(ruby: &Ruby, text: RString, order: Symbol) -> Result<Value, Error> {
+    let text = utf8(ruby, text)?;
     let order = resolve_order(ruby, order)?;
     match with_bytes(text, |bytes| core::cast_datetime(bytes, order)) {
         Ok(civil) => {
@@ -341,15 +431,17 @@ fn datetime_door(ruby: &Ruby, text: RString, order: Symbol) -> Result<Value, Err
                 )?,
             )
         }
-        Err(failed) => fault(ruby, failed),
+        Err(failed) => fault(ruby, text, failed),
     }
 }
 
 fn time_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
-    verdict(ruby, with_bytes(text, |bytes| core::cast_time(bytes)))
+    let text = utf8(ruby, text)?;
+    verdict(ruby, text, with_bytes(text, |bytes| core::cast_time(bytes)))
 }
 
 fn duration_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
+    let text = utf8(ruby, text)?;
     match with_bytes(text, |bytes| core::cast_duration(bytes)) {
         Ok(span) => {
             // Exact Rational seconds, no float anywhere: nanos.quo(1e9) + whole seconds.
@@ -361,7 +453,7 @@ fn duration_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
             let rational: Value = fraction.funcall("+", (span.seconds,))?;
             success(ruby, rational)
         }
-        Err(failed) => fault(ruby, failed),
+        Err(failed) => fault(ruby, text, failed),
     }
 }
 
@@ -382,6 +474,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     hypercast.define_singleton_method("u64", function!(u64_door, 2))?;
     hypercast.define_singleton_method("f32", function!(f32_door, 2))?;
     hypercast.define_singleton_method("f64", function!(f64_door, 2))?;
+    hypercast.define_singleton_method("decimal", function!(decimal_door, 2))?;
     hypercast.define_singleton_method("uuid", function!(uuid_door, 1))?;
     hypercast.define_singleton_method("timestamp", function!(timestamp_door, 1))?;
     hypercast.define_singleton_method("unix", function!(unix_door, 2))?;
@@ -390,5 +483,6 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     hypercast.define_singleton_method("datetime", function!(datetime_door, 2))?;
     hypercast.define_singleton_method("time", function!(time_door, 1))?;
     hypercast.define_singleton_method("duration", function!(duration_door, 1))?;
+    hypercast.define_singleton_method("native_version", function!(native_version, 0))?;
     Ok(())
 }

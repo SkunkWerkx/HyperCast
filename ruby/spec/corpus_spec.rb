@@ -1,6 +1,8 @@
 # Replays the shared conformance corpus (corpus/*.json at the repository root) — the same
-# files every other binding's suite replays — through this binding's doors. Fault spans are
-# byte offsets into the UTF-8 input, identical to Ruby String byte offsets here.
+# files every other binding's suite replays — through this binding's doors. The corpus pins
+# fault spans as byte offsets into the UTF-8 input; this binding presents them in the units
+# String#[] slices by (character offsets on text), so each pinned span is mapped through
+# `byteslice` before comparing — an identity on ASCII input, which is nearly all of it.
 
 require "json"
 require "spec_helper"
@@ -23,8 +25,10 @@ RSpec.describe "conformance corpus" do
     spec = vector["format"]
     return HyperCast::NumFormat::INVARIANT unless spec
 
+    # "currency" is optional in the corpus: absent means no symbol declared.
     HyperCast::NumFormat.new(
-      decimal_sep: spec["decimal_sep"], group_sep: spec["group_sep"], flags: spec["flags"]
+      decimal_sep: spec["decimal_sep"], group_sep: spec["group_sep"], flags: spec["flags"],
+      currency: spec.fetch("currency", "")
     )
   end
 
@@ -41,7 +45,8 @@ RSpec.describe "conformance corpus" do
                                  "#{domain}: #{input.inspect} expected #{expect_label} but faulted"
       expect(reason).to eq(EXPECTED_REASON[expect_label]), "#{domain}: #{input.inspect} -> #{reason}"
       if (span = vector["fault"])
-        expect([offset, length]).to eq(span), "#{domain}: #{input.inspect} fault span"
+        expected_span = [input.byteslice(0, span[0]).length, input.byteslice(span[0], span[1]).length]
+        expect([offset, length]).to eq(expected_span), "#{domain}: #{input.inspect} fault span"
       end
     end
   end
@@ -73,6 +78,22 @@ RSpec.describe "conformance corpus" do
       expected = [expected].pack("e").unpack1("e") if expected && door == :f32
       verdict = HyperCast.public_send(door, vector["input"], format_of(vector))
       assert_verdict("real", vector, verdict, expected)
+    end
+  end
+
+  it "replays decimal.json" do
+    corpus("decimal.json").each do |vector|
+      expected = if vector.key?("magnitude")
+                   HyperCast::Decimal.new(magnitude: Integer(vector["magnitude"]), scale: vector["scale"],
+                                          negative: vector["negative"])
+                 end
+      verdict = HyperCast.decimal(vector["input"], format_of(vector))
+      assert_verdict("decimal", vector, verdict, expected)
+      # The canonical text is pinned too: Decimal#to_s must render exactly what every
+      # other binding renders for the same triple.
+      if verdict in HyperCast::Success(value:)
+        expect(value.to_s).to eq(vector["value"]), "decimal: #{vector['input'].inspect} to_s"
+      end
     end
   end
 

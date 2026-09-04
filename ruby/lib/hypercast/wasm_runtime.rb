@@ -9,17 +9,17 @@ module HyperCast
   #
   # Same integration shape as the Magnus extension: on require (after hypercast.rb has
   # defined the pure-Fiddle module) this redefines methods **in place** on HyperCast — no
-  # delegation layer, no second surface. The Magnus extension replaces the twenty public
-  # doors; this file replaces only the three private bodies underneath them (`plain`,
-  # `numeric`, `declared` — the whole native crossing), so every door, every verdict type,
-  # `utf8`, `verdict`, `instant` and the Symbol tables stay the exact code the other two
-  # backends run, byte for byte.
+  # delegation layer, no second surface. The Magnus extension replaces every public door;
+  # this file replaces only the four private bodies underneath them (`plain`, `numeric`,
+  # `declared`, `packed_version` — the whole native crossing), so every door, every verdict
+  # type, `utf8`, `verdict`, `instant` and the Symbol tables stay the exact code the other
+  # two backends run, byte for byte.
   #
   # Two things differ from the native backends, both forced by the sandbox:
   #
   # * A wasm guest only sees its own linear memory, so no Fiddle::Pointer can cross. The
   #   input text is copied into a grow-only guest buffer, and the three out-params the doors
-  #   fill — the 16-byte out-value, the 8-byte fault span, the 12-byte NumFormat — are guest
+  #   fill — the 16-byte out-value, the 8-byte fault span, the 32-byte NumFormat — are guest
   #   allocations made once at load, all from the module's own exported `malloc` (the
   #   wasi-libc allocator Rust's std already uses on this target) and read back with
   #   `Memory#read`. Using the guest's allocator rather than a host-picked offset is
@@ -62,17 +62,23 @@ module HyperCast
         instance = linker.instantiate(store, mod)
 
         @memory = instance.export("memory").to_memory
-        @fn = (DOORS + %i[malloc free]).to_h { |name| [name, instance.export(name.to_s).to_func] }
+        @fn = (DOORS + [Runtime::VERSION_PROBE] + %i[malloc free]).to_h do |name|
+          export = instance.export(name.to_s) or
+            raise LoadError, "hypercast: #{path} does not export #{name} (a module older than this binding)"
+          [name, export.to_func]
+        end
+        # dlmalloc hands back 8-byte-aligned (in fact 16) blocks, which covers the
+        # decimal out-value's 8-byte alignment.
         @out = malloc(16)
         @fault = malloc(8)
-        @format = malloc(12)
+        @format = malloc(32)
         # Grow-only buffer for the input text, so a steady stream of ordinary scalars never
         # touches the guest allocator again.
         @in = 0
         @in_cap = 0
         # The format currently written at @format, memoized by identity: formats are reused
         # constants in practice, and NumFormat is a frozen Data, so one `equal?` skips the
-        # 12-byte write on the overwhelming majority of numeric calls. The Instance holds
+        # 32-byte write on the overwhelming majority of numeric calls. The Instance holds
         # the format it memoized, so the key can never be a recycled object.
         @last_format = nil
       end
@@ -129,14 +135,14 @@ module HyperCast
   class << self
     private
 
-    # The three crossing bodies, redefined over the guest. Each reads the out-value back
-    # only on success and the fault span only on a failure code, so `verdict` sees exactly
-    # what the Fiddle path hands it.
+    # The four crossing bodies, redefined over the guest. Each door body reads the
+    # out-value back only on success and the fault span only on a failure code, so
+    # `verdict` sees exactly what the Fiddle path hands it.
     def plain(symbol, text, out_size)
       bytes = utf8(text)
       WasmRuntime.with_instance do |w|
         rc = w.fn(symbol).call(w.stage_input(bytes), bytes.bytesize, w.out, w.fault)
-        verdict(rc, rc.zero? ? nil : w.memory.read(w.fault, 8)) { yield(w.memory.read(w.out, out_size)) }
+        verdict(rc, rc.zero? ? nil : w.memory.read(w.fault, 8), bytes) { yield(w.memory.read(w.out, out_size)) }
       end
     end
 
@@ -144,7 +150,7 @@ module HyperCast
       bytes = utf8(text)
       WasmRuntime.with_instance do |w|
         rc = w.fn(symbol).call(w.stage_input(bytes), bytes.bytesize, w.stage_format(format), w.out, w.fault)
-        verdict(rc, rc.zero? ? nil : w.memory.read(w.fault, 8)) { yield(w.memory.read(w.out, out_size)) }
+        verdict(rc, rc.zero? ? nil : w.memory.read(w.fault, 8), bytes) { yield(w.memory.read(w.out, out_size)) }
       end
     end
 
@@ -152,8 +158,12 @@ module HyperCast
       bytes = utf8(text)
       WasmRuntime.with_instance do |w|
         rc = w.fn(symbol).call(w.stage_input(bytes), bytes.bytesize, code, w.out, w.fault)
-        verdict(rc, rc.zero? ? nil : w.memory.read(w.fault, 8)) { yield(w.memory.read(w.out, out_size)) }
+        verdict(rc, rc.zero? ? nil : w.memory.read(w.fault, 8), bytes) { yield(w.memory.read(w.out, out_size)) }
       end
+    end
+
+    def packed_version
+      WasmRuntime.with_instance { |w| w.fn(Runtime::VERSION_PROBE).call }
     end
   end
 end

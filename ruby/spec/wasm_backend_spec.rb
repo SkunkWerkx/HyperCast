@@ -60,6 +60,37 @@ RSpec.describe "wasm backend" do
     expect(fiddle_eval("HyperCast.uuid(#{text.inspect}).value")).to eq(HyperCast.uuid(text).value)
   end
 
+  it "agrees with the Fiddle backend on the decimal door and a declared currency" do
+    expression = 'HyperCast.decimal("($1,234.50)", HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",", ' \
+                 'flags: HyperCast::ALL_STYLES, currency: "$")).inspect'
+    wasm = HyperCast.decimal("($1,234.50)", HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",",
+                                                                     flags: HyperCast::ALL_STYLES, currency: "$"))
+    expect(wasm).to eq(HyperCast::Success.new(value: HyperCast::Decimal.new(magnitude: 12_345, scale: 1,
+                                                                            negative: true)))
+    expect(fiddle_eval(expression)).to eq(wasm.inspect)
+    big = "79228162514264337593543950335"
+    expect(fiddle_eval("HyperCast.decimal(#{big.inspect}, HyperCast::NumFormat::INVARIANT).value.magnitude"))
+      .to eq(HyperCast.decimal(big, HyperCast::NumFormat::INVARIANT).value.magnitude.to_s)
+  end
+
+  it "agrees with the Fiddle backend on the core's version and availability" do
+    expect(HyperCast.native_version).to eq(HyperCast::VERSION)
+    expect(fiddle_eval("HyperCast.native_version")).to eq(HyperCast.native_version)
+    expect(HyperCast.available?).to be(true)
+    expect(fiddle_eval("HyperCast.available?")).to eq("true")
+  end
+
+  it "agrees with the Fiddle backend on character and byte fault spans" do
+    expect(HyperCast.i32("1€", HyperCast::NumFormat::INVARIANT))
+      .to eq(HyperCast::Fault.new(reason: :malformed, offset: 1, length: 1))
+    expect(HyperCast.i32("1€".b, HyperCast::NumFormat::INVARIANT))
+      .to eq(HyperCast::Fault.new(reason: :malformed, offset: 1, length: 3))
+    expect(fiddle_eval('HyperCast.i32("1€", HyperCast::NumFormat::INVARIANT).inspect'))
+      .to eq(HyperCast.i32("1€", HyperCast::NumFormat::INVARIANT).inspect)
+    expect(fiddle_eval('HyperCast.i32("1€".b, HyperCast::NumFormat::INVARIANT).inspect'))
+      .to eq(HyperCast.i32("1€".b, HyperCast::NumFormat::INVARIANT).inspect)
+  end
+
   it "only ever grows the guest input buffer, and loses nothing across the regrowth" do
     padded = "#{' ' * 10_000}42#{' ' * 10_000}"
     invariant = HyperCast::NumFormat::INVARIANT
@@ -73,12 +104,16 @@ RSpec.describe "wasm backend" do
 
   it "memoizes the format by identity, not by value" do
     # Two distinct formats must each write their bytes: a stale one would silently parse
-    # under the wrong separators.
+    # under the wrong separators — or a stale currency symbol, which lives in the same
+    # 32-byte write.
     a = HyperCast::NumFormat.new(decimal_sep: ",", group_sep: ".", flags: HyperCast::ALL_STYLES)
     b = HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",", flags: HyperCast::ALL_STYLES)
+    c = HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",", flags: HyperCast::ALL_STYLES, currency: "€")
     expect(HyperCast.f64("1.234,5", a)).to eq(HyperCast::Success.new(value: 1234.5))
     expect(HyperCast.f64("1,234.5", b)).to eq(HyperCast::Success.new(value: 1234.5))
     expect(HyperCast.f64("1.234,5", a)).to eq(HyperCast::Success.new(value: 1234.5))
+    expect(HyperCast.f64("1,234.5 €", c)).to eq(HyperCast::Success.new(value: 1234.5))
+    expect(HyperCast.f64("1,234.5 €", b)).to be_a(HyperCast::Fault)
   end
 
   it "raises the package's own errors for caller bugs, never a verdict" do

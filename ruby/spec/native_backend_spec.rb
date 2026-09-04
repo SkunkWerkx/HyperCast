@@ -56,4 +56,36 @@ RSpec.describe "native backend" do
     text = "urn:uuid:01020304-0506-0708-090A-0B0C0D0E0F10"
     expect(fiddle_eval("HyperCast.uuid(#{text.inspect}).value")).to eq(HyperCast.uuid(text).value)
   end
+
+  it "agrees with the Fiddle backend on the decimal door and a declared currency" do
+    expression = 'HyperCast.decimal("($1,234.50)", HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",", ' \
+                 'flags: HyperCast::ALL_STYLES, currency: "$")).inspect'
+    native = HyperCast.decimal("($1,234.50)", HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",",
+                                                                       flags: HyperCast::ALL_STYLES, currency: "$"))
+    expect(native).to eq(HyperCast::Success.new(value: HyperCast::Decimal.new(magnitude: 12_345, scale: 1,
+                                                                              negative: true)))
+    expect(fiddle_eval(expression)).to eq(native.inspect)
+    # Past 2**64: the magnitude crosses as a Bignum on both backends.
+    big = "79228162514264337593543950335"
+    expect(fiddle_eval("HyperCast.decimal(#{big.inspect}, HyperCast::NumFormat::INVARIANT).value.magnitude"))
+      .to eq(HyperCast.decimal(big, HyperCast::NumFormat::INVARIANT).value.magnitude.to_s)
+  end
+
+  it "agrees with the Fiddle backend on the core's version and availability" do
+    expect(fiddle_eval("HyperCast.native_version")).to eq(HyperCast.native_version)
+    expect(fiddle_eval("HyperCast.available?")).to eq(HyperCast.available?.to_s)
+  end
+
+  it "agrees with the Fiddle backend on character and byte fault spans" do
+    expect(HyperCast.i32("1€", HyperCast::NumFormat::INVARIANT))
+      .to eq(HyperCast::Fault.new(reason: :malformed, offset: 1, length: 1))
+    expect(HyperCast.i32("1€".b, HyperCast::NumFormat::INVARIANT))
+      .to eq(HyperCast::Fault.new(reason: :malformed, offset: 1, length: 3))
+    expect(fiddle_eval('HyperCast.i32("1€", HyperCast::NumFormat::INVARIANT).inspect'))
+      .to eq(HyperCast.i32("1€", HyperCast::NumFormat::INVARIANT).inspect)
+    expect(fiddle_eval('HyperCast.i32("1€".b, HyperCast::NumFormat::INVARIANT).inspect'))
+      .to eq(HyperCast.i32("1€".b, HyperCast::NumFormat::INVARIANT).inspect)
+    expect(fiddle_eval('HyperCast.i32("1€x".encode(Encoding::UTF_16LE), HyperCast::NumFormat::INVARIANT).inspect'))
+      .to eq(HyperCast.i32("1€x".encode(Encoding::UTF_16LE), HyperCast::NumFormat::INVARIANT).inspect)
+  end
 end
