@@ -6,8 +6,21 @@ plugins {
     id("org.graalvm.buildtools.native") version "1.1.10"
 }
 
+repositories {
+    mavenCentral()
+}
+
 dependencies {
     implementation(rootProject)
+    // -Pwasm: the same smoke test with GraalWasm on the classpath and the binary run with
+    // -Dhypercast.backend=wasm, so the wasm path is proven under Native Image too — the
+    // library's own reachability-metadata.json (the WasmBackend reflection entry, the
+    // native/*/* resource glob) is what has to carry it, exactly as for the FFM path.
+    // Off by default: the plain run keeps proving the FFM path with nothing extra linked in.
+    if (project.hasProperty("wasm")) {
+        runtimeOnly("org.graalvm.polyglot:polyglot:25.3.4.1")
+        runtimeOnly("org.graalvm.polyglot:wasm:25.3.4.1")
+    }
 }
 
 application {
@@ -26,6 +39,9 @@ graalvmNative {
             // report so a failed reachability/linking analysis is diagnosable.
             buildArgs.add("--enable-native-access=ALL-UNNAMED")
             buildArgs.add("-H:+ReportExceptionStackTraces")
+            if (project.hasProperty("wasm")) {
+                runtimeArgs.add("-Dhypercast.backend=wasm")
+            }
             // Deliberately NO `resources { includedPatterns.add("native/.*") }` here.
             //
             // Native Image doesn't embed classpath resources by default, so without that

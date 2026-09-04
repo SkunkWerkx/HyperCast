@@ -10,14 +10,17 @@ composition, but the doors never panic on input; a panic here means a caller bug
 data.**
 
 Allocation-lean scalar casts — booleans, the full integer family, reals, UUIDs, temporals —
-calling directly into the native `libhypercast` Rust core. Two backends, chosen
+calling directly into the native `libhypercast` Rust core. Two native backends, chosen
 automatically by build tag, same public API either way: real cgo on darwin/linux
 (`backend_cgo.go`) — 3.5-4.8x faster per call, see Benchmarks — and
 [purego](https://github.com/ebitengine/purego) (`backend_purego.go`) — dlopen/dlsym plus
 per-arch call trampolines, no cgo and no C compiler required — everywhere else, including
 Windows unconditionally and any darwin/linux build with `CGO_ENABLED=0` (which, per Go's
 own defaults, includes every cross-compile). Bundles a native build for every supported
-platform via `go:embed` and picks the right one at runtime.
+platform via `go:embed` and picks the right one at runtime. A third backend, opt-in behind
+`-tags hypercast_wasm`, runs the same core as a WebAssembly module inside the process
+through wasmtime-go instead of dlopen'ing anything — see
+[WebAssembly (wasmtime-go)](#webassembly-wasmtime-go).
 
 ```go
 import "github.com/SkunkWerkx/HyperCast/go"
@@ -49,8 +52,8 @@ rather than silently wrapping.
    parentheses, declared separators, radix prefixes, all five .NET `Guid` text forms plus
    `urn:uuid:` prefixes, protobuf JSON durations.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other
-   binding, held by the shared corpus (22 tests green on both backends, full twelve-file
-   corpus replay).
+   binding, held by the shared corpus (the whole suite green on all three backends, full
+   twelve-file corpus replay).
 
 **The honest trade-off, stated as plainly as the wins elsewhere: every Go door loses
 per-call to Go's stdlib.** Go's parsers are simply excellent (`time.Parse(RFC3339Nano)` at
@@ -96,6 +99,72 @@ every cross-compile automatically. One caveat inherited with cgo-by-default: a *
 darwin/linux build on a machine with no C compiler at all (distroless-style container,
 macOS without Xcode CLT) now fails to build — `CGO_ENABLED=0 go build ./...` forces the
 purego fallback anywhere.
+
+## WebAssembly (wasmtime-go)
+
+The root README's WebAssembly table lists Go as a **structural** blocker, and that row is
+still true: it is about compiling *this module* to wasm, and neither `cgo` nor `purego`
+has a wasm target. This section is the inverse direction — the Rust core compiled to
+`wasm32-wasip1` and run *inside* an ordinary Go process by
+[wasmtime-go](https://github.com/bytecodealliance/wasmtime-go), with no native shared
+library dlopen'd at all. Same public API, same suite, third backend:
+
+```shell
+go build -tags hypercast_wasm ./...
+go test  -tags hypercast_wasm ./...
+```
+
+`backend_wasmtime.go` is gated on the `hypercast_wasm` tag and the other two backends
+are gated on its absence, so exactly one is ever compiled in. It is opt-in only — never
+selected automatically — because it is the right answer to two specific questions and a
+worse answer to every other one:
+
+- **A platform this module ships no native build for.** The embedded
+  `native/wasm32-wasip1/hypercast.wasm` is one artifact for every OS and architecture
+  wasmtime itself runs on; `currentTarget()` and the per-RID shared libraries are not
+  consulted.
+- **A deployment that must not write an executable to a temp file.** The native backends
+  have to (see `native_extract.go`); this one instantiates the module straight from the
+  embedded bytes.
+
+Two costs, stated plainly:
+
+**It is cgo throughout.** wasmtime-go links wasmtime's precompiled static library through
+its C API, so a build with this tag needs a working C toolchain on every platform,
+Windows included — which is exactly the story `backend_purego.go` exists to avoid (see
+"cgo on darwin/linux, purego everywhere else" above). It is also a `require` in
+`go.mod` regardless of tag, because Go has no tag-conditional requirements; it lands in
+every consumer's module graph and `go.sum`, and compiles into a binary only with the tag.
+
+**Every call crosses into a wasm guest, serialized under a mutex.** A wasmtime `Store`
+is not safe for concurrent use, so one process-wide instance takes a lock per call. A
+wasm guest sees only its own linear memory, so nothing is handed over by pointer either:
+the input is copied into a grow-only guest buffer, the out-value, fault span and
+`NumFormat` live in guest allocations made once at load — all from the module's own
+exported `malloc`, never a host-picked offset, because dlmalloc claims the tail of the
+initial memory on first use and HyperUuid observed a buffer written there corrupted by the
+guest's next allocation — and the verdict is copied back out. The by-value `result` the
+doors read is the same one the cgo shims return, so `cast.go` does not know which backend
+it got.
+
+Measured on linux-arm64 (WSL2, go1.27), `go test -bench=BenchmarkCast -benchmem` with and
+without the tag, same session:
+
+| Door | cgo | wasmtime-go |
+| --- | ---: | ---: |
+| `Bool` | 82 ns, 0 allocs | 3.4 µs, 14 allocs |
+| `I32` | 84 ns, 0 allocs | 3.4 µs, 16 allocs |
+| `F64` | 105 ns, 0 allocs | 3.7 µs, 16 allocs |
+| `Uuid` | 99 ns, 0 allocs | 3.5 µs, 14 allocs |
+| `Timestamp` | 101 ns, 0 allocs | 3.8 µs, 14 allocs |
+| `DateTime` (`1/7/2026 3:04 PM`) | 110 ns, 0 allocs | 3.4 µs, 15 allocs |
+| `Span` (ISO) | 119 ns, 0 allocs | 3.6 µs, 14 allocs |
+
+Roughly 35x the native crossing per door, and the allocations are wasmtime-go's own
+per-call argument boxing, not this module's. Unlike HyperUuid, there is no batch door here
+to amortize that behind — a per-cell workload pays it per cell — which is exactly the shape
+round three's chunk layer exists to change. Until then this backend is a portability answer,
+not a performance one.
 
 ## Verifying build provenance
 

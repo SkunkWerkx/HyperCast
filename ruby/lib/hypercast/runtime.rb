@@ -35,7 +35,29 @@ module HyperCast
         functions.fetch(symbol)
       end
 
+      # Whether this platform has a shared library for Fiddle to dlopen at all: a known RID
+      # and the file actually present — in this install, or in the in-repo cargo build the
+      # dev loop falls back to. Backend selection (hypercast.rb) asks this before falling
+      # back to the WebAssembly backend, which needs neither.
+      def fiddle_library_available?
+        !library_path.nil?
+      rescue NativePlatform::UnsupportedPlatformError
+        false
+      end
+
       private
+
+      # The shared library to dlopen: this install's native/{rid}/{lib}, or — the
+      # development loop — the in-repo cargo build, exactly what the other bindings' local
+      # staging does. Nil when neither exists.
+      def library_path
+        rid, lib_name = NativePlatform.rid_and_library_name
+        path = File.join(NATIVE_DIR, rid, lib_name)
+        return path if File.exist?(path)
+
+        repo_build = File.expand_path(File.join(__dir__, "../../../rust/target/release", lib_name))
+        File.exist?(repo_build) ? repo_build : nil
+      end
 
       # Loaded lazily and exactly once; the native library and its function pointers live
       # for the process's lifetime, same as every other binding (never dlclose'd). The
@@ -46,18 +68,12 @@ module HyperCast
       end
 
       def load_functions
-        rid, lib_name = NativePlatform.rid_and_library_name
-        path = File.join(NATIVE_DIR, rid, lib_name)
-        unless File.exist?(path)
-          # Development loop: fall back to the in-repo cargo build, exactly what the other
-          # bindings' local staging does.
-          repo_build = File.expand_path(File.join(__dir__, "../../../rust/target/release", lib_name))
-          path = repo_build if File.exist?(repo_build)
-        end
-        unless File.exist?(path)
+        path = library_path
+        if path.nil?
+          rid, lib_name = NativePlatform.rid_and_library_name
           raise LoadError,
-                "hypercast: #{path} not found (unsupported platform, or this gem was built " \
-                "without a native library for it)"
+                "hypercast: #{File.join(NATIVE_DIR, rid, lib_name)} not found (unsupported " \
+                "platform, or this gem was built without a native library for it)"
         end
 
         handle = Fiddle.dlopen(path)

@@ -39,8 +39,9 @@ parses is truncated on the way out — full nanosecond precision, end to end.
 2. **The vocabulary untrusted sources actually send** — twenty boolean lexemes, accounting
    parentheses, radix prefixes, all five .NET `Guid` text forms, protobuf JSON durations.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
-   held by the shared corpus (all 31 tests green, full twelve-file corpus replay through real
-   FFM downcalls with byte-exact fault spans).
+   held by the shared corpus (the whole suite green, full twelve-file corpus replay through
+   real FFM downcalls with byte-exact fault spans — and a second time through the GraalWasm
+   backend, on every build).
 4. **Faster where it matters, and the input no longer copies.** JMH, full-length — 2 forks,
    5 warmup + 10 measurement iterations, 20 samples per row, `-prof gc` for the allocation
    column (linux-arm64, JDK 25). Reproduce: `./gradlew :benchmarks:jmh` — which now runs
@@ -102,7 +103,8 @@ reasonable choice.
 ## AOT
 
 The GraalVM Native Image smoke test (`./gradlew :aot-smoke-test:nativeRun`) builds and
-runs every door plus the exhaustive union switch as a true native binary. Native Image needs two separate registrations
+runs every door plus the exhaustive union switch as a true native binary; `-Pwasm` does the
+same through the GraalWasm backend (see [WebAssembly](#webassembly-graalwasm)). Native Image needs two separate registrations
 and the jar ships both in its `reachability-metadata.json` under
 `META-INF/native-image/io.github.skunkwerkx/hypercast/`, so a consumer inherits them with no
 configuration: the FFM downcall *signatures* (reachability is per-signature, not per-function
@@ -116,6 +118,86 @@ found". The in-repo smoke test was green throughout, because it declared the glo
 build file — so it proved only that *this repo* could be configured to work. That override is
 gone now; the test passes on the packaged metadata alone, which is the only thing that
 actually proves a consumer is fine.
+
+## WebAssembly (GraalWasm)
+
+The jar carries the Rust core a second time, as `native/wasm32-wasip1/hypercast.wasm` — the
+exact same twenty `cast_*` C exports, compiled for WASI preview 1 instead of an OS.
+[GraalWasm](https://www.graalvm.org/webassembly/) runs that module inside the JVM, so `Cast`
+has a second interop path that needs no platform-specific binary and no FFM downcall: the
+polyglot API calls the exports, the input is copied into a guest buffer, and the guest's own
+exported `malloc` supplies the out-value, fault-span and `NumFormat` buffers the core fills.
+The seam is one level below the verdict (`Backend`): the wasm class performs the crossing and
+fills the same per-thread scratch segments the native call would, and everything above it —
+every door, every reader, every exception and message — is one implementation for both paths.
+The full test suite runs twice on every build (`./gradlew test testWasm`), corpus replay
+included, once through each.
+
+This is not the Java binding compiled *to* WebAssembly (the root README's WebAssembly table
+still says why that path is blocked). It is the opposite direction: the Rust core running
+*as* WebAssembly inside an ordinary JVM.
+
+**Enabling it.** GraalWasm is deliberately not a dependency of this jar — its POM lists
+nothing, so the default FFM path pulls in nothing extra. Add the two artifacts yourself
+(`wasm` is a POM-type dependency that fans out into the Truffle runtime):
+
+```kotlin
+dependencies {
+    implementation("io.github.skunkwerkx:hypercast:<version>")
+    implementation("org.graalvm.polyglot:polyglot:25.3.4.1")
+    runtimeOnly("org.graalvm.polyglot:wasm:25.3.4.1")
+}
+```
+
+Then either set `-Dhypercast.backend=wasm` to force it, or do nothing: with the property
+unset, `Cast` takes the FFM path when the jar has a native build for the running OS/arch and
+falls back to the wasm module when it does not. `-Dhypercast.backend=native` forces FFM and
+fails loudly on a platform without a bundled library. `Cast.backend()` reports `"native"` or
+`"wasm"` for whichever won. Selecting wasm without GraalWasm on the classpath fails at class
+init with a message naming the two artifacts; the `org.graalvm.polyglot` classes are never
+loaded otherwise.
+
+**What it costs**, measured with the JMH suite on this repo's linux-arm64 box (WSL2), same
+session, three ways: the FFM downcall (`./gradlew :benchmarks:jmh`; GraalVM CE 25.3 and
+Temurin 25 agree within noise on that row), then the wasm path (`-Pwasm`) on a GraalVM JDK,
+where Truffle JIT-compiles the guest, and on a stock Temurin 25, where it cannot:
+
+| Door | FFM downcall | GraalWasm, GraalVM CE 25.3 (JIT) | GraalWasm, Temurin 25 (interpreter) |
+| --- | ---: | ---: | ---: |
+| `bool` | 18 ns, 40 B | 174 ns, 488 B | 1.9 µs, 2.6 KB |
+| `uuid` | 37 ns, 104 B | 384 ns, 928 B | 6.5 µs, 4.0 KB |
+| `f64` | 50 ns, 72 B | 230 ns, 544 B | 7.3 µs, 4.4 KB |
+| `timestamp` | 60 ns, 88 B | 354 ns, 936 B | 8.5 µs, 6.1 KB |
+| `dateTime` (`1/7/2026 3:04 PM`) | 65 ns, 120 B | 243 ns, 552 B | 10.7 µs, 8.0 KB |
+| `i32` (grouped) | 66 ns, 64 B | 237 ns, 480 B | 20.1 µs, 12.0 KB |
+| `duration` (ISO) | 61 ns, 72 B | 297 ns, 632 B | 17.3 µs, 11.8 KB |
+
+Two things those rows say plainly. Under GraalVM's JIT the wasm path costs 4-10x the
+downcall — the polyglot crossing, the input copy and the lock, with the parse itself
+invisible behind them — and the JIT column needed a longer warmup than the FFM suite runs
+(`-Pwasm` raises it), because the first seconds measure Truffle compiling the guest rather
+than the door. On a stock OpenJDK, GraalWasm has no JIT: the engine prints a fallback-runtime
+warning at startup (`-Dpolyglot.engine.WarnInterpreterOnly=false` silences it) and runs the
+module interpreted, so the cost scales with how much wasm the parse executes — a two-lexeme
+boolean is 100x the downcall, a grouped integer 300x — and the kilobytes per call are the
+interpreter's, not this binding's. Nothing in this jar can change which of those a consumer
+gets. Unlike HyperUuid there is no batch door to amortize the crossing behind; that is round
+three's chunk layer.
+
+**Threading.** A polyglot context does not allow concurrent access from multiple threads, so
+every call on the wasm path is serialized on one lock; one context and one module instance
+serve the whole process. The FFM path has no lock. A hot, multi-threaded caster should
+expect that difference, not just the per-call one.
+
+**Native Image.** The bundled `reachability-metadata.json` registers `WasmBackend`'s
+constructor for reflection and the `native/*/*` resource glob already covers the module, so a
+consumer's `native-image` build of the wasm path needs no extra configuration on this jar's
+account — proven the same way the FFM path is: `./gradlew :aot-smoke-test:nativeRun -Pwasm`
+puts GraalWasm on the smoke test's classpath and runs the binary with
+`-Dhypercast.backend=wasm`, and every door plus the union switch passes with the binary
+reporting `backend: wasm`. The same test without the property builds the FFM-only binary
+(16.5 MiB against 50.4 MiB with the Truffle runtime linked in) and reports `backend:
+native`.
 
 ## Verifying provenance
 

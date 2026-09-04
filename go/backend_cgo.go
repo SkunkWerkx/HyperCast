@@ -1,4 +1,4 @@
-//go:build cgo && (darwin || linux)
+//go:build cgo && (darwin || linux) && !hypercast_wasm
 
 // The cgo backend — HyperUuid's measured lesson applied from day one: purego's per-call
 // trampoline allocations would eat scalar parsing alive (on its purego backend, HyperUuid's

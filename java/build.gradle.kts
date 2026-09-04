@@ -21,7 +21,18 @@ repositories {
     mavenCentral()
 }
 
+// GraalWasm, the wasm backend's runtime, is deliberately compileOnly: this jar's POM carries no
+// dependency on it, so a consumer on the default FFM path downloads nothing extra. Opting into
+// the wasm path means adding both artifacts (polyglot for the API, wasm for the engine — a
+// POM-type dependency that fans out into Truffle) to their own build; see README.md's
+// WebAssembly section. Tests get both on the runtime classpath so the whole suite can run a
+// second time through the wasm module (the testWasm task below).
+val graalPolyglotVersion = "25.3.4.1"
+
 dependencies {
+    compileOnly("org.graalvm.polyglot:polyglot:$graalPolyglotVersion")
+    testRuntimeOnly("org.graalvm.polyglot:polyglot:$graalPolyglotVersion")
+    testRuntimeOnly("org.graalvm.polyglot:wasm:$graalPolyglotVersion")
     testImplementation(platform("org.junit:junit-bom:6.1.3"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testImplementation("com.google.code.gson:gson:2.11.0")
@@ -42,18 +53,41 @@ val nativeRid = run {
     }
 }
 
-val stageNativeLibrary = tasks.register<Copy>("stageNativeLibrary") {
-    // Only when this platform's library has NOT been placed under src/main/resources
-    // explicitly. The forge builds the PyO3 extension (cargo build --features python) into
-    // the same rust/target/release/ BEFORE the Java leg runs, so staging from there in CI
-    // put an extension with unresolved Py* imports beside the correctly placed one and the
-    // suite failed at native load. Explicit placement is the signal that the right bytes
-    // are already on the classpath.
-    onlyIf { !file("src/main/resources/native/$nativeRid").exists() }
+// Only when this platform's library has NOT been placed under src/main/resources
+// explicitly. The forge builds the PyO3 extension (cargo build --features python) into the
+// same rust/target/release/ BEFORE the Java leg runs, so staging from there in CI put an
+// extension with unresolved Py* imports beside the correctly placed one and the suite
+// failed at native load. Explicit placement is the signal that the right bytes are already
+// on the classpath.
+//
+// A Sync that stages nothing, rather than a Copy that is skipped: a skipped task leaves
+// whatever it staged last time in generated-resources, and the moment a library is placed
+// explicitly on top of that, processResources fails on the duplicate entry (found by
+// staging, then placing, in one working tree). Sync removes what it did not stage.
+val nativePlaced = file("src/main/resources/native/$nativeRid").exists()
+val stageNativeLibrary = tasks.register<Sync>("stageNativeLibrary") {
     from("../rust/target/release") {
         include("libhypercast.so", "libhypercast.dylib", "hypercast.dll")
+        if (nativePlaced) {
+            exclude("**")
+        }
     }
     into(layout.buildDirectory.dir("generated-resources/native/$nativeRid"))
+}
+
+// The same dev loop for the wasm32-wasip1 module the GraalWasm backend runs: a
+// `cargo build --release --target wasm32-wasip1` in ../rust (from inside rust/, so its
+// .cargo/config.toml export flags apply) lands at /native/wasm32-wasip1/hypercast.wasm on
+// the classpath, beside the platform library. Same explicit-placement yield as above.
+val wasmPlaced = file("src/main/resources/native/wasm32-wasip1").exists()
+val stageWasmModule = tasks.register<Sync>("stageWasmModule") {
+    from("../rust/target/wasm32-wasip1/release") {
+        include("hypercast.wasm")
+        if (wasmPlaced) {
+            exclude("**")
+        }
+    }
+    into(layout.buildDirectory.dir("generated-resources/native/wasm32-wasip1"))
 }
 
 sourceSets.main {
@@ -61,7 +95,7 @@ sourceSets.main {
 }
 
 tasks.processResources {
-    dependsOn(stageNativeLibrary)
+    dependsOn(stageNativeLibrary, stageWasmModule)
 }
 
 // sourcesJar packages the main source set, and `generated-resources` is one of its resource
@@ -75,7 +109,7 @@ tasks.processResources {
 // configuration and named() fails outright with "Task with name 'sourcesJar' not found".
 // configureEach is lazy and picks them up whenever they appear.
 tasks.withType<Jar>().configureEach {
-    dependsOn(stageNativeLibrary)
+    dependsOn(stageNativeLibrary, stageWasmModule)
 }
 
 // Ships the license text and this binding's README inside the jar, under META-INF/ (the
@@ -95,6 +129,27 @@ tasks.test {
     // Cast's FFM downcalls are a "restricted method" — silences the runtime warning today
     // and avoids them being blocked outright in a future JDK.
     jvmArgs("--enable-native-access=ALL-UNNAMED")
+}
+
+// The identical suite, forced through the GraalWasm backend (-Dhypercast.backend=wasm), so
+// both interop paths are held to the same assertions — the full corpus replay included — on
+// every build. --enable-native-access is for Truffle's own System.load, not this binding;
+// WarnInterpreterOnly=false silences the engine's fallback-runtime notice on a non-GraalVM
+// JDK, which is what CI and most dev boxes run — the numbers in README.md say what that
+// fallback costs, this just keeps the test log readable.
+val testWasm = tasks.register<Test>("testWasm") {
+    description = "Runs the test suite against the bundled wasm32-wasip1 module via GraalWasm."
+    group = "verification"
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = sourceSets.test.get().runtimeClasspath
+    useJUnitPlatform()
+    jvmArgs("--enable-native-access=ALL-UNNAMED", "-Dpolyglot.engine.WarnInterpreterOnly=false")
+    systemProperty("hypercast.backend", "wasm")
+    shouldRunAfter(tasks.test)
+}
+
+tasks.check {
+    dependsOn(testWasm)
 }
 
 java {

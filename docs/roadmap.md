@@ -13,15 +13,18 @@ Requirements that hold across every round, stated up front so no layer designs t
   `java/aot-smoke-test`); HyperCast inherits them as a requirement, not an aspiration —
   every layer, the tabular one included.
 - **The scalar core and its bindings must ride alongside HyperUuid's wasm train.** The
-  same three proven shapes: the Rust core under `wasm32-wasip1`, C# via Blazor's
-  `NativeFileReference` static linking, Python via an Emscripten side module in Pyodide.
-  HyperCast's core is strictly easier freight than HyperUuid's here — pure computation
-  over caller bytes, zero dependencies, no WASI clock or randomness imports at all — and
-  the core leg is already proven, not projected: the full test suite (51 unit + the
-  counting-allocator proof + all 12 corpus replays + both fault-span invariant sweeps —
-  66 tests) passes under `wasmtime` on `wasm32-wasip1` today
+  same proven shapes: the Rust core under `wasm32-wasip1`, C# via Blazor's
+  `NativeFileReference` static linking, and the core running as a `wasm32-wasip1` module
+  *inside* the Java, Ruby, Python and Go processes through an engine each ecosystem already
+  has (GraalWasm, wasmtime). HyperCast's core is strictly easier freight than HyperUuid's
+  here — pure computation over caller bytes, zero dependencies, no WASI clock or randomness
+  imports at all — and both legs are proven, not projected: the full test suite (51 unit +
+  the counting-allocator proof + all 12 corpus replays + both fault-span invariant sweeps —
+  66 tests) passes under `wasmtime` on `wasm32-wasip1`
   (`CARGO_TARGET_WASM32_WASIP1_RUNNER="wasmtime --dir <repo>" cargo test --target
-  wasm32-wasip1`; the preopen is only so the conformance test can read `corpus/`).
+  wasm32-wasip1`; the preopen is only so the conformance test can read `corpus/`), and the
+  four in-process backends run their bindings' whole suites, corpus replay included, a
+  second time on every CI leg (see the root README's WebAssembly section).
 - **The tabular layer is server domain.** CSV/TSV/XLSX ingestion must be AOT-clean like
   everything else, but wasm is explicitly out of scope at that layer — no design
   contortions to keep zip/XML streaming sandbox-friendly.

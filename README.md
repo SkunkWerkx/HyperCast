@@ -55,7 +55,7 @@ Culture never lives in the core: numeric doors take a caller-declared format (se
   Three of the four bugs this project has shipped were found exactly there, in the gap between those two claims, and none of them could fail a build in this repo. v0.0.1's first tag landed four of five registries: Maven died in *our* Gradle config, where `sourcesJar` read `stageNativeLibrary`'s output without declaring the dependency — invisible to CI, which never builds a sources jar. Then v0.0.1's published artifacts turned out to be broken in two ways for AOT and wasm consumers specifically (see the Java AOT and WebAssembly notes below), which v0.0.2 fixes. The recovery protocol — gate the registries that accepted a version, fix the one that didn't, retag — is written into `release.yml`'s header, because a version is only ever burned where it was actually accepted.
 - **Fast paths pay for the lenience** — plain-shaped input takes allocation-free fast lanes; only text that actually uses the forgiveness pays for it. Measured with criterion against Rust's own best-in-class (linux-arm64): `cast_uuid` 15.8 ns against the `uuid` crate's 11.8 ns, `cast_i64` 15.5 vs 9.7 ns `str::parse`, `cast_timestamp` 30.3 vs 21.9 ns `time`. In-process against Rust's own parsers these doors trade raw speed for what they *return* (a verdict with a span) and what they *accept*; the speed story belongs to the bindings, where the competition is culture machinery. **Correction on the record:** an earlier version of this line claimed the UUID door beat the `uuid` crate (15.4 vs 17.4 ns). Our number didn't move; `uuid` 1.26 got faster. Receipts get re-run, and this one changed.
 - **Fuzzed, and it found real bugs** — a `cargo-fuzz` target (`rust/fuzz/`) drives all 20 doors under six format profiles and every declared order/precision/epoch, asserting two invariants every binding silently relies on: a door never panics on any byte sequence, and every fault span stays inside the caller's buffer (`offset + len <= input.len()`, which bindings slice with). It caught two real classes within a minute — truncation faults pointing one byte past the input, and `char_len` spans overrunning on text ending mid-UTF-8-character — both since fixed structurally and pinned by `rust/tests/fault_span_invariant.rs` (every corpus input truncated at every byte boundary, through every door) so they fail plain `cargo test`. The following 550M-execution session found nothing.
-- **WASM, already, for the core** — the full Rust test suite (51 unit + the allocation proof + all twelve corpus replays + the fault-span invariant sweeps — 66 tests) passes under `wasmtime` on `wasm32-wasip1`. No clock, no randomness, no dependencies: strictly easier freight than HyperUuid, whose wasm train this rides.
+- **WASM, for the core and for four of the bindings** — the full Rust test suite (51 unit + the allocation proof + all twelve corpus replays + the fault-span invariant sweeps — 66 tests) passes under `wasmtime` on `wasm32-wasip1`. No clock, no randomness, no dependencies: strictly easier freight than HyperUuid, whose wasm train this rides. And the same `wasm32-wasip1` module now ships inside the jar, the gems and the wheels and is committed under `go/native/`, where GraalWasm (Java) and wasmtime (Ruby, Python, Go) run it in-process as a second backend behind each binding's existing switch — every one of those four suites, corpus replay included, runs a second time through it on every CI leg. See [WebAssembly](#webassembly).
 - **C# binding on .NET 11, union-native** — `Verdict<T>` is a real discriminated union: two case arms, no default, and a missing disposition is a **compile error** (CS8509 as error). 29 tests green including the full corpus replay; source-generated `LibraryImport` only, and the AOT smoke test publishes under `PublishAot` into a genuine native binary that runs every door — proven, not configured.
 - **C# vs. the BCL, first wave** — BenchmarkDotNet, `[MemoryDiagnoser]`, lenience matched where the BCL has the knob (`AllowThousands`, invariant culture, UTC styles), FFI crossing and UTF-16→UTF-8 transcode *included* in every HyperCast number. Measured on linux-arm64, .NET 11 preview (in-process toolchain — BDN doesn't know the net11 moniker yet); zero managed allocation on every row, both sides:
 
@@ -118,8 +118,9 @@ the signing workflow physically lives, not on which registry the artifact ended 
 artifacts signed directly inside this repo's own `release.yml` — the RubyGems gems, the PyPI
 wheels, and the published NuGet package — verify with plain `--repo SkunkWerkx/HyperCast`.
 Artifacts signed by a reusable workflow hosted in `SkunkWerkx/.github` — the crates.io crate,
-the Maven jar, the pre-push NuGet package, and every native library (which is the entire
-story for Go, Swift, and PHP, none of which has a package-level attestation of its own) —
+the Maven jar, the pre-push NuGet package, every native library (which is the entire
+story for Go, Swift, and PHP, none of which has a package-level attestation of its own), and
+the `wasm32-wasip1` module that rides inside the jar, the gems, the wheels and `go/native/` —
 need `--signer-repo SkunkWerkx/.github` added, or `--owner SkunkWerkx` in place of both
 flags. Get it wrong and `gh` reports a bare `verifying with issuer "sigstore.dev"`, which
 reads like a bad signature but is only an identity mismatch.
@@ -135,12 +136,81 @@ verify command and artifact: [Rust](rust/#verifying-provenance),
 [PHP](php/#verifying-provenance), [Swift](swift/#verifying-provenance),
 [Go](go/#verifying-build-provenance).
 
+## WebAssembly
+
+WebAssembly meets a binding in one of two directions, and they share nothing mechanically:
+
+- **The core runs as wasm inside the binding.** The process stays native. The Rust core
+  arrives as a `wasm32-wasip1` module, `hypercast.wasm`, and a wasm engine the ecosystem
+  already has runs it in-process: no `dlopen`, no per-platform binary, the same twenty
+  C-ABI exports. The engine is an optional dependency the consumer adds only if they want
+  this path.
+- **The binding is compiled to wasm.** The whole consumer app becomes a wasm module
+  (Blazor, a `wasm32` Rust crate) and the Rust core has to be linked into that build by the
+  ecosystem's own toolchain.
+
+Where each of the eight stands, today:
+
+| Binding | Core as wasm inside the binding | Binding compiled to wasm |
+| --- | --- | --- |
+| Rust | Not applicable: the crate *is* the core, and the wasip1 build of it is the module everyone else embeds. | **Yes.** The full suite (66 tests) passes under [wasmtime](https://wasmtime.dev/) on `wasm32-wasip1`; no clock, no entropy, nothing to stub. See [`rust/README.md`](rust/README.md#webassembly). |
+| C# | Not built. | **Packaged and linked, not yet run in a browser.** `dotnet add package HyperCast` into a Blazor WebAssembly project links the staticlib and exports all 20 doors through the shipped `.targets`; see [`csharp/README.md`](csharp/README.md#webassembly-blazor) and the aspirations below for what is still owed. |
+| Java | **Yes.** [GraalWasm](https://www.graalvm.org/webassembly/); `-Dhypercast.backend=wasm`, or automatic when the jar has no native build for the platform. | Blocked. No Java-to-wasm compiler supports the Foreign Function & Memory API this binding is built on: GraalVM's Web Image (`--tool:svm-wasm`) is labeled experimental and never lists it, and neither TeaVM nor CheerpJ has it. |
+| Ruby | **Yes.** [wasmtime gem](https://github.com/bytecodealliance/wasmtime-rb); `HYPERCAST_WASM=1`, or automatic when no native library exists for the platform. | Not tried. `ruby.wasm` has no runtime library search, so the Fiddle backend cannot work there; it does link C extensions statically at build time, and building a `ruby.wasm` with the Magnus extension linked in has not been attempted here. |
+| Python | **Yes.** [wasmtime-py](https://github.com/bytecodealliance/wasmtime-py) (`pip install hypercast[wasm]`); `HYPERCAST_WASM=1`, or automatic when the PyO3 extension fails to import. | Proven once, then removed. The core built as an Emscripten side module loaded through `ctypes.CDLL` in a real [Pyodide](https://pyodide.org/) session; that smoke test existed to justify the `ctypes` backend and went with it when PyO3 `abi3` wheels made the fallback unnecessary. |
+| Go | **Yes.** [wasmtime-go](https://github.com/bytecodealliance/wasmtime-go); `-tags hypercast_wasm`, opt-in only, never selected automatically. cgo throughout, so no win-arm64. | Blocked. `cgo` has no wasm target, `purego`'s supported-platform list has no wasm entry (its whole model is runtime `dlopen`), and `go:wasmimport`/`go:wasmexport` let a Go module talk to its host, not link a second module. |
+| Swift | Not built. No wasm engine ships as a Swift package with a stable API, so there is nothing to embed. | Blocked. swift.org ships official WASM SDKs since Swift 6.2, but its own docs say dynamic linking "is not formally specified for `wasip1` triples and tooling for it is not available yet," and no static path to a Rust `.a` is documented either. |
+| PHP | Not built. There is no maintained wasm engine PHP can embed. | Blocked. The maintained wasm PHP (WordPress Playground's `@php-wasm`) loads extensions at build time or startup only, and there is no indication the `FFI` extension this binding needs is available there at all. |
+
+The two directions are blocked, where they are blocked, for different reasons. Compiling a
+binding to wasm needs the ecosystem's toolchain to link a Rust static library into its own
+wasm build. .NET has a supported mechanism for exactly that (`NativeFileReference`, which this
+package's `.targets` injects for you); Swift, PHP and Go do not. Java's gap is different in
+kind: the loading mechanism is not the problem, the compilers that exist have no FFM. The
+in-process backends sidestep all of that rather than climb it, because the engine is the
+loader, and they are what a platform with no native build falls back to.
+
+### The in-process backends
+
+One artifact, `hypercast.wasm`, built from the same crate with wasi-libc's `malloc`/`free`
+exported (two linker flags in `rust/.cargo/config.toml`, no source change), ships beside the
+native libraries in the jar, the gems and the wheels, and is committed under `go/native/`
+like the rest of Go's binaries. CI builds it on every leg and runs the Java, Ruby, Python and
+Go suites a second time through it (Go on the non-Windows legs, since wasmtime-go has no
+win-arm64 build). Every number below was measured through the shipped binding on one
+linux-arm64 box (WSL2) in one session, native column beside it; each binding's README has
+the mechanics, the exact loop, and more doors.
+
+| Binding | Engine dependency | `i32`, one call | `timestamp`, one call | Native, same box |
+| --- | --- | ---: | ---: | --- |
+| Java | `org.graalvm.polyglot:wasm`, `compileOnly`, never in the POM | 237 ns (grouped) on GraalVM CE 25.3 (JIT); 20.1 µs on Temurin 25 (interpreter) | 354 ns (JIT); 8.5 µs (interpreter) | 66 ns / 60 ns |
+| Ruby | `wasmtime` gem, a Gemfile group for the suite, never a dependency of the gem | 2.65 µs | 3.10 µs | 555 ns / 769 ns (Magnus); 2.78 / 3.12 µs (Fiddle) |
+| Python | `wasmtime`, via the `[wasm]` extra | 6.4 µs | 7.7 µs | 139 ns / 423 ns |
+| Go | wasmtime-go, compiled in only under the tag | 3.4 µs | 3.8 µs | 84 ns / 101 ns |
+
+Three footnotes to those rows. On a stock JDK GraalWasm has no JIT and runs the module
+interpreted, with a startup warning, so its cost scales with how much wasm the parse
+executes; under GraalVM's JIT the same doors sit at 4-10x the FFM downcall, and the wasm path
+also survives a GraalVM Native Image build on the jar's own reachability metadata (the Java
+README has the receipts). Ruby's wasm backend lands at Fiddle parity door for door, which
+makes it a free fallback there. And unlike HyperUuid there is no batch door anywhere in this
+crate to amortize the crossing behind — a per-cell workload pays it per cell — so these
+backends are portability answers, not speed options, until round three's chunk layer crosses
+once per chunk.
+
+Two facts every one of those four shares, both learned the hard way in HyperUuid. The host
+must take its buffers from the guest's own allocator: a host-picked offset past the data
+segments looked free and was not, because dlmalloc claims the tail of the initial memory on
+first use, and the next allocation overwrote a buffer mid-way. And every call is serialized
+under a lock, because neither a GraalWasm `Context` nor a wasmtime `Store` is safe for
+concurrent use; the native backends stay lock-free.
+
 ## Aspirations — the queue that turns into receipts
 
 Stated the way this project states things: each of these becomes a measured table or a CI matrix row, or it gets cut. Details in [docs/roadmap.md](docs/roadmap.md).
 
 - **Per-binding benchmark passes for the rest of the roster** — Java's is done (the scratch-arena pass landed and the full-length JMH run replaced its directional table), and every new door now carries numbers. What's left is the same discipline applied to the remaining first-wave figures: no number enters this file from a rushed run, and re-runs get published even when they go the wrong way — see the `uuid`-crate correction above.
-- **The wasm leg beyond the core** — the packaging half is done and proven from a real consumer: a Blazor app that only adds a `PackageReference` links the staticlib and exports all 20 doors, via the `build/net11.0/HyperCast.targets` the package now ships. What's left is running that app in an actual browser session and reporting numbers from it; a successful `wasm-ld` link is not the same claim as working in a browser, and this project doesn't get to call it proven until it has been. Server-side bindings stay native; Pyodide left with the ctypes backend.
+- **The wasm leg beyond the core** — the packaging half is done and proven from a real consumer: a Blazor app that only adds a `PackageReference` links the staticlib and exports all 20 doors, via the `build/net11.0/HyperCast.targets` the package now ships. What's left is running that app in an actual browser session and reporting numbers from it; a successful `wasm-ld` link is not the same claim as working in a browser, and this project doesn't get to call it proven until it has been. The other direction — the core as wasm *inside* a native process — is built for Java, Ruby, Python and Go (see [WebAssembly](#webassembly)); Pyodide left with the ctypes backend.
 - **The payoff: tabular ingestion** — CSV/TSV/delimited and XLSX parsing *on top of* these doors, so the FFI boundary is crossed once per chunk instead of once per cell. A million-row, 20-column file is 20M scalar casts; per-cell that's real crossing overhead, per-chunk it rounds to zero while 15–35 ns doors run in a tight native loop. HyperUuid already measured this exact amortization at 19.6x on its batch API. Column buffers in, parallel verdict arrays out — the reason every fault is a span and never an allocation. Under way in three repositories of their own — [HyperTabular](https://github.com/SkunkWerkx/HyperTabular) (the contract), [HyperDelimited](https://github.com/SkunkWerkx/HyperDelimited), and [HyperWorkbook](https://github.com/SkunkWerkx/HyperWorkbook) — each with a Rust crate green against this core; bindings and the corpus are what remain.
 
 **Non-negotiables, every round:** full AOT in .NET and Java; wasm ride-along for the core and bindings; the tabular layer is server-domain (AOT yes, wasm out of scope there, by design).
@@ -151,11 +221,11 @@ Stated the way this project states things: each of these becomes a measured tabl
 corpus/     the shared conformance vectors — the cross-language contract
 rust/       the core: one cdylib, 20 cast_* exports, zero runtime dependencies
 csharp/     the .NET 11 binding: Verdict<T> union, LibraryImport, corpus replay, AOT smoke test
-java/       the JDK 22+ binding: sealed-interface union, FFM, corpus replay, Native Image smoke test
-python/     the 3.10+ binding: match/case verdicts, PyO3 native extension (abi3 wheels)
+java/       the JDK 22+ binding: sealed-interface union, FFM + GraalWasm backends, corpus replay, Native Image smoke test
+python/     the 3.10+ binding: match/case verdicts, PyO3 native extension (abi3 wheels) + wasmtime backend
 swift/      the SwiftPM binding: enum verdicts (mandatory-exhaustive switch) over dlopen
-go/         the Go binding: (value, *Fault) verdicts, cgo + purego dual backend
-ruby/       the 3.2+ binding: pattern-matched Data verdicts, Fiddle + Magnus dual backend
+go/         the Go binding: (value, *Fault) verdicts, cgo + purego + wasmtime-go backends
+ruby/       the 3.2+ binding: pattern-matched Data verdicts, Fiddle + Magnus + wasmtime backends
 php/        the 8.1+ binding: Success|Fault union types over ext-ffi
 docs/       roadmap and parked designs — where this goes, and what's deliberately not built yet
 ```

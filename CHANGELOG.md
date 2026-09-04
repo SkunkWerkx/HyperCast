@@ -7,6 +7,81 @@ entry marks which packages it actually affects.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+*One core, one more way in*, ported from HyperUuid 0.3.0: Java, Ruby, Python and Go can now
+run the Rust core as a `wasm32-wasip1` module inside the process, through a wasm engine the
+ecosystem already has, so a platform with no native build in the package still has a working
+backend and nothing has to be `dlopen`'d at all. No door changed its verdict on any input:
+the corpus replays byte-identical through every backend, native and wasm alike.
+
+### Added
+
+- **A wasm backend in Java, Ruby, Python and Go.** The core built as a `wasm32-wasip1`
+  module, `hypercast.wasm`, ships beside the native libraries in the jar, the gems and the
+  wheels, and is committed under `go/native/`; a wasm engine the ecosystem already has runs it
+  in-process, behind each binding's existing backend switch, with the engine an optional
+  dependency the consumer adds only if they want this path:
+  - **Java** — [GraalWasm](https://www.graalvm.org/webassembly/), `-Dhypercast.backend=wasm`,
+    or automatic when the jar has no native build for the platform. `org.graalvm.polyglot:wasm`
+    is `compileOnly` and never in the POM; `Cast.backend()` reports which path won. The seam is
+    one level below the verdict (`Backend`), so every reader, exception and message is one
+    implementation for both paths.
+  - **Ruby** — the [wasmtime](https://rubygems.org/gems/wasmtime) gem, `HYPERCAST_WASM=1`, or
+    automatic when no native library exists for the platform. It redefines only the three
+    private crossing bodies under the doors; `HyperCast::BACKEND` reports `:wasm`, and
+    `spec/wasm_backend_spec.rb` pins the outputs against Fiddle.
+  - **Python** — [wasmtime-py](https://github.com/bytecodealliance/wasmtime-py) via
+    `pip install hypercast[wasm]`, `HYPERCAST_WASM=1`, or automatic when the PyO3 extension
+    fails to import. `hypercast.BACKEND` reports `"wasm"` or `"native"`; the backend presents
+    the same `Success`/`Fault`/`NumFormat` types, and `tests/test_wasm_backend.py` pins it
+    against the extension.
+  - **Go** — [wasmtime-go](https://github.com/bytecodealliance/wasmtime-go) behind
+    `-tags hypercast_wasm`, opt-in only and never selected automatically; the tag compiles in
+    exactly one backend. cgo throughout, so no win-arm64 build.
+
+  Measured on one box (linux-arm64, WSL2), through each shipped binding, `i32` and `timestamp`
+  one call each: 237 (grouped) / 354 ns from Java under GraalVM CE 25.3's JIT and 20.1 / 8.5 µs
+  on a stock Temurin 25, where GraalWasm runs interpreted; 2.65 / 3.10 µs from Ruby — Fiddle
+  parity, door for door; 6.4 / 7.7 µs from Python; 3.4 / 3.8 µs from Go; against 66 / 60 ns,
+  555 / 769 ns (Magnus), 139 / 423 ns and 84 / 101 ns native. The Java wasm path also
+  survives a GraalVM Native Image build on the jar's own reachability metadata
+  (`./gradlew :aot-smoke-test:nativeRun -Pwasm`). Every call is serialized under a lock, because neither a GraalWasm
+  `Context` nor a wasmtime `Store` is safe for concurrent use; the native backends stay
+  lock-free. The module exports wasi-libc's `malloc`/`free` through two linker flags in
+  `rust/.cargo/config.toml`, because a host-picked offset into the guest's initial memory
+  collides with dlmalloc. CI builds the module on every leg and runs the four suites a second
+  time through it. *(Maven Central, RubyGems, PyPI, `go get`)*
+- **Backend-agreement specs in Ruby.** `spec/native_backend_spec.rb` compares Magnus against
+  Fiddle across a subprocess boundary, the contract the README already described and the
+  suite did not yet pin; `spec/wasm_backend_spec.rb` does the same for wasm. *(RubyGems)*
+- **The wasm module is attested like every native library.** `hypercast.wasm` carries the
+  same build-provenance attestation as the six native builds, signed by the reusable workflow
+  in `SkunkWerkx/.github`, and `stage-native-binaries.yml` refuses to commit it under
+  `go/native/` unless that attestation verifies. *(release machinery)*
+- **A wasm dev loop in every binding.** The Java build stages `rust/target/wasm32-wasip1/`
+  beside the native library, and the Ruby and Python backends fall back to the same in-repo
+  build when nothing is staged — the same shape the Fiddle runtime already had. *(dev only)*
+
+### Changed
+
+- **The allocation proof counts per thread.** `rust/tests/allocation_free.rs` moved from a
+  process-wide atomic to a `const`-initialised thread-local, so the test harness's own
+  allocations on its main thread — a join-handle map insert and a timeout push right after
+  `spawn` — can no longer race the claim on a slow-to-schedule runner. HyperUuid saw exactly
+  that flake on linux-arm64. *(`hypercast` crate, tests only)*
+
+### Upgrade note
+
+Drop-in for every binding. Nothing is removed or renamed. The wasm backends are opt-in and
+change nothing until asked for: no new runtime dependency in any package (Java's GraalWasm is
+`compileOnly`, Ruby's wasmtime a Gemfile group for the suite, Python's an extra, Go's behind a
+build tag — though wasmtime-go does now appear in `go.mod`, so it enters a consumer's module
+graph without entering their binary). The Rust crate's source is unchanged; the only addition
+under `rust/` is the `.cargo/config.toml` section that exports `malloc`/`free` on
+`wasm32-wasip1`, which applies to builds run from that directory and to nothing a consumer
+compiles.
+
 ## [0.2.0] — 2026-09-02
 
 The theme is *stop paying for the carrier*. Every binding already made exactly one native
@@ -207,5 +282,6 @@ notes: [v0.1.0 release](https://github.com/SkunkWerkx/HyperCast/releases/tag/v0.
   found in that window, in the gap between "the publish succeeded" and "a consumer can use it",
   and none of them could have failed a build in this repository.
 
+[Unreleased]: https://github.com/SkunkWerkx/HyperCast/compare/v0.2.0...HEAD
 [0.2.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/SkunkWerkx/HyperCast/releases/tag/v0.1.0
