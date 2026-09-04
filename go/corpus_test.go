@@ -7,6 +7,7 @@ package hypercast
 import (
 	"encoding/json"
 	"math"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -32,12 +33,16 @@ type vector struct {
 	Year      *int            `json:"year"`
 	Month     int             `json:"month"`
 	Day       int             `json:"day"`
+	Magnitude string          `json:"magnitude"`
+	Scale     uint8           `json:"scale"`
+	Negative  bool            `json:"negative"`
 }
 
 type formatSpec struct {
 	DecimalSep string `json:"decimal_sep"`
 	GroupSep   string `json:"group_sep"`
 	Flags      uint32 `json:"flags"`
+	Currency   string `json:"currency"` // absent ⇒ none declared
 }
 
 func corpus(t *testing.T, name string) []vector {
@@ -68,6 +73,7 @@ func (v *vector) format() NumFormat {
 		DecimalSep: []rune(v.Format.DecimalSep)[0],
 		GroupSep:   []rune(v.Format.GroupSep)[0],
 		Styles:     NumStyles(v.Format.Flags),
+		Currency:   v.Format.Currency,
 	}
 }
 
@@ -194,6 +200,31 @@ func TestRealCorpus(t *testing.T) {
 			assertVerdict(t, "real", &v, value, fault, expected)
 		default:
 			t.Fatalf("real: unknown type %q", v.Type)
+		}
+	}
+}
+
+func TestDecimalCorpus(t *testing.T) {
+	for _, v := range corpus(t, "decimal.json") {
+		var expected Decimal
+		var text string
+		if v.Expect == "ok" {
+			magnitude, ok := new(big.Int).SetString(v.Magnitude, 10)
+			if !ok || magnitude.Sign() < 0 || magnitude.BitLen() > 96 {
+				t.Fatalf("decimal: %q bad expected magnitude %q", v.Input, v.Magnitude)
+			}
+			lo := new(big.Int).And(magnitude, new(big.Int).SetUint64(math.MaxUint64))
+			hi := new(big.Int).Rsh(magnitude, 64)
+			expected = Decimal{Lo: lo.Uint64(), Hi: uint32(hi.Uint64()), Scale: v.Scale, Negative: v.Negative}
+			if err := json.Unmarshal(v.Value, &text); err != nil {
+				t.Fatalf("decimal: %q bad expected value: %v", v.Input, err)
+			}
+		}
+		value, fault := Exact(v.Input, v.format())
+		assertVerdict(t, "decimal", &v, value, fault, expected)
+		// The canonical text form is pinned alongside the triple: String() must agree.
+		if fault == nil && value.String() != text {
+			t.Errorf("decimal: %q String() = %q, want %q", v.Input, value.String(), text)
 		}
 	}
 }

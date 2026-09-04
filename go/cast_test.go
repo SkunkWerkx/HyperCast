@@ -5,6 +5,8 @@ package hypercast
 // pair and its checked converter), and the caller-bug guards.
 
 import (
+	"math"
+	"math/big"
 	"testing"
 	"time"
 
@@ -80,6 +82,162 @@ func TestDurationPairAndCheckedConverter(t *testing.T) {
 	}
 	if _, ok := huge.AsDuration(); ok {
 		t.Fatal("expected AsDuration to report out-of-range")
+	}
+}
+
+func TestCurrencySymbolAtEitherEdge(t *testing.T) {
+	dollars := NumFormat{DecimalSep: '.', GroupSep: ',', Styles: AllStyles, Currency: "$"}
+	for _, c := range []struct {
+		text string
+		want int32
+	}{
+		{"$1,234", 1234}, {"-$5", -5}, {"$ -5", -5}, {"($5)", -5}, {"5 $", 5},
+	} {
+		value, fault := I32(c.text, dollars)
+		if fault != nil || value != c.want {
+			t.Errorf("%q: got %v %v, want %d", c.text, value, fault, c.want)
+		}
+	}
+	// The symbol is matched whole and never inside the digit scan, so a symbol that
+	// contains the grouping separator is fine.
+	danish := NumFormat{DecimalSep: ',', GroupSep: '.', Styles: AllStyles, Currency: "kr."}
+	value, fault := F64("1.234,50 kr.", danish)
+	if fault != nil || value != 1234.5 {
+		t.Fatalf("got %v %v", value, fault)
+	}
+}
+
+func TestCurrencyDeclaredButStyleOffIsMalformedAtTheSymbol(t *testing.T) {
+	format := NumFormat{DecimalSep: '.', GroupSep: ',', Styles: AllStyles &^ CurrencySymbol, Currency: "$"}
+	_, fault := I32("$5", format)
+	if fault == nil || fault.Reason != Malformed || fault.Offset != 0 || fault.Length != 1 {
+		t.Fatalf("got %v", fault)
+	}
+	// The flag with nothing declared is a no-op, and Invariant declares nothing.
+	if _, fault := I32("$5", Invariant); fault == nil || fault.Reason != Malformed {
+		t.Fatalf("undeclared symbol should be Malformed, got %v", fault)
+	}
+}
+
+func TestInvalidCurrencySymbolsPanic(t *testing.T) {
+	for _, symbol := range []string{"$1", "US $", "\t€", "seventeen-bytes!!", "\xff"} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("%q: expected panic", symbol)
+				}
+			}()
+			I32("5", NumFormat{DecimalSep: '.', GroupSep: ',', Styles: AllStyles, Currency: symbol})
+		}()
+	}
+	// Exactly 16 bytes is the ceiling, not past it.
+	sixteen := NumFormat{DecimalSep: '.', GroupSep: ',', Styles: AllStyles, Currency: "sixteen-bytes-ok"}
+	if value, fault := I32("sixteen-bytes-ok 5", sixteen); fault != nil || value != 5 {
+		t.Fatalf("got %v %v", value, fault)
+	}
+}
+
+func TestExactIsExact(t *testing.T) {
+	// Canonical: exact trailing zeros are trimmed, so the scale is minimal and 1.10, 1.1
+	// and 1.1000 are all magnitude 11 at scale 1.
+	for _, text := range []string{"1.10", "1.1", "1.1000"} {
+		value, fault := Exact(text, Invariant)
+		if fault != nil || value != (Decimal{Lo: 11, Scale: 1}) || value.String() != "1.1" {
+			t.Fatalf("%q: got %v %v", text, value, fault)
+		}
+	}
+	// 0.1 is exactly 1/10 — no binary approximation anywhere.
+	value, fault := Exact("0.1", Invariant)
+	if fault != nil || value.Rat().Cmp(big.NewRat(1, 10)) != 0 {
+		t.Fatalf("got %v %v", value, fault)
+	}
+	// Negative zero collapses: zero is never negative and always scale 0.
+	value, fault = Exact("-0.00", Invariant)
+	if fault != nil || value != (Decimal{}) || value.String() != "0" {
+		t.Fatalf("got %v %v", value, fault)
+	}
+	// Accounting negative, currency, and the sign in String().
+	value, fault = Exact("($1,234.50)", NumFormat{DecimalSep: '.', GroupSep: ',', Styles: AllStyles, Currency: "$"})
+	if fault != nil || value != (Decimal{Lo: 12345, Scale: 1, Negative: true}) || value.String() != "-1234.5" {
+		t.Fatalf("got %v %v", value, fault)
+	}
+	// The high word is live: 2^96 - 1 is the ceiling, one more is OutOfRange, not rounded.
+	value, fault = Exact("79228162514264337593543950335", Invariant)
+	if fault != nil || value != (Decimal{Lo: math.MaxUint64, Hi: math.MaxUint32}) {
+		t.Fatalf("got %v %v", value, fault)
+	}
+	if value.String() != "79228162514264337593543950335" {
+		t.Fatalf("got %q", value.String())
+	}
+	if _, fault := Exact("79228162514264337593543950336", Invariant); fault == nil || fault.Reason != OutOfRange {
+		t.Fatalf("expected OutOfRange, got %v", fault)
+	}
+	if _, fault := Exact("1e-29", Invariant); fault == nil || fault.Reason != OutOfRange {
+		t.Fatalf("scale 29 should be OutOfRange, got %v", fault)
+	}
+}
+
+func TestNativeVersionMatchesTheCrate(t *testing.T) {
+	if got := NativeVersion(); got != "0.2.0" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestAvailableIsTheNonPanickingProbe(t *testing.T) {
+	if !Available() {
+		t.Fatal("the embedded core should load on every CI leg")
+	}
+	// Cached: the second answer is the same one, not a second probe.
+	if !Available() {
+		t.Fatal("availability flipped between probes")
+	}
+}
+
+// numericTarget pins Numeric[V] to its concrete door for one target: the same verdict,
+// value for value, fault for fault.
+func numericTarget[V Number](t *testing.T, text string, door func(string, NumFormat) (V, *Fault)) {
+	t.Helper()
+	got, gotFault := Numeric[V](text, Invariant)
+	want, wantFault := door(text, Invariant)
+	if gotFault != nil || wantFault != nil {
+		t.Fatalf("%T %q: unexpected fault %v / %v", want, text, gotFault, wantFault)
+	}
+	if got != want {
+		t.Fatalf("%T %q: Numeric gave %v, door gave %v", want, text, got, want)
+	}
+}
+
+func TestNumericDispatchesToEveryDoor(t *testing.T) {
+	numericTarget[int8](t, "-128", I8[string])
+	numericTarget[int16](t, "-32,768", I16[string])
+	numericTarget[int32](t, "(2,147,483,648)", I32[string])
+	numericTarget[int64](t, "9223372036854775807", I64[string])
+	numericTarget[uint8](t, "255", U8[string])
+	numericTarget[uint16](t, "0xFFFF", U16[string])
+	numericTarget[uint32](t, "4,294,967,295", U32[string])
+	numericTarget[uint64](t, "18446744073709551615", U64[string])
+	numericTarget[float32](t, "1.5e3", F32[string])
+	numericTarget[float64](t, "50%", F64[string])
+	numericTarget[Decimal](t, "1,234.50", Exact[string])
+	// T is inferred from the argument; []byte crosses the same way.
+	if value, fault := Numeric[int32]([]byte("42"), Invariant); fault != nil || value != 42 {
+		t.Fatalf("got %v %v", value, fault)
+	}
+}
+
+func TestNumericPassesTheFaultThrough(t *testing.T) {
+	value, fault := Numeric[int32]("  12x4", Invariant)
+	if value != 0 || fault == nil || fault.Reason != Malformed || fault.Offset != 4 || fault.Length != 1 {
+		t.Fatalf("got %v %v", value, fault)
+	}
+	if _, fault := Numeric[uint8]("256", Invariant); fault == nil || fault.Reason != OutOfRange {
+		t.Fatalf("got %v", fault)
+	}
+	if d, fault := Numeric[Decimal]("1e29", Invariant); d != (Decimal{}) || fault == nil || fault.Reason != OutOfRange {
+		t.Fatalf("got %v %v", d, fault)
+	}
+	if _, fault := Numeric[float64]("", Invariant); fault == nil || fault.Reason != Empty {
+		t.Fatalf("got %v", fault)
 	}
 }
 

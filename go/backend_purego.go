@@ -27,6 +27,7 @@ type (
 	plainSymbol   = func(ptr unsafe.Pointer, length uintptr, out, fault unsafe.Pointer) int32
 	numericSymbol = func(ptr unsafe.Pointer, length uintptr, format, out, fault unsafe.Pointer) int32
 	unixSymbol    = func(ptr unsafe.Pointer, length uintptr, precision uint32, out, fault unsafe.Pointer) int32
+	versionSymbol = func() uint32
 )
 
 var (
@@ -36,7 +37,9 @@ var (
 	symBool, symUuid, symTimestamp, symDate, symTime, symDuration plainSymbol
 
 	symI8, symI16, symI32, symI64, symU8, symU16, symU32, symU64,
-	symF32, symF64 numericSymbol
+	symF32, symF64, symDecimal numericSymbol
+
+	symVersion versionSymbol
 
 	// cast_date_ordered, cast_datetime and cast_excel_serial share the unix ABI shape
 	// (ptr, len, u32, out, fault).
@@ -59,6 +62,15 @@ func ensureLoaded() error {
 			return
 		}
 
+		// RegisterLibFunc panics on a symbol the library does not export (an older core,
+		// say). That is a load failure, not a caller bug: fold it into initErr so Available
+		// answers false and the doors panic with the reason, the same as the cgo backend.
+		defer func() {
+			if r := recover(); r != nil {
+				initErr = fmt.Errorf("hypercast: resolving native symbols: %v", r)
+			}
+		}()
+
 		purego.RegisterLibFunc(&symBool, handle, "cast_bool")
 		purego.RegisterLibFunc(&symUuid, handle, "cast_uuid")
 		purego.RegisterLibFunc(&symTimestamp, handle, "cast_timestamp")
@@ -75,10 +87,14 @@ func ensureLoaded() error {
 		purego.RegisterLibFunc(&symU64, handle, "cast_u64")
 		purego.RegisterLibFunc(&symF32, handle, "cast_f32")
 		purego.RegisterLibFunc(&symF64, handle, "cast_f64")
+		purego.RegisterLibFunc(&symDecimal, handle, "cast_decimal")
+		purego.RegisterLibFunc(&symVersion, handle, "hypercast_version")
 		purego.RegisterLibFunc(&symUnix, handle, "cast_unix")
 		purego.RegisterLibFunc(&symDateOrdered, handle, "cast_date_ordered")
 		purego.RegisterLibFunc(&symDateTime, handle, "cast_datetime")
 		purego.RegisterLibFunc(&symExcelSerial, handle, "cast_excel_serial")
+		// One real call through the ABI, so Available means "answered", not "resolved".
+		nativeVersion = callVersion()
 	})
 	return initErr
 }
@@ -96,6 +112,10 @@ func callNumeric(sym numericSymbol, ptr unsafe.Pointer, length uintptr, format r
 	var r result
 	r.code = sym(ptr, length, unsafe.Pointer(&format), unsafe.Pointer(&r.out), unsafe.Pointer(&r.fault))
 	return r
+}
+
+func callVersion() uint32 {
+	return symVersion()
 }
 
 func callUnix(ptr unsafe.Pointer, length uintptr, precision uint32) result {

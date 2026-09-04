@@ -30,9 +30,11 @@ package hypercast
 typedef int32_t (*fn_plain)(const uint8_t*, size_t, void*, void*);
 typedef int32_t (*fn_numeric)(const uint8_t*, size_t, const void*, void*, void*);
 typedef int32_t (*fn_unix)(const uint8_t*, size_t, uint32_t, void*, void*);
+typedef uint32_t (*fn_version)(void);
 
 typedef struct { uint32_t offset; uint32_t len; } hc_fault;
-typedef struct { uint32_t decimal_sep; uint32_t group_sep; uint32_t flags; } hc_format;
+// RawNumFormat, 32 bytes: the currency symbol is currency_len UTF-8 bytes held inline.
+typedef struct { uint32_t decimal_sep; uint32_t group_sep; uint32_t flags; uint32_t currency_len; uint8_t currency[16]; } hc_format;
 
 // The verdict, by value: 16 bytes of out-value (the widest door — a timestamp or a civil
 // date-time — 8-aligned because the core writes an i64/u64 into it), the code, and the
@@ -47,14 +49,24 @@ static hc_result call_plain(void *fn, const uint8_t *ptr, size_t len) {
 	r.len = f.len;
 	return r;
 }
-static hc_result call_numeric(void *fn, const uint8_t *ptr, size_t len, uint32_t decimal_sep, uint32_t group_sep, uint32_t flags) {
+// The format arrives as scalars — the 16 currency bytes as two little-endian u64 halves —
+// and is assembled here on the C stack, so no Go pointer to a local crosses the call.
+static hc_result call_numeric(void *fn, const uint8_t *ptr, size_t len, uint32_t decimal_sep, uint32_t group_sep, uint32_t flags,
+                              uint32_t currency_len, uint64_t cur_lo, uint64_t cur_hi) {
 	hc_result r = {{0, 0}, 0, 0, 0};
 	hc_fault f = {0, 0};
-	hc_format format = {decimal_sep, group_sep, flags};
+	hc_format format = {decimal_sep, group_sep, flags, currency_len, {0}};
+	for (int i = 0; i < 8; i++) {
+		format.currency[i] = (uint8_t)(cur_lo >> (8 * i));
+		format.currency[8 + i] = (uint8_t)(cur_hi >> (8 * i));
+	}
 	r.code = ((fn_numeric)fn)(ptr, len, &format, r.out, &f);
 	r.offset = f.offset;
 	r.len = f.len;
 	return r;
+}
+static uint32_t call_version(void *fn) {
+	return ((fn_version)fn)();
 }
 static hc_result call_unix(void *fn, const uint8_t *ptr, size_t len, uint32_t discriminant) {
 	hc_result r = {{0, 0}, 0, 0, 0};
@@ -68,6 +80,7 @@ static hc_result call_unix(void *fn, const uint8_t *ptr, size_t len, uint32_t di
 import "C"
 
 import (
+	"encoding/binary"
 	"fmt"
 	"sync"
 	"unsafe"
@@ -86,8 +99,8 @@ var (
 	initErr  error
 
 	symBool, symI8, symI16, symI32, symI64, symU8, symU16, symU32, symU64,
-	symF32, symF64, symUuid, symTimestamp, symUnix, symDate, symDateOrdered,
-	symDateTime, symTime, symDuration, symExcelSerial unsafe.Pointer
+	symF32, symF64, symDecimal, symUuid, symTimestamp, symUnix, symDate, symDateOrdered,
+	symDateTime, symTime, symDuration, symExcelSerial, symVersion unsafe.Pointer
 )
 
 // ensureLoaded extracts this platform's embedded native library to a temp file and
@@ -123,12 +136,17 @@ func ensureLoaded() error {
 		symBool, symUuid = sym("cast_bool"), sym("cast_uuid")
 		symI8, symI16, symI32, symI64 = sym("cast_i8"), sym("cast_i16"), sym("cast_i32"), sym("cast_i64")
 		symU8, symU16, symU32, symU64 = sym("cast_u8"), sym("cast_u16"), sym("cast_u32"), sym("cast_u64")
-		symF32, symF64 = sym("cast_f32"), sym("cast_f64")
+		symF32, symF64, symDecimal = sym("cast_f32"), sym("cast_f64"), sym("cast_decimal")
+		symVersion = sym("hypercast_version")
 		symTimestamp, symUnix = sym("cast_timestamp"), sym("cast_unix")
 		symDate, symDateOrdered = sym("cast_date"), sym("cast_date_ordered")
 		symDateTime = sym("cast_datetime")
 		symTime, symDuration = sym("cast_time"), sym("cast_duration")
 		symExcelSerial = sym("cast_excel_serial")
+		if initErr == nil {
+			// One real call through the ABI, so Available means "answered", not "resolved".
+			nativeVersion = callVersion()
+		}
 	})
 	return initErr
 }
@@ -146,8 +164,17 @@ func callPlain(sym plainSymbol, ptr unsafe.Pointer, length uintptr) result {
 }
 
 func callNumeric(sym numericSymbol, ptr unsafe.Pointer, length uintptr, format rawNumFormat) result {
+	// The currency bytes travel as two little-endian u64 halves so nothing here takes the
+	// address of a local for the C side — the shim reassembles them byte by byte.
 	return fromC(C.call_numeric(sym, (*C.uint8_t)(ptr), C.size_t(length),
-		C.uint32_t(format.DecimalSep), C.uint32_t(format.GroupSep), C.uint32_t(format.Flags)))
+		C.uint32_t(format.DecimalSep), C.uint32_t(format.GroupSep), C.uint32_t(format.Flags),
+		C.uint32_t(format.CurrencyLen),
+		C.uint64_t(binary.LittleEndian.Uint64(format.Currency[:8])),
+		C.uint64_t(binary.LittleEndian.Uint64(format.Currency[8:]))))
+}
+
+func callVersion() uint32 {
+	return uint32(C.call_version(symVersion))
 }
 
 func callUnix(ptr unsafe.Pointer, length uintptr, precision uint32) result {
