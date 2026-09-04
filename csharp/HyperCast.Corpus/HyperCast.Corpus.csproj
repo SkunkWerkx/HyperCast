@@ -11,7 +11,7 @@
     <PackageId>HyperCast.Corpus</PackageId>
     <!-- Bumped by prepare-release.yml in the same sweep as HyperCast.csproj: the corpus a
          consumer replays must be the one its HyperCast package was proven against. -->
-    <Version>0.2.0</Version>
+    <Version>0.3.0</Version>
     <Description>HyperCast's cross-language conformance corpus (corpus/*.json) as content files, versioned in lockstep with the HyperCast package — replay the same vectors the native core, and every binding, are proven against.</Description>
     <Authors>Brian Buvinghausen</Authors>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
