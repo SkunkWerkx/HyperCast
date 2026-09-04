@@ -22,7 +22,7 @@ use ext_php_rs::prelude::*;
 use ext_php_rs::types::ZendHashTable;
 
 use crate as core;
-use crate::{DateOrder, ExcelEpoch, UnixPrecision};
+use crate::{CurrencySymbol, DateOrder, ExcelEpoch, UnixPrecision};
 
 type Reply = PhpResult<ZBox<ZendHashTable>>;
 
@@ -52,7 +52,10 @@ fn reply<T>(
     Ok(table)
 }
 
-fn format(decimal_sep: u32, group_sep: u32, flags: u32) -> PhpResult<core::NumFormat> {
+/// `currency` is the declared symbol's text — empty declares none — validated to the same
+/// rule `NumFormat.php` enforces at construction, so an invalid symbol throws here rather
+/// than becoming a contract violation deeper in.
+fn format(decimal_sep: u32, group_sep: u32, flags: u32, currency: &str) -> PhpResult<core::NumFormat> {
     let (Some(decimal_sep), Some(group_sep)) = (char::from_u32(decimal_sep), char::from_u32(group_sep))
     else {
         return Err(PhpException::default("separators must be Unicode scalar values".into()));
@@ -60,7 +63,16 @@ fn format(decimal_sep: u32, group_sep: u32, flags: u32) -> PhpResult<core::NumFo
     if decimal_sep == group_sep {
         return Err(PhpException::default("decimal and group separators must differ".into()));
     }
-    Ok(core::NumFormat { decimal_sep, group_sep, flags })
+    let currency = if currency.is_empty() {
+        CurrencySymbol::NONE
+    } else {
+        CurrencySymbol::new(currency).ok_or_else(|| {
+            PhpException::default(
+                "currency symbol must be at most 16 bytes of UTF-8 with no ASCII digit or whitespace".into(),
+            )
+        })?
+    };
+    Ok(core::NumFormat::new(decimal_sep, group_sep, flags).with_currency(currency))
 }
 
 fn timestamp(table: &mut ZendHashTable, ts: core::Timestamp) -> PhpResult<()> {
@@ -86,8 +98,8 @@ macro_rules! integer_doors {
         // identifier, which splits the width off as its own word (`cast_i_8`).
         #[php_function]
         #[php(name = $name)]
-        pub fn $php(text: Binary<u8>, decimal_sep: u32, group_sep: u32, flags: u32) -> Reply {
-            let format = format(decimal_sep, group_sep, flags)?;
+        pub fn $php(text: Binary<u8>, decimal_sep: u32, group_sep: u32, flags: u32, currency: String) -> Reply {
+            let format = format(decimal_sep, group_sep, flags, &currency)?;
             reply(core::$core(text.as_slice(), &format), |table, value| push(table, i64::from(value)))
         }
     )+};
@@ -107,23 +119,70 @@ integer_doors! {
 /// pattern, exactly as `Cast.php`'s `u64` door presents it.
 #[php_function]
 #[php(name = "hypercast_native_cast_u64")]
-pub fn hypercast_native_cast_u64(text: Binary<u8>, decimal_sep: u32, group_sep: u32, flags: u32) -> Reply {
-    let format = format(decimal_sep, group_sep, flags)?;
+pub fn hypercast_native_cast_u64(
+    text: Binary<u8>,
+    decimal_sep: u32,
+    group_sep: u32,
+    flags: u32,
+    currency: String,
+) -> Reply {
+    let format = format(decimal_sep, group_sep, flags, &currency)?;
     reply(core::cast_u64(text.as_slice(), &format), |table, value| push(table, value as i64))
 }
 
 #[php_function]
 #[php(name = "hypercast_native_cast_f32")]
-pub fn hypercast_native_cast_f32(text: Binary<u8>, decimal_sep: u32, group_sep: u32, flags: u32) -> Reply {
-    let format = format(decimal_sep, group_sep, flags)?;
+pub fn hypercast_native_cast_f32(
+    text: Binary<u8>,
+    decimal_sep: u32,
+    group_sep: u32,
+    flags: u32,
+    currency: String,
+) -> Reply {
+    let format = format(decimal_sep, group_sep, flags, &currency)?;
     reply(core::cast_f32(text.as_slice(), &format), |table, value| push(table, f64::from(value)))
 }
 
 #[php_function]
 #[php(name = "hypercast_native_cast_f64")]
-pub fn hypercast_native_cast_f64(text: Binary<u8>, decimal_sep: u32, group_sep: u32, flags: u32) -> Reply {
-    let format = format(decimal_sep, group_sep, flags)?;
+pub fn hypercast_native_cast_f64(
+    text: Binary<u8>,
+    decimal_sep: u32,
+    group_sep: u32,
+    flags: u32,
+    currency: String,
+) -> Reply {
+    let format = format(decimal_sep, group_sep, flags, &currency)?;
     reply(core::cast_f64(text.as_slice(), &format), push)
+}
+
+/// The exact triple as `Cast.php`'s `decimal` door reads it off the out-struct: the
+/// magnitude's low 64 bits (as the two's-complement bit pattern, like `u64`), its high 32,
+/// the scale, and the sign.
+#[php_function]
+#[php(name = "hypercast_native_cast_decimal")]
+pub fn hypercast_native_cast_decimal(
+    text: Binary<u8>,
+    decimal_sep: u32,
+    group_sep: u32,
+    flags: u32,
+    currency: String,
+) -> Reply {
+    let format = format(decimal_sep, group_sep, flags, &currency)?;
+    reply(core::cast_decimal(text.as_slice(), &format), |table, value| {
+        push(table, value.lo as i64)?;
+        push(table, i64::from(value.hi))?;
+        push(table, i64::from(value.scale))?;
+        push(table, value.negative)
+    })
+}
+
+/// The packed `major << 16 | minor << 8 | patch` the cdylib exports, so the spike can be
+/// version-checked the same way `Cast::nativeVersion()` checks the ext-ffi path.
+#[php_function]
+#[php(name = "hypercast_native_version")]
+pub fn hypercast_native_version() -> i64 {
+    i64::from(core::hypercast_version())
 }
 
 /// The 16 RFC 9562-ordered bytes as a binary string — the same raw form `Cast::uuidBytes`
@@ -225,6 +284,8 @@ pub fn get_module(module: ModuleBuilder) -> ModuleBuilder {
         .function(wrap_function!(hypercast_native_cast_u64))
         .function(wrap_function!(hypercast_native_cast_f32))
         .function(wrap_function!(hypercast_native_cast_f64))
+        .function(wrap_function!(hypercast_native_cast_decimal))
+        .function(wrap_function!(hypercast_native_version))
         .function(wrap_function!(hypercast_native_cast_uuid))
         .function(wrap_function!(hypercast_native_cast_timestamp))
         .function(wrap_function!(hypercast_native_cast_unix))

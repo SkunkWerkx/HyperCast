@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use HyperCast\Cast;
 use HyperCast\DateOrder;
 use HyperCast\CastFailure;
+use HyperCast\Decimal;
 use HyperCast\ExcelEpoch;
 use HyperCast\Duration;
 use HyperCast\Fault;
@@ -56,7 +57,8 @@ final class CorpusTest extends TestCase
         return new NumFormat(
             $vector['format']['decimal_sep'],
             $vector['format']['group_sep'],
-            $vector['format']['flags']
+            $vector['format']['flags'],
+            $vector['format']['currency'] ?? ''
         );
     }
 
@@ -124,6 +126,28 @@ final class CorpusTest extends TestCase
                 }
             }
             $this->assertVerdict('real', $vector, Cast::$door($vector['input'], self::formatOf($vector)), $expected);
+        }
+    }
+
+    public function testDecimalCorpus(): void
+    {
+        foreach (self::corpus('decimal.json') as $vector) {
+            $input = $vector['input'];
+            $verdict = Cast::decimal($input, self::formatOf($vector));
+            if (!$verdict instanceof Success) {
+                $this->assertVerdict('decimal', $vector, $verdict, null);
+                continue;
+            }
+            $this->assertSame('ok', $vector['expect'], "decimal: '{$input}' unexpectedly parsed");
+            $decimal = $verdict->value;
+            $this->assertInstanceOf(Decimal::class, $decimal);
+            // The triple exactly as the core hands it over, then the canonical rendering.
+            $this->assertSame(
+                [(string) $vector['magnitude'], $vector['scale'], $vector['negative']],
+                [$decimal->magnitude, $decimal->scale, $decimal->negative],
+                "decimal: '{$input}' triple"
+            );
+            $this->assertSame($vector['value'], (string) $decimal, "decimal: '{$input}' canonical text");
         }
     }
 

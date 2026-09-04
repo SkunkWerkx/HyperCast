@@ -13,6 +13,7 @@
     <file>src/NumFormat.php</file>
     <file>src/UnixPrecision.php</file>
     <file>src/Duration.php</file>
+    <file>src/Decimal.php</file>
 
     <rule ref="Squiz.Commenting.ClassComment"/>
     <rule ref="Squiz.Commenting.FunctionComment">

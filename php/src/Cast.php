@@ -8,11 +8,12 @@ use DateTimeImmutable;
 use FFI;
 
 /**
- * Allocation-lean scalar casts — booleans, numerics, UUIDs, temporals — calling directly
- * into the native libhypercast shared library via PHP's built-in ext-ffi, no runtime
- * bridge and no Composer dependency. Every door returns the `Success|Fault` verdict union;
- * never an exception for bad data — an exception here is a caller bug (a malformed
- * NumFormat), never data.
+ * Allocation-lean scalar casts — booleans, numerics (integer, real and exact decimal),
+ * UUIDs, temporals — calling directly into the native libhypercast shared library via
+ * PHP's built-in ext-ffi, no runtime bridge and no Composer dependency. Every door returns
+ * the `Success|Fault` verdict union; never an exception for bad data — an exception here
+ * is a caller bug (a malformed NumFormat), never data. {@see nativeVersion()} names the
+ * library that actually loaded.
  *
  * Door names mirror the native ABI (i32, f64, timestamp, ...) so the polyglot surface
  * reads identically across bindings. PHP strings are raw bytes, so inputs cross verbatim
@@ -30,7 +31,8 @@ use FFI;
  * two's-complement bit pattern (render with sprintf('%u', ...)); DateTimeImmutable tops
  * out at microseconds, so the core's nanoseconds truncate by three digits on the instant
  * doors; time-of-day is an exact int of nanoseconds since midnight; durations come back as
- * the protobuf pair ({@see Duration}) because DateInterval can't carry them.
+ * the protobuf pair ({@see Duration}) because DateInterval can't carry them; decimals come
+ * back as the core's exact triple ({@see Decimal}) because PHP has no decimal type at all.
  */
 final class Cast
 {
@@ -41,6 +43,7 @@ final class Cast
     private static ?FFI\CData $outCivil = null;
     private static ?FFI\CData $outI64 = null;
     private static ?FFI\CData $outReal = null;
+    private static ?FFI\CData $outDecimal = null;
     private static ?FFI\CData $fault = null;
     private static ?FFI\CData $format = null;
     // Pre-taken addresses: FFI auto-decays arrays to pointers but not scalars/structs, and
@@ -50,9 +53,12 @@ final class Cast
     private static ?FFI\CData $outCivilPtr = null;
     private static ?FFI\CData $outI64Ptr = null;
     private static ?FFI\CData $outRealPtr = null;
+    private static ?FFI\CData $outDecimalPtr = null;
     private static ?FFI\CData $faultPtr = null;
+    private static ?FFI\CData $formatPtr = null;
     private static ?NumFormat $formatKey = null;
     private static bool $fastInstants = false;
+    private static ?bool $available = null;
 
     /** Static-only facade — never instantiated. */
     private function __construct()
@@ -88,7 +94,10 @@ final class Cast
     }
 
     /**
-     * Re-stores the declared format only when it actually changes (identity check).
+     * Re-stores the declared format only when it actually changes (identity check). The
+     * currency bytes are always written as the full 16, zero-padded — the memo means a
+     * shorter symbol can follow a longer one into the same scratch, and the core's contract
+     * is zero-padding beyond `currency_len`.
      *
      * @param NumFormat $format the caller-declared numeric notation
      * @return void
@@ -97,9 +106,12 @@ final class Cast
     {
         if (self::$formatKey !== $format) {
             [$decimal, $group] = $format->codePoints();
-            self::$format[0] = $decimal;
-            self::$format[1] = $group;
-            self::$format[2] = $format->flags;
+            $packed = self::$format;
+            $packed->decimal_sep = $decimal;
+            $packed->group_sep = $group;
+            $packed->flags = $format->flags;
+            $packed->currency_len = \strlen($format->currency);
+            FFI::memcpy($packed->currency, str_pad($format->currency, 16, "\0"), 16);
             self::$formatKey = $format;
         }
     }
@@ -137,7 +149,7 @@ final class Cast
         self::declare($format);
         self::$outI64->cdata = 0;
         $rc = $ffi->cast_i8(
-            $text === '' ? null : $text, \strlen($text), self::$format, self::$outI64Ptr, self::$faultPtr
+            $text === '' ? null : $text, \strlen($text), self::$formatPtr, self::$outI64Ptr, self::$faultPtr
         );
         if ($rc !== 0) {
             return self::fail($rc);
@@ -159,7 +171,7 @@ final class Cast
         self::declare($format);
         self::$outI64->cdata = 0;
         $rc = $ffi->cast_i16(
-            $text === '' ? null : $text, \strlen($text), self::$format, self::$outI64Ptr, self::$faultPtr
+            $text === '' ? null : $text, \strlen($text), self::$formatPtr, self::$outI64Ptr, self::$faultPtr
         );
         if ($rc !== 0) {
             return self::fail($rc);
@@ -181,7 +193,7 @@ final class Cast
         self::declare($format);
         self::$outI64->cdata = 0;
         $rc = $ffi->cast_i32(
-            $text === '' ? null : $text, \strlen($text), self::$format, self::$outI64Ptr, self::$faultPtr
+            $text === '' ? null : $text, \strlen($text), self::$formatPtr, self::$outI64Ptr, self::$faultPtr
         );
         if ($rc !== 0) {
             return self::fail($rc);
@@ -203,7 +215,7 @@ final class Cast
         self::declare($format);
         self::$outI64->cdata = 0;
         $rc = $ffi->cast_i64(
-            $text === '' ? null : $text, \strlen($text), self::$format, self::$outI64Ptr, self::$faultPtr
+            $text === '' ? null : $text, \strlen($text), self::$formatPtr, self::$outI64Ptr, self::$faultPtr
         );
         return $rc === 0 ? new Success(self::$outI64->cdata) : self::fail($rc);
     }
@@ -221,7 +233,7 @@ final class Cast
         self::declare($format);
         self::$outI64->cdata = 0;
         $rc = $ffi->cast_u8(
-            $text === '' ? null : $text, \strlen($text), self::$format, self::$outI64Ptr, self::$faultPtr
+            $text === '' ? null : $text, \strlen($text), self::$formatPtr, self::$outI64Ptr, self::$faultPtr
         );
         return $rc === 0 ? new Success(self::$outI64->cdata) : self::fail($rc);
     }
@@ -239,7 +251,7 @@ final class Cast
         self::declare($format);
         self::$outI64->cdata = 0;
         $rc = $ffi->cast_u16(
-            $text === '' ? null : $text, \strlen($text), self::$format, self::$outI64Ptr, self::$faultPtr
+            $text === '' ? null : $text, \strlen($text), self::$formatPtr, self::$outI64Ptr, self::$faultPtr
         );
         return $rc === 0 ? new Success(self::$outI64->cdata) : self::fail($rc);
     }
@@ -257,7 +269,7 @@ final class Cast
         self::declare($format);
         self::$outI64->cdata = 0;
         $rc = $ffi->cast_u32(
-            $text === '' ? null : $text, \strlen($text), self::$format, self::$outI64Ptr, self::$faultPtr
+            $text === '' ? null : $text, \strlen($text), self::$formatPtr, self::$outI64Ptr, self::$faultPtr
         );
         return $rc === 0 ? new Success(self::$outI64->cdata) : self::fail($rc);
     }
@@ -276,7 +288,7 @@ final class Cast
         self::declare($format);
         self::$outI64->cdata = 0;
         $rc = $ffi->cast_u64(
-            $text === '' ? null : $text, \strlen($text), self::$format, self::$outI64Ptr, self::$faultPtr
+            $text === '' ? null : $text, \strlen($text), self::$formatPtr, self::$outI64Ptr, self::$faultPtr
         );
         return $rc === 0 ? new Success(self::$outI64->cdata) : self::fail($rc);
     }
@@ -294,7 +306,7 @@ final class Cast
         $ffi = self::$ffi ?? self::load();
         self::declare($format);
         $rc = $ffi->cast_f32(
-            $text === '' ? null : $text, \strlen($text), self::$format, self::$outRealPtr, self::$faultPtr
+            $text === '' ? null : $text, \strlen($text), self::$formatPtr, self::$outRealPtr, self::$faultPtr
         );
         return $rc === 0 ? new Success(self::$outReal->f32) : self::fail($rc);
     }
@@ -311,9 +323,38 @@ final class Cast
         $ffi = self::$ffi ?? self::load();
         self::declare($format);
         $rc = $ffi->cast_f64(
-            $text === '' ? null : $text, \strlen($text), self::$format, self::$outRealPtr, self::$faultPtr
+            $text === '' ? null : $text, \strlen($text), self::$formatPtr, self::$outRealPtr, self::$faultPtr
         );
         return $rc === 0 ? new Success(self::$outReal->f64) : self::fail($rc);
+    }
+
+    /**
+     * Casts decimal text to an exact {@see Decimal} — sign, 96-bit magnitude, base-10
+     * scale 0..=28 — under the same grammar and NumFormat as the real doors. Never rounds:
+     * only exact trailing zeros in the fraction are dropped, so the scale is canonical
+     * ("1.10", "1.1" and "1.1000" are all 11 at scale 1; zero is always scale 0), and text
+     * carrying more precision than the triple can hold is OutOfRange, not silently
+     * approximated.
+     *
+     * @param string $text the text to cast
+     * @param NumFormat $format the caller-declared numeric notation
+     * @return Success|Fault the verdict: a Success carrying the cast value, or a Fault
+     */
+    public static function decimal(string $text, NumFormat $format): Success|Fault
+    {
+        $ffi = self::$ffi ?? self::load();
+        self::declare($format);
+        $rc = $ffi->cast_decimal(
+            $text === '' ? null : $text, \strlen($text), self::$formatPtr, self::$outDecimalPtr, self::$faultPtr
+        );
+        return $rc === 0
+            ? new Success(Decimal::fromLimbs(
+                self::$outDecimal->lo,
+                self::$outDecimal->hi,
+                self::$outDecimal->scale,
+                self::$outDecimal->negative !== 0
+            ))
+            : self::fail($rc);
     }
 
     /**
@@ -552,6 +593,44 @@ final class Cast
     }
 
     /**
+     * Whether libhypercast resolved for this platform and exports the ABI this binding was
+     * built against — the probe a consumer with a fallback gates on. Attempts the same load
+     * every door makes, but never throws: a missing library, an unsupported platform, or a
+     * stale library that lacks a symbol this binding declares all answer false. The answer
+     * is cached for the request; true exactly when {@see nativeVersion()} succeeds.
+     *
+     * @return bool true when every door can be called; false when the first one would throw
+     */
+    public static function isAvailable(): bool
+    {
+        if (self::$available !== null) {
+            return self::$available;
+        }
+        try {
+            self::nativeVersion();
+            return self::$available = true;
+        } catch (\Throwable) {
+            return self::$available = false;
+        }
+    }
+
+    /**
+     * The version of the native library that actually loaded, as "major.minor.patch" —
+     * the core's own manifest version, read through the zero-argument probe it exports, so
+     * a host can prove the library it resolved is the one this binding was written against
+     * before making the first cast. Throws when no library resolves; {@see isAvailable()}
+     * is the non-throwing form.
+     *
+     * @return string the native library's semantic version, e.g. "0.2.0"
+     */
+    public static function nativeVersion(): string
+    {
+        $ffi = self::$ffi ?? self::load();
+        $packed = $ffi->hypercast_version();
+        return sprintf('%d.%d.%d', $packed >> 16, ($packed >> 8) & 0xFF, $packed & 0xFF);
+    }
+
+    /**
      * One-time cdef load plus the static scratch allocations every door reuses.
      *
      * @return FFI the bound library handle
@@ -583,10 +662,14 @@ final class Cast
             . 'typedef struct { uint16_t year; uint8_t month; uint8_t day; } hc_date;'
             . 'typedef struct { uint16_t year; uint8_t month; uint8_t day; uint32_t pad; uint64_t nanos; } hc_civil;'
             . 'typedef union { float f32; double f64; } hc_real;'
+            . 'typedef struct { uint64_t lo; uint32_t hi; uint8_t scale; uint8_t negative; uint8_t pad[2]; } hc_decimal;'
+            . 'typedef struct { uint32_t decimal_sep; uint32_t group_sep; uint32_t flags; uint32_t currency_len;'
+            . ' uint8_t currency[16]; } hc_format;'
+            . 'uint32_t hypercast_version(void);'
             . "int cast_bool{$plain};"
             . "int cast_i8{$numeric}; int cast_i16{$numeric}; int cast_i32{$numeric}; int cast_i64{$numeric};"
             . "int cast_u8{$numeric}; int cast_u16{$numeric}; int cast_u32{$numeric}; int cast_u64{$numeric};"
-            . "int cast_f32{$numeric}; int cast_f64{$numeric};"
+            . "int cast_f32{$numeric}; int cast_f64{$numeric}; int cast_decimal{$numeric};"
             . "int cast_uuid{$plain};"
             . "int cast_timestamp{$plain};"
             . 'int cast_unix(const char *ptr, size_t len, uint32_t precision, void *out, void *fault);'
@@ -604,14 +687,17 @@ final class Cast
         self::$outCivil = self::$ffi->new('hc_civil');
         self::$outI64 = self::$ffi->new('int64_t');
         self::$outReal = self::$ffi->new('hc_real');
+        self::$outDecimal = self::$ffi->new('hc_decimal');
         self::$fault = self::$ffi->new('hc_fault');
-        self::$format = self::$ffi->new('uint32_t[3]');
+        self::$format = self::$ffi->new('hc_format');
         self::$outPairPtr = FFI::addr(self::$outPair);
         self::$outDatePtr = FFI::addr(self::$outDate);
         self::$outCivilPtr = FFI::addr(self::$outCivil);
         self::$outI64Ptr = FFI::addr(self::$outI64);
         self::$outRealPtr = FFI::addr(self::$outReal);
+        self::$outDecimalPtr = FFI::addr(self::$outDecimal);
         self::$faultPtr = FFI::addr(self::$fault);
+        self::$formatPtr = FFI::addr(self::$format);
         self::$fastInstants = method_exists(DateTimeImmutable::class, 'createFromTimestamp')
             && method_exists(DateTimeImmutable::class, 'setMicrosecond');
         return self::$ffi;
