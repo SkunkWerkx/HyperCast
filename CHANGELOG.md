@@ -9,6 +9,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-09-04
+
 *One core, one more way in*, ported from HyperUuid 0.3.0: Java, Ruby, Python and Go can now
 run the Rust core as a `wasm32-wasip1` module inside the process, through a wasm engine the
 ecosystem already has, so a platform with no native build in the package still has a working
@@ -46,8 +48,8 @@ the core and all seven bindings; `docs/roadmap.md` records the reasoning.
   opportunity: a magnitude past 2⁹⁶−1, or more than 28 nonzero places, is `OutOfRange` —
   nothing but a zero is ever dropped. Presented as `decimal` (C#), `BigDecimal` (Java),
   `decimal.Decimal` (Python), `Foundation.Decimal` (Swift), and an exact carrier type
-  where the platform has no
-  decimal: Go `Decimal` (door `Exact`), Ruby `HyperCast::Decimal` (with `to_r`, canonical
+  where the platform has no decimal:
+  Go `Decimal` (door `Exact`), Ruby `HyperCast::Decimal` (with `to_r`, canonical
   `to_s`, lazy `to_d`), PHP `HyperCast\Decimal` (magnitude as a numeric string). New
   `corpus/decimal.json` pins the raw triple and the canonical text for every binding.
   *(every package)*
@@ -81,32 +83,6 @@ the core and all seven bindings; `docs/roadmap.md` records the reasoning.
   `magnitude()` and a canonical `Display`), and `hypercast_version()` re-exported. The
   fuzz target covers the decimal door and three currency profiles; the allocation proof and
   the fault-span sweep cover both. *(`hypercast` crate)*
-
-### Changed
-
-- **`RawNumFormat` is 32 bytes.** Four `u32`s — `decimal_sep`, `group_sep`, `flags`,
-  `currency_len` — then the symbol's 16 bytes inline; alignment stays 4. Every binding's
-  crossing, native and wasm alike, was updated together; nothing else at the ABI moved.
-  *(every package)*
-- **`ALL` is 95, not 31** — the currency lenience joined it — in every binding's flag set
-  (`NumStyles.All`, `STYLE_ALL`, `AllStyles`, `.all`, `ALL_STYLES`, `NumFormat.ALL`).
-  `SEPARATOR_DETECT` stays excluded. A caller that spelled `31` keeps exactly the old
-  behavior. *(every package)*
-- **Fault spans come back in the caller's own units.** The core reports UTF-8 byte
-  offsets; the C# `string`/`ReadOnlySpan<char>` doors, Java `String` doors, Python `str`
-  input and Ruby text input now remap a fault's offset and length to char/code-point units
-  when the input was not ASCII, so slicing the offending text back out of what was passed
-  needs no mapping. Byte input, and ASCII text, are unchanged and pay nothing. Go, Swift
-  and PHP strings are already UTF-8 bytes. *(NuGet, Maven Central, PyPI, RubyGems)*
-- **Java: `NumFormat` is a four-component record** (`currencySymbol` last); the
-  three-argument constructor remains and declares no symbol. **Rust: `NumFormat` gained a
-  `currency` field** — a struct literal of the three old fields no longer compiles; use
-  `NumFormat::new(decimal_sep, group_sep, flags)` or `{ ..NumFormat::INVARIANT }`. *(Maven
-  Central, `hypercast` crate)*
-- **Go, purego backend:** a core missing an export is a reported load failure the probe
-  sees, instead of a panic escaping initialization — matching the cgo and wasm backends.
-  *(`go get`)*
-
 - **A wasm backend in Java, Ruby, Python and Go.** The core built as a `wasm32-wasip1`
   module, `hypercast.wasm`, ships beside the native libraries in the jar, the gems and the
   wheels, and is committed under `go/native/`; a wasm engine the ecosystem already has runs it
@@ -155,6 +131,29 @@ the core and all seven bindings; `docs/roadmap.md` records the reasoning.
 
 ### Changed
 
+- **`RawNumFormat` is 32 bytes.** Four `u32`s — `decimal_sep`, `group_sep`, `flags`,
+  `currency_len` — then the symbol's 16 bytes inline; alignment stays 4. Every binding's
+  crossing, native and wasm alike, was updated together; nothing else at the ABI moved.
+  *(every package)*
+- **`ALL` is 95, not 31** — the currency lenience joined it — in every binding's flag set
+  (`NumStyles.All`, `STYLE_ALL`, `AllStyles`, `.all`, `ALL_STYLES`, `NumFormat.ALL`).
+  `SEPARATOR_DETECT` stays excluded. A caller that spelled `31` keeps exactly the old
+  behavior. *(every package)*
+- **Fault spans come back in the caller's own units.** The core reports UTF-8 byte
+  offsets; the C# `string`/`ReadOnlySpan<char>` doors, Java `String` doors, Python `str`
+  input and Ruby text input now remap a fault's offset and length to char/code-point units
+  when the input was not ASCII, so slicing the offending text back out of what was passed
+  needs no mapping. Byte input, and ASCII text, are unchanged and pay nothing. Go, Swift
+  and PHP strings are already UTF-8 bytes. *(NuGet, Maven Central, PyPI, RubyGems)*
+- **Java: `NumFormat` is a four-component record** (`currencySymbol` last); the
+  three-argument constructor remains and declares no symbol. **Rust: `NumFormat` gained a
+  `currency` field** — a struct literal of the three old fields no longer compiles; use
+  `NumFormat::new(decimal_sep, group_sep, flags)` or `{ ..NumFormat::INVARIANT }`. *(Maven
+  Central, `hypercast` crate)*
+- **Go, purego backend:** a core missing an export is a reported load failure the probe
+  sees, instead of a panic escaping initialization — matching the cgo and wasm backends.
+  *(`go get`)*
+
 - **The allocation proof counts per thread.** `rust/tests/allocation_free.rs` moved from a
   process-wide atomic to a `const`-initialised thread-local, so the test harness's own
   allocations on its main thread — a join-handle map insert and a timeout push right after
@@ -163,25 +162,21 @@ the core and all seven bindings; `docs/roadmap.md` records the reasoning.
 
 ### Upgrade note
 
-Source-compatible for every binding's consumers with three things to know. The native
-library and the binding must move together — the format crossing is 32 bytes now, and a
-binding of this version on an older `libhypercast` fails at load (which the new probe
-reports rather than the first cast); the committed binaries under `go/native/`,
-`php/src/native/` and `swift/…/NativeLibs/` are restaged by CI, so those three suites are
-red on a checkout until that lands. `ALL` changed value: code that stored the number keeps
-the old lenience set, code that named the constant gains currency, which with no symbol
-declared changes nothing. Non-ASCII fault spans on the C#, Java, Python and Ruby text doors
-now index characters rather than bytes — the byte doors are untouched. In Rust, `NumFormat`
-struct literals need the new field or `NumFormat::new`.
+Source-compatible for every binding's consumers, with three things to know. The native
+library and the binding move together: the format crossing is 32 bytes now, and a binding of
+this version on an older `libhypercast` fails at load, which the new probe reports rather
+than the first cast. `ALL` changed value: code that stored the number keeps the old lenience
+set, code that named the constant gains currency, which with no symbol declared changes
+nothing. Non-ASCII fault spans on the C#, Java, Python and Ruby text doors now index
+characters rather than bytes; the byte doors are untouched. In Rust, `NumFormat` struct
+literals need the new field or `NumFormat::new`.
 
-The wasm backends are opt-in and
-change nothing until asked for: no new runtime dependency in any package (Java's GraalWasm is
-`compileOnly`, Ruby's wasmtime a Gemfile group for the suite, Python's an extra, Go's behind a
-build tag — though wasmtime-go does now appear in `go.mod`, so it enters a consumer's module
-graph without entering their binary). The Rust crate's source is unchanged; the only addition
-under `rust/` is the `.cargo/config.toml` section that exports `malloc`/`free` on
-`wasm32-wasip1`, which applies to builds run from that directory and to nothing a consumer
-compiles.
+The wasm backends are opt-in and change nothing until asked for: no new runtime dependency
+in any package (Java's GraalWasm is `compileOnly`, Ruby's wasmtime a Gemfile group for the
+suite, Python's an extra, Go's behind a build tag — though wasmtime-go does now appear in
+`go.mod`, so it enters a consumer's module graph without entering their binary). The
+`.cargo/config.toml` section that exports `malloc`/`free` on `wasm32-wasip1` applies to
+builds run from `rust/` and to nothing a consumer compiles.
 
 ## [0.2.0] — 2026-09-02
 
@@ -383,6 +378,7 @@ notes: [v0.1.0 release](https://github.com/SkunkWerkx/HyperCast/releases/tag/v0.
   found in that window, in the gap between "the publish succeeded" and "a consumer can use it",
   and none of them could have failed a build in this repository.
 
-[Unreleased]: https://github.com/SkunkWerkx/HyperCast/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/SkunkWerkx/HyperCast/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/SkunkWerkx/HyperCast/releases/tag/v0.1.0

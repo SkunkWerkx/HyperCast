@@ -50,8 +50,8 @@ gates on, instead of catching `DllNotFoundException` around its first real call.
    protobuf JSON durations, a declared currency symbol at either edge — much of it grammar
    the BCL has no knob for at any price.
 3. **One engine across a polyglot system** — the same Rust core, bit-for-bit verdicts,
-   proven by the shared conformance corpus every binding replays (all 28 of this binding's
-   tests include the full thirteen-file corpus through real P/Invoke). The corpus also
+   proven by the shared conformance corpus every binding replays (the whole suite,
+   full corpus replay through real P/Invoke). The corpus also
    ships as the `HyperCast.Corpus` content package, versioned in lockstep, for a downstream
    suite that routes its own parsers through these doors.
 4. **Not slower — mostly faster.** BenchmarkDotNet, `[MemoryDiagnoser]`, lenience matched
@@ -169,7 +169,7 @@ cd rust && cargo build --release
 
 Drop the result into `csharp/HyperCast/runtimes/<rid>/native/` and the package's own MSBuild
 globs will pick it up, or point `dlopen` at it however you prefer — the C ABI in
-`rust/src/ffi.rs` is the entire contract: twenty-one exported `cast_*` functions that take
+`rust/src/ffi.rs` is the entire contract: one exported `cast_*` function per door, taking
 plain pointers into your own buffers, plus `hypercast_version`.
 
 **Reproducibility, stated honestly.** A Rust build is deterministic *locally* but not

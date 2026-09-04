@@ -29,7 +29,7 @@ let ts = cast_timestamp(b"2026-01-02T15:04:05.123456789+05:00");
 ```
 
 The crate is simultaneously the engine under every binding in this repo — built as a
-`cdylib` (`libhypercast`) with 21 `cast_*` C-ABI exports plus `hypercast_version`, dlopen'd or linked by the
+`cdylib` (`libhypercast`) with one `cast_*` C-ABI export per door plus `hypercast_version`, dlopen'd or linked by the
 C#/Java/Go/Swift/Ruby/PHP/Python bindings, all held to byte-identical verdicts by the
 shared `corpus/*.json` conformance vectors — and an ordinary `rlib` for plain Rust use.
 Zero runtime dependencies either way.
@@ -111,7 +111,7 @@ extension module needs (the host runtime's symbols resolve at load time, not lin
 **Local dev trap worth knowing:** all three builds write the *same* file —
 `target/release/libhypercast.so` — so a `--features python` build (or a `maturin build` in
 `python/`, which is one) silently replaces the plain cdylib that every other binding's dev
-loop loads. The extension build still exports all 21 `cast_*` symbols, but it also carries
+loop loads. The extension build still exports every `cast_*` symbol, but it also carries
 ~95 undefined `Py*` symbols that only resolve inside a CPython process, so the next
 `./gradlew test` or `dotnet test` fails at native load with something unhelpful about a
 missing symbol. Nothing is broken; a plain `cargo build --release` puts it back. CI hits
@@ -123,7 +123,7 @@ CI has already placed the library explicitly (`runtimes/<rid>/native/`,
 
 ## WebAssembly
 
-The full test suite — unit tests, the allocation proof, and all twelve corpus replays —
+The full test suite — unit tests, the allocation proof, and every corpus replay —
 passes under `wasmtime` on `wasm32-wasip1`: no clock, no randomness, no dependencies to
 stub. CI also builds the `wasm32-unknown-emscripten` staticlib the C# binding's
 browser-wasm packaging consumes, on every PR.

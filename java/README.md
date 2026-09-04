@@ -87,7 +87,7 @@ bytes. ASCII input is identical either way and is never touched.
 2. **The vocabulary untrusted sources actually send** — twenty boolean lexemes, accounting
    parentheses, radix prefixes, all five .NET `Guid` text forms, protobuf JSON durations.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
-   held by the shared corpus (the whole suite green, full thirteen-file corpus replay through
+   held by the shared corpus (the whole suite green, full corpus replay through
    real FFM downcalls with byte-exact fault spans — and a second time through the GraalWasm
    backend, on every build).
 4. **Faster where it matters, and the input no longer copies.** JMH, full-length — 2 forks,
@@ -156,7 +156,7 @@ same through the GraalWasm backend (see [WebAssembly](#webassembly-graalwasm)). 
 and the jar ships both in its `reachability-metadata.json` under
 `META-INF/native-image/io.github.skunkwerkx/hypercast/`, so a consumer inherits them with no
 configuration: the FFM downcall *signatures* (reachability is per-signature, not per-function
-— the twenty-one doors share three shapes, and the version probe's `() -> int` is the fourth),
+— the doors share three shapes, and the version probe's `() -> int` is the fourth),
 and a `resources` glob covering `native/*/*`.
 
 The resources half was missing from v0.0.1, and the failure mode is worth knowing because
@@ -171,7 +171,7 @@ actually proves a consumer is fine.
 ## WebAssembly (GraalWasm)
 
 The jar carries the Rust core a second time, as `native/wasm32-wasip1/hypercast.wasm` — the
-exact same twenty-one `cast_*` C exports (and the `hypercast_version` probe), compiled for
+exact same `cast_*` C exports (and the `hypercast_version` probe), compiled for
 WASI preview 1 instead of an OS.
 [GraalWasm](https://www.graalvm.org/webassembly/) runs that module inside the JVM, so `Cast`
 has a second interop path that needs no platform-specific binary and no FFM downcall: the

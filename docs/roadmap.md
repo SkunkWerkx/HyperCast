@@ -18,9 +18,9 @@ Requirements that hold across every round, stated up front so no layer designs t
   *inside* the Java, Ruby, Python and Go processes through an engine each ecosystem already
   has (GraalWasm, wasmtime). HyperCast's core is strictly easier freight than HyperUuid's
   here — pure computation over caller bytes, zero dependencies, no WASI clock or randomness
-  imports at all — and both legs are proven, not projected: the full test suite (51 unit +
-  the counting-allocator proof + all 12 corpus replays + both fault-span invariant sweeps —
-  66 tests) passes under `wasmtime` on `wasm32-wasip1`
+  imports at all — and both legs are proven, not projected: the full test suite (unit tests,
+  the counting-allocator proof, every corpus replay, both fault-span invariant sweeps)
+  passes under `wasmtime` on `wasm32-wasip1`
   (`CARGO_TARGET_WASM32_WASIP1_RUNNER="wasmtime --dir <repo>" cargo test --target
   wasm32-wasip1`; the preopen is only so the conformance test can read `corpus/`), and the
   four in-process backends run their bindings' whole suites, corpus replay included, a

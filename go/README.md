@@ -150,7 +150,7 @@ value, fault := hypercast.F64("€ 1.234,50", euros) // 1234.5
    `Guid` text forms plus `urn:uuid:` prefixes, protobuf JSON durations.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other
    binding, held by the shared corpus (the whole suite green on all three backends, full
-   thirteen-file corpus replay).
+   corpus replay).
 
 **The honest trade-off, stated as plainly as the wins elsewhere: every Go door loses
 per-call to Go's stdlib.** Go's parsers are simply excellent (`time.Parse(RFC3339Nano)` at

@@ -133,7 +133,7 @@ and memoized by identity on every backend, so declaring a currency costs a cast 
    `urn:uuid:` prefixes, protobuf JSON durations.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
    held by the shared corpus (the whole suite green on *all three* backends, full
-   twelve-file corpus replay; cross-backend agreement specs compare Magnus against Fiddle
+   corpus replay; cross-backend agreement specs compare Magnus against Fiddle
    and wasm against Fiddle across a subprocess boundary).
 4. **Faster than the stdlib on the Magnus backend, where the carrier is cheap** —
    benchmark-ips (`ruby benchmark/cast_benchmark.rb`, linux-arm64): timestamp **713 ns vs
