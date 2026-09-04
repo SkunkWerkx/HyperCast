@@ -9,13 +9,13 @@
 //! stack buffer holding the normalized ASCII (declared separators swapped to invariant,
 //! grouping stripped): `core` cannot allocate, so neither can this door.
 
-use crate::integer::{char_len_at, strip_parens, Sep};
+use crate::integer::{char_len_at, strip_currency, strip_parens, Sep};
 use crate::verdict::{trim, Fault, NumFormat};
 
 /// Upper bound on the normalized numeric text — Svartalfheim's decimal digit guard
 /// generalized: no meaningful finite real needs this many characters, and a fixed bound is
 /// what keeps the scratch space on the stack.
-const MAX_NORMALIZED: usize = 256;
+pub(crate) const MAX_NORMALIZED: usize = 256;
 
 macro_rules! real_doors {
     ($($(#[$doc:meta])* $door:ident => $ty:ty),+ $(,)?) => {$(
@@ -84,7 +84,7 @@ real_doors! {
 /// exponent arm is gated on the EXPONENT flag; everything else that a flag governs
 /// (grouping, parens, percent) uses bytes this shape already excludes, and `NaN`/`inf`
 /// literals are excluded by construction, exactly as in the full scanner.
-fn is_plain(text: &[u8], format: &NumFormat) -> bool {
+pub(crate) fn is_plain(text: &[u8], format: &NumFormat) -> bool {
     if format.decimal_sep != '.'
         || matches!(format.group_sep, '0'..='9' | '.' | 'e' | 'E' | '+' | '-')
     {
@@ -128,7 +128,7 @@ fn is_plain(text: &[u8], format: &NumFormat) -> bool {
 /// Scans the trimmed token under the declared format and writes the invariant ASCII form
 /// (`[-]digits[.digits][e[+|-]digits]`) into `buf`, returning the written length and whether
 /// a trailing percent was consumed.
-fn normalize(
+pub(crate) fn normalize(
     text: &[u8],
     start: usize,
     format: &NumFormat,
@@ -145,6 +145,7 @@ fn normalize(
         return Err(Fault::malformed(start, text.len()));
     }
     let (body, base, parens) = strip_parens(body, start, format)?;
+    let (body, base, pre_sign) = strip_currency(body, base, format)?;
 
     let mut out = 0;
     let mut push = |byte: u8, out: &mut usize| -> bool {
@@ -159,7 +160,14 @@ fn normalize(
 
     let mut i = 0;
     let mut negative = parens;
-    if body[0] == b'+' || body[0] == b'-' {
+    if let Some(sign) = pre_sign {
+        // The sign sat ahead of a leading currency symbol (`-$5`); a second one after it,
+        // or one inside accounting parens, is double negation nonsense.
+        if parens || matches!(body[0], b'+' | b'-') {
+            return Err(Fault::malformed(base, 1));
+        }
+        negative = sign == b'-';
+    } else if body[0] == b'+' || body[0] == b'-' {
         if parens {
             return Err(Fault::malformed(base, 1));
         }

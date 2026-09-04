@@ -10,7 +10,7 @@
 //! The fuzzer explores; this pins what it found so a regression fails `cargo test`, not
 //! just a nightly fuzz session.
 
-use hypercast::{DateOrder, ExcelEpoch, Fault, NumFormat, UnixPrecision};
+use hypercast::{CurrencySymbol, DateOrder, ExcelEpoch, Fault, NumFormat, UnixPrecision};
 use serde_json::Value;
 use std::path::PathBuf;
 
@@ -47,8 +47,11 @@ fn every_door(input: &[u8]) {
     let formats = [
         NumFormat::INVARIANT,
         NumFormat::DETECT,
-        NumFormat { decimal_sep: ',', group_sep: '.', flags: NumFormat::ALL },
-        NumFormat { decimal_sep: '.', group_sep: ',', flags: 0 },
+        NumFormat::new(',', '.', NumFormat::ALL),
+        NumFormat::new('.', ',', 0),
+        NumFormat::INVARIANT.with_currency(CurrencySymbol::new("$").unwrap()),
+        NumFormat::new(',', '.', NumFormat::ALL).with_currency(CurrencySymbol::new("kr.").unwrap()),
+        NumFormat::DETECT.with_currency(CurrencySymbol::new("€").unwrap()),
     ];
     for format in &formats {
         assert_span(input, hypercast::cast_i8(input, format), "cast_i8");
@@ -56,6 +59,7 @@ fn every_door(input: &[u8]) {
         assert_span(input, hypercast::cast_u64(input, format), "cast_u64");
         assert_span(input, hypercast::cast_f32(input, format), "cast_f32");
         assert_span(input, hypercast::cast_f64(input, format), "cast_f64");
+        assert_span(input, hypercast::cast_decimal(input, format), "cast_decimal");
     }
     assert_span(input, hypercast::cast_bool(input), "cast_bool");
     assert_span(input, hypercast::cast_uuid(input), "cast_uuid");

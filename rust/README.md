@@ -29,7 +29,7 @@ let ts = cast_timestamp(b"2026-01-02T15:04:05.123456789+05:00");
 ```
 
 The crate is simultaneously the engine under every binding in this repo — built as a
-`cdylib` (`libhypercast`) with 20 `cast_*` C-ABI exports, dlopen'd or linked by the
+`cdylib` (`libhypercast`) with 21 `cast_*` C-ABI exports plus `hypercast_version`, dlopen'd or linked by the
 C#/Java/Go/Swift/Ruby/PHP/Python bindings, all held to byte-identical verdicts by the
 shared `corpus/*.json` conformance vectors — and an ordinary `rlib` for plain Rust use.
 Zero runtime dependencies either way.
@@ -111,7 +111,7 @@ extension module needs (the host runtime's symbols resolve at load time, not lin
 **Local dev trap worth knowing:** all three builds write the *same* file —
 `target/release/libhypercast.so` — so a `--features python` build (or a `maturin build` in
 `python/`, which is one) silently replaces the plain cdylib that every other binding's dev
-loop loads. The extension build still exports all 20 `cast_*` symbols, but it also carries
+loop loads. The extension build still exports all 21 `cast_*` symbols, but it also carries
 ~95 undefined `Py*` symbols that only resolve inside a CPython process, so the next
 `./gradlew test` or `dotnet test` fails at native load with something unhelpful about a
 missing symbol. Nothing is broken; a plain `cargo build --release` puts it back. CI hits
@@ -138,7 +138,7 @@ cargo build --release --target wasm32-wasip1
 ```
 
 That config adds two linker flags for this target only, `--export=malloc` and
-`--export=free`, so the module's exports are the twenty `cast_*` functions from `ffi.rs`
+`--export=free`, so the module's exports are the `cast_*` functions and `hypercast_version` from `ffi.rs`
 plus wasi-libc's allocator. A wasm host cannot hand this library a pointer into its own
 memory, so every embedder — GraalWasm inside the Java binding, wasmtime inside the Ruby,
 Python and Go ones — copies the input text into a guest buffer, points the door at guest
@@ -150,7 +150,7 @@ next allocation. The module imports four `wasi_snapshot_preview1` functions — 
 `environ_get`, `environ_sizes_get`, `fd_write` and `proc_exit`, from its startup and panic
 paths — and nothing else: no clock and no entropy, because the core is pure computation
 over the bytes it is handed. `ffi.rs` itself is untouched by any of this; on every native
-target the C ABI is still exactly the twenty exports.
+target the C ABI is still exactly the same exports.
 
 ## Benchmarks
 
@@ -164,6 +164,8 @@ the doors' raw cost:
 | `cast_uuid` (D format) | 15.8 ns | 11.8 ns — `uuid` crate |
 | `cast_i64` | 15.5 ns | 9.7 ns — `str::parse` |
 | `cast_f64` | 26.6 ns | 14.6 ns — `str::parse` |
+| `cast_decimal` (`12345.6789`) | 30.5 ns | no stdlib parser — an exact `u96`+scale, never rounded; measured 28.1 ns for `cast_f64` in the same run |
+| `cast_decimal` (`$12,345.67`, declared `$`) | 58.8 ns | the currency symbol, grouping and the full engine: what a culture-shaped feed actually costs |
 | `cast_datetime` (`1/7/2026 3:04 PM`) | 30.1 ns | no stdlib parser takes it |
 | `cast_timestamp` (RFC 3339) | 30.3 ns | 21.9 ns — `time` crate |
 | `cast_datetime` (ISO) | 34.6 ns | — |

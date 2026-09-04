@@ -7,7 +7,7 @@
 //! plus a per-domain value shape on "ok" vectors, an optional `"fault": [offset, len]`
 //! span assertion on failures, and `"type"`/`"format"`/`"precision"` where a door takes one.
 
-use hypercast::{DateOrder, ExcelEpoch, Fault, NumFormat, Reason, UnixPrecision};
+use hypercast::{CurrencySymbol, DateOrder, ExcelEpoch, Fault, NumFormat, Reason, UnixPrecision};
 use serde_json::Value;
 use std::path::PathBuf;
 
@@ -73,10 +73,38 @@ fn format_of(vector: &Value) -> NumFormat {
             .and_then(|text| text.chars().next())
             .expect("single-char separator")
     };
-    NumFormat {
-        decimal_sep: sep("decimal_sep"),
-        group_sep: sep("group_sep"),
-        flags: format["flags"].as_u64().expect("flags") as u32,
+    let currency = match format.get("currency").and_then(Value::as_str) {
+        Some(symbol) => CurrencySymbol::new(symbol).expect("declarable currency symbol"),
+        None => CurrencySymbol::NONE,
+    };
+    NumFormat::new(
+        sep("decimal_sep"),
+        sep("group_sep"),
+        format["flags"].as_u64().expect("flags") as u32,
+    )
+    .with_currency(currency)
+}
+
+/// A decimal vector pins the raw triple (`magnitude` as a decimal string, `scale`,
+/// `negative`) and the canonical `value` text; both must agree with the door.
+#[test]
+fn decimal_corpus() {
+    for vector in corpus("decimal.json") {
+        let text = input(&vector).as_bytes();
+        let format = format_of(&vector);
+        let verdict = hypercast::cast_decimal(text, &format);
+        assert_verdict("decimal", &vector, verdict, |v| {
+            let magnitude: u128 = v["magnitude"].as_str().expect("magnitude").parse().expect("u128");
+            hypercast::Decimal {
+                lo: magnitude as u64,
+                hi: (magnitude >> 64) as u32,
+                scale: v["scale"].as_u64().expect("scale") as u8,
+                negative: v["negative"].as_bool().expect("negative"),
+            }
+        });
+        if let Ok(value) = verdict {
+            assert_eq!(value.to_string(), vector["value"].as_str().expect("value"), "decimal: {:?}", input(&vector));
+        }
     }
 }
 

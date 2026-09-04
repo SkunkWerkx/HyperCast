@@ -7,6 +7,8 @@
 //! - [`cast_bool`] — the natural-language boolean lexicon
 //! - [`cast_i8`]…[`cast_u64`] — the integer family under a caller-declared [`NumFormat`]
 //! - [`cast_f32`] / [`cast_f64`] — finite reals only, percent notation included
+//! - [`cast_decimal`] — the same grammar to an exact [`Decimal`] (sign, 96-bit magnitude,
+//!   base-10 scale), never rounded
 //! - [`cast_uuid`] — every .NET `Guid` text format plus `urn:uuid:`-style prefixes,
 //!   16 RFC 9562-ordered bytes out
 //! - [`cast_timestamp`] / [`cast_unix`] — instants to protobuf's `{seconds, nanos}` pair
@@ -42,6 +44,7 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 mod boolean;
+mod decimal;
 mod ffi;
 mod integer;
 mod real;
@@ -57,6 +60,8 @@ mod ruby_ext;
 mod php_ext;
 
 pub use boolean::cast_bool;
+pub use decimal::cast_decimal;
+pub use ffi::hypercast_version;
 pub use integer::{cast_i8, cast_i16, cast_i32, cast_i64, cast_u8, cast_u16, cast_u32, cast_u64};
 pub use real::{cast_f32, cast_f64};
 pub use temporal::{
@@ -65,7 +70,9 @@ pub use temporal::{
     MAX_TIMESTAMP_SECONDS, MIN_TIMESTAMP_SECONDS,
 };
 pub use uuid::cast_uuid;
-pub use verdict::{CivilDateTime, Date, Duration, Fault, NumFormat, Reason, Timestamp};
+pub use verdict::{
+    CivilDateTime, CurrencySymbol, Date, Decimal, Duration, Fault, NumFormat, Reason, Timestamp,
+};
 
 /// Presents a verdict optionally: an [`Reason::Empty`] fault becomes `Ok(None)` — Rust's
 /// absent — and everything else flows through untouched. The same presentation helper
@@ -140,7 +147,7 @@ mod tests {
 
     #[test]
     fn int_honors_declared_eurozone_grouping() {
-        let eurozone = NumFormat { decimal_sep: ',', group_sep: '.', flags: NumFormat::ALL };
+        let eurozone = NumFormat::new(',', '.', NumFormat::ALL);
         assert_eq!(cast_i32(b"1.234", &eurozone), Ok(1234));
         assert_eq!(reason(cast_i32(b"1,5", &eurozone)), Reason::Malformed);
     }
@@ -232,9 +239,9 @@ mod tests {
 
     #[test]
     fn real_honors_declared_eurozone_separators() {
-        let eurozone = NumFormat { decimal_sep: ',', group_sep: '.', flags: NumFormat::ALL };
+        let eurozone = NumFormat::new(',', '.', NumFormat::ALL);
         assert_eq!(cast_f64(b"1.234,5", &eurozone), Ok(1234.5));
-        let french = NumFormat { decimal_sep: ',', group_sep: '\u{00A0}', flags: NumFormat::ALL };
+        let french = NumFormat::new(',', '\u{00A0}', NumFormat::ALL);
         assert_eq!(cast_f64("1\u{00A0}234,5".as_bytes(), &french), Ok(1234.5));
     }
 
@@ -291,6 +298,149 @@ mod tests {
         assert_eq!(reason(cast_f64(b"%", &INVARIANT)), Reason::Malformed);
         assert_eq!(reason(cast_f64(b"1,234.5,6", &INVARIANT)), Reason::Malformed);
         assert_eq!(reason(cast_f64(b"", &INVARIANT)), Reason::Empty);
+    }
+
+    // --- currency ---
+
+    fn dollars() -> NumFormat {
+        NumFormat::INVARIANT.with_currency(CurrencySymbol::new("$").unwrap())
+    }
+
+    #[test]
+    fn currency_symbol_is_matched_at_either_edge_once() {
+        let usd = dollars();
+        assert_eq!(cast_i32(b"$1,234", &usd), Ok(1234));
+        assert_eq!(cast_i32(b"1,234$", &usd), Ok(1234));
+        assert_eq!(cast_i32(b"$ 5", &usd), Ok(5));
+        assert_eq!(cast_i32(b"5 $", &usd), Ok(5));
+        assert_eq!(cast_i32(b"-$5", &usd), Ok(-5));
+        assert_eq!(cast_i32(b"$-5", &usd), Ok(-5));
+        assert_eq!(cast_i32(b"($5)", &usd), Ok(-5));
+        assert_eq!(cast_f64(b"$1,234.50", &usd), Ok(1234.5));
+        assert_eq!(cast_f64(b"$50%", &usd), Ok(0.5));
+        assert_eq!(reason(cast_i32(b"$1$", &usd)), Reason::Malformed);
+        assert_eq!(reason(cast_i32(b"-$-5", &usd)), Reason::Malformed);
+        assert_eq!(reason(cast_i32(b"$", &usd)), Reason::Malformed);
+        assert_eq!(reason(cast_i32(b"$(5)", &usd)), Reason::Malformed);
+    }
+
+    #[test]
+    fn currency_symbol_may_contain_separator_characters() {
+        let danish = NumFormat::new(',', '.', NumFormat::ALL)
+            .with_currency(CurrencySymbol::new("kr.").unwrap());
+        assert_eq!(cast_i64(b"1.234.567 kr.", &danish), Ok(1_234_567));
+        assert_eq!(cast_f64(b"1.234,50 kr.", &danish), Ok(1234.5));
+        let swiss = NumFormat::new('.', '\'', NumFormat::ALL)
+            .with_currency(CurrencySymbol::new("CHF").unwrap());
+        assert_eq!(cast_f32(b"CHF 1'234.50", &swiss), Ok(1234.5));
+    }
+
+    #[test]
+    fn currency_flag_gates_the_symbol_and_no_symbol_matches_nothing() {
+        let declared_but_off = NumFormat { flags: NumFormat::ALL & !NumFormat::CURRENCY, ..dollars() };
+        let fault = cast_i32(b"$5", &declared_but_off).unwrap_err();
+        assert_eq!((fault.reason, fault.offset, fault.len), (Reason::Malformed, 0, 1));
+        assert_eq!(cast_i32(b"5", &declared_but_off), Ok(5));
+        // Flag on, nothing declared: the invariant profile is unchanged by the flag.
+        assert_eq!(reason(cast_i32(b"$5", &INVARIANT)), Reason::Malformed);
+        assert_eq!(cast_i32(b"5", &INVARIANT), Ok(5));
+    }
+
+    #[test]
+    fn currency_symbol_rejects_what_would_collide_with_the_scan() {
+        assert!(CurrencySymbol::new("").is_none());
+        assert!(CurrencySymbol::new("US 1").is_none());
+        assert!(CurrencySymbol::new("$1").is_none());
+        assert!(CurrencySymbol::new("seventeen-bytes!!").is_none());
+        assert_eq!(CurrencySymbol::new("руб.").unwrap().as_str(), "руб.");
+        assert!(CurrencySymbol::NONE.is_empty());
+    }
+
+    #[test]
+    fn separator_detection_carries_the_currency_through() {
+        let detect = NumFormat::DETECT.with_currency(CurrencySymbol::new("€").unwrap());
+        assert_eq!(cast_f64("€ 1.234.567,89".as_bytes(), &detect), Ok(1_234_567.89));
+        assert_eq!(cast_i32("1.234.567 €".as_bytes(), &detect), Ok(1_234_567));
+    }
+
+    // --- decimal ---
+
+    fn dec(text: &[u8]) -> Result<Decimal, Fault> {
+        cast_decimal(text, &INVARIANT)
+    }
+
+    fn decimal(magnitude: u128, scale: u8, negative: bool) -> Decimal {
+        Decimal { lo: magnitude as u64, hi: (magnitude >> 64) as u32, scale, negative }
+    }
+
+    #[test]
+    fn decimal_is_exact_and_canonical() {
+        assert_eq!(dec(b"0.1"), Ok(decimal(1, 1, false)));
+        assert_eq!(dec(b"1.10"), Ok(decimal(11, 1, false)));
+        assert_eq!(dec(b"1.1000"), Ok(decimal(11, 1, false)));
+        assert_eq!(dec(b"100"), Ok(decimal(100, 0, false)));
+        assert_eq!(dec(b"1,234.50"), Ok(decimal(12345, 1, false)));
+        assert_eq!(dec(b"(2.5)"), Ok(decimal(25, 1, true)));
+        assert_eq!(dec(b".5"), Ok(decimal(5, 1, false)));
+        assert_eq!(dec(b"2.5e3"), Ok(decimal(2500, 0, false)));
+        assert_eq!(dec(b"2.5e-3"), Ok(decimal(25, 4, false)));
+        assert_eq!(dec(b"50%"), Ok(decimal(5, 1, false)));
+        assert_eq!(dec(b"100%"), Ok(decimal(1, 0, false)));
+        assert_eq!(dec(b"(2.5)%"), Ok(decimal(25, 3, true)));
+        assert_eq!(cast_decimal(b"$1,234.50", &dollars()), Ok(decimal(12345, 1, false)));
+    }
+
+    #[test]
+    fn decimal_zero_is_never_negative() {
+        assert_eq!(dec(b"-0"), Ok(decimal(0, 0, false)));
+        assert_eq!(dec(b"-0.00"), Ok(decimal(0, 0, false)));
+        assert_eq!(dec(b"0e999999"), Ok(decimal(0, 0, false)));
+    }
+
+    #[test]
+    fn decimal_range_is_96_bits_and_28_places_with_no_rounding() {
+        let max = (1u128 << 96) - 1;
+        assert_eq!(dec(b"79228162514264337593543950335"), Ok(decimal(max, 0, false)));
+        assert_eq!(dec(b"-79228162514264337593543950335"), Ok(decimal(max, 0, true)));
+        assert_eq!(reason(dec(b"79228162514264337593543950336")), Reason::OutOfRange);
+        assert_eq!(dec(b"0.0000000000000000000000000001"), Ok(decimal(1, 28, false)));
+        assert_eq!(reason(dec(b"0.00000000000000000000000000001")), Reason::OutOfRange);
+        assert_eq!(reason(dec(b"1e-29")), Reason::OutOfRange);
+        assert_eq!(reason(dec(b"1e29")), Reason::OutOfRange);
+        // Exact trailing zeros are always shed — which is also how an over-deep literal
+        // comes to fit; a nonzero digit never is.
+        assert_eq!(dec(b"1.0000000000000000000000000000000"), Ok(decimal(1, 0, false)));
+        assert_eq!(dec(b"7922816251426433759354395033.50"), Ok(decimal(max, 1, false)));
+        assert_eq!(reason(dec(b"7922816251426433759354395033.51")), Reason::OutOfRange);
+    }
+
+    #[test]
+    fn decimal_rejects_the_same_shapes_the_real_doors_do() {
+        assert_eq!(reason(dec(b"NaN")), Reason::Malformed);
+        assert_eq!(reason(dec(b"Infinity")), Reason::Malformed);
+        assert_eq!(reason(dec(b"1.2.3")), Reason::Malformed);
+        assert_eq!(reason(dec(b"1e")), Reason::Malformed);
+        assert_eq!(reason(dec(b"")), Reason::Empty);
+        let fault = dec(b"1.2.3").unwrap_err();
+        assert_eq!((fault.offset, fault.len), (3, 1));
+    }
+
+    #[test]
+    fn decimal_renders_its_canonical_text() {
+        assert_eq!(dec(b"1.10").unwrap().to_string(), "1.1");
+        assert_eq!(dec(b"(2.5)%").unwrap().to_string(), "-0.025");
+        assert_eq!(dec(b"0.00").unwrap().to_string(), "0");
+        assert_eq!(dec(b"2.5e3").unwrap().to_string(), "2500");
+        assert_eq!(dec(b"1e28").unwrap().to_string(), "10000000000000000000000000000");
+    }
+
+    #[test]
+    fn version_is_packed_from_the_manifest() {
+        let expected: u32 = env!("CARGO_PKG_VERSION")
+            .split('.')
+            .map(|field| field.parse::<u32>().unwrap())
+            .fold(0, |acc, field| (acc << 8) | field);
+        assert_eq!(hypercast_version(), expected);
     }
 
     // --- uuid ---

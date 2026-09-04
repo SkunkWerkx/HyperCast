@@ -33,5 +33,14 @@
   {"input": "0,785", "type": "f64", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 63}, "expect": "ok", "value": 0.785},
   {"input": "3,1415", "type": "f64", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 63}, "expect": "ok", "value": 3.1415},
   {"input": "12.185", "type": "f64", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 63}, "expect": "malformed", "fault": [2, 1]},
-  {"input": "1,000", "type": "f64", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 63}, "expect": "malformed", "fault": [1, 1]}
+  {"input": "1,000", "type": "f64", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 63}, "expect": "malformed", "fault": [1, 1]},
+  {"type": "f64", "input": "$1,234.50", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 95, "currency": "$"}, "expect": "ok", "value": 1234.5},
+  {"type": "f64", "input": "-$2.5", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 95, "currency": "$"}, "expect": "ok", "value": -2.5},
+  {"type": "f64", "input": "€ 1.234,50", "format": {"decimal_sep": ",", "group_sep": ".", "flags": 95, "currency": "€"}, "expect": "ok", "value": 1234.5},
+  {"type": "f64", "input": "($2.50)", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 95, "currency": "$"}, "expect": "ok", "value": -2.5},
+  {"type": "f64", "input": "$50%", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 95, "currency": "$"}, "expect": "ok", "value": 0.5},
+  {"type": "f32", "input": "2.5 CHF", "format": {"decimal_sep": ".", "group_sep": "'", "flags": 95, "currency": "CHF"}, "expect": "ok", "value": 2.5},
+  {"type": "f64", "input": "$1,234.50", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 31, "currency": "$"}, "expect": "malformed", "fault": [0, 1]},
+  {"type": "f64", "input": "$", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 95, "currency": "$"}, "expect": "malformed", "fault": [0, 1]},
+  {"type": "f64", "input": "1.5$$", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 95, "currency": "$"}, "expect": "malformed", "fault": [3, 1]}
 ]

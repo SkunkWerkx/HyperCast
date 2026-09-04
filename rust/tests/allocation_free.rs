@@ -90,6 +90,17 @@ fn allocation_free() {
         hypercast::cast_datetime(b"1/7/2026 3:04:05.123 PM", hypercast::DateOrder::MonthDayYear)
             .unwrap()
     });
+    let dollars = NumFormat::INVARIANT.with_currency(hypercast::CurrencySymbol::new("$").unwrap());
+    assert_allocation_free("cast_i64 currency", || hypercast::cast_i64(b"($1,234)", &dollars).unwrap());
+    assert_allocation_free("cast_f64 currency", || hypercast::cast_f64(b"-$1,234.5", &dollars).unwrap());
+    assert_allocation_free("cast_decimal", || hypercast::cast_decimal(b"1,234.50", &format).unwrap());
+    assert_allocation_free("cast_decimal currency percent", || {
+        hypercast::cast_decimal(b"($1,234.50)%", &dollars).unwrap()
+    });
+    assert_allocation_free("cast_decimal failure", || {
+        hypercast::cast_decimal(b"79228162514264337593543950336", &format).unwrap_err()
+    });
+    assert_allocation_free("hypercast_version", || hypercast::hypercast_version());
     assert_allocation_free("cast_f64 (separator detection)", || {
         hypercast::cast_f64(b"1.234.567,89", &hypercast::NumFormat::DETECT).unwrap()
     });
