@@ -164,6 +164,109 @@ public sealed class CastTests
 	}
 
 	[Fact]
+	void NumFormat_bridges_from_any_format_provider()
+	{
+		// The shape every BCL TryParse takes — no CultureInfo cast at the call site.
+		IFormatProvider provider = CultureInfo.GetCultureInfo("de-DE");
+		NumFormat.From(provider).ShouldBe(NumFormat.From(CultureInfo.GetCultureInfo("de-DE")));
+		NumFormat.From(NumberFormatInfo.InvariantInfo).CurrencySymbol.ShouldBe("¤");
+		NumFormat.From(CultureInfo.InvariantCulture).ShouldBe(NumFormat.From(NumberFormatInfo.InvariantInfo));
+	}
+
+	[Fact]
+	void Currency_symbol_comes_from_the_culture_and_is_matched_at_either_edge()
+	{
+		var usd = NumFormat.From(CultureInfo.GetCultureInfo("en-US"));
+		usd.CurrencySymbol.ShouldBe("$");
+		(Cast.Int32("$1,234", usd) is Success<int> { Value: 1234 }).ShouldBeTrue();
+		(Cast.Int32("-$5", usd) is Success<int> { Value: -5 }).ShouldBeTrue();
+		(Cast.Int32("($5)", usd) is Success<int> { Value: -5 }).ShouldBeTrue();
+		(Cast.Double("$1,234.50", usd) is Success<double> { Value: 1234.5 }).ShouldBeTrue();
+		(Cast.Decimal("$1,234.50", usd) is Success<decimal> { Value: 1234.50m }).ShouldBeTrue();
+		var euro = NumFormat.From(CultureInfo.GetCultureInfo("de-DE"));
+		euro.CurrencySymbol.ShouldBe("€");
+		(Cast.Double("1.234,50 €", euro) is Success<double> { Value: 1234.5 }).ShouldBeTrue();
+		// Declared but not permitted: the symbol is a stray character like any other.
+		var declaredOff = usd with { Styles = NumStyles.All & ~NumStyles.Currency };
+		(Cast.Int32("$5", declaredOff) is Fault { Reason: CastFailure.Malformed, Offset: 0, Length: 1 }).ShouldBeTrue();
+		// Permitted but nothing declared: the invariant profile is unchanged by the flag.
+		(Cast.Int32("$5", NumFormat.Invariant) is Fault { Reason: CastFailure.Malformed }).ShouldBeTrue();
+	}
+
+	[Fact]
+	void Currency_symbol_that_would_collide_with_the_scan_is_a_caller_bug()
+	{
+		Should.Throw<ArgumentException>(() => Cast.Int32("5", NumFormat.Invariant with { CurrencySymbol = "US 1" }));
+		Should.Throw<ArgumentException>(() => Cast.Int32("5", NumFormat.Invariant with { CurrencySymbol = new string('€', 6) }));
+		// Multi-byte, multi-character symbols that fit are fine — and may contain a separator.
+		var danish = new NumFormat(',', '.', NumStyles.All, "kr.");
+		(Cast.Int64("1.234.567 kr.", danish) is Success<long> { Value: 1_234_567 }).ShouldBeTrue();
+	}
+
+	[Fact]
+	void Decimal_is_exact_and_canonical()
+	{
+		Cast.Decimal("0.1", NumFormat.Invariant).ShouldBe(new(new Success<decimal>(0.1m)));
+		// Canonical: trailing fraction zeros are trimmed, so the scale is minimal.
+		Cast.Decimal("1.10", NumFormat.Invariant).TryGetValue(out Success<decimal> scaled).ShouldBeTrue();
+		scaled.Value.ShouldBe(1.1m);
+		scaled.Value.Scale.ShouldBe((byte)1);
+		Cast.Decimal("100", NumFormat.Invariant).TryGetValue(out Success<decimal> hundred).ShouldBeTrue();
+		hundred.Value.Scale.ShouldBe((byte)0);
+		Cast.Decimal("(2.5)%", NumFormat.Invariant).ShouldBe(new(new Success<decimal>(-0.025m)));
+		Cast.Decimal("79228162514264337593543950335", NumFormat.Invariant).ShouldBe(new(new Success<decimal>(decimal.MaxValue)));
+		(Cast.Decimal("79228162514264337593543950336", NumFormat.Invariant) is Fault { Reason: CastFailure.OutOfRange }).ShouldBeTrue();
+		(Cast.Decimal("0.00000000000000000000000000001", NumFormat.Invariant) is Fault { Reason: CastFailure.OutOfRange }).ShouldBeTrue();
+		// Zero is never negative — no -0 decimal escapes the door.
+		Cast.Decimal("-0.00", NumFormat.Invariant).TryGetValue(out Success<decimal> zero).ShouldBeTrue();
+		decimal.IsNegative(zero.Value).ShouldBeFalse();
+		zero.Value.Scale.ShouldBe((byte)0);
+		(Cast.Decimal("1.234,50", NumFormat.Detect) is Success<decimal> { Value: 1234.50m }).ShouldBeTrue();
+	}
+
+	[Fact]
+	void Numeric_dispatches_every_target_through_one_generic_door()
+	{
+		(Cast.Numeric<sbyte>("-128", NumFormat.Invariant) is Success<sbyte> { Value: -128 }).ShouldBeTrue();
+		(Cast.Numeric<short>("(1,234)", NumFormat.Invariant) is Success<short> { Value: -1234 }).ShouldBeTrue();
+		(Cast.Numeric<int>("0x2A", NumFormat.Invariant) is Success<int> { Value: 42 }).ShouldBeTrue();
+		(Cast.Numeric<long>("1e3", NumFormat.Invariant) is Success<long> { Value: 1000 }).ShouldBeTrue();
+		(Cast.Numeric<byte>("255", NumFormat.Invariant) is Success<byte> { Value: 255 }).ShouldBeTrue();
+		(Cast.Numeric<ushort>("65535", NumFormat.Invariant) is Success<ushort> { Value: 65535 }).ShouldBeTrue();
+		(Cast.Numeric<uint>("4294967295", NumFormat.Invariant) is Success<uint> { Value: 4294967295 }).ShouldBeTrue();
+		(Cast.Numeric<ulong>("18446744073709551615", NumFormat.Invariant) is Success<ulong> { Value: ulong.MaxValue }).ShouldBeTrue();
+		(Cast.Numeric<float>("2.5", NumFormat.Invariant) is Success<float> { Value: 2.5f }).ShouldBeTrue();
+		(Cast.Numeric<double>("25.5%", NumFormat.Invariant) is Success<double> { Value: 0.255 }).ShouldBeTrue();
+		(Cast.Numeric<decimal>("1.10", NumFormat.Invariant) is Success<decimal> { Value: 1.10m }).ShouldBeTrue();
+		// The fault travels through untouched.
+		(Cast.Numeric<byte>("256", NumFormat.Invariant) is Fault { Reason: CastFailure.OutOfRange }).ShouldBeTrue();
+		Should.Throw<NotSupportedException>(() => Cast.Numeric<Int128>("1", NumFormat.Invariant));
+	}
+
+	[Fact]
+	void Utf16_doors_report_char_offsets_not_byte_offsets()
+	{
+		// "€" is three UTF-8 bytes but one char: the byte door says 3+1, the char door 1+1.
+		var euroThenX = "€x"u8;
+		(Cast.Int32(euroThenX, NumFormat.Invariant) is Fault { Offset: 0, Length: 3 }).ShouldBeTrue();
+		(Cast.Int32("€x", NumFormat.Invariant) is Fault { Offset: 0, Length: 1 }).ShouldBeTrue();
+		(Cast.Int32("1€", NumFormat.Invariant) is Fault { Offset: 1, Length: 1 }).ShouldBeTrue();
+		(Cast.Int32("1€"u8, NumFormat.Invariant) is Fault { Offset: 1, Length: 3 }).ShouldBeTrue();
+		(Cast.Int32("€€1x", NumFormat.Invariant) is Fault { Offset: 0, Length: 1 }).ShouldBeTrue();
+		(Cast.Double("1 234,5x", new NumFormat(',', ' ', NumStyles.All)) is Fault { Offset: 7, Length: 1 }).ShouldBeTrue();
+	}
+
+	[Fact]
+	void Native_library_is_probed_once_and_reports_its_version()
+	{
+		Cast.IsAvailable.ShouldBeTrue();
+		Cast.NativeVersion.ShouldNotBeNull();
+		// The binding and the core share one version — the probe exists to catch the mismatch.
+		var binding = typeof(Cast).Assembly.GetName().Version!;
+		Cast.NativeVersion.ShouldBe(new Version(binding.Major, binding.Minor, binding.Build));
+	}
+
+	[Fact]
 	void Equal_separators_are_a_caller_bug_not_a_verdict() =>
 		Should.Throw<ArgumentException>(() =>
 			Cast.Int32("42", new NumFormat('.', '.', NumStyles.All)));

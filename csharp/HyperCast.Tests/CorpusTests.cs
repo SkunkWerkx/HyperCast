@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 
@@ -38,10 +39,33 @@ public sealed class CorpusTests
 	{
 		if (!vector.TryGetProperty("format", out var format))
 			return NumFormat.Invariant;
+		var currency = format.TryGetProperty("currency", out var symbol) ? symbol.GetString()! : "";
 		return new(
 			format.GetProperty("decimal_sep").GetString()![0],
 			format.GetProperty("group_sep").GetString()![0],
-			(NumStyles)format.GetProperty("flags").GetUInt32());
+			(NumStyles)format.GetProperty("flags").GetUInt32(),
+			currency);
+	}
+
+	[Fact]
+	void Decimal_corpus()
+	{
+		foreach (var vector in Corpus("decimal.json"))
+		{
+			var verdict = Cast.Decimal(InputBytes(vector), FormatOf(vector));
+			// The raw triple is the contract; decimal's own constructor is exact for it.
+			AssertVerdict("decimal", vector, verdict, static v =>
+			{
+				var magnitude = UInt128.Parse(v.GetProperty("magnitude").GetString()!, CultureInfo.InvariantCulture);
+				var lo = (ulong)magnitude;
+				return new decimal((int)lo, (int)(lo >> 32), (int)(magnitude >> 64),
+					v.GetProperty("negative").GetBoolean(), v.GetProperty("scale").GetByte());
+			});
+			// The minimal scale is part of the contract too — decimal equality ignores it, so
+			// pin it through the canonical text, which the core renders with no trailing zeros.
+			if (verdict.TryGetValue(out Success<decimal> success))
+				success.Value.ToString(CultureInfo.InvariantCulture).ShouldBe(vector.GetProperty("value").GetString());
+		}
 	}
 
 	static void AssertVerdict<T>(string domain, JsonElement vector, Verdict<T> verdict, Func<JsonElement, T> expected)

@@ -21,6 +21,9 @@ void Check<T>(string name, Verdict<T> verdict, T expected) where T : struct
 Check("bool", Cast.Boolean("enabled"), true);
 Check("i32", Cast.Int32("(1,234)", NumFormat.Invariant), -1234);
 Check("f64", Cast.Double("25.5%", NumFormat.Invariant), 0.255);
+Check("decimal", Cast.Decimal("(1,234.50)", NumFormat.Invariant), -1234.50m);
+Check("currency", Cast.Int32("($1,234)", new NumFormat('.', ',', NumStyles.All, "$")), -1234);
+Check("generic", Cast.Numeric<short>("0x7FFF", NumFormat.Invariant), (short)32767);
 Check("uuid", Cast.Uuid("urn:uuid:01020304-0506-0708-090a-0b0c0d0e0f10"),
 	new Guid("01020304-0506-0708-090a-0b0c0d0e0f10"));
 Check("timestamp", Cast.Timestamp("2026-01-02T15:04:05+05:00"),
@@ -36,6 +39,12 @@ var disposition = Cast.Int32("not-a-number", NumFormat.Invariant) switch
 	Fault f => $"fault {f.Reason} @ {f.Offset}+{f.Length}",
 };
 Console.WriteLine($"union switch: {disposition}");
+
+// The probe must answer before any door is the thing that finds out, and it must name the
+// core it actually loaded — under AOT too, where a stale runtimes/ asset is the classic slip.
+Console.WriteLine($"native: available={Cast.IsAvailable} version={Cast.NativeVersion}");
+if (!Cast.IsAvailable || Cast.NativeVersion is null)
+	failures++;
 if (!disposition.StartsWith("fault Malformed", StringComparison.Ordinal))
 	failures++;
 

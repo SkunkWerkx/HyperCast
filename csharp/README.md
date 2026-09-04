@@ -8,9 +8,9 @@
 union — the value, or `Empty`/`Malformed`/`OutOfRange` plus the exact byte span that
 offended — and an unhandled case is a compile error, not a review nit.**
 
-Allocation-free scalar casts — booleans, the full integer family, reals, UUIDs, temporals —
-as source-generated `[LibraryImport]` P/Invoke straight into the native `libhypercast` Rust
-core. No runtime bridge, no reflection anywhere in the assembly. .NET 11 is the floor
+Allocation-free scalar casts — booleans, the full integer family, reals, an exact
+`decimal`, UUIDs, temporals — as source-generated `[LibraryImport]` P/Invoke straight into
+the native `libhypercast` Rust core. No runtime bridge, no reflection anywhere in the assembly. .NET 11 is the floor
 deliberately: `Verdict<T>` is a real `[Union]`, and CS8509 (non-exhaustive switch) is
 elevated to an error, so a missing disposition fails the build — the entire point of
 returning a union instead of throwing.
@@ -23,12 +23,23 @@ var message = Cast.Int32("(1,234)", NumFormat.From(culture)) switch
 };
 ```
 
-Door names mirror the native ABI (`Int32`, `Double`, `Timestamp`, …) so the polyglot
-surface reads identically across bindings. Culture never lives in the core —
-`NumFormat.From(CultureInfo)` bridges .NET's culture machinery to the caller-declared
-format the native side actually reads. .NET-flavored fidelity, stated honestly:
-`DateTimeOffset`/`TimeOnly`/`TimeSpan` resolve to 100 ns ticks, so sub-tick nanoseconds
-truncate (the core carries full nanosecond fidelity; .NET's clock types don't).
+Door names mirror the native ABI (`Int32`, `Double`, `Decimal`, `Timestamp`, …) so the
+polyglot surface reads identically across bindings; `Cast.Numeric<T>` fronts all eleven
+numeric doors for a caller that is itself generic over the target. Culture never lives in
+the core — `NumFormat.From(CultureInfo)` (or `From(IFormatProvider)`, the shape every BCL
+`TryParse` already takes) bridges .NET's culture machinery to the caller-declared format
+the native side actually reads: separators, lenience flags, and the culture's currency
+symbol. Or spell the format directly — `new NumFormat(',', '\u00A0', NumStyles.All, "€")`
+declares an arbitrary pair, and `NumStyles.None` turns every lenience off. .NET-flavored
+fidelity, stated honestly: `DateTimeOffset`/`TimeOnly`/`TimeSpan` resolve to 100 ns
+ticks, so sub-tick nanoseconds truncate (the core carries full nanosecond fidelity; .NET's
+clock types don't). `Cast.Decimal` is exact and canonical — sign, 96-bit magnitude, trailing
+fraction zeros trimmed, never rounded — and `Fault` spans on the `string`/`ReadOnlySpan<char>` doors are
+char offsets, so slicing the offending text back out needs no mapping.
+
+Before the first cast, `Cast.IsAvailable` says whether the native library resolved and
+`Cast.NativeVersion` names the core it loaded — the probe a consumer with a managed fallback
+gates on, instead of catching `DllNotFoundException` around its first real call.
 
 ## Why not the BCL's own `TryParse` family?
 
@@ -36,10 +47,13 @@ truncate (the core carries full nanosecond fidelity; .NET's clock types don't).
    against the BCL's bare `false`.
 2. **The vocabulary untrusted sources actually send** — twenty boolean lexemes, accounting
    parentheses, radix prefixes, all five `Guid` formats *plus* `urn:uuid:` prefixes,
-   protobuf JSON durations — much of it grammar the BCL has no knob for at any price.
+   protobuf JSON durations, a declared currency symbol at either edge — much of it grammar
+   the BCL has no knob for at any price.
 3. **One engine across a polyglot system** — the same Rust core, bit-for-bit verdicts,
    proven by the shared conformance corpus every binding replays (all 28 of this binding's
-   tests include the full twelve-file corpus through real P/Invoke).
+   tests include the full thirteen-file corpus through real P/Invoke). The corpus also
+   ships as the `HyperCast.Corpus` content package, versioned in lockstep, for a downstream
+   suite that routes its own parsers through these doors.
 4. **Not slower — mostly faster.** BenchmarkDotNet, `[MemoryDiagnoser]`, lenience matched
    where the BCL has the knob, FFI crossing and UTF-16→UTF-8 transcode *included* in every
    HyperCast number; zero managed allocation on every row, both sides (linux-arm64,
@@ -75,6 +89,25 @@ truncate (the core carries full nanosecond fidelity; .NET's clock types don't).
    and rent from the pool only when the encoder says the text did not fit, instead of
    sizing by the 3-bytes-per-char worst case — which had sent any text past ~170 chars to
    the pool even when it was plain ASCII that fit with room to spare.
+
+   The two doors the first consumer asked for, same box, one run, string doors with the
+   transcode included, invariant unless stated — printed as measured, because two of the
+   three rows are losses:
+
+   | Door | HyperCast | BCL | Verdict |
+   | --- | ---: | ---: | --- |
+   | `Cast.Decimal` (`12,345.6789`) vs `decimal.TryParse` | 95.9 ns | 94.8 ns (median 81.8) | wash — and exact, canonical, never rounded |
+   | `Cast.Decimal` (`($1,234.50)`, en-US `$`) vs `decimal.TryParse` `NumberStyles.Currency` | 115.6 ns | 71.3 ns | 1.6x slower |
+   | `Cast.Double` (same text, same format) vs `double.TryParse` `NumberStyles.Currency` | 117.3 ns | 69.1 ns | 1.7x slower |
+   | `Cast.Double` (`12345.6789`) vs `double.TryParse`, same run | 56.1 ns | 56.1 ns | wash |
+
+   The currency rows lose for the reason the eurozone row below does, plus one more: a
+   declared symbol takes the door's normalize-then-parse path rather than its invariant fast
+   lane, and the core itself pays ~29 ns for the symbol and the grouping (`cast_decimal`
+   30.5 ns plain against 58.8 ns for `$12,345.67`, measured in the Rust suite). What the
+   consumer buys with the loss is the reason it asked: without a declared symbol, every
+   non-invariant culture fell out of the native path entirely. A fast lane for a symbol at
+   one edge is the obvious next receipt to chase; it is not built.
 
    **Separator detection is nearly free**: `NumFormat.Detect` on `1.234.567,89` costs
    104.4 ns against 98.7 ns for the same text under a declared eurozone format — ~6 ns for
@@ -136,8 +169,8 @@ cd rust && cargo build --release
 
 Drop the result into `csharp/HyperCast/runtimes/<rid>/native/` and the package's own MSBuild
 globs will pick it up, or point `dlopen` at it however you prefer — the C ABI in
-`rust/src/ffi.rs` is the entire contract: twenty exported `cast_*` functions that take plain
-pointers into your own buffers.
+`rust/src/ffi.rs` is the entire contract: twenty-one exported `cast_*` functions that take
+plain pointers into your own buffers, plus `hypercast_version`.
 
 **Reproducibility, stated honestly.** A Rust build is deterministic *locally* but not
 bit-reproducible *across machines* — differing toolchain versions and embedded build paths

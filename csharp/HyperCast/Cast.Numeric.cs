@@ -1,3 +1,6 @@
+using System.Numerics;
+using System.Runtime.CompilerServices;
+
 namespace HyperCast;
 
 public static partial class Cast
@@ -9,7 +12,7 @@ public static partial class Cast
 	/// two's-complement radix prefixes (<c>0xFF</c> is -1).
 	/// </summary>
 	/// <param name="utf8">The raw scalar text as UTF-8 bytes.</param>
-	/// <param name="format">The declared numeric notation — state it out loud (<see cref="NumFormat.Invariant"/>, or <see cref="NumFormat.From"/>).</param>
+	/// <param name="format">The declared numeric notation — state it out loud (<see cref="NumFormat.Invariant"/>, or <see cref="NumFormat.From(System.Globalization.CultureInfo)"/>).</param>
 	public static unsafe Verdict<sbyte> SByte(ReadOnlySpan<byte> utf8, NumFormat format)
 	{
 		var raw = format.ToRaw();
@@ -152,6 +155,109 @@ public static partial class Cast
 		return code == 0 ? value : Failed<double>(code, fault);
 	}
 
+	/// <summary>
+	/// Casts decimal text to an exact <see cref="decimal"/> under the declared
+	/// <paramref name="format"/> — the same notation the real doors read (declared
+	/// separators and grouping, accounting parentheses, exponent, trailing percent, declared
+	/// currency), but no floating point is ever formed: <c>0.1</c> is one tenth and
+	/// <c>50%</c> is exactly <c>0.5</c>. The result is canonical — exact trailing zeros in
+	/// the fraction are trimmed, so <c>1.10</c> and <c>1.1</c> both come back with a
+	/// <see cref="decimal.Scale"/> of 1, and zero is scale 0, never negative. Precision is a
+	/// range, not a rounding opportunity: a magnitude past <see cref="decimal.MaxValue"/> or
+	/// more nonzero fractional places than 28 is <see cref="CastFailure.OutOfRange"/>.
+	/// </summary>
+	/// <param name="utf8">The raw scalar text as UTF-8 bytes.</param>
+	/// <param name="format">The declared numeric notation.</param>
+	public static unsafe Verdict<decimal> Decimal(ReadOnlySpan<byte> utf8, NumFormat format)
+	{
+		var raw = format.ToRaw();
+		RawDecimal value = default;
+		RawFault fault = default;
+		int code;
+		fixed (byte* ptr = utf8)
+			code = cast_decimal(ptr, (nuint)utf8.Length, &raw, &value, &fault);
+		return code == 0
+			? new decimal((int)value.Lo, (int)(value.Lo >> 32), (int)value.Hi, value.Negative != 0, value.Scale)
+			: Failed<decimal>(code, fault);
+	}
+
+	/// <inheritdoc cref="Decimal(ReadOnlySpan{byte}, NumFormat)"/>
+	/// <param name="input">The raw scalar text.</param>
+	/// <param name="format">The declared numeric notation.</param>
+	public static Verdict<decimal> Decimal(ReadOnlySpan<char> input, NumFormat format)
+	{
+		byte[]? rented = null;
+		try
+		{
+			var utf8 = Utf8(input, stackalloc byte[Utf8StackBytes], ref rented);
+			return Remap(Decimal(utf8, format), utf8, input.Length);
+		}
+		finally
+		{
+			Recycle(rented);
+		}
+	}
+
+	/// <summary>
+	/// The numeric doors behind one generic entry point, for a caller that is itself generic
+	/// over the target type — a parser family, a column mapper — so it need not write the
+	/// <c>typeof</c> dispatch itself. Exactly the eleven numeric targets this binding has a
+	/// door for: <see cref="sbyte"/>, <see cref="short"/>, <see cref="int"/>,
+	/// <see cref="long"/>, <see cref="byte"/>, <see cref="ushort"/>, <see cref="uint"/>,
+	/// <see cref="ulong"/>, <see cref="float"/>, <see cref="double"/> and
+	/// <see cref="decimal"/>. The <c>typeof</c> test folds per instantiation, so a given
+	/// <typeparamref name="T"/> costs one direct call.
+	/// </summary>
+	/// <typeparam name="T">The numeric target — one of the eleven above.</typeparam>
+	/// <param name="utf8">The raw scalar text as UTF-8 bytes.</param>
+	/// <param name="format">The declared numeric notation.</param>
+	/// <exception cref="NotSupportedException"><typeparamref name="T"/> has no native door — a caller bug, not a data verdict.</exception>
+	public static Verdict<T> Numeric<T>(ReadOnlySpan<byte> utf8, NumFormat format) where T : struct, INumber<T>
+	{
+		if (typeof(T) == typeof(sbyte)) return Fold<sbyte, T>(SByte(utf8, format));
+		if (typeof(T) == typeof(short)) return Fold<short, T>(Int16(utf8, format));
+		if (typeof(T) == typeof(int)) return Fold<int, T>(Int32(utf8, format));
+		if (typeof(T) == typeof(long)) return Fold<long, T>(Int64(utf8, format));
+		if (typeof(T) == typeof(byte)) return Fold<byte, T>(Byte(utf8, format));
+		if (typeof(T) == typeof(ushort)) return Fold<ushort, T>(UInt16(utf8, format));
+		if (typeof(T) == typeof(uint)) return Fold<uint, T>(UInt32(utf8, format));
+		if (typeof(T) == typeof(ulong)) return Fold<ulong, T>(UInt64(utf8, format));
+		if (typeof(T) == typeof(float)) return Fold<float, T>(Single(utf8, format));
+		if (typeof(T) == typeof(double)) return Fold<double, T>(Double(utf8, format));
+		if (typeof(T) == typeof(decimal)) return Fold<decimal, T>(Decimal(utf8, format));
+		throw new NotSupportedException($"No native door casts to {typeof(T)}.");
+	}
+
+	/// <inheritdoc cref="Numeric{T}(ReadOnlySpan{byte}, NumFormat)"/>
+	/// <param name="input">The raw scalar text.</param>
+	/// <param name="format">The declared numeric notation.</param>
+	public static Verdict<T> Numeric<T>(ReadOnlySpan<char> input, NumFormat format) where T : struct, INumber<T>
+	{
+		byte[]? rented = null;
+		try
+		{
+			var utf8 = Utf8(input, stackalloc byte[Utf8StackBytes], ref rented);
+			return Remap(Numeric<T>(utf8, format), utf8, input.Length);
+		}
+		finally
+		{
+			Recycle(rented);
+		}
+	}
+
+	// Re-types a concrete door's verdict as the caller's T once typeof(T) has proven the two
+	// identical — an identity reinterpret, never a conversion, so no value can change.
+	static Verdict<T> Fold<TNative, T>(Verdict<TNative> verdict) where TNative : struct where T : struct
+	{
+		if (verdict.TryGetValue(out Success<TNative> success))
+		{
+			var value = success.Value;
+			return new Verdict<T>(new Success<T>(Unsafe.As<TNative, T>(ref value)));
+		}
+		verdict.TryGetValue(out Fault fault);
+		return new Verdict<T>(fault);
+	}
+
 	/// <inheritdoc cref="SByte(ReadOnlySpan{byte}, NumFormat)"/>
 	/// <param name="input">The raw scalar text.</param>
 	/// <param name="format">The declared numeric notation.</param>
@@ -160,7 +266,8 @@ public static partial class Cast
 		byte[]? rented = null;
 		try
 		{
-			return SByte(Utf8(input, stackalloc byte[Utf8StackBytes], ref rented), format);
+			var utf8 = Utf8(input, stackalloc byte[Utf8StackBytes], ref rented);
+			return Remap(SByte(utf8, format), utf8, input.Length);
 		}
 		finally
 		{
@@ -176,7 +283,8 @@ public static partial class Cast
 		byte[]? rented = null;
 		try
 		{
-			return Int16(Utf8(input, stackalloc byte[Utf8StackBytes], ref rented), format);
+			var utf8 = Utf8(input, stackalloc byte[Utf8StackBytes], ref rented);
+			return Remap(Int16(utf8, format), utf8, input.Length);
 		}
 		finally
 		{
@@ -192,7 +300,8 @@ public static partial class Cast
 		byte[]? rented = null;
 		try
 		{
-			return Int32(Utf8(input, stackalloc byte[Utf8StackBytes], ref rented), format);
+			var utf8 = Utf8(input, stackalloc byte[Utf8StackBytes], ref rented);
+			return Remap(Int32(utf8, format), utf8, input.Length);
 		}
 		finally
 		{
@@ -208,7 +317,8 @@ public static partial class Cast
 		byte[]? rented = null;
 		try
 		{
-			return Int64(Utf8(input, stackalloc byte[Utf8StackBytes], ref rented), format);
+			var utf8 = Utf8(input, stackalloc byte[Utf8StackBytes], ref rented);
+			return Remap(Int64(utf8, format), utf8, input.Length);
 		}
 		finally
 		{
@@ -224,7 +334,8 @@ public static partial class Cast
 		byte[]? rented = null;
 		try
 		{
-			return Byte(Utf8(input, stackalloc byte[Utf8StackBytes], ref rented), format);
+			var utf8 = Utf8(input, stackalloc byte[Utf8StackBytes], ref rented);
+			return Remap(Byte(utf8, format), utf8, input.Length);
 		}
 		finally
 		{
@@ -240,7 +351,8 @@ public static partial class Cast
 		byte[]? rented = null;
 		try
 		{
-			return UInt16(Utf8(input, stackalloc byte[Utf8StackBytes], ref rented), format);
+			var utf8 = Utf8(input, stackalloc byte[Utf8StackBytes], ref rented);
+			return Remap(UInt16(utf8, format), utf8, input.Length);
 		}
 		finally
 		{
@@ -256,7 +368,8 @@ public static partial class Cast
 		byte[]? rented = null;
 		try
 		{
-			return UInt32(Utf8(input, stackalloc byte[Utf8StackBytes], ref rented), format);
+			var utf8 = Utf8(input, stackalloc byte[Utf8StackBytes], ref rented);
+			return Remap(UInt32(utf8, format), utf8, input.Length);
 		}
 		finally
 		{
@@ -272,7 +385,8 @@ public static partial class Cast
 		byte[]? rented = null;
 		try
 		{
-			return UInt64(Utf8(input, stackalloc byte[Utf8StackBytes], ref rented), format);
+			var utf8 = Utf8(input, stackalloc byte[Utf8StackBytes], ref rented);
+			return Remap(UInt64(utf8, format), utf8, input.Length);
 		}
 		finally
 		{
@@ -288,7 +402,8 @@ public static partial class Cast
 		byte[]? rented = null;
 		try
 		{
-			return Single(Utf8(input, stackalloc byte[Utf8StackBytes], ref rented), format);
+			var utf8 = Utf8(input, stackalloc byte[Utf8StackBytes], ref rented);
+			return Remap(Single(utf8, format), utf8, input.Length);
 		}
 		finally
 		{
@@ -304,7 +419,8 @@ public static partial class Cast
 		byte[]? rented = null;
 		try
 		{
-			return Double(Utf8(input, stackalloc byte[Utf8StackBytes], ref rented), format);
+			var utf8 = Utf8(input, stackalloc byte[Utf8StackBytes], ref rented);
+			return Remap(Double(utf8, format), utf8, input.Length);
 		}
 		finally
 		{

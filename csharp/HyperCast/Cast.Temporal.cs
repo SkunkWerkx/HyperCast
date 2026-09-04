@@ -27,7 +27,8 @@ public static partial class Cast
 		byte[]? rented = null;
 		try
 		{
-			return Uuid(Utf8(input, stackalloc byte[Utf8StackBytes], ref rented));
+			var utf8 = Utf8(input, stackalloc byte[Utf8StackBytes], ref rented);
+			return Remap(Uuid(utf8), utf8, input.Length);
 		}
 		finally
 		{
@@ -61,7 +62,8 @@ public static partial class Cast
 		byte[]? rented = null;
 		try
 		{
-			return Timestamp(Utf8(input, stackalloc byte[Utf8StackBytes], ref rented));
+			var utf8 = Utf8(input, stackalloc byte[Utf8StackBytes], ref rented);
+			return Remap(Timestamp(utf8), utf8, input.Length);
 		}
 		finally
 		{
@@ -97,7 +99,8 @@ public static partial class Cast
 		byte[]? rented = null;
 		try
 		{
-			return Unix(Utf8(input, stackalloc byte[Utf8StackBytes], ref rented), precision);
+			var utf8 = Utf8(input, stackalloc byte[Utf8StackBytes], ref rented);
+			return Remap(Unix(utf8, precision), utf8, input.Length);
 		}
 		finally
 		{
@@ -141,7 +144,8 @@ public static partial class Cast
 		byte[]? rented = null;
 		try
 		{
-			return ExcelSerial(Utf8(input, stackalloc byte[Utf8StackBytes], ref rented), epoch);
+			var utf8 = Utf8(input, stackalloc byte[Utf8StackBytes], ref rented);
+			return Remap(ExcelSerial(utf8, epoch), utf8, input.Length);
 		}
 		finally
 		{
@@ -174,7 +178,8 @@ public static partial class Cast
 		byte[]? rented = null;
 		try
 		{
-			return Date(Utf8(input, stackalloc byte[Utf8StackBytes], ref rented));
+			var utf8 = Utf8(input, stackalloc byte[Utf8StackBytes], ref rented);
+			return Remap(Date(utf8), utf8, input.Length);
 		}
 		finally
 		{
@@ -215,7 +220,8 @@ public static partial class Cast
 		byte[]? rented = null;
 		try
 		{
-			return Date(Utf8(input, stackalloc byte[Utf8StackBytes], ref rented), order);
+			var utf8 = Utf8(input, stackalloc byte[Utf8StackBytes], ref rented);
+			return Remap(Date(utf8, order), utf8, input.Length);
 		}
 		finally
 		{
@@ -261,7 +267,8 @@ public static partial class Cast
 		byte[]? rented = null;
 		try
 		{
-			return DateTime(Utf8(input, stackalloc byte[Utf8StackBytes], ref rented), order);
+			var utf8 = Utf8(input, stackalloc byte[Utf8StackBytes], ref rented);
+			return Remap(DateTime(utf8, order), utf8, input.Length);
 		}
 		finally
 		{
@@ -293,7 +300,8 @@ public static partial class Cast
 		byte[]? rented = null;
 		try
 		{
-			return Time(Utf8(input, stackalloc byte[Utf8StackBytes], ref rented));
+			var utf8 = Utf8(input, stackalloc byte[Utf8StackBytes], ref rented);
+			return Remap(Time(utf8), utf8, input.Length);
 		}
 		finally
 		{
@@ -329,7 +337,8 @@ public static partial class Cast
 		byte[]? rented = null;
 		try
 		{
-			return Duration(Utf8(input, stackalloc byte[Utf8StackBytes], ref rented));
+			var utf8 = Utf8(input, stackalloc byte[Utf8StackBytes], ref rented);
+			return Remap(Duration(utf8), utf8, input.Length);
 		}
 		finally
 		{
