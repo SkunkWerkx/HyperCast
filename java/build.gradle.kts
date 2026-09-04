@@ -53,16 +53,24 @@ val nativeRid = run {
     }
 }
 
-val stageNativeLibrary = tasks.register<Copy>("stageNativeLibrary") {
-    // Only when this platform's library has NOT been placed under src/main/resources
-    // explicitly. The forge builds the PyO3 extension (cargo build --features python) into
-    // the same rust/target/release/ BEFORE the Java leg runs, so staging from there in CI
-    // put an extension with unresolved Py* imports beside the correctly placed one and the
-    // suite failed at native load. Explicit placement is the signal that the right bytes
-    // are already on the classpath.
-    onlyIf { !file("src/main/resources/native/$nativeRid").exists() }
+// Only when this platform's library has NOT been placed under src/main/resources
+// explicitly. The forge builds the PyO3 extension (cargo build --features python) into the
+// same rust/target/release/ BEFORE the Java leg runs, so staging from there in CI put an
+// extension with unresolved Py* imports beside the correctly placed one and the suite
+// failed at native load. Explicit placement is the signal that the right bytes are already
+// on the classpath.
+//
+// A Sync that stages nothing, rather than a Copy that is skipped: a skipped task leaves
+// whatever it staged last time in generated-resources, and the moment a library is placed
+// explicitly on top of that, processResources fails on the duplicate entry (found by
+// staging, then placing, in one working tree). Sync removes what it did not stage.
+val nativePlaced = file("src/main/resources/native/$nativeRid").exists()
+val stageNativeLibrary = tasks.register<Sync>("stageNativeLibrary") {
     from("../rust/target/release") {
         include("libhypercast.so", "libhypercast.dylib", "hypercast.dll")
+        if (nativePlaced) {
+            exclude("**")
+        }
     }
     into(layout.buildDirectory.dir("generated-resources/native/$nativeRid"))
 }
@@ -71,10 +79,13 @@ val stageNativeLibrary = tasks.register<Copy>("stageNativeLibrary") {
 // `cargo build --release --target wasm32-wasip1` in ../rust (from inside rust/, so its
 // .cargo/config.toml export flags apply) lands at /native/wasm32-wasip1/hypercast.wasm on
 // the classpath, beside the platform library. Same explicit-placement yield as above.
-val stageWasmModule = tasks.register<Copy>("stageWasmModule") {
-    onlyIf { !file("src/main/resources/native/wasm32-wasip1").exists() }
+val wasmPlaced = file("src/main/resources/native/wasm32-wasip1").exists()
+val stageWasmModule = tasks.register<Sync>("stageWasmModule") {
     from("../rust/target/wasm32-wasip1/release") {
         include("hypercast.wasm")
+        if (wasmPlaced) {
+            exclude("**")
+        }
     }
     into(layout.buildDirectory.dir("generated-resources/native/wasm32-wasip1"))
 }
