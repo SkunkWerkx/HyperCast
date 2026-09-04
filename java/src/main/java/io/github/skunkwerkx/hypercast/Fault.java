@@ -6,18 +6,20 @@ package io.github.skunkwerkx.hypercast;
  * (slicing the offending text out of the input) is the caller's choice, paid only when
  * actually rendering.
  *
- * <p>{@code offset} and {@code length} are byte offsets into the UTF-8 representation of
- * the input — exactly what the {@code byte[]} doors received, and identical to character
- * offsets whenever the input is ASCII (which scalar text almost always is). For non-ASCII
- * input passed through a {@link String} door, map accordingly before slicing.
+ * <p>{@code offset} and {@code length} are in the input's own unit. Through a {@code byte[]}
+ * or {@link java.lang.foreign.MemorySegment} door they are byte offsets into the UTF-8 the
+ * core received, verbatim. Through a {@link String} door they are UTF-16 code-unit offsets
+ * into that string — the core's byte span rebased, so
+ * {@code text.substring(offset, offset + length)} is the offending text whatever the input
+ * contained; for ASCII the two units coincide and nothing is rebased.
  *
  * <p>Generic only so it can inhabit {@code Verdict<T>} — the type parameter is phantom;
  * a fault carries no value.
  *
  * @param <T> the verdict's value type (phantom)
  * @param reason the closed-set conversion reason, never {@code null}
- * @param offset byte offset of the offending span in the input's UTF-8 form
- * @param length byte length of the offending span; zero for {@link CastFailure#EMPTY}
+ * @param offset offset of the offending span in the input: bytes for byte input, chars for a {@link String}
+ * @param length length of the offending span in the same unit; zero for {@link CastFailure#EMPTY}
  */
 public record Fault<T>(CastFailure reason, int offset, int length) implements Verdict<T> {
     /** Rejects a {@code null} reason up front — a fault with no reason is a caller bug. */

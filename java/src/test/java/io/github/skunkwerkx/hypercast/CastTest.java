@@ -1,5 +1,6 @@
 package io.github.skunkwerkx.hypercast;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -7,6 +8,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
+import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -129,6 +132,106 @@ final class CastTest {
     void equalSeparatorsAreACallerBugNotAVerdict() {
         assertThrows(IllegalArgumentException.class, () -> new NumFormat('.', '.', NumFormat.STYLE_ALL));
     }
+
+    @Test
+    void currencySymbolComesFromTheLocaleAndIsHonoredOnlyWhenDeclared() {
+        NumFormat us = NumFormat.from(Locale.US);
+        assertEquals("$", us.currencySymbol());
+        assertEquals(new Success<>(1234.5), Cast.f64("$1,234.50", us));
+        assertEquals(new Success<>(-5), Cast.i32("-$5", us));
+        assertEquals(new Success<>(new BigDecimal("-1234.5")), Cast.decimal("($1,234.50)", us));
+        // A trailing symbol, eurozone style, with the locale's own separators.
+        assertEquals(new Success<>(1234.5), Cast.f64("1.234,50 €", NumFormat.from(Locale.GERMANY)));
+        // Declared but not permitted: the symbol is the malformed span, not the whole token.
+        NumFormat declaredOnly = new NumFormat('.', ',', NumFormat.STYLE_ALL & ~NumFormat.STYLE_CURRENCY, "$");
+        assertEquals(new Fault<Integer>(CastFailure.MALFORMED, 0, 1), Cast.i32("$5", declaredOnly));
+        // The three-field constructor still declares nothing, and INVARIANT never did.
+        assertEquals("", NumFormat.INVARIANT.currencySymbol());
+        assertEquals(new Fault<Integer>(CastFailure.MALFORMED, 0, 1), Cast.i32("$5", NumFormat.INVARIANT));
+    }
+
+    @Test
+    void malformedCurrencySymbolsAreACallerBugNotAVerdict() {
+        // The core's own rule, enforced before the crossing: no ASCII digit, no ASCII
+        // whitespace, at most 16 UTF-8 bytes, whole code points.
+        assertThrows(IllegalArgumentException.class, () -> new NumFormat('.', ',', NumFormat.STYLE_ALL, "$1"));
+        assertThrows(IllegalArgumentException.class, () -> new NumFormat('.', ',', NumFormat.STYLE_ALL, "US $"));
+        assertThrows(IllegalArgumentException.class, () -> new NumFormat('.', ',', NumFormat.STYLE_ALL, "€".repeat(6)));
+        assertThrows(IllegalArgumentException.class, () -> new NumFormat('.', ',', NumFormat.STYLE_ALL, "\ud83d"));
+        // The widest real symbols fit: "€" ×5 is 15 bytes.
+        assertEquals("€€€€€", new NumFormat('.', ',', NumFormat.STYLE_ALL, "€".repeat(5)).currencySymbol());
+    }
+
+    @Test
+    void decimalIsExactAndCanonical() {
+        // BigDecimal.equals is scale-sensitive, so these pin the scale as well as the value:
+        // exact trailing fraction zeros are trimmed, so the scale is minimal.
+        assertEquals(new Success<>(new BigDecimal("0.1")), Cast.decimal("0.1", NumFormat.INVARIANT));
+        assertEquals(new Success<>(new BigDecimal("1.1")), Cast.decimal("1.10", NumFormat.INVARIANT));
+        assertEquals(new Success<>(new BigDecimal("1.1")), Cast.decimal("1.1", NumFormat.INVARIANT));
+        assertEquals(new Success<>(new BigDecimal("1.1")), Cast.decimal("1.1000", NumFormat.INVARIANT));
+        assertEquals(new Success<>(new BigDecimal("12345.5")), Cast.decimal("12,345.50", NumFormat.INVARIANT));
+        assertEquals(new Success<>(new BigDecimal("0.5")), Cast.decimal("50%", NumFormat.INVARIANT));
+        // Integer zeros are never touched: 100 stays 100 / scale 0.
+        assertEquals(new Success<>(new BigDecimal("100")), Cast.decimal("100", NumFormat.INVARIANT));
+        assertEquals(new Success<>(new BigDecimal("-0.025")), Cast.decimal("(2.5)%", NumFormat.INVARIANT));
+        assertEquals(new Success<>(new BigDecimal("2500")), Cast.decimal("2.5e3", NumFormat.INVARIANT));
+        // The full 96 bits: 2^96 - 1 is the largest magnitude the core carries.
+        assertEquals(new Success<>(new BigDecimal("79228162514264337593543950335")),
+                Cast.decimal("79228162514264337593543950335", NumFormat.INVARIANT));
+        assertEquals(new Fault<BigDecimal>(CastFailure.OUT_OF_RANGE, 0, 29),
+                Cast.decimal("79228162514264337593543950336", NumFormat.INVARIANT));
+        // Zero is never negative, whatever the text said, and is always scale 0.
+        switch (Cast.decimal("-0.00", NumFormat.INVARIANT)) {
+            case Success<BigDecimal> s -> {
+                assertEquals(0, s.value().signum());
+                assertEquals(0, s.value().scale());
+            }
+            case Fault<BigDecimal> f -> throw new AssertionError("zero faulted: " + f);
+        }
+    }
+
+    @Test
+    void nativeVersionIsThisBindingsOwn() {
+        // The probe decodes the packed major.minor.patch of the core actually loaded — the
+        // platform library or the wasm module — which must be the one this binding is built
+        // against: build.gradle.kts hands its own version to the test JVM, and rust/Cargo.toml
+        // moves with it.
+        // A CI override may append a prerelease tag (0.2.0-ci.N, per build.gradle.kts); the
+        // core carries only major.minor.patch, so compare that much.
+        var expected = System.getProperty("hypercast.version").split("-", 2)[0];
+        assertEquals(expected, Cast.nativeVersion());
+    }
+
+    @Test
+    void isAvailableAgreesWithNativeVersion() {
+        // The suite only ever runs with a core staged, so the probe says so — and it says so
+        // by the same crossing nativeVersion() makes, so the two cannot disagree.
+        assertTrue(Cast.isAvailable());
+        assertDoesNotThrow(Cast::nativeVersion);
+    }
+
+    @Test
+    void stringDoorsReportCharOffsetsAndByteDoorsReportByteOffsets() {
+        // The core faults in bytes. A String caller thinks in chars, so the span is rebased
+        // for them and substring() names the offending text; the byte doors are the core's
+        // own span, verbatim. ASCII input is identical either way and is never touched.
+        assertEquals(new Fault<Integer>(CastFailure.MALFORMED, 0, 1), Cast.i32("€x", NumFormat.INVARIANT));
+        assertEquals(new Fault<Integer>(CastFailure.MALFORMED, 0, 3),
+                Cast.i32("€x".getBytes(StandardCharsets.UTF_8), NumFormat.INVARIANT));
+        assertEquals(new Fault<Integer>(CastFailure.MALFORMED, 1, 1), Cast.i32("1€", NumFormat.INVARIANT));
+        assertEquals(new Fault<Integer>(CastFailure.MALFORMED, 1, 3),
+                Cast.i32("1€".getBytes(StandardCharsets.UTF_8), NumFormat.INVARIANT));
+        // A supplementary code point is one UTF-8 sequence and two UTF-16 units.
+        String astral = "12\uD83D\uDE00";
+        switch (Cast.i32(astral, NumFormat.INVARIANT)) {
+            case Fault<Integer> fault -> assertEquals("\uD83D\uDE00",
+                    astral.substring(fault.offset(), fault.offset() + fault.length()));
+            case Success<Integer> success -> throw new AssertionError("emoji parsed: " + success);
+        }
+        assertEquals(new Fault<Integer>(CastFailure.MALFORMED, 4, 1), Cast.i32("  12x4", NumFormat.INVARIANT));
+    }
+
     @Test
     void dateOrderDisambiguatesLikeTheCulturesDo() {
         // The canonical ambiguity: 1/7/2026 is January 7th under en-US's month-first short

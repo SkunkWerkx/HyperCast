@@ -5,6 +5,7 @@ import io.github.skunkwerkx.hypercast.DateOrder;
 import io.github.skunkwerkx.hypercast.NumFormat;
 import io.github.skunkwerkx.hypercast.Verdict;
 import java.lang.foreign.MemorySegment;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.text.NumberFormat;
 import java.text.ParseException;
@@ -98,6 +99,16 @@ public class CastBenchmarks {
     @Benchmark
     public double jdkParseDouble() {
         return Double.parseDouble(doubleText);
+    }
+
+    @Benchmark
+    public Verdict<BigDecimal> castDecimal() {
+        return Cast.decimal(doubleText, INVARIANT);
+    }
+
+    @Benchmark
+    public BigDecimal jdkBigDecimalParse() {
+        return new BigDecimal(doubleText);
     }
 
     @Benchmark

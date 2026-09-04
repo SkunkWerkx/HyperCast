@@ -7,10 +7,12 @@ import io.github.skunkwerkx.hypercast.NumFormat;
 import io.github.skunkwerkx.hypercast.Success;
 import io.github.skunkwerkx.hypercast.UnixPrecision;
 import io.github.skunkwerkx.hypercast.Verdict;
+import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.util.Locale;
 import java.util.UUID;
 
 /**
@@ -47,10 +49,26 @@ public final class Main {
     public static void main(String[] args) {
         // Which interop path this binary took — "native" (FFM) or "wasm" (GraalWasm) — so a
         // -Dhypercast.backend=wasm run is visibly proving the path it claims to.
+        // The non-throwing gate first: under AOT a missing resource registration would make
+        // the core unloadable, and this is the probe a consumer would notice that through.
+        System.out.println("available: " + Cast.isAvailable());
+        if (!Cast.isAvailable()) {
+            failures++;
+        }
         System.out.println("backend: " + Cast.backend());
+        // The version probe is the one export linked without the critical option, so it
+        // needs its own downcall signature in reachability-metadata.json — this is what
+        // proves the registration reached the binary.
+        String version = Cast.nativeVersion();
+        System.out.println("version: " + version);
+        if (!version.matches("\\d+\\.\\d+\\.\\d+")) {
+            System.out.println("FAIL version: " + version + " (expected major.minor.patch)");
+            failures++;
+        }
         check("bool", Cast.bool("enabled"), true);
         check("i32", Cast.i32("(1,234)", NumFormat.INVARIANT), -1234);
         check("f64", Cast.f64("25.5%", NumFormat.INVARIANT), 0.255);
+        check("decimal", Cast.decimal("$1,234.50", NumFormat.from(Locale.US)), new BigDecimal("1234.5"));
         check("uuid", Cast.uuid("urn:uuid:01020304-0506-0708-090a-0b0c0d0e0f10"),
                 UUID.fromString("01020304-0506-0708-090a-0b0c0d0e0f10"));
         check("timestamp", Cast.timestamp("2026-01-02T15:04:05.123456789+05:00"),

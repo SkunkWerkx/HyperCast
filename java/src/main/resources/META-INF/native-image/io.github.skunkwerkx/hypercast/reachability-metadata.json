@@ -20,7 +20,8 @@
       { "returnType": "jint", "parameterTypes": ["void*", "jlong", "void*", "void*", "void*"],
         "options": { "critical": { "allowHeapAccess": true } } },
       { "returnType": "jint", "parameterTypes": ["void*", "jlong", "jint", "void*", "void*"],
-        "options": { "critical": { "allowHeapAccess": true } } }
+        "options": { "critical": { "allowHeapAccess": true } } },
+      { "returnType": "jint", "parameterTypes": [] }
     ]
   }
 }
