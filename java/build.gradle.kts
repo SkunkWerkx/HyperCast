@@ -43,13 +43,29 @@ dependencies {
 // the Rust cdylib exists in-repo (a release-profile cargo build in ../rust), stage it as
 // the classpath resource /native/{rid}/{lib} the loader expects. CI overlays every
 // platform's build into the same layout before packaging.
+//
+// The same resolution NativePlatform.java does at runtime, so the library lands under the
+// RID the loader will ask for: x64 or arm64 only, and on Linux the musl family when this
+// (Gradle's own) JVM has musl's loader mapped — a `cargo build` on Alpine produces a musl
+// library, and it has to be staged as linux-musl-*. Anything else stages nothing, and the
+// suite then runs through the wasm module exactly as a consumer on that platform would.
 val nativeRid = run {
     val osName = System.getProperty("os.name").lowercase()
-    val isArm = System.getProperty("os.arch").lowercase().let { it.contains("aarch64") || it.contains("arm") }
+    val arch = when (System.getProperty("os.arch").lowercase()) {
+        "amd64", "x86_64", "x64" -> "x64"
+        "aarch64", "arm64" -> "arm64"
+        else -> null
+    }
+    val musl = runCatching {
+        file("/proc/self/maps").readLines(Charsets.ISO_8859_1)
+            .any { it.contains("ld-musl-") || it.contains("libc.musl-") }
+    }.getOrDefault(false)
     when {
-        osName.contains("win") -> if (isArm) "win-arm64" else "win-x64"
-        osName.contains("mac") || osName.contains("darwin") -> if (isArm) "osx-arm64" else "osx-x64"
-        else -> if (isArm) "linux-arm64" else "linux-x64"
+        arch == null -> "unsupported"
+        osName.startsWith("windows") -> "win-$arch"
+        osName.startsWith("mac") || osName.startsWith("darwin") -> "osx-$arch"
+        osName.startsWith("linux") -> if (musl) "linux-musl-$arch" else "linux-$arch"
+        else -> "unsupported"
     }
 }
 
@@ -68,7 +84,7 @@ val nativePlaced = file("src/main/resources/native/$nativeRid").exists()
 val stageNativeLibrary = tasks.register<Sync>("stageNativeLibrary") {
     from("../rust/target/release") {
         include("libhypercast.so", "libhypercast.dylib", "hypercast.dll")
-        if (nativePlaced) {
+        if (nativePlaced || nativeRid == "unsupported") {
             exclude("**")
         }
     }
@@ -122,6 +138,14 @@ tasks.jar {
         from("../LICENSE")
         from("README.md")
     }
+    // A stable module name for a consumer on the module path — without it the name is
+    // derived from the jar's file name — and therefore something exact to hand
+    // --enable-native-access (README.md's "Native access" section). Not a module-info.java:
+    // GraalWasm is an optional dependency this jar has to load without, and a module
+    // descriptor would have to declare it one way or the other.
+    manifest {
+        attributes("Automatic-Module-Name" to "io.github.skunkwerkx.hypercast")
+    }
 }
 
 tasks.test {
@@ -158,13 +182,21 @@ tasks.check {
 }
 
 java {
-    // 22 is the floor: java.lang.foreign is stable, non-preview only from JDK 22 (JEP 454)
-    // onward, and the Verdict union's whole point — sealed interface + record patterns +
-    // exhaustive switch, Java's native discriminated union — is stable since 21. The same
-    // reasoning that put .NET 11 under the C# binding, at Java's own version numbers.
-    sourceCompatibility = JavaVersion.VERSION_22
-    targetCompatibility = JavaVersion.VERSION_22
+    // 25 is the floor: the first long-term-support JDK with the final java.lang.foreign API
+    // (JEP 454 finalized it in 22, and 22 through 24 are all past end of life), comfortably
+    // past the Verdict union's own requirement — sealed interface + record patterns +
+    // exhaustive switch, Java's native discriminated union, stable since 21. Only
+    // upstream-supported runtimes, the same rule that put .NET 11 under the C# binding.
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
     withSourcesJar()
+}
+
+// --release, not just the -source/-target pair above: it also compiles against JDK 25's own
+// API signatures whatever JDK is running the build, so a newer JDK on a CI leg cannot let a
+// newer API slip into a jar that claims 25.
+tasks.withType<JavaCompile>().configureEach {
+    options.release = 25
 }
 
 // javadoc's own doclint already flags a missing comment/@param/@return as a WARNING by
@@ -191,10 +223,11 @@ mavenPublishing {
     pom {
         name.set("hypercast")
         description.set(
-            "Allocation-free scalar parsing — booleans, numerics, UUIDs, temporals — " +
+            "Allocation-lean scalar parsing — booleans, numerics, UUIDs, temporals — " +
                 "as a sealed-interface Verdict union (value or reason + offending span, " +
                 "never an exception), FFM bindings straight into a native Rust core " +
-                "(libhypercast). No runtime bridge, no reflection, no extra dependency."
+                "(libhypercast) that never allocates. JDK 25+. No runtime bridge, no extra " +
+                "dependency."
         )
         url.set("https://github.com/SkunkWerkx/HyperCast")
         licenses {

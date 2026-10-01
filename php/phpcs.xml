@@ -12,6 +12,8 @@
     <file>src/Fault.php</file>
     <file>src/NumFormat.php</file>
     <file>src/UnixPrecision.php</file>
+    <file>src/DateOrder.php</file>
+    <file>src/ExcelEpoch.php</file>
     <file>src/Duration.php</file>
     <file>src/Decimal.php</file>
 

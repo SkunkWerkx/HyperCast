@@ -3,16 +3,21 @@ require_relative "hypercast/native_platform"
 require_relative "hypercast/runtime"
 
 # Allocation-lean scalar casts — booleans, numerics, exact decimals, UUIDs, temporals —
-# calling directly into the native libhypercast shared library via Fiddle. Every door
-# returns a verdict: Success or Fault (a closed reason plus the offending byte span), never
-# an exception for bad data — the only exceptions here are caller bugs (a malformed
-# NumFormat), never data.
+# from one Rust core, reached through whichever of three backends this install can load:
+# the core linked straight into a Magnus native extension (shipped precompiled in the
+# platform gems), the native libhypercast shared library called through Fiddle (the
+# universal gem bundles one per supported platform), or the same core as a WebAssembly
+# module inside the wasmtime gem. HyperCast::BACKEND names the one that loaded; the
+# selection logic is at the bottom of this file. Every door returns a verdict: Success or
+# Fault (a closed reason plus the offending span), never an exception for bad data — the
+# only exceptions here are caller bugs (a malformed NumFormat, an undeclared option, text
+# that is not a String), never data, and the same exception on every backend.
 #
 # Consume with Ruby's own pattern matching over the two Data case types:
 #
 #   case HyperCast.i32("(1,234)", HyperCast::NumFormat::INVARIANT)
 #   in HyperCast::Success(value:) then puts "got #{value}"          # -1234
-#   in HyperCast::Fault(reason:, offset:) then puts "#{reason} at byte #{offset}"
+#   in HyperCast::Fault(reason:, offset:) then puts "#{reason} at #{offset}"
 #   end
 #
 # Door names mirror the native ABI (i32, f64, timestamp, ...) so the polyglot surface reads
@@ -50,25 +55,29 @@ module HyperCast
   # 16 UTF-8 bytes or carrying an ASCII digit or ASCII whitespace, are a caller bug
   # (ArgumentError), never a verdict.
   NumFormat = Data.define(:decimal_sep, :group_sep, :flags, :currency) do
-    # The widest currency symbol the native ABI carries inline, in UTF-8 bytes.
-    CURRENCY_MAX_BYTES = 16
-
     # Validates the declared separators up front — single characters, and distinct from
     # each other — and the currency symbol (a String of at most 16 UTF-8 bytes with no
     # ASCII digit or ASCII whitespace, since those would collide with the digit scan and
     # the trimming around the symbol), so a malformed format fails loudly as the caller bug
-    # it is. The symbol is stored transcoded to UTF-8, the encoding the core reads.
+    # it is. All three are stored transcoded to UTF-8, the encoding the core reads — a
+    # separator handed over in another encoding (a no-break space read from a Latin-1
+    # file, say) is the same code point on every backend rather than whatever its bytes
+    # happened to spell in the encoding it arrived in.
     def initialize(decimal_sep:, group_sep:, flags:, currency: "")
       raise ArgumentError, "separators must be single characters" unless
         decimal_sep.is_a?(String) && decimal_sep.length == 1 &&
         group_sep.is_a?(String) && group_sep.length == 1
+
+      decimal_sep = decimal_sep.encode(Encoding::UTF_8)
+      group_sep = group_sep.encode(Encoding::UTF_8)
       raise ArgumentError, "decimal and group separators must differ; both are #{decimal_sep.inspect}" if
         decimal_sep == group_sep
       raise ArgumentError, "currency symbol must be a String; got #{currency.inspect}" unless currency.is_a?(String)
 
       symbol = currency.encode(Encoding::UTF_8)
-      raise ArgumentError, "currency symbol #{currency.inspect} exceeds #{CURRENCY_MAX_BYTES} UTF-8 bytes" if
-        symbol.bytesize > CURRENCY_MAX_BYTES
+      limit = self.class::CURRENCY_MAX_BYTES
+      raise ArgumentError, "currency symbol #{currency.inspect} exceeds #{limit} UTF-8 bytes" if
+        symbol.bytesize > limit
       raise ArgumentError, "currency symbol #{currency.inspect} must not contain an ASCII digit or whitespace" if
         symbol.match?(/[0-9\t\n\f\r ]/)
 
@@ -82,6 +91,11 @@ module HyperCast
       [decimal_sep.ord, group_sep.ord, flags, currency.bytesize].pack("L<L<L<L<") + [currency].pack("a16")
     end
   end
+
+  # The widest currency symbol the native ABI carries inline, in UTF-8 bytes. Assigned out
+  # here rather than inside the Data.define block above: a constant written in that block
+  # is scoped lexically, and landed on HyperCast instead of on NumFormat.
+  NumFormat::CURRENCY_MAX_BYTES = 16
 
   # Permit the group separator between digits (sizes not validated — between digits is the rule).
   GROUPING = 1
@@ -351,9 +365,19 @@ module HyperCast
     BYTE_COMPATIBLE = [Encoding::UTF_8, Encoding::US_ASCII, Encoding::ASCII_8BIT].freeze
 
     # Presents the input as UTF-8 bytes: already-compatible text crosses as-is (Fiddle
-    # passes a String's bytes for void* directly — no Pointer wrapper, no dup); only
-    # foreign encodings pay a transcode.
+    # passes a String's own bytes for void* — no copy of them); only foreign encodings pay
+    # a transcode, and text that cannot be transcoded raises String#encode's own
+    # Encoding:: error, the same one the Magnus extension raises through the same call.
+    #
+    # Text that is not a String is a caller bug, and the same TypeError on every backend:
+    # the extension takes its argument through Ruby's implicit String conversion (to_str,
+    # or a TypeError), so this does too.
     def utf8(text)
+      unless text.is_a?(String)
+        converted = String.try_convert(text) or
+          raise TypeError, "no implicit conversion of #{text.class} into String"
+        text = converted
+      end
       BYTE_COMPATIBLE.include?(text.encoding) ? text : text.encode(Encoding::UTF_8)
     end
 
@@ -437,13 +461,25 @@ module HyperCast
       Runtime.function(:hypercast_version).call
     end
 
+    # How many formats packed_cache remembers before it starts forgetting the oldest. Far
+    # more than a process that reuses its formats ever holds; what it bounds is the one
+    # that builds a NumFormat per request.
+    PACKED_CACHE_LIMIT = 64
+
     # Identity-keyed memo (compare_by_identity — a pointer hash, not Data's structural
     # #hash over three Strings and an Integer) of a native 32-byte RawNumFormat per format
     # object, filled once from NumFormat#packed. Formats are reused constants in practice,
     # so the common call finds its pointer in one lookup and packs nothing. The Hash holds
     # the format, so a key can never be a recycled address; the race is benign (idempotent).
+    #
+    # Bounded, oldest entry out first (a Hash keeps insertion order): unbounded, it held
+    # every format ever cast with and its 32-byte allocation for the life of the process,
+    # which a consumer building a format per request experienced as a leak. A format
+    # evicted and then used again is simply packed again, and an evicted pointer stays
+    # alive for any call already holding it — the caller's own reference outlives the cache's.
     def packed_cache
       @packed_cache ||= Hash.new do |cache, format|
+        cache.shift while cache.size >= PACKED_CACHE_LIMIT
         pointer = Fiddle::Pointer.malloc(32, Fiddle::RUBY_FREE)
         pointer[0, 32] = format.packed
         cache[format] = pointer
@@ -470,6 +506,10 @@ end
 # forces it (and fails loudly if wasmtime is missing); otherwise it is only ever chosen when
 # there is no native library for this platform at all and wasmtime happens to be available,
 # so no supported platform's behavior changes by its existence.
+#
+# Both variables are read for presence, not value — set to anything at all, "0" and the
+# empty string included, they force their backend — and HYPERCAST_WASM wins when both are
+# set.
 HyperCast::BACKEND =
   if ENV["HYPERCAST_WASM"]
     begin
@@ -486,9 +526,12 @@ HyperCast::BACKEND =
     # Two layouts, and both have to work. A released platform gem is a "fat" gem carrying one
     # extension per supported Ruby ABI under lib/hypercast/<minor>/ (see the Rakefile's
     # native:gem task for why an ABI-per-file is unavoidable — Magnus has no `abi3`
-    # equivalent). CI's in-job staging and a local `cargo ruby` (rust/.cargo/config.toml)
-    # instead drop a single extension flat at lib/. Trying the versioned path first and the
-    # flat one second means neither has to know the other exists.
+    # equivalent), and `rake native:dev` — the local dev loop — stages its own build at that
+    # same versioned path. CI's in-job staging additionally drops a single extension flat at
+    # lib/, which is also where a hand copy of `cargo ruby-ext`'s output goes (the alias only
+    # builds into rust/target/ruby/release/; nothing but that rake task copies it here).
+    # Trying the versioned path first and the flat one second means neither has to know the
+    # other exists.
     #
     # A miss on both is not an error: it means this Ruby/platform combination has no
     # precompiled extension, which is precisely what the Fiddle backend is for.
@@ -505,8 +548,9 @@ HyperCast::BACKEND =
         else
           # No shared library for this platform either. wasmtime, if the consumer has it,
           # is the only backend left that can run here; without it, stay on Fiddle so the
-          # first call raises its own precise "not found" LoadError rather than a vaguer one
-          # from here.
+          # first call raises its own precise error — a "not found" LoadError naming the
+          # path, or NativePlatform::UnsupportedPlatformError naming the platform — rather
+          # than a vaguer one from here. HyperCast.available? is the quiet way to ask.
           begin
             require "wasmtime"
             require_relative "hypercast/wasm_runtime"

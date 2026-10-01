@@ -34,7 +34,8 @@ final class CorpusTest extends TestCase
     private static function corpus(string $name): array
     {
         $dir = __DIR__;
-        while ($dir !== '/') {
+        // Stop when dirname() stops moving, not at '/': a Windows root is 'C:\\', never '/'.
+        for ($parent = \dirname($dir); $parent !== $dir; $dir = $parent, $parent = \dirname($dir)) {
             $candidate = $dir . '/corpus/' . $name;
             if (is_file($candidate)) {
                 return json_decode(
@@ -44,7 +45,6 @@ final class CorpusTest extends TestCase
                     JSON_THROW_ON_ERROR | JSON_BIGINT_AS_STRING
                 );
             }
-            $dir = \dirname($dir);
         }
         self::fail('corpus directory not found');
     }
@@ -70,11 +70,7 @@ final class CorpusTest extends TestCase
         match (true) {
             $verdict instanceof Success => (function () use ($domain, $input, $expect, $verdict, $expected) {
                 $this->assertSame('ok', $expect, "{$domain}: '{$input}' unexpectedly parsed");
-                if ($expected instanceof DateTimeImmutable) {
-                    $this->assertEquals($expected, $verdict->value, "{$domain}: '{$input}'");
-                } else {
-                    $this->assertEquals($expected, $verdict->value, "{$domain}: '{$input}'");
-                }
+                $this->assertEquals($expected, $verdict->value, "{$domain}: '{$input}'");
             })(),
             $verdict instanceof Fault => (function () use ($domain, $input, $expect, $vector, $verdict) {
                 $this->assertArrayHasKey($expect, self::EXPECTED_REASON,

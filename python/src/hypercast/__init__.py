@@ -27,26 +27,39 @@ games; ``cast_decimal`` returns an exact, canonical ``decimal.Decimal``;
 digits on the temporal doors (the JVM binding is the fidelity king; this is Python's honest
 ceiling).
 
-Ships as real platform-specific abi3 wheels (linux/macOS/Windows, x64/arm64) built by
-``maturin`` — no compiler needed to install. The same core also rides inside every wheel
-as a ``wasm32-wasip1`` module, which ``wasmtime-py`` can run in-process for an interpreter
-no wheel matches (``pip install hypercast[wasm]``, ``HYPERCAST_WASM=1``); see ``_wasm``.
+Ships as real platform-specific abi3 wheels (linux glibc and musl, macOS, Windows; x64 and
+arm64) built by ``maturin`` — no compiler needed to install. The same core also rides inside
+every wheel as a ``wasm32-wasip1`` module, which ``wasmtime-py`` can run in-process
+(``pip install hypercast[wasm]``, ``HYPERCAST_WASM=1``); see ``_wasm``. The package is typed:
+``py.typed`` ships beside it, with a stub for the extension module, so a checker sees each
+door's own ``Success[...] | Fault`` rather than ``Any``.
 """
 
 from __future__ import annotations
 
 import os as _os
 from enum import IntEnum
-from typing import Union
+from typing import TYPE_CHECKING, TypeVar, Union
+
+#: Which backend this process loaded: ``"native"`` (the PyO3 extension) or ``"wasm"`` (the
+#: same core as a wasm32-wasip1 module under wasmtime-py). Informational — every door in
+#: this module behaves identically on both; the test suite runs against each.
+BACKEND: str
 
 # --- backend selection -----------------------------------------------------------------
 # `_native` is the PyO3 extension: the Rust core linked straight into CPython, the backend
 # every published wheel ships. `_wasm` is the same core compiled to wasm32-wasip1 and run
 # inside this process by wasmtime-py (see `_wasm.py` for how the crossing works and what it
 # costs). HYPERCAST_WASM=1 forces the wasm backend; otherwise it is the fallback for an
-# interpreter no wheel matches, taken only when `wasmtime` is importable — a plain
-# `pip install hypercast[wasm]` on an unsupported platform is the whole opt-in.
-if _os.environ.get("HYPERCAST_WASM"):
+# install whose extension cannot be imported, taken only when `wasmtime` is importable. It
+# does not widen where pip can install the package: only wheels are published, so an
+# interpreter no wheel matches gets nothing to fall back *from*.
+#
+# A type checker reads the first branch and nothing else: `_native.pyi` is the one typed
+# description of the surface both backends present.
+if TYPE_CHECKING:
+    from . import _native
+elif _os.environ.get("HYPERCAST_WASM"):
     from . import _wasm as _native
 
     BACKEND = "wasm"
@@ -66,11 +79,6 @@ else:
         from . import _wasm as _native
 
         BACKEND = "wasm"
-
-#: Which backend this process loaded: ``"native"`` (the PyO3 extension) or ``"wasm"`` (the
-#: same core as a wasm32-wasip1 module under wasmtime-py). Informational — every door in
-#: this module behaves identically on both; the test suite runs against each.
-BACKEND: str
 
 __all__ = [
     "BACKEND",
@@ -167,11 +175,14 @@ cast_time = _native.cast_time
 cast_duration = _native.cast_duration
 native_version = _native.native_version
 
-Verdict = Union[Success, Fault]
-"""The outcome of a cast: exactly one of :class:`Success` or :class:`Fault`."""
+_T = TypeVar("_T")
+
+Verdict = Union[Success[_T], Fault]
+"""The outcome of a cast: exactly one of :class:`Success` or :class:`Fault`. Generic in the
+value a success carries — ``Verdict[int]`` is what :func:`cast_i32` returns."""
 
 
-def optional(verdict):
+def optional(verdict: Verdict[_T]) -> Verdict[_T] | None:
     """Presents a verdict optionally: a :data:`CastFailure.EMPTY` fault becomes ``None``
     (Python's absent), everything else flows through untouched.
     """

@@ -88,4 +88,34 @@ RSpec.describe "native backend" do
     expect(fiddle_eval('HyperCast.i32("1€x".encode(Encoding::UTF_16LE), HyperCast::NumFormat::INVARIANT).inspect'))
       .to eq(HyperCast.i32("1€x".encode(Encoding::UTF_16LE), HyperCast::NumFormat::INVARIANT).inspect)
   end
+
+  it "agrees with the Fiddle backend on an explicit nil date order" do
+    expect(fiddle_eval('HyperCast.date("2026-01-07", nil).inspect')).to eq(HyperCast.date("2026-01-07", nil).inspect)
+    expect(fiddle_eval('HyperCast.date("1/7/2026", nil).inspect')).to eq(HyperCast.date("1/7/2026", nil).inspect)
+  end
+
+  it "agrees with the Fiddle backend on caller bugs: the same exception, worded the same" do
+    # The extension replaces the doors themselves, so a caller bug is raised by Rust here and
+    # by Ruby there. Class and message are compared across the subprocess boundary.
+    rescued = 'begin; %s; rescue StandardError => e; "#{e.class}: #{e.message}"; end'
+    lone_surrogate = '[0x0031, 0xD800].pack("v*").force_encoding(Encoding::UTF_16LE)'
+    [
+      ['HyperCast.unix("1", :fortnights)', -> { HyperCast.unix("1", :fortnights) }],
+      ['HyperCast.unix("1", "seconds")', -> { HyperCast.unix("1", "seconds") }],
+      ['HyperCast.excel_serial("1", nil)', -> { HyperCast.excel_serial("1", nil) }],
+      ['HyperCast.date("1/7/2026", "month_day_year")', -> { HyperCast.date("1/7/2026", "month_day_year") }],
+      ['HyperCast.datetime("1/7/2026 3:04 PM", 2)', -> { HyperCast.datetime("1/7/2026 3:04 PM", 2) }],
+      ["HyperCast.bool(#{lone_surrogate})",
+       -> { HyperCast.bool([0x0031, 0xD800].pack("v*").force_encoding(Encoding::UTF_16LE)) }],
+      ["HyperCast.i32(42, HyperCast::NumFormat::INVARIANT)", -> { HyperCast.i32(42, HyperCast::NumFormat::INVARIANT) }]
+    ].each do |source, call|
+      native = begin
+        call.call
+      rescue StandardError => e
+        "#{e.class}: #{e.message}"
+      end
+      expect(native).to match(/\A(KeyError|TypeError|Encoding::InvalidByteSequenceError): /), source
+      expect(fiddle_eval(format(rescued, source))).to eq(native), source
+    end
+  end
 end

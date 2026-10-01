@@ -61,9 +61,9 @@ final class CastTest extends TestCase
     public function testUuidBytesAreTheRfcOrderedSixteen(): void
     {
         $verdict = Cast::uuidBytes('urn:uuid:01020304-0506-0708-090A-0B0C0D0E0F10');
-        self::assertInstanceOf(Success::class, $verdict);
-        self::assertSame(hex2bin('0102030405060708090a0b0c0d0e0f10'), $verdict->value);
-        self::assertInstanceOf(Fault::class, Cast::uuidBytes('not-a-uuid'));
+        $this->assertInstanceOf(Success::class, $verdict);
+        $this->assertSame(hex2bin('0102030405060708090a0b0c0d0e0f10'), $verdict->value);
+        $this->assertInstanceOf(Fault::class, Cast::uuidBytes('not-a-uuid'));
     }
 
     public function testUuidMatchesTheCanonicalShape(): void
@@ -255,6 +255,135 @@ final class CastTest extends TestCase
         $this->assertSame(['.', ',', ''], [$bare->decimalSep, $bare->groupSep, $bare->currency]);
     }
 
+    public function testFromLocaleconvNeverInventsACollidingSeparator(): void
+    {
+        // A comma-decimal locale that reports no thousands separator: the default ',' would
+        // collide with the declared decimal, so grouping takes the other of the pair.
+        $comma = NumFormat::fromLocaleconv(['decimal_point' => ',', 'thousands_sep' => '']);
+        $this->assertSame([',', '.'], [$comma->decimalSep, $comma->groupSep]);
+        $this->assertEquals(new Success(1234.5), Cast::f64('1.234,5', $comma));
+        // The mirror image, for a hand-built array: no decimal point beside a '.' group.
+        $point = NumFormat::fromLocaleconv(['decimal_point' => '', 'thousands_sep' => '.']);
+        $this->assertSame([',', '.'], [$point->decimalSep, $point->groupSep]);
+        // A declared pair is never rewritten, and a declared collision is still a caller bug.
+        $swiss = NumFormat::fromLocaleconv(['decimal_point' => '.', 'thousands_sep' => "'"]);
+        $this->assertSame(['.', "'"], [$swiss->decimalSep, $swiss->groupSep]);
+        $this->expectException(\InvalidArgumentException::class);
+        NumFormat::fromLocaleconv(['decimal_point' => ',', 'thousands_sep' => ',']);
+    }
+
+    public function testSeparatorsCrossAsCodePointsAtEveryUtf8Width(): void
+    {
+        // One, two, three and four UTF-8 bytes — decoded without ext-mbstring.
+        $widths = ['.' => 0x2E, '·' => 0xB7, "\u{202F}" => 0x202F, "\u{1F600}" => 0x1F600];
+        foreach ($widths as $char => $codePoint) {
+            $this->assertSame([$codePoint, 0x2C], (new NumFormat((string) $char, ',', 0))->codePoints());
+        }
+        // The largest scalar value, and the last one before the surrogate gap.
+        $this->assertSame([0x10FFFF, 0xD7FF], (new NumFormat("\u{10FFFF}", "\u{D7FF}", 0))->codePoints());
+        // A narrow no-break space is what fr_FR really groups with; it reaches the core intact.
+        $french = new NumFormat(',', "\u{202F}", NumFormat::ALL);
+        $this->assertEquals(new Success(1234.5), Cast::f64("1\u{202F}234,5", $french));
+    }
+
+    public function testSeparatorsMustBeExactlyOneWellFormedCharacter(): void
+    {
+        foreach (['', '..', "\xFF", "\xC3", "\xE2\x82", "\xC0\xAF", "\xED\xA0\x80"] as $bad) {
+            try {
+                new NumFormat($bad, ',', NumFormat::ALL);
+                $this->fail('separator ' . bin2hex($bad) . ' should have been rejected');
+            } catch (\InvalidArgumentException) {
+                $this->addToAssertionCount(1);
+            }
+        }
+    }
+
+    public function testIsAvailableAnswersFalseWhenFfiIsDisabled(): void
+    {
+        // ffi.enable=0 refuses the FFI API even on the CLI, which is exactly what a
+        // restricted web SAPI looks like from inside the binding.
+        $this->assertSame('unavailable ffi', self::probe(\dirname(__DIR__) . '/src', '-d', 'ffi.enable=0'));
+    }
+
+    public function testIsAvailableAnswersFalseWhenTheExtensionIsMissing(): void
+    {
+        // -n drops every ini file, and with them a shared ext-ffi. A PHP with ext-ffi
+        // compiled in statically has nothing to drop, so there is nothing to prove there.
+        $answer = self::probe(\dirname(__DIR__) . '/src', '-n');
+        if (str_ends_with($answer, ' ffi')) {
+            $this->markTestSkipped('ext-ffi is compiled into this PHP and cannot be unloaded');
+        }
+        $this->assertSame('unavailable no-ffi', $answer);
+    }
+
+    public function testIsAvailableAnswersFalseWhenTheLibraryIsMissing(): void
+    {
+        // A copy of the binding with no native/ directory beside it, far from any cargo
+        // build the development fallback could find.
+        $root = sys_get_temp_dir() . '/hypercast-probe-' . bin2hex(random_bytes(6));
+        $src = $root . '/php/src';
+        mkdir($src, 0o777, true);
+        try {
+            foreach (glob(\dirname(__DIR__) . '/src/*.php') as $file) {
+                copy($file, $src . '/' . basename($file));
+            }
+            $this->assertSame('unavailable ffi', self::probe($src));
+        } finally {
+            array_map('unlink', glob($src . '/*.php'));
+            rmdir($src);
+            rmdir($root . '/php');
+            rmdir($root);
+        }
+    }
+
+    public function testDateOrderDisambiguatesLikeTheCulturesDo(): void
+    {
+        // The canonical ambiguity: 1/7/2026 is January 7th under en-US's month-first short
+        // dates and July 1st under en-GB's day-first ones — resolved only by declaration.
+        $enUs = Cast::date('1/7/2026', DateOrder::Mdy);
+        $enGb = Cast::date('1/7/2026', DateOrder::Dmy);
+        $this->assertInstanceOf(Success::class, $enUs);
+        $this->assertInstanceOf(Success::class, $enGb);
+        $this->assertSame('2026-01-07', $enUs->value->format('Y-m-d'));
+        $this->assertSame('2026-07-01', $enGb->value->format('Y-m-d'));
+        // Undeclared, the door stays strict ISO — the ambiguity is never guessed at.
+        $undeclared = Cast::date('1/7/2026');
+        $this->assertInstanceOf(Fault::class, $undeclared);
+        $this->assertSame(CastFailure::Malformed, $undeclared->reason);
+    }
+
+    public function testDateTimeReadsTheMessyCivilShapes(): void
+    {
+        // The AM/PM world, zone-less: the UTC label on the carrier is an artifact, not
+        // data — no zone was read and none was applied.
+        $enUs = Cast::datetime('1/7/2026 3:04 PM', DateOrder::Mdy);
+        $enGb = Cast::datetime('1/7/2026 3:04 PM', DateOrder::Dmy);
+        $this->assertInstanceOf(Success::class, $enUs);
+        $this->assertInstanceOf(Success::class, $enGb);
+        $this->assertSame('2026-01-07 15:04:00', $enUs->value->format('Y-m-d H:i:s'));
+        $this->assertSame('2026-07-01 15:04:00', $enGb->value->format('Y-m-d H:i:s'));
+        // A zone suffix is not this door's business — timestamp() is the instant door.
+        $this->assertInstanceOf(Fault::class, Cast::datetime('1/7/2026 15:04:05Z', DateOrder::Mdy));
+    }
+
+    /**
+     * Runs tests/fixtures/probe.php in a child PHP — the only way to observe a process in
+     * which the binding cannot load — and returns what it printed.
+     */
+    private static function probe(string $src, string ...$phpFlags): string
+    {
+        $process = proc_open(
+            [PHP_BINARY, ...$phpFlags, __DIR__ . '/fixtures/probe.php', $src],
+            [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes
+        );
+        self::assertIsResource($process);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        self::assertSame(0, proc_close($process), "probe failed: {$stdout}{$stderr}");
+        return $stdout;
+    }
+
     /** The crate's own manifest version — walked up from here the way CorpusTest finds corpus/. */
     private static function crateVersion(): string
     {
@@ -273,34 +402,4 @@ final class CastTest extends TestCase
         }
         self::fail('rust/Cargo.toml not found');
     }
-    public function testDateOrderDisambiguatesLikeTheCulturesDo(): void
-    {
-        // The canonical ambiguity: 1/7/2026 is January 7th under en-US's month-first short
-        // dates and July 1st under en-GB's day-first ones — resolved only by declaration.
-        $enUs = Cast::date('1/7/2026', DateOrder::Mdy);
-        $enGb = Cast::date('1/7/2026', DateOrder::Dmy);
-        self::assertInstanceOf(Success::class, $enUs);
-        self::assertInstanceOf(Success::class, $enGb);
-        self::assertSame('2026-01-07', $enUs->value->format('Y-m-d'));
-        self::assertSame('2026-07-01', $enGb->value->format('Y-m-d'));
-        // Undeclared, the door stays strict ISO — the ambiguity is never guessed at.
-        $undeclared = Cast::date('1/7/2026');
-        self::assertInstanceOf(Fault::class, $undeclared);
-        self::assertSame(CastFailure::Malformed, $undeclared->reason);
-    }
-
-    public function testDateTimeReadsTheMessyCivilShapes(): void
-    {
-        // The AM/PM world, zone-less: the UTC label on the carrier is an artifact, not
-        // data — no zone was read and none was applied.
-        $enUs = Cast::datetime('1/7/2026 3:04 PM', DateOrder::Mdy);
-        $enGb = Cast::datetime('1/7/2026 3:04 PM', DateOrder::Dmy);
-        self::assertInstanceOf(Success::class, $enUs);
-        self::assertInstanceOf(Success::class, $enGb);
-        self::assertSame('2026-01-07 15:04:00', $enUs->value->format('Y-m-d H:i:s'));
-        self::assertSame('2026-07-01 15:04:00', $enGb->value->format('Y-m-d H:i:s'));
-        // A zone suffix is not this door's business — timestamp() is the instant door.
-        self::assertInstanceOf(Fault::class, Cast::datetime('1/7/2026 15:04:05Z', DateOrder::Mdy));
-    }
-
 }

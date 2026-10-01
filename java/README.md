@@ -11,11 +11,12 @@ disposition is a compile failure.**
 
 Allocation-lean scalar casts — booleans, the full integer family, reals, exact decimals,
 UUIDs, temporals — via `java.lang.foreign` (FFM) downcalls straight into the native `libhypercast` Rust core.
-JDK 22 is the floor: FFM is stable, non-preview only from JDK 22 (JEP 454), and the
-Verdict union's whole point — sealed interface + record patterns + exhaustive switch — is
+JDK 25 is the floor: the first long-term-support release with the final FFM API (JEP 454
+finalized it in JDK 22, and 22 through 24 are past end of life), comfortably past the
+Verdict union's own requirement — sealed interface + record patterns + exhaustive switch,
 stable since 21. The jar bundles a native build for every supported platform
-(linux/macOS/Windows × x64/arm64) under `/native/{rid}/` and picks the right one at
-runtime, so a consumer adds one dependency and nothing else.
+(Linux glibc, Linux musl, macOS, Windows × x64/arm64) under `/native/{rid}/` and picks the
+right one at runtime, so a consumer adds one dependency and nothing else.
 
 ```java
 String message = switch (Cast.i32("(1,234)", NumFormat.INVARIANT)) {
@@ -79,6 +80,26 @@ A `Fault`'s `offset`/`length` count in the input's own unit. Through a `byte[]` 
 input is not ASCII: `Cast.i32("1€", …)` faults at `(1, 1)` as a `String` and `(1, 3)` as
 bytes. ASCII input is identical either way and is never touched.
 
+## Native access
+
+FFM downcalls are a *restricted* operation: the JDK wants the application, not a library on
+its classpath, to say that native code may run. Without that the first cast still works,
+and prints a four-line warning naming `java.lang.foreign.SymbolLookup::libraryLookup` and
+ending "Restricted methods will be blocked in a future release unless native access is
+enabled". Grant it where the JVM is launched:
+
+```sh
+java --enable-native-access=ALL-UNNAMED -cp app.jar:hypercast.jar com.example.Main        # on the classpath
+java --enable-native-access=io.github.skunkwerkx.hypercast -p mods -m com.example.app     # on the module path
+```
+
+The jar's manifest carries `Automatic-Module-Name: io.github.skunkwerkx.hypercast`, so the
+module-path form has a stable name to grant rather than one derived from the jar's file
+name. An executable jar can make the same grant in its own manifest
+(`Enable-Native-Access: ALL-UNNAMED`). Under `--illegal-native-access=deny` with no grant
+the library cannot be loaded at all: `isAvailable()` is `false` and the doors throw. The
+wasm path wants the same flag, for Truffle's own native library rather than this one.
+
 ## Why not `Integer.parseInt` / `Instant.parse` / the formatter zoo?
 
 1. **Verdicts, not exceptions** — `NumberFormatException`-driven control flow costs a
@@ -140,18 +161,20 @@ a value out of it with nothing copied. The UUID door reads its sixteen bytes as 
 big-endian longs instead of one byte at a time, which is what turned that row from a loss
 into a win.
 
-**The honest trade-off:** two rows still lose. `UUID.fromString` beats this door by ~12 ns
-— it's pure bit-twiddling with no boundary to cross, and this door also accepts N/B/P/X
-forms and `urn:uuid:` prefixes it doesn't. And `Boolean.parseBoolean` is unbeatable by
+**The honest trade-off:** one row still loses. `Boolean.parseBoolean` is unbeatable by
 construction: JIT folds a loop-invariant `parseBoolean` into nothing, which an FFM downcall
-structurally can't match — the twenty-lexeme vocabulary is why anyone calls this door. It's
-also a native dependency: for plain invariant integers, `Integer.parseInt` is the
-reasonable choice.
+structurally can't match — the twenty-lexeme vocabulary is why anyone calls this door. The
+`UUID.fromString` row is a narrow win, not a wide one: that method is pure bit-twiddling
+with no boundary to cross, and what this door adds is the N/B/P/X forms and `urn:uuid:`
+prefixes it doesn't accept. It's also a native dependency: for plain invariant integers,
+`Integer.parseInt` is the reasonable choice.
 
 ## AOT
 
 The GraalVM Native Image smoke test (`./gradlew :aot-smoke-test:nativeRun`) builds and
-runs every door plus the exhaustive union switch as a true native binary; `-Pwasm` does the
+runs the `isAvailable()`/`nativeVersion()` probe, all twenty-one doors through their
+`String` form, the `byte[]` and `MemorySegment` forms (heap slice and native segment) once
+per ABI shape, and the exhaustive union switch as a true native binary; `-Pwasm` does the
 same through the GraalWasm backend (see [WebAssembly](#webassembly-graalwasm)). Native Image needs two separate registrations
 and the jar ships both in its `reachability-metadata.json` under
 `META-INF/native-image/io.github.skunkwerkx/hypercast/`, so a consumer inherits them with no
@@ -201,12 +224,19 @@ dependencies {
 ```
 
 Then either set `-Dhypercast.backend=wasm` to force it, or do nothing: with the property
-unset, `Cast` takes the FFM path when the jar has a native build for the running OS/arch and
-falls back to the wasm module when it does not. `-Dhypercast.backend=native` forces FFM and
-fails loudly on a platform without a bundled library. `Cast.backend()` reports `"native"` or
-`"wasm"` for whichever won. Selecting wasm without GraalWasm on the classpath fails at class
-init with a message naming the two artifacts; the `org.graalvm.polyglot` classes are never
-loaded otherwise.
+unset, `Cast` takes the FFM path when the jar has a native build for the running platform
+and that library loads, and falls back to the wasm module otherwise. "No native build" is
+decided exactly, not by nearest match: an architecture other than x64/arm64 (riscv64,
+ppc64le, s390x, 32-bit anything) or an OS other than Linux, macOS and Windows resolves to no
+library at all, and on Linux a musl process (Alpine) gets the musl build, never the glibc
+one. "Will not load" covers a bundled library the dynamic loader refuses — a temp directory
+mounted `noexec`, say; if the wasm path cannot start either, the failure thrown is the
+native one, with the wasm one attached as suppressed. `-Dhypercast.backend=native` forces
+FFM and fails loudly on a platform without a bundled library, or with one that will not
+load. `Cast.backend()` reports `"native"` or `"wasm"` for whichever won. Selecting wasm
+without GraalWasm on the classpath fails when the core is first needed — `isAvailable()` is
+`false`, and every door throws — with a message naming the two artifacts; the
+`org.graalvm.polyglot` classes are never loaded otherwise.
 
 **What it costs**, measured with the JMH suite on this repo's linux-arm64 box (WSL2), same
 session, three ways: the FFM downcall (`./gradlew :benchmarks:jmh`; GraalVM CE 25.3 and
@@ -282,8 +312,10 @@ dependencies {
 }
 ```
 
-The current version is the one on the Maven Central badge above. The jar bundles a native
-build for all six platforms and picks the right one at runtime.
+The current version is the one on the Maven Central badge above. Requires JDK 25 or later.
+The jar bundles a native build for all eight platforms (linux-x64, linux-arm64,
+linux-musl-x64, linux-musl-arm64, osx-x64, osx-arm64, win-x64, win-arm64) and picks the
+right one at runtime; see [Native access](#native-access) for the one flag the JVM wants.
 
 See [the repo root README](../README.md) for the full door table, the receipts, and the
 state of every other language binding.

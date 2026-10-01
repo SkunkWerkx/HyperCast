@@ -37,11 +37,13 @@ public static class DateOrders
 	/// declaring explicitly when the text's origin is known — a culture is process/user
 	/// state; the text's dialect is a property of the text.
 	/// </summary>
-	/// <param name="culture">The culture whose short-date pattern declares the order.</param>
+	/// <param name="culture">The culture whose short-date pattern declares the order. Never null.</param>
 	/// <returns>The culture's field order.</returns>
+	/// <exception cref="ArgumentNullException"><paramref name="culture"/> is null.</exception>
 	/// <exception cref="ArgumentException">The pattern names none of y/M/d — a malformed culture, not a data verdict.</exception>
 	public static DateOrder From(CultureInfo culture)
 	{
+		ArgumentNullException.ThrowIfNull(culture);
 		var inLiteral = false;
 		foreach (var ch in culture.DateTimeFormat.ShortDatePattern)
 		{

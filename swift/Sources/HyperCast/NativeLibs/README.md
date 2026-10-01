@@ -11,6 +11,18 @@ merge. Regenerate locally with `cargo build --release` in `rust/` and copy the r
 you need to update one by hand; CI's own `build-native` job does the same per-leg during
 in-repo testing.
 
+Four RIDs: `osx-x64`, `osx-arm64`, `win-x64` and `win-arm64`. Linux is not here, glibc or
+musl. There the binding links the core in from `swift/HyperCastCore.artifactbundle` — a static
+library per triple, WebAssembly included — instead of loading a shared one, which is the
+only way to reach Swift's static Linux SDK at all: a statically linked executable has no
+loader to open a `.so` with. `stage-native-binaries.yml` fills both directories from the
+same CI run.
+
+At run time the library is opened in place, from wherever SwiftPM staged this directory
+(`HyperCast_HyperCast.bundle` beside the build products, or `HyperCast_HyperCast.resources` on
+Windows before Swift 6.4) — see the binding README's "Loading and deployment" for what that
+means for a deployed executable.
+
 ## Verifying provenance
 
 These are compiled binaries committed to git, which is the least inspectable thing in this
@@ -24,7 +36,7 @@ Verify any of them yourself, against GitHub's transparency log, without trusting
 repository or whoever handed you a copy:
 
 ```shell
-gh attestation verify linux-arm64/libhypercast.dylib \
+gh attestation verify linux-arm64/libhypercast.so \
   --repo SkunkWerkx/HyperCast --signer-repo SkunkWerkx/.github
 ```
 

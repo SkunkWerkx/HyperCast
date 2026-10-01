@@ -8,8 +8,8 @@
 // and cross-compiles land there automatically.
 //
 // cgo can't call an opaquely-typed void* function pointer directly — it needs a real,
-// statically-typed C call site — hence the three per-signature shims below, one per ABI
-// shape (plain, numeric, unix).
+// statically-typed C call site — hence the four per-signature shims below, one per ABI
+// shape (plain, numeric, unix, version).
 //
 // The shims own the out-params. Every door used to declare `var out T; var fault rawFault`
 // and pass `unsafe.Pointer(&out)` across — and any Go pointer handed to a cgo call escapes
@@ -82,7 +82,6 @@ import "C"
 import (
 	"encoding/binary"
 	"fmt"
-	"sync"
 	"unsafe"
 )
 
@@ -94,61 +93,56 @@ type (
 	numericSymbol = unsafe.Pointer
 )
 
-var (
-	initOnce sync.Once
-	initErr  error
-
-	symBool, symI8, symI16, symI32, symI64, symU8, symU16, symU32, symU64,
+var symBool, symI8, symI16, symI32, symI64, symU8, symU16, symU32, symU64,
 	symF32, symF64, symDecimal, symUuid, symTimestamp, symUnix, symDate, symDateOrdered,
 	symDateTime, symTime, symDuration, symExcelSerial, symVersion unsafe.Pointer
-)
 
-// ensureLoaded extracts this platform's embedded native library to a temp file and
-// dlopen's it via cgo, exactly once.
-func ensureLoaded() error {
-	initOnce.Do(func() {
-		path, err := extractNativeLib()
-		if err != nil {
-			initErr = err
-			return
-		}
+// loadBackend extracts this platform's embedded native library to a temp file and
+// dlopen's it via cgo. ensureLoaded (load.go) runs it exactly once.
+func loadBackend() error {
+	path, err := extractNativeLib()
+	if err != nil {
+		return err
+	}
 
-		cPath := C.CString(path)
-		defer C.free(unsafe.Pointer(cPath))
-		handle := C.dlopen(cPath, C.RTLD_NOW|C.RTLD_GLOBAL)
-		if handle == nil {
-			initErr = fmt.Errorf("hypercast: dlopen failed: %s", C.GoString(C.dlerror()))
-			return
-		}
+	cPath := C.CString(path)
+	defer C.free(unsafe.Pointer(cPath))
+	// RTLD_LOCAL: every symbol is resolved through this handle, so nothing needs the
+	// library's exports in the process-wide namespace.
+	handle := C.dlopen(cPath, C.RTLD_NOW|C.RTLD_LOCAL)
+	if handle == nil {
+		return fmt.Errorf("dlopen failed: %s", C.GoString(C.dlerror()))
+	}
 
-		sym := func(name string) unsafe.Pointer {
-			if initErr != nil {
-				return nil
-			}
-			cName := C.CString(name)
-			defer C.free(unsafe.Pointer(cName))
-			p := C.dlsym(handle, cName)
-			if p == nil {
-				initErr = fmt.Errorf("hypercast: symbol %s not found in native library: %s", name, C.GoString(C.dlerror()))
-			}
-			return p
+	var symErr error
+	sym := func(name string) unsafe.Pointer {
+		if symErr != nil {
+			return nil
 		}
-		symBool, symUuid = sym("cast_bool"), sym("cast_uuid")
-		symI8, symI16, symI32, symI64 = sym("cast_i8"), sym("cast_i16"), sym("cast_i32"), sym("cast_i64")
-		symU8, symU16, symU32, symU64 = sym("cast_u8"), sym("cast_u16"), sym("cast_u32"), sym("cast_u64")
-		symF32, symF64, symDecimal = sym("cast_f32"), sym("cast_f64"), sym("cast_decimal")
-		symVersion = sym("hypercast_version")
-		symTimestamp, symUnix = sym("cast_timestamp"), sym("cast_unix")
-		symDate, symDateOrdered = sym("cast_date"), sym("cast_date_ordered")
-		symDateTime = sym("cast_datetime")
-		symTime, symDuration = sym("cast_time"), sym("cast_duration")
-		symExcelSerial = sym("cast_excel_serial")
-		if initErr == nil {
-			// One real call through the ABI, so Available means "answered", not "resolved".
-			nativeVersion = callVersion()
+		cName := C.CString(name)
+		defer C.free(unsafe.Pointer(cName))
+		p := C.dlsym(handle, cName)
+		if p == nil {
+			symErr = fmt.Errorf("symbol %s not found in native library: %s", name, C.GoString(C.dlerror()))
 		}
-	})
-	return initErr
+		return p
+	}
+	symBool, symUuid = sym("cast_bool"), sym("cast_uuid")
+	symI8, symI16, symI32, symI64 = sym("cast_i8"), sym("cast_i16"), sym("cast_i32"), sym("cast_i64")
+	symU8, symU16, symU32, symU64 = sym("cast_u8"), sym("cast_u16"), sym("cast_u32"), sym("cast_u64")
+	symF32, symF64, symDecimal = sym("cast_f32"), sym("cast_f64"), sym("cast_decimal")
+	symVersion = sym("hypercast_version")
+	symTimestamp, symUnix = sym("cast_timestamp"), sym("cast_unix")
+	symDate, symDateOrdered = sym("cast_date"), sym("cast_date_ordered")
+	symDateTime = sym("cast_datetime")
+	symTime, symDuration = sym("cast_time"), sym("cast_duration")
+	symExcelSerial = sym("cast_excel_serial")
+	if symErr != nil {
+		return symErr
+	}
+	// One real call through the ABI, so Available means "answered", not "resolved".
+	nativeVersion = callVersion()
+	return nil
 }
 
 func fromC(r C.hc_result) result {

@@ -60,6 +60,26 @@ def test_localeconv_bridge():
     euro = NumFormat.from_localeconv({"decimal_point": ",", "thousands_sep": ".", "currency_symbol": "€"})
     assert euro.currency == "€"
     assert hypercast.cast_f64("1.234,5 €", euro) == Success(1234.5)
+    # The C locale's shape: an empty thousands separator falls back to ",".
+    c_locale = NumFormat.from_localeconv({"decimal_point": ".", "thousands_sep": ""})
+    assert (c_locale.decimal_sep, c_locale.group_sep) == (".", ",")
+
+
+def test_localeconv_bridge_never_puts_one_character_in_both_roles():
+    # An empty field takes its invariant default unless the other separator already holds
+    # that character, in which case it takes the other of the pair. A comma-decimal locale
+    # with no thousands separator used to fall back to "," for the group too — a format no
+    # door can read — and the same rule now holds in the PHP binding's bridge.
+    comma = NumFormat.from_localeconv({"decimal_point": ",", "thousands_sep": ""})
+    assert (comma.decimal_sep, comma.group_sep) == (",", ".")
+    assert hypercast.cast_f64("1.234,5", comma) == Success(1234.5)
+    dotted_groups = NumFormat.from_localeconv({"decimal_point": "", "thousands_sep": "."})
+    assert (dotted_groups.decimal_sep, dotted_groups.group_sep) == (",", ".")
+    nothing = NumFormat.from_localeconv({})
+    assert (nothing.decimal_sep, nothing.group_sep) == (".", ",")
+    # Two separators the locale itself declares equal are still the constructor's caller bug.
+    with pytest.raises(ValueError, match="must differ"):
+        NumFormat.from_localeconv({"decimal_point": ",", "thousands_sep": ","})
 
 
 def test_currency_symbol_is_declared_never_guessed():

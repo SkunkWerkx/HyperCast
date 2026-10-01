@@ -25,11 +25,26 @@ dependencies {
 
 application {
     mainClass.set("io.github.skunkwerkx.hypercast.aotsmoketest.Main")
+    // `:aot-smoke-test:run` is the same program on an ordinary JVM: with the flag a consumer
+    // passes (README.md's "Native access"), and with -Pwasm selecting the wasm backend
+    // exactly as it does for the native binary below.
+    applicationDefaultJvmArgs = buildList {
+        add("--enable-native-access=ALL-UNNAMED")
+        if (project.hasProperty("wasm")) {
+            add("-Dhypercast.backend=wasm")
+            add("-Dpolyglot.engine.WarnInterpreterOnly=false")
+        }
+    }
 }
 
 java {
-    sourceCompatibility = JavaVersion.VERSION_22
-    targetCompatibility = JavaVersion.VERSION_22
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
+}
+
+// The library's own floor, enforced the same way it is there.
+tasks.withType<JavaCompile>().configureEach {
+    options.release = 25
 }
 
 graalvmNative {

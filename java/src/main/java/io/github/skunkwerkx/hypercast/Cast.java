@@ -10,6 +10,7 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.SymbolLookup;
 import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
+import java.lang.reflect.InvocationTargetException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
@@ -27,7 +28,7 @@ import java.util.UUID;
 /**
  * Allocation-lean scalar casts — booleans, numerics, UUIDs, temporals — calling directly
  * into the native {@code libhypercast} shared library via the Java Foreign Function &amp;
- * Memory API (stable since JDK 22 / JEP 454). Every door returns a {@link Verdict}: the
+ * Memory API (JEP 454; this binding's floor is JDK 25). Every door returns a {@link Verdict}: the
  * value, or a {@link Fault} with a closed reason and the offending byte span. Never throws
  * on bad input — the only exceptions here are caller bugs (a malformed {@link NumFormat}),
  * never data.
@@ -56,7 +57,8 @@ import java.util.UUID;
  *
  * <p>The same core also ships inside this jar as a {@code wasm32-wasip1} module, run by
  * <a href="https://www.graalvm.org/webassembly/">GraalWasm</a> when {@link #BACKEND_PROPERTY}
- * says so or when no native build exists for the running platform. That path needs
+ * says so, when no native build exists for the running platform, or when the bundled one
+ * will not load. That path needs
  * {@code org.graalvm.polyglot:polyglot} and {@code org.graalvm.polyglot:wasm} on the
  * classpath (optional dependencies, never pulled in transitively), serializes every call on
  * one lock, and costs several times a native downcall per door; {@link #backend()} reports
@@ -74,7 +76,7 @@ public final class Cast {
      * Name of the system property that picks the interop path: {@code "native"} for the FFM
      * downcalls into the bundled platform library, {@code "wasm"} for the bundled
      * {@code wasm32-wasip1} module run by GraalWasm. Unset means native when this platform's
-     * library is bundled, wasm otherwise.
+     * library is bundled and loads, wasm otherwise.
      */
     public static final String BACKEND_PROPERTY = "hypercast.backend";
 
@@ -108,15 +110,64 @@ public final class Cast {
         private Core() {}
 
         /**
-         * Non-null only when the wasm path was selected — see {@link #selectWasm()}. Every door
+         * Non-null only when the wasm path was selected — see the static block below. Every door
          * checks this one {@code static final} against {@code null} before its FFM path; the JIT
          * folds that check away, so the native path costs exactly what it did before a second
          * backend existed.
          */
-        private static final Backend WASM = selectWasm();
+        private static final Backend WASM;
 
-        private static final Linker LINKER = Linker.nativeLinker();
-        private static final SymbolLookup LOOKUP = WASM == null ? loadLibrary() : null;
+        // Both null on the wasm path: there is no library to look symbols up in, and the
+        // native linker is never asked for — a platform the JDK has no linker for can
+        // still run the module.
+        private static final Linker LINKER;
+        private static final SymbolLookup LOOKUP;
+
+        /*
+         * Decides the interop path once, at class init, and never again. BACKEND_PROPERTY set
+         * to "wasm" forces the GraalWasm backend; "native" forces FFM, and fails loudly when
+         * this platform has no bundled library or the library will not load. Unset takes FFM
+         * when this platform's native library is bundled and loads, and the wasm module
+         * otherwise — an OS, architecture or C library this jar ships no native build for
+         * still works, just through the module, and so does a bundled library that will not
+         * open (a temp directory mounted noexec, say). When that last fallback cannot start
+         * either, the failure thrown is the native one, with the wasm one suppressed on it.
+         */
+        static {
+            String choice = System.getProperty(BACKEND_PROPERTY);
+            if (choice != null && !"native".equals(choice) && !"wasm".equals(choice)) {
+                throw new IllegalStateException(
+                        BACKEND_PROPERTY + " must be \"native\" or \"wasm\"; got \"" + choice + "\"");
+            }
+            NativePlatform.Target target = NativePlatform.current();
+            Backend wasm = null;
+            Linker linker = null;
+            SymbolLookup lookup = null;
+            if ("wasm".equals(choice)) {
+                wasm = startWasm(null);
+            } else if ("native".equals(choice)) {
+                linker = Linker.nativeLinker();
+                lookup = loadLibrary(target);
+            } else if (target == null || Cast.class.getResource(target.resourcePath()) == null) {
+                wasm = startWasm(nativeMissing(target));
+            } else {
+                try {
+                    linker = Linker.nativeLinker();
+                    lookup = loadLibrary(target);
+                } catch (RuntimeException | LinkageError nativeFailure) {
+                    try {
+                        wasm = startWasm("the bundled native library would not load (" + nativeFailure + ")");
+                    } catch (RuntimeException wasmFailure) {
+                        nativeFailure.addSuppressed(wasmFailure);
+                        throw nativeFailure;
+                    }
+                    linker = null;
+                }
+            }
+            WASM = wasm;
+            LINKER = linker;
+            LOOKUP = lookup;
+        }
 
         private static final MethodHandle CAST_BOOL = handle("cast_bool", PLAIN);
         private static final MethodHandle CAST_I8 = handle("cast_i8", NUMERIC);
@@ -161,70 +212,63 @@ public final class Cast {
                     LOOKUP.find(symbol).orElseThrow(), descriptor, Linker.Option.critical(true));
         }
 
+        // Why there is no native library to load, for the messages below: no build exists for
+        // this platform at all, or one should and this jar was packed without it.
+        private static String nativeMissing(NativePlatform.Target target) {
+            return target == null
+                    ? "hypercast: this jar carries no native library for " + NativePlatform.describe()
+                    : target.resourcePath() + " classpath resource not found (this jar was built "
+                            + "without a native library for this platform)";
+        }
+
         /**
-         * Decides the interop path once, at class init, and never again. {@link Cast#BACKEND_PROPERTY}
-         * set to {@code "wasm"} forces the GraalWasm backend; {@code "native"} forces FFM (and fails
-         * loudly if this platform has no bundled library); unset takes FFM when this platform's
-         * native library is bundled and falls back to wasm when it is not — an OS/arch this jar
-         * ships no native build for still works, just through the wasm module.
+         * Starts the GraalWasm backend. {@code nativeUnavailable} is why the native path was
+         * not taken, or {@code null} when wasm was asked for by name — it only shapes the
+         * message of a failure here.
          *
          * <p>{@link WasmBackend} is instantiated by name so that {@code org.graalvm.polyglot} is
          * never loaded unless it is actually going to be used: it is a {@code compileOnly}
          * dependency of this jar, present at runtime only if the consumer added it.
          */
-        private static Backend selectWasm() {
-            String choice = System.getProperty(BACKEND_PROPERTY);
-            boolean nativeAvailable;
-            try {
-                nativeAvailable = Cast.class.getResource(NativePlatform.resourcePath()) != null;
-            } catch (RuntimeException | LinkageError unsupportedPlatform) {
-                // NativePlatform refuses an OS/arch it has no RID for; that is exactly the case the
-                // wasm module exists to cover.
-                nativeAvailable = false;
-            }
-            if ("native".equals(choice) || (choice == null && nativeAvailable)) {
-                return null;
-            }
-            if (choice != null && !"wasm".equals(choice)) {
-                throw new IllegalStateException(
-                        BACKEND_PROPERTY + " must be \"native\" or \"wasm\"; got \"" + choice + "\"");
-            }
+        private static Backend startWasm(String nativeUnavailable) {
             if (Cast.class.getResource(WasmBackend.RESOURCE_PATH) == null) {
-                throw new IllegalStateException(choice == null
-                        ? NativePlatform.resourcePath() + " classpath resource not found (unsupported "
-                                + "platform, or this jar was built without a native library for it), and "
-                                + WasmBackend.RESOURCE_PATH + " is not bundled either"
-                        : WasmBackend.RESOURCE_PATH + " classpath resource not found (this jar was built "
-                                + "without the wasm module)");
+                throw new IllegalStateException(nativeUnavailable == null
+                        ? WasmBackend.RESOURCE_PATH + " classpath resource not found (this jar was built "
+                                + "without the wasm module)"
+                        : nativeUnavailable + ", and " + WasmBackend.RESOURCE_PATH + " is not bundled either");
             }
             try {
                 return (Backend) Class.forName(Cast.class.getPackageName() + ".WasmBackend")
                         .getDeclaredConstructor()
                         .newInstance();
-            } catch (ReflectiveOperationException e) {
-                Throwable cause = e.getCause() != null ? e.getCause() : e;
+            } catch (ReflectiveOperationException | LinkageError e) {
+                // The constructor is where GraalWasm is first touched, so its absence arrives
+                // wrapped: newInstance hands back whatever the constructor threw — an Error
+                // included — inside an InvocationTargetException.
+                Throwable cause = e instanceof InvocationTargetException && e.getCause() != null ? e.getCause() : e;
+                if (cause instanceof NoClassDefFoundError) {
+                    throw new IllegalStateException(WasmBackend.GRAALWASM_MISSING
+                            + (nativeUnavailable == null ? "" : "; wasm was selected because " + nativeUnavailable),
+                            cause);
+                }
                 if (cause instanceof RuntimeException re) {
                     throw re;
                 }
                 throw new IllegalStateException("hypercast: could not start the wasm backend", cause);
-            } catch (NoClassDefFoundError e) {
-                throw new IllegalStateException("hypercast: the wasm backend needs GraalWasm on the "
-                        + "classpath — add org.graalvm.polyglot:polyglot and org.graalvm.polyglot:wasm "
-                        + "(the latter is a POM-type dependency)", e);
             }
         }
 
         // The library must outlive every downcall made through it, so it's loaded into the
         // JDK-provided global arena that lives for the process's lifetime.
-        private static SymbolLookup loadLibrary() {
-            String resourcePath = NativePlatform.resourcePath();
-            try (InputStream resource = Cast.class.getResourceAsStream(resourcePath)) {
+        private static SymbolLookup loadLibrary(NativePlatform.Target target) {
+            if (target == null) {
+                throw new IllegalStateException(nativeMissing(null));
+            }
+            try (InputStream resource = Cast.class.getResourceAsStream(target.resourcePath())) {
                 if (resource == null) {
-                    throw new IllegalStateException(resourcePath
-                            + " classpath resource not found (unsupported platform, or this jar was "
-                            + "built without a native library for it)");
+                    throw new IllegalStateException(nativeMissing(target));
                 }
-                String libraryFileName = NativePlatform.current().libraryFileName();
+                String libraryFileName = target.libraryFileName();
                 String extension = libraryFileName.substring(libraryFileName.lastIndexOf('.'));
                 Path tmp = Files.createTempFile("hypercast", extension);
                 tmp.toFile().deleteOnExit();
@@ -279,11 +323,11 @@ public final class Cast {
                 return true;
             } catch (RuntimeException | LinkageError unavailable) {
                 // Core failing to initialize surfaces as ExceptionInInitializerError (and
-                // NoClassDefFoundError on every later touch), GraalWasm missing from the
-                // classpath as NoClassDefFoundError — LinkageErrors. The loader's own
-                // IllegalStateException, an unopenable library's IllegalArgumentException,
-                // a missing export's NoSuchElementException — RuntimeExceptions. Nothing
-                // else is expected, and nothing else is swallowed.
+                // NoClassDefFoundError on every later touch) — LinkageErrors, whatever was
+                // underneath: the loader's own IllegalStateException, an unopenable
+                // library's IllegalArgumentException, a missing export's
+                // NoSuchElementException. Nothing else is expected, and nothing else is
+                // swallowed.
                 return false;
             }
         }
@@ -293,8 +337,9 @@ public final class Cast {
      * The version of the core this process actually loaded — the bundled platform library
      * or the wasm module — as {@code major.minor.patch}, decoded from the core's own
      * {@code hypercast_version} export. The probe a host uses to prove the library it
-     * resolved is the one this binding was built against, before making the first cast;
-     * takes nothing, touches nothing, cannot fail.
+     * resolved is the one this binding was built against, before making the first cast.
+     * Takes nothing and touches nothing; the only way it fails is the core not having
+     * loaded, which it reports as the load failure itself.
      *
      * @return the loaded core's version as {@code "major.minor.patch"}
      */

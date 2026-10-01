@@ -66,7 +66,11 @@ final readonly class NumFormat
         public int $flags,
         public string $currency = '',
     ) {
-        if (mb_strlen($decimalSep, 'UTF-8') !== 1 || mb_strlen($groupSep, 'UTF-8') !== 1) {
+        // PCRE's /u mode is the UTF-8 authority here rather than ext-mbstring: PCRE is part
+        // of every PHP build, so the package's only extension requirement stays ext-ffi.
+        // /u fails the match outright on ill-formed UTF-8, so "exactly one character" also
+        // means "exactly one well-formed code point".
+        if (preg_match('/\A.\z/us', $decimalSep) !== 1 || preg_match('/\A.\z/us', $groupSep) !== 1) {
             throw new \InvalidArgumentException('Separators must be single characters');
         }
         if ($decimalSep === $groupSep) {
@@ -75,7 +79,7 @@ final readonly class NumFormat
             );
         }
         if ($currency !== '') {
-            if (\strlen($currency) > self::CURRENCY_MAX_BYTES || !mb_check_encoding($currency, 'UTF-8')) {
+            if (\strlen($currency) > self::CURRENCY_MAX_BYTES || preg_match('//u', $currency) !== 1) {
                 throw new \InvalidArgumentException(
                     'Currency symbol must be at most ' . self::CURRENCY_MAX_BYTES . ' bytes of UTF-8'
                 );
@@ -119,6 +123,9 @@ final readonly class NumFormat
      * `decimal_point`, `thousands_sep` and `currency_symbol` from `$conv`, or from
      * {@see localeconv()} when null, defaulting to '.', ',' and no symbol wherever the field
      * is empty (the C locale reports an empty thousands separator), with every lenience on.
+     * An empty separator never collides with the declared one: a comma-decimal locale that
+     * reports no thousands separator gets '.' for grouping rather than a second ',' (and,
+     * symmetrically, an empty decimal point beside a '.' group becomes ',').
      *
      * PHP's `localeconv()` reflects `setlocale(LC_NUMERIC | LC_MONETARY)` *process* state —
      * shared across every request in the worker, and nothing this library controls — so a
@@ -135,12 +142,15 @@ final readonly class NumFormat
         $decimalSep = $conv['decimal_point'] ?? '';
         $groupSep = $conv['thousands_sep'] ?? '';
         $currency = $conv['currency_symbol'] ?? '';
-        return new self(
-            $decimalSep === '' ? '.' : $decimalSep,
-            $groupSep === '' ? ',' : $groupSep,
-            self::ALL,
-            \is_string($currency) ? $currency : ''
-        );
+        // An empty field takes its invariant default unless the other separator already
+        // holds that character, in which case it takes the other of the ./, pair.
+        if ($decimalSep === '') {
+            $decimalSep = $groupSep === '.' ? ',' : '.';
+        }
+        if ($groupSep === '') {
+            $groupSep = $decimalSep === ',' ? '.' : ',';
+        }
+        return new self($decimalSep, $groupSep, self::ALL, \is_string($currency) ? $currency : '');
     }
 
     /**
@@ -150,9 +160,26 @@ final readonly class NumFormat
      */
     public function codePoints(): array
     {
-        return [
-            mb_ord($this->decimalSep, 'UTF-8'),
-            mb_ord($this->groupSep, 'UTF-8'),
-        ];
+        return [self::codePoint($this->decimalSep), self::codePoint($this->groupSep)];
+    }
+
+    /**
+     * Decodes one UTF-8 character to its code point. The constructor has already proven
+     * the string is exactly one well-formed character, so the byte length alone names the
+     * encoding form and no validation is repeated here.
+     *
+     * @param string $char exactly one well-formed UTF-8 character
+     * @return int its Unicode code point
+     */
+    private static function codePoint(string $char): int
+    {
+        $lead = \ord($char[0]);
+        return match (\strlen($char)) {
+            1 => $lead,
+            2 => ($lead & 0x1F) << 6 | (\ord($char[1]) & 0x3F),
+            3 => ($lead & 0x0F) << 12 | (\ord($char[1]) & 0x3F) << 6 | (\ord($char[2]) & 0x3F),
+            4 => ($lead & 0x07) << 18 | (\ord($char[1]) & 0x3F) << 12 | (\ord($char[2]) & 0x3F) << 6
+                | (\ord($char[3]) & 0x3F),
+        };
     }
 }

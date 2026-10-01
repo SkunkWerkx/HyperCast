@@ -4,13 +4,15 @@ source "https://rubygems.org"
 
 gemspec
 
+# The test and benchmark gems; rake and yard are the gemspec's own development
+# dependencies, since `rake build` and `rake docs:check` are part of packaging the gem.
 group :development do
-  gem "benchmark-ips"
+  gem "benchmark-ips", "~> 2.15"
   # Bundled (not default) gem since Ruby 3.4, so Bundler only sees it when named here: the
   # suite exercises Decimal#to_d, which requires it lazily. Consumers stay free of it —
   # the gemspec declares nothing beyond Fiddle.
   gem "bigdecimal"
-  gem "rspec"
+  gem "rspec", "~> 3.13"
 end
 
 # The WebAssembly backend's engine, and nothing else needs it: HYPERCAST_WASM=1 runs the

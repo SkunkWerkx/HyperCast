@@ -1,12 +1,18 @@
 import Foundation
 
+#if canImport(HyperCastCore)
+import HyperCastCore
+#endif
+
 /// Allocation-lean scalar casts — booleans, numerics (integers, reals, exact decimals),
-/// UUIDs, temporals — calling directly into the native `libhypercast` shared library via
-/// `dlopen`/`dlsym` plus `@convention(c)` function-pointer casts (see
-/// `DynamicLibrary.swift`). Every door returns a ``Verdict``: the value, or a ``Fault``
-/// with a closed reason and the offending byte span. Never throws for bad data — a
-/// `throws` here means the native library itself couldn't load, and a precondition
-/// failure means a caller bug, never data.
+/// UUIDs, temporals — calling directly into the native `hypercast` core through
+/// `@convention(c)` function pointers. On Linux and WebAssembly the core is linked into the
+/// executable; on macOS and Windows it is a shared library bundled with this package and
+/// opened on first use (see `NativePlatform` and `DynamicLibrary`). Every door returns a
+/// ``Verdict``: the value, or a ``Fault`` with a closed reason and the offending byte span.
+/// Never throws for bad data — a `throws` here means the shared library itself couldn't
+/// load (always a ``NativeLibraryError``; ``isAvailable`` asks up front), and a
+/// precondition failure means a caller bug, never data.
 ///
 /// Door names mirror the native ABI (`i32`, `f64`, `decimal`, `timestamp`, …) so the polyglot surface
 /// reads identically across bindings. Swift-flavored fidelity: `UInt8`–`UInt64` are native
@@ -32,9 +38,9 @@ public enum Cast {
 
     // A class, deliberately: `loaded()` used to copy this struct — one function pointer
     // per native export — out of the `Result` on every single door call. A reference is
-    // one retain.
-    private final class LoadedLibrary {
-        let library: DynamicLibrary
+    // one retain. Immutable once built, and C function pointers carry no state of their own.
+    private final class LoadedLibrary: Sendable {
+        let origin: NativeLibraryOrigin
         let bool: PlainFn
         let i8: NumericFn
         let i16: NumericFn
@@ -60,12 +66,13 @@ public enum Cast {
         let duration: PlainFn
         let version: VersionFn
 
-        init(library: DynamicLibrary, bool: PlainFn, i8: NumericFn, i16: NumericFn, i32: NumericFn,
-             i64: NumericFn, u8: NumericFn, u16: NumericFn, u32: NumericFn, u64: NumericFn,
+        init(origin: NativeLibraryOrigin, bool: PlainFn,
+             i8: NumericFn, i16: NumericFn, i32: NumericFn, i64: NumericFn,
+             u8: NumericFn, u16: NumericFn, u32: NumericFn, u64: NumericFn,
              f32: NumericFn, f64: NumericFn, decimal: NumericFn, uuid: PlainFn, timestamp: PlainFn,
              unix: UnixFn, excelSerial: UnixFn, date: PlainFn, dateOrdered: UnixFn, dateTime: UnixFn,
              time: PlainFn, duration: PlainFn, version: VersionFn) {
-            self.library = library
+            self.origin = origin
             self.bool = bool
             self.i8 = i8; self.i16 = i16; self.i32 = i32; self.i64 = i64
             self.u8 = u8; self.u16 = u16; self.u32 = u32; self.u64 = u64
@@ -82,8 +89,33 @@ public enum Cast {
     // captured in a `Result` and re-surfaced as a normal `throws` from `loaded()`.
     private static let loadResult: Result<LoadedLibrary, Swift.Error> = Result { try load() }
 
+    #if canImport(HyperCastCore)
+    // Linked in: the C declarations are the table, and there is nothing to find or open.
     private static func load() throws -> LoadedLibrary {
-        let library = try DynamicLibrary(path: try extractNativeLibrary())
+        LoadedLibrary(
+            origin: .staticallyLinked,
+            bool: cast_bool,
+            i8: cast_i8, i16: cast_i16, i32: cast_i32, i64: cast_i64,
+            u8: cast_u8, u16: cast_u16, u32: cast_u32, u64: cast_u64,
+            f32: cast_f32, f64: cast_f64,
+            decimal: cast_decimal,
+            uuid: cast_uuid,
+            timestamp: cast_timestamp,
+            unix: cast_unix,
+            excelSerial: cast_excel_serial,
+            date: cast_date,
+            dateOrdered: cast_date_ordered,
+            dateTime: cast_datetime,
+            time: cast_time,
+            duration: cast_duration,
+            version: hypercast_version)
+    }
+    #else
+    // `DynamicLibrary` never closes its handle, so the function pointers resolved here stay
+    // valid for the life of the process without this holding the library object itself.
+    private static func load() throws -> LoadedLibrary {
+        let (path, origin) = try DynamicLibrary.locateBundled()
+        let library = try DynamicLibrary(path: path)
         func plain(_ name: String) throws -> PlainFn {
             unsafeBitCast(try library.symbol(name), to: PlainFn.self)
         }
@@ -91,7 +123,7 @@ public enum Cast {
             unsafeBitCast(try library.symbol(name), to: NumericFn.self)
         }
         return LoadedLibrary(
-            library: library,
+            origin: origin,
             bool: try plain("cast_bool"),
             i8: try numeric("cast_i8"), i16: try numeric("cast_i16"),
             i32: try numeric("cast_i32"), i64: try numeric("cast_i64"),
@@ -110,6 +142,7 @@ public enum Cast {
             duration: try plain("cast_duration"),
             version: unsafeBitCast(try library.symbol("hypercast_version"), to: VersionFn.self))
     }
+    #endif
 
     private static func loaded() throws -> LoadedLibrary {
         switch loadResult {
@@ -118,39 +151,24 @@ public enum Cast {
         }
     }
 
-    /// Whether the bundled native library loaded and exports the ABI this binding was
-    /// built against — the probe a consumer with a fallback gates on, so the doors' own
-    /// `throws` (which only ever means "the library couldn't load") never has to be caught
-    /// at a call site. Drives the same lazy, once-only load the doors do, so it costs
-    /// nothing after the first answer; never throws. `true` exactly when
+    /// Whether the native core is usable: always `true` on Linux and WebAssembly, where it
+    /// is linked into the executable; on macOS and Windows, whether the bundled shared
+    /// library loaded and exports the ABI this binding was built against. The probe a
+    /// consumer with a fallback gates on, so the doors' own `throws` (which only ever means
+    /// "the library couldn't load") never has to be caught at a call site. Drives the same
+    /// lazy, once-only load the doors do, so it costs nothing after the first answer; never
+    /// throws and never traps, a missing resource directory included. `true` exactly when
     /// ``nativeVersion()`` would succeed.
     public static var isAvailable: Bool {
         if case .success = loadResult { return true }
         return false
     }
 
-    /// Extracts this platform's bundled native library (an SPM resource) to a temp file —
-    /// HyperUuid's approach, verbatim; the temp file is deliberately never removed.
-    private static func extractNativeLibrary() throws -> String {
-        let libNameURL = URL(fileURLWithPath: NativePlatform.libraryFileName)
-        guard
-            let resourceURL = Bundle.module.url(
-                forResource: libNameURL.deletingPathExtension().lastPathComponent,
-                withExtension: libNameURL.pathExtension,
-                subdirectory: "NativeLibs/\(NativePlatform.rid)"
-            )
-        else {
-            throw DynamicLibraryError.openFailed(
-                path: "NativeLibs/\(NativePlatform.rid)/\(NativePlatform.libraryFileName)",
-                reason: "resource not found (unsupported platform, or this package was built without a native library for it)"
-            )
-        }
-        let data = try Data(contentsOf: resourceURL)
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("libhypercast-\(UUID().uuidString)")
-            .appendingPathExtension(libNameURL.pathExtension)
-        try data.write(to: tempURL)
-        return tempURL.path
+    /// Where the core came from — internal, for the test suite to pin that it was linked in,
+    /// or that it came out of the resource bundle rather than the build machine's
+    /// source-tree fallback.
+    static func nativeLibraryOrigin() throws -> NativeLibraryOrigin {
+        try loaded().origin
     }
 
     private static func fault(_ code: Int32, _ raw: UnsafeRawBufferPointer) -> Fault {
@@ -551,8 +569,9 @@ public enum Cast {
 
     /// Casts an RFC 3339 instant — zone **mandatory** — to a `Date`, normalized to UTC.
     /// `Date` is a `Double` of seconds, so sub-microsecond fidelity degrades toward the
-    /// 0001/9999 window edges; ``timeComponents``-style exactness isn't available for
-    /// instants in Foundation, and that trade is stated rather than hidden.
+    /// 0001/9999 window edges; the digit-perfect `DateComponents` that
+    /// ``time(_:)-swift.type.method`` returns has no counterpart for instants in Foundation,
+    /// and that trade is stated rather than hidden.
     public static func timestamp(_ text: String) throws -> Verdict<Date> {
         try withUTF8(text) { try timestamp($0) }
     }
@@ -766,7 +785,8 @@ public enum Cast {
     /// The version of the native `libhypercast` this process actually loaded, as
     /// `major.minor.patch` — the library's own answer (`hypercast_version`), not this
     /// package's tag — so a caller can prove the two agree before the first cast and name
-    /// the mismatch when they don't. Throws only when the library itself couldn't load.
+    /// the mismatch when they don't. Throws only when the library itself couldn't load —
+    /// a ``NativeLibraryError``, like every door.
     public static func nativeVersion() throws -> String {
         let packed = try loaded().version()
         return "\(packed >> 16).\(packed >> 8 & 0xFF).\(packed & 0xFF)"

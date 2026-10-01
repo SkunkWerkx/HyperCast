@@ -595,9 +595,10 @@ final class Cast
     /**
      * Whether libhypercast resolved for this platform and exports the ABI this binding was
      * built against — the probe a consumer with a fallback gates on. Attempts the same load
-     * every door makes, but never throws: a missing library, an unsupported platform, or a
-     * stale library that lacks a symbol this binding declares all answer false. The answer
-     * is cached for the request; true exactly when {@see nativeVersion()} succeeds.
+     * every door makes, but never throws: a missing ext-ffi, an `ffi.enable` setting that
+     * restricts FFI for this SAPI, a missing or unloadable library, an unsupported platform,
+     * or a stale library that lacks a symbol this binding declares all answer false. The
+     * answer is cached for the request; true exactly when {@see nativeVersion()} succeeds.
      *
      * @return bool true when every door can be called; false when the first one would throw
      */
@@ -631,7 +632,10 @@ final class Cast
     }
 
     /**
-     * One-time cdef load plus the static scratch allocations every door reuses.
+     * The cdef load plus the static scratch allocations every door reuses — once per
+     * request: PHP's statics reset between requests, so under a web SAPI the declarations
+     * are bound again on each request's first door (the OS keeps the library itself mapped
+     * for the worker's lifetime).
      *
      * @return FFI the bound library handle
      */

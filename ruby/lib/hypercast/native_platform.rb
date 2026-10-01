@@ -4,18 +4,24 @@ module HyperCast
   module NativePlatform
     class UnsupportedPlatformError < StandardError; end
 
-    def self.rid_and_library_name
-      is_arm = RUBY_PLATFORM.match?(/arm64|aarch64/)
+    # +platform+ is a parameter only so the specs can walk the whole table from one host;
+    # every real caller takes the default.
+    def self.rid_and_library_name(platform = RUBY_PLATFORM)
+      arch = platform.match?(/arm64|aarch64/) ? "arm64" : "x64"
 
-      case RUBY_PLATFORM
+      case platform
       when /mingw|mswin|windows/
-        is_arm ? ["win-arm64", "hypercast.dll"] : ["win-x64", "hypercast.dll"]
+        ["win-#{arch}", "hypercast.dll"]
       when /darwin/
-        is_arm ? ["osx-arm64", "libhypercast.dylib"] : ["osx-x64", "libhypercast.dylib"]
+        ["osx-#{arch}", "libhypercast.dylib"]
       when /linux/
-        is_arm ? ["linux-arm64", "libhypercast.so"] : ["linux-x64", "libhypercast.so"]
+        # Two C libraries, two builds: a glibc-linked library cannot be relied on to dlopen
+        # into a musl process (Alpine), so musl gets RIDs of its own. Ruby names the libc
+        # in its platform string there ("x86_64-linux-musl") and leaves it off on glibc.
+        os = platform.include?("musl") ? "linux-musl" : "linux"
+        ["#{os}-#{arch}", "libhypercast.so"]
       else
-        raise UnsupportedPlatformError, "hypercast: unsupported platform RUBY_PLATFORM=#{RUBY_PLATFORM}"
+        raise UnsupportedPlatformError, "hypercast: unsupported platform RUBY_PLATFORM=#{platform}"
       end
     end
   end

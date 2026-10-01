@@ -5,12 +5,13 @@ in the identical ``cast_*`` C-ABI export the PyO3 extension and every other bind
 repo call, just across a guest/host memory boundary rather than a direct function call.
 
 Selected by ``hypercast`` itself (see ``__init__``): ``HYPERCAST_WASM=1`` forces it, and it is
-the automatic fallback when no ``_native`` extension matches the running interpreter and
-``wasmtime`` is importable. It exposes exactly the surface ``__init__`` consumes from
-``_native`` — the same ``Success``/``Fault``/``NumFormat`` types (``__match_args__``,
-equality and ``repr`` included), the same doors with the same argument shapes, the same
-exception types and messages — so the package above it never knows which one it got,
-and the whole test suite runs against both.
+the automatic fallback when the ``_native`` extension cannot be imported and ``wasmtime`` is
+importable. It exposes exactly the surface ``__init__`` consumes from ``_native`` — the same
+``Success``/``Fault``/``NumFormat`` types (``__match_args__``, equality and ``repr``
+included), the same doors with the same argument shapes, the same exception types — so the
+package above it never knows which one it got, and the whole test suite runs against both.
+``_native.pyi`` is the typed description of that surface, and a test holds both backends
+to it.
 
 Three things about the crossing are load-bearing:
 
@@ -36,8 +37,10 @@ from __future__ import annotations
 
 import ctypes
 import datetime
+import operator
 import struct
 import threading
+import types
 import uuid as _uuid
 from decimal import Decimal
 from pathlib import Path
@@ -97,6 +100,9 @@ class Success:
 
     __slots__ = ("value",)
     __match_args__ = ("value",)
+    # ``Success[int]`` is what ``_native.pyi`` calls a door's success case; this makes it a
+    # legal expression at runtime too, as the extension's ``#[pyclass(generic)]`` does.
+    __class_getitem__ = classmethod(types.GenericAlias)
 
     def __init__(self, value):  # noqa: ANN001
         _OBJECT_SETATTR(self, "value", value)
@@ -145,9 +151,32 @@ class Fault:
 
 
 def _single_char(text: str) -> str:
-    if not isinstance(text, str) or len(text) != 1:
+    if len(text) != 1:
         raise ValueError("Separators must be single characters")
     return text
+
+
+def _str(value, name: str) -> str:  # noqa: ANN001
+    """An argument the extension declares as ``str``: anything else is the ``TypeError``
+    PyO3's own extraction raises there, before any value is looked at."""
+    if not isinstance(value, str):
+        raise TypeError(f"argument '{name}': '{type(value).__name__}' object cannot be cast as 'str'")
+    return value
+
+
+def _u32(value, name: str) -> int:  # noqa: ANN001
+    """An argument the extension declares as ``u32`` — the flag set, an enum discriminant.
+    Extracted the way PyO3 extracts it, so both backends reject alike: a non-integer is a
+    ``TypeError``, an integer outside 32 unsigned bits an ``OverflowError``."""
+    try:
+        value = operator.index(value)
+    except TypeError:
+        raise TypeError(
+            f"argument '{name}': '{type(value).__name__}' object cannot be interpreted as an integer"
+        ) from None
+    if not 0 <= value < 1 << 32:
+        raise OverflowError("out of range integral type conversion attempted")
+    return value
 
 
 # The bytes the core's ``CurrencySymbol::new`` rejects: ASCII digits and Rust's
@@ -162,8 +191,6 @@ def _currency_bytes(currency: str) -> bytes:
     Anything else must be a valid ``CurrencySymbol`` (1 to 16 UTF-8 bytes, no ASCII digit
     or whitespace), or it is a caller bug raised here, at construction, the way equal
     separators are — the same text the PyO3 extension raises."""
-    if not isinstance(currency, str):
-        raise TypeError("currency must be str")
     if not currency:
         return b""
     encoded = currency.encode("utf-8")
@@ -192,6 +219,10 @@ class NumFormat:
     ALL = GROUPING | PARENTHESES | EXPONENT | RADIX_PREFIXES | PERCENT | CURRENCY
 
     def __init__(self, decimal_sep: str, group_sep: str, flags: int, currency: str = ""):
+        # Types first and values after, the order the extension checks them in: PyO3 extracts
+        # every argument before the constructor's own guards run.
+        decimal_sep, group_sep = _str(decimal_sep, "decimal_sep"), _str(group_sep, "group_sep")
+        flags, currency = _u32(flags, "flags"), _str(currency, "currency")
         decimal, group = _single_char(decimal_sep), _single_char(group_sep)
         if decimal == group:
             # The same text the PyO3 extension raises, Rust's {:?} quoting included.
@@ -199,10 +230,10 @@ class NumFormat:
         symbol = _currency_bytes(currency)
         _OBJECT_SETATTR(self, "_decimal_sep", decimal)
         _OBJECT_SETATTR(self, "_group_sep", group)
-        _OBJECT_SETATTR(self, "_flags", int(flags))
+        _OBJECT_SETATTR(self, "_flags", flags)
         _OBJECT_SETATTR(self, "_currency", currency)
         _OBJECT_SETATTR(
-            self, "_packed", _FORMAT.pack(ord(decimal), ord(group), int(flags), len(symbol), symbol)
+            self, "_packed", _FORMAT.pack(ord(decimal), ord(group), flags, len(symbol), symbol)
         )
 
     def __setattr__(self, name, value):  # noqa: ANN001
@@ -231,25 +262,30 @@ class NumFormat:
     @staticmethod
     def from_localeconv(conv: dict | None = None) -> NumFormat:
         """Bridges ``locale.localeconv()`` (or a dict shaped like it) to a declared format —
-        ``decimal_point``, ``thousands_sep``, and ``currency_symbol``."""
+        ``decimal_point``, ``thousands_sep``, and ``currency_symbol``.
+
+        A field the locale leaves empty takes its invariant default (``.`` decimal, ``,``
+        group) unless the other separator already holds that character, in which case it
+        takes the other of the pair — so a comma-decimal locale with no thousands separator
+        groups on ``.`` rather than colliding. Two separators the locale itself declares
+        equal are still the ``ValueError`` the constructor raises."""
         if conv is None:
             import locale
 
             conv = locale.localeconv()
 
-        def field(name: str, fallback: str) -> str:
-            value = conv.get(name)
-            if value is None:
-                return fallback
-            text = str(value)
-            return text[0] if text else fallback
+        # "" when the key is absent or its text is empty: the locale declares nothing.
+        def field(name: str) -> str:
+            if name not in conv:
+                return ""
+            return _str(conv[name], name)[:1]
 
-        return NumFormat(
-            field("decimal_point", "."),
-            field("thousands_sep", ","),
-            NumFormat.ALL,
-            conv.get("currency_symbol", ""),
-        )
+        decimal, group = field("decimal_point"), field("thousands_sep")
+        if not decimal:
+            decimal = "," if group == "." else "."
+        if not group:
+            group = "." if decimal == "," else ","
+        return NumFormat(decimal, group, NumFormat.ALL, conv.get("currency_symbol", ""))
 
 
 NumFormat.INVARIANT = NumFormat(".", ",", NumFormat.ALL)
@@ -303,7 +339,11 @@ class _Guest:
     # --- guest memory ---------------------------------------------------------------
 
     def _malloc(self, size: int) -> int:
-        ptr = self._call["malloc"](size)
+        # The guest's size_t is 32 bits and the call slot takes its image without a range
+        # check, so a size past it would wrap into a small allocation the input then
+        # overruns. And the result is an address, not a signed number: masked, so a block in
+        # the upper half of the guest's 4 GiB does not come back negative.
+        ptr = self._call["malloc"](size) & 0xFFFF_FFFF if size < 1 << 32 else 0
         if ptr == 0:
             raise MemoryError(f"hypercast: guest malloc({size}) failed")
         # Growing the guest memory can relocate it on the host side, and malloc is the only
@@ -427,6 +467,9 @@ def _bind(cast_failure) -> None:  # noqa: ANN001
 
 _REASONS = {1: lambda: _EMPTY, 2: lambda: _MALFORMED, 3: lambda: _OUT_OF_RANGE}
 
+# What each declared argument must be, in the extension's own words.
+_DECLARATIONS = {"precision": "a UnixPrecision", "epoch": "an ExcelEpoch", "order": "a DateOrder"}
+
 
 def _text(text) -> bytes:  # noqa: ANN001
     if isinstance(text, str):
@@ -480,8 +523,13 @@ def _numeric(name: str, text, fmt, read):  # noqa: ANN001
         return _verdict(guest, rc, read, text, data)
 
 
-def _declared(name: str, text, discriminant: int, read):  # noqa: ANN001
+def _declared(name: str, text, declared, argument: str, members: int, read):  # noqa: ANN001
+    # The extension's order: the text's type, then the declaration's type and range (PyO3
+    # extracting a u32), then whether it names one of the enum's 1..members discriminants.
     data = _text(text)
+    discriminant = _u32(declared, argument)
+    if not 1 <= discriminant <= members:
+        raise ValueError(f"{argument} must be {_DECLARATIONS[argument]}")
     guest = _get()
     with _lock:
         in_ptr = guest._stage_input(data)
@@ -648,16 +696,12 @@ def cast_timestamp(text):  # noqa: ANN001
 
 def cast_unix(text, precision: int):  # noqa: ANN001
     """Casts an integer Unix-epoch value under the declared ``UnixPrecision``."""
-    if precision not in (1, 2, 3, 4):
-        raise ValueError("precision must be a UnixPrecision")
-    return _declared("cast_unix", text, int(precision), _read_instant)
+    return _declared("cast_unix", text, precision, "precision", 4, _read_instant)
 
 
 def cast_excel_serial(text, epoch: int):  # noqa: ANN001
     """Casts an Excel date serial under the declared ``ExcelEpoch``."""
-    if epoch not in (1, 2):
-        raise ValueError("epoch must be an ExcelEpoch")
-    return _declared("cast_excel_serial", text, int(epoch), _read_instant)
+    return _declared("cast_excel_serial", text, epoch, "epoch", 2, _read_instant)
 
 
 def cast_date(text, order: int | None = None):  # noqa: ANN001
@@ -665,17 +709,13 @@ def cast_date(text, order: int | None = None):  # noqa: ANN001
     under a declared ``DateOrder``."""
     if order is None:
         return _plain("cast_date", text, _read_date)
-    if order not in (1, 2, 3):
-        raise ValueError("order must be a DateOrder")
-    return _declared("cast_date_ordered", text, int(order), _read_date)
+    return _declared("cast_date_ordered", text, order, "order", 3, _read_date)
 
 
 def cast_datetime(text, order: int):  # noqa: ANN001
     """Casts a zone-less civil date-time under a declared ``DateOrder`` to a naive
     ``datetime``."""
-    if order not in (1, 2, 3):
-        raise ValueError("order must be a DateOrder")
-    return _declared("cast_datetime", text, int(order), _read_civil)
+    return _declared("cast_datetime", text, order, "order", 3, _read_civil)
 
 
 def cast_time(text):  # noqa: ANN001

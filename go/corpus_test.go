@@ -51,7 +51,7 @@ func corpus(t *testing.T, name string) []vector {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for ; dir != "/"; dir = filepath.Dir(dir) {
+	for {
 		candidate := filepath.Join(dir, "corpus", name)
 		if data, err := os.ReadFile(candidate); err == nil {
 			var vectors []vector
@@ -60,9 +60,15 @@ func corpus(t *testing.T, name string) []vector {
 			}
 			return vectors
 		}
+		// The root is its own parent on every OS — "/" here, "C:\" on Windows, where a
+		// comparison against "/" never becomes true and the walk would never end.
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("corpus directory not found above the test directory")
+			return nil
+		}
+		dir = parent
 	}
-	t.Fatal("corpus directory not found")
-	return nil
 }
 
 func (v *vector) format() NumFormat {

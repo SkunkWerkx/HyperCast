@@ -50,6 +50,12 @@ import org.graalvm.polyglot.io.ByteSequence;
 final class WasmBackend implements Backend {
     static final String RESOURCE_PATH = "/native/wasm32-wasip1/hypercast.wasm";
 
+    // What a consumer who selected this backend without its optional dependencies is told.
+    // A compile-time constant, so Cast can name it without loading this class.
+    static final String GRAALWASM_MISSING = "hypercast: the wasm backend needs GraalWasm on the "
+            + "classpath — add org.graalvm.polyglot:polyglot and org.graalvm.polyglot:wasm "
+            + "(the latter is a POM-type dependency)";
+
     private static final ByteOrder BIG_ENDIAN = ByteOrder.BIG_ENDIAN;
     private static final ByteOrder LITTLE_ENDIAN = ByteOrder.LITTLE_ENDIAN;
     // Eight input bytes at a time, in the order they sit in the caller's segment: read
@@ -99,9 +105,15 @@ final class WasmBackend implements Backend {
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
-        context = Context.newBuilder("wasm")
-                .option("wasm.Builtins", "wasi_snapshot_preview1")
-                .build();
+        try {
+            context = Context.newBuilder("wasm")
+                    .option("wasm.Builtins", "wasi_snapshot_preview1")
+                    .build();
+        } catch (IllegalArgumentException | IllegalStateException noWasmLanguage) {
+            // The polyglot API is on the classpath but nothing behind it can run wasm: the
+            // half-added dependency, org.graalvm.polyglot:polyglot without :wasm.
+            throw new IllegalStateException(GRAALWASM_MISSING, noWasmLanguage);
+        }
         Value instance = context.eval(Source.newBuilder("wasm", ByteSequence.create(module), "hypercast").buildLiteral())
                 .newInstance();
         Value exports = instance.getMember("exports");

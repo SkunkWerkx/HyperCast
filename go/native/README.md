@@ -12,6 +12,12 @@ to update one by hand; CI's own `build-native` job does the same per-leg during 
 overwriting whichever platform's file matches that leg — harmless, since it's the same build
 either way.
 
+The RIDs `platform.go` selects from: `linux-x64` and `linux-arm64` (glibc 2.34 or newer),
+`linux-musl-x64` and `linux-musl-arm64` (musl — chosen when the running process has a musl
+loader mapped), `osx-x64`, `osx-arm64`, `win-x64` and `win-arm64`. A RID with no directory
+here is not a build error — `go:embed` takes whatever exists — but a load on that platform
+returns `ErrNativeUnavailable` naming the missing file.
+
 `wasm32-wasip1/hypercast.wasm` lives here for the same reason, and is the one entry that
 isn't a per-platform shared library: it's the core compiled as a WebAssembly module, embedded
 by the same `//go:embed native` and loaded only by the `hypercast_wasm` build tag's

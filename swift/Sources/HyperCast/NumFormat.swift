@@ -2,8 +2,11 @@ import Foundation
 
 /// The lenience flags of ``NumFormat`` — bit-for-bit the native core's flags.
 public struct NumStyles: OptionSet, Sendable {
+    /// The flag bits, exactly as the native format's `flags` field carries them.
     public let rawValue: UInt32
 
+    /// Wraps raw flag bits. Bits no flag below names are carried through untouched, and
+    /// mean nothing to the core.
     public init(rawValue: UInt32) {
         self.rawValue = rawValue
     }
@@ -48,8 +51,12 @@ public struct NumStyles: OptionSet, Sendable {
 /// the core's code-point fields; the currency symbol is the one field that needs a culture
 /// table to fill in, and it is declared, never looked up.
 public struct NumFormat: Equatable, Sendable {
+    /// The scalar between the integer and fraction digits (`.` in ``invariant``).
     public let decimalSeparator: Unicode.Scalar
+    /// The scalar permitted between digits while ``NumStyles/grouping`` is in ``styles``
+    /// (`,` in ``invariant``). Never equal to ``decimalSeparator``.
     public let groupSeparator: Unicode.Scalar
+    /// The leniences this format permits.
     public let styles: NumStyles
     /// The declared currency symbol (`$`, `€`, `kr.`, `CHF`), honored only while
     /// ``NumStyles/currency`` is in ``styles``; empty declares none. At most
@@ -67,6 +74,8 @@ public struct NumFormat: Equatable, Sendable {
     /// The inline capacity of the native format's currency field, in UTF-8 bytes.
     static let maxCurrencySymbolBytes = 16
 
+    /// Declares a format from its separators, leniences and (optionally) a currency symbol.
+    ///
     /// - Precondition: the separators differ, and `currencySymbol` is at most 16 UTF-8
     ///   bytes with no ASCII digit or ASCII whitespace — either is a caller bug, not a data
     ///   verdict.
@@ -176,9 +185,13 @@ public enum DateOrder: UInt32, Sendable {
 /// The declared unit of a Unix-epoch value — no magnitude guessing, ever. Values match the
 /// native core's discriminants.
 public enum UnixPrecision: UInt32, Sendable {
+    /// Whole seconds since the Unix epoch.
     case seconds = 1
+    /// Milliseconds since the Unix epoch.
     case milliseconds = 2
+    /// Microseconds since the Unix epoch.
     case microseconds = 3
+    /// Nanoseconds since the Unix epoch.
     case nanoseconds = 4
 }
 

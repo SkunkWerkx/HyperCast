@@ -17,10 +17,15 @@ public enum CastFailure: Int32, Equatable, Sendable {
 /// `offset` and `length` are byte offsets into the UTF-8 representation of the input —
 /// exactly what the `[UInt8]` doors received, identical to `String.utf8` offsets.
 public struct Fault: Equatable, Sendable {
+    /// Why the cast failed.
     public let reason: CastFailure
+    /// Where the offending span starts, in UTF-8 bytes from the start of the input.
     public let offset: Int
+    /// How many UTF-8 bytes the offending span covers.
     public let length: Int
 
+    /// Builds a fault from its parts — what a test asserting an expected verdict needs; the
+    /// doors are what produce one otherwise.
     public init(reason: CastFailure, offset: Int, length: Int) {
         self.reason = reason
         self.offset = offset
@@ -35,7 +40,7 @@ public struct Fault: Equatable, Sendable {
 /// needs a type checker — Swift's compiler refuses an unhandled disposition out of the box.
 ///
 /// ```swift
-/// switch Cast.i32("(1,234)", format: .invariant) {
+/// switch try Cast.i32("(1,234)", format: .invariant) {
 /// case .success(let value): print("got \(value)")          // -1234, accounting negative
 /// case .fault(let fault): print("\(fault.reason) at byte \(fault.offset)")
 /// }   // no third case exists, and the compiler knows it

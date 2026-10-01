@@ -43,6 +43,27 @@
 // must anyway. Nothing in the parsing modules ever touches std either way.
 #![cfg_attr(not(feature = "std"), no_std)]
 
+// The panic handler for the no_std artifacts this crate links itself: the static libraries
+// behind the `staticlib` feature (Cargo.toml has what they are and why they carry no std).
+// Built with `panic = "abort"`, so a panic ends the program instead of unwinding into the
+// host: on wasm32 it is the `unreachable` trap, which the host sees as a RuntimeError rather
+// than as a corrupted return value; anywhere else it is the C library's `abort`, which the
+// executable the library is linked into already has. Never compiled for a bare-metal rlib
+// consumer, who brings a handler of their own, nor with `std`, which has one.
+#[cfg(all(feature = "staticlib", not(feature = "std")))]
+#[panic_handler]
+fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
+    #[cfg(target_arch = "wasm32")]
+    core::arch::wasm32::unreachable();
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        unsafe extern "C" {
+            safe fn abort() -> !;
+        }
+        abort()
+    }
+}
+
 mod boolean;
 mod decimal;
 mod ffi;
@@ -245,7 +266,10 @@ mod tests {
         assert_eq!(cast_f64("1\u{00A0}234,5".as_bytes(), &french), Ok(1234.5));
     }
 
+    // `3,1415` is the README's own example of a non-3-digit right run; clippy reads the
+    // expected value as a sloppy PI, which it is not.
     #[test]
+    #[allow(clippy::approx_constant)]
     fn separator_detection_resolves_structure_and_refuses_ambiguity() {
         const DETECT: NumFormat = NumFormat::DETECT;
         // Both separators present: the rightmost is the decimal.

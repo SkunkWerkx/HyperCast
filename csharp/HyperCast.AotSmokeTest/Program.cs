@@ -1,6 +1,7 @@
 // Proves the binding under Native AOT for real: this program publishes with PublishAot and
-// exercises a door from every family — including the union's compile-checked consumption —
-// against the real native library. Exit code 0 only if every cast lands as expected.
+// crosses every native entry point the binding declares — the twenty-one cast_* functions and
+// hypercast_version — against the real native library, including the generic door and the
+// union's compile-checked consumption. Exit code 0 only if every cast lands as expected.
 
 using HyperCast;
 
@@ -19,18 +20,36 @@ void Check<T>(string name, Verdict<T> verdict, T expected) where T : struct
 }
 
 Check("bool", Cast.Boolean("enabled"), true);
+Check("i8", Cast.SByte("-128", NumFormat.Invariant), (sbyte)-128);
+Check("i16", Cast.Int16("0x7FFF", NumFormat.Invariant), (short)32767);
 Check("i32", Cast.Int32("(1,234)", NumFormat.Invariant), -1234);
+Check("i64", Cast.Int64("1e3", NumFormat.Invariant), 1000L);
+Check("u8", Cast.Byte("255", NumFormat.Invariant), (byte)255);
+Check("u16", Cast.UInt16("65535", NumFormat.Invariant), (ushort)65535);
+Check("u32", Cast.UInt32("4294967295", NumFormat.Invariant), 4294967295u);
+Check("u64", Cast.UInt64("18446744073709551615", NumFormat.Invariant), ulong.MaxValue);
+Check("f32", Cast.Single("2.5", NumFormat.Invariant), 2.5f);
 Check("f64", Cast.Double("25.5%", NumFormat.Invariant), 0.255);
 Check("decimal", Cast.Decimal("(1,234.50)", NumFormat.Invariant), -1234.50m);
 Check("currency", Cast.Int32("($1,234)", new NumFormat('.', ',', NumStyles.All, "$")), -1234);
+// The generic door's typeof dispatch has to fold under AOT's shared generics too.
 Check("generic", Cast.Numeric<short>("0x7FFF", NumFormat.Invariant), (short)32767);
 Check("uuid", Cast.Uuid("urn:uuid:01020304-0506-0708-090a-0b0c0d0e0f10"),
 	new Guid("01020304-0506-0708-090a-0b0c0d0e0f10"));
 Check("timestamp", Cast.Timestamp("2026-01-02T15:04:05+05:00"),
 	new DateTimeOffset(2026, 1, 2, 10, 4, 5, TimeSpan.Zero));
+Check("unix", Cast.Unix("1700000000123", UnixPrecision.Milliseconds),
+	DateTimeOffset.FromUnixTimeMilliseconds(1_700_000_000_123));
+Check("excel serial", Cast.ExcelSerial("45292.75", ExcelEpoch.Y1900),
+	new DateTimeOffset(2024, 1, 1, 18, 0, 0, TimeSpan.Zero));
 Check("date", Cast.Date("2026-01-02"), new DateOnly(2026, 1, 2));
+Check("date (ordered)", Cast.Date("1/7/2026", DateOrder.MonthDayYear), new DateOnly(2026, 1, 7));
+Check("datetime", Cast.DateTime("1/7/2026 3:04 PM", DateOrder.MonthDayYear),
+	new DateTime(2026, 1, 7, 15, 4, 0));
 Check("time", Cast.Time("15:04:05"), new TimeOnly(15, 4, 5));
 Check("duration", Cast.Duration("P1DT6H"), new TimeSpan(1, 6, 0, 0));
+// The UTF-8 doors are the native contract itself — no transcode in front of the crossing.
+Check("utf8", Cast.Int32("(1,234)"u8, NumFormat.Invariant), -1234);
 
 // The exhaustive two-arm switch (concrete case types) must survive AOT too.
 var disposition = Cast.Int32("not-a-number", NumFormat.Invariant) switch

@@ -16,7 +16,7 @@ csharp/HyperCast/runtimes/
 # local dev loop stages into build/generated-resources instead (already covered by
 # **/build/ above), so anything here is regenerable via `cargo build --release`.
 java/src/main/resources/native/
-# csharp/HyperCast/build/ is NuGet's real, tracked build/{tfm}/{PackageId}.targets packaging
+# csharp/HyperCast/build/ is NuGet's real, tracked build/{PackageId}.targets packaging
 # convention (auto-imported into every consumer for the browser-wasm NativeFileReference and
 # EmccExportedFunction wiring — see HyperCast.csproj), not a build output. It collides with
 # **/build/ above, which would otherwise silently swallow it: the file would sit on disk,
@@ -25,8 +25,7 @@ java/src/main/resources/native/
 # !file re-inclusion — and gitignore rules apply in file order, so this must come after the
 # rule it un-ignores. HyperUuid carries the same block for the same reason.
 !csharp/HyperCast/build/
-!csharp/HyperCast/build/net11.0/
-!csharp/HyperCast/build/net11.0/HyperCast.targets
+!csharp/HyperCast/build/HyperCast.targets
 
 # Python
 **/__pycache__/

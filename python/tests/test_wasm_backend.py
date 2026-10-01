@@ -7,6 +7,7 @@ test is not the wasm backend, so a plain ``pytest`` still exercises the native p
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 import subprocess
 import sys
@@ -89,6 +90,25 @@ def test_agrees_with_the_native_backend_on_the_decimal_door():
 
 def test_agrees_with_the_native_backend_on_the_version():
     assert native_eval("hypercast.native_version()") == hypercast.native_version()
+
+
+def test_agrees_with_the_native_backend_on_what_help_says():
+    # help(hypercast.cast_i32) must not depend on which backend loaded: the PyO3 doors carry
+    # their docstrings as Rust doc comments, these twins as Python ones, and nothing but this
+    # holds the two texts together.
+    doors = [name for name in hypercast.__all__ if name.startswith("cast_")]
+    native = json.loads(
+        native_eval(
+            "__import__('json').dumps({n: getattr(hypercast, n).__doc__"
+            " for n in hypercast.__all__ if n.startswith('cast_')})"
+        )
+    )
+
+    def squeeze(doc: str | None) -> str:
+        return " ".join((doc or "").split())
+
+    differing = {name for name in doors if squeeze(native[name]) != squeeze(getattr(hypercast, name).__doc__)}
+    assert not differing
 
 
 def test_agrees_with_the_native_backend_on_uuid_construction():
