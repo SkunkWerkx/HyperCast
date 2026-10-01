@@ -37,7 +37,8 @@ between the core and the presentation. `Cast.nativeVersion()` reports the loaded
 library's own `major.minor.patch` (`hypercast_version`), so a caller can prove the binary
 it resolved is the one this binding was built against before the first cast; `Cast.isAvailable`
 is the non-throwing form of the same question — the probe a consumer with a fallback gates
-on, so a door's `throws` (which only ever means "the library couldn't load") never has to be
+on, so a door's `throws` (which only ever means "the library couldn't load", and is always a
+`NativeLibraryError` — see [Loading and deployment](#loading-and-deployment)) never has to be
 caught at a call site. A caller that is itself generic over its target uses
 `Cast.numeric<T>(_:format:)`, resolved statically over the closed `NumericCastTarget` set —
 exactly the eleven numeric targets (`Int8`…`Int64`, `UInt8`…`UInt64`, `Float`, `Double`,
@@ -133,6 +134,66 @@ let enUs = NumFormat.from(locale: Locale(identifier: "en_US"))   // "$", from th
 try Cast.i32("-$5", format: enUs)                                  // .success(-5)
 ```
 
+## Requirements
+
+- **Swift.** Tested on Swift 6.3 — every CI leg runs `swift test` on it. The manifests
+  declare `swift-tools-version:5.9`: that is the floor SwiftPM will accept and the oldest
+  language version the sources are written against, but no CI leg builds on it, so anything
+  below 6.3 is declared rather than proven.
+- **Platforms.** glibc Linux, macOS and Windows, each on x86_64 and arm64 — the six native
+  builds under `NativeLibs/`. macOS 13 is the declared deployment floor, for `Duration`.
+- **Not supported: musl Linux.** The other bindings in this repo ship `linux-musl-x64` and
+  `linux-musl-arm64` builds; this one deliberately does not. Swift's musl target is the fully
+  static Linux SDK, and a statically linked executable has no dynamic loader to `dlopen` a
+  shared library with, so there is nothing a bundled musl library could be loaded by. A musl
+  build stops at a compile-time `#error` that says so. This is deferred, not impossible:
+  the core could be linked in statically instead of loaded, as a SwiftPM binary
+  static-library target (SE-0482, Swift 6.2 and later), and that path is not built yet.
+- **Not supported: everything else.** iOS, tvOS, watchOS, visionOS, Android, and any other
+  architecture on the three supported systems have no native build here and stop at the same
+  kind of `#error` — at compile time, rather than being handed a library that can't load.
+
+## Loading and deployment
+
+The native library travels as a SwiftPM resource. `swift build` stages `NativeLibs/` into a
+directory named `HyperCast_HyperCast.resources` (`HyperCast_HyperCast.bundle` on macOS) beside
+the built products, and the first call `dlopen`s this platform's library straight out of it —
+nothing is extracted, copied or left behind in a temp directory.
+
+**That directory has to ship with your executable.** A deployment that copies only the binary
+— the usual multi-stage Dockerfile — has no native library to load:
+
+```dockerfile
+COPY --from=build /src/.build/release/MyServer /app/
+COPY --from=build /src/.build/release/HyperCast_HyperCast.resources /app/HyperCast_HyperCast.resources
+```
+
+The loader looks beside the executable first, then in the main bundle's resources, which is
+where an app bundle carries it. On the machine that built the package it also falls back to
+the package's own checkout, so an executable copied out of `.build` keeps working *there* —
+which is exactly why a missing directory tends to show up only after deployment. Test the
+deployed layout, not the build tree.
+
+When the library can't be found or loaded, nothing crashes. Every door throws
+`NativeLibraryError` — a public type, and the only thing a door ever throws, naming the path
+it looked for or the export it couldn't resolve — and `Cast.isAvailable` answers the same
+question without a `do`/`catch`:
+
+```swift
+guard Cast.isAvailable else {
+    return Int32(text)                          // your fallback
+}
+
+do {
+    return try Cast.i32(text, format: .invariant)
+} catch let error as NativeLibraryError {
+    // .openFailed(path:reason:) or .symbolNotFound(name:) — the library, never the data
+}
+```
+
+The load is attempted once per process and its outcome kept, so `isAvailable` costs nothing
+after the first answer, and a failed load throws the same error from every later call.
+
 ## WebAssembly
 
 None today, in either direction. Compiling *this binding* to wasm: swift.org ships real WASM
@@ -172,8 +233,23 @@ https://github.com/SkunkWerkx/HyperCast
 ```
 
 In Xcode that's File ▸ Add Package Dependencies; in a `Package.swift` it's a `.package(url:)`
-entry with whatever version requirement suits you. SwiftPM resolves the newest release that
-satisfies it, so there is no version to copy from here and none to go stale.
+entry with whatever version requirement suits you, plus the product on each target that
+uses it:
+
+```swift
+dependencies: [
+    .package(url: "https://github.com/SkunkWerkx/HyperCast", from: "…"),   // the tag on the badge above
+],
+targets: [
+    .target(
+        name: "MyTarget",
+        dependencies: [.product(name: "HyperCast", package: "HyperCast")]
+    ),
+]
+```
+
+SwiftPM resolves the newest release that satisfies the requirement, so there is no version
+to copy from here and none to go stale.
 
 SwiftPM has no separate registry to publish to — `.package(url:from:)` resolves straight from
 a git tag, which *is* the complete publish story here rather than a placeholder for one. It

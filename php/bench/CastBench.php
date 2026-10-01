@@ -95,6 +95,7 @@ final class CastBench
         // PHP has; PT1H30M15S here vs our PT1H30M15.5S is as close as its grammar goes.
         new \DateInterval('PT1H30M15S');
     }
+
     public function benchCastDateTimeMessy(): void
     {
         Cast::datetime('1/7/2026 3:04 PM', DateOrder::Mdy);
@@ -130,5 +131,4 @@ final class CastBench
         static $eurozone = null;
         return $eurozone ??= new NumFormat(',', '.', NumFormat::ALL);
     }
-
 }

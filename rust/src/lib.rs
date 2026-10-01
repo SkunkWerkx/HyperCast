@@ -43,6 +43,17 @@
 // must anyway. Nothing in the parsing modules ever touches std either way.
 #![cfg_attr(not(feature = "std"), no_std)]
 
+// The panic handler for the one no_std artifact this crate links itself: the wasm static
+// library behind the `wasm-staticlib` feature (Cargo.toml has why it exists). Built with
+// `panic = "abort"`, so a panic is a trap: the wasm `unreachable` instruction, which the
+// host sees as a RuntimeError rather than as a corrupted return value. Never compiled for a
+// bare-metal rlib consumer, who brings a handler of their own, nor with `std`, which has one.
+#[cfg(all(feature = "wasm-staticlib", not(feature = "std"), target_arch = "wasm32"))]
+#[panic_handler]
+fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
+    core::arch::wasm32::unreachable()
+}
+
 mod boolean;
 mod decimal;
 mod ffi;
@@ -245,7 +256,10 @@ mod tests {
         assert_eq!(cast_f64("1\u{00A0}234,5".as_bytes(), &french), Ok(1234.5));
     }
 
+    // `3,1415` is the README's own example of a non-3-digit right run; clippy reads the
+    // expected value as a sloppy PI, which it is not.
     #[test]
+    #[allow(clippy::approx_constant)]
     fn separator_detection_resolves_structure_and_refuses_ambiguity() {
         const DETECT: NumFormat = NumFormat::DETECT;
         // Both separators present: the rightmost is the decimal.

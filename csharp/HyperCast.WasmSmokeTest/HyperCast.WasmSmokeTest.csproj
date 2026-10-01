@@ -13,10 +13,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- The managed binding, through its real public surface: unlike HyperUuid's spike this
-         app declares no P/Invokes of its own, because HyperCast declares every entry point
-         twice ("hypercast" for dlopen platforms, "*" for the statically linked wasm module)
-         and picks at the call site with OperatingSystem.IsBrowser(). -->
+    <!-- The managed binding, through its real public surface: this app declares no P/Invokes
+         of its own, because Cast declares every entry point twice ("hypercast" for dlopen
+         platforms, "*" for the statically linked wasm module) and picks at the call site
+         with OperatingSystem.IsBrowser(). -->
     <ProjectReference Include="../HyperCast/HyperCast.csproj" />
   </ItemGroup>
 
@@ -29,12 +29,8 @@
        same file adds for .NET 11, without which the browser rejects the module.
 
        Needs the wasm32-unknown-emscripten staticlib staged where the targets file looks for
-       it — csharp/HyperCast/runtimes/browser-wasm/nativeassets/net10.0/libhypercast.a, which
-       is gitignored like every other runtimes/ asset:
-
-         `cargo rustc` with release, the wasm32-unknown-emscripten target and a staticlib
-         crate type (run inside rust/), then copy
-         target/wasm32-unknown-emscripten/release/libhypercast.a there. -->
-  <Import Project="../HyperCast/build/net11.0/HyperCast.targets" />
+       it, csharp/HyperCast/runtimes/browser-wasm/nativeassets/net10.0/libhypercast.a, which
+       is gitignored like every other runtimes/ asset. check.sh stages it. -->
+  <Import Project="../HyperCast/build/HyperCast.targets" />
 
 </Project>

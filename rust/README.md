@@ -91,9 +91,9 @@ path-depending back here:
 
 ```sh
 cargo build --release                    # the plain cdylib + rlib every FFI binding uses
-cargo build --release --features python  # the CPython extension module (PyO3, abi3-py310)
-cargo ruby                               # the Ruby extension (Magnus), in target/ruby/release/
-cargo php                                # the Zend extension (ext-php-rs) — benchmark spike only, in target/php/release/
+cargo build --release --features python  # the CPython extension module (PyO3, abi3-py311)
+cargo ruby-ext                           # the Ruby extension (Magnus), in target/ruby/release/ (ruby/'s `rake native:dev` runs this and stages the result)
+cargo php-ext                            # the Zend extension (ext-php-rs) — benchmark spike only, in target/php/release/
 ```
 
 The `php` one is not a shipped backend. PHP's ext-ffi crossing measured ~105 ns — already
@@ -115,7 +115,7 @@ loop loads. The extension build still exports every `cast_*` symbol, but it also
 ~95 undefined `Py*` symbols that only resolve inside a CPython process, so the next
 `./gradlew test` or `dotnet test` fails at native load with something unhelpful about a
 missing symbol. Nothing is broken; a plain `cargo build --release` puts it back. Locally,
-the `cargo ruby` and `cargo php` aliases in `.cargo/config.toml` avoid it by building into
+the `cargo ruby-ext` and `cargo php-ext` aliases in `.cargo/config.toml` avoid it by building into
 `target/ruby/` and `target/php/`, and `python/.cargo/config.toml` does the same for maturin
 (`python/target/`). CI hits
 exactly this ordering — the forge's single per-platform job builds the PyO3 extension
@@ -129,7 +129,9 @@ CI has already placed the library explicitly (`runtimes/<rid>/native/`,
 The full test suite — unit tests, the allocation proof, and every corpus replay —
 passes under `wasmtime` on `wasm32-wasip1`: no clock, no randomness, no dependencies to
 stub. CI also builds the `wasm32-unknown-emscripten` staticlib the C# binding's
-browser-wasm packaging consumes, on every PR.
+browser-wasm packaging consumes, on every PR — `cargo wasm-staticlib`, which leaves Rust's
+standard library out of it (the `wasm-staticlib` feature supplies the panic handler in its
+place), so it can be linked into one Blazor app beside HyperUuid's.
 
 One wasm build of this crate is not left to the consumer, because four bindings in this repo
 ship it: the `cdylib` for `wasm32-wasip1`, built from inside this directory so that

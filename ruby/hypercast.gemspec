@@ -1,33 +1,53 @@
 Gem::Specification.new do |spec|
   spec.name = "hypercast"
+  # Kept in lockstep with HyperCast::VERSION (lib/hypercast.rb) and rust/Cargo.toml by the
+  # prepare-release workflow, which rewrites all three together.
   spec.version = "0.3.0"
+  spec.summary = "Scalar parsing as Success/Fault verdicts over a native Rust core, shipped prebuilt"
+  spec.description = <<~DESC
+    Booleans, numerics, exact decimals, UUIDs, and temporals cast from untrusted text by a
+    native Rust core — every parse returns a verdict (the value, or a reason plus the
+    offending span), never an exception for bad data. Three backends behind one surface,
+    selected automatically and all shipped prebuilt: a Magnus extension where a precompiled
+    platform gem matches, stdlib Fiddle everywhere else, and the same core as a WebAssembly
+    module for anyone who installs the wasmtime gem. No runtime bridge, no dependencies
+    beyond Fiddle.
+  DESC
   spec.authors = ["Brian Buvinghausen"]
-  spec.summary = "Allocation-free scalar parsing as Success/Fault verdicts over a native Rust core"
-  spec.description = "Booleans, numerics, UUIDs, and temporals cast from untrusted text by a " \
-                     "native Rust core — every parse returns a verdict (the value, or a reason " \
-                     "plus the offending span), never an exception for bad data. Two backends " \
-                     "behind one surface, selected automatically with nothing ever compiled: a " \
-                     "Magnus extension where a precompiled platform gem matches, stdlib Fiddle " \
-                     "everywhere else. No runtime bridge, no dependencies beyond Fiddle."
-  spec.homepage = "https://github.com/SkunkWerkx/HyperCast"
   spec.license = "MIT"
-  # 3.2 floor: Data.define for the verdict case types (pattern-matchable value objects).
-  spec.required_ruby_version = ">= 3.2"
+  spec.homepage = "https://github.com/SkunkWerkx/HyperCast"
+  # 3.3 floor: the oldest Ruby still supported upstream (3.2 reached end of life on
+  # 2026-03-31; Data.define, which the verdict case types are built on, arrived there). The
+  # precompiled platform gems narrow this further, to the ABIs they carry — see the
+  # Rakefile's native:gem task.
+  spec.required_ruby_version = ">= 3.3"
 
   # LICENSE is a local copy of the repo root's, not a reference to it: RubyGems stores a
   # "../LICENSE" entry with the `..` intact (a path-traversal entry no installer accepts),
   # and a symlink is stored *as* a symlink — `gem build` warns, and it dangles once the gem
   # is unpacked somewhere else entirely. Same reason rust/ and python/ carry their own.
+  #
+  # native/*/* is exactly the staged binaries, one directory per RID plus wasm32-wasip1.
   spec.files = Dir["lib/**/*.rb"] + Dir["lib/hypercast/native/*/*"] + ["README.md", "LICENSE"]
   spec.require_paths = ["lib"]
 
+  # fiddle was a Ruby default gem (effectively stdlib, no declaration needed) through Ruby
+  # 3.x; Ruby 4.0 unbundled it into a regular gem, so it needs an explicit dependency. Still
+  # zero *third-party* runtime dependencies: fiddle ships with every Ruby install, just no
+  # longer implicitly on the load path.
   spec.add_dependency "fiddle"
   # wasmtime — the engine behind the WebAssembly backend (lib/hypercast/wasm_runtime.rb) —
   # is deliberately absent here. It is never a dependency of this gem, and it is not a
   # development dependency either: it lives in the Gemfile's own `:wasm` group, so CI can
-  # install it only where the wasm suite actually runs. See the Gemfile.
+  # install it only where the wasm suite actually runs. See the Gemfile, which also holds
+  # the test and benchmark gems.
   spec.add_development_dependency "rake", "~> 13.0"
   spec.add_development_dependency "yard", "~> 0.9"
 
   spec.metadata["source_code_uri"] = spec.homepage
+  spec.metadata["changelog_uri"] = "#{spec.homepage}/blob/master/CHANGELOG.md"
+  spec.metadata["bug_tracker_uri"] = "#{spec.homepage}/issues"
+  spec.metadata["documentation_uri"] = "#{spec.homepage}/tree/master/ruby#readme"
+  # Pushing or yanking a version takes an account with multi-factor authentication on.
+  spec.metadata["rubygems_mfa_required"] = "true"
 end

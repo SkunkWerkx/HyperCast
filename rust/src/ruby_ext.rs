@@ -91,6 +91,21 @@ fn lookup<T: Copy, const N: usize>(table: &[(u64, T); N], symbol: Symbol) -> Opt
     table.iter().find(|(known, _)| *known == raw).map(|(_, value)| *value)
 }
 
+/// A declared option that names nothing — an unknown Symbol, or no Symbol at all (a String,
+/// say) — is a caller bug, and the same one on every backend: hypercast.rb resolves these
+/// through `UNIX_PRECISIONS.fetch` / `EXCEL_EPOCHS.fetch` / `DATE_ORDERS.fetch`, so this is
+/// `Hash#fetch`'s KeyError with `Hash#fetch`'s own message.
+fn unknown_option(ruby: &Ruby, option: Value) -> Error {
+    Error::new(ruby.exception_key_error(), format!("key not found: {}", option.inspect()))
+}
+
+/// The declared option as a Symbol. Taken as a plain `Value` rather than a `Symbol`
+/// parameter on purpose: magnus would turn anything else into a TypeError before the door
+/// ran, where the Fiddle and wasm backends raise `unknown_option`'s KeyError.
+fn declared_symbol(ruby: &Ruby, option: Value) -> Result<Symbol, Error> {
+    Symbol::from_value(option).ok_or_else(|| unknown_option(ruby, option))
+}
+
 fn success(ruby: &Ruby, value: impl magnus::IntoValue) -> Result<Value, Error> {
     ruby.get_inner(cached().success)
         .funcall("new", (value.into_value_with(ruby),))
@@ -126,6 +141,11 @@ fn character_span(text: RString, offset: u32, len: u32) -> (i64, i64) {
 /// US-ASCII and binary cross as-is (one encoding-index read); any other encoding pays a
 /// transcode. Character offsets survive the transcode, so a fault span mapped on the
 /// UTF-8 form still indexes the caller's own String.
+///
+/// The transcode is `String#encode` itself, the very call hypercast.rb makes, rather than
+/// `rb_str_conv_enc`: text that cannot be transcoded (a lone UTF-16 surrogate, say) must
+/// raise the same `Encoding::` error on every backend, and `rb_str_conv_enc` does not raise
+/// — it hands the original bytes back, which this door would then have parsed as UTF-8.
 fn utf8(ruby: &Ruby, text: RString) -> Result<RString, Error> {
     let index = text.enc_get();
     if index == ruby.utf8_encindex()
@@ -134,7 +154,7 @@ fn utf8(ruby: &Ruby, text: RString) -> Result<RString, Error> {
     {
         Ok(text)
     } else {
-        text.conv_enc(ruby.utf8_encoding())
+        text.funcall("encode", (ruby.utf8_encoding(),))
     }
 }
 
@@ -301,7 +321,11 @@ fn uuid_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
                 hyphenated.push(char::from_digit((byte >> 4) as u32, 16).unwrap());
                 hyphenated.push(char::from_digit((byte & 0xF) as u32, 16).unwrap());
             }
-            success(ruby, hyphenated)
+            // US-ASCII, not the UTF-8 a Rust `String` would become: the encoding
+            // `SecureRandom.uuid` returns, and the one hypercast.rb's `unpack("H…")` yields
+            // on the other two backends — same characters and same `==` either way, and
+            // now the same `#encoding` whichever backend is live.
+            success(ruby, ruby.enc_str_new(&hyphenated, ruby.usascii_encoding()))
         }
         Err(failed) => fault(ruby, text, failed),
     }
@@ -324,44 +348,36 @@ fn timestamp_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
     }
 }
 
-fn unix_door(ruby: &Ruby, text: RString, precision: Symbol) -> Result<Value, Error> {
-    let text = utf8(ruby, text)?;
-    let precision = match lookup(&cached().precisions, precision) {
+fn unix_door(ruby: &Ruby, text: RString, precision: Value) -> Result<Value, Error> {
+    let symbol = declared_symbol(ruby, precision)?;
+    let precision = match lookup(&cached().precisions, symbol) {
         Some(known) => known,
-        None => match &*precision.name()? {
+        None => match &*symbol.name()? {
             "seconds" => core::UnixPrecision::Seconds,
             "milliseconds" => core::UnixPrecision::Millis,
             "microseconds" => core::UnixPrecision::Micros,
             "nanoseconds" => core::UnixPrecision::Nanos,
-            other => {
-                return Err(Error::new(
-                    ruby.exception_key_error(),
-                    format!("unknown UnixPrecision {other:?}"),
-                ))
-            }
+            _ => return Err(unknown_option(ruby, precision)),
         },
     };
+    let text = utf8(ruby, text)?;
     match with_bytes(text, |bytes| core::cast_unix(bytes, precision)) {
         Ok(ts) => utc_time(ruby, ts),
         Err(failed) => fault(ruby, text, failed),
     }
 }
 
-fn excel_serial_door(ruby: &Ruby, text: RString, epoch: Symbol) -> Result<Value, Error> {
-    let text = utf8(ruby, text)?;
-    let epoch = match lookup(&cached().epochs, epoch) {
+fn excel_serial_door(ruby: &Ruby, text: RString, epoch: Value) -> Result<Value, Error> {
+    let symbol = declared_symbol(ruby, epoch)?;
+    let epoch = match lookup(&cached().epochs, symbol) {
         Some(known) => known,
-        None => match &*epoch.name()? {
+        None => match &*symbol.name()? {
             "y1900" => core::ExcelEpoch::Y1900,
             "y1904" => core::ExcelEpoch::Y1904,
-            other => {
-                return Err(Error::new(
-                    ruby.exception_key_error(),
-                    format!("unknown ExcelEpoch {other:?}"),
-                ))
-            }
+            _ => return Err(unknown_option(ruby, epoch)),
         },
     };
+    let text = utf8(ruby, text)?;
     match with_bytes(text, |bytes| core::cast_excel_serial(bytes, epoch)) {
         Ok(ts) => utc_time(ruby, ts),
         Err(failed) => fault(ruby, text, failed),
@@ -370,17 +386,21 @@ fn excel_serial_door(ruby: &Ruby, text: RString, epoch: Symbol) -> Result<Value,
 
 // Variadic (arity -1) because the order argument is optional — magnus's fixed-arity
 // function! would demand both; scan_args gives Ruby's own required-then-optional shape.
+// The order is scanned as a plain Value: `date(text, nil)` is the documented
+// `order = nil` default spelled out, and means exactly what leaving it off means — scanned
+// as a Symbol it was a TypeError here and the strict ISO door on the other two backends.
 fn date_door(ruby: &Ruby, args: &[Value]) -> Result<Value, Error> {
-    let args = scan_args::<(RString,), (Option<Symbol>,), (), (), (), ()>(args)?;
+    let args = scan_args::<(RString,), (Option<Value>,), (), (), (), ()>(args)?;
     let (text,) = args.required;
-    let text = utf8(ruby, text)?;
     let (order,) = args.optional;
+    let order = match order.filter(|declared| !declared.is_nil()) {
+        None => None,
+        Some(declared) => Some(resolve_order(ruby, declared)?),
+    };
+    let text = utf8(ruby, text)?;
     let verdict = match order {
         None => with_bytes(text, |bytes| core::cast_date(bytes)),
-        Some(order) => {
-            let order = resolve_order(ruby, order)?;
-            with_bytes(text, |bytes| core::cast_date_ordered(bytes, order))
-        }
+        Some(order) => with_bytes(text, |bytes| core::cast_date_ordered(bytes, order)),
     };
     match verdict {
         Ok(date) => {
@@ -391,25 +411,23 @@ fn date_door(ruby: &Ruby, args: &[Value]) -> Result<Value, Error> {
     }
 }
 
-fn resolve_order(ruby: &Ruby, order: Symbol) -> Result<core::DateOrder, Error> {
-    if let Some(known) = lookup(&cached().orders, order) {
+fn resolve_order(ruby: &Ruby, order: Value) -> Result<core::DateOrder, Error> {
+    let symbol = declared_symbol(ruby, order)?;
+    if let Some(known) = lookup(&cached().orders, symbol) {
         return Ok(known);
     }
-    let name = order.name()?;
+    let name = symbol.name()?;
     match &*name {
         "year_month_day" => Ok(core::DateOrder::YearMonthDay),
         "month_day_year" => Ok(core::DateOrder::MonthDayYear),
         "day_month_year" => Ok(core::DateOrder::DayMonthYear),
-        other => Err(Error::new(
-            ruby.exception_key_error(),
-            format!("unknown DateOrder {other:?}"),
-        )),
+        _ => Err(unknown_option(ruby, order)),
     }
 }
 
-fn datetime_door(ruby: &Ruby, text: RString, order: Symbol) -> Result<Value, Error> {
-    let text = utf8(ruby, text)?;
+fn datetime_door(ruby: &Ruby, text: RString, order: Value) -> Result<Value, Error> {
     let order = resolve_order(ruby, order)?;
+    let text = utf8(ruby, text)?;
     match with_bytes(text, |bytes| core::cast_datetime(bytes, order)) {
         Ok(civil) => {
             // Zone-less civil value on stdlib DateTime with exact Rational seconds — the

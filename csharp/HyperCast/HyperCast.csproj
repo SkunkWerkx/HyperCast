@@ -59,11 +59,28 @@
          text alongside it, which the expression alone doesn't do. -->
     <None Include="../../LICENSE" Pack="true" PackagePath="\" />
     <!-- Standard NuGet RID-specific native asset layout — populated by CI before packing
-         (hyper-pack-nuget.yml arranges runtimes/{rid}/native/ from the ci.yml artifacts). -->
+         (hyper-pack-nuget.yml arranges runtimes/{rid}/native/ from the ci.yml artifacts): the
+         six desktop RIDs and the two musl ones, linux-musl-x64 and linux-musl-arm64. -->
     <None Include="runtimes/**" Pack="true" PackagePath="runtimes" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="runtimes/**/native/*" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
-    <!-- Auto-imported into every consuming project via NuGet's build/{tfm}/{PackageId}.targets
-         convention — see the file itself for why browser-wasm needs it and no other RID does.
+    <!-- The same files flattened into the output root, where an in-repo ProjectReference
+         probes (the runtimes/{rid}/native/ lookup only exists for a consumed package). Two
+         spellings of the one copy, because flattening is only safe for a single RID: once
+         more than one is staged (the pack job stages all of them, and a dev box can easily
+         hold a glibc and a musl build side by side), libhypercast.so from linux-x64,
+         linux-arm64 and both musl RIDs all flatten to the same output filename and whichever
+         copies last wins. So when this SDK's own RID is among the staged ones, only that one
+         is flattened — on Alpine the SDK's RID is linux-musl-x64, so the musl build is the one
+         that lands; everything-flattened stays the fallback for a leg whose SDK RID differs
+         from the one RID it staged. -->
+    <None Include="runtimes/$(NETCoreSdkRuntimeIdentifier)/native/*"
+          Condition="Exists('runtimes/$(NETCoreSdkRuntimeIdentifier)/native')"
+          Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="runtimes/**/native/*"
+          Condition="!Exists('runtimes/$(NETCoreSdkRuntimeIdentifier)/native')"
+          Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Auto-imported into every consuming project via NuGet's build/{PackageId}.targets
+         convention, and into projects that reach the package through another project via
+         buildTransitive/ — see the file itself for why browser-wasm needs it and no other RID does.
          Two pieces, both required: the NativeFileReference that actually hands the staticlib
          to the linker (restore never populates @(NativeLibrary) from a plain
          PackageReference's nativeassets folder), and an EmccExportedFunction per door
@@ -71,6 +88,7 @@
          HyperUuid learned both the hard way; HyperCast's v0.0.1 shipped without this file and
          a real Blazor consumer failed at wasm-ld. -->
     <None Include="build/**" Pack="true" PackagePath="build" />
+    <None Include="buildTransitive/**" Pack="true" PackagePath="buildTransitive" />
     <!-- Local dev loop: when the Rust core has been built in-repo (a release-profile cargo
          build in rust/), copy that fresh native library straight to the output so tests and
          benchmarks run against it without any packaging step. CI's runtimes/ layout above
@@ -81,11 +99,13 @@
          items link to the same output filename, and PreserveNewest lets the newer one win —
          which in CI is the wrong one: the forge builds the PyO3 extension (a cargo build
          with the python feature on) into the same rust/target/release/ BEFORE the C# leg
-         runs, so
-         this copy overwrote the correctly placed library with an extension whose Py* imports
-         are unresolved outside CPython (DllNotFoundException: undefined symbol
+         runs, so this copy overwrote the correctly placed library with an extension whose
+         Py* imports are unresolved outside CPython (DllNotFoundException: undefined symbol
          PyExc_SystemError, on every Linux leg of the first collapsed-job run). Explicit
-         placement is the signal that someone else already staged the right bytes. -->
+         placement is the signal that someone else already staged the right bytes. The RID
+         test also keeps the two C libraries apart: on Alpine the SDK's RID is
+         linux-musl-x64, so a staged musl build is never displaced by whatever sits in
+         rust/target/release. -->
     <None Include="../../rust/target/release/libhypercast.so"
           Condition="Exists('../../rust/target/release/libhypercast.so') And !Exists('runtimes/$(NETCoreSdkRuntimeIdentifier)/native/libhypercast.so')"
           Link="libhypercast.so" CopyToOutputDirectory="PreserveNewest" Visible="false" />

@@ -335,12 +335,19 @@ public static partial class Cast
 	}
 
 	/// <summary>
-	/// <see langword="true"/> when the native library resolved and exports the ABI this
-	/// binding was built against. Probed once, then cached; a <see langword="false"/> is
-	/// permanent for the process. A consumer keeping a managed fallback for platforms the
-	/// package does not cover gates on this instead of catching
-	/// <see cref="DllNotFoundException"/> around its first cast.
+	/// <see langword="true"/> when the native library resolved and answered the version
+	/// probe. Probed once, then cached; a <see langword="false"/> is permanent for the
+	/// process. A consumer keeping a managed fallback for platforms the package does not
+	/// cover gates on this instead of catching <see cref="DllNotFoundException"/> around its
+	/// first cast.
 	/// </summary>
+	/// <remarks>
+	/// Also <see langword="false"/> when a library did load but predates the
+	/// <c>hypercast_version</c> export — a stale binary beside a newer binding is the
+	/// mismatch this probe exists to name. It says nothing about <em>which</em> version
+	/// answered, and compares nothing; that is <see cref="NativeVersion"/>, and the
+	/// comparison is the caller's.
+	/// </remarks>
 	public static bool IsAvailable => _nativeVersion.Value is not null;
 
 	/// <summary>

@@ -31,7 +31,7 @@ Requirements that hold across every round, stated up front so no layer designs t
 
 ## Round one — the scalar core (done)
 
-One Rust `cdylib` (`rust/`, `libhypercast`), HyperUuid's proven FFI mechanics: 20 `cast_*`
+One Rust `cdylib` (`rust/`, `libhypercast`), HyperUuid's proven FFI mechanics: 21 `cast_*`
 exports over UTF-8 bytes and caller-owned out-buffers, verdict codes (`0` ok, `1` empty,
 `2` malformed, `3` out of range) with the offending byte span through a nullable fault
 out-param. Semantics ported from Svartalfheim's `Norse.Primitives` parser family; temporals
@@ -99,7 +99,7 @@ Design constraints round one already locked in on purpose:
 - **The batch entry point is additive.** Nothing about the scalar ABI changes. The batch
   lives beside it, not beneath it: `hypertabular` links `hypercast` as an rlib and each
   provider's cdylib exports the batch surface, so `libhypercast` itself never gains a batch
-  export — and because the link is static, each provider's library also carries the 20
+  export — and because the link is static, each provider's library also carries the 21
   `cast_*` exports.
 
 One piece of this round already landed, ahead of schedule and on purpose:
@@ -122,8 +122,9 @@ Two designs this file once parked are now recorded and built:
 - **XLSX container handling** — HyperWorkbook's `docs/design.md`, "Container and
   streaming": a hand-rolled central-directory zip reader, streaming inflate through
   `flate2` on the `zlib-rs` backend (the one external crate in the three repositories),
-  and the shared-string preload as the documented allocating boundary — the same way
-  HyperUuid's batch scratch buffer is its one documented allocating path.
+  and the shared-string preload as the documented allocating boundary. (This line used to
+  compare it to HyperUuid's batch scratch buffer; HyperUuid has since retired that
+  allocation, so the preload is the series' one documented allocating path.)
 - **Delimited-text dialect surface** — HyperDelimited's `docs/design.md`: one ASCII byte
   as separator, `"` as the only quote with RFC 4180 doubling, `\n`/`\r\n`/`\r` terminators,
   column count fixed by the first record. The same caller-declares-everything philosophy
@@ -191,11 +192,14 @@ the record of what shipped; this is the record of why.
    throw (Codex's review of the PR found the same hole independently). `hypercast_version`
    is the zero-argument probe, and every binding fronts it with an availability check plus
    the loaded core's version.
-4. **Mobile and musl builds — open.** The forge builds the three desktop OS families on x64
-   and arm64 plus browser-wasm, and nothing for `ios-*`, `android-*` or `linux-musl-*`. That
-   gap is the sole reason the PR carries several hundred lines of managed fallback grammar
-   duplicating this core — RFC 3339, the three-shape duration grammar, separator detection.
-   HyperForge work, shared with HyperUuid.
+4. **musl builds — built; mobile — open.** The forge built the three desktop OS families
+   on x64 and arm64 plus browser-wasm, and nothing for `ios-*`, `android-*` or
+   `linux-musl-*`. That gap is the sole reason the PR carries several hundred lines of
+   managed fallback grammar duplicating this core — RFC 3339, the three-shape duration
+   grammar, separator detection. `linux-musl-x64` and `linux-musl-arm64` are now built in
+   Alpine containers, attested, and shipped in every binding that has a dynamic-loading
+   story on musl (all but Swift), so Alpine no longer takes the fallback. `ios-*` and
+   `android-*` remain HyperForge work, shared with HyperUuid.
 5. **A corpus content package — declined.** The consumer vendored the corpus files plus a
    snapshot SHA by hand and asked for a package. The ruling is that the corpus is this
    repository's receipt, not a product: a downstream suite takes `corpus/*.json` from the
@@ -223,9 +227,11 @@ language has an idiomatic home for it, with the exceptions named:
   `string` doors, Java `String` doors, Python `str` and Ruby text inputs now remap to
   char/code-point offsets on a non-ASCII failure, so slicing the offending text back out of
   what was passed needs no mapping. Go, Swift and PHP strings are already UTF-8 bytes.
-- **HyperUuid: `NewV5(Guid, ReadOnlySpan<char>)` — open, tracked there.** The `string`
-  door already transcodes into a stack buffer; the char-span overload is the same code and
-  removes the consumer's `ToString()`.
+- **HyperUuid: `NewV5(Guid, ReadOnlySpan<char>)` — built.** The `string` door already
+  transcoded into a stack buffer; the char-span overload is the same code and removes the
+  consumer's `ToString()`. HyperUuid also gained the load probe this section asks for
+  (`hyperuuid_version`, `UuidGenerator.IsAvailable`), so a consumer no longer infers that
+  library's presence from a `TryNewV4` call.
 
 Found along the way, not acted on, worth their own pass. **The currency path costs about
 twice the plain path in the core** — `cast_decimal` 30.5 ns for `12345.6789` against 58.8 ns
@@ -233,13 +239,12 @@ for `$12,345.67` under a declared `$`, and the C# binding's `Cast.Double`/`Cast.
 `($1,234.50)` land at ~116 ns against ~70 ns for the BCL's `NumberStyles.Currency`. A
 declared symbol currently forces the full normalize-then-parse engine; a fast lane that
 strips a symbol at one edge and re-enters `is_plain` would recover most of it. Measured, not
-built. And, **Python's `bytes` input costs about
+built. And, **Python's `bytes` input cost about
 a microsecond more than the same text as `str`** on every native door, success and failure
-alike — `"42"` at 116 ns against `b"42"` at 1,179 ns on the same box. Pre-existing; the
-shape points at the PyO3 `Text` extractor trying the `str` variant first and materializing a
-downcast error before falling through to `bytes`. A hand-written extractor that checks the
-type tag directly would likely remove it, and both the corpus replay and the "zero-copy
-`bytes`" story run through that path.
+alike — `"42"` at 116 ns against `b"42"` at 1,179 ns on the same box. The cause was the
+derived PyO3 `Text` extractor trying the `str` variant first and materializing a downcast
+error before falling through to `bytes`. **Built since:** a hand-written extractor checks
+the type tag directly, and the two inputs now cost the same.
 
 Not found: any core hot-path optimization evidenced by the PR. The consumer's own re-measured
 ratios sit inside the crossing-tax band the C# README already describes, and its one outlier turned out to

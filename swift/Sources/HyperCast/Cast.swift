@@ -5,8 +5,9 @@ import Foundation
 /// `dlopen`/`dlsym` plus `@convention(c)` function-pointer casts (see
 /// `DynamicLibrary.swift`). Every door returns a ``Verdict``: the value, or a ``Fault``
 /// with a closed reason and the offending byte span. Never throws for bad data — a
-/// `throws` here means the native library itself couldn't load, and a precondition
-/// failure means a caller bug, never data.
+/// `throws` here means the native library itself couldn't load (always a
+/// ``NativeLibraryError``; ``isAvailable`` asks up front), and a precondition failure means
+/// a caller bug, never data.
 ///
 /// Door names mirror the native ABI (`i32`, `f64`, `decimal`, `timestamp`, …) so the polyglot surface
 /// reads identically across bindings. Swift-flavored fidelity: `UInt8`–`UInt64` are native
@@ -35,6 +36,7 @@ public enum Cast {
     // one retain.
     private final class LoadedLibrary {
         let library: DynamicLibrary
+        let origin: DynamicLibrary.Origin
         let bool: PlainFn
         let i8: NumericFn
         let i16: NumericFn
@@ -60,12 +62,14 @@ public enum Cast {
         let duration: PlainFn
         let version: VersionFn
 
-        init(library: DynamicLibrary, bool: PlainFn, i8: NumericFn, i16: NumericFn, i32: NumericFn,
-             i64: NumericFn, u8: NumericFn, u16: NumericFn, u32: NumericFn, u64: NumericFn,
+        init(library: DynamicLibrary, origin: DynamicLibrary.Origin, bool: PlainFn,
+             i8: NumericFn, i16: NumericFn, i32: NumericFn, i64: NumericFn,
+             u8: NumericFn, u16: NumericFn, u32: NumericFn, u64: NumericFn,
              f32: NumericFn, f64: NumericFn, decimal: NumericFn, uuid: PlainFn, timestamp: PlainFn,
              unix: UnixFn, excelSerial: UnixFn, date: PlainFn, dateOrdered: UnixFn, dateTime: UnixFn,
              time: PlainFn, duration: PlainFn, version: VersionFn) {
             self.library = library
+            self.origin = origin
             self.bool = bool
             self.i8 = i8; self.i16 = i16; self.i32 = i32; self.i64 = i64
             self.u8 = u8; self.u16 = u16; self.u32 = u32; self.u64 = u64
@@ -83,7 +87,8 @@ public enum Cast {
     private static let loadResult: Result<LoadedLibrary, Swift.Error> = Result { try load() }
 
     private static func load() throws -> LoadedLibrary {
-        let library = try DynamicLibrary(path: try extractNativeLibrary())
+        let (path, origin) = try DynamicLibrary.locateBundled()
+        let library = try DynamicLibrary(path: path)
         func plain(_ name: String) throws -> PlainFn {
             unsafeBitCast(try library.symbol(name), to: PlainFn.self)
         }
@@ -91,7 +96,7 @@ public enum Cast {
             unsafeBitCast(try library.symbol(name), to: NumericFn.self)
         }
         return LoadedLibrary(
-            library: library,
+            library: library, origin: origin,
             bool: try plain("cast_bool"),
             i8: try numeric("cast_i8"), i16: try numeric("cast_i16"),
             i32: try numeric("cast_i32"), i64: try numeric("cast_i64"),
@@ -122,35 +127,17 @@ public enum Cast {
     /// built against — the probe a consumer with a fallback gates on, so the doors' own
     /// `throws` (which only ever means "the library couldn't load") never has to be caught
     /// at a call site. Drives the same lazy, once-only load the doors do, so it costs
-    /// nothing after the first answer; never throws. `true` exactly when
-    /// ``nativeVersion()`` would succeed.
+    /// nothing after the first answer; never throws and never traps, a missing resource
+    /// directory included. `true` exactly when ``nativeVersion()`` would succeed.
     public static var isAvailable: Bool {
         if case .success = loadResult { return true }
         return false
     }
 
-    /// Extracts this platform's bundled native library (an SPM resource) to a temp file —
-    /// HyperUuid's approach, verbatim; the temp file is deliberately never removed.
-    private static func extractNativeLibrary() throws -> String {
-        let libNameURL = URL(fileURLWithPath: NativePlatform.libraryFileName)
-        guard
-            let resourceURL = Bundle.module.url(
-                forResource: libNameURL.deletingPathExtension().lastPathComponent,
-                withExtension: libNameURL.pathExtension,
-                subdirectory: "NativeLibs/\(NativePlatform.rid)"
-            )
-        else {
-            throw DynamicLibraryError.openFailed(
-                path: "NativeLibs/\(NativePlatform.rid)/\(NativePlatform.libraryFileName)",
-                reason: "resource not found (unsupported platform, or this package was built without a native library for it)"
-            )
-        }
-        let data = try Data(contentsOf: resourceURL)
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("libhypercast-\(UUID().uuidString)")
-            .appendingPathExtension(libNameURL.pathExtension)
-        try data.write(to: tempURL)
-        return tempURL.path
+    /// Where the load found the library — internal, for the test suite to pin that it came
+    /// out of the resource bundle rather than the build machine's source-tree fallback.
+    static func nativeLibraryOrigin() throws -> DynamicLibrary.Origin {
+        try loaded().origin
     }
 
     private static func fault(_ code: Int32, _ raw: UnsafeRawBufferPointer) -> Fault {
@@ -551,8 +538,9 @@ public enum Cast {
 
     /// Casts an RFC 3339 instant — zone **mandatory** — to a `Date`, normalized to UTC.
     /// `Date` is a `Double` of seconds, so sub-microsecond fidelity degrades toward the
-    /// 0001/9999 window edges; ``timeComponents``-style exactness isn't available for
-    /// instants in Foundation, and that trade is stated rather than hidden.
+    /// 0001/9999 window edges; the digit-perfect `DateComponents` that
+    /// ``time(_:)-swift.type.method`` returns has no counterpart for instants in Foundation,
+    /// and that trade is stated rather than hidden.
     public static func timestamp(_ text: String) throws -> Verdict<Date> {
         try withUTF8(text) { try timestamp($0) }
     }
@@ -766,7 +754,8 @@ public enum Cast {
     /// The version of the native `libhypercast` this process actually loaded, as
     /// `major.minor.patch` — the library's own answer (`hypercast_version`), not this
     /// package's tag — so a caller can prove the two agree before the first cast and name
-    /// the mismatch when they don't. Throws only when the library itself couldn't load.
+    /// the mismatch when they don't. Throws only when the library itself couldn't load —
+    /// a ``NativeLibraryError``, like every door.
     public static func nativeVersion() throws -> String {
         let packed = try loaded().version()
         return "\(packed >> 16).\(packed >> 8 & 0xFF).\(packed & 0xFF)"

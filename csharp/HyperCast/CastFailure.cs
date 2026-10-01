@@ -10,7 +10,7 @@ public enum CastFailure : byte
 	/// <summary>Sentinel CLR default — never produced by any cast path (0 is "Ok" at the ABI).</summary>
 	Unspecified = 0,
 
-	/// <summary>Required input was empty or whitespace. The <c>*Optional</c> doors surface this as absent.</summary>
+	/// <summary>Required input was empty or whitespace. <see cref="Cast.Optional{T}(Verdict{T})"/> presents this as absent.</summary>
 	Empty = 1,
 
 	/// <summary>Input was present but not recognizable as the target type.</summary>

@@ -3,11 +3,16 @@
 // returns Go's own union idiom: (value, *Fault), where a nil fault is the success case and
 // a non-nil one carries the closed reason plus the offending byte span. Never an error for
 // bad data in the exception sense — *Fault implements error for composition, but the doors
-// never panic on input; a panic here means a caller bug (a malformed NumFormat), never data.
+// never panic on input; a panic here means a caller bug (a malformed NumFormat) or a native
+// library that never loaded (Available and LoadError, in load.go, probe for that without
+// panicking), never data.
 //
-// Door names mirror the native ABI (I32, F64, Timestamp, ...) so the polyglot surface reads
-// identically across bindings. Doors are generic over string | []byte — both cross
-// zero-copy (the core only reads).
+// Door names follow the native ABI's (cast_i32 is I32, cast_timestamp is Timestamp) so the
+// polyglot surface reads the same across bindings, except where Go already owns the word:
+// Exact and Span return the Decimal and Duration types their ABI names would collide with,
+// and DateOnly, DateOnlyOrdered and TimeOfDay say what cast_date, cast_date_ordered and
+// cast_time return. Doors are generic over string | []byte — both cross zero-copy (the
+// core only reads).
 //
 // Go-flavored fidelity, stated honestly both ways: time.Time carries full nanoseconds
 // across the whole 0001–9999 window, and time-of-day comes back as a time.Duration since
@@ -43,6 +48,8 @@ const (
 	OutOfRange CastFailure = 3
 )
 
+// String names the reason in lower case — "empty", "malformed", "out of range" — the form
+// Fault.Error embeds.
 func (f CastFailure) String() string {
 	switch f {
 	case Empty:
@@ -66,6 +73,8 @@ type Fault struct {
 	Length int
 }
 
+// Error renders the verdict as "hypercast: {reason} at byte {start}..{end}", the span as a
+// half-open byte range into the input.
 func (f *Fault) Error() string {
 	return fmt.Sprintf("hypercast: %s at byte %d..%d", f.Reason, f.Offset, f.Offset+f.Length)
 }
@@ -390,27 +399,6 @@ func failed(code int32, fault *rawFault) *Fault {
 	return &Fault{Reason: CastFailure(code), Offset: int(fault.Offset), Length: int(fault.Length)}
 }
 
-func mustLoad() {
-	if err := ensureLoaded(); err != nil {
-		panic(err)
-	}
-}
-
-// nativeVersion is the packed major<<16 | minor<<8 | patch the loaded core reported, set
-// by each backend's ensureLoaded as its final step — so a successful load has already
-// made one real call through the ABI, not merely resolved its symbols.
-var nativeVersion uint32
-
-// Available reports whether the native library (or, under the hypercast_wasm tag, the
-// wasm module) loaded and exports the ABI this binding was built against — every door's
-// symbol resolved and hypercast_version answered. Probed once and cached; a false is
-// permanent for the process. This is the one entry point that never panics on a load
-// failure: a consumer keeping a fallback for a platform this module does not cover gates
-// on it instead of recovering around its first cast.
-func Available() bool {
-	return ensureLoaded() == nil
-}
-
 // Bool casts boolean text: true/false plus the conventions untrusted sources actually send
 // (t/f, yes/no, y/n, 1/0, on/off, enabled/disabled, active/inactive, checked/unchecked,
 // in/out), ASCII case-insensitive.
@@ -506,17 +494,6 @@ func Exact[T Text](text T, format NumFormat) (Decimal, *Fault) {
 		return Decimal{}, fault
 	}
 	return Decimal{Lo: out.Lo, Hi: out.Hi, Scale: out.Scale, Negative: out.Negative != 0}, nil
-}
-
-// NativeVersion reports the loaded core's own version as "major.minor.patch" — read from
-// the library itself, not from this module — so a deployment can name a mismatch between
-// the binary it resolved and the one this binding was built against before making its
-// first cast. Panics if the native library cannot be loaded, the same way every door does;
-// Available is the probe that does not.
-func NativeVersion() string {
-	mustLoad()
-	v := nativeVersion
-	return fmt.Sprintf("%d.%d.%d", v>>16, (v>>8)&0xFF, v&0xFF)
 }
 
 // Number is the closed set of targets the numeric doors cast to — exactly the eleven

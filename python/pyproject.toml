@@ -1,5 +1,7 @@
 [build-system]
-requires = ["maturin>=1.0,<2.0"]
+# 1.9 is the first maturin with full PEP 639 support — the SPDX `license` string and the
+# top-level `license-files` below. An older one does not build this file.
+requires = ["maturin>=1.9,<2.0"]
 build-backend = "maturin"
 
 [project]
@@ -15,19 +17,24 @@ license = "MIT"
 # no better. Same reason rust/ carries its own — git stores one blob for all of them.
 license-files = ["LICENSE"]
 authors = [{ name = "Brian Buvinghausen" }]
-# 3.10 floor deliberately: match/case over the Success | Fault union is the consumption
-# idiom, the Python answer to C#'s native union and Java's sealed interface. The wheel is
-# built abi3-py310, so one wheel per platform covers the whole floor-and-up range.
-requires-python = ">=3.10"
+# 3.11 floor: the oldest CPython still in upstream support (3.10 ends 2026-10-31). It is
+# comfortably past what the consumption idiom needs — match/case over the Success | Fault
+# union, the Python answer to C#'s native union and Java's sealed interface, arrived in
+# 3.10 — and it puts `typing.assert_never` in the standard library. The wheel is built
+# abi3-py311, so one wheel per platform covers the whole floor-and-up range.
+requires-python = ">=3.11"
 dependencies = []
 keywords = ["parsing", "ffi", "verdict", "rfc3339", "pyo3"]
+# No `License ::` classifier: PEP 639 deprecates them in favour of the `license` expression
+# above, and the two are not meant to be declared together.
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Rust",
     "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
 ]
 
 [project.urls]
@@ -36,11 +43,13 @@ Repository = "https://github.com/SkunkWerkx/HyperCast"
 Issues = "https://github.com/SkunkWerkx/HyperCast/issues"
 
 [project.optional-dependencies]
-test = ["pytest>=8.0"]
+# mypy is what tests/test_typing.py checks a consumer's match with; those tests skip without it.
+test = ["pytest>=8.0", "mypy>=1.11"]
 bench = ["pyperf>=2.6"]
-# The wasm32-wasip1 build of the same core, run in-process by wasmtime-py — the backend for
-# an interpreter no `_native` wheel matches (see README's WebAssembly section). Optional
-# because a matching wheel needs nothing at all, and wasmtime is a ~10 MB runtime.
+# The wasm32-wasip1 build of the same core, run in-process by wasmtime-py — the backend
+# HYPERCAST_WASM=1 forces, and the fallback when the `_native` extension fails to import (see
+# README's WebAssembly section). Optional because the extension needs nothing at all, and
+# wasmtime is a ~10 MB runtime.
 wasm = ["wasmtime>=47"]
 
 [tool.maturin]

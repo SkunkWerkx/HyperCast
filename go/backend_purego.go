@@ -14,7 +14,6 @@ package hypercast
 
 import (
 	"fmt"
-	"sync"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
@@ -31,9 +30,6 @@ type (
 )
 
 var (
-	initOnce sync.Once
-	initErr  error
-
 	symBool, symUuid, symTimestamp, symDate, symTime, symDuration plainSymbol
 
 	symI8, symI16, symI32, symI64, symU8, symU16, symU32, symU64,
@@ -46,57 +42,53 @@ var (
 	symUnix, symDateOrdered, symDateTime, symExcelSerial unixSymbol
 )
 
-// ensureLoaded extracts this platform's embedded native library to a temp file and
-// dlopen's it via purego, exactly once.
-func ensureLoaded() error {
-	initOnce.Do(func() {
-		path, err := extractNativeLib()
-		if err != nil {
-			initErr = err
-			return
+// loadBackend extracts this platform's embedded native library to a temp file and
+// dlopen's it via purego. ensureLoaded (load.go) runs it exactly once.
+func loadBackend() (err error) {
+	path, err := extractNativeLib()
+	if err != nil {
+		return err
+	}
+
+	handle, err := openLibrary(path)
+	if err != nil {
+		return fmt.Errorf("loading native library: %w", err)
+	}
+
+	// RegisterLibFunc panics on a symbol the library does not export (an older core, say).
+	// That is a load failure, not a caller bug: fold it into the returned error so Available
+	// answers false and the doors panic with the reason, the same as the cgo backend.
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("resolving native symbols: %v", r)
 		}
+	}()
 
-		handle, err := openLibrary(path)
-		if err != nil {
-			initErr = fmt.Errorf("hypercast: loading native library: %w", err)
-			return
-		}
-
-		// RegisterLibFunc panics on a symbol the library does not export (an older core,
-		// say). That is a load failure, not a caller bug: fold it into initErr so Available
-		// answers false and the doors panic with the reason, the same as the cgo backend.
-		defer func() {
-			if r := recover(); r != nil {
-				initErr = fmt.Errorf("hypercast: resolving native symbols: %v", r)
-			}
-		}()
-
-		purego.RegisterLibFunc(&symBool, handle, "cast_bool")
-		purego.RegisterLibFunc(&symUuid, handle, "cast_uuid")
-		purego.RegisterLibFunc(&symTimestamp, handle, "cast_timestamp")
-		purego.RegisterLibFunc(&symDate, handle, "cast_date")
-		purego.RegisterLibFunc(&symTime, handle, "cast_time")
-		purego.RegisterLibFunc(&symDuration, handle, "cast_duration")
-		purego.RegisterLibFunc(&symI8, handle, "cast_i8")
-		purego.RegisterLibFunc(&symI16, handle, "cast_i16")
-		purego.RegisterLibFunc(&symI32, handle, "cast_i32")
-		purego.RegisterLibFunc(&symI64, handle, "cast_i64")
-		purego.RegisterLibFunc(&symU8, handle, "cast_u8")
-		purego.RegisterLibFunc(&symU16, handle, "cast_u16")
-		purego.RegisterLibFunc(&symU32, handle, "cast_u32")
-		purego.RegisterLibFunc(&symU64, handle, "cast_u64")
-		purego.RegisterLibFunc(&symF32, handle, "cast_f32")
-		purego.RegisterLibFunc(&symF64, handle, "cast_f64")
-		purego.RegisterLibFunc(&symDecimal, handle, "cast_decimal")
-		purego.RegisterLibFunc(&symVersion, handle, "hypercast_version")
-		purego.RegisterLibFunc(&symUnix, handle, "cast_unix")
-		purego.RegisterLibFunc(&symDateOrdered, handle, "cast_date_ordered")
-		purego.RegisterLibFunc(&symDateTime, handle, "cast_datetime")
-		purego.RegisterLibFunc(&symExcelSerial, handle, "cast_excel_serial")
-		// One real call through the ABI, so Available means "answered", not "resolved".
-		nativeVersion = callVersion()
-	})
-	return initErr
+	purego.RegisterLibFunc(&symBool, handle, "cast_bool")
+	purego.RegisterLibFunc(&symUuid, handle, "cast_uuid")
+	purego.RegisterLibFunc(&symTimestamp, handle, "cast_timestamp")
+	purego.RegisterLibFunc(&symDate, handle, "cast_date")
+	purego.RegisterLibFunc(&symTime, handle, "cast_time")
+	purego.RegisterLibFunc(&symDuration, handle, "cast_duration")
+	purego.RegisterLibFunc(&symI8, handle, "cast_i8")
+	purego.RegisterLibFunc(&symI16, handle, "cast_i16")
+	purego.RegisterLibFunc(&symI32, handle, "cast_i32")
+	purego.RegisterLibFunc(&symI64, handle, "cast_i64")
+	purego.RegisterLibFunc(&symU8, handle, "cast_u8")
+	purego.RegisterLibFunc(&symU16, handle, "cast_u16")
+	purego.RegisterLibFunc(&symU32, handle, "cast_u32")
+	purego.RegisterLibFunc(&symU64, handle, "cast_u64")
+	purego.RegisterLibFunc(&symF32, handle, "cast_f32")
+	purego.RegisterLibFunc(&symF64, handle, "cast_f64")
+	purego.RegisterLibFunc(&symDecimal, handle, "cast_decimal")
+	purego.RegisterLibFunc(&symVersion, handle, "hypercast_version")
+	purego.RegisterLibFunc(&symUnix, handle, "cast_unix")
+	purego.RegisterLibFunc(&symDateOrdered, handle, "cast_date_ordered")
+	purego.RegisterLibFunc(&symDateTime, handle, "cast_datetime")
+	purego.RegisterLibFunc(&symExcelSerial, handle, "cast_excel_serial")
+	// One real call through the ABI, so Available means "answered", not "resolved".
+	nativeVersion = callVersion()
+	return nil
 }
 
 // The same by-value result shape the cgo backend returns, filled through pointers here:

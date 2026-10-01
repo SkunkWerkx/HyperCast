@@ -275,4 +275,52 @@ public sealed class CastTests
 	void Undefined_precision_is_a_caller_bug_not_a_verdict() =>
 		Should.Throw<ArgumentOutOfRangeException>(() =>
 			Cast.Unix("1700000000", UnixPrecision.Unspecified));
+
+	[Fact]
+	void Undefined_epoch_and_order_are_caller_bugs_not_verdicts()
+	{
+		Should.Throw<ArgumentOutOfRangeException>(() => Cast.ExcelSerial("45292", ExcelEpoch.Unspecified))
+			.ParamName.ShouldBe("epoch");
+		Should.Throw<ArgumentOutOfRangeException>(() => Cast.DateTime("1/7/2026", DateOrder.Unspecified))
+			.ParamName.ShouldBe("order");
+	}
+
+	[Fact]
+	void A_format_with_no_currency_symbol_set_declares_none_however_it_was_built()
+	{
+		// default(NumFormat) never ran the property initializer, so its symbol field is null;
+		// carried forward through `with`, it must read back as "no symbol", not surface as a
+		// NullReferenceException inside the first door that reads it.
+		var fromDefault = default(NumFormat) with { DecimalSeparator = '.', GroupSeparator = ',', Styles = NumStyles.All };
+		fromDefault.CurrencySymbol.ShouldBe("");
+		(Cast.Int32("(1,234)", fromDefault) is Success<int> { Value: -1234 }).ShouldBeTrue();
+
+		// The same for a null handed over explicitly, by either route.
+		var fromConstructor = new NumFormat('.', ',', NumStyles.All, null!);
+		fromConstructor.CurrencySymbol.ShouldBe("");
+		(Cast.Decimal("1,234.50", fromConstructor) is Success<decimal> { Value: 1234.50m }).ShouldBeTrue();
+		var fromInitializer = NumFormat.Invariant with { CurrencySymbol = null! };
+		fromInitializer.CurrencySymbol.ShouldBe("");
+		(Cast.Double("25.5%", fromInitializer) is Success<double> { Value: 0.255 }).ShouldBeTrue();
+
+		// And default(NumFormat) itself is still the caller bug it always was: both
+		// separators are U+0000, which is "equal separators", not a null dereference.
+		Should.Throw<ArgumentException>(() => Cast.Int32("42", default));
+	}
+
+	[Fact]
+	void A_malformed_currency_symbol_names_the_format_argument()
+	{
+		Should.Throw<ArgumentException>(() => Cast.Int32("5", NumFormat.Invariant with { CurrencySymbol = "US 1" }))
+			.ParamName.ShouldBe("format");
+		Should.Throw<ArgumentException>(() => Cast.Decimal("5"u8, NumFormat.Invariant with { CurrencySymbol = new string('€', 6) }))
+			.ParamName.ShouldBe("format");
+	}
+
+	[Fact]
+	void Culture_bridges_reject_a_null_culture_by_name()
+	{
+		Should.Throw<ArgumentNullException>(() => DateOrders.From(null!)).ParamName.ShouldBe("culture");
+		Should.Throw<ArgumentNullException>(() => NumFormat.From((CultureInfo)null!)).ParamName.ShouldBe("culture");
+	}
 }

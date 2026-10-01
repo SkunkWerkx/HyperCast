@@ -133,6 +133,8 @@ RSpec.describe HyperCast do
     text = "01020304-0506-0708-090A-0B0C0D0E0F10"
     expect(described_class.uuid("urn:uuid:#{text}"))
       .to eq(HyperCast::Success.new(value: text.downcase))
+    # The shape down to the encoding: US-ASCII, as SecureRandom.uuid returns, on every backend.
+    expect(described_class.uuid(text).value.encoding).to eq(Encoding::US_ASCII)
   end
 
   it "keeps full nanosecond fidelity on Time" do
@@ -201,5 +203,114 @@ RSpec.describe HyperCast do
     expect { build.call(:usd) }.to raise_error(ArgumentError)       # not a String
     expect(build.call("€" * 5).currency).to eq("€" * 5)             # 15 bytes: fine
     expect(build.call("").currency).to eq("")                       # none declared
+  end
+
+  it "keeps the currency limit on NumFormat, where it is documented" do
+    expect(HyperCast::NumFormat::CURRENCY_MAX_BYTES).to eq(16)
+    expect(HyperCast.const_defined?(:CURRENCY_MAX_BYTES, false)).to be(false)
+  end
+
+  it "stores separators as UTF-8, so one declared in another encoding is the same character" do
+    # A no-break space as it comes out of a Latin-1 file, and a comma out of a UTF-16 one.
+    latin1_nbsp = "\u00A0".encode(Encoding::ISO_8859_1)
+    french = HyperCast::NumFormat.new(decimal_sep: ",".encode(Encoding::UTF_16LE), group_sep: latin1_nbsp,
+                                      flags: HyperCast::ALL_STYLES)
+    expect(french.decimal_sep.encoding).to eq(Encoding::UTF_8)
+    expect(french.group_sep).to eq("\u00A0")
+    expect(described_class.f64("1\u00A0234,5", french)).to eq(HyperCast::Success.new(value: 1234.5))
+    # "Distinct" is judged on the characters, not on the bytes they arrived as.
+    expect { HyperCast::NumFormat.new(decimal_sep: "\u00A0", group_sep: latin1_nbsp, flags: HyperCast::ALL_STYLES) }
+      .to raise_error(ArgumentError, /must differ/)
+  end
+
+  # Caller bugs raise the same exception on every backend — this suite runs under all three.
+  # The Magnus extension replaces the doors themselves, so each of these was once a place
+  # the two implementations of a door disagreed.
+  describe "caller bugs" do
+    it "takes an explicit nil order as the strict ISO door, exactly like leaving it off" do
+      expect(described_class.date("2026-01-07", nil)).to eq(HyperCast::Success.new(value: Date.new(2026, 1, 7)))
+      expect(described_class.date("1/7/2026", nil)).to eq(described_class.date("1/7/2026"))
+      expect(described_class.date("", nil)).to eq(described_class.date(""))
+    end
+
+    it "raises Hash#fetch's KeyError for an undeclared option, whatever its type" do
+      {
+        ->(option) { described_class.unix("1", option) } => [:fortnights, "seconds", 1, nil],
+        ->(option) { described_class.excel_serial("1", option) } => [:y2000, "y1900", 1900, nil],
+        ->(option) { described_class.date("1/7/2026", option) } => [:little_endian, "month_day_year", 2],
+        ->(option) { described_class.datetime("1/7/2026 3:04 PM", option) } => [:little_endian, "month_day_year", nil]
+      }.each do |door, options|
+        options.each do |option|
+          expect { door.call(option) }.to raise_error(KeyError, "key not found: #{option.inspect}")
+        end
+      end
+    end
+
+    it "raises TypeError for text that is not a String, and takes anything with to_str" do
+      [nil, 42, :"42"].each do |text|
+        expect { described_class.bool(text) }.to raise_error(TypeError, /into String/)
+        expect { described_class.i32(text, invariant) }.to raise_error(TypeError, /into String/)
+        expect { described_class.unix(text, :seconds) }.to raise_error(TypeError, /into String/)
+        expect { described_class.date(text) }.to raise_error(TypeError, /into String/)
+      end
+      textual = Class.new { def to_str = "42" }.new
+      expect(described_class.i32(textual, invariant)).to eq(HyperCast::Success.new(value: 42))
+    end
+
+    it "raises String#encode's own error for text that cannot be transcoded to UTF-8" do
+      # A lone high surrogate: valid UTF-16 code units that name no character.
+      lone_surrogate = [0x0031, 0xD800].pack("v*").force_encoding(Encoding::UTF_16LE)
+      expect { described_class.bool(lone_surrogate) }.to raise_error(Encoding::InvalidByteSequenceError)
+      expect { described_class.i32(lone_surrogate, invariant) }.to raise_error(Encoding::InvalidByteSequenceError)
+      expect { described_class.unix(lone_surrogate, :seconds) }.to raise_error(Encoding::InvalidByteSequenceError)
+    end
+  end
+
+  it "bounds the Fiddle backend's packed-format memo instead of holding every format ever used" do
+    skip "the packed-format memo is the Fiddle backend's (BACKEND=#{HyperCast::BACKEND})" unless
+      HyperCast::BACKEND == :fiddle
+
+    limit = HyperCast.singleton_class::PACKED_CACHE_LIMIT
+    formats = Array.new(limit * 3) do
+      HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",", flags: HyperCast::ALL_STYLES)
+    end
+    formats.each { |format| expect(described_class.i32("1,234", format)).to eq(HyperCast::Success.new(value: 1234)) }
+    expect(described_class.send(:packed_cache).size).to eq(limit)
+    # A format the memo has since forgotten is simply packed again.
+    expect(described_class.i32("1,234", formats.first)).to eq(HyperCast::Success.new(value: 1234))
+    expect(described_class.send(:packed_cache).size).to eq(limit)
+  end
+
+  # Runs under every backend, and matters most under Fiddle: Fiddle releases the GVL for the
+  # duration of a call, so that is the one backend where Ruby threads run the core truly in
+  # parallel, each through its own scratch buffers. (The Magnus extension holds the GVL; the
+  # wasm backend serializes on one Mutex around one shared instance.) Each thread declares a
+  # format of its own, so the per-format memo every backend keeps is crossed concurrently too.
+  it "keeps concurrent callers' values, fault spans and formats their own" do
+    eurozone = { decimal_sep: ",", group_sep: ".", text: "1.234,5" }
+    dollars = { decimal_sep: ".", group_sep: ",", text: "1,234.5" }
+    results = Array.new(8) do |n|
+      Thread.new do
+        notation = n.even? ? eurozone : dollars
+        declared = HyperCast::NumFormat.new(decimal_sep: notation[:decimal_sep], group_sep: notation[:group_sep],
+                                            flags: HyperCast::ALL_STYLES)
+        Array.new(300) do |i|
+          digits = ((n + 1) * 1000 + i).to_s
+          [described_class.i32(digits, invariant), described_class.i32("#{digits}x", invariant),
+           described_class.f64(notation[:text], declared),
+           described_class.uuid(format("%08x-0000-0000-0000-%012x", n, i))]
+        end
+      end
+    end.map(&:value)
+
+    results.each_with_index do |rows, n|
+      rows.each_with_index do |(value, fault, real, uuid), i|
+        digits = ((n + 1) * 1000 + i).to_s
+        expect(value).to eq(HyperCast::Success.new(value: (n + 1) * 1000 + i))
+        expect(fault).to eq(HyperCast::Fault.new(reason: :malformed, offset: digits.length, length: 1))
+        expect(real).to eq(HyperCast::Success.new(value: 1234.5))
+        expect(uuid.value).to eq(format("%08x-0000-0000-0000-%012x", n, i))
+      end
+    end
   end
 end

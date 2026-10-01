@@ -1,9 +1,10 @@
 name: CI — build native, build wasm, test every binding
 
 # The build/test matrix lives in HyperForge (SkunkWerkx/.github) as the canonical Hyper*
-# pipeline — 6 real-hardware legs, the Rust core built fresh per leg, every binding's
-# suite run against it. Ruby's suite runs twice (forced Fiddle fallback + Magnus extension
-# backend); Python has no fallback — PyO3 only, staged and tested per leg.
+# pipeline — 6 real-hardware legs plus the two musl RIDs in Alpine containers, the Rust core
+# built fresh per leg, every binding's suite run against it. Ruby's suite runs twice (forced
+# Fiddle fallback + Magnus extension backend); Python has no fallback — PyO3 only, staged
+# and tested per leg.
 #
 # The forge is one canonical pipeline, and this repo conforms to it rather than the other
 # way round. When the forge assumes something HyperUuid's crate has and this one lacks,
@@ -12,20 +13,24 @@ name: CI — build native, build wasm, test every binding
 # darwin/linux leg, this crate had no such feature, and the fix was carrying HyperUuid's
 # ext-php-rs spike behind a `php` feature (rust/src/php_ext.rs), not gating the forge.
 #
-# CI's job is build, test, and upload reusable artifacts — nothing version-specific. Every
-# native leg builds+tests fresh, and the raw, version-agnostic outputs (the plain FFI
-# libhypercast.so/.dylib/.dll, the compiled Ruby Magnus extension) get uploaded here for
-# later reuse. What deliberately does NOT happen here: anything that bakes a version number
-# into a shippable package (a PyPI wheel's own filename/metadata, a .nupkg, a .gem) — CI runs
-# long before any release tag exists, so there's no correct version to bake in yet. That
-# packing happens once, for real, in release.yml, at actual tag time, when the version is
-# genuinely known — see release.yml's own header for the full shape.
+# CI's job is build, test, and upload reusable artifacts. Every native leg builds+tests
+# fresh, and the raw outputs (the plain FFI libhypercast.so/.dylib/.dll, the compiled Ruby
+# Magnus extension) get uploaded here for later reuse. What deliberately does NOT happen
+# here: anything that bakes a version number into a shippable package's own filename or
+# metadata (a PyPI wheel, a .nupkg, a .gem). That packing happens once, in release.yml, at
+# tag time.
+#
+# The native libraries are not version-agnostic, though: each reports the crate version it
+# was built at (`hypercast_version()`). So the run a release reuses has to be one that ran
+# against the version-bump commit, which is why prepare-release.yml dispatches this
+# workflow after it pushes the bump — see release.yml's find-ci-run for the gate. 0.3.0
+# shipped libraries reporting 0.2.0 because that gate did not exist yet.
 #
 # No push trigger, deliberately: stage-native-binaries.yml and prepare-release.yml both
-# direct-push mechanical bot commits, and a stray matrix run rebuilding/retesting on each
-# of those would be wasted compute for a result nobody's waiting on (HyperUuid checked the
-# branch-protection theory against reality — master isn't protected; the trigger choice is
-# the whole mechanism).
+# direct-push mechanical bot commits, and a stray matrix run on each of those would be
+# wasted compute (HyperUuid checked the branch-protection theory against reality — master
+# isn't protected; the trigger choice is the whole mechanism). The bump is the one push
+# that does need a run, and prepare-release.yml asks for it explicitly.
 
 on:
   pull_request:
@@ -133,13 +138,16 @@ jobs:
       # So the regression to guard is the declaration itself, and grepping for it is a
       # complete guard for exactly that, rather than an approximation of something better.
       #
-      # python_ext/ruby_ext are excluded: both sit behind features that pull in std anyway,
-      # so neither can affect the no_std configuration this job exists to protect.
+      # Anchored to the start of a line, so a comment that merely mentions the declaration
+      # (HyperUuid's lib.rs has one) is not read as the thing it forbids. The three extension
+      # modules are excluded: each sits behind a feature that pulls in std anyway, so none
+      # can affect the no_std configuration this job exists to protect.
       - name: assert the core links no allocator
         working-directory: rust
         run: |
           set -euo pipefail
-          if grep -rn 'extern crate alloc' src --exclude=python_ext.rs --exclude=ruby_ext.rs; then
+          if grep -rnE '^[[:space:]]*extern crate alloc' src \
+               --exclude=python_ext.rs --exclude=ruby_ext.rs --exclude=php_ext.rs; then
             echo '::error::The core declared "extern crate alloc". hypercast documents that a bare-metal consumer needs a panic handler and no global allocator (see rust/README.md no_std section) — either drop the allocation or update that claim.' >&2
             exit 1
           fi
@@ -172,7 +180,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
       - run: pip install ruff==0.16.5

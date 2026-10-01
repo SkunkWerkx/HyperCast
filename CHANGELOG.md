@@ -9,19 +9,138 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+Three themes, shared with HyperUuid's release of the same day. *The libraries report the
+right version*: 0.3.0's native libraries say 0.2.0, and the release order that caused it is
+fixed. *musl*: `linux-musl-x64` and `linux-musl-arm64` are built, attested and shipped.
+*Only supported runtimes*: every floor that had reached end of life is raised, and the
+floors are now tested. No door changed its verdict on any input.
+
 ### Added
 
+- **musl (Alpine): `linux-musl-x64` and `linux-musl-arm64`.** Built inside an Alpine
+  container with the unwinder linked statically, so the library depends on musl's libc and
+  nothing else and loads on a bare `alpine`, `python:alpine` or `golang:alpine` image. In
+  the NuGet package, the jar, the gems, `go/native/` and `php/src/native/`, and as
+  `musllinux_1_2` wheels. Each binding resolves it for a process that has a musl loader
+  mapped; Ruby runs on its Fiddle backend there. Through 0.3.0 Alpine got the glibc library,
+  which does not load under musl — the gap that made the first consumer carry a managed
+  fallback (`docs/roadmap.md`). Swift ships no musl build: its musl target links fully
+  statically and has no dynamic loader. *(every package but Swift)*
+- **Go — `LoadError()` and `ErrNativeUnavailable`.** `Available()` said that the core had
+  not loaded; `LoadError()` says why, without a panic, and the doors now panic with that
+  same error so a `recover` can `errors.Is` it. `Example*` tests for pkg.go.dev, and the
+  zero-allocation claim held by `testing.AllocsPerRun` tests on the success path.
+  *(`go get`)*
+- **Swift — `NativeLibraryError`, a load failure a caller can match.** The error a door
+  throws when the bundled library cannot be found, opened or resolved was an internal type;
+  it is public now and `LocalizedError`. *(`.package(url:)`)*
+- **Java — `Automatic-Module-Name: io.github.skunkwerkx.hypercast`**, and a README section
+  on `--enable-native-access`. *(Maven Central)*
+- **Python — the package is typed.** `py.typed` and a stub for the extension module: every
+  door returns its own `Success[...] | Fault`, `Verdict[T]` is generic, and the documented
+  `assert_never` exhaustiveness now type-checks. Every native door and `NumFormat` member
+  carries a docstring, word for word with its wasm twin. *(PyPI)*
+- **Ruby — `rake native:dev`.** Builds the Magnus extension for the running Ruby and stages
+  it where `require` looks. *(dev only)*
+- **The declared floors are tested, and so is every wheel.** CI's new musl job runs the PHP,
+  Ruby and Python suites on the oldest version each package declares as well as the newest;
+  the Go purego backend now runs on Linux and macOS, where only cgo did; and the release
+  installs each wheel and calls into it before anything is published. *(dev only)*
+- **The AOT and browser smoke tests cross every native entry point**, the twenty-one
+  `cast_*` functions and `hypercast_version`, in C# and Java; each ran "a door from every
+  family" before. *(dev only)*
 - **A browser proof of the C# WebAssembly package.** `csharp/HyperCast.WasmSmokeTest` is a
-  Blazor WebAssembly app that imports the shipped `build/net11.0/HyperCast.targets` and runs
+  Blazor WebAssembly app that imports the shipped `build/HyperCast.targets` and runs
   a door from every family, a fault through the union `switch` and the native-version probe.
   `./check.sh` publishes it, loads it in headless Chromium and requires `PASS`. Not yet run
   from a packed `.nupkg` in a separate consumer project or in CI. *(dev only)*
-- **`cargo ruby` and `cargo php`**, aliases in `rust/.cargo/config.toml`, and
+- **`cargo ruby-ext` and `cargo php-ext`**, aliases in `rust/.cargo/config.toml`, and
   `python/.cargo/config.toml` for maturin: each extension builds into its own target
   directory, so none of them overwrites the plain cdylib the other bindings load. *(dev only)*
 
+### Changed
+
+- **Only upstream-supported runtimes.** PHP's floor is 8.2 (8.1 ended 2025-12-31; the
+  binding already used `readonly class`, which is 8.2 syntax, while declaring 8.1), Ruby's
+  is 3.3 (3.2 ended 2026-03-31), Python's is 3.11 (3.10 ends 2026-10-31; the wheels are
+  `abi3-py311`), and Java's is JDK 25 (22, 23 and 24 are end of life; the jar is compiled
+  `--release 25`). A consumer on an older runtime keeps resolving 0.3.0.
+  *(Packagist, RubyGems, PyPI, Maven Central)*
+- **A release rebuilds the native libraries at the version it ships.** `prepare-release`
+  dispatches CI on the version-bump commit, staging follows that run automatically, and
+  `release.yml` refuses a tag whose CI run or committed libraries were built at any other
+  version. See the first Fixed entry. *(release machinery)*
+- **An architecture with no native build is no longer taken for x64.** Go and PHP report an
+  unsupported platform, Swift refuses to compile for it, and Java resolves to no native
+  build and falls back to wasm; Java also falls back when a bundled library will not load.
+  PHP on Windows always loads the x64 library, since PHP there is an x64 process even on
+  ARM hardware. *(Maven Central, `go get`, `.package(url:)`, Packagist)*
+- **PHP — ext-mbstring is no longer needed.** `NumFormat` validated and decoded separators
+  with `mb_*` functions the package never declared; it uses PCRE and a small decoder now, so
+  `ext-ffi` is the only extension required. *(Packagist)*
+- **`NumFormat::fromLocaleconv` / `from_localeconv` never puts one character in both
+  roles.** A field the locale leaves empty takes its invariant default unless the other
+  separator already holds that character, in which case it takes the other of the pair, so a
+  comma-decimal locale with no thousands separator groups on `.`. PHP used to throw for it;
+  Python's extension built a `,`/`,` format no door can read. Two separators a locale itself
+  declares equal are still a caller bug. *(Packagist, PyPI)*
+- **Ruby — caller bugs raise the same exception on every backend**, `NumFormat` stores its
+  separators as UTF-8, the `uuid` door returns a US-ASCII String on every backend as
+  `SecureRandom.uuid` does, and `CURRENCY_MAX_BYTES` lives on `NumFormat`, where it was
+  meant to. *(RubyGems)*
+- **Python (wasm) — argument errors match the extension**: a non-`str` separator or a
+  non-integer flag set is `TypeError`, one too wide for 32 bits is `OverflowError`. *(PyPI)*
+- **Swift and Go open the native library `RTLD_LOCAL`**, and Swift opens it in place rather
+  than copying it to a fresh temp file per process. *(`.package(url:)`, `go get`)*
+
 ### Fixed
 
+- **C# — a Blazor WebAssembly app could not use HyperUuid and HyperCast together.** Each
+  package's wasm static library bundled its own copy of Rust's standard library, and the
+  two collided at link time: `wasm-ld: duplicate symbol: rust_eh_personality`. The library
+  is now built without std (`cargo wasm-staticlib`: `--no-default-features` plus a
+  `wasm-staticlib` feature that supplies the panic handler std would have, with panics
+  aborting on that target), so there is nothing to collide. Proven by linking both packed
+  packages into one Blazor app and running it in headless Chromium; CI fails the build if
+  the library ever defines `rust_eh_personality` again. *(NuGet, `hypercast` crate)*
+- **C# — a Blazor WebAssembly app that reached the package through a class library got no
+  native link at all.** NuGet imports `build/` only into a project that references a package
+  directly, so an app depending on a library that depends on HyperCast received the managed
+  assembly and none of the wasm wiring. The package now also ships `buildTransitive/`,
+  which flows to every project downstream, and an app using both HyperUuid and HyperCast is
+  handed the exception-handling translation flag once instead of twice. The file now sits at `build/HyperCast.targets`, with no target-framework folder. Proven with
+  a packed `.nupkg`, a class library and a Blazor app in headless Chromium. *(NuGet)*
+- **0.3.0's native libraries report version 0.2.0.** `hypercast_version` is compiled in
+  from the crate manifest, and 0.3.0's libraries were built one minute before the manifest
+  was bumped: the NuGet package, the jar, the gems and the libraries committed for Go, Swift
+  and PHP all carry them, so `NativeVersion` reads `0.2.0` from a 0.3.0 package (the PyPI
+  wheels and the crate, built from the tag, are right). Behaviour is unaffected; the number
+  is wrong. This release is built in the corrected order. *(every package but PyPI and the
+  crate)*
+- **Python — `bytes` input cost about a microsecond more than `str` on every door.** The
+  derived PyO3 extractor tried `str` first and built, then discarded, a `TypeError` for
+  every `bytes` call: `"42"` at 116 ns against `b"42"` at 1,179 ns. A hand-written extractor
+  checks the type directly, and the two now cost the same. The item `docs/roadmap.md`
+  recorded as measured, not built. *(PyPI)*
+- **Ruby — `HyperCast.date(text, nil)` raised `TypeError` on the Magnus backend**, though
+  an explicit nil is the documented default; the Fiddle backend's packed-format memo grew
+  without bound and now holds 64 formats; and on Alpine, 0.3.0 loaded the glibc library and
+  `available?` was false. *(RubyGems)*
+- **Swift — a missing resource bundle crashed the process, `Cast.isAvailable` included.**
+  SwiftPM's generated accessor calls `fatalError`; the loader finds the directory by name
+  now, so the probe is `false` and the doors throw. *(`.package(url:)`)*
+- **C# — a `NumFormat` with no currency symbol set could throw `NullReferenceException`**,
+  `DateOrders.From(null)` now throws `ArgumentNullException`, and every `ArgumentException`
+  from a bad format names the `format` argument. `global.json` pinned nothing: `"11.0.100-"`
+  is not a valid version and the host ignored the file. *(NuGet)*
+- **Java — selecting wasm without GraalWasm now says what to add.** *(Maven Central)*
+- **Go — `corpus_test.go` could loop forever on Windows**, as could PHP's corpus test, when
+  `corpus/` was not above the test directory. *(dev only)*
+- **Docs that had drifted from the code.** "20 `cast_*` exports" where there are 21; the
+  Python READMEs described an sdist that is not published; C#'s `IsAvailable` claimed an ABI
+  check it does not make and called `string`-door fault offsets bytes; Swift's provenance
+  command named a file that does not exist. PHP's README now says how to enable FFI under a
+  web SAPI. *(docs only)*
 - **C# — Blazor WebAssembly on .NET 11 failed in the browser.** A successful `wasm-ld` link
   had hidden it: .NET 11 links browser-wasm with the new exception-handling encoding while
   the precompiled Rust standard library inside the static library uses the legacy one, and

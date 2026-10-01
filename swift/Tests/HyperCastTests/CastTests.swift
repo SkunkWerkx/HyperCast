@@ -152,6 +152,38 @@ final class CastTests: XCTestCase {
         XCTAssertNoThrow(try Cast.nativeVersion())
     }
 
+    func testNativeLibraryLoadsFromTheResourceBundle() throws {
+        // The resource directory is the only place a deployed binary has. The source-tree
+        // fallback would keep every other test here green on the build machine even if
+        // the bundle lookup stopped working, so the origin is pinned on its own.
+        XCTAssertEqual(try Cast.nativeLibraryOrigin(), .resourceBundle)
+    }
+
+    func testAMissingLibraryIsANativeLibraryErrorACallerCanMatch() {
+        let missing = "/nonexistent/\(NativePlatform.libraryFileName)"
+        XCTAssertThrowsError(try DynamicLibrary(path: missing)) { error in
+            guard case NativeLibraryError.openFailed(let path, _) = error else {
+                XCTFail("expected NativeLibraryError.openFailed, got \(error)")
+                return
+            }
+            XCTAssertEqual(path, missing)
+            // LocalizedError, so the one-liner survives `localizedDescription` too.
+            XCTAssertEqual(error.localizedDescription, "\(error)")
+            XCTAssertTrue(error.localizedDescription.hasPrefix("hypercast: failed to load native library at \(missing)"))
+        }
+    }
+
+    func testAMissingExportIsANativeLibraryErrorNamingTheSymbol() throws {
+        let library = try DynamicLibrary(path: try DynamicLibrary.locateBundled().path)
+        XCTAssertThrowsError(try library.symbol("cast_no_such_export")) { error in
+            guard case NativeLibraryError.symbolNotFound(let name) = error else {
+                XCTFail("expected NativeLibraryError.symbolNotFound, got \(error)")
+                return
+            }
+            XCTAssertEqual(name, "cast_no_such_export")
+        }
+    }
+
     func testGenericNumericDoorReachesEveryTarget() throws {
         let invariant = NumFormat.invariant
         XCTAssertEqual(try Cast.numeric("-8", format: invariant), Verdict<Int8>.success(-8))

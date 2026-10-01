@@ -27,6 +27,10 @@ public readonly record struct NumFormat(char DecimalSeparator, char GroupSeparat
 	/// <summary>The most UTF-8 bytes a <see cref="CurrencySymbol"/> may occupy — the core's inline buffer.</summary>
 	public const int MaxCurrencyBytes = 16;
 
+	// What every numeric door calls the parameter this value arrives in, so a malformed
+	// format is reported against the argument the caller actually passed.
+	const string DoorParameter = "format";
+
 	/// <summary>The invariant profile — <c>.</c> decimal, <c>,</c> grouping, every lenience on, no currency symbol.</summary>
 	public static readonly NumFormat Invariant = new('.', ',', NumStyles.All);
 
@@ -52,7 +56,14 @@ public readonly record struct NumFormat(char DecimalSeparator, char GroupSeparat
 	/// whitespace; anything else is a caller bug the doors reject with an
 	/// <see cref="ArgumentException"/>.
 	/// </summary>
-	public string CurrencySymbol { get; init; } = "";
+	/// <remarks>
+	/// Never <see langword="null"/>, whatever built the value: a <see langword="null"/> handed
+	/// to the constructor or the initializer, and the unset field of a
+	/// <c>default(NumFormat)</c> carried forward through <c>with</c>, both read back as empty —
+	/// no symbol declared — rather than surfacing as a
+	/// <see cref="NullReferenceException"/> inside the first door that reads it.
+	/// </remarks>
+	public string CurrencySymbol { get => field ?? ""; init; } = "";
 
 	/// <summary>
 	/// Derives a format from a culture's number formatting: the first code unit of its
@@ -107,9 +118,9 @@ public readonly record struct NumFormat(char DecimalSeparator, char GroupSeparat
 	{
 		if (DecimalSeparator == GroupSeparator)
 			throw new ArgumentException(
-				$"Decimal and group separators must differ; both are '{DecimalSeparator}'.");
+				$"Decimal and group separators must differ; both are '{DecimalSeparator}'.", DoorParameter);
 		if (char.IsSurrogate(DecimalSeparator) || char.IsSurrogate(GroupSeparator))
-			throw new ArgumentException("Separators must be whole code points, not surrogate halves.");
+			throw new ArgumentException("Separators must be whole code points, not surrogate halves.", DoorParameter);
 		var raw = new Cast.RawNumFormat
 		{
 			DecimalSep = DecimalSeparator,
@@ -120,9 +131,9 @@ public readonly record struct NumFormat(char DecimalSeparator, char GroupSeparat
 			return raw;
 		foreach (var c in CurrencySymbol)
 			if (char.IsAsciiDigit(c) || char.IsWhiteSpace(c))
-				throw new ArgumentException($"Currency symbol '{CurrencySymbol}' must not contain a digit or whitespace.");
+				throw new ArgumentException($"Currency symbol '{CurrencySymbol}' must not contain a digit or whitespace.", DoorParameter);
 		if (!Encoding.UTF8.TryGetBytes(CurrencySymbol, raw.Currency, out var written))
-			throw new ArgumentException($"Currency symbol '{CurrencySymbol}' exceeds {MaxCurrencyBytes} UTF-8 bytes.");
+			throw new ArgumentException($"Currency symbol '{CurrencySymbol}' exceeds {MaxCurrencyBytes} UTF-8 bytes.", DoorParameter);
 		raw.CurrencyLen = (uint)written;
 		return raw;
 	}

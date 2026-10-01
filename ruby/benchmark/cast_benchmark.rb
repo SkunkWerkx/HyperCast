@@ -21,6 +21,12 @@ FLOAT = "12345.6789"
 UUID_TEXT = "01020304-0506-0708-090a-0b0c0d0e0f10"
 TIMESTAMP = "2026-01-02T15:04:05.123456789Z"
 ISO_SPAN = "PT1H30M15.5S"
+INT_FAULT = "12345x7"
+
+# Every number below belongs to one backend on one Ruby, so say which before printing any:
+# run it again under HYPERCAST_PURE=1 or HYPERCAST_WASM=1 for the other two.
+puts "backend: #{HyperCast::BACKEND} (core #{HyperCast.native_version}) — #{RUBY_DESCRIPTION}"
+puts
 
 puts "== boolean =="
 Benchmark.ips do |x|
@@ -38,6 +44,8 @@ Benchmark.ips do |x|
   x.report("Integer()") { Integer(INT) }
   x.report("HyperCast.i32") { HyperCast.i32(INT, INVARIANT) }
   x.report("HyperCast.i32 grouped") { HyperCast.i32(INT_GROUPED, INVARIANT) }
+  # The failure path: a Fault built instead of a Success — the README's "`i32`, a fault" row.
+  x.report("HyperCast.i32, a fault") { HyperCast.i32(INT_FAULT, INVARIANT) }
   x.compare!
 end
 

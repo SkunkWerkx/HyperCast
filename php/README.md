@@ -9,9 +9,11 @@ reason plus the exact byte span that offended — over PHP's own built-in ext-ff
 Composer runtime dependencies, no extension to compile, no runtime bridge.**
 
 Allocation-lean scalar casts — booleans, the full integer family, reals, exact decimals,
-UUIDs, temporals — calling directly into the native `libhypercast` Rust core. PHP 8.1 is
+UUIDs, temporals — calling directly into the native `libhypercast` Rust core. PHP 8.2 is
 the floor (readonly classes, enums); both verdict classes are `final` and every door's
 return type declares the union, which is as closed as PHP's type system can state it.
+Bundles a native build for every supported platform (see [Requirements](#requirements))
+and picks the right one at runtime.
 
 ```php
 use HyperCast\{Cast, NumFormat, Success, Fault};
@@ -31,6 +33,87 @@ core's nanoseconds truncate by three digits; durations come back as the protobuf
 (`Duration`) because `DateInterval` can't carry them; decimals come back as the core's
 exact triple (`Decimal`) because PHP has no decimal type at all.
 
+## Requirements
+
+- **PHP 8.2 or later**, 64-bit.
+- **`ext-ffi`**, loaded and permitted for your SAPI — see [Enabling FFI](#enabling-ffi)
+  below. No other extension (not even mbstring) and no Composer dependency.
+- **A supported platform.** The package bundles one native library per platform and picks
+  at load:
+
+  | Platform | Bundled library |
+  | --- | --- |
+  | Linux x64 / arm64, glibc 2.34 or newer | `linux-x64`, `linux-arm64` |
+  | Linux x64 / arm64, musl (Alpine) | `linux-musl-x64`, `linux-musl-arm64` |
+  | macOS x64 / arm64 | `osx-x64`, `osx-arm64` |
+  | Windows x64 | `win-x64` |
+
+  glibc 2.34 means Debian 12, Ubuntu 22.04, RHEL 9, Amazon Linux 2023 or newer; an older
+  glibc fails when the library loads. musl is detected from the running process, so an
+  Alpine image needs nothing extra. Windows on ARM hardware loads the x64 library, because
+  PHP itself is an x64 process there — PHP has never shipped a native Windows ARM64 build.
+  Anything else (a 32-bit PHP, another architecture, another OS family) is a clear
+  unsupported-platform error rather than a wrong-library load.
+
+### Enabling FFI
+
+`ext-ffi` ships with PHP, but the `ffi.enable` ini setting decides who may use it, and its
+default is `preload`:
+
+| `ffi.enable` | CLI | Web SAPIs (FPM, Apache, `php -S`) |
+| --- | --- | --- |
+| `preload` (the default) | works | works only from preloaded code |
+| `1` | works | works |
+| `0` | refused | refused |
+
+So the CLI works out of the box, and a web SAPI needs one of two things in `php.ini`
+(`ffi.enable` is a system-level setting — `ini_set()` and per-directory overrides cannot
+change it):
+
+- `ffi.enable=1`, which permits FFI to every script the server runs; or
+- keep the default and preload this package, which permits FFI to it alone:
+
+  ```ini
+  opcache.preload=/path/to/your/preload.php
+  ; opcache.preload_user=www-data   ; required when the server starts as root
+  ```
+
+  ```php
+  // preload.php
+  foreach (glob(__DIR__ . '/vendor/skunkwerkx/hypercast/php/src/*.php') as $file) {
+      opcache_compile_file($file);
+  }
+  ```
+
+  PHP has no preloading on Windows; use `ffi.enable=1` there.
+
+Without either, the first call throws `FFI\Exception: FFI API is restricted by "ffi.enable"
+configuration directive`. Under a web SAPI the library is bound once per request — PHP's
+statics reset between requests — while the operating system keeps it mapped for the
+worker's lifetime.
+
+## Checking availability
+
+`Cast::isAvailable()` answers whether the native library can be used at all, and never
+throws: a missing `ext-ffi`, an `ffi.enable` that restricts FFI for this SAPI, a missing or
+unloadable library, an unsupported platform, and a stale library lacking a symbol this
+binding declares all answer `false`. It attempts the same load every door makes and caches
+the answer for the request, so it is what a consumer with a fallback gates on:
+
+```php
+$total = Cast::isAvailable()
+    ? Cast::decimal($text, $format)
+    : $legacyParser->parse($text);
+```
+
+`Cast::nativeVersion()` returns the loaded library's own `"major.minor.patch"` — a
+zero-argument probe the core exports, so a host can prove the `libhypercast` it resolved is
+the one this binding was written against before making the first cast. It throws exactly
+where `isAvailable()` answers `false`. If you catch instead of asking, catch `\Throwable`:
+ext-ffi reports its own failures as `\Error`s (`FFI\Exception` extends `\Error`, and a
+missing extension is a plain `Error: Class "FFI" not found`), which `catch (\Exception)`
+does not see.
+
 ## Doors
 
 | Door | Value on `Success` |
@@ -45,18 +128,19 @@ exact triple (`Decimal`) because PHP has no decimal type at all.
 | `Cast::time` | `int` nanoseconds since midnight |
 | `Cast::duration` | `Duration` (the protobuf pair) |
 
-Every numeric door takes a `NumFormat`; `Cast::optional()` presents an `Empty` fault as
-`null`. `Cast::nativeVersion()` returns the loaded library's own `"major.minor.patch"` — a
-zero-argument probe, so a host can prove the `libhypercast` it resolved is the one this
-binding was written against before making the first cast. `Cast::isAvailable()` is its
-non-throwing form and what a consumer with a fallback gates on: it attempts the same load
-every door makes, answers `false` for a missing library, an unsupported platform, or a
-stale library lacking a symbol this binding declares, and caches the answer for the request.
+Every numeric door takes a `NumFormat` — `NumFormat::invariant()`, `NumFormat::detect()`
+(the `.`/`,` roles resolved per input from structure, ambiguous input a `Malformed` fault),
+or a constructed one — and `Cast::optional()` presents an `Empty` fault as `null`. Context
+the text cannot carry is declared, never guessed, through backed enums:
 
 ```php
-$total = Cast::isAvailable()
-    ? Cast::decimal($text, $format)
-    : $legacyParser->parse($text);
+use HyperCast\{Cast, DateOrder, ExcelEpoch, UnixPrecision};
+
+Cast::unix('1767348245123', UnixPrecision::Milliseconds);
+Cast::excelSerial('45292.75', ExcelEpoch::Y1900);        // 2024-01-01T18:00:00Z
+Cast::date('1/7/2026', DateOrder::Mdy);                  // January 7th; Dmy makes it July 1st
+Cast::date('2026-01-07');                                // no order: the strict ISO door
+Cast::datetime('1/7/2026 3:04 PM', DateOrder::Mdy);
 ```
 
 ### Decimal
@@ -100,7 +184,9 @@ Cast::decimal('$ 19.99', $usd);          // Success(Decimal 19.99)
 bindings carry (C# `From(CultureInfo)`, Java `from(Locale)`, Python `from_localeconv`): it
 reads `decimal_point`, `thousands_sep` and `currency_symbol` from the given array, or from
 `localeconv()` when null, defaulting to `.`, `,` and no symbol wherever a field is empty,
-every lenience on. PHP's `localeconv()` reflects `setlocale(LC_NUMERIC | LC_MONETARY)`
+every lenience on. An empty separator never collides with the declared one: a comma-decimal
+locale that reports no thousands separator gets `.` for grouping, not a second `,`. PHP's
+`localeconv()` reflects `setlocale(LC_NUMERIC | LC_MONETARY)`
 *process* state — shared across every request in the worker — so a caller that knows its
 notation should declare it explicitly; the factory is for the caller that genuinely wants
 whatever the process locale says.
@@ -124,46 +210,68 @@ so hoist a format rather than constructing one per call.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
    held by the shared corpus (every corpus file replayed by phpunit, with byte-exact fault
    spans).
-4. **Faster than the platform's own parser** — phpbench
-   (`XDEBUG_MODE=off vendor/bin/phpbench run --report=aggregate`, linux-arm64): timestamp
-   **487 ns vs 1.3 µs `new DateTimeImmutable`** (2.7x). No new mechanism was needed for
-   that — PHP's raw ext-ffi call floor is ~105 ns, already extension-class, so the win was
-   a wrapper diet: flat doors (one FFI call, no closure indirection), typed cdef structs
-   read as fields, static scratch `CData` with pre-taken addresses (PHP's request model
-   makes static scratch safe), and `createFromTimestamp`/`setMicrosecond` on PHP 8.4+
-   instead of a date-string parse. The messy civil shape lands the same way: `Cast::datetime`
-   on `1/7/2026 3:04 PM` is **620 ns vs 1.36 µs** for `DateTimeImmutable::createFromFormat`
-   with the equivalent pattern (2.2x), and the declared-order date door is 539 ns.
-   Separator detection costs ~22 ns (385 ns vs 363 ns declared).
+4. **Faster than the platform's own parser** — see [Benchmarks](#benchmarks) below.
 
-   When bytes are the destination — a `BINARY(16)` column bind, a wire format —
-   `Cast::uuidBytes` returns the sixteen RFC-ordered octets as a binary string and skips
-   the hex encoding and hyphen assembly `Cast::uuid` does to render the canonical form.
-   The eight integer doors are now written out flat like the real doors — one literal FFI
-   call each, no shared helper doing a dynamic symbol lookup and a string match to find
-   the width's sign-extension shift.
+**The honest trade-off:** a native library shipped inside the package and an FFI call per
+door — for plain invariant integers, `(int)` casts and `ctype_digit` are the reasonable
+choice.
 
-**Why no native extension, when Python and Ruby got one:** the ~105 ns ext-ffi floor
-above is already extension-class, so there is no mechanism tax left for a Zend extension
-to remove. That reasoning is kept checkable rather than asserted: the core crate carries
-an `ext-php-rs` build behind its `php` cargo feature (`rust/src/php_ext.rs`), the same
-benchmark-only spike HyperUuid carries, exposing every door at the raw layer this package's
-own FFI calls sit at. CI builds and load-checks it on every darwin/linux leg so it cannot
-bit-rot; nothing in this Composer package loads it, and no phpunit runs against it.
+## Benchmarks
 
-If you want to try it anyway, here's how to build and load it yourself:
+phpbench (`XDEBUG_MODE=off vendor/bin/phpbench run --report=aggregate`, linux-arm64):
+timestamp **487 ns vs 1.3 µs `new DateTimeImmutable`** (2.7x). No new mechanism was needed
+for that — PHP's raw ext-ffi call floor is ~105 ns, already extension-class, so the win was
+a wrapper diet: flat doors (one FFI call, no closure indirection), typed cdef structs read
+as fields, static scratch `CData` with pre-taken addresses (PHP's request model makes static
+scratch safe), and `createFromTimestamp`/`setMicrosecond` on PHP 8.4+ instead of a
+date-string parse. The messy civil shape lands the same way: `Cast::datetime` on
+`1/7/2026 3:04 PM` is **620 ns vs 1.36 µs** for `DateTimeImmutable::createFromFormat` with
+the equivalent pattern (2.2x), and the declared-order date door is 539 ns. Separator
+detection costs ~22 ns (385 ns vs 363 ns declared).
+
+When bytes are the destination — a `BINARY(16)` column bind, a wire format —
+`Cast::uuidBytes` returns the sixteen RFC-ordered octets as a binary string and skips the
+hex encoding and hyphen assembly `Cast::uuid` does to render the canonical form. The eight
+integer doors are now written out flat like the real doors — one literal FFI call each, no
+shared helper doing a dynamic symbol lookup and a string match to find the width's
+sign-extension shift.
+
+Benchmark forensics worth knowing: PHP read 20x slow until a loaded Xdebug was caught
+inflating everything uniformly ~14x — `XDEBUG_MODE=off` for every recorded number.
+
+### The native extension spike
+
+**The `skunkwerkx/hypercast` Composer package (see Install below) is `ext-ffi` only** —
+chosen because it needs zero compilation to install.
+
+The same Rust core also links straight into a real Zend extension via
+[`ext-php-rs`](https://ext-php.rs) (`rust/src/php_ext.rs`, gated behind the crate's `php`
+Cargo feature) — the same move Python (PyO3) and Ruby (Magnus) get a shipped native backend
+for, exposing every door at the raw layer this package's own FFI calls sit at. PHP's didn't
+ship, for two reasons. The mechanism was never the bottleneck here the way ctypes and Fiddle
+were: the `ext-ffi` crossing measures ~105 ns, so what a Zend extension removes is the
+PHP-level wrapper around the call, not the call. And a Zend extension is pinned to one PHP
+ABI per build — the API number plus NTS or ZTS — with no Windows build on stable Rust, so
+shipping it means a binary per PHP version where the `ext-ffi` package ships one library per
+platform. CI builds the extension on every Linux and macOS leg, load-checks it, and uploads
+and attests the result, so it cannot silently bit-rot; no `phpunit` runs against it and
+nothing in the Composer package loads it. HyperUuid carries the same spike on the same terms
+and measured it: 1.4-2x on single calls, where that wrapper is a large share of the time, and
+nothing on batches ([its PHP README](https://github.com/SkunkWerkx/HyperUuid/tree/master/php#the-native-extension-spike)
+has the table). No measurement of this repo's spike is recorded, so no number is claimed
+here. If you want to try it anyway, here's how to build and load it yourself:
 
 1. **Prerequisites:** a Rust toolchain ([rustup](https://rustup.rs)) and PHP's development
    headers (the `php-dev` / `php8.5-dev` / `php-devel` package for your distro — `ext-php-rs`'s
    build script needs these to link against `libphp`).
 2. **Build it** with the `php` feature, not the plain default build — that produces the
    `ext-ffi` binding's cdylib, a different entry point from the same crate; don't load both
-   at once. `cargo php` is an alias in `rust/.cargo/config.toml` that builds into its own
+   at once. `cargo php-ext` is an alias in `rust/.cargo/config.toml` that builds into its own
    `target/php/` directory, so it can't overwrite the plain cdylib the other bindings load:
    ```sh
    git clone https://github.com/SkunkWerkx/HyperCast
    cd HyperCast/rust
-   cargo php
+   cargo php-ext
    ```
    Produces `target/php/release/libhypercast.so` (`.dylib` on macOS; Windows isn't supported —
    `ext-php-rs`'s Windows path needs a nightly-only Rust feature, so every CI leg here builds
@@ -182,11 +290,6 @@ If you want to try it anyway, here's how to build and load it yourself:
    ```
    See [`rust/src/php_ext.rs`](../rust/src/php_ext.rs) for the full function list — one
    `hypercast_native_cast_*` per door, plus `hypercast_native_version`.
-
-**The honest trade-off:** a native library shipped inside the package and an FFI call per
-door — for plain invariant integers, `(int)` casts and `ctype_digit` are the reasonable
-choice. (Benchmark forensics worth knowing: PHP read 20x slow until a loaded Xdebug was
-caught inflating everything uniformly ~14x — `XDEBUG_MODE=off` for every recorded number.)
 
 ## WebAssembly
 
@@ -211,7 +314,7 @@ identity mismatch:
 
 ```sh
 composer require skunkwerkx/hypercast:X.Y.Z
-gh attestation verify vendor/skunkwerkx/hypercast/src/native/linux-x64/libhypercast.so \
+gh attestation verify vendor/skunkwerkx/hypercast/php/src/native/linux-x64/libhypercast.so \
   --repo SkunkWerkx/HyperCast --signer-repo SkunkWerkx/.github
 ```
 
@@ -227,11 +330,19 @@ more on why `--signer-repo` is needed for some artifacts here and not others.
 composer require skunkwerkx/hypercast
 ```
 
-Packagist has no packing step — the git tree at the tag *is* the package. That is why the six
-per-RID native libraries under `src/native/` are committed to git (kept fresh automatically
-by `stage-native-binaries.yml`; see `src/native/README.md`), and why the repository root
-carries the `composer.json` Packagist requires, since Packagist has no monorepo-subdirectory
-support.
+Published to [Packagist](https://packagist.org/packages/skunkwerkx/hypercast) — no extra
+repository configuration needed. See [Requirements](#requirements) for the PHP floor,
+`ffi.enable` and the supported platforms.
+
+There are two `composer.json` files in this repo: this directory's own (what CI actually
+`composer install`s/tests against) and a second one at [the repo root](../composer.json),
+which exists because Packagist requires `composer.json` at the top of the git repository it
+watches, with no subdirectory support. Its `autoload` PSR-4 mapping points into `php/src/`.
+Keep both in sync by hand when `require`/`autoload` change here.
+
+The native libraries under `src/native/{rid}/` are committed to git, not built by Packagist —
+Packagist has no packing step, so the git tree at the tag *is* the package. They are kept
+fresh automatically by `stage-native-binaries.yml`; see `src/native/README.md`.
 
 See [the repo root README](../README.md) for the full door table, the receipts, and the
 state of every other language binding.

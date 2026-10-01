@@ -20,8 +20,13 @@ dependencies {
 }
 
 java {
-    sourceCompatibility = JavaVersion.VERSION_22
-    targetCompatibility = JavaVersion.VERSION_22
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
+}
+
+// The library's own floor, enforced the same way it is there.
+tasks.withType<JavaCompile>().configureEach {
+    options.release = 25
 }
 
 jmh {

@@ -2,6 +2,7 @@
     "name": "skunkwerkx/hypercast",
     "description": "Allocation-free scalar parsing as Success/Fault verdicts — direct native FFI into a Rust core, no runtime bridge.",
     "type": "library",
+    "keywords": ["parsing", "parser", "cast", "validation", "decimal", "datetime", "uuid", "ffi", "rust"],
     "license": "MIT",
     "authors": [
         {
@@ -9,8 +10,12 @@
         }
     ],
     "homepage": "https://github.com/SkunkWerkx/HyperCast",
+    "support": {
+        "issues": "https://github.com/SkunkWerkx/HyperCast/issues",
+        "source": "https://github.com/SkunkWerkx/HyperCast"
+    },
     "require": {
-        "php": ">=8.1",
+        "php": ">=8.2",
         "ext-ffi": "*"
     },
     "require-dev": {

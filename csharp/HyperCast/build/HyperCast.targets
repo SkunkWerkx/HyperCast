@@ -30,10 +30,16 @@
        With only 1, the build succeeds and the app throws at runtime instead of failing at the
        link, which is strictly worse than the original bug.
 
-       net10.0 is the forge's own spelling for the staticlib directory; NuGet's TFM compatible
-       asset selection serves it to this package's net11.0 consumers, so no rename is needed. -->
+       net10.0 is the forge's own spelling for the staticlib directory, shared with HyperUuid's
+       package. It is only a folder name here: the reference below names the path directly, so
+       nothing selects on it and no rename is needed for this package's net11.0 consumers.
+
+       No target-framework gate, unlike HyperUuid's copy of this file, and no
+       target-framework folder either: this package targets net11.0 and nothing older, so
+       NuGet cannot install it into a project that predates the .NET 11 WebAssembly
+       toolchain the last item group depends on. -->
   <ItemGroup Condition="'$(RuntimeIdentifier)' == 'browser-wasm'">
-    <NativeFileReference Include="$(MSBuildThisFileDirectory)../../runtimes/browser-wasm/nativeassets/net10.0/libhypercast.a" />
+    <NativeFileReference Include="$(MSBuildThisFileDirectory)../runtimes/browser-wasm/nativeassets/net10.0/libhypercast.a" />
     <EmccExportedFunction Include="_cast_bool" />
     <EmccExportedFunction Include="_cast_i8" />
     <EmccExportedFunction Include="_cast_i16" />
@@ -59,15 +65,20 @@
   </ItemGroup>
 
   <!-- .NET 11 and later link browser-wasm with the new (exnref) exception-handling encoding,
-       while the Rust standard library and compiler_builtins inside the emscripten staticlib
-       are precompiled with the legacy one. The link succeeds and the SDK's wasm-opt passes the
+       while Rust's precompiled core and compiler_builtins inside the emscripten staticlib use
+       the legacy one (the staticlib is built without std, and that did not change this:
+       re-tested, and the browser still refuses the module without the pass). The link succeeds and the SDK's wasm-opt passes the
        mix through, then the browser refuses to compile the module: "module uses a mix of
        legacy and new exception handling instructions". Binaryen's translate-to-exnref pass
        rewrites the legacy instructions into the new encoding so the module is uniform.
        Appended to the SDK's own post-link wasm-opt step through @(WasmOptConfigurationFlags).
        WebAssembly support is .NET 11 and later only, so there is no gate on the target
-       framework. -->
+       framework.
+
+       Exclude names the item list itself, so the flag is added once however many packages
+       ask for it: an app that references both HyperUuid and HyperCast imports both files,
+       and without this wasm-opt was handed the pass twice. -->
   <ItemGroup Condition="'$(RuntimeIdentifier)' == 'browser-wasm'">
-    <WasmOptConfigurationFlags Include="--translate-to-exnref" />
+    <WasmOptConfigurationFlags Include="--translate-to-exnref" Exclude="@(WasmOptConfigurationFlags)" />
   </ItemGroup>
 </Project>

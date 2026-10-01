@@ -85,9 +85,7 @@ type wasmCore struct {
 }
 
 var (
-	initOnce sync.Once
-	initErr  error
-	core     *wasmCore
+	core *wasmCore
 
 	symBool, symUuid, symTimestamp, symDate, symTime, symDuration plainSymbol
 
@@ -102,48 +100,53 @@ var (
 	symUnix, symDateOrdered, symDateTime, symExcelSerial *wasmtime.Func
 )
 
-// ensureLoaded instantiates the embedded wasm module exactly once. The name and signature
-// match the native backends so cast.go needs no knowledge of which one it got.
-func ensureLoaded() error {
-	initOnce.Do(func() {
-		core, initErr = newWasmCore()
-		if initErr == nil {
-			// One real call into the guest, so Available means "answered", not "resolved".
-			nativeVersion = callVersion()
-		}
-	})
-	return initErr
+// loadBackend instantiates the embedded wasm module. ensureLoaded (load.go) runs it exactly
+// once; the name and signature match the native backends' so nothing above this file needs
+// to know which one it got.
+func loadBackend() error {
+	c, err := newWasmCore()
+	if err != nil {
+		return err
+	}
+	// One real call into the guest, so Available means "answered", not "resolved".
+	v, err := symVersion.Call(c.store)
+	if err != nil {
+		return fmt.Errorf("hypercast_version trapped inside the wasm core: %w", err)
+	}
+	packed, _ := v.(int32)
+	core, nativeVersion = c, uint32(packed)
+	return nil
 }
 
 func newWasmCore() (*wasmCore, error) {
 	wasm, err := nativeFS.ReadFile(wasmModulePath)
 	if err != nil {
-		return nil, fmt.Errorf("hypercast: %s not found in embedded native libs (this module was built without the wasm32-wasip1 module): %w", wasmModulePath, err)
+		return nil, fmt.Errorf("%s not found in embedded native libs (this module was built without the wasm32-wasip1 module): %w", wasmModulePath, err)
 	}
 
 	engine := wasmtime.NewEngine()
 	module, err := wasmtime.NewModule(engine, wasm)
 	if err != nil {
-		return nil, fmt.Errorf("hypercast: compiling wasm module: %w", err)
+		return nil, fmt.Errorf("compiling wasm module: %w", err)
 	}
 	// The module imports four WASI preview1 functions — the environ/fd_write/proc_exit set
 	// wasi-libc's startup and panic paths reference; the core itself needs no clock and no
 	// entropy. An empty WasiConfig satisfies them: no files, no env, nothing inherited.
 	linker := wasmtime.NewLinker(engine)
 	if err := linker.DefineWasi(); err != nil {
-		return nil, fmt.Errorf("hypercast: defining WASI imports: %w", err)
+		return nil, fmt.Errorf("defining WASI imports: %w", err)
 	}
 	store := wasmtime.NewStore(engine)
 	store.SetWasi(wasmtime.NewWasiConfig())
 	instance, err := linker.Instantiate(store, module)
 	if err != nil {
-		return nil, fmt.Errorf("hypercast: instantiating wasm module: %w", err)
+		return nil, fmt.Errorf("instantiating wasm module: %w", err)
 	}
 
 	c := &wasmCore{store: store}
 	memExport := instance.GetExport(store, "memory")
 	if memExport == nil || memExport.Memory() == nil {
-		return nil, fmt.Errorf("hypercast: wasm module exports no memory")
+		return nil, fmt.Errorf("wasm module exports no memory")
 	}
 	c.mem = memExport.Memory()
 
@@ -166,7 +169,7 @@ func newWasmCore() (*wasmCore, error) {
 	for _, e := range exports {
 		f := instance.GetFunc(store, e.name)
 		if f == nil {
-			return nil, fmt.Errorf("hypercast: export %s not found in wasm module", e.name)
+			return nil, fmt.Errorf("export %s not found in wasm module", e.name)
 		}
 		*e.dst = f
 	}
@@ -183,15 +186,17 @@ func newWasmCore() (*wasmCore, error) {
 	return c, nil
 }
 
-// alloc asks the guest allocator for n bytes and returns the guest address.
+// alloc asks the guest allocator for n bytes and returns the guest address. Its errors carry
+// no package prefix: at load they are wrapped by ErrNativeUnavailable, and the per-call site
+// in stageInput adds its own.
 func (c *wasmCore) alloc(n int) (int32, error) {
 	v, err := c.malloc.Call(c.store, int32(n))
 	if err != nil {
-		return 0, fmt.Errorf("hypercast: guest malloc(%d) trapped: %w", n, err)
+		return 0, fmt.Errorf("guest malloc(%d) trapped: %w", n, err)
 	}
 	p, _ := v.(int32)
 	if p == 0 {
-		return 0, fmt.Errorf("hypercast: guest malloc(%d) returned null", n)
+		return 0, fmt.Errorf("guest malloc(%d) returned null", n)
 	}
 	return p, nil
 }
@@ -216,7 +221,7 @@ func (c *wasmCore) stageInput(ptr unsafe.Pointer, length uintptr) int32 {
 		}
 		p, err := c.alloc(n)
 		if err != nil {
-			panic(err)
+			panic(fmt.Sprintf("hypercast: %v", err))
 		}
 		c.in, c.inCap = p, n
 	}
@@ -237,20 +242,6 @@ func (c *wasmCore) writeFormat(format rawNumFormat) {
 	binary.LittleEndian.PutUint32(data[c.format+12:], format.CurrencyLen)
 	copy(data[c.format+16:c.format+32], format.Currency[:])
 	c.lastFormat, c.formatValid = format, true
-}
-
-// callVersion reads the guest's packed version — a zero-argument export that cannot trap
-// short of a broken module, taken under the same lock every other guest call holds.
-func callVersion() uint32 {
-	c := core
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	v, err := symVersion.Call(c.store)
-	if err != nil {
-		panic(fmt.Sprintf("hypercast: hypercast_version trapped inside the wasm core: %v", err))
-	}
-	packed, _ := v.(int32)
-	return uint32(packed)
 }
 
 // call invokes a guest door and returns its verdict code. A trap here is a bug in the core

@@ -8,15 +8,14 @@
 //! The Python package (`hypercast/__init__.py`) re-exports everything here directly:
 //! `Success`/`Fault`/`NumFormat` are the package's own types, `__match_args__` included,
 //! so `match`/`case` and equality behave exactly as the docstrings promise. Built
-//! abi3-py310, so one wheel per platform covers every CPython from the package's 3.10
+//! abi3-py311, so one wheel per platform covers every CPython from the package's 3.11
 //! floor up.
 
-use std::borrow::Cow;
 use std::sync::OnceLock;
 
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDate, PyDateTime, PyDelta, PyDict, PyTime, PyTzInfo};
+use pyo3::types::{PyBytes, PyDate, PyDateTime, PyDelta, PyDict, PyString, PyTime, PyTzInfo};
 
 use crate as core;
 
@@ -39,11 +38,14 @@ static DECIMAL_CLASS: OnceLock<Py<PyAny>> = OnceLock::new();
 fn cached<'py>(py: Python<'py>, cell: &'static OnceLock<Py<PyAny>>) -> PyResult<&'py Bound<'py, PyAny>> {
     cell.get()
         .map(|value| value.bind(py))
-        .ok_or_else(|| PyValueError::new_err("hypercast._native used before _bind"))
+        .ok_or_else(|| PyRuntimeError::new_err("hypercast._native used before _bind"))
 }
 
 /// The success case of a verdict: a cast value.
-#[pyclass(frozen, module = "hypercast")]
+// `generic` gives the class a `__class_getitem__`, so the `Success[int]` the type stubs
+// (`_native.pyi`) describe is also a legal expression at runtime — an annotation that gets
+// evaluated, on the Pythons that still evaluate them eagerly, must not raise.
+#[pyclass(frozen, generic, module = "hypercast")]
 struct Success {
     #[pyo3(get)]
     value: Py<PyAny>,
@@ -162,38 +164,41 @@ impl NumFormat {
     #[new]
     #[pyo3(signature = (decimal_sep, group_sep, flags, currency = ""))]
     fn new(decimal_sep: &str, group_sep: &str, flags: u32, currency: &str) -> PyResult<Self> {
-        let (decimal, group) = (single_char(decimal_sep)?, single_char(group_sep)?);
-        if decimal == group {
-            return Err(PyValueError::new_err(format!(
-                "Decimal and group separators must differ; both are {decimal_sep:?}"
-            )));
-        }
-        Ok(NumFormat {
-            resolved: core::NumFormat::new(decimal, group, flags)
-                .with_currency(currency_symbol(currency)?),
-        })
+        declare(single_char(decimal_sep)?, single_char(group_sep)?, flags, currency)
     }
 
+    /// The declared decimal separator.
     #[getter]
     fn decimal_sep(&self) -> String {
         self.resolved.decimal_sep.to_string()
     }
 
+    /// The declared digit-group separator.
     #[getter]
     fn group_sep(&self) -> String {
         self.resolved.group_sep.to_string()
     }
 
+    /// The bitwise OR of the lenience flags.
     #[getter]
     fn flags(&self) -> u32 {
         self.resolved.flags
     }
 
+    /// The declared currency symbol — ``""`` when none is declared.
     #[getter]
     fn currency(&self) -> String {
         self.resolved.currency.as_str().to_string()
     }
 
+    /// Bridges ``locale.localeconv()`` (or a dict shaped like it) to a declared format —
+    /// ``decimal_point``, ``thousands_sep``, and ``currency_symbol``.
+    ///
+    /// A field the locale leaves empty takes its invariant default (``.`` decimal, ``,``
+    /// group) unless the other separator already holds that character, in which case it
+    /// takes the other of the pair — so a comma-decimal locale with no thousands separator
+    /// groups on ``.`` rather than colliding. Two separators the locale itself declares
+    /// equal are still the ``ValueError`` the constructor raises.
     #[staticmethod]
     #[pyo3(signature = (conv = None))]
     fn from_localeconv(py: Python<'_>, conv: Option<Bound<'_, PyDict>>) -> PyResult<Self> {
@@ -204,26 +209,39 @@ impl NumFormat {
                 .call_method0("localeconv")?
                 .cast_into::<PyDict>()?,
         };
-        let field = |name: &str, fallback: char| -> PyResult<char> {
+        // None when the key is absent or its text is empty: the locale declares nothing.
+        let field = |name: &str| -> PyResult<Option<char>> {
             match conv.get_item(name)? {
-                Some(value) => {
-                    let text = value.extract::<String>()?;
-                    Ok(text.chars().next().unwrap_or(fallback))
-                }
-                None => Ok(fallback),
+                Some(value) => Ok(value.extract::<String>()?.chars().next()),
+                None => Ok(None),
             }
         };
-        let decimal = field("decimal_point", '.')?;
-        let group = field("thousands_sep", ',')?;
+        let (decimal, group) = match (field("decimal_point")?, field("thousands_sep")?) {
+            (Some(decimal), Some(group)) => (decimal, group),
+            (Some(decimal), None) => (decimal, if decimal == ',' { '.' } else { ',' }),
+            (None, Some(group)) => (if group == '.' { ',' } else { '.' }, group),
+            (None, None) => ('.', ','),
+        };
         let currency = match conv.get_item("currency_symbol")? {
             Some(value) => value.extract::<String>()?,
             None => String::new(),
         };
-        Ok(NumFormat {
-            resolved: core::NumFormat::new(decimal, group, core::NumFormat::ALL)
-                .with_currency(currency_symbol(&currency)?),
-        })
+        declare(decimal, group, core::NumFormat::ALL, &currency)
     }
+}
+
+/// The one place a format is built, so the constructor and the locale bridge refuse the
+/// same caller bugs: equal separators, and a currency symbol the core cannot carry.
+fn declare(decimal: char, group: char, flags: u32, currency: &str) -> PyResult<NumFormat> {
+    if decimal == group {
+        return Err(PyValueError::new_err(format!(
+            "Decimal and group separators must differ; both are \"{decimal}\""
+        )));
+    }
+    Ok(NumFormat {
+        resolved: core::NumFormat::new(decimal, group, flags)
+            .with_currency(currency_symbol(currency)?),
+    })
 }
 
 /// The declared currency symbol: `""` declares none; anything else must be a valid
@@ -235,7 +253,7 @@ fn currency_symbol(text: &str) -> PyResult<core::CurrencySymbol> {
     }
     core::CurrencySymbol::new(text).ok_or_else(|| {
         PyValueError::new_err(format!(
-            "Currency symbol must be 1 to 16 UTF-8 bytes with no ASCII digit or whitespace; got {text:?}"
+            "Currency symbol must be 1 to 16 UTF-8 bytes with no ASCII digit or whitespace; got \"{text}\""
         ))
     })
 }
@@ -248,27 +266,42 @@ fn single_char(text: &str) -> PyResult<char> {
     }
 }
 
-/// Door input: str (borrowed as UTF-8 where CPython's cached encoding allows) or bytes,
-/// zero-copy views into the caller's own object.
-#[derive(FromPyObject)]
+/// Door input: str or bytes, each a zero-copy view into the caller's own object.
 enum Text<'py> {
-    #[pyo3(transparent)]
-    Str(Bound<'py, pyo3::types::PyString>),
-    #[pyo3(transparent)]
+    Str(Bound<'py, PyString>),
     Bytes(Bound<'py, PyBytes>),
 }
 
+// Hand-written rather than `#[derive(FromPyObject)]`: the derived two-variant extractor
+// tries `Str` first, and a failed variant is not free — it builds a `TypeError` with a
+// formatted message and a cause chain, which the next variant's success then throws away.
+// That was about a microsecond on every `bytes` input, ten times the cast itself (`"42"` at
+// 116 ns against `b"42"` at 1,179 ns), on the path the corpus replay and every "zero-copy
+// bytes" caller take. Checking the type tag directly costs nothing on either path.
+impl<'py> FromPyObject<'_, 'py> for Text<'py> {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'_, 'py, PyAny>) -> PyResult<Self> {
+        if let Ok(text) = obj.cast::<PyString>() {
+            Ok(Text::Str(text.to_owned()))
+        } else if let Ok(bytes) = obj.cast::<PyBytes>() {
+            Ok(Text::Bytes(bytes.to_owned()))
+        } else {
+            // PyO3 prefixes the argument name, so a door raises
+            // "argument 'text': must be str or bytes" — the wasm backend's own words.
+            Err(PyTypeError::new_err("must be str or bytes"))
+        }
+    }
+}
+
 impl Text<'_> {
-    // to_str() needs non-limited-API access, unavailable under abi3; to_cow() is the
-    // abi3-safe equivalent — still borrowed for the ASCII/UTF-8-cached common case, owned
-    // only when the limited API forces a copy (same trade HyperUuid made).
-    fn bytes(&self) -> PyResult<Cow<'_, [u8]>> {
+    // to_str() borrows the str's own cached UTF-8 with no copy. It is in the limited API
+    // from 3.10, below this extension's floor (abi3-py311), so nothing here ever owns
+    // the text.
+    fn bytes(&self) -> PyResult<&[u8]> {
         match self {
-            Text::Str(text) => Ok(match text.to_cow()? {
-                Cow::Borrowed(text) => Cow::Borrowed(text.as_bytes()),
-                Cow::Owned(text) => Cow::Owned(text.into_bytes()),
-            }),
-            Text::Bytes(bytes) => Ok(Cow::Borrowed(bytes.as_bytes())),
+            Text::Str(text) => Ok(text.to_str()?.as_bytes()),
+            Text::Bytes(bytes) => Ok(bytes.as_bytes()),
         }
     }
 
@@ -305,10 +338,7 @@ fn fault(py: Python<'_>, failed: core::Fault) -> PyResult<Py<PyAny>> {
         core::Reason::Malformed => &MALFORMED,
         core::Reason::OutOfRange => &OUT_OF_RANGE,
     };
-    let reason = member
-        .get()
-        .ok_or_else(|| PyValueError::new_err("hypercast._native used before _bind"))?
-        .clone_ref(py);
+    let reason = cached(py, member)?.clone().unbind();
     Ok(Py::new(py, Fault { reason, offset: failed.offset, length: failed.len })?.into_any())
 }
 
@@ -327,8 +357,12 @@ fn verdict<'py, T>(
     }
 }
 
+// Each door's doc comment is its Python docstring — what `help(hypercast.cast_i32)` prints —
+// so it is written the way the `_wasm` backend's twin is, word for word and in the same
+// reStructuredText, and a test holds the two backends to it.
 macro_rules! numeric_doors {
-    ($($door:ident => $core:ident),+ $(,)?) => {$(
+    ($($(#[$doc:meta])* $door:ident => $core:ident),+ $(,)?) => {$(
+        $(#[$doc])*
         #[pyfunction]
         fn $door(py: Python<'_>, text: Text<'_>, fmt: PyRef<'_, NumFormat>) -> PyResult<Py<PyAny>> {
             verdict(py, &text, core::$core(text.bytes()?, &fmt.resolved), |py, value| {
@@ -339,15 +373,26 @@ macro_rules! numeric_doors {
 }
 
 numeric_doors! {
+    /// Casts integer text to a signed 8-bit value under the declared format.
     cast_i8 => cast_i8,
+    /// Casts integer text to a signed 16-bit value under the declared format.
     cast_i16 => cast_i16,
+    /// Casts integer text to a signed 32-bit value under the declared format.
     cast_i32 => cast_i32,
+    /// Casts integer text to a signed 64-bit value under the declared format.
     cast_i64 => cast_i64,
+    /// Casts integer text to an unsigned 8-bit value under the declared format.
     cast_u8 => cast_u8,
+    /// Casts integer text to an unsigned 16-bit value under the declared format.
     cast_u16 => cast_u16,
+    /// Casts integer text to an unsigned 32-bit value under the declared format.
     cast_u32 => cast_u32,
+    /// Casts integer text to an unsigned 64-bit value — the true unsigned value, ``int``
+    /// being unbounded — under the declared format.
     cast_u64 => cast_u64,
+    /// Casts real text to an IEEE single (widened losslessly) under the declared format.
     cast_f32 => cast_f32,
+    /// Casts real text to an IEEE double under the declared format.
     cast_f64 => cast_f64,
 }
 
@@ -373,7 +418,7 @@ impl std::fmt::Write for Canonical {
 }
 
 /// Casts decimal text under the declared format to an exact, canonical
-/// `decimal.Decimal` — trailing fraction zeros trimmed, so `"1.10"` is `Decimal('1.1')`;
+/// ``decimal.Decimal`` — trailing fraction zeros trimmed, so ``"1.10"`` is ``Decimal('1.1')``;
 /// never rounded.
 #[pyfunction]
 fn cast_decimal(py: Python<'_>, text: Text<'_>, fmt: PyRef<'_, NumFormat>) -> PyResult<Py<PyAny>> {
@@ -388,14 +433,15 @@ fn cast_decimal(py: Python<'_>, text: Text<'_>, fmt: PyRef<'_, NumFormat>) -> Py
     })
 }
 
-/// This library's version as `"major.minor.patch"`, decoded from the same packed
-/// `hypercast_version` export every other binding probes.
+/// This library's version as ``"major.minor.patch"``, decoded from the same packed
+/// ``hypercast_version`` export every other binding probes.
 #[pyfunction]
 fn native_version() -> String {
     let packed = core::hypercast_version();
     format!("{}.{}.{}", packed >> 16, (packed >> 8) & 0xff, packed & 0xff)
 }
 
+/// Casts boolean text under the natural-language lexicon.
 #[pyfunction]
 fn cast_bool(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
     verdict(py, &text, core::cast_bool(text.bytes()?), |py, value| {
@@ -403,6 +449,8 @@ fn cast_bool(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
     })
 }
 
+/// Casts UUID text — every .NET ``Guid`` form plus ``urn:uuid:``-style prefixes — to a
+/// ``uuid.UUID``.
 #[pyfunction]
 fn cast_uuid(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
     verdict(py, &text, core::cast_uuid(text.bytes()?), |py, bytes| {
@@ -457,11 +505,13 @@ fn instant<'py>(py: Python<'py>, ts: core::Timestamp) -> PyResult<Py<PyAny>> {
     .unbind())
 }
 
+/// Casts an RFC 3339 instant to an aware UTC ``datetime`` (microsecond truncation).
 #[pyfunction]
 fn cast_timestamp(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
     verdict(py, &text, core::cast_timestamp(text.bytes()?), instant)
 }
 
+/// Casts an integer Unix-epoch value under the declared ``UnixPrecision``.
 #[pyfunction]
 fn cast_unix(py: Python<'_>, text: Text<'_>, precision: u32) -> PyResult<Py<PyAny>> {
     let precision = match precision {
@@ -474,6 +524,7 @@ fn cast_unix(py: Python<'_>, text: Text<'_>, precision: u32) -> PyResult<Py<PyAn
     verdict(py, &text, core::cast_unix(text.bytes()?, precision), instant)
 }
 
+/// Casts an Excel date serial under the declared ``ExcelEpoch``.
 #[pyfunction]
 fn cast_excel_serial(py: Python<'_>, text: Text<'_>, epoch: u32) -> PyResult<Py<PyAny>> {
     let epoch = match epoch {
@@ -490,6 +541,8 @@ fn date_value(py: Python<'_>, date: core::Date) -> PyResult<Py<PyAny>> {
         .unbind())
 }
 
+/// Casts a calendar date: strict ISO ``yyyy-MM-dd`` with no order, the separated forms
+/// under a declared ``DateOrder``.
 #[pyfunction]
 #[pyo3(signature = (text, order = None))]
 fn cast_date(py: Python<'_>, text: Text<'_>, order: Option<u32>) -> PyResult<Py<PyAny>> {
@@ -505,6 +558,8 @@ fn cast_date(py: Python<'_>, text: Text<'_>, order: Option<u32>) -> PyResult<Py<
     verdict(py, &text, core::cast_date_ordered(text.bytes()?, order), date_value)
 }
 
+/// Casts a zone-less civil date-time under a declared ``DateOrder`` to a naive
+/// ``datetime``.
 #[pyfunction]
 fn cast_datetime(py: Python<'_>, text: Text<'_>, order: u32) -> PyResult<Py<PyAny>> {
     let order = match order {
@@ -535,6 +590,7 @@ fn cast_datetime(py: Python<'_>, text: Text<'_>, order: u32) -> PyResult<Py<PyAn
     })
 }
 
+/// Casts an ISO 24-hour time-of-day to a ``time`` (microsecond truncation).
 #[pyfunction]
 fn cast_time(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
     verdict(py, &text, core::cast_time(text.bytes()?), |py, nanos| {
@@ -554,6 +610,8 @@ fn cast_time(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
     })
 }
 
+/// Casts a duration (ISO 8601, invariant colon form, or protobuf JSON seconds) to a
+/// ``timedelta`` (microsecond truncation toward zero).
 #[pyfunction]
 fn cast_duration(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
     verdict(py, &text, core::cast_duration(text.bytes()?), |py, span| {

@@ -11,6 +11,18 @@ merge. Regenerate locally with `cargo build --release` in `rust/` and copy the r
 you need to update one by hand; CI's own `build-native` job does the same per-leg during
 in-repo testing.
 
+Six RIDs, and deliberately not the `linux-musl-x64`/`linux-musl-arm64` pair the other
+bindings carry: Swift's musl target links fully statically and has no dynamic loader to open
+a shared library with, so a musl build of `libhypercast` here would be shipped to every consumer
+and loadable by none. `NativePlatform.swift` stops a musl build at a compile-time `#error`
+instead. Covering musl would mean linking the core statically (a SwiftPM binary
+static-library target, SE-0482, Swift 6.2 and later) rather than adding files here; that is
+deferred, not ruled out.
+
+At run time the library is opened in place, from wherever SwiftPM staged this directory
+(`HyperCast_HyperCast.resources` beside the build products, `.bundle` on macOS) — see the binding
+README's "Loading and deployment" for what that means for a deployed executable.
+
 ## Verifying provenance
 
 These are compiled binaries committed to git, which is the least inspectable thing in this
@@ -24,7 +36,7 @@ Verify any of them yourself, against GitHub's transparency log, without trusting
 repository or whoever handed you a copy:
 
 ```shell
-gh attestation verify linux-arm64/libhypercast.dylib \
+gh attestation verify linux-arm64/libhypercast.so \
   --repo SkunkWerkx/HyperCast --signer-repo SkunkWerkx/.github
 ```
 

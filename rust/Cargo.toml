@@ -15,7 +15,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 # Deliberately none for the plain build — the core is pure parsing over caller-supplied
 # bytes. The extension backends below are additive and off by default.
-pyo3 = { version = "0.27", features = ["extension-module", "abi3-py310"], optional = true }
+pyo3 = { version = "0.27", features = ["extension-module", "abi3-py311"], optional = true }
 magnus = { version = "0.8", features = ["rb-sys"], optional = true }
 rb-sys = { version = "0.9", optional = true }
 ext-php-rs = { version = "0.15", optional = true }
@@ -36,6 +36,14 @@ ext-php-rs = { version = "0.15", optional = true }
 # own dependencies, so they name it explicitly rather than relying on the default.
 default = ["std"]
 std = []
+# The no_std wasm static library the NuGet package links into a Blazor WebAssembly app. A
+# static library is a final artifact as far as panics go, so with `std` off it needs the
+# `#[panic_handler]` std would have supplied; this feature is that handler and nothing else
+# (see lib.rs). It exists so that library carries no copy of Rust's standard library: two
+# Hyper* static libraries that each bundled std could not be linked into one wasm module
+# (`duplicate symbol: rust_eh_personality`). Off by default, wasm32 only, and never for an
+# rlib consumer, who supplies a handler of their own.
+wasm-staticlib = []
 python = ["dep:pyo3", "std"]
 ruby = ["dep:magnus", "dep:rb-sys", "std"]
 php = ["dep:ext-php-rs", "std"]
