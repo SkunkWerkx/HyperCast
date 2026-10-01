@@ -95,7 +95,7 @@ jobs:
   # committed libraries that all report 0.2.0, with every run green — the libraries were
   # built a minute before the version changed. The checks below are that failure, named.
   find-ci-run:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       run_id: ${{ steps.find.outputs.run_id }}
     steps:
@@ -214,7 +214,7 @@ jobs:
   # the confirmed 401s behind that).
   nuget-org-publish:
     needs: nuget-org-pack
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       # id-token covers both OIDC exchanges this job makes: nuget.org Trusted Publishing for
       # the push, and attest-build-provenance's signing identity for the post-publish
@@ -360,7 +360,7 @@ jobs:
   # picks up the resulting credentials.
   rubygems-publish:
     needs: find-ci-run
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       # Explicit, so checkout keeps working if this repo ever stops being public — a
       # permissions block sets every unlisted scope to none.
@@ -574,11 +574,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-26.04
             rid: linux-x64
             target: x86_64-unknown-linux-gnu
             manylinux: "2_28"
-          - os: ubuntu-24.04-arm
+          - os: ubuntu-26.04-arm
             rid: linux-arm64
             target: aarch64-unknown-linux-gnu
             manylinux: "2_28"
@@ -587,11 +587,11 @@ jobs:
           # install at all. maturin turns crt-static off for an extension module itself and
           # bundles the extension's libgcc_s into the wheel, which the smoke test below
           # holds it to by importing the wheel on an image that has no libgcc.
-          - os: ubuntu-latest
+          - os: ubuntu-26.04
             rid: linux-musl-x64
             target: x86_64-unknown-linux-musl
             manylinux: "musllinux_1_2"
-          - os: ubuntu-24.04-arm
+          - os: ubuntu-26.04-arm
             rid: linux-musl-arm64
             target: aarch64-unknown-linux-musl
             manylinux: "musllinux_1_2"
@@ -705,7 +705,7 @@ jobs:
 
   pypi-publish:
     needs: pypi-build-wheels
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       id-token: write
     steps:

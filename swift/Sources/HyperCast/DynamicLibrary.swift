@@ -106,15 +106,17 @@ extension DynamicLibrary {
 
         var searched: [String] = []
         for directory in directories {
-            let bundleURL = directory.appendingPathComponent(NativePlatform.resourceBundleName)
-            if searched.contains(bundleURL.path) { continue }
-            searched.append(bundleURL.path)
-            if let url = Bundle(url: bundleURL)?.url(
-                forResource: fileName.deletingPathExtension().lastPathComponent,
-                withExtension: fileName.pathExtension,
-                subdirectory: subdirectory
-            ) {
-                return (fileSystemPath(url), .resourceBundle)
+            for bundleName in NativePlatform.resourceBundleNames {
+                let bundleURL = directory.appendingPathComponent(bundleName)
+                if searched.contains(bundleURL.path) { continue }
+                searched.append(bundleURL.path)
+                if let url = Bundle(url: bundleURL)?.url(
+                    forResource: fileName.deletingPathExtension().lastPathComponent,
+                    withExtension: fileName.pathExtension,
+                    subdirectory: subdirectory
+                ) {
+                    return (fileSystemPath(url), .resourceBundle)
+                }
             }
         }
 
@@ -129,9 +131,10 @@ extension DynamicLibrary {
             return (fileSystemPath(inSourceTree), .sourceTree)
         }
 
+        let bundleNames = NativePlatform.resourceBundleNames.joined(separator: " or ")
         throw NativeLibraryError.openFailed(
-            path: "\(NativePlatform.resourceBundleName)/\(subdirectory)/\(NativePlatform.libraryFileName)",
-            reason: "not found — \(NativePlatform.resourceBundleName) has to ship beside the executable, with "
+            path: "\(NativePlatform.resourceBundleNames[0])/\(subdirectory)/\(NativePlatform.libraryFileName)",
+            reason: "not found — \(bundleNames) has to ship beside the executable, with "
                 + "this platform's library inside it (looked in \(searched.joined(separator: ", ")))"
         )
     }

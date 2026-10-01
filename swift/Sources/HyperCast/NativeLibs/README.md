@@ -20,8 +20,9 @@ static-library target, SE-0482, Swift 6.2 and later) rather than adding files he
 deferred, not ruled out.
 
 At run time the library is opened in place, from wherever SwiftPM staged this directory
-(`HyperCast_HyperCast.resources` beside the build products, `.bundle` on macOS) — see the binding
-README's "Loading and deployment" for what that means for a deployed executable.
+(`HyperCast_HyperCast.bundle` beside the build products, or `HyperCast_HyperCast.resources` on Linux
+and Windows before Swift 6.4) — see the binding README's "Loading and deployment" for what
+that means for a deployed executable.
 
 ## Verifying provenance
 

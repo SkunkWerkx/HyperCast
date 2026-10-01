@@ -92,6 +92,12 @@ floors are now tested. No door changed its verdict on any input.
   non-integer flag set is `TypeError`, one too wide for 32 bits is `OverflowError`. *(PyPI)*
 - **Swift and Go open the native library `RTLD_LOCAL`**, and Swift opens it in place rather
   than copying it to a fresh temp file per process. *(`.package(url:)`, `go get`)*
+- **CI builds on Ubuntu 26.04 and tests Swift on 6.4.** The Linux legs name `ubuntu-26.04`
+  and `ubuntu-26.04-arm` rather than `ubuntu-latest`. The glibc floor is unchanged at 2.34,
+  and CI now fails a Linux leg whose library references anything newer. The Swift loader
+  finds its resource directory under both names SwiftPM uses: `.bundle` (Swift 6.4's
+  default build system) and `.resources` (6.3 and earlier), each with its own test run.
+  *(`.package(url:)`)*
 
 ### Fixed
 
