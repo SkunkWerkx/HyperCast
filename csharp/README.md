@@ -144,6 +144,23 @@ the staticlib to the linker (restore never populates `@(NativeLibrary)` from a p
 scans P/Invoke declarations to find the rest. v0.0.1 shipped without that file, and a real
 Blazor consumer's publish died at `wasm-ld` with `undefined symbol: cast_i32`.
 
+`HyperCast.WasmSmokeTest` proves the whole chain in a real browser: a Blazor WebAssembly app that
+imports that targets file, calls a door from every family through the public `Cast` surface, and
+renders `PASS` or `FAIL` into the page. It is a local check, not wired into the solution or CI,
+because it needs the `wasm-tools` workload and a browser. To run it:
+
+```sh
+cd rust && cargo rustc --release --target wasm32-unknown-emscripten --crate-type staticlib
+mkdir -p ../csharp/HyperCast/runtimes/browser-wasm/nativeassets/net10.0
+cp target/wasm32-unknown-emscripten/release/libhypercast.a ../csharp/HyperCast/runtimes/browser-wasm/nativeassets/net10.0/
+cd ../csharp/HyperCast.WasmSmokeTest && dotnet publish -c Release -o /tmp/hypercast-wasm
+cd /tmp/hypercast-wasm/wwwroot && python3 -m http.server 5099   # then open http://localhost:5099/
+```
+
+`check.sh` in that directory does all of it, including the headless-Chromium assertion.
+
+WebAssembly is .NET 11 and later only. `HyperCast.targets` also appends Binaryen's translate-to-exnref pass to the SDK's post-link `wasm-opt`: .NET 11 links with the new exception-handling encoding while the precompiled Rust standard library in the staticlib uses the legacy one, and the browser rejects a module that mixes them (`module uses a mix of legacy and new exception handling instructions`).
+
 ## Native binary provenance
 
 The `.nupkg` carries compiled native code, which is a real thing to ask questions about
@@ -250,3 +267,7 @@ reference and nothing else — no build step, no manual native staging.
 
 See [the repo root README](https://github.com/SkunkWerkx/HyperCast/blob/master/README.md)
 for the full door table, the receipts, and the state of every other language binding.
+
+## License
+
+[MIT](https://github.com/SkunkWerkx/HyperCast/blob/master/LICENSE)

@@ -287,3 +287,7 @@ build for all six platforms and picks the right one at runtime.
 
 See [the repo root README](../README.md) for the full door table, the receipts, and the
 state of every other language binding.
+
+## License
+
+[MIT](https://github.com/SkunkWerkx/HyperCast/blob/master/LICENSE)

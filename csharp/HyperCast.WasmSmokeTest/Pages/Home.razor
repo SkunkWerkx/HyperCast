@@ -1,0 +1,79 @@
+@page "/"
+@using HyperCast
+
+<PageTitle>@Title</PageTitle>
+
+<h1>HyperCast WASM smoke test</h1>
+
+<pre id="results">@Results</pre>
+
+@code {
+    private string Title = "RUNNING";
+    private string Results = "running...";
+
+    protected override void OnInitialized()
+    {
+        var lines = new List<string>();
+        var failed = false;
+
+        void Fail(string msg)
+        {
+            failed = true;
+            lines.Add($"FAIL: {msg}");
+        }
+
+        // One door from every family, through the same public Cast surface a Blazor consumer
+        // calls. Each lands in the statically linked wasm module via LibraryImport("*"), so a
+        // door missing from build/net11.0/HyperCast.targets' EmccExportedFunction list fails
+        // here at runtime, not at the link.
+        void Check<T>(string name, Verdict<T> verdict, T expected) where T : struct
+        {
+            if (verdict.TryGetValue(out Success<T> success) && success.Value.Equals(expected))
+                lines.Add($"ok   {name} = {success.Value}");
+            else
+                Fail($"{name}: {verdict} (expected {expected})");
+        }
+
+        try
+        {
+            Check("bool", Cast.Boolean("enabled"), true);
+            Check("i32", Cast.Int32("(1,234)", NumFormat.Invariant), -1234);
+            Check("f64", Cast.Double("25.5%", NumFormat.Invariant), 0.255);
+            Check("decimal", Cast.Decimal("(1,234.50)", NumFormat.Invariant), -1234.50m);
+            Check("currency", Cast.Int32("($1,234)", new NumFormat('.', ',', NumStyles.All, "$")), -1234);
+            Check("uuid", Cast.Uuid("urn:uuid:01020304-0506-0708-090a-0b0c0d0e0f10"),
+                new Guid("01020304-0506-0708-090a-0b0c0d0e0f10"));
+            Check("timestamp", Cast.Timestamp("2026-01-02T15:04:05+05:00"),
+                new DateTimeOffset(2026, 1, 2, 10, 4, 5, TimeSpan.Zero));
+            Check("date", Cast.Date("2026-01-02"), new DateOnly(2026, 1, 2));
+            Check("time", Cast.Time("15:04:05"), new TimeOnly(15, 4, 5));
+            Check("duration", Cast.Duration("P1DT6H"), new TimeSpan(1, 6, 0, 0));
+
+            // A fault, not an exception: the verdict names the reason and the offending span.
+            var disposition = Cast.Int32("not-a-number", NumFormat.Invariant) switch
+            {
+                Success<int> s => $"unexpected ok {s.Value}",
+                Fault f => $"fault {f.Reason} @ {f.Offset}+{f.Length}",
+            };
+            if (!disposition.StartsWith("fault Malformed", StringComparison.Ordinal))
+                Fail($"union switch: {disposition}");
+            else
+                lines.Add($"ok   union switch: {disposition}");
+
+            // The probe must name the core that actually linked in.
+            if (!Cast.IsAvailable || Cast.NativeVersion is null)
+                Fail($"native probe: available={Cast.IsAvailable} version={Cast.NativeVersion}");
+            else
+                lines.Add($"ok   native: version={Cast.NativeVersion}");
+        }
+        catch (Exception ex)
+        {
+            Fail($"exception: {ex}");
+        }
+
+        lines.Add("");
+        lines.Add(failed ? "SOME WASM CHECKS FAILED" : "ALL WASM CHECKS PASSED");
+        Results = string.Join("\n", lines);
+        Title = failed ? "FAIL" : "PASS";
+    }
+}

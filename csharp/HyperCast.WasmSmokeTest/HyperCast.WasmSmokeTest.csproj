@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk.BlazorWebAssembly">
+
+  <!-- TargetFramework, LangVersion and Nullable/ImplicitUsings come from
+       csharp/Directory.Build.props, shared with every project here. -->
+  <PropertyGroup>
+    <OverrideHtmlAssetPlaceholders>true</OverrideHtmlAssetPlaceholders>
+    <StaticWebAssetSpaFallbackEnabled>true</StaticWebAssetSpaFallbackEnabled>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" Version="11.0.0-rc.1.26425.128" />
+    <PackageReference Include="Microsoft.AspNetCore.Components.Gateway" Version="11.0.0-rc.1.26425.128" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The managed binding, through its real public surface: unlike HyperUuid's spike this
+         app declares no P/Invokes of its own, because HyperCast declares every entry point
+         twice ("hypercast" for dlopen platforms, "*" for the statically linked wasm module)
+         and picks at the call site with OperatingSystem.IsBrowser(). -->
+    <ProjectReference Include="../HyperCast/HyperCast.csproj" />
+  </ItemGroup>
+
+  <!-- What a NuGet consumer gets for free and a ProjectReference does not: the package's
+       build/{tfm}/HyperCast.targets is only auto-imported from a restored package. Importing
+       it by hand means this app links through the *shipped* NativeFileReference and
+       EmccExportedFunction wiring rather than a copy of it, so a door missing from that list
+       fails here at runtime exactly as it would for a real Blazor consumer (v0.0.1's
+       `undefined symbol: cast_i32`), and through the translate-to-exnref wasm-opt pass the
+       same file adds for .NET 11, without which the browser rejects the module.
+
+       Needs the wasm32-unknown-emscripten staticlib staged where the targets file looks for
+       it — csharp/HyperCast/runtimes/browser-wasm/nativeassets/net10.0/libhypercast.a, which
+       is gitignored like every other runtimes/ asset:
+
+         `cargo rustc` with release, the wasm32-unknown-emscripten target and a staticlib
+         crate type (run inside rust/), then copy
+         target/wasm32-unknown-emscripten/release/libhypercast.a there. -->
+  <Import Project="../HyperCast/build/net11.0/HyperCast.targets" />
+
+</Project>

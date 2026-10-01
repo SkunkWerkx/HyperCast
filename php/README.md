@@ -151,6 +151,38 @@ benchmark-only spike HyperUuid carries, exposing every door at the raw layer thi
 own FFI calls sit at. CI builds and load-checks it on every darwin/linux leg so it cannot
 bit-rot; nothing in this Composer package loads it, and no phpunit runs against it.
 
+If you want to try it anyway, here's how to build and load it yourself:
+
+1. **Prerequisites:** a Rust toolchain ([rustup](https://rustup.rs)) and PHP's development
+   headers (the `php-dev` / `php8.5-dev` / `php-devel` package for your distro — `ext-php-rs`'s
+   build script needs these to link against `libphp`).
+2. **Build it** with the `php` feature, not the plain default build — that produces the
+   `ext-ffi` binding's cdylib, a different entry point from the same crate; don't load both
+   at once. `cargo php` is an alias in `rust/.cargo/config.toml` that builds into its own
+   `target/php/` directory, so it can't overwrite the plain cdylib the other bindings load:
+   ```sh
+   git clone https://github.com/SkunkWerkx/HyperCast
+   cd HyperCast/rust
+   cargo php
+   ```
+   Produces `target/php/release/libhypercast.so` (`.dylib` on macOS; Windows isn't supported —
+   `ext-php-rs`'s Windows path needs a nightly-only Rust feature, so every CI leg here builds
+   Linux/macOS only).
+3. **Load it** — either add `extension=/absolute/path/to/target/php/release/libhypercast.so` to
+   `php.ini`, or pass it ad hoc: `php -d extension=/absolute/path/to/target/php/release/libhypercast.so your_script.php`.
+   Verify with `php -m | grep hypercast`.
+4. **Call it.** This extension is a benchmark spike, not a polished second backend, so it
+   exposes flat `hypercast_native_*` functions taking the raw text and returning a packed
+   verdict array, not this package's `Cast` API: `[0, ...value]` on success, or
+   `[reason, offset, length]` on a fault:
+   ```php
+   hypercast_native_cast_bool("yes");                  // [0, true]
+   hypercast_native_cast_bool("maybe");                // [2, 0, 5] — reason, offset, length
+   hypercast_native_cast_u64("42", 46, 44, 0, "");     // [0, 42]
+   ```
+   See [`rust/src/php_ext.rs`](../rust/src/php_ext.rs) for the full function list — one
+   `hypercast_native_cast_*` per door, plus `hypercast_native_version`.
+
 **The honest trade-off:** a native library shipped inside the package and an FFI call per
 door — for plain invariant integers, `(int)` casts and `ctype_digit` are the reasonable
 choice. (Benchmark forensics worth knowing: PHP read 20x slow until a loaded Xdebug was
@@ -203,3 +235,7 @@ support.
 
 See [the repo root README](../README.md) for the full door table, the receipts, and the
 state of every other language binding.
+
+## License
+
+[MIT](https://github.com/SkunkWerkx/HyperCast/blob/master/LICENSE)

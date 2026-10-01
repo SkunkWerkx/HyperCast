@@ -92,8 +92,8 @@ path-depending back here:
 ```sh
 cargo build --release                    # the plain cdylib + rlib every FFI binding uses
 cargo build --release --features python  # the CPython extension module (PyO3, abi3-py310)
-cargo build --release --features ruby    # the Ruby extension (Magnus)
-cargo build --release --features php     # the Zend extension (ext-php-rs) — benchmark spike only
+cargo ruby                               # the Ruby extension (Magnus), in target/ruby/release/
+cargo php                                # the Zend extension (ext-php-rs) — benchmark spike only, in target/php/release/
 ```
 
 The `php` one is not a shipped backend. PHP's ext-ffi crossing measured ~105 ns — already
@@ -114,7 +114,10 @@ extension module needs (the host runtime's symbols resolve at load time, not lin
 loop loads. The extension build still exports every `cast_*` symbol, but it also carries
 ~95 undefined `Py*` symbols that only resolve inside a CPython process, so the next
 `./gradlew test` or `dotnet test` fails at native load with something unhelpful about a
-missing symbol. Nothing is broken; a plain `cargo build --release` puts it back. CI hits
+missing symbol. Nothing is broken; a plain `cargo build --release` puts it back. Locally,
+the `cargo ruby` and `cargo php` aliases in `.cargo/config.toml` avoid it by building into
+`target/ruby/` and `target/php/`, and `python/.cargo/config.toml` does the same for maturin
+(`python/target/`). CI hits
 exactly this ordering — the forge's single per-platform job builds the PyO3 extension
 before it tests C# and Java — which is why both bindings' dev-loop staging yields whenever
 CI has already placed the library explicitly (`runtimes/<rid>/native/`,
@@ -224,3 +227,7 @@ above; the default build additionally produces the `cdylib` every other binding 
 
 See [the repo root README](../README.md) for the full door table, the receipts, and the
 state of every other language binding.
+
+## License
+
+[MIT](https://github.com/SkunkWerkx/HyperCast/blob/master/LICENSE)

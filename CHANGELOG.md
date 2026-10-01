@@ -9,6 +9,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **A browser proof of the C# WebAssembly package.** `csharp/HyperCast.WasmSmokeTest` is a
+  Blazor WebAssembly app that imports the shipped `build/net11.0/HyperCast.targets` and runs
+  a door from every family, a fault through the union `switch` and the native-version probe.
+  `./check.sh` publishes it, loads it in headless Chromium and requires `PASS`. Not yet run
+  from a packed `.nupkg` in a separate consumer project or in CI. *(dev only)*
+- **`cargo ruby` and `cargo php`**, aliases in `rust/.cargo/config.toml`, and
+  `python/.cargo/config.toml` for maturin: each extension builds into its own target
+  directory, so none of them overwrites the plain cdylib the other bindings load. *(dev only)*
+
+### Fixed
+
+- **C# — Blazor WebAssembly on .NET 11 failed in the browser.** A successful `wasm-ld` link
+  had hidden it: .NET 11 links browser-wasm with the new exception-handling encoding while
+  the precompiled Rust standard library inside the static library uses the legacy one, and
+  the browser refused the module (`module uses a mix of legacy and new exception handling
+  instructions`). `HyperCast.targets` now appends Binaryen's translate-to-exnref pass to the
+  SDK's post-link `wasm-opt`.
+
 ## [0.3.0] — 2026-09-04
 
 *One core, one more way in*, ported from HyperUuid 0.3.0: Java, Ruby, Python and Go can now

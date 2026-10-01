@@ -298,3 +298,7 @@ forge's `hyper-build-native.yml`, shared with every other Hyper* repo.
 
 See [the repo root README](../README.md) for the full door table, the receipts, and the
 state of every other language binding.
+
+## License
+
+[MIT](https://github.com/SkunkWerkx/HyperCast/blob/master/LICENSE)
