@@ -120,20 +120,21 @@ Culture never lives in the core: numeric doors take a caller-declared format (se
 | [C#](csharp/) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | [NuGet](https://www.nuget.org/packages/HyperCast) |
 | [Java](java/) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | [Maven Central](https://central.sonatype.com/artifact/io.github.skunkwerkx/hypercast) |
 | [Go](go/) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `go get` (git tag) |
-| [Swift](swift/) | ✅ | ✅ | — | — | ✅ | ✅ | ✅ | ✅ | `.package(url:)` (git tag) |
+| [Swift](swift/) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `.package(url:)` (git tag) |
 | [Ruby](ruby/) | ✅ | ✅ | Fiddle | Fiddle | ✅ | ✅ | ✅ | ✅ | [RubyGems](https://rubygems.org/gems/hypercast) |
 | [PHP](php/) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | [Packagist](https://packagist.org/packages/skunkwerkx/hypercast) |
 | [Python](python/) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | [PyPI](https://pypi.org/project/hypercast/) |
 
-The three cells that are not a plain ✅, and why each is deliberate:
+The cells that are not a plain ✅, and why each is deliberate:
 
 - **PHP on win-arm64.** PHP has never shipped a native Windows ARM64 build, so it runs as an x64 process there regardless of host CPU and loads the win-x64 library — already exercised for real by the win-x64 leg.
-- **Swift on musl.** Swift's musl target links fully statically and has no dynamic loader, so there is no library it could open; the binding refuses to compile for it with a message that says so. Deferred, not impossible: linking the core in statically, as a SwiftPM binary static-library target (SE-0482, Swift 6.2 and later), would cover it and is not built yet.
 - **Ruby on musl.** There is no musl Magnus platform gem, so Alpine runs the Fiddle backend over the musl library, which is the suite CI runs there. Through 0.3.0 that cell was simply broken: RubyGems installs the `*-linux` gem on Alpine, and it carried only a glibc library.
+
+Swift reaches Linux differently from the rest: there the core is linked into the consumer's executable as a static library, on glibc and musl alike, rather than loaded. Its musl cells are Swift's static Linux SDK, which CI proves with a smoke executable built and run in Swift's own containers (that SDK ships no XCTest). The same mechanism compiles the binding to WebAssembly; see [WebAssembly](#webassembly).
 
 The musl libraries are built so that they depend on musl's libc and nothing else — the unwinder is linked statically — which is what lets them load on a bare `alpine`, `python:alpine` or `golang:alpine` image with no `libgcc` installed. The glibc libraries need glibc 2.34 or newer.
 
-**Runtime floors** follow upstream support: a version that has reached end of life is not a floor. Today that is .NET 11, JDK 25, Go 1.26, Python 3.11, Ruby 3.3 and PHP 8.2, and the musl job runs the PHP, Ruby and Python suites on those oldest versions as well as the newest.
+**Runtime floors** follow upstream support: a version that has reached end of life is not a floor. Today that is .NET 11, JDK 25, Go 1.26, Python 3.11, Ruby 3.3 and PHP 8.2, and the musl job runs the PHP, Ruby and Python suites on those oldest versions as well as the newest. Swift's floor is 6.2 for a different reason: it is the first release whose package manager can link a static library, which is how the binding reaches musl and WebAssembly at all. CI runs it on 6.2 as well as 6.4.
 
 ## Provenance
 
@@ -185,13 +186,14 @@ Where each of the eight stands, today:
 | Ruby | **Yes.** [wasmtime gem](https://github.com/bytecodealliance/wasmtime-rb); `HYPERCAST_WASM=1`, or automatic when no native library exists for the platform. | Not tried. `ruby.wasm` has no runtime library search, so the Fiddle backend cannot work there; it does link C extensions statically at build time, and building a `ruby.wasm` with the Magnus extension linked in has not been attempted here. |
 | Python | **Yes.** [wasmtime-py](https://github.com/bytecodealliance/wasmtime-py) (`pip install hypercast[wasm]`); `HYPERCAST_WASM=1`, or automatic when the PyO3 extension fails to import. | Proven once, then removed. The core built as an Emscripten side module loaded through `ctypes.CDLL` in a real [Pyodide](https://pyodide.org/) session; that smoke test existed to justify the `ctypes` backend and went with it when PyO3 `abi3` wheels made the fallback unnecessary. |
 | Go | **Yes.** [wasmtime-go](https://github.com/bytecodealliance/wasmtime-go); `-tags hypercast_wasm`, opt-in only, never selected automatically. cgo throughout, so no win-arm64. | Blocked. `cgo` has no wasm target, `purego`'s supported-platform list has no wasm entry (its whole model is runtime `dlopen`), and `go:wasmimport`/`go:wasmexport` let a Go module talk to its host, not link a second module. |
-| Swift | Not built. No wasm engine ships as a Swift package with a stable API, so there is nothing to embed. | Blocked. swift.org ships official WASM SDKs since Swift 6.2, but its own docs say dynamic linking "is not formally specified for `wasip1` triples and tooling for it is not available yet," and no static path to a Rust `.a` is documented either. |
+| Swift | Not built. No wasm engine ships as a Swift package with a stable API, so there is nothing to embed. | **Yes, on Swift 6.2+.** `swift build --swift-sdk` with swift.org's WebAssembly SDK links the core in as a static library (a SwiftPM binary target with a `wasm32-unknown-wasip1` archive), so there is nothing to load. CI runs the binding's suite under WasmKit on Swift 6.4 and a smoke executable on 6.2; see [`swift/README.md`](swift/README.md#webassembly). |
 | PHP | Not built. There is no maintained wasm engine PHP can embed. | Blocked. The maintained wasm PHP (WordPress Playground's `@php-wasm`) loads extensions at build time or startup only, and there is no indication the `FFI` extension this binding needs is available there at all. |
 
 The two directions are blocked, where they are blocked, for different reasons. Compiling a
 binding to wasm needs the ecosystem's toolchain to link a Rust static library into its own
 wasm build. .NET has a supported mechanism for exactly that (`NativeFileReference`, which this
-package's `.targets` injects for you); Swift, PHP and Go do not. Java's gap is different in
+package's `.targets` injects for you), and so does Swift from 6.2 (a SwiftPM binary
+static-library target); PHP and Go do not. Java's gap is different in
 kind: the loading mechanism is not the problem, the compilers that exist have no FFM. The
 in-process backends sidestep all of that rather than climb it, because the engine is the
 loader, and they are what a platform with no native build falls back to.
@@ -248,7 +250,7 @@ rust/       the core: one cdylib, 21 cast_* exports plus hypercast_version, zero
 csharp/     the .NET 11 binding: Verdict<T> union, LibraryImport, corpus replay, AOT smoke test
 java/       the JDK 25+ binding: sealed-interface union, FFM + GraalWasm backends, corpus replay, Native Image smoke test
 python/     the 3.11+ binding: match/case verdicts, PyO3 native extension (abi3 wheels) + wasmtime backend
-swift/      the SwiftPM binding: enum verdicts (mandatory-exhaustive switch) over dlopen
+swift/      the SwiftPM binding: enum verdicts (mandatory-exhaustive switch); core linked in on Linux/wasm
 go/         the Go binding: (value, *Fault) verdicts, cgo + purego + wasmtime-go backends
 ruby/       the 3.3+ binding: pattern-matched Data verdicts, Fiddle + Magnus + wasmtime backends
 php/        the 8.2+ binding: Success|Fault union types over ext-ffi

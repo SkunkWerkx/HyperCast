@@ -1,4 +1,4 @@
-// swift-tools-version:5.9
+// swift-tools-version:6.2
 import PackageDescription
 
 let package = Package(
@@ -13,13 +13,26 @@ let package = Package(
         .library(name: "HyperCast", targets: ["HyperCast"])
     ],
     targets: [
-        // Bundles every platform's native build under NativeLibs/{rid}/{lib} (the same
-        // reasoning as HyperUuid's Swift binding: SwiftPM's binaryTarget/XCFramework
-        // mechanism is Apple-only and can't cover the Windows/Linux RIDs).
-        // NativePlatform.swift picks the resource path at compile time;
-        // DynamicLibrary.swift dlopen/dlsym's it at runtime.
+        // The native core as static libraries, one per triple (SE-0482, which is what sets
+        // the tools version above): glibc and musl Linux on x86_64 and arm64, and WASI.
+        // Where SwiftPM finds a variant for the triple being built, the core is linked into
+        // the consumer's executable and nothing has to ship beside it — the only way to
+        // reach the static Linux SDK and WebAssembly at all, neither of which can open a
+        // shared library.
+        .binaryTarget(
+            name: "HyperCastCore",
+            path: "HyperCastCore.artifactbundle"
+        ),
+        // macOS and Windows load a shared library instead, bundled under
+        // NativeLibs/{rid}/{lib} as a resource: the bundle above has no variant for them,
+        // and the platform condition keeps SwiftPM from warning about that on every build.
+        // NativePlatform.swift picks the resource at compile time; DynamicLibrary.swift
+        // dlopen/dlsym's (or LoadLibraryW/GetProcAddress's, on Windows) it at run time.
         .target(
             name: "HyperCast",
+            dependencies: [
+                .target(name: "HyperCastCore", condition: .when(platforms: [.linux, .wasi]))
+            ],
             resources: [.copy("NativeLibs")]
         ),
         .testTarget(

@@ -1,0 +1,4 @@
+module HyperCastCore {
+    header "hypercast.h"
+    export *
+}

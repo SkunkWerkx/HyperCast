@@ -9,14 +9,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-Three themes, shared with HyperUuid's release of the same day. *The libraries report the
+Four themes, shared with HyperUuid's release of the same day. *The libraries report the
 right version*: 0.3.0's native libraries say 0.2.0, and the release order that caused it is
 fixed. *musl*: `linux-musl-x64` and `linux-musl-arm64` are built, attested and shipped.
 *Only supported runtimes*: every floor that had reached end of life is raised, and the
-floors are now tested. No door changed its verdict on any input.
+floors are now tested. *Swift links the core in* on Linux, which is what adds musl and
+WebAssembly to that binding. No door changed its verdict on any input.
 
 ### Added
 
+- **Swift — musl Linux and WebAssembly.** The binding builds with Swift's static Linux SDK
+  (`--swift-sdk x86_64-swift-linux-musl`, and arm64) and with its WebAssembly SDK
+  (`wasm32-unknown-wasip1`). Neither target can open a shared library, so the core is
+  linked in: `swift/HyperCastCore.artifactbundle` carries one no_std static library per
+  triple, about 140 KB each, built by `cargo staticlib` and attested like every other native
+  binary. CI runs the suite under WasmKit and a smoke executable (`swift/StaticSmokeTest`)
+  through the musl SDK, on Swift 6.4 and on the 6.2 floor. Through 0.3.0 a musl build
+  stopped at a compile error. *(`.package(url:)`)*
 - **musl (Alpine): `linux-musl-x64` and `linux-musl-arm64`.** Built inside an Alpine
   container with the unwinder linked statically, so the library depends on musl's libc and
   nothing else and loads on a bare `alpine`, `python:alpine` or `golang:alpine` image. In
@@ -24,8 +33,8 @@ floors are now tested. No door changed its verdict on any input.
   `musllinux_1_2` wheels. Each binding resolves it for a process that has a musl loader
   mapped; Ruby runs on its Fiddle backend there. Through 0.3.0 Alpine got the glibc library,
   which does not load under musl — the gap that made the first consumer carry a managed
-  fallback (`docs/roadmap.md`). Swift ships no musl build: its musl target links fully
-  statically and has no dynamic loader. *(every package but Swift)*
+  fallback (`docs/roadmap.md`). Swift has no dynamic loader on musl and reaches it
+  by linking the core in instead (above). *(every package)*
 - **Go — `LoadError()` and `ErrNativeUnavailable`.** `Available()` said that the core had
   not loaded; `LoadError()` says why, without a panic, and the doors now panic with that
   same error so a `recover` can `errors.Is` it. `Example*` tests for pkg.go.dev, and the
@@ -92,12 +101,18 @@ floors are now tested. No door changed its verdict on any input.
   non-integer flag set is `TypeError`, one too wide for 32 bits is `OverflowError`. *(PyPI)*
 - **Swift and Go open the native library `RTLD_LOCAL`**, and Swift opens it in place rather
   than copying it to a fresh temp file per process. *(`.package(url:)`, `go get`)*
+- **Swift — the floor is Swift 6.2, and Linux links the core in.** On Linux the package
+  no longer loads a shared library: the core is a static library SwiftPM links into the
+  consumer's executable (a binary target, SE-0482, which is what sets the floor). Nothing
+  has to be deployed beside the executable, `Cast.isAvailable` is always `true` there, and
+  `NativeLibraryError` is never thrown. macOS and Windows still load a bundled shared
+  library, and find its resource directory under both names SwiftPM uses: `.bundle` (Swift
+  6.4's default build system) and `.resources` (6.2 and 6.3 on Windows). A toolchain older
+  than 6.2 keeps resolving 0.3.0. *(`.package(url:)`)*
 - **CI builds on Ubuntu 26.04 and tests Swift on 6.4.** The Linux legs name `ubuntu-26.04`
-  and `ubuntu-26.04-arm` rather than `ubuntu-latest`. The glibc floor is unchanged at 2.34,
-  and CI now fails a Linux leg whose library references anything newer. The Swift loader
-  finds its resource directory under both names SwiftPM uses: `.bundle` (Swift 6.4's
-  default build system) and `.resources` (6.3 and earlier), each with its own test run.
-  *(`.package(url:)`)*
+  and `ubuntu-26.04-arm` rather than `ubuntu-latest`. The glibc floor of the shared
+  libraries is unchanged at 2.34, and CI now fails a Linux leg whose library references
+  anything newer.
 
 ### Fixed
 
@@ -105,8 +120,8 @@ floors are now tested. No door changed its verdict on any input.
   package's wasm static library bundled its own copy of Rust's standard library, and the
   two collided at link time: `wasm-ld: duplicate symbol: rust_eh_personality`. The library
   is now built without std (`cargo wasm-staticlib`: `--no-default-features` plus a
-  `wasm-staticlib` feature that supplies the panic handler std would have, with panics
-  aborting on that target), so there is nothing to collide. Proven by linking both packed
+  `staticlib` feature that supplies the panic handler std would have, with panics
+  aborting), so there is nothing to collide. Proven by linking both packed
   packages into one Blazor app and running it in headless Chromium; CI fails the build if
   the library ever defines `rust_eh_personality` again. *(NuGet, `hypercast` crate)*
 - **C# — a Blazor WebAssembly app that reached the package through a class library got no

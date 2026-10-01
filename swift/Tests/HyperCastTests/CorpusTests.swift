@@ -7,7 +7,13 @@ import XCTest
 /// doors. Fault spans are byte offsets into the UTF-8 input, which is exactly what these
 /// doors receive, so span assertions hold verbatim.
 final class CorpusTests: XCTestCase {
-    private static let corpusDirectory: URL = {
+    /// `nil` only under WASI, where the test module runs sandboxed with no view of the
+    /// source tree; every corpus test is skipped there, and the doors are exercised by
+    /// `CastTests` and by swift/StaticSmokeTest instead.
+    private static let corpusDirectory: URL? = {
+        #if os(WASI)
+        return nil
+        #else
         var dir = URL(fileURLWithPath: #filePath)
         while dir.path != "/" {
             let candidate = dir.appendingPathComponent("corpus")
@@ -17,10 +23,14 @@ final class CorpusTests: XCTestCase {
             dir.deleteLastPathComponent()
         }
         fatalError("corpus directory not found above \(#filePath)")
+        #endif
     }()
 
     private func corpus(_ name: String) throws -> [[String: Any]] {
-        let data = try Data(contentsOf: Self.corpusDirectory.appendingPathComponent(name))
+        guard let directory = Self.corpusDirectory else {
+            throw XCTSkip("the conformance corpus is not reachable from a WASI sandbox")
+        }
+        let data = try Data(contentsOf: directory.appendingPathComponent(name))
         return try JSONSerialization.jsonObject(with: data) as! [[String: Any]]
     }
 

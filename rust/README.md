@@ -130,7 +130,7 @@ The full test suite — unit tests, the allocation proof, and every corpus repla
 passes under `wasmtime` on `wasm32-wasip1`: no clock, no randomness, no dependencies to
 stub. CI also builds the `wasm32-unknown-emscripten` staticlib the C# binding's
 browser-wasm packaging consumes, on every PR — `cargo wasm-staticlib`, which leaves Rust's
-standard library out of it (the `wasm-staticlib` feature supplies the panic handler in its
+standard library out of it (the `staticlib` feature supplies the panic handler in its
 place), so it can be linked into one Blazor app beside HyperUuid's.
 
 One wasm build of this crate is not left to the consumer, because four bindings in this repo

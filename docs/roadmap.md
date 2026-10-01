@@ -198,7 +198,8 @@ the record of what shipped; this is the record of why.
    managed fallback grammar duplicating this core — RFC 3339, the three-shape duration
    grammar, separator detection. `linux-musl-x64` and `linux-musl-arm64` are now built in
    Alpine containers, attested, and shipped in every binding that has a dynamic-loading
-   story on musl (all but Swift), so Alpine no longer takes the fallback. `ios-*` and
+   story on musl; Swift, which has none, links the core in statically instead. Alpine no
+   longer takes the fallback. `ios-*` and
    `android-*` remain HyperForge work, shared with HyperUuid.
 5. **A corpus content package — declined.** The consumer vendored the corpus files plus a
    snapshot SHA by hand and asked for a package. The ruling is that the corpus is this

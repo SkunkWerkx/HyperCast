@@ -9,12 +9,12 @@
 closed reason plus the exact byte span that offended.**
 
 Allocation-lean scalar casts — booleans, the full integer family, reals, exact decimals,
-UUIDs, temporals — calling directly into the native `libhypercast` Rust core via
-`dlopen`/`dlsym` (`LoadLibraryW`/`GetProcAddress` on Windows) and `@convention(c)`
-function-pointer casts, no shim layer. The package bundles a native build for every
-supported platform as SwiftPM resources under `NativeLibs/{rid}/` — `binaryTarget`/XCFramework
-is Apple-only, so the resource-bundle approach is what covers Linux and Windows too — and
-`NativePlatform` resolves the RID at compile time.
+UUIDs, temporals — calling directly into the native `hypercast` Rust core through
+`@convention(c)` function pointers, no shim layer. On Linux (glibc and musl) and
+WebAssembly the core is linked into your executable as a static library, so there is
+nothing to deploy beside it; on macOS and Windows it is a bundled shared library, opened on
+first use with `dlopen`/`dlsym` or `LoadLibraryW`/`GetProcAddress`. Which one, and for
+which architecture, is decided at compile time.
 
 ```swift
 switch try Cast.i32("(1,234)", format: .invariant) {
@@ -136,40 +136,42 @@ try Cast.i32("-$5", format: enUs)                                  // .success(-
 
 ## Requirements
 
-- **Swift.** Tested on Swift 6.4 — every CI leg runs `swift test` on it, and the Linux legs
-  run it a second time with `--build-system native`, the build system Swift 6.3 and earlier
-  use. The manifests declare `swift-tools-version:5.9`: that is the floor SwiftPM will accept
-  and the oldest language version the sources are written against, but no CI leg builds on
-  it, so anything below 6.4 is declared rather than proven.
-- **Platforms.** glibc Linux, macOS and Windows, each on x86_64 and arm64 — the six native
-  builds under `NativeLibs/`. macOS 13 is the declared deployment floor, for `Duration`.
-- **Not supported: musl Linux.** The other bindings in this repo ship `linux-musl-x64` and
-  `linux-musl-arm64` builds; this one deliberately does not. Swift's musl target is the fully
-  static Linux SDK, and a statically linked executable has no dynamic loader to `dlopen` a
-  shared library with, so there is nothing a bundled musl library could be loaded by. A musl
-  build stops at a compile-time `#error` that says so. This is deferred, not impossible:
-  the core could be linked in statically instead of loaded, as a SwiftPM binary
-  static-library target (SE-0482, Swift 6.2 and later), and that path is not built yet.
+- **Swift 6.2 or later.** The manifests declare `swift-tools-version:6.2`: the first release
+  whose package manager can link a static library as a binary target (SE-0482), which is how
+  the core reaches Linux and WebAssembly. CI runs `swift test` on Swift 6.4 on every
+  platform, and runs Linux (glibc and musl) and WebAssembly again on 6.2 in Swift's own
+  containers. macOS and Windows are tested on 6.4 only.
+- **Platforms.** Linux on glibc and on musl (Swift's static Linux SDK), macOS and Windows,
+  each on x86_64 and arm64, and WebAssembly (`wasm32-unknown-wasip1`). macOS 13 is the declared deployment floor, for `Duration`.
 - **Not supported: everything else.** iOS, tvOS, watchOS, visionOS, Android, and any other
-  architecture on the three supported systems have no native build here and stop at the same
-  kind of `#error` — at compile time, rather than being handed a library that can't load.
+  architecture on the supported systems have no native build here and stop at an `#error`
+  — at compile time, rather than being handed a library that can't load.
 
 ## Loading and deployment
 
-The native library travels as a SwiftPM resource. `swift build` stages `NativeLibs/` into a
-directory beside the built products, and the first call `dlopen`s this platform's library
-straight out of it — nothing is extracted, copied or left behind in a temp directory. The
-directory's name depends on the toolchain: `HyperCast_HyperCast.bundle` on Swift 6.4 and later
-(and on macOS with any version), `HyperCast_HyperCast.resources` on Linux and Windows with Swift
-6.3 and earlier or with `--build-system native`. The loader accepts either.
+How the native core gets into your program depends on the target, and on most of them there
+is nothing for you to do.
 
-**That directory has to ship with your executable.** A deployment that copies only the binary
-— the usual multi-stage Dockerfile — has no native library to load:
+**Linux and WebAssembly: linked in.** The package declares the core as a SwiftPM binary
+target — one static library per triple, in `HyperCastCore.artifactbundle` — and SwiftPM links
+the one for your target into your executable. There is no shared library to find at run
+time and nothing to deploy beside the binary: a multi-stage Dockerfile that copies only the
+executable works, and so does a fully static build with
+`swift build --swift-sdk x86_64-swift-linux-musl`. `Cast.isAvailable` is always `true`
+here.
 
-```dockerfile
-COPY --from=build /src/.build/release/MyServer /app/
-# Swift 6.4 and later. On 6.3 and earlier the directory is HyperCast_HyperCast.resources.
-COPY --from=build /src/.build/release/HyperCast_HyperCast.bundle /app/HyperCast_HyperCast.bundle
+**macOS and Windows: loaded.** There the core is a shared library that travels as a SwiftPM
+resource. `swift build` stages `NativeLibs/` into a directory beside the built products,
+and the first call opens this platform's library straight out of it — nothing is extracted,
+copied or left behind in a temp directory. The directory is `HyperCast_HyperCast.bundle` on macOS,
+and on Windows with Swift 6.4 and later; on Windows with Swift 6.2 or 6.3 (or
+`--build-system native`) it is `HyperCast_HyperCast.resources`. The loader accepts either.
+
+**On those two platforms that directory has to ship with your executable.** A deployment
+that copies only the binary has no native library to load:
+
+```sh
+cp -R .build/release/MyTool .build/release/HyperCast_HyperCast.bundle /path/to/deploy/
 ```
 
 The loader looks beside the executable first, then in the main bundle's resources, which is
@@ -200,21 +202,31 @@ after the first answer, and a failed load throws the same error from every later
 
 ## WebAssembly
 
-None today, in either direction. Compiling *this binding* to wasm: swift.org ships real WASM
-SDKs since Swift 6.2, but its own docs say dynamic linking "is not formally specified for
-`wasip1` triples and tooling for it is not available yet," and there is no documented path
-to link a Rust `.a` statically either — this binding is `dlopen`/`@convention(c)` all the
-way down. Running the core as wasm *inside* Swift, the way the Java, Ruby, Python and Go
-bindings now do: no wasm engine ships as a Swift package with a stable API today, so there
-is nothing to embed. The root README's [WebAssembly section](../README.md#webassembly)
-tracks both directions for every binding; if either changes for Swift, this section is
-where it lands.
+The binding compiles to WebAssembly from Swift 6.2: install swift.org's WebAssembly SDK
+and build with it.
+
+```sh
+swift sdk install <the Wasm SDK URL and checksum from swift.org/install>
+swift build --swift-sdk swift-6.4.0-RELEASE_wasm     # `swift sdk list` names yours
+```
+
+The core is linked in as a static library — the same binary target Linux uses, with a
+`wasm32-unknown-wasip1` archive — so there is no module to load and no engine to embed.
+The core needs neither a clock nor randomness, so it asks nothing of the host. CI runs the whole suite under WasmKit on Swift 6.4, and a smoke executable on 6.2, whose
+XCTest does not start under WASI.
+
+The other direction — running the core as wasm *inside* a native Swift process, the way the
+Java, Ruby, Python and Go bindings do — is not built: no wasm engine ships as a Swift
+package with a stable API, and nothing here needs one, since every platform this binding
+supports has the core natively. The root README's
+[WebAssembly section](../README.md#webassembly) tracks both directions for every binding.
 
 ## Verifying provenance
 
 Like PHP, there's no separate package registry to attest here — SwiftPM resolves a git tag
-directly against this repo. The native libraries bundled under
-`swift/Sources/HyperCast/NativeLibs/` (staged by `stage-native-binaries.yml`) each carry
+directly against this repo. The native binaries the package carries — the shared libraries
+under `swift/Sources/HyperCast/NativeLibs/` and the static libraries under
+`swift/HyperCastCore.artifactbundle/`, both staged by `stage-native-binaries.yml` — each carry
 their own build-provenance attestation from `hyper-build-native.yml`, which physically lives
 in `SkunkWerkx/.github` — so verifying needs `--signer-repo` alongside `--repo`, or `gh`
 reports a bare `verifying with issuer "sigstore.dev"` that reads like a bad signature but is
@@ -222,6 +234,8 @@ only an identity mismatch:
 
 ```sh
 gh attestation verify swift/Sources/HyperCast/NativeLibs/osx-arm64/libhypercast.dylib \
+  --repo SkunkWerkx/HyperCast --signer-repo SkunkWerkx/.github
+gh attestation verify swift/HyperCastCore.artifactbundle/x86_64-unknown-linux-gnu/libhypercast.a \
   --repo SkunkWerkx/HyperCast --signer-repo SkunkWerkx/.github
 ```
 
@@ -259,10 +273,11 @@ SwiftPM has no separate registry to publish to — `.package(url:from:)` resolve
 a git tag, which *is* the complete publish story here rather than a placeholder for one. It
 requires `Package.swift` at the repository root with no monorepo-subdirectory support, which
 is why [the root's own `Package.swift`](../Package.swift) exists, with its targets pointed at
-the real sources under `swift/` via `path:`. The native libraries under
-`Sources/HyperCast/NativeLibs/{rid}/` are committed straight to git for the same reason as
-the tag itself: SwiftPM has no packing step, so the tree at the resolved tag is what a
-consumer's build bundles as resources.
+the real sources under `swift/` via `path:`. The native binaries — the shared libraries
+under `Sources/HyperCast/NativeLibs/{rid}/` and the static ones under
+`HyperCastCore.artifactbundle/{triple}/` — are committed straight to git for the same
+reason as the tag itself: SwiftPM has no packing step, so the tree at the resolved tag is
+what a consumer's build links or bundles.
 
 See [the repo root README](../README.md) for the full door table, the receipts, and the
 state of every other language binding.

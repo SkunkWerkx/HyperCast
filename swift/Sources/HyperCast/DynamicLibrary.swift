@@ -1,16 +1,17 @@
+// The loading path: macOS and Windows only. Where the core is linked in instead — Linux and
+// WebAssembly, see NativePlatform.swift — none of this file is compiled.
+#if !canImport(HyperCastCore)
+
 import Foundation
 
-// Exactly the three C libraries `NativePlatform` has a native build for. `canImport` rather
-// than `os(Linux)` so a musl build reaches `NativePlatform`'s own `#error` and nothing else.
-#if canImport(Glibc)
-import Glibc
-#elseif os(macOS)
+// Exactly the two C libraries `NativePlatform` has a shared library for.
+#if os(macOS)
 import Darwin
 #elseif os(Windows)
 import WinSDK
 #endif
 
-/// Thin cross-platform wrapper around `dlopen`/`dlsym` (Linux/macOS) or
+/// Thin cross-platform wrapper around `dlopen`/`dlsym` (macOS) or
 /// `LoadLibraryW`/`GetProcAddress` (Windows) — this project's positioning is "direct native
 /// FFI, no runtime bridge," and Swift natively calls a raw C function pointer via an
 /// `@convention(c)` typealias cast, so no shim/trampoline is needed. HyperUuid's proven
@@ -56,23 +57,12 @@ final class DynamicLibrary {
         #endif
     }
 
-    // Deliberately no `deinit` that closes the handle: `Cast`'s loaded-library reference
-    // holds this for the process's lifetime, and its cached `@convention(c)` function
-    // pointers would dangle if the library were unloaded while still in use.
+    // Deliberately no `deinit` that closes the handle: the library stays loaded for the
+    // process's lifetime, because `Cast` keeps the `@convention(c)` function pointers
+    // resolved from it, and they would dangle if it were unloaded.
 }
 
 extension DynamicLibrary {
-    /// Where `locateBundled()` found the library. The test suite pins `.resourceBundle`, so
-    /// the path a deployed consumer depends on can't quietly stop working behind the
-    /// build-machine fallback.
-    enum Origin {
-        /// Inside the SwiftPM resource directory — the only origin a deployed binary has.
-        case resourceBundle
-        /// Straight from this package's source tree, which exists only on the machine that
-        /// built it.
-        case sourceTree
-    }
-
     /// Finds this platform's bundled native library on disk and returns a path `dlopen` can
     /// take directly — SwiftPM copies resources as plain files, so there is nothing to
     /// extract, and nothing left behind in the temp directory per process the way the old
@@ -82,7 +72,7 @@ extension DynamicLibrary {
     /// the resource directory is missing, which turns "deployed the executable without its
     /// resources" into a crash no caller can catch. Looking for the directory by name makes
     /// that the same thrown ``NativeLibraryError`` as any other load failure.
-    static func locateBundled() throws -> (path: String, origin: Origin) {
+    static func locateBundled() throws -> (path: String, origin: NativeLibraryOrigin) {
         let fileName = URL(fileURLWithPath: NativePlatform.libraryFileName)
         let subdirectory = "NativeLibs/\(NativePlatform.rid)"
 
@@ -145,3 +135,5 @@ extension DynamicLibrary {
         url.withUnsafeFileSystemRepresentation { $0.map { String(cString: $0) } } ?? url.path
     }
 }
+
+#endif
