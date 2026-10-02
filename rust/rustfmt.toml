@@ -1,0 +1,5 @@
+# The house style: anything that fits in the default 100 columns stays on one line — struct
+# literals, `if`/`else` expressions, call chains — rather than rustfmt's default heuristics,
+# which break those up well short of the limit. CI runs `cargo fmt --check` on this crate and
+# fuzz/ (which picks this file up from here).
+use_small_heuristics = "Max"

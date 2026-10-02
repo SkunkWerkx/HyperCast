@@ -12,10 +12,10 @@
 #![no_main]
 
 use hypercast::{
-    cast_bool, cast_date, cast_date_ordered, cast_datetime, cast_decimal, cast_duration,
-    cast_excel_serial, cast_f32, cast_f64, cast_i16, cast_i32, cast_i64, cast_i8, cast_time,
-    cast_timestamp, cast_u16, cast_u32, cast_u64, cast_u8, cast_unix, cast_uuid, CurrencySymbol,
-    DateOrder, ExcelEpoch, Fault, NumFormat, UnixPrecision,
+    CurrencySymbol, DateOrder, ExcelEpoch, Fault, NumFormat, UnixPrecision, cast_bool, cast_date,
+    cast_date_ordered, cast_datetime, cast_decimal, cast_duration, cast_excel_serial, cast_f32,
+    cast_f64, cast_i8, cast_i16, cast_i32, cast_i64, cast_time, cast_timestamp, cast_u8, cast_u16,
+    cast_u32, cast_u64, cast_unix, cast_uuid,
 };
 use libfuzzer_sys::fuzz_target;
 

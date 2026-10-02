@@ -33,25 +33,24 @@
 // fact — no `std::`, `String`, `Vec`, `Box`, or `format!` in any parsing module. This makes
 // that compiler-enforced rather than a claim nobody checks.
 //
-// Gated on the default-on `std` feature rather than unconditional, because this crate is
-// also built as a `cdylib`: a final linked artifact needs a `#[panic_handler]`, which only
-// std supplies (proven, not assumed — dropping `no_std` in unconditionally fails the release
-// build with "`#[panic_handler]` function required, but not found" plus "unwinding panics
-// are not supported without std"). So the shared library every binding dlopens builds with
-// std as it always has, and a no_std consumer takes the crate with
-// `default-features = false`, bringing its own panic handler where the target has no
-// operating system, the way such a consumer must anyway. The cdylib is not in Cargo.toml's
-// `crate-type` for this reason: cargo would build it for every consumer, and it cannot link
-// without std. Nothing in the parsing modules ever touches std either way.
+// Gated on the default-on `std` feature rather than unconditional, because the extension
+// modules (python, ruby, php) need std through their own dependencies and the test harness
+// needs it to run at all. Every artifact this crate ships itself is built without it: the
+// static libraries (`cargo staticlib`) and the shared library every binding dlopens
+// (`cargo cdylib`), which bring the panic handler below in std's place. A no_std rlib
+// consumer takes the crate with `default-features = false` and brings a handler of their
+// own, the way such a consumer must anyway. Nothing in the parsing modules ever touches std
+// either way.
 #![cfg_attr(not(feature = "std"), no_std)]
 
 // The panic handler for the no_std artifacts this crate links itself: the static libraries
-// behind the `staticlib` feature (Cargo.toml has what they are and why they carry no std).
-// Built with `panic = "abort"`, so a panic ends the program instead of unwinding into the
-// host: on wasm32 it is the `unreachable` trap, which the host sees as a RuntimeError rather
-// than as a corrupted return value; anywhere else it is the C library's `abort`, which the
-// executable the library is linked into already has. Never compiled for a bare-metal rlib
-// consumer, who brings a handler of their own, nor with `std`, which has one.
+// behind the `staticlib` feature and the shared library behind `cdylib` (Cargo.toml has
+// what each is and why neither carries std). Built with `panic = "abort"`, so a panic ends
+// the program instead of unwinding into the host: on wasm32 it is the `unreachable` trap,
+// which the host sees as a RuntimeError rather than as a corrupted return value; anywhere
+// else it is the C library's `abort`, which every process the library is loaded or linked
+// into already has. Never compiled for a bare-metal rlib consumer, who brings a handler of
+// their own, nor with `std`, which has one.
 #[cfg(all(feature = "staticlib", not(feature = "std")))]
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
@@ -66,6 +65,61 @@ fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
     }
 }
 
+// The one symbol a no_std shared library needs that a static library does not. `core` and
+// `compiler_builtins` ship precompiled with unwind tables, and an entry that names
+// `rust_eh_personality` survives into the library (on linux-x64, that of the 128-bit
+// division intrinsic). In a static library the reference is left for the final link to
+// resolve; a shared library is the final link, so without a definition every dlopen fails
+// with "undefined symbol: rust_eh_personality". With `panic = "abort"` nothing ever
+// unwinds, so nothing ever calls it — the definition only has to exist.
+//
+// Assembly rather than a `#[no_mangle]` function, for the visibility: a `#[no_mangle]`
+// item is exported from a cdylib whatever its Rust visibility, which would put a 23rd
+// symbol beside the 22 C ABI exports, one any other library in the process could bind to.
+// Defined hidden instead, it satisfies the library's own reference and is seen by nothing
+// outside it. Never compiled for the static libraries: two Hyper* archives that each
+// defined it could not be linked into one program, the duplicate-symbol failure that kept
+// std out of them in the first place. Windows needs no definition (its unwind tables name
+// the C runtime's handler), and wasm32 has no unwind tables to name one.
+#[cfg(all(feature = "cdylib", not(feature = "std"), target_vendor = "apple"))]
+core::arch::global_asm!(
+    ".globl _rust_eh_personality",
+    ".private_extern _rust_eh_personality",
+    "_rust_eh_personality:",
+    "ret",
+);
+#[cfg(all(
+    feature = "cdylib",
+    not(feature = "std"),
+    not(target_vendor = "apple"),
+    not(target_os = "windows"),
+    not(target_arch = "wasm32"),
+))]
+core::arch::global_asm!(
+    ".globl rust_eh_personality",
+    ".hidden rust_eh_personality",
+    ".type rust_eh_personality, %function",
+    "rust_eh_personality:",
+    "ret",
+);
+
+// The other half of the same gap: the C runtime. Under std it comes in through std's own
+// link directives; a no_std shared library has to name it, or nothing does. On Linux the
+// library then links with no NEEDED entry at all, its `abort`, `memcpy` and `memset`
+// unversioned and resolved only because the host process happens to have libc loaded; on
+// Windows nothing names the runtime its `memcpy`, `__CxxFrameHandler3` and DLL entry point
+// come from. The choice mirrors the one std
+// makes by way of the libc crate — libc on Unix, and on Windows the DLL import library
+// ordinarily or the static runtime when crt-static asks for it — so the library depends on
+// exactly the C runtime the std build did and nothing more.
+#[cfg(all(feature = "cdylib", not(feature = "std"), unix))]
+#[link(name = "c")]
+unsafe extern "C" {}
+#[cfg(all(feature = "cdylib", not(feature = "std"), target_env = "msvc"))]
+#[cfg_attr(target_feature = "crt-static", link(name = "libcmt"))]
+#[cfg_attr(not(target_feature = "crt-static"), link(name = "msvcrt"))]
+unsafe extern "C" {}
+
 mod boolean;
 mod decimal;
 mod ffi;
@@ -76,12 +130,12 @@ mod temporal;
 mod uuid;
 mod verdict;
 
+#[cfg(feature = "php")]
+mod php_ext;
 #[cfg(feature = "python")]
 mod python_ext;
 #[cfg(feature = "ruby")]
 mod ruby_ext;
-#[cfg(feature = "php")]
-mod php_ext;
 
 pub use boolean::cast_bool;
 pub use decimal::cast_decimal;
@@ -89,9 +143,9 @@ pub use ffi::hypercast_version;
 pub use integer::{cast_i8, cast_i16, cast_i32, cast_i64, cast_u8, cast_u16, cast_u32, cast_u64};
 pub use real::{cast_f32, cast_f64};
 pub use temporal::{
-    cast_date, cast_date_ordered, cast_datetime, cast_duration, cast_excel_serial, cast_time,
-    cast_timestamp, cast_unix, DateOrder, ExcelEpoch, UnixPrecision, MAX_DURATION_SECONDS,
-    MAX_TIMESTAMP_SECONDS, MIN_TIMESTAMP_SECONDS,
+    DateOrder, ExcelEpoch, MAX_DURATION_SECONDS, MAX_TIMESTAMP_SECONDS, MIN_TIMESTAMP_SECONDS,
+    UnixPrecision, cast_date, cast_date_ordered, cast_datetime, cast_duration, cast_excel_serial,
+    cast_time, cast_timestamp, cast_unix,
 };
 pub use uuid::cast_uuid;
 pub use verdict::{
@@ -124,10 +178,14 @@ mod tests {
 
     #[test]
     fn bool_recognizes_the_full_lexicon_case_insensitively() {
-        for text in ["true", "TRUE", "t", "yes", "Y", "1", "on", "enabled", "Active", "checked", "in"] {
+        for text in
+            ["true", "TRUE", "t", "yes", "Y", "1", "on", "enabled", "Active", "checked", "in"]
+        {
             assert_eq!(cast_bool(text.as_bytes()), Ok(true), "{text}");
         }
-        for text in ["false", "F", "no", "N", "0", "off", "Disabled", "inactive", "unchecked", "Out"] {
+        for text in
+            ["false", "F", "no", "N", "0", "off", "Disabled", "inactive", "unchecked", "Out"]
+        {
             assert_eq!(cast_bool(text.as_bytes()), Ok(false), "{text}");
         }
     }
@@ -364,7 +422,8 @@ mod tests {
 
     #[test]
     fn currency_flag_gates_the_symbol_and_no_symbol_matches_nothing() {
-        let declared_but_off = NumFormat { flags: NumFormat::ALL & !NumFormat::CURRENCY, ..dollars() };
+        let declared_but_off =
+            NumFormat { flags: NumFormat::ALL & !NumFormat::CURRENCY, ..dollars() };
         let fault = cast_i32(b"$5", &declared_but_off).unwrap_err();
         assert_eq!((fault.reason, fault.offset, fault.len), (Reason::Malformed, 0, 1));
         assert_eq!(cast_i32(b"5", &declared_but_off), Ok(5));
@@ -473,8 +532,8 @@ mod tests {
     // --- uuid ---
 
     const KNOWN: [u8; 16] = [
-        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
-        0x0f, 0x10,
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+        0x10,
     ];
 
     #[test]
@@ -631,7 +690,10 @@ mod tests {
         assert_eq!(reason(cast_unix(b"not-a-number", UnixPrecision::Seconds)), Reason::Malformed);
         assert_eq!(reason(cast_unix(b"253402300800", UnixPrecision::Seconds)), Reason::OutOfRange);
         assert_eq!(reason(cast_unix(b"-62135596801", UnixPrecision::Seconds)), Reason::OutOfRange);
-        assert_eq!(cast_unix(b"253402300799", UnixPrecision::Seconds).unwrap().seconds, MAX_TIMESTAMP_SECONDS);
+        assert_eq!(
+            cast_unix(b"253402300799", UnixPrecision::Seconds).unwrap().seconds,
+            MAX_TIMESTAMP_SECONDS
+        );
     }
 
     // --- excel serial ---
@@ -688,7 +750,10 @@ mod tests {
     #[test]
     fn excel_serial_rejects_malformed_text_and_the_out_of_window() {
         assert_eq!(reason(cast_excel_serial(b"", ExcelEpoch::Y1900)), Reason::Empty);
-        assert_eq!(reason(cast_excel_serial(b"not-a-number", ExcelEpoch::Y1900)), Reason::Malformed);
+        assert_eq!(
+            reason(cast_excel_serial(b"not-a-number", ExcelEpoch::Y1900)),
+            Reason::Malformed
+        );
         assert_eq!(reason(cast_excel_serial(b"45292.", ExcelEpoch::Y1900)), Reason::Malformed);
         assert_eq!(reason(cast_excel_serial(b".5", ExcelEpoch::Y1900)), Reason::Malformed);
         // A date serial is never signed — no silent reflection into pre-1900.
@@ -716,7 +781,15 @@ mod tests {
 
     #[test]
     fn date_rejects_everything_else() {
-        for text in ["1/2/2026", "2026-01-02T00:00:00", "2026/01/02", "garbage", "2026-02-29", "2026-00-01", "2026-01-00"] {
+        for text in [
+            "1/2/2026",
+            "2026-01-02T00:00:00",
+            "2026/01/02",
+            "garbage",
+            "2026-02-29",
+            "2026-00-01",
+            "2026-01-00",
+        ] {
             assert_eq!(reason(cast_date(text.as_bytes())), Reason::Malformed, "{text}");
         }
         assert_eq!(reason(cast_date(b"0000-01-01")), Reason::OutOfRange);
@@ -763,21 +836,33 @@ mod tests {
             cast_date_ordered(b"13/1/2026", DateOrder::DayMonthYear),
             Ok(Date { year: 2026, month: 1, day: 13 })
         );
-        assert_eq!(reason(cast_date_ordered(b"13/1/2026", DateOrder::MonthDayYear)), Reason::Malformed);
+        assert_eq!(
+            reason(cast_date_ordered(b"13/1/2026", DateOrder::MonthDayYear)),
+            Reason::Malformed
+        );
         // Real calendar, same as the strict door.
         assert_eq!(
             cast_date_ordered(b"29/2/2024", DateOrder::DayMonthYear),
             Ok(Date { year: 2024, month: 2, day: 29 })
         );
-        assert_eq!(reason(cast_date_ordered(b"29/2/2026", DateOrder::DayMonthYear)), Reason::Malformed);
+        assert_eq!(
+            reason(cast_date_ordered(b"29/2/2026", DateOrder::DayMonthYear)),
+            Reason::Malformed
+        );
     }
 
     #[test]
     fn date_ordered_rejects_ambiguity_reintroducers() {
         // Two-digit years mean century guessing — never.
-        assert_eq!(reason(cast_date_ordered(b"1/7/26", DateOrder::MonthDayYear)), Reason::Malformed);
+        assert_eq!(
+            reason(cast_date_ordered(b"1/7/26", DateOrder::MonthDayYear)),
+            Reason::Malformed
+        );
         // A three-digit field fits no order — faulted at its own digits.
-        assert_eq!(reason(cast_date_ordered(b"123/4/2026", DateOrder::MonthDayYear)), Reason::Malformed);
+        assert_eq!(
+            reason(cast_date_ordered(b"123/4/2026", DateOrder::MonthDayYear)),
+            Reason::Malformed
+        );
         // Mixed separators, trailing junk, missing fields.
         for text in ["1-7/2026", "1/7/2026 extra", "1/7", "1//2026", "garbage"] {
             assert_eq!(
@@ -786,7 +871,10 @@ mod tests {
                 "{text}"
             );
         }
-        assert_eq!(reason(cast_date_ordered(b"1/7/0000", DateOrder::MonthDayYear)), Reason::OutOfRange);
+        assert_eq!(
+            reason(cast_date_ordered(b"1/7/0000", DateOrder::MonthDayYear)),
+            Reason::OutOfRange
+        );
         assert_eq!(reason(cast_date_ordered(b"   ", DateOrder::DayMonthYear)), Reason::Empty);
     }
 
@@ -861,7 +949,10 @@ mod tests {
                 "{text}"
             );
         }
-        assert_eq!(reason(cast_datetime(b"1/7/0000 3:04 PM", DateOrder::MonthDayYear)), Reason::OutOfRange);
+        assert_eq!(
+            reason(cast_datetime(b"1/7/0000 3:04 PM", DateOrder::MonthDayYear)),
+            Reason::OutOfRange
+        );
         assert_eq!(reason(cast_datetime(b"", DateOrder::MonthDayYear)), Reason::Empty);
     }
 
@@ -966,7 +1057,10 @@ mod tests {
     fn faults_display_the_reason_and_span() {
         assert_eq!(cast_bool("   ").unwrap_err().to_string(), "empty input");
         assert_eq!(cast_bool("maybe").unwrap_err().to_string(), "malformed input at bytes 0..5");
-        assert_eq!(cast_u8("256", &INVARIANT).unwrap_err().to_string(), "out of range input at bytes 0..3");
+        assert_eq!(
+            cast_u8("256", &INVARIANT).unwrap_err().to_string(),
+            "out of range input at bytes 0..3"
+        );
     }
 
     #[test]
@@ -1061,14 +1155,21 @@ mod tests {
         assert_eq!(
             cast_f32(input, format).map(f32::to_bits),
             real::engine_only_f32(input, format).map(f32::to_bits),
-            "cast_f32 on {}", shown()
+            "cast_f32 on {}",
+            shown()
         );
         assert_eq!(
             cast_f64(input, format).map(f64::to_bits),
             real::engine_only_f64(input, format).map(f64::to_bits),
-            "cast_f64 on {}", shown()
+            "cast_f64 on {}",
+            shown()
         );
-        assert_eq!(cast_decimal(input, format), decimal::engine_only(input, format), "cast_decimal on {}", shown());
+        assert_eq!(
+            cast_decimal(input, format),
+            decimal::engine_only(input, format),
+            "cast_decimal on {}",
+            shown()
+        );
     }
 
     /// Every sequence of `1..=longest` tokens, each handed to `visit` as one input.
@@ -1139,8 +1240,20 @@ mod tests {
                     .map(|chunk| str::from_utf8(chunk).unwrap())
                     .collect::<Vec<_>>()
                     .join(",");
-                for body in [run.clone(), grouped.clone(), format!("{run}.5"), format!("{grouped}.50"), format!("0.{run}")] {
-                    for dressed in [body.clone(), format!("${body}"), format!("-${body}"), format!("(${body})"), format!("{body}$")] {
+                for body in [
+                    run.clone(),
+                    grouped.clone(),
+                    format!("{run}.5"),
+                    format!("{grouped}.50"),
+                    format!("0.{run}"),
+                ] {
+                    for dressed in [
+                        body.clone(),
+                        format!("${body}"),
+                        format!("-${body}"),
+                        format!("(${body})"),
+                        format!("{body}$"),
+                    ] {
                         for format in &formats {
                             lane_agrees_with_the_engine(dressed.as_bytes(), format);
                         }

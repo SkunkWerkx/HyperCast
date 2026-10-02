@@ -126,8 +126,8 @@ jobs:
   # compiles clean under std, at worst an unused-import warning nothing fails on, and the
   # published claim quietly stops being true with the whole matrix green.
   # `--no-default-features` against a real bare-metal target is the only invocation that
-  # compiles the other configuration at all — see lib.rs's own comment for why the feature
-  # has to stay default-on (the cdylib every binding dlopens needs std's panic handler).
+  # compiles the other configuration at all for a consumer — see lib.rs's own comment for
+  # why the feature stays default-on (the extensions and the test harness need std).
   #
   # Ported from HyperUuid, which had the claim live and false at its own v0.1.0. The one
   # difference is that this job needs no RUSTFLAGS: HyperUuid points `getrandom` at a custom
@@ -208,6 +208,126 @@ jobs:
       - name: No C ABI export can panic
         working-directory: rust
         run: cargo no-panic
+
+  # The shared library every binding loads is built without std (`cargo cdylib`; the
+  # `cdylib` feature in rust/Cargo.toml has why), which leaves it carrying what std used to
+  # bring by itself: the C runtime it links, and a hidden `rust_eh_personality` for core's
+  # unwind tables. Both are per-platform — `.hidden` on ELF, `.private_extern` on Mach-O,
+  # msvcrt on Windows — and a gap in either is a library that links but will not load, so
+  # every platform the forge ships is built and loaded here rather than assumed. Each leg
+  # checks the export surface is the 22 C ABI symbols and nothing else where the platform's
+  # nm can list it, then runs the Go binding's whole suite — every door and the shared
+  # corpus — through purego (cgo off), so the library is dlopen'd and called exactly as a
+  # host would. The musl legs run in golang's Alpine image, as the forge's musl suite does,
+  # and also hold the library to a single NEEDED entry: musl's libc.
+  check-cdylib:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-26.04, rid: linux-x64, lib: libhypercast.so }
+          - { os: ubuntu-26.04-arm, rid: linux-arm64, lib: libhypercast.so }
+          - { os: macos-latest, rid: osx-arm64, lib: libhypercast.dylib }
+          - { os: windows-latest, rid: win-x64, lib: hypercast.dll }
+          - { os: windows-11-arm, rid: win-arm64, lib: hypercast.dll }
+          - { os: ubuntu-26.04, rid: linux-musl-x64, lib: libhypercast.so, musl: true }
+          - { os: ubuntu-26.04-arm, rid: linux-musl-arm64, lib: libhypercast.so, musl: true }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: ${{ !matrix.musl }}
+      - uses: actions/setup-go@v7
+        if: ${{ !matrix.musl }}
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      - name: Build the no_std shared library
+        if: ${{ !matrix.musl }}
+        working-directory: rust
+        run: cargo cdylib
+
+      - name: Exports are the 22 C ABI symbols, and nothing else
+        if: ${{ !matrix.musl && runner.os != 'Windows' }}
+        working-directory: rust
+        run: |
+          set -euo pipefail
+          lib="target/release/${{ matrix.lib }}"
+          if [ "$RUNNER_OS" = macOS ]; then
+            exports=$(nm -gU "$lib" | awk '$2 == "T" {print $3}' | sed 's/^_//' | sort)
+          else
+            exports=$(nm -D --defined-only "$lib" | awk '$2 == "T" {print $3}' | sort)
+          fi
+          echo "$exports"
+          count=$(echo "$exports" | wc -l | tr -d ' ')
+          extra=$(echo "$exports" | grep -v -E '^(cast_[a-z0-9_]+|hypercast_version)$' || true)
+          if [ "$count" != 22 ] || [ -n "$extra" ]; then
+            echo "::error::expected the 22 C ABI exports and nothing else, found $count${extra:+ (unexpected: $extra)}"
+            exit 1
+          fi
+
+      - name: Go suite through purego, against this library
+        if: ${{ !matrix.musl }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "rust/target/release/${{ matrix.lib }}" "go/native/${{ matrix.rid }}/${{ matrix.lib }}"
+          cd go
+          CGO_ENABLED=0 go test -count=1 ./...
+
+      - name: Build, check and run the Go suite in Alpine
+        if: ${{ matrix.musl }}
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$GITHUB_WORKSPACE:/src:ro" golang:1.27-alpine sh -euc '
+            apk add --no-cache build-base curl >/dev/null
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable >/dev/null 2>&1
+            . "$HOME/.cargo/env"
+            mkdir /work
+            (cd /src && tar cf - --exclude=./rust/target ./rust ./go ./corpus) | tar xf - -C /work
+            cd /work/rust
+            cargo cdylib
+            lib=target/release/libhypercast.so
+            needed=$(readelf -d "$lib" | sed -n "s/.*(NEEDED).*\[\(.*\)\]/\1/p" | tr "\n" " ")
+            echo "NEEDED: $needed"
+            case "$needed" in
+              "libc.musl-"*".so.1 ") ;;
+              *) echo "::error::$lib must depend on musl libc and nothing else, found: $needed"; exit 1 ;;
+            esac
+            apk del build-base >/dev/null
+            cp "$lib" /work/go/native/${{ matrix.rid }}/libhypercast.so
+            cd /work/go && CGO_ENABLED=0 go test -count=1 ./...
+          '
+
+  # Formatting and lints for the crate and its fuzz target, every PR. rust/rustfmt.toml is
+  # the house style; clippy runs over each configuration that compiles different code — the
+  # default (with tests and benches), the bare-metal no_std rlib, the no_std shared library,
+  # and the python extension — with warnings as errors. The ruby and php features need their
+  # interpreters' headers to compile at all; the forge builds both on every leg, and they
+  # were clean when this job was added.
+  lint-rust:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: thumbv7em-none-eabi
+      - name: cargo fmt --check
+        working-directory: rust
+        run: |
+          cargo fmt --check
+          cargo fmt --check --manifest-path fuzz/Cargo.toml
+      - name: cargo clippy
+        working-directory: rust
+        run: |
+          cargo clippy --all-targets -- -D warnings
+          cargo clippy --no-default-features --target thumbv7em-none-eabi -- -D warnings
+          cargo clippy --no-default-features --features cdylib -- -D warnings
+          cargo clippy --features python -- -D warnings
+          cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
 
   # Doc-comment coverage on every real public API surface, every PR — the same bar
   # C#/Java/Rust get from a compiler flag (CS1591+TreatWarningsAsErrors, javadoc -Xwerror,

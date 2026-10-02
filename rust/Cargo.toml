@@ -12,7 +12,7 @@ categories = ["parsing", "no-std", "no-std::no-alloc"]
 # Only the rlib is declared. The shared library every binding loads is built by naming its
 # crate type on the command line (`cargo cdylib`, an alias in .cargo/config.toml), the way
 # the static libraries already are. Cargo builds every crate type a dependency lists, and a
-# cdylib is a linked artifact that needs std's panic handler: while `cdylib` was listed
+# cdylib is a linked artifact that needs a panic handler: while `cdylib` was listed
 # here, a `default-features = false` consumer failed to build on any target able to produce
 # one (the host, wasm32-unknown-unknown), and only bare-metal targets worked.
 [lib]
@@ -37,11 +37,13 @@ no-panic = { version = "0.1", optional = true }
 # in one binary). The php one is a benchmark spike, exactly as in HyperUuid: the shipped
 # PHP package is ext-ffi; see src/php_ext.rs.
 [features]
-# On by default so `cargo cdylib` produces the ordinary shared library every binding dlopens
-# (a linked artifact needs std's panic handler). The parsing core itself is core-only —
-# `default-features = false` gives a genuine `#![no_std]` rlib on every target, which is what
-# the crate's published `no-std` category means. The extension backends all require std through their
-# own dependencies, so they name it explicitly rather than relying on the default.
+# On by default for the crates.io consumer, the test suite and the benchmarks; no artifact
+# this repo ships is built with it except the extension modules and the wasm32-wasip1
+# module (whose hosts depend on the malloc/free exports std's allocator brings). The parsing
+# core itself is core-only — `default-features = false` gives a genuine `#![no_std]` rlib on
+# every target, which is what the crate's published `no-std` category means. The extension
+# backends all require std through their own dependencies, so they name it explicitly
+# rather than relying on the default.
 default = ["std"]
 std = []
 # The no_std static libraries, for the hosts that link the core in rather than load it: a
@@ -54,16 +56,29 @@ std = []
 # (`duplicate symbol: rust_eh_personality`). Off by default, and never for an rlib consumer,
 # who supplies a handler of their own.
 staticlib = []
+# The shared library every non-extension binding dlopens (`cargo cdylib`), built without
+# Rust's standard library: the `staticlib` panic handler plus what a no_std shared library
+# needs that a static library does not (lib.rs has what and why). The parse is the same
+# code either way; what std added was its runtime — the unwinder, the backtrace symbolizer
+# and the allocator, ~330 KB of the 437 KB linux-x64 library, none of it reachable from a
+# C ABI export. Leaving std out also leaves every import but the C library's `abort`,
+# `memcpy`, `memset` and `bcmp` out, so on musl the library no longer needs libgcc_s. A
+# panic was already a process abort at an `extern "C"` boundary under std; it is the same
+# abort here, only without the message printed first. Off by default, and never for an
+# rlib consumer.
+cdylib = ["staticlib"]
 python = ["dep:pyo3", "std"]
 ruby = ["dep:magnus", "dep:rb-sys", "std"]
 php = ["dep:ext-php-rs", "std"]
-# Proves at link time that no C ABI export can panic: `cargo cdylib --features no-panic`
+# Proves at link time that no C ABI export can panic: `cargo no-panic` (.cargo/config.toml)
 # fails with an undefined-symbol error naming any export the optimizer could not clear of
 # every panic path (dtolnay's no-panic). A check, not a build of anything shipped. The
 # doors' contract is "never panics on bad input"; at an `extern "C"` boundary a panic is
 # a process abort in the host, so this is the guarantee that matters, and it has to be
 # re-proved per compiler release because whether a bounds check survives is the
-# optimizer's call. Release builds only — debug keeps every check.
+# optimizer's call. Release builds only — debug keeps every check. Built with std rather
+# than as the shipped no_std library, because no-panic detects a panic path by the unwind
+# edge it leaves, and a no_std build has to abort; the exports' code is the same either way.
 no-panic = ["dep:no-panic"]
 
 [dev-dependencies]
@@ -94,9 +109,10 @@ harness = false
 # never to a downstream crates.io consumer, who gets their own workspace's profile.
 #
 # Cargo only passes `-C lto` for a cdylib built as the invocation's one crate type, which is
-# what `cargo cdylib` is: the plain linux-x64 library is 457,008 bytes that way, against
-# 535,440 from a manifest that listed `["cdylib", "rlib"]`, at the same speed (the timestamp,
-# uuid and bool doors through the C ABI, alternating runs, within noise).
+# what `cargo cdylib` is: the plain linux-x64 library was 457,008 bytes that way while it
+# still carried std (110,048 since), against 535,440 from a manifest that listed
+# `["cdylib", "rlib"]`, at the same speed (the timestamp, uuid and bool doors through the
+# C ABI, alternating runs, within noise).
 [profile.release]
 lto = true
 codegen-units = 1

@@ -8,7 +8,7 @@
 //! leading and trailing ASCII whitespace is ignored. Culture-insensitive by nature —
 //! no [`NumFormat`](crate::NumFormat) is accepted.
 
-use crate::verdict::{trim, Fault};
+use crate::verdict::{Fault, trim};
 
 /// Casts boolean text. Empty or whitespace input ⇒ `Empty`; unrecognized input ⇒
 /// `Malformed` spanning the trimmed token.
@@ -35,9 +35,7 @@ pub fn cast_bool(input: impl AsRef<[u8]>) -> Result<bool, Fault> {
         2 if text.eq_ignore_ascii_case(b"on") || text.eq_ignore_ascii_case(b"in") => Some(true),
         2 if text.eq_ignore_ascii_case(b"no") => Some(false),
         3 if text.eq_ignore_ascii_case(b"yes") => Some(true),
-        3 if text.eq_ignore_ascii_case(b"off") || text.eq_ignore_ascii_case(b"out") => {
-            Some(false)
-        }
+        3 if text.eq_ignore_ascii_case(b"off") || text.eq_ignore_ascii_case(b"out") => Some(false),
         4 if text.eq_ignore_ascii_case(b"true") => Some(true),
         5 if text.eq_ignore_ascii_case(b"false") => Some(false),
         6 if text.eq_ignore_ascii_case(b"active") => Some(true),

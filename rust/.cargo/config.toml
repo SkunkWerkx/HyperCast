@@ -1,7 +1,7 @@
 # macOS: a Python/Ruby extension module must not link the host runtime (libpython,
 # libruby) — the Py*/rb_* symbols resolve from the host process when the extension loads,
 # so the linker has to be told to leave them undefined (`dynamic_lookup`). maturin
-# arranges this itself for the python feature's release wheel build; a plain `cargo cdylib`
+# arranges this itself for the python feature's release wheel build; a plain `cargo rustc`
 # (this repo's dev loop, CI, and the ruby feature, which has no maturin-equivalent
 # wrapper) does not, so it's declared here. Harmless for the default (no extension
 # feature) build too — a cdylib with no undefined symbols is unaffected by the flag either
@@ -28,7 +28,7 @@ rustflags = ["-C", "link-arg=-Wl,-undefined,dynamic_lookup"]
 # Using the guest's allocator, rather than a host-picked offset past the data segments, is
 # load-bearing: dlmalloc claims the tail of the initial memory on first use, and HyperUuid
 # observed a batch written there corrupted by the host's very next allocation. Cargo only
-# reads this file from the crate directory (`cargo cdylib` run inside rust/), the same way
+# reads this file from the crate directory (`cargo wasm-module` run inside rust/), the same way
 # every other target section here already relies on.
 [target.wasm32-wasip1]
 rustflags = ["-C", "link-arg=--export=malloc", "-C", "link-arg=--export=free"]
@@ -60,13 +60,26 @@ rustflags = ["-C", "panic=abort"]
 
 [alias]
 # The shared library every binding loads: libhypercast.so / .dylib / hypercast.dll in
-# target/release/, and with `--target wasm32-wasip1` the hypercast.wasm module the wasm
-# backends run. `rustc --crate-type cdylib` rather than a [lib] entry, because Cargo.toml
+# target/release/. `rustc --crate-type cdylib` rather than a [lib] entry, because Cargo.toml
 # declares only the rlib (it has the reason: a listed cdylib broke every
 # `default-features = false` consumer off bare metal). A plain `cargo build` therefore
-# produces the rlib and no shared library; this is the dev loop's build command, and what
-# CI runs spelled out. Extra arguments pass through: `cargo cdylib --features python`.
-cdylib = "rustc --release --crate-type cdylib"
+# produces the rlib and no shared library; this is the dev loop's build command, and the
+# forge's.
+#
+# Built without Rust's standard library (the `cdylib` feature in Cargo.toml has what that
+# saves), which takes panics that abort: rustc refuses a no_std artifact that unwinds. The
+# `--config` sets that for this one invocation rather than in [profile.release], where it
+# would reach the extension modules too — PyO3 and Magnus turn a panic into a host exception
+# only when it unwinds — and keeps the output in target/release/, where every binding's dev
+# loop looks for it. Extra arguments pass through: `cargo cdylib --target <triple>`. Not
+# for wasm32-wasip1 (`cargo wasm-module`, below), nor for an extension feature, which have
+# their own aliases.
+cdylib = ["rustc", "--release", "--crate-type", "cdylib", "--no-default-features", "--features", "cdylib", "--config", 'profile.release.panic="abort"']
+# The hypercast.wasm module the wasm backends run, in target/wasm32-wasip1/release/. Built
+# with std, unlike the native library: its hosts allocate their buffers through the
+# module's own malloc/free (the wasm32-wasip1 section above), which come from wasi-libc by
+# way of std's allocator, and a no_std module does not link wasi-libc at all.
+wasm-module = "rustc --release --crate-type cdylib --target wasm32-wasip1"
 # Local-dev builds of the extension features, each in its own target dir. The ruby and php
 # features produce a differently-shaped libhypercast.so (Init_hypercast_native / the PHP module
 # entry point) at the same path as the plain cdylib that Fiddle, ctypes-free FFI, P/Invoke,
@@ -98,4 +111,7 @@ staticlib = "rustc --profile staticlib --crate-type staticlib --no-default-featu
 # no-panic reports a failure as an undefined symbol, and a Linux shared library is allowed
 # to have those, so without it the check passes silently. GNU ld/lld only (Linux); the
 # output is a throwaway build in target/no-panic/, never the library the bindings load.
+# Built with std and unwinding, unlike that library, because an unwind edge is what
+# no-panic detects: under `panic = "abort"` there is none, and the check would pass no
+# matter what the exports did.
 no-panic = "rustc --release --crate-type cdylib --features no-panic --target-dir target/no-panic -- -C link-arg=-Wl,--no-undefined"

@@ -60,11 +60,13 @@ in the core. Nothing else in the pipeline would notice any of these regressions 
 cargo invocation builds the default `std` configuration, where a stray `use std::` or a `Vec`
 compiles perfectly cleanly.
 
-The `std` feature is on by default and stays that way for the shared-library build
-(`cargo cdylib`, below), because a `cdylib` is a final linked artifact and needs a
-`#[panic_handler]` that only `std` supplies — declaring `#![no_std]` unconditionally fails
-that build outright. The shared library is not one of the manifest's crate types, so cargo
-never builds it for a consumer of the crate.
+The `std` feature is on by default for the crates.io consumer, the tests and the native
+extensions. The artifacts this repository ships leave it out: the static libraries and the
+shared library every FFI binding loads (`cargo cdylib`, below) are all `#![no_std]`, each
+bringing the abort-on-panic handler `std` would otherwise supply — which takes the linux-x64
+shared library from 437 KB to 110 KB with the same exports and the same code behind them.
+The shared library is not one of the manifest's crate types, so cargo never builds it for a
+consumer of the crate.
 
 ## Excel date serials
 
@@ -94,16 +96,19 @@ native extension — one crate, three extra entry points, instead of satellite c
 path-depending back here:
 
 ```sh
-cargo cdylib                    # the plain shared library every FFI binding uses
-cargo cdylib --features python  # the CPython extension module (PyO3, abi3-py311)
+cargo cdylib                    # the plain shared library every FFI binding uses (no_std)
+cargo rustc --release --crate-type cdylib --features python  # the CPython extension module (PyO3, abi3-py311)
 cargo ruby-ext                  # the Ruby extension (Magnus), in target/ruby/release/ (ruby/'s `rake native:dev` runs this and stages the result)
 cargo php-ext                   # the Zend extension (ext-php-rs) — benchmark spike only, in target/php/release/
 ```
 
 `cargo cdylib` is an alias in `.cargo/config.toml` for `cargo rustc --release --crate-type
-cdylib`. The manifest declares only the rlib, so a plain `cargo build` produces no shared
-library; the crate type is named per invocation, which is what keeps it out of every
-consumer's build.
+cdylib` with the `cdylib` feature in place of `std` and panics set to abort. The manifest
+declares only the rlib, so a plain `cargo build` produces no shared library; the crate type
+is named per invocation, which is what keeps it out of every consumer's build. The
+extensions are built with `std` and unwinding, so a panic in one still reaches the host as
+an exception — which is why the python one is spelled out rather than run through the
+alias.
 
 The `php` one is not a shipped backend. PHP's ext-ffi crossing measured ~105 ns — already
 extension-class, which is why Python and Ruby got a native backend and PHP didn't — and
@@ -147,9 +152,12 @@ ship it: the `cdylib` for `wasm32-wasip1`, built from inside this directory so t
 `.cargo/config.toml` applies —
 
 ```sh
-cargo cdylib --target wasm32-wasip1
+cargo wasm-module
 # rust/target/wasm32-wasip1/release/hypercast.wasm
 ```
+
+Unlike the native library, the module is built with `std`: its allocator exports come from
+wasi-libc by way of `std`'s allocator, and a `no_std` module does not link wasi-libc at all.
 
 That config adds two linker flags for this target only, `--export=malloc` and
 `--export=free`, so the module's exports are the `cast_*` functions and `hypercast_version` from `ffi.rs`

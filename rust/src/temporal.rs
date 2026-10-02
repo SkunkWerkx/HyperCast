@@ -13,8 +13,8 @@
 //! exactly as HyperUuid left the wall clock to the host.
 
 use crate::integer::char_len_at;
+use crate::verdict::{CivilDateTime, Date, Duration, Fault, Timestamp, trim};
 use core::num::NonZero;
-use crate::verdict::{trim, CivilDateTime, Date, Duration, Fault, Timestamp};
 
 /// `0001-01-01T00:00:00Z` — the floor of the protobuf timestamp window.
 pub const MIN_TIMESTAMP_SECONDS: i64 = -62_135_596_800;
@@ -124,11 +124,7 @@ fn read4(text: &[u8], at: usize) -> Option<u32> {
 /// Reads `.f{1..=9}` at `at` when present, returning the value widened to nanoseconds and
 /// the index after the fraction. A tenth fractional digit is `Malformed` — nanos is the
 /// core's full fidelity. The RFC 3339/ISO-time doors: dot only.
-fn read_fraction(
-    text: &[u8],
-    at: usize,
-    start: usize,
-) -> Result<(u32, usize), Fault> {
+fn read_fraction(text: &[u8], at: usize, start: usize) -> Result<(u32, usize), Fault> {
     read_fraction_marked(text, at, start, b".")
 }
 
@@ -251,11 +247,7 @@ fn read_date_field(text: &[u8], at: usize, start: usize) -> Result<(u32, usize),
 /// Parses a separated calendar date at the head of `text` under the declared order,
 /// returning the [`Date`] and the index after it. Shared by [`cast_date_ordered`] (which
 /// then demands end-of-input) and [`cast_datetime`] (which continues into the time part).
-fn read_ordered_date(
-    text: &[u8],
-    start: usize,
-    order: DateOrder,
-) -> Result<(Date, usize), Fault> {
+fn read_ordered_date(text: &[u8], start: usize, order: DateOrder) -> Result<(Date, usize), Fault> {
     let (first, first_end) = read_date_field(text, 0, start)?;
     let sep = match text.get(first_end) {
         Some(&sep @ (b'/' | b'-' | b'.')) => sep,
@@ -455,9 +447,8 @@ pub fn cast_time(input: impl AsRef<[u8]>) -> Result<u64, Fault> {
 /// Parses `HH:mm[:ss[.f{1..9}]]` at `at`, returning nanos-since-midnight and the index
 /// after the time.
 fn read_time(text: &[u8], at: usize, start: usize) -> Result<(u64, usize), Fault> {
-    let hour = read2(text, at).ok_or_else(|| {
-        Fault::malformed(start + at, (text.len() - at).clamp(1, 2))
-    })?;
+    let hour = read2(text, at)
+        .ok_or_else(|| Fault::malformed(start + at, (text.len() - at).clamp(1, 2)))?;
     if hour > 23 {
         return Err(Fault::malformed(start + at, 2));
     }
@@ -520,7 +511,10 @@ pub fn cast_timestamp(input: impl AsRef<[u8]>) -> Result<Timestamp, Fault> {
         }
         Some(&(b'Z' | b'z')) => {
             if after_time + 1 != text.len() {
-                return Err(Fault::malformed(start + after_time + 1, char_len_at(text, after_time + 1)));
+                return Err(Fault::malformed(
+                    start + after_time + 1,
+                    char_len_at(text, after_time + 1),
+                ));
             }
             0i64
         }
@@ -536,7 +530,10 @@ pub fn cast_timestamp(input: impl AsRef<[u8]>) -> Result<Timestamp, Fault> {
                 return Err(Fault::malformed(start + after_time + 1, 5));
             }
             if after_time + 6 != text.len() {
-                return Err(Fault::malformed(start + after_time + 6, char_len_at(text, after_time + 6)));
+                return Err(Fault::malformed(
+                    start + after_time + 6,
+                    char_len_at(text, after_time + 6),
+                ));
             }
             let magnitude = i64::from(hours) * 3_600 + i64::from(minutes) * 60;
             if sign == b'-' { -magnitude } else { magnitude }
@@ -745,18 +742,11 @@ pub fn cast_duration(input: impl AsRef<[u8]>) -> Result<Duration, Fault> {
     if seconds.unsigned_abs() > MAX_DURATION_SECONDS as u128 {
         return Err(Fault::out_of_range(start, text.len()));
     }
-    Ok(Duration {
-        seconds: seconds as i64,
-        nanos: (total_nanos % NANOS_PER_SECOND) as i32,
-    })
+    Ok(Duration { seconds: seconds as i64, nanos: (total_nanos % NANOS_PER_SECOND) as i32 })
 }
 
 /// Reads a bounded ASCII digit run, returning (value, digit count, next index).
-fn read_digit_run(
-    text: &[u8],
-    at: usize,
-    start: usize,
-) -> Result<(i128, usize, usize), Fault> {
+fn read_digit_run(text: &[u8], at: usize, start: usize) -> Result<(i128, usize, usize), Fault> {
     let mut i = at;
     let mut value: i128 = 0;
     while i < text.len() && text[i].is_ascii_digit() {

@@ -91,9 +91,15 @@ fn allocation_free() {
             .unwrap()
     });
     let dollars = NumFormat::INVARIANT.with_currency(hypercast::CurrencySymbol::new("$").unwrap());
-    assert_allocation_free("cast_i64 currency", || hypercast::cast_i64(b"($1,234)", &dollars).unwrap());
-    assert_allocation_free("cast_f64 currency", || hypercast::cast_f64(b"-$1,234.5", &dollars).unwrap());
-    assert_allocation_free("cast_decimal", || hypercast::cast_decimal(b"1,234.50", &format).unwrap());
+    assert_allocation_free("cast_i64 currency", || {
+        hypercast::cast_i64(b"($1,234)", &dollars).unwrap()
+    });
+    assert_allocation_free("cast_f64 currency", || {
+        hypercast::cast_f64(b"-$1,234.5", &dollars).unwrap()
+    });
+    assert_allocation_free("cast_decimal", || {
+        hypercast::cast_decimal(b"1,234.50", &format).unwrap()
+    });
     assert_allocation_free("cast_decimal currency percent", || {
         hypercast::cast_decimal(b"($1,234.50)%", &dollars).unwrap()
     });

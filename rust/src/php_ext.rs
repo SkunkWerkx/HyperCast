@@ -27,9 +27,9 @@ use crate::{CurrencySymbol, DateOrder, ExcelEpoch, UnixPrecision};
 type Reply = PhpResult<ZBox<ZendHashTable>>;
 
 fn push<V: IntoZval>(table: &mut ZendHashTable, value: V) -> PhpResult<()> {
-    table
-        .push(value)
-        .map_err(|e| PhpException::default(format!("hypercast: building the verdict array failed: {e}")))
+    table.push(value).map_err(|e| {
+        PhpException::default(format!("hypercast: building the verdict array failed: {e}"))
+    })
 }
 
 /// The packed verdict: `[code, ...value fields]` or `[code, offset, length]`.
@@ -55,8 +55,14 @@ fn reply<T>(
 /// `currency` is the declared symbol's text — empty declares none — validated to the same
 /// rule `NumFormat.php` enforces at construction, so an invalid symbol throws here rather
 /// than becoming a contract violation deeper in.
-fn format(decimal_sep: u32, group_sep: u32, flags: u32, currency: &str) -> PhpResult<core::NumFormat> {
-    let (Some(decimal_sep), Some(group_sep)) = (char::from_u32(decimal_sep), char::from_u32(group_sep))
+fn format(
+    decimal_sep: u32,
+    group_sep: u32,
+    flags: u32,
+    currency: &str,
+) -> PhpResult<core::NumFormat> {
+    let (Some(decimal_sep), Some(group_sep)) =
+        (char::from_u32(decimal_sep), char::from_u32(group_sep))
     else {
         return Err(PhpException::default("separators must be Unicode scalar values".into()));
     };
@@ -190,7 +196,9 @@ pub fn hypercast_native_version() -> i64 {
 #[php_function]
 #[php(name = "hypercast_native_cast_uuid")]
 pub fn hypercast_native_cast_uuid(text: Binary<u8>) -> Reply {
-    reply(core::cast_uuid(text.as_slice()), |table, bytes| push(table, Binary::from(bytes.to_vec())))
+    reply(core::cast_uuid(text.as_slice()), |table, bytes| {
+        push(table, Binary::from(bytes.to_vec()))
+    })
 }
 
 #[php_function]

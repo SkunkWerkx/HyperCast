@@ -40,7 +40,10 @@ static IS_SAFE_UNKNOWN: OnceLock<Py<PyAny>> = OnceLock::new();
 // canonical text through the C `_decimal` constructor.
 static DECIMAL_CLASS: OnceLock<Py<PyAny>> = OnceLock::new();
 
-fn cached<'py>(py: Python<'py>, cell: &'static OnceLock<Py<PyAny>>) -> PyResult<&'py Bound<'py, PyAny>> {
+fn cached<'py>(
+    py: Python<'py>,
+    cell: &'static OnceLock<Py<PyAny>>,
+) -> PyResult<&'py Bound<'py, PyAny>> {
     cell.get()
         .map(|value| value.bind(py))
         .ok_or_else(|| PyRuntimeError::new_err("hypercast._native used before _bind"))
@@ -209,10 +212,7 @@ impl NumFormat {
     fn from_localeconv(py: Python<'_>, conv: Option<Bound<'_, PyDict>>) -> PyResult<Self> {
         let conv = match conv {
             Some(conv) => conv,
-            None => py
-                .import("locale")?
-                .call_method0("localeconv")?
-                .cast_into::<PyDict>()?,
+            None => py.import("locale")?.call_method0("localeconv")?.cast_into::<PyDict>()?,
         };
         // None when the key is absent or its text is empty: the locale declares nothing.
         let field = |name: &str| -> PyResult<Option<char>> {
@@ -474,10 +474,20 @@ fn cast_uuid(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
         // SAFETY: UUID_CLASS is a type object (bound in _bind); both calls check their
         // arguments and report failure by return value with an exception set.
         unsafe {
-            let instance = Bound::from_owned_ptr_or_err(py, ffi::PyType_GenericAlloc(class.as_ptr().cast(), 0))?;
-            if ffi::PyObject_GenericSetAttr(instance.as_ptr(), intern!(py, "int").as_ptr(), value.as_ptr()) != 0
-                || ffi::PyObject_GenericSetAttr(instance.as_ptr(), intern!(py, "is_safe").as_ptr(), is_safe.as_ptr())
-                    != 0
+            let instance = Bound::from_owned_ptr_or_err(
+                py,
+                ffi::PyType_GenericAlloc(class.as_ptr().cast(), 0),
+            )?;
+            if ffi::PyObject_GenericSetAttr(
+                instance.as_ptr(),
+                intern!(py, "int").as_ptr(),
+                value.as_ptr(),
+            ) != 0
+                || ffi::PyObject_GenericSetAttr(
+                    instance.as_ptr(),
+                    intern!(py, "is_safe").as_ptr(),
+                    is_safe.as_ptr(),
+                ) != 0
             {
                 return Err(PyErr::fetch(py));
             }
@@ -500,7 +510,10 @@ fn int_from_be_bytes<'py>(py: Python<'py>, bytes: [u8; 16]) -> PyResult<Bound<'p
     // SAFETY: `text` is NUL-terminated ASCII; the call returns a new reference, or null with
     // an exception set.
     unsafe {
-        Bound::from_owned_ptr_or_err(py, ffi::PyLong_FromString(text.as_ptr().cast(), std::ptr::null_mut(), 16))
+        Bound::from_owned_ptr_or_err(
+            py,
+            ffi::PyLong_FromString(text.as_ptr().cast(), std::ptr::null_mut(), 16),
+        )
     }
 }
 
@@ -520,7 +533,15 @@ const fn packed_time(hour: u8, minute: u8, second: u8, micros: u32) -> [u8; 6] {
     [hour, minute, second, (micros >> 16) as u8, (micros >> 8) as u8, micros as u8]
 }
 
-fn packed_datetime(year: i32, month: u8, day: u8, hour: u8, minute: u8, second: u8, micros: u32) -> [u8; 10] {
+fn packed_datetime(
+    year: i32,
+    month: u8,
+    day: u8,
+    hour: u8,
+    minute: u8,
+    second: u8,
+    micros: u32,
+) -> [u8; 10] {
     let (d, t) = (packed_date(year, month, day), packed_time(hour, minute, second, micros));
     [d[0], d[1], d[2], d[3], t[0], t[1], t[2], t[3], t[4], t[5]]
 }
@@ -559,15 +580,26 @@ fn instant<'py>(py: Python<'py>, ts: core::Timestamp) -> PyResult<Py<PyAny>> {
     let (minute, second) = (rest / 60, rest % 60);
     let micros = (ts.nanos / 1_000) as u32;
     if packs(year) {
-        let state = packed_datetime(year, month, day, hour as u8, minute as u8, second as u8, micros);
+        let state =
+            packed_datetime(year, month, day, hour as u8, minute as u8, second as u8, micros);
         return Ok(cached(py, &DATETIME_CLASS)?
             .call1((PyBytes::new(py, &state), cached(py, &UTC)?))?
             .unbind());
     }
     let utc = PyTzInfo::utc(py)?;
-    Ok(PyDateTime::new(py, year, month, day, hour as u8, minute as u8, second as u8, micros, Some(&utc))?
-        .into_any()
-        .unbind())
+    Ok(PyDateTime::new(
+        py,
+        year,
+        month,
+        day,
+        hour as u8,
+        minute as u8,
+        second as u8,
+        micros,
+        Some(&utc),
+    )?
+    .into_any()
+    .unbind())
 }
 
 /// Casts an RFC 3339 instant to an aware UTC ``datetime`` (microsecond truncation).
@@ -606,9 +638,7 @@ fn date_value(py: Python<'_>, date: core::Date) -> PyResult<Py<PyAny>> {
         let state = packed_date(year, date.month, date.day);
         return Ok(cached(py, &DATE_CLASS)?.call1((PyBytes::new(py, &state),))?.unbind());
     }
-    Ok(PyDate::new(py, year, date.month, date.day)?
-        .into_any()
-        .unbind())
+    Ok(PyDate::new(py, year, date.month, date.day)?.into_any().unbind())
 }
 
 /// Casts a calendar date: strict ISO ``yyyy-MM-dd`` with no order, the separated forms
@@ -641,7 +671,8 @@ fn cast_datetime(py: Python<'_>, text: Text<'_>, order: u32) -> PyResult<Py<PyAn
     verdict(py, &text, core::cast_datetime(text.bytes()?, order), |py, civil| {
         // Naive datetime — the text named no zone, so the value carries none; fusing a
         // zone is the caller's job. Sub-microsecond nanoseconds truncate (Python's ceiling).
-        let (second_of_day, nano) = (civil.nanos_of_day / 1_000_000_000, civil.nanos_of_day % 1_000_000_000);
+        let (second_of_day, nano) =
+            (civil.nanos_of_day / 1_000_000_000, civil.nanos_of_day % 1_000_000_000);
         let (hour, rest) = (second_of_day / 3_600, second_of_day % 3_600);
         let (minute, second) = (rest / 60, rest % 60);
         let year = i32::from(civil.date.year);
@@ -698,15 +729,23 @@ fn cast_duration(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
         // magnitude, and the subtraction normalizes the sign exactly as the constructor
         // would. A span too long for a datetime to stand that far from year 1 (past roughly
         // 9,998 years) takes the constructor below.
-        let (magnitude_seconds, magnitude_nanos) = (span.seconds.unsigned_abs(), span.nanos.unsigned_abs());
+        let (magnitude_seconds, magnitude_nanos) =
+            (span.seconds.unsigned_abs(), span.nanos.unsigned_abs());
         let days = magnitude_seconds / 86_400;
         if days <= ANCHOR_REACH_DAYS {
             let second_of_day = magnitude_seconds % 86_400;
             let (year, month, day) = civil_from_days(days as i64 + ANCHOR_DAYS_FROM_EPOCH);
             let (hour, rest) = (second_of_day / 3_600, second_of_day % 3_600);
             let (minute, second) = (rest / 60, rest % 60);
-            let state =
-                packed_datetime(year, month, day, hour as u8, minute as u8, second as u8, magnitude_nanos / 1_000);
+            let state = packed_datetime(
+                year,
+                month,
+                day,
+                hour as u8,
+                minute as u8,
+                second as u8,
+                magnitude_nanos / 1_000,
+            );
             let anchor = cached(py, &DURATION_ANCHOR)?;
             let moved = cached(py, &DATETIME_CLASS)?.call1((PyBytes::new(py, &state),))?;
             let negative = span.seconds < 0 || span.nanos < 0;
@@ -719,9 +758,7 @@ fn cast_duration(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
         let micros = if nanos >= 0 { nanos / 1_000 } else { -((-nanos) / 1_000) };
         let days = span.seconds.div_euclid(86_400);
         let seconds = span.seconds.rem_euclid(86_400);
-        Ok(PyDelta::new(py, days as i32, seconds as i32, micros as i32, true)?
-            .into_any()
-            .unbind())
+        Ok(PyDelta::new(py, days as i32, seconds as i32, micros as i32, true)?.into_any().unbind())
     })
 }
 

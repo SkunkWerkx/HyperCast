@@ -68,10 +68,7 @@ fn format_of(vector: &Value) -> NumFormat {
         return NumFormat::INVARIANT;
     };
     let sep = |field: &str| {
-        format[field]
-            .as_str()
-            .and_then(|text| text.chars().next())
-            .expect("single-char separator")
+        format[field].as_str().and_then(|text| text.chars().next()).expect("single-char separator")
     };
     let currency = match format.get("currency").and_then(Value::as_str) {
         Some(symbol) => CurrencySymbol::new(symbol).expect("declarable currency symbol"),
@@ -94,7 +91,8 @@ fn decimal_corpus() {
         let format = format_of(&vector);
         let verdict = hypercast::cast_decimal(text, &format);
         assert_verdict("decimal", &vector, verdict, |v| {
-            let magnitude: u128 = v["magnitude"].as_str().expect("magnitude").parse().expect("u128");
+            let magnitude: u128 =
+                v["magnitude"].as_str().expect("magnitude").parse().expect("u128");
             hypercast::Decimal {
                 lo: magnitude as u64,
                 hi: (magnitude >> 64) as u32,
@@ -103,7 +101,12 @@ fn decimal_corpus() {
             }
         });
         if let Ok(value) = verdict {
-            assert_eq!(value.to_string(), vector["value"].as_str().expect("value"), "decimal: {:?}", input(&vector));
+            assert_eq!(
+                value.to_string(),
+                vector["value"].as_str().expect("value"),
+                "decimal: {:?}",
+                input(&vector)
+            );
         }
     }
 }

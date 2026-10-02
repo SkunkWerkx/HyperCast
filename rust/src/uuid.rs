@@ -8,7 +8,7 @@
 //! the bindings, exactly where HyperUuid already put them.
 
 use crate::integer::char_len_at;
-use crate::verdict::{trim, Fault};
+use crate::verdict::{Fault, trim};
 
 const PREFIXES: [&[u8]; 3] = [b"urn:uuid:", b"guid:", b"uuid:"];
 
