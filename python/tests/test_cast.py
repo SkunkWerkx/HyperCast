@@ -182,6 +182,49 @@ def test_u64_comes_back_as_the_true_unsigned_value():
     assert hypercast.cast_u64("18446744073709551615", NumFormat.INVARIANT) == Success(2**64 - 1)
 
 
+def test_fast_built_temporals_equal_the_ordinary_constructors():
+    # The extension builds dates, times and datetimes from their packed pickle state and
+    # durations by datetime subtraction; whatever it hands back has to be the object the
+    # keyword constructors would have made, type included, across the fields' ranges.
+    utc = dt.timezone.utc
+    for text, expected in (
+        ("0001-01-01T00:00:00Z", dt.datetime(1, 1, 1, tzinfo=utc)),
+        ("1969-12-31T23:59:59.999999Z", dt.datetime(1969, 12, 31, 23, 59, 59, 999999, tzinfo=utc)),
+        ("2024-02-29T12:34:56.000001Z", dt.datetime(2024, 2, 29, 12, 34, 56, 1, tzinfo=utc)),
+        ("9999-12-31T23:59:59.999999999Z", dt.datetime(9999, 12, 31, 23, 59, 59, 999999, tzinfo=utc)),
+    ):
+        got = hypercast.cast_timestamp(text)
+        assert isinstance(got, Success) and type(got.value) is dt.datetime
+        assert got.value == expected and got.value.tzinfo is utc
+    got = hypercast.cast_date("9999-12-31")
+    assert isinstance(got, Success) and type(got.value) is dt.date and got.value == dt.date(9999, 12, 31)
+    got = hypercast.cast_time("23:59:59.999999")
+    assert isinstance(got, Success) and type(got.value) is dt.time and got.value == dt.time(23, 59, 59, 999999)
+    got = hypercast.cast_datetime("12/31/9999 11:59:59 PM", hypercast.DateOrder.MONTH_DAY_YEAR)
+    assert isinstance(got, Success) and got.value == dt.datetime(9999, 12, 31, 23, 59, 59) and got.value.tzinfo is None
+
+
+def test_durations_equal_the_timedelta_constructor_on_both_sides_of_the_fast_path():
+    # 3,652,058 days is the longest span the subtraction path can build; one more day takes
+    # the constructor. Both signs, and sub-microsecond digits truncating toward zero.
+    for text, expected in (
+        ("PT0S", dt.timedelta(0)),
+        ("PT1H30M15.5S", dt.timedelta(hours=1, minutes=30, seconds=15, microseconds=500000)),
+        ("-PT1H30M15.5S", -dt.timedelta(hours=1, minutes=30, seconds=15, microseconds=500000)),
+        ("PT0.000001S", dt.timedelta(microseconds=1)),
+        ("-PT0.000001S", dt.timedelta(microseconds=-1)),
+        ("PT0.0000009S", dt.timedelta(0)),
+        ("-PT0.0000009S", dt.timedelta(0)),
+        ("P3652058DT23H59M59.999999S", dt.timedelta(days=3652058, hours=23, minutes=59, seconds=59, microseconds=999999)),
+        ("-P3652058D", dt.timedelta(days=-3652058)),
+        ("P3652059D", dt.timedelta(days=3652059)),
+        ("-P3652059D", dt.timedelta(days=-3652059)),
+    ):
+        got = hypercast.cast_duration(text)
+        assert isinstance(got, Success), text
+        assert type(got.value) is dt.timedelta and got.value == expected, text
+
+
 def test_date_time_and_duration_map_to_their_stdlib_types():
     assert hypercast.cast_date("2026-01-02") == Success(dt.date(2026, 1, 2))
     assert hypercast.cast_time("15:04:05.123456789") == Success(dt.time(15, 4, 5, 123456))

@@ -64,20 +64,20 @@ binding is exactly the mismatch it exists to name.
    through real P/Invoke, fault spans asserted byte for byte.
 4. **Not slower — mostly faster.** BenchmarkDotNet, `[MemoryDiagnoser]`, lenience matched
    where the BCL has the knob, FFI crossing and UTF-16→UTF-8 transcode *included* in every
-   HyperCast number; zero managed allocation on every row, both sides (linux-arm64,
-   .NET 11 preview):
+   HyperCast number; zero managed allocation on every row, both sides (linux-x64 on an
+   Intel Core i9-11900H, .NET 11 RC 1):
 
    | Door | HyperCast | BCL | Verdict |
    | --- | ---: | ---: | --- |
-   | `Cast.Timestamp` vs `DateTimeOffset.TryParse` | 71.0 ns | 285.6 ns | **4.0x faster** |
-   | `Cast.Duration` vs `TimeSpan.TryParse` | 64.1 ns | 143.0 ns | **2.2x faster** |
-   | `Cast.Double` vs `double.TryParse` | 50.4 ns | 69.8 ns | **1.4x faster** |
-   | `Cast.Uuid` vs `Guid.TryParse` | 54.8 ns | 51.9 ns | wash — while also taking N/B/P/X and `urn:uuid:` |
-   | `Cast.Int32` (grouped) vs `int.TryParse` | 64.5 ns | 54.0 ns | 1.2x slower — the crossing tax, paid honestly |
-   | `Cast.Boolean` vs `bool.TryParse` | 18.5 ns | JIT-folded | honest loss — the twenty-lexeme vocabulary is why anyone calls this door |
-   | `Cast.DateTime` (`1/7/2026 3:04 PM`) vs `DateTime.TryParse` (en-US) | 61.2 ns | 222.9 ns | **3.6x faster** |
-   | `Cast.Date` (declared order) vs `DateOnly.TryParse` (en-US) | 33.7 ns | 132.3 ns | **3.9x faster** |
-   | `Cast.Double` (eurozone) vs `double.TryParse` (de-DE) | 98.7 ns | 65.9 ns | 1.5x slower — see below |
+   | `Cast.DateTime` (`1/7/2026 3:04 PM`) vs `DateTime.TryParse` (en-US) | 48.2 ns | 186.0 ns | **3.9x faster** |
+   | `Cast.Timestamp` vs `DateTimeOffset.TryParse` | 52.5 ns | 128.3 ns | **2.4x faster** |
+   | `Cast.Duration` vs `TimeSpan.TryParse` | 49.0 ns | 118.7 ns | **2.4x faster** |
+   | `Cast.Date` (declared order) vs `DateOnly.TryParse` (en-US) | 41.5 ns | 91.6 ns | **2.2x faster** |
+   | `Cast.Int32` (grouped) vs `int.TryParse` | 46.2 ns | 48.7 ns | wash |
+   | `Cast.Double` vs `double.TryParse` | 51.9 ns | 49.5 ns | wash |
+   | `Cast.Double` (eurozone) vs `double.TryParse` (de-DE) | 66.8 ns | 64.4 ns | wash |
+   | `Cast.Uuid` vs `Guid.TryParse` | 40.3 ns | 27.4 ns | 1.5x slower — while also taking N/B/P/X and `urn:uuid:` |
+   | `Cast.Boolean` vs `bool.TryParse` | 21.2 ns | JIT-folded | honest loss — the twenty-lexeme vocabulary is why anyone calls this door |
 
    Reproduce: `dotnet run -c Release --project csharp/HyperCast.Benchmarks`, from the repo
    root.
@@ -85,49 +85,51 @@ binding is exactly the mismatch it exists to name.
    Every row above is the `string` door, transcode included. The `ReadOnlySpan<byte>`
    doors are the primary surface — a caller holding UTF-8 already (a file, a wire buffer,
    one field of a delimited line) never pays that transcode — so they are measured on
-   their own, same machine, same run, BCL rows re-measured alongside:
+   their own, same machine, same run:
 
    | Door (UTF-8 in hand) | HyperCast | `string` door | BCL, same run |
    | --- | ---: | ---: | ---: |
-   | `Cast.Timestamp` | **51.2 ns** | 76.9 ns | 282.0 ns `DateTimeOffset.TryParse` |
-   | `Cast.Uuid` | **36.9 ns** | 47.6 ns | 51.2 ns `Guid.TryParse` — the wash becomes a win |
-   | `Cast.Double` | **32.3 ns** | 45.9 ns | 66.8 ns `double.TryParse` |
-   | `Cast.Int32` (grouped) | 52.9 ns | 64.1 ns | 49.3 ns `int.TryParse` — still a loss, by 3.5 ns now |
+   | `Cast.Timestamp` | **41.9 ns** | 52.5 ns | 128.3 ns `DateTimeOffset.TryParse` |
+   | `Cast.Int32` (grouped) | **28.0 ns** | 46.2 ns | 48.7 ns `int.TryParse` — the wash becomes a win |
+   | `Cast.Double` | **35.9 ns** | 51.9 ns | 49.5 ns `double.TryParse` — and so does this one |
+   | `Cast.Uuid` | 29.8 ns | 40.3 ns | 27.4 ns `Guid.TryParse` — still a loss, by 2.4 ns |
 
    The UTF-16 doors try the stack buffer first and rent from the pool only when the
    encoder says the text did not fit, rather than sizing by the 3-bytes-per-char worst
    case — which would send any text past ~170 chars to the pool even when it is plain
    ASCII that fits with room to spare.
 
-   The two doors the first consumer asked for, same box, one run, string doors with the
-   transcode included, invariant unless stated — printed as measured, because two of the
-   three rows are losses:
+   The two doors the first consumer asked for, same run, string doors with the transcode
+   included, invariant unless stated — printed as measured, because two of the three rows
+   are losses:
 
    | Door | HyperCast | BCL | Verdict |
    | --- | ---: | ---: | --- |
-   | `Cast.Decimal` (`12,345.6789`) vs `decimal.TryParse` | 95.9 ns | 94.8 ns (median 81.8) | wash — and exact, canonical, never rounded |
-   | `Cast.Decimal` (`($1,234.50)`, en-US `$`) vs `decimal.TryParse` `NumberStyles.Currency` | 115.6 ns | 71.3 ns | 1.6x slower |
-   | `Cast.Double` (same text, same format) vs `double.TryParse` `NumberStyles.Currency` | 117.3 ns | 69.1 ns | 1.7x slower |
-   | `Cast.Double` (`12345.6789`) vs `double.TryParse`, same run | 56.1 ns | 56.1 ns | wash |
+   | `Cast.Decimal` (`12,345.6789`) vs `decimal.TryParse` | 55.3 ns | 60.2 ns | 1.1x faster — and exact, canonical, never rounded |
+   | `Cast.Decimal` (`($1,234.50)`, en-US `$`) vs `decimal.TryParse` `NumberStyles.Currency` | 66.9 ns | 59.4 ns | 1.1x slower |
+   | `Cast.Double` (same text, same format) vs `double.TryParse` `NumberStyles.Currency` | 74.8 ns | 58.9 ns | 1.3x slower |
 
-   The currency rows lose for the reason the eurozone row below does, plus one more: a
-   declared symbol takes the door's normalize-then-parse path rather than its invariant fast
-   lane, and the core itself pays ~29 ns for the symbol and the grouping (`cast_decimal`
-   30.5 ns plain against 58.8 ns for `$12,345.67`, measured in the Rust suite). What the
-   consumer buys with the loss is the reason it asked: without a declared symbol, every
-   non-invariant culture fell out of the native path entirely. A fast lane for a symbol at
-   one edge is the obvious next receipt to chase; it is not built.
+   Grouping, a declared symbol and accounting parentheses are read in one pass by the
+   core's lenient fast lane (`rust/src/lane.rs`): in the Rust suite a `cast_decimal` of
+   `$12,345.67` costs 20.6 ns against 14.1 ns plain. The same lane is why the grouped
+   `Cast.Int32` row and the eurozone `Cast.Double` row are washes. What the currency rows
+   pay is the crossing and the transcode, against a BCL parser that has neither.
 
    **Separator detection is nearly free**: `NumFormat.Detect` on `1.234.567,89` costs
-   104.4 ns against 98.7 ns for the same text under a declared eurozone format — ~6 ns for
+   75.7 ns against 66.8 ns for the same text under a declared eurozone format — ~9 ns for
    resolving the `.`/`,` roles structurally instead of being told them.
 
-**The honest trade-off:** the eurozone `double` row is a real loss — `double.TryParse`
-under de-DE beats this door by ~33 ns, because non-invariant separators take the door's
-normalize-then-parse path rather than its invariant fast lane. And it's a native dependency
-(shipped per-RID inside the package) with a ~15–65 ns FFI crossing on every call. For plain
-invariant integers the BCL is already excellent; these doors earn their keep on the
-culture-machinery parsers, the closed error contract, and cross-language agreement.
+**The honest trade-off:** the currency rows and `Guid` are losses, expected ones, and
+every row carries the same cause: a native dependency (shipped per-RID inside the package)
+with an FFI crossing on every call — about 15 ns here, plus the transcode when the text is
+a `string` — against parsers that run in-process. Those two are also the rows where the
+BCL has a parser built for exactly the one shape being timed, so the comparison is that
+parser at its best against a door doing more: a format declared per call instead of
+borrowed from a culture, separators it can detect, a fault with a byte span instead of
+`false`, and the same verdict in seven languages. A handful of nanoseconds is what that
+costs. For plain invariant numbers the BCL is already excellent; these doors earn their
+keep on the culture-machinery parsers, the closed error contract, and cross-language
+agreement.
 
 ## AOT
 
@@ -148,11 +150,21 @@ dotnet publish csharp/HyperCast.AotSmokeTest/HyperCast.AotSmokeTest.csproj \
 ```
 
 Last verified on `linux-x64` and, inside an Alpine container, `linux-musl-x64`: **zero
-`ILxxxx`/`AOTxxxx` trim or AOT diagnostics**, a 1.6 MB self-contained native binary, and
-`AOT smoke test passed.` with exit code 0. `TreatWarningsAsErrors` is on for the library
+`ILxxxx`/`AOTxxxx` trim or AOT diagnostics**, a 1.7 MB native binary with the core inside it
+and no shared library beside it, and `AOT smoke test passed.` with exit code 0. `TreatWarningsAsErrors` is on for the library
 project, so an analyzer warning is a build failure, not a line in a log nobody reads. CI
 re-proves it per platform on every PR (see
 [Native binary provenance](#native-binary-provenance)).
+
+**The core is linked into the executable.** A Native AOT publish does not load
+`libhypercast.so` (or the `.dylib`, or the `.dll`): the package carries the core as a static
+library for each RID under `staticlibs/`, and its targets file hands the one for your RID to
+the AOT linker and binds every P/Invoke as a direct call. The publish directory holds one
+executable and no native library beside it, `Cast.IsAvailable` is always `true`, and
+this package and HyperUuid's can both be linked into the same executable. Nothing to configure;
+`<HyperCastStaticLink>false</HyperCastStaticLink>` in the project puts it back to loading the shared
+library, and so does publishing for a RID the package has no archive for. A JIT process is
+unaffected: it cannot link an archive, and loads the shared library as before.
 
 ## WebAssembly (Blazor)
 
@@ -349,7 +361,7 @@ build; an author signature ties it to an identity. If you want the automatic res
 check, this is the gap.
 
 **Per-platform AOT receipts.** The same CI run publishes `HyperCast.AotSmokeTest` under
-Native AOT on all six desktop RIDs and, in Alpine containers, on the two musl ones, fails the build on any `ILxxxx`/`AOTxxxx` trim diagnostic,
+Native AOT on five desktop RIDs (every one but `osx-x64`, which is cross-built and has no CI leg) and, in Alpine containers, on the two musl ones, fails the build on any `ILxxxx`/`AOTxxxx` trim diagnostic,
 executes the resulting binary, and requires exit 0. Each leg's log uploads as an
 `aot-report-{rid}` artifact.
 

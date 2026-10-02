@@ -159,27 +159,41 @@ target the C ABI is still exactly the same exports.
 
 ## Benchmarks
 
-`cargo bench` — Criterion, `rust/benches/cast_benchmarks.rs`. Measured on linux-arm64
-against Rust's own best-in-class. In-process, with no FFI boundary in the way, these are
+`cargo bench` — Criterion, `rust/benches/cast_benchmarks.rs`. Measured on linux-x64 (an
+Intel Core i9-11900H) against Rust's own best-in-class. In-process, with no FFI boundary in the way, these are
 the doors' raw cost:
 
 | Door | HyperCast | Closest Rust parser |
 | --- | ---: | --- |
-| `cast_date_ordered` (`1/7/2026`) | 17.8 ns | no stdlib parser takes it |
-| `cast_uuid` (D format) | 15.8 ns | 11.8 ns — `uuid` crate |
-| `cast_i64` | 15.5 ns | 9.7 ns — `str::parse` |
-| `cast_f64` | 26.6 ns | 14.6 ns — `str::parse` |
-| `cast_decimal` (`12345.6789`) | 30.5 ns | no stdlib parser — an exact `u96`+scale, never rounded; measured 28.1 ns for `cast_f64` in the same run |
-| `cast_decimal` (`$12,345.67`, declared `$`) | 58.8 ns | the currency symbol, grouping and the full engine: what a culture-shaped feed actually costs |
-| `cast_datetime` (`1/7/2026 3:04 PM`) | 30.1 ns | no stdlib parser takes it |
-| `cast_timestamp` (RFC 3339) | 30.3 ns | 21.9 ns — `time` crate |
-| `cast_datetime` (ISO) | 34.6 ns | — |
-| `cast_duration` (ISO 8601) | 42.1 ns | no stdlib parser takes it |
+| `cast_date_ordered` (`1/7/2026`) | 17.1 ns | no stdlib parser takes it |
+| `cast_uuid` (D format) | 16.8 ns | 11.3 ns — `uuid` crate |
+| `cast_i64` | 10.1 ns | 7.8 ns — `str::parse` |
+| `cast_f64` | 20.6 ns | 14.1 ns — `str::parse` |
+| `cast_decimal` (`12345.6789`) | 14.1 ns | no stdlib parser — an exact `u96`+scale, never rounded |
+| `cast_decimal` (`$12,345.67`, declared `$`) | 20.6 ns | the currency symbol and grouping, read in one pass: what a culture-shaped feed actually costs |
+| `cast_datetime` (`1/7/2026 3:04 PM`) | 25.7 ns | no stdlib parser takes it |
+| `cast_timestamp` (RFC 3339) | 23.1 ns | 17.5 ns — `time` crate |
+| `cast_datetime` (ISO) | 28.6 ns | — |
+| `cast_duration` (ISO 8601) | 36.6 ns | no stdlib parser takes it |
 
 Separator detection costs one extra scan and nothing more: `1.234.567,89` under
-`NumFormat::DETECT` is 71.1 ns against 59.9 ns for the same text under a declared eurozone
-format — ~11 ns, and invisible behind any FFI boundary (the Java and Swift bindings measure
+`NumFormat::DETECT` is 43.3 ns against 33.5 ns for the same text under a declared eurozone
+format — ~10 ns, and invisible behind any FFI boundary (the Java and Swift bindings measure
 detection as free at their crossing).
+
+Grouping, a currency symbol and accounting parentheses each used to send a number through
+the full normalize-then-parse engine. A second fast lane (`src/lane.rs`) reads them in one
+pass, so a money-shaped value costs a few nanoseconds more than a plain one rather than
+several times as much — under a declared `$` and `,`:
+
+| Shape | `cast_i64` | `cast_decimal` | `cast_f64` |
+| --- | ---: | ---: | ---: |
+| plain (`12345.67`) | 6.0 ns | 12.2 ns | 18.9 ns |
+| grouped (`12,345.67`) | 13.7 ns | 23.8 ns | 31.9 ns |
+| grouped, with the symbol (`$12,345.67`) | 13.5 ns | 22.2 ns | 32.7 ns |
+| the same in parentheses (`($12,345.67)`) | 13.6 ns | 23.2 ns | 33.0 ns |
+
+(The integer door reads the same four shapes of `1234567`.)
 
 **Correction, and the reason this file carries a table instead of a boast:** an earlier
 version of this README claimed `cast_uuid` beat the `uuid` crate (15.4 vs 17.4 ns). It

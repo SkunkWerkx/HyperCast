@@ -10,17 +10,21 @@ composition, but the doors never panic on input; a panic here means a caller bug
 data.**
 
 Allocation-lean scalar casts — booleans, the full integer family, reals, exact decimals,
-UUIDs, temporals — calling directly into the native `libhypercast` Rust core. Two native backends, chosen
-automatically by build tag, same public API either way: real cgo on darwin/linux
-(`backend_cgo.go`) — 3.5-4.8x faster per call, see Benchmarks — and
-[purego](https://github.com/ebitengine/purego) (`backend_purego.go`) — dlopen/dlsym plus
-per-arch call trampolines, no cgo and no C compiler required — everywhere else, including
-Windows unconditionally and any darwin/linux build with `CGO_ENABLED=0` (which, per Go's
-own defaults, includes every cross-compile). Bundles a native build for every supported
-platform (see [Platforms](#platforms)) via `go:embed` and picks the right one at runtime. A
-third backend, opt-in behind `-tags hypercast_wasm`, runs the same core as a WebAssembly
-module inside the process through wasmtime-go instead of dlopen'ing anything — see
-[WebAssembly (wasmtime-go)](#webassembly-wasmtime-go).
+UUIDs, temporals — calling directly into the native `hypercast` Rust core. Which way is
+chosen by the build, with the same public API every time:
+
+- **cgo on Linux and macOS links the core in** (`backend_static.go`). The core is a static
+  library on the link line: nothing is embedded, nothing is extracted, nothing is
+  `dlopen`ed, and the binary runs from a read-only filesystem or a `scratch` image.
+- **Everywhere else loads it** through [purego](https://github.com/ebitengine/purego)
+  (`backend_purego.go`) — no cgo and no C compiler required. That is Windows always, and
+  any build with `CGO_ENABLED=0`, which per Go's own defaults includes every cross-compile.
+  This build embeds a shared library for every supported platform via `go:embed` and picks
+  one at run time.
+- **`-tags hypercast_wasm`** runs the same core as a WebAssembly module inside the process
+  through wasmtime-go — see [WebAssembly (wasmtime-go)](#webassembly-wasmtime-go).
+
+cgo is also 5-8x faster per call than purego; see Benchmarks.
 
 ```go
 import hypercast "github.com/SkunkWerkx/HyperCast/go"
@@ -48,9 +52,11 @@ reads as if the package were called `go`.
 
 Go modules have no separate registry — `go get` resolves straight from a git tag, and because
 this module lives in a monorepo subdirectory its tags are prefixed (`go/vX.Y.Z`). The native
-libraries under `native/{rid}/` are committed to git and kept fresh by
-`stage-native-binaries.yml`: a `go:embed` consumer has no packing step, so whatever is
-literally in the tree at the resolved tag is what gets embedded (see `native/README.md`).
+binaries — the shared libraries under `native/{rid}/` and the static ones under
+`staticlib/{goos}_{goarch}/` — are committed to git and kept fresh by
+`stage-native-binaries.yml`: a `go get` consumer has no packing step, so whatever is
+literally in the tree at the resolved tag is what gets linked or embedded (see
+`native/README.md` and `staticlib/README.md`).
 
 See [the repo root README](../README.md) for the full door table, the receipts, and the
 state of every other language binding.
@@ -155,8 +161,11 @@ value, fault := hypercast.F64("€ 1.234,50", euros) // 1234.5
 
 ## The native library: `Available`, `LoadError`, `NativeVersion`
 
-The core is loaded once, on first use, and the outcome is cached for the life of the
-process. A door returns `(value, *Fault)`, and a `*Fault` is a verdict about the input — so
+In a cgo build on Linux or macOS the core is part of the binary, so there is nothing to
+load and nothing that can fail: `Available()` is always `true`, `LoadError()` always `nil`,
+and no door can panic for want of the library. Every other build loads the core once, on
+first use, and caches the outcome for the life of the process. A door returns
+`(value, *Fault)`, and a `*Fault` is a verdict about the input — so
 a library that never loaded has nowhere to go but a panic, and every door panics with an
 error wrapping `ErrNativeUnavailable` around the specific reason: an unsupported platform,
 no embedded build for it, a failed extraction or `dlopen`, a core that doesn't export the
@@ -190,40 +199,54 @@ points and the same `ErrNativeUnavailable`, with one difference that follows fro
 its functions already return `error`, so they return that error where these doors panic
 with it.
 
-On the two native backends, loading means extracting the embedded library to a temp file
-and `dlopen`ing it from there (`native_extract.go`). The file is created in `os.TempDir()`
-— `TMPDIR` moves it — once per process, and is not removed at exit.
+Where the core is loaded — purego, or cgo with `-tags hypercast_dynamic` — loading means
+extracting the embedded library to a temp file and `dlopen`ing it from there
+(`native_extract.go`). The file is created in `os.TempDir()` — `TMPDIR` moves it — once per
+process, and is not removed at exit. A build that links the core in does none of that.
 
 ## Platforms
 
-| Platform | Embedded build | Needs at run time |
+| Platform | cgo build | `CGO_ENABLED=0` (purego) |
 | --- | --- | --- |
-| Linux x64 / arm64, glibc | `native/linux-x64`, `native/linux-arm64` | glibc 2.34 or newer, and `libgcc_s.so.1` |
-| Linux x64 / arm64, musl (Alpine) | `native/linux-musl-x64`, `native/linux-musl-arm64` | musl libc, nothing else |
-| macOS x64 / arm64 | `native/osx-x64`, `native/osx-arm64` | — |
-| Windows x64 / arm64 | `native/win-x64`, `native/win-arm64` | — |
+| Linux x64 / arm64, glibc | linked in: `staticlib/linux_amd64`, `staticlib/linux_arm64` | loads `native/linux-x64`, `native/linux-arm64` — needs glibc 2.34 or newer, and `libgcc_s.so.1` |
+| Linux x64 / arm64, musl (Alpine) | linked in, the same two archives | loads `native/linux-musl-x64`, `native/linux-musl-arm64` — needs musl libc, nothing else |
+| macOS x64 / arm64 | linked in: `staticlib/darwin_amd64`, `staticlib/darwin_arm64` | loads `native/osx-x64`, `native/osx-arm64` |
+| Windows x64 / arm64 | purego regardless of cgo | loads `native/win-x64`, `native/win-arm64` |
 
 Anything else — another OS, or an architecture such as 386 or riscv64 — is reported as
 `unsupported platform {GOOS}/{GOARCH}` inside `ErrNativeUnavailable`, never guessed at.
 
-**glibc.** The glibc builds reference symbols up to `GLIBC_2.34`, which is Debian 12,
-Ubuntu 22.04, RHEL 9 and Amazon Linux 2023 or later; on an older glibc the load fails with
-the loader's own `version ... not found`. They also link `libgcc_s.so.1`, which every
-mainstream glibc distribution ships and a minimal image may not: an image with glibc but
-no `libgcc_s.so.1` (`gcr.io/distroless/base`, for one) fails the load with `libgcc_s.so.1:
-cannot open shared object file`.
+**Linked in.** A cgo build names one static library on its link line and that is all it
+takes from this module: the binary carries the core for its own platform, where a build
+that loads carries every platform's shared library — 3.2 MB against 6.7 MB for a program
+that does nothing else. It needs nothing at run time beyond the C library it was linked
+against, so `-ldflags '-linkmode external -extldflags -static'` gives a binary with no
+dependencies at all, which runs in an empty, read-only container. One archive serves glibc
+and musl alike: cgo has no build constraint that tells them apart, and the archive asks the
+C library for nothing both do not have. CI runs the suite against it on Debian and on
+Alpine, on both architectures.
 
-**musl.** Which Linux build is loaded is decided at run time, by what the process is
+**Loaded, on glibc.** The glibc shared libraries reference symbols up to `GLIBC_2.34`, which
+is Debian 12, Ubuntu 22.04, RHEL 9 and Amazon Linux 2023 or later; on an older glibc the
+load fails with the loader's own `version ... not found`. They also link `libgcc_s.so.1`,
+which every mainstream glibc distribution ships and a minimal image may not: an image with
+glibc but no `libgcc_s.so.1` (`gcr.io/distroless/base`, for one) fails the load with
+`libgcc_s.so.1: cannot open shared object file`. None of this applies to a build that links
+the core in.
+
+**Loaded, on musl.** Which Linux shared library is loaded is decided at run time, by what the process is
 actually running on: if `/proc/self/maps` shows a musl loader mapped (`ld-musl-*` or
 `libc.musl-*`), the `linux-musl-*` build is used; otherwise, or if the file can't be read,
 the glibc one. The musl builds depend on musl libc alone — no `libgcc`, no `gcompat`. What
 that means for a build:
 
-- **Built on Alpine** — both backends work. The default cgo build needs a C compiler
-  (`apk add build-base`) at build time only. `CGO_ENABLED=0` (purego) needs none.
-- **Built on a glibc machine, shipped to Alpine** — build with `CGO_ENABLED=0`; a cgo
-  build links the builder's glibc, which a bare Alpine image does not have. Even then,
-  Go's linker writes glibc's loader into the binary by default, so on a bare Alpine image
+- **Built on Alpine** — every backend works. The default cgo build needs a C compiler
+  (`apk add build-base`) at build time only, and links the core in. `CGO_ENABLED=0`
+  (purego) needs none.
+- **Built on a glibc machine, shipped to Alpine** — build with `CGO_ENABLED=0`, or link
+  fully statically; an ordinary cgo build links the builder's glibc, which a bare Alpine
+  image does not have. With `CGO_ENABLED=0`, Go's linker still writes glibc's loader into
+  the binary by default, so on a bare Alpine image
   it fails to start (`not found`, exit 127) before this module is ever reached. Name
   musl's loader instead and it runs:
   `CGO_ENABLED=0 go build -ldflags '-I /lib/ld-musl-x86_64.so.1' ./...` (arm64's loader
@@ -242,12 +265,19 @@ either way — no code changes for a consumer:
 
 | Build | Backend | File |
 | --- | --- | --- |
-| darwin/linux with cgo enabled | cgo | `backend_cgo.go` (`//go:build cgo && (darwin \|\| linux) && !hypercast_wasm`) |
+| darwin/linux with cgo enabled, amd64 or arm64 | cgo, core linked in | `backend_static.go` |
+| the same, with `-tags hypercast_dynamic` | cgo, shared library loaded | `backend_cgo.go` |
 | Windows; any build with `CGO_ENABLED=0`; every cross-compile | purego | `backend_purego.go` (`//go:build !(cgo && (darwin \|\| linux)) && !hypercast_wasm`) |
 | `-tags hypercast_wasm` | wasmtime-go | `backend_wasmtime.go` (`//go:build hypercast_wasm`) |
 
 **cgo wherever it is available**, because a scalar parser pays the crossing on every call
 and purego's trampoline allocates on each one — the Benchmarks section has both columns.
+
+**Linked in by default.** `backend_static.go` takes each door's address from a symbol the
+linker resolved; `backend_cgo.go` takes it from `dlsym`, the way every cgo build did through
+0.3.0, and is kept behind `-tags hypercast_dynamic` for a build that has to pick the core
+up at run time rather than at link time. The two share their C shims and cost the same per
+call; it is the loading that differs.
 
 **Windows stays on purego unconditionally**, even when `CGO_ENABLED=1`: a cgo build there
 needs a MinGW-class C toolchain, and the mainline MinGW-w64 distribution has no arm64
@@ -287,9 +317,10 @@ worse answer to every other one:
   `native/wasm32-wasip1/hypercast.wasm` is one artifact for every OS and architecture
   wasmtime itself runs on; `currentTarget()` and the per-RID shared libraries are not
   consulted.
-- **A deployment that must not write an executable to a temp file.** The native backends
-  have to (see `native_extract.go`); this one instantiates the module straight from the
-  embedded bytes.
+- **A deployment that must not write an executable to a temp file, and cannot use cgo.** The
+  purego backend has to (see `native_extract.go`); this one instantiates the module straight
+  from the embedded bytes. Where cgo is available the default build already writes nothing:
+  it links the core in.
 
 Two costs, stated plainly:
 
@@ -311,18 +342,18 @@ guest's next allocation — and the verdict is copied back out. The by-value `re
 doors read is the same one the cgo shims return, so `cast.go` does not know which backend
 it got.
 
-Measured on linux-arm64 (WSL2, go1.27), `go test -bench=BenchmarkCast -benchmem` with and
-without the tag, same session:
+Measured on linux-x64 (an Intel Core i9-11900H, go1.27), `go test -bench=BenchmarkCast
+-benchmem` with and without the tag, same session:
 
 | Door | cgo | wasmtime-go |
 | --- | ---: | ---: |
-| `Bool` | 82 ns, 0 allocs | 3.4 µs, 14 allocs |
-| `I32` | 84 ns, 0 allocs | 3.4 µs, 16 allocs |
-| `F64` | 105 ns, 0 allocs | 3.7 µs, 16 allocs |
-| `Uuid` | 99 ns, 0 allocs | 3.5 µs, 14 allocs |
-| `Timestamp` | 101 ns, 0 allocs | 3.8 µs, 14 allocs |
-| `DateTime` (`1/7/2026 3:04 PM`) | 110 ns, 0 allocs | 3.4 µs, 15 allocs |
-| `Span` (ISO) | 119 ns, 0 allocs | 3.6 µs, 14 allocs |
+| `Bool` | 51 ns, 0 allocs | 2.6 µs, 14 allocs |
+| `I32` | 73 ns, 0 allocs | 2.9 µs, 16 allocs |
+| `F64` | 95 ns, 0 allocs | 2.7 µs, 16 allocs |
+| `Uuid` | 71 ns, 0 allocs | 2.5 µs, 14 allocs |
+| `Timestamp` | 77 ns, 0 allocs | 2.6 µs, 14 allocs |
+| `DateTime` (`1/7/2026 3:04 PM`) | 73 ns, 0 allocs | 2.9 µs, 15 allocs |
+| `Span` (ISO) | 80 ns, 0 allocs | 2.6 µs, 14 allocs |
 
 Roughly 35x the native crossing per door, and the allocations are wasmtime-go's own
 per-call argument boxing, not this module's. Unlike HyperUuid, there is no batch door here
@@ -341,9 +372,11 @@ not a performance one.
    binding, held by the shared corpus (the whole suite green on all three backends, full
    corpus replay).
 
-**The honest trade-off, stated as plainly as the wins elsewhere: every Go door loses
-per-call to Go's stdlib.** Go's parsers are simply excellent (`time.Parse(RFC3339Nano)` at
-~67 ns, `strconv.Atoi` at ~11 ns), and every HyperCast call pays a cgo crossing. It no
+**The honest trade-off, stated as plainly as the wins elsewhere: every Go door but one
+loses per-call to Go's stdlib.** Go's parsers are simply excellent (`time.Parse(RFC3339Nano)`
+at ~44 ns, `strconv.Atoi` at ~7 ns), and every HyperCast call pays a cgo crossing of about
+50 ns. The exception is the messy date-time door, which beats `time.Parse` with a layout by
+1.3x because that is the one stdlib path slow enough to absorb the crossing. It no
 longer pays a heap allocation on top: 0.1.0's doors passed `&out` and `&fault` into the
 foreign call, and any Go pointer handed to cgo escapes to the heap — which the README then
 called "a floor for this call shape". It was a floor for *that* shape, not for the ABI.
@@ -357,30 +390,31 @@ zero.
 
 ## Benchmarks
 
-`go test -bench=. -benchmem ./...` for cgo, the same with `CGO_ENABLED=0` for purego.
-Measured on the same linux-arm64 machine, same session, median of three runs — 0.1.0's
-pointer-passing doors against 0.2.0's by-value shims:
+`go test -bench=. -benchmem ./...` for cgo with the core linked in, `-tags
+hypercast_dynamic` for cgo loading it, `CGO_ENABLED=0` for purego. Measured on linux-x64
+(an Intel Core i9-11900H, go1.27), one session, median of three runs:
 
-| Door | cgo 0.1.0 | cgo 0.2.0 | purego | stdlib |
+| Door | cgo, linked in (the default) | cgo, loading | purego | stdlib |
 | --- | ---: | ---: | ---: | ---: |
-| `Timestamp` | 174 ns, 2 allocs | **112 ns, 0 allocs** | 596 ns, 5 allocs | 67 ns `time.Parse(RFC3339Nano)` |
-| `I32` | 172 ns, 3 allocs | **87 ns, 0 allocs** | — | 11 ns `strconv.Atoi` |
-| `I32` (grouped) | 224 ns, 3 allocs | **125 ns, 0 allocs** | 652 ns, 6 allocs | — |
-| `F64` | 218 ns, 3 allocs | **106 ns, 0 allocs** | — | 39 ns `strconv.ParseFloat` |
-| `Uuid` | 155 ns, 2 allocs | **99 ns, 0 allocs** | 590 ns, 5 allocs | 35 ns `google/uuid.Parse` |
-| `Span` (ISO) | 172 ns, 2 allocs | **120 ns, 0 allocs** | — | 71 ns `ParseDuration` (Go dialect — different grammar) |
-| `Bool` | 111 ns, 1 alloc | **78 ns, 0 allocs** | 560 ns, 5 allocs | 4 ns `strconv.ParseBool` |
-| `TimeOfDay` | 115 ns, 1 alloc | **81 ns, 0 allocs** | — | — |
-| `DateTime` (`1/7/2026 3:04 PM`) | 173 ns, 2 allocs | **122 ns, 0 allocs** | — | 135 ns `time.Parse` w/ layout |
-| `DateOnlyOrdered` (`1/7/2026`) | 129 ns, 1 alloc | **95 ns, 0 allocs** | — | 78 ns `time.Parse` w/ layout |
+| `Timestamp` | **77 ns, 0 allocs** | 82 ns, 0 allocs | 466 ns, 5 allocs | 44 ns `time.Parse(RFC3339Nano)` |
+| `I32` | **73 ns, 0 allocs** | 74 ns, 0 allocs | 488 ns, 6 allocs | 7 ns `strconv.Atoi` |
+| `I32` (grouped) | **83 ns, 0 allocs** | 80 ns, 0 allocs | 496 ns, 6 allocs | — |
+| `F64` | **95 ns, 0 allocs** | 95 ns, 0 allocs | 508 ns, 6 allocs | 25 ns `strconv.ParseFloat` |
+| `Uuid` | **71 ns, 0 allocs** | 69 ns, 0 allocs | 442 ns, 5 allocs | 27 ns `google/uuid.Parse` |
+| `Span` (ISO) | **80 ns, 0 allocs** | 87 ns, 0 allocs | 474 ns, 5 allocs | 61 ns `ParseDuration` (Go dialect — different grammar) |
+| `Bool` | **51 ns, 0 allocs** | 53 ns, 0 allocs | 426 ns, 5 allocs | 2 ns `strconv.ParseBool` |
+| `TimeOfDay` | **66 ns, 0 allocs** | 61 ns, 0 allocs | 443 ns, 5 allocs | — |
+| `DateTime` (`1/7/2026 3:04 PM`) | **73 ns, 0 allocs** | 79 ns, 0 allocs | 499 ns, 6 allocs | 95 ns `time.Parse` w/ layout |
+| `DateOnlyOrdered` (`1/7/2026`) | **70 ns, 0 allocs** | 70 ns, 0 allocs | 483 ns, 6 allocs | 56 ns `time.Parse` w/ layout |
 
-The purego column barely moves, as expected: its allocations are the trampoline's own
-argument boxing, not the out-params, and its doors fill the same by-value result through
-pointers because that cost is already paid. Separator detection costs ~9 ns: `1.234.567,89`
-under `Detect` is 172 ns against 164 ns for the same text under a declared eurozone format
-(cgo backend).
+Linking the core in and loading it cost the same per call, within the noise of three runs;
+what linking changes is the binary and its start-up, not the crossing. purego's allocations
+are the trampoline's own argument boxing, not the out-params — its doors fill the same
+by-value result through pointers, because that cost is already paid. Separator detection
+costs ~13 ns: `1.234.567,89` under `Detect` is 117 ns against 104 ns for the same text under
+a declared eurozone format (cgo backend).
 
-cgo's 4.5-7x per-call win over purego is why it stays the default wherever it's
+cgo's 5-8x per-call win over purego is why it stays the default wherever it's
 available; purego's zero-toolchain story is why it carries Windows, `CGO_ENABLED=0`, and
 every cross-compile automatically. One caveat inherited with cgo-by-default: a *native*
 darwin/linux build on a machine with no C compiler at all (distroless-style container,

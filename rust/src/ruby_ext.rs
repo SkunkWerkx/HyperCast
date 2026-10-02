@@ -17,7 +17,7 @@ use magnus::encoding::EncodingCapable;
 use magnus::rb_sys::{AsRawValue, FromRawValue};
 use magnus::scan_args::scan_args;
 use magnus::value::{Opaque, ReprValue};
-use magnus::{function, prelude::*, Error, IntoValue, RModule, RString, Ruby, Symbol, Value};
+use magnus::{function, prelude::*, Error, IntoValue, RModule, RString, RStruct, Ruby, Symbol, Value};
 
 use crate as core;
 
@@ -106,9 +106,34 @@ fn declared_symbol(ruby: &Ruby, option: Value) -> Result<Symbol, Error> {
     Symbol::from_value(option).ok_or_else(|| unknown_option(ruby, option))
 }
 
+/// Builds an instance of one of the package's `Data` classes with its members in definition
+/// order.
+///
+/// `Data.new` is the expensive part of a lean door: it gathers its arguments into a keyword
+/// Hash before it stores them, and measured ~280 ns for `Success` alone against ~450 for a
+/// whole `bool` cast. A `Data` instance is a struct underneath, so the same object is made
+/// here the way `Data#initialize` finishes making it — allocated, its members stored, frozen
+/// — without the Hash. Should a Ruby ever stop representing `Data` as a struct, `from_value`
+/// says so and the door falls back to `.new`.
+fn data<const N: usize>(class: Value, members: [Value; N]) -> Result<Value, Error> {
+    // SAFETY: `class` is a live class object (cached at load); rb_obj_alloc runs its
+    // allocator and raises only when memory is exhausted.
+    let instance = unsafe { Value::from_raw(rb_sys::rb_obj_alloc(class.as_raw())) };
+    let Some(fields) = RStruct::from_value(instance) else {
+        return match members.len() {
+            1 => class.funcall("new", (members[0],)),
+            _ => class.funcall("new", (members[0], members[1], members[2])),
+        };
+    };
+    for (index, member) in members.into_iter().enumerate() {
+        fields.aset(index, member)?;
+    }
+    instance.freeze();
+    Ok(instance)
+}
+
 fn success(ruby: &Ruby, value: impl magnus::IntoValue) -> Result<Value, Error> {
-    ruby.get_inner(cached().success)
-        .funcall("new", (value.into_value_with(ruby),))
+    data(ruby.get_inner(cached().success), [value.into_value_with(ruby)])
 }
 
 /// Builds the Fault over `text` — the UTF-8 the core read — with its span in the units
@@ -121,7 +146,10 @@ fn fault(ruby: &Ruby, text: RString, failed: core::Fault) -> Result<Value, Error
         core::Reason::OutOfRange => cache.out_of_range,
     });
     let (offset, length) = character_span(text, failed.offset, failed.len);
-    ruby.get_inner(cached().fault).funcall("new", (reason, offset, length))
+    data(
+        ruby.get_inner(cached().fault),
+        [reason.as_value(), offset.into_value_with(ruby), length.into_value_with(ruby)],
+    )
 }
 
 /// The core's byte span in the units `String#[]` slices by — the same rule as

@@ -15,8 +15,8 @@ dependencies {
     // GraalWasm on the benchmark classpath only, so `./gradlew :benchmarks:jmh -Pwasm` can
     // run the same suite through the wasm32-wasip1 module — the README's WebAssembly table
     // is that run against the plain one. Absent the property nothing here loads it.
-    jmh("org.graalvm.polyglot:polyglot:25.3.4.1")
-    jmh("org.graalvm.polyglot:wasm:25.3.4.1")
+    jmh("org.graalvm.polyglot:polyglot:25.4.4.1.1")
+    jmh("org.graalvm.polyglot:wasm:25.4.4.1.1")
 }
 
 java {

@@ -1,3 +1,5 @@
+//go:build !(cgo && (darwin || linux) && (amd64 || arm64) && !hypercast_wasm && !hypercast_dynamic)
+
 package hypercast
 
 import (

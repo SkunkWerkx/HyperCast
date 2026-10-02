@@ -29,6 +29,26 @@ RSpec.describe "native backend" do
     expect(fiddle_eval("HyperCast::BACKEND")).to eq("fiddle")
   end
 
+  # The extension builds Success and Fault without going through Data.new (the keyword Hash
+  # it gathers was most of a lean door's cost), so what it hands back has to be the object
+  # Data.new would have made in every way a caller can observe.
+  it "hands back verdicts indistinguishable from ones Data.new built" do
+    success = HyperCast.bool("true")
+    built = HyperCast::Success.new(value: true)
+    expect(success).to eq(built).and be_frozen
+    expect(success).to eql(built)
+    expect(success.hash).to eq(built.hash)
+    expect(success.to_h).to eq(value: true)
+    expect(success.with(value: false)).to eq(HyperCast::Success.new(value: false))
+    expect(Marshal.load(Marshal.dump(success))).to eq(built)
+    expect((success in HyperCast::Success(value: true))).to be(true)
+
+    fault = HyperCast.i32("12x", HyperCast::NumFormat::INVARIANT)
+    expect(fault).to eq(HyperCast::Fault.new(reason: :malformed, offset: 2, length: 1)).and be_frozen
+    expect(fault.to_h).to eq(reason: :malformed, offset: 2, length: 1)
+    expect((fault in HyperCast::Fault(reason: :malformed, offset: 2, length: 1))).to be(true)
+  end
+
   it "agrees with the Fiddle backend on a declared format" do
     eurozone = HyperCast::NumFormat.new(decimal_sep: ",", group_sep: ".", flags: HyperCast::ALL_STYLES)
     native = HyperCast.f64("1.234,5", eurozone)

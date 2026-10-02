@@ -239,8 +239,20 @@ twice the plain path in the core** — `cast_decimal` 30.5 ns for `12345.6789` a
 for `$12,345.67` under a declared `$`, and the C# binding's `Cast.Double`/`Cast.Decimal` on
 `($1,234.50)` land at ~116 ns against ~70 ns for the BCL's `NumberStyles.Currency`. A
 declared symbol currently forces the full normalize-then-parse engine; a fast lane that
-strips a symbol at one edge and re-enters `is_plain` would recover most of it. Measured, not
-built. And, **Python's `bytes` input cost about
+strips a symbol at one edge and re-enters `is_plain` would recover most of it. **Built
+since, though not as proposed:** measuring each notation on its own showed the symbol was
+never the cost. Grouping alone was as slow as grouping, symbol and parentheses together
+(41.5 ns against 44.5 for an i64), because the price was leaving the plain path at all, so
+stripping a symbol and re-entering it would have helped `$12345.67` and nothing a person
+actually types. `rust/src/lane.rs` is a second fast lane for the whole family instead —
+grouping, a declared symbol, accounting parentheses — and brings an i64 from 41–45 ns to
+14, a decimal from 42–50 ns to 21–24, and a real from 40–42 ns to 33. The plain decimal
+path went from 25.5 ns to 11.8 on the way. Through the C# binding, same machine and
+session, `Cast.Decimal` on `($1,234.50)` went from 104 ns to 66 against the BCL's 60, and
+`Cast.Double` from 83 ns to 74 against 52: the decimal door is level with
+`NumberStyles.Currency` now, and the real door still trails it, because a real has to be
+copied without its separators for `core`'s float parser where a decimal is read in place.
+And, **Python's `bytes` input cost about
 a microsecond more than the same text as `str`** on every native door, success and failure
 alike — `"42"` at 116 ns against `b"42"` at 1,179 ns on the same box. The cause was the
 derived PyO3 `Text` extractor trying the `str` variant first and materializing a downcast
