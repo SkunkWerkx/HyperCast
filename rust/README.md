@@ -37,7 +37,8 @@ Zero runtime dependencies either way.
 ## `no_std`
 
 The parsing core touches nothing outside `core` — so `default-features = false` gives a
-genuine `#![no_std]` rlib:
+genuine `#![no_std]` rlib, on every target: your own machine, `wasm32-unknown-unknown`, and
+bare metal.
 
 ```sh
 cargo add hypercast --no-default-features
@@ -53,14 +54,17 @@ a benchmark result.
 
 Both halves are guarded in CI (`check-no-std`), not left to convention:
 `cargo check --no-default-features --target thumbv7em-none-eabi` compiles the crate for a
-real Cortex-M target, and the job additionally fails if `extern crate alloc` ever appears in
-the core. Nothing else in the pipeline would notice either regression — every other cargo
-invocation builds the default `std` configuration, where a stray `use std::` or a `Vec`
+real Cortex-M target, a `default-features = false` consumer is built for the host and for
+`wasm32-unknown-unknown`, and the job additionally fails if `extern crate alloc` ever appears
+in the core. Nothing else in the pipeline would notice any of these regressions — every other
+cargo invocation builds the default `std` configuration, where a stray `use std::` or a `Vec`
 compiles perfectly cleanly.
 
-The `std` feature is on by default and stays that way for the shared-library build, because
-a `cdylib` is a final linked artifact and needs a `#[panic_handler]` that only `std`
-supplies — declaring `#![no_std]` unconditionally fails the release build outright.
+The `std` feature is on by default and stays that way for the shared-library build
+(`cargo cdylib`, below), because a `cdylib` is a final linked artifact and needs a
+`#[panic_handler]` that only `std` supplies — declaring `#![no_std]` unconditionally fails
+that build outright. The shared library is not one of the manifest's crate types, so cargo
+never builds it for a consumer of the crate.
 
 ## Excel date serials
 
@@ -90,11 +94,16 @@ native extension — one crate, three extra entry points, instead of satellite c
 path-depending back here:
 
 ```sh
-cargo build --release                    # the plain cdylib + rlib every FFI binding uses
-cargo build --release --features python  # the CPython extension module (PyO3, abi3-py311)
-cargo ruby-ext                           # the Ruby extension (Magnus), in target/ruby/release/ (ruby/'s `rake native:dev` runs this and stages the result)
-cargo php-ext                            # the Zend extension (ext-php-rs) — benchmark spike only, in target/php/release/
+cargo cdylib                    # the plain shared library every FFI binding uses
+cargo cdylib --features python  # the CPython extension module (PyO3, abi3-py311)
+cargo ruby-ext                  # the Ruby extension (Magnus), in target/ruby/release/ (ruby/'s `rake native:dev` runs this and stages the result)
+cargo php-ext                   # the Zend extension (ext-php-rs) — benchmark spike only, in target/php/release/
 ```
+
+`cargo cdylib` is an alias in `.cargo/config.toml` for `cargo rustc --release --crate-type
+cdylib`. The manifest declares only the rlib, so a plain `cargo build` produces no shared
+library; the crate type is named per invocation, which is what keeps it out of every
+consumer's build.
 
 The `php` one is not a shipped backend. PHP's ext-ffi crossing measured ~105 ns — already
 extension-class, which is why Python and Ruby got a native backend and PHP didn't — and
@@ -114,7 +123,7 @@ extension module needs (the host runtime's symbols resolve at load time, not lin
 loop loads. The extension build still exports every `cast_*` symbol, but it also carries
 ~95 undefined `Py*` symbols that only resolve inside a CPython process, so the next
 `./gradlew test` or `dotnet test` fails at native load with something unhelpful about a
-missing symbol. Nothing is broken; a plain `cargo build --release` puts it back. Locally,
+missing symbol. Nothing is broken; a plain `cargo cdylib` puts it back. Locally,
 the `cargo ruby-ext` and `cargo php-ext` aliases in `.cargo/config.toml` avoid it by building into
 `target/ruby/` and `target/php/`, and `python/.cargo/config.toml` does the same for maturin
 (`python/target/`). CI hits
@@ -138,7 +147,7 @@ ship it: the `cdylib` for `wasm32-wasip1`, built from inside this directory so t
 `.cargo/config.toml` applies —
 
 ```sh
-cargo build --release --target wasm32-wasip1
+cargo cdylib --target wasm32-wasip1
 # rust/target/wasm32-wasip1/release/hypercast.wasm
 ```
 
@@ -239,7 +248,8 @@ cargo add hypercast
 ```
 
 Zero runtime dependencies. `default-features = false` gives the `#![no_std]` rlib described
-above; the default build additionally produces the `cdylib` every other binding loads.
+above. The `cdylib` every other binding loads is built from this repository with
+`cargo cdylib`, and is never part of a consumer's build.
 
 See [the repo root README](../README.md) for the full door table, the receipts, and the
 state of every other language binding.

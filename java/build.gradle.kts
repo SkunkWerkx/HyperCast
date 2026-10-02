@@ -15,7 +15,7 @@ group = "io.github.skunkwerkx"
 // workflow_dispatch runs during testing don't collide with an already-published version —
 // the real Maven Central publish (release.yml, tag-triggered) never sets that env var, so
 // it always uses this committed version as-is.
-version = System.getenv("HYPERCAST_VERSION") ?: "0.4.0"
+version = System.getenv("HYPERCAST_VERSION") ?: "0.4.1"
 
 repositories {
     mavenCentral()
@@ -40,13 +40,13 @@ dependencies {
 }
 
 // Local dev loop, mirroring the C# binding's csproj copy of the freshly-built core: when
-// the Rust cdylib exists in-repo (a release-profile cargo build in ../rust), stage it as
+// the Rust cdylib exists in-repo (`cargo cdylib` in ../rust), stage it as
 // the classpath resource /native/{rid}/{lib} the loader expects. CI overlays every
 // platform's build into the same layout before packaging.
 //
 // The same resolution NativePlatform.java does at runtime, so the library lands under the
 // RID the loader will ask for: x64 or arm64 only, and on Linux the musl family when this
-// (Gradle's own) JVM has musl's loader mapped — a `cargo build` on Alpine produces a musl
+// (Gradle's own) JVM has musl's loader mapped — `cargo cdylib` on Alpine produces a musl
 // library, and it has to be staged as linux-musl-*. Anything else stages nothing, and the
 // suite then runs through the wasm module exactly as a consumer on that platform would.
 val nativeRid = run {
@@ -70,7 +70,7 @@ val nativeRid = run {
 }
 
 // Only when this platform's library has NOT been placed under src/main/resources
-// explicitly. The forge builds the PyO3 extension (cargo build --features python) into the
+// explicitly. The forge builds the PyO3 extension (the `python` feature's cdylib) into the
 // same rust/target/release/ BEFORE the Java leg runs, so staging from there in CI put an
 // extension with unresolved Py* imports beside the correctly placed one and the suite
 // failed at native load. Explicit placement is the signal that the right bytes are already
@@ -92,7 +92,7 @@ val stageNativeLibrary = tasks.register<Sync>("stageNativeLibrary") {
 }
 
 // The same dev loop for the wasm32-wasip1 module the GraalWasm backend runs: a
-// `cargo build --release --target wasm32-wasip1` in ../rust (from inside rust/, so its
+// `cargo cdylib --target wasm32-wasip1` in ../rust (from inside rust/, so its
 // .cargo/config.toml export flags apply) lands at /native/wasm32-wasip1/hypercast.wasm on
 // the classpath, beside the platform library. Same explicit-placement yield as above.
 val wasmPlaced = file("src/main/resources/native/wasm32-wasip1").exists()

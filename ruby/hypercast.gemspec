@@ -2,7 +2,7 @@ Gem::Specification.new do |spec|
   spec.name = "hypercast"
   # Kept in lockstep with HyperCast::VERSION (lib/hypercast.rb) and rust/Cargo.toml by the
   # prepare-release workflow, which rewrites all three together.
-  spec.version = "0.4.0"
+  spec.version = "0.4.1"
   spec.summary = "Scalar parsing as Success/Fault verdicts over a native Rust core, shipped prebuilt"
   spec.description = <<~DESC
     Booleans, numerics, exact decimals, UUIDs, and temporals cast from untrusted text by a
