@@ -206,6 +206,9 @@ jobs:
   # prerequisite "prepare release" is responsible for, not automatic just because this job
   # runs.
   nuget-org-pack:
+    # 0.4.0 recovery: this leg already published 0.4.0 (run 36962100705); gated so the
+    # rerun that publishes PyPI does not push a duplicate. Remove once PyPI is out.
+    if: false
     needs: find-ci-run
     uses: SkunkWerkx/.github/.github/workflows/hyper-pack-nuget.yml@master
     # attest-build-provenance signs with an OIDC token and records the result; a reusable
@@ -228,6 +231,9 @@ jobs:
   # repo's own workflow, never from the shared forge (see hyper-pack-nuget.yml's header for
   # the confirmed 401s behind that).
   nuget-org-publish:
+    # 0.4.0 recovery: this leg already published 0.4.0 (run 36962100705); gated so the
+    # rerun that publishes PyPI does not push a duplicate. Remove once PyPI is out.
+    if: false
     needs: nuget-org-pack
     runs-on: ubuntu-26.04
     permissions:
@@ -374,6 +380,9 @@ jobs:
   # exchange release-gem uses internally, called directly so a plain `gem push` per file
   # picks up the resulting credentials.
   rubygems-publish:
+    # 0.4.0 recovery: this leg already published 0.4.0 (run 36962100705); gated so the
+    # rerun that publishes PyPI does not push a duplicate. Remove once PyPI is out.
+    if: false
     needs: find-ci-run
     runs-on: ubuntu-26.04
     permissions:
@@ -705,9 +714,17 @@ jobs:
             docker run --rm -v "$PWD/python/dist:/dist:ro" python:3.14-alpine sh -euc \
               "pip install -q --root-user-action=ignore /dist/*.whl && python -c \"$check\""
           else
-            python -m pip install --quiet --force-reinstall python/dist/*.whl
+            # The osx-x64 leg runs on an arm64 runner. setup-python's "x64" macOS build is
+            # the python.org installer, which is a universal binary, and a universal binary
+            # runs its arm64 slice there — where pip rightly refuses an x86_64 wheel ("not a
+            # supported wheel on this platform", v0.4.0's first run). `arch -x86_64` runs the
+            # Intel slice under Rosetta, which is the interpreter this wheel is for.
+            py=(python)
+            if [[ "${{ matrix.rid }}" == osx-x64 ]]; then py=(arch -x86_64 python); fi
+            "${py[@]}" -c 'import platform, sys; print("smoke-test interpreter:", platform.machine(), sys.version.split()[0])'
+            "${py[@]}" -m pip install --quiet --force-reinstall python/dist/*.whl
             cd "$RUNNER_TEMP"
-            python -c "$check"
+            "${py[@]}" -c "$check"
           fi
 
       # Unlike every other artifact in this file, the wheel needs no verification gate
@@ -770,6 +787,9 @@ jobs:
   # is handed down — id-token: write is the whole credential, the same scope the
   # attestation already needed.
   pack-crates:
+    # 0.4.0 recovery: this leg already published 0.4.0 (run 36962100705); gated so the
+    # rerun that publishes PyPI does not push a duplicate. Remove once PyPI is out.
+    if: false
     needs: find-ci-run
     uses: SkunkWerkx/.github/.github/workflows/hyper-publish-crate.yml@master
     # Handed down to the reusable workflow, which attests what it publishes and cannot
@@ -783,6 +803,9 @@ jobs:
   # upload, and auto-release in one un-splittable task, so unlike NuGet there's no
   # pack-here/push-there split — the whole leg runs in the forge with this repo's secrets.
   maven-publish:
+    # 0.4.0 recovery: this leg already published 0.4.0 (run 36962100705); gated so the
+    # rerun that publishes PyPI does not push a duplicate. Remove once PyPI is out.
+    if: false
     needs: find-ci-run
     uses: SkunkWerkx/.github/.github/workflows/hyper-publish-maven.yml@master
     # Handed down to the reusable workflow, which attests what it publishes and cannot
