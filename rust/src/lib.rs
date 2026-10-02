@@ -68,6 +68,7 @@ mod boolean;
 mod decimal;
 mod ffi;
 mod integer;
+mod lane;
 mod real;
 mod temporal;
 mod uuid;
@@ -983,5 +984,167 @@ mod tests {
         assert_eq!(optional(cast_bool("  ")), Ok(None));
         assert_eq!(optional(cast_bool("true")), Ok(Some(true)));
         assert_eq!(optional(cast_bool("maybe")).unwrap_err().reason, Reason::Malformed);
+    }
+
+    // ---- The lenient lane changes no verdict ----
+    //
+    // lane.rs is a second fast path in front of the numeric engines. Its whole contract is
+    // that it may make a cast faster and may not change one: every token it reads must get
+    // the value the engine gives it, and every token it declines goes to the engine
+    // untouched. That is held here by running each numeric door twice — as shipped, and
+    // with the lane switched off — over every sequence of up to four tokens drawn from the
+    // grammar's own vocabulary (and up to six from the handful the lane actually reads),
+    // under formats chosen to put a symbol where a sign, a separator, a percent, a radix
+    // prefix or a parenthesis would be. Faults are compared whole, spans included; reals are
+    // compared by bit pattern, so `-0.0` is not `0.0`.
+
+    fn lane_formats() -> Vec<NumFormat> {
+        let symbol = |text| CurrencySymbol::new(text).unwrap();
+        let all = NumFormat::ALL;
+        let usd = NumFormat::INVARIANT.with_currency(symbol("$"));
+        let eurozone = NumFormat::new(',', '.', all);
+        let mut formats = vec![
+            usd,
+            NumFormat::INVARIANT,
+            eurozone.with_currency(symbol("\u{20ac}")),
+            // A symbol carrying the group separator, and ones that collide with a sign, the
+            // percent, a radix prefix and each parenthesis.
+            eurozone.with_currency(symbol("kr.")),
+            NumFormat::INVARIANT.with_currency(symbol("%")),
+            NumFormat::INVARIANT.with_currency(symbol("&H")),
+            NumFormat::INVARIANT.with_currency(symbol("-")),
+            NumFormat::INVARIANT.with_currency(symbol("+")),
+            NumFormat::INVARIANT.with_currency(symbol("(")),
+            NumFormat::INVARIANT.with_currency(symbol(")")),
+            NumFormat::INVARIANT.with_currency(symbol(".")),
+            NumFormat::INVARIANT.with_currency(symbol(",")),
+            NumFormat::INVARIANT.with_currency(symbol("e")),
+            // Separators that are whitespace, non-ASCII, equal, a digit and a sign.
+            NumFormat::new('.', ' ', all).with_currency(symbol("$")),
+            NumFormat::new('.', '\u{a0}', all).with_currency(symbol("$")),
+            NumFormat::new('.', '.', all).with_currency(symbol("$")),
+            NumFormat::new('.', '1', all).with_currency(symbol("$")),
+            NumFormat::new('-', ',', all).with_currency(symbol("$")),
+            NumFormat::new('.', '-', all).with_currency(symbol("$")),
+            NumFormat::DETECT.with_currency(symbol("$")),
+        ];
+        // Each lenience switched off on its own, and all of them at once.
+        for flag in [
+            NumFormat::GROUPING,
+            NumFormat::PARENS,
+            NumFormat::EXPONENT,
+            NumFormat::RADIX_PREFIX,
+            NumFormat::PERCENT,
+            NumFormat::CURRENCY,
+            all,
+        ] {
+            formats.push(NumFormat::new('.', ',', all & !flag).with_currency(symbol("$")));
+        }
+        formats
+    }
+
+    fn lane_agrees_with_the_engine(input: &[u8], format: &NumFormat) {
+        let shown = || format!("{:?} under {format:?}", String::from_utf8_lossy(input));
+        macro_rules! integers {
+            ($($door:ident => $ty:ty),+) => {$(
+                assert_eq!(
+                    $door(input, format),
+                    integer::engine_only::<$ty>(
+                        input, format, <$ty>::MIN as i128, <$ty>::MAX as i128, <$ty>::BITS),
+                    "{} on {}", stringify!($door), shown()
+                );
+            )+};
+        }
+        integers!(cast_i8 => i8, cast_i64 => i64, cast_u8 => u8, cast_u64 => u64);
+        assert_eq!(
+            cast_f32(input, format).map(f32::to_bits),
+            real::engine_only_f32(input, format).map(f32::to_bits),
+            "cast_f32 on {}", shown()
+        );
+        assert_eq!(
+            cast_f64(input, format).map(f64::to_bits),
+            real::engine_only_f64(input, format).map(f64::to_bits),
+            "cast_f64 on {}", shown()
+        );
+        assert_eq!(cast_decimal(input, format), decimal::engine_only(input, format), "cast_decimal on {}", shown());
+    }
+
+    /// Every sequence of `1..=longest` tokens, each handed to `visit` as one input.
+    fn each_sequence(tokens: &[&str], longest: usize, mut visit: impl FnMut(&[u8])) {
+        let mut text = Vec::new();
+        for length in 1..=longest {
+            let mut odometer = vec![0usize; length];
+            loop {
+                text.clear();
+                for &index in &odometer {
+                    text.extend_from_slice(tokens[index].as_bytes());
+                }
+                visit(&text);
+                let mut position = 0;
+                while position < length {
+                    odometer[position] += 1;
+                    if odometer[position] < tokens.len() {
+                        break;
+                    }
+                    odometer[position] = 0;
+                    position += 1;
+                }
+                if position == length {
+                    break;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_lenient_lane_changes_no_verdict_over_the_grammars_vocabulary() {
+        let formats = lane_formats();
+        let vocabulary = [
+            "-", "+", "(", ")", "$", "\u{20ac}", "kr.", "%", "&H", " ", "\u{a0}", ",", ".", "0",
+            "5", "12", "123", "e3", "E-2", "x",
+        ];
+        each_sequence(&vocabulary, 4, |input| {
+            for format in &formats {
+                lane_agrees_with_the_engine(input, format);
+            }
+        });
+    }
+
+    #[test]
+    fn the_lenient_lane_changes_no_verdict_over_longer_money_shapes() {
+        let formats = lane_formats();
+        each_sequence(&["(", ")", "$", "-", ",", ".", "1", "234"], 6, |input| {
+            for format in &formats {
+                lane_agrees_with_the_engine(input, format);
+            }
+        });
+    }
+
+    #[test]
+    fn the_lenient_lane_changes_no_verdict_at_its_own_limits() {
+        // Where each sink stops and hands the token back: nineteen digits for an integer,
+        // twenty-eight for a decimal, forty-eight characters for a real — and an f32 that
+        // overflows to infinity well inside that. One digit either side of each, bare and
+        // dressed.
+        let formats = lane_formats();
+        for digits in [18usize, 19, 20, 27, 28, 29, 30, 38, 39, 40, 47, 48, 49, 50, 60] {
+            for digit in ["9", "1", "0"] {
+                let run = digit.repeat(digits);
+                let grouped: String = run
+                    .as_bytes()
+                    .rchunks(3)
+                    .rev()
+                    .map(|chunk| str::from_utf8(chunk).unwrap())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                for body in [run.clone(), grouped.clone(), format!("{run}.5"), format!("{grouped}.50"), format!("0.{run}")] {
+                    for dressed in [body.clone(), format!("${body}"), format!("-${body}"), format!("(${body})"), format!("{body}$")] {
+                        for format in &formats {
+                            lane_agrees_with_the_engine(dressed.as_bytes(), format);
+                        }
+                    }
+                }
+            }
+        }
     }
 }

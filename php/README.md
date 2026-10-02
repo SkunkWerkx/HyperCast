@@ -210,7 +210,8 @@ so hoist a format rather than constructing one per call.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
    held by the shared corpus (every corpus file replayed by phpunit, with byte-exact fault
    spans).
-4. **Faster than the platform's own parser** — see [Benchmarks](#benchmarks) below.
+4. **Level with the platform's own parser on a timestamp** — and behind it on the shapes
+   PHP has a dedicated function for; both are printed under [Benchmarks](#benchmarks) below.
 
 **The honest trade-off:** a native library shipped inside the package and an FFI call per
 door — for plain invariant integers, `(int)` casts and `ctype_digit` are the reasonable
@@ -218,16 +219,36 @@ choice.
 
 ## Benchmarks
 
-phpbench (`XDEBUG_MODE=off vendor/bin/phpbench run --report=aggregate`, linux-arm64):
-timestamp **487 ns vs 1.3 µs `new DateTimeImmutable`** (2.7x). No new mechanism was needed
-for that — PHP's raw ext-ffi call floor is ~105 ns, already extension-class, so the win was
-a wrapper diet: flat doors (one FFI call, no closure indirection), typed cdef structs read
-as fields, static scratch `CData` with pre-taken addresses (PHP's request model makes static
-scratch safe), and `createFromTimestamp`/`setMicrosecond` on PHP 8.4+ instead of a
-date-string parse. The messy civil shape lands the same way: `Cast::datetime` on
-`1/7/2026 3:04 PM` is **620 ns vs 1.36 µs** for `DateTimeImmutable::createFromFormat` with
-the equivalent pattern (2.2x), and the declared-order date door is 539 ns. Separator
-detection costs ~22 ns (385 ns vs 363 ns declared).
+phpbench (`XDEBUG_MODE=off vendor/bin/phpbench run --report=aggregate --retry-threshold=5`,
+linux-x64 on an Intel Core i9-11900H, PHP 8.5; the threshold repeats a case until its
+iterations agree within 5%):
+
+| Door | HyperCast | PHP's own | Verdict |
+| --- | ---: | ---: | --- |
+| `Cast::timestamp` vs `new DateTimeImmutable` | 538 ns | 560 ns | level |
+| `Cast::datetime` (`1/7/2026 3:04 PM`) vs `DateTimeImmutable::createFromFormat` | 673 ns | 439 ns | 1.5x slower |
+| `Cast::duration` vs `new DateInterval` | 413 ns | 149 ns | 2.8x slower |
+| `Cast::i32` vs `intval` | 340 ns | 22 ns | a cast, not a parser — no contest |
+| `Cast::f64` vs `floatval` | 354 ns | 22 ns | the same |
+| `Cast::i32` (grouped) | 352 ns | — | |
+| `Cast::bool` | 273 ns | — | |
+| `Cast::uuid` | 502 ns | — | |
+| `Cast::date` (declared order) | 578 ns | — | |
+
+Read it as a floor, not a race. Every door costs 270-680 ns, and nearly all of that is the
+`ext-ffi` call and the PHP around it rather than the parse, which the core finishes in tens
+of nanoseconds. PHP's own date functions are C running inside the engine with no boundary to
+cross, and how they compare depends on the machine (this one runs them at 440-560 ns). What a door
+buys for its few hundred nanoseconds is what `intval` and `createFromFormat` do not return
+— a verdict with a reason and a span instead of `0` or `false`, a format declared per call,
+and the same answer in six other languages.
+
+No new mechanism was needed to get here — the ext-ffi call floor is already extension-class,
+so the work was a wrapper diet: flat doors (one FFI call, no closure indirection), typed
+cdef structs read as fields, static scratch `CData` with pre-taken addresses (PHP's request
+model makes static scratch safe), and `createFromTimestamp`/`setMicrosecond` on PHP 8.4+
+instead of a date-string parse. Separator detection costs ~54 ns (441 ns vs 387 ns
+declared).
 
 When bytes are the destination — a `BINARY(16)` column bind, a wire format —
 `Cast::uuidBytes` returns the sixteen RFC-ordered octets as a binary string and skips the
@@ -249,7 +270,7 @@ The same Rust core also links straight into a real Zend extension via
 Cargo feature) — the same move Python (PyO3) and Ruby (Magnus) get a shipped native backend
 for, exposing every door at the raw layer this package's own FFI calls sit at. PHP's didn't
 ship, for two reasons. The mechanism was never the bottleneck here the way ctypes and Fiddle
-were: the `ext-ffi` crossing measures ~105 ns, so what a Zend extension removes is the
+were: the `ext-ffi` crossing measured ~105 ns, so what a Zend extension removes is the
 PHP-level wrapper around the call, not the call. And a Zend extension is pinned to one PHP
 ABI per build — the API number plus NTS or ZTS — with no Windows build on stable Rust, so
 shipping it means a binary per PHP version where the `ext-ffi` package ships one library per

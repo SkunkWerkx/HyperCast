@@ -38,12 +38,43 @@ fn benchmarks(c: &mut Criterion) {
     });
     group.finish();
 
+    // The lenient shapes, one notation added at a time, so a regression in any one of them
+    // has a row of its own: grouping, a declared currency symbol, both, and both inside
+    // accounting parentheses. Same value throughout, on the three doors that take them.
+    let usd = NumFormat::INVARIANT.with_currency(hypercast::CurrencySymbol::new("$").unwrap());
+    let shapes: [(&str, &[u8]); 5] = [
+        ("plain", b"12345.67"),
+        ("grouped", b"12,345.67"),
+        ("currency", b"$12345.67"),
+        ("grouped currency", b"$12,345.67"),
+        ("grouped currency in parens", b"($12,345.67)"),
+    ];
+    let mut group = c.benchmark_group("f64-shapes");
+    for (name, text) in shapes {
+        group.bench_function(name, |b| b.iter(|| hypercast::cast_f64(black_box(text), &usd).unwrap()));
+    }
+    group.finish();
+    let mut group = c.benchmark_group("decimal-shapes");
+    for (name, text) in shapes {
+        group.bench_function(name, |b| b.iter(|| hypercast::cast_decimal(black_box(text), &usd).unwrap()));
+    }
+    group.finish();
+    let mut group = c.benchmark_group("i64-shapes");
+    for (name, text) in [
+        ("plain", &b"1234567"[..]),
+        ("grouped", b"1,234,567"),
+        ("grouped currency", b"$1,234,567"),
+        ("grouped currency in parens", b"($1,234,567)"),
+    ] {
+        group.bench_function(name, |b| b.iter(|| hypercast::cast_i64(black_box(text), &usd).unwrap()));
+    }
+    group.finish();
+
     let mut group = c.benchmark_group("decimal");
     group.bench_function("hypercast", |b| {
         b.iter(|| hypercast::cast_decimal(black_box(b"12345.6789"), &format).unwrap())
     });
     group.bench_function("hypercast grouped currency", |b| {
-        let usd = NumFormat::INVARIANT.with_currency(hypercast::CurrencySymbol::new("$").unwrap());
         b.iter(|| hypercast::cast_decimal(black_box(b"$12,345.67"), &usd).unwrap())
     });
     group.finish();

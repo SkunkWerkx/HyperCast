@@ -14,8 +14,10 @@
 use std::sync::OnceLock;
 
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
+use pyo3::ffi;
+use pyo3::intern;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDate, PyDateTime, PyDelta, PyDict, PyString, PyTime, PyTzInfo};
+use pyo3::types::{PyBytes, PyDate, PyDateTime, PyDelta, PyDict, PyString, PyTzInfo};
 
 use crate as core;
 
@@ -28,8 +30,11 @@ static UUID_CLASS: OnceLock<Py<PyAny>> = OnceLock::new();
 // The fastuuid-style constructor HyperUuid pinned: `UUID.__new__` plus `object.__setattr__`
 // of the `int` and `is_safe` slots, skipping `UUID.__init__` — whose validation the core
 // already performed on the text, and whose cost was the whole of this door's carrier.
-static UUID_NEW: OnceLock<Py<PyAny>> = OnceLock::new();
-static OBJECT_SETATTR: OnceLock<Py<PyAny>> = OnceLock::new();
+static DATETIME_CLASS: OnceLock<Py<PyAny>> = OnceLock::new();
+static DATE_CLASS: OnceLock<Py<PyAny>> = OnceLock::new();
+static TIME_CLASS: OnceLock<Py<PyAny>> = OnceLock::new();
+static UTC: OnceLock<Py<PyAny>> = OnceLock::new();
+static DURATION_ANCHOR: OnceLock<Py<PyAny>> = OnceLock::new();
 static IS_SAFE_UNKNOWN: OnceLock<Py<PyAny>> = OnceLock::new();
 // `decimal.Decimal` — the exact host type the decimal door builds, from the core's
 // canonical text through the C `_decimal` constructor.
@@ -458,14 +463,77 @@ fn cast_uuid(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
         // value it cannot reject, so the instance is built the way `uuid.UUID` itself
         // stores it — the 128-bit `int` slot, big-endian from the RFC-ordered bytes, and
         // `is_safe` left at `SafeUUID.unknown`, exactly what `UUID(bytes=...)` would set.
+        //
+        // Through the C API's own entry points rather than Python callables:
+        // PyType_GenericAlloc and PyObject_GenericSetAttr are what `object.__new__` and
+        // `object.__setattr__` do underneath, without a call, an argument tuple or a fresh
+        // `str` per attribute name. Both are in the stable ABI.
         let class = cached(py, &UUID_CLASS)?;
-        let instance = cached(py, &UUID_NEW)?.call1((class,))?;
-        let setattr = cached(py, &OBJECT_SETATTR)?;
-        setattr.call1((&instance, "int", u128::from_be_bytes(bytes)))?;
-        setattr.call1((&instance, "is_safe", cached(py, &IS_SAFE_UNKNOWN)?))?;
-        Ok(instance.unbind())
+        let value = int_from_be_bytes(py, bytes)?;
+        let is_safe = cached(py, &IS_SAFE_UNKNOWN)?;
+        // SAFETY: UUID_CLASS is a type object (bound in _bind); both calls check their
+        // arguments and report failure by return value with an exception set.
+        unsafe {
+            let instance = Bound::from_owned_ptr_or_err(py, ffi::PyType_GenericAlloc(class.as_ptr().cast(), 0))?;
+            if ffi::PyObject_GenericSetAttr(instance.as_ptr(), intern!(py, "int").as_ptr(), value.as_ptr()) != 0
+                || ffi::PyObject_GenericSetAttr(instance.as_ptr(), intern!(py, "is_safe").as_ptr(), is_safe.as_ptr())
+                    != 0
+            {
+                return Err(PyErr::fetch(py));
+            }
+            Ok(instance.unbind())
+        }
     })
 }
+
+/// A Python `int` holding 16 big-endian bytes. The stable ABI has no byte-array constructor
+/// for `int` before 3.14, so it goes through `PyLong_FromString` in base 16 — one allocation,
+/// and measured faster than joining two 64-bit halves with a shift and an or (three).
+fn int_from_be_bytes<'py>(py: Python<'py>, bytes: [u8; 16]) -> PyResult<Bound<'py, PyAny>> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    // 32 digits and the terminating NUL PyLong_FromString reads up to.
+    let mut text = [0u8; 33];
+    for (i, byte) in bytes.iter().enumerate() {
+        text[2 * i] = HEX[(byte >> 4) as usize];
+        text[2 * i + 1] = HEX[(byte & 15) as usize];
+    }
+    // SAFETY: `text` is NUL-terminated ASCII; the call returns a new reference, or null with
+    // an exception set.
+    unsafe {
+        Bound::from_owned_ptr_or_err(py, ffi::PyLong_FromString(text.as_ptr().cast(), std::ptr::null_mut(), 16))
+    }
+}
+
+// The datetime module's own pickle constructors: `date(state)`, `time(state)` and
+// `datetime(state[, tzinfo])`, where `state` is the packed bytes `__reduce__` emits — year
+// (two bytes, big-endian), month, day, then hour, minute, second and microsecond (three
+// bytes, big-endian). It is the pickle format, so it cannot change under a pickle written by
+// an older Python, and it builds the same object as the keyword constructors in a third of
+// the time: one bytes object instead of up to seven ints, and no per-field range checks.
+// That last part is why each caller falls back to the ordinary constructor for a year
+// outside 1..=9999 — the packed form would encode it, and the constructor is what refuses it.
+const fn packed_date(year: i32, month: u8, day: u8) -> [u8; 4] {
+    [(year >> 8) as u8, year as u8, month, day]
+}
+
+const fn packed_time(hour: u8, minute: u8, second: u8, micros: u32) -> [u8; 6] {
+    [hour, minute, second, (micros >> 16) as u8, (micros >> 8) as u8, micros as u8]
+}
+
+fn packed_datetime(year: i32, month: u8, day: u8, hour: u8, minute: u8, second: u8, micros: u32) -> [u8; 10] {
+    let (d, t) = (packed_date(year, month, day), packed_time(hour, minute, second, micros));
+    [d[0], d[1], d[2], d[3], t[0], t[1], t[2], t[3], t[4], t[5]]
+}
+
+const fn packs(year: i32) -> bool {
+    1 <= year && year <= 9_999
+}
+
+/// 0001-01-01, the datetime a duration is measured from (see `cast_duration`): its day number
+/// on the Unix epoch's count, and how many whole days past it a datetime can still stand
+/// (9999-12-31 is day 3,652,058 from it).
+const ANCHOR_DAYS_FROM_EPOCH: i64 = -719_162;
+const ANCHOR_REACH_DAYS: u64 = 3_652_058;
 
 /// Hinnant's civil_from_days — the inverse of the core's days_from_civil, for presenting
 /// `{seconds, nanos}` as a datetime without a strftime round trip.
@@ -489,20 +557,17 @@ fn instant<'py>(py: Python<'py>, ts: core::Timestamp) -> PyResult<Py<PyAny>> {
     let (year, month, day) = civil_from_days(days);
     let (hour, rest) = (second_of_day / 3_600, second_of_day % 3_600);
     let (minute, second) = (rest / 60, rest % 60);
+    let micros = (ts.nanos / 1_000) as u32;
+    if packs(year) {
+        let state = packed_datetime(year, month, day, hour as u8, minute as u8, second as u8, micros);
+        return Ok(cached(py, &DATETIME_CLASS)?
+            .call1((PyBytes::new(py, &state), cached(py, &UTC)?))?
+            .unbind());
+    }
     let utc = PyTzInfo::utc(py)?;
-    Ok(PyDateTime::new(
-        py,
-        year,
-        month,
-        day,
-        hour as u8,
-        minute as u8,
-        second as u8,
-        (ts.nanos / 1_000) as u32,
-        Some(&utc),
-    )?
-    .into_any()
-    .unbind())
+    Ok(PyDateTime::new(py, year, month, day, hour as u8, minute as u8, second as u8, micros, Some(&utc))?
+        .into_any()
+        .unbind())
 }
 
 /// Casts an RFC 3339 instant to an aware UTC ``datetime`` (microsecond truncation).
@@ -536,7 +601,12 @@ fn cast_excel_serial(py: Python<'_>, text: Text<'_>, epoch: u32) -> PyResult<Py<
 }
 
 fn date_value(py: Python<'_>, date: core::Date) -> PyResult<Py<PyAny>> {
-    Ok(PyDate::new(py, i32::from(date.year), date.month, date.day)?
+    let year = i32::from(date.year);
+    if packs(year) {
+        let state = packed_date(year, date.month, date.day);
+        return Ok(cached(py, &DATE_CLASS)?.call1((PyBytes::new(py, &state),))?.unbind());
+    }
+    Ok(PyDate::new(py, year, date.month, date.day)?
         .into_any()
         .unbind())
 }
@@ -574,9 +644,22 @@ fn cast_datetime(py: Python<'_>, text: Text<'_>, order: u32) -> PyResult<Py<PyAn
         let (second_of_day, nano) = (civil.nanos_of_day / 1_000_000_000, civil.nanos_of_day % 1_000_000_000);
         let (hour, rest) = (second_of_day / 3_600, second_of_day % 3_600);
         let (minute, second) = (rest / 60, rest % 60);
+        let year = i32::from(civil.date.year);
+        if packs(year) {
+            let state = packed_datetime(
+                year,
+                civil.date.month,
+                civil.date.day,
+                hour as u8,
+                minute as u8,
+                second as u8,
+                (nano / 1_000) as u32,
+            );
+            return Ok(cached(py, &DATETIME_CLASS)?.call1((PyBytes::new(py, &state),))?.unbind());
+        }
         Ok(PyDateTime::new(
             py,
-            i32::from(civil.date.year),
+            year,
             civil.date.month,
             civil.date.day,
             hour as u8,
@@ -597,16 +680,8 @@ fn cast_time(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
         let (second_of_day, nano) = (nanos / 1_000_000_000, nanos % 1_000_000_000);
         let (hour, rest) = (second_of_day / 3_600, second_of_day % 3_600);
         let (minute, second) = (rest / 60, rest % 60);
-        Ok(PyTime::new(
-            py,
-            hour as u8,
-            minute as u8,
-            second as u8,
-            (nano / 1_000) as u32,
-            None,
-        )?
-        .into_any()
-        .unbind())
+        let state = packed_time(hour as u8, minute as u8, second as u8, (nano / 1_000) as u32);
+        Ok(cached(py, &TIME_CLASS)?.call1((PyBytes::new(py, &state),))?.unbind())
     })
 }
 
@@ -615,6 +690,29 @@ fn cast_time(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
 #[pyfunction]
 fn cast_duration(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
     verdict(py, &text, core::cast_duration(text.bytes()?), |py, span| {
+        // `timedelta(days, seconds, microseconds)` is the slowest constructor in the module —
+        // it normalizes through arbitrary-precision arithmetic whatever it is given — while
+        // subtracting two datetimes hands back the same object from a fixed-width fast path.
+        // So a span that fits is built as (0001-01-01 + |span|) - 0001-01-01, or the other
+        // way round for a negative one: sub-microsecond digits truncate toward zero on the
+        // magnitude, and the subtraction normalizes the sign exactly as the constructor
+        // would. A span too long for a datetime to stand that far from year 1 (past roughly
+        // 9,998 years) takes the constructor below.
+        let (magnitude_seconds, magnitude_nanos) = (span.seconds.unsigned_abs(), span.nanos.unsigned_abs());
+        let days = magnitude_seconds / 86_400;
+        if days <= ANCHOR_REACH_DAYS {
+            let second_of_day = magnitude_seconds % 86_400;
+            let (year, month, day) = civil_from_days(days as i64 + ANCHOR_DAYS_FROM_EPOCH);
+            let (hour, rest) = (second_of_day / 3_600, second_of_day % 3_600);
+            let (minute, second) = (rest / 60, rest % 60);
+            let state =
+                packed_datetime(year, month, day, hour as u8, minute as u8, second as u8, magnitude_nanos / 1_000);
+            let anchor = cached(py, &DURATION_ANCHOR)?;
+            let moved = cached(py, &DATETIME_CLASS)?.call1((PyBytes::new(py, &state),))?;
+            let negative = span.seconds < 0 || span.nanos < 0;
+            let (left, right) = if negative { (anchor, &moved) } else { (&moved, anchor) };
+            return Ok(left.sub(right)?.unbind());
+        }
         // Truncate sub-microsecond digits toward zero on both signs, matching every other
         // binding's truncation; PyDelta normalizes the mixed-sign pieces.
         let nanos = i64::from(span.nanos);
@@ -635,12 +733,13 @@ fn _bind(py: Python<'_>, cast_failure: Bound<'_, PyAny>) -> PyResult<()> {
     let _ = MALFORMED.set(cast_failure.getattr("MALFORMED")?.unbind());
     let _ = OUT_OF_RANGE.set(cast_failure.getattr("OUT_OF_RANGE")?.unbind());
     let uuid_module = py.import("uuid")?;
-    let class = uuid_module.getattr("UUID")?;
-    let _ = UUID_NEW.set(class.getattr("__new__")?.unbind());
-    let _ = UUID_CLASS.set(class.unbind());
-    let _ = OBJECT_SETATTR.set(
-        py.import("builtins")?.getattr("object")?.getattr("__setattr__")?.unbind(),
-    );
+    let _ = UUID_CLASS.set(uuid_module.getattr("UUID")?.unbind());
+    let datetime_module = py.import("datetime")?;
+    let _ = DATETIME_CLASS.set(datetime_module.getattr("datetime")?.unbind());
+    let _ = DATE_CLASS.set(datetime_module.getattr("date")?.unbind());
+    let _ = TIME_CLASS.set(datetime_module.getattr("time")?.unbind());
+    let _ = UTC.set(datetime_module.getattr("timezone")?.getattr("utc")?.unbind());
+    let _ = DURATION_ANCHOR.set(datetime_module.getattr("datetime")?.call1((1, 1, 1))?.unbind());
     let _ = IS_SAFE_UNKNOWN.set(uuid_module.getattr("SafeUUID")?.getattr("unknown")?.unbind());
     let _ = DECIMAL_CLASS.set(py.import("decimal")?.getattr("Decimal")?.unbind());
     Ok(())

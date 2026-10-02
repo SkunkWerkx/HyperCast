@@ -1,7 +1,8 @@
 name: CI — build native, build wasm, test every binding
 
 # The build/test matrix lives in HyperForge (SkunkWerkx/.github) as the canonical Hyper*
-# pipeline — 6 real-hardware legs plus the two musl RIDs in Alpine containers, the Rust core
+# pipeline — 5 real-hardware legs plus the two musl RIDs in Alpine containers (and osx-x64
+# cross-built on the Apple silicon runner, the core's own suite run under Rosetta), the Rust core
 # built fresh per leg, every binding's suite run against it. Ruby's suite runs twice (forced
 # Fiddle fallback + Magnus extension backend); Python has no fallback — PyO3 only, staged
 # and tested per leg.
@@ -56,7 +57,7 @@ jobs:
       dotnet_version: "11.0.x"
       dotnet_quality: "preview"
       # Turns the package's Native AOT claim into a per-platform receipt: the forge publishes
-      # this project under PublishAot on all six legs, fails on any ILxxxx/AOTxxxx trim
+      # this project under PublishAot on all five legs, fails on any ILxxxx/AOTxxxx trim
       # diagnostic, then runs the produced binary and requires exit 0. The log uploads as
       # aot-report-{rid}. The smoke test exercises a door from every family plus the union's
       # compile-checked consumption, so it covers the AOT-sensitive surface, not one call.

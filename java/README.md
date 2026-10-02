@@ -111,41 +111,40 @@ wasm path wants the same flag, for Truffle's own native library rather than this
    held by the shared corpus (the whole suite green, full corpus replay through
    real FFM downcalls with byte-exact fault spans — and a second time through the GraalWasm
    backend, on every build).
-4. **Faster where it matters, and the input no longer copies.** JMH, full-length — 2 forks,
-   5 warmup + 10 measurement iterations, 20 samples per row, `-prof gc` for the allocation
-   column (linux-arm64, JDK 25). Reproduce: `./gradlew :benchmarks:jmh` — which now runs
-   HyperUuid's short profile (1 fork, 3 + 5 iterations of one second) and lands within a
-   few percent of the table in under two minutes; the full-length numbers are the ones
-   printed.
+4. **Faster where it matters, and the input no longer copies.** JMH, `-prof gc` for the
+   allocation column, the profile `./gradlew :benchmarks:jmh` runs: 1 fork, 3 warmup + 5
+   measurement iterations of one second (linux-x64 on an Intel Core i9-11900H, Temurin 25).
+   The error bars are that short profile's; the verdicts are far outside them.
 
    | Door | HyperCast | JDK | Verdict |
    | --- | ---: | ---: | --- |
-   | `Cast.timestamp` vs `Instant.parse` | 52.5 ± 1.7 ns | 595.9 ± 16.8 ns | **11.4x faster** |
-   | `Cast.dateTime` vs `LocalDateTime.parse` (ISO) | 67.5 ± 1.9 ns | 535.0 ± 13.9 ns | **7.9x faster** |
-   | `Cast.dateTime` vs a `M/d/yyyy h:mm a` formatter | 64.9 ± 1.3 ns | 386.2 ± 15.7 ns | **6.0x faster** |
-   | `Cast.date` (declared order) vs a `M/d/yyyy` formatter | 39.5 ± 2.1 ns | 176.4 ± 9.0 ns | **4.5x faster** |
-   | `Cast.time` vs `LocalTime.parse` | 45.1 ± 1.3 ns | 393.4 ± 18.0 ns | **8.7x faster** |
-   | `Cast.duration` vs `Duration.parse` | 60.9 ± 5.1 ns | 268.8 ± 16.2 ns | **4.4x faster** |
-   | `Cast.i32` (grouped) vs `NumberFormat` | 65.2 ± 2.9 ns | 94.7 ± 3.5 ns | **1.5x faster** |
-   | `Cast.f64` vs `Double.parseDouble` | 50.5 ± 1.3 ns | 67.4 ± 6.7 ns | **1.3x faster** |
-   | `Cast.f64` (eurozone) vs `NumberFormat` (de-DE) | 86.5 ± 3.3 ns | 157.5 ± 4.0 ns | **1.8x faster** |
-   | `Cast.uuid` vs `UUID.fromString` | 38.3 ± 2.5 ns | 45.9 ± 1.5 ns | **1.2x faster** — was a 1.3x loss |
-   | `Cast.bool` vs `Boolean.parseBoolean` | 17.7 ± 0.4 ns | 0.61 ns | honest loss — see below |
+   | `Cast.time` vs `LocalTime.parse` | 33.8 ± 3.8 ns | 415.3 ± 31.8 ns | **12.3x faster** |
+   | `Cast.timestamp` vs `Instant.parse` | 50.7 ± 11.7 ns | 614.8 ± 139.9 ns | **12.1x faster** |
+   | `Cast.dateTime` vs `LocalDateTime.parse` (ISO) | 62.4 ± 8.0 ns | 571.2 ± 28.8 ns | **9.2x faster** |
+   | `Cast.dateTime` vs a `M/d/yyyy h:mm a` formatter | 56.7 ± 1.4 ns | 392.6 ± 78.0 ns | **6.9x faster** |
+   | `Cast.duration` vs `Duration.parse` | 54.6 ± 3.6 ns | 348.6 ± 48.6 ns | **6.4x faster** |
+   | `Cast.date` (declared order) vs a `M/d/yyyy` formatter | 37.1 ± 3.2 ns | 169.9 ± 43.5 ns | **4.6x faster** |
+   | `Cast.f64` (eurozone) vs `NumberFormat` (de-DE) | 58.5 ± 5.5 ns | 160.0 ± 10.7 ns | **2.7x faster** |
+   | `Cast.i32` (grouped) vs `NumberFormat` | 32.5 ± 5.8 ns | 85.8 ± 14.5 ns | **2.6x faster** |
+   | `Cast.f64` vs `Double.parseDouble` | 41.8 ± 5.5 ns | 43.3 ± 8.9 ns | wash |
+   | `Cast.uuid` vs `UUID.fromString` | 35.2 ± 1.7 ns | 25.6 ± 2.5 ns | 1.4x slower — see below |
+   | `Cast.decimal` vs `new BigDecimal(String)` | 52.1 ± 16.9 ns | 22.6 ± 4.7 ns | 2.3x slower — see below |
+   | `Cast.bool` vs `Boolean.parseBoolean` | 14.2 ± 3.6 ns | 0.48 ns | honest loss — see below |
 
    The `String` rows above include the UTF-8 encode. A caller already holding bytes skips
    it, and the raw crossing is what round three's chunk layer will pay per cell:
 
    | Door (UTF-8 in hand) | `byte[]` | `MemorySegment` slice | allocation |
    | --- | ---: | ---: | ---: |
-   | `Cast.timestamp` | 46.2 ± 1.7 ns | 49.1 ± 2.0 ns | 40 B (the `Instant` + record) |
-   | `Cast.i32` (grouped) | 58.7 ± 2.2 ns | 62.7 ± 2.0 ns | 32 B (the `Integer` + record) |
-   | `Cast.uuid` | 30.2 ± 1.2 ns | — | 48 B (the `UUID` + record) |
+   | `Cast.timestamp` | 42.2 ± 4.8 ns | 40.8 ± 2.8 ns | 40 B (the `Instant` + record) |
+   | `Cast.i32` (grouped) | 28.0 ± 4.2 ns | 30.9 ± 4.7 ns | 32 B (the `Integer` + record) |
+   | `Cast.uuid` | 29.1 ± 2.5 ns | — | 48 B (the `UUID` + record) |
 
    Separator detection costs what the core says it costs: `NumFormat.DETECT` on
-   `1.234.567,89` measures 100.1 ± 9.0 ns against 86.5 ± 3.3 ns declared — the structural
-   resolution pass, now visible because the carrier around it got thin. The
-   `DateTimeFormatter.ISO_OFFSET_DATE_TIME` control was unstable in this run (29 µs ± 61 µs
-   across forks) and is not quoted; the 0.1.0 tape had it at 690 ns.
+   `1.234.567,89` measures 73.0 ± 13.5 ns against 58.5 ± 5.5 ns declared — the structural
+   resolution pass, visible because the carrier around it is thin. The
+   `DateTimeFormatter.ISO_OFFSET_DATE_TIME` control measures 790.1 ± 52.5 ns for the text
+   the timestamp door reads in 54.6.
 
 **What changed, twice.** 0.1.0's first tuning removed the `Arena.ofConfined()` every door
 used to open per call — one `ThreadLocal` holds the out/fault/format segments for the life
@@ -158,16 +157,18 @@ for — and `reachability-metadata.json` registers the option, so the GraalVM Na
 smoke test proves it under AOT too. Every door also gained a `MemorySegment` overload: slice
 one buffer holding many values (a mapped file, a direct buffer, one line of a CSV) and cast
 a value out of it with nothing copied. The UUID door reads its sixteen bytes as two
-big-endian longs instead of one byte at a time, which is what turned that row from a loss
-into a win.
+big-endian longs instead of one byte at a time, which took about a third off that row.
 
-**The honest trade-off:** one row still loses. `Boolean.parseBoolean` is unbeatable by
-construction: JIT folds a loop-invariant `parseBoolean` into nothing, which an FFM downcall
-structurally can't match — the twenty-lexeme vocabulary is why anyone calls this door. The
-`UUID.fromString` row is a narrow win, not a wide one: that method is pure bit-twiddling
-with no boundary to cross, and what this door adds is the N/B/P/X forms and `urn:uuid:`
-prefixes it doesn't accept. It's also a native dependency: for plain invariant integers,
-`Integer.parseInt` is the reasonable choice.
+**The honest trade-off:** three rows lose, each to a JDK method with no boundary to cross
+and one shape to read. `Boolean.parseBoolean` is unbeatable by construction: JIT folds a
+loop-invariant `parseBoolean` into nothing, which an FFM downcall structurally can't match
+— the twenty-lexeme vocabulary is why anyone calls this door. `UUID.fromString` is pure
+bit-twiddling over one text form; what this door adds for its ten nanoseconds is the
+N/B/P/X forms and `urn:uuid:` prefixes that method doesn't accept. `new BigDecimal(String)`
+reads plain digits and throws on anything else; `Cast.decimal` reads the same grouping,
+currency and parentheses every other numeric door does and returns a verdict. It's also a
+native dependency: for plain invariant integers, `Integer.parseInt` is the reasonable
+choice.
 
 ## AOT
 
@@ -180,7 +181,10 @@ and the jar ships both in its `reachability-metadata.json` under
 `META-INF/native-image/io.github.skunkwerkx/hypercast/`, so a consumer inherits them with no
 configuration: the FFM downcall *signatures* (reachability is per-signature, not per-function
 — the doors share three shapes, and the version probe's `() -> int` is the fourth),
-and a `resources` glob covering `native/*/*`.
+and a `resources` glob covering `native/*/*`. A `native-image.properties` beside it has the
+class holding the downcall handles initialized at image build time, which is what keeps the
+doors compiled rather than interpreted in the image — 60-110 ns a door there
+([the numbers](#webassembly-graalwasm)).
 
 The resources half was missing from v0.0.1, and the failure mode is worth knowing because
 nothing catches it at build time: Native Image doesn't embed classpath resources unless they
@@ -218,8 +222,8 @@ nothing, so the default FFM path pulls in nothing extra. Add the two artifacts y
 ```kotlin
 dependencies {
     implementation("io.github.skunkwerkx:hypercast:<version>")
-    implementation("org.graalvm.polyglot:polyglot:25.3.4.1")
-    runtimeOnly("org.graalvm.polyglot:wasm:25.3.4.1")
+    implementation("org.graalvm.polyglot:polyglot:25.4.4.1.1")
+    runtimeOnly("org.graalvm.polyglot:wasm:25.4.4.1.1")
 }
 ```
 
@@ -238,32 +242,56 @@ without GraalWasm on the classpath fails when the core is first needed — `isAv
 `false`, and every door throws — with a message naming the two artifacts; the
 `org.graalvm.polyglot` classes are never loaded otherwise.
 
-**What it costs**, measured with the JMH suite on this repo's linux-arm64 box (WSL2), same
-session, three ways: the FFM downcall (`./gradlew :benchmarks:jmh`; GraalVM CE 25.3 and
+**What it costs**, measured with the JMH suite on linux-x64 (an Intel Core i9-11900H), same
+session, three ways: the FFM downcall (`./gradlew :benchmarks:jmh`; GraalVM CE 25.4 and
 Temurin 25 agree within noise on that row), then the wasm path (`-Pwasm`) on a GraalVM JDK,
 where Truffle JIT-compiles the guest, and on a stock Temurin 25, where it cannot:
 
-| Door | FFM downcall | GraalWasm, GraalVM CE 25.3 (JIT) | GraalWasm, Temurin 25 (interpreter) |
+| Door | FFM downcall | GraalWasm, GraalVM CE 25.4 (JIT) | GraalWasm, Temurin 25 (interpreter) |
 | --- | ---: | ---: | ---: |
-| `bool` | 18 ns, 40 B | 174 ns, 488 B | 1.9 µs, 2.6 KB |
-| `uuid` | 37 ns, 104 B | 384 ns, 928 B | 6.5 µs, 4.0 KB |
-| `f64` | 50 ns, 72 B | 230 ns, 544 B | 7.3 µs, 4.4 KB |
-| `timestamp` | 60 ns, 88 B | 354 ns, 936 B | 8.5 µs, 6.1 KB |
-| `dateTime` (`1/7/2026 3:04 PM`) | 65 ns, 120 B | 243 ns, 552 B | 10.7 µs, 8.0 KB |
-| `i32` (grouped) | 66 ns, 64 B | 237 ns, 480 B | 20.1 µs, 12.0 KB |
-| `duration` (ISO) | 61 ns, 72 B | 297 ns, 632 B | 17.3 µs, 11.8 KB |
+| `bool` | 14 ns, 40 B | 133 ns, 488 B | 1.9 µs, 2.6 KB |
+| `i32` (grouped) | 33 ns, 64 B | 134 ns, 480 B | 5.0 µs, 2.8 KB |
+| `uuid` | 35 ns, 104 B | 261 ns, 928 B | 5.3 µs, 4.0 KB |
+| `f64` | 42 ns, 72 B | 172 ns, 544 B | 6.2 µs, 4.5 KB |
+| `timestamp` | 51 ns, 88 B | 285 ns, 936 B | 7.9 µs, 6.1 KB |
+| `duration` (ISO) | 55 ns, 72 B | 232 ns, 632 B | 14.1 µs, 11.8 KB |
+| `dateTime` (`1/7/2026 3:04 PM`) | 57 ns, 120 B | 183 ns, 552 B | 9.2 µs, 8.0 KB |
 
-Two things those rows say plainly. Under GraalVM's JIT the wasm path costs 4-10x the
+Two things those rows say plainly. Under GraalVM's JIT the wasm path costs 3-9x the
 downcall — the polyglot crossing, the input copy and the lock, with the parse itself
 invisible behind them — and the JIT column needed a longer warmup than the FFM suite runs
 (`-Pwasm` raises it), because the first seconds measure Truffle compiling the guest rather
 than the door. On a stock OpenJDK, GraalWasm has no JIT: the engine prints a fallback-runtime
 warning at startup (`-Dpolyglot.engine.WarnInterpreterOnly=false` silences it) and runs the
 module interpreted, so the cost scales with how much wasm the parse executes — a two-lexeme
-boolean is 100x the downcall, a grouped integer 300x — and the kilobytes per call are the
-interpreter's, not this binding's. Nothing in this jar can change which of those a consumer
-gets. Unlike HyperUuid there is no batch door to amortize the crossing behind; that is round
-three's chunk layer.
+boolean is over 100x the downcall, an ISO duration over 250x — and the kilobytes per call
+are the interpreter's, not this binding's. Nothing in this jar can change which of those a
+consumer gets. Unlike HyperUuid there is no batch door to amortize the crossing behind; that
+is round three's chunk layer.
+
+Keep `org.graalvm.polyglot:polyglot` and `:wasm` at the same release as the GraalVM JDK you
+run on (25.4.4.1.1 here): Truffle will not use a compiler from a different release, so a
+mismatched pair runs the interpreter on the JVM and fails a Native Image build.
+
+**Under GraalVM Native Image** JMH cannot run, so these are a hand loop (warm up, one
+million calls per door, best of five rounds) built into a native image with the metadata the
+jar ships, same machine, the same loop on the JVM beside it:
+
+| Door | FFM downcall, JVM | FFM downcall, Native Image | GraalWasm, Native Image |
+| --- | ---: | ---: | ---: |
+| `bool` | 18 ns | 60 ns | 266 ns |
+| `i32` (grouped) | 32 ns | 91 ns | 400 ns |
+| `f64` | 41 ns | 106 ns | 452 ns |
+| `timestamp` | 52 ns | 111 ns | 773 ns |
+
+A native image runs the FFM doors at two to three times their JVM cost — the ordinary price
+of an ahead-of-time compiler without a profile — and the wasm path keeps its JIT there.
+
+The FFM doors are compiled in the image, not interpreted, because the downcall handles are
+constants there: one per ABI shape, created from the C signature alone in a class that needs
+nothing from the library, taking the export's address as its first argument, with
+`META-INF/native-image/.../native-image.properties` in the jar initializing that class at
+image build time. A consumer's `native-image` build inherits it with no configuration.
 
 **Threading.** A polyglot context does not allow concurrent access from multiple threads, so
 every call on the wasm path is serialized on one lock; one context and one module instance

@@ -80,26 +80,69 @@ public final class Cast {
      */
     public static final String BACKEND_PROPERTY = "hypercast.backend";
 
-    // (ptr, len, out, fault) -> code — the culture-insensitive doors.
-    private static final FunctionDescriptor PLAIN = FunctionDescriptor.of(
-            ValueLayout.JAVA_INT,
-            ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS);
-    // (ptr, len, format, out, fault) -> code — the numeric doors.
-    private static final FunctionDescriptor NUMERIC = FunctionDescriptor.of(
-            ValueLayout.JAVA_INT,
-            ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
-            ValueLayout.ADDRESS);
-    // (ptr, len, precision, out, fault) -> code — the Unix door.
-    private static final FunctionDescriptor UNIX = FunctionDescriptor.of(
-            ValueLayout.JAVA_INT,
-            ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT, ValueLayout.ADDRESS,
-            ValueLayout.ADDRESS);
-    // () -> packed version — the probe. Nothing crosses, so it is not linked critical.
-    private static final FunctionDescriptor VERSION = FunctionDescriptor.of(ValueLayout.JAVA_INT);
+    /**
+     * The downcall handles: one per ABI shape the core exports, none of them bound to an
+     * address. Each takes the export's address as its leading argument, which {@link Core}
+     * looks up once the library is loaded.
+     *
+     * <p>They live apart from {@link Core} for GraalVM Native Image. An image can only compile
+     * a call through a {@code MethodHandle} that is already a constant when the image is
+     * built; a handle created at run time — which is what binding one to a symbol's address
+     * forces, since the address does not exist until the library is loaded — is invoked
+     * through the image's method-handle interpreter instead, at microseconds a call (measured:
+     * 8-9 µs a door, against 14-51 ns on the JVM). Nothing in this class needs the library, so
+     * {@code META-INF/native-image/.../native-image.properties} has it initialized at image
+     * build time, and the handles are constants in the image. On the JVM the split changes
+     * nothing: the class initializes on the first native-path door, and the JIT folds a
+     * {@code static final} handle either way.
+     */
+    private static final class Downcalls {
+        private Downcalls() {}
+
+        private static final Linker LINKER = Linker.nativeLinker();
+
+        // critical(true) is what lets a heap segment (MemorySegment.ofArray over the caller's
+        // byte[]) cross without being copied into native memory first: the array is pinned for
+        // the duration of the call instead. The contract in exchange — the callee must be short,
+        // must not block, and must never upcall into Java — is exactly what every door is: a
+        // bounded parse over the bytes it was handed, with no callbacks and no allocation.
+        private static final Linker.Option CRITICAL = Linker.Option.critical(true);
+
+        // (ptr, len, out, fault) -> code — the culture-insensitive doors.
+        private static final MethodHandle PLAIN = LINKER.downcallHandle(
+                FunctionDescriptor.of(
+                        ValueLayout.JAVA_INT,
+                        ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS),
+                CRITICAL);
+        // (ptr, len, format, out, fault) -> code — the numeric doors.
+        private static final MethodHandle NUMERIC = LINKER.downcallHandle(
+                FunctionDescriptor.of(
+                        ValueLayout.JAVA_INT,
+                        ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                        ValueLayout.ADDRESS),
+                CRITICAL);
+        // (ptr, len, discriminant, out, fault) -> code — the Unix door, and every other door
+        // that takes one declared u32: the Excel epoch, the date order.
+        private static final MethodHandle DECLARED = LINKER.downcallHandle(
+                FunctionDescriptor.of(
+                        ValueLayout.JAVA_INT,
+                        ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT, ValueLayout.ADDRESS,
+                        ValueLayout.ADDRESS),
+                CRITICAL);
+        // () -> packed version — the probe. Nothing crosses, so it is not linked critical.
+        private static final MethodHandle VERSION = LINKER.downcallHandle(
+                FunctionDescriptor.of(ValueLayout.JAVA_INT));
+
+        // The uuid door's out-value read as two big-endian longs. Here for the same reason the
+        // handles are: a layout is read through a VarHandle, and one that is not a constant in
+        // the image costs ~70 ns a load there instead of one instruction.
+        private static final ValueLayout.OfLong BIG_ENDIAN_LONG =
+                ValueLayout.JAVA_LONG.withOrder(java.nio.ByteOrder.BIG_ENDIAN);
+    }
 
     /**
-     * The loaded core: which path won, the library it resolved to, and one downcall handle
-     * per export — all {@code static final}, all resolved in this holder's own class init.
+     * The loaded core: which path won, the library it resolved to, and the address of every
+     * export in it — all {@code static final}, all resolved in this holder's own class init.
      * A holder rather than fields on {@code Cast} itself so that nothing loads until the
      * first door (or {@link Cast#backend()}/{@link Cast#nativeVersion()}) touches it, and so
      * that {@link Cast#isAvailable()} can observe a load failure without {@code Cast} having failed
@@ -117,10 +160,9 @@ public final class Cast {
          */
         private static final Backend WASM;
 
-        // Both null on the wasm path: there is no library to look symbols up in, and the
-        // native linker is never asked for — a platform the JDK has no linker for can
-        // still run the module.
-        private static final Linker LINKER;
+        // Null on the wasm path: there is no library to look symbols up in, and the native
+        // linker is never asked for (Downcalls stays uninitialized) — a platform the JDK has
+        // no linker for can still run the module.
         private static final SymbolLookup LOOKUP;
 
         /*
@@ -141,18 +183,15 @@ public final class Cast {
             }
             NativePlatform.Target target = NativePlatform.current();
             Backend wasm = null;
-            Linker linker = null;
             SymbolLookup lookup = null;
             if ("wasm".equals(choice)) {
                 wasm = startWasm(null);
             } else if ("native".equals(choice)) {
-                linker = Linker.nativeLinker();
                 lookup = loadLibrary(target);
             } else if (target == null || Cast.class.getResource(target.resourcePath()) == null) {
                 wasm = startWasm(nativeMissing(target));
             } else {
                 try {
-                    linker = Linker.nativeLinker();
                     lookup = loadLibrary(target);
                 } catch (RuntimeException | LinkageError nativeFailure) {
                     try {
@@ -161,55 +200,42 @@ public final class Cast {
                         nativeFailure.addSuppressed(wasmFailure);
                         throw nativeFailure;
                     }
-                    linker = null;
                 }
             }
             WASM = wasm;
-            LINKER = linker;
             LOOKUP = lookup;
         }
 
-        private static final MethodHandle CAST_BOOL = handle("cast_bool", PLAIN);
-        private static final MethodHandle CAST_I8 = handle("cast_i8", NUMERIC);
-        private static final MethodHandle CAST_I16 = handle("cast_i16", NUMERIC);
-        private static final MethodHandle CAST_I32 = handle("cast_i32", NUMERIC);
-        private static final MethodHandle CAST_I64 = handle("cast_i64", NUMERIC);
-        private static final MethodHandle CAST_U8 = handle("cast_u8", NUMERIC);
-        private static final MethodHandle CAST_U16 = handle("cast_u16", NUMERIC);
-        private static final MethodHandle CAST_U32 = handle("cast_u32", NUMERIC);
-        private static final MethodHandle CAST_U64 = handle("cast_u64", NUMERIC);
-        private static final MethodHandle CAST_F32 = handle("cast_f32", NUMERIC);
-        private static final MethodHandle CAST_F64 = handle("cast_f64", NUMERIC);
-        private static final MethodHandle CAST_DECIMAL = handle("cast_decimal", NUMERIC);
-        private static final MethodHandle CAST_UUID = handle("cast_uuid", PLAIN);
-        private static final MethodHandle CAST_TIMESTAMP = handle("cast_timestamp", PLAIN);
-        private static final MethodHandle CAST_UNIX = handle("cast_unix", UNIX);
-        // cast_excel_serial shares the unix ABI shape too — a u32 discriminant, timestamp out.
-        private static final MethodHandle CAST_EXCEL_SERIAL = handle("cast_excel_serial", UNIX);
-        private static final MethodHandle CAST_DATE = handle("cast_date", PLAIN);
-        // cast_date_ordered and cast_datetime share the unix ABI shape (ptr, len, u32, out, fault).
-        private static final MethodHandle CAST_DATE_ORDERED = handle("cast_date_ordered", UNIX);
-        private static final MethodHandle CAST_DATETIME = handle("cast_datetime", UNIX);
-        private static final MethodHandle CAST_TIME = handle("cast_time", PLAIN);
-        private static final MethodHandle CAST_DURATION = handle("cast_duration", PLAIN);
-        private static final MethodHandle HYPERCAST_VERSION = LOOKUP == null
-                ? null
-                : LINKER.downcallHandle(LOOKUP.find("hypercast_version").orElseThrow(), VERSION);
+        // Where each export lives in the loaded library — the leading argument of the
+        // Downcalls handle with its shape. Looked up here, once, so an export missing from an
+        // older core fails this class's init (and isAvailable() says so) rather than a door.
+        private static final MemorySegment CAST_BOOL = export("cast_bool");
+        private static final MemorySegment CAST_I8 = export("cast_i8");
+        private static final MemorySegment CAST_I16 = export("cast_i16");
+        private static final MemorySegment CAST_I32 = export("cast_i32");
+        private static final MemorySegment CAST_I64 = export("cast_i64");
+        private static final MemorySegment CAST_U8 = export("cast_u8");
+        private static final MemorySegment CAST_U16 = export("cast_u16");
+        private static final MemorySegment CAST_U32 = export("cast_u32");
+        private static final MemorySegment CAST_U64 = export("cast_u64");
+        private static final MemorySegment CAST_F32 = export("cast_f32");
+        private static final MemorySegment CAST_F64 = export("cast_f64");
+        private static final MemorySegment CAST_DECIMAL = export("cast_decimal");
+        private static final MemorySegment CAST_UUID = export("cast_uuid");
+        private static final MemorySegment CAST_TIMESTAMP = export("cast_timestamp");
+        private static final MemorySegment CAST_UNIX = export("cast_unix");
+        private static final MemorySegment CAST_EXCEL_SERIAL = export("cast_excel_serial");
+        private static final MemorySegment CAST_DATE = export("cast_date");
+        private static final MemorySegment CAST_DATE_ORDERED = export("cast_date_ordered");
+        private static final MemorySegment CAST_DATETIME = export("cast_datetime");
+        private static final MemorySegment CAST_TIME = export("cast_time");
+        private static final MemorySegment CAST_DURATION = export("cast_duration");
+        private static final MemorySegment HYPERCAST_VERSION = export("hypercast_version");
 
-        // critical(true) is what lets a heap segment (MemorySegment.ofArray over the caller's
-        // byte[]) cross without being copied into native memory first: the array is pinned for
-        // the duration of the call instead. The contract in exchange — the callee must be short,
-        // must not block, and must never upcall into Java — is exactly what every door is: a
-        // bounded parse over the bytes it was handed, with no callbacks and no allocation.
-        //
-        // Null when the wasm backend is active — the static final MethodHandles above are then
-        // never invoked, and there is no library to look symbols up in.
-        private static MethodHandle handle(String symbol, FunctionDescriptor descriptor) {
-            if (LOOKUP == null) {
-                return null;
-            }
-            return LINKER.downcallHandle(
-                    LOOKUP.find(symbol).orElseThrow(), descriptor, Linker.Option.critical(true));
+        // Null when the wasm backend is active — the addresses above are then never used, and
+        // there is no library to look symbols up in.
+        private static MemorySegment export(String symbol) {
+            return LOOKUP == null ? null : LOOKUP.find(symbol).orElseThrow();
         }
 
         // Why there is no native library to load, for the messages below: no build exists for
@@ -349,7 +375,7 @@ public final class Cast {
             packed = Core.WASM.version();
         } else {
             try {
-                packed = (int) Core.HYPERCAST_VERSION.invokeExact();
+                packed = (int) Downcalls.VERSION.invokeExact(Core.HYPERCAST_VERSION);
             } catch (Throwable t) {
                 throw new AssertionError("hypercast: hypercast_version downcall failed unexpectedly", t);
             }
@@ -360,40 +386,40 @@ public final class Cast {
 
     // The three ABI shapes, each one line on the wasm path and one downcall on the native
     // one. Core.WASM is a static final, so the JIT folds the null check away on the FFM
-    // path, and once these inline into the door that called them the handle is the static
-    // final constant that door named — a direct downcall, exactly as before a second
-    // backend existed.
-    private static int plain(MethodHandle handle, Door door, MemorySegment in, long len,
+    // path. Each shape has one handle, a static final constant in Downcalls; what a door
+    // names is the address of its export, which is the handle's leading argument — a direct
+    // downcall, exactly as before a second backend existed.
+    private static int plain(MemorySegment export, Door door, MemorySegment in, long len,
             MemorySegment out, MemorySegment fault) {
         if (Core.WASM != null) {
             return Core.WASM.plain(door, in, len, out, fault);
         }
         try {
-            return (int) handle.invokeExact(in, len, out, fault);
+            return (int) Downcalls.PLAIN.invokeExact(export, in, len, out, fault);
         } catch (Throwable t) {
             throw new AssertionError("hypercast: " + door.symbol() + " downcall failed unexpectedly", t);
         }
     }
 
-    private static int numeric(MethodHandle handle, Door door, MemorySegment in, long len,
+    private static int numeric(MemorySegment export, Door door, MemorySegment in, long len,
             NumFormat format, Scratch scratch) {
         if (Core.WASM != null) {
             return Core.WASM.numeric(door, in, len, format, scratch.out, scratch.fault);
         }
         try {
-            return (int) handle.invokeExact(in, len, scratch.format(format), scratch.out, scratch.fault);
+            return (int) Downcalls.NUMERIC.invokeExact(export, in, len, scratch.format(format), scratch.out, scratch.fault);
         } catch (Throwable t) {
             throw new AssertionError("hypercast: " + door.symbol() + " downcall failed unexpectedly", t);
         }
     }
 
-    private static int declared(MethodHandle handle, Door door, MemorySegment in, long len,
+    private static int declared(MemorySegment export, Door door, MemorySegment in, long len,
             int discriminant, MemorySegment out, MemorySegment fault) {
         if (Core.WASM != null) {
             return Core.WASM.declared(door, in, len, discriminant, out, fault);
         }
         try {
-            return (int) handle.invokeExact(in, len, discriminant, out, fault);
+            return (int) Downcalls.DECLARED.invokeExact(export, in, len, discriminant, out, fault);
         } catch (Throwable t) {
             throw new AssertionError("hypercast: " + door.symbol() + " downcall failed unexpectedly", t);
         }
@@ -585,10 +611,10 @@ public final class Cast {
     }
 
     private static <T> Verdict<T> numeric(
-            MethodHandle handle, Door door, MemorySegment in, long len, NumFormat format,
+            MemorySegment export, Door door, MemorySegment in, long len, NumFormat format,
             IntReader<T> reader) {
         Scratch scratch = SCRATCH.get();
-        int code = numeric(handle, door, in, len, format, scratch);
+        int code = numeric(export, door, in, len, format, scratch);
         return code == 0 ? new Success<>(reader.read(scratch.out)) : failed(code, scratch.fault);
     }
 
@@ -1076,13 +1102,10 @@ public final class Cast {
         }
         // RFC 9562 order is exactly UUID's msb/lsb decomposition — no swapping, unlike Guid —
         // so the 16 bytes are two big-endian longs, read as such; `out` is 8-aligned for it.
-        return new Success<>(new UUID(out.get(BIG_ENDIAN_LONG, 0), out.get(BIG_ENDIAN_LONG, 8)));
+        return new Success<>(new UUID(out.get(Downcalls.BIG_ENDIAN_LONG, 0), out.get(Downcalls.BIG_ENDIAN_LONG, 8)));
     }
 
     // --- temporals ---
-
-    private static final ValueLayout.OfLong BIG_ENDIAN_LONG =
-            ValueLayout.JAVA_LONG.withOrder(java.nio.ByteOrder.BIG_ENDIAN);
 
     /** Timestamp out-param: {@code {i64 seconds, i32 nanos}} (protobuf layout, 16 bytes with padding). */
     private static final long TIMESTAMP_BYTES = 16;
@@ -1093,13 +1116,13 @@ public final class Cast {
     // A zero precision means the RFC 3339 door's plain shape; anything else is a declared
     // unit or epoch on the unix shape.
     private static Verdict<Instant> instantDoor(
-            MethodHandle handle, Door door, MemorySegment in, long len, int precision) {
+            MemorySegment export, Door door, MemorySegment in, long len, int precision) {
         Scratch scratch = SCRATCH.get();
         MemorySegment out = scratch.out;
         MemorySegment fault = scratch.fault;
         int code = precision == 0
-                ? plain(handle, door, in, len, out, fault)
-                : declared(handle, door, in, len, precision, out, fault);
+                ? plain(export, door, in, len, out, fault)
+                : declared(export, door, in, len, precision, out, fault);
         return code == 0
                 ? new Success<>(Instant.ofEpochSecond(
                         out.get(ValueLayout.JAVA_LONG, 0), out.get(ValueLayout.JAVA_INT, 8)))

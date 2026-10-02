@@ -1,8 +1,15 @@
-//go:build cgo && (darwin || linux) && !hypercast_wasm
+//go:build cgo && (darwin || linux) && !hypercast_wasm && (hypercast_dynamic || !(amd64 || arm64))
 
-// The cgo backend — HyperUuid's measured lesson applied from day one: purego's per-call
+// The loading cgo backend: it dlopen's libhypercast and calls it through real cgo. It was
+// what every cgo build got through 0.3.0; a cgo build now links the core in instead
+// (backend_static.go), and this one is selected by `-tags hypercast_dynamic` — for a build
+// that has to pick the core up at run time rather than link time — or on an architecture
+// the static backend has no archive for, where it reports the platform as unsupported
+// exactly as it always did.
+//
+// Why cgo at all — HyperUuid's measured lesson applied from day one: purego's per-call
 // trampoline allocations would eat scalar parsing alive (on its purego backend, HyperUuid's
-// batch API was 19.6x faster than per-call precisely because of that overhead; on cgo the
+// batch API is 20-27x faster than per-call precisely because of that overhead; on cgo the
 // two were a wash), so scalar-per-call HyperCast runs on real C calls wherever cgo is
 // available. backend_purego.go is the fallback half of the pair — Windows, CGO_ENABLED=0,
 // and cross-compiles land there automatically.

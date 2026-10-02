@@ -240,26 +240,39 @@ inside a browser.
 
 ## Benchmarks
 
-With the mechanism replaced, every door runs 10-18x faster than it did over ctypes (pyperf,
-linux-arm64): timestamp 3.07 µs → **201 ns** — near-parity with C-accelerated
-`fromisoformat` (163 ns) while returning verdicts instead of exceptions; i32 at **146 ns**
-vs `int()`'s 88; and the forgiveness doors at ~180 ns for grammar the stdlib doesn't sell at
-any price. The uuid door used to sit at parity with `uuid.UUID()` because both were bounded
-by `UUID.__init__`; it now builds the instance the way HyperUuid pinned — `UUID.__new__`
-plus `object.__setattr__` of the `int` and `is_safe` slots, skipping an `__init__` whose
-validation the core has already done — and measures **730 ns against 1.18 µs** before the
-change, same machine, same session, ahead of `uuid.UUID()`'s 979 ns.
-
-The messy-feed doors are where the gap is widest, because `strptime` is the only stdlib
-parser that accepts their input at all — and it is *slow*:
+With the mechanism replaced, every door runs roughly an order of magnitude faster than it did
+over ctypes, where each cost about 3 µs. Measured with pyperf on linux-x64 (an Intel Core
+i9-11900H), CPython 3.14.7 as Fedora builds it, each door beside the closest thing the
+stdlib has:
 
 | Door | HyperCast | stdlib | Verdict |
 | --- | ---: | ---: | --- |
-| `cast_datetime("1/7/2026 3:04 PM", MONTH_DAY_YEAR)` | 409 ns | 5.19 µs `datetime.strptime` | **12.7x faster** |
-| `cast_date("1/7/2026", MONTH_DAY_YEAR)` | 292 ns | 3.86 µs `datetime.strptime` | **13.2x faster** |
+| `cast_datetime("1/7/2026 3:04 PM", MONTH_DAY_YEAR)` | 230 ns | 4.65 µs `datetime.strptime` | **20x faster** |
+| `cast_date("1/7/2026", MONTH_DAY_YEAR)` | 201 ns | 3.51 µs `datetime.strptime` | **17x faster** |
+| `cast_uuid` | 262 ns | 798 ns `uuid.UUID()` | **3.0x faster** |
+| `cast_timestamp` | 252 ns | 146 ns `datetime.fromisoformat` | 1.7x slower |
+| `cast_f64` | 131 ns | 72 ns `float()` | 1.8x slower |
+| `cast_i32` | 103 ns | 56 ns `int()` | 1.8x slower |
+| `cast_i32` (grouped) | 116 ns | — | |
+| `cast_bool` | 89 ns | — | |
+| `cast_duration` (ISO) | 262 ns | — | |
 
-Separator detection costs ~18 ns: `1.234.567,89` under `NumFormat.DETECT` is 216 ns
-against 198 ns for the same text under a declared eurozone format.
+The messy-feed doors are where the gap is widest, because `strptime` is the only stdlib
+parser that accepts their input at all — and it is *slow*. The three losses are each to a C
+builtin that reads one shape and has no boundary to cross: `int()` and `float()` on plain
+numbers, and `fromisoformat` on a timestamp. What a door returns for the difference is a
+verdict rather than an exception, and the forgiveness — grouping, declared separators, a
+currency symbol — at ~115-160 ns for grammar the stdlib doesn't sell at any price.
+
+Past the parse, what a door costs is the Python object it hands back, so those are built
+the cheapest way the stable ABI allows: a `uuid.UUID` is allocated and its slots set through
+the C API with no `__init__` (the core has already validated the text); a `datetime`, `date`
+or `time` comes from the packed form the `datetime` module's own pickling uses; and a
+`timedelta` from subtracting two datetimes, which is several times cheaper than its
+constructor. One `abi3` wheel still covers every CPython from 3.11.
+
+Separator detection costs ~15 ns: `1.234.567,89` under `NumFormat.DETECT` is 157 ns
+against 142 ns for the same text under a declared eurozone format.
 
 Reproduce: `maturin develop --release` (from `python/`, inside a virtualenv — `pyproject.toml`
 already points maturin at `../rust/Cargo.toml` and the `python` feature) to build the release
@@ -313,21 +326,21 @@ Three things about the crossing decide the numbers below:
   `try` at load time and degrades to the public call — slow, never broken — if a wasmtime release
   moves it.
 
-Measured end to end on CPython 3.14.7, linux-arm64 (WSL2), `timeit` best of five, same session
-as the native column:
+Measured end to end with the same pyperf suite as the table above (`HYPERCAST_WASM=1 python
+bench_cast.py --fast --inherit-environ HYPERCAST_WASM` — pyperf's workers do not inherit the
+environment unless told to), CPython 3.14.7, linux-x64, same session as the native column:
 
 | Door | wasm backend | native (`_native`) |
 | --- | ---: | ---: |
-| `cast_bool` | 6.0 µs | 99 ns |
-| `cast_i32` | 6.4 µs | 139 ns |
-| `cast_f64` | 6.4 µs | 153 ns |
-| `cast_uuid` | 6.9 µs | 681 ns |
-| `cast_timestamp` | 7.7 µs | 423 ns |
-| `cast_datetime` (`1/7/2026 3:04 PM`) | 7.2 µs | 407 ns |
-| `cast_duration` (ISO) | 7.5 µs | 662 ns |
-| `cast_i32`, a fault | 6.8 µs | 138 ns |
+| `cast_bool` | 5.2 µs | 89 ns |
+| `cast_i32` | 5.5 µs | 103 ns |
+| `cast_f64` | 5.7 µs | 131 ns |
+| `cast_uuid` | 5.8 µs | 262 ns |
+| `cast_timestamp` | 6.6 µs | 252 ns |
+| `cast_datetime` (`1/7/2026 3:04 PM`) | 6.3 µs | 230 ns |
+| `cast_duration` (ISO) | 6.6 µs | 262 ns |
 
-Read it the way the rest of this README reads: every door pays the crossing — roughly 6 µs of
+Read it the way the rest of this README reads: every door pays the crossing — roughly 5 µs of
 lock, argument packing, guest memory copies and the call itself — and the parse underneath is
 invisible next to it. There is no batch door here to amortize that behind, so this backend is
 the answer to "the extension will not load here", not a speed option; the object-building doors

@@ -165,15 +165,14 @@ and memoized by identity on every backend, so declaring a currency costs a cast 
    corpus replay; cross-backend agreement specs compare Magnus against Fiddle
    and wasm against Fiddle across a subprocess boundary).
 4. **Faster than the stdlib on the Magnus backend, where the carrier is cheap** —
-   benchmark-ips (`ruby benchmark/cast_benchmark.rb`, linux-arm64): timestamp **713 ns vs
-   2.88 µs `Time.iso8601`** (4.0x) — while returning exact `Rational` durations on the
-   duration door. The Fiddle fallback lands at ~3.5 µs: parity with `Time.iso8601`, sitting
-   on Fiddle's measured 1.6 µs per-call marshalling floor.
+   benchmark-ips (`ruby benchmark/cast_benchmark.rb`, linux-x64 on an Intel Core
+   i9-11900H, Ruby 4.0.7): timestamp **447 ns vs 2.97 µs `Time.iso8601`** (6.6x) — while
+   returning exact `Rational` durations on the duration door. The Fiddle fallback lands at
+   3.25 µs: a little behind `Time.iso8601`, sitting on Fiddle's per-call marshalling floor.
 
-   Separator detection is free here: `1.234.567,89` under `NumFormat::DETECT` runs at
-   591 ns against 570 ns for the same text under a declared eurozone format — inside the
-   error bars. Both of those were ~990 ns in 0.1.0, for a reason that had nothing to do
-   with parsing: every format other than `INVARIANT` paid three method dispatches and two
+   Separator detection is nearly free here: `1.234.567,89` under `NumFormat::DETECT` runs
+   at 178 ns against 170 ns for the same text under a declared eurozone format. Both cost
+   nearly twice that in 0.1.0, for a reason that had nothing to do with parsing: every format other than `INVARIANT` paid three method dispatches and two
    `String` allocations per call to read its separators back out of the `Data`. `DETECT`
    is now identity-matched like `INVARIANT`, and any other format is resolved once per
    thread and memoized by identity — anchored in a thread-variable so the memo's key can
@@ -182,23 +181,19 @@ and memoized by identity on every backend, so declaring a currency costs a cast 
    cached the same way, so a fault or a declared option is a pointer compare too, never a
    `Symbol#name` materialization.
 
-**The honest trade-off, and Ruby's one real loss:** the civil date-time door is *slower*
-than `strptime` — 1.30 µs against `DateTime.strptime`'s 1.02 µs, and the date door 1.04 µs
-against `Date.strptime`'s 619 ns. The parse isn't the problem; the carrier is. Building a
-stdlib `DateTime` with an exact `Rational` second costs more than the whole native call,
-where the timestamp door's `Time` is built by a single cheap `rb_time_nano_new`. Printed
-because it's real: if you want Ruby's fastest civil parse and don't need the verdict or the
-declared order, `strptime` wins. Also note the carrier's other caveat — `DateTime`'s offset
-defaults to `+00:00`, which is an artifact of the type, not a zone the parse assigned.
+**The honest trade-off:** the civil doors do not beat `strptime`. The date-time door is
+level with `DateTime.strptime` (904 ns against 901 ns) and the date door a little behind
+`Date.strptime` (620 ns against 513 ns). The parse isn't the cost; the carrier is. Building
+a stdlib `DateTime` with an exact `Rational` second costs more than the whole native call,
+where the timestamp door's `Time` is built by a single cheap `rb_time_nano_new`. If you want
+Ruby's fastest civil parse and don't need the verdict or the declared order, `strptime` is
+as good. Also note the carrier's other caveat — `DateTime`'s offset defaults to `+00:00`,
+which is an artifact of the type, not a zone the parse assigned.
 
 On the Fiddle fallback the doors are parity-at-best — Fiddle's
 per-call floor is the mechanism's price, kept because it's the universal zero-compile
-path. 0.2.0 still took ~20% off its numeric doors (`i32` 3.37 → 2.62 µs, `f64` 3.31 →
-2.76 µs, same session) by not building things per call that never changed: the integer
-doors interpolated and interned their `:cast_*` Symbol on every call, every door went
-through a splat-and-resplat dispatcher, and every numeric call copied the format's 12
-packed bytes into scratch — each format now owns one native pointer, memoized by identity,
-passed straight through. (Benchmark forensics worth knowing: the doors read 4.3 µs until
+path. Its doors build nothing per call that does not change between calls: each format
+owns one native pointer, memoized by identity and passed straight through. (Benchmark forensics worth knowing: the doors read 4.3 µs until
 per-call `Fiddle::Pointer.malloc` finalizers were hoisted to thread-local scratch —
 receipts include their own archaeology.)
 
@@ -210,19 +205,23 @@ first line names the backend, core version and Ruby it measured, so run it again
 are in [the section above](#why-not-integer--timeiso8601--float); this is the three backends
 against each other.
 
-Measured on Ruby 4.0.6, linux-arm64 under WSL2, wasmtime 48.0.1, `benchmark-ips`, same
-session, all three backends:
+Measured on Ruby 4.0.7, linux-x64 (an Intel Core i9-11900H), wasmtime 48.0.1,
+`benchmark-ips`, same session, all three backends:
 
 | Door | Magnus | Fiddle | wasmtime |
 |---|---:|---:|---:|
-| `bool` | 484 ns | 2.55 µs | 2.07 µs |
-| `i32` | 555 ns | 2.78 µs | 2.65 µs |
-| `f64` | 529 ns | 2.72 µs | 2.73 µs |
-| `uuid` | 640 ns | 3.32 µs | 3.53 µs |
-| `timestamp` | 769 ns | 3.12 µs | 3.10 µs |
-| `datetime` (`1/7/2026 3:04 PM`) | 1.36 µs | 3.97 µs | 3.66 µs |
-| `duration` (ISO) | 975 ns | 2.84 µs | 2.47 µs |
-| `i32`, a fault | 658 ns | 2.89 µs | 2.42 µs |
+| `bool` | 112 ns | 2.35 µs | 1.75 µs |
+| `i32` | 133 ns | 2.63 µs | 1.80 µs |
+| `f64` | 166 ns | 2.70 µs | 1.84 µs |
+| `uuid` | 223 ns | 3.47 µs | 2.65 µs |
+| `timestamp` | 447 ns | 3.25 µs | 2.42 µs |
+| `datetime` (`1/7/2026 3:04 PM`) | 904 ns | 3.98 µs | 3.14 µs |
+| `duration` (ISO) | 632 ns | 2.91 µs | 2.10 µs |
+| `i32`, a fault | 225 ns | 3.18 µs | 2.50 µs |
+
+A lean door on the Magnus backend is little more than the native call: the extension builds
+the `Success` or `Fault` it returns directly — allocated, its members stored, frozen —
+rather than through `Data.new`, whose keyword handling alone cost more than the cast.
 
 ## Backends
 
@@ -294,15 +293,17 @@ single-threaded, so every call is serialized under one Mutex around one shared i
 Measured against the other two backends in the same session — the `wasmtime` column of the
 table under [Benchmarks](#benchmarks).
 
-The finding worth stating: in Ruby the wasm backend lands at Fiddle parity, door for door.
-Fiddle's per-call floor is interpreted marshalling; wasmtime's is the host-to-guest crossing
-plus the guest memory copies; on this box they cost the same, and both sit 4-5x behind the
-Magnus extension. So on a platform with no native build, the fallback costs a consumer
-nothing they were not already paying on the universal gem.
+The finding worth stating: in Ruby the wasm backend is no slower than Fiddle, and on the
+x64 box that table comes from it is the faster of the two on every door, by a fifth to a
+third. Fiddle's per-call floor is interpreted marshalling; wasmtime's is the host-to-guest
+crossing plus the guest memory copies; on the lean doors wasmtime sits eleven to sixteen
+times behind the Magnus extension and Fiddle sixteen to twenty-one, narrowing to three to
+five times where building the Ruby value dominates. So on a platform with no native build, the fallback costs a consumer nothing
+they were not already paying on the universal gem.
 
 ## Verifying provenance
 
-Every gem RubyGems.org serves — the universal fallback and each of the six precompiled
+Every gem RubyGems.org serves — the universal fallback and each of the five precompiled
 platform gems — carries its own GitHub build-provenance attestation, signed directly by
 this repo's own `release.yml` (the `rubygems-publish` job attests `ruby/pkg/*.gem` right
 before the push), so plain `--repo` verifies any of them:
@@ -331,10 +332,12 @@ more on why `--signer-repo` is needed for some artifacts here and not others.
 gem install hypercast
 ```
 
-Seven gems are published per release: one universal `ruby`-platform gem (Fiddle, with every
-platform's native library and the wasm module bundled) plus six precompiled Magnus platform
-gems (`x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, `arm64-darwin`, `x64-mingw-ucrt`,
-`aarch64-mingw-ucrt`) that `gem install` and `bundle` auto-select when they match. A platform
+Six gems are published per release: one universal `ruby`-platform gem (Fiddle, with every
+platform's native library and the wasm module bundled) plus five precompiled Magnus platform
+gems (`x86_64-linux`, `aarch64-linux`, `arm64-darwin`, `x64-mingw-ucrt`,
+`aarch64-mingw-ucrt`) that `gem install` and `bundle` auto-select when they match. There is
+no `x86_64-darwin` platform gem: an Intel Mac installs the universal gem and runs on Fiddle
+over the bundled `osx-x64` library, as Alpine does. A platform
 gem carries the same libraries and module beside its extensions, so the Fiddle and wasm
 backends are still there behind `HYPERCAST_PURE` and `HYPERCAST_WASM`. No extra configuration
 needed either way.
@@ -352,8 +355,8 @@ one at `require` time:
 | 3.3 (the floor) | Fiddle | Fiddle | wasm, if `wasmtime` is installed |
 
 What stands behind each cell: CI replays the whole suite, shared corpus included, for the
-first column on every push — Magnus on Ruby 3.4 and 4.0, Fiddle and wasm on 4.0, on all six
-platforms — and the Fiddle suite for the musl column inside an Alpine container. The 3.3 row
+first column on every push — Magnus on Ruby 3.4 and 4.0, Fiddle and wasm on 4.0, on all five
+platforms with a CI leg (Intel macOS has none) — and the Fiddle suite for the musl column inside an Alpine container. The 3.3 row
 is the same Fiddle code path, run with the Docker command under [Development](#development)
 (Ruby 3.3 with the Fiddle 1.1.2 it ships) rather than on every push. The last column — wasm
 chosen automatically because nothing native exists — has no leg of its own: CI runs the wasm

@@ -69,6 +69,46 @@ WebAssembly to that binding. No door changed its verdict on any input.
 
 ### Changed
 
+- **Every benchmark table was re-measured on x86-64, and several verdicts changed.** The
+  published figures came from an arm64 WSL2 machine. On linux-x64 (an Intel Core i9-11900H)
+  the doors' own costs moved little; the platform parsers they are timed against moved a
+  lot — PHP's date functions run about 2.5x faster here — so the ratios did. C#: the
+  date and time doors are 2.2–3.9x ahead of the BCL, `double` and a grouped `int` are
+  washes, and `Guid` is 1.5x behind where it was a wash. Java: 4.6–12.3x on the date and
+  time doors; `UUID.fromString` now beats the door by ten nanoseconds where it trailed it,
+  and a `BigDecimal` row is printed for the first time, a 2.3x loss. Swift: 12.6x on a
+  timestamp, 15x on a UUID. Go: every door still loses to the stdlib except the messy
+  date-time one, which is 1.3x ahead. Ruby's wasm backend is faster than Fiddle rather
+  than level with it; Ruby and Python are otherwise stated in the two entries below, which
+  they were measured after. PHP: level with `DateTimeImmutable` (was 2.7x ahead) and 1.5x behind
+  `createFromFormat` (was 2.2x ahead). The losses are stated as what they are: a few
+  nanoseconds to a few hundred, against a parser built for the one shape being timed, for
+  a format declared per call, a fault with a span, and the same verdict in seven
+  languages. Java's table is the JMH profile the build's own task runs, and every README
+  names the machine and runtime behind its tables. *(docs)*
+- **Java — GraalWasm 25.4.4.1.1.** The wasm backend's optional engine moves from 25.3.4.1
+  to the release that matches GraalVM 25.4, in the build, the benchmarks, the AOT smoke
+  test and the README's dependency snippet. The two have to match: on a 25.4 JDK the older
+  artifacts ran the module interpreted on the JVM, with no error, and failed a Native Image
+  build outright. *(docs, dev only)*
+- **Python — the doors that return an object cost about half what they did.** Past the
+  parse, a door's cost was the Python object it handed back, built by calling Python
+  callables. A `uuid.UUID` is now allocated and its slots set through the C API; a
+  `datetime`, `date` or `time` is built from the packed state the `datetime` module's own
+  pickling uses; and a `timedelta` comes from subtracting two datetimes, since its
+  constructor is the slowest in the module. All of it is inside the stable ABI, so the
+  wheels are unchanged, and each has a fallback to the ordinary constructor for a value the
+  short path cannot carry. On CPython 3.14: `cast_uuid` 557 ns to 262 (3.0x
+  `uuid.UUID()`), `cast_timestamp` 369 to 252 (1.7x behind `fromisoformat`, was 2.5x),
+  `cast_datetime` 339 to 230 (20x `strptime`), `cast_duration` 581 to 262. *(PyPI)*
+- **Ruby — a lean door on the Magnus backend costs a quarter of what it did.** The
+  extension returned its `Success` or `Fault` through `Data.new`, whose keyword handling
+  alone cost ~280 ns, more than the cast. It now builds the instance directly — allocated,
+  its members stored, frozen — and falls back to `.new` if a Ruby ever stops representing
+  `Data` as a struct; a spec pins the result as indistinguishable (`==`, `eql?`, `hash`,
+  `to_h`, `with`, pattern matching, `Marshal`). `bool` 462 ns to 112, `i32` 468 to 133,
+  `uuid` 629 to 223, `timestamp` 794 to 447 — 6.6x `Time.iso8601`, was 3.4x — and the
+  civil date-time door is level with `DateTime.strptime` where it trailed it. *(RubyGems)*
 - **Only upstream-supported runtimes.** PHP's floor is 8.2 (8.1 ended 2025-12-31; the
   binding already used `readonly class`, which is 8.2 syntax, while declaring 8.1), Ruby's
   is 3.3 (3.2 ended 2026-03-31), Python's is 3.11 (3.10 ends 2026-10-31; the wheels are
@@ -109,6 +149,47 @@ WebAssembly to that binding. No door changed its verdict on any input.
   library, and find its resource directory under both names SwiftPM uses: `.bundle` (Swift
   6.4's default build system) and `.resources` (6.2 and 6.3 on Windows). A toolchain older
   than 6.2 keeps resolving 0.3.0. *(`.package(url:)`)*
+- **Grouped, currency and accounting input casts in about half the time.** `12,345.67`,
+  `$12,345.67` and `($12,345.67)` used to take the full normalize-then-parse engine, at
+  roughly twice the cost of a plain number — and it was leaving the plain path that cost,
+  not the symbol: grouping alone was as slow as all three together. A second fast lane
+  (`rust/src/lane.rs`) now reads those shapes in one pass and hands anything it does not
+  recognise to the engine untouched, so no verdict and no fault span changes; a
+  differential test runs every numeric door with the lane on and off over an enumerated
+  grammar and requires identical answers. In the core, on one machine: an i64 from 41–45 ns
+  to 14, a decimal from 42–50 ns to 21–24, a real from 40–42 ns to 33. A plain decimal
+  such as `12345.67` also went from 25.5 ns to 11.8.
+
+  Through the C# binding, old core against new on the same machine and in the same session
+  (x86_64, .NET 11, the `string` doors with the transcode included), with the BCL beside
+  them: `Cast.Int32("1,234,567")` 65 ns to 43, against 43 for `int.TryParse`;
+  `Cast.Decimal("12,345.6789")` 98 ns to 62, against 59; `Cast.Decimal("($1,234.50)")`
+  104 ns to 66, against 60 for `NumberStyles.Currency`; `Cast.Double("($1,234.50)")` 83 ns
+  to 74, against 52; `Cast.Double` on `1.234.567,89` 77 ns to 61, against 58 for de-DE.
+  Four of the five rows where this binding trailed the BCL are now within about ten
+  percent of it; the real door on currency input still trails. The READMEs' tables were
+  re-measured on that machine in the same round (see Changed). *(every package)*
+- **Go — a cgo build links the core in.** On Linux and macOS, amd64 and arm64, the core
+  is a static library on the cgo link line (`go/staticlib/`), not a shared library embedded
+  for every platform, written to a temp file and `dlopen`ed on first use. A program that
+  does nothing else is 3.2 MB instead of 6.7 MB, starts without touching the filesystem, and
+  runs with no writable temp directory — including fully static, in an empty read-only
+  container. One archive serves glibc and musl. `Available()` is always `true` in this
+  build. `CGO_ENABLED=0`, Windows and cross-compiles still load through purego, unchanged;
+  `-tags hypercast_dynamic` keeps cgo and loads the shared library as before. *(`go get`)*
+- **C# — a Native AOT publish links the core in.** The package carries a static library
+  per RID (`staticlibs/`), and its targets file hands the right one to the AOT linker and
+  binds the P/Invokes as direct calls, so the publish directory is one executable with no
+  `libhypercast` beside it. `<HyperCastStaticLink>false</HyperCastStaticLink>` restores the old
+  behaviour; a JIT process is unaffected. *(NuGet)*
+- **Intel macOS (`osx-x64`) is built and core-tested, with no CI leg of its own.** The
+  library is cross-compiled on the Apple silicon runner, attested and shipped in every
+  package as before, and the Rust core's own suite runs on it under Rosetta 2. No binding's
+  suite runs there any more, and there is no `x86_64-darwin` precompiled gem: Ruby on an
+  Intel Mac installs the universal gem and runs on Fiddle, the slower of the two backends. The `osx-x64` wheel is cross-built on the same runner and still installed
+  and called into, under an x64 Python, before it is published. The leg took 37 minutes
+  against 8 on Apple silicon, on hardware Apple stopped selling in 2023.
+  *(RubyGems; CI for everything else)*
 - **CI builds on Ubuntu 26.04 and tests Swift on 6.4.** The Linux legs name `ubuntu-26.04`
   and `ubuntu-26.04-arm` rather than `ubuntu-latest`. The glibc floor of the shared
   libraries is unchanged at 2.34, and CI now fails a Linux leg whose library references
@@ -116,6 +197,18 @@ WebAssembly to that binding. No door changed its verdict on any input.
 
 ### Fixed
 
+- **Java — every FFM door in a GraalVM Native Image went through the method-handle
+  interpreter.** A native image built from this jar ran a door in 7.8–9.1 µs where the JVM
+  takes 18–52 ns, 150 to 450 times slower and ten to thirty times slower than the wasm
+  backend in the same binary. The downcall handles were `static final` but bound to the
+  library's addresses, so their class initialized at run time, and Native Image only
+  compiles a call through a handle that is a constant when the image is built. There is
+  now one handle per ABI shape, created without an address in a holder class
+  (`Cast.Downcalls`) that a `native-image.properties` in the jar initializes at image build
+  time; each door passes its export's address as the first argument. In a native image:
+  `bool` 60 ns, a grouped `i32` 91, `f64` 106, `timestamp` 111. Nothing changes on the JVM,
+  and a consumer's `native-image` build inherits the setting with no configuration.
+  *(Maven Central)*
 - **C# — a Blazor WebAssembly app could not use HyperUuid and HyperCast together.** Each
   package's wasm static library bundled its own copy of Rust's standard library, and the
   two collided at link time: `wasm-ld: duplicate symbol: rust_eh_personality`. The library

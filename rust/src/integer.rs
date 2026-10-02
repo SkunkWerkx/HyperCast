@@ -9,6 +9,7 @@
 //! negative exponent) is `Malformed`. Hex and binary are read as the two's-complement bit
 //! pattern, so `0xFF` is -1 for an i8; the pattern must fit the target's width.
 
+use crate::lane;
 use crate::verdict::{trim, Fault, NumFormat};
 
 /// The UTF-8 length of the character starting at `text[at]`, clamped to the text — so a
@@ -168,13 +169,16 @@ fn parse_radix(
 }
 
 /// The shared decimal engine: every width funnels through one i128 accumulator, so the
-/// range check is the target's own `[min, max]` and nothing else.
+/// range check is the target's own `[min, max]` and nothing else. `lenient_lane` is `true`
+/// for every door; the differential test passes `false` to get the engine's own answer.
+#[inline(always)]
 fn parse_int(
     input: &[u8],
     format: &NumFormat,
     min: i128,
     max: i128,
     bits: u32,
+    lenient_lane: bool,
 ) -> Result<i128, Fault> {
     let (text, start) = trim(input);
     if text.is_empty() {
@@ -225,6 +229,22 @@ fn parse_int(
         && let Some(radix) = radix_prefix(text)
     {
         return parse_radix(text, start, radix, min, max, bits);
+    }
+
+    // The lenient lane (lane.rs): grouped digits, a declared currency symbol and accounting
+    // parentheses, read in one pass into a u64. After the radix check on purpose — `&H12`
+    // is hex even when `&H` is also the declared currency symbol. Anything the lane does
+    // not read falls through to the engine below, which owns every fault.
+    if lenient_lane {
+        let mut sink = lane::Integer::default();
+        if let Some(negative) = lane::scan(text, format, false, &mut sink) {
+            let value = if negative { -(sink.value as i128) } else { sink.value as i128 };
+            return if value < min || value > max {
+                Err(Fault::out_of_range(start, text.len()))
+            } else {
+                Ok(value)
+            };
+        }
     }
 
     let (body, base, parens) = strip_parens(text, start, format)?;
@@ -345,10 +365,24 @@ macro_rules! integer_doors {
         $(#[$doc])*
         pub fn $door(input: impl AsRef<[u8]>, format: &NumFormat) -> Result<$ty, Fault> {
             let input = input.as_ref();
-            parse_int(input, format, <$ty>::MIN as i128, <$ty>::MAX as i128, <$ty>::BITS)
+            parse_int(input, format, <$ty>::MIN as i128, <$ty>::MAX as i128, <$ty>::BITS, true)
                 .map(|value| value as $ty)
         }
     )+};
+}
+
+/// The engine's answer with the lenient lane switched off — what `lib.rs`'s differential
+/// test compares every integer door against.
+#[cfg(test)]
+pub(crate) fn engine_only<T: TryFrom<i128>>(
+    input: &[u8],
+    format: &NumFormat,
+    min: i128,
+    max: i128,
+    bits: u32,
+) -> Result<T, Fault> {
+    parse_int(input, format, min, max, bits, false)
+        .map(|value| T::try_from(value).ok().expect("the engine range-checked this"))
 }
 
 integer_doors! {

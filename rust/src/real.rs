@@ -10,6 +10,7 @@
 //! grouping stripped): `core` cannot allocate, so neither can this door.
 
 use crate::integer::{char_len_at, strip_currency, strip_parens, Sep};
+use crate::lane;
 use crate::verdict::{trim, Fault, NumFormat};
 
 /// Upper bound on the normalized numeric text — Svartalfheim's decimal digit guard
@@ -18,10 +19,21 @@ use crate::verdict::{trim, Fault, NumFormat};
 pub(crate) const MAX_NORMALIZED: usize = 256;
 
 macro_rules! real_doors {
-    ($($(#[$doc:meta])* $door:ident => $ty:ty),+ $(,)?) => {$(
+    ($($(#[$doc:meta])* $door:ident / $inner:ident / $engine_only:ident => $ty:ty),+ $(,)?) => {$(
         $(#[$doc])*
         pub fn $door(input: impl AsRef<[u8]>, format: &NumFormat) -> Result<$ty, Fault> {
-            let input = input.as_ref();
+            $inner(input.as_ref(), format, true)
+        }
+
+        /// The engine's answer with the lenient lane switched off — what `lib.rs`'s
+        /// differential test compares the door against.
+        #[cfg(test)]
+        pub(crate) fn $engine_only(input: &[u8], format: &NumFormat) -> Result<$ty, Fault> {
+            $inner(input, format, false)
+        }
+
+        #[inline(always)]
+        fn $inner(input: &[u8], format: &NumFormat, lenient_lane: bool) -> Result<$ty, Fault> {
             let (text, start) = trim(input);
             if text.is_empty() {
                 return Err(Fault::EMPTY);
@@ -47,6 +59,10 @@ macro_rules! real_doors {
                     Ok(value) => value,
                     Err(_) => return Err(Fault::malformed(start, text.len())),
                 }
+            } else if let Some(value) = lenient::<$ty>(text, format, lenient_lane) {
+                // The lenient lane (lane.rs): grouped digits, a declared currency symbol
+                // and accounting parentheses. The finite check below is the engine's own.
+                value
             } else {
                 let mut buf = [0u8; MAX_NORMALIZED];
                 let (len, percent) = normalize(text, start, format, &mut buf)?;
@@ -71,10 +87,35 @@ macro_rules! real_doors {
 real_doors! {
     /// Casts real text to f32. Empty ⇒ `Empty`; unrecognized ⇒ `Malformed`; a magnitude
     /// beyond f32's finite range ⇒ `OutOfRange`.
-    cast_f32 => f32,
+    cast_f32 / real_f32 / engine_only_f32 => f32,
     /// Casts real text to f64. Empty ⇒ `Empty`; unrecognized ⇒ `Malformed`; a magnitude
     /// beyond f64's finite range ⇒ `OutOfRange`.
-    cast_f64 => f64,
+    cast_f64 / real_f64 / engine_only_f64 => f64,
+}
+
+/// The lenient lane for a real: the lane copies the digits and the point, with every
+/// grouping separator, symbol and parenthesis left out, and `core`'s parser reads that.
+/// The sign is applied afterwards, which is exact — negation flips one bit — and is why
+/// the copy never needs a byte for it. `None` falls through to the full engine.
+#[inline]
+fn lenient<T>(text: &[u8], format: &NumFormat, lenient_lane: bool) -> Option<T>
+where
+    T: core::str::FromStr + core::ops::Neg<Output = T>,
+{
+    if !lenient_lane {
+        return None;
+    }
+    let mut sink = lane::Text::new();
+    let negative = lane::scan(text, format, true, &mut sink)?;
+    let value: T = sink.as_str().parse().ok()?;
+    Some(if negative { -value } else { value })
+}
+
+/// True when `format`'s declared separators cannot reinterpret any byte of the plain
+/// invariant shape — the precondition for reading such a token as written.
+pub(crate) fn reads_plain(format: &NumFormat) -> bool {
+    format.decimal_sep == '.'
+        && !matches!(format.group_sep, '0'..='9' | '.' | 'e' | 'E' | '+' | '-')
 }
 
 /// True when the trimmed token is exactly the invariant shape
@@ -85,9 +126,7 @@ real_doors! {
 /// (grouping, parens, percent) uses bytes this shape already excludes, and `NaN`/`inf`
 /// literals are excluded by construction, exactly as in the full scanner.
 pub(crate) fn is_plain(text: &[u8], format: &NumFormat) -> bool {
-    if format.decimal_sep != '.'
-        || matches!(format.group_sep, '0'..='9' | '.' | 'e' | 'E' | '+' | '-')
-    {
+    if !reads_plain(format) {
         return false;
     }
     let mut i = usize::from(matches!(text[0], b'+' | b'-'));

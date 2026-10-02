@@ -12,7 +12,8 @@
 //! digit — the one thing a caller who reached for a decimal instead of a double is
 //! entitled to assume.
 
-use crate::real::{is_plain, normalize, MAX_NORMALIZED};
+use crate::lane::{self, Sink};
+use crate::real::{is_plain, normalize, reads_plain, MAX_NORMALIZED};
 use crate::verdict::{trim, Decimal, Fault, NumFormat};
 
 /// The largest magnitude a [`Decimal`] carries: 2⁹⁶ − 1.
@@ -27,7 +28,18 @@ const EXPONENT_CLAMP: i32 = 100_000;
 /// Empty ⇒ `Empty`; unrecognized ⇒ `Malformed`; a magnitude past 96 bits, or more
 /// fractional precision than 28 places can hold after trimming exact zeros, ⇒ `OutOfRange`.
 pub fn cast_decimal(input: impl AsRef<[u8]>, format: &NumFormat) -> Result<Decimal, Fault> {
-    let input = input.as_ref();
+    decimal(input.as_ref(), format, true)
+}
+
+/// The engine's answer with the lenient lane switched off — what `lib.rs`'s differential
+/// test compares the door against.
+#[cfg(test)]
+pub(crate) fn engine_only(input: &[u8], format: &NumFormat) -> Result<Decimal, Fault> {
+    decimal(input, format, false)
+}
+
+#[inline(always)]
+fn decimal(input: &[u8], format: &NumFormat, lenient_lane: bool) -> Result<Decimal, Fault> {
     let (text, start) = trim(input);
     if text.is_empty() {
         return Err(Fault::EMPTY);
@@ -39,14 +51,89 @@ pub fn cast_decimal(input: impl AsRef<[u8]>, format: &NumFormat) -> Result<Decim
     } else {
         format
     };
+    // The commonest decimal there is — `[+|-]digits[.digits]`, no exponent, twenty-eight
+    // digits or fewer — in one pass over the caller's bytes. The plain path below reads the
+    // same tokens to the same value; it scans once to recognise the shape and again to read
+    // it, and does the second scan in checked 128-bit arithmetic.
+    if lenient_lane && let Some(value) = plain_exact(text, format) {
+        return Ok(value);
+    }
     let whole_token = Fault::malformed(start, text.len());
     let out_of_range = Fault::out_of_range(start, text.len());
     if is_plain(text, format) {
         return from_invariant(text, false).map_err(|range| if range { out_of_range } else { whole_token });
     }
+    // The lenient lane (lane.rs): grouped digits, a declared currency symbol and accounting
+    // parentheses, read straight into the magnitude in one pass. Up to twenty-eight digits,
+    // no exponent and no percent; anything else falls through, and nothing the lane accepts
+    // can be out of range. After the plain shape, never before it: a plain token is read
+    // as written even when the declared symbol is a character it contains (`.5` under a
+    // symbol of `.` is one half, not five), and the lane would have stripped it.
+    if lenient_lane {
+        let mut sink = lane::Exact::default();
+        if let Some(negative) = lane::scan(text, format, true, &mut sink) {
+            return Ok(canonical(sink.magnitude(), sink.fraction_digits, negative));
+        }
+    }
     let mut buf = [0u8; MAX_NORMALIZED];
     let (len, percent) = normalize(text, start, format, &mut buf)?;
     from_invariant(&buf[..len], percent).map_err(|range| if range { out_of_range } else { whole_token })
+}
+
+/// Reads a plain token with no exponent straight into a [`Decimal`]: recognition and
+/// accumulation in the same pass, in 64-bit arithmetic for the first nineteen digits.
+/// `None` for any other shape, a format whose separators could reinterpret a plain token,
+/// or more than twenty-eight digits — all of which the paths after it read exactly as
+/// they did before this existed.
+fn plain_exact(text: &[u8], format: &NumFormat) -> Option<Decimal> {
+    if !reads_plain(format) {
+        return None;
+    }
+    let negative = text[0] == b'-';
+    let mut sink = lane::Exact::default();
+    let mut any_digit = false;
+    let mut seen_point = false;
+    for &byte in &text[usize::from(matches!(text[0], b'+' | b'-'))..] {
+        let digit = byte.wrapping_sub(b'0');
+        if digit <= 9 {
+            if !sink.digit(digit) {
+                return None;
+            }
+            any_digit = true;
+        } else if byte == b'.' && !seen_point {
+            seen_point = true;
+            sink.point();
+        } else {
+            return None;
+        }
+    }
+    if !any_digit {
+        return None;
+    }
+    Some(canonical(sink.magnitude(), sink.fraction_digits, negative))
+}
+
+/// The canonical [`Decimal`] for a magnitude and scale that are already known to fit — at
+/// most twenty-eight digits, which is what the lenient lane hands over. Exact trailing
+/// fraction zeros are shed and zero is never negative, exactly as [`from_invariant`] ends.
+/// The common case never leaves 64-bit arithmetic: a `u128` remainder is a library call.
+fn canonical(magnitude: u128, mut scale: u32, negative: bool) -> Decimal {
+    if magnitude == 0 {
+        return Decimal { lo: 0, hi: 0, scale: 0, negative: false };
+    }
+    if let Ok(mut narrow) = u64::try_from(magnitude) {
+        while scale > 0 && narrow.is_multiple_of(10) {
+            narrow /= 10;
+            scale -= 1;
+        }
+        return Decimal { lo: narrow, hi: 0, scale: scale as u8, negative };
+    }
+    let mut magnitude = magnitude;
+    while scale > 0 && magnitude.is_multiple_of(10) {
+        magnitude /= 10;
+        scale -= 1;
+    }
+    Decimal { lo: magnitude as u64, hi: (magnitude >> 64) as u32, scale: scale as u8, negative }
 }
 
 /// Reads the invariant shape `[+|-]digits[.digits][e[+|-]digits]` (with `.digits`-only
