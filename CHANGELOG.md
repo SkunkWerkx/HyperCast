@@ -11,6 +11,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Rust — every door except `cast_f32`/`cast_f64` is proved unable to panic, and CI
+  re-proves it on every PR.** The doors always promised never to panic on bad input; at the
+  C ABI a panic is an abort of the host process, so that promise is what keeps untrusted
+  text from crashing the caller. It held because the optimizer happened to remove the
+  bounds checks, not by construction, and 18 of the 22 exports could still reach one. The
+  indexing is now `get`, slice patterns and `strip_prefix`/`strip_suffix`, the Excel serial
+  fraction divides by a `NonZero`, and `cargo no-panic` (dtolnay's `no-panic`, behind a
+  feature of the same name) fails the build if any export can still reach a panic. The two
+  float doors are exempt: their remaining panic paths are inside `core`'s float parser.
+  Verdicts are unchanged (every test, the corpus and the lane-vs-engine differential test
+  pass), and interleaved benchmark runs put every door within noise or faster — grouped and
+  currency integers in the lenient lane 18–23% faster. *(crates.io, and every package that
+  carries a native library)*
+
 - **Rust — the shared library is built by naming its crate type, not listed in the
   manifest.** `[lib]` now declares only the rlib, and the library every binding loads is
   built with `cargo cdylib` (an alias for `cargo rustc --release --crate-type cdylib`), the

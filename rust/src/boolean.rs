@@ -20,11 +20,16 @@ pub fn cast_bool(input: impl AsRef<[u8]>) -> Result<bool, Fault> {
     }
     // Length dispatch first: no lexeme pair shares a length and a truth value, so each arm
     // compares at most a couple of fixed-width candidates — no scratch buffer, no fold loop.
-    // (`| 0x20` is a no-op on the digit arms: 0x30–0x39 already carry that bit.)
+    // (`| 0x20` is a no-op on the digit arms: 0x30–0x39 already carry that bit.) The
+    // one-byte arm binds its byte by slice pattern rather than indexing `text[0]`, so there
+    // is no bounds check for the optimizer to have to see through.
     let value = match text.len() {
-        1 => match text[0] | 0x20 {
-            b't' | b'y' | b'1' => Some(true),
-            b'f' | b'n' | b'0' => Some(false),
+        1 => match *text {
+            [byte] => match byte | 0x20 {
+                b't' | b'y' | b'1' => Some(true),
+                b'f' | b'n' | b'0' => Some(false),
+                _ => None,
+            },
             _ => None,
         },
         2 if text.eq_ignore_ascii_case(b"on") || text.eq_ignore_ascii_case(b"in") => Some(true),

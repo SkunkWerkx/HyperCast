@@ -23,6 +23,7 @@
 //! tried before a trailing one, and only one of them is taken; a digit is a digit before it
 //! is anything else, and the decimal separator is tried before the group separator.
 
+use crate::integer::is_digit_at;
 use crate::verdict::NumFormat;
 
 /// Where the lane hands what it reads. One per door family: the integer door accumulates a
@@ -57,34 +58,33 @@ pub(crate) fn scan<S: Sink>(
     let decimal = format.decimal_sep as u8;
     let group = format.group_sep as u8;
     let grouping = format.allows(NumFormat::GROUPING);
-    let last = text[text.len() - 1];
-    if percent_door && last == b'%' && format.allows(NumFormat::PERCENT) {
+    if percent_door && text.last() == Some(&b'%') && format.allows(NumFormat::PERCENT) {
         return None;
     }
 
     let mut body = text;
     let mut negative = false;
-    let parens = format.allows(NumFormat::PARENS) && text[0] == b'(';
+    let parens = format.allows(NumFormat::PARENS) && text.first() == Some(&b'(');
     if parens {
-        if text.len() < 3 || last != b')' {
-            return None;
-        }
         // Whitespace just inside the parentheses is legal and the engine trims it; here it
-        // simply fails the scan below, like any other byte the lane does not read.
-        body = &text[1..text.len() - 1];
+        // simply fails the scan below, like any other byte the lane does not read. `()`
+        // leaves an empty body, which reads no digit and falls through.
+        let [_, inner @ .., b')'] = text else {
+            return None;
+        };
+        body = inner;
         negative = true;
     }
 
     let mut i = 0;
-    let mut end = body.len();
     let mut signed = false;
-    if matches!(body[0], b'+' | b'-') {
+    if let Some(&sign @ (b'+' | b'-')) = body.first() {
         // A sign inside accounting parentheses is double negation; the engine faults it.
         if parens {
             return None;
         }
         signed = true;
-        negative = body[0] == b'-';
+        negative = sign == b'-';
         i = 1;
     }
     if format.allows(NumFormat::CURRENCY) && !format.currency.is_empty() {
@@ -92,21 +92,22 @@ pub(crate) fn scan<S: Sink>(
         // memcmp, three nanoseconds a time) only runs where the symbol could be.
         let symbol = format.currency.as_bytes();
         let leads = body.get(i) == symbol.first()
-            && (symbol.len() == 1 || body[i..].starts_with(symbol));
+            && (symbol.len() == 1 || body.get(i..).is_some_and(|rest| rest.starts_with(symbol)));
         if leads {
             i += symbol.len();
             // `$-5` is fine; `-$-5` and `($-5)` are not.
-            if i < end && matches!(body[i], b'+' | b'-') {
+            if let Some(&sign @ (b'+' | b'-')) = body.get(i) {
                 if signed || parens {
                     return None;
                 }
-                negative = body[i] == b'-';
+                negative = sign == b'-';
                 i += 1;
             }
         } else if body.last() == symbol.last()
             && (symbol.len() == 1 || body.ends_with(symbol))
         {
-            end -= symbol.len();
+            // The trailing symbol is cut off the body, so the loops below stop short of it.
+            body = body.get(..body.len() - symbol.len()).unwrap_or_default();
         }
     }
 
@@ -117,8 +118,7 @@ pub(crate) fn scan<S: Sink>(
     // whose separators are digits or each other.
     let mut any_digit = false;
     let mut after_digit = false;
-    while i < end {
-        let byte = body[i];
+    while let Some(&byte) = body.get(i) {
         let digit = byte.wrapping_sub(b'0');
         if digit <= 9 {
             if !sink.digit(digit) {
@@ -128,25 +128,20 @@ pub(crate) fn scan<S: Sink>(
             after_digit = true;
         } else if byte == decimal {
             break;
-        } else if grouping
-            && byte == group
-            && after_digit
-            && i + 1 < end
-            && body[i + 1].is_ascii_digit()
-        {
+        } else if grouping && byte == group && after_digit && is_digit_at(body, i + 1) {
             after_digit = false;
         } else {
             return None;
         }
         i += 1;
     }
-    if i < end {
+    if i < body.len() {
         if !sink.point() {
             return None;
         }
         i += 1;
-        while i < end {
-            let digit = body[i].wrapping_sub(b'0');
+        while let Some(&byte) = body.get(i) {
+            let digit = byte.wrapping_sub(b'0');
             if digit > 9 || !sink.digit(digit) {
                 return None;
             }
@@ -244,15 +239,16 @@ impl Text {
 
     pub(crate) fn as_str(&self) -> &str {
         // SAFETY: only ASCII digits and `.` are ever written.
-        unsafe { str::from_utf8_unchecked(&self.buf[..self.len]) }
+        unsafe { str::from_utf8_unchecked(self.buf.get(..self.len).unwrap_or_default()) }
     }
 
+    /// Appends `byte`; `false` when the buffer is full.
     #[inline]
     fn push(&mut self, byte: u8) -> bool {
-        if self.len == Self::CAPACITY {
+        let Some(slot) = self.buf.get_mut(self.len) else {
             return false;
-        }
-        self.buf[self.len] = byte;
+        };
+        *slot = byte;
         self.len += 1;
         true
     }

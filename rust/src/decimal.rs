@@ -12,6 +12,7 @@
 //! digit — the one thing a caller who reached for a decimal instead of a double is
 //! entitled to assume.
 
+use crate::integer::split_sign;
 use crate::lane::{self, Sink};
 use crate::real::{is_plain, normalize, reads_plain, MAX_NORMALIZED};
 use crate::verdict::{trim, Decimal, Fault, NumFormat};
@@ -77,7 +78,7 @@ fn decimal(input: &[u8], format: &NumFormat, lenient_lane: bool) -> Result<Decim
     }
     let mut buf = [0u8; MAX_NORMALIZED];
     let (len, percent) = normalize(text, start, format, &mut buf)?;
-    from_invariant(&buf[..len], percent).map_err(|range| if range { out_of_range } else { whole_token })
+    from_invariant(buf.get(..len).unwrap_or_default(), percent).map_err(|range| if range { out_of_range } else { whole_token })
 }
 
 /// Reads a plain token with no exponent straight into a [`Decimal`]: recognition and
@@ -89,11 +90,12 @@ fn plain_exact(text: &[u8], format: &NumFormat) -> Option<Decimal> {
     if !reads_plain(format) {
         return None;
     }
-    let negative = text[0] == b'-';
+    let (sign, digits) = split_sign(text);
+    let negative = sign == Some(b'-');
     let mut sink = lane::Exact::default();
     let mut any_digit = false;
     let mut seen_point = false;
-    for &byte in &text[usize::from(matches!(text[0], b'+' | b'-'))..] {
+    for &byte in digits {
         let digit = byte.wrapping_sub(b'0');
         if digit <= 9 {
             if !sink.digit(digit) {
@@ -161,8 +163,7 @@ fn from_invariant(text: &[u8], percent: bool) -> Result<Decimal, bool> {
     // widen the scale, and the reduction below would shed it again as an exact zero. Once
     // one has been skipped every later digit is either another skipped zero or a nonzero
     // digit that cannot be represented, which is out of range outright.
-    while i < text.len() {
-        let byte = text[i];
+    while let Some(&byte) = text.get(i) {
         if byte.is_ascii_digit() {
             any_digit = true;
             let digit = u128::from(byte - b'0');
@@ -188,7 +189,7 @@ fn from_invariant(text: &[u8], percent: bool) -> Result<Decimal, bool> {
         return Err(false);
     }
     let mut exponent: i32 = 0;
-    if i < text.len() && matches!(text[i], b'e' | b'E') {
+    if let Some(b'e' | b'E') = text.get(i) {
         i += 1;
         let exponent_negative = match text.get(i) {
             Some(b'-') => {
@@ -202,8 +203,8 @@ fn from_invariant(text: &[u8], percent: bool) -> Result<Decimal, bool> {
             _ => false,
         };
         let digits_at = i;
-        while i < text.len() && text[i].is_ascii_digit() {
-            exponent = (exponent * 10 + i32::from(text[i] - b'0')).min(EXPONENT_CLAMP);
+        while let Some(&digit @ b'0'..=b'9') = text.get(i) {
+            exponent = (exponent * 10 + i32::from(digit - b'0')).min(EXPONENT_CLAMP);
             i += 1;
         }
         if i == digits_at {

@@ -132,32 +132,28 @@ fn parse_x(text: &[u8], start: usize) -> Result<[u8; 16], Fault> {
     let mut out = [0u8; 16];
     let mut i = 0;
     let expect = |wanted: u8, i: &mut usize| -> Result<(), Fault> {
-        if *i < text.len() && text[*i] == wanted {
-            *i += 1;
-            Ok(())
-        } else if *i < text.len() {
-            Err(Fault::malformed(start + *i, char_len_at(text, *i)))
-        } else {
-            Err(Fault::malformed(start, text.len()))
+        match text.get(*i) {
+            Some(&byte) if byte == wanted => {
+                *i += 1;
+                Ok(())
+            }
+            Some(_) => Err(Fault::malformed(start + *i, char_len_at(text, *i))),
+            None => Err(Fault::malformed(start, text.len())),
         }
     };
 
     // Reads `0x` + 1..=max_digits hex digits, big-endian into out[at..at + width].
     let component =
         |i: &mut usize, out: &mut [u8; 16], at: usize, width: usize| -> Result<(), Fault> {
-            if *i + 2 > text.len()
-                || text[*i] != b'0'
-                || (text[*i + 1] | 0x20) != b'x'
-            {
+            let prefixed = matches!(text.get(*i..), Some([b'0', x, ..]) if x | 0x20 == b'x');
+            if !prefixed {
                 let bad = (*i).min(text.len().saturating_sub(1));
                 return Err(Fault::malformed(start + bad, char_len_at(text, bad)));
             }
             *i += 2;
             let mut value: u64 = 0;
             let mut digits = 0;
-            while *i < text.len()
-                && let Some(nibble) = hex(text[*i])
-            {
+            while let Some(nibble) = text.get(*i).and_then(|&byte| hex(byte)) {
                 if digits == width * 2 {
                     return Err(Fault::malformed(start + *i, char_len_at(text, *i)));
                 }
@@ -169,8 +165,8 @@ fn parse_x(text: &[u8], start: usize) -> Result<[u8; 16], Fault> {
                 let bad = (*i).min(text.len().saturating_sub(1));
                 return Err(Fault::malformed(start + bad, char_len_at(text, bad)));
             }
-            for slot in 0..width {
-                out[at + slot] = (value >> ((width - 1 - slot) * 8)) as u8;
+            for (slot, byte) in out.iter_mut().skip(at).take(width).enumerate() {
+                *byte = (value >> ((width - 1 - slot) * 8)) as u8;
             }
             Ok(())
         };

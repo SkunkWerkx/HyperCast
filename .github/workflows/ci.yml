@@ -190,6 +190,25 @@ jobs:
           fi
           echo "no allocator dependency in the core"
 
+  # Every door's contract is "never panics on bad input", and at an `extern "C"` boundary a
+  # panic is an abort of the host process — so for untrusted text, a reachable bounds check
+  # is a crash anyone can trigger. The fuzzer hunts for one; this proves there is none: each
+  # C ABI export is wrapped in dtolnay's `#[no_panic]` (the `no-panic` feature), and the
+  # link fails, naming the export, if the optimizer left any panic path in it. It has to
+  # run every PR rather than once, because whether a bounds check is eliminated is the
+  # optimizer's call and can change with nothing in this repo touched — a new stable
+  # rustc is enough. cast_f32/cast_f64 are exempt (ffi.rs has why: the residue is in
+  # core's float parser, not this crate). Linux only: the alias leans on GNU ld's
+  # `--no-undefined`, which is what turns no-panic's undefined symbol into an error.
+  check-no-panic:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: No C ABI export can panic
+        working-directory: rust
+        run: cargo no-panic
+
   # Doc-comment coverage on every real public API surface, every PR — the same bar
   # C#/Java/Rust get from a compiler flag (CS1591+TreatWarningsAsErrors, javadoc -Xwerror,
   # #![deny(missing_docs)]), applied here with the closest per-language equivalent. Each is
