@@ -412,7 +412,7 @@ that is what `rake native:dev` is for.
 ```sh
 cd rust
 cargo cdylib                           # libhypercast, what the Fiddle backend loads
-cargo cdylib --target wasm32-wasip1    # hypercast.wasm, what the wasm backend loads
+cargo wasm-module                      # hypercast.wasm, what the wasm backend loads
 
 cd ../ruby
 bundle install

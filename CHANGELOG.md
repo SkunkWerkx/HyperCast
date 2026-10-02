@@ -29,9 +29,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   manifest.** `[lib]` now declares only the rlib, and the library every binding loads is
   built with `cargo cdylib` (an alias for `cargo rustc --release --crate-type cdylib`), the
   way the static libraries already were. In this repository `cargo cdylib` replaces
-  `cargo build --release` in every dev loop, with `--target wasm32-wasip1` or
-  `--features python` passed through; a plain `cargo build` now produces the rlib and no
-  shared library. The fix below is the reason. *(crates.io, and every dev loop)*
+  `cargo build --release` in every dev loop, and `cargo wasm-module` builds the
+  wasm32-wasip1 module; a plain `cargo build` now produces the rlib and no shared library.
+  The fix below is the reason. *(crates.io, and every dev loop)*
+- **The native libraries no longer carry Rust's standard library, and are a quarter the
+  size.** `cargo cdylib` now builds the shared library every binding loads `#![no_std]`,
+  with the same abort-on-panic handler the static libraries already had. What std added was
+  its runtime — the unwinder, the backtrace symbolizer and the allocator — which no C ABI
+  export can reach: linux-x64 goes from 436,504 bytes to 110,048, and imports nothing but
+  the C library's `abort`, `memcpy`, `memset` and `bcmp`, so the musl builds no longer
+  depend on libgcc_s. The exports are the same 22 symbols over the same code; a panic was
+  already an abort of the host at the C ABI and still is, without the message printed
+  first. The float doors' parse stays `core`'s own — making it panic-free would not have
+  shrunk anything, since a std library carries the runtime whether or not a panic can
+  reach it. The wasm32-wasip1 module keeps std, whose allocator its hosts call into, and
+  the Python, Ruby and PHP extensions keep std and unwinding, so a panic in one still
+  surfaces as a host exception. *(every package that carries a native library)*
 - **The native libraries are smaller.** Cargo only passes `-C lto` for a cdylib built as an
   invocation's one crate type, so `lto = true` never reached the plain library while the
   manifest listed `["cdylib", "rlib"]`. The linux-x64 library is 457,008 bytes against
