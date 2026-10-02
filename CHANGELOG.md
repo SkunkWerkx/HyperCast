@@ -9,12 +9,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-Four themes, shared with HyperUuid's release of the same day. *The libraries report the
+## [0.4.0] — 2026-10-01
+
+Six themes, shared with HyperUuid's release of the same day. *The libraries report the
 right version*: 0.3.0's native libraries say 0.2.0, and the release order that caused it is
 fixed. *musl*: `linux-musl-x64` and `linux-musl-arm64` are built, attested and shipped.
 *Only supported runtimes*: every floor that had reached end of life is raised, and the
-floors are now tested. *Swift links the core in* on Linux, which is what adds musl and
-WebAssembly to that binding. No door changed its verdict on any input.
+floors are now tested. *The core links in*: Swift on Linux, which is what adds musl and
+WebAssembly to that binding, and Go's cgo build and C# Native AOT, which now carry no shared
+library to extract or load. *Faster*: a second fast lane reads grouped, currency and
+accounting input in one pass; Java's FFM doors are compiled rather than interpreted in a
+GraalVM Native Image; and Python and Ruby doors cost a half to a quarter of what they did.
+*Measured again*: every benchmark table is re-measured on x86-64, and several verdicts
+changed with the machine. No door changed its verdict on any input.
 
 ### Added
 
@@ -635,7 +642,8 @@ notes: [v0.1.0 release](https://github.com/SkunkWerkx/HyperCast/releases/tag/v0.
   found in that window, in the gap between "the publish succeeded" and "a consumer can use it",
   and none of them could have failed a build in this repository.
 
-[Unreleased]: https://github.com/SkunkWerkx/HyperCast/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/SkunkWerkx/HyperCast/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/SkunkWerkx/HyperCast/releases/tag/v0.1.0
