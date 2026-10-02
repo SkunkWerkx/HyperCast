@@ -284,7 +284,7 @@ committing it.)
 never have to take the shipped binary at all:
 
 ```shell
-cd rust && cargo build --release
+cd rust && cargo cdylib
 # -> target/release/libhypercast.so  (.dylib on macOS, hypercast.dll on Windows)
 ```
 
@@ -294,7 +294,7 @@ globs will pick it up, or point `dlopen` at it however you prefer — the C ABI 
 `hypercast_version`, taking plain pointers into your own buffers. For local development
 nothing needs dropping anywhere: when no library has been staged under `runtimes/` for your
 machine's RID, the project copies `rust/target/release/` straight to the output, so
-`dotnet test` after a `cargo build --release` just runs.
+`dotnet test` after a `cargo cdylib` just runs.
 
 **Reproducibility, stated honestly.** A Rust build is deterministic *locally* but not
 bit-reproducible *across machines* — differing toolchain versions and embedded build paths

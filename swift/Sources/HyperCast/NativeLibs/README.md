@@ -7,7 +7,7 @@ Apple-only, so it can't cover the Linux/Windows RIDs), so the native binaries ha
 here for real, not be staged in transiently by CI (the same real bug HyperUuid found and
 fixed across its PHP/Swift/Go bindings — see `php/src/native/README.md` for the origin
 story). `stage-native-binaries.yml` refreshes them automatically on every rust/-touching
-merge. Regenerate locally with `cargo build --release` in `rust/` and copy the result in if
+merge. Regenerate locally with `cargo cdylib` in `rust/` and copy the result in if
 you need to update one by hand; CI's own `build-native` job does the same per-leg during
 in-repo testing.
 
@@ -59,5 +59,5 @@ If you would rather not trust a binary at all, build the core from source instea
 plain Rust crate with no build-time codegen:
 
 ```shell
-cd rust && cargo build --release
+cd rust && cargo cdylib
 ```

@@ -1,4 +1,4 @@
-//! C-ABI exports — this crate's `crate-type` is `cdylib`, so this same source produces a
+//! C-ABI exports — built as a `cdylib` (`cargo cdylib`), this same source produces a
 //! native `libhypercast.so`/`.dylib`/`.dll` loaded through ordinary P/Invoke/FFM/ctypes-style
 //! FFI. This is the one contract every host binding calls through: a caller shares this
 //! library's address space directly, so every export takes plain pointers into the caller's

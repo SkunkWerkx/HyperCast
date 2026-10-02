@@ -7,7 +7,7 @@ literally in the git tree at the resolved module version, so the native binaries
 here for real, not be staged in transiently by CI (the same real bug HyperUuid found and
 fixed for its PHP/Swift/Go bindings — see `php/src/native/README.md` for the origin story).
 `stage-native-binaries.yml` refreshes them automatically on every rust/-touching merge.
-Regenerate locally with `cargo build --release` in `rust/` and copy the result in if you need
+Regenerate locally with `cargo cdylib` in `rust/` and copy the result in if you need
 to update one by hand; CI's own `build-native` job does the same per-leg during in-repo testing,
 overwriting whichever platform's file matches that leg — harmless, since it's the same build
 either way.
@@ -22,7 +22,7 @@ returns `ErrNativeUnavailable` naming the missing file.
 isn't a per-platform shared library: it's the core compiled as a WebAssembly module, embedded
 by the same `//go:embed native` and loaded only by the `hypercast_wasm` build tag's
 wasmtime-go backend (`backend_wasmtime.go`, see the README's WebAssembly section).
-Regenerate it with `cargo build --release --target wasm32-wasip1` in `rust/` — from inside
+Regenerate it with `cargo cdylib --target wasm32-wasip1` in `rust/` — from inside
 `rust/`, not with `--manifest-path`, so `rust/.cargo/config.toml`'s wasip1 linker flags
 (which export the guest's `malloc`/`free`) are picked up — and copy
 `rust/target/wasm32-wasip1/release/hypercast.wasm` in.
@@ -68,5 +68,5 @@ If you would rather not trust a binary at all, build the core from source instea
 plain Rust crate with no build-time codegen:
 
 ```shell
-cd rust && cargo build --release
+cd rust && cargo cdylib
 ```

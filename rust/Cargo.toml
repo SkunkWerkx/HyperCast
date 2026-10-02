@@ -1,6 +1,6 @@
 [package]
 name = "hypercast"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 description = "Allocation-free parsers for scalars from untrusted text — booleans, numerics, UUIDs, and temporals. Every parse returns a verdict (the value, or a closed reason code with the offending span), never throws, never allocates — wrapped as a native library (libhypercast) for direct FFI from every host language."
 license = "MIT"
@@ -9,8 +9,14 @@ repository = "https://github.com/SkunkWerkx/HyperCast"
 keywords = ["parser", "ffi", "allocation-free", "rfc3339", "protobuf"]
 categories = ["parsing", "no-std", "no-std::no-alloc"]
 
+# Only the rlib is declared. The shared library every binding loads is built by naming its
+# crate type on the command line (`cargo cdylib`, an alias in .cargo/config.toml), the way
+# the static libraries already are. Cargo builds every crate type a dependency lists, and a
+# cdylib is a linked artifact that needs std's panic handler: while `cdylib` was listed
+# here, a `default-features = false` consumer failed to build on any target able to produce
+# one (the host, wasm32-unknown-unknown), and only bare-metal targets worked.
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [dependencies]
 # Deliberately none for the plain build — the core is pure parsing over caller-supplied
@@ -22,17 +28,17 @@ ext-php-rs = { version = "0.15", optional = true }
 
 # One crate, three optional native-extension entry points instead of three satellite crates
 # each path-depending back on this one (HyperUuid's consolidation, ported home). Nothing
-# in a plain `cargo build` (the Fiddle/ext-ffi-consumed cdylib every non-extension binding
-# dlopens) changes — these are additive, off by default, and only one is ever enabled per
+# in a plain `cargo cdylib` (the Fiddle/ext-ffi-consumed shared library every non-extension
+# binding dlopens) changes — these are additive, off by default, and only one is ever enabled per
 # build invocation (each produces a different C entry point — PyInit__native,
 # Init_hypercast_native, PHP's module struct — under the same crate, not meant to coexist
 # in one binary). The php one is a benchmark spike, exactly as in HyperUuid: the shipped
 # PHP package is ext-ffi; see src/php_ext.rs.
 [features]
-# On by default so `cargo build` keeps producing the ordinary cdylib every binding dlopens
+# On by default so `cargo cdylib` produces the ordinary shared library every binding dlopens
 # (a linked artifact needs std's panic handler). The parsing core itself is core-only —
-# `default-features = false` gives a genuine `#![no_std]` rlib, which is what the crate's
-# published `no-std` category means. The extension backends all require std through their
+# `default-features = false` gives a genuine `#![no_std]` rlib on every target, which is what
+# the crate's published `no-std` category means. The extension backends all require std through their
 # own dependencies, so they name it explicitly rather than relying on the default.
 default = ["std"]
 std = []
@@ -76,6 +82,11 @@ harness = false
 # Scope worth knowing: Cargo ignores a dependency's profile settings, so this applies to
 # builds *of this repo* — every binding's cdylib, the extension features, `cargo bench` — and
 # never to a downstream crates.io consumer, who gets their own workspace's profile.
+#
+# Cargo only passes `-C lto` for a cdylib built as the invocation's one crate type, which is
+# what `cargo cdylib` is: the plain linux-x64 library is 457,008 bytes that way, against
+# 535,440 from a manifest that listed `["cdylib", "rlib"]`, at the same speed (the timestamp,
+# uuid and bool doors through the C ABI, alternating runs, within noise).
 [profile.release]
 lto = true
 codegen-units = 1

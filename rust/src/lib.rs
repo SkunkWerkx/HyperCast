@@ -33,14 +33,16 @@
 // fact — no `std::`, `String`, `Vec`, `Box`, or `format!` in any parsing module. This makes
 // that compiler-enforced rather than a claim nobody checks.
 //
-// Gated on the default-on `std` feature rather than unconditional, because this crate also
-// ships a `cdylib`: a final linked artifact needs a `#[panic_handler]`, which only std
-// supplies (proven, not assumed — dropping `no_std` in unconditionally fails the release
+// Gated on the default-on `std` feature rather than unconditional, because this crate is
+// also built as a `cdylib`: a final linked artifact needs a `#[panic_handler]`, which only
+// std supplies (proven, not assumed — dropping `no_std` in unconditionally fails the release
 // build with "`#[panic_handler]` function required, but not found" plus "unwinding panics
 // are not supported without std"). So the shared library every binding dlopens builds with
-// std as it always has, and a bare-metal consumer takes the crate with
-// `default-features = false` and brings its own panic handler, the way such a consumer
-// must anyway. Nothing in the parsing modules ever touches std either way.
+// std as it always has, and a no_std consumer takes the crate with
+// `default-features = false`, bringing its own panic handler where the target has no
+// operating system, the way such a consumer must anyway. The cdylib is not in Cargo.toml's
+// `crate-type` for this reason: cargo would build it for every consumer, and it cannot link
+// without std. Nothing in the parsing modules ever touches std either way.
 #![cfg_attr(not(feature = "std"), no_std)]
 
 // The panic handler for the no_std artifacts this crate links itself: the static libraries
