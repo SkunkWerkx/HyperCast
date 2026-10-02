@@ -206,9 +206,6 @@ jobs:
   # prerequisite "prepare release" is responsible for, not automatic just because this job
   # runs.
   nuget-org-pack:
-    # 0.4.0 recovery: this leg already published 0.4.0 (run 36962100705); gated so the
-    # rerun that publishes PyPI does not push a duplicate. Remove once PyPI is out.
-    if: false
     needs: find-ci-run
     uses: SkunkWerkx/.github/.github/workflows/hyper-pack-nuget.yml@master
     # attest-build-provenance signs with an OIDC token and records the result; a reusable
@@ -231,9 +228,6 @@ jobs:
   # repo's own workflow, never from the shared forge (see hyper-pack-nuget.yml's header for
   # the confirmed 401s behind that).
   nuget-org-publish:
-    # 0.4.0 recovery: this leg already published 0.4.0 (run 36962100705); gated so the
-    # rerun that publishes PyPI does not push a duplicate. Remove once PyPI is out.
-    if: false
     needs: nuget-org-pack
     runs-on: ubuntu-26.04
     permissions:
@@ -380,9 +374,6 @@ jobs:
   # exchange release-gem uses internally, called directly so a plain `gem push` per file
   # picks up the resulting credentials.
   rubygems-publish:
-    # 0.4.0 recovery: this leg already published 0.4.0 (run 36962100705); gated so the
-    # rerun that publishes PyPI does not push a duplicate. Remove once PyPI is out.
-    if: false
     needs: find-ci-run
     runs-on: ubuntu-26.04
     permissions:
@@ -787,9 +778,6 @@ jobs:
   # is handed down — id-token: write is the whole credential, the same scope the
   # attestation already needed.
   pack-crates:
-    # 0.4.0 recovery: this leg already published 0.4.0 (run 36962100705); gated so the
-    # rerun that publishes PyPI does not push a duplicate. Remove once PyPI is out.
-    if: false
     needs: find-ci-run
     uses: SkunkWerkx/.github/.github/workflows/hyper-publish-crate.yml@master
     # Handed down to the reusable workflow, which attests what it publishes and cannot
@@ -803,9 +791,6 @@ jobs:
   # upload, and auto-release in one un-splittable task, so unlike NuGet there's no
   # pack-here/push-there split — the whole leg runs in the forge with this repo's secrets.
   maven-publish:
-    # 0.4.0 recovery: this leg already published 0.4.0 (run 36962100705); gated so the
-    # rerun that publishes PyPI does not push a duplicate. Remove once PyPI is out.
-    if: false
     needs: find-ci-run
     uses: SkunkWerkx/.github/.github/workflows/hyper-publish-maven.yml@master
     # Handed down to the reusable workflow, which attests what it publishes and cannot
