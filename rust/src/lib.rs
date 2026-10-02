@@ -76,12 +76,12 @@ mod temporal;
 mod uuid;
 mod verdict;
 
+#[cfg(feature = "php")]
+mod php_ext;
 #[cfg(feature = "python")]
 mod python_ext;
 #[cfg(feature = "ruby")]
 mod ruby_ext;
-#[cfg(feature = "php")]
-mod php_ext;
 
 pub use boolean::cast_bool;
 pub use decimal::cast_decimal;
@@ -89,9 +89,9 @@ pub use ffi::hypercast_version;
 pub use integer::{cast_i8, cast_i16, cast_i32, cast_i64, cast_u8, cast_u16, cast_u32, cast_u64};
 pub use real::{cast_f32, cast_f64};
 pub use temporal::{
-    cast_date, cast_date_ordered, cast_datetime, cast_duration, cast_excel_serial, cast_time,
-    cast_timestamp, cast_unix, DateOrder, ExcelEpoch, UnixPrecision, MAX_DURATION_SECONDS,
-    MAX_TIMESTAMP_SECONDS, MIN_TIMESTAMP_SECONDS,
+    DateOrder, ExcelEpoch, MAX_DURATION_SECONDS, MAX_TIMESTAMP_SECONDS, MIN_TIMESTAMP_SECONDS,
+    UnixPrecision, cast_date, cast_date_ordered, cast_datetime, cast_duration, cast_excel_serial,
+    cast_time, cast_timestamp, cast_unix,
 };
 pub use uuid::cast_uuid;
 pub use verdict::{
@@ -124,10 +124,14 @@ mod tests {
 
     #[test]
     fn bool_recognizes_the_full_lexicon_case_insensitively() {
-        for text in ["true", "TRUE", "t", "yes", "Y", "1", "on", "enabled", "Active", "checked", "in"] {
+        for text in
+            ["true", "TRUE", "t", "yes", "Y", "1", "on", "enabled", "Active", "checked", "in"]
+        {
             assert_eq!(cast_bool(text.as_bytes()), Ok(true), "{text}");
         }
-        for text in ["false", "F", "no", "N", "0", "off", "Disabled", "inactive", "unchecked", "Out"] {
+        for text in
+            ["false", "F", "no", "N", "0", "off", "Disabled", "inactive", "unchecked", "Out"]
+        {
             assert_eq!(cast_bool(text.as_bytes()), Ok(false), "{text}");
         }
     }
@@ -364,7 +368,8 @@ mod tests {
 
     #[test]
     fn currency_flag_gates_the_symbol_and_no_symbol_matches_nothing() {
-        let declared_but_off = NumFormat { flags: NumFormat::ALL & !NumFormat::CURRENCY, ..dollars() };
+        let declared_but_off =
+            NumFormat { flags: NumFormat::ALL & !NumFormat::CURRENCY, ..dollars() };
         let fault = cast_i32(b"$5", &declared_but_off).unwrap_err();
         assert_eq!((fault.reason, fault.offset, fault.len), (Reason::Malformed, 0, 1));
         assert_eq!(cast_i32(b"5", &declared_but_off), Ok(5));
@@ -473,8 +478,8 @@ mod tests {
     // --- uuid ---
 
     const KNOWN: [u8; 16] = [
-        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
-        0x0f, 0x10,
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+        0x10,
     ];
 
     #[test]
@@ -631,7 +636,10 @@ mod tests {
         assert_eq!(reason(cast_unix(b"not-a-number", UnixPrecision::Seconds)), Reason::Malformed);
         assert_eq!(reason(cast_unix(b"253402300800", UnixPrecision::Seconds)), Reason::OutOfRange);
         assert_eq!(reason(cast_unix(b"-62135596801", UnixPrecision::Seconds)), Reason::OutOfRange);
-        assert_eq!(cast_unix(b"253402300799", UnixPrecision::Seconds).unwrap().seconds, MAX_TIMESTAMP_SECONDS);
+        assert_eq!(
+            cast_unix(b"253402300799", UnixPrecision::Seconds).unwrap().seconds,
+            MAX_TIMESTAMP_SECONDS
+        );
     }
 
     // --- excel serial ---
@@ -688,7 +696,10 @@ mod tests {
     #[test]
     fn excel_serial_rejects_malformed_text_and_the_out_of_window() {
         assert_eq!(reason(cast_excel_serial(b"", ExcelEpoch::Y1900)), Reason::Empty);
-        assert_eq!(reason(cast_excel_serial(b"not-a-number", ExcelEpoch::Y1900)), Reason::Malformed);
+        assert_eq!(
+            reason(cast_excel_serial(b"not-a-number", ExcelEpoch::Y1900)),
+            Reason::Malformed
+        );
         assert_eq!(reason(cast_excel_serial(b"45292.", ExcelEpoch::Y1900)), Reason::Malformed);
         assert_eq!(reason(cast_excel_serial(b".5", ExcelEpoch::Y1900)), Reason::Malformed);
         // A date serial is never signed — no silent reflection into pre-1900.
@@ -716,7 +727,15 @@ mod tests {
 
     #[test]
     fn date_rejects_everything_else() {
-        for text in ["1/2/2026", "2026-01-02T00:00:00", "2026/01/02", "garbage", "2026-02-29", "2026-00-01", "2026-01-00"] {
+        for text in [
+            "1/2/2026",
+            "2026-01-02T00:00:00",
+            "2026/01/02",
+            "garbage",
+            "2026-02-29",
+            "2026-00-01",
+            "2026-01-00",
+        ] {
             assert_eq!(reason(cast_date(text.as_bytes())), Reason::Malformed, "{text}");
         }
         assert_eq!(reason(cast_date(b"0000-01-01")), Reason::OutOfRange);
@@ -763,21 +782,33 @@ mod tests {
             cast_date_ordered(b"13/1/2026", DateOrder::DayMonthYear),
             Ok(Date { year: 2026, month: 1, day: 13 })
         );
-        assert_eq!(reason(cast_date_ordered(b"13/1/2026", DateOrder::MonthDayYear)), Reason::Malformed);
+        assert_eq!(
+            reason(cast_date_ordered(b"13/1/2026", DateOrder::MonthDayYear)),
+            Reason::Malformed
+        );
         // Real calendar, same as the strict door.
         assert_eq!(
             cast_date_ordered(b"29/2/2024", DateOrder::DayMonthYear),
             Ok(Date { year: 2024, month: 2, day: 29 })
         );
-        assert_eq!(reason(cast_date_ordered(b"29/2/2026", DateOrder::DayMonthYear)), Reason::Malformed);
+        assert_eq!(
+            reason(cast_date_ordered(b"29/2/2026", DateOrder::DayMonthYear)),
+            Reason::Malformed
+        );
     }
 
     #[test]
     fn date_ordered_rejects_ambiguity_reintroducers() {
         // Two-digit years mean century guessing — never.
-        assert_eq!(reason(cast_date_ordered(b"1/7/26", DateOrder::MonthDayYear)), Reason::Malformed);
+        assert_eq!(
+            reason(cast_date_ordered(b"1/7/26", DateOrder::MonthDayYear)),
+            Reason::Malformed
+        );
         // A three-digit field fits no order — faulted at its own digits.
-        assert_eq!(reason(cast_date_ordered(b"123/4/2026", DateOrder::MonthDayYear)), Reason::Malformed);
+        assert_eq!(
+            reason(cast_date_ordered(b"123/4/2026", DateOrder::MonthDayYear)),
+            Reason::Malformed
+        );
         // Mixed separators, trailing junk, missing fields.
         for text in ["1-7/2026", "1/7/2026 extra", "1/7", "1//2026", "garbage"] {
             assert_eq!(
@@ -786,7 +817,10 @@ mod tests {
                 "{text}"
             );
         }
-        assert_eq!(reason(cast_date_ordered(b"1/7/0000", DateOrder::MonthDayYear)), Reason::OutOfRange);
+        assert_eq!(
+            reason(cast_date_ordered(b"1/7/0000", DateOrder::MonthDayYear)),
+            Reason::OutOfRange
+        );
         assert_eq!(reason(cast_date_ordered(b"   ", DateOrder::DayMonthYear)), Reason::Empty);
     }
 
@@ -861,7 +895,10 @@ mod tests {
                 "{text}"
             );
         }
-        assert_eq!(reason(cast_datetime(b"1/7/0000 3:04 PM", DateOrder::MonthDayYear)), Reason::OutOfRange);
+        assert_eq!(
+            reason(cast_datetime(b"1/7/0000 3:04 PM", DateOrder::MonthDayYear)),
+            Reason::OutOfRange
+        );
         assert_eq!(reason(cast_datetime(b"", DateOrder::MonthDayYear)), Reason::Empty);
     }
 
@@ -966,7 +1003,10 @@ mod tests {
     fn faults_display_the_reason_and_span() {
         assert_eq!(cast_bool("   ").unwrap_err().to_string(), "empty input");
         assert_eq!(cast_bool("maybe").unwrap_err().to_string(), "malformed input at bytes 0..5");
-        assert_eq!(cast_u8("256", &INVARIANT).unwrap_err().to_string(), "out of range input at bytes 0..3");
+        assert_eq!(
+            cast_u8("256", &INVARIANT).unwrap_err().to_string(),
+            "out of range input at bytes 0..3"
+        );
     }
 
     #[test]
@@ -1061,14 +1101,21 @@ mod tests {
         assert_eq!(
             cast_f32(input, format).map(f32::to_bits),
             real::engine_only_f32(input, format).map(f32::to_bits),
-            "cast_f32 on {}", shown()
+            "cast_f32 on {}",
+            shown()
         );
         assert_eq!(
             cast_f64(input, format).map(f64::to_bits),
             real::engine_only_f64(input, format).map(f64::to_bits),
-            "cast_f64 on {}", shown()
+            "cast_f64 on {}",
+            shown()
         );
-        assert_eq!(cast_decimal(input, format), decimal::engine_only(input, format), "cast_decimal on {}", shown());
+        assert_eq!(
+            cast_decimal(input, format),
+            decimal::engine_only(input, format),
+            "cast_decimal on {}",
+            shown()
+        );
     }
 
     /// Every sequence of `1..=longest` tokens, each handed to `visit` as one input.
@@ -1139,8 +1186,20 @@ mod tests {
                     .map(|chunk| str::from_utf8(chunk).unwrap())
                     .collect::<Vec<_>>()
                     .join(",");
-                for body in [run.clone(), grouped.clone(), format!("{run}.5"), format!("{grouped}.50"), format!("0.{run}")] {
-                    for dressed in [body.clone(), format!("${body}"), format!("-${body}"), format!("(${body})"), format!("{body}$")] {
+                for body in [
+                    run.clone(),
+                    grouped.clone(),
+                    format!("{run}.5"),
+                    format!("{grouped}.50"),
+                    format!("0.{run}"),
+                ] {
+                    for dressed in [
+                        body.clone(),
+                        format!("${body}"),
+                        format!("-${body}"),
+                        format!("(${body})"),
+                        format!("{body}$"),
+                    ] {
                         for format in &formats {
                             lane_agrees_with_the_engine(dressed.as_bytes(), format);
                         }

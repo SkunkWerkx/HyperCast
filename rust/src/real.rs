@@ -9,9 +9,9 @@
 //! stack buffer holding the normalized ASCII (declared separators swapped to invariant,
 //! grouping stripped): `core` cannot allocate, so neither can this door.
 
-use crate::integer::{char_len_at, is_digit_at, split_sign, strip_currency, strip_parens, Sep};
+use crate::integer::{Sep, char_len_at, is_digit_at, split_sign, strip_currency, strip_parens};
 use crate::lane;
-use crate::verdict::{trim, Fault, NumFormat};
+use crate::verdict::{Fault, NumFormat, trim};
 
 /// Upper bound on the normalized numeric text — Svartalfheim's decimal digit guard
 /// generalized: no meaningful finite real needs this many characters, and a fixed bound is

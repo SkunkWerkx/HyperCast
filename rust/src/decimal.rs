@@ -14,8 +14,8 @@
 
 use crate::integer::split_sign;
 use crate::lane::{self, Sink};
-use crate::real::{is_plain, normalize, reads_plain, MAX_NORMALIZED};
-use crate::verdict::{trim, Decimal, Fault, NumFormat};
+use crate::real::{MAX_NORMALIZED, is_plain, normalize, reads_plain};
+use crate::verdict::{Decimal, Fault, NumFormat, trim};
 
 /// The largest magnitude a [`Decimal`] carries: 2⁹⁶ − 1.
 const MAX_MAGNITUDE: u128 = (1u128 << 96) - 1;
@@ -62,7 +62,8 @@ fn decimal(input: &[u8], format: &NumFormat, lenient_lane: bool) -> Result<Decim
     let whole_token = Fault::malformed(start, text.len());
     let out_of_range = Fault::out_of_range(start, text.len());
     if is_plain(text, format) {
-        return from_invariant(text, false).map_err(|range| if range { out_of_range } else { whole_token });
+        return from_invariant(text, false)
+            .map_err(|range| if range { out_of_range } else { whole_token });
     }
     // The lenient lane (lane.rs): grouped digits, a declared currency symbol and accounting
     // parentheses, read straight into the magnitude in one pass. Up to twenty-eight digits,
@@ -78,7 +79,8 @@ fn decimal(input: &[u8], format: &NumFormat, lenient_lane: bool) -> Result<Decim
     }
     let mut buf = [0u8; MAX_NORMALIZED];
     let (len, percent) = normalize(text, start, format, &mut buf)?;
-    from_invariant(buf.get(..len).unwrap_or_default(), percent).map_err(|range| if range { out_of_range } else { whole_token })
+    from_invariant(buf.get(..len).unwrap_or_default(), percent)
+        .map_err(|range| if range { out_of_range } else { whole_token })
 }
 
 /// Reads a plain token with no exponent straight into a [`Decimal`]: recognition and
@@ -237,10 +239,5 @@ fn from_invariant(text: &[u8], percent: bool) -> Result<Decimal, bool> {
     if magnitude > MAX_MAGNITUDE || scale > MAX_SCALE as i32 {
         return Err(true);
     }
-    Ok(Decimal {
-        lo: magnitude as u64,
-        hi: (magnitude >> 64) as u32,
-        scale: scale as u8,
-        negative,
-    })
+    Ok(Decimal { lo: magnitude as u64, hi: (magnitude >> 64) as u32, scale: scale as u8, negative })
 }

@@ -17,7 +17,9 @@ use magnus::encoding::EncodingCapable;
 use magnus::rb_sys::{AsRawValue, FromRawValue};
 use magnus::scan_args::scan_args;
 use magnus::value::{Opaque, ReprValue};
-use magnus::{function, prelude::*, Error, IntoValue, RModule, RString, RStruct, Ruby, Symbol, Value};
+use magnus::{
+    Error, IntoValue, RModule, RString, RStruct, Ruby, Symbol, Value, function, prelude::*,
+};
 
 use crate as core;
 
@@ -464,9 +466,8 @@ fn datetime_door(ruby: &Ruby, text: RString, order: Value) -> Result<Value, Erro
                 (civil.nanos_of_day / 1_000_000_000, civil.nanos_of_day % 1_000_000_000);
             let (hour, rest) = (second_of_day / 3_600, second_of_day % 3_600);
             let (minute, second) = (rest / 60, rest % 60);
-            let fraction: Value = (frac as i64)
-                .into_value_with(ruby)
-                .funcall("quo", (1_000_000_000i64,))?;
+            let fraction: Value =
+                (frac as i64).into_value_with(ruby).funcall("quo", (1_000_000_000i64,))?;
             let seconds: Value = fraction.funcall("+", (second as i64,))?;
             let class = ruby.get_inner(cached().datetime_class);
             success(
@@ -493,9 +494,8 @@ fn duration_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
             // Exact Rational seconds, no float anywhere: nanos.quo(1e9) + whole seconds.
             // (Rational + Integer stays Rational; the parts each fit i64 where the total
             // in nanoseconds would not.)
-            let fraction: Value = i64::from(span.nanos)
-                .into_value_with(ruby)
-                .funcall("quo", (1_000_000_000i64,))?;
+            let fraction: Value =
+                i64::from(span.nanos).into_value_with(ruby).funcall("quo", (1_000_000_000i64,))?;
             let rational: Value = fraction.funcall("+", (span.seconds,))?;
             success(ruby, rational)
         }

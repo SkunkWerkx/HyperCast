@@ -95,11 +95,31 @@ fn every_truncation_of_every_corpus_input_faults_in_bounds() {
 #[test]
 fn the_fuzzer_regressions_stay_fixed() {
     // The minimized crash inputs, verbatim, at their original doors.
-    assert_span(b"12.5", hypercast::cast_datetime(b"12.5", DateOrder::YearMonthDay), "cast_datetime");
-    assert_span(b"12", hypercast::cast_date_ordered(b"12", DateOrder::YearMonthDay), "cast_date_ordered");
+    assert_span(
+        b"12.5",
+        hypercast::cast_datetime(b"12.5", DateOrder::YearMonthDay),
+        "cast_datetime",
+    );
+    assert_span(
+        b"12",
+        hypercast::cast_date_ordered(b"12", DateOrder::YearMonthDay),
+        "cast_date_ordered",
+    );
     assert_span(b"15", hypercast::cast_time(b"15"), "cast_time");
-    assert_span(b"1/7/2026T", hypercast::cast_datetime(b"1/7/2026T", DateOrder::MonthDayYear), "cast_datetime");
-    assert_span(b"1/7/2026 3:", hypercast::cast_datetime(b"1/7/2026 3:", DateOrder::MonthDayYear), "cast_datetime");
-    assert_span(b"2026-01-02T15:04:05+0", hypercast::cast_timestamp(b"2026-01-02T15:04:05+0"), "cast_timestamp");
+    assert_span(
+        b"1/7/2026T",
+        hypercast::cast_datetime(b"1/7/2026T", DateOrder::MonthDayYear),
+        "cast_datetime",
+    );
+    assert_span(
+        b"1/7/2026 3:",
+        hypercast::cast_datetime(b"1/7/2026 3:", DateOrder::MonthDayYear),
+        "cast_datetime",
+    );
+    assert_span(
+        b"2026-01-02T15:04:05+0",
+        hypercast::cast_timestamp(b"2026-01-02T15:04:05+0"),
+        "cast_timestamp",
+    );
     assert_span(b"1:2", hypercast::cast_duration(b"1:2"), "cast_duration");
 }

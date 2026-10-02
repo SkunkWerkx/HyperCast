@@ -48,12 +48,9 @@ impl core::fmt::Display for Fault {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self.reason {
             Reason::Empty => f.write_str("empty input"),
-            reason => write!(
-                f,
-                "{reason} input at bytes {}..{}",
-                self.offset,
-                self.offset + self.len
-            ),
+            reason => {
+                write!(f, "{reason} input at bytes {}..{}", self.offset, self.offset + self.len)
+            }
         }
     }
 }

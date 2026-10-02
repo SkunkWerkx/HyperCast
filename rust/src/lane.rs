@@ -103,9 +103,7 @@ pub(crate) fn scan<S: Sink>(
                 negative = sign == b'-';
                 i += 1;
             }
-        } else if body.last() == symbol.last()
-            && (symbol.len() == 1 || body.ends_with(symbol))
-        {
+        } else if body.last() == symbol.last() && (symbol.len() == 1 || body.ends_with(symbol)) {
             // The trailing symbol is cut off the body, so the loops below stop short of it.
             body = body.get(..body.len() - symbol.len()).unwrap_or_default();
         }

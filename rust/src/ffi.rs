@@ -17,7 +17,7 @@ use crate::verdict::{
     CivilDateTime, CurrencySymbol, Date, Decimal, Duration, Fault, NumFormat, Timestamp,
 };
 use crate::{
-    boolean, decimal, integer, real, temporal, uuid, DateOrder, ExcelEpoch, UnixPrecision,
+    DateOrder, ExcelEpoch, UnixPrecision, boolean, decimal, integer, real, temporal, uuid,
 };
 use core::slice;
 

@@ -1,9 +1,9 @@
 //! Criterion benchmarks pitting each door against the closest established parser — the
 //! stdlib's own `str::parse` for booleans/numerics, the `uuid` crate for UUID text, and the
-//! `time` crate's RFC 3339 well-known format for instants. Numbers are informational this
-//! round; the load-bearing claims (allocation-free, corpus conformance) live in the tests.
+//! `time` crate's RFC 3339 well-known format for instants. The numbers are informational;
+//! the load-bearing claims (allocation-free, corpus conformance) live in the tests.
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use hypercast::{DateOrder, NumFormat};
 use std::hint::black_box;
 use time::format_description::well_known::Rfc3339;
@@ -15,9 +15,7 @@ fn benchmarks(c: &mut Criterion) {
     group.bench_function("hypercast", |b| {
         b.iter(|| hypercast::cast_bool(black_box(b"true")).unwrap())
     });
-    group.bench_function("stdlib", |b| {
-        b.iter(|| black_box("true").parse::<bool>().unwrap())
-    });
+    group.bench_function("stdlib", |b| b.iter(|| black_box("true").parse::<bool>().unwrap()));
     group.finish();
 
     let mut group = c.benchmark_group("i64");
@@ -33,9 +31,7 @@ fn benchmarks(c: &mut Criterion) {
     group.bench_function("hypercast", |b| {
         b.iter(|| hypercast::cast_f64(black_box(b"12345.6789"), &format).unwrap())
     });
-    group.bench_function("stdlib", |b| {
-        b.iter(|| black_box("12345.6789").parse::<f64>().unwrap())
-    });
+    group.bench_function("stdlib", |b| b.iter(|| black_box("12345.6789").parse::<f64>().unwrap()));
     group.finish();
 
     // The lenient shapes, one notation added at a time, so a regression in any one of them
@@ -51,14 +47,20 @@ fn benchmarks(c: &mut Criterion) {
     ];
     let mut group = c.benchmark_group("f64-shapes");
     for (name, text) in shapes {
-        group.bench_function(name, |b| b.iter(|| hypercast::cast_f64(black_box(text), &usd).unwrap()));
+        group.bench_function(name, |b| {
+            b.iter(|| hypercast::cast_f64(black_box(text), &usd).unwrap())
+        });
     }
     group.finish();
+
     let mut group = c.benchmark_group("decimal-shapes");
     for (name, text) in shapes {
-        group.bench_function(name, |b| b.iter(|| hypercast::cast_decimal(black_box(text), &usd).unwrap()));
+        group.bench_function(name, |b| {
+            b.iter(|| hypercast::cast_decimal(black_box(text), &usd).unwrap())
+        });
     }
     group.finish();
+
     let mut group = c.benchmark_group("i64-shapes");
     for (name, text) in [
         ("plain", &b"1234567"[..]),
@@ -66,7 +68,9 @@ fn benchmarks(c: &mut Criterion) {
         ("grouped currency", b"$1,234,567"),
         ("grouped currency in parens", b"($1,234,567)"),
     ] {
-        group.bench_function(name, |b| b.iter(|| hypercast::cast_i64(black_box(text), &usd).unwrap()));
+        group.bench_function(name, |b| {
+            b.iter(|| hypercast::cast_i64(black_box(text), &usd).unwrap())
+        });
     }
     group.finish();
 
@@ -125,14 +129,13 @@ fn benchmarks(c: &mut Criterion) {
 
     // Separator detection against the same text under a declared format: the cost of the
     // structural resolution pass, isolated.
+    let eurozone = NumFormat::new(',', '.', NumFormat::ALL);
     let mut group = c.benchmark_group("separator-detection");
-    const EUROZONE: NumFormat =
-        NumFormat::new(',', '.', NumFormat::ALL);
     group.bench_function("hypercast-detect", |b| {
         b.iter(|| hypercast::cast_f64(black_box(b"1.234.567,89"), &NumFormat::DETECT).unwrap())
     });
     group.bench_function("hypercast-declared", |b| {
-        b.iter(|| hypercast::cast_f64(black_box(b"1.234.567,89"), &EUROZONE).unwrap())
+        b.iter(|| hypercast::cast_f64(black_box(b"1.234.567,89"), &eurozone).unwrap())
     });
     group.finish();
 

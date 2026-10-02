@@ -10,7 +10,7 @@
 //! pattern, so `0xFF` is -1 for an i8; the pattern must fit the target's width.
 
 use crate::lane;
-use crate::verdict::{trim, Fault, NumFormat};
+use crate::verdict::{Fault, NumFormat, trim};
 
 /// The UTF-8 length of the character starting at `text[at]`, clamped to the text — so a
 /// fault span covers the whole offending character without ever running past the input
@@ -215,8 +215,7 @@ fn parse_int(
             value = value * 10 + u64::from(digit);
         }
         if plain {
-            let signed =
-                if sign == Some(b'-') { -(value as i128) } else { value as i128 };
+            let signed = if sign == Some(b'-') { -(value as i128) } else { value as i128 };
             return if signed < min || signed > max {
                 Err(Fault::out_of_range(start, text.len()))
             } else {
