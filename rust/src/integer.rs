@@ -16,8 +16,10 @@ use crate::verdict::{trim, Fault, NumFormat};
 /// fault span covers the whole offending character without ever running past the input
 /// when the text ends mid-character (arbitrary bytes are a legal input; the fuzz target
 /// caught a lead byte at the last position producing a span one past the end).
+///
+/// An `at` past the end (no caller passes one) gives 0 rather than a bounds panic.
 pub(crate) fn char_len_at(text: &[u8], at: usize) -> usize {
-    char_len(text[at]).min(text.len() - at)
+    text.get(at).map_or(0, |&byte| char_len(byte).min(text.len() - at))
 }
 
 /// The UTF-8 length of the character starting with `byte` (unclamped — span builders use
@@ -44,8 +46,13 @@ impl Sep {
         Sep { bytes, len }
     }
 
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        // `len` is at most 4 by construction; `get` says so without a bounds check.
+        self.bytes.get(..self.len).unwrap_or_default()
+    }
+
     pub(crate) fn matches(&self, text: &[u8], at: usize) -> bool {
-        text[at..].starts_with(&self.bytes[..self.len])
+        text.get(at..).is_some_and(|rest| rest.starts_with(self.as_bytes()))
     }
 }
 
@@ -57,13 +64,13 @@ pub(crate) fn strip_parens<'t>(
     start: usize,
     format: &NumFormat,
 ) -> Result<(&'t [u8], usize, bool), Fault> {
-    if !format.allows(NumFormat::PARENS) || text[0] != b'(' {
+    if !format.allows(NumFormat::PARENS) || text.first() != Some(&b'(') {
         return Ok((text, start, false));
     }
-    if text.len() < 3 || *text.last().unwrap() != b')' {
+    let [_, inner @ .., b')'] = text else {
         return Err(Fault::malformed(start, text.len()));
-    }
-    let (inner, inner_start) = trim(&text[1..text.len() - 1]);
+    };
+    let (inner, inner_start) = trim(inner);
     if inner.is_empty() {
         return Err(Fault::malformed(start, text.len()));
     }
@@ -85,18 +92,17 @@ pub(crate) fn strip_currency<'t>(
         return Ok((body, base, None));
     }
     let symbol = format.currency.as_bytes();
-    let sign_at = usize::from(matches!(body[0], b'+' | b'-'));
-    if body[sign_at..].starts_with(symbol) {
-        let sign = if sign_at == 1 { Some(body[0]) } else { None };
-        let after = sign_at + symbol.len();
-        let (rest, rest_start) = trim(&body[after..]);
+    let (sign, unsigned) = split_sign(body);
+    if let Some(after_symbol) = unsigned.strip_prefix(symbol) {
+        let after = body.len() - after_symbol.len();
+        let (rest, rest_start) = trim(after_symbol);
         if rest.is_empty() {
             return Err(Fault::malformed(base, body.len()));
         }
         return Ok((rest, base + after + rest_start, sign));
     }
-    if body.ends_with(symbol) {
-        let (rest, rest_start) = trim(&body[..body.len() - symbol.len()]);
+    if let Some(before_symbol) = body.strip_suffix(symbol) {
+        let (rest, rest_start) = trim(before_symbol);
         if rest.is_empty() {
             return Err(Fault::malformed(base, body.len()));
         }
@@ -105,24 +111,30 @@ pub(crate) fn strip_currency<'t>(
     Ok((body, base, None))
 }
 
+/// Splits a leading `+`/`-` off `text`, returning the sign byte (if any) and the rest.
+/// Shared with the real and decimal doors.
+pub(crate) fn split_sign(text: &[u8]) -> (Option<u8>, &[u8]) {
+    match text {
+        [sign @ (b'+' | b'-'), rest @ ..] => (Some(*sign), rest),
+        _ => (None, text),
+    }
+}
+
 fn digit_value(byte: u8, radix: u32) -> Option<u32> {
     (byte as char).to_digit(radix)
 }
 
 /// Detects a radix prefix at the head of the trimmed token: `0x`/`&H` (hex) or `0b`
-/// (binary), case-insensitive.
-fn radix_prefix(text: &[u8]) -> Option<u32> {
-    if text.len() < 2 {
+/// (binary), case-insensitive. Returns the radix and the digits after the prefix.
+fn radix_prefix(text: &[u8]) -> Option<(u32, &[u8])> {
+    let [first, second, digits @ ..] = text else {
         return None;
+    };
+    match (first, second | 0x20) {
+        (b'0', b'x') | (b'&', b'h') => Some((16, digits)),
+        (b'0', b'b') => Some((2, digits)),
+        _ => None,
     }
-    let second = text[1] | 0x20;
-    if (text[0] == b'0' && second == b'x') || (text[0] == b'&' && second == b'h') {
-        return Some(16);
-    }
-    if text[0] == b'0' && second == b'b' {
-        return Some(2);
-    }
-    None
 }
 
 /// Parses radix-prefixed digits as an unsigned bit pattern, then reinterprets as
@@ -131,11 +143,11 @@ fn parse_radix(
     text: &[u8],
     start: usize,
     radix: u32,
+    digits: &[u8],
     min: i128,
     max: i128,
     bits: u32,
 ) -> Result<i128, Fault> {
-    let digits = &text[2..];
     if digits.is_empty() {
         return Err(Fault::malformed(start, text.len()));
     }
@@ -190,8 +202,7 @@ fn parse_int(
     // exponent — the first byte that breaks the shape falls through to the full engine,
     // which rescans from the top and owns every fault span. Verdicts are identical either
     // way; only plain input skips the lenience tax.
-    let digits_at = usize::from(matches!(text[0], b'+' | b'-'));
-    let digits = &text[digits_at..];
+    let (sign, digits) = split_sign(text);
     if !digits.is_empty() && digits.len() <= 19 {
         let mut value: u64 = 0;
         let mut plain = true;
@@ -205,7 +216,7 @@ fn parse_int(
         }
         if plain {
             let signed =
-                if text[0] == b'-' { -(value as i128) } else { value as i128 };
+                if sign == Some(b'-') { -(value as i128) } else { value as i128 };
             return if signed < min || signed > max {
                 Err(Fault::out_of_range(start, text.len()))
             } else {
@@ -226,9 +237,9 @@ fn parse_int(
     };
 
     if format.allows(NumFormat::RADIX_PREFIX)
-        && let Some(radix) = radix_prefix(text)
+        && let Some((radix, digits)) = radix_prefix(text)
     {
-        return parse_radix(text, start, radix, min, max, bits);
+        return parse_radix(text, start, radix, digits, min, max, bits);
     }
 
     // The lenient lane (lane.rs): grouped digits, a declared currency symbol and accounting
@@ -252,19 +263,20 @@ fn parse_int(
 
     let mut i = 0;
     let mut negative = parens;
-    if let Some(sign) = pre_sign {
+    let (sign, _) = split_sign(body);
+    if let Some(pre_sign) = pre_sign {
         // The sign sat ahead of a leading currency symbol (`-$5`); a second one after it,
         // or one inside accounting parens, is double negation nonsense.
-        if parens || matches!(body[0], b'+' | b'-') {
+        if parens || sign.is_some() {
             return Err(Fault::malformed(base, 1));
         }
-        negative = sign == b'-';
-    } else if body[0] == b'+' || body[0] == b'-' {
+        negative = pre_sign == b'-';
+    } else if let Some(sign) = sign {
         if parens {
             // A sign inside accounting parens is double negation nonsense.
             return Err(Fault::malformed(base, 1));
         }
-        negative = body[0] == b'-';
+        negative = sign == b'-';
         i = 1;
     }
 
@@ -275,8 +287,7 @@ fn parse_int(
     let mut any_digit = false;
     let mut exp: u32 = 0;
     let mut exp_over = false;
-    while i < body.len() {
-        let byte = body[i];
+    while let Some(&byte) = body.get(i) {
         if byte.is_ascii_digit() {
             any_digit = true;
             acc = match acc
@@ -295,10 +306,7 @@ fn parse_int(
             return Err(Fault::malformed(base + i, decimal.len));
         } else if format.allows(NumFormat::GROUPING) && group.matches(body, i) {
             let after = i + group.len;
-            let between_digits = i > 0
-                && body[i - 1].is_ascii_digit()
-                && after < body.len()
-                && body[after].is_ascii_digit();
+            let between_digits = is_digit_at(body, i.wrapping_sub(1)) && is_digit_at(body, after);
             if !between_digits {
                 return Err(Fault::malformed(base + i, group.len));
             }
@@ -307,20 +315,20 @@ fn parse_int(
         {
             let e_pos = i;
             i += 1;
-            if i < body.len() && body[i] == b'+' {
+            if body.get(i) == Some(&b'+') {
                 i += 1;
             }
-            if i < body.len() && body[i] == b'-' {
+            if body.get(i) == Some(&b'-') {
                 // A negative exponent demands a fraction — never integral.
                 return Err(Fault::malformed(base + i, 1));
             }
-            if i >= body.len() || !body[i].is_ascii_digit() {
+            if !is_digit_at(body, i) {
                 return Err(Fault::malformed(base + e_pos, 1));
             }
-            while i < body.len() && body[i].is_ascii_digit() {
+            while let Some(&digit @ b'0'..=b'9') = body.get(i) {
                 exp = match exp
                     .checked_mul(10)
-                    .and_then(|shifted| shifted.checked_add((body[i] - b'0') as u32))
+                    .and_then(|shifted| shifted.checked_add((digit - b'0') as u32))
                 {
                     Some(next) if next <= 100_000 => next,
                     _ => {
@@ -358,6 +366,12 @@ fn parse_int(
         return Err(Fault::out_of_range(start, text.len()));
     }
     Ok(value)
+}
+
+/// Whether `text` has an ASCII digit at `at`; false past either end (an `at` built by
+/// `wrapping_sub` from 0 is past the far end).
+pub(crate) fn is_digit_at(text: &[u8], at: usize) -> bool {
+    text.get(at).is_some_and(u8::is_ascii_digit)
 }
 
 macro_rules! integer_doors {

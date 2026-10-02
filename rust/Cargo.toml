@@ -1,6 +1,6 @@
 [package]
 name = "hypercast"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2024"
 description = "Allocation-free parsers for scalars from untrusted text — booleans, numerics, UUIDs, and temporals. Every parse returns a verdict (the value, or a closed reason code with the offending span), never throws, never allocates — wrapped as a native library (libhypercast) for direct FFI from every host language."
 license = "MIT"
@@ -25,6 +25,8 @@ pyo3 = { version = "0.27", features = ["extension-module", "abi3-py311"], option
 magnus = { version = "0.8", features = ["rb-sys"], optional = true }
 rb-sys = { version = "0.9", optional = true }
 ext-php-rs = { version = "0.15", optional = true }
+# Build-time check only, never shipped: see the `no-panic` feature.
+no-panic = { version = "0.1", optional = true }
 
 # One crate, three optional native-extension entry points instead of three satellite crates
 # each path-depending back on this one (HyperUuid's consolidation, ported home). Nothing
@@ -55,6 +57,14 @@ staticlib = []
 python = ["dep:pyo3", "std"]
 ruby = ["dep:magnus", "dep:rb-sys", "std"]
 php = ["dep:ext-php-rs", "std"]
+# Proves at link time that no C ABI export can panic: `cargo cdylib --features no-panic`
+# fails with an undefined-symbol error naming any export the optimizer could not clear of
+# every panic path (dtolnay's no-panic). A check, not a build of anything shipped. The
+# doors' contract is "never panics on bad input"; at an `extern "C"` boundary a panic is
+# a process abort in the host, so this is the guarantee that matters, and it has to be
+# re-proved per compiler release because whether a bounds check survives is the
+# optimizer's call. Release builds only — debug keeps every check.
+no-panic = ["dep:no-panic"]
 
 [dev-dependencies]
 # default-features off drops rayon/plotters, which cannot build for wasm32-wasip1 —

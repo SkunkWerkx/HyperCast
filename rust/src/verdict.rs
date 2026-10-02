@@ -126,7 +126,8 @@ impl CurrencySymbol {
 
     /// The symbol's UTF-8 bytes — empty for [`NONE`](Self::NONE).
     pub fn as_bytes(&self) -> &[u8] {
-        &self.bytes[..self.len as usize]
+        // `len` never exceeds MAX_BYTES (`new` checks); `get` says so without a bounds check.
+        self.bytes.get(..usize::from(self.len)).unwrap_or_default()
     }
 
     /// The symbol as text — empty for [`NONE`](Self::NONE).
@@ -342,12 +343,16 @@ fn resolve_single_sep(
     if count >= 2 {
         return Ok((other, sep));
     }
-    let right = text[at + 1..].iter().take_while(|byte| byte.is_ascii_digit()).count();
+    // `at` always indexes the separator; were it ever past the end, the declared roles stand.
+    let Some((before, [_, after @ ..])) = text.split_at_checked(at) else {
+        return Ok((sep, other));
+    };
+    let right = after.iter().take_while(|byte| byte.is_ascii_digit()).count();
     if right != 3 {
         return Ok((sep, other));
     }
-    let left = text[..at].iter().rev().take_while(|byte| byte.is_ascii_digit()).count();
-    if left == 1 && text[at - 1] == b'0' {
+    let left = before.iter().rev().take_while(|byte| byte.is_ascii_digit()).count();
+    if left == 1 && before.last() == Some(&b'0') {
         return Ok((sep, other));
     }
     Err(Fault::malformed(start + at, 1))

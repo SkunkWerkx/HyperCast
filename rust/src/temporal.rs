@@ -13,6 +13,7 @@
 //! exactly as HyperUuid left the wall clock to the host.
 
 use crate::integer::char_len_at;
+use core::num::NonZero;
 use crate::verdict::{trim, CivilDateTime, Date, Duration, Fault, Timestamp};
 
 /// `0001-01-01T00:00:00Z` — the floor of the protobuf timestamp window.
@@ -422,11 +423,10 @@ pub fn cast_datetime(input: impl AsRef<[u8]>, order: DateOrder) -> Result<CivilD
         return Err(Fault::EMPTY);
     }
     let (date, date_end) = read_ordered_date(text, start, order)?;
-    if date_end == text.len() {
-        return Ok(CivilDateTime { date, nanos_of_day: 0 });
-    }
-    if !matches!(text[date_end], b' ' | b'T' | b't') {
-        return Err(Fault::malformed(start + date_end, char_len_at(text, date_end)));
+    match text.get(date_end) {
+        None => return Ok(CivilDateTime { date, nanos_of_day: 0 }),
+        Some(b' ' | b'T' | b't') => {}
+        Some(_) => return Err(Fault::malformed(start + date_end, char_len_at(text, date_end))),
     }
     let (nanos_of_day, end) = read_civil_time(text, date_end + 1, start)?;
     if end != text.len() {
@@ -645,10 +645,10 @@ pub fn cast_excel_serial(input: impl AsRef<[u8]>, epoch: ExcelEpoch) -> Result<T
     let mut i = 0;
     let mut days: i64 = 0;
     let mut over = false;
-    while i < text.len() && text[i].is_ascii_digit() {
+    while let Some(&digit @ b'0'..=b'9') = text.get(i) {
         days = match days
             .checked_mul(10)
-            .and_then(|shifted| shifted.checked_add((text[i] - b'0') as i64))
+            .and_then(|shifted| shifted.checked_add((digit - b'0') as i64))
         {
             Some(next) => next,
             None => {
@@ -663,24 +663,25 @@ pub fn cast_excel_serial(input: impl AsRef<[u8]>, epoch: ExcelEpoch) -> Result<T
     }
 
     let mut nanos_of_day: i128 = 0;
-    if i < text.len() && text[i] == b'.' {
+    if text.get(i) == Some(&b'.') {
         i += 1;
         let fraction_start = i;
-        let mut scaled: i128 = 0;
-        let mut scale: i128 = 1;
-        while i < text.len() && text[i].is_ascii_digit() {
+        // `scale` is NonZero by type, so the division below has no zero to check for.
+        const TEN: NonZero<u128> = NonZero::new(10).unwrap();
+        let mut scaled: u128 = 0;
+        let mut scale = NonZero::<u128>::MIN;
+        while let Some(&digit @ b'0'..=b'9') = text.get(i) {
             if i - fraction_start < MAX_EXCEL_FRACTION_DIGITS {
-                scaled = scaled * 10 + (text[i] - b'0') as i128;
-                scale *= 10;
+                scaled = scaled * 10 + u128::from(digit - b'0');
+                scale = scale.saturating_mul(TEN);
             }
             i += 1;
         }
         if i == fraction_start {
-            // Point at the `.` itself: a trailing separator has nothing after it to span,
-            // and `char_len_at` indexes the byte directly so `text.len()` would panic.
+            // Point at the `.` itself: a trailing separator has nothing after it to span.
             return Err(Fault::malformed(start + fraction_start - 1, 1));
         }
-        nanos_of_day = scaled * 86_400 * NANOS_PER_SECOND / scale;
+        nanos_of_day = (scaled * 86_400 * NANOS_PER_SECOND as u128 / scale) as i128;
     }
     if i != text.len() {
         return Err(Fault::malformed(start + i, char_len_at(text, i)));

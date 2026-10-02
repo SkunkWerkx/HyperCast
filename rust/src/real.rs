@@ -9,7 +9,7 @@
 //! stack buffer holding the normalized ASCII (declared separators swapped to invariant,
 //! grouping stripped): `core` cannot allocate, so neither can this door.
 
-use crate::integer::{char_len_at, strip_currency, strip_parens, Sep};
+use crate::integer::{char_len_at, is_digit_at, split_sign, strip_currency, strip_parens, Sep};
 use crate::lane;
 use crate::verdict::{trim, Fault, NumFormat};
 
@@ -67,7 +67,7 @@ macro_rules! real_doors {
                 let mut buf = [0u8; MAX_NORMALIZED];
                 let (len, percent) = normalize(text, start, format, &mut buf)?;
                 // SAFETY: normalize writes only ASCII bytes.
-                let normalized = unsafe { str::from_utf8_unchecked(&buf[..len]) };
+                let normalized = unsafe { str::from_utf8_unchecked(buf.get(..len).unwrap_or_default()) };
                 let value: $ty = normalized
                     .parse()
                     .map_err(|_| Fault::malformed(start, text.len()))?;
@@ -129,15 +129,15 @@ pub(crate) fn is_plain(text: &[u8], format: &NumFormat) -> bool {
     if !reads_plain(format) {
         return false;
     }
-    let mut i = usize::from(matches!(text[0], b'+' | b'-'));
+    let mut i = usize::from(split_sign(text).0.is_some());
     let mut any_digit = false;
-    while i < text.len() && text[i].is_ascii_digit() {
+    while is_digit_at(text, i) {
         any_digit = true;
         i += 1;
     }
-    if i < text.len() && text[i] == b'.' {
+    if text.get(i) == Some(&b'.') {
         i += 1;
-        while i < text.len() && text[i].is_ascii_digit() {
+        while is_digit_at(text, i) {
             any_digit = true;
             i += 1;
         }
@@ -145,16 +145,16 @@ pub(crate) fn is_plain(text: &[u8], format: &NumFormat) -> bool {
     if !any_digit {
         return false;
     }
-    if i < text.len() && matches!(text[i], b'e' | b'E') {
+    if let Some(b'e' | b'E') = text.get(i) {
         if !format.allows(NumFormat::EXPONENT) {
             return false;
         }
         i += 1;
-        if i < text.len() && matches!(text[i], b'+' | b'-') {
+        if let Some(b'+' | b'-') = text.get(i) {
             i += 1;
         }
         let exponent_digits = i;
-        while i < text.len() && text[i].is_ascii_digit() {
+        while is_digit_at(text, i) {
             i += 1;
         }
         if i == exponent_digits {
@@ -175,10 +175,9 @@ pub(crate) fn normalize(
 ) -> Result<(usize, bool), Fault> {
     // Percent strips first, exactly as Svartalfheim checked `trimmed[^1]` first — the parens
     // and sign live inside the percent body: `(2.5)%` is -0.025.
-    let (body, percent) = if format.allows(NumFormat::PERCENT) && *text.last().unwrap() == b'%' {
-        (text[..text.len() - 1].trim_ascii_end(), true)
-    } else {
-        (text, false)
+    let (body, percent) = match text.strip_suffix(b"%") {
+        Some(rest) if format.allows(NumFormat::PERCENT) => (rest.trim_ascii_end(), true),
+        _ => (text, false),
     };
     if body.is_empty() {
         return Err(Fault::malformed(start, text.len()));
@@ -188,10 +187,10 @@ pub(crate) fn normalize(
 
     let mut out = 0;
     let mut push = |byte: u8, out: &mut usize| -> bool {
-        if *out >= MAX_NORMALIZED {
+        let Some(slot) = buf.get_mut(*out) else {
             return false;
-        }
-        buf[*out] = byte;
+        };
+        *slot = byte;
         *out += 1;
         true
     };
@@ -199,18 +198,19 @@ pub(crate) fn normalize(
 
     let mut i = 0;
     let mut negative = parens;
-    if let Some(sign) = pre_sign {
+    let (sign, _) = split_sign(body);
+    if let Some(pre_sign) = pre_sign {
         // The sign sat ahead of a leading currency symbol (`-$5`); a second one after it,
         // or one inside accounting parens, is double negation nonsense.
-        if parens || matches!(body[0], b'+' | b'-') {
+        if parens || sign.is_some() {
             return Err(Fault::malformed(base, 1));
         }
-        negative = sign == b'-';
-    } else if body[0] == b'+' || body[0] == b'-' {
+        negative = pre_sign == b'-';
+    } else if let Some(sign) = sign {
         if parens {
             return Err(Fault::malformed(base, 1));
         }
-        negative = body[0] == b'-';
+        negative = sign == b'-';
         i = 1;
     }
     if negative && !push(b'-', &mut out) {
@@ -221,8 +221,7 @@ pub(crate) fn normalize(
     let group = Sep::new(format.group_sep);
     let mut any_digit = false;
     let mut seen_decimal = false;
-    while i < body.len() {
-        let byte = body[i];
+    while let Some(&byte) = body.get(i) {
         if byte.is_ascii_digit() {
             any_digit = true;
             if !push(byte, &mut out) {
@@ -241,11 +240,8 @@ pub(crate) fn normalize(
         } else if format.allows(NumFormat::GROUPING) && group.matches(body, i) {
             let after = i + group.len;
             // Grouping lives in the integer part only, strictly between digits.
-            let between_digits = !seen_decimal
-                && i > 0
-                && body[i - 1].is_ascii_digit()
-                && after < body.len()
-                && body[after].is_ascii_digit();
+            let between_digits =
+                !seen_decimal && is_digit_at(body, i.wrapping_sub(1)) && is_digit_at(body, after);
             if !between_digits {
                 return Err(Fault::malformed(base + i, group.len));
             }
@@ -255,18 +251,18 @@ pub(crate) fn normalize(
             let e_pos = i;
             i += 1;
             let mut exp_sign = 0u8;
-            if i < body.len() && (body[i] == b'+' || body[i] == b'-') {
-                exp_sign = body[i];
+            if let Some(&sign @ (b'+' | b'-')) = body.get(i) {
+                exp_sign = sign;
                 i += 1;
             }
-            if i >= body.len() || !body[i].is_ascii_digit() {
+            if !is_digit_at(body, i) {
                 return Err(Fault::malformed(base + e_pos, 1));
             }
             if !push(b'e', &mut out) || (exp_sign != 0 && !push(exp_sign, &mut out)) {
                 return Err(overflow);
             }
-            while i < body.len() && body[i].is_ascii_digit() {
-                if !push(body[i], &mut out) {
+            while let Some(&digit @ b'0'..=b'9') = body.get(i) {
+                if !push(digit, &mut out) {
                     return Err(overflow);
                 }
                 i += 1;

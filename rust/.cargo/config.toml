@@ -92,3 +92,10 @@ wasm-staticlib = "rustc --release --target wasm32-unknown-emscripten --crate-typ
 # profile (Cargo.toml), which is release plus `panic = "abort"`.
 # Output: target/<triple>/staticlib/libhypercast.a.
 staticlib = "rustc --profile staticlib --crate-type staticlib --no-default-features --features staticlib"
+# Proves no C ABI export can panic (the `no-panic` feature in Cargo.toml has why): builds
+# the shared library with every export wrapped by `#[no_panic]` and fails to link, naming
+# each export, if any panic path survived optimization. `--no-undefined` is load-bearing:
+# no-panic reports a failure as an undefined symbol, and a Linux shared library is allowed
+# to have those, so without it the check passes silently. GNU ld/lld only (Linux); the
+# output is a throwaway build in target/no-panic/, never the library the bindings load.
+no-panic = "rustc --release --crate-type cdylib --features no-panic --target-dir target/no-panic -- -C link-arg=-Wl,--no-undefined"
