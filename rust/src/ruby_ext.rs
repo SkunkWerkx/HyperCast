@@ -20,6 +20,7 @@ use magnus::value::{Opaque, ReprValue};
 use magnus::{
     Error, IntoValue, RModule, RString, RStruct, Ruby, Symbol, Value, function, prelude::*,
 };
+use rb_sys::VALUE;
 
 use crate as core;
 
@@ -33,14 +34,14 @@ struct Cached {
     date_class: Opaque<Value>,
     datetime_class: Opaque<Value>,
     decimal_class: Opaque<Value>,
-    invariant_raw: u64,
-    detect_raw: u64,
+    invariant_raw: VALUE,
+    detect_raw: VALUE,
     empty: Opaque<Symbol>,
     malformed: Opaque<Symbol>,
     out_of_range: Opaque<Symbol>,
-    precisions: [(u64, core::UnixPrecision); 4],
-    epochs: [(u64, core::ExcelEpoch); 2],
-    orders: [(u64, core::DateOrder); 3],
+    precisions: [(VALUE, core::UnixPrecision); 4],
+    epochs: [(VALUE, core::ExcelEpoch); 2],
+    orders: [(VALUE, core::DateOrder); 3],
 }
 
 static CACHED: OnceLock<Cached> = OnceLock::new();
@@ -88,7 +89,7 @@ fn build_cache(ruby: &Ruby, hypercast: RModule) -> Result<Cached, Error> {
 /// pointer compare per entry, no `Symbol#name` materialization. A dynamic Symbol that
 /// spells the same name (rare: `"seconds".to_sym` where no static one existed) misses
 /// here and is resolved by name in the caller's slow path.
-fn lookup<T: Copy, const N: usize>(table: &[(u64, T); N], symbol: Symbol) -> Option<T> {
+fn lookup<T: Copy, const N: usize>(table: &[(VALUE, T); N], symbol: Symbol) -> Option<T> {
     let raw = symbol.as_raw();
     table.iter().find(|(known, _)| *known == raw).map(|(_, value)| *value)
 }
@@ -209,7 +210,7 @@ thread_local! {
     /// thread-variable (below) for exactly as long as this entry names it. Only plain data
     /// lives here, deliberately — a GC-registered handle in a thread-local would try to
     /// unregister itself from a VM that has already shut down when the thread exits.
-    static LAST_FORMAT: RefCell<Option<(u64, core::NumFormat)>> = const { RefCell::new(None) };
+    static LAST_FORMAT: RefCell<Option<(VALUE, core::NumFormat)>> = const { RefCell::new(None) };
 }
 
 /// Keeps `format` alive for as long as `LAST_FORMAT` keys on it: one Ruby thread-variable
