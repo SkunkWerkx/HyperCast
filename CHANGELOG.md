@@ -9,8 +9,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-10-03
+
+### Added
+
+- **Ruby — in the browser, through ruby.wasm: the `hypercast-wasm` gem.** ruby.wasm links
+  extensions into the interpreter when `rbwasm build` makes it, so a browser app lists
+  `hypercast-wasm` instead of `hypercast` in that Gemfile and gets the same Magnus extension,
+  prebuilt for `wasm32-wasip1` for Ruby 3.4 and 4.0, with no Rust toolchain on the consumer's
+  machine. It links into the same interpreter as HyperUuid's `hyperuuid-wasm`. CI builds each
+  minor's archive from the commit, attests it, and runs the gem packed around it under Node and
+  in headless Chrome; the release packs the published gem from those archives. Unblocked by
+  Magnus 0.8.3/0.9.2, which fixed the two bugs that kept it off WASI
+  ([magnus#186](https://github.com/matsadler/magnus/issues/186),
+  [#187](https://github.com/matsadler/magnus/issues/187)). *(RubyGems)*
+
+### Changed
+
+- **Ruby — Magnus 0.9.** The extension builds on Magnus 0.9.2 (from 0.8.2), with no change to
+  the gem's API. *(RubyGems)*
+
 ### Fixed
 
+- **Ruby — the Magnus extension compiles on 32-bit targets.** It cached Ruby objects' raw
+  `VALUE`s as `u64` to resolve the declared-option Symbols and memoize the last format, which
+  only type-checks where `VALUE` is 64 bits. They are `rb_sys::VALUE` now, so the extension
+  builds for `wasm32-wasip1` (the `hypercast-wasm` gem) and any other 32-bit target; nothing
+  changes on the platforms the platform gems cover. *(RubyGems)*
 - **Rust — the no-panic proof from a consumer's crate fails at `cast_uuid` on the recipe the
   README gives.** 0.6.0 said `lto = true` in your release profile is enough, and it is for
   every other export, but on stable that build still flagged `cast_uuid`, and on Rust 1.88
@@ -966,7 +991,8 @@ notes: [v0.1.0 release](https://github.com/SkunkWerkx/HyperCast/releases/tag/v0.
   found in that window, in the gap between "the publish succeeded" and "a consumer can use it",
   and none of them could have failed a build in this repository.
 
-[Unreleased]: https://github.com/SkunkWerkx/HyperCast/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/SkunkWerkx/HyperCast/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/SkunkWerkx/HyperCast/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.4.0...v0.6.0
 [0.4.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.2.0...v0.3.0
