@@ -77,8 +77,13 @@ type Fault struct {
 }
 
 // Error renders the verdict as "hypercast: {reason} at byte {start}..{end}", the span as a
-// half-open byte range into the input.
+// half-open byte range into the input. A nil *Fault — a door's success, printed — renders as
+// "<nil>", what fmt prints for one under stock Go after recovering the nil dereference.
+// TinyGo's wasm targets cannot recover a panic, so without this the same print trapped there.
 func (f *Fault) Error() string {
+	if f == nil {
+		return "<nil>"
+	}
 	return fmt.Sprintf("hypercast: %s at byte %d..%d", f.Reason, f.Offset, f.Offset+f.Length)
 }
 

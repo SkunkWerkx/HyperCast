@@ -9,6 +9,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Rust — the no-panic proof from a consumer's crate fails at `cast_uuid` on the recipe the
+  README gives.** 0.6.0 said `lto = true` in your release profile is enough, and it is for
+  every other export, but on stable that build still flagged `cast_uuid`, and on Rust 1.88
+  (the crate's floor) so did this repository's own `cargo no-panic`. The UUID parser
+  indexed its input after checking the length, and whether that bounds check vanished was the
+  optimizer's call. It now reads every byte with `get`, so there is no panic path for any
+  compiler to keep: the proof passes from a consumer with `lto = true` alone and in this
+  repository, on both stable and 1.88. Verdicts and speed are unchanged. *(crates.io)*
+- **C# — a .NET 10 project is refused at restore instead of failing to compile.** The
+  package targets .NET 11 only (the binding is built on C#'s native union types), but its
+  targets file and native libraries sat in no target-framework folder, so NuGet restored it
+  into a net10.0 project without a warning and the build then stopped on missing `HyperCast`
+  types. The targets file now ships under `build/net11.0/` and `buildTransitive/net11.0/`,
+  and a net10.0 project gets NuGet's own NU1202 ("not compatible with net10.0"). Nothing
+  changes for .NET 11: Native AOT still links the core in, and Blazor WebAssembly, direct or
+  through a class library, still gets the wiring. *(NuGet)*
+- **Go — printing a nil `*Fault` no longer traps under TinyGo.** A door's success is a nil
+  `*Fault`, and printing one called `Error` on nil. Stock Go's `fmt` recovers that and
+  prints `<nil>`; TinyGo's wasm targets cannot recover, so the program trapped. `Error` now
+  returns `<nil>` for a nil receiver itself. *(Go module)*
+
 ## [0.6.0] — 2026-10-02
 
 Four themes, shared with HyperUuid's 0.6.0; there was no HyperCast 0.5.0, so this release

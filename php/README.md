@@ -55,6 +55,13 @@ exact triple (`Decimal`) because PHP has no decimal type at all.
   Anything else (a 32-bit PHP, another architecture, another OS family) is a clear
   unsupported-platform error rather than a wrong-library load.
 
+- **About 2.3 MB on disk.** The Composer package is GitHub's archive of the release tag,
+  trimmed to PHP by `.gitattributes`, except for `go/`, which is over half of it: mostly
+  the Go module's static libraries, which PHP never loads. The Go module proxy builds its
+  module from the same archive, so leaving `go/` out would break the Go module, and moving
+  PHP to a repository of its own is not worth it for the users it has. This will stay as it
+  is unless PHP sees wide adoption.
+
 ### Enabling FFI
 
 `ext-ffi` ships with PHP, but the `ffi.enable` ini setting decides who may use it, and its

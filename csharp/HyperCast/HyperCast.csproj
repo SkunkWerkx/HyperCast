@@ -78,9 +78,9 @@
     <None Include="runtimes/**/native/*"
           Condition="!Exists('runtimes/$(NETCoreSdkRuntimeIdentifier)/native')"
           Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
-    <!-- Auto-imported into every consuming project via NuGet's build/{PackageId}.targets
+    <!-- Auto-imported into every consuming project via NuGet's build/{tfm}/{PackageId}.targets
          convention, and into projects that reach the package through another project via
-         buildTransitive/ — see the file itself for why browser-wasm needs it and no other RID does.
+         buildTransitive/{tfm}/ — see the file itself for why browser-wasm needs it and no other RID does.
          Two pieces, both required: the NativeFileReference that actually hands the staticlib
          to the linker (restore never populates @(NativeLibrary) from a plain
          PackageReference's nativeassets folder), and an EmccExportedFunction per door
@@ -90,7 +90,7 @@
     <None Include="build/**" Pack="true" PackagePath="build" />
     <None Include="buildTransitive/**" Pack="true" PackagePath="buildTransitive" />
     <!-- The core as a static library, one per RID, for a Native AOT publish to link in
-         instead of loading the shared library; build/HyperCast.targets has the wiring and
+         instead of loading the shared library; build/net11.0/HyperCast.targets has the wiring and
          the reasons. Staged here before packing, like runtimes/, and not committed. -->
     <None Include="staticlibs/**" Pack="true" PackagePath="staticlibs" />
     <!-- Local dev loop: when the Rust core has been built in-repo (`cargo cdylib` in

@@ -17,6 +17,6 @@
 	     archive it links is csharp/HyperCast/staticlibs/{rid}/, which is not committed —
 	     the forge's static-libs/build-static-libs.sh stages it, in CI and by hand. Where it
 	     is absent the publish loads the shared library, as it did before these existed. -->
-	<Import Project="../HyperCast/build/HyperCast.targets" />
+	<Import Project="../HyperCast/build/net11.0/HyperCast.targets" />
 
 </Project>

@@ -195,6 +195,13 @@ separate linker handling for each OS, so it is deliberately not done; the forge'
 [levers not pulled](https://github.com/SkunkWerkx/.github#levers-deliberately-not-pulled)
 table has the full reasoning, the proven recipe, and what would change the answer.
 
+`NumFormat.from(Locale)` needs the locale in the image. Native Image includes only the
+locale it was built in unless told otherwise, and for any other locale `DecimalFormatSymbols`
+quietly returns the root locale's `.` and `,`, so a German format built from
+`Locale.GERMANY` reads `1.234,5` as `Malformed` in the image while the JVM reads it as 1234.5.
+Name every locale the program declares formats from, e.g. `-H:IncludeLocales=de-DE,fr-FR`
+(or `-H:+IncludeAllLocales`). A `NumFormat` built from explicit separators needs nothing.
+
 The resources half was missing from v0.0.1, and the failure mode is worth knowing because
 nothing catches it at build time: Native Image doesn't embed classpath resources unless they
 are registered, so `Cast`'s `getResourceAsStream("/native/{rid}/{lib}")` returned null and a

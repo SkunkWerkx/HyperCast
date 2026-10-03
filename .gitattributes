@@ -5,7 +5,10 @@
 #
 # A deny-list on purpose, and `go/` is deliberately not on it: the Go module proxy builds
 # the module zip with `git archive` of that directory, so an export-ignore that reached it
-# would publish an empty or partial Go module. A new top-level directory that is not listed
+# would publish an empty or partial Go module. That is over half of the PHP download (2.28 MB
+# at 0.6.0, of which go/ is 1.25 MB, mostly its static libraries), and it stays that way:
+# a PHP-only repository is not worth it unless PHP sees wide adoption (php/README.md,
+# Requirements). A new top-level directory that is not listed
 # here only costs download size. SwiftPM clones, and every other registry gets a built
 # package, so nothing else reads these attributes. They apply from the tree being archived:
 # a tag made before this file existed keeps its full archive.

@@ -24,10 +24,12 @@ pub fn cast_uuid(input: impl AsRef<[u8]>) -> Result<[u8; 16], Fault> {
     let (mut text, mut start) = (outer, outer_start);
     // Every prefix starts with u/g; a hex digit never does, so the common unprefixed
     // shapes skip the three case-insensitive comparisons entirely.
-    if matches!(text[0] | 0x20, b'u' | b'g') {
+    if matches!(text.first().map(|&byte| byte | 0x20), Some(b'u' | b'g')) {
         for prefix in PREFIXES {
-            if text.len() >= prefix.len() && text[..prefix.len()].eq_ignore_ascii_case(prefix) {
-                let (stripped, inner_start) = trim(&text[prefix.len()..]);
+            if let Some((head, rest)) = text.split_at_checked(prefix.len())
+                && head.eq_ignore_ascii_case(prefix)
+            {
+                let (stripped, inner_start) = trim(rest);
                 start += prefix.len() + inner_start;
                 text = stripped;
                 break;
@@ -39,19 +41,12 @@ pub fn cast_uuid(input: impl AsRef<[u8]>) -> Result<[u8; 16], Fault> {
         return Err(Fault::malformed(outer_start, outer.len()));
     }
 
-    match text[0] {
-        b'{' if text.len() >= 3 && text[1] == b'0' && (text[2] | 0x20) == b'x' => {
-            parse_x(text, start)
-        }
-        b'{' => parse_wrapped(text, start, b'}'),
-        b'(' => parse_wrapped(text, start, b')'),
-        // The length lives in the type rather than a guard, so `parse_n`'s indexing is
-        // provably in bounds without inlining: built as a dependency's rlib, the guard and
-        // the indexing were optimized apart and `cast_uuid` failed the no-panic check.
-        _ => match <&[u8; 32]>::try_from(text) {
-            Ok(digits) => parse_n(digits, start),
-            Err(_) => parse_d(text, start),
-        },
+    match text {
+        [b'{', b'0', x, ..] if x | 0x20 == b'x' => parse_x(text, start),
+        [b'{', ..] => parse_wrapped(text, start, b'}'),
+        [b'(', ..] => parse_wrapped(text, start, b')'),
+        _ if text.len() == 32 => parse_n(text, start),
+        _ => parse_d(text, start),
     }
 }
 
@@ -80,10 +75,17 @@ fn hex(byte: u8) -> Option<u8> {
 }
 
 /// Decodes the hex pair at `at` into one output byte, faulting on the exact bad byte.
+///
+/// Every caller has already checked the length, so the pair is always there; it is read with
+/// `get` all the same, because a bounds check the optimizer has to prove away is a panic
+/// path whenever it does not: a consumer's build on Rust 1.88, or on stable without
+/// `codegen-units = 1`, kept one here and `cast_uuid` failed the no-panic proof. A pair that
+/// is somehow absent reads as a non-hex byte.
 #[inline]
 fn hex_pair(text: &[u8], at: usize, start: usize) -> Result<u8, Fault> {
-    let hi = HEX[text[at] as usize];
-    let lo = HEX[text[at + 1] as usize];
+    let nibble = |at: usize| text.get(at).map_or(0xFF, |&byte| HEX[byte as usize]);
+    let hi = nibble(at);
+    let lo = nibble(at + 1);
     if hi | lo == 0xFF {
         let bad = if hi == 0xFF { at } else { at + 1 };
         return Err(Fault::malformed(start + bad, char_len_at(text, bad)));
@@ -100,7 +102,7 @@ fn parse_d(text: &[u8], start: usize) -> Result<[u8; 16], Fault> {
         return Err(Fault::malformed(start, text.len()));
     }
     for hyphen in [8usize, 13, 18, 23] {
-        if text[hyphen] != b'-' {
+        if text.get(hyphen) != Some(&b'-') {
             return Err(Fault::malformed(start + hyphen, char_len_at(text, hyphen)));
         }
     }
@@ -112,7 +114,7 @@ fn parse_d(text: &[u8], start: usize) -> Result<[u8; 16], Fault> {
 }
 
 /// N format: 32 bare hex digits.
-fn parse_n(text: &[u8; 32], start: usize) -> Result<[u8; 16], Fault> {
+fn parse_n(text: &[u8], start: usize) -> Result<[u8; 16], Fault> {
     let mut out = [0u8; 16];
     for (slot, at) in out.iter_mut().zip((0..32).step_by(2)) {
         *slot = hex_pair(text, at, start)?;
@@ -125,10 +127,10 @@ fn parse_wrapped(text: &[u8], start: usize, close: u8) -> Result<[u8; 16], Fault
     if text.len() != 38 {
         return Err(Fault::malformed(start, text.len()));
     }
-    if *text.last().unwrap() != close {
+    let Some(inner) = text.get(1..37).filter(|_| text.last() == Some(&close)) else {
         return Err(Fault::malformed(start + 37, char_len_at(text, 37)));
-    }
-    parse_d(&text[1..37], start + 1)
+    };
+    parse_d(inner, start + 1)
 }
 
 /// X format: `{0xdddddddd,0xdddd,0xdddd,{0xdd,0xdd,0xdd,0xdd,0xdd,0xdd,0xdd,0xdd}}`,

@@ -31,6 +31,15 @@ func TestFaultImplementsError(t *testing.T) {
 	}
 }
 
+// A door's success is a nil *Fault, and printing it must not dereference it: stock Go's fmt
+// recovers that panic, but TinyGo's wasm targets cannot recover and trapped.
+func TestNilFaultErrorDoesNotPanic(t *testing.T) {
+	var fault *Fault
+	if got := fault.Error(); got != "<nil>" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestStringAndBytesDoorsAgree(t *testing.T) {
 	fromString, faultString := Bool("yes")
 	fromBytes, faultBytes := Bool([]byte("yes"))

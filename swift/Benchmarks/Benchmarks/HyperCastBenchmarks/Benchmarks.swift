@@ -2,7 +2,7 @@ import Benchmark
 import Foundation
 import HyperCast
 
-// Each pair pits a HyperCast door (dlopen crossing included) against Foundation's closest
+// Each pair pits a HyperCast door (a direct call into the linked core) against Foundation's closest
 // parse. Honesty notes baked in: Int()/Double() have no grouping knob (the ungrouped Cast
 // row is the like-for-like); Foundation's ISO8601 parsing tops out at fractional-second
 // precision it round-trips through Double; Swift has no stdlib ISO-duration or

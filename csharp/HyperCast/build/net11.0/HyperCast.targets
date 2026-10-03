@@ -34,12 +34,16 @@
        package. It is only a folder name here: the reference below names the path directly, so
        nothing selects on it and no rename is needed for this package's net11.0 consumers.
 
-       No target-framework gate, unlike HyperUuid's copy of this file, and no
-       target-framework folder either: this package targets net11.0 and nothing older, so
-       NuGet cannot install it into a project that predates the .NET 11 WebAssembly
-       toolchain the last item group depends on. -->
+       No target-framework gate, unlike HyperUuid's copy of this file: the gate is the
+       net11.0 folder this file sits in (and buildTransitive/'s copy beside it). The package
+       targets net11.0 and nothing older, because the binding is built on C#'s native union
+       types; with every framework-specific asset under net11.0, NuGet refuses the package to
+       an older project at restore (NU1202, "not compatible with net10.0") instead of
+       restoring it and leaving the build to fail on missing HyperCast types. So the wiring
+       below never meets a toolchain older than the .NET 11 one the last item group depends
+       on. HyperUuid keeps a net10.0 floor, so its copy sits in build/ and gates itself. -->
   <ItemGroup Condition="'$(RuntimeIdentifier)' == 'browser-wasm'">
-    <NativeFileReference Include="$(MSBuildThisFileDirectory)../runtimes/browser-wasm/nativeassets/net10.0/libhypercast.a" />
+    <NativeFileReference Include="$(MSBuildThisFileDirectory)../../runtimes/browser-wasm/nativeassets/net10.0/libhypercast.a" />
     <EmccExportedFunction Include="_cast_bool" />
     <EmccExportedFunction Include="_cast_i8" />
     <EmccExportedFunction Include="_cast_i16" />
@@ -108,7 +112,7 @@
 
        The archives are in staticlibs/{rid}/, one per RID the package carries a shared
        library for, built without Rust's standard library so that this package and
-       HyperCast's can both be linked into one executable (the same collision, and the same
+       HyperUuid's can both be linked into one executable (the same collision, and the same
        fix, as the Blazor WebAssembly archive above).
 
        Presence decides. Where the package has no archive for the RID being published — a
@@ -119,8 +123,8 @@
        Not for browser-wasm, which has its own wiring above, and not for anything but an AOT
        publish: a JIT process cannot link an archive, so it still loads the shared library. -->
   <PropertyGroup Condition="'$(PublishAot)' == 'true' And '$(RuntimeIdentifier)' != '' And '$(RuntimeIdentifier)' != 'browser-wasm' And '$(HyperCastStaticLink)' != 'false'">
-    <_HyperCastStaticLibrary Condition="$(RuntimeIdentifier.StartsWith('win'))">$(MSBuildThisFileDirectory)../staticlibs/$(RuntimeIdentifier)/hypercast.lib</_HyperCastStaticLibrary>
-    <_HyperCastStaticLibrary Condition="!$(RuntimeIdentifier.StartsWith('win'))">$(MSBuildThisFileDirectory)../staticlibs/$(RuntimeIdentifier)/libhypercast.a</_HyperCastStaticLibrary>
+    <_HyperCastStaticLibrary Condition="$(RuntimeIdentifier.StartsWith('win'))">$(MSBuildThisFileDirectory)../../staticlibs/$(RuntimeIdentifier)/hypercast.lib</_HyperCastStaticLibrary>
+    <_HyperCastStaticLibrary Condition="!$(RuntimeIdentifier.StartsWith('win'))">$(MSBuildThisFileDirectory)../../staticlibs/$(RuntimeIdentifier)/libhypercast.a</_HyperCastStaticLibrary>
     <_HyperCastStaticLibrary Condition="!Exists('$(_HyperCastStaticLibrary)')"></_HyperCastStaticLibrary>
   </PropertyGroup>
 

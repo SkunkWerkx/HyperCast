@@ -173,7 +173,7 @@ One compiled assembly covers browser-wasm too — every native entry point is de
 the same `EntryPoint`, with `OperatingSystem.IsBrowser()` picked at the call site and
 constant-folded by the linker. CI builds the `wasm32-unknown-emscripten` staticlib on every
 PR; the release pack stages it under `runtimes/browser-wasm/nativeassets/`, and
-`build/HyperCast.targets` ships inside the package to wire it up for a consumer with
+`build/net11.0/HyperCast.targets` ships inside the package to wire it up for a consumer with
 no configuration at all.
 
 That targets file is load-bearing, and both halves of it are: a `NativeFileReference` hands
@@ -185,9 +185,11 @@ scans P/Invoke declarations to find the rest. v0.0.1 shipped without that file, 
 Blazor consumer's publish died at `wasm-ld` with `undefined symbol: cast_i32`.
 
 **Target frameworks.** One floor here, not two: the package targets net11.0 and nothing
-older, so NuGet never imports that targets file into a project that predates the .NET 11
-WebAssembly toolchain, and it carries no target-framework gate. (HyperUuid's package targets
-net10.0 for its native platforms, so its copy of the file has one.)
+older, and the targets file sits under `build/net11.0/` (and `buildTransitive/net11.0/`) like
+the assembly under `lib/net11.0/`. With every framework-specific asset in a net11.0 folder,
+NuGet refuses the package to an older project at restore, with NU1202 ("not compatible with
+net10.0"), so the file needs no target-framework gate of its own. (HyperUuid's package targets
+net10.0 for its native platforms, so its copy sits in `build/` and has one.)
 
 `HyperCast.WasmSmokeTest` proves the whole chain in a real browser: a Blazor WebAssembly app
 that imports that targets file, calls every native entry point — the twenty-one `cast_*`
@@ -268,7 +270,7 @@ or Native AOT's
 [`NativeLibrary`/`DirectPInvoke`](https://learn.microsoft.com/dotnet/core/deploying/native-aot/interop),
 rather than resolved at runtime from `runtimes/{rid}/native/`. That is structurally the same problem
 the WebAssembly support above already solves: build the Rust core as a `.a` rather than a shared
-library, and let this package's own auto-imported `build/HyperCast.targets` inject the
+library, and let this package's own auto-imported `build/net11.0/HyperCast.targets` inject the
 reference so a consumer still writes nothing but a `PackageReference`. The packaging mechanism is
 therefore already proven in this repo; what is *not* yet established is how the managed
 `LibraryImport` declaration should resolve against a statically-linked core on iOS, which is the
