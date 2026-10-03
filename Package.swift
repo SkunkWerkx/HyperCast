@@ -25,11 +25,8 @@ let package = Package(
         ),
         .target(
             name: "HyperCast",
-            dependencies: [
-                .target(name: "HyperCastCore", condition: .when(platforms: [.linux, .wasi]))
-            ],
-            path: "swift/Sources/HyperCast",
-            resources: [.copy("NativeLibs")]
+            dependencies: ["HyperCastCore"],
+            path: "swift/Sources/HyperCast"
         ),
         .testTarget(
             name: "HyperCastTests",

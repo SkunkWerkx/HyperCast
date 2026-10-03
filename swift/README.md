@@ -10,11 +10,10 @@ closed reason plus the exact byte span that offended.**
 
 Allocation-lean scalar casts — booleans, the full integer family, reals, exact decimals,
 UUIDs, temporals — calling directly into the native `hypercast` Rust core through
-`@convention(c)` function pointers, no shim layer. On Linux (glibc and musl) and
-WebAssembly the core is linked into your executable as a static library, so there is
-nothing to deploy beside it; on macOS and Windows it is a bundled shared library, opened on
-first use with `dlopen`/`dlsym` or `LoadLibraryW`/`GetProcAddress`. Which one, and for
-which architecture, is decided at compile time.
+`@convention(c)` function pointers, no shim layer. On every platform it supports — Linux
+(glibc and musl), macOS, Windows and WebAssembly — the core is linked into your executable
+as a static library, so there is nothing to load at run time and nothing to deploy beside
+it.
 
 ```swift
 switch try Cast.i32("(1,234)", format: .invariant) {
@@ -33,13 +32,10 @@ the core's 96-bit, 28-place decimal produces exactly — `0.1` is one tenth, `50
 `0.5`, and excess precision is `outOfRange` rather than rounded. The core's result is
 canonical — exact trailing fraction zeros are trimmed, so `1.10`, `1.1` and `1.1000` are all
 magnitude 11 at scale 1 — which is exactly what `Decimal` represents, so nothing is lost
-between the core and the presentation. `Cast.nativeVersion()` reports the loaded
-library's own `major.minor.patch` (`hypercast_version`), so a caller can prove the binary
-it resolved is the one this binding was built against before the first cast; `Cast.isAvailable`
-is the non-throwing form of the same question — the probe a consumer with a fallback gates
-on, so a door's `throws` (which only ever means "the library couldn't load", and is always a
-`NativeLibraryError` — see [Loading and deployment](#loading-and-deployment)) never has to be
-caught at a call site. A caller that is itself generic over its target uses
+between the core and the presentation. `Cast.nativeVersion()` reports the linked core's
+own `major.minor.patch` (`hypercast_version`), so a caller can prove the binary it resolved
+is the one this binding was built against before the first cast — see
+[Linking and deployment](#linking-and-deployment). A caller that is itself generic over its target uses
 `Cast.numeric<T>(_:format:)`, resolved statically over the closed `NumericCastTarget` set —
 exactly the eleven numeric targets (`Int8`…`Int64`, `UInt8`…`UInt64`, `Float`, `Double`,
 `Decimal`), each routed to its own door; any other `T` is a compile error, not a runtime
@@ -80,9 +76,9 @@ func column<T: NumericCastTarget>(_ cells: [String], as _: T.Type, format: NumFo
 
    **What makes the doors this cheap** is the carrier, not the parse: nothing is allocated
    around the call. The input crosses as a view of the string's own UTF-8 (`withUTF8`), the
-   scratch is a tuple of fixed-width integers on the stack, and the library handle (one
-   function pointer per native export) is a class reference rather than a struct copied out
-   of a `Result` per call.
+   scratch is a tuple of fixed-width integers on the stack, and the call is a direct call to
+   a linked-in symbol through a table of function pointers held as a class reference, not a
+   struct copied per call.
 
    Two things to read straight: `Int(String)` at 7 ns is still faster than the invariant
    integer door, as it should be — a stdlib integer parse with no grouping, no parens and
@@ -96,9 +92,9 @@ func column<T: NumericCastTarget>(_ cells: [String], as _: T.Type, format: NumFo
    `1.234.567,89` under `.detect` is 75 ns against 52 ns for the same text under a declared
    eurozone format.
 
-**The honest trade-off:** a native dependency — linked in on Linux and WebAssembly, carried
-as a package resource and `dlopen`ed at first use on macOS and Windows — and a call across
-the C ABI per cast. For plain invariant integers, `Int32("...")` is the reasonable choice.
+**The honest trade-off:** a native dependency — a prebuilt static library per platform,
+linked into your executable — and a call across the C ABI per cast. For plain invariant
+integers, `Int32("...")` is the reasonable choice.
 (Benchmark forensics worth knowing: the first Swift tape was pure measurement-floor
 quantization until `.kilo` scaling amortized it — receipts include their own archaeology.)
 
@@ -135,67 +131,41 @@ try Cast.i32("-$5", format: enUs)                                  // .success(-
 
 - **Swift 6.2 or later.** The manifests declare `swift-tools-version:6.2`: the first release
   whose package manager can link a static library as a binary target (SE-0482), which is how
-  the core reaches Linux and WebAssembly. CI runs `swift test` on Swift 6.4 on every
-  platform, and runs Linux (glibc and musl) and WebAssembly again on 6.2 in Swift's own
-  containers. macOS and Windows are tested on 6.4 only.
+  the core reaches every platform. CI runs `swift test` on Swift 6.4 on every platform, and
+  runs Linux (glibc and musl) and WebAssembly again on 6.2 in Swift's own containers. macOS
+  and Windows are tested on 6.4 only.
 - **Platforms.** Linux on glibc and on musl (Swift's static Linux SDK), macOS and Windows,
-  each on x86_64 and arm64, and WebAssembly (`wasm32-unknown-wasip1`). macOS 13 is the declared deployment floor, for `Duration`.
+  each on x86_64 and arm64, and WebAssembly (`wasm32-unknown-wasip1`), in WASI hosts and in
+  the browser. macOS 13 is the declared deployment floor, for `Duration`.
 - **Not supported: everything else.** iOS, tvOS, watchOS, visionOS, Android, and any other
-  architecture on the supported systems have no native build here and stop at an `#error`
-  — at compile time, rather than being handed a library that can't load.
+  architecture on the supported systems have no prebuilt core here, so the build stops at
+  compile time with no `HyperCastCore` module (Swift Build first warns that the artifact
+  bundle has no matching variant) — never at run time.
 
-## Loading and deployment
+## Linking and deployment
 
-How the native core gets into your program depends on the target, and on most of them there
-is nothing for you to do.
+There is nothing for you to do. The package declares the core as a SwiftPM binary target —
+one static library per triple, in `HyperCastCore.artifactbundle` — and SwiftPM links the one
+for your target into your executable. There is no shared library to find at run time, no
+resource bundle, and nothing to deploy beside the binary: a multi-stage Dockerfile that
+copies only the executable works, so does a fully static build with
+`swift build --swift-sdk x86_64-swift-linux-musl`, and so does copying a macOS or Windows
+executable on its own. Each triple's archive is 130–180 KB, and the linker keeps only what
+your executable reaches.
 
-**Linux and WebAssembly: linked in.** The package declares the core as a SwiftPM binary
-target — one static library per triple, in `HyperCastCore.artifactbundle` — and SwiftPM links
-the one for your target into your executable. There is no shared library to find at run
-time and nothing to deploy beside the binary: a multi-stage Dockerfile that copies only the
-executable works, and so does a fully static build with
-`swift build --swift-sdk x86_64-swift-linux-musl`. `Cast.isAvailable` is always `true`
-here.
+No door throws. Bad data was never thrown — it is a `Verdict`'s `Fault` — and the `throws`
+every door still carries is left from when macOS and Windows loaded a shared library that
+could fail to load, so existing `try` call sites keep compiling. `Cast.isAvailable` is
+always `true`, and the `NativeLibraryError` type is deprecated and has no cases, for the
+same reason: code that checks either still compiles.
 
-**macOS and Windows: loaded.** There the core is a shared library that travels as a SwiftPM
-resource. `swift build` stages `NativeLibs/` into a directory beside the built products,
-and the first call opens this platform's library straight out of it — nothing is extracted,
-copied or left behind in a temp directory. The directory is `HyperCast_HyperCast.bundle` on macOS,
-and on Windows with Swift 6.4 and later; on Windows with Swift 6.2 or 6.3 (or
-`--build-system native`) it is `HyperCast_HyperCast.resources`. The loader accepts either.
-
-**On those two platforms that directory has to ship with your executable.** A deployment
-that copies only the binary has no native library to load:
-
-```sh
-cp -R .build/release/MyTool .build/release/HyperCast_HyperCast.bundle /path/to/deploy/
-```
-
-The loader looks beside the executable first, then in the main bundle's resources, which is
-where an app bundle carries it. On the machine that built the package it also falls back to
-the package's own checkout, so an executable copied out of `.build` keeps working *there* —
-which is exactly why a missing directory tends to show up only after deployment. Test the
-deployed layout, not the build tree.
-
-When the library can't be found or loaded, nothing crashes. Every door throws
-`NativeLibraryError` — a public type, and the only thing a door ever throws, naming the path
-it looked for or the export it couldn't resolve — and `Cast.isAvailable` answers the same
-question without a `do`/`catch`:
-
-```swift
-guard Cast.isAvailable else {
-    return Int32(text)                          // your fallback
-}
-
-do {
-    return try Cast.i32(text, format: .invariant)
-} catch let error as NativeLibraryError {
-    // .openFailed(path:reason:) or .symbolNotFound(name:) — the library, never the data
-}
-```
-
-The load is attempted once per process and its outcome kept, so `isAvailable` costs nothing
-after the first answer, and a failed load throws the same error from every later call.
+On Swift 6.3 with `--build-system swiftbuild` (opt-in there), a package that depends on
+this one fails with `missing required module 'HyperCastCore'`: that release's Swift Build
+drops a binary target's module map when it is reached through a product
+([swift-build#1295](https://github.com/swiftlang/swift-build/pull/1295), fixed in 6.4).
+The default build system of every release from 6.2 on is unaffected, and so is 6.4's
+Swift Build (its default); 6.2's opt-in Swift Build predates static-library artifact
+bundles altogether.
 
 ## WebAssembly
 
@@ -212,8 +182,31 @@ The core is linked in as a static library — the same binary target Linux uses,
 The core needs neither a clock nor randomness, so it asks nothing of the host. CI runs the whole suite under WasmKit on Swift 6.4, and a smoke executable on 6.2, whose
 XCTest does not start under WASI.
 
+### In the browser
+
+What the WebAssembly SDK builds is a plain `wasm32-wasip1` command module (it imports only
+`wasi_snapshot_preview1`), so a browser runs it through a WASI shim — no JavaScriptKit and
+no change to the package. With [`@bjorn3/browser_wasi_shim`](https://github.com/bjorn3/browser_wasi_shim):
+
+```js
+import { WASI, File, OpenFile, ConsoleStdout } from "@bjorn3/browser_wasi_shim";
+
+const wasi = new WASI(["MyTool"], [], [
+  new OpenFile(new File([])),                       // stdin
+  ConsoleStdout.lineBuffered(console.log),          // stdout
+  ConsoleStdout.lineBuffered(console.error),        // stderr
+]);
+const { instance } = await WebAssembly.instantiateStreaming(
+  fetch("MyTool.wasm"), { wasi_snapshot_preview1: wasi.wasiImport });
+const exitCode = wasi.start(instance);
+```
+
+CI builds the smoke executable for WebAssembly on Swift 6.4 and runs it this way in headless
+Chrome on every PR, failing unless it exits 0. An executable that imports Foundation is
+large (tens of MB, most of it ICU data); `-c release` and `wasm-opt` bring that down.
+
 The other direction — running the core as wasm *inside* a native Swift process, the way the
-Java, Ruby, Python and Go bindings do — is not built: no wasm engine ships as a Swift
+Java binding does — is not built: no wasm engine ships as a Swift
 package with a stable API, and nothing here needs one, since every platform this binding
 supports has the core natively. The root README's
 [WebAssembly section](../README.md#webassembly) tracks both directions for every binding.
@@ -221,16 +214,15 @@ supports has the core natively. The root README's
 ## Verifying provenance
 
 Like PHP, there's no separate package registry to attest here — SwiftPM resolves a git tag
-directly against this repo. The native binaries the package carries — the shared libraries
-under `swift/Sources/HyperCast/NativeLibs/` and the static libraries under
-`swift/HyperCastCore.artifactbundle/`, both staged by `stage-native-binaries.yml` — each carry
-their own build-provenance attestation from `hyper-build-native.yml`, which physically lives
+directly against this repo. The native binaries the package carries — the static libraries
+under `swift/HyperCastCore.artifactbundle/`, staged by `stage-native-binaries.yml` — each
+carry their own build-provenance attestation from `hyper-build-native.yml`, which physically lives
 in `SkunkWerkx/.github` — so verifying needs `--signer-repo` alongside `--repo`, or `gh`
 reports a bare `verifying with issuer "sigstore.dev"` that reads like a bad signature but is
 only an identity mismatch:
 
 ```sh
-gh attestation verify swift/Sources/HyperCast/NativeLibs/osx-arm64/libhypercast.dylib \
+gh attestation verify swift/HyperCastCore.artifactbundle/arm64-apple-macosx/libhypercast.a \
   --repo SkunkWerkx/HyperCast --signer-repo SkunkWerkx/.github
 gh attestation verify swift/HyperCastCore.artifactbundle/x86_64-unknown-linux-gnu/libhypercast.a \
   --repo SkunkWerkx/HyperCast --signer-repo SkunkWerkx/.github
@@ -270,11 +262,11 @@ SwiftPM has no separate registry to publish to — `.package(url:from:)` resolve
 a git tag, which *is* the complete publish story here rather than a placeholder for one. It
 requires `Package.swift` at the repository root with no monorepo-subdirectory support, which
 is why [the root's own `Package.swift`](../Package.swift) exists, with its targets pointed at
-the real sources under `swift/` via `path:`. The native binaries — the shared libraries
-under `Sources/HyperCast/NativeLibs/{rid}/` and the static ones under
-`HyperCastCore.artifactbundle/{triple}/` — are committed straight to git for the same
-reason as the tag itself: SwiftPM has no packing step, so the tree at the resolved tag is
-what a consumer's build links or bundles.
+the real sources under `swift/` via `path:`. The native binaries — the static libraries
+under `HyperCastCore.artifactbundle/{triple}/` (`hypercast.lib` for the two Windows triples,
+`libhypercast.a` for the rest) — are committed straight to git for the same reason as the
+tag itself: SwiftPM has no packing step, so the tree at the resolved tag is what a
+consumer's build links.
 
 See [the repo root README](../README.md) for the full door table, the receipts, and the
 state of every other language binding.

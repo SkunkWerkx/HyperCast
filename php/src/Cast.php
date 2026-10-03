@@ -451,7 +451,7 @@ final class Cast
      *
      * The 1900 system contains a day that never existed: serial 60 is 1900-02-29, kept
      * deliberately because Lotus 1-2-3 wrongly treated 1900 as a leap year and Excel copied
-     * the bug for file compatibility. It is Malformed here — the same verdict date() gives
+     * the bug for file compatibility. It is OutOfRange here — the same verdict date() gives
      * the text "1900-02-29" — so every serial above it is shifted one day against a naive
      * count, which is the arithmetic hand-rolled conversions get wrong.
      *

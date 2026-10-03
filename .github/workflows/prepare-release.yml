@@ -75,9 +75,11 @@ jobs:
           # Regenerates Cargo.lock's own self-referential package entry to match the bump
           # above — cargo publish --locked (pack-crates in release.yml) fails on a mismatch.
           cargo check --manifest-path rust/Cargo.toml
-          # The fuzz crate path-depends on the core and carries its own lockfile, which
-          # nothing else regenerates (it sat at 0.1.0 through three releases).
+          # The fuzz and browser-test crates path-depend on the core and carry their own
+          # lockfiles, which nothing else regenerates (fuzz's sat at 0.1.0 through three
+          # releases).
           cargo update --manifest-path rust/fuzz/Cargo.toml --package hypercast
+          cargo update --manifest-path rust/browser-test/Cargo.toml --package hypercast
 
       - name: Show what changed
         run: git diff --stat

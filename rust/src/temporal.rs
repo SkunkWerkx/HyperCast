@@ -15,6 +15,7 @@
 use crate::integer::char_len_at;
 use crate::verdict::{CivilDateTime, Date, Duration, Fault, Timestamp, trim};
 use core::num::NonZero;
+use core::ops::RangeInclusive;
 
 /// `0001-01-01T00:00:00Z` — the floor of the protobuf timestamp window.
 pub const MIN_TIMESTAMP_SECONDS: i64 = -62_135_596_800;
@@ -175,9 +176,15 @@ fn malformed_at(text: &[u8], start: usize, at: usize, len: usize) -> Fault {
     }
 }
 
-/// Parses the strict date prefix `yyyy-MM-dd` at the head of `text`, faulting into the
-/// caller's coordinates. Year 0000 is well-formed but unrepresentable ⇒ `OutOfRange`;
-/// an impossible month or day ⇒ `Malformed` at its digits.
+/// Where the fields of a strict `yyyy-MM-dd` date sit: offset and length of the year, the
+/// month and the day, relative to the date's first byte.
+const ISO_DATE_SPANS: [(usize, usize); 3] = [(0, 4), (5, 2), (8, 2)];
+
+/// Reads the strict date prefix `yyyy-MM-dd` at the head of `text` for its shape only —
+/// four, two and two digits, hyphens between — faulting `Malformed` into the caller's
+/// coordinates at the first piece that is wrong. The values are not checked here:
+/// [`check_date`] does that once the caller has read the rest of its input, so a shape
+/// fault anywhere in the text is reported ahead of an impossible value.
 fn read_date(text: &[u8], start: usize) -> Result<(u32, u32, u32), Fault> {
     let year = read4(text, 0).ok_or_else(|| Fault::malformed(start, text.len().min(4)))?;
     if text.get(4) != Some(&b'-') {
@@ -188,20 +195,36 @@ fn read_date(text: &[u8], start: usize) -> Result<(u32, u32, u32), Fault> {
         return Err(Fault::malformed(start + 7, 1));
     }
     let day = read2(text, 8).ok_or(Fault::malformed(start + 8, 2))?;
-    if year == 0 {
-        return Err(Fault::out_of_range(start, 10));
-    }
-    if !(1..=12).contains(&month) {
-        return Err(Fault::malformed(start + 5, 2));
-    }
-    if day == 0 || day > days_in_month(year as i64, month) {
-        return Err(Fault::malformed(start + 8, 2));
-    }
     Ok((year, month, day))
 }
 
+/// Checks that a well-formed date names a real day. `spans` are the year, month and day
+/// fields' offsets and lengths within the trimmed text. Year 0000, a month outside 1–12 or
+/// a day the month does not have ⇒ `OutOfRange` at that field's digits: the text is shaped
+/// like a date, and names one that does not exist.
+fn check_date(
+    year: u32,
+    month: u32,
+    day: u32,
+    spans: [(usize, usize); 3],
+    start: usize,
+) -> Result<Date, Fault> {
+    let fault = |(at, len): (usize, usize)| Fault::out_of_range(start + at, len);
+    if year == 0 {
+        return Err(fault(spans[0]));
+    }
+    if !(1..=12).contains(&month) {
+        return Err(fault(spans[1]));
+    }
+    if day == 0 || day > days_in_month(i64::from(year), month) {
+        return Err(fault(spans[2]));
+    }
+    Ok(Date { year: year as u16, month: month as u8, day: day as u8 })
+}
+
 /// Casts a strict ISO 8601 `yyyy-MM-dd` calendar date. Empty ⇒ `Empty`; anything
-/// time-bearing or non-ISO ⇒ `Malformed`; year 0000 ⇒ `OutOfRange`.
+/// time-bearing or non-ISO ⇒ `Malformed`; year 0000, month 00 or 13+, or a day the month
+/// does not have (`2026-02-29`) ⇒ `OutOfRange` at that field.
 pub fn cast_date(input: impl AsRef<[u8]>) -> Result<Date, Fault> {
     let input = input.as_ref();
     let (text, start) = trim(input);
@@ -212,7 +235,7 @@ pub fn cast_date(input: impl AsRef<[u8]>) -> Result<Date, Fault> {
         return Err(Fault::malformed(start, text.len()));
     }
     let (year, month, day) = read_date(text, start)?;
-    Ok(Date { year: year as u16, month: month as u8, day: day as u8 })
+    check_date(year, month, day, ISO_DATE_SPANS, start)
 }
 
 /// The caller-declared field order of a separated calendar date. There is no guessing —
@@ -244,10 +267,29 @@ fn read_date_field(text: &[u8], at: usize, start: usize) -> Result<(u32, usize),
     Ok((value as u32, after))
 }
 
-/// Parses a separated calendar date at the head of `text` under the declared order,
-/// returning the [`Date`] and the index after it. Shared by [`cast_date_ordered`] (which
-/// then demands end-of-input) and [`cast_datetime`] (which continues into the time part).
-fn read_ordered_date(text: &[u8], start: usize, order: DateOrder) -> Result<(Date, usize), Fault> {
+/// A separated date whose shape [`read_ordered_date`] has accepted, its fields put in
+/// year-month-day order with their spans, not yet checked by [`check_date`].
+struct OrderedDate {
+    fields: [u32; 3],
+    spans: [(usize, usize); 3],
+}
+
+impl OrderedDate {
+    fn check(&self, start: usize) -> Result<Date, Fault> {
+        let [year, month, day] = self.fields;
+        check_date(year, month, day, self.spans, start)
+    }
+}
+
+/// Parses a separated calendar date at the head of `text` under the declared order, for
+/// its shape, returning it and the index after it. Shared by [`cast_date_ordered`] (which
+/// then demands end-of-input) and [`cast_datetime`] (which continues into the time part);
+/// each range-checks it once the rest of the input has been read.
+fn read_ordered_date(
+    text: &[u8],
+    start: usize,
+    order: DateOrder,
+) -> Result<(OrderedDate, usize), Fault> {
     let (first, first_end) = read_date_field(text, 0, start)?;
     let sep = match text.get(first_end) {
         Some(&sep @ (b'/' | b'-' | b'.')) => sep,
@@ -272,14 +314,14 @@ fn read_ordered_date(text: &[u8], start: usize, order: DateOrder) -> Result<(Dat
     // ambiguous forms ("1/7/2026" under a wrong declaration) still parse exactly as
     // declared, because no structure distinguishes them.
     let effective = if spans[0].1 == 4 { DateOrder::YearMonthDay } else { order };
-    let (fields, year_at, month_at, day_at) = match effective {
-        DateOrder::YearMonthDay => ([first, second, third], 0, 1, 2),
-        DateOrder::MonthDayYear => ([first, second, third], 2, 0, 1),
-        DateOrder::DayMonthYear => ([first, second, third], 2, 1, 0),
+    let fields = [first, second, third];
+    let (year_at, month_at, day_at) = match effective {
+        DateOrder::YearMonthDay => (0, 1, 2),
+        DateOrder::MonthDayYear => (2, 0, 1),
+        DateOrder::DayMonthYear => (2, 1, 0),
     };
     let field_fault = |at: usize| Fault::malformed(start + spans[at].0, spans[at].1);
 
-    let (year, month, day) = (fields[year_at], fields[month_at], fields[day_at]);
     // The year field is four digits wherever the order puts it; month and day are one or
     // two (a three-digit field faults at its own digits). A two-digit year would mean
     // century guessing, which this core never does.
@@ -292,16 +334,11 @@ fn read_ordered_date(text: &[u8], start: usize, order: DateOrder) -> Result<(Dat
     if spans[year_at].1 != 4 {
         return Err(field_fault(year_at));
     }
-    if year == 0 {
-        return Err(Fault::out_of_range(start, third_end));
-    }
-    if !(1..=12).contains(&month) {
-        return Err(field_fault(month_at));
-    }
-    if day == 0 || day > days_in_month(i64::from(year), month) {
-        return Err(field_fault(day_at));
-    }
-    Ok((Date { year: year as u16, month: month as u8, day: day as u8 }, third_end))
+    let date = OrderedDate {
+        fields: [fields[year_at], fields[month_at], fields[day_at]],
+        spans: [spans[year_at], spans[month_at], spans[day_at]],
+    };
+    Ok((date, third_end))
 }
 
 /// Casts a separated calendar date — three digit fields joined by one consistent separator
@@ -309,8 +346,8 @@ fn read_ordered_date(text: &[u8], start: usize, order: DateOrder) -> Result<(Dat
 /// four digits wherever the order puts it (two-digit years mean century guessing, which
 /// this core never does — `Malformed`); month and day take one or two; a four-digit
 /// *first* field is structurally a year, so year-first dates parse under any declared
-/// order. Empty ⇒ `Empty`; year 0000 ⇒ `OutOfRange`; an impossible month or day ⇒
-/// `Malformed` at its own digits.
+/// order. Empty ⇒ `Empty`; year 0000, an impossible month or a day the month does not
+/// have ⇒ `OutOfRange` at that field's own digits.
 pub fn cast_date_ordered(input: impl AsRef<[u8]>, order: DateOrder) -> Result<Date, Fault> {
     let input = input.as_ref();
     let (text, start) = trim(input);
@@ -321,41 +358,74 @@ pub fn cast_date_ordered(input: impl AsRef<[u8]>, order: DateOrder) -> Result<Da
     if end != text.len() {
         return Err(Fault::malformed(start + end, char_len_at(text, end)));
     }
-    Ok(date)
+    date.check(start)
 }
 
-/// Reads the civil time part of [`cast_datetime`] at `at`: `h[:mm[:ss[.f{1..9}]]]`, hour
-/// one or two digits, with an optional case-insensitive `AM`/`PM` marker (preceding space
-/// optional). With a marker the hour is `1..=12` (`12 AM` is midnight, `12 PM` noon);
-/// without one the time is 24-hour and minutes are mandatory (a bare trailing number is
-/// not a time). Returns nanos-since-midnight and the index after the time.
-fn read_civil_time(text: &[u8], at: usize, start: usize) -> Result<(u64, usize), Fault> {
-    let (hour_value, hour_digits, mut i) = read_digit_run(text, at, start)?;
+/// A time of day whose shape has been read, not yet range-checked: each field's value and
+/// where its digits sit in the trimmed text. Minutes or seconds the text leaves out read
+/// as zero, which is always in range, so their spans are never reported.
+struct Clock {
+    hour: u32,
+    minute: u32,
+    second: u32,
+    nanos: u32,
+    spans: [(usize, usize); 3],
+}
+
+impl Clock {
+    /// Checks the fields against a clock whose hours run over `hours`: an hour outside it,
+    /// a minute past 59 or a second past 59 ⇒ `OutOfRange` at that field's digits. A leap
+    /// second (`:60`) is out of range too: protobuf timestamps have no representation for
+    /// it, and a deterministic core doesn't smear.
+    fn check(&self, hours: RangeInclusive<u32>, start: usize) -> Result<(), Fault> {
+        let fault = |(at, len): (usize, usize)| Fault::out_of_range(start + at, len);
+        if !hours.contains(&self.hour) {
+            return Err(fault(self.spans[0]));
+        }
+        if self.minute > 59 {
+            return Err(fault(self.spans[1]));
+        }
+        if self.second > 59 {
+            return Err(fault(self.spans[2]));
+        }
+        Ok(())
+    }
+
+    /// Nanoseconds since midnight, with the (checked) hour given on the 24-hour clock.
+    fn nanos_of_day(&self, hour: u32) -> u64 {
+        let total = u64::from(hour) * 3_600 + u64::from(self.minute) * 60 + u64::from(self.second);
+        total * 1_000_000_000 + u64::from(self.nanos)
+    }
+}
+
+/// Reads the civil time part of [`cast_datetime`] at `at` for its shape:
+/// `h[:mm[:ss[.f{1..9}]]]`, hour one or two digits, with an optional case-insensitive
+/// `AM`/`PM` marker (preceding space optional). Without a marker minutes are mandatory (a
+/// bare trailing number is not a time). Returns the clock, the marker (`Some(true)` for
+/// PM) and the index after the time; [`civil_nanos`] range-checks them.
+fn read_civil_time(
+    text: &[u8],
+    at: usize,
+    start: usize,
+) -> Result<(Clock, Option<bool>, usize), Fault> {
+    let (hour, hour_digits, mut i) = read_digit_run(text, at, start)?;
     if hour_digits == 0 || hour_digits > 2 {
         return Err(malformed_at(text, start, at, hour_digits.max(1)));
     }
-    let hour_span = (at, hour_digits);
-    let mut hour = hour_value as u32;
-    let mut minute = 0;
-    let mut second = 0;
-    let mut nanos = 0;
+    let mut clock =
+        Clock { hour: hour as u32, minute: 0, second: 0, nanos: 0, spans: [(at, hour_digits); 3] };
     let mut has_minutes = false;
     if text.get(i) == Some(&b':') {
-        minute = read2(text, i + 1).ok_or_else(|| malformed_at(text, start, i + 1, 2))?;
-        if minute > 59 {
-            return Err(Fault::malformed(start + i + 1, 2));
-        }
+        clock.minute = read2(text, i + 1).ok_or_else(|| malformed_at(text, start, i + 1, 2))?;
+        clock.spans[1] = (i + 1, 2);
         has_minutes = true;
         i += 3;
         if text.get(i) == Some(&b':') {
-            second = read2(text, i + 1).ok_or_else(|| malformed_at(text, start, i + 1, 2))?;
-            // Leap seconds rejected, same as every other temporal door.
-            if second > 59 {
-                return Err(Fault::malformed(start + i + 1, 2));
-            }
+            clock.second = read2(text, i + 1).ok_or_else(|| malformed_at(text, start, i + 1, 2))?;
+            clock.spans[2] = (i + 1, 2);
             i += 3;
             let (fraction, after) = read_fraction(text, i, start)?;
-            nanos = fraction;
+            clock.nanos = fraction;
             i = after;
         }
     }
@@ -373,30 +443,28 @@ fn read_civil_time(text: &[u8], at: usize, start: usize) -> Result<(u64, usize),
         _ => None,
     };
     match marker {
+        Some(_) => i = meridiem_at + 2,
+        // A bare trailing number is only a time when a meridiem names it one.
+        None if !has_minutes => return Err(Fault::malformed(start + at, hour_digits)),
+        None => {}
+    }
+    Ok((clock, marker, i))
+}
+
+/// Range-checks a civil time and converts it to nanoseconds since midnight. With a marker
+/// the hour is `1..=12` (`12 AM` is midnight, `12 PM` noon); without one it is `0..=23`.
+fn civil_nanos(clock: &Clock, pm: Option<bool>, start: usize) -> Result<u64, Fault> {
+    let hour = match pm {
         Some(pm) => {
-            if !(1..=12).contains(&hour) {
-                return Err(Fault::malformed(start + hour_span.0, hour_span.1));
-            }
-            if hour == 12 {
-                hour = 0;
-            }
-            if pm {
-                hour += 12;
-            }
-            i = meridiem_at + 2;
+            clock.check(1..=12, start)?;
+            clock.hour % 12 + if pm { 12 } else { 0 }
         }
         None => {
-            if !has_minutes {
-                // A bare trailing number is only a time when a meridiem names it one.
-                return Err(Fault::malformed(start + hour_span.0, hour_span.1));
-            }
-            if hour > 23 {
-                return Err(Fault::malformed(start + hour_span.0, hour_span.1));
-            }
+            clock.check(0..=23, start)?;
+            clock.hour
         }
-    }
-    let total = u64::from(hour) * 3_600 + u64::from(minute) * 60 + u64::from(second);
-    Ok((total * 1_000_000_000 + u64::from(nanos), i))
+    };
+    Ok(clock.nanos_of_day(hour))
 }
 
 /// Casts a civil (wall-clock) date and time with **no zone** — the shape untrusted feeds
@@ -416,74 +484,67 @@ pub fn cast_datetime(input: impl AsRef<[u8]>, order: DateOrder) -> Result<CivilD
     }
     let (date, date_end) = read_ordered_date(text, start, order)?;
     match text.get(date_end) {
-        None => return Ok(CivilDateTime { date, nanos_of_day: 0 }),
+        None => return Ok(CivilDateTime { date: date.check(start)?, nanos_of_day: 0 }),
         Some(b' ' | b'T' | b't') => {}
         Some(_) => return Err(Fault::malformed(start + date_end, char_len_at(text, date_end))),
     }
-    let (nanos_of_day, end) = read_civil_time(text, date_end + 1, start)?;
+    let (clock, pm, end) = read_civil_time(text, date_end + 1, start)?;
     if end != text.len() {
         return Err(Fault::malformed(start + end, char_len_at(text, end)));
     }
-    Ok(CivilDateTime { date, nanos_of_day })
+    let date = date.check(start)?;
+    Ok(CivilDateTime { date, nanos_of_day: civil_nanos(&clock, pm, start)? })
 }
 
 /// Casts an ISO 8601 24-hour time-of-day — `HH:mm`, `HH:mm:ss`, or `HH:mm:ss.f{1..9}` —
-/// to nanoseconds since midnight. Midnight and `23:59:59.999999999` are both real clock
-/// readings, so there is no range failure on this door: empty ⇒ `Empty`, everything else
-/// wrong ⇒ `Malformed`.
+/// to nanoseconds since midnight, `00:00` through `23:59:59.999999999`. Empty ⇒ `Empty`;
+/// a well-formed hour past 23, minute past 59 or second past 59 (`24:00`, `15:04:60`) ⇒
+/// `OutOfRange` at that field; anything else wrong ⇒ `Malformed`.
 pub fn cast_time(input: impl AsRef<[u8]>) -> Result<u64, Fault> {
     let input = input.as_ref();
     let (text, start) = trim(input);
     if text.is_empty() {
         return Err(Fault::EMPTY);
     }
-    let (nanos, end) = read_time(text, 0, start)?;
+    let (clock, end) = read_time(text, 0, start)?;
     if end != text.len() {
         return Err(Fault::malformed(start + end, char_len_at(text, end)));
     }
-    Ok(nanos)
+    clock.check(0..=23, start)?;
+    Ok(clock.nanos_of_day(clock.hour))
 }
 
-/// Parses `HH:mm[:ss[.f{1..9}]]` at `at`, returning nanos-since-midnight and the index
-/// after the time.
-fn read_time(text: &[u8], at: usize, start: usize) -> Result<(u64, usize), Fault> {
+/// Parses `HH:mm[:ss[.f{1..9}]]` at `at` for its shape, returning the clock (not yet
+/// range-checked) and the index after the time.
+fn read_time(text: &[u8], at: usize, start: usize) -> Result<(Clock, usize), Fault> {
     let hour = read2(text, at)
         .ok_or_else(|| Fault::malformed(start + at, (text.len() - at).clamp(1, 2)))?;
-    if hour > 23 {
-        return Err(Fault::malformed(start + at, 2));
-    }
     if text.get(at + 2) != Some(&b':') {
         return Err(malformed_at(text, start, at + 2, 1));
     }
     let minute = read2(text, at + 3).ok_or_else(|| malformed_at(text, start, at + 3, 2))?;
-    if minute > 59 {
-        return Err(Fault::malformed(start + at + 3, 2));
-    }
-    let mut second = 0;
+    let mut clock =
+        Clock { hour, minute, second: 0, nanos: 0, spans: [(at, 2), (at + 3, 2), (at + 3, 2)] };
     let mut i = at + 5;
-    let mut nanos = 0;
     if text.get(i) == Some(&b':') {
-        second = read2(text, i + 1).ok_or_else(|| malformed_at(text, start, i + 1, 2))?;
-        // A leap second (:60) is deliberately rejected — protobuf timestamps have no
-        // representation for it, and a deterministic core doesn't smear.
-        if second > 59 {
-            return Err(Fault::malformed(start + i + 1, 2));
-        }
+        clock.second = read2(text, i + 1).ok_or_else(|| malformed_at(text, start, i + 1, 2))?;
+        clock.spans[2] = (i + 1, 2);
         i += 3;
         let (fraction, after) = read_fraction(text, i, start)?;
-        nanos = fraction;
+        clock.nanos = fraction;
         i = after;
     }
-    let total = u64::from(hour) * 3_600 + u64::from(minute) * 60 + u64::from(second);
-    Ok((total * 1_000_000_000 + u64::from(nanos), i))
+    Ok((clock, i))
 }
 
 /// Casts an RFC 3339 instant — `yyyy-MM-ddTHH:mm:ss[.f{1..9}](Z|±hh:mm)` — to a protobuf
 /// [`Timestamp`], normalized to UTC. The zone is mandatory (a zone-less or space-separated
 /// form is `Malformed`, Svartalfheim parity); `-00:00` is accepted as UTC; `T`/`Z` are
-/// case-insensitive; seconds are mandatory; `:60` leap seconds are `Malformed`. A
-/// well-formed instant outside the window (year 0000, or an offset pushing past an edge)
-/// ⇒ `OutOfRange` spanning the token.
+/// case-insensitive; seconds are mandatory. Every piece is checked for shape before any
+/// value is: a well-formed field that names nothing — year 0000, month 13, `02-30`, hour
+/// 24, a `:60` leap second, an offset of `+24:00` — ⇒ `OutOfRange` at that field, and an
+/// instant whose fields are all real but which falls outside the window (an offset pushing
+/// past an edge) ⇒ `OutOfRange` spanning the token.
 pub fn cast_timestamp(input: impl AsRef<[u8]>) -> Result<Timestamp, Fault> {
     let input = input.as_ref();
     let (text, start) = trim(input);
@@ -502,9 +563,10 @@ pub fn cast_timestamp(input: impl AsRef<[u8]>) -> Result<Timestamp, Fault> {
     if text.get(13) != Some(&b':') || text.get(16) != Some(&b':') {
         return Err(Fault::malformed(start + 11, text.len() - 11));
     }
-    let (nanos_of_day, after_time) = read_time(text, 11, start)?;
+    let (clock, after_time) = read_time(text, 11, start)?;
 
-    let offset_seconds = match text.get(after_time) {
+    // The zone, for shape: `None` is UTC, `Some` the sign, hours and minutes of an offset.
+    let offset = match text.get(after_time) {
         None => {
             // Zone-less — an ambiguous instant, rejected whole.
             return Err(Fault::malformed(start, text.len()));
@@ -516,7 +578,7 @@ pub fn cast_timestamp(input: impl AsRef<[u8]>) -> Result<Timestamp, Fault> {
                     char_len_at(text, after_time + 1),
                 ));
             }
-            0i64
+            None
         }
         Some(&sign @ (b'+' | b'-')) => {
             let hours = read2(text, after_time + 1)
@@ -526,26 +588,43 @@ pub fn cast_timestamp(input: impl AsRef<[u8]>) -> Result<Timestamp, Fault> {
             }
             let minutes = read2(text, after_time + 4)
                 .ok_or_else(|| malformed_at(text, start, after_time + 4, 2))?;
-            if hours > 23 || minutes > 59 {
-                return Err(Fault::malformed(start + after_time + 1, 5));
-            }
             if after_time + 6 != text.len() {
                 return Err(Fault::malformed(
                     start + after_time + 6,
                     char_len_at(text, after_time + 6),
                 ));
             }
-            let magnitude = i64::from(hours) * 3_600 + i64::from(minutes) * 60;
-            if sign == b'-' { -magnitude } else { magnitude }
+            Some((sign, hours, minutes))
         }
         Some(_) => {
             return Err(Fault::malformed(start + after_time, char_len_at(text, after_time)));
         }
     };
 
+    // Every piece is well-formed; now each value, in reading order.
+    let date = check_date(year, month, day, ISO_DATE_SPANS, start)?;
+    clock.check(0..=23, start)?;
+    let offset_seconds = match offset {
+        None => 0i64,
+        Some((sign, hours, minutes)) => {
+            if hours > 23 {
+                return Err(Fault::out_of_range(start + after_time + 1, 2));
+            }
+            if minutes > 59 {
+                return Err(Fault::out_of_range(start + after_time + 4, 2));
+            }
+            let magnitude = i64::from(hours) * 3_600 + i64::from(minutes) * 60;
+            if sign == b'-' { -magnitude } else { magnitude }
+        }
+    };
+
+    let nanos_of_day = clock.nanos_of_day(clock.hour);
     let day_seconds = (nanos_of_day / 1_000_000_000) as i64;
     let nanos = (nanos_of_day % 1_000_000_000) as i32;
-    let seconds = days_from_civil(year as i64, month, day) * 86_400 + day_seconds - offset_seconds;
+    let seconds = days_from_civil(i64::from(date.year), u32::from(date.month), u32::from(date.day))
+        * 86_400
+        + day_seconds
+        - offset_seconds;
     if !(MIN_TIMESTAMP_SECONDS..=MAX_TIMESTAMP_SECONDS).contains(&seconds) {
         return Err(Fault::out_of_range(start, text.len()));
     }
@@ -622,9 +701,9 @@ pub fn cast_unix(input: impl AsRef<[u8]>, precision: UnixPrecision) -> Result<Ti
 ///
 /// **The 1900 system contains a day that never existed.** Serial `60` is `1900-02-29`, kept
 /// deliberately since Lotus 1-2-3 wrongly treated 1900 as a leap year and Excel copied the
-/// bug for file compatibility. It is rejected as `Malformed` here — the same verdict
-/// [`cast_date`] already gives the text `1900-02-29`, so both doors agree that day is not a
-/// date. Every serial above it is therefore shifted one day against a naive count, which is
+/// bug for file compatibility. It is rejected as `OutOfRange` here — the same verdict
+/// [`cast_date`] already gives the text `1900-02-29`, so both doors agree that day does not
+/// exist. Every serial above it is therefore shifted one day against a naive count, which is
 /// the arithmetic hand-rolled conversions get wrong.
 ///
 /// Non-numeric text, a bare or trailing `.`, or a sign ⇒ `Malformed`; a serial below the
@@ -698,7 +777,7 @@ pub fn cast_excel_serial(input: impl AsRef<[u8]>, epoch: ExcelEpoch) -> Result<T
         ExcelEpoch::Y1900 => match days.cmp(&EXCEL_1900_PHANTOM_SERIAL) {
             core::cmp::Ordering::Less => anchor + days + 1,
             core::cmp::Ordering::Equal => {
-                return Err(Fault::malformed(start, text.len()));
+                return Err(Fault::out_of_range(start, text.len()));
             }
             core::cmp::Ordering::Greater => anchor + days,
         },
@@ -839,7 +918,9 @@ fn parse_iso_duration(text: &[u8], start: usize) -> Result<i128, Fault> {
 
 /// The invariant colon form `[-][d.]hh:mm[:ss[.f{1..9}]]` — hours 0–23 (a larger total
 /// needs the day part), minutes and seconds 0–59, each 1–2 digits, .NET's invariant
-/// `TimeSpan` profile with the fraction widened to nanos.
+/// `TimeSpan` profile with the fraction widened to nanos. Shape first, as everywhere: a
+/// well-formed field past its range (`25:00:00`, `01:60:00`) ⇒ `OutOfRange` at its digits,
+/// where .NET throws `OverflowException`.
 fn parse_colon_duration(text: &[u8], start: usize) -> Result<i128, Fault> {
     let mut i = 0;
     let negative = text[0] == b'-';
@@ -856,6 +937,7 @@ fn parse_colon_duration(text: &[u8], start: usize) -> Result<i128, Fault> {
 
     let mut days: i128 = 0;
     let hours: i128;
+    let mut hour_span = (after_first - first_digits, first_digits);
     if text.get(i) == Some(&b'.') {
         days = first;
         i += 1;
@@ -864,15 +946,13 @@ fn parse_colon_duration(text: &[u8], start: usize) -> Result<i128, Fault> {
             return Err(malformed_at(text, start, i, (after_hours - i).max(1)));
         }
         hours = h;
+        hour_span = (i, h_digits);
         i = after_hours;
     } else {
         if first_digits > 2 {
             return Err(Fault::malformed(start + if negative { 1 } else { 0 }, first_digits));
         }
         hours = first;
-    }
-    if hours > 23 {
-        return Err(Fault::malformed(start, text.len()));
     }
 
     if text.get(i) != Some(&b':') {
@@ -881,20 +961,23 @@ fn parse_colon_duration(text: &[u8], start: usize) -> Result<i128, Fault> {
     }
     i += 1;
     let (minutes, m_digits, after_minutes) = read_digit_run(text, i, start)?;
-    if m_digits == 0 || m_digits > 2 || minutes > 59 {
+    if m_digits == 0 || m_digits > 2 {
         return Err(malformed_at(text, start, i, (after_minutes - i).max(1)));
     }
+    let minute_span = (i, m_digits);
     i = after_minutes;
 
     let mut seconds: i128 = 0;
+    let mut second_span = minute_span;
     let mut fraction_nanos: i128 = 0;
     if text.get(i) == Some(&b':') {
         i += 1;
         let (s, s_digits, after_seconds) = read_digit_run(text, i, start)?;
-        if s_digits == 0 || s_digits > 2 || s > 59 {
+        if s_digits == 0 || s_digits > 2 {
             return Err(malformed_at(text, start, i, (after_seconds - i).max(1)));
         }
         seconds = s;
+        second_span = (i, s_digits);
         i = after_seconds;
         let (nanos, after_fraction) = read_fraction_marked(text, i, start, b".,")?;
         fraction_nanos = nanos as i128;
@@ -902,6 +985,13 @@ fn parse_colon_duration(text: &[u8], start: usize) -> Result<i128, Fault> {
     }
     if i != text.len() {
         return Err(Fault::malformed(start + i, char_len_at(text, i)));
+    }
+    for (value, (at, len), max) in
+        [(hours, hour_span, 23), (minutes, minute_span, 59), (seconds, second_span, 59)]
+    {
+        if value > max {
+            return Err(Fault::out_of_range(start + at, len));
+        }
     }
 
     let total = ((days * 86_400 + hours * 3_600 + minutes * 60 + seconds) * NANOS_PER_SECOND)

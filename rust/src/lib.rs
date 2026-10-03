@@ -631,12 +631,20 @@ mod tests {
 
     #[test]
     fn timestamp_rejects_impossible_calendar_and_clock_readings() {
-        assert_eq!(reason(cast_timestamp(b"2026-02-29T00:00:00Z")), Reason::Malformed);
+        // Well-formed fields that name nothing are out of range, at the field.
+        assert_eq!(cast_timestamp(b"2026-02-29T00:00:00Z"), Err(Fault::out_of_range(8, 2)));
         assert!(cast_timestamp(b"2024-02-29T00:00:00Z").is_ok());
-        assert_eq!(reason(cast_timestamp(b"2026-13-01T00:00:00Z")), Reason::Malformed);
-        assert_eq!(reason(cast_timestamp(b"2026-01-02T24:00:00Z")), Reason::Malformed);
+        assert_eq!(cast_timestamp(b"2026-13-01T00:00:00Z"), Err(Fault::out_of_range(5, 2)));
+        assert_eq!(cast_timestamp(b"0000-01-01T00:00:00Z"), Err(Fault::out_of_range(0, 4)));
+        assert_eq!(cast_timestamp(b"2026-01-02T24:00:00Z"), Err(Fault::out_of_range(11, 2)));
+        assert_eq!(cast_timestamp(b"2026-01-02T15:60:00Z"), Err(Fault::out_of_range(14, 2)));
         // Leap seconds have no protobuf representation; a deterministic core doesn't smear.
-        assert_eq!(reason(cast_timestamp(b"2016-12-31T23:59:60Z")), Reason::Malformed);
+        assert_eq!(cast_timestamp(b"2016-12-31T23:59:60Z"), Err(Fault::out_of_range(17, 2)));
+        assert_eq!(cast_timestamp(b"2026-01-02T15:04:05+24:00"), Err(Fault::out_of_range(20, 2)));
+        assert_eq!(cast_timestamp(b"2026-01-02T15:04:05+05:60"), Err(Fault::out_of_range(23, 2)));
+        // Shape is checked across the whole text first: the stray `x` is reported, not the
+        // month that would also be wrong.
+        assert_eq!(cast_timestamp(b"2026-13-01T00:00:00x"), Err(Fault::malformed(19, 1)));
     }
 
     #[test]
@@ -717,16 +725,16 @@ mod tests {
     /// are consecutive real days one 86,400-second step apart despite the gap in serials.
     #[test]
     fn excel_serial_rejects_the_phantom_leap_day_and_shifts_everything_after_it() {
-        assert_eq!(reason(cast_excel_serial(b"60", ExcelEpoch::Y1900)), Reason::Malformed);
+        assert_eq!(reason(cast_excel_serial(b"60", ExcelEpoch::Y1900)), Reason::OutOfRange);
 
         let feb28 = cast_excel_serial(b"59", ExcelEpoch::Y1900).unwrap().seconds;
         let mar01 = cast_excel_serial(b"61", ExcelEpoch::Y1900).unwrap().seconds;
         assert_eq!(mar01 - feb28, 86_400, "59 and 61 are adjacent real days");
 
-        // The same date reached through the text door, which already calls 1900-02-29
-        // malformed — the two doors agree that day does not exist.
+        // The same date reached through the text door, which calls 1900-02-29 out of range
+        // too — the two doors agree that day does not exist.
         assert_eq!(cast_date(b"1900-02-28"), Ok(Date { year: 1900, month: 2, day: 28 }));
-        assert_eq!(reason(cast_date(b"1900-02-29")), Reason::Malformed);
+        assert_eq!(reason(cast_date(b"1900-02-29")), Reason::OutOfRange);
 
         // 1904 has no phantom: its serial 60 is an ordinary day.
         assert!(cast_excel_serial(b"60", ExcelEpoch::Y1904).is_ok());
@@ -786,13 +794,24 @@ mod tests {
             "2026-01-02T00:00:00",
             "2026/01/02",
             "garbage",
-            "2026-02-29",
-            "2026-00-01",
-            "2026-01-00",
+            "2026-1x-01",
+            "2026-001-01",
+            "0000-1x-01",
         ] {
             assert_eq!(reason(cast_date(text.as_bytes())), Reason::Malformed, "{text}");
         }
-        assert_eq!(reason(cast_date(b"0000-01-01")), Reason::OutOfRange);
+        // Shaped like a date but naming none: out of range, at the field that is wrong.
+        for (text, at) in [
+            ("0000-01-01", (0, 4)),
+            ("2026-00-01", (5, 2)),
+            ("2026-13-01", (5, 2)),
+            ("2026-01-00", (8, 2)),
+            ("2026-01-32", (8, 2)),
+            ("2026-02-29", (8, 2)),
+            ("1900-02-29", (8, 2)),
+        ] {
+            assert_eq!(cast_date(text.as_bytes()), Err(Fault::out_of_range(at.0, at.1)), "{text}");
+        }
         assert_eq!(reason(cast_date(b"")), Reason::Empty);
     }
 
@@ -831,14 +850,14 @@ mod tests {
             cast_date_ordered(b"2026/1/7", DateOrder::MonthDayYear),
             Ok(Date { year: 2026, month: 1, day: 7 })
         );
-        // 13 can only be a day — valid day-first, malformed month-first, span on the field.
+        // 13 can only be a day — valid day-first, out of range month-first, span on the field.
         assert_eq!(
             cast_date_ordered(b"13/1/2026", DateOrder::DayMonthYear),
             Ok(Date { year: 2026, month: 1, day: 13 })
         );
         assert_eq!(
-            reason(cast_date_ordered(b"13/1/2026", DateOrder::MonthDayYear)),
-            Reason::Malformed
+            cast_date_ordered(b"13/1/2026", DateOrder::MonthDayYear),
+            Err(Fault::out_of_range(0, 2))
         );
         // Real calendar, same as the strict door.
         assert_eq!(
@@ -846,8 +865,13 @@ mod tests {
             Ok(Date { year: 2024, month: 2, day: 29 })
         );
         assert_eq!(
-            reason(cast_date_ordered(b"29/2/2026", DateOrder::DayMonthYear)),
-            Reason::Malformed
+            cast_date_ordered(b"29/2/2026", DateOrder::DayMonthYear),
+            Err(Fault::out_of_range(0, 2))
+        );
+        // Year 0000 points at the year field wherever the order puts it.
+        assert_eq!(
+            cast_date_ordered(b"1/7/0000", DateOrder::MonthDayYear),
+            Err(Fault::out_of_range(4, 4))
         );
     }
 
@@ -931,12 +955,9 @@ mod tests {
 
     #[test]
     fn datetime_rejects_what_names_no_civil_time() {
-        // A meridiem hour past 12, a 24-hour hour past 23, a bare trailing number, and a
-        // zone suffix (this door reads no zone and invents none — RFC 3339 instants go
-        // through cast_timestamp).
+        // A bare trailing number and a zone suffix (this door reads no zone and invents
+        // none — RFC 3339 instants go through cast_timestamp).
         for text in [
-            "1/7/2026 13:04 PM",
-            "1/7/2026 25:04",
             "1/7/2026 3",
             "1/7/2026 3:04 XM",
             "1/7/2026 3:04 PM +05:00",
@@ -949,9 +970,27 @@ mod tests {
                 "{text}"
             );
         }
+        // Well-formed fields that name nothing: a meridiem hour outside 1–12, a 24-hour hour
+        // past 23, a minute or second past 59, year 0000 — out of range, at the field.
+        for (text, at) in [
+            ("1/7/2026 13:04 PM", (9, 2)),
+            ("1/7/2026 0 AM", (9, 1)),
+            ("1/7/2026 25:04", (9, 2)),
+            ("1/7/2026 3:60 PM", (11, 2)),
+            ("1/7/2026 3:04:60", (14, 2)),
+            ("1/7/0000 3:04 PM", (4, 4)),
+        ] {
+            assert_eq!(
+                cast_datetime(text.as_bytes(), DateOrder::MonthDayYear),
+                Err(Fault::out_of_range(at.0, at.1)),
+                "{text}"
+            );
+        }
+        // Shape is checked across the whole text first: the zone suffix is reported, not
+        // the hour that would also be wrong.
         assert_eq!(
-            reason(cast_datetime(b"1/7/0000 3:04 PM", DateOrder::MonthDayYear)),
-            Reason::OutOfRange
+            reason(cast_datetime(b"1/7/2026 25:04Z", DateOrder::MonthDayYear)),
+            Reason::Malformed
         );
         assert_eq!(reason(cast_datetime(b"", DateOrder::MonthDayYear)), Reason::Empty);
     }
@@ -969,8 +1008,13 @@ mod tests {
 
     #[test]
     fn time_rejects_non_iso_readings() {
-        for text in ["3:04:05 PM", "25:00", "noon", "15:60", "15:04:60", "15:04:05.0000000001"] {
+        for text in ["3:04:05 PM", "noon", "1:04", "15:04:05.0000000001", "25:00x"] {
             assert_eq!(reason(cast_time(text.as_bytes())), Reason::Malformed, "{text}");
+        }
+        for (text, at) in
+            [("24:00", (0, 2)), ("25:00", (0, 2)), ("15:60", (3, 2)), ("15:04:60", (6, 2))]
+        {
+            assert_eq!(cast_time(text.as_bytes()), Err(Fault::out_of_range(at.0, at.1)), "{text}");
         }
         assert_eq!(reason(cast_time(b"")), Reason::Empty);
     }
@@ -1037,7 +1081,10 @@ mod tests {
 
     #[test]
     fn duration_colon_hours_cap_at_23_without_a_day_part() {
-        assert_eq!(reason(cast_duration(b"25:00:00")), Reason::Malformed);
+        assert_eq!(cast_duration(b"25:00:00"), Err(Fault::out_of_range(0, 2)));
+        assert_eq!(cast_duration(b"-1.24:00:00"), Err(Fault::out_of_range(3, 2)));
+        assert_eq!(cast_duration(b"01:60:00"), Err(Fault::out_of_range(3, 2)));
+        assert_eq!(cast_duration(b"01:30:60"), Err(Fault::out_of_range(6, 2)));
         assert_eq!(cast_duration(b"1.01:00:00"), Ok(Duration { seconds: 90_000, nanos: 0 }));
     }
 

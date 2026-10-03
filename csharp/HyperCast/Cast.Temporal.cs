@@ -116,7 +116,7 @@ public static partial class Cast
 	/// <para>
 	/// The 1900 system contains a day that never existed: serial <c>60</c> is 1900-02-29,
 	/// kept deliberately because Lotus 1-2-3 wrongly treated 1900 as a leap year and Excel
-	/// copied the bug for file compatibility. It is <see cref="CastFailure.Malformed"/>
+	/// copied the bug for file compatibility. It is <see cref="CastFailure.OutOfRange"/>
 	/// here — the same verdict <see cref="Date(ReadOnlySpan{byte})"/> gives the text
 	/// <c>1900-02-29</c> — so every serial above it is shifted one day against a naive
 	/// count, which is the arithmetic hand-rolled conversions get wrong.
@@ -155,8 +155,9 @@ public static partial class Cast
 
 	/// <summary>
 	/// Casts a strict ISO 8601 <c>yyyy-MM-dd</c> calendar date to a <see cref="DateOnly"/>.
-	/// Anything time-bearing or non-ISO is <see cref="CastFailure.Malformed"/>; year 0000 is
-	/// <see cref="CastFailure.OutOfRange"/>.
+	/// Anything time-bearing or non-ISO is <see cref="CastFailure.Malformed"/>; year 0000,
+	/// month 00 or 13+, or a day the month does not have is
+	/// <see cref="CastFailure.OutOfRange"/>, at that field.
 	/// </summary>
 	/// <param name="utf8">The raw scalar text as UTF-8 bytes.</param>
 	public static unsafe Verdict<DateOnly> Date(ReadOnlySpan<byte> utf8)
@@ -278,8 +279,9 @@ public static partial class Cast
 
 	/// <summary>
 	/// Casts an ISO 8601 24-hour time-of-day — <c>HH:mm</c>, <c>HH:mm:ss</c>, or
-	/// <c>HH:mm:ss.f{1..9}</c> — to a <see cref="TimeOnly"/>. Midnight and
-	/// <c>23:59:59.999…</c> are real clock readings, so this door has no range failure.
+	/// <c>HH:mm:ss.f{1..9}</c> — to a <see cref="TimeOnly"/>, <c>00:00</c> through
+	/// <c>23:59:59.999…</c>. A well-formed hour past 23 or minute or second past 59
+	/// (<c>24:00</c>, <c>15:04:60</c>) is <see cref="CastFailure.OutOfRange"/>, at that field.
 	/// Sub-tick nanoseconds truncate.
 	/// </summary>
 	/// <param name="utf8">The raw scalar text as UTF-8 bytes.</param>

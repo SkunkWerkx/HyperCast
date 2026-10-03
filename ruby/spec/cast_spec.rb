@@ -118,10 +118,25 @@ RSpec.describe HyperCast do
     script = "HyperCast::Runtime.singleton_class.define_method(:library_path) { nil }; " \
              "print HyperCast.available?; print ' '; " \
              "begin; HyperCast.i32('1', HyperCast::NumFormat::INVARIANT); rescue LoadError; print 'raised'; end"
-    out, status = Open3.capture2({ "HYPERCAST_PURE" => "1", "HYPERCAST_WASM" => nil },
+    out, status = Open3.capture2({ "HYPERCAST_PURE" => "1" },
                                  RbConfig.ruby, "-I", lib, "-r", "hypercast", "-e", script)
     expect(status).to be_success
     expect(out).to eq("false raised")
+  end
+
+  it "names the universal gem when a platform gem, which carries no Fiddle library, falls to Fiddle" do
+    musl = Gem::Platform.new("x86_64-linux-musl")
+    forced = HyperCast::Runtime.send(:missing_library_message, musl, true)
+    expect(forced).to include("x86_64-linux-musl platform gem", "HYPERCAST_PURE forces",
+                              "gem install hypercast --platform ruby")
+    unloaded = HyperCast::Runtime.send(:missing_library_message, musl, false)
+    expect(unloaded).to include("none of its extensions loads on this Ruby (#{RUBY_VERSION}",
+                                "gem install hypercast --platform ruby")
+    expect(unloaded).not_to include("HYPERCAST_PURE")
+    [["ruby", true], [nil, false]].each do |platform, pure|
+      expect(HyperCast::Runtime.send(:missing_library_message, platform, pure))
+        .to match(/not found \(unsupported platform/)
+    end
   end
 
   it "returns u64 as the true unsigned value — Integer is unbounded" do
@@ -283,9 +298,9 @@ RSpec.describe HyperCast do
 
   # Runs under every backend, and matters most under Fiddle: Fiddle releases the GVL for the
   # duration of a call, so that is the one backend where Ruby threads run the core truly in
-  # parallel, each through its own scratch buffers. (The Magnus extension holds the GVL; the
-  # wasm backend serializes on one Mutex around one shared instance.) Each thread declares a
-  # format of its own, so the per-format memo every backend keeps is crossed concurrently too.
+  # parallel, each through its own scratch buffers. (The Magnus extension holds the GVL.)
+  # Each thread declares a format of its own, so the per-format memo every backend keeps is
+  # crossed concurrently too.
   it "keeps concurrent callers' values, fault spans and formats their own" do
     eurozone = { decimal_sep: ",", group_sep: ".", text: "1.234,5" }
     dollars = { decimal_sep: ".", group_sep: ",", text: "1,234.5" }

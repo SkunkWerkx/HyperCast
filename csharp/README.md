@@ -194,8 +194,11 @@ that imports that targets file, calls every native entry point — the twenty-on
 functions and `hypercast_version` — through the public `Cast` surface, and renders `PASS` or
 `FAIL` into the page. Every one, because that is the only way the check means what it says:
 a door missing from the `EmccExportedFunction` list links fine and fails only when called.
-It is a local check, not wired into the solution or CI, because it needs the `wasm-tools`
-workload and a browser. To run it:
+`./check.sh` in that directory stages the wasm static library, publishes the app, loads it in
+headless Chromium and requires `PASS`. CI runs the same script on every PR, in headless Chrome
+with the `wasm-tools` workload, against the static library that run just built (`STATICLIB`
+names it, so the script skips building its own); it is not part of the solution, so a plain
+`dotnet build` never needs the workload or a browser. By hand, the same steps are:
 
 ```shell
 cd rust && cargo wasm-staticlib
@@ -205,11 +208,15 @@ cd ../csharp/HyperCast.WasmSmokeTest && dotnet publish -c Release -o /tmp/hyperc
 cd /tmp/hypercast-wasm/wwwroot && python3 -m http.server 5099   # then open http://localhost:5099/
 ```
 
-`check.sh` in that directory does all of it, including the headless-Chromium assertion.
+The archive reaches the linker by the path the targets file names, and nowhere else. Restore
+also resolves `runtimes/browser-wasm/nativeassets/` as a copy-local native asset, which on its
+own would copy the 3 MB `libhypercast.a` into `bin/` and the publish root of every Blazor
+WebAssembly consumer, never served and never read; the same targets file takes it back out of
+the copy-local list, so a consumer's output carries only the linked `dotnet.native.wasm`.
 
 **WebAssembly is .NET 11 and later only.** .NET 11 links browser-wasm with the new (exnref)
-exception-handling encoding, while the precompiled Rust standard library inside the static
-library uses the legacy one, and the browser refuses a module that mixes them (`module uses a
+exception-handling encoding, while Rust's precompiled `core` inside the static library uses
+the legacy one, and the browser refuses a module that mixes them (`module uses a
 mix of legacy and new exception handling instructions`). The same `HyperCast.targets`
 therefore appends Binaryen's translate-to-exnref pass to the SDK's post-link `wasm-opt`, with
 no action needed from a consumer.

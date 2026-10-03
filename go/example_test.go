@@ -1,7 +1,6 @@
 package hypercast_test
 
 import (
-	"errors"
 	"fmt"
 	"log"
 
@@ -164,22 +163,7 @@ func ExampleSpan() {
 	// 1h30m15.5s true
 }
 
-func ExampleLoadError() {
-	// At startup, before the first cast: nil means the native core loaded, and anything
-	// else is the reason it did not — the error every door would otherwise panic with.
-	if err := hypercast.LoadError(); err != nil {
-		if errors.Is(err, hypercast.ErrNativeUnavailable) {
-			log.Fatalf("no HyperCast core on this platform: %v", err)
-		}
-	}
-	fmt.Println(hypercast.Available())
-	// Output: true
-}
-
 func ExampleNativeVersion() {
-	// The version the loaded core reports about itself, "major.minor.patch". It panics if
-	// the core did not load, so gate it on Available or LoadError.
-	if hypercast.Available() {
-		log.Printf("hypercast core %s", hypercast.NativeVersion())
-	}
+	// The version the linked core reports about itself, "major.minor.patch".
+	log.Printf("hypercast core %s", hypercast.NativeVersion())
 }

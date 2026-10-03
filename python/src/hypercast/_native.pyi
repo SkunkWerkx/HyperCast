@@ -1,8 +1,8 @@
-"""The typed surface of ``hypercast._native`` — the PyO3 extension, and equally the
-``_wasm`` backend that stands in for it under the same name (``tests/test_typing.py`` holds
-both to this file). ``hypercast`` re-exports all of it directly, so this is what a type
-checker sees behind every door: its own ``Success[...] | Fault``, which is what lets a
-``match`` over the two cases be checked for exhaustiveness with ``typing.assert_never``.
+"""The typed surface of ``hypercast._native``, the PyO3 extension (``tests/test_typing.py``
+holds the loaded module to this file). ``hypercast`` re-exports all of it directly, so this
+is what a type checker sees behind every door: its own ``Success[...] | Fault``, which is
+what lets a ``match`` over the two cases be checked for exhaustiveness with
+``typing.assert_never``.
 """
 
 import datetime

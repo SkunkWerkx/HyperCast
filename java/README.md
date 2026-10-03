@@ -68,7 +68,9 @@ Nothing loads until the first door is called. A consumer with a managed fallback
 `Cast.isAvailable()` first: probed once, cached, never throws — `false` when the platform
 library will not open, the jar carries no core for this OS/arch, GraalWasm is missing on the
 wasm path, or an older core lacks an export this binding was built against. The doors do
-not fall back; a core that failed to load is thrown from every door as the failure it was.
+not fall back. The first one to need a core that failed to load throws
+`ExceptionInInitializerError`, and every later one `NoClassDefFoundError`; either way the
+original failure is in its cause chain.
 `Cast.nativeVersion()` reports the loaded core's `major.minor.patch`, and succeeds exactly
 when `isAvailable()` is `true` — the pair that proves the library that resolved is the one
 this jar was built against. `Cast.backend()` says which path won.
@@ -185,6 +187,13 @@ and a `resources` glob covering `native/*/*`. A `native-image.properties` beside
 class holding the downcall handles initialized at image build time, which is what keeps the
 doors compiled rather than interpreted in the image — 60-110 ns a door there
 ([the numbers](#webassembly-graalwasm)).
+
+A native image still loads the core's shared library at startup, extracted from the jar as on
+the JVM, rather than linking the static archive into the executable the way C# Native AOT and
+Go do. Linking it in works on Linux, but only through GraalVM's internal builder API, with
+separate linker handling for each OS, so it is deliberately not done; the forge's
+[levers not pulled](https://github.com/SkunkWerkx/.github#levers-deliberately-not-pulled)
+table has the full reasoning, the proven recipe, and what would change the answer.
 
 The resources half was missing from v0.0.1, and the failure mode is worth knowing because
 nothing catches it at build time: Native Image doesn't embed classpath resources unless they

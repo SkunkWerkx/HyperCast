@@ -28,7 +28,7 @@ type Reply = PhpResult<ZBox<ZendHashTable>>;
 
 fn push<V: IntoZval>(table: &mut ZendHashTable, value: V) -> PhpResult<()> {
     table.push(value).map_err(|e| {
-        PhpException::default(format!("hypercast: building the verdict array failed: {e}"))
+        PhpException::from_message(format!("hypercast: building the verdict array failed: {e}"))
     })
 }
 
@@ -64,16 +64,16 @@ fn format(
     let (Some(decimal_sep), Some(group_sep)) =
         (char::from_u32(decimal_sep), char::from_u32(group_sep))
     else {
-        return Err(PhpException::default("separators must be Unicode scalar values".into()));
+        return Err(PhpException::from_message("separators must be Unicode scalar values".into()));
     };
     if decimal_sep == group_sep {
-        return Err(PhpException::default("decimal and group separators must differ".into()));
+        return Err(PhpException::from_message("decimal and group separators must differ".into()));
     }
     let currency = if currency.is_empty() {
         CurrencySymbol::NONE
     } else {
         CurrencySymbol::new(currency).ok_or_else(|| {
-            PhpException::default(
+            PhpException::from_message(
                 "currency symbol must be at most 16 bytes of UTF-8 with no ASCII digit or whitespace".into(),
             )
         })?
@@ -215,7 +215,9 @@ pub fn hypercast_native_cast_unix(text: Binary<u8>, precision: u32) -> Reply {
         2 => UnixPrecision::Millis,
         3 => UnixPrecision::Micros,
         4 => UnixPrecision::Nanos,
-        other => return Err(PhpException::default(format!("undefined UnixPrecision {other}"))),
+        other => {
+            return Err(PhpException::from_message(format!("undefined UnixPrecision {other}")));
+        }
     };
     reply(core::cast_unix(text.as_slice(), precision), timestamp)
 }
@@ -226,7 +228,7 @@ pub fn hypercast_native_cast_excel_serial(text: Binary<u8>, epoch: u32) -> Reply
     let epoch = match epoch {
         1 => ExcelEpoch::Y1900,
         2 => ExcelEpoch::Y1904,
-        other => return Err(PhpException::default(format!("undefined ExcelEpoch {other}"))),
+        other => return Err(PhpException::from_message(format!("undefined ExcelEpoch {other}"))),
     };
     reply(core::cast_excel_serial(text.as_slice(), epoch), timestamp)
 }
@@ -236,7 +238,7 @@ fn order(order: u32) -> PhpResult<DateOrder> {
         1 => Ok(DateOrder::YearMonthDay),
         2 => Ok(DateOrder::MonthDayYear),
         3 => Ok(DateOrder::DayMonthYear),
-        other => Err(PhpException::default(format!("undefined DateOrder {other}"))),
+        other => Err(PhpException::from_message(format!("undefined DateOrder {other}"))),
     }
 }
 

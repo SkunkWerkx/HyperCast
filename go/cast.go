@@ -1,11 +1,14 @@
 // Package hypercast provides allocation-lean scalar casts — booleans, numerics, UUIDs,
-// temporals — calling directly into the native libhypercast shared library. Every door
-// returns Go's own union idiom: (value, *Fault), where a nil fault is the success case and
-// a non-nil one carries the closed reason plus the offending byte span. Never an error for
-// bad data in the exception sense — *Fault implements error for composition, but the doors
-// never panic on input; a panic here means a caller bug (a malformed NumFormat) or a native
-// library that never loaded (Available and LoadError, in load.go, probe for that without
-// panicking), never data.
+// temporals — by calling the Rust core, linked into the binary as a static library through
+// cgo (backend_static.go). It builds on Linux, macOS and Windows, on amd64 and arm64, with a
+// C compiler present, and under TinyGo for WebAssembly, browser included
+// (backend_tinygo.go); anything else is a compile error that says so (unsupported.go).
+//
+// Every door returns Go's own union idiom: (value, *Fault), where a nil fault is the success
+// case and a non-nil one carries the closed reason plus the offending byte span. Never an
+// error for bad data in the exception sense — *Fault implements error for composition, but
+// the doors never panic on input; a panic here means a caller bug (a malformed NumFormat or
+// an undefined enum value), never data.
 //
 // Door names follow the native ABI's (cast_i32 is I32, cast_timestamp is Timestamp) so the
 // polyglot surface reads the same across bindings, except where Go already owns the word:
@@ -109,7 +112,7 @@ type rawFault struct {
 // The verdict as the backends hand it back, by value: 16 bytes of out-value (8-aligned,
 // the widest door's size — every door reads its own prefix through a typed view), the
 // native code, and the fault span. Returning this rather than filling caller pointers is
-// what keeps the cgo backend's doors allocation-free — see backend_cgo.go.
+// what keeps the cgo backend's doors allocation-free — see backend_static.go.
 type result struct {
 	out   [2]uint64
 	code  int32
@@ -123,8 +126,7 @@ func read[V any](r *result) V {
 
 // NumFormat as it crosses the ABI — 32 bytes, 4-aligned: the separators as code points,
 // the flags, and the currency symbol as CurrencyLen UTF-8 bytes held inline (zero-padded;
-// a zero length declares none). Stays comparable: the wasm backend memoizes the last one
-// written by value.
+// a zero length declares none).
 type rawNumFormat struct {
 	DecimalSep  uint32
 	GroupSep    uint32
@@ -403,7 +405,6 @@ func failed(code int32, fault *rawFault) *Fault {
 // (t/f, yes/no, y/n, 1/0, on/off, enabled/disabled, active/inactive, checked/unchecked,
 // in/out), ASCII case-insensitive.
 func Bool[T Text](text T) (bool, *Fault) {
-	mustLoad()
 	ptr, length := textPtr(text)
 	r := callPlain(symBool, ptr, length)
 	runtime.KeepAlive(text)
@@ -413,13 +414,10 @@ func Bool[T Text](text T) (bool, *Fault) {
 	return read[uint8](&r) != 0, nil
 }
 
-func numericDoor[T Text, V any](sym *numericSymbol, text T, format NumFormat) (V, *Fault) {
-	// sym is an address, not a value: the caller evaluates it before mustLoad has
-	// resolved the symbols, so the dereference must happen after.
-	mustLoad()
+func numericDoor[T Text, V any](sym numericSymbol, text T, format NumFormat) (V, *Fault) {
 	raw := format.raw()
 	ptr, length := textPtr(text)
-	r := callNumeric(*sym, ptr, length, raw)
+	r := callNumeric(sym, ptr, length, raw)
 	runtime.KeepAlive(text)
 	if r.code != 0 {
 		var zero V
@@ -433,54 +431,54 @@ func numericDoor[T Text, V any](sym *numericSymbol, text T, format NumFormat) (V
 // never accepted), and 0x/&H/0b two's-complement radix prefixes (0xFF is -1). The other
 // integer doors share these rules at their own widths.
 func I8[T Text](text T, format NumFormat) (int8, *Fault) {
-	return numericDoor[T, int8](&symI8, text, format)
+	return numericDoor[T, int8](symI8, text, format)
 }
 
 // I16 casts integer text to int16. Rules as I8.
 func I16[T Text](text T, format NumFormat) (int16, *Fault) {
-	return numericDoor[T, int16](&symI16, text, format)
+	return numericDoor[T, int16](symI16, text, format)
 }
 
 // I32 casts integer text to int32. Rules as I8.
 func I32[T Text](text T, format NumFormat) (int32, *Fault) {
-	return numericDoor[T, int32](&symI32, text, format)
+	return numericDoor[T, int32](symI32, text, format)
 }
 
 // I64 casts integer text to int64. Rules as I8.
 func I64[T Text](text T, format NumFormat) (int64, *Fault) {
-	return numericDoor[T, int64](&symI64, text, format)
+	return numericDoor[T, int64](symI64, text, format)
 }
 
 // U8 casts integer text to uint8. Rules as I8.
 func U8[T Text](text T, format NumFormat) (uint8, *Fault) {
-	return numericDoor[T, uint8](&symU8, text, format)
+	return numericDoor[T, uint8](symU8, text, format)
 }
 
 // U16 casts integer text to uint16. Rules as I8.
 func U16[T Text](text T, format NumFormat) (uint16, *Fault) {
-	return numericDoor[T, uint16](&symU16, text, format)
+	return numericDoor[T, uint16](symU16, text, format)
 }
 
 // U32 casts integer text to uint32. Rules as I8.
 func U32[T Text](text T, format NumFormat) (uint32, *Fault) {
-	return numericDoor[T, uint32](&symU32, text, format)
+	return numericDoor[T, uint32](symU32, text, format)
 }
 
 // U64 casts integer text to uint64 — natively unsigned, no widening games. Rules as I8.
 func U64[T Text](text T, format NumFormat) (uint64, *Fault) {
-	return numericDoor[T, uint64](&symU64, text, format)
+	return numericDoor[T, uint64](symU64, text, format)
 }
 
 // F32 casts real text under the declared format: finite values only (NaN/Infinity literals
 // are Malformed, overflow to infinity is OutOfRange), declared separators and grouping,
 // accounting parentheses, exponent, and trailing percent (50% is 0.5).
 func F32[T Text](text T, format NumFormat) (float32, *Fault) {
-	return numericDoor[T, float32](&symF32, text, format)
+	return numericDoor[T, float32](symF32, text, format)
 }
 
 // F64 casts real text to float64. Rules as F32.
 func F64[T Text](text T, format NumFormat) (float64, *Fault) {
-	return numericDoor[T, float64](&symF64, text, format)
+	return numericDoor[T, float64](symF64, text, format)
 }
 
 // Exact casts decimal text to a Decimal under the declared format — the same grammar and
@@ -489,7 +487,7 @@ func F64[T Text](text T, format NumFormat) (float64, *Fault) {
 // 2^96 - 1 or a scale past 28 is OutOfRange, not approximated. Named Exact because the
 // result type already owns the identifier Decimal, the way Span returns a Duration.
 func Exact[T Text](text T, format NumFormat) (Decimal, *Fault) {
-	out, fault := numericDoor[T, rawDecimal](&symDecimal, text, format)
+	out, fault := numericDoor[T, rawDecimal](symDecimal, text, format)
 	if fault != nil {
 		return Decimal{}, fault
 	}
@@ -551,7 +549,6 @@ func Numeric[V Number, T Text](text T, format NumFormat) (V, *Fault) {
 // urn:uuid:/GUID:/UUID: prefixes — to a uuid.UUID (RFC 9562 byte order, which is exactly
 // uuid.UUID's own layout).
 func Uuid[T Text](text T) (uuid.UUID, *Fault) {
-	mustLoad()
 	ptr, length := textPtr(text)
 	r := callPlain(symUuid, ptr, length)
 	runtime.KeepAlive(text)
@@ -562,9 +559,8 @@ func Uuid[T Text](text T) (uuid.UUID, *Fault) {
 }
 
 // instantDoor serves both instant-shaped doors: a zero precision means the RFC 3339 door
-// (symTimestamp, read after mustLoad has resolved it), anything else the Unix-epoch door.
+// (symTimestamp), anything else the Unix-epoch door.
 func instantDoor[T Text](text T, precision UnixPrecision) (time.Time, *Fault) {
-	mustLoad()
 	ptr, length := textPtr(text)
 	var r result
 	if precision == 0 {
@@ -602,7 +598,7 @@ func Unix[T Text](text T, precision UnixPrecision) (time.Time, *Fault) {
 //
 // The 1900 system contains a day that never existed: serial 60 is 1900-02-29, kept
 // deliberately because Lotus 1-2-3 wrongly treated 1900 as a leap year and Excel copied the
-// bug for file compatibility. It is Malformed here — the same verdict DateOnly gives the
+// bug for file compatibility. It is OutOfRange here — the same verdict DateOnly gives the
 // text "1900-02-29" — so every serial above it is shifted one day against a naive count,
 // which is the arithmetic hand-rolled conversions get wrong.
 //
@@ -611,7 +607,6 @@ func ExcelSerial[T Text](text T, epoch ExcelEpoch) (time.Time, *Fault) {
 	if epoch != Excel1900 && epoch != Excel1904 {
 		panic(fmt.Sprintf("hypercast: undefined ExcelEpoch %d", epoch))
 	}
-	mustLoad()
 	ptr, length := textPtr(text)
 	r := callExcelSerial(ptr, length, uint32(epoch))
 	runtime.KeepAlive(text)
@@ -624,7 +619,6 @@ func ExcelSerial[T Text](text T, epoch ExcelEpoch) (time.Time, *Fault) {
 
 // DateOnly casts a strict ISO 8601 yyyy-MM-dd calendar date.
 func DateOnly[T Text](text T) (Date, *Fault) {
-	mustLoad()
 	ptr, length := textPtr(text)
 	r := callPlain(symDate, ptr, length)
 	runtime.KeepAlive(text)
@@ -644,7 +638,6 @@ func DateOnlyOrdered[T Text](text T, order DateOrder) (Date, *Fault) {
 	if order < YearMonthDay || order > DayMonthYear {
 		panic(fmt.Sprintf("hypercast: undefined DateOrder %d", order))
 	}
-	mustLoad()
 	ptr, length := textPtr(text)
 	r := callDateOrdered(ptr, length, uint32(order))
 	runtime.KeepAlive(text)
@@ -665,7 +658,6 @@ func DateTime[T Text](text T, order DateOrder) (CivilDateTime, *Fault) {
 	if order < YearMonthDay || order > DayMonthYear {
 		panic(fmt.Sprintf("hypercast: undefined DateOrder %d", order))
 	}
-	mustLoad()
 	ptr, length := textPtr(text)
 	r := callDateTime(ptr, length, uint32(order))
 	runtime.KeepAlive(text)
@@ -682,7 +674,6 @@ func DateTime[T Text](text T, order DateOrder) (CivilDateTime, *Fault) {
 // TimeOfDay casts an ISO 24-hour time-of-day to a time.Duration since midnight —
 // nanosecond-exact, and comfortably inside time.Duration's range.
 func TimeOfDay[T Text](text T) (time.Duration, *Fault) {
-	mustLoad()
 	ptr, length := textPtr(text)
 	r := callPlain(symTime, ptr, length)
 	runtime.KeepAlive(text)
@@ -695,7 +686,6 @@ func TimeOfDay[T Text](text T) (time.Duration, *Fault) {
 // Span casts a duration (ISO 8601 fixed components, invariant colon form, or protobuf JSON
 // seconds) to the protobuf pair — see Duration for why not time.Duration directly.
 func Span[T Text](text T) (Duration, *Fault) {
-	mustLoad()
 	ptr, length := textPtr(text)
 	r := callPlain(symDuration, ptr, length)
 	runtime.KeepAlive(text)

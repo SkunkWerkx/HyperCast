@@ -1,28 +1,32 @@
-require "fiddle"
+# Autoloaded, not required: the platform gems carry no library for Fiddle to open and do not
+# declare fiddle, so loading it eagerly would make `require "hypercast"` fail under Bundler
+# wherever fiddle is a bundled rather than a default gem (Ruby 4.0). It loads the first time
+# the Fiddle backend runs, and every path there goes through `functions` first, so a platform
+# gem forced onto Fiddle still gets missing_library_message rather than a bare LoadError.
+autoload :Fiddle, "fiddle"
 
 module HyperCast
   # Fiddle plumbing for the native libhypercast shared library — dlopen/dlsym plus raw
   # C-ABI calls, no runtime bridge. Fiddle ships with every Ruby install; it's a plain gem
-  # dependency here rather than a third-party one. A Ruby gem's files are already plain
-  # files on disk once installed, so native/{rid}/{lib} dlopen's directly — no extraction.
+  # dependency of the universal gem (see hypercast.gemspec) rather than a third-party one.
+  # A Ruby gem's files are already plain files on disk once installed, so native/{rid}/{lib}
+  # dlopen's directly — no extraction.
   module Runtime
     NATIVE_DIR = File.join(__dir__, "native")
 
-    PLAIN = [Fiddle::TYPE_VOIDP, Fiddle::TYPE_SIZE_T, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP].freeze
-    NUMERIC = [Fiddle::TYPE_VOIDP, Fiddle::TYPE_SIZE_T, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP,
-               Fiddle::TYPE_VOIDP].freeze
-    UNIX = [Fiddle::TYPE_VOIDP, Fiddle::TYPE_SIZE_T, Fiddle::TYPE_UINT32_T, Fiddle::TYPE_VOIDP,
-            Fiddle::TYPE_VOIDP].freeze
-
+    # Each door's C signature, by shape — resolved to Fiddle types only in load_functions,
+    # so nothing here touches Fiddle until the Fiddle backend actually runs: plain is
+    # (text, len, out, fault), numeric adds the packed NumFormat pointer before out, and
+    # declared a caller-declared u32 (precision, epoch, field order) in the same place.
     DOORS = {
-      cast_bool: PLAIN,
-      cast_i8: NUMERIC, cast_i16: NUMERIC, cast_i32: NUMERIC, cast_i64: NUMERIC,
-      cast_u8: NUMERIC, cast_u16: NUMERIC, cast_u32: NUMERIC, cast_u64: NUMERIC,
-      cast_f32: NUMERIC, cast_f64: NUMERIC, cast_decimal: NUMERIC,
-      cast_uuid: PLAIN,
-      cast_timestamp: PLAIN, cast_unix: UNIX, cast_excel_serial: UNIX,
-      cast_date: PLAIN, cast_date_ordered: UNIX, cast_datetime: UNIX,
-      cast_time: PLAIN, cast_duration: PLAIN
+      cast_bool: :plain,
+      cast_i8: :numeric, cast_i16: :numeric, cast_i32: :numeric, cast_i64: :numeric,
+      cast_u8: :numeric, cast_u16: :numeric, cast_u32: :numeric, cast_u64: :numeric,
+      cast_f32: :numeric, cast_f64: :numeric, cast_decimal: :numeric,
+      cast_uuid: :plain,
+      cast_timestamp: :plain, cast_unix: :declared, cast_excel_serial: :declared,
+      cast_date: :plain, cast_date_ordered: :declared, cast_datetime: :declared,
+      cast_time: :plain, cast_duration: :plain
     }.freeze
 
     # The one export that is not a door: the zero-argument version probe, returning the
@@ -41,14 +45,13 @@ module HyperCast
         functions.fetch(symbol)
       end
 
-      # Whether this platform has a shared library for Fiddle to dlopen at all: a known RID
-      # and the file actually present — in this install, or in the in-repo cargo build the
-      # dev loop falls back to. Backend selection (hypercast.rb) asks this before falling
-      # back to the WebAssembly backend, which needs neither.
-      def fiddle_library_available?
-        !library_path.nil?
-      rescue NativePlatform::UnsupportedPlatformError
-        false
+      # Every Fiddle allocation goes through here, and loads the library first: that is what
+      # keeps a missing library reported as missing_library_message instead of as whatever
+      # touching Fiddle raises first. The per-thread scratch buffer and each packed NumFormat
+      # (hypercast.rb) pay for it once apiece.
+      def buffer(size)
+        functions
+        Fiddle::Pointer.malloc(size, Fiddle::RUBY_FREE)
       end
 
       private
@@ -65,6 +68,35 @@ module HyperCast
         File.exist?(repo_build) ? repo_build : nil
       end
 
+      # Why Fiddle found nothing to load. A precompiled platform gem is the one install where
+      # that is by design rather than a gap: it carries only its Magnus extensions, and the
+      # Fiddle backend is reached there only by forcing it (HYPERCAST_PURE) or because none
+      # of its extensions loaded — a gem RubyGems matched to a Ruby it was not built for,
+      # such as the glibc Linux gem that `gem install` on RubyGems 3.x picks on Alpine. So
+      # that case names its fix, the universal gem, which carries every platform's library,
+      # instead of a missing path that reads like a packaging bug. Both arguments are
+      # parameters only so the specs can ask for every wording.
+      def missing_library_message(gem_platform = Gem.loaded_specs["hypercast"]&.platform,
+                                  forced = ENV.key?("HYPERCAST_PURE"))
+        rid, lib_name = NativePlatform.rid_and_library_name
+        missing = File.join(NATIVE_DIR, rid, lib_name)
+        if gem_platform && gem_platform.to_s != Gem::Platform::RUBY
+          reason =
+            if forced
+              "HYPERCAST_PURE forces the Fiddle backend (unset it to use the extension)"
+            else
+              "none of its extensions loads on this Ruby (#{RUBY_VERSION}, #{RUBY_PLATFORM})"
+            end
+          "hypercast: this #{gem_platform} platform gem carries only Magnus extensions, no " \
+            "Fiddle library, and #{reason}. The universal gem has the Fiddle backend for every " \
+            "platform: `gem install hypercast --platform ruby`, or Bundler's force_ruby_platform " \
+            "(#{missing} not found)"
+        else
+          "hypercast: #{missing} not found (unsupported platform, or this gem was built " \
+            "without a native library for it)"
+        end
+      end
+
       # Loaded lazily and exactly once; the native library and its function pointers live
       # for the process's lifetime, same as every other binding (never dlclose'd). The
       # unsynchronized read is the fast path — a per-call mutex acquisition measured as a
@@ -75,16 +107,17 @@ module HyperCast
 
       def load_functions
         path = library_path
-        if path.nil?
-          rid, lib_name = NativePlatform.rid_and_library_name
-          raise LoadError,
-                "hypercast: #{File.join(NATIVE_DIR, rid, lib_name)} not found (unsupported " \
-                "platform, or this gem was built without a native library for it)"
-        end
+        raise LoadError, missing_library_message if path.nil?
 
         handle = Fiddle.dlopen(path)
-        functions = DOORS.to_h do |name, signature|
-          [name, Fiddle::Function.new(handle[name.to_s], signature, Fiddle::TYPE_INT32_T)]
+        plain = [Fiddle::TYPE_VOIDP, Fiddle::TYPE_SIZE_T, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP]
+        signatures = {
+          plain: plain,
+          numeric: plain.dup.insert(2, Fiddle::TYPE_VOIDP),
+          declared: plain.dup.insert(2, Fiddle::TYPE_UINT32_T)
+        }
+        functions = DOORS.to_h do |name, shape|
+          [name, Fiddle::Function.new(handle[name.to_s], signatures.fetch(shape), Fiddle::TYPE_INT32_T)]
         end
         functions[VERSION_PROBE] =
           Fiddle::Function.new(handle[VERSION_PROBE.to_s], [], Fiddle::TYPE_UINT32_T)
