@@ -9,6 +9,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Rust — the README's consumer no-panic recipe could not fail for a `cdylib`.** no-panic
+  reports a surviving panic path as an undefined symbol, which a Linux shared library is
+  allowed to have, so a `cdylib` built from the recipe linked cleanly even against 0.6.0,
+  whose `cast_uuid` fails the proof. The recipe now adds `-C link-arg=-Wl,--no-undefined`,
+  as this repository's own `cargo no-panic` always has. Documentation only. *(crates.io)*
+
 ## [0.6.1] — 2026-10-03
 
 ### Added

@@ -157,6 +157,15 @@ hypercast = { version = "0.6", features = ["no-panic"] }
 lto = true
 ```
 
+no-panic reports a surviving panic path as an undefined symbol. An executable fails to link
+on one, but a Linux shared library is allowed undefined symbols, so a `cdylib` passes
+silently unless the link forbids them, which is what this repository's own `cargo no-panic`
+does:
+
+```sh
+RUSTFLAGS="-C link-arg=-Wl,--no-undefined" cargo build --release
+```
+
 Panic-freedom says nothing about whether a door reads the right value, so
 `tests/round_trip.rs` checks that too: values format to text and cast back to themselves,
 and every one-character edit of a valid string (replaced, removed or inserted, multi-byte
