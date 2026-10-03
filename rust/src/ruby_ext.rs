@@ -103,7 +103,7 @@ fn unknown_option(ruby: &Ruby, option: Value) -> Error {
 
 /// The declared option as a Symbol. Taken as a plain `Value` rather than a `Symbol`
 /// parameter on purpose: magnus would turn anything else into a TypeError before the door
-/// ran, where the Fiddle and wasm backends raise `unknown_option`'s KeyError.
+/// ran, where the Fiddle backend raises `unknown_option`'s KeyError.
 fn declared_symbol(ruby: &Ruby, option: Value) -> Result<Symbol, Error> {
     Symbol::from_value(option).ok_or_else(|| unknown_option(ruby, option))
 }

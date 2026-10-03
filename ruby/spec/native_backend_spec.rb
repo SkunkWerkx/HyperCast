@@ -3,10 +3,8 @@ require "open3"
 
 # Cross-backend agreement: the Magnus extension and the pure-Fiddle fallback must be
 # indistinguishable through the public surface. The whole main spec suite already runs under
-# every backend (HYPERCAST_PURE=1 forces Fiddle, HYPERCAST_WASM=1 the wasmtime module); this
-# file pins the *agreement* between Magnus and Fiddle by comparing deterministic outputs
-# across a subprocess boundary, and wasm_backend_spec.rb does the same for wasm against
-# Fiddle.
+# both backends (HYPERCAST_PURE=1 forces Fiddle); this file pins the *agreement* between them
+# by comparing deterministic outputs across a subprocess boundary.
 RSpec.describe "native backend" do
   before(:all) do
     skip "Magnus extension not loaded (BACKEND=#{HyperCast::BACKEND})" unless
@@ -16,7 +14,7 @@ RSpec.describe "native backend" do
   def fiddle_eval(expression)
     lib = File.expand_path("../lib", __dir__)
     out, status = Open3.capture2(
-      { "HYPERCAST_PURE" => "1", "HYPERCAST_WASM" => nil },
+      { "HYPERCAST_PURE" => "1" },
       RbConfig.ruby, "-I", lib, "-r", "hypercast", "-e", "print (#{expression})"
     )
     raise "fiddle subprocess failed: #{out}" unless status.success?

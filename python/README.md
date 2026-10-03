@@ -12,11 +12,8 @@ Allocation-lean scalar casts — booleans, the full integer family, reals, exact
 UUIDs, temporals.
 The PyO3 extension (`hypercast._native`) is the backend every wheel ships — a door is an
 ordinary `METH_FASTCALL` extension call into a direct Rust call, and the wheel maturin
-builds is the whole package (the interim ctypes fallback is gone). A second backend runs the
-same core as a `wasm32-wasip1` module inside CPython through `wasmtime-py`, opt-in via
-`pip install hypercast[wasm]` and `HYPERCAST_WASM=1` — see
-[WebAssembly (wasmtime)](#webassembly-wasmtime). Python 3.11 is the floor, the oldest version still in upstream support (`match`/`case` is
-the consumption idiom).
+builds is the whole package (the interim ctypes fallback is gone). Python 3.11 is the floor,
+the oldest version still in upstream support (`match`/`case` is the consumption idiom).
 
 ## Install
 
@@ -26,8 +23,8 @@ pip install hypercast
 
 Real platform-specific wheels, so it lands at native speed with nothing to compile — no
 compiler needed and no dependencies at all; the PyO3 extension *is* the package. The wheels
-are `abi3` (abi3-py311), so one per platform covers every CPython from the 3.11 floor up,
-eight in all:
+are `abi3` (abi3-py311), so one per platform covers every CPython from the 3.11 floor up —
+eight native ones, plus a ninth for Pyodide in the browser ([below](#in-the-browser-pyodide)):
 
 | | x64 | arm64 |
 | --- | :---: | :---: |
@@ -36,14 +33,17 @@ eight in all:
 | macOS | ✓ | ✓ |
 | Windows | ✓ | ✓ |
 
-**Only wheels are published — there is no sdist.** An interpreter none of the eight matches
+**Only wheels are published — there is no sdist.** An interpreter none of the wheels matches
 (a glibc older than 2.28, PyPy, free-threaded CPython) gets `No matching distribution found`
 from pip, not a source build.
+
+On Alpine the musl wheel needs nothing beyond the base image — it carries its own copy of
+`libgcc_s` — and the whole suite passes on a bare `python:3.14-alpine`.
 
 **Not yet covered: free-threaded (no-GIL) CPython (`3.13t`/`3.14t`).** An `abi3` wheel is
 ignored by a free-threaded interpreter (it's a genuinely separate ABI, not a compatibility
 flag), so closing this gap means building and shipping additional version-specific
-`cp313t`/`cp314t` wheels alongside the existing eight, not just a build-flag change. PyO3
+`cp313t`/`cp314t` wheels alongside the existing ones, not just a build-flag change. PyO3
 itself has supported free-threading (opt-in, `gil_used = false`) since 0.23; the cleaner
 long-term fix — [PEP 803](https://peps.python.org/pep-0803/)'s `abi3t` stable ABI, one build
 covering both GIL and no-GIL — needs Python 3.15+, not yet released. Revisiting once that
@@ -158,8 +158,7 @@ hypercast.optional(hypercast.cast_i32("   ", hypercast.NumFormat.INVARIANT))    
 hypercast.optional(hypercast.cast_i32("abc", hypercast.NumFormat.INVARIANT))    # Fault(reason=<CastFailure.MALFORMED: 2>, offset=0, length=1)
 ```
 
-Bad data is always a `Fault`. What raises is a caller's bug, and it is the same exception on
-both backends: `TypeError` for an argument of the wrong type (text that is neither `str` nor
+Bad data is always a `Fault`. What raises is a caller's bug: `TypeError` for an argument of the wrong type (text that is neither `str` nor
 `bytes`, a format that is not a `NumFormat`), `ValueError` for a declaration that names no
 member of its enum or a `NumFormat` that cannot be (below), `OverflowError` for an integer
 too wide for the 32 unsigned bits a flag set or a declaration is. The one exception that is
@@ -189,8 +188,7 @@ symbol is accepted once, leading (before or after the sign: `$5`, `-$5`, `$ -5`)
 parentheses wrap the symbol along with the digits (`($5)`). Declared but with the flag off,
 the symbol is simply the first offending byte of a `MALFORMED` fault; with no symbol declared
 the flag matches nothing. A symbol is 1 to 16 UTF-8 bytes with no ASCII digit or whitespace —
-anything else is a `ValueError` at construction, a caller bug like equal separators, raised
-identically on both backends.
+anything else is a `ValueError` at construction, a caller bug like equal separators.
 
 ```python
 dollars = hypercast.NumFormat(".", ",", hypercast.NumFormat.ALL, "$")
@@ -211,8 +209,33 @@ ever dropped, never rounded, the one thing a caller who reached for a decimal is
 assume.
 
 `hypercast.native_version()` names the core actually loaded, `"major.minor.patch"`, decoded
-from the same packed `hypercast_version` export every other binding probes, and
-`hypercast.BACKEND` says which backend loaded it — `"native"` or `"wasm"`.
+from the same packed `hypercast_version` export every other binding probes.
+`hypercast.BACKEND` is always `"native"`, the PyO3 extension.
+
+## In the browser (Pyodide)
+
+The same PyO3 extension, compiled for Pyodide's Emscripten target, is published to PyPI as
+`hypercast-X.Y.Z-cp311-abi3-pyemscripten_2026_0_wasm32.whl` (about 150 KB), so micropip
+finds it the way pip finds the native wheels:
+
+```python
+import micropip
+await micropip.install("hypercast")
+
+import hypercast
+hypercast.cast_i32("(1,234)", hypercast.NumFormat.INVARIANT)   # Success(value=-1234)
+hypercast.cast_timestamp("2026-01-02T10:04:05Z")
+```
+
+It is the native backend (`hypercast.BACKEND == "native"`), with the same API and no
+JavaScript bridge: every door is the same Rust call it is in CPython, and the verdicts are
+bit-for-bit the same. CI installs the wheel into Pyodide and runs this package's whole pytest
+suite in it twice, under Node and in headless Chrome, shared corpus replay included.
+
+The wheel is for **Pyodide 314.x** (Python 3.14, platform `pyemscripten_2026_0`). It is
+`abi3`, but a Pyodide ABI is one Python minor built with one exact Emscripten, so each
+Pyodide ABI year needs its own wheel: earlier Pyodide lines (0.29.x and older) find no wheel,
+and the next line is covered by the release that adds its build.
 
 ## Why not `int()` / `fromisoformat` / `dateutil`?
 
@@ -223,8 +246,8 @@ from the same packed `hypercast_version` export every other binding probes, and
    `Guid` text forms plus `urn:uuid:` prefixes, protobuf JSON durations — with each
    lenience individually declared, never guessed.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
-   held by the shared corpus (the whole suite green on both backends, the full corpus
-   replayed).
+   held by the shared corpus (the whole suite green, in CPython and in Pyodide, the full
+   corpus replayed).
 4. **Native-extension speed** — the escape from the interpreted tier is this binding's own
    receipt: the old losses were never "Python calling native code," they were *ctypes*
    (~1 µs of interpreted marshalling per call, measured). The numbers are under
@@ -232,11 +255,7 @@ from the same packed `hypercast_version` export every other binding probes, and
 
 **The honest trade-off:** for plain invariant integers `int()` still wins — it's a
 C-accelerated builtin with no boundary to cross. These doors earn their keep on the
-culture-machinery parsers, the closed error contract, and cross-language agreement. And
-dropping ctypes means dropping the Pyodide path Python briefly had — the wheels are real
-native extensions, and a native extension has no browser story. The wasm backend below is
-the other direction entirely: the core as wasm inside an ordinary CPython, not CPython
-inside a browser.
+culture-machinery parsers, the closed error contract, and cross-language agreement.
 
 ## Benchmarks
 
@@ -278,78 +297,10 @@ Reproduce: `maturin develop --release` (from `python/`, inside a virtualenv — 
 already points maturin at `../rust/Cargo.toml` and the `python` feature) to build the release
 extension, then `pip install pyperf` and `python bench_cast.py --fast`.
 
-## WebAssembly (wasmtime)
-
-The same Rust core, compiled to `wasm32-wasip1`, run *inside* CPython by
-[`wasmtime-py`](https://github.com/bytecodealliance/wasmtime-py) — the inverse of the Pyodide
-experiment this package once carried (CPython itself in the browser, loading the core as an
-Emscripten side module). Nothing is reimplemented: `hypercast._wasm` calls the identical
-`cast_*` C-ABI exports the PyO3 extension does, across a guest/host memory boundary
-instead of a direct call, and presents the same `Success`/`Fault`/`NumFormat` types with the
-same `__match_args__`, equality, `repr` and exception types. The whole test suite
-runs against it, corpus replay included, and `tests/test_wasm_backend.py` pins its outputs
-against the extension across a subprocess boundary.
-
-```sh
-pip install hypercast[wasm]        # adds wasmtime; the .wasm module ships inside every wheel
-HYPERCAST_WASM=1 python app.py     # force it; hypercast.BACKEND reports "wasm" or "native"
-```
-
-Without the variable, `_native` is used whenever it imports, and `_wasm` is the fallback when it
-does not and `wasmtime` is installed — an install whose extension cannot load keeps working
-instead of failing at import. One honest limit on that story today: it does not widen where
-`pip install hypercast` works. Only wheels are published and every one of them carries the
-PyO3 extension, so an interpreter no wheel matches has nothing to install, with or without
-`[wasm]`. A pure-Python wheel carrying only the wasm backend is what would make
-`pip install hypercast[wasm]` land anywhere `wasmtime` itself does; it is not built yet.
-
-One platform note, measured on a bare `python:3.14-alpine`: the musl wheel needs nothing
-beyond the base image — it carries its own copy of `libgcc_s` — and the whole suite passes
-there. The wasm backend on Alpine additionally needs `apk add libgcc`, because `wasmtime`'s
-own musl wheel links `libgcc_s` without bundling it.
-
-Three things about the crossing decide the numbers below:
-
-- **Buffers come from the guest.** A wasm module only sees its own linear memory, so this backend
-  asks the module's exported `malloc` for every buffer it touches — the input text (a grow-only
-  buffer), the 16-byte out-value, the fault span, the 32-byte `NumFormat` — rather than picking
-  an offset itself. That is load-bearing, not tidiness: the guest's own allocator (dlmalloc, which claims
-  the tail of the initial memory on first use) corrupted a host-chosen buffer in HyperUuid.
-- **Calls are serialized.** A wasmtime `Store` is not thread-safe, so one process-wide lock
-  guards every call. Uncontended under the GIL; on a free-threaded build it is what keeps two
-  threads out of one store.
-- **The call path sidesteps wasmtime-py's per-call type lookup.** `Func.__call__` re-fetches the
-  function's type from the engine and builds and frees a `FuncType` plus one `ValType` wrapper per
-  parameter and result on *every* call. This backend builds the argument and result arrays once
-  and hands them to the same `wasmtime_func_call` C entry point the library reaches after that
-  bookkeeping. That touches `wasmtime._ffi`, which is not public API, so it is bound inside a
-  `try` at load time and degrades to the public call — slow, never broken — if a wasmtime release
-  moves it.
-
-Measured end to end with the same pyperf suite as the table above (`HYPERCAST_WASM=1 python
-bench_cast.py --fast --inherit-environ HYPERCAST_WASM` — pyperf's workers do not inherit the
-environment unless told to), CPython 3.14.7, linux-x64, same session as the native column:
-
-| Door | wasm backend | native (`_native`) |
-| --- | ---: | ---: |
-| `cast_bool` | 5.2 µs | 89 ns |
-| `cast_i32` | 5.5 µs | 103 ns |
-| `cast_f64` | 5.7 µs | 131 ns |
-| `cast_uuid` | 5.8 µs | 262 ns |
-| `cast_timestamp` | 6.6 µs | 252 ns |
-| `cast_datetime` (`1/7/2026 3:04 PM`) | 6.3 µs | 230 ns |
-| `cast_duration` (ISO) | 6.6 µs | 262 ns |
-
-Read it the way the rest of this README reads: every door pays the crossing — roughly 5 µs of
-lock, argument packing, guest memory copies and the call itself — and the parse underneath is
-invisible next to it. There is no batch door here to amortize that behind, so this backend is
-the answer to "the extension will not load here", not a speed option; the object-building doors
-(`uuid`, `timestamp`) close the gap a little only because their native carrier is already the
-expensive part.
-
 ## Verifying provenance
 
-Every wheel PyPI serves carries a GitHub build-provenance attestation. The wheels are built,
+Every wheel PyPI serves, the Pyodide one included, carries a GitHub build-provenance
+attestation. The wheels are built,
 installed and attested in CI by the shared `hyper-build-wheels.yml` workflow in
 `SkunkWerkx/.github`, and `release.yml` verifies each one before publishing it unchanged, so
 the verify command names that signer:

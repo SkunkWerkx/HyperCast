@@ -1,40 +1,44 @@
-//go:build cgo && (darwin || linux) && (amd64 || arm64) && !hypercast_wasm && !hypercast_dynamic
+//go:build cgo && !tinygo && (darwin || linux || windows) && (amd64 || arm64)
 
-// This backend links libhypercast into the binary. It is what a cgo build gets on Linux and
-// macOS, on amd64 and arm64: the core is a static library under staticlib/{goos}_{goarch}/,
-// named on the cgo link line below, and every door is an ordinary C call to a symbol the
-// linker resolved.
+// The native backend: libhypercast linked into the binary. The core is a static library
+// under staticlib/{goos}_{goarch}/, named on the cgo link line below, and every door is an
+// ordinary C call to a symbol the linker resolved. Nothing is embedded, nothing is written to
+// a temp directory, nothing is loaded at run time: a binary carries the core for its own
+// platform, starts without touching the filesystem, runs from a read-only or `scratch`
+// image, and has nothing that can fail to load.
 //
-// What that removes, compared with the backend it replaced as the default (backend_cgo.go,
-// still there behind the hypercast_dynamic tag): nothing is embedded, nothing is written to
-// a temp directory, nothing is dlopen'd. A binary built this way carries the core for its
-// own platform instead of every platform's shared library, starts without touching the
-// filesystem, and runs where there is no writable temp directory or no dynamic loader at
-// all — a read-only container, a `scratch` image, a fully static build. There is also
-// nothing left that can fail to load: Available is always true.
+// That takes cgo, and so a C compiler wherever the module is built — gcc or clang on Linux,
+// the Xcode command-line tools on macOS, a MinGW-w64 gcc (or llvm-mingw on arm64) on
+// Windows. TinyGo compiling to WebAssembly links the same core from backend_tinygo.go — its
+// cgo cannot parse this file's per-platform #cgo lines, hence `!tinygo` above. Anything else
+// does not compile; unsupported.go says so by name. There used to be three more backends — a
+// purego one for CGO_ENABLED=0 and Windows that extracted an embedded shared library to a
+// temp file, a cgo one that loaded that library instead of linking it, and a wasmtime one —
+// and none of them reached a platform this one does not: wasmtime-go itself needs cgo and
+// ships engines only for these same platforms.
 //
 // One archive serves both C libraries on Linux. cgo has no build constraint that tells
 // glibc from musl, so there cannot be one per libc; the archive is the core built for the
-// musl target, which asks the C library for nothing glibc and musl do not both have. The
-// suite runs against it on Debian and on Alpine.
+// musl target, which asks the C library for nothing glibc and musl do not both have (memcpy,
+// memset, bcmp, abort). The suite runs against it on Debian and on Alpine.
 //
-// Three other builds exist, and none of them changes:
+// Windows links the same MSVC archive C#'s Native AOT publish does: MinGW's linker reads
+// MSVC's COFF objects, and what the archive asks of the C runtime — memcpy, memset, memcmp,
+// abort, __CxxFrameHandler3 — resolves against msvcrt.dll through MinGW's own import
+// library, so the link line names nothing else. The core imports nothing from Windows
+// itself: parsing needs no system call.
 //
-//   - CGO_ENABLED=0 — which includes every cross-compile, per Go's own default — is the
-//     purego backend (backend_purego.go): the shared library, embedded and dlopen'd. An
-//     archive cannot be linked without a C linker.
-//   - Windows is purego unconditionally; see backend_purego.go for why.
-//   - `-tags hypercast_dynamic` keeps cgo but loads the shared library the way this module
-//     did through 0.3.0 (backend_cgo.go), for a build that has to pick the core up at run
-//     time rather than link time.
+// cgo cannot call a function pointer directly — it needs a statically-typed C call site —
+// hence one shim per ABI shape (plain, numeric, unix, version), each taking its door as a
+// pointer. The shims also own the out-params: any Go pointer handed to a cgo call escapes
+// to the heap, so instead of passing `&out` and `&fault` across, the C side declares the
+// out-value, the fault span and the format on its own stack and hands the whole verdict
+// back BY VALUE as one struct. No Go pointer crosses but the input bytes — a pointer value
+// into memory that already exists, not an address taken of a local — and the success path
+// allocates nothing (allocs_test.go holds that).
 //
-// The shims are backend_cgo.go's, unchanged: each takes the door as a function pointer and
-// owns the out-params on the C stack, so no Go pointer crosses but the input bytes and the
-// success path allocates nothing. Only where the pointers come from differs — the linker
-// here, dlsym there.
-//
-// The archives are committed, for the reason the shared libraries are (staticlib/README.md):
-// a Go module is whatever is in the tree at the resolved version.
+// The archives are committed (staticlib/README.md): a Go module is whatever is in the tree at
+// the resolved version, with no packing step to stage them in.
 package hypercast
 
 /*
@@ -42,10 +46,12 @@ package hypercast
 #cgo linux,arm64 LDFLAGS: ${SRCDIR}/staticlib/linux_arm64/libhypercast.a
 #cgo darwin,amd64 LDFLAGS: ${SRCDIR}/staticlib/darwin_amd64/libhypercast.a
 #cgo darwin,arm64 LDFLAGS: ${SRCDIR}/staticlib/darwin_arm64/libhypercast.a
+#cgo windows,amd64 LDFLAGS: ${SRCDIR}/staticlib/windows_amd64/libhypercast.a
+#cgo windows,arm64 LDFLAGS: ${SRCDIR}/staticlib/windows_arm64/libhypercast.a
 #include <stddef.h>
 #include <stdint.h>
 
-// The core's C ABI — rust/src/ffi.rs, the same twenty-two exports every backend calls.
+// The core's C ABI — rust/src/ffi.rs, the twenty-two exports every binding calls.
 // `out`, `format` and `fault` are untyped because the shims below fill and read them as
 // the raw layouts ffi.rs declares.
 uint32_t hypercast_version(void);
@@ -128,38 +134,40 @@ import (
 	"unsafe"
 )
 
-// The backend-defined symbol types cast.go's shared doors are written against: here both
-// alias the address of a linked C function and the calls go through the statically-typed C
-// shims above;
-// in backend_purego.go each symbol is a purego-registered typed trampoline instead.
+// The backend-defined symbol types cast.go's doors are written against: here both are the
+// address of a linked C function, called through the statically-typed shims above;
+// backend_tinygo.go's are Go functions that call the core directly.
 type (
 	plainSymbol   = unsafe.Pointer
 	numericSymbol = unsafe.Pointer
 )
 
-var symBool, symI8, symI16, symI32, symI64, symU8, symU16, symU32, symU64,
-	symF32, symF64, symDecimal, symUuid, symTimestamp, symUnix, symDate, symDateOrdered,
-	symDateTime, symTime, symDuration, symExcelSerial, symVersion unsafe.Pointer
+// Each door's address, resolved by the linker — nothing to look up at run time.
+var (
+	symBool      = plainSymbol(C.cast_bool)
+	symUuid      = plainSymbol(C.cast_uuid)
+	symTimestamp = plainSymbol(C.cast_timestamp)
+	symDate      = plainSymbol(C.cast_date)
+	symTime      = plainSymbol(C.cast_time)
+	symDuration  = plainSymbol(C.cast_duration)
 
-// loadBackend has nothing to load — the linker did that — so it takes each door's address
-// from the linked symbol and makes the one call through the ABI that every backend ends
-// with. It cannot fail. ensureLoaded (load.go) runs it exactly once.
-func loadBackend() error {
-	symBool, symUuid = unsafe.Pointer(C.cast_bool), unsafe.Pointer(C.cast_uuid)
-	symI8, symI16 = unsafe.Pointer(C.cast_i8), unsafe.Pointer(C.cast_i16)
-	symI32, symI64 = unsafe.Pointer(C.cast_i32), unsafe.Pointer(C.cast_i64)
-	symU8, symU16 = unsafe.Pointer(C.cast_u8), unsafe.Pointer(C.cast_u16)
-	symU32, symU64 = unsafe.Pointer(C.cast_u32), unsafe.Pointer(C.cast_u64)
-	symF32, symF64 = unsafe.Pointer(C.cast_f32), unsafe.Pointer(C.cast_f64)
-	symDecimal = unsafe.Pointer(C.cast_decimal)
-	symVersion = unsafe.Pointer(C.hypercast_version)
-	symTimestamp, symUnix = unsafe.Pointer(C.cast_timestamp), unsafe.Pointer(C.cast_unix)
-	symDate, symDateOrdered = unsafe.Pointer(C.cast_date), unsafe.Pointer(C.cast_date_ordered)
-	symDateTime = unsafe.Pointer(C.cast_datetime)
-	symTime, symDuration = unsafe.Pointer(C.cast_time), unsafe.Pointer(C.cast_duration)
-	symExcelSerial = unsafe.Pointer(C.cast_excel_serial)
-	nativeVersion = callVersion()
-	return nil
+	symI8      = numericSymbol(C.cast_i8)
+	symI16     = numericSymbol(C.cast_i16)
+	symI32     = numericSymbol(C.cast_i32)
+	symI64     = numericSymbol(C.cast_i64)
+	symU8      = numericSymbol(C.cast_u8)
+	symU16     = numericSymbol(C.cast_u16)
+	symU32     = numericSymbol(C.cast_u32)
+	symU64     = numericSymbol(C.cast_u64)
+	symF32     = numericSymbol(C.cast_f32)
+	symF64     = numericSymbol(C.cast_f64)
+	symDecimal = numericSymbol(C.cast_decimal)
+)
+
+// packedVersion is the core's own version, major<<16 | minor<<8 | patch, read through the
+// ABI rather than from this module, so NativeVersion reports the archive that was linked.
+func packedVersion() uint32 {
+	return uint32(C.call_version(unsafe.Pointer(C.hypercast_version)))
 }
 
 func fromC(r C.hc_result) result {
@@ -184,24 +192,20 @@ func callNumeric(sym numericSymbol, ptr unsafe.Pointer, length uintptr, format r
 		C.uint64_t(binary.LittleEndian.Uint64(format.Currency[8:]))))
 }
 
-func callVersion() uint32 {
-	return uint32(C.call_version(symVersion))
-}
-
 func callUnix(ptr unsafe.Pointer, length uintptr, precision uint32) result {
-	return fromC(C.call_unix(symUnix, (*C.uint8_t)(ptr), C.size_t(length), C.uint32_t(precision)))
+	return fromC(C.call_unix(unsafe.Pointer(C.cast_unix), (*C.uint8_t)(ptr), C.size_t(length), C.uint32_t(precision)))
 }
 
-// cast_date_ordered and cast_datetime share the unix ABI shape (ptr, len, u32, out,
-// fault) — same C shim.
+// cast_date_ordered, cast_datetime and cast_excel_serial share the unix ABI shape (ptr,
+// len, u32, out, fault) — same C shim.
 func callDateOrdered(ptr unsafe.Pointer, length uintptr, order uint32) result {
-	return fromC(C.call_unix(symDateOrdered, (*C.uint8_t)(ptr), C.size_t(length), C.uint32_t(order)))
+	return fromC(C.call_unix(unsafe.Pointer(C.cast_date_ordered), (*C.uint8_t)(ptr), C.size_t(length), C.uint32_t(order)))
 }
 
 func callDateTime(ptr unsafe.Pointer, length uintptr, order uint32) result {
-	return fromC(C.call_unix(symDateTime, (*C.uint8_t)(ptr), C.size_t(length), C.uint32_t(order)))
+	return fromC(C.call_unix(unsafe.Pointer(C.cast_datetime), (*C.uint8_t)(ptr), C.size_t(length), C.uint32_t(order)))
 }
 
 func callExcelSerial(ptr unsafe.Pointer, length uintptr, epoch uint32) result {
-	return fromC(C.call_unix(symExcelSerial, (*C.uint8_t)(ptr), C.size_t(length), C.uint32_t(epoch)))
+	return fromC(C.call_unix(unsafe.Pointer(C.cast_excel_serial), (*C.uint8_t)(ptr), C.size_t(length), C.uint32_t(epoch)))
 }

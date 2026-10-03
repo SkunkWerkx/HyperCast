@@ -103,7 +103,7 @@ def test_currency_symbol_is_declared_never_guessed():
 
 def test_currency_symbol_rules_are_a_caller_bug():
     # 1 to 16 UTF-8 bytes, no ASCII digit or whitespace — the core's CurrencySymbol rule,
-    # enforced at construction like equal separators, identically on both backends.
+    # enforced at construction like equal separators.
     for bad in ("$5", "US D", "x" * 17, "€" * 6):
         with pytest.raises(ValueError):
             NumFormat(".", ",", NumFormat.ALL, bad)

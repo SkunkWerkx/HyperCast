@@ -13,18 +13,21 @@ Requirements that hold across every round, stated up front so no layer designs t
   `java/aot-smoke-test`); HyperCast inherits them as a requirement, not an aspiration —
   every layer, the tabular one included.
 - **The scalar core and its bindings must ride alongside HyperUuid's wasm train.** The
-  same proven shapes: the Rust core under `wasm32-wasip1`, C# via Blazor's
-  `NativeFileReference` static linking, and the core running as a `wasm32-wasip1` module
-  *inside* the Java, Ruby, Python and Go processes through an engine each ecosystem already
-  has (GraalWasm, wasmtime). HyperCast's core is strictly easier freight than HyperUuid's
-  here — pure computation over caller bytes, zero dependencies, no WASI clock or randomness
-  imports at all — and both legs are proven, not projected: the full test suite (unit tests,
-  the counting-allocator proof, every corpus replay, both fault-span invariant sweeps)
-  passes under `wasmtime` on `wasm32-wasip1`
+  same proven shapes: the Rust core under `wasm32-wasip1` and `wasm32-unknown-unknown`,
+  C# via Blazor's `NativeFileReference` static linking, Python as a Pyodide wheel, Go
+  through TinyGo and Swift through its WebAssembly SDK, each linking the core in, and the
+  core running as a `wasm32-wasip1` module *inside* the JVM through GraalWasm. HyperCast's
+  core is strictly easier freight than HyperUuid's here — pure computation over caller
+  bytes, zero dependencies, no WASI clock or randomness imports at all — and every leg is
+  proven, not projected: the full test suite (unit tests, the counting-allocator proof,
+  every corpus replay, both fault-span invariant sweeps) passes under `wasmtime` on
+  `wasm32-wasip1`
   (`CARGO_TARGET_WASM32_WASIP1_RUNNER="wasmtime --dir <repo>" cargo test --target
   wasm32-wasip1`; the preopen is only so the conformance test can read `corpus/`), and the
-  four in-process backends run their bindings' whole suites, corpus replay included, a
-  second time on every CI leg (see the root README's WebAssembly section).
+  browser targets run in headless Chrome on every pull request (see the root README's
+  WebAssembly section). The in-process wasm backends Ruby, Python and Go carried from 0.3.0
+  through 0.4.0 are gone in 0.6.0: each binding now links the core or loads a native
+  library on every platform it ships for, so the fallback had nothing left to catch.
 - **The tabular layer is server domain.** CSV/TSV/XLSX ingestion must be AOT-clean like
   everything else, but wasm is explicitly out of scope at that layer — no design
   contortions to keep zip/XML streaming sandbox-friendly.
@@ -110,7 +113,7 @@ One piece of this round already landed, ahead of schedule and on purpose:
   natural, tiny addition to `temporal.rs` when this round starts" — it turned out to be
   exactly that, so it was built early rather than left to block the tabular layer. The door
   ships in every binding today (`cast_excel_serial`, a caller-declared `ExcelEpoch`, the
-  phantom serial `Malformed` exactly as the text `1900-02-29` already is), with
+  phantom serial `OutOfRange` exactly as the text `1900-02-29` is), with
   `corpus/excel_serial.json` holding it byte-identical across all eight languages. The door
   reads serial *text* — a CSV column of serials. HyperWorkbook's reader starts from the
   `f64` the file stores and converts it in `hypertabular::serial`, which carries the same

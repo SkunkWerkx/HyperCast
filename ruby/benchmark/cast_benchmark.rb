@@ -24,7 +24,7 @@ ISO_SPAN = "PT1H30M15.5S"
 INT_FAULT = "12345x7"
 
 # Every number below belongs to one backend on one Ruby, so say which before printing any:
-# run it again under HYPERCAST_PURE=1 or HYPERCAST_WASM=1 for the other two.
+# run it again under HYPERCAST_PURE=1 for the other one.
 puts "backend: #{HyperCast::BACKEND} (core #{HyperCast.native_version}) — #{RUBY_DESCRIPTION}"
 puts
 

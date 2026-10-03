@@ -3,12 +3,11 @@ require_relative "hypercast/native_platform"
 require_relative "hypercast/runtime"
 
 # Allocation-lean scalar casts — booleans, numerics, exact decimals, UUIDs, temporals —
-# from one Rust core, reached through whichever of three backends this install can load:
+# from one Rust core, reached through whichever of two backends this install can load:
 # the core linked straight into a Magnus native extension (shipped precompiled in the
-# platform gems), the native libhypercast shared library called through Fiddle (the
-# universal gem bundles one per supported platform), or the same core as a WebAssembly
-# module inside the wasmtime gem. HyperCast::BACKEND names the one that loaded; the
-# selection logic is at the bottom of this file. Every door returns a verdict: Success or
+# platform gems), or the native libhypercast shared library called through Fiddle (the
+# universal gem bundles one per supported platform). HyperCast::BACKEND names the one that
+# loaded; the selection logic is at the bottom of this file. Every door returns a verdict: Success or
 # Fault (a closed reason plus the offending span), never an exception for bad data — the
 # only exceptions here are caller bugs (a malformed NumFormat, an undeclared option, text
 # that is not a String), never data, and the same exception on every backend.
@@ -30,7 +29,7 @@ require_relative "hypercast/runtime"
 module HyperCast
   # This gem's own version — kept in lockstep with hypercast.gemspec by the
   # prepare-release workflow, so the two can never drift apart again.
-  VERSION = "0.5.0"
+  VERSION = "0.6.0"
 
   # The success case of a verdict: a cast value.
   Success = Data.define(:value)
@@ -199,11 +198,10 @@ module HyperCast
     # Whether a backend actually loaded and exports the ABI this binding was built against
     # — what a consumer with a fallback of its own checks before committing to these doors.
     # Probed once (a native_version round trip: the cheapest call the core has), cached,
-    # and never raises: a missing shared library, an older core without the version
-    # export, or a wasm module the wasmtime gem cannot instantiate all answer false. The
-    # doors themselves keep their own behavior — the first call on an unavailable backend
-    # raises its precise LoadError, exactly as before — and so does require-time selection
-    # under HYPERCAST_WASM=1 without wasmtime; this only answers the question quietly.
+    # and never raises: a missing shared library, an unsupported platform, or an older core
+    # without the version export all answer false. The doors themselves keep their own
+    # behavior — the first call on an unavailable backend raises its precise LoadError —
+    # this only answers the question quietly.
     def available?
       return @available unless @available.nil?
 
@@ -289,7 +287,7 @@ module HyperCast
     #
     # The 1900 system contains a day that never existed: serial 60 is 1900-02-29, kept
     # deliberately because Lotus 1-2-3 wrongly treated 1900 as a leap year and Excel copied
-    # the bug for file compatibility. It is :malformed here — the same verdict .date gives
+    # the bug for file compatibility. It is :out_of_range here — the same verdict .date gives
     # the text "1900-02-29" — so every serial above it is shifted one day against a naive
     # count. An unknown epoch is a caller bug (KeyError), never a verdict.
     def excel_serial(text, epoch)
@@ -392,10 +390,11 @@ module HyperCast
     # registering a GC finalizer — measured as the dominant per-call cost by an order of
     # magnitude. The NumFormat no longer lives here: each format owns its own packed
     # pointer (see packed_cache), so a numeric call copies nothing into scratch before
-    # crossing.
+    # crossing. Allocated through Runtime.buffer, which loads the library first, so a
+    # missing one is reported as such before Fiddle is touched.
     def scratch
       Thread.current[:hypercast_scratch] ||= begin
-        base = Fiddle::Pointer.malloc(24, Fiddle::RUBY_FREE)
+        base = Runtime.buffer(24)
         [base, base + 16]
       end
     end
@@ -445,9 +444,7 @@ module HyperCast
 
     # The shared body of the four doors that take a caller-declared u32 — a precision, an
     # epoch, or a field order — already resolved from its Symbol by the door. These bodies
-    # (plain, numeric, declared, and packed_version below) are the whole native crossing:
-    # the wasm backend (wasm_runtime.rb) redefines exactly these four in place and nothing
-    # above them.
+    # (plain, numeric, declared, and packed_version below) are the whole Fiddle crossing.
     def declared(symbol, text, code, out_size)
       bytes = utf8(text)
       out, fault = scratch
@@ -480,7 +477,7 @@ module HyperCast
     def packed_cache
       @packed_cache ||= Hash.new do |cache, format|
         cache.shift while cache.size >= PACKED_CACHE_LIMIT
-        pointer = Fiddle::Pointer.malloc(32, Fiddle::RUBY_FREE)
+        pointer = Runtime.buffer(32)
         pointer[0, 32] = format.packed
         cache[format] = pointer
       end.compare_by_identity
@@ -497,30 +494,18 @@ end
 # --- backend selection: the Magnus extension, when present, replaces the doors above in
 # place on this module (no delegation layer) — Fiddle's measured 1.6 µs per-call floor
 # drops to an ordinary extension call. The pure-Fiddle definitions stay the universal
-# zero-compile fallback; precompiled platform gems are how the extension ships without
-# ever making a consumer compile anything. Set HYPERCAST_PURE=1 to force Fiddle.
+# zero-compile fallback — the last resort, for a Ruby or a platform no platform gem covers;
+# precompiled platform gems are how the extension ships without ever making a consumer
+# compile anything, and they carry no Fiddle library at all.
 #
-# The third backend is WebAssembly (lib/hypercast/wasm_runtime.rb): the same core as a
-# wasm32-wasip1 module, run in-process by the `wasmtime` gem, which is deliberately not a
-# runtime dependency of this gem — a consumer who wants it installs it. HYPERCAST_WASM=1
-# forces it (and fails loudly if wasmtime is missing); otherwise it is only ever chosen when
-# there is no native library for this platform at all and wasmtime happens to be available,
-# so no supported platform's behavior changes by its existence.
-#
-# Both variables are read for presence, not value — set to anything at all, "0" and the
-# empty string included, they force their backend — and HYPERCAST_WASM wins when both are
-# set.
+# HYPERCAST_PURE forces Fiddle. It is a testing and diagnostic switch — CI runs the whole
+# suite through it, and it is how a suspected extension bug is ruled in or out — not a
+# setting a deployment needs. It is read for presence, not value, so "0" and the empty
+# string force it too. Inside a platform gem there is no library for it to load: BACKEND
+# still reads :fiddle, HyperCast.available? answers false, and the first door call raises a
+# LoadError naming the universal gem, which is where the Fiddle backend lives.
 HyperCast::BACKEND =
-  if ENV["HYPERCAST_WASM"]
-    begin
-      require "wasmtime"
-    rescue LoadError
-      raise LoadError,
-            "hypercast: HYPERCAST_WASM=1 needs the wasmtime gem — `gem install wasmtime` (or add it to your Gemfile)"
-    end
-    require_relative "hypercast/wasm_runtime"
-    :wasm
-  elsif ENV["HYPERCAST_PURE"]
+  if ENV["HYPERCAST_PURE"]
     :fiddle
   else
     # Two layouts, and both have to work. A released platform gem is a "fat" gem carrying one
@@ -534,7 +519,11 @@ HyperCast::BACKEND =
     # other exists.
     #
     # A miss on both is not an error: it means this Ruby/platform combination has no
-    # precompiled extension, which is precisely what the Fiddle backend is for.
+    # precompiled extension, which is precisely what the Fiddle backend is for. A platform
+    # with no shared library either still lands on Fiddle, so the first call raises its own
+    # precise error — a "not found" LoadError naming the path, or
+    # NativePlatform::UnsupportedPlatformError naming the platform. HyperCast.available? is
+    # the quiet way to ask.
     begin
       require "hypercast/#{RUBY_VERSION[/\d+\.\d+/]}/hypercast_native"
       :native
@@ -543,22 +532,7 @@ HyperCast::BACKEND =
         require "hypercast_native"
         :native
       rescue LoadError
-        if HyperCast::Runtime.fiddle_library_available?
-          :fiddle
-        else
-          # No shared library for this platform either. wasmtime, if the consumer has it,
-          # is the only backend left that can run here; without it, stay on Fiddle so the
-          # first call raises its own precise error — a "not found" LoadError naming the
-          # path, or NativePlatform::UnsupportedPlatformError naming the platform — rather
-          # than a vaguer one from here. HyperCast.available? is the quiet way to ask.
-          begin
-            require "wasmtime"
-            require_relative "hypercast/wasm_runtime"
-            :wasm
-          rescue LoadError
-            :fiddle
-          end
-        end
+        :fiddle
       end
     end
   end

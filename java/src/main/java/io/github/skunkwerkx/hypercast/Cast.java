@@ -1210,7 +1210,7 @@ public final class Cast {
      *
      * <p>The 1900 system contains a day that never existed: serial {@code 60} is
      * 1900-02-29, kept deliberately because Lotus 1-2-3 wrongly treated 1900 as a leap year
-     * and Excel copied the bug for file compatibility. It is {@link CastFailure#MALFORMED}
+     * and Excel copied the bug for file compatibility. It is {@link CastFailure#OUT_OF_RANGE}
      * here — the same verdict {@link #date(String)} gives the text {@code 1900-02-29} — so
      * every serial above it is shifted one day against a naive count, which is the
      * arithmetic hand-rolled conversions get wrong.
@@ -1249,8 +1249,9 @@ public final class Cast {
 
     /**
      * Casts a strict ISO 8601 {@code yyyy-MM-dd} calendar date to a {@link LocalDate}.
-     * Anything time-bearing or non-ISO is {@link CastFailure#MALFORMED}; year 0000 is
-     * {@link CastFailure#OUT_OF_RANGE}.
+     * Anything time-bearing or non-ISO is {@link CastFailure#MALFORMED}; year 0000, month
+     * 00 or 13+, or a day the month does not have is {@link CastFailure#OUT_OF_RANGE}, at
+     * that field.
      *
      * @param text the text to cast
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
@@ -1408,9 +1409,10 @@ public final class Cast {
 
     /**
      * Casts an ISO 8601 24-hour time-of-day — {@code HH:mm}, {@code HH:mm:ss}, or
-     * {@code HH:mm:ss.f{1..9}} — to a {@link LocalTime} at full nanosecond fidelity.
-     * Midnight and {@code 23:59:59.999999999} are real clock readings, so this door has no
-     * range failure.
+     * {@code HH:mm:ss.f{1..9}} — to a {@link LocalTime} at full nanosecond fidelity,
+     * {@code 00:00} through {@code 23:59:59.999999999}. A well-formed hour past 23 or minute
+     * or second past 59 ({@code 24:00}, {@code 15:04:60}) is
+     * {@link CastFailure#OUT_OF_RANGE}, at that field.
      *
      * @param text the text to cast
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}

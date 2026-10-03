@@ -1,6 +1,5 @@
 """Pins the typed surface: ``py.typed`` ships, ``_native.pyi`` describes what the loaded
-backend actually has (it is the one description of both — the extension and the wasm backend
-that stands in for it), and a consumer's ``match`` over a verdict type-checks as exhaustive
+extension actually has, and a consumer's ``match`` over a verdict type-checks as exhaustive
 against the package. The last one needs mypy and is skipped without it."""
 
 from __future__ import annotations
@@ -35,19 +34,19 @@ def test_the_package_is_marked_typed():
 def test_the_stub_and_the_loaded_backend_name_the_same_surface():
     stubbed = set(_functions(STUB.body)) | set(_classes())
     missing = {name for name in stubbed if not hasattr(_native, name)}
-    assert not missing, f"in _native.pyi but not on the {hypercast.BACKEND} backend: {missing}"
-    # And the other way: everything the package re-exports from the backend is stubbed.
+    assert not missing, f"in _native.pyi but not on the extension: {missing}"
+    # And the other way: everything the package re-exports from the extension is stubbed.
     reexported = {name for name in hypercast.__all__ if getattr(_native, name, None) is getattr(hypercast, name)}
     assert reexported <= stubbed, f"re-exported but not in _native.pyi: {reexported - stubbed}"
     assert {"Success", "Fault", "NumFormat", "cast_i32", "native_version"} <= reexported
 
 
 def test_the_stub_and_the_loaded_backend_agree_on_parameter_names():
-    # Parameter names are part of the surface — a keyword call must work on both backends.
+    # Parameter names are part of the surface — a keyword call must work.
     for name, node in _functions(STUB.body).items():
         expected = [arg.arg for arg in node.args.args]
         actual = list(inspect.signature(getattr(_native, name)).parameters)
-        assert actual == expected, f"{name} on the {hypercast.BACKEND} backend"
+        assert actual == expected, f"{name} on the extension"
 
 
 def test_the_stub_and_the_loaded_backend_agree_on_class_members():
@@ -60,7 +59,7 @@ def test_the_stub_and_the_loaded_backend_agree_on_class_members():
             if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name)
         }
         missing = {member for member in declared if not hasattr(cls, member)}
-        assert not missing, f"{name} on the {hypercast.BACKEND} backend lacks {missing}"
+        assert not missing, f"{name} on the extension lacks {missing}"
 
 
 def test_a_consumers_match_type_checks_as_exhaustive(monkeypatch):

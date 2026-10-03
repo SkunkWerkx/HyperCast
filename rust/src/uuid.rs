@@ -45,8 +45,13 @@ pub fn cast_uuid(input: impl AsRef<[u8]>) -> Result<[u8; 16], Fault> {
         }
         b'{' => parse_wrapped(text, start, b'}'),
         b'(' => parse_wrapped(text, start, b')'),
-        _ if text.len() == 32 => parse_n(text, start),
-        _ => parse_d(text, start),
+        // The length lives in the type rather than a guard, so `parse_n`'s indexing is
+        // provably in bounds without inlining: built as a dependency's rlib, the guard and
+        // the indexing were optimized apart and `cast_uuid` failed the no-panic check.
+        _ => match <&[u8; 32]>::try_from(text) {
+            Ok(digits) => parse_n(digits, start),
+            Err(_) => parse_d(text, start),
+        },
     }
 }
 
@@ -107,7 +112,7 @@ fn parse_d(text: &[u8], start: usize) -> Result<[u8; 16], Fault> {
 }
 
 /// N format: 32 bare hex digits.
-fn parse_n(text: &[u8], start: usize) -> Result<[u8; 16], Fault> {
+fn parse_n(text: &[u8; 32], start: usize) -> Result<[u8; 16], Fault> {
     let mut out = [0u8; 16];
     for (slot, at) in out.iter_mut().zip((0..32).step_by(2)) {
         *slot = hex_pair(text, at, start)?;

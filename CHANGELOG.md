@@ -9,8 +9,190 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-10-02
+
+Four themes, shared with HyperUuid's 0.6.0; there was no HyperCast 0.5.0, so this release
+also carries the work that went into HyperUuid's 0.5.0. *One way in*: every binding reaches the
+core one way per platform. Go links it statically through cgo on Linux, macOS and Windows
+and nothing else — purego, the loading cgo backend, the wasmtime backend and the nine
+embedded files under `go/native/` are gone — and Swift now links it on macOS and Windows as
+well as Linux and WebAssembly, so it has no loader, nothing to deploy and no door that can
+throw. Ruby gets Magnus platform gems for Alpine and keeps Fiddle only in the universal gem,
+as the last resort; Python and Ruby drop the wasmtime backend that reached no platform their
+native backends did not. *In the browser*: C#, Rust, Python (a Pyodide wheel on PyPI), Go
+(through TinyGo) and Swift (through a WASI shim) all run HyperCast in a web page, and CI runs
+each in headless Chrome on every PR; PHP is proven and documented but not shipped.
+*Smaller*: the native libraries are built without Rust's standard library and stripped —
+the linux-x64 library 0.4.0 shipped at 529,960 bytes is 104,496 in a local build — the Ruby
+platform gems carry only their own platform's extensions, Go's module and the Composer package lose their embedded
+libraries, and a Blazor app no longer carries a 3 MB archive it never reads. *Proven*: every
+door but the two float ones is proved unable to panic on every PR, and the crate declares
+its minimum Rust (1.88) and gains clippy, semver, round-trip and browser checks. One set of
+verdicts changes on purpose: a date or time shaped right but naming a moment that does not
+exist (month 13, February 30th, hour 24, a `:60` second) is now `OutOfRange` at that field
+instead of `Malformed`.
+
+### Added
+
+- **Go — Windows links the core in, like Linux and macOS.** A cgo build on Windows now names
+  `go/staticlib/windows_amd64` (or `windows_arm64`) on its link line: the same MSVC archive
+  the C# package links under Native AOT. MinGW's linker reads MSVC's objects, and the core
+  needs nothing from Windows beyond the C runtime, which resolves against msvcrt, so the link
+  line names nothing else and there is one Windows archive per architecture for both
+  bindings. *(`go get`)*
+- **Go — in the browser, through TinyGo.** [TinyGo](https://tinygo.org) 0.42+ compiles the
+  module to WebAssembly with the core linked in, the way Blazor links it for C#:
+  `tinygo build -target=wasm` picks up `backend_tinygo.go`, which names
+  `go/staticlib/wasm/libhypercast.a` — the `wasm32-wasip1` archive, the same bytes as Swift's —
+  on its link line. The core imports nothing (no clock, no randomness, no I/O), so the page
+  loads one module. `-target=wasip1` works the same way under a WASI runtime. CI builds
+  `go/internal/tinygosmoke` this way on every PR, with that run's archive, and runs 17
+  checks in headless Chrome — every ABI shape (plain, numeric with a format and a currency
+  symbol, discriminated), a fault with its span, and the core's version against
+  `rust/Cargo.toml` — failing on any `FAIL` or a missing `DONE`. Stock Go on
+  `GOOS=js`/`wasip1` is still a compile error, whose name now points at TinyGo. *(`go get`)*
+- **Python — in the browser, under Pyodide.** A ninth wheel,
+  `cp311-abi3-pyemscripten_2026_0_wasm32` (~150 KB), is the same PyO3 extension built for
+  Pyodide 314.x's Emscripten target, so `await micropip.install("hypercast")` finds it on
+  PyPI the way pip finds the native wheels — the native backend, no JavaScript bridge. CI
+  runs the package's whole pytest suite, corpus replay included, inside Pyodide on every
+  run, under Node and in headless Chrome, before the wheel is attested and uploaded.
+  *(PyPI)*
+- **Swift — in the browser, through a WASI shim.** What swift.org's WebAssembly SDK builds
+  from the binding is a plain `wasm32-wasip1` command module with the core linked in, so a
+  page runs it with [`@bjorn3/browser_wasi_shim`](https://github.com/bjorn3/browser_wasi_shim)
+  — no JavaScriptKit, no change to the package. CI builds the smoke executable for
+  WebAssembly with that run's archive and runs it in headless Chrome on every PR, failing
+  unless it exits 0. *(`.package(url:)`)*
+- **C# and Rust in the browser, run in CI on every PR.** The Blazor WebAssembly smoke app,
+  which links the `wasm32-unknown-emscripten` archive through the package's own targets file
+  and calls all 22 native entry points, is published and loaded in headless Chrome against
+  the archive that run built (`check.sh` takes it as `STATICLIB`); through 0.4.0 it was a
+  local check. The crate gets the same for `wasm32-unknown-unknown`: `rust/browser-test`
+  depends on it the way a browser consumer does — with nothing to switch on, since the core
+  reads no clock and no entropy — and `wasm-pack test --headless --chrome` runs five tests
+  over every door family and the version export in a real browser. *(repository only)*
+- **Rust — `rust-version = "1.88"`.** The lowest toolchain the crate builds on, now declared
+  and measured: the parsers use `let` chains (stable since 1.88) and `is_multiple_of`, above
+  edition 2024's own 1.85 floor. An older rustc says so by name instead of failing somewhere
+  in the compile, and Cargo's resolver picks dependency versions that build on it. CI checks
+  the library and the `no_std` shared library on exactly that version. *(crates.io)*
+- **Rust — the doors are checked against a reference, not just for panics.**
+  `tests/round_trip.rs`: values format to text and cast back to themselves, and every
+  one-character edit of a valid string (replaced, removed or inserted, multi-byte UTF-8
+  included) casts exactly when a deliberately naive reference parser says it should, to the
+  same value — about 34,000 strings across the UUID, boolean, integer (all eight widths) and
+  strict ISO date doors — and sampled floats and decimals survive their own canonical
+  formatting through `cast_f32`/`cast_f64`/`cast_decimal` to the same value. The doors whose
+  grammar *is* the lenience stay pinned by the shared corpus. *(repository only)*
+- **Rust — clippy, semver and MSRV checks, and a ctypes check of the shared library, on
+  every PR.** `lint-rust` runs clippy with warnings as errors over each configuration that
+  compiles different code (default with tests and benches, the bare-metal `no_std` rlib, the
+  `no_std` shared library, the Python extension, the fuzz target and the browser tests),
+  beside `cargo fmt --check` over all three crates. `check-semver` runs `cargo-semver-checks`
+  against the latest crates.io release; `check-msrv` builds on the declared `rust-version`. `check-cdylib` builds the `no_std` shared
+  library on all seven CI platforms, holds its exports to the 22 C ABI symbols (and the musl
+  builds to musl's libc as their one dependency), then loads it through Python's `ctypes` and
+  calls every export with an accepted and a rejected input
+  (`.github/scripts/cdylib_smoke.py`). *(repository only)*
+
+### Removed
+
+- **Go — every backend but the linked one.** The purego backend (`CGO_ENABLED=0`, and all of
+  Windows until now), the loading cgo backend (`-tags hypercast_dynamic`) and the wasmtime
+  backend (`-tags hypercast_wasm`) are gone, and with them `go/native/`: the eight shared
+  libraries and the wasm module every non-linked build embedded, the copy each process wrote
+  to a temp directory, and the libc detection that picked one. None of them reached a
+  platform the linked build does not — wasmtime-go needs cgo itself and ships engines only
+  for the same platforms — and stock Go compiled to WebAssembly never worked: its toolchain
+  has no cgo and no external linker. (TinyGo's does; see Added.) `go.mod` drops purego and
+  wasmtime-go, and `go/` (which the Composer archive carries too, for the Go proxy) is about a
+  quarter of its 0.4.0 size. *(`go get`, Packagist)*
+- **Python and Ruby — the in-process wasm backend.** `hypercast._wasm` and the `[wasm]` extra,
+  `lib/hypercast/wasm_runtime.rb` and the Gemfile's `wasmtime` group, the `HYPERCAST_WASM`
+  variable that forced either, and the `wasm32-wasip1` module inside every wheel and every gem
+  are gone. Neither reached a platform the native backends do not: only platform wheels are
+  published, each carrying the PyO3 extension, and no sdist, so a Python with no matching
+  wheel had nothing to fall back from; and the Ruby backend's only extra reach was a platform
+  with no Fiddle library, where the `wasmtime` gem itself has to be built from source with a
+  Rust toolchain. `hypercast.BACKEND` is now always `"native"`, and `HyperCast::BACKEND` is
+  `:native` or `:fiddle`. Java's GraalWasm backend stays, since it is plain Java and reaches
+  every JVM platform, and the jar keeps the module. *(PyPI, RubyGems)*
+
 ### Changed
 
+- **A date or time that is well-formed but impossible is `OutOfRange`, at the field that is
+  wrong.** `Malformed` now means only the wrong shape: a missing separator, a stray
+  character, three digits where two belong. Text with the right shape that names something
+  that does not exist is `OutOfRange`, with the fault span on that field's digits. That
+  covers year 0000, month 00 or 13 and up, a day the month does not have (`2026-02-29`), hour
+  24 and up (outside 1–12 with `AM`/`PM`), minute or second 60 and up (leap seconds
+  included), and a timestamp offset past `23:59`. All of these were `Malformed` before,
+  except year 0000, which was already `OutOfRange` but spanned the whole date and now spans
+  just the year. Every door that reads them moves together: `cast_date`,
+  `cast_date_ordered`, `cast_datetime`, `cast_time`, `cast_timestamp`, `cast_duration`'s
+  colon form (`25:00:00` — .NET's `TimeSpan` throws `OverflowException` there) and
+  `cast_excel_serial`'s 1900 phantom serial `60`, which keeps agreeing with the text
+  `1900-02-29`. Shape is checked across the whole input before any value, so
+  `2026-13-01T00:00:00x` is `Malformed` at the `x`, not out of range at the month. The
+  corpus carries every case with its span. *(every package)*
+- **Every shipped library is stripped.** The release profile now drops the symbol table and
+  debug info from what it links, never the exports, and leaves the machine code
+  byte-identical. Measured on local builds, the linux-x64 shared library goes 110,048 →
+  104,496 bytes, the wasm32-wasip1 module 137,432 → 126,724 and the Linux Magnus extension
+  551,736 → 457,400 (a platform gem carries two). Windows DLLs keep their symbols in a PDB,
+  not the DLL. The static libraries keep their symbols, since a consumer's linker resolves
+  the core through them, and `cargo bench` keeps its own for profilers. *(every package that
+  carries a native library)*
+- **Ruby — Magnus platform gems for Alpine, glibc gems named for their libc, and Fiddle only
+  in the universal gem.** Alpine gets platform gems of its own, `x86_64-linux-musl` and
+  `aarch64-linux-musl`, whose extensions are built and tested inside each Ruby's
+  `ruby:*-alpine` image; through 0.4.0 Alpine ran on Fiddle. The glibc gems are now
+  `x86_64-linux-gnu` and `aarch64-linux-gnu` (0.4.0's `x86_64-linux` and `aarch64-linux`):
+  beside a plain `*-linux` gem, `gem install` on RubyGems before 4.0 resolves that one on
+  Alpine, even under `--platform x86_64-linux-musl`, while naming the libc on both sides
+  makes every supported RubyGems and Bundler pick right — Nokogiri's scheme, for the same
+  reason. With `arm64-darwin`, `x64-mingw-ucrt` and `aarch64-mingw-ucrt` that is seven
+  platform gems, each carrying its Ruby 3.4 and 4.0 extensions and no Fiddle library at all,
+  and no `fiddle` dependency either (Fiddle is autoloaded, so a platform gem never loads it);
+  through 0.4.0 every platform gem also carried every RID's library and the wasm module,
+  though one only installs where its own platform matches. Fiddle is now the last resort, in
+  the universal gem alone, which still bundles all eight libraries and depends on `fiddle`:
+  Ruby 3.3, a Ruby newer than the release, Intel macOS (which has no platform gem and no CI
+  leg), or a platform with no build. `release.yml` checks every gem's contents before the
+  push. *(RubyGems)*
+- **Swift — the core is linked in on macOS and Windows too, so there is nothing to deploy
+  and nothing to throw.** The SwiftPM binary target that already linked a static core on
+  Linux and WebAssembly now carries macOS (`arm64-apple-macosx`, `x86_64-apple-macosx`) and
+  Windows (`x86_64-unknown-windows-msvc`, `aarch64-unknown-windows-msvc`, as
+  `hypercast.lib`) archives as well — nine in all, the same archives the C# package links
+  under Native AOT and Go links through cgo — and every platform depends on it
+  unconditionally. The shared libraries under `Sources/HyperCast/NativeLibs` (1.4 MB at
+  0.4.0, carried by every build, Linux and WebAssembly included) and the
+  `dlopen`/`LoadLibraryW` loader are gone: an executable copied on its own works on every
+  platform. No door throws any more — the only thing one ever threw was the load failure —
+  but each keeps its `throws`, so existing `try` call sites compile unchanged. `isAvailable`
+  is always `true`. `NativeLibraryError` is deprecated and has no cases; a platform with no
+  prebuilt core (iOS, Android, …) now fails to compile, with no `HyperCastCore` module,
+  instead of at run time. On Swift 6.3 with the opt-in `--build-system swiftbuild`, a
+  dependent package fails with `missing required module 'HyperCastCore'`
+  ([swift-build#1295](https://github.com/swiftlang/swift-build/pull/1295), fixed in 6.4);
+  every release's default build system is unaffected. *(`.package(url:)`)*
+- **Go — `NativeVersion` can no longer panic.** It still returns the core's own
+  `"major.minor.patch"`, now read from the linked core, which is always there; `Available` is
+  always `true`, `LoadError` always `nil`, and `ErrNativeUnavailable`, which nothing returns
+  or panics with any more, is deprecated. *(`go get`)*
+- **PHP — the `ext-php-rs` extension spike is on ext-php-rs 0.16, and proven in the browser.**
+  The extension builds and loads on PHP 8.5 as before. Built as a side module (258 KB, 85 KB
+  gzipped), the same extension runs in WordPress Playground's prebuilt PHP for the browser
+  (`@php-wasm/web`, PHP 8.5, JSPI), checked in node and headless Chromium across the version
+  probe, the boolean, integer, real, UUID, date and duration doors, a fault span and the
+  contract-violation exception. It is not shipped — a module per PHP minor and a large build
+  image in CI, waiting on a request — and `php/README.md` carries the whole recipe, including
+  the two upstream issues HyperUuid found on the same route
+  ([ext-php-rs#800](https://github.com/extphprs/ext-php-rs/issues/800),
+  [wordpress-playground#4377](https://github.com/WordPress/wordpress-playground/issues/4377)).
+  *(repository only)*
 - **Rust — every door except `cast_f32`/`cast_f64` is proved unable to panic, and CI
   re-proves it on every PR.** The doors always promised never to panic on bad input; at the
   C ABI a panic is an abort of the host process, so that promise is what keeps untrusted
@@ -53,7 +235,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Python — the wheels are built, installed and attested in CI, and the release publishes
   them unchanged.** Through 0.4.0 they were built in `release.yml` at the tag, so the first
   time a wheel was ever installed was after other registries had published; 0.4.0's osx-x64
-  wheel failed there. All eight are now built on every CI run by the forge's
+  wheel failed there. All nine (the Pyodide one is new; see Added) are now built on every CI run by the forge's
   `hyper-build-wheels.yml`, installed on their own platform and called into, and
   `release.yml` verifies their count, version and provenance before uploading them. Because
   the forge signs them, `gh attestation verify` on a wheel now takes
@@ -67,6 +249,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **C# — a Blazor WebAssembly app no longer gets the 3 MB wasm archive in its output.**
+  Restore resolves `runtimes/browser-wasm/nativeassets/` as a copy-local native asset, so
+  through 0.4.0 `libhypercast.a` was copied into `bin/` and the publish root of every
+  browser-wasm consumer, outside `wwwroot`, never served and never read. The package's
+  targets take it back out of the copy-local list; the link, which names the archive by
+  path, is unchanged. *(NuGet)*
 - **Rust — `default-features = false` builds on every target, not only bare metal.** Cargo
   builds every crate type a dependency lists, and a no_std cdylib has no panic handler, so
   through 0.4.0 a `default-features = false` consumer failed with "`#[panic_handler]`
@@ -75,6 +263,52 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   type, which is why the `thumbv7em` check in CI never saw it. CI now builds a real
   `default-features = false` consumer on the host and for `wasm32-unknown-unknown`.
   *(crates.io)*
+
+### Upgrade note
+
+Go has the breaking change, and it is the reason this is a minor release. Four smaller ones
+follow it: Swift drops the `NativeLibraryError` cases (second paragraph), Ruby renames its
+glibc platform gems (third), Python and Ruby lose an opt-in backend (fourth), and impossible
+dates and times change their verdict in every package (last). The Go module
+now builds only under cgo, on Linux, macOS and Windows on amd64 and arm64, which takes a C
+compiler where it is built: gcc or clang on Linux (`build-base` on Alpine), the Xcode
+command-line tools on macOS, MinGW-w64 gcc on Windows (llvm-mingw on arm64). A build with
+`CGO_ENABLED=0`, for stock Go's `GOOS=wasip1` or `js`, or for any other platform stops at
+compile time on `undefined: hypercast_needs_cgo_and_a_C_compiler_…`, which names the fix;
+drop `-tags hypercast_dynamic` and `-tags hypercast_wasm`, which no longer select anything.
+Cross-compiling needs a C cross-compiler, e.g. `CC=x86_64-w64-mingw32-gcc GOOS=windows
+CGO_ENABLED=1`. The API is unchanged: `Available` is always `true`, `LoadError` always `nil`,
+`NativeVersion` never panics, and `ErrNativeUnavailable` is deprecated. Stock Go compiled to
+WebAssembly cannot use this module; build with TinyGo 0.42+ instead, which links the core
+there, browser included (go/README's "In the browser (TinyGo)").
+
+Swift on macOS and Windows has nothing to deploy beside the executable any more: delete the
+step that copied `HyperCast_HyperCast.bundle` (or `.resources`) from deployment scripts and
+Dockerfiles. Code that matches `NativeLibraryError` cases (`.openFailed`, `.symbolNotFound`)
+no longer compiles — those cases are gone with the loader; a plain
+`catch let error as NativeLibraryError` still compiles, with a deprecation warning, and can be
+deleted along with any `do`/`catch` that existed only for it — no door throws. A Swift build
+for a platform with no prebuilt core now fails at compile time instead of throwing at run
+time. Nothing changes on Linux and WebAssembly.
+
+Ruby on Alpine moves from `BACKEND == :fiddle` to `:native` on Ruby 3.4 and 4.0 with no
+action, through the new musl platform gems; Intel Macs stay on Fiddle. The glibc platform
+gems are renamed `x86_64-linux-gnu` and `aarch64-linux-gnu`: RubyGems and Bundler resolve
+them by themselves, but anything that names the old `x86_64-linux`/`aarch64-linux` platform
+string explicitly — a `gem install --platform`, a pinned gem file name — needs the new one. A
+platform gem has no Fiddle library any more, so `HYPERCAST_PURE` inside one makes the first
+call raise a `LoadError` that names the universal gem (`gem install hypercast --platform
+ruby`, or Bundler's `force_ruby_platform`) instead of running on Fiddle.
+
+Python and Ruby users who set `HYPERCAST_WASM` should unset it: both packages now ignore it
+and load their native backend as though it were not set. `pip install hypercast[wasm]` still
+installs, with pip's warning that the package has no `wasm` extra; drop the extra.
+
+Every package: code that tells `Malformed` from `OutOfRange` on a date, time, timestamp,
+colon-form duration or Excel serial will see `OutOfRange` where it saw `Malformed` for a
+well-formed but impossible value (Changed, first entry). Code that only checks for success,
+or that reports the fault span, needs nothing: the span still points at the same digits,
+and for year 0000 it now points at the year instead of the whole date.
 
 ## [0.4.0] — 2026-10-01
 
@@ -709,7 +943,8 @@ notes: [v0.1.0 release](https://github.com/SkunkWerkx/HyperCast/releases/tag/v0.
   found in that window, in the gap between "the publish succeeded" and "a consumer can use it",
   and none of them could have failed a build in this repository.
 
-[Unreleased]: https://github.com/SkunkWerkx/HyperCast/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/SkunkWerkx/HyperCast/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.4.0...v0.6.0
 [0.4.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.1.0...v0.2.0

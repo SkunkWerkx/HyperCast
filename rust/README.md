@@ -64,7 +64,7 @@ The `std` feature is on by default for the crates.io consumer, the tests and the
 extensions. The artifacts this repository ships leave it out: the static libraries and the
 shared library every FFI binding loads (`cargo cdylib`, below) are all `#![no_std]`, each
 bringing the abort-on-panic handler `std` would otherwise supply — which takes the linux-x64
-shared library from 437 KB to 110 KB with the same exports and the same code behind them.
+shared library from 437 KB to 104 KB with the same exports and the same code behind them.
 The shared library is not one of the manifest's crate types, so cargo never builds it for a
 consumer of the crate.
 
@@ -83,9 +83,8 @@ cast_excel_serial("45292.75", ExcelEpoch::Y1900);
 
 The 1900 system contains a **February 29th that never existed**: Lotus 1-2-3 wrongly treated
 1900 as a leap year, Excel copied the bug for file compatibility, and serial `60` has named
-that phantom day ever since. This door rejects it as `Malformed` — the same verdict
-`cast_date` already gives the text `1900-02-29` — so both doors agree that day is not a
-date. Every serial above 60 is therefore shifted one day against a naive count, which is
+that phantom day ever since. This door rejects it as `OutOfRange` — the same verdict
+`cast_date` gives the text `1900-02-29` — so both doors agree that day does not exist. Every serial above 60 is therefore shifted one day against a naive count, which is
 precisely the arithmetic hand-rolled conversions get wrong. `ExcelEpoch::Y1904` (legacy
 Macintosh workbooks, still selectable today) has no phantom anywhere in it.
 
@@ -138,6 +137,37 @@ CI has already placed the library explicitly (`runtimes/<rid>/native/`,
 `src/main/resources/native/<rid>/`); the first collapsed-job run failed every Linux leg on
 `undefined symbol: PyExc_SystemError` before that gate existed.
 
+## Proven panic-free, and proven right
+
+Every C export is checked at link time: the `no-panic` feature wraps each one in dtolnay's
+[`#[no_panic]`](https://docs.rs/no-panic), and `cargo no-panic` (an alias in
+`.cargo/config.toml`) links a release build that fails, naming the export, if the optimizer
+left any panic path in it. CI runs it on every PR.
+
+To run the same proof from your own crate, turn on fat LTO in its release profile. Cargo
+ignores a dependency's profile, so a consumer's stock `--release` build compiles this crate
+separately, leaves the panic paths across that boundary in, and fails the link for most of
+the exports; thin LTO and `codegen-units = 1` are not enough:
+
+```toml
+[dependencies]
+hypercast = { version = "0.6", features = ["no-panic"] }
+
+[profile.release]
+lto = true
+```
+
+Panic-freedom says nothing about whether a door reads the right value, so
+`tests/round_trip.rs` checks that too: values format to text and cast back to themselves,
+and every one-character edit of a valid string (replaced, removed or inserted, multi-byte
+UTF-8 included) casts exactly when a deliberately naive reference parser says it should,
+to the same value — about 34,000 strings across the UUID, boolean, integer (each through
+all eight widths) and strict date doors — and 10,000 sampled floats, extremes and
+subnormals included, survive Rust's own shortest round-trip formatting through
+`cast_f32`/`cast_f64` to the same bits. The doors
+whose grammar *is* the lenience (grouping, currency, separator detection, the separated
+temporal forms, durations) are pinned by the shared corpus instead.
+
 ## WebAssembly
 
 The full test suite — unit tests, the allocation proof, and every corpus replay —
@@ -147,8 +177,16 @@ browser-wasm packaging consumes, on every PR — `cargo wasm-staticlib`, which l
 standard library out of it (the `staticlib` feature supplies the panic handler in its
 place), so it can be linked into one Blazor app beside HyperUuid's.
 
-One wasm build of this crate is not left to the consumer, because four bindings in this repo
-ship it: the `cdylib` for `wasm32-wasip1`, built from inside this directory so that
+**In the browser, from Rust.** The crate needs nothing from a consumer on
+`wasm32-unknown-unknown`: the core reads no clock and no entropy, so there is no `getrandom`
+backend to switch on and no time to hand in — `default-features = false` or not, it builds
+for the browser as it is. `rust/browser-test/` depends on it the way a browser consumer does
+and runs the boolean, integer, real, decimal, UUID, timestamp, date and duration doors plus
+the version export inside a real browser; CI runs it in headless Chrome on every PR
+(`wasm-pack test --headless --chrome` there).
+
+One wasm build of this crate is not left to the consumer, because the Java binding in this
+repo ships it: the `cdylib` for `wasm32-wasip1`, built from inside this directory so that
 `.cargo/config.toml` applies —
 
 ```sh
@@ -162,10 +200,9 @@ wasi-libc by way of `std`'s allocator, and a `no_std` module does not link wasi-
 That config adds two linker flags for this target only, `--export=malloc` and
 `--export=free`, so the module's exports are the `cast_*` functions and `hypercast_version` from `ffi.rs`
 plus wasi-libc's allocator. A wasm host cannot hand this library a pointer into its own
-memory, so every embedder — GraalWasm inside the Java binding, wasmtime inside the Ruby,
-Python and Go ones — copies the input text into a guest buffer, points the door at guest
-buffers for the out-value, the fault span and the `NumFormat`, and reads the result back out
-of the exported `memory`. The exported allocator is what makes that safe: dlmalloc claims
+memory, so its embedder — GraalWasm inside the Java binding — copies the input text into a
+guest buffer, points the door at guest buffers for the out-value, the fault span and the
+`NumFormat`, and reads the result back out of the exported `memory`. The exported allocator is what makes that safe: dlmalloc claims
 the tail of the initial linear memory on its first use, so a host-chosen offset past the
 data segments is not free, and HyperUuid observed a buffer written there corrupted by the
 next allocation. The module imports four `wasi_snapshot_preview1` functions — wasi-libc's
@@ -254,6 +291,10 @@ full breakdown of which artifacts in this project are signed from which repo and
 ```sh
 cargo add hypercast
 ```
+
+Requires Rust 1.88 or later (`rust-version` in the manifest): the parsers use `let` chains,
+stable since 1.88, above edition 2024's own 1.85 floor. CI builds the library and the
+`no_std` shared library on exactly that toolchain on every PR.
 
 Zero runtime dependencies. `default-features = false` gives the `#![no_std]` rlib described
 above. The `cdylib` every other binding loads is built from this repository with

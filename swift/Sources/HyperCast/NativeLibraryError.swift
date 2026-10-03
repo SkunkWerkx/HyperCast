@@ -1,33 +1,19 @@
 import Foundation
 
-/// The one error a door in this package throws: the bundled native `libhypercast` itself
-/// couldn't be used — found, opened, or resolved against the exports this binding was built
-/// for. Bad data is never thrown — it is a ``Verdict``'s ``Fault`` — so catching this type
-/// is catching "the library isn't there", and nothing else.
-///
-/// The load is attempted once per process and its outcome kept, so every call after a
-/// failed one throws the same value; ``Cast/isAvailable`` asks the same question without a
-/// `do`/`catch`.
+/// Never thrown. This was the one error a door threw — a shared library that couldn't be
+/// found, opened or resolved — back when macOS and Windows loaded the native core at run
+/// time. The core is now linked into the executable on every platform, so there is no load
+/// left to fail and the type has no cases; bad data was never thrown, and is still a
+/// ``Verdict``'s ``Fault``. It stays so that an existing
+/// `catch let error as NativeLibraryError` still compiles (with a deprecation warning)
+/// instead of breaking the build.
+@available(*, deprecated, message: "Never thrown: the native core is linked in on every platform, so nothing is loaded at run time.")
 public enum NativeLibraryError: Error, CustomStringConvertible, LocalizedError {
-    /// The library file wasn't found or couldn't be opened. `path` is where it was expected
-    /// and `reason` is the loader's own explanation — most often a deployment that copied the
-    /// executable without the resource directory beside it.
-    case openFailed(path: String, reason: String)
-    /// The library opened but doesn't export `name` — it is a different build than the one
-    /// this binding was written against.
-    case symbolNotFound(name: String)
-
-    /// What failed, naming the path or the symbol involved.
+    /// Unreachable: the type has no values.
     public var description: String {
-        switch self {
-        case .openFailed(let path, let reason):
-            return "hypercast: failed to load native library at \(path): \(reason)"
-        case .symbolNotFound(let name):
-            return "hypercast: symbol \(name) not found in native library"
-        }
+        switch self {}
     }
 
-    /// The same text as ``description``, so `localizedDescription` names the failure too
-    /// instead of Foundation's generic "The operation couldn't be completed".
+    /// Unreachable: the type has no values.
     public var errorDescription: String? { description }
 }

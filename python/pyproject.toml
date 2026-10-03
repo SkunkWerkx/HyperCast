@@ -29,6 +29,7 @@ keywords = ["parsing", "ffi", "verdict", "rfc3339", "pyo3"]
 # above, and the two are not meant to be declared together.
 classifiers = [
     "Development Status :: 3 - Alpha",
+    "Environment :: WebAssembly :: Emscripten",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: Implementation :: CPython",
@@ -46,21 +47,12 @@ Issues = "https://github.com/SkunkWerkx/HyperCast/issues"
 # mypy is what tests/test_typing.py checks a consumer's match with; those tests skip without it.
 test = ["pytest>=8.0", "mypy>=1.11"]
 bench = ["pyperf>=2.6"]
-# The wasm32-wasip1 build of the same core, run in-process by wasmtime-py — the backend
-# HYPERCAST_WASM=1 forces, and the fallback when the `_native` extension fails to import (see
-# README's WebAssembly section). Optional because the extension needs nothing at all, and
-# wasmtime is a ~10 MB runtime.
-wasm = ["wasmtime>=47"]
 
 [tool.maturin]
 manifest-path = "../rust/Cargo.toml"
 python-source = "src"
 module-name = "hypercast._native"
 features = ["python"]
-# The wasm32-wasip1 build of the core (staged under src/hypercast/native/ by CI, gitignored
-# like every other binding's native staging dir). maturin's python-source walk skips it
-# without this, so the wasm backend would import cleanly and then find no module to load.
-include = [{ path = "src/hypercast/native/wasm32-wasip1/hypercast.wasm", format = ["sdist", "wheel"] }]
 
 [tool.ruff.lint]
 # Doc-comment enforcement only — the "missing docstring" family of pydocstyle rules

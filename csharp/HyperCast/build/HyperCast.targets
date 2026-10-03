@@ -82,6 +82,21 @@
     <WasmOptConfigurationFlags Include="--translate-to-exnref" Exclude="@(WasmOptConfigurationFlags)" />
   </ItemGroup>
 
+  <!-- The archive is linked by the path above, and nothing else is supposed to touch it. But
+       restore resolves runtimes/browser-wasm/nativeassets/ as a copy-local native asset for
+       this RID, so without this the 3 MB archive was copied into bin/ and the publish root of
+       every Blazor WebAssembly consumer, never served and never read. Taken back out of
+       @(NativeCopyLocalItems), which is where restore puts it, before anything copies it.
+       HyperUuid's package carries the same target for its own archive. -->
+  <Target Name="_HyperCastDropWasmArchiveFromCopyLocal"
+          AfterTargets="ResolvePackageAssets"
+          Condition="'$(RuntimeIdentifier)' == 'browser-wasm'">
+    <ItemGroup>
+      <NativeCopyLocalItems Remove="@(NativeCopyLocalItems)"
+                            Condition="'%(NativeCopyLocalItems.NuGetPackageId)' == 'HyperCast' And '%(NativeCopyLocalItems.Filename)%(NativeCopyLocalItems.Extension)' == 'libhypercast.a'" />
+    </ItemGroup>
+  </Target>
+
   <!-- Native AOT: link the core in.
 
        A Native AOT publish used to produce an executable with libhypercast.so (or the .dylib,

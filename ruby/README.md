@@ -5,18 +5,19 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/SkunkWerkx/HyperCast/blob/master/LICENSE)
 
 **Ruby's own pattern matching over two `Data` case types — the value, or a closed reason
-Symbol plus the exact span that offended. Three backends, one public surface: a Magnus
-native extension where a precompiled platform gem covers you, stdlib Fiddle everywhere
-else — selected automatically, zero compiles either way — and the same core as a
-WebAssembly module inside the `wasmtime` gem for any platform with no native build at all.**
+Symbol plus the exact span that offended. Two backends, one public surface: a Magnus
+native extension where a precompiled platform gem covers you, stdlib Fiddle as the last
+resort everywhere else — selected automatically, zero compiles either way.**
 
 Allocation-lean scalar casts — booleans, the full integer family, reals, exact decimals,
 UUIDs, temporals — calling directly into the native `libhypercast` Rust core. Ruby 3.3 is the
 floor. The fast path links the core straight into a Ruby extension (Magnus): on require it
 redefines the doors in place on the `HyperCast` module — no delegation layer, no second
 surface, which is exactly what keeps the backends provably in agreement.
-`HyperCast::BACKEND` reports which is live; `HYPERCAST_PURE=1` forces Fiddle,
-`HYPERCAST_WASM=1` the wasm module — see [Backends](#backends).
+The last-resort fallback, in the universal gem only, calls the native `libhypercast` shared
+library via [`Fiddle`](https://docs.ruby-lang.org/en/master/Fiddle.html) — dlopen/dlsym plus
+raw C-ABI calls, no runtime bridge. `HyperCast::BACKEND` reports which one is live;
+`HYPERCAST_PURE=1` forces Fiddle for testing — see [Backends](#backends).
 
 ```ruby
 case HyperCast.i32("(1,234)", HyperCast::NumFormat::INVARIANT)
@@ -87,7 +88,9 @@ mismatch against `HyperCast::VERSION` can be named before the first cast.
 `HyperCast::BACKEND` says which backend was *selected*, which is not the same question: it
 reads `:fiddle` on a platform with no library at all, because that is the backend whose
 first call explains what is missing — a `LoadError` naming the path it looked for, or
-`HyperCast::NativePlatform::UnsupportedPlatformError` naming the platform.
+`HyperCast::NativePlatform::UnsupportedPlatformError` naming the platform. Inside a platform
+gem, which carries no Fiddle library, that `LoadError` names the universal gem instead (see
+[Backends](#backends)).
 
 ### Fault spans index the String you passed
 
@@ -161,9 +164,9 @@ and memoized by identity on every backend, so declaring a currency costs a cast 
    parentheses, declared separators, radix prefixes, all five .NET `Guid` text forms plus
    `urn:uuid:` prefixes, protobuf JSON durations.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
-   held by the shared corpus (the whole suite green on *all three* backends, full
-   corpus replay; cross-backend agreement specs compare Magnus against Fiddle
-   and wasm against Fiddle across a subprocess boundary).
+   held by the shared corpus (the whole suite green on both backends, full corpus replay;
+   cross-backend agreement specs compare Magnus against Fiddle across a subprocess
+   boundary).
 4. **Faster than the stdlib on the Magnus backend, where the carrier is cheap** —
    benchmark-ips (`ruby benchmark/cast_benchmark.rb`, linux-x64 on an Intel Core
    i9-11900H, Ruby 4.0.7): timestamp **447 ns vs 2.97 µs `Time.iso8601`** (6.6x) — while
@@ -201,23 +204,23 @@ receipts include their own archaeology.)
 
 `ruby benchmark/cast_benchmark.rb` pairs each door with Ruby's closest stdlib parse. Its
 first line names the backend, core version and Ruby it measured, so run it again under
-`HYPERCAST_PURE=1` or `HYPERCAST_WASM=1` for the other two backends. The stdlib comparisons
-are in [the section above](#why-not-integer--timeiso8601--float); this is the three backends
-against each other.
+`HYPERCAST_PURE=1` for the other backend. The stdlib comparisons are in
+[the section above](#why-not-integer--timeiso8601--float); this is the two backends against
+each other.
 
-Measured on Ruby 4.0.7, linux-x64 (an Intel Core i9-11900H), wasmtime 48.0.1,
-`benchmark-ips`, same session, all three backends:
+Measured on Ruby 4.0.7, linux-x64 (an Intel Core i9-11900H), `benchmark-ips`, same session,
+both backends:
 
-| Door | Magnus | Fiddle | wasmtime |
-|---|---:|---:|---:|
-| `bool` | 112 ns | 2.35 µs | 1.75 µs |
-| `i32` | 133 ns | 2.63 µs | 1.80 µs |
-| `f64` | 166 ns | 2.70 µs | 1.84 µs |
-| `uuid` | 223 ns | 3.47 µs | 2.65 µs |
-| `timestamp` | 447 ns | 3.25 µs | 2.42 µs |
-| `datetime` (`1/7/2026 3:04 PM`) | 904 ns | 3.98 µs | 3.14 µs |
-| `duration` (ISO) | 632 ns | 2.91 µs | 2.10 µs |
-| `i32`, a fault | 225 ns | 3.18 µs | 2.50 µs |
+| Door | Magnus | Fiddle |
+|---|---:|---:|
+| `bool` | 112 ns | 2.35 µs |
+| `i32` | 133 ns | 2.63 µs |
+| `f64` | 166 ns | 2.70 µs |
+| `uuid` | 223 ns | 3.47 µs |
+| `timestamp` | 447 ns | 3.25 µs |
+| `datetime` (`1/7/2026 3:04 PM`) | 904 ns | 3.98 µs |
+| `duration` (ISO) | 632 ns | 2.91 µs |
+| `i32`, a fault | 225 ns | 3.18 µs |
 
 A lean door on the Magnus backend is little more than the native call: the extension builds
 the `Success` or `Fault` it returns directly — allocated, its members stored, frozen —
@@ -227,83 +230,33 @@ rather than through `Data.new`, whose keyword handling alone cost more than the 
 
 | `HyperCast::BACKEND` | What runs | Chosen when |
 |---|---|---|
-| `:native` | the core linked into a Magnus extension | a precompiled platform gem carries an extension for this Ruby's ABI — see [Install](#install) |
-| `:fiddle` | `libhypercast` for this platform, `dlopen`ed through Fiddle | no extension loads; also the answer when nothing loads at all |
-| `:wasm` | the core as a `wasm32-wasip1` module inside the `wasmtime` gem | no extension and no library for this platform, and `wasmtime` is installed — see [WebAssembly (wasmtime)](#webassembly-wasmtime) |
+| `:native` | the core linked into a Magnus extension | a precompiled platform gem is installed — every one carries an extension for each Ruby it installs on; see [Install](#install) |
+| `:fiddle` | `libhypercast` for this platform, `dlopen`ed through Fiddle | no extension loads: the universal gem, on a Ruby or platform no platform gem covers; also the answer when nothing loads at all |
 
-Selection happens once, at `require`, in that order. Two environment variables override it:
+Selection happens once, at `require`, in that order.
 
-| Variable | Effect |
-|---|---|
-| `HYPERCAST_WASM` | forces `:wasm`; `require` raises a `LoadError` naming the gem if `wasmtime` is missing |
-| `HYPERCAST_PURE` | forces `:fiddle`, even where an extension would load |
-
-Both are read for presence, not value — set to anything at all, `0` and the empty string
-included, they force their backend — and `HYPERCAST_WASM` wins when both are set. A forced
-backend that turns out to have nothing to load does not fall through to another one: the
-first call raises, and `HyperCast.available?` answers `false`.
+`HYPERCAST_PURE` forces `:fiddle`, even where an extension would load. It is a testing and
+diagnostic switch — CI runs the whole suite through it, and it is how to rule an extension
+problem in or out — not a setting a deployment needs. It is read for presence, not value: set
+to anything at all, `0` and the empty string included, it forces Fiddle. A forced backend that
+turns out to have nothing to load does not fall through to another one: the first call raises,
+and `HyperCast.available?` answers `false`. That is what happens inside a platform gem, which
+carries no Fiddle library: the `LoadError` names the universal gem
+(`gem install hypercast --platform ruby`, or Bundler's `force_ruby_platform`), where the
+Fiddle backend lives.
 
 **Threads.** Every backend is safe to call from any number of threads. The extension runs
 under the GVL. Fiddle releases the GVL for the duration of each call, so that is the one
 backend where Ruby threads run the core truly in parallel — each through its own scratch
-buffers; the core itself keeps no state between calls. The wasm backend serializes every call
-on one Mutex around one instance. `spec/cast_spec.rb`'s concurrent-callers example runs under
-all three.
+buffers; the core itself keeps no state between calls. `spec/cast_spec.rb`'s
+concurrent-callers example runs under both.
 
 **Ractors.** Main Ractor only, on every backend: called from another Ractor the doors raise
-`Ractor::UnsafeError` (`Ractor::IsolationError` under wasm).
-
-## WebAssembly (wasmtime)
-
-The Rust core also ships inside this gem as a `wasm32-wasip1` module
-(`lib/hypercast/native/wasm32-wasip1/hypercast.wasm`), and the
-[`wasmtime`](https://rubygems.org/gems/wasmtime) gem can run it in-process. This is the
-inverse of ruby.wasm — not Ruby inside a wasm sandbox, but a wasm module inside Ruby — and
-it is the one backend that needs no shared library for the platform it runs on: no
-`dlopen`, no Magnus extension, nothing compiled against this Ruby's ABI. The Magnus
-extension replaces every public door in place; this backend replaces only the four private
-bodies underneath them (`plain`, `numeric`, `declared`, `packed_version` — the whole native
-crossing), so every door, both verdict `Data` types, the Symbol tables and the
-`Time`/`DateTime`/`Rational`/`Decimal` carriers are the exact code the other two backends
-run. `spec/wasm_backend_spec.rb` pins that the outputs agree with the Fiddle backend byte for
-byte.
-
-`wasmtime` is deliberately **not** a dependency of this gem; a consumer who wants this path
-installs it:
-
-```sh
-gem install wasmtime
-HYPERCAST_WASM=1 ruby -rhypercast -e 'p HyperCast::BACKEND'   # => :wasm
-```
-
-`HYPERCAST_WASM=1` forces the backend (and raises a `LoadError` naming the gem if it is
-missing). Without it, the wasm backend is only ever chosen automatically when there is no
-native library for this platform at all — no Magnus extension and no `libhypercast` for the
-RID — and `wasmtime` happens to be installed. No supported platform's behavior changes just
-because this backend exists.
-
-Two things are different under the sandbox, both by necessity. A wasm guest only sees its own
-linear memory, so the input is copied into a grow-only guest buffer and the out-value, fault
-span and `NumFormat` live in guest allocations made once at load — all from the module's own
-exported `malloc` (the same wasi-libc allocator Rust's std uses on that target), read back
-with `Memory#read`; using the guest's allocator rather than a host-picked offset is what keeps
-a buffer from being clobbered by the guest's next allocation. And a `Wasmtime::Store` is
-single-threaded, so every call is serialized under one Mutex around one shared instance.
-
-Measured against the other two backends in the same session — the `wasmtime` column of the
-table under [Benchmarks](#benchmarks).
-
-The finding worth stating: in Ruby the wasm backend is no slower than Fiddle, and on the
-x64 box that table comes from it is the faster of the two on every door, by a fifth to a
-third. Fiddle's per-call floor is interpreted marshalling; wasmtime's is the host-to-guest
-crossing plus the guest memory copies; on the lean doors wasmtime sits eleven to sixteen
-times behind the Magnus extension and Fiddle sixteen to twenty-one, narrowing to three to
-five times where building the Ruby value dominates. So on a platform with no native build, the fallback costs a consumer nothing
-they were not already paying on the universal gem.
+`Ractor::UnsafeError`.
 
 ## Verifying provenance
 
-Every gem RubyGems.org serves — the universal fallback and each of the five precompiled
+Every gem RubyGems.org serves — the universal fallback and each of the seven precompiled
 platform gems — carries its own GitHub build-provenance attestation, signed directly by
 this repo's own `release.yml` (the `rubygems-publish` job attests `ruby/pkg/*.gem` right
 before the push), so plain `--repo` verifies any of them:
@@ -315,7 +268,7 @@ gh attestation verify hypercast-X.Y.Z-<platform>.gem --repo SkunkWerkx/HyperCast
 
 That's the release's second layer of checking, not the only one: before any gem gets built,
 the same job verifies every native binary it packs — the Fiddle libraries, the Magnus
-extensions (one per Ruby ABI per platform) and the wasm module — against *their own*
+extensions (one per Ruby ABI per platform) — against *their own*
 attestations — those are signed from `SkunkWerkx/.github` by `hyper-build-native.yml`, so
 that check needs `--signer-repo SkunkWerkx/.github` added — and refuses to proceed on an
 unverified one.
@@ -332,15 +285,16 @@ more on why `--signer-repo` is needed for some artifacts here and not others.
 gem install hypercast
 ```
 
-Six gems are published per release: one universal `ruby`-platform gem (Fiddle, with every
-platform's native library and the wasm module bundled) plus five precompiled Magnus platform
-gems (`x86_64-linux`, `aarch64-linux`, `arm64-darwin`, `x64-mingw-ucrt`,
-`aarch64-mingw-ucrt`) that `gem install` and `bundle` auto-select when they match. There is
-no `x86_64-darwin` platform gem: an Intel Mac installs the universal gem and runs on Fiddle
-over the bundled `osx-x64` library, as Alpine does. A platform
-gem carries the same libraries and module beside its extensions, so the Fiddle and wasm
-backends are still there behind `HYPERCAST_PURE` and `HYPERCAST_WASM`. No extra configuration
-needed either way.
+Eight gems are published per release: seven precompiled Magnus platform gems that
+`gem install` and `bundle` auto-select when they match — `x86_64-linux-gnu`,
+`aarch64-linux-gnu`, `x86_64-linux-musl`, `aarch64-linux-musl`, `arm64-darwin`,
+`x64-mingw-ucrt` and `aarch64-mingw-ucrt` — and one universal `ruby`-platform gem. A platform
+gem carries its Magnus extensions and nothing else native: no Fiddle library at all. The
+universal gem is the last resort, Fiddle with every platform's native library bundled, and it
+is what RubyGems resolves for a Ruby the platform gems do not cover (3.3, or a Ruby newer than
+the release, such as 4.1 before a release ships for it) and on a platform no platform gem is
+built for — Intel macOS among them, which runs on Fiddle. No extra configuration needed either
+way.
 
 Selection has **two** axes here, unlike every other binding in this repo. A Magnus extension
 is bound to one Ruby minor ABI — there is no `abi3` equivalent to collapse the version axis
@@ -348,19 +302,21 @@ the way [the Python binding's](../python/) wheels do — so each platform gem is
 carrying one compiled extension per supported Ruby, under `lib/hypercast/<minor>/`, and picks
 one at `require` time:
 
-| Ruby | glibc Linux, macOS, Windows — x64 and arm64 | musl Linux (Alpine) — x64 and arm64 | anywhere else |
-| --- | --- | --- | --- |
-| 4.0 (primary) | Magnus, `BACKEND == :native` | Fiddle | wasm, if `wasmtime` is installed |
-| 3.4 (until its EOL 2028-03-31) | Magnus, `BACKEND == :native` | Fiddle | wasm, if `wasmtime` is installed |
-| 3.3 (the floor) | Fiddle | Fiddle | wasm, if `wasmtime` is installed |
+| Ruby | Linux (glibc and musl), Apple silicon macOS, Windows — x64 and arm64 | Gem installed |
+| --- | --- | --- |
+| a newer Ruby than the release covers (4.1+) | Fiddle | universal |
+| 4.0 (primary) | Magnus, `BACKEND == :native` | platform |
+| 3.4 (until its EOL 2028-03-31) | Magnus, `BACKEND == :native` | platform |
+| 3.3 (the floor, until its EOL 2027-03-31) | Fiddle | universal |
 
-What stands behind each cell: CI replays the whole suite, shared corpus included, for the
-first column on every push — Magnus on Ruby 3.4 and 4.0, Fiddle and wasm on 4.0, on all five
-platforms with a CI leg (Intel macOS has none) — and the Fiddle suite for the musl column inside an Alpine container. The 3.3 row
-is the same Fiddle code path, run with the Docker command under [Development](#development)
-(Ruby 3.3 with the Fiddle 1.1.2 it ships) rather than on every push. The last column — wasm
-chosen automatically because nothing native exists — has no leg of its own: CI runs the wasm
-backend's suite forced, on platforms that have native builds too.
+What stands behind each cell: CI replays the whole suite, shared corpus included, through
+each Magnus extension on every push — Ruby 3.4 and 4.0 on all seven platform-gem platforms,
+the two musl ones inside each Ruby's own Alpine image — and the Fiddle suite on Ruby 4.0 on
+every one of them, plus on Ruby 3.3 inside Alpine. Intel macOS has no CI leg: its library is
+cross-built and tested at the core, and Ruby there runs the universal gem's Fiddle backend
+over it. Anywhere else — a platform with no native build at all — the universal gem installs
+but `HyperCast.available?` answers `false`, and the first call raises
+`HyperCast::NativePlatform::UnsupportedPlatformError`.
 
 The platform gems declare `required_ruby_version >= 3.4, < 4.1` precisely so RubyGems
 *declines* them outside that range and resolves the universal gem instead — a wrong-ABI
@@ -371,24 +327,25 @@ link libruby at all, so one can load successfully against the wrong ABI and misb
 When 3.4 goes EOL it simply leaves the matrix and its users fall back to Fiddle, which is
 exactly what the fallback is for.
 
-**musl.** RubyGems does not tell musl from glibc for these gems: on Alpine, `gem install`
-picks the `x86_64-linux` or `aarch64-linux` platform gem exactly as it does on any other
-Linux (checked with RubyGems 4.0.20 on `x86_64-linux-musl`). The Magnus extension inside is
-linked against glibc and cannot load there — `require` fails cleanly on the missing
-`ld-linux` loader — so the gem falls back to Fiddle, which loads the musl build of the core
-(`native/linux-musl-x64` or `native/linux-musl-arm64`, chosen from `RUBY_PLATFORM`) that
-every gem carries. Alpine therefore works as installed, on the Fiddle backend and at Fiddle's
-speed. Releases through 0.3.0 carried no musl library: there the fallback found only the
-glibc one, `HyperCast.available?` answered `false`, and the first cast raised
-`Fiddle::DLError`.
+**musl.** Alpine has platform gems of its own, `x86_64-linux-musl` and
+`aarch64-linux-musl`, whose extensions are built inside each Ruby's official `ruby:*-alpine`
+image and need nothing beyond musl's libc. The glibc gems name their libc too
+(`x86_64-linux-gnu`, `aarch64-linux-gnu`), which is what makes both `gem install` and
+Bundler pick the right one on every supported Ruby: next to a plain `x86_64-linux` gem,
+RubyGems before 4.0 resolves that one on Alpine instead, even under
+`--platform x86_64-linux-musl`.
 
-**Nothing in this gem is ever compiled, on any platform.** Its one dependency can be:
-`fiddle` is a bundled gem on Ruby 4.0 and a default gem on 3.3 and 3.4, and `gem install` is
-satisfied by the copy Ruby ships. Bundler resolves the newest `fiddle` on rubygems.org
-instead, and when that is newer than the one your Ruby ships — true today on 3.3 and 3.4, not
-on 4.0 — it builds Fiddle's own C extension, which takes a compiler and libffi's headers
-(`apk add build-base libffi-dev` on Alpine). Holding `fiddle` at your Ruby's version in the
-`Gemfile.lock` avoids that.
+**Nothing in this gem is ever compiled, on any platform.** The platform gems depend on nothing
+at all. The universal gem depends on `fiddle`, which can be: `fiddle` is a bundled gem on Ruby
+4.0 and a default gem on 3.3 and 3.4, and `gem install` is satisfied by the copy Ruby ships.
+Bundler resolves the newest `fiddle` on rubygems.org instead, and when that is newer than the
+one your Ruby ships — true today on 3.3 and 3.4, not on 4.0 — it builds Fiddle's own C
+extension, which takes a compiler and libffi's headers (`apk add build-base libffi-dev` on
+Alpine). That only reaches you where the universal gem installs: Ruby 3.3, Intel macOS, a
+Ruby newer than the release, or a platform with no platform gem. `bundle install
+--prefer-local` makes Bundler use the copy Ruby ships where it can (it did on Ruby 3.4's
+Bundler 2.6, not on 3.3's 2.5); otherwise install the compiler and headers. Pinning `fiddle`
+to your Ruby's version in the `Gemfile.lock` does not stop the build.
 
 Both Windows architectures get a Magnus gem, and the reasoning that once kept them on Fiddle
 was backwards: MinGW is the *only* Windows flavour `rb-sys` targets (`x64-mingw-ucrt` and
@@ -404,22 +361,20 @@ forge's `ruby-magnus` action (`build-magnus.sh`), shared with every other Hyper*
 ## Development
 
 Everything below runs from a checkout, with `rust/` and `corpus/` beside `ruby/`; none of it
-is needed to use the gem. The Fiddle and wasm backends find the in-repo builds on their own
-when nothing is staged under `lib/hypercast/native/`. The Magnus backend does not — an
+is needed to use the gem. The Fiddle backend finds the in-repo build on its own when nothing
+is staged under `lib/hypercast/native/`. The Magnus backend does not — an
 extension has to be built for the Ruby you are running and put where `require` looks — and
 that is what `rake native:dev` is for.
 
 ```sh
 cd rust
 cargo cdylib                           # libhypercast, what the Fiddle backend loads
-cargo wasm-module                      # hypercast.wasm, what the wasm backend loads
 
 cd ../ruby
 bundle install
 bundle exec rake native:dev          # build the Magnus extension for this Ruby and stage it
 bundle exec rspec                    # BACKEND == :native
 HYPERCAST_PURE=1 bundle exec rspec   # BACKEND == :fiddle
-HYPERCAST_WASM=1 bundle exec rspec   # BACKEND == :wasm
 bundle exec rake docs:check          # every public object carries a doc comment
 ruby benchmark/cast_benchmark.rb     # prints the backend it measured
 ```
@@ -454,8 +409,8 @@ docker run --rm -v "$PWD/..":/src:ro ruby:4.0-alpine sh -euc '
   mkdir -p /work/ruby/lib/hypercast/native/linux-musl-x64
   cp /src/rust/target/musl/linux-musl-x64/libhypercast.so /work/ruby/lib/hypercast/native/linux-musl-x64/
   cd /work/ruby && rm -f Gemfile.lock
-  BUNDLE_WITHOUT=wasm bundle install --quiet --prefer-local
-  HYPERCAST_PURE=1 BUNDLE_WITHOUT=wasm bundle exec rspec'
+  bundle install --quiet --prefer-local
+  HYPERCAST_PURE=1 bundle exec rspec'
 ```
 
 The floor's test is the same container on `ruby:3.3-alpine`. Bundler would compile a newer
@@ -471,6 +426,11 @@ docker run --rm -v "$PWD/..":/src:ro ruby:3.3-alpine sh -euc '
   gem install rspec -v "~> 3.13" --no-document --silent
   HYPERCAST_PURE=1 rspec'
 ```
+
+The musl Magnus extension is built the way CI builds it by the forge's
+`ruby-magnus-musl/build-magnus-musl.sh`, which runs on any machine with Docker: from the repo
+root, `build-magnus-musl.sh hypercast linux-musl-x64 4.0 . <dir with the musl libhypercast.so> <out-dir>`
+compiles it in `ruby:4.0-alpine`, then runs this suite through it on a bare copy of that image.
 
 See [the repo root README](../README.md) for the full door table, the receipts, and the
 state of every other language binding.

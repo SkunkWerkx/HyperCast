@@ -1,7 +1,8 @@
 [package]
 name = "hypercast"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
+rust-version = "1.88"
 description = "Allocation-free parsers for scalars from untrusted text — booleans, numerics, UUIDs, and temporals. Every parse returns a verdict (the value, or a closed reason code with the offending span), never throws, never allocates — wrapped as a native library (libhypercast) for direct FFI from every host language."
 license = "MIT"
 readme = "README.md"
@@ -24,7 +25,7 @@ crate-type = ["rlib"]
 pyo3 = { version = "0.27", features = ["extension-module", "abi3-py311"], optional = true }
 magnus = { version = "0.8", features = ["rb-sys"], optional = true }
 rb-sys = { version = "0.9", optional = true }
-ext-php-rs = { version = "0.15", optional = true }
+ext-php-rs = { version = "0.16", optional = true }
 # Build-time check only, never shipped: see the `no-panic` feature.
 no-panic = { version = "0.1", optional = true }
 
@@ -113,9 +114,24 @@ harness = false
 # still carried std (110,048 since), against 535,440 from a manifest that listed
 # `["cdylib", "rlib"]`, at the same speed (the timestamp, uuid and bool doors through the
 # C ABI, alternating runs, within noise).
+#
+# strip drops the symbol table and debug info from what is linked, never the exports, and
+# never the code: the stripped linux-x64 library's .text is byte-identical to the unstripped one.
+# Measured on local linux-x64 builds, stripped against unstripped: the shared library goes
+# 110,048 → 104,496 bytes (the last one CI staged unstripped was 109,736), the wasm32-wasip1 module
+# 137,432 → 126,724 and the Linux Magnus extension 551,736 → 457,400 (a platform gem ships
+# two). Windows already got this for the Magnus build from the forge's RUSTFLAGS; this is
+# every other leg.
+# A static library is not linked, so the archives keep their symbols — they are how the
+# consumer's linker finds the core.
 [profile.release]
 lto = true
 codegen-units = 1
+strip = true
+
+# A profiler needs the symbols the release profile strips.
+[profile.bench]
+strip = false
 
 # The profile the `staticlib` feature's libraries are built with (`cargo staticlib`, in
 # .cargo/config.toml): release, plus panics that abort. A no_std artifact cannot unwind —

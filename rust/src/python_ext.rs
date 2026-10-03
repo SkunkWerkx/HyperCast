@@ -293,7 +293,7 @@ impl<'py> FromPyObject<'_, 'py> for Text<'py> {
             Ok(Text::Bytes(bytes.to_owned()))
         } else {
             // PyO3 prefixes the argument name, so a door raises
-            // "argument 'text': must be str or bytes" — the wasm backend's own words.
+            // "argument 'text': must be str or bytes".
             Err(PyTypeError::new_err("must be str or bytes"))
         }
     }
@@ -363,8 +363,7 @@ fn verdict<'py, T>(
 }
 
 // Each door's doc comment is its Python docstring — what `help(hypercast.cast_i32)` prints —
-// so it is written the way the `_wasm` backend's twin is, word for word and in the same
-// reStructuredText, and a test holds the two backends to it.
+// so it is written in reStructuredText, and a test holds every door to having one.
 macro_rules! numeric_doors {
     ($($(#[$doc:meta])* $door:ident => $core:ident),+ $(,)?) => {$(
         $(#[$doc])*
