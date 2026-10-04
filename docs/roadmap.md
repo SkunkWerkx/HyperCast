@@ -115,10 +115,9 @@ One piece of this round already landed, ahead of schedule and on purpose:
   ships in every binding today (`cast_excel_serial`, a caller-declared `ExcelEpoch`, the
   phantom serial `OutOfRange` exactly as the text `1900-02-29` is), with
   `corpus/excel_serial.json` holding it byte-identical across all eight languages. The door
-  reads serial *text* — a CSV column of serials. HyperWorkbook's reader starts from the
-  `f64` the file stores and converts it in `hypertabular::serial`, which carries the same
-  rules (epoch, phantom 60, fraction as time of day) independently; nothing yet pins the
-  two to agree.
+  reads serial *text* — a CSV column of serials. A workbook reader starts from the `f64`
+  the file stores; `excel_serial` is the same rules for that number, from the same code,
+  and the corpus is replayed through both.
 
 Two designs this file once parked are now recorded and built:
 

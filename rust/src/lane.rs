@@ -28,7 +28,7 @@ use crate::verdict::NumFormat;
 
 /// Where the lane hands what it reads. One per door family: the integer door accumulates a
 /// value and refuses a decimal point, the decimal door accumulates a magnitude and counts
-/// fraction digits, the real doors copy the invariant text for `core`'s float parser.
+/// fraction digits, the real doors copy the invariant text for `float::parse`.
 pub(crate) trait Sink {
     /// One digit, as its value `0..=9`. `false` takes the token out of the lane.
     fn digit(&mut self, digit: u8) -> bool;
@@ -219,8 +219,8 @@ impl Sink for Exact {
     }
 }
 
-/// The real doors' sink: the invariant text `digits[.digits]`, unsigned, for `core`'s own
-/// float parser — the one piece of this crate that is not reimplemented, in any lane. The
+/// The real doors' sink: the invariant text `digits[.digits]`, unsigned, for
+/// `float::parse`. The
 /// buffer is deliberately small: it is zeroed on every call, and a literal with more than
 /// forty-eight significant characters is rare enough to leave to the engine.
 pub(crate) struct Text {

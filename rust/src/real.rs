@@ -5,10 +5,12 @@
 //! Only finite reals come out. The scanner admits nothing but sign, digits, separators, and
 //! exponent — so the `NaN`/`Infinity` literals Rust's own parser would accept are `Malformed`
 //! here by construction — and a well-formed magnitude that overflows to ±∞ (`1e400`) is
-//! `OutOfRange`. The parse itself is `core`'s dec2flt via `str::parse`, fed from a fixed
-//! stack buffer holding the normalized ASCII (declared separators swapped to invariant,
-//! grouping stripped): `core` cannot allocate, so neither can this door.
+//! `OutOfRange`. The conversion itself is `float.rs` — `core`'s own algorithms for the
+//! ordinary case, an exact integer division for the rest, none of it able to panic — fed
+//! from a fixed stack buffer holding the normalized ASCII (declared separators swapped to
+//! invariant, grouping stripped). Nothing allocates.
 
+use crate::float::{self, Real};
 use crate::integer::{Sep, char_len_at, is_digit_at, split_sign, strip_currency, strip_parens};
 use crate::lane;
 use crate::verdict::{Fault, NumFormat, trim};
@@ -49,15 +51,13 @@ macro_rules! real_doors {
                 format
             };
             // Fast path: a token already in the invariant shape needs no normalization —
-            // hand the caller's own bytes straight to core's dec2flt, no scratch buffer.
+            // hand the caller's own bytes straight to the conversion, no scratch buffer.
             // Non-plain input (declared separators, grouping, parens, percent, or any
             // stray byte) falls through to the full engine; verdicts are identical.
             let value: $ty = if is_plain(text, format) {
-                // SAFETY: is_plain admits only ASCII bytes.
-                let plain = unsafe { str::from_utf8_unchecked(text) };
-                match plain.parse() {
-                    Ok(value) => value,
-                    Err(_) => return Err(Fault::malformed(start, text.len())),
+                match float::parse(text) {
+                    Some(value) => value,
+                    None => return Err(Fault::malformed(start, text.len())),
                 }
             } else if let Some(value) = lenient::<$ty>(text, format, lenient_lane) {
                 // The lenient lane (lane.rs): grouped digits, a declared currency symbol
@@ -66,11 +66,8 @@ macro_rules! real_doors {
             } else {
                 let mut buf = [0u8; MAX_NORMALIZED];
                 let (len, percent) = normalize(text, start, format, &mut buf)?;
-                // SAFETY: normalize writes only ASCII bytes.
-                let normalized = unsafe { str::from_utf8_unchecked(buf.get(..len).unwrap_or_default()) };
-                let value: $ty = normalized
-                    .parse()
-                    .map_err(|_| Fault::malformed(start, text.len()))?;
+                let value: $ty = float::parse(buf.get(..len).unwrap_or_default())
+                    .ok_or(Fault::malformed(start, text.len()))?;
                 if !value.is_finite() {
                     return Err(Fault::out_of_range(start, text.len()));
                 }
@@ -94,20 +91,17 @@ real_doors! {
 }
 
 /// The lenient lane for a real: the lane copies the digits and the point, with every
-/// grouping separator, symbol and parenthesis left out, and `core`'s parser reads that.
+/// grouping separator, symbol and parenthesis left out, and `float::parse` reads that.
 /// The sign is applied afterwards, which is exact — negation flips one bit — and is why
 /// the copy never needs a byte for it. `None` falls through to the full engine.
 #[inline]
-fn lenient<T>(text: &[u8], format: &NumFormat, lenient_lane: bool) -> Option<T>
-where
-    T: core::str::FromStr + core::ops::Neg<Output = T>,
-{
+fn lenient<T: Real>(text: &[u8], format: &NumFormat, lenient_lane: bool) -> Option<T> {
     if !lenient_lane {
         return None;
     }
     let mut sink = lane::Text::new();
     let negative = lane::scan(text, format, true, &mut sink)?;
-    let value: T = sink.as_str().parse().ok()?;
+    let value: T = float::parse(sink.as_str().as_bytes())?;
     Some(if negative { -value } else { value })
 }
 

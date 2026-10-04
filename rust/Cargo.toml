@@ -1,6 +1,6 @@
 [package]
 name = "hypercast"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2024"
 rust-version = "1.88"
 description = "Allocation-free parsers for scalars from untrusted text — booleans, numerics, UUIDs, and temporals. Every parse returns a verdict (the value, or a closed reason code with the offending span), never throws, never allocates — wrapped as a native library (libhypercast) for direct FFI from every host language."
@@ -45,8 +45,17 @@ no-panic = { version = "0.1", optional = true }
 # every target, which is what the crate's published `no-std` category means. The extension
 # backends all require std through their own dependencies, so they name it explicitly
 # rather than relying on the default.
-default = ["std"]
+default = ["std", "exports"]
 std = []
+# The 21 `cast_*` C ABI symbols, and `hypercast_version` as a symbol rather than only a Rust
+# function. On by default, and implied by every feature that builds a library of this
+# crate's own, so nothing this repo ships changes. It exists to be turned off: a
+# `#[no_mangle]` item is exported from whatever library the crate is linked into, so a
+# crate that links this one as an rlib and exports a C ABI of its own (the tabular layer)
+# would carry all 22 symbols in its own library, and its static archive could not be
+# linked into one program with libhypercast.a (`multiple definition of cast_bool`). Such a
+# consumer takes `default-features = false` and names `std` again if it wants it.
+exports = []
 # The no_std static libraries, for the hosts that link the core in rather than load it: a
 # Blazor WebAssembly app (the NuGet package, wasm32-unknown-emscripten), a Swift executable
 # on Linux or WebAssembly, a Go binary built with cgo, and a C# Native AOT publish. A
@@ -56,7 +65,7 @@ std = []
 # Hyper* static libraries that each bundled std could not be linked into one program
 # (`duplicate symbol: rust_eh_personality`). Off by default, and never for an rlib consumer,
 # who supplies a handler of their own.
-staticlib = []
+staticlib = ["exports"]
 # The shared library every non-extension binding dlopens (`cargo cdylib`), built without
 # Rust's standard library: the `staticlib` panic handler plus what a no_std shared library
 # needs that a static library does not (lib.rs has what and why). The parse is the same
@@ -80,7 +89,7 @@ php = ["dep:ext-php-rs", "std"]
 # optimizer's call. Release builds only — debug keeps every check. Built with std rather
 # than as the shipped no_std library, because no-panic detects a panic path by the unwind
 # edge it leaves, and a no_std build has to abort; the exports' code is the same either way.
-no-panic = ["dep:no-panic"]
+no-panic = ["dep:no-panic", "exports"]
 
 [dev-dependencies]
 # default-features off drops rayon/plotters, which cannot build for wasm32-wasip1 —

@@ -227,6 +227,83 @@ fn excel_serial_corpus() {
     }
 }
 
+/// The typed door reads the same corpus the text door does. Every vector whose input is a
+/// plain decimal is parsed to the `f64` a workbook would have stored and must land on the
+/// same verdict: the same reason on failure, and on success the same instant to within a
+/// microsecond — a double near serial 45,000 resolves about 0.6 µs, so the text door's
+/// exact decimal digits are not all there to compare.
+#[test]
+fn excel_serial_typed_agrees_with_the_text_door() {
+    let mut replayed = 0;
+    for vector in corpus("excel_serial.json") {
+        let text = input(&vector).trim();
+        let plain = !text.is_empty()
+            && text.bytes().all(|byte| byte.is_ascii_digit() || byte == b'.')
+            && text.bytes().filter(|&byte| byte == b'.').count() <= 1
+            && !text.starts_with('.')
+            && !text.ends_with('.');
+        if !plain {
+            continue;
+        }
+        let epoch = match vector["epoch"].as_u64().expect("epoch") {
+            1 => ExcelEpoch::Y1900,
+            2 => ExcelEpoch::Y1904,
+            other => panic!("excel_serial: unknown epoch {other}"),
+        };
+        let serial: f64 = text.parse().expect("a plain decimal");
+        let verdict = hypercast::excel_serial(serial, epoch);
+        match expect(&vector) {
+            "ok" => {
+                let expected = timestamp_of(&vector);
+                let actual = verdict
+                    .unwrap_or_else(|reason| panic!("excel_serial({text}): {reason:?}"))
+                    .assume_utc();
+                let nanos = |t: hypercast::Timestamp| {
+                    i128::from(t.seconds) * 1_000_000_000 + i128::from(t.nanos)
+                };
+                let drift = (nanos(actual) - nanos(expected)).abs();
+                assert!(drift <= 1_000, "excel_serial({text}): {actual:?} vs {expected:?}");
+                assert_eq!(actual.utc_civil(), verdict.ok(), "excel_serial({text}) round trip");
+            }
+            "out_of_range" => assert_eq!(verdict, Err(Reason::OutOfRange), "excel_serial({text})"),
+            other => panic!("excel_serial({text}): a plain decimal expecting {other}"),
+        }
+        replayed += 1;
+    }
+    assert!(replayed >= 15, "only {replayed} excel_serial vectors were plain decimals");
+
+    // What the text door rejects at the sign or cannot spell at all.
+    assert_eq!(hypercast::excel_serial(-1.0, ExcelEpoch::Y1900), Err(Reason::Malformed));
+    assert_eq!(hypercast::excel_serial(f64::NAN, ExcelEpoch::Y1904), Err(Reason::Malformed));
+    assert_eq!(hypercast::excel_serial(f64::INFINITY, ExcelEpoch::Y1900), Err(Reason::Malformed));
+    // A time-only cell has no date in the 1900 system, and is 1904-01-01 in the other.
+    assert_eq!(hypercast::excel_serial(0.5, ExcelEpoch::Y1900), Err(Reason::OutOfRange));
+    assert_eq!(
+        hypercast::excel_serial(0.5, ExcelEpoch::Y1904),
+        Ok(hypercast::CivilDateTime {
+            date: hypercast::Date { year: 1904, month: 1, day: 1 },
+            nanos_of_day: 43_200_000_000_000,
+        })
+    );
+    // A fraction within half a nanosecond of a whole day rounds up to it and carries into
+    // the date. Only a small serial can sit that close: one ulp under 45,000 is already
+    // 629 ns short of midnight, and stays on its own day.
+    assert_eq!(
+        hypercast::excel_serial(2.0 - f64::EPSILON, ExcelEpoch::Y1900),
+        Ok(hypercast::CivilDateTime {
+            date: hypercast::Date { year: 1900, month: 1, day: 2 },
+            nanos_of_day: 0,
+        })
+    );
+    assert_eq!(
+        hypercast::excel_serial(45_000.0 - 45_000.0 * f64::EPSILON / 2.0, ExcelEpoch::Y1900),
+        Ok(hypercast::CivilDateTime {
+            date: hypercast::Date { year: 2023, month: 3, day: 14 },
+            nanos_of_day: 86_399_999_999_371,
+        })
+    );
+}
+
 #[test]
 fn date_corpus() {
     for vector in corpus("date.json") {

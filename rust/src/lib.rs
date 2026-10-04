@@ -14,6 +14,8 @@
 //! - [`cast_timestamp`] / [`cast_unix`] — instants to protobuf's `{seconds, nanos}` pair
 //! - [`cast_excel_serial`] — spreadsheet date serials under a declared [`ExcelEpoch`],
 //!   phantom `1900-02-29` and all
+//! - [`excel_serial`] — the same serials already held as the `f64` a workbook stores,
+//!   under the same rules, to a zone-less [`CivilDateTime`]
 //! - [`cast_date`] / [`cast_time`] / [`cast_duration`] — the remaining temporal shapes,
 //!   likewise protobuf-formed
 //! - [`cast_date_ordered`] — separated calendar dates under a caller-declared [`DateOrder`]
@@ -120,9 +122,13 @@ unsafe extern "C" {}
 #[cfg_attr(not(target_feature = "crt-static"), link(name = "msvcrt"))]
 unsafe extern "C" {}
 
+mod abi;
 mod boolean;
 mod decimal;
+#[cfg(feature = "exports")]
 mod ffi;
+mod float;
+mod float_table;
 mod integer;
 mod lane;
 mod real;
@@ -137,15 +143,15 @@ mod python_ext;
 #[cfg(feature = "ruby")]
 mod ruby_ext;
 
+pub use abi::{RawNumFormat, hypercast_version};
 pub use boolean::cast_bool;
 pub use decimal::cast_decimal;
-pub use ffi::hypercast_version;
 pub use integer::{cast_i8, cast_i16, cast_i32, cast_i64, cast_u8, cast_u16, cast_u32, cast_u64};
 pub use real::{cast_f32, cast_f64};
 pub use temporal::{
     DateOrder, ExcelEpoch, MAX_DURATION_SECONDS, MAX_TIMESTAMP_SECONDS, MIN_TIMESTAMP_SECONDS,
     UnixPrecision, cast_date, cast_date_ordered, cast_datetime, cast_duration, cast_excel_serial,
-    cast_time, cast_timestamp, cast_unix,
+    cast_time, cast_timestamp, cast_unix, excel_serial,
 };
 pub use uuid::cast_uuid;
 pub use verdict::{
