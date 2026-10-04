@@ -13,9 +13,8 @@
 //! input; on success and contract violation it is left untouched. A `len` of 0 never
 //! dereferences `ptr`.
 
-use crate::verdict::{
-    CivilDateTime, CurrencySymbol, Date, Decimal, Duration, Fault, NumFormat, Timestamp,
-};
+use crate::abi::RawNumFormat;
+use crate::verdict::{CivilDateTime, Date, Decimal, Duration, Fault, NumFormat, Timestamp};
 use crate::{
     DateOrder, ExcelEpoch, UnixPrecision, boolean, decimal, integer, real, temporal, uuid,
 };
@@ -28,44 +27,6 @@ const CONTRACT_VIOLATION: i32 = -1;
 pub struct RawFault {
     pub offset: u32,
     pub len: u32,
-}
-
-/// [`NumFormat`] as it crosses the ABI: separators as Unicode code points, the currency
-/// symbol as `currency_len` UTF-8 bytes held inline in `currency` (32 bytes in all,
-/// 4-byte alignment). A null pointer means [`NumFormat::INVARIANT`]; a code point that is
-/// no `char`, equal separators, or a currency that is not a valid [`CurrencySymbol`]
-/// (longer than 16 bytes, not UTF-8, or carrying an ASCII digit or whitespace) is a
-/// contract violation. A zero `currency_len` declares no symbol.
-#[repr(C)]
-pub struct RawNumFormat {
-    pub decimal_sep: u32,
-    pub group_sep: u32,
-    pub flags: u32,
-    pub currency_len: u32,
-    pub currency: [u8; CurrencySymbol::MAX_BYTES],
-}
-
-/// This library's version, packed `major << 16 | minor << 8 | patch` from the crate's own
-/// manifest — so a host can prove the library it loaded is the one its binding was built
-/// against before making the first cast, and can name the mismatch when it isn't. Takes
-/// nothing, touches nothing: the cheapest possible "did the native library resolve" probe.
-#[unsafe(no_mangle)]
-#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
-pub extern "C" fn hypercast_version() -> u32 {
-    const fn field(text: &str) -> u32 {
-        let bytes = text.as_bytes();
-        let mut value = 0u32;
-        let mut i = 0;
-        while i < bytes.len() {
-            value = value * 10 + (bytes[i] - b'0') as u32;
-            i += 1;
-        }
-        value
-    }
-    const VERSION: u32 = (field(env!("CARGO_PKG_VERSION_MAJOR")) << 16)
-        | (field(env!("CARGO_PKG_VERSION_MINOR")) << 8)
-        | field(env!("CARGO_PKG_VERSION_PATCH"));
-    VERSION
 }
 
 /// # Safety
@@ -84,24 +45,11 @@ unsafe fn text<'caller>(ptr: *const u8, len: usize) -> &'caller [u8] {
 /// # Safety
 /// Caller guarantees `format` is null or points to a live [`RawNumFormat`].
 unsafe fn resolve_format(format: *const RawNumFormat) -> Option<NumFormat> {
-    if format.is_null() {
-        return Some(NumFormat::INVARIANT);
-    }
     // SAFETY: per the function contract.
-    let raw = unsafe { &*format };
-    let decimal_sep = char::from_u32(raw.decimal_sep)?;
-    let group_sep = char::from_u32(raw.group_sep)?;
-    if decimal_sep == group_sep {
-        return None;
+    match unsafe { format.as_ref() } {
+        None => Some(NumFormat::INVARIANT),
+        Some(raw) => raw.resolve(),
     }
-    let currency_len = raw.currency_len as usize;
-    let currency = if currency_len == 0 {
-        CurrencySymbol::NONE
-    } else {
-        let bytes = raw.currency.get(..currency_len)?;
-        CurrencySymbol::new(core::str::from_utf8(bytes).ok()?)?
-    };
-    Some(NumFormat { decimal_sep, group_sep, flags: raw.flags, currency })
 }
 
 /// # Safety
@@ -156,11 +104,9 @@ macro_rules! numeric_exports {
     )+};
 }
 
-// The real doors are the two exports `#[no_panic]` cannot certify, and not for anything in
-// this crate: they hand their text to `core`'s own float parser (real.rs has why), and
-// `core::num::dec2flt` keeps slice-index checks the optimizer cannot discharge. HyperCast's
-// side of both doors — trimming, the lane, normalization — is held to the same standard as
-// every other door; the float conversion itself is core's, and core's to keep sound.
+// Every numeric door is certified, the two real ones included. They used to be the
+// exception: they handed their text to `core`'s float parser, whose slice-index checks the
+// optimizer cannot discharge. The conversion is this crate's own now (float.rs).
 numeric_exports! {
     #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
     cast_i8 => (integer, i8),
@@ -178,7 +124,9 @@ numeric_exports! {
     cast_u32 => (integer, u32),
     #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
     cast_u64 => (integer, u64),
+    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
     cast_f32 => (real, f32),
+    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
     cast_f64 => (real, f64),
     #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
     cast_decimal => (decimal, Decimal),

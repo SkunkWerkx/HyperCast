@@ -214,8 +214,8 @@ jobs:
   # link fails, naming the export, if the optimizer left any panic path in it. It has to
   # run every PR rather than once, because whether a bounds check is eliminated is the
   # optimizer's call and can change with nothing in this repo touched — a new stable
-  # rustc is enough. cast_f32/cast_f64 are exempt (ffi.rs has why: the residue is in
-  # core's float parser, not this crate). Linux only: the alias leans on GNU ld's
+  # rustc is enough. Every export is covered, cast_f32/cast_f64 included since the float
+  # conversion became this crate's own (float.rs). Linux only: the alias leans on GNU ld's
   # `--no-undefined`, which is what turns no-panic's undefined symbol into an error.
   check-no-panic:
     runs-on: ubuntu-26.04

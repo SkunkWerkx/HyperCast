@@ -9,6 +9,47 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Rust — `excel_serial`, the Excel-serial door for a number.** `cast_excel_serial` reads
+  serial *text*; a workbook reader holds the `f64` the file stores and had to re-implement
+  the rules to convert it. `excel_serial(serial, epoch)` is the same two date systems from
+  the same code — the phantom serial `60`, a serial below the system's first day and one
+  past `9999-12-31` are `OutOfRange`; a negative, NaN or infinite value is `Malformed` —
+  returning the zone-less `CivilDateTime` the cell holds, its fraction rounded to the
+  nearest nanosecond. `corpus/excel_serial.json` is replayed through both doors, so the
+  two can no longer drift. *(crates.io)*
+- **Rust — `CivilDateTime::assume_utc` and `Timestamp::utc_civil`.** The two conversions
+  between a wall clock and an instant, for the caller who states the zone is UTC. The
+  crate still never assumes it for them. *(crates.io)*
+- **Rust — `RawNumFormat` is public.** `NumFormat` as it crosses the C ABI (32 bytes: two
+  code points, the flags, the currency symbol inline), with `resolve()` returning the
+  `NumFormat` or `None` for a contract violation, so a crate exporting a C ABI of its own
+  declares a numeric column in the same layout instead of a copy of it. *(crates.io)*
+
+### Changed
+
+- **Every door is proven unable to panic — `cast_f32` and `cast_f64` were the exception.**
+  They handed their normalized text to `core`'s float parser, which keeps slice-index
+  checks the optimizer cannot remove, so the two real doors were the only C ABI exports
+  outside the no-panic proof. The conversion is now this crate's own (`float.rs`):
+  Clinger's fast path and Eisel-Lemire, as `core` runs them, and an exact integer division
+  on fixed stack arrays for what those cannot settle. Same bits as before for every input —
+  held to `core`'s answer over about a million and a half generated strings, exact halfway points
+  and 1,100-digit expansions among them, on every path — at the same speed (within 4%
+  either way on five workloads, linux-x64) and 1.7 KB more library. All 22 exports are in
+  the proof now, on every PR. *(every package)*
+- **Rust — the C ABI symbols are an `exports` feature, on by default.** A `#[no_mangle]`
+  item is exported from whatever library the crate ends up in, so a crate that linked
+  `hypercast` as an rlib and built a shared or static library of its own carried all 22
+  `cast_*`/`hypercast_version` symbols, and its static archive failed to link into one
+  program with `libhypercast.a` (`multiple definition of cast_bool`). Nothing changes for
+  a default build, or for any library this repository ships: `staticlib` and `cdylib`
+  imply the feature. A consumer exporting its own C ABI takes `default-features = false`
+  (naming `std` again if it wants it) and gets none of them; `hypercast_version()` stays a
+  Rust function either way. A `default-features = false` build that relied on the symbols
+  now has to name `exports`. *(crates.io)*
+
 ### Fixed
 
 - **Rust — the README's consumer no-panic recipe could not fail for a `cdylib`.** no-panic

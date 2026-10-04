@@ -13,7 +13,7 @@
 //! exactly as HyperUuid left the wall clock to the host.
 
 use crate::integer::char_len_at;
-use crate::verdict::{CivilDateTime, Date, Duration, Fault, Timestamp, trim};
+use crate::verdict::{CivilDateTime, Date, Duration, Fault, Reason, Timestamp, trim};
 use core::num::NonZero;
 use core::ops::RangeInclusive;
 
@@ -104,6 +104,58 @@ const fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     let day_of_year = (153 * (month as i64 + month_shift) + 2) / 5 + day as i64 - 1;
     let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
     era * 146_097 + day_of_era - 719_468
+}
+
+/// The inverse of [`days_from_civil`]: `(year, month, day)` for days since 1970-01-01.
+const fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = (day_of_year - (153 * month_index + 2) / 5 + 1) as u32;
+    let month = if month_index < 10 { month_index + 3 } else { month_index - 9 } as u32;
+    (year_of_era + era * 400 + (month <= 2) as i64, month, day)
+}
+
+const NANOS_PER_DAY: u64 = 86_400_000_000_000;
+
+impl CivilDateTime {
+    /// This wall clock read as UTC — the instant it names if, and only if, the caller says
+    /// its zone is UTC. The crate never makes that assumption for a caller (see the type's
+    /// own doc); this is the caller making it, by name, where a zone-less source has to
+    /// become an instant, as [`cast_excel_serial`] does for a spreadsheet's serial text.
+    pub const fn assume_utc(self) -> Timestamp {
+        let days =
+            days_from_civil(self.date.year as i64, self.date.month as u32, self.date.day as u32);
+        Timestamp {
+            seconds: days * 86_400 + (self.nanos_of_day / 1_000_000_000) as i64,
+            nanos: (self.nanos_of_day % 1_000_000_000) as i32,
+        }
+    }
+}
+
+impl Timestamp {
+    /// The UTC wall clock of this instant — the inverse of [`CivilDateTime::assume_utc`].
+    /// `None` outside the timestamp window (`0001-01-01` through `9999-12-31`, nanos in
+    /// `0..=999_999_999`), which no door produces but the public fields can spell.
+    pub const fn utc_civil(self) -> Option<CivilDateTime> {
+        if self.seconds < MIN_TIMESTAMP_SECONDS
+            || self.seconds > MAX_TIMESTAMP_SECONDS
+            || self.nanos < 0
+            || self.nanos > 999_999_999
+        {
+            return None;
+        }
+        let (year, month, day) = civil_from_days(self.seconds.div_euclid(86_400));
+        let second_of_day = self.seconds.rem_euclid(86_400) as u64;
+        Some(CivilDateTime {
+            date: Date { year: year as u16, month: month as u8, day: day as u8 },
+            nanos_of_day: second_of_day * 1_000_000_000 + self.nanos as u64,
+        })
+    }
 }
 
 /// Reads exactly two ASCII digits at `at` — one bounds check, wrapping-sub digit test.
@@ -693,6 +745,72 @@ pub fn cast_unix(input: impl AsRef<[u8]>, precision: UnixPrecision) -> Result<Ti
     Ok(Timestamp { seconds: seconds as i64, nanos: nanos as i32 })
 }
 
+/// The day a whole serial names, as days from the Unix epoch — or `None` where the system
+/// has no such day: below its first serial (`1` for 1900, `0` for 1904), past
+/// `9999-12-31`, or the 1900 system's phantom serial `60`. The one statement of the rule,
+/// read by the text door and the typed one alike.
+const fn excel_day_number(days: i64, epoch: ExcelEpoch) -> Option<i64> {
+    match epoch {
+        ExcelEpoch::Y1900 => {
+            if days < 1 || days > MAX_EXCEL_1900_SERIAL || days == EXCEL_1900_PHANTOM_SERIAL {
+                return None;
+            }
+            // Below the phantom the 1900 system counts true days from 1899-12-31; above
+            // it, every serial has absorbed the extra day.
+            Some(EXCEL_1900_ANCHOR_DAYS + days + (days < EXCEL_1900_PHANTOM_SERIAL) as i64)
+        }
+        ExcelEpoch::Y1904 => {
+            if days < 0 || days > MAX_EXCEL_1904_SERIAL {
+                return None;
+            }
+            Some(EXCEL_1904_ANCHOR_DAYS + days)
+        }
+    }
+}
+
+/// Reads an Excel date serial already held as the number a workbook stores — the typed
+/// twin of [`cast_excel_serial`], for a reader that has the cell's `f64` and no text to
+/// parse. The same two systems under the same rules, from the same code: the phantom
+/// serial `60` of the 1900 system, a serial below the system's first real day (`1` for
+/// 1900, `0` for 1904) and one past `9999-12-31` are `OutOfRange`; a negative, NaN or
+/// infinite value is `Malformed`.
+///
+/// The result is the zone-less wall clock the cell holds, a [`CivilDateTime`];
+/// [`CivilDateTime::assume_utc`] makes it the instant the text door returns. The fraction
+/// is rounded to the nearest nanosecond, where the text door truncates digits it was given
+/// exactly: a double near serial 45,000 resolves about 0.6 µs, so its last digits are
+/// noise either way, and rounding is what keeps `0.5` at noon when the stored double sits
+/// one ulp under it. A fraction that rounds up to a whole day carries into the date.
+///
+/// The verdict is a bare [`Reason`]: there is no text for a [`Fault`]'s span to index.
+pub fn excel_serial(serial: f64, epoch: ExcelEpoch) -> Result<CivilDateTime, Reason> {
+    if !serial.is_finite() || serial < 0.0 {
+        return Err(Reason::Malformed);
+    }
+    // Past either system's last day; also what keeps the casts below exact.
+    if serial >= (MAX_EXCEL_1900_SERIAL + 1) as f64 {
+        return Err(Reason::OutOfRange);
+    }
+    // `core` has no `floor` or `round`. The value is non-negative and far below 2^53, so
+    // the cast truncates to its floor exactly, and the remainder decides the rounding.
+    let mut days = serial as i64;
+    let scaled = (serial - days as f64) * NANOS_PER_DAY as f64;
+    let mut nanos_of_day = scaled as u64;
+    if scaled - nanos_of_day as f64 >= 0.5 {
+        nanos_of_day += 1;
+    }
+    if nanos_of_day >= NANOS_PER_DAY {
+        days += 1;
+        nanos_of_day -= NANOS_PER_DAY;
+    }
+    let day_number = excel_day_number(days, epoch).ok_or(Reason::OutOfRange)?;
+    let (year, month, day) = civil_from_days(day_number);
+    Ok(CivilDateTime {
+        date: Date { year: year as u16, month: month as u8, day: day as u8 },
+        nanos_of_day,
+    })
+}
+
 /// Casts an Excel date serial under a caller-declared [`ExcelEpoch`] to a protobuf
 /// [`Timestamp`]. The whole part counts days from the system's own day zero; the fraction
 /// is the time of day (`0.5` is noon), so `45292.75` is `2024-01-01T18:00:00Z`. The result
@@ -763,25 +881,9 @@ pub fn cast_excel_serial(input: impl AsRef<[u8]>, epoch: ExcelEpoch) -> Result<T
         return Err(Fault::malformed(start + i, char_len_at(text, i)));
     }
 
-    let (anchor, first_serial, max_serial) = match epoch {
-        ExcelEpoch::Y1900 => (EXCEL_1900_ANCHOR_DAYS, 1, MAX_EXCEL_1900_SERIAL),
-        ExcelEpoch::Y1904 => (EXCEL_1904_ANCHOR_DAYS, 0, MAX_EXCEL_1904_SERIAL),
-    };
-    if over || days < first_serial || days > max_serial {
-        return Err(Fault::out_of_range(start, text.len()));
-    }
-
-    let day_number = match epoch {
-        // Below the phantom the 1900 system counts true days from 1899-12-31; at it, the
-        // serial names nothing; above it, every serial has absorbed the extra day.
-        ExcelEpoch::Y1900 => match days.cmp(&EXCEL_1900_PHANTOM_SERIAL) {
-            core::cmp::Ordering::Less => anchor + days + 1,
-            core::cmp::Ordering::Equal => {
-                return Err(Fault::out_of_range(start, text.len()));
-            }
-            core::cmp::Ordering::Greater => anchor + days,
-        },
-        ExcelEpoch::Y1904 => anchor + days,
+    let day_number = match excel_day_number(days, epoch) {
+        Some(day_number) if !over => day_number,
+        _ => return Err(Fault::out_of_range(start, text.len())),
     };
 
     let seconds = day_number * 86_400 + (nanos_of_day / NANOS_PER_SECOND) as i64;

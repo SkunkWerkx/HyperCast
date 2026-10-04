@@ -88,6 +88,18 @@ that phantom day ever since. This door rejects it as `OutOfRange` — the same v
 precisely the arithmetic hand-rolled conversions get wrong. `ExcelEpoch::Y1904` (legacy
 Macintosh workbooks, still selectable today) has no phantom anywhere in it.
 
+A workbook reader holds the number, not its text. `excel_serial` is the same rules for the
+`f64` a file stores, returning the zone-less wall clock the cell holds:
+
+```rust
+use hypercast::{excel_serial, ExcelEpoch};
+
+let civil = excel_serial(45292.75, ExcelEpoch::Y1900);
+// Ok(CivilDateTime { .. }) — 2024-01-01 18:00:00, no zone
+civil.map(|wall| wall.assume_utc());
+// the Timestamp the text door returns, because the caller said UTC
+```
+
 ## Optional native-extension features
 
 Three additive cargo features link this same core straight into an interpreter as a real
