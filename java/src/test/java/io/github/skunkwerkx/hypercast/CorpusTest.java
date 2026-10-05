@@ -39,12 +39,14 @@ final class CorpusTest {
                 return corpus;
             }
         }
-        throw new IllegalStateException("corpus directory not found above " + Path.of("").toAbsolutePath());
+        throw new IllegalStateException(
+                "corpus directory not found above " + Path.of("").toAbsolutePath());
     }
 
     private static JsonArray corpus(String name) {
         try {
-            return JsonParser.parseString(Files.readString(CORPUS.resolve(name))).getAsJsonArray();
+            return JsonParser.parseString(Files.readString(CORPUS.resolve(name)))
+                    .getAsJsonArray();
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -109,22 +111,27 @@ final class CorpusTest {
             NumFormat format = formatOf(vector);
             JsonElement value = vector.get("value");
             switch (vector.get("type").getAsString()) {
-                case "i8" -> assertVerdict("integer", vector, Cast.i8(input, format),
-                        value == null ? null : value.getAsByte());
-                case "i16" -> assertVerdict("integer", vector, Cast.i16(input, format),
-                        value == null ? null : value.getAsShort());
-                case "i32" -> assertVerdict("integer", vector, Cast.i32(input, format),
-                        value == null ? null : value.getAsInt());
-                case "i64" -> assertVerdict("integer", vector, Cast.i64(input, format),
-                        value == null ? null : value.getAsLong());
-                case "u8" -> assertVerdict("integer", vector, Cast.u8(input, format),
-                        value == null ? null : value.getAsInt());
-                case "u16" -> assertVerdict("integer", vector, Cast.u16(input, format),
-                        value == null ? null : value.getAsInt());
-                case "u32" -> assertVerdict("integer", vector, Cast.u32(input, format),
-                        value == null ? null : value.getAsLong());
-                case "u64" -> assertVerdict("integer", vector, Cast.u64(input, format),
-                        value == null ? null : value.getAsBigInteger().longValue());
+                case "i8" ->
+                    assertVerdict("integer", vector, Cast.i8(input, format), value == null ? null : value.getAsByte());
+                case "i16" ->
+                    assertVerdict(
+                            "integer", vector, Cast.i16(input, format), value == null ? null : value.getAsShort());
+                case "i32" ->
+                    assertVerdict("integer", vector, Cast.i32(input, format), value == null ? null : value.getAsInt());
+                case "i64" ->
+                    assertVerdict("integer", vector, Cast.i64(input, format), value == null ? null : value.getAsLong());
+                case "u8" ->
+                    assertVerdict("integer", vector, Cast.u8(input, format), value == null ? null : value.getAsInt());
+                case "u16" ->
+                    assertVerdict("integer", vector, Cast.u16(input, format), value == null ? null : value.getAsInt());
+                case "u32" ->
+                    assertVerdict("integer", vector, Cast.u32(input, format), value == null ? null : value.getAsLong());
+                case "u64" ->
+                    assertVerdict(
+                            "integer",
+                            vector,
+                            Cast.u64(input, format),
+                            value == null ? null : value.getAsBigInteger().longValue());
                 default -> fail("integer: unknown type " + vector.get("type"));
             }
         }
@@ -138,10 +145,14 @@ final class CorpusTest {
             NumFormat format = formatOf(vector);
             JsonElement value = vector.get("value");
             switch (vector.get("type").getAsString()) {
-                case "f32" -> assertVerdict("real", vector, Cast.f32(input, format),
-                        value == null ? null : (float) value.getAsDouble());
-                case "f64" -> assertVerdict("real", vector, Cast.f64(input, format),
-                        value == null ? null : value.getAsDouble());
+                case "f32" ->
+                    assertVerdict(
+                            "real",
+                            vector,
+                            Cast.f32(input, format),
+                            value == null ? null : (float) value.getAsDouble());
+                case "f64" ->
+                    assertVerdict("real", vector, Cast.f64(input, format), value == null ? null : value.getAsDouble());
                 default -> fail("real: unknown type " + vector.get("type"));
             }
         }
@@ -168,7 +179,10 @@ final class CorpusTest {
             Verdict<BigDecimal> verdict = Cast.decimal(inputBytes(vector), formatOf(vector));
             assertVerdict("decimal", vector, verdict, expected);
             if (verdict instanceof Success<BigDecimal> success) {
-                assertEquals(expected.unscaledValue(), success.value().unscaledValue(), "decimal: '" + input + "' magnitude");
+                assertEquals(
+                        expected.unscaledValue(),
+                        success.value().unscaledValue(),
+                        "decimal: '" + input + "' magnitude");
                 assertEquals(expected.scale(), success.value().scale(), "decimal: '" + input + "' scale");
                 assertEquals(expected.signum(), success.value().signum(), "decimal: '" + input + "' sign");
             }
@@ -192,7 +206,8 @@ final class CorpusTest {
 
     private static Instant expectedInstant(JsonObject vector) {
         return vector.has("seconds")
-                ? Instant.ofEpochSecond(vector.get("seconds").getAsLong(), vector.get("nanos").getAsLong())
+                ? Instant.ofEpochSecond(
+                        vector.get("seconds").getAsLong(), vector.get("nanos").getAsLong())
                 : null;
     }
 
@@ -304,9 +319,83 @@ final class CorpusTest {
         for (JsonElement element : corpus("duration.json")) {
             JsonObject vector = element.getAsJsonObject();
             Duration expected = vector.has("seconds")
-                    ? Duration.ofSeconds(vector.get("seconds").getAsLong(), vector.get("nanos").getAsLong())
+                    ? Duration.ofSeconds(
+                            vector.get("seconds").getAsLong(),
+                            vector.get("nanos").getAsLong())
                     : null;
             assertVerdict("duration", vector, Cast.duration(inputBytes(vector)), expected);
         }
+    }
+
+    /**
+     * The typed doors, by bits: each double is rebuilt exactly from its IEEE 754 pattern — NaN
+     * and the infinities included, which JSON cannot spell. A typed door's fault has no span.
+     */
+    @Test
+    void typedCorpus() {
+        java.util.Set<String> doors = new java.util.TreeSet<>();
+        for (JsonElement element : corpus("typed.json")) {
+            JsonObject vector = element.getAsJsonObject();
+            double value = Double.longBitsToDouble(
+                    Long.parseUnsignedLong(vector.get("bits").getAsString(), 16));
+            String door = vector.get("door").getAsString();
+            doors.add(door);
+            Verdict<?> verdict = switch (door) {
+                case "decimal" -> {
+                    BigDecimal expected = null;
+                    if (vector.has("magnitude")) {
+                        BigInteger magnitude =
+                                new BigInteger(vector.get("magnitude").getAsString());
+                        expected = new BigDecimal(
+                                vector.get("negative").getAsBoolean() ? magnitude.negate() : magnitude,
+                                vector.get("scale").getAsInt());
+                        assertEquals(
+                                vector.get("value").getAsString(), expected.toPlainString(), "typed decimal: value");
+                    }
+                    Verdict<BigDecimal> cast = Cast.decimalFromDouble(value);
+                    assertVerdict("typed decimal", vector, cast, expected);
+                    yield cast;
+                }
+                case "excel_serial" -> {
+                    ExcelEpoch epoch = vector.get("epoch").getAsInt() == 1 ? ExcelEpoch.Y1900 : ExcelEpoch.Y1904;
+                    LocalDateTime expected = vector.has("year")
+                            ? LocalDateTime.of(
+                                    LocalDate.of(
+                                            vector.get("year").getAsInt(),
+                                            vector.get("month").getAsInt(),
+                                            vector.get("day").getAsInt()),
+                                    LocalTime.ofNanoOfDay(
+                                            vector.get("nanos_of_day").getAsLong()))
+                            : null;
+                    Verdict<LocalDateTime> cast = Cast.excelSerialFromDouble(value, epoch);
+                    assertVerdict("typed excel_serial", vector, cast, expected);
+                    yield cast;
+                }
+                case "excel_time" -> {
+                    LocalTime expected = vector.has("nanos")
+                            ? LocalTime.ofNanoOfDay(vector.get("nanos").getAsLong())
+                            : null;
+                    Verdict<LocalTime> cast = Cast.excelTime(value);
+                    assertVerdict("typed excel_time", vector, cast, expected);
+                    yield cast;
+                }
+                case "excel_duration" -> {
+                    Duration expected = vector.has("seconds")
+                            ? Duration.ofSeconds(
+                                    vector.get("seconds").getAsLong(),
+                                    vector.get("nanos").getAsLong())
+                            : null;
+                    Verdict<Duration> cast = Cast.excelDuration(value);
+                    assertVerdict("typed excel_duration", vector, cast, expected);
+                    yield cast;
+                }
+                default -> throw new AssertionError("typed: unknown door " + door);
+            };
+            if (verdict instanceof Fault<?> fault) {
+                assertEquals(0, fault.offset(), "typed " + door + ": span offset");
+                assertEquals(0, fault.length(), "typed " + door + ": span length");
+            }
+        }
+        assertEquals(java.util.Set.of("decimal", "excel_serial", "excel_time", "excel_duration"), doors);
     }
 }

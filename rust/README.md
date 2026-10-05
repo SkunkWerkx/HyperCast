@@ -100,6 +100,23 @@ civil.map(|wall| wall.assume_utc());
 // the Timestamp the text door returns, because the caller said UTC
 ```
 
+## Numbers a workbook already holds
+
+The same holds for every other door. A numeric cell is a double, and each text door has a
+typed twin that reads one: `i32_from_f64` and the other integer widths, `f32_from_f64`,
+`bool_from_f64`, `decimal_from_f64`, `unix_from_f64`, and, for serials, `excel_time` (the
+fraction as a time of day) and `excel_duration` (a span of days). A double is read as the
+shortest decimal that rounds back to it, the digits a spreadsheet writes for it, so no twin
+invents precision the file never had:
+
+```rust
+use hypercast::{decimal_from_f64, i32_from_f64, Reason};
+
+decimal_from_f64(2.5).map(|d| d.to_string());       // Ok("2.5")
+decimal_from_f64(0.1 + 0.2).map(|d| d.to_string()); // Ok("0.30000000000000004")
+i32_from_f64(2.5);                                  // Err(Reason::Malformed), never rounded
+```
+
 ## Optional native-extension features
 
 Three additive cargo features link this same core straight into an interpreter as a real

@@ -15,10 +15,11 @@ import org.graalvm.polyglot.io.ByteSequence;
 /**
  * The Rust core as a {@code wasm32-wasip1} module, run inside the JVM by
  * <a href="https://www.graalvm.org/webassembly/">GraalWasm</a>. No native binary, no
- * {@code java.lang.foreign} downcall: the same twenty-one {@code cast_*} exports (and the
+ * {@code java.lang.foreign} downcall: the same twenty-five {@code cast_*} exports (and the
  * {@code hypercast_version} probe) {@link Cast} downcalls into natively are called through
  * the polyglot API instead, on the module bundled at
- * {@code /native/wasm32-wasip1/hypercast.wasm}.
+ * {@code /native/wasm32-wasip1/hypercast.wasm}. The typed doors take a {@code double}, which
+ * crosses as a wasm {@code f64} with nothing to stage.
  *
  * <p><b>Memory protocol.</b> A wasm guest only sees its own linear memory, so nothing here
  * can hand the core a pointer into a Java array the way the FFM path pins a {@code byte[]}.
@@ -60,8 +61,7 @@ final class WasmBackend implements Backend {
     private static final ByteOrder LITTLE_ENDIAN = ByteOrder.LITTLE_ENDIAN;
     // Eight input bytes at a time, in the order they sit in the caller's segment: read
     // big-endian, written big-endian, so the guest sees the same byte sequence.
-    private static final ValueLayout.OfLong BE_LONG_UNALIGNED =
-            ValueLayout.JAVA_LONG_UNALIGNED.withOrder(BIG_ENDIAN);
+    private static final ValueLayout.OfLong BE_LONG_UNALIGNED = ValueLayout.JAVA_LONG_UNALIGNED.withOrder(BIG_ENDIAN);
 
     private final Context context;
     private final Value memory;
@@ -98,8 +98,8 @@ final class WasmBackend implements Backend {
         byte[] module;
         try (InputStream in = WasmBackend.class.getResourceAsStream(RESOURCE_PATH)) {
             if (in == null) {
-                throw new IllegalStateException(RESOURCE_PATH
-                        + " classpath resource not found (this jar was built without the wasm module)");
+                throw new IllegalStateException(
+                        RESOURCE_PATH + " classpath resource not found (this jar was built without the wasm module)");
             }
             module = in.readAllBytes();
         } catch (IOException e) {
@@ -114,7 +114,8 @@ final class WasmBackend implements Backend {
             // half-added dependency, org.graalvm.polyglot:polyglot without :wasm.
             throw new IllegalStateException(GRAALWASM_MISSING, noWasmLanguage);
         }
-        Value instance = context.eval(Source.newBuilder("wasm", ByteSequence.create(module), "hypercast").buildLiteral())
+        Value instance = context.eval(Source.newBuilder("wasm", ByteSequence.create(module), "hypercast")
+                        .buildLiteral())
                 .newInstance();
         Value exports = instance.getMember("exports");
         memory = exports.getMember("memory");
@@ -221,12 +222,14 @@ final class WasmBackend implements Backend {
         return code;
     }
 
-    // ---- the three ABI shapes, and the version probe ------------------------------------
+    // ---- the five ABI shapes, and the version probe -------------------------------------
 
     @Override
     public synchronized int plain(Door door, MemorySegment in, long len, MemorySegment out, MemorySegment fault) {
         int input = stageInput(in, len);
-        int code = doors[door.ordinal()].execute(input, (int) len, outPtr, faultPtr).asInt();
+        int code = doors[door.ordinal()]
+                .execute(input, (int) len, outPtr, faultPtr)
+                .asInt();
         return finish(code, out, fault);
     }
 
@@ -234,7 +237,9 @@ final class WasmBackend implements Backend {
     public synchronized int numeric(
             Door door, MemorySegment in, long len, NumFormat format, MemorySegment out, MemorySegment fault) {
         int input = stageInput(in, len);
-        int code = doors[door.ordinal()].execute(input, (int) len, stageFormat(format), outPtr, faultPtr).asInt();
+        int code = doors[door.ordinal()]
+                .execute(input, (int) len, stageFormat(format), outPtr, faultPtr)
+                .asInt();
         return finish(code, out, fault);
     }
 
@@ -242,7 +247,24 @@ final class WasmBackend implements Backend {
     public synchronized int declared(
             Door door, MemorySegment in, long len, int discriminant, MemorySegment out, MemorySegment fault) {
         int input = stageInput(in, len);
-        int code = doors[door.ordinal()].execute(input, (int) len, discriminant, outPtr, faultPtr).asInt();
+        int code = doors[door.ordinal()]
+                .execute(input, (int) len, discriminant, outPtr, faultPtr)
+                .asInt();
+        return finish(code, out, fault);
+    }
+
+    @Override
+    public synchronized int typed(Door door, double value, MemorySegment out, MemorySegment fault) {
+        int code = doors[door.ordinal()].execute(value, outPtr, faultPtr).asInt();
+        return finish(code, out, fault);
+    }
+
+    @Override
+    public synchronized int typedDeclared(
+            Door door, double value, int discriminant, MemorySegment out, MemorySegment fault) {
+        int code = doors[door.ordinal()]
+                .execute(value, discriminant, outPtr, faultPtr)
+                .asInt();
         return finish(code, out, fault);
     }
 

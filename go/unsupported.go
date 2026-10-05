@@ -40,3 +40,7 @@ func callUnix(unsafe.Pointer, uintptr, uint32) (r result)                       
 func callDateOrdered(unsafe.Pointer, uintptr, uint32) (r result)                  { return r }
 func callDateTime(unsafe.Pointer, uintptr, uint32) (r result)                     { return r }
 func callExcelSerial(unsafe.Pointer, uintptr, uint32) (r result)                  { return r }
+func callDecimalFromF64(float64) (r result)                                       { return r }
+func callExcelSerialFromF64(float64, uint32) (r result)                           { return r }
+func callExcelTime(float64) (r result)                                            { return r }
+func callExcelDuration(float64) (r result)                                        { return r }

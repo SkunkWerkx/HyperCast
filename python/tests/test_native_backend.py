@@ -13,12 +13,21 @@ import hypercast
 from hypercast import CastFailure, DateOrder, ExcelEpoch, Fault, NumFormat, Success, UnixPrecision
 
 DOORS = [name for name in hypercast.__all__ if name.startswith("cast_")]
+#: The typed doors read a number a caller already holds, not text.
+TYPED = [
+    "cast_decimal_from_float",
+    "cast_excel_serial_from_float",
+    "cast_excel_time",
+    "cast_excel_duration",
+]
+TEXT_DOORS = [name for name in DOORS if name not in TYPED]
 
 
 def test_fast_constructed_uuids_are_indistinguishable():
-    # The pin for the UUID.__new__ + object.__setattr__ fast path cast_uuid builds through:
-    # every observable surface of the result must match a stdlib-constructed twin, so a
-    # change to uuid.UUID's slots fails here instead of handing callers a half-built object.
+    """The pin for the UUID.__new__ + object.__setattr__ fast path cast_uuid builds through: every
+    observable surface of the result must match a stdlib-constructed twin, so a change to
+    uuid.UUID's slots fails here instead of handing callers a half-built object.
+    """
     text = "01020304-0506-4708-890a-0b0c0d0e0f10"
     cast = hypercast.cast_uuid(text).value
     twin = uuid.UUID(text)
@@ -35,6 +44,7 @@ def test_fast_constructed_uuids_are_indistinguishable():
 
 
 def test_the_verdict_types_hold_their_shape():
+    """Success and Fault compare, hash, match and refuse mutation as documented."""
     success, fault = Success(42), Fault(CastFailure.MALFORMED, 4, 1)
     assert Success.__match_args__ == ("value",)
     assert Fault.__match_args__ == ("reason", "offset", "length")
@@ -52,8 +62,9 @@ def test_the_verdict_types_hold_their_shape():
 
 
 def test_success_is_generic_at_runtime_as_well_as_in_the_stub():
-    # `Success[int]` is how the stub spells a door's success case; an annotation that gets
-    # evaluated must not raise.
+    """`Success[int]` is how the stub spells a door's success case; an annotation that gets
+    evaluated must not raise.
+    """
     assert Success[int].__origin__ is Success
     assert hypercast.Verdict[int].__args__ == (Success[int], Fault)
 
@@ -61,19 +72,42 @@ def test_success_is_generic_at_runtime_as_well_as_in_the_stub():
 # --- a caller's bug is an exception, of the documented type ---------------------------------
 
 
-@pytest.mark.parametrize("door", DOORS)
+@pytest.mark.parametrize("door", TEXT_DOORS)
 @pytest.mark.parametrize("text", [42, 4.2, None, bytearray(b"42"), memoryview(b"42")])
 def test_text_that_is_neither_str_nor_bytes_is_a_type_error(door, text):
+    """A text door raises TypeError for anything but str or bytes."""
     cast = getattr(hypercast, door)
     declared = {
         "cast_unix": (UnixPrecision.SECONDS,),
         "cast_excel_serial": (ExcelEpoch.Y1900,),
         "cast_datetime": (DateOrder.YEAR_MONTH_DAY,),
-        "cast_bool": (), "cast_uuid": (), "cast_timestamp": (), "cast_date": (),
-        "cast_time": (), "cast_duration": (),
+        "cast_bool": (),
+        "cast_uuid": (),
+        "cast_timestamp": (),
+        "cast_date": (),
+        "cast_time": (),
+        "cast_duration": (),
     }.get(door, (NumFormat.INVARIANT,))
     with pytest.raises(TypeError):
         cast(text, *declared)
+
+
+@pytest.mark.parametrize("door", TYPED)
+@pytest.mark.parametrize("value", ["0.5", b"0.5", None])
+def test_a_typed_door_takes_a_number_not_text(door, value):
+    """A typed door raises TypeError for text and accepts an int."""
+    cast = getattr(hypercast, door)
+    declared = (ExcelEpoch.Y1900,) if door == "cast_excel_serial_from_float" else ()
+    with pytest.raises(TypeError):
+        cast(value, *declared)
+    # An int is a number too.
+    assert isinstance(cast(1, *declared), hypercast.Success)
+
+
+def test_a_typed_serial_checks_its_epoch():
+    """An undefined epoch is a ValueError, not a verdict."""
+    with pytest.raises(ValueError):
+        hypercast.cast_excel_serial_from_float(1.0, 3)
 
 
 _DECLARED = [
@@ -86,6 +120,7 @@ _DECLARED = [
 
 @pytest.mark.parametrize("door, members", _DECLARED)
 def test_a_declaration_is_checked_for_type_then_width_then_membership(door, members):
+    """A declared option is checked as an int, then as a u32, then as a member."""
     for wrong_type in ("1", 1.0, b"1"):
         with pytest.raises(TypeError):
             door("1", wrong_type)
@@ -100,6 +135,7 @@ def test_a_declaration_is_checked_for_type_then_width_then_membership(door, memb
 
 
 def test_num_format_arguments_are_checked_for_type_before_value():
+    """NumFormat's constructor raises TypeError for a wrong type before any value check."""
     for args in ((1, ",", 0), (".", b",", 0), (".", ",", 0, 5), (".", ",", "0"), (".", ",", 1.5)):
         with pytest.raises(TypeError):
             NumFormat(*args)
@@ -117,9 +153,10 @@ def test_num_format_arguments_are_checked_for_type_before_value():
 
 
 def test_a_str_that_is_not_encodable_is_the_one_exception_a_door_raises_for_data():
-    # A lone surrogate has no UTF-8 form, so there are no bytes to hand the core and no span
-    # to report: the str itself is rejected before any door
-    # runs. Every other piece of bad data is a Fault.
+    """A lone surrogate has no UTF-8 form, so there are no bytes to hand the core and no span to
+    report: the str itself is rejected before any door runs. Every other piece of bad data is a
+    Fault.
+    """
     for door in (hypercast.cast_bool, hypercast.cast_uuid, hypercast.cast_timestamp):
         with pytest.raises(UnicodeEncodeError):
             door("\ud800")
@@ -129,18 +166,24 @@ def test_a_str_that_is_not_encodable_is_the_one_exception_a_door_raises_for_data
 
 # --- help() ----------------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize("door", DOORS + ["native_version", "optional"])
 def test_every_door_has_a_docstring(door):
+    """Every door carries the docstring help() prints."""
     doc = getattr(hypercast, door).__doc__
     assert doc and doc.strip(), f"help(hypercast.{door}) is empty"
 
 
-@pytest.mark.parametrize("member", ["from_localeconv", "decimal_sep", "group_sep", "flags", "currency"])
+@pytest.mark.parametrize(
+    "member", ["from_localeconv", "decimal_sep", "group_sep", "flags", "currency"]
+)
 def test_num_format_members_have_docstrings(member):
+    """Every NumFormat member carries a docstring."""
     doc = getattr(NumFormat, member).__doc__
     assert doc and doc.strip(), f"help(NumFormat.{member}) is empty"
 
 
 def test_the_verdict_types_have_docstrings():
+    """Success, Fault and NumFormat carry docstrings."""
     for cls in (Success, Fault, NumFormat):
         assert cls.__doc__ and cls.__doc__.strip()

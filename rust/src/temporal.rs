@@ -13,6 +13,7 @@
 //! exactly as HyperUuid left the wall clock to the host.
 
 use crate::integer::char_len_at;
+use crate::typed::{rounded, whole};
 use crate::verdict::{CivilDateTime, Date, Duration, Fault, Reason, Timestamp, trim};
 use core::num::NonZero;
 use core::ops::RangeInclusive;
@@ -784,6 +785,30 @@ const fn excel_day_number(days: i64, epoch: ExcelEpoch) -> Option<i64> {
 ///
 /// The verdict is a bare [`Reason`]: there is no text for a [`Fault`]'s span to index.
 pub fn excel_serial(serial: f64, epoch: ExcelEpoch) -> Result<CivilDateTime, Reason> {
+    let (days, nanos_of_day) = split_serial(serial)?;
+    let day_number = excel_day_number(days, epoch).ok_or(Reason::OutOfRange)?;
+    let (year, month, day) = civil_from_days(day_number);
+    Ok(CivilDateTime {
+        date: Date { year: year as u16, month: month as u8, day: day as u8 },
+        nanos_of_day,
+    })
+}
+
+/// Reads the time of day of an Excel serial already held as the number a workbook stores:
+/// its fraction, nanoseconds since midnight as [`cast_time`] returns them — the typed twin
+/// of that door for a cell formatted as a time, whether or not the serial also carries a
+/// date (`0.75` and `45292.75` are both `18:00`). Rounded to the nearest nanosecond as
+/// [`excel_serial`] rounds, and a fraction that rounds up to a whole day is midnight. A
+/// negative, NaN or infinite value is `Malformed`; a serial past either system's last day
+/// is `OutOfRange`. No date system is asked for: the fraction means the same in both.
+pub fn excel_time(serial: f64) -> Result<u64, Reason> {
+    split_serial(serial).map(|(_, nanos_of_day)| nanos_of_day)
+}
+
+/// Splits a non-negative serial into whole days and the nanoseconds of its fractional day,
+/// rounding the fraction to the nearest nanosecond and carrying into the day if that
+/// rounds up to a whole one — the one statement of how a serial's fraction is read.
+fn split_serial(serial: f64) -> Result<(i64, u64), Reason> {
     if !serial.is_finite() || serial < 0.0 {
         return Err(Reason::Malformed);
     }
@@ -803,12 +828,48 @@ pub fn excel_serial(serial: f64, epoch: ExcelEpoch) -> Result<CivilDateTime, Rea
         days += 1;
         nanos_of_day -= NANOS_PER_DAY;
     }
-    let day_number = excel_day_number(days, epoch).ok_or(Reason::OutOfRange)?;
-    let (year, month, day) = civil_from_days(day_number);
-    Ok(CivilDateTime {
-        date: Date { year: year as u16, month: month as u8, day: day as u8 },
-        nanos_of_day,
+    Ok((days, nanos_of_day))
+}
+
+/// Reads a span of days already held as the number a workbook stores — what an elapsed-time
+/// format (`[h]:mm:ss`) or an ODS `office:time-value` converted to days says — as a
+/// protobuf [`Duration`]: the typed twin of [`cast_duration`]. `1.5` is a day and twelve
+/// hours, and a negative span is negative, `seconds` and `nanos` same-signed. Rounded to
+/// the nearest nanosecond, halves away from zero. NaN or an infinity is `Malformed`; past
+/// ±10,000 years of seconds is `OutOfRange`.
+pub fn excel_duration(days: f64) -> Result<Duration, Reason> {
+    if !days.is_finite() {
+        return Err(Reason::Malformed);
+    }
+    let seconds = days * 86_400.0;
+    if seconds.abs() > MAX_DURATION_SECONDS as f64 {
+        return Err(Reason::OutOfRange);
+    }
+    let total = rounded(seconds * 1e9);
+    Ok(Duration {
+        seconds: (total / NANOS_PER_SECOND) as i64,
+        nanos: (total % NANOS_PER_SECOND) as i32,
     })
+}
+
+/// Reads an integer Unix-epoch value already held as an `f64` under a caller-declared unit
+/// — the typed twin of [`cast_unix`], under its rules: an integral value only (a fraction,
+/// NaN or an infinity is `Malformed`), negatives allowed, `nanos` non-negative even before
+/// the epoch, and outside the window `OutOfRange`.
+pub fn unix_from_f64(value: f64, precision: UnixPrecision) -> Result<Timestamp, Reason> {
+    let epoch = whole(value)?;
+    let per_second: i128 = match precision {
+        UnixPrecision::Seconds => 1,
+        UnixPrecision::Millis => 1_000,
+        UnixPrecision::Micros => 1_000_000,
+        UnixPrecision::Nanos => 1_000_000_000,
+    };
+    let seconds = epoch.div_euclid(per_second);
+    let nanos = epoch.rem_euclid(per_second) * (NANOS_PER_SECOND / per_second);
+    if seconds < MIN_TIMESTAMP_SECONDS as i128 || seconds > MAX_TIMESTAMP_SECONDS as i128 {
+        return Err(Reason::OutOfRange);
+    }
+    Ok(Timestamp { seconds: seconds as i64, nanos: nanos as i32 })
 }
 
 /// Casts an Excel date serial under a caller-declared [`ExcelEpoch`] to a protobuf

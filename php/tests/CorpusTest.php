@@ -73,12 +73,18 @@ final class CorpusTest extends TestCase
                 $this->assertEquals($expected, $verdict->value, "{$domain}: '{$input}'");
             })(),
             $verdict instanceof Fault => (function () use ($domain, $input, $expect, $vector, $verdict) {
-                $this->assertArrayHasKey($expect, self::EXPECTED_REASON,
-                    "{$domain}: '{$input}' expected {$expect} but faulted");
+                $this->assertArrayHasKey(
+                    $expect,
+                    self::EXPECTED_REASON,
+                    "{$domain}: '{$input}' expected {$expect} but faulted"
+                );
                 $this->assertSame(self::EXPECTED_REASON[$expect], $verdict->reason, "{$domain}: '{$input}'");
                 if (isset($vector['fault'])) {
-                    $this->assertSame($vector['fault'], [$verdict->offset, $verdict->length],
-                        "{$domain}: '{$input}' fault span");
+                    $this->assertSame(
+                        $vector['fault'],
+                        [$verdict->offset, $verdict->length],
+                        "{$domain}: '{$input}' fault span"
+                    );
                 }
             })(),
         };
@@ -101,8 +107,11 @@ final class CorpusTest extends TestCase
                 // Beyond PHP_INT_MAX the carrier is the two's-complement bit pattern —
                 // compare through the unsigned renderer, the documented consumption path.
                 if ($verdict instanceof Success) {
-                    $this->assertSame($expected, sprintf('%u', $verdict->value),
-                        "integer: '{$vector['input']}'");
+                    $this->assertSame(
+                        $expected,
+                        sprintf('%u', $verdict->value),
+                        "integer: '{$vector['input']}'"
+                    );
                     continue;
                 }
             }
@@ -179,8 +188,12 @@ final class CorpusTest extends TestCase
     public function testTimestampCorpus(): void
     {
         foreach (self::corpus('timestamp.json') as $vector) {
-            $this->assertVerdict('timestamp', $vector, Cast::timestamp($vector['input']),
-                self::expectedInstant($vector));
+            $this->assertVerdict(
+                'timestamp',
+                $vector,
+                Cast::timestamp($vector['input']),
+                self::expectedInstant($vector)
+            );
         }
     }
 
@@ -270,5 +283,73 @@ final class CorpusTest extends TestCase
                 : null;
             $this->assertVerdict('duration', $vector, Cast::duration($vector['input']), $expected);
         }
+    }
+
+    /**
+     * The typed doors, by bits: unpack('E', hex2bin(...)) rebuilds each double exactly —
+     * NAN and INF included, which JSON cannot spell. A typed door's Fault has no span.
+     */
+    public function testTypedCorpus(): void
+    {
+        $doors = [];
+        foreach (self::corpus('typed.json') as $vector) {
+            $value = unpack('E', hex2bin($vector['bits']))[1];
+            $door = $vector['door'];
+            $doors[$door] = true;
+            $expected = null;
+            switch ($door) {
+                case 'decimal':
+                    $verdict = Cast::decimalFromFloat($value);
+                    if ($verdict instanceof Success) {
+                        $decimal = $verdict->value;
+                        $this->assertSame(
+                            [(string) $vector['magnitude'], $vector['scale'], $vector['negative']],
+                            [$decimal->magnitude, $decimal->scale, $decimal->negative],
+                            "typed decimal: '{$vector['input']}' triple"
+                        );
+                        $this->assertSame($vector['value'], (string) $decimal, "typed decimal: '{$vector['input']}'");
+                        $expected = $decimal;
+                    }
+                    break;
+                case 'excel_serial':
+                    $verdict = Cast::excelSerialFromFloat($value, ExcelEpoch::from($vector['epoch']));
+                    if (isset($vector['year'])) {
+                        $secondOfDay = intdiv($vector['nanos_of_day'], 1_000_000_000);
+                        $micros = intdiv($vector['nanos_of_day'] % 1_000_000_000, 1000);
+                        $expected = new DateTimeImmutable(
+                            sprintf(
+                                '%04d-%02d-%02d %02d:%02d:%02d.%06d',
+                                $vector['year'],
+                                $vector['month'],
+                                $vector['day'],
+                                intdiv($secondOfDay, 3600),
+                                intdiv($secondOfDay % 3600, 60),
+                                $secondOfDay % 60,
+                                $micros
+                            ),
+                            new \DateTimeZone('UTC')
+                        );
+                    }
+                    break;
+                case 'excel_time':
+                    $verdict = Cast::excelTime($value);
+                    $expected = $vector['nanos'] ?? null;
+                    break;
+                case 'excel_duration':
+                    $verdict = Cast::excelDuration($value);
+                    $expected = isset($vector['seconds']) ? new Duration($vector['seconds'], $vector['nanos']) : null;
+                    break;
+                default:
+                    self::fail("typed: unknown door {$door}");
+            }
+            $this->assertVerdict("typed {$door}", $vector, $verdict, $expected);
+            if ($verdict instanceof Fault) {
+                $this->assertSame([0, 0], [$verdict->offset, $verdict->length], "typed {$door}: span");
+            }
+        }
+        $this->assertEqualsCanonicalizing(
+            ['decimal', 'excel_serial', 'excel_time', 'excel_duration'],
+            array_keys($doors)
+        );
     }
 }

@@ -700,3 +700,66 @@ func Span[T Text](text T) (Duration, *Fault) {
 	out := read[rawTimestamp](&r)
 	return Duration{Seconds: out.Seconds, Nanos: out.Nanos}, nil
 }
+
+// ExactFromFloat64 reads a number the caller already holds — the float64 a workbook stores
+// for a numeric cell — as the exact Decimal it names: the shortest decimal that rounds back
+// to the float64, the digits a spreadsheet writes for it. So 0.1 is one tenth, not the
+// binary fraction nearest it, and 0.1 + 0.2 is 0.30000000000000004 — the same digits
+// strconv.FormatFloat(v, 'g', -1, 64) prints. The result is canonical, as Exact's is. NaN is
+// Malformed; an infinity, a magnitude past 2^96 - 1 or more than 28 places is OutOfRange —
+// the digits are never cut to fit. A typed door's Fault has no span: Offset and Length are 0.
+func ExactFromFloat64(value float64) (Decimal, *Fault) {
+	r := callDecimalFromF64(value)
+	if r.code != 0 {
+		return Decimal{}, failed(r.code, &r.fault)
+	}
+	out := read[rawDecimal](&r)
+	return Decimal{Lo: out.Lo, Hi: out.Hi, Scale: out.Scale, Negative: out.Negative != 0}, nil
+}
+
+// ExcelSerialFromFloat64 reads an Excel date serial the caller already holds as a float64
+// under a caller-declared ExcelEpoch — the twin of ExcelSerial for a workbook reader that
+// has the cell's number and no text. The result is the zone-less wall clock the cell holds,
+// a CivilDateTime as DateTime returns, its fraction rounded to the nearest nanosecond. The
+// 1900 system's phantom serial 60, a serial below the system's first day and one past
+// 9999-12-31 are OutOfRange; a negative, NaN or infinite serial is Malformed. An undefined
+// epoch is a caller bug and panics, never a verdict.
+func ExcelSerialFromFloat64(value float64, epoch ExcelEpoch) (CivilDateTime, *Fault) {
+	if epoch != Excel1900 && epoch != Excel1904 {
+		panic(fmt.Sprintf("hypercast: undefined ExcelEpoch %d", epoch))
+	}
+	r := callExcelSerialFromF64(value, uint32(epoch))
+	if r.code != 0 {
+		return CivilDateTime{}, failed(r.code, &r.fault)
+	}
+	out := read[rawCivil](&r)
+	return CivilDateTime{
+		Date:      Date{Year: int(out.Year), Month: time.Month(out.Month), Day: int(out.Day)},
+		TimeOfDay: time.Duration(out.Nanos),
+	}, nil
+}
+
+// ExcelTime reads the fraction of an Excel serial the caller already holds as a float64 as a
+// time.Duration since midnight, as TimeOfDay returns: 0.75 and 45292.75 are both 18h.
+// Rounded to the nearest nanosecond, and a fraction that rounds to a whole day is midnight.
+// A negative, NaN or infinite serial is Malformed; one past 9999-12-31 is OutOfRange.
+func ExcelTime(value float64) (time.Duration, *Fault) {
+	r := callExcelTime(value)
+	if r.code != 0 {
+		return 0, failed(r.code, &r.fault)
+	}
+	return time.Duration(read[uint64](&r)), nil
+}
+
+// ExcelDuration reads a number of days the caller already holds as a float64 — what an
+// elapsed-time format ([h]:mm:ss) stores — as the protobuf pair Span returns: 1.5 is a day
+// and twelve hours, and a negative span is negative. Rounded to the nearest nanosecond. NaN
+// or an infinity is Malformed; beyond ±10,000 years is OutOfRange.
+func ExcelDuration(value float64) (Duration, *Fault) {
+	r := callExcelDuration(value)
+	if r.code != 0 {
+		return Duration{}, failed(r.code, &r.fault)
+	}
+	out := read[rawTimestamp](&r)
+	return Duration{Seconds: out.Seconds, Nanos: out.Nanos}, nil
+}

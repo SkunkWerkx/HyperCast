@@ -45,8 +45,7 @@ final class CastTest {
     @Test
     void verdictPatternMatchesCaseTypesDirectly() {
         assertTrue(Cast.bool("yes") instanceof Success<Boolean>(Boolean value) && value);
-        assertTrue(Cast.bool("maybe") instanceof Fault<Boolean> fault
-                && fault.reason() == CastFailure.MALFORMED);
+        assertTrue(Cast.bool("maybe") instanceof Fault<Boolean> fault && fault.reason() == CastFailure.MALFORMED);
     }
 
     @Test
@@ -82,9 +81,7 @@ final class CastTest {
                 new Success<>(Instant.parse("2026-01-02T15:04:05.123456789Z")),
                 Cast.timestamp("2026-01-02T15:04:05.123456789Z"));
         // Offset input normalizes to UTC — 15:04:05+05:00 is 10:04:05Z.
-        assertEquals(
-                new Success<>(Instant.parse("2026-01-02T10:04:05Z")),
-                Cast.timestamp("2026-01-02T15:04:05+05:00"));
+        assertEquals(new Success<>(Instant.parse("2026-01-02T10:04:05Z")), Cast.timestamp("2026-01-02T15:04:05+05:00"));
     }
 
     @Test
@@ -114,7 +111,8 @@ final class CastTest {
         assertEquals(new Success<>(4_294_967_295L), Cast.u32("4294967295", NumFormat.INVARIANT));
         // u64::MAX arrives as the two's-complement bit pattern.
         assertEquals(new Success<>(-1L), Cast.u64("18446744073709551615", NumFormat.INVARIANT));
-        assertEquals("18446744073709551615",
+        assertEquals(
+                "18446744073709551615",
                 switch (Cast.u64("18446744073709551615", NumFormat.INVARIANT)) {
                     case Success<Long> s -> Long.toUnsignedString(s.value());
                     case Fault<Long> f -> f.toString();
@@ -124,8 +122,11 @@ final class CastTest {
     @Test
     void optionalPresentsEmptyAsAbsentAndEverythingElseVerbatim() {
         assertTrue(Cast.optional(Cast.i32("   ", NumFormat.INVARIANT)).isEmpty());
-        assertEquals(new Success<>(42), Cast.optional(Cast.i32("42", NumFormat.INVARIANT)).orElseThrow());
-        assertInstanceOf(Fault.class, Cast.optional(Cast.i32("abc", NumFormat.INVARIANT)).orElseThrow());
+        assertEquals(
+                new Success<>(42),
+                Cast.optional(Cast.i32("42", NumFormat.INVARIANT)).orElseThrow());
+        assertInstanceOf(
+                Fault.class, Cast.optional(Cast.i32("abc", NumFormat.INVARIANT)).orElseThrow());
     }
 
     @Test
@@ -177,9 +178,11 @@ final class CastTest {
         assertEquals(new Success<>(new BigDecimal("-0.025")), Cast.decimal("(2.5)%", NumFormat.INVARIANT));
         assertEquals(new Success<>(new BigDecimal("2500")), Cast.decimal("2.5e3", NumFormat.INVARIANT));
         // The full 96 bits: 2^96 - 1 is the largest magnitude the core carries.
-        assertEquals(new Success<>(new BigDecimal("79228162514264337593543950335")),
+        assertEquals(
+                new Success<>(new BigDecimal("79228162514264337593543950335")),
                 Cast.decimal("79228162514264337593543950335", NumFormat.INVARIANT));
-        assertEquals(new Fault<BigDecimal>(CastFailure.OUT_OF_RANGE, 0, 29),
+        assertEquals(
+                new Fault<BigDecimal>(CastFailure.OUT_OF_RANGE, 0, 29),
                 Cast.decimal("79228162514264337593543950336", NumFormat.INVARIANT));
         // Zero is never negative, whatever the text said, and is always scale 0.
         switch (Cast.decimal("-0.00", NumFormat.INVARIANT)) {
@@ -217,16 +220,18 @@ final class CastTest {
         // for them and substring() names the offending text; the byte doors are the core's
         // own span, verbatim. ASCII input is identical either way and is never touched.
         assertEquals(new Fault<Integer>(CastFailure.MALFORMED, 0, 1), Cast.i32("€x", NumFormat.INVARIANT));
-        assertEquals(new Fault<Integer>(CastFailure.MALFORMED, 0, 3),
+        assertEquals(
+                new Fault<Integer>(CastFailure.MALFORMED, 0, 3),
                 Cast.i32("€x".getBytes(StandardCharsets.UTF_8), NumFormat.INVARIANT));
         assertEquals(new Fault<Integer>(CastFailure.MALFORMED, 1, 1), Cast.i32("1€", NumFormat.INVARIANT));
-        assertEquals(new Fault<Integer>(CastFailure.MALFORMED, 1, 3),
+        assertEquals(
+                new Fault<Integer>(CastFailure.MALFORMED, 1, 3),
                 Cast.i32("1€".getBytes(StandardCharsets.UTF_8), NumFormat.INVARIANT));
         // A supplementary code point is one UTF-8 sequence and two UTF-16 units.
         String astral = "12\uD83D\uDE00";
         switch (Cast.i32(astral, NumFormat.INVARIANT)) {
-            case Fault<Integer> fault -> assertEquals("\uD83D\uDE00",
-                    astral.substring(fault.offset(), fault.offset() + fault.length()));
+            case Fault<Integer> fault ->
+                assertEquals("\uD83D\uDE00", astral.substring(fault.offset(), fault.offset() + fault.length()));
             case Success<Integer> success -> throw new AssertionError("emoji parsed: " + success);
         }
         assertEquals(new Fault<Integer>(CastFailure.MALFORMED, 4, 1), Cast.i32("  12x4", NumFormat.INVARIANT));
@@ -251,9 +256,11 @@ final class CastTest {
     void dateTimeReadsTheMessyCivilShapes() {
         // The AM/PM world, zone-less: LocalDateTime because the text named no zone —
         // fusing one is the caller's job, never the parser's guess.
-        assertEquals(new Success<>(LocalDateTime.of(2026, 1, 7, 15, 4)),
+        assertEquals(
+                new Success<>(LocalDateTime.of(2026, 1, 7, 15, 4)),
                 Cast.dateTime("1/7/2026 3:04 PM", DateOrder.from(Locale.US)));
-        assertEquals(new Success<>(LocalDateTime.of(2026, 7, 1, 15, 4)),
+        assertEquals(
+                new Success<>(LocalDateTime.of(2026, 7, 1, 15, 4)),
                 Cast.dateTime("1/7/2026 3:04 PM", DateOrder.from(Locale.UK)));
         // A zone suffix is not this door's business — timestamp is the instant door.
         assertInstanceOf(Fault.class, Cast.dateTime("1/7/2026 15:04:05Z", DateOrder.MONTH_DAY_YEAR));
@@ -275,9 +282,9 @@ final class CastTest {
                 running.add(pool.submit(() -> {
                     for (int i = 0; i < iterations; i++) {
                         int mine = id * 1_000_000 + i;
-                        assertEquals(new Success<>(mine),
-                                Cast.i32(Integer.toString(mine), NumFormat.INVARIANT));
-                        assertEquals(new Success<>(LocalDateTime.of(2026, 1, 7, 15, 4)),
+                        assertEquals(new Success<>(mine), Cast.i32(Integer.toString(mine), NumFormat.INVARIANT));
+                        assertEquals(
+                                new Success<>(LocalDateTime.of(2026, 1, 7, 15, 4)),
                                 Cast.dateTime("1/7/2026 3:04 PM", DateOrder.MONTH_DAY_YEAR));
                     }
                 }));
@@ -303,7 +310,8 @@ final class CastTest {
         String longJunk = "x".repeat(1_000);
         switch (Cast.i32(longJunk, NumFormat.INVARIANT)) {
             case Fault<Integer> fault ->
-                assertTrue(fault.offset() + fault.length() <= longJunk.length(),
+                assertTrue(
+                        fault.offset() + fault.length() <= longJunk.length(),
                         "fault span escaped a " + longJunk.length() + "-byte input");
             case Success<Integer> success -> throw new AssertionError("junk parsed: " + success);
         }
@@ -316,8 +324,7 @@ final class CastTest {
         byte[] line = "1,234|2026-01-07T15:04:05Z|not-a-uuid|true".getBytes(java.nio.charset.StandardCharsets.UTF_8);
         MemorySegment whole = MemorySegment.ofArray(line);
         assertEquals(new Success<>(1234), Cast.i32(whole.asSlice(0, 5), NumFormat.INVARIANT));
-        assertEquals(new Success<>(Instant.parse("2026-01-07T15:04:05Z")),
-                Cast.timestamp(whole.asSlice(6, 20)));
+        assertEquals(new Success<>(Instant.parse("2026-01-07T15:04:05Z")), Cast.timestamp(whole.asSlice(6, 20)));
         assertEquals(new Fault<>(CastFailure.MALFORMED, 0, 10), Cast.uuid(whole.asSlice(27, 10)));
         assertEquals(new Success<>(true), Cast.bool(whole.asSlice(38, 4)));
     }
@@ -336,8 +343,8 @@ final class CastTest {
     void uuidDoorReadsTheSixteenBytesInRfcOrder() {
         // Two big-endian long reads must produce the same UUID as the byte-at-a-time
         // decomposition did, including the top bit set in both halves.
-        assertEquals(new Success<>(UUID.fromString("f1e2d3c4-b5a6-9788-8968-5a4b3c2d1e0f")),
+        assertEquals(
+                new Success<>(UUID.fromString("f1e2d3c4-b5a6-9788-8968-5a4b3c2d1e0f")),
                 Cast.uuid("f1e2d3c4-b5a6-9788-8968-5a4b3c2d1e0f"));
     }
-
 }

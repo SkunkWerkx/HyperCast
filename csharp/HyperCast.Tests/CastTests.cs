@@ -133,7 +133,7 @@ public sealed class CastTests
 		// no zone — fusing one is the caller's job, never the parser's guess.
 		var enUs = DateOrders.From(CultureInfo.GetCultureInfo("en-US"));
 		(Cast.DateTime("1/7/2026 3:04 PM", enUs) is Success<DateTime>
-			{ Value: { Kind: DateTimeKind.Unspecified } value } && value == new DateTime(2026, 1, 7, 15, 4, 0))
+		{ Value: { Kind: DateTimeKind.Unspecified } value } && value == new DateTime(2026, 1, 7, 15, 4, 0))
 			.ShouldBeTrue();
 		(Cast.DateTime("1/7/2026 3:04 PM", DateOrder.DayMonthYear) is Success<DateTime> { Value: var gb }
 			&& gb == new DateTime(2026, 7, 1, 15, 4, 0)).ShouldBeTrue();
@@ -279,6 +279,8 @@ public sealed class CastTests
 	[Fact]
 	void Undefined_epoch_and_order_are_caller_bugs_not_verdicts()
 	{
+		Should.Throw<ArgumentOutOfRangeException>(() => Cast.ExcelSerialFromDouble(45292, ExcelEpoch.Unspecified))
+			.ParamName.ShouldBe("epoch");
 		Should.Throw<ArgumentOutOfRangeException>(() => Cast.ExcelSerial("45292", ExcelEpoch.Unspecified))
 			.ParamName.ShouldBe("epoch");
 		Should.Throw<ArgumentOutOfRangeException>(() => Cast.DateTime("1/7/2026", DateOrder.Unspecified))

@@ -18,6 +18,7 @@ from hypercast import CastFailure, Fault, NumFormat, Success, UnixPrecision
 
 
 def test_match_case_consumes_the_union():
+    """A verdict destructures with match/case through __match_args__."""
     match hypercast.cast_i32("42", NumFormat.INVARIANT):
         case Success(value):
             assert value == 42
@@ -26,38 +27,52 @@ def test_match_case_consumes_the_union():
 
 
 def test_fault_span_points_at_the_offending_byte():
+    """A fault's span names the offending byte, offset into the untrimmed input."""
     assert hypercast.cast_i32("  12x4", NumFormat.INVARIANT) == Fault(CastFailure.MALFORMED, 4, 1)
 
 
 def test_str_doors_transcode_non_ascii_separators():
+    """A str door reads a declared non-ASCII separator after transcoding to UTF-8."""
     french = NumFormat(",", " ", NumFormat.ALL)
     assert hypercast.cast_f64("1 234,5", french) == Success(1234.5)
 
 
 def test_fault_spans_come_back_in_the_callers_own_units():
-    # The core reports byte spans into the UTF-8 it saw; a str caller's unit is the code
-    # point, so the same text faults at the same place in either unit and slices back out.
+    """The core reports byte spans into the UTF-8 it saw; a str caller's unit is the code point, so
+    the same text faults at the same place in either unit and slices back out.
+    """
     assert hypercast.cast_i32("€x", NumFormat.INVARIANT) == Fault(CastFailure.MALFORMED, 0, 1)
-    assert hypercast.cast_i32("€x".encode(), NumFormat.INVARIANT) == Fault(CastFailure.MALFORMED, 0, 3)
+    assert hypercast.cast_i32("€x".encode(), NumFormat.INVARIANT) == Fault(
+        CastFailure.MALFORMED, 0, 3
+    )
     assert hypercast.cast_i32("1€", NumFormat.INVARIANT) == Fault(CastFailure.MALFORMED, 1, 1)
-    assert hypercast.cast_i32("1€".encode(), NumFormat.INVARIANT) == Fault(CastFailure.MALFORMED, 1, 3)
+    assert hypercast.cast_i32("1€".encode(), NumFormat.INVARIANT) == Fault(
+        CastFailure.MALFORMED, 1, 3
+    )
     text = "12€4"
     for passed in (text, text.encode()):
         match hypercast.cast_f64(passed, NumFormat.INVARIANT):
             case Fault(_, offset, length):
-                assert passed[offset:offset + length] == ("€" if isinstance(passed, str) else "€".encode())
+                assert passed[offset : offset + length] == (
+                    "€" if isinstance(passed, str) else "€".encode()
+                )
             case other:
                 raise AssertionError(f"{passed!r} parsed: {other!r}")
     # A non-ASCII input that succeeds, and an ASCII fault, are untouched by the mapping.
-    assert hypercast.cast_f64("1\u00a0234,5", NumFormat(",", "\u00a0", NumFormat.ALL)) == Success(1234.5)
+    assert hypercast.cast_f64("1\u00a0234,5", NumFormat(",", "\u00a0", NumFormat.ALL)) == Success(
+        1234.5
+    )
     assert hypercast.cast_i32("  12x4", NumFormat.INVARIANT) == Fault(CastFailure.MALFORMED, 4, 1)
 
 
 def test_localeconv_bridge():
+    """NumFormat.from_localeconv takes the separators a locale declares."""
     fmt = NumFormat.from_localeconv({"decimal_point": ",", "thousands_sep": "."})
     assert fmt.currency == ""
     assert hypercast.cast_f64("1.234,5", fmt) == Success(1234.5)
-    euro = NumFormat.from_localeconv({"decimal_point": ",", "thousands_sep": ".", "currency_symbol": "€"})
+    euro = NumFormat.from_localeconv(
+        {"decimal_point": ",", "thousands_sep": ".", "currency_symbol": "€"}
+    )
     assert euro.currency == "€"
     assert hypercast.cast_f64("1.234,5 €", euro) == Success(1234.5)
     # The C locale's shape: an empty thousands separator falls back to ",".
@@ -66,10 +81,11 @@ def test_localeconv_bridge():
 
 
 def test_localeconv_bridge_never_puts_one_character_in_both_roles():
-    # An empty field takes its invariant default unless the other separator already holds
-    # that character, in which case it takes the other of the pair. A comma-decimal locale
-    # with no thousands separator used to fall back to "," for the group too — a format no
-    # door can read — and the same rule now holds in the PHP binding's bridge.
+    """An empty field takes its invariant default unless the other separator already holds that
+    character, in which case it takes the other of the pair. A comma-decimal locale with no
+    thousands separator used to fall back to "," for the group too — a format no door can read — and
+    the same rule now holds in the PHP binding's bridge.
+    """
     comma = NumFormat.from_localeconv({"decimal_point": ",", "thousands_sep": ""})
     assert (comma.decimal_sep, comma.group_sep) == (",", ".")
     assert hypercast.cast_f64("1.234,5", comma) == Success(1234.5)
@@ -83,6 +99,7 @@ def test_localeconv_bridge_never_puts_one_character_in_both_roles():
 
 
 def test_currency_symbol_is_declared_never_guessed():
+    """A currency symbol is honored only when declared and its flag is set."""
     dollars = NumFormat(".", ",", NumFormat.ALL, "$")
     assert dollars.currency == "$"
     assert NumFormat.ALL & NumFormat.CURRENCY
@@ -102,8 +119,9 @@ def test_currency_symbol_is_declared_never_guessed():
 
 
 def test_currency_symbol_rules_are_a_caller_bug():
-    # 1 to 16 UTF-8 bytes, no ASCII digit or whitespace — the core's CurrencySymbol rule,
-    # enforced at construction like equal separators.
+    """1 to 16 UTF-8 bytes, no ASCII digit or whitespace — the core's CurrencySymbol rule, enforced
+    at construction like equal separators.
+    """
     for bad in ("$5", "US D", "x" * 17, "€" * 6):
         with pytest.raises(ValueError):
             NumFormat(".", ",", NumFormat.ALL, bad)
@@ -111,6 +129,7 @@ def test_currency_symbol_rules_are_a_caller_bug():
 
 
 def test_decimal_is_exact_and_canonical():
+    """The decimal door never forms a float and trims exact trailing zeros."""
     assert hypercast.cast_decimal("0.1", NumFormat.INVARIANT) == Success(Decimal("0.1"))
     verdict = hypercast.cast_decimal("1.10", NumFormat.INVARIANT)
     assert isinstance(verdict.value, Decimal)
@@ -128,7 +147,8 @@ def test_decimal_is_exact_and_canonical():
     top = 2**96 - 1
     assert hypercast.cast_decimal(str(top), NumFormat.INVARIANT) == Success(Decimal(top))
     assert hypercast.cast_decimal(str(top + 1), NumFormat.INVARIANT) == Fault(
-        CastFailure.OUT_OF_RANGE, 0, len(str(top + 1)))
+        CastFailure.OUT_OF_RANGE, 0, len(str(top + 1))
+    )
 
 
 def _expected_version() -> str:
@@ -143,70 +163,98 @@ def _expected_version() -> str:
     for parent in Path(__file__).resolve().parents:
         manifest = parent / "rust" / "Cargo.toml"
         if manifest.is_file():
-            found = re.search(r'^version\s*=\s*"([^"]+)"', manifest.read_text(encoding="utf-8"), re.MULTILINE)
+            found = re.search(
+                r'^version\s*=\s*"([^"]+)"', manifest.read_text(encoding="utf-8"), re.MULTILINE
+            )
             assert found, f"no version in {manifest}"
             return found.group(1)
     raise FileNotFoundError("rust/Cargo.toml not found")
 
 
 def test_native_version_names_the_loaded_core():
+    """native_version reports the core this package was built from."""
     assert hypercast.native_version() == _expected_version()
 
 
 def test_uuid_agrees_with_the_platforms_own_parser():
+    """The UUID door's value equals uuid.UUID's own for the same text."""
     text = "01020304-0506-0708-090a-0b0c0d0e0f10"
     assert hypercast.cast_uuid(text) == Success(uuidlib.UUID(text))
     assert hypercast.cast_uuid(f"urn:uuid:{text}") == Success(uuidlib.UUID(text))
 
 
 def test_timestamp_is_aware_utc_with_microsecond_truncation():
+    """An instant comes back aware and in UTC, nanoseconds truncated to microseconds."""
     verdict = hypercast.cast_timestamp("2026-01-02T15:04:05.123456789Z")
     expected = dt.datetime(2026, 1, 2, 15, 4, 5, 123456, tzinfo=dt.timezone.utc)
     assert verdict == Success(expected)
     # Offset input normalizes to UTC.
     assert hypercast.cast_timestamp("2026-01-02T15:04:05+05:00") == Success(
-        dt.datetime(2026, 1, 2, 10, 4, 5, tzinfo=dt.timezone.utc))
+        dt.datetime(2026, 1, 2, 10, 4, 5, tzinfo=dt.timezone.utc)
+    )
     # The full protobuf window survives timedelta arithmetic.
     assert hypercast.cast_timestamp("0001-01-01T00:00:00Z") == Success(
-        dt.datetime(1, 1, 1, tzinfo=dt.timezone.utc))
+        dt.datetime(1, 1, 1, tzinfo=dt.timezone.utc)
+    )
 
 
 def test_unix_maps_the_declared_precision():
+    """The Unix door reads the value in the unit the caller declared."""
     assert hypercast.cast_unix("-1", UnixPrecision.SECONDS) == Success(
-        dt.datetime(1969, 12, 31, 23, 59, 59, tzinfo=dt.timezone.utc))
+        dt.datetime(1969, 12, 31, 23, 59, 59, tzinfo=dt.timezone.utc)
+    )
     assert hypercast.cast_unix("1700000000123", UnixPrecision.MILLISECONDS) == Success(
-        dt.datetime.fromtimestamp(1700000000.0, dt.timezone.utc) + dt.timedelta(milliseconds=123))
+        dt.datetime.fromtimestamp(1700000000.0, dt.timezone.utc) + dt.timedelta(milliseconds=123)
+    )
 
 
 def test_u64_comes_back_as_the_true_unsigned_value():
+    """u64 is the true unsigned value, int being unbounded."""
     assert hypercast.cast_u64("18446744073709551615", NumFormat.INVARIANT) == Success(2**64 - 1)
 
 
 def test_fast_built_temporals_equal_the_ordinary_constructors():
-    # The extension builds dates, times and datetimes from their packed pickle state and
-    # durations by datetime subtraction; whatever it hands back has to be the object the
-    # keyword constructors would have made, type included, across the fields' ranges.
+    """The extension builds dates, times and datetimes from their packed pickle state and durations
+    by datetime subtraction; whatever it hands back has to be the object the keyword constructors
+    would have made, type included, across the fields' ranges.
+    """
     utc = dt.timezone.utc
     for text, expected in (
         ("0001-01-01T00:00:00Z", dt.datetime(1, 1, 1, tzinfo=utc)),
         ("1969-12-31T23:59:59.999999Z", dt.datetime(1969, 12, 31, 23, 59, 59, 999999, tzinfo=utc)),
         ("2024-02-29T12:34:56.000001Z", dt.datetime(2024, 2, 29, 12, 34, 56, 1, tzinfo=utc)),
-        ("9999-12-31T23:59:59.999999999Z", dt.datetime(9999, 12, 31, 23, 59, 59, 999999, tzinfo=utc)),
+        (
+            "9999-12-31T23:59:59.999999999Z",
+            dt.datetime(9999, 12, 31, 23, 59, 59, 999999, tzinfo=utc),
+        ),
     ):
         got = hypercast.cast_timestamp(text)
         assert isinstance(got, Success) and type(got.value) is dt.datetime
         assert got.value == expected and got.value.tzinfo is utc
     got = hypercast.cast_date("9999-12-31")
-    assert isinstance(got, Success) and type(got.value) is dt.date and got.value == dt.date(9999, 12, 31)
+    assert (
+        isinstance(got, Success)
+        and type(got.value) is dt.date
+        and got.value == dt.date(9999, 12, 31)
+    )
     got = hypercast.cast_time("23:59:59.999999")
-    assert isinstance(got, Success) and type(got.value) is dt.time and got.value == dt.time(23, 59, 59, 999999)
+    assert (
+        isinstance(got, Success)
+        and type(got.value) is dt.time
+        and got.value == dt.time(23, 59, 59, 999999)
+    )
     got = hypercast.cast_datetime("12/31/9999 11:59:59 PM", hypercast.DateOrder.MONTH_DAY_YEAR)
-    assert isinstance(got, Success) and got.value == dt.datetime(9999, 12, 31, 23, 59, 59) and got.value.tzinfo is None
+    assert (
+        isinstance(got, Success)
+        and got.value == dt.datetime(9999, 12, 31, 23, 59, 59)
+        and got.value.tzinfo is None
+    )
 
 
 def test_durations_equal_the_timedelta_constructor_on_both_sides_of_the_fast_path():
-    # 3,652,058 days is the longest span the subtraction path can build; one more day takes
-    # the constructor. Both signs, and sub-microsecond digits truncating toward zero.
+    """3,652,058 days is the longest span the subtraction path can build; one more day takes the
+    constructor. Both signs, and sub-microsecond digits truncating toward zero.
+    """
     for text, expected in (
         ("PT0S", dt.timedelta(0)),
         ("PT1H30M15.5S", dt.timedelta(hours=1, minutes=30, seconds=15, microseconds=500000)),
@@ -215,7 +263,10 @@ def test_durations_equal_the_timedelta_constructor_on_both_sides_of_the_fast_pat
         ("-PT0.000001S", dt.timedelta(microseconds=-1)),
         ("PT0.0000009S", dt.timedelta(0)),
         ("-PT0.0000009S", dt.timedelta(0)),
-        ("P3652058DT23H59M59.999999S", dt.timedelta(days=3652058, hours=23, minutes=59, seconds=59, microseconds=999999)),
+        (
+            "P3652058DT23H59M59.999999S",
+            dt.timedelta(days=3652058, hours=23, minutes=59, seconds=59, microseconds=999999),
+        ),
         ("-P3652058D", dt.timedelta(days=-3652058)),
         ("P3652059D", dt.timedelta(days=3652059)),
         ("-P3652059D", dt.timedelta(days=-3652059)),
@@ -226,6 +277,7 @@ def test_durations_equal_the_timedelta_constructor_on_both_sides_of_the_fast_pat
 
 
 def test_date_time_and_duration_map_to_their_stdlib_types():
+    """Dates, times and durations come back as the datetime module's own types."""
     assert hypercast.cast_date("2026-01-02") == Success(dt.date(2026, 1, 2))
     assert hypercast.cast_time("15:04:05.123456789") == Success(dt.time(15, 4, 5, 123456))
     assert hypercast.cast_duration("P1DT6H") == Success(dt.timedelta(hours=30))
@@ -234,28 +286,35 @@ def test_date_time_and_duration_map_to_their_stdlib_types():
 
 
 def test_optional_presents_empty_as_none():
+    """optional folds an EMPTY fault to None and passes everything else through."""
     assert hypercast.optional(hypercast.cast_i32("   ", NumFormat.INVARIANT)) is None
     assert hypercast.optional(hypercast.cast_i32("42", NumFormat.INVARIANT)) == Success(42)
     assert hypercast.optional(hypercast.cast_i32("abc", NumFormat.INVARIANT)) == Fault(
-        CastFailure.MALFORMED, 0, 1)
+        CastFailure.MALFORMED, 0, 1
+    )
 
 
 def test_equal_separators_are_a_caller_bug():
+    """A format whose separators are equal raises rather than becoming a verdict."""
     with pytest.raises(ValueError):
         NumFormat(".", ".", NumFormat.ALL)
 
 
 def test_bytes_and_str_doors_agree():
+    """str and bytes input reach the same verdict."""
     assert hypercast.cast_bool("yes") == hypercast.cast_bool(b"yes") == Success(True)
 
 
 def test_date_order_disambiguates_like_the_cultures_do():
-    # The canonical ambiguity: 1/7/2026 is January 7th under en-US's month-first short
-    # dates and July 1st under en-GB's day-first ones — resolved only by declaration.
-    assert hypercast.cast_date("1/7/2026", hypercast.DateOrder.MONTH_DAY_YEAR) == \
-        hypercast.Success(dt.date(2026, 1, 7))
-    assert hypercast.cast_date("1/7/2026", hypercast.DateOrder.DAY_MONTH_YEAR) == \
-        hypercast.Success(dt.date(2026, 7, 1))
+    """The canonical ambiguity: 1/7/2026 is January 7th under en-US's month-first short dates and
+    July 1st under en-GB's day-first ones — resolved only by declaration.
+    """
+    assert hypercast.cast_date("1/7/2026", hypercast.DateOrder.MONTH_DAY_YEAR) == hypercast.Success(
+        dt.date(2026, 1, 7)
+    )
+    assert hypercast.cast_date("1/7/2026", hypercast.DateOrder.DAY_MONTH_YEAR) == hypercast.Success(
+        dt.date(2026, 7, 1)
+    )
     # Undeclared, the door stays strict ISO — the ambiguity is never guessed at.
     match hypercast.cast_date("1/7/2026"):
         case hypercast.Fault(reason, _, _):
@@ -265,16 +324,19 @@ def test_date_order_disambiguates_like_the_cultures_do():
 
 
 def test_datetime_reads_the_messy_civil_shapes():
-    # The AM/PM world, zone-less: the value is naive because the text named no zone —
-    # fusing one is the caller's job, never the parser's guess.
+    """The AM/PM world, zone-less: the value is naive because the text named no zone — fusing one is
+    the caller's job, never the parser's guess.
+    """
     verdict = hypercast.cast_datetime("1/7/2026 3:04 PM", hypercast.DateOrder.MONTH_DAY_YEAR)
     assert verdict == hypercast.Success(dt.datetime(2026, 1, 7, 15, 4))
     assert verdict.value.tzinfo is None
-    assert hypercast.cast_datetime("1/7/2026 3:04 PM", hypercast.DateOrder.DAY_MONTH_YEAR) == \
-        hypercast.Success(dt.datetime(2026, 7, 1, 15, 4))
+    assert hypercast.cast_datetime(
+        "1/7/2026 3:04 PM", hypercast.DateOrder.DAY_MONTH_YEAR
+    ) == hypercast.Success(dt.datetime(2026, 7, 1, 15, 4))
     # ISO forms ride through the same door (a four-digit first field is structurally a year).
-    assert hypercast.cast_datetime("2026-01-07T15:04:05", hypercast.DateOrder.MONTH_DAY_YEAR) == \
-        hypercast.Success(dt.datetime(2026, 1, 7, 15, 4, 5))
+    assert hypercast.cast_datetime(
+        "2026-01-07T15:04:05", hypercast.DateOrder.MONTH_DAY_YEAR
+    ) == hypercast.Success(dt.datetime(2026, 1, 7, 15, 4, 5))
     # A zone suffix is not this door's business — cast_timestamp is the instant door.
     match hypercast.cast_datetime("1/7/2026 15:04:05Z", hypercast.DateOrder.MONTH_DAY_YEAR):
         case hypercast.Fault(reason, _, _):

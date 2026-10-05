@@ -51,7 +51,7 @@ package hypercast
 #include <stddef.h>
 #include <stdint.h>
 
-// The core's C ABI — rust/src/ffi.rs, the twenty-two exports every binding calls.
+// The core's C ABI — rust/src/ffi.rs, the twenty-six exports every binding calls.
 // `out`, `format` and `fault` are untyped because the shims below fill and read them as
 // the raw layouts ffi.rs declares.
 uint32_t hypercast_version(void);
@@ -76,11 +76,16 @@ int32_t cast_date_ordered(const uint8_t *ptr, size_t len, uint32_t order, void *
 int32_t cast_datetime(const uint8_t *ptr, size_t len, uint32_t order, void *out, void *fault);
 int32_t cast_time(const uint8_t *ptr, size_t len, void *out, void *fault);
 int32_t cast_duration(const uint8_t *ptr, size_t len, void *out, void *fault);
+int32_t cast_decimal_from_f64(double value, void *out, void *fault);
+int32_t cast_excel_serial_from_f64(double value, uint32_t epoch, void *out, void *fault);
+int32_t cast_excel_time(double value, void *out, void *fault);
+int32_t cast_excel_duration(double value, void *out, void *fault);
 
 typedef int32_t (*fn_plain)(const uint8_t*, size_t, void*, void*);
 typedef int32_t (*fn_numeric)(const uint8_t*, size_t, const void*, void*, void*);
 typedef int32_t (*fn_unix)(const uint8_t*, size_t, uint32_t, void*, void*);
 typedef uint32_t (*fn_version)(void);
+typedef int32_t (*fn_typed)(double, void*, void*);
 
 typedef struct { uint32_t offset; uint32_t len; } hc_fault;
 // RawNumFormat, 32 bytes: the currency symbol is currency_len UTF-8 bytes held inline.
@@ -111,6 +116,24 @@ static hc_result call_numeric(void *fn, const uint8_t *ptr, size_t len, uint32_t
 		format.currency[8 + i] = (uint8_t)(cur_hi >> (8 * i));
 	}
 	r.code = ((fn_numeric)fn)(ptr, len, &format, r.out, &f);
+	r.offset = f.offset;
+	r.len = f.len;
+	return r;
+}
+// The typed doors take a double instead of text: one shim for the three that take nothing
+// else, and the Excel serial door's own for its epoch.
+static hc_result call_typed(void *fn, double value) {
+	hc_result r = {{0, 0}, 0, 0, 0};
+	hc_fault f = {0, 0};
+	r.code = ((fn_typed)fn)(value, r.out, &f);
+	r.offset = f.offset;
+	r.len = f.len;
+	return r;
+}
+static hc_result call_excel_serial_from_f64(double value, uint32_t epoch) {
+	hc_result r = {{0, 0}, 0, 0, 0};
+	hc_fault f = {0, 0};
+	r.code = cast_excel_serial_from_f64(value, epoch, r.out, &f);
 	r.offset = f.offset;
 	r.len = f.len;
 	return r;
@@ -208,4 +231,20 @@ func callDateTime(ptr unsafe.Pointer, length uintptr, order uint32) result {
 
 func callExcelSerial(ptr unsafe.Pointer, length uintptr, epoch uint32) result {
 	return fromC(C.call_unix(unsafe.Pointer(C.cast_excel_serial), (*C.uint8_t)(ptr), C.size_t(length), C.uint32_t(epoch)))
+}
+
+func callDecimalFromF64(value float64) result {
+	return fromC(C.call_typed(unsafe.Pointer(C.cast_decimal_from_f64), C.double(value)))
+}
+
+func callExcelSerialFromF64(value float64, epoch uint32) result {
+	return fromC(C.call_excel_serial_from_f64(C.double(value), C.uint32_t(epoch)))
+}
+
+func callExcelTime(value float64) result {
+	return fromC(C.call_typed(unsafe.Pointer(C.cast_excel_time), C.double(value)))
+}
+
+func callExcelDuration(value float64) result {
+	return fromC(C.call_typed(unsafe.Pointer(C.cast_excel_duration), C.double(value)))
 }

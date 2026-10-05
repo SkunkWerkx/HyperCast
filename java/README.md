@@ -34,6 +34,15 @@ fractional digits, so nothing the core parses is truncated on the way out — fu
 precision, end to end — and `Cast.decimal` lands in a `BigDecimal` built straight from the
 core's exact sign, magnitude and scale.
 
+## Numbers a workbook already holds
+
+A spreadsheet stores a numeric cell as a `double`, and four doors read one directly, with no
+text in between: `Cast.decimalFromDouble` (the shortest decimal that names the double, the
+digits the file holds — `0.1` is one tenth, not what `new BigDecimal(0.1)` spells out),
+`Cast.excelSerialFromDouble` (a `LocalDateTime` under a declared `ExcelEpoch`),
+`Cast.excelTime` (a serial's fraction as a `LocalTime`) and `Cast.excelDuration` (days as a
+`Duration`). A typed door's `Fault` has no span: its offset and length are 0.
+
 ## NumFormat: declared, never guessed
 
 Every integer, real and decimal door takes a `NumFormat`: the two separators, the `STYLE_*`
@@ -175,7 +184,7 @@ choice.
 ## AOT
 
 The GraalVM Native Image smoke test (`./gradlew :aot-smoke-test:nativeRun`) builds and
-runs the `isAvailable()`/`nativeVersion()` probe, all twenty-one doors through their
+runs the `isAvailable()`/`nativeVersion()` probe, all twenty-five doors through their
 `String` form, the `byte[]` and `MemorySegment` forms (heap slice and native segment) once
 per ABI shape, and the exhaustive union switch as a true native binary; `-Pwasm` does the
 same through the GraalWasm backend (see [WebAssembly](#webassembly-graalwasm)). Native Image needs two separate registrations

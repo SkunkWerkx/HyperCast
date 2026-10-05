@@ -34,7 +34,7 @@ package hypercast
 #include <stddef.h>
 #include <stdint.h>
 
-// The core's C ABI — rust/src/ffi.rs, the twenty-two exports every binding calls.
+// The core's C ABI — rust/src/ffi.rs, the twenty-six exports every binding calls.
 uint32_t hypercast_version(void);
 int32_t cast_bool(const uint8_t *ptr, size_t len, void *out, void *fault);
 int32_t cast_i8(const uint8_t *ptr, size_t len, const void *format, void *out, void *fault);
@@ -57,6 +57,10 @@ int32_t cast_date_ordered(const uint8_t *ptr, size_t len, uint32_t order, void *
 int32_t cast_datetime(const uint8_t *ptr, size_t len, uint32_t order, void *out, void *fault);
 int32_t cast_time(const uint8_t *ptr, size_t len, void *out, void *fault);
 int32_t cast_duration(const uint8_t *ptr, size_t len, void *out, void *fault);
+int32_t cast_decimal_from_f64(double value, void *out, void *fault);
+int32_t cast_excel_serial_from_f64(double value, uint32_t epoch, void *out, void *fault);
+int32_t cast_excel_time(double value, void *out, void *fault);
+int32_t cast_excel_duration(double value, void *out, void *fault);
 */
 import "C"
 
@@ -161,5 +165,26 @@ func callDateTime(ptr unsafe.Pointer, length uintptr, order uint32) (r result) {
 func callExcelSerial(ptr unsafe.Pointer, length uintptr, epoch uint32) (r result) {
 	r.code = int32(C.cast_excel_serial((*C.uint8_t)(ptr), C.size_t(length), C.uint32_t(epoch),
 		unsafe.Pointer(&r.out), unsafe.Pointer(&r.fault)))
+	return r
+}
+
+func callDecimalFromF64(value float64) (r result) {
+	r.code = int32(C.cast_decimal_from_f64(C.double(value), unsafe.Pointer(&r.out), unsafe.Pointer(&r.fault)))
+	return r
+}
+
+func callExcelSerialFromF64(value float64, epoch uint32) (r result) {
+	r.code = int32(C.cast_excel_serial_from_f64(C.double(value), C.uint32_t(epoch),
+		unsafe.Pointer(&r.out), unsafe.Pointer(&r.fault)))
+	return r
+}
+
+func callExcelTime(value float64) (r result) {
+	r.code = int32(C.cast_excel_time(C.double(value), unsafe.Pointer(&r.out), unsafe.Pointer(&r.fault)))
+	return r
+}
+
+func callExcelDuration(value float64) (r result) {
+	r.code = int32(C.cast_excel_duration(C.double(value), unsafe.Pointer(&r.out), unsafe.Pointer(&r.fault)))
 	return r
 }

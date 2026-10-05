@@ -138,6 +138,10 @@ rather than silently wrapping.
 | `DateTime` | `CivilDateTime` | `DateOrder` |
 | `TimeOfDay` | `time.Duration` since midnight | — |
 | `Span` | `Duration{Seconds, Nanos}` | — |
+| `ExactFromFloat64` | `Decimal`, the shortest that names the `float64` (`0.1` is one tenth) | — |
+| `ExcelSerialFromFloat64` | `CivilDateTime` | `ExcelEpoch` |
+| `ExcelTime` | `time.Duration` since midnight | — |
+| `ExcelDuration` | `Duration{Seconds, Nanos}` | — |
 
 Plus three entry points that are not doors — `Available()`, `LoadError()` and
 `NativeVersion()` — covered under

@@ -68,12 +68,8 @@ public record NumFormat(char decimalSeparator, char groupSeparator, int styles, 
      * Every lenience on. {@link #STYLE_SEPARATOR_DETECT} is a separator <em>policy</em>, not
      * a lenience, and is deliberately not included.
      */
-    public static final int STYLE_ALL = STYLE_GROUPING
-            | STYLE_PARENTHESES
-            | STYLE_EXPONENT
-            | STYLE_RADIX_PREFIXES
-            | STYLE_PERCENT
-            | STYLE_CURRENCY;
+    public static final int STYLE_ALL =
+            STYLE_GROUPING | STYLE_PARENTHESES | STYLE_EXPONENT | STYLE_RADIX_PREFIXES | STYLE_PERCENT | STYLE_CURRENCY;
 
     /**
      * The invariant profile — {@code .} decimal, {@code ,} grouping, every lenience on, no
@@ -143,9 +139,6 @@ public record NumFormat(char decimalSeparator, char groupSeparator, int styles, 
     public static NumFormat from(Locale locale) {
         DecimalFormatSymbols symbols = DecimalFormatSymbols.getInstance(locale);
         return new NumFormat(
-                symbols.getDecimalSeparator(),
-                symbols.getGroupingSeparator(),
-                STYLE_ALL,
-                symbols.getCurrencySymbol());
+                symbols.getDecimalSeparator(), symbols.getGroupingSeparator(), STYLE_ALL, symbols.getCurrencySymbol());
     }
 }

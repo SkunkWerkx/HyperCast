@@ -48,6 +48,12 @@ Check("datetime", Cast.DateTime("1/7/2026 3:04 PM", DateOrder.MonthDayYear),
 	new DateTime(2026, 1, 7, 15, 4, 0));
 Check("time", Cast.Time("15:04:05"), new TimeOnly(15, 4, 5));
 Check("duration", Cast.Duration("P1DT6H"), new TimeSpan(1, 6, 0, 0));
+// The typed doors take the double a workbook stores, not text.
+Check("decimal from double", Cast.DecimalFromDouble(0.1 + 0.2), 0.30000000000000004m);
+Check("excel serial from double", Cast.ExcelSerialFromDouble(45292.75, ExcelEpoch.Y1900),
+	new DateTime(2024, 1, 1, 18, 0, 0));
+Check("excel time", Cast.ExcelTime(0.75), new TimeOnly(18, 0));
+Check("excel duration", Cast.ExcelDuration(1.5), new TimeSpan(1, 12, 0, 0));
 // The UTF-8 doors are the native contract itself — no transcode in front of the crossing.
 Check("utf8", Cast.Int32("(1,234)"u8, NumFormat.Invariant), -1234);
 

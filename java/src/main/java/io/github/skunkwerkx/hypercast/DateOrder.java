@@ -65,10 +65,9 @@ public enum DateOrder {
                 case 'd' -> {
                     return DAY_MONTH_YEAR;
                 }
-                default -> { }
+                default -> {}
             }
         }
-        throw new IllegalArgumentException(
-                "Short date pattern '" + pattern + "' names none of y/M/d.");
+        throw new IllegalArgumentException("Short date pattern '" + pattern + "' names none of y/M/d.");
     }
 }

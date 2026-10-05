@@ -21,17 +21,29 @@ import HyperCastCore
 /// fraction zeros trimmed, so the scale is minimal — which is precisely what `Decimal`
 /// represents: nothing is lost between the core and the presentation.
 public enum Cast {
-    private typealias PlainFn = @convention(c) (
-        UnsafePointer<UInt8>?, UInt, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?
-    ) -> Int32
-    private typealias NumericFn = @convention(c) (
-        UnsafePointer<UInt8>?, UInt, UnsafeRawPointer?, UnsafeMutableRawPointer?,
-        UnsafeMutableRawPointer?
-    ) -> Int32
-    private typealias UnixFn = @convention(c) (
-        UnsafePointer<UInt8>?, UInt, UInt32, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?
-    ) -> Int32
+    private typealias PlainFn =
+        @convention(c) (
+            UnsafePointer<UInt8>?, UInt, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?
+        ) -> Int32
+    private typealias NumericFn =
+        @convention(c) (
+            UnsafePointer<UInt8>?, UInt, UnsafeRawPointer?, UnsafeMutableRawPointer?,
+            UnsafeMutableRawPointer?
+        ) -> Int32
+    private typealias UnixFn =
+        @convention(c) (
+            UnsafePointer<UInt8>?, UInt, UInt32, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?
+        ) -> Int32
     private typealias VersionFn = @convention(c) () -> UInt32
+    // The typed doors read a double the caller holds instead of text.
+    private typealias TypedFn =
+        @convention(c) (
+            Double, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?
+        ) -> Int32
+    private typealias TypedDeclaredFn =
+        @convention(c) (
+            Double, UInt32, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?
+        ) -> Int32
 
     // The native exports as one table, so every door reaches them the same way. A class:
     // a reference is one retain where a struct of function pointers would be copied.
@@ -60,14 +72,22 @@ public enum Cast {
         let dateTime: UnixFn
         let time: PlainFn
         let duration: PlainFn
+        let decimalFromF64: TypedFn
+        let excelSerialFromF64: TypedDeclaredFn
+        let excelTime: TypedFn
+        let excelDuration: TypedFn
         let version: VersionFn
 
-        init(bool: PlainFn,
-             i8: NumericFn, i16: NumericFn, i32: NumericFn, i64: NumericFn,
-             u8: NumericFn, u16: NumericFn, u32: NumericFn, u64: NumericFn,
-             f32: NumericFn, f64: NumericFn, decimal: NumericFn, uuid: PlainFn, timestamp: PlainFn,
-             unix: UnixFn, excelSerial: UnixFn, date: PlainFn, dateOrdered: UnixFn, dateTime: UnixFn,
-             time: PlainFn, duration: PlainFn, version: VersionFn) {
+        init(
+            bool: PlainFn,
+            i8: NumericFn, i16: NumericFn, i32: NumericFn, i64: NumericFn,
+            u8: NumericFn, u16: NumericFn, u32: NumericFn, u64: NumericFn,
+            f32: NumericFn, f64: NumericFn, decimal: NumericFn, uuid: PlainFn, timestamp: PlainFn,
+            unix: UnixFn, excelSerial: UnixFn, date: PlainFn, dateOrdered: UnixFn, dateTime: UnixFn,
+            time: PlainFn, duration: PlainFn,
+            decimalFromF64: TypedFn, excelSerialFromF64: TypedDeclaredFn, excelTime: TypedFn,
+            excelDuration: TypedFn, version: VersionFn
+        ) {
             self.bool = bool
             self.i8 = i8; self.i16 = i16; self.i32 = i32; self.i64 = i64
             self.u8 = u8; self.u16 = u16; self.u32 = u32; self.u64 = u64
@@ -76,6 +96,8 @@ public enum Cast {
             self.timestamp = timestamp; self.unix = unix; self.excelSerial = excelSerial
             self.date = date; self.dateOrdered = dateOrdered; self.dateTime = dateTime
             self.time = time; self.duration = duration
+            self.decimalFromF64 = decimalFromF64; self.excelSerialFromF64 = excelSerialFromF64
+            self.excelTime = excelTime; self.excelDuration = excelDuration
             self.version = version
         }
     }
@@ -96,6 +118,10 @@ public enum Cast {
         dateTime: cast_datetime,
         time: cast_time,
         duration: cast_duration,
+        decimalFromF64: cast_decimal_from_f64,
+        excelSerialFromF64: cast_excel_serial_from_f64,
+        excelTime: cast_excel_time,
+        excelDuration: cast_excel_duration,
         version: hypercast_version)
 
     // `throws` only so every door keeps one shape; the core is always there.
@@ -162,14 +188,16 @@ public enum Cast {
     ) -> Verdict<T> {
         var rawFormat: RawNumFormat = (
             format.decimalSeparator.value, format.groupSeparator.value, format.styles.rawValue,
-            format.currencyLength, format.currencyLow, format.currencyHigh)
+            format.currencyLength, format.currencyLow, format.currencyHigh
+        )
         var out: OutScratch = (0, 0)
         var faultOut: FaultScratch = (0, 0)
         let code = withUnsafeMutableBytes(of: &out) { outRaw in
             withUnsafeMutableBytes(of: &faultOut) { faultRaw in
                 withUnsafeBytes(of: &rawFormat) { formatRaw in
-                    fn(inputPointer(utf8), UInt(utf8.count), formatRaw.baseAddress,
-                       outRaw.baseAddress, faultRaw.baseAddress)
+                    fn(
+                        inputPointer(utf8), UInt(utf8.count), formatRaw.baseAddress,
+                        outRaw.baseAddress, faultRaw.baseAddress)
                 }
             }
         }
@@ -188,8 +216,28 @@ public enum Cast {
         var faultOut: FaultScratch = (0, 0)
         let code = withUnsafeMutableBytes(of: &out) { outRaw in
             withUnsafeMutableBytes(of: &faultOut) { faultRaw in
-                fn(inputPointer(utf8), UInt(utf8.count), discriminant, outRaw.baseAddress,
-                   faultRaw.baseAddress)
+                fn(
+                    inputPointer(utf8), UInt(utf8.count), discriminant, outRaw.baseAddress,
+                    faultRaw.baseAddress)
+            }
+        }
+        if code == 0 {
+            return .success(withUnsafeBytes(of: &out, read))
+        }
+        return .fault(withUnsafeBytes(of: &faultOut) { fault(code, $0) })
+    }
+
+    /// The typed shape: a double instead of text, then the declared epoch when the door
+    /// takes one. There is no text for a fault's span to index, so the core leaves it empty.
+    private static func typedDoor<T>(
+        _ value: Double, _ call: (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> Int32,
+        read: (UnsafeRawBufferPointer) -> T
+    ) -> Verdict<T> {
+        var out: OutScratch = (0, 0)
+        var faultOut: FaultScratch = (0, 0)
+        let code = withUnsafeMutableBytes(of: &out) { outRaw in
+            withUnsafeMutableBytes(of: &faultOut) { faultRaw in
+                call(outRaw.baseAddress, faultRaw.baseAddress)
             }
         }
         if code == 0 {
@@ -476,7 +524,9 @@ public enum Cast {
     /// See ``numeric(_:format:)-swift.type.method``; input as a raw view of UTF-8 bytes —
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
-    public static func numeric<T: NumericCastTarget>(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<T> {
+    public static func numeric<T: NumericCastTarget>(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws
+        -> Verdict<T>
+    {
         try T.castNumeric(utf8, format: format)
     }
 
@@ -647,18 +697,22 @@ public enum Cast {
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
     public static func dateTime(_ utf8: UnsafeRawBufferPointer, order: DateOrder) throws -> Verdict<DateComponents> {
-        unixDoor(try loaded().dateTime, utf8, order.rawValue) { raw in
-            let nanos = raw.load(fromByteOffset: 8, as: UInt64.self)
-            let secondOfDay = nanos / 1_000_000_000
-            return DateComponents(
-                year: Int(raw.load(fromByteOffset: 0, as: UInt16.self)),
-                month: Int(raw.load(fromByteOffset: 2, as: UInt8.self)),
-                day: Int(raw.load(fromByteOffset: 3, as: UInt8.self)),
-                hour: Int(secondOfDay / 3_600),
-                minute: Int(secondOfDay % 3_600 / 60),
-                second: Int(secondOfDay % 60),
-                nanosecond: Int(nanos % 1_000_000_000))
-        }
+        unixDoor(try loaded().dateTime, utf8, order.rawValue, read: civilValue)
+    }
+
+    /// The native civil date-time: `year: u16` at 0, `month`/`day: u8` at 2/3, nanoseconds
+    /// of the day as `u64` at 8.
+    private static func civilValue(_ raw: UnsafeRawBufferPointer) -> DateComponents {
+        let nanos = raw.load(fromByteOffset: 8, as: UInt64.self)
+        let secondOfDay = nanos / 1_000_000_000
+        return DateComponents(
+            year: Int(raw.load(fromByteOffset: 0, as: UInt16.self)),
+            month: Int(raw.load(fromByteOffset: 2, as: UInt8.self)),
+            day: Int(raw.load(fromByteOffset: 3, as: UInt8.self)),
+            hour: Int(secondOfDay / 3_600),
+            minute: Int(secondOfDay % 3_600 / 60),
+            second: Int(secondOfDay % 60),
+            nanosecond: Int(nanos % 1_000_000_000))
     }
 
     /// Casts an ISO 24-hour time-of-day to `DateComponents` (hour, minute, second,
@@ -676,14 +730,17 @@ public enum Cast {
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
     public static func time(_ utf8: UnsafeRawBufferPointer) throws -> Verdict<DateComponents> {
-        plainDoor(try loaded().time, utf8) { raw in
-            let nanosOfDay = raw.load(as: UInt64.self)
-            let (secondOfDay, nano) = nanosOfDay.quotientAndRemainder(dividingBy: 1_000_000_000)
-            let (hour, rest) = secondOfDay.quotientAndRemainder(dividingBy: 3_600)
-            let (minute, second) = rest.quotientAndRemainder(dividingBy: 60)
-            return DateComponents(
-                hour: Int(hour), minute: Int(minute), second: Int(second), nanosecond: Int(nano))
-        }
+        plainDoor(try loaded().time, utf8, read: timeValue)
+    }
+
+    /// Nanoseconds since midnight, as `u64`, in hour-through-nanosecond components.
+    private static func timeValue(_ raw: UnsafeRawBufferPointer) -> DateComponents {
+        let nanosOfDay = raw.load(as: UInt64.self)
+        let (secondOfDay, nano) = nanosOfDay.quotientAndRemainder(dividingBy: 1_000_000_000)
+        let (hour, rest) = secondOfDay.quotientAndRemainder(dividingBy: 3_600)
+        let (minute, second) = rest.quotientAndRemainder(dividingBy: 60)
+        return DateComponents(
+            hour: Int(hour), minute: Int(minute), second: Int(second), nanosecond: Int(nano))
     }
 
     /// Casts a duration (ISO 8601 fixed components, invariant colon form, or protobuf JSON
@@ -702,11 +759,59 @@ public enum Cast {
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
     public static func duration(_ utf8: UnsafeRawBufferPointer) throws -> Verdict<Duration> {
-        plainDoor(try loaded().duration, utf8) { raw in
-            let seconds = raw.load(fromByteOffset: 0, as: Int64.self)
-            let nanos = raw.load(fromByteOffset: 8, as: Int32.self)
-            return Duration.seconds(seconds) + .nanoseconds(Int64(nanos))
-        }
+        plainDoor(try loaded().duration, utf8, read: durationValue)
+    }
+
+    /// The protobuf pair: `seconds: i64` at 0, same-signed `nanos: i32` at 8.
+    private static func durationValue(_ raw: UnsafeRawBufferPointer) -> Duration {
+        let seconds = raw.load(fromByteOffset: 0, as: Int64.self)
+        let nanos = raw.load(fromByteOffset: 8, as: Int32.self)
+        return Duration.seconds(seconds) + .nanoseconds(Int64(nanos))
+    }
+
+    // MARK: - typed doors (a number the caller already holds, not text)
+
+    /// Reads a number the caller already holds — the `Double` a workbook stores for a
+    /// numeric cell — as the exact `Decimal` it names: the shortest decimal that rounds back
+    /// to the double, the digits a spreadsheet writes for it. So `0.1` is one tenth, not the
+    /// binary fraction nearest it, and `0.1 + 0.2` is `0.30000000000000004`. The result is
+    /// canonical, as ``decimal(_:format:)-swift.type.method``'s is. NaN is `.malformed`; an
+    /// infinity, a magnitude past 2⁹⁶ − 1 or more than 28 places is `.outOfRange` — the digits
+    /// are never cut to fit. A typed door's ``Fault`` has no span: its offset and length are 0.
+    public static func decimalFromDouble(_ value: Double) throws -> Verdict<Decimal> {
+        let fn = try loaded().decimalFromF64
+        return typedDoor(value, { fn(value, $0, $1) }, read: decimalValue)
+    }
+
+    /// Reads an Excel date serial the caller already holds as a `Double` under a declared
+    /// ``ExcelEpoch`` — the twin of ``excelSerial(_:epoch:)-swift.type.method`` for a workbook
+    /// reader that has the cell's number and no text — as the zone-less wall clock the cell
+    /// holds, in the `DateComponents` ``dateTime(_:order:)-swift.type.method`` returns, its
+    /// fraction rounded to the nearest nanosecond. The 1900 system's phantom serial `60`, a
+    /// serial below the system's first day and one past 9999-12-31 are `.outOfRange`; a
+    /// negative, NaN or infinite serial is `.malformed`.
+    public static func excelSerialFromDouble(_ value: Double, epoch: ExcelEpoch) throws -> Verdict<DateComponents> {
+        let fn = try loaded().excelSerialFromF64
+        return typedDoor(value, { fn(value, epoch.rawValue, $0, $1) }, read: civilValue)
+    }
+
+    /// Reads the fraction of an Excel serial the caller already holds as a `Double` as a time
+    /// of day, in the components ``time(_:)-swift.type.method`` returns: `0.75` and
+    /// `45292.75` are both 18:00. Rounded to the nearest nanosecond, and a fraction that
+    /// rounds to a whole day is midnight. A negative, NaN or infinite serial is `.malformed`;
+    /// one past 9999-12-31 is `.outOfRange`.
+    public static func excelTime(_ value: Double) throws -> Verdict<DateComponents> {
+        let fn = try loaded().excelTime
+        return typedDoor(value, { fn(value, $0, $1) }, read: timeValue)
+    }
+
+    /// Reads a number of days the caller already holds as a `Double` — what an elapsed-time
+    /// format (`[h]:mm:ss`) stores — as a `Duration`: `1.5` is a day and twelve hours, and a
+    /// negative span is negative. Rounded to the nearest nanosecond. NaN or an infinity is
+    /// `.malformed`; beyond ±10,000 years is `.outOfRange`.
+    public static func excelDuration(_ value: Double) throws -> Verdict<Duration> {
+        let fn = try loaded().excelDuration
+        return typedDoor(value, { fn(value, $0, $1) }, read: durationValue)
     }
 
     /// Presents a verdict optionally: an ``CastFailure/empty`` fault becomes `nil` (Swift's

@@ -35,7 +35,8 @@ RSpec.describe HyperCast do
     utf16 = "1€x".encode(Encoding::UTF_16LE)
     expect(described_class.i32(utf16, invariant)).to eq(HyperCast::Fault.new(reason: :malformed, offset: 1, length: 1))
     # ASCII text is the identity either way.
-    expect(described_class.i32("  12x4".b, invariant)).to eq(HyperCast::Fault.new(reason: :malformed, offset: 4, length: 1))
+    expect(described_class.i32("  12x4".b,
+                               invariant)).to eq(HyperCast::Fault.new(reason: :malformed, offset: 4, length: 1))
   end
 
   it "honors declared separators" do
@@ -59,7 +60,8 @@ RSpec.describe HyperCast do
     # Declared but with the flag off: the symbol is malformed input, at the symbol.
     declared_off = HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",",
                                             flags: HyperCast::ALL_STYLES & ~HyperCast::CURRENCY, currency: "$")
-    expect(described_class.i32("$5", declared_off)).to eq(HyperCast::Fault.new(reason: :malformed, offset: 0, length: 1))
+    expect(described_class.i32("$5",
+                               declared_off)).to eq(HyperCast::Fault.new(reason: :malformed, offset: 0, length: 1))
     # The flag with nothing declared (INVARIANT) is a no-op: a symbol is just malformed input.
     expect(described_class.i32("$5", invariant)).to eq(HyperCast::Fault.new(reason: :malformed, offset: 0, length: 1))
   end
@@ -252,6 +254,7 @@ RSpec.describe HyperCast do
       {
         ->(option) { described_class.unix("1", option) } => [:fortnights, "seconds", 1, nil],
         ->(option) { described_class.excel_serial("1", option) } => [:y2000, "y1900", 1900, nil],
+        ->(option) { described_class.excel_serial_from_float(1.0, option) } => [:y2000, "y1900", 1900, nil],
         ->(option) { described_class.date("1/7/2026", option) } => [:little_endian, "month_day_year", 2],
         ->(option) { described_class.datetime("1/7/2026 3:04 PM", option) } => [:little_endian, "month_day_year", nil]
       }.each do |door, options|

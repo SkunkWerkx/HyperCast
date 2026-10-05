@@ -155,6 +155,21 @@ fn fault(ruby: &Ruby, text: RString, failed: core::Fault) -> Result<Value, Error
     )
 }
 
+/// A typed door's Fault: the reason alone, over an empty span — there is no text for one
+/// to index.
+fn typed_fault(ruby: &Ruby, reason: core::Reason) -> Result<Value, Error> {
+    let cache = cached();
+    let reason = ruby.get_inner(match reason {
+        core::Reason::Empty => cache.empty,
+        core::Reason::Malformed => cache.malformed,
+        core::Reason::OutOfRange => cache.out_of_range,
+    });
+    data(
+        ruby.get_inner(cached().fault),
+        [reason.as_value(), 0i64.into_value_with(ruby), 0i64.into_value_with(ruby)],
+    )
+}
+
 /// The core's byte span in the units `String#[]` slices by — the same rule as
 /// hypercast.rb's `characters`, through the routine Ruby itself uses to turn a byte
 /// position into a character position: an identity for a binary String and for 7-bit
@@ -317,18 +332,30 @@ fn decimal_door(ruby: &Ruby, text: RString, format: Value) -> Result<Value, Erro
     let text = utf8(ruby, text)?;
     let resolved = resolve_format(ruby, format)?;
     match with_bytes(text, |bytes| core::cast_decimal(bytes, &resolved)) {
-        Ok(decimal) => {
-            let class = ruby.get_inner(cached().decimal_class);
-            let magnitude = ruby.integer_from_u128(decimal.magnitude());
-            success(
-                ruby,
-                class.funcall::<_, _, Value>(
-                    "new",
-                    (magnitude, u32::from(decimal.scale), decimal.negative),
-                )?,
-            )
-        }
+        Ok(decimal) => decimal_value(ruby, decimal),
         Err(failed) => fault(ruby, text, failed),
+    }
+}
+
+fn decimal_value(ruby: &Ruby, decimal: core::Decimal) -> Result<Value, Error> {
+    let class = ruby.get_inner(cached().decimal_class);
+    let magnitude = ruby.integer_from_u128(decimal.magnitude());
+    success(
+        ruby,
+        class.funcall::<_, _, Value>(
+            "new",
+            (magnitude, u32::from(decimal.scale), decimal.negative),
+        )?,
+    )
+}
+
+/// Reads a number as the exact Decimal it names — the shortest decimal that rounds back to
+/// the Float. The value is taken as Ruby's own Float conversion takes it (`rb_num2dbl`): an
+/// Integer, Float or Rational, and a TypeError for anything else, a String included.
+fn decimal_from_float_door(ruby: &Ruby, value: f64) -> Result<Value, Error> {
+    match core::decimal_from_f64(value) {
+        Ok(decimal) => decimal_value(ruby, decimal),
+        Err(reason) => typed_fault(ruby, reason),
     }
 }
 
@@ -398,16 +425,20 @@ fn unix_door(ruby: &Ruby, text: RString, precision: Value) -> Result<Value, Erro
     }
 }
 
-fn excel_serial_door(ruby: &Ruby, text: RString, epoch: Value) -> Result<Value, Error> {
+fn resolve_epoch(ruby: &Ruby, epoch: Value) -> Result<core::ExcelEpoch, Error> {
     let symbol = declared_symbol(ruby, epoch)?;
-    let epoch = match lookup(&cached().epochs, symbol) {
-        Some(known) => known,
-        None => match &*symbol.name()? {
-            "y1900" => core::ExcelEpoch::Y1900,
-            "y1904" => core::ExcelEpoch::Y1904,
-            _ => return Err(unknown_option(ruby, epoch)),
-        },
-    };
+    if let Some(known) = lookup(&cached().epochs, symbol) {
+        return Ok(known);
+    }
+    match &*symbol.name()? {
+        "y1900" => Ok(core::ExcelEpoch::Y1900),
+        "y1904" => Ok(core::ExcelEpoch::Y1904),
+        _ => Err(unknown_option(ruby, epoch)),
+    }
+}
+
+fn excel_serial_door(ruby: &Ruby, text: RString, epoch: Value) -> Result<Value, Error> {
+    let epoch = resolve_epoch(ruby, epoch)?;
     let text = utf8(ruby, text)?;
     match with_bytes(text, |bytes| core::cast_excel_serial(bytes, epoch)) {
         Ok(ts) => utc_time(ruby, ts),
@@ -460,26 +491,54 @@ fn datetime_door(ruby: &Ruby, text: RString, order: Value) -> Result<Value, Erro
     let order = resolve_order(ruby, order)?;
     let text = utf8(ruby, text)?;
     match with_bytes(text, |bytes| core::cast_datetime(bytes, order)) {
-        Ok(civil) => {
-            // Zone-less civil value on stdlib DateTime with exact Rational seconds — the
-            // text named no zone, so none is invented; fusing one is the caller's job.
-            let (second_of_day, frac) =
-                (civil.nanos_of_day / 1_000_000_000, civil.nanos_of_day % 1_000_000_000);
-            let (hour, rest) = (second_of_day / 3_600, second_of_day % 3_600);
-            let (minute, second) = (rest / 60, rest % 60);
-            let fraction: Value =
-                (frac as i64).into_value_with(ruby).funcall("quo", (1_000_000_000i64,))?;
-            let seconds: Value = fraction.funcall("+", (second as i64,))?;
-            let class = ruby.get_inner(cached().datetime_class);
-            success(
-                ruby,
-                class.funcall::<_, _, Value>(
-                    "new",
-                    (civil.date.year, civil.date.month, civil.date.day, hour, minute, seconds),
-                )?,
-            )
-        }
+        Ok(civil) => civil_value(ruby, civil),
         Err(failed) => fault(ruby, text, failed),
+    }
+}
+
+/// Zone-less civil value on stdlib DateTime with exact Rational seconds — the input named
+/// no zone, so none is invented; fusing one is the caller's job.
+fn civil_value(ruby: &Ruby, civil: core::CivilDateTime) -> Result<Value, Error> {
+    let (second_of_day, frac) =
+        (civil.nanos_of_day / 1_000_000_000, civil.nanos_of_day % 1_000_000_000);
+    let (hour, rest) = (second_of_day / 3_600, second_of_day % 3_600);
+    let (minute, second) = (rest / 60, rest % 60);
+    let fraction: Value =
+        (frac as i64).into_value_with(ruby).funcall("quo", (1_000_000_000i64,))?;
+    let seconds: Value = fraction.funcall("+", (second as i64,))?;
+    let class = ruby.get_inner(cached().datetime_class);
+    success(
+        ruby,
+        class.funcall::<_, _, Value>(
+            "new",
+            (civil.date.year, civil.date.month, civil.date.day, hour, minute, seconds),
+        )?,
+    )
+}
+
+/// Reads an Excel serial number under a declared epoch Symbol as the zone-less DateTime it
+/// names — the typed twin of `excel_serial`.
+fn excel_serial_from_float_door(ruby: &Ruby, value: f64, epoch: Value) -> Result<Value, Error> {
+    let epoch = resolve_epoch(ruby, epoch)?;
+    match core::excel_serial(value, epoch) {
+        Ok(civil) => civil_value(ruby, civil),
+        Err(reason) => typed_fault(ruby, reason),
+    }
+}
+
+/// Reads the fraction of an Excel serial number as nanoseconds since midnight.
+fn excel_time_door(ruby: &Ruby, value: f64) -> Result<Value, Error> {
+    match core::excel_time(value) {
+        Ok(nanos) => success(ruby, nanos),
+        Err(reason) => typed_fault(ruby, reason),
+    }
+}
+
+/// Reads a number of days as exact Rational seconds.
+fn excel_duration_door(ruby: &Ruby, value: f64) -> Result<Value, Error> {
+    match core::excel_duration(value) {
+        Ok(span) => duration_value(ruby, span),
+        Err(reason) => typed_fault(ruby, reason),
     }
 }
 
@@ -491,17 +550,18 @@ fn time_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
 fn duration_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
     let text = utf8(ruby, text)?;
     match with_bytes(text, |bytes| core::cast_duration(bytes)) {
-        Ok(span) => {
-            // Exact Rational seconds, no float anywhere: nanos.quo(1e9) + whole seconds.
-            // (Rational + Integer stays Rational; the parts each fit i64 where the total
-            // in nanoseconds would not.)
-            let fraction: Value =
-                i64::from(span.nanos).into_value_with(ruby).funcall("quo", (1_000_000_000i64,))?;
-            let rational: Value = fraction.funcall("+", (span.seconds,))?;
-            success(ruby, rational)
-        }
+        Ok(span) => duration_value(ruby, span),
         Err(failed) => fault(ruby, text, failed),
     }
+}
+
+/// Exact Rational seconds, no float anywhere: nanos.quo(1e9) + whole seconds. (Rational +
+/// Integer stays Rational; the parts each fit i64 where the total in nanoseconds would not.)
+fn duration_value(ruby: &Ruby, span: core::Duration) -> Result<Value, Error> {
+    let fraction: Value =
+        i64::from(span.nanos).into_value_with(ruby).funcall("quo", (1_000_000_000i64,))?;
+    let rational: Value = fraction.funcall("+", (span.seconds,))?;
+    success(ruby, rational)
 }
 
 #[magnus::init(name = "hypercast_native")]
@@ -530,6 +590,14 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     hypercast.define_singleton_method("datetime", function!(datetime_door, 2))?;
     hypercast.define_singleton_method("time", function!(time_door, 1))?;
     hypercast.define_singleton_method("duration", function!(duration_door, 1))?;
+    hypercast
+        .define_singleton_method("decimal_from_float", function!(decimal_from_float_door, 1))?;
+    hypercast.define_singleton_method(
+        "excel_serial_from_float",
+        function!(excel_serial_from_float_door, 2),
+    )?;
+    hypercast.define_singleton_method("excel_time", function!(excel_time_door, 1))?;
+    hypercast.define_singleton_method("excel_duration", function!(excel_duration_door, 1))?;
     hypercast.define_singleton_method("native_version", function!(native_version, 0))?;
     Ok(())
 }

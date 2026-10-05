@@ -48,6 +48,10 @@ func TestEveryDoorIsAllocationFreeOnSuccess(t *testing.T) {
 		{"DateTime", func() *Fault { _, f := DateTime("1/7/2026 3:04 PM", MonthDayYear); return f }},
 		{"TimeOfDay", func() *Fault { _, f := TimeOfDay("15:04:05.123456789"); return f }},
 		{"Span", func() *Fault { _, f := Span("PT1H30M15.5S"); return f }},
+		{"ExactFromFloat64", func() *Fault { _, f := ExactFromFloat64(0.1 + 0.2); return f }},
+		{"ExcelSerialFromFloat64", func() *Fault { _, f := ExcelSerialFromFloat64(45292.75, Excel1900); return f }},
+		{"ExcelTime", func() *Fault { _, f := ExcelTime(0.75); return f }},
+		{"ExcelDuration", func() *Fault { _, f := ExcelDuration(1.5); return f }},
 	}
 	for _, door := range doors {
 		succeed(t, door.name, door.call())

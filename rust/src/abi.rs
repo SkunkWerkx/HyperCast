@@ -1,6 +1,6 @@
 //! The parts of the C ABI that are Rust API too: the version word every binding probes, and
 //! [`NumFormat`] as it crosses the boundary. They live outside `ffi` because that module is
-//! the `exports` feature — the 21 `cast_*` symbols — and a crate that links this one as an
+//! the `exports` feature — the 25 `cast_*` symbols — and a crate that links this one as an
 //! rlib to export a C ABI of its own takes the core with `exports` off, so its library
 //! carries none of them, while still declaring a numeric column in exactly this layout.
 

@@ -50,6 +50,10 @@ midnight, durations come back as exact `Rational` seconds across the core's whol
 | `datetime(text, order)` | zone-less `DateTime`, exact `Rational` seconds | a field order, as `date` |
 | `time(text)` | `Integer` nanoseconds since midnight | — |
 | `duration(text)` | exact `Rational` seconds | — |
+| `decimal_from_float(value)` | `HyperCast::Decimal`, the shortest that names the number (`0.1` is one tenth) | — |
+| `excel_serial_from_float(value, epoch)` | zone-less `DateTime`, as `datetime` | `:y1900` / `:y1904` |
+| `excel_time(value)` | `Integer` nanoseconds since midnight | — |
+| `excel_duration(value)` | exact `Rational` seconds | — |
 
 Every door returns a `Success` or a `Fault`; `HyperCast.optional(verdict)` folds `:empty`
 to `nil`. Beside the doors, `native_version` returns the loaded core's

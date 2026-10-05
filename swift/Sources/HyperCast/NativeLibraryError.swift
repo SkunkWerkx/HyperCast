@@ -7,7 +7,10 @@ import Foundation
 /// ``Verdict``'s ``Fault``. It stays so that an existing
 /// `catch let error as NativeLibraryError` still compiles (with a deprecation warning)
 /// instead of breaking the build.
-@available(*, deprecated, message: "Never thrown: the native core is linked in on every platform, so nothing is loaded at run time.")
+@available(
+    *, deprecated,
+    message: "Never thrown: the native core is linked in on every platform, so nothing is loaded at run time."
+)
 public enum NativeLibraryError: Error, CustomStringConvertible, LocalizedError {
     /// Unreachable: the type has no values.
     public var description: String {

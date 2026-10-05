@@ -36,6 +36,8 @@ type vector struct {
 	Magnitude string          `json:"magnitude"`
 	Scale     uint8           `json:"scale"`
 	Negative  bool            `json:"negative"`
+	Door      string          `json:"door"`
+	Bits      string          `json:"bits"`
 }
 
 type formatSpec struct {
@@ -340,5 +342,71 @@ func TestDurationCorpus(t *testing.T) {
 		}
 		value, fault := Span(v.Input)
 		assertVerdict(t, "duration", &v, value, fault, expected)
+	}
+}
+
+// The typed doors, by bits: each float64 is rebuilt exactly from its IEEE 754 pattern — NaN
+// and the infinities included, which JSON cannot spell. A typed door's Fault has no span.
+func TestTypedCorpus(t *testing.T) {
+	doors := map[string]bool{}
+	for _, v := range corpus(t, "typed.json") {
+		bits, err := strconv.ParseUint(v.Bits, 16, 64)
+		if err != nil {
+			t.Fatalf("typed: %q bad bits %q", v.Input, v.Bits)
+		}
+		value := math.Float64frombits(bits)
+		doors[v.Door] = true
+		var fault *Fault
+		switch v.Door {
+		case "decimal":
+			var expected Decimal
+			var text string
+			if v.Expect == "ok" {
+				magnitude, _ := new(big.Int).SetString(v.Magnitude, 10)
+				lo := new(big.Int).And(magnitude, new(big.Int).SetUint64(math.MaxUint64))
+				hi := new(big.Int).Rsh(magnitude, 64)
+				expected = Decimal{Lo: lo.Uint64(), Hi: uint32(hi.Uint64()), Scale: v.Scale, Negative: v.Negative}
+				if err := json.Unmarshal(v.Value, &text); err != nil {
+					t.Fatalf("typed decimal: %q bad expected value: %v", v.Input, err)
+				}
+			}
+			var got Decimal
+			got, fault = ExactFromFloat64(value)
+			assertVerdict(t, "typed decimal", &v, got, fault, expected)
+			if fault == nil && got.String() != text {
+				t.Errorf("typed decimal: %q String() = %q, want %q", v.Input, got.String(), text)
+			}
+		case "excel_serial":
+			var expected CivilDateTime
+			if v.Year != nil {
+				expected = CivilDateTime{
+					Date:      Date{Year: *v.Year, Month: time.Month(v.Month), Day: v.Day},
+					TimeOfDay: time.Duration(v.NanosDay),
+				}
+			}
+			var got CivilDateTime
+			got, fault = ExcelSerialFromFloat64(value, ExcelEpoch(v.Epoch))
+			assertVerdict(t, "typed excel_serial", &v, got, fault, expected)
+		case "excel_time":
+			var got time.Duration
+			got, fault = ExcelTime(value)
+			assertVerdict(t, "typed excel_time", &v, got, fault, time.Duration(v.Nanos))
+		case "excel_duration":
+			var expected Duration
+			if v.Seconds != nil {
+				expected = Duration{Seconds: *v.Seconds, Nanos: int32(v.Nanos)}
+			}
+			var got Duration
+			got, fault = ExcelDuration(value)
+			assertVerdict(t, "typed excel_duration", &v, got, fault, expected)
+		default:
+			t.Fatalf("typed: unknown door %q", v.Door)
+		}
+		if fault != nil && (fault.Offset != 0 || fault.Length != 0) {
+			t.Errorf("typed %s: %q fault span %d+%d, want 0+0", v.Door, v.Input, fault.Offset, fault.Length)
+		}
+	}
+	if len(doors) != 4 {
+		t.Errorf("typed: replayed %d doors, want 4", len(doors))
 	}
 }

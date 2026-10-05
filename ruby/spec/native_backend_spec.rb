@@ -51,9 +51,9 @@ RSpec.describe "native backend" do
     eurozone = HyperCast::NumFormat.new(decimal_sep: ",", group_sep: ".", flags: HyperCast::ALL_STYLES)
     native = HyperCast.f64("1.234,5", eurozone)
     expect(fiddle_eval(
-      'HyperCast.f64("1.234,5", HyperCast::NumFormat.new(decimal_sep: ",", group_sep: ".", ' \
-      "flags: HyperCast::ALL_STYLES)).inspect"
-    )).to eq(native.inspect)
+             'HyperCast.f64("1.234,5", HyperCast::NumFormat.new(decimal_sep: ",", group_sep: ".", ' \
+             "flags: HyperCast::ALL_STYLES)).inspect"
+           )).to eq(native.inspect)
   end
 
   it "agrees with the Fiddle backend on a fault span" do
@@ -64,7 +64,8 @@ RSpec.describe "native backend" do
 
   it "agrees with the Fiddle backend on the temporal doors" do
     text = "2026-01-02T15:04:05.123456789+05:00"
-    expect(fiddle_eval("HyperCast.timestamp(#{text.inspect}).value.nsec")).to eq(HyperCast.timestamp(text).value.nsec.to_s)
+    expect(fiddle_eval("HyperCast.timestamp(#{text.inspect}).value.nsec"))
+      .to eq(HyperCast.timestamp(text).value.nsec.to_s)
     expect(fiddle_eval('HyperCast.duration("-1.5s").value.to_s')).to eq(HyperCast.duration("-1.5s").value.to_s)
     expect(fiddle_eval('HyperCast.datetime("1/7/2026 3:04 PM", :month_day_year).value.iso8601(9)'))
       .to eq(HyperCast.datetime("1/7/2026 3:04 PM", :month_day_year).value.iso8601(9))
@@ -125,14 +126,21 @@ RSpec.describe "native backend" do
       ['HyperCast.datetime("1/7/2026 3:04 PM", 2)', -> { HyperCast.datetime("1/7/2026 3:04 PM", 2) }],
       ["HyperCast.bool(#{lone_surrogate})",
        -> { HyperCast.bool([0x0031, 0xD800].pack("v*").force_encoding(Encoding::UTF_16LE)) }],
-      ["HyperCast.i32(42, HyperCast::NumFormat::INVARIANT)", -> { HyperCast.i32(42, HyperCast::NumFormat::INVARIANT) }]
+      ["HyperCast.i32(42, HyperCast::NumFormat::INVARIANT)", -> { HyperCast.i32(42, HyperCast::NumFormat::INVARIANT) }],
+      ['HyperCast.decimal_from_float("0.5")', -> { HyperCast.decimal_from_float("0.5") }],
+      ["HyperCast.excel_time(nil)", -> { HyperCast.excel_time(nil) }],
+      ["HyperCast.excel_duration(true)", -> { HyperCast.excel_duration(true) }],
+      ["HyperCast.excel_time(:noon)", -> { HyperCast.excel_time(:noon) }],
+      ["HyperCast.excel_duration(Complex(1, 2))", -> { HyperCast.excel_duration(Complex(1, 2)) }],
+      ["HyperCast.excel_serial_from_float(1.0, :y2000)", -> { HyperCast.excel_serial_from_float(1.0, :y2000) }],
+      ['HyperCast.excel_serial_from_float("1", :y2000)', -> { HyperCast.excel_serial_from_float("1", :y2000) }]
     ].each do |source, call|
       native = begin
         call.call
       rescue StandardError => e
         "#{e.class}: #{e.message}"
       end
-      expect(native).to match(/\A(KeyError|TypeError|Encoding::InvalidByteSequenceError): /), source
+      expect(native).to match(/\A(KeyError|TypeError|RangeError|Encoding::InvalidByteSequenceError): /), source
       expect(fiddle_eval(format(rescued, source))).to eq(native), source
     end
   end

@@ -270,4 +270,68 @@ public sealed class CorpusTests
 					v.GetProperty("seconds").GetInt64() * TimeSpan.TicksPerSecond
 					+ v.GetProperty("nanos").GetInt64() / 100));
 	}
+
+	/// <summary>
+	/// The typed doors, by bits: each double is rebuilt exactly from its IEEE 754 pattern —
+	/// NaN and the infinities included, which JSON cannot spell. A typed door's fault has no
+	/// span.
+	/// </summary>
+	[Fact]
+	void Typed_corpus()
+	{
+		var doors = new HashSet<string>();
+		foreach (var vector in Corpus("typed.json"))
+		{
+			var value = BitConverter.Int64BitsToDouble(
+				(long)ulong.Parse(vector.GetProperty("bits").GetString()!, NumberStyles.HexNumber, CultureInfo.InvariantCulture));
+			var door = vector.GetProperty("door").GetString()!;
+			doors.Add(door);
+			switch (door)
+			{
+				case "decimal":
+					var verdict = Cast.DecimalFromDouble(value);
+					AssertTyped(door, vector, verdict, static v =>
+					{
+						var magnitude = UInt128.Parse(v.GetProperty("magnitude").GetString()!, CultureInfo.InvariantCulture);
+						var lo = (ulong)magnitude;
+						return new decimal((int)lo, (int)(lo >> 32), (int)(magnitude >> 64),
+							v.GetProperty("negative").GetBoolean(), v.GetProperty("scale").GetByte());
+					});
+					if (verdict.TryGetValue(out Success<decimal> success))
+						success.Value.ToString(CultureInfo.InvariantCulture).ShouldBe(vector.GetProperty("value").GetString());
+					break;
+				case "excel_serial":
+					AssertTyped(door, vector,
+						Cast.ExcelSerialFromDouble(value, (ExcelEpoch)vector.GetProperty("epoch").GetUInt32()),
+						static v => new DateTime(
+								v.GetProperty("year").GetInt32(),
+								v.GetProperty("month").GetInt32(),
+								v.GetProperty("day").GetInt32(),
+								0, 0, 0, DateTimeKind.Unspecified)
+							.AddTicks((long)(v.GetProperty("nanos_of_day").GetUInt64() / 100)));
+					break;
+				case "excel_time":
+					AssertTyped(door, vector, Cast.ExcelTime(value),
+						static v => new TimeOnly((long)(v.GetProperty("nanos").GetUInt64() / 100)));
+					break;
+				case "excel_duration":
+					AssertTyped(door, vector, Cast.ExcelDuration(value),
+						static v => new TimeSpan(
+							v.GetProperty("seconds").GetInt64() * TimeSpan.TicksPerSecond
+							+ v.GetProperty("nanos").GetInt64() / 100));
+					break;
+				default:
+					throw new InvalidOperationException($"typed: unknown door {door}");
+			}
+		}
+		doors.ShouldBe(["decimal", "excel_serial", "excel_time", "excel_duration"], ignoreOrder: true);
+	}
+
+	static void AssertTyped<T>(string door, JsonElement vector, Verdict<T> verdict, Func<JsonElement, T> expected)
+		where T : struct
+	{
+		AssertVerdict($"typed {door}", vector, verdict, expected);
+		if (verdict.TryGetValue(out Fault fault))
+			(fault.Offset, fault.Length).ShouldBe((0, 0), $"typed {door}: '{vector.GetProperty("input").GetString()}' span");
+	}
 }

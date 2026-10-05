@@ -117,7 +117,9 @@ One piece of this round already landed, ahead of schedule and on purpose:
   `corpus/excel_serial.json` holding it byte-identical across all eight languages. The door
   reads serial *text* — a CSV column of serials. A workbook reader starts from the `f64`
   the file stores; `excel_serial` is the same rules for that number, from the same code,
-  and the corpus is replayed through both.
+  and the corpus is replayed through both. That typed door, with a decimal, a time-of-day
+  and a duration read from the same `f64`, is now exported to every binding as well, and
+  `corpus/typed.json` holds the four byte-identical across all eight languages.
 
 Two designs this file once parked are now recorded and built:
 

@@ -79,6 +79,9 @@ fn allocation_free() {
     assert_allocation_free("cast_unix", || {
         hypercast::cast_unix(b"1700000000123", UnixPrecision::Millis).unwrap()
     });
+    assert_allocation_free("decimal_from_f64", || hypercast::decimal_from_f64(0.1 + 0.2).unwrap());
+    assert_allocation_free("u64_from_f64", || hypercast::u64_from_f64(1e19).unwrap());
+    assert_allocation_free("excel_duration", || hypercast::excel_duration(1.5).unwrap());
     assert_allocation_free("cast_excel_serial", || {
         hypercast::cast_excel_serial(b"45292.75", hypercast::ExcelEpoch::Y1900).unwrap()
     });

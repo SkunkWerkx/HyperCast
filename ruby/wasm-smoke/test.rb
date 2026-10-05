@@ -30,7 +30,8 @@ check.("custom format", value.(HyperCast.i32("($1,234)", dollars)), -1234)
 check.("decimal", value.(HyperCast.decimal("-1,234.50", inv)).to_r, Rational(-2469, 2))
 # The declared-option doors resolve their Symbol by raw VALUE, which the extension held as a
 # u64 until the first wasm32 build: VALUE is 32 bits there.
-check.("unix milliseconds", value.(HyperCast.unix("1700000000123", :milliseconds)).to_r, Rational(1_700_000_000_123, 1000))
+check.("unix milliseconds", value.(HyperCast.unix("1700000000123", :milliseconds)).to_r,
+       Rational(1_700_000_000_123, 1000))
 check.("excel serial", value.(HyperCast.excel_serial("45000.5", :y1900)).to_i, 1_678_881_600)
 check.("date, declared order", value.(HyperCast.date("03/10/2026", :day_month_year)).to_s, "2026-10-03")
 check.("date, ISO", value.(HyperCast.date("2026-10-03")).to_s, "2026-10-03")
