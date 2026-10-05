@@ -3,7 +3,8 @@ import HyperCast
 
 // One door of every ABI shape, crossed through the public API, with the answers checked:
 // plain (bool, uuid, timestamp, date, time, duration), numeric with a format (integers, a
-// real, the exact decimal), and the ones that take a mode (unix, ordered dates). Exits
+// real, the exact decimal), the ones that take a mode (unix, ordered dates), and the typed
+// doors that read a Double instead of text, with and without a declared epoch. Exits
 // non-zero on the first thing that is wrong, so the build-and-run is the test.
 
 func check(_ condition: Bool, _ what: String) {
@@ -49,6 +50,18 @@ do {
     }
     check(time.hour == 13 && time.minute == 45 && time.second == 30, "time fields")
     check(try Cast.duration("PT1H30M") == .success(.seconds(5400)), "duration")
+    let tenth = 0.1, fifth = 0.2
+    check(
+        try Cast.decimalFromDouble(tenth + fifth) == .success(Decimal(string: "0.30000000000000004")!),
+        "decimalFromDouble")
+    guard case .success(let serial) = try Cast.excelSerialFromDouble(45292.75, epoch: .y1900) else {
+        print("FAILED: excelSerialFromDouble did not read")
+        exit(1)
+    }
+    check(
+        serial.year == 2024 && serial.month == 1 && serial.day == 1 && serial.hour == 18,
+        "excelSerialFromDouble fields")
+    check(try Cast.excelDuration(1.5) == .success(.seconds(129_600)), "excelDuration")
 
     // A fault is a value, with the reason and the offending span.
     check(

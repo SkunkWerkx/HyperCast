@@ -362,6 +362,22 @@ fn verdict<'py, T>(
     }
 }
 
+/// A typed door's verdict: the reason alone, presented as a fault with an empty span (there
+/// is no text for one to index).
+fn typed<'py, T>(
+    py: Python<'py>,
+    outcome: Result<T, core::Reason>,
+    into: impl FnOnce(Python<'py>, T) -> PyResult<Py<PyAny>>,
+) -> PyResult<Py<PyAny>> {
+    match outcome {
+        Ok(value) => {
+            let value = into(py, value)?;
+            Ok(Py::new(py, Success { value })?.into_any())
+        }
+        Err(reason) => fault(py, core::Fault { reason, offset: 0, len: 0 }),
+    }
+}
+
 // Each door's doc comment is its Python docstring — what `help(hypercast.cast_i32)` prints —
 // so it is written in reStructuredText, and a test holds every door to having one.
 macro_rules! numeric_doors {
@@ -426,15 +442,26 @@ impl std::fmt::Write for Canonical {
 /// never rounded.
 #[pyfunction]
 fn cast_decimal(py: Python<'_>, text: Text<'_>, fmt: PyRef<'_, NumFormat>) -> PyResult<Py<PyAny>> {
-    verdict(py, &text, core::cast_decimal(text.bytes()?, &fmt.resolved), |py, value| {
-        use std::fmt::Write;
-        let mut canonical = Canonical { buf: [0; 48], len: 0 };
-        write!(canonical, "{value}")
-            .map_err(|_| PyValueError::new_err("hypercast: decimal text overflowed its buffer"))?;
-        let text = std::str::from_utf8(&canonical.buf[..canonical.len])
-            .map_err(|_| PyValueError::new_err("hypercast: decimal text was not UTF-8"))?;
-        Ok(cached(py, &DECIMAL_CLASS)?.call1((text,))?.unbind())
-    })
+    verdict(py, &text, core::cast_decimal(text.bytes()?, &fmt.resolved), decimal_value)
+}
+
+/// Reads a ``float`` as the exact ``decimal.Decimal`` it names: the shortest decimal that
+/// rounds back to it, the digits a spreadsheet writes for it — ``0.1`` is
+/// ``Decimal('0.1')``, not the binary fraction ``Decimal(0.1)`` spells out. NaN is
+/// ``MALFORMED``; an infinity, past 96 bits or more than 28 places is ``OUT_OF_RANGE``.
+#[pyfunction]
+fn cast_decimal_from_float(py: Python<'_>, value: f64) -> PyResult<Py<PyAny>> {
+    typed(py, core::decimal_from_f64(value), decimal_value)
+}
+
+fn decimal_value(py: Python<'_>, value: core::Decimal) -> PyResult<Py<PyAny>> {
+    use std::fmt::Write;
+    let mut canonical = Canonical { buf: [0; 48], len: 0 };
+    write!(canonical, "{value}")
+        .map_err(|_| PyValueError::new_err("hypercast: decimal text overflowed its buffer"))?;
+    let text = std::str::from_utf8(&canonical.buf[..canonical.len])
+        .map_err(|_| PyValueError::new_err("hypercast: decimal text was not UTF-8"))?;
+    Ok(cached(py, &DECIMAL_CLASS)?.call1((text,))?.unbind())
 }
 
 /// This library's version as ``"major.minor.patch"``, decoded from the same packed
@@ -631,6 +658,32 @@ fn cast_excel_serial(py: Python<'_>, text: Text<'_>, epoch: u32) -> PyResult<Py<
     verdict(py, &text, core::cast_excel_serial(text.bytes()?, epoch), instant)
 }
 
+/// Reads an Excel serial ``float`` under the declared ``ExcelEpoch`` as the naive
+/// ``datetime`` it names — the twin of ``cast_excel_serial`` for a number a workbook reader
+/// already holds. Zone-less, as the cell is.
+#[pyfunction]
+fn cast_excel_serial_from_float(py: Python<'_>, value: f64, epoch: u32) -> PyResult<Py<PyAny>> {
+    let epoch = match epoch {
+        1 => core::ExcelEpoch::Y1900,
+        2 => core::ExcelEpoch::Y1904,
+        _ => return Err(PyValueError::new_err("epoch must be an ExcelEpoch")),
+    };
+    typed(py, core::excel_serial(value, epoch), civil_value)
+}
+
+/// Reads the fraction of an Excel serial ``float`` as a ``time`` of day (microsecond
+/// truncation).
+#[pyfunction]
+fn cast_excel_time(py: Python<'_>, value: f64) -> PyResult<Py<PyAny>> {
+    typed(py, core::excel_time(value), time_value)
+}
+
+/// Reads a ``float`` count of days as a ``timedelta`` (microsecond truncation toward zero).
+#[pyfunction]
+fn cast_excel_duration(py: Python<'_>, value: f64) -> PyResult<Py<PyAny>> {
+    typed(py, core::excel_duration(value), duration_value)
+}
+
 fn date_value(py: Python<'_>, date: core::Date) -> PyResult<Py<PyAny>> {
     let year = i32::from(date.year);
     if packs(year) {
@@ -667,28 +720,19 @@ fn cast_datetime(py: Python<'_>, text: Text<'_>, order: u32) -> PyResult<Py<PyAn
         3 => core::DateOrder::DayMonthYear,
         _ => return Err(PyValueError::new_err("order must be a DateOrder")),
     };
-    verdict(py, &text, core::cast_datetime(text.bytes()?, order), |py, civil| {
-        // Naive datetime — the text named no zone, so the value carries none; fusing a
-        // zone is the caller's job. Sub-microsecond nanoseconds truncate (Python's ceiling).
-        let (second_of_day, nano) =
-            (civil.nanos_of_day / 1_000_000_000, civil.nanos_of_day % 1_000_000_000);
-        let (hour, rest) = (second_of_day / 3_600, second_of_day % 3_600);
-        let (minute, second) = (rest / 60, rest % 60);
-        let year = i32::from(civil.date.year);
-        if packs(year) {
-            let state = packed_datetime(
-                year,
-                civil.date.month,
-                civil.date.day,
-                hour as u8,
-                minute as u8,
-                second as u8,
-                (nano / 1_000) as u32,
-            );
-            return Ok(cached(py, &DATETIME_CLASS)?.call1((PyBytes::new(py, &state),))?.unbind());
-        }
-        Ok(PyDateTime::new(
-            py,
+    verdict(py, &text, core::cast_datetime(text.bytes()?, order), civil_value)
+}
+
+fn civil_value(py: Python<'_>, civil: core::CivilDateTime) -> PyResult<Py<PyAny>> {
+    // Naive datetime — the text named no zone, so the value carries none; fusing a
+    // zone is the caller's job. Sub-microsecond nanoseconds truncate (Python's ceiling).
+    let (second_of_day, nano) =
+        (civil.nanos_of_day / 1_000_000_000, civil.nanos_of_day % 1_000_000_000);
+    let (hour, rest) = (second_of_day / 3_600, second_of_day % 3_600);
+    let (minute, second) = (rest / 60, rest % 60);
+    let year = i32::from(civil.date.year);
+    if packs(year) {
+        let state = packed_datetime(
             year,
             civil.date.month,
             civil.date.day,
@@ -696,69 +740,84 @@ fn cast_datetime(py: Python<'_>, text: Text<'_>, order: u32) -> PyResult<Py<PyAn
             minute as u8,
             second as u8,
             (nano / 1_000) as u32,
-            None,
-        )?
-        .into_any()
-        .unbind())
-    })
+        );
+        return Ok(cached(py, &DATETIME_CLASS)?.call1((PyBytes::new(py, &state),))?.unbind());
+    }
+    Ok(PyDateTime::new(
+        py,
+        year,
+        civil.date.month,
+        civil.date.day,
+        hour as u8,
+        minute as u8,
+        second as u8,
+        (nano / 1_000) as u32,
+        None,
+    )?
+    .into_any()
+    .unbind())
 }
 
 /// Casts an ISO 24-hour time-of-day to a ``time`` (microsecond truncation).
 #[pyfunction]
 fn cast_time(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
-    verdict(py, &text, core::cast_time(text.bytes()?), |py, nanos| {
-        let (second_of_day, nano) = (nanos / 1_000_000_000, nanos % 1_000_000_000);
-        let (hour, rest) = (second_of_day / 3_600, second_of_day % 3_600);
-        let (minute, second) = (rest / 60, rest % 60);
-        let state = packed_time(hour as u8, minute as u8, second as u8, (nano / 1_000) as u32);
-        Ok(cached(py, &TIME_CLASS)?.call1((PyBytes::new(py, &state),))?.unbind())
-    })
+    verdict(py, &text, core::cast_time(text.bytes()?), time_value)
+}
+
+fn time_value(py: Python<'_>, nanos: u64) -> PyResult<Py<PyAny>> {
+    let (second_of_day, nano) = (nanos / 1_000_000_000, nanos % 1_000_000_000);
+    let (hour, rest) = (second_of_day / 3_600, second_of_day % 3_600);
+    let (minute, second) = (rest / 60, rest % 60);
+    let state = packed_time(hour as u8, minute as u8, second as u8, (nano / 1_000) as u32);
+    Ok(cached(py, &TIME_CLASS)?.call1((PyBytes::new(py, &state),))?.unbind())
 }
 
 /// Casts a duration (ISO 8601, invariant colon form, or protobuf JSON seconds) to a
 /// ``timedelta`` (microsecond truncation toward zero).
 #[pyfunction]
 fn cast_duration(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
-    verdict(py, &text, core::cast_duration(text.bytes()?), |py, span| {
-        // `timedelta(days, seconds, microseconds)` is the slowest constructor in the module —
-        // it normalizes through arbitrary-precision arithmetic whatever it is given — while
-        // subtracting two datetimes hands back the same object from a fixed-width fast path.
-        // So a span that fits is built as (0001-01-01 + |span|) - 0001-01-01, or the other
-        // way round for a negative one: sub-microsecond digits truncate toward zero on the
-        // magnitude, and the subtraction normalizes the sign exactly as the constructor
-        // would. A span too long for a datetime to stand that far from year 1 (past roughly
-        // 9,998 years) takes the constructor below.
-        let (magnitude_seconds, magnitude_nanos) =
-            (span.seconds.unsigned_abs(), span.nanos.unsigned_abs());
-        let days = magnitude_seconds / 86_400;
-        if days <= ANCHOR_REACH_DAYS {
-            let second_of_day = magnitude_seconds % 86_400;
-            let (year, month, day) = civil_from_days(days as i64 + ANCHOR_DAYS_FROM_EPOCH);
-            let (hour, rest) = (second_of_day / 3_600, second_of_day % 3_600);
-            let (minute, second) = (rest / 60, rest % 60);
-            let state = packed_datetime(
-                year,
-                month,
-                day,
-                hour as u8,
-                minute as u8,
-                second as u8,
-                magnitude_nanos / 1_000,
-            );
-            let anchor = cached(py, &DURATION_ANCHOR)?;
-            let moved = cached(py, &DATETIME_CLASS)?.call1((PyBytes::new(py, &state),))?;
-            let negative = span.seconds < 0 || span.nanos < 0;
-            let (left, right) = if negative { (anchor, &moved) } else { (&moved, anchor) };
-            return Ok(left.sub(right)?.unbind());
-        }
-        // Truncate sub-microsecond digits toward zero on both signs, matching every other
-        // binding's truncation; PyDelta normalizes the mixed-sign pieces.
-        let nanos = i64::from(span.nanos);
-        let micros = if nanos >= 0 { nanos / 1_000 } else { -((-nanos) / 1_000) };
-        let days = span.seconds.div_euclid(86_400);
-        let seconds = span.seconds.rem_euclid(86_400);
-        Ok(PyDelta::new(py, days as i32, seconds as i32, micros as i32, true)?.into_any().unbind())
-    })
+    verdict(py, &text, core::cast_duration(text.bytes()?), duration_value)
+}
+
+fn duration_value(py: Python<'_>, span: core::Duration) -> PyResult<Py<PyAny>> {
+    // `timedelta(days, seconds, microseconds)` is the slowest constructor in the module —
+    // it normalizes through arbitrary-precision arithmetic whatever it is given — while
+    // subtracting two datetimes hands back the same object from a fixed-width fast path.
+    // So a span that fits is built as (0001-01-01 + |span|) - 0001-01-01, or the other
+    // way round for a negative one: sub-microsecond digits truncate toward zero on the
+    // magnitude, and the subtraction normalizes the sign exactly as the constructor
+    // would. A span too long for a datetime to stand that far from year 1 (past roughly
+    // 9,998 years) takes the constructor below.
+    let (magnitude_seconds, magnitude_nanos) =
+        (span.seconds.unsigned_abs(), span.nanos.unsigned_abs());
+    let days = magnitude_seconds / 86_400;
+    if days <= ANCHOR_REACH_DAYS {
+        let second_of_day = magnitude_seconds % 86_400;
+        let (year, month, day) = civil_from_days(days as i64 + ANCHOR_DAYS_FROM_EPOCH);
+        let (hour, rest) = (second_of_day / 3_600, second_of_day % 3_600);
+        let (minute, second) = (rest / 60, rest % 60);
+        let state = packed_datetime(
+            year,
+            month,
+            day,
+            hour as u8,
+            minute as u8,
+            second as u8,
+            magnitude_nanos / 1_000,
+        );
+        let anchor = cached(py, &DURATION_ANCHOR)?;
+        let moved = cached(py, &DATETIME_CLASS)?.call1((PyBytes::new(py, &state),))?;
+        let negative = span.seconds < 0 || span.nanos < 0;
+        let (left, right) = if negative { (anchor, &moved) } else { (&moved, anchor) };
+        return Ok(left.sub(right)?.unbind());
+    }
+    // Truncate sub-microsecond digits toward zero on both signs, matching every other
+    // binding's truncation; PyDelta normalizes the mixed-sign pieces.
+    let nanos = i64::from(span.nanos);
+    let micros = if nanos >= 0 { nanos / 1_000 } else { -((-nanos) / 1_000) };
+    let days = span.seconds.div_euclid(86_400);
+    let seconds = span.seconds.rem_euclid(86_400);
+    Ok(PyDelta::new(py, days as i32, seconds as i32, micros as i32, true)?.into_any().unbind())
 }
 
 /// Hands the package's own `CastFailure` IntEnum (plus `uuid.UUID` and `decimal.Decimal`)
@@ -810,6 +869,10 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cast_datetime, m)?)?;
     m.add_function(wrap_pyfunction!(cast_time, m)?)?;
     m.add_function(wrap_pyfunction!(cast_duration, m)?)?;
+    m.add_function(wrap_pyfunction!(cast_decimal_from_float, m)?)?;
+    m.add_function(wrap_pyfunction!(cast_excel_serial_from_float, m)?)?;
+    m.add_function(wrap_pyfunction!(cast_excel_time, m)?)?;
+    m.add_function(wrap_pyfunction!(cast_excel_duration, m)?)?;
     m.add_function(wrap_pyfunction!(native_version, m)?)?;
     m.add_function(wrap_pyfunction!(_bind, m)?)?;
     Ok(())

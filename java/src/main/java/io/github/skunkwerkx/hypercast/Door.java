@@ -1,7 +1,7 @@
 package io.github.skunkwerkx.hypercast;
 
 /**
- * The twenty-one {@code cast_*} exports of the native core, named once so both interop
+ * The twenty-five {@code cast_*} exports of the native core, named once so both interop
  * paths — the FFM downcalls in {@link Cast} and the GraalWasm calls in {@link WasmBackend}
  * — key off the same list. The ordinal is what the wasm backend indexes its resolved
  * exports by, so a new door is appended, never inserted.
@@ -27,7 +27,11 @@ enum Door {
     DATETIME("cast_datetime"),
     TIME("cast_time"),
     DURATION("cast_duration"),
-    DECIMAL("cast_decimal");
+    DECIMAL("cast_decimal"),
+    DECIMAL_FROM_F64("cast_decimal_from_f64"),
+    EXCEL_SERIAL_FROM_F64("cast_excel_serial_from_f64"),
+    EXCEL_TIME("cast_excel_time"),
+    EXCEL_DURATION("cast_excel_duration");
 
     private final String symbol;
 

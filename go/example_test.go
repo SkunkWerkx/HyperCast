@@ -116,6 +116,27 @@ func ExampleExcelSerial() {
 	// Output: 2024-01-01 18:00:00 +0000 UTC
 }
 
+func ExampleExactFromFloat64() {
+	// The digits a spreadsheet writes for the double, not the binary fraction nearest it.
+	// (Two variables, because Go adds the constants 0.1 + 0.2 exactly, to 0.3.)
+	a, b := 0.1, 0.2
+	d, fault := hypercast.ExactFromFloat64(a + b)
+	if fault != nil {
+		log.Fatal(fault)
+	}
+	fmt.Println(d)
+	// Output: 0.30000000000000004
+}
+
+func ExampleExcelSerialFromFloat64() {
+	civil, fault := hypercast.ExcelSerialFromFloat64(45292.75, hypercast.Excel1900)
+	if fault != nil {
+		log.Fatal(fault)
+	}
+	fmt.Println(civil.Date.Year, civil.Date.Month, civil.Date.Day, civil.TimeOfDay)
+	// Output: 2024 January 1 18h0m0s
+}
+
 func ExampleDateOnlyOrdered() {
 	// The same text is January 7th or July 1st only because the caller said which.
 	us, _ := hypercast.DateOnlyOrdered("1/7/2026", hypercast.MonthDayYear)

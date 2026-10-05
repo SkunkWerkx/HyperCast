@@ -34,8 +34,8 @@ public final class Main {
 
     private static <T> void check(String name, Verdict<T> verdict, T expected) {
         switch (verdict) {
-            case Success<T> success when success.value().equals(expected) ->
-                    System.out.println("ok   " + name + " = " + success.value());
+            case Success<T> success
+            when success.value().equals(expected) -> System.out.println("ok   " + name + " = " + success.value());
             case Success<T> success -> {
                 System.out.println("FAIL " + name + ": " + success.value() + " (expected " + expected + ")");
                 failures++;
@@ -86,18 +86,33 @@ public final class Main {
         check("f32", Cast.f32("1.5", NumFormat.INVARIANT), 1.5f);
         check("f64", Cast.f64("25.5%", NumFormat.INVARIANT), 0.255);
         check("decimal", Cast.decimal("$1,234.50", NumFormat.from(Locale.US)), new BigDecimal("1234.5"));
-        check("uuid", Cast.uuid("urn:uuid:01020304-0506-0708-090a-0b0c0d0e0f10"),
+        check(
+                "uuid",
+                Cast.uuid("urn:uuid:01020304-0506-0708-090a-0b0c0d0e0f10"),
                 UUID.fromString("01020304-0506-0708-090a-0b0c0d0e0f10"));
-        check("timestamp", Cast.timestamp("2026-01-02T15:04:05.123456789+05:00"),
+        check(
+                "timestamp",
+                Cast.timestamp("2026-01-02T15:04:05.123456789+05:00"),
                 Instant.parse("2026-01-02T10:04:05.123456789Z"));
         check("unix", Cast.unix("1700000000", UnixPrecision.SECONDS), Instant.ofEpochSecond(1_700_000_000L));
         check("excelSerial", Cast.excelSerial("45292.75", ExcelEpoch.Y1900), Instant.parse("2024-01-01T18:00:00Z"));
         check("date", Cast.date("2026-01-02"), LocalDate.of(2026, 1, 2));
         check("date (ordered)", Cast.date("1/7/2026", DateOrder.MONTH_DAY_YEAR), LocalDate.of(2026, 1, 7));
-        check("dateTime", Cast.dateTime("1/7/2026 3:04 PM", DateOrder.MONTH_DAY_YEAR),
+        check(
+                "dateTime",
+                Cast.dateTime("1/7/2026 3:04 PM", DateOrder.MONTH_DAY_YEAR),
                 LocalDateTime.of(2026, 1, 7, 15, 4));
         check("time", Cast.time("15:04:05"), LocalTime.of(15, 4, 5));
         check("duration", Cast.duration("P1DT6H"), Duration.ofHours(30));
+        // The typed doors, one per shape: their downcalls take a double, which is its own
+        // registration in reachability-metadata.json.
+        check("decimalFromDouble", Cast.decimalFromDouble(0.1 + 0.2), new BigDecimal("0.30000000000000004"));
+        check(
+                "excelSerialFromDouble",
+                Cast.excelSerialFromDouble(45292.75, ExcelEpoch.Y1900),
+                LocalDateTime.of(2024, 1, 1, 18, 0));
+        check("excelTime", Cast.excelTime(0.75), LocalTime.of(18, 0));
+        check("excelDuration", Cast.excelDuration(1.5), Duration.ofHours(36));
 
         // The other two input forms, once per ABI shape rather than once per door — the
         // overloads differ only in how the bytes arrive. A byte[] and a heap slice both
@@ -107,7 +122,9 @@ public final class Main {
         check("i32 (byte[])", Cast.i32("(1,234)".getBytes(StandardCharsets.UTF_8), NumFormat.INVARIANT), -1234);
         MemorySegment whole = MemorySegment.ofArray(line);
         check("i32 (heap slice)", Cast.i32(whole.asSlice(0, 7), NumFormat.INVARIANT), -1234);
-        check("unix (heap slice)", Cast.unix(whole.asSlice(8, 10), UnixPrecision.SECONDS),
+        check(
+                "unix (heap slice)",
+                Cast.unix(whole.asSlice(8, 10), UnixPrecision.SECONDS),
                 Instant.ofEpochSecond(1_700_000_000L));
         check("bool (heap slice)", Cast.bool(whole.asSlice(19, 4)), true);
         try (Arena arena = Arena.ofConfined()) {

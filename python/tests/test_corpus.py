@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import struct
 import uuid as uuidlib
 from decimal import Decimal
 from pathlib import Path
@@ -71,26 +72,35 @@ def _input(vector: dict) -> bytes:
 
 
 def test_boolean_corpus():
+    """Replays corpus/boolean.json."""
     for vector in _corpus("boolean.json"):
         _assert_verdict("boolean", vector, hypercast.cast_bool(_input(vector)), vector.get("value"))
 
 
 _INT_DOORS = {
-    "i8": hypercast.cast_i8, "i16": hypercast.cast_i16,
-    "i32": hypercast.cast_i32, "i64": hypercast.cast_i64,
-    "u8": hypercast.cast_u8, "u16": hypercast.cast_u16,
-    "u32": hypercast.cast_u32, "u64": hypercast.cast_u64,
+    "i8": hypercast.cast_i8,
+    "i16": hypercast.cast_i16,
+    "i32": hypercast.cast_i32,
+    "i64": hypercast.cast_i64,
+    "u8": hypercast.cast_u8,
+    "u16": hypercast.cast_u16,
+    "u32": hypercast.cast_u32,
+    "u64": hypercast.cast_u64,
 }
 
 
 def test_integer_corpus():
+    """Replays corpus/integer.json through every integer width."""
     for vector in _corpus("integer.json"):
         door = _INT_DOORS[vector["type"]]
         # Python int is unbounded — u64's full unsigned value comes back natively.
-        _assert_verdict("integer", vector, door(_input(vector), _format_of(vector)), vector.get("value"))
+        _assert_verdict(
+            "integer", vector, door(_input(vector), _format_of(vector)), vector.get("value")
+        )
 
 
 def test_real_corpus():
+    """Replays corpus/real.json through both real doors."""
     for vector in _corpus("real.json"):
         door = hypercast.cast_f32 if vector["type"] == "f32" else hypercast.cast_f64
         expected = vector.get("value")
@@ -102,6 +112,7 @@ def test_real_corpus():
 
 
 def test_decimal_corpus():
+    """Replays corpus/decimal.json, pinning the canonical scale as well as the value."""
     for vector in _corpus("decimal.json"):
         verdict = hypercast.cast_decimal(_input(vector), _format_of(vector))
         expected = Decimal(vector["value"]) if "value" in vector else None
@@ -112,11 +123,14 @@ def test_decimal_corpus():
             sign, digits, exponent = verdict.value.as_tuple()
             text = vector["input"]
             assert sign == int(vector["negative"]), f"decimal: {text!r} sign"
-            assert digits == tuple(int(d) for d in str(int(vector["magnitude"]))), f"decimal: {text!r} digits"
+            assert digits == tuple(int(d) for d in str(int(vector["magnitude"]))), (
+                f"decimal: {text!r} digits"
+            )
             assert exponent == -vector["scale"], f"decimal: {text!r} scale"
 
 
 def test_uuid_corpus():
+    """Replays corpus/uuid.json."""
     for vector in _corpus("uuid.json"):
         expected = uuidlib.UUID(hex=vector["value"]) if "value" in vector else None
         _assert_verdict("uuid", vector, hypercast.cast_uuid(_input(vector)), expected)
@@ -132,40 +146,58 @@ def _expected_instant(vector: dict) -> dt.datetime | None:
 
 
 def test_timestamp_corpus():
+    """Replays corpus/timestamp.json."""
     for vector in _corpus("timestamp.json"):
-        _assert_verdict("timestamp", vector, hypercast.cast_timestamp(_input(vector)),
-                        _expected_instant(vector))
+        _assert_verdict(
+            "timestamp", vector, hypercast.cast_timestamp(_input(vector)), _expected_instant(vector)
+        )
 
 
 def test_unix_corpus():
+    """Replays corpus/unix.json."""
     for vector in _corpus("unix.json"):
         precision = UnixPrecision(vector["precision"])
-        _assert_verdict("unix", vector, hypercast.cast_unix(_input(vector), precision),
-                        _expected_instant(vector))
+        _assert_verdict(
+            "unix",
+            vector,
+            hypercast.cast_unix(_input(vector), precision),
+            _expected_instant(vector),
+        )
 
 
 def test_excel_serial_corpus():
+    """Replays corpus/excel_serial.json."""
     for vector in _corpus("excel_serial.json"):
         epoch = ExcelEpoch(vector["epoch"])
-        _assert_verdict("excel_serial", vector,
-                        hypercast.cast_excel_serial(_input(vector), epoch),
-                        _expected_instant(vector))
+        _assert_verdict(
+            "excel_serial",
+            vector,
+            hypercast.cast_excel_serial(_input(vector), epoch),
+            _expected_instant(vector),
+        )
 
 
 def test_date_corpus():
+    """Replays corpus/date.json."""
     for vector in _corpus("date.json"):
-        expected = dt.date(vector["year"], vector["month"], vector["day"]) if "year" in vector else None
+        expected = (
+            dt.date(vector["year"], vector["month"], vector["day"]) if "year" in vector else None
+        )
         _assert_verdict("date", vector, hypercast.cast_date(_input(vector)), expected)
 
 
 def test_date_order_corpus():
+    """Replays corpus/date_order.json."""
     for vector in _corpus("date_order.json"):
         order = hypercast.DateOrder(vector["order"])
-        expected = dt.date(vector["year"], vector["month"], vector["day"]) if "year" in vector else None
+        expected = (
+            dt.date(vector["year"], vector["month"], vector["day"]) if "year" in vector else None
+        )
         _assert_verdict("date_order", vector, hypercast.cast_date(_input(vector), order), expected)
 
 
 def test_datetime_corpus():
+    """Replays corpus/datetime.json."""
     for vector in _corpus("datetime.json"):
         order = hypercast.DateOrder(vector["order"])
         expected = None
@@ -174,12 +206,15 @@ def test_datetime_corpus():
             hour, rest = divmod(second_of_day, 3600)
             minute, second = divmod(rest, 60)
             expected = dt.datetime(
-                vector["year"], vector["month"], vector["day"],
-                hour, minute, second, nano // 1000)
-        _assert_verdict("datetime", vector, hypercast.cast_datetime(_input(vector), order), expected)
+                vector["year"], vector["month"], vector["day"], hour, minute, second, nano // 1000
+            )
+        _assert_verdict(
+            "datetime", vector, hypercast.cast_datetime(_input(vector), order), expected
+        )
 
 
 def test_time_corpus():
+    """Replays corpus/time.json."""
     for vector in _corpus("time.json"):
         expected = None
         if "nanos" in vector:
@@ -191,6 +226,7 @@ def test_time_corpus():
 
 
 def test_duration_corpus():
+    """Replays corpus/duration.json."""
     for vector in _corpus("duration.json"):
         expected = None
         if "seconds" in vector:
@@ -198,3 +234,57 @@ def test_duration_corpus():
             micros = nanos // 1000 if nanos >= 0 else -((-nanos) // 1000)
             expected = dt.timedelta(seconds=vector["seconds"], microseconds=micros)
         _assert_verdict("duration", vector, hypercast.cast_duration(_input(vector)), expected)
+
+
+def test_typed_corpus():
+    """Each double is named by its bits, which rebuild it exactly — NaN and the infinities included,
+    which JSON cannot spell. A typed door's fault has no span.
+    """
+    doors = set()
+    for vector in _corpus("typed.json"):
+        value = struct.unpack(">d", bytes.fromhex(vector["bits"]))[0]
+        door = vector["door"]
+        doors.add(door)
+        expected = None
+        if door == "decimal":
+            verdict = hypercast.cast_decimal_from_float(value)
+            if "value" in vector:
+                expected = Decimal(vector["value"])
+        elif door == "excel_serial":
+            verdict = hypercast.cast_excel_serial_from_float(value, ExcelEpoch(vector["epoch"]))
+            if "year" in vector:
+                second_of_day, nano = divmod(vector["nanos_of_day"], 1_000_000_000)
+                hour, rest = divmod(second_of_day, 3600)
+                minute, second = divmod(rest, 60)
+                expected = dt.datetime(
+                    vector["year"],
+                    vector["month"],
+                    vector["day"],
+                    hour,
+                    minute,
+                    second,
+                    nano // 1000,
+                )
+        elif door == "excel_time":
+            verdict = hypercast.cast_excel_time(value)
+            if "nanos" in vector:
+                second_of_day, nano = divmod(vector["nanos"], 1_000_000_000)
+                hour, rest = divmod(second_of_day, 3600)
+                minute, second = divmod(rest, 60)
+                expected = dt.time(hour, minute, second, nano // 1000)
+        elif door == "excel_duration":
+            verdict = hypercast.cast_excel_duration(value)
+            if "seconds" in vector:
+                nanos = vector["nanos"]
+                micros = nanos // 1000 if nanos >= 0 else -((-nanos) // 1000)
+                expected = dt.timedelta(seconds=vector["seconds"], microseconds=micros)
+        else:
+            raise AssertionError(f"typed: unknown door {door}")
+        _assert_verdict(f"typed {door}", vector, verdict, expected)
+        if isinstance(verdict, Fault):
+            assert (verdict.offset, verdict.length) == (0, 0), f"typed {door}: span"
+        elif door == "decimal":
+            sign, digits, exponent = verdict.value.as_tuple()
+            assert (sign, exponent) == (int(vector["negative"]), -vector["scale"]), vector["input"]
+            assert digits == tuple(int(d) for d in vector["magnitude"]), vector["input"]
+    assert doors == {"decimal", "excel_serial", "excel_time", "excel_duration"}

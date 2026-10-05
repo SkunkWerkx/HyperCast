@@ -149,7 +149,11 @@ final class Cast
         self::declare($format);
         self::$outI64->cdata = 0;
         $rc = $ffi->cast_i8(
-            $text === '' ? null : $text, \strlen($text), self::$formatPtr, self::$outI64Ptr, self::$faultPtr
+            $text === '' ? null : $text,
+            \strlen($text),
+            self::$formatPtr,
+            self::$outI64Ptr,
+            self::$faultPtr
         );
         if ($rc !== 0) {
             return self::fail($rc);
@@ -171,7 +175,11 @@ final class Cast
         self::declare($format);
         self::$outI64->cdata = 0;
         $rc = $ffi->cast_i16(
-            $text === '' ? null : $text, \strlen($text), self::$formatPtr, self::$outI64Ptr, self::$faultPtr
+            $text === '' ? null : $text,
+            \strlen($text),
+            self::$formatPtr,
+            self::$outI64Ptr,
+            self::$faultPtr
         );
         if ($rc !== 0) {
             return self::fail($rc);
@@ -193,7 +201,11 @@ final class Cast
         self::declare($format);
         self::$outI64->cdata = 0;
         $rc = $ffi->cast_i32(
-            $text === '' ? null : $text, \strlen($text), self::$formatPtr, self::$outI64Ptr, self::$faultPtr
+            $text === '' ? null : $text,
+            \strlen($text),
+            self::$formatPtr,
+            self::$outI64Ptr,
+            self::$faultPtr
         );
         if ($rc !== 0) {
             return self::fail($rc);
@@ -215,7 +227,11 @@ final class Cast
         self::declare($format);
         self::$outI64->cdata = 0;
         $rc = $ffi->cast_i64(
-            $text === '' ? null : $text, \strlen($text), self::$formatPtr, self::$outI64Ptr, self::$faultPtr
+            $text === '' ? null : $text,
+            \strlen($text),
+            self::$formatPtr,
+            self::$outI64Ptr,
+            self::$faultPtr
         );
         return $rc === 0 ? new Success(self::$outI64->cdata) : self::fail($rc);
     }
@@ -233,7 +249,11 @@ final class Cast
         self::declare($format);
         self::$outI64->cdata = 0;
         $rc = $ffi->cast_u8(
-            $text === '' ? null : $text, \strlen($text), self::$formatPtr, self::$outI64Ptr, self::$faultPtr
+            $text === '' ? null : $text,
+            \strlen($text),
+            self::$formatPtr,
+            self::$outI64Ptr,
+            self::$faultPtr
         );
         return $rc === 0 ? new Success(self::$outI64->cdata) : self::fail($rc);
     }
@@ -251,7 +271,11 @@ final class Cast
         self::declare($format);
         self::$outI64->cdata = 0;
         $rc = $ffi->cast_u16(
-            $text === '' ? null : $text, \strlen($text), self::$formatPtr, self::$outI64Ptr, self::$faultPtr
+            $text === '' ? null : $text,
+            \strlen($text),
+            self::$formatPtr,
+            self::$outI64Ptr,
+            self::$faultPtr
         );
         return $rc === 0 ? new Success(self::$outI64->cdata) : self::fail($rc);
     }
@@ -269,7 +293,11 @@ final class Cast
         self::declare($format);
         self::$outI64->cdata = 0;
         $rc = $ffi->cast_u32(
-            $text === '' ? null : $text, \strlen($text), self::$formatPtr, self::$outI64Ptr, self::$faultPtr
+            $text === '' ? null : $text,
+            \strlen($text),
+            self::$formatPtr,
+            self::$outI64Ptr,
+            self::$faultPtr
         );
         return $rc === 0 ? new Success(self::$outI64->cdata) : self::fail($rc);
     }
@@ -288,7 +316,11 @@ final class Cast
         self::declare($format);
         self::$outI64->cdata = 0;
         $rc = $ffi->cast_u64(
-            $text === '' ? null : $text, \strlen($text), self::$formatPtr, self::$outI64Ptr, self::$faultPtr
+            $text === '' ? null : $text,
+            \strlen($text),
+            self::$formatPtr,
+            self::$outI64Ptr,
+            self::$faultPtr
         );
         return $rc === 0 ? new Success(self::$outI64->cdata) : self::fail($rc);
     }
@@ -306,7 +338,11 @@ final class Cast
         $ffi = self::$ffi ?? self::load();
         self::declare($format);
         $rc = $ffi->cast_f32(
-            $text === '' ? null : $text, \strlen($text), self::$formatPtr, self::$outRealPtr, self::$faultPtr
+            $text === '' ? null : $text,
+            \strlen($text),
+            self::$formatPtr,
+            self::$outRealPtr,
+            self::$faultPtr
         );
         return $rc === 0 ? new Success(self::$outReal->f32) : self::fail($rc);
     }
@@ -323,7 +359,11 @@ final class Cast
         $ffi = self::$ffi ?? self::load();
         self::declare($format);
         $rc = $ffi->cast_f64(
-            $text === '' ? null : $text, \strlen($text), self::$formatPtr, self::$outRealPtr, self::$faultPtr
+            $text === '' ? null : $text,
+            \strlen($text),
+            self::$formatPtr,
+            self::$outRealPtr,
+            self::$faultPtr
         );
         return $rc === 0 ? new Success(self::$outReal->f64) : self::fail($rc);
     }
@@ -345,7 +385,11 @@ final class Cast
         $ffi = self::$ffi ?? self::load();
         self::declare($format);
         $rc = $ffi->cast_decimal(
-            $text === '' ? null : $text, \strlen($text), self::$formatPtr, self::$outDecimalPtr, self::$faultPtr
+            $text === '' ? null : $text,
+            \strlen($text),
+            self::$formatPtr,
+            self::$outDecimalPtr,
+            self::$faultPtr
         );
         return $rc === 0
             ? new Success(Decimal::fromLimbs(
@@ -438,7 +482,11 @@ final class Cast
     {
         $ffi = self::$ffi ?? self::load();
         $rc = $ffi->cast_unix(
-            $text === '' ? null : $text, \strlen($text), $precision->value, self::$outPairPtr, self::$faultPtr
+            $text === '' ? null : $text,
+            \strlen($text),
+            $precision->value,
+            self::$outPairPtr,
+            self::$faultPtr
         );
         return $rc === 0 ? new Success(self::instant()) : self::fail($rc);
     }
@@ -463,7 +511,11 @@ final class Cast
     {
         $ffi = self::$ffi ?? self::load();
         $rc = $ffi->cast_excel_serial(
-            $text === '' ? null : $text, \strlen($text), $epoch->value, self::$outPairPtr, self::$faultPtr
+            $text === '' ? null : $text,
+            \strlen($text),
+            $epoch->value,
+            self::$outPairPtr,
+            self::$faultPtr
         );
         return $rc === 0 ? new Success(self::instant()) : self::fail($rc);
     }
@@ -486,7 +538,11 @@ final class Cast
         $rc = $order === null
             ? $ffi->cast_date($text === '' ? null : $text, \strlen($text), self::$outDatePtr, self::$faultPtr)
             : $ffi->cast_date_ordered(
-                $text === '' ? null : $text, \strlen($text), $order->value, self::$outDatePtr, self::$faultPtr
+                $text === '' ? null : $text,
+                \strlen($text),
+                $order->value,
+                self::$outDatePtr,
+                self::$faultPtr
             );
         if ($rc !== 0) {
             return self::fail($rc);
@@ -545,21 +601,33 @@ final class Cast
     {
         $ffi = self::$ffi ?? self::load();
         $rc = $ffi->cast_datetime(
-            $text === '' ? null : $text, \strlen($text), $order->value, self::$outCivilPtr, self::$faultPtr
+            $text === '' ? null : $text,
+            \strlen($text),
+            $order->value,
+            self::$outCivilPtr,
+            self::$faultPtr
         );
-        if ($rc !== 0) {
-            return self::fail($rc);
-        }
+        return $rc === 0 ? new Success(self::civil()) : self::fail($rc);
+    }
+
+    /**
+     * The civil date-time in the scratch out-param on its UTC-labeled carrier (see
+     * datetime() for why the label is not data), nanoseconds truncated to microseconds.
+     *
+     * @return DateTimeImmutable the civil value, labeled UTC
+     */
+    private static function civil(): DateTimeImmutable
+    {
         $nanos = self::$outCivil->nanos;
         $seconds = self::epochSeconds(self::$outCivil->year, self::$outCivil->month, self::$outCivil->day)
             + intdiv($nanos, 1_000_000_000);
         $micros = intdiv($nanos % 1_000_000_000, 1000);
         if (self::$fastInstants) {
             $instant = DateTimeImmutable::createFromTimestamp($seconds);
-            return new Success($micros === 0 ? $instant : $instant->setMicrosecond($micros));
+            return $micros === 0 ? $instant : $instant->setMicrosecond($micros);
         }
         $instant = new DateTimeImmutable("@{$seconds}");
-        return new Success($micros === 0 ? $instant : $instant->modify("+{$micros} microseconds"));
+        return $micros === 0 ? $instant : $instant->modify("+{$micros} microseconds");
     }
 
     /**
@@ -587,6 +655,78 @@ final class Cast
     {
         $ffi = self::$ffi ?? self::load();
         $rc = $ffi->cast_duration($text === '' ? null : $text, \strlen($text), self::$outPairPtr, self::$faultPtr);
+        return $rc === 0
+            ? new Success(new Duration(self::$outPair->seconds, self::$outPair->nanos))
+            : self::fail($rc);
+    }
+
+    /**
+     * Reads a number a caller already holds as the exact {@see Decimal} it names: the
+     * shortest decimal that rounds back to the float, the digits a spreadsheet writes for
+     * it — 0.1 is magnitude 1 at scale 1, not the binary fraction nearest it, and 0.1 + 0.2
+     * is 0.30000000000000004. NAN is Malformed; INF, a magnitude past 2^96 - 1 or more than
+     * 28 places is OutOfRange. A typed door's Fault has no span: offset and length are 0.
+     *
+     * @param float $value the number to read
+     * @return Success|Fault the verdict: a Success carrying the cast value, or a Fault
+     */
+    public static function decimalFromFloat(float $value): Success|Fault
+    {
+        $ffi = self::$ffi ?? self::load();
+        $rc = $ffi->cast_decimal_from_f64($value, self::$outDecimalPtr, self::$faultPtr);
+        return $rc === 0
+            ? new Success(Decimal::fromLimbs(
+                self::$outDecimal->lo,
+                self::$outDecimal->hi,
+                self::$outDecimal->scale,
+                self::$outDecimal->negative !== 0
+            ))
+            : self::fail($rc);
+    }
+
+    /**
+     * Reads an Excel serial number under a caller-declared epoch as the zone-less civil
+     * date-time it names — the twin of excelSerial() for a number a workbook reader already
+     * holds, on the same UTC-labeled carrier datetime() uses (the label is not data). The
+     * 1900 system's phantom serial 60 is OutOfRange; a negative, NAN or INF serial is
+     * Malformed. Sub-microsecond nanoseconds truncate.
+     *
+     * @param float $value the serial
+     * @param ExcelEpoch $epoch the declared date system
+     * @return Success|Fault the verdict: a Success carrying the cast value, or a Fault
+     */
+    public static function excelSerialFromFloat(float $value, ExcelEpoch $epoch): Success|Fault
+    {
+        $ffi = self::$ffi ?? self::load();
+        $rc = $ffi->cast_excel_serial_from_f64($value, $epoch->value, self::$outCivilPtr, self::$faultPtr);
+        return $rc === 0 ? new Success(self::civil()) : self::fail($rc);
+    }
+
+    /**
+     * Reads the fraction of an Excel serial number as an exact int of nanoseconds since
+     * midnight, as time() does; 0.75 and 45292.75 are both 18:00.
+     *
+     * @param float $value the serial
+     * @return Success|Fault the verdict: a Success carrying the cast value, or a Fault
+     */
+    public static function excelTime(float $value): Success|Fault
+    {
+        $ffi = self::$ffi ?? self::load();
+        $rc = $ffi->cast_excel_time($value, self::$outI64Ptr, self::$faultPtr);
+        return $rc === 0 ? new Success(self::$outI64->cdata) : self::fail($rc);
+    }
+
+    /**
+     * Reads a number of days as the protobuf pair duration() returns: 1.5 is 129,600
+     * seconds.
+     *
+     * @param float $value the number of days
+     * @return Success|Fault the verdict: a Success carrying the cast value, or a Fault
+     */
+    public static function excelDuration(float $value): Success|Fault
+    {
+        $ffi = self::$ffi ?? self::load();
+        $rc = $ffi->cast_excel_duration($value, self::$outPairPtr, self::$faultPtr);
         return $rc === 0
             ? new Success(new Duration(self::$outPair->seconds, self::$outPair->nanos))
             : self::fail($rc);
@@ -664,9 +804,11 @@ final class Cast
             'typedef struct { uint32_t offset; uint32_t length; } hc_fault;'
             . 'typedef struct { int64_t seconds; int32_t nanos; } hc_pair;'
             . 'typedef struct { uint16_t year; uint8_t month; uint8_t day; } hc_date;'
-            . 'typedef struct { uint16_t year; uint8_t month; uint8_t day; uint32_t pad; uint64_t nanos; } hc_civil;'
+            . 'typedef struct { uint16_t year; uint8_t month; uint8_t day; uint32_t pad;'
+            . ' uint64_t nanos; } hc_civil;'
             . 'typedef union { float f32; double f64; } hc_real;'
-            . 'typedef struct { uint64_t lo; uint32_t hi; uint8_t scale; uint8_t negative; uint8_t pad[2]; } hc_decimal;'
+            . 'typedef struct { uint64_t lo; uint32_t hi; uint8_t scale; uint8_t negative;'
+            . ' uint8_t pad[2]; } hc_decimal;'
             . 'typedef struct { uint32_t decimal_sep; uint32_t group_sep; uint32_t flags; uint32_t currency_len;'
             . ' uint8_t currency[16]; } hc_format;'
             . 'uint32_t hypercast_version(void);'
@@ -682,7 +824,11 @@ final class Cast
             . 'int cast_date_ordered(const char *ptr, size_t len, uint32_t order, void *out, void *fault);'
             . 'int cast_datetime(const char *ptr, size_t len, uint32_t order, void *out, void *fault);'
             . "int cast_time{$plain};"
-            . "int cast_duration{$plain};",
+            . "int cast_duration{$plain};"
+            . 'int cast_decimal_from_f64(double value, void *out, void *fault);'
+            . 'int cast_excel_serial_from_f64(double value, uint32_t epoch, void *out, void *fault);'
+            . 'int cast_excel_time(double value, void *out, void *fault);'
+            . 'int cast_excel_duration(double value, void *out, void *fault);',
             $path
         );
         self::$out16 = self::$ffi->new('uint8_t[16]');

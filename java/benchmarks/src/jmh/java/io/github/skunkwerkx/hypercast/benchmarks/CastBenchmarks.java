@@ -53,8 +53,8 @@ public class CastBenchmarks {
     private final byte[] intBytes = intText.getBytes(StandardCharsets.UTF_8);
     private final byte[] uuidBytes = uuidText.getBytes(StandardCharsets.UTF_8);
     // The round-three shape: one buffer holding many values, each door handed a heap slice.
-    private final MemorySegment line = MemorySegment.ofArray(
-            (intText + "|" + timestampText).getBytes(StandardCharsets.UTF_8));
+    private final MemorySegment line =
+            MemorySegment.ofArray((intText + "|" + timestampText).getBytes(StandardCharsets.UTF_8));
     private final MemorySegment intSlice = line.asSlice(0, intBytes.length);
     private final MemorySegment timestampSlice = line.asSlice(intBytes.length + 1, timestampBytes.length);
 
@@ -179,8 +179,7 @@ public class CastBenchmarks {
     // same text. This is the messy-feed shape the doors exist for: "1/7/2026 3:04 PM"
     // has no java.time parser of its own, only a hand-built formatter.
 
-    private static final DateTimeFormatter US_DATE_TIME =
-            DateTimeFormatter.ofPattern("M/d/yyyy h:mm a", Locale.US);
+    private static final DateTimeFormatter US_DATE_TIME = DateTimeFormatter.ofPattern("M/d/yyyy h:mm a", Locale.US);
     private static final DateTimeFormatter US_DATE = DateTimeFormatter.ofPattern("M/d/yyyy", Locale.US);
 
     private final String messyDateTimeText = "1/7/2026 3:04 PM";
@@ -220,8 +219,7 @@ public class CastBenchmarks {
     // --- separator detection, vs the same text under a declared eurozone format and vs
     // the JDK's own locale machinery. Detection's cost is one extra scan for '.'/','.
 
-    private static final NumFormat EUROZONE =
-            new NumFormat(',', '.', NumFormat.STYLE_ALL);
+    private static final NumFormat EUROZONE = new NumFormat(',', '.', NumFormat.STYLE_ALL);
     private static final NumberFormat JDK_GERMAN = NumberFormat.getInstance(Locale.GERMANY);
 
     private final String euroNumberText = "1.234.567,89";
@@ -240,5 +238,4 @@ public class CastBenchmarks {
     public Number jdkNumberFormatGerman() throws ParseException {
         return JDK_GERMAN.parse(euroNumberText);
     }
-
 }

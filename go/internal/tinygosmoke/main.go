@@ -90,5 +90,19 @@ func main() {
 	span, fault := hypercast.Span("PT1H30M15.5S")
 	check(fault == nil && span.Seconds == 5415 && span.Nanos == 500000000, "Span")
 
+	tenth, fifth := 0.1, 0.2 // variables: Go adds the constants 0.1 + 0.2 exactly, to 0.3
+	fromDouble, fault := hypercast.ExactFromFloat64(tenth + fifth)
+	check(fault == nil && fromDouble.String() == "0.30000000000000004", "ExactFromFloat64")
+
+	serial, fault := hypercast.ExcelSerialFromFloat64(45292.75, hypercast.Excel1900)
+	check(fault == nil && serial.Date == hypercast.Date{Year: 2024, Month: time.January, Day: 1} &&
+		serial.TimeOfDay == 18*time.Hour, "ExcelSerialFromFloat64 1900")
+
+	noon, fault := hypercast.ExcelTime(0.5)
+	check(fault == nil && noon == 12*time.Hour, "ExcelTime")
+
+	elapsed, fault := hypercast.ExcelDuration(1.5)
+	check(fault == nil && elapsed.Seconds == 129600 && elapsed.Nanos == 0, "ExcelDuration")
+
 	fmt.Println("DONE")
 }

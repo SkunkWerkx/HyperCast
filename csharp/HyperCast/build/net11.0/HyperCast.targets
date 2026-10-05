@@ -65,6 +65,10 @@
     <EmccExportedFunction Include="_cast_datetime" />
     <EmccExportedFunction Include="_cast_time" />
     <EmccExportedFunction Include="_cast_duration" />
+    <EmccExportedFunction Include="_cast_decimal_from_f64" />
+    <EmccExportedFunction Include="_cast_excel_serial_from_f64" />
+    <EmccExportedFunction Include="_cast_excel_time" />
+    <EmccExportedFunction Include="_cast_excel_duration" />
     <EmccExportedFunction Include="_hypercast_version" />
   </ItemGroup>
 

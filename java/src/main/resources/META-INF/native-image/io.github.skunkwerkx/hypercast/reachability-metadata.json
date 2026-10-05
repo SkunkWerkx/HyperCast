@@ -21,6 +21,10 @@
         "options": { "critical": { "allowHeapAccess": true } } },
       { "returnType": "jint", "parameterTypes": ["void*", "jlong", "jint", "void*", "void*"],
         "options": { "critical": { "allowHeapAccess": true } } },
+      { "returnType": "jint", "parameterTypes": ["jdouble", "void*", "void*"],
+        "options": { "critical": { "allowHeapAccess": true } } },
+      { "returnType": "jint", "parameterTypes": ["jdouble", "jint", "void*", "void*"],
+        "options": { "critical": { "allowHeapAccess": true } } },
       { "returnType": "jint", "parameterTypes": [] }
     ]
   }

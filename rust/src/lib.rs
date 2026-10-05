@@ -15,7 +15,11 @@
 //! - [`cast_excel_serial`] — spreadsheet date serials under a declared [`ExcelEpoch`],
 //!   phantom `1900-02-29` and all
 //! - [`excel_serial`] — the same serials already held as the `f64` a workbook stores,
-//!   under the same rules, to a zone-less [`CivilDateTime`]
+//!   under the same rules, to a zone-less [`CivilDateTime`]; [`excel_time`] and
+//!   [`excel_duration`] read the same `f64` as a time of day and as a span of days
+//! - [`decimal_from_f64`], [`i32_from_f64`] and their kin — the typed twins of the numeric
+//!   doors, for a number a workbook already stores as a double: an integer only when the
+//!   double is one, a decimal as the shortest that names the double ([`shortest_digits`])
 //! - [`cast_date`] / [`cast_time`] / [`cast_duration`] — the remaining temporal shapes,
 //!   likewise protobuf-formed
 //! - [`cast_date_ordered`] — separated calendar dates under a caller-declared [`DateOrder`]
@@ -77,7 +81,7 @@ fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
 //
 // Assembly rather than a `#[no_mangle]` function, for the visibility: a `#[no_mangle]`
 // item is exported from a cdylib whatever its Rust visibility, which would put a 23rd
-// symbol beside the 22 C ABI exports, one any other library in the process could bind to.
+// symbol beside the 26 C ABI exports, one any other library in the process could bind to.
 // Defined hidden instead, it satisfies the library's own reference and is seen by nothing
 // outside it. Never compiled for the static libraries: two Hyper* archives that each
 // defined it could not be linked into one program, the duplicate-symbol failure that kept
@@ -133,6 +137,7 @@ mod integer;
 mod lane;
 mod real;
 mod temporal;
+mod typed;
 mod uuid;
 mod verdict;
 
@@ -151,7 +156,12 @@ pub use real::{cast_f32, cast_f64};
 pub use temporal::{
     DateOrder, ExcelEpoch, MAX_DURATION_SECONDS, MAX_TIMESTAMP_SECONDS, MIN_TIMESTAMP_SECONDS,
     UnixPrecision, cast_date, cast_date_ordered, cast_datetime, cast_duration, cast_excel_serial,
-    cast_time, cast_timestamp, cast_unix, excel_serial,
+    cast_time, cast_timestamp, cast_unix, excel_duration, excel_serial, excel_time, unix_from_f64,
+};
+pub use typed::{
+    ShortestDigits, bool_from_f64, decimal_from_f64, f32_from_f64, i8_from_f64, i16_from_f64,
+    i32_from_f64, i64_from_f64, shortest_digits, u8_from_f64, u16_from_f64, u32_from_f64,
+    u64_from_f64,
 };
 pub use uuid::cast_uuid;
 pub use verdict::{
@@ -780,6 +790,68 @@ mod tests {
         assert_eq!(reason(cast_excel_serial(b"2957004", ExcelEpoch::Y1904)), Reason::OutOfRange);
         assert!(cast_excel_serial(b"2958465", ExcelEpoch::Y1900).is_ok());
         assert!(cast_excel_serial(b"2957003", ExcelEpoch::Y1904).is_ok());
+    }
+
+    // --- typed doors ---
+
+    #[test]
+    fn excel_time_reads_the_fraction_of_any_serial() {
+        assert_eq!(excel_time(0.75), Ok(64_800_000_000_000));
+        assert_eq!(excel_time(45_292.75), Ok(64_800_000_000_000));
+        assert_eq!(excel_time(0.0), Ok(0));
+        // Rounds as `excel_serial` does, and a fraction that rounds to a whole day is midnight.
+        assert_eq!(excel_time(1.0 - f64::EPSILON / 2.0), Ok(0));
+        assert_eq!(excel_time(-0.5), Err(Reason::Malformed));
+        assert_eq!(excel_time(f64::NAN), Err(Reason::Malformed));
+        assert_eq!(excel_time(3_000_000.0), Err(Reason::OutOfRange));
+    }
+
+    #[test]
+    fn excel_duration_reads_days_sign_and_all() {
+        assert_eq!(excel_duration(1.5), Ok(Duration { seconds: 129_600, nanos: 0 }));
+        assert_eq!(excel_duration(-0.25), Ok(Duration { seconds: -21_600, nanos: 0 }));
+        // A tenth of a second, and its negation, same-signed.
+        let tenth = 0.1 / 86_400.0;
+        assert_eq!(excel_duration(tenth), Ok(Duration { seconds: 0, nanos: 100_000_000 }));
+        assert_eq!(excel_duration(-tenth), Ok(Duration { seconds: 0, nanos: -100_000_000 }));
+        let window = MAX_DURATION_SECONDS as f64 / 86_400.0;
+        assert_eq!(excel_duration(window).map(|d| d.seconds), Ok(MAX_DURATION_SECONDS));
+        assert_eq!(excel_duration(window * 1.000_001), Err(Reason::OutOfRange));
+        assert_eq!(excel_duration(f64::INFINITY), Err(Reason::Malformed));
+    }
+
+    #[test]
+    fn bool_and_f32_from_a_double() {
+        assert_eq!(bool_from_f64(1.0), Ok(true));
+        assert_eq!(bool_from_f64(0.0), Ok(false));
+        assert_eq!(bool_from_f64(-0.0), Ok(false));
+        assert_eq!(bool_from_f64(2.0), Err(Reason::Malformed));
+        assert_eq!(bool_from_f64(0.5), Err(Reason::Malformed));
+        assert_eq!(bool_from_f64(f64::NAN), Err(Reason::Malformed));
+
+        assert_eq!(f32_from_f64(0.1), Ok(0.1f32));
+        assert_eq!(f32_from_f64(f64::from(f32::MAX)), Ok(f32::MAX));
+        assert_eq!(f32_from_f64(1e39), Err(Reason::OutOfRange));
+        assert_eq!(f32_from_f64(f64::NEG_INFINITY), Err(Reason::OutOfRange));
+        assert_eq!(f32_from_f64(f64::NAN), Err(Reason::Malformed));
+        assert_eq!(f32_from_f64(1e-50), Ok(0.0));
+    }
+
+    #[test]
+    fn a_double_is_the_decimal_it_is_written_as() {
+        let decimal = |value| decimal_from_f64(value).map(|d| d.to_string());
+        assert_eq!(decimal(2.5).as_deref(), Ok("2.5"));
+        assert_eq!(decimal(0.1).as_deref(), Ok("0.1"));
+        assert_eq!(decimal(0.1 + 0.2).as_deref(), Ok("0.30000000000000004"));
+        assert_eq!(decimal(-1234.5).as_deref(), Ok("-1234.5"));
+        assert_eq!(decimal(1e20).as_deref(), Ok("100000000000000000000"));
+        assert_eq!(decimal(1e-28).as_deref(), Ok("0.0000000000000000000000000001"));
+        assert_eq!(decimal(1e-29), Err(Reason::OutOfRange));
+        assert_eq!(decimal(1e29), Err(Reason::OutOfRange));
+        assert_eq!(i64_from_f64(9_223_372_036_854_775_808.0), Err(Reason::OutOfRange));
+        assert_eq!(u64_from_f64(9_223_372_036_854_775_808.0), Ok(9_223_372_036_854_776_000));
+        assert_eq!(i32_from_f64(2.5), Err(Reason::Malformed));
+        assert_eq!(u8_from_f64(-0.0), Ok(0));
     }
 
     // --- date ---

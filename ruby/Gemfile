@@ -13,4 +13,6 @@ group :development do
   # the gemspec declares nothing beyond Fiddle.
   gem "bigdecimal"
   gem "rspec", "~> 3.13"
+  # The formatter: .rubocop.yml enables the layout cops only, over lib, spec and benchmark.
+  gem "rubocop", "~> 1.91", require: false
 end

@@ -120,6 +120,10 @@ Every door takes the text first — `str` or `bytes` — and returns `Success(va
 | `cast_datetime(text, order)` | a zone-less civil date-time in a declared `DateOrder` | `datetime`, naive |
 | `cast_time(text)` | an ISO 24-hour time of day | `time` |
 | `cast_duration(text)` | ISO 8601, the invariant colon form, or protobuf JSON seconds | `timedelta` |
+| `cast_decimal_from_float(value)` | a `float` as the shortest decimal that names it (`0.1` is one tenth) | `decimal.Decimal` |
+| `cast_excel_serial_from_float(value, epoch)` | an Excel serial `float` in a declared `ExcelEpoch` | `datetime`, naive |
+| `cast_excel_time(value)` | the fraction of an Excel serial `float` | `time` |
+| `cast_excel_duration(value)` | a `float` count of days | `timedelta` |
 
 Nothing about the text is guessed; what a door cannot know from the text, the caller
 declares, as an `IntEnum`:

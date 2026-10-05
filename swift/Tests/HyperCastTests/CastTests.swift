@@ -12,34 +12,35 @@ final class CastTests: XCTestCase {
     /// test module runs sandboxed with no view of the source tree.
     private static let crateVersion: String? = {
         #if os(WASI)
-        return nil
+            return nil
         #else
-        var dir = URL(fileURLWithPath: #filePath)
-        while true {
-            let manifest = dir.appendingPathComponent("rust/Cargo.toml")
-            if let text = try? String(contentsOf: manifest, encoding: .utf8) {
-                // Split on any newline, not on "\n": Swift treats "\r\n" as one Character, so a
-                // CRLF checkout (Windows) would otherwise read as a single line. Bit CI for real.
-                for line in text.split(whereSeparator: \.isNewline) where line.hasPrefix("version = \"") {
-                    return String(line.dropFirst("version = \"".count).prefix { $0 != "\"" })
+            var dir = URL(fileURLWithPath: #filePath)
+            while true {
+                let manifest = dir.appendingPathComponent("rust/Cargo.toml")
+                if let text = try? String(contentsOf: manifest, encoding: .utf8) {
+                    // Split on any newline, not on "\n": Swift treats "\r\n" as one Character, so a
+                    // CRLF checkout (Windows) would otherwise read as a single line. Bit CI for real.
+                    for line in text.split(whereSeparator: \.isNewline) where line.hasPrefix("version = \"") {
+                        return String(line.dropFirst("version = \"".count).prefix { $0 != "\"" })
+                    }
+                    fatalError("no version = \"...\" line in \(manifest.path)")
                 }
-                fatalError("no version = \"...\" line in \(manifest.path)")
+                let parent = dir.deletingLastPathComponent()
+                if parent.path == dir.path { break }
+                dir = parent
             }
-            let parent = dir.deletingLastPathComponent()
-            if parent.path == dir.path { break }
-            dir = parent
-        }
-        fatalError("rust/Cargo.toml not found above \(#filePath)")
+            fatalError("rust/Cargo.toml not found above \(#filePath)")
         #endif
     }()
 
     func testVerdictSwitchIsExhaustiveWithTwoCases() throws {
         // This compiling at all is the feature — and in Swift it's not opt-in: the
         // compiler rejects a non-exhaustive switch over an enum, full stop.
-        let rendered: String = switch try Cast.i32("42", format: .invariant) {
-        case .success(let value): "ok \(value)"
-        case .fault(let fault): "fault \(fault.reason)"
-        }
+        let rendered: String =
+            switch try Cast.i32("42", format: .invariant) {
+            case .success(let value): "ok \(value)"
+            case .fault(let fault): "fault \(fault.reason)"
+            }
         XCTAssertEqual(rendered, "ok 42")
     }
 

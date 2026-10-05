@@ -591,3 +591,193 @@ fn every_finite_float_formats_and_casts_back_to_the_same_bits() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// Typed doors
+// ---------------------------------------------------------------------------------------
+
+/// Doubles worth asking the typed doors about: the edges, integers of every size (where the
+/// integer doors and the decimal's 96 bits run out), halves and tenths (the fractions a
+/// spreadsheet is full of), and raw bit patterns for everything else.
+fn typed_samples() -> Vec<f64> {
+    let mut rng = XorShift(0xBB67_AE85_84CA_A73B);
+    let mut values = vec![
+        0.0,
+        -0.0,
+        1.0,
+        -1.0,
+        0.1,
+        0.1 + 0.2,
+        2.5,
+        -2.5,
+        1e-28,
+        1e-29,
+        1.5e-28,
+        79_228_162_514_264_337_593_543_950_335.0,
+        1e29,
+        f64::MIN_POSITIVE,
+        5e-324,
+        f64::MAX,
+        f64::MIN,
+        f64::EPSILON,
+        9_007_199_254_740_993.0,
+        i64::MAX as f64,
+        i64::MIN as f64,
+        u64::MAX as f64,
+        253_402_300_799.0,
+        253_402_300_800.0,
+        -62_135_596_800.0,
+        -62_135_596_801.0,
+    ];
+    while values.len() < 20_000 {
+        let candidate = match values.len() % 4 {
+            0 => f64::from_bits(rng.next()),
+            1 => (rng.next() as i64 >> (rng.next() % 64)) as f64,
+            2 => (rng.next() as i64 >> (rng.next() % 64)) as f64 / 2.0,
+            _ => {
+                (rng.next() as i64 >> (20 + rng.next() % 44)) as f64
+                    / 10f64.powi((rng.next() % 12) as i32)
+            }
+        };
+        if candidate.is_finite() {
+            values.push(candidate);
+        }
+    }
+    values
+}
+
+/// Rust's `{:e}` is the shortest text naming the same double, nearest where several are as
+/// short — the rule `shortest_digits` states — so the two must agree digit for digit.
+#[test]
+fn shortest_digits_agree_with_rusts_own_shortest_formatting() {
+    for value in typed_samples() {
+        let Some(shortest) = hypercast::shortest_digits(value) else {
+            assert_eq!(value, 0.0, "only zero has no digits");
+            continue;
+        };
+        let text = format!("{:e}", value.abs());
+        let (mantissa, exponent) = text.split_once('e').expect("exponent form");
+        let digits: String = mantissa.chars().filter(|c| *c != '.').collect();
+        let exponent: i16 = exponent.parse().expect("exponent");
+        assert_eq!(std::str::from_utf8(shortest.digits()), Ok(digits.as_str()), "{text}");
+        assert_eq!(shortest.exponent(), exponent + 1, "{text}");
+    }
+    assert_eq!(hypercast::shortest_digits(f64::NAN), None);
+    assert_eq!(hypercast::shortest_digits(f64::INFINITY), None);
+}
+
+/// The decimal a double names is the decimal its shortest text names: the text door read on
+/// `{:e}` must give the same verdict, out-of-range digits included, and a decimal that
+/// comes out must read back as the same double.
+#[test]
+fn every_double_is_the_decimal_its_shortest_text_names() {
+    let exponent = NumFormat::new('.', ',', NumFormat::EXPONENT);
+    let mut exact = 0usize;
+    for value in typed_samples() {
+        let typed = hypercast::decimal_from_f64(value);
+        let text = cast_decimal(format!("{value:e}"), &exponent).map_err(|fault| fault.reason);
+        assert_eq!(typed, text, "{value:e}");
+        if let Ok(decimal) = typed {
+            // (`-0.0` comes out as zero, which compares equal to it.)
+            assert_eq!(decimal.to_string().parse::<f64>(), Ok(value), "{value:e}");
+            exact += 1;
+        }
+    }
+    assert!(exact > 10_000, "only {exact} doubles were decimals");
+    assert_eq!(hypercast::decimal_from_f64(f64::NAN), Err(Reason::Malformed));
+    assert_eq!(hypercast::decimal_from_f64(f64::NEG_INFINITY), Err(Reason::OutOfRange));
+    assert_eq!(hypercast::decimal_from_f64(-0.0).map(|d| d.negative), Ok(false));
+}
+
+/// An integral double's own `{}` text is every one of its digits, and a fractional one's
+/// has a point, so the integer doors read on it say what the typed doors must: the value,
+/// `OutOfRange` past the type, `Malformed` for a fraction.
+#[test]
+fn the_integer_doors_read_a_double_as_they_read_its_digits() {
+    type Pair = (fn(f64) -> Result<i128, Reason>, fn(&str) -> Result<i128, Reason>);
+    let doors: [(&str, Pair); 8] = [
+        (
+            "i8",
+            (
+                |v| hypercast::i8_from_f64(v).map(i128::from),
+                |t| cast_i8(t, &STRICT).map(i128::from).map_err(|f| f.reason),
+            ),
+        ),
+        (
+            "i16",
+            (
+                |v| hypercast::i16_from_f64(v).map(i128::from),
+                |t| cast_i16(t, &STRICT).map(i128::from).map_err(|f| f.reason),
+            ),
+        ),
+        (
+            "i32",
+            (
+                |v| hypercast::i32_from_f64(v).map(i128::from),
+                |t| cast_i32(t, &STRICT).map(i128::from).map_err(|f| f.reason),
+            ),
+        ),
+        (
+            "i64",
+            (
+                |v| hypercast::i64_from_f64(v).map(i128::from),
+                |t| cast_i64(t, &STRICT).map(i128::from).map_err(|f| f.reason),
+            ),
+        ),
+        (
+            "u8",
+            (
+                |v| hypercast::u8_from_f64(v).map(i128::from),
+                |t| cast_u8(t, &STRICT).map(i128::from).map_err(|f| f.reason),
+            ),
+        ),
+        (
+            "u16",
+            (
+                |v| hypercast::u16_from_f64(v).map(i128::from),
+                |t| cast_u16(t, &STRICT).map(i128::from).map_err(|f| f.reason),
+            ),
+        ),
+        (
+            "u32",
+            (
+                |v| hypercast::u32_from_f64(v).map(i128::from),
+                |t| cast_u32(t, &STRICT).map(i128::from).map_err(|f| f.reason),
+            ),
+        ),
+        (
+            "u64",
+            (
+                |v| hypercast::u64_from_f64(v).map(i128::from),
+                |t| cast_u64(t, &STRICT).map(i128::from).map_err(|f| f.reason),
+            ),
+        ),
+    ];
+    for value in typed_samples() {
+        // `-0` is zero to every integer door, and its text is `-0`, which they also read.
+        let text = format!("{value}");
+        for (name, (typed, door)) in &doors {
+            assert_eq!(typed(value), door(&text), "{name} {text}");
+        }
+    }
+    for (name, (typed, _)) in &doors {
+        assert_eq!(typed(f64::NAN), Err(Reason::Malformed), "{name}");
+        assert_eq!(typed(f64::INFINITY), Err(Reason::Malformed), "{name}");
+    }
+}
+
+/// The same for Unix-epoch values, in every unit.
+#[test]
+fn the_unix_door_reads_a_double_as_it_reads_its_digits() {
+    use hypercast::UnixPrecision::{Micros, Millis, Nanos, Seconds};
+    for value in typed_samples() {
+        let text = format!("{value}");
+        for precision in [Seconds, Millis, Micros, Nanos] {
+            assert_eq!(
+                hypercast::unix_from_f64(value, precision),
+                hypercast::cast_unix(&text, precision).map_err(|fault| fault.reason),
+                "{text} {precision:?}"
+            );
+        }
+    }
+}

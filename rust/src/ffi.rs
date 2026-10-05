@@ -12,11 +12,16 @@
 //! out-param (when non-null) receives the offending byte span, indexed into the caller's
 //! input; on success and contract violation it is left untouched. A `len` of 0 never
 //! dereferences `ptr`.
+//!
+//! The four typed doors (`cast_decimal_from_f64`, `cast_excel_serial_from_f64`,
+//! `cast_excel_time`, `cast_excel_duration`) take a `double` instead of text and keep the
+//! same contract; there is no text for a span to index, so a fault's span is always empty.
 
 use crate::abi::RawNumFormat;
 use crate::verdict::{CivilDateTime, Date, Decimal, Duration, Fault, NumFormat, Timestamp};
 use crate::{
-    DateOrder, ExcelEpoch, UnixPrecision, boolean, decimal, integer, real, temporal, uuid,
+    DateOrder, ExcelEpoch, Reason, UnixPrecision, boolean, decimal, integer, real, temporal, typed,
+    uuid,
 };
 use core::slice;
 
@@ -70,6 +75,11 @@ unsafe fn finish<T>(verdict: Result<T, Fault>, out: *mut T, fault: *mut RawFault
             failed.reason as i32
         }
     }
+}
+
+/// A typed door's verdict as a text door's: the same reason, over an empty span.
+fn spanless<T>(verdict: Result<T, Reason>) -> Result<T, Fault> {
+    verdict.map_err(|reason| Fault { reason, offset: 0, len: 0 })
 }
 
 /// Casts boolean text at `ptr`/`len` into `out` (0 or 1). See [`boolean::cast_bool`].
@@ -281,4 +291,54 @@ pub extern "C" fn cast_duration(
 ) -> i32 {
     // SAFETY: caller guarantees the pointer contracts, per the module doc.
     unsafe { finish(temporal::cast_duration(text(ptr, len)), out, fault) }
+}
+
+/// Reads the number `value` as the shortest decimal that names it into `out`. See
+/// [`typed::decimal_from_f64`].
+#[unsafe(no_mangle)]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub extern "C" fn cast_decimal_from_f64(
+    value: f64,
+    out: *mut Decimal,
+    fault: *mut RawFault,
+) -> i32 {
+    // SAFETY: caller guarantees the pointer contracts, per the module doc.
+    unsafe { finish(spanless(typed::decimal_from_f64(value)), out, fault) }
+}
+
+/// Reads the Excel serial `value` under the declared `epoch` (1 the 1900 system, 2 the 1904
+/// system — anything else is a contract violation) into `out` as the zone-less wall clock
+/// it names. See [`temporal::excel_serial`].
+#[unsafe(no_mangle)]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub extern "C" fn cast_excel_serial_from_f64(
+    value: f64,
+    epoch: u32,
+    out: *mut CivilDateTime,
+    fault: *mut RawFault,
+) -> i32 {
+    let epoch = match epoch {
+        1 => ExcelEpoch::Y1900,
+        2 => ExcelEpoch::Y1904,
+        _ => return CONTRACT_VIOLATION,
+    };
+    // SAFETY: caller guarantees the pointer contracts, per the module doc.
+    unsafe { finish(spanless(temporal::excel_serial(value, epoch)), out, fault) }
+}
+
+/// Reads the time of day of the Excel serial `value` into `out` as nanoseconds since
+/// midnight. See [`temporal::excel_time`].
+#[unsafe(no_mangle)]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub extern "C" fn cast_excel_time(value: f64, out: *mut u64, fault: *mut RawFault) -> i32 {
+    // SAFETY: caller guarantees the pointer contracts, per the module doc.
+    unsafe { finish(spanless(temporal::excel_time(value)), out, fault) }
+}
+
+/// Reads `value` days into `out` as a duration. See [`temporal::excel_duration`].
+#[unsafe(no_mangle)]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub extern "C" fn cast_excel_duration(value: f64, out: *mut Duration, fault: *mut RawFault) -> i32 {
+    // SAFETY: caller guarantees the pointer contracts, per the module doc.
+    unsafe { finish(spanless(temporal::excel_duration(value)), out, fault) }
 }

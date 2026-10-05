@@ -89,7 +89,13 @@ for name, out in NUMERIC.items():
 for name, out in SELECTOR.items():
     fn = getattr(lib, name)
     fn.restype, fn.argtypes = i32, [txt, size, u32, P(out), FaultP]
-OUT_TYPES = {**PLAIN, **NUMERIC, **SELECTOR}
+# The typed doors take a double instead of text, and give a fault no span.
+TYPED = {"cast_decimal_from_f64": (Decimal, []), "cast_excel_serial_from_f64": (CivilDateTime, [u32]),
+         "cast_excel_time": (ctypes.c_uint64, []), "cast_excel_duration": (Duration, [])}
+for name, (out, extra) in TYPED.items():
+    fn = getattr(lib, name)
+    fn.restype, fn.argtypes = i32, [ctypes.c_double, *extra, P(out), FaultP]
+OUT_TYPES = {**PLAIN, **NUMERIC, **SELECTOR, **{name: out for name, (out, _) in TYPED.items()}}
 called = set()
 
 
@@ -111,6 +117,14 @@ def ok(name, text, *extra):
     status, out, _ = call(name, text, *extra)
     check(status == OK, f"{name}({text!r}) returned {status}, expected ok")
     return out
+
+
+def typed(name, value, *extra):
+    """Calls one typed export; returns (status, out, fault)."""
+    called.add(name)
+    out, fault = OUT_TYPES[name](), Fault(0xFFFF, 0xFFFF)
+    status = getattr(lib, name)(value, *extra, ctypes.byref(out), ctypes.byref(fault))
+    return status, out, fault
 
 
 def fails(name, text, reason, *extra, span=None):
@@ -201,5 +215,22 @@ check((dt.date.year, dt.date.month, dt.date.day, dt.nanos_of_day) == (2026, 1, 7
 fails("cast_datetime", "1/7/2026 25:04", OUT_OF_RANGE, 2, span=(9, 2))
 fails("cast_datetime", "1/7/2026 3:04 PM", CONTRACT_VIOLATION, 0)
 
-check(len(called) == 21, f"called {len(called)} cast exports, expected 21: {sorted(OUT_TYPES.keys() - called)}")
-print(f"cdylib smoke: {lib_path} {got}, all 22 exports called")
+status, dec, _ = typed("cast_decimal_from_f64", 0.1 + 0.2)
+check(status == OK and (dec.lo, dec.hi, dec.scale, dec.negative) == (30000000000000004, 0, 17, False),
+      "cast_decimal_from_f64 value")
+status, _, fault = typed("cast_decimal_from_f64", float("nan"))
+check(status == MALFORMED and (fault.offset, fault.len) == (0, 0), "cast_decimal_from_f64 NaN, spanless")
+status, wall, _ = typed("cast_excel_serial_from_f64", 45292.75, 1)
+check(status == OK and (wall.date.year, wall.date.month, wall.date.day, wall.nanos_of_day)
+      == (2024, 1, 1, 64800000000000), "cast_excel_serial_from_f64 value")
+check(typed("cast_excel_serial_from_f64", 60.0, 1)[0] == OUT_OF_RANGE, "cast_excel_serial_from_f64 phantom")
+check(typed("cast_excel_serial_from_f64", 1.0, 3)[0] == CONTRACT_VIOLATION, "cast_excel_serial_from_f64 epoch")
+status, nanos, _ = typed("cast_excel_time", 0.75)
+check(status == OK and nanos.value == 64800000000000, "cast_excel_time value")
+check(typed("cast_excel_time", -0.5)[0] == MALFORMED, "cast_excel_time negative")
+status, span, _ = typed("cast_excel_duration", -0.25)
+check(status == OK and (span.seconds, span.nanos) == (-21600, 0), "cast_excel_duration value")
+check(typed("cast_excel_duration", 1e10)[0] == OUT_OF_RANGE, "cast_excel_duration window")
+
+check(len(called) == 25, f"called {len(called)} cast exports, expected 25: {sorted(OUT_TYPES.keys() - called)}")
+print(f"cdylib smoke: {lib_path} {got}, all 26 exports called")

@@ -51,6 +51,16 @@ probed once and never throws; every door lets a load failure propagate. A librar
 loaded but predates the probe reads as unavailable too: a stale binary beside a newer
 binding is exactly the mismatch it exists to name.
 
+## Numbers a workbook already holds
+
+A spreadsheet stores a numeric cell as a `double`, and four doors read one directly, with no
+text in between: `Cast.DecimalFromDouble` (the shortest decimal that names the double, the
+digits the file holds — `0.1 + 0.2` is `0.30000000000000004`, where `(decimal)double` rounds
+to 15 significant digits), `Cast.ExcelSerialFromDouble` (a `DateTime` of
+`DateTimeKind.Unspecified` under a declared `ExcelEpoch`), `Cast.ExcelTime` (a serial's
+fraction as a `TimeOnly`) and `Cast.ExcelDuration` (days as a `TimeSpan`). A typed door's
+`Fault` has no span: its offset and length are 0.
+
 ## Why not the BCL's own `TryParse` family?
 
 1. **The error story is data, not archaeology** — a closed reason plus the offending span,
@@ -139,7 +149,7 @@ trim/Native-AOT analyzers via `IsAotCompatible`.
 
 That claim is reproducible rather than asserted. `HyperCast.AotSmokeTest/` is a real
 AOT-published console app that crosses every native entry point the binding declares — the
-twenty-one `cast_*` functions and `hypercast_version` — plus the generic `Cast.Numeric<T>`
+twenty-five `cast_*` functions and `hypercast_version` — plus the generic `Cast.Numeric<T>`
 door, a UTF-8 door, and the union's exhaustive two-arm `switch`, and returns a nonzero exit
 code on any mismatch:
 
@@ -192,7 +202,7 @@ net10.0"), so the file needs no target-framework gate of its own. (HyperUuid's p
 net10.0 for its native platforms, so its copy sits in `build/` and has one.)
 
 `HyperCast.WasmSmokeTest` proves the whole chain in a real browser: a Blazor WebAssembly app
-that imports that targets file, calls every native entry point — the twenty-one `cast_*`
+that imports that targets file, calls every native entry point — the twenty-five `cast_*`
 functions and `hypercast_version` — through the public `Cast` surface, and renders `PASS` or
 `FAIL` into the page. Every one, because that is the only way the check means what it says:
 a door missing from the `EmccExportedFunction` list links fine and fails only when called.
@@ -299,7 +309,7 @@ cd rust && cargo cdylib
 
 Drop the result into `csharp/HyperCast/runtimes/<rid>/native/` and the package's own MSBuild
 globs will pick it up, or point `dlopen` at it however you prefer — the C ABI in
-`rust/src/ffi.rs` is the entire contract: the twenty-one `cast_*` functions and
+`rust/src/ffi.rs` is the entire contract: the twenty-five `cast_*` functions and
 `hypercast_version`, taking plain pointers into your own buffers. For local development
 nothing needs dropping anywhere: when no library has been staged under `runtimes/` for your
 machine's RID, the project copies `rust/target/release/` straight to the output, so

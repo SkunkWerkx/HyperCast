@@ -280,6 +280,54 @@ pub fn hypercast_native_cast_duration(text: Binary<u8>) -> Reply {
     })
 }
 
+/// The typed doors' packed verdict: the same shape, over an empty span.
+fn typed<T>(
+    outcome: Result<T, core::Reason>,
+    fields: impl FnOnce(&mut ZendHashTable, T) -> PhpResult<()>,
+) -> Reply {
+    reply(outcome.map_err(|reason| core::Fault { reason, offset: 0, len: 0 }), fields)
+}
+
+#[php_function]
+#[php(name = "hypercast_native_cast_decimal_from_f64")]
+pub fn hypercast_native_cast_decimal_from_f64(value: f64) -> Reply {
+    typed(core::decimal_from_f64(value), |table, decimal| {
+        push(table, decimal.lo as i64)?;
+        push(table, i64::from(decimal.hi))?;
+        push(table, i64::from(decimal.scale))?;
+        push(table, decimal.negative)
+    })
+}
+
+#[php_function]
+#[php(name = "hypercast_native_cast_excel_serial_from_f64")]
+pub fn hypercast_native_cast_excel_serial_from_f64(value: f64, epoch: u32) -> Reply {
+    let epoch = match epoch {
+        1 => ExcelEpoch::Y1900,
+        2 => ExcelEpoch::Y1904,
+        other => return Err(PhpException::from_message(format!("undefined ExcelEpoch {other}"))),
+    };
+    typed(core::excel_serial(value, epoch), |table, civil| {
+        date(table, civil.date)?;
+        push(table, civil.nanos_of_day as i64)
+    })
+}
+
+#[php_function]
+#[php(name = "hypercast_native_cast_excel_time")]
+pub fn hypercast_native_cast_excel_time(value: f64) -> Reply {
+    typed(core::excel_time(value), |table, nanos| push(table, nanos as i64))
+}
+
+#[php_function]
+#[php(name = "hypercast_native_cast_excel_duration")]
+pub fn hypercast_native_cast_excel_duration(value: f64) -> Reply {
+    typed(core::excel_duration(value), |table, span| {
+        push(table, span.seconds)?;
+        push(table, i64::from(span.nanos))
+    })
+}
+
 #[php_module]
 pub fn get_module(module: ModuleBuilder) -> ModuleBuilder {
     module
@@ -305,4 +353,8 @@ pub fn get_module(module: ModuleBuilder) -> ModuleBuilder {
         .function(wrap_function!(hypercast_native_cast_datetime))
         .function(wrap_function!(hypercast_native_cast_time))
         .function(wrap_function!(hypercast_native_cast_duration))
+        .function(wrap_function!(hypercast_native_cast_decimal_from_f64))
+        .function(wrap_function!(hypercast_native_cast_excel_serial_from_f64))
+        .function(wrap_function!(hypercast_native_cast_excel_time))
+        .function(wrap_function!(hypercast_native_cast_excel_duration))
 }

@@ -13,10 +13,20 @@ import uuid
 from typing import assert_never, assert_type
 
 import hypercast
-from hypercast import CastFailure, DateOrder, ExcelEpoch, Fault, NumFormat, Success, UnixPrecision, Verdict
+from hypercast import (
+    CastFailure,
+    DateOrder,
+    ExcelEpoch,
+    Fault,
+    NumFormat,
+    Success,
+    UnixPrecision,
+    Verdict,
+)
 
 
 def describe(verdict: Verdict[int]) -> str:
+    """Presents a verdict by matching its two cases, exhaustively."""
     match verdict:
         case Success(value):
             assert_type(value, int)
@@ -31,6 +41,7 @@ def describe(verdict: Verdict[int]) -> str:
 
 
 def by_isinstance(verdict: Success[float] | Fault) -> float | None:
+    """Narrows a verdict with isinstance instead of match."""
     if isinstance(verdict, Success):
         return verdict.value
     assert_type(verdict, Fault)
@@ -56,9 +67,18 @@ assert_type(hypercast.cast_uuid("…"), Success[uuid.UUID] | Fault)
 assert_type(hypercast.cast_timestamp("…"), Success[datetime.datetime] | Fault)
 assert_type(hypercast.cast_unix("1", UnixPrecision.SECONDS), Success[datetime.datetime] | Fault)
 assert_type(hypercast.cast_excel_serial("1", ExcelEpoch.Y1900), Success[datetime.datetime] | Fault)
+assert_type(hypercast.cast_decimal_from_float(0.1), Success[decimal.Decimal] | Fault)
+assert_type(
+    hypercast.cast_excel_serial_from_float(1.0, ExcelEpoch.Y1900),
+    Success[datetime.datetime] | Fault,
+)
+assert_type(hypercast.cast_excel_time(0.5), Success[datetime.time] | Fault)
+assert_type(hypercast.cast_excel_duration(1.5), Success[datetime.timedelta] | Fault)
 assert_type(hypercast.cast_date("…"), Success[datetime.date] | Fault)
 assert_type(hypercast.cast_date("…", DateOrder.DAY_MONTH_YEAR), Success[datetime.date] | Fault)
-assert_type(hypercast.cast_datetime("…", DateOrder.MONTH_DAY_YEAR), Success[datetime.datetime] | Fault)
+assert_type(
+    hypercast.cast_datetime("…", DateOrder.MONTH_DAY_YEAR), Success[datetime.datetime] | Fault
+)
 assert_type(hypercast.cast_time("…"), Success[datetime.time] | Fault)
 assert_type(hypercast.cast_duration("…"), Success[datetime.timedelta] | Fault)
 

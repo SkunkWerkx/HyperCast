@@ -134,6 +134,7 @@ does not see.
 | `Cast::date`, `Cast::datetime` | `DateTimeImmutable` (UTC label, no zone read) |
 | `Cast::time` | `int` nanoseconds since midnight |
 | `Cast::duration` | `Duration` (the protobuf pair) |
+| `Cast::decimalFromFloat`, `Cast::excelSerialFromFloat`, `Cast::excelTime`, `Cast::excelDuration` | as `decimal`, `datetime`, `time` and `duration` — read from a `float` a workbook already holds; the decimal is the shortest that names it |
 
 Every numeric door takes a `NumFormat` — `NumFormat::invariant()`, `NumFormat::detect()`
 (the `.`/`,` roles resolved per input from structure, ambiguous input a `Malformed` fault),

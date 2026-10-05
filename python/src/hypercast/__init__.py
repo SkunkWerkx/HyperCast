@@ -21,8 +21,9 @@ Door names mirror the native ABI (``cast_i32``, ``cast_f64``, ``cast_timestamp``
 polyglot surface reads identically across bindings. Inputs are ``str`` (read as UTF-8) or
 ``bytes``, and a :class:`Fault`'s span comes back in the caller's own units — byte offsets
 for ``bytes``, code-point offsets for ``str`` — so slicing the offending text back out of
-what you passed needs no mapping either way. Python ``int`` is unbounded, so ``cast_u64`` returns the true unsigned value with no bit-pattern
-games; ``cast_decimal`` returns an exact, canonical ``decimal.Decimal``;
+what you passed needs no mapping either way. Python ``int`` is unbounded, so ``cast_u64``
+returns the true unsigned value with no bit-pattern games; ``cast_decimal`` returns an
+exact, canonical ``decimal.Decimal``;
 ``datetime``'s resolution is microseconds, so the core's nanoseconds truncate by three
 digits on the temporal doors (the JVM binding is the fidelity king; this is Python's honest
 ceiling).
@@ -47,14 +48,39 @@ BACKEND: str = "native"
 
 __all__ = [
     "BACKEND",
-    "CastFailure", "Success", "Fault", "Verdict", "NumFormat", "UnixPrecision", "DateOrder",
+    "CastFailure",
+    "Success",
+    "Fault",
+    "Verdict",
+    "NumFormat",
+    "UnixPrecision",
+    "DateOrder",
     "ExcelEpoch",
     "optional",
-    "cast_bool", "cast_i8", "cast_i16", "cast_i32", "cast_i64",
-    "cast_u8", "cast_u16", "cast_u32", "cast_u64", "cast_f32", "cast_f64", "cast_decimal",
-    "cast_uuid", "cast_timestamp", "cast_unix", "cast_excel_serial", "cast_date",
-    "cast_datetime", "cast_time",
+    "cast_bool",
+    "cast_i8",
+    "cast_i16",
+    "cast_i32",
+    "cast_i64",
+    "cast_u8",
+    "cast_u16",
+    "cast_u32",
+    "cast_u64",
+    "cast_f32",
+    "cast_f64",
+    "cast_decimal",
+    "cast_uuid",
+    "cast_timestamp",
+    "cast_unix",
+    "cast_excel_serial",
+    "cast_date",
+    "cast_datetime",
+    "cast_time",
     "cast_duration",
+    "cast_decimal_from_float",
+    "cast_excel_serial_from_float",
+    "cast_excel_time",
+    "cast_excel_duration",
     "native_version",
 ]
 
@@ -136,6 +162,10 @@ cast_date = _native.cast_date
 cast_datetime = _native.cast_datetime
 cast_time = _native.cast_time
 cast_duration = _native.cast_duration
+cast_decimal_from_float = _native.cast_decimal_from_float
+cast_excel_serial_from_float = _native.cast_excel_serial_from_float
+cast_excel_time = _native.cast_excel_time
+cast_excel_duration = _native.cast_excel_duration
 native_version = _native.native_version
 
 _T = TypeVar("_T")

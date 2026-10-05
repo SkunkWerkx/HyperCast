@@ -174,4 +174,47 @@ RSpec.describe "conformance corpus" do
       assert_verdict("duration", vector, HyperCast.duration(vector["input"]), expected)
     end
   end
+
+  # The typed doors, by bits: [hex].pack("H*").unpack1("G") rebuilds each double exactly —
+  # NaN and the infinities included, which JSON cannot spell. A typed door's Fault has no span.
+  it "replays typed.json" do
+    epochs = HyperCast::EXCEL_EPOCHS.invert
+    doors = corpus("typed.json").map do |vector|
+      value = [vector["bits"]].pack("H*").unpack1("G")
+      verdict, expected =
+        case vector["door"]
+        in "decimal"
+          [HyperCast.decimal_from_float(value),
+           vector.key?("magnitude") &&
+             HyperCast::Decimal.new(magnitude: Integer(vector["magnitude"]), scale: vector["scale"],
+                                    negative: vector["negative"])]
+        in "excel_serial"
+          expected = nil
+          if vector.key?("year")
+            second_of_day, frac = vector["nanos_of_day"].divmod(1_000_000_000)
+            hour, rest = second_of_day.divmod(3600)
+            minute, second = rest.divmod(60)
+            expected = DateTime.new(vector["year"], vector["month"], vector["day"],
+                                    hour, minute, second + Rational(frac, 1_000_000_000))
+          end
+          [HyperCast.excel_serial_from_float(value, epochs.fetch(vector["epoch"])), expected]
+        in "excel_time"
+          [HyperCast.excel_time(value), vector["nanos"]]
+        in "excel_duration"
+          [HyperCast.excel_duration(value),
+           vector.key?("seconds") && Rational(vector["seconds"] * 1_000_000_000 + vector["nanos"], 1_000_000_000)]
+        end
+      assert_verdict("typed #{vector['door']}", vector, verdict, expected)
+      case verdict
+      in HyperCast::Fault(offset:, length:)
+        expect([offset, length]).to eq([0, 0]), "typed #{vector['door']}: #{vector['input']} span"
+      in HyperCast::Success(value: HyperCast::Decimal => decimal)
+        expect(decimal.to_s).to eq(vector["value"]), "typed decimal: #{vector['input']} to_s"
+      else
+        nil
+      end
+      vector["door"]
+    end
+    expect(doors.uniq.sort).to eq(%w[decimal excel_duration excel_serial excel_time])
+  end
 end

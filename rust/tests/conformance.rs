@@ -373,3 +373,70 @@ fn duration_corpus() {
         });
     }
 }
+
+/// The typed doors, replayed by bits: `corpus/typed.json` names each double by its IEEE 754
+/// pattern (`bits`, hex), which every language can rebuild exactly — NaN and the infinities
+/// included, which JSON cannot spell — and carries `input` only for the reader. A typed
+/// door's fault has no span.
+#[test]
+fn typed_corpus() {
+    let mut doors = std::collections::BTreeSet::new();
+    for vector in corpus("typed.json") {
+        let bits = u64::from_str_radix(vector["bits"].as_str().expect("bits"), 16).expect("hex");
+        let value = f64::from_bits(bits);
+        let door = vector["door"].as_str().expect("door");
+        let spanned = |reason| Fault { reason, offset: 0, len: 0 };
+        match door {
+            "decimal" => {
+                let verdict = hypercast::decimal_from_f64(value).map_err(spanned);
+                assert_verdict("typed decimal", &vector, verdict, |v| {
+                    let magnitude: u128 =
+                        v["magnitude"].as_str().expect("magnitude").parse().expect("u128");
+                    hypercast::Decimal {
+                        lo: magnitude as u64,
+                        hi: (magnitude >> 64) as u32,
+                        scale: v["scale"].as_u64().expect("scale") as u8,
+                        negative: v["negative"].as_bool().expect("negative"),
+                    }
+                });
+                if let Ok(decimal) = verdict {
+                    assert_eq!(decimal.to_string(), vector["value"].as_str().expect("value"));
+                }
+            }
+            "excel_serial" => {
+                let epoch = match vector["epoch"].as_u64().expect("epoch") {
+                    1 => ExcelEpoch::Y1900,
+                    2 => ExcelEpoch::Y1904,
+                    other => panic!("typed excel_serial: unknown epoch {other}"),
+                };
+                let verdict = hypercast::excel_serial(value, epoch).map_err(spanned);
+                assert_verdict("typed excel_serial", &vector, verdict, |v| {
+                    hypercast::CivilDateTime {
+                        date: hypercast::Date {
+                            year: v["year"].as_u64().expect("year") as u16,
+                            month: v["month"].as_u64().expect("month") as u8,
+                            day: v["day"].as_u64().expect("day") as u8,
+                        },
+                        nanos_of_day: v["nanos_of_day"].as_u64().expect("nanos_of_day"),
+                    }
+                });
+            }
+            "excel_time" => {
+                let verdict = hypercast::excel_time(value).map_err(spanned);
+                assert_verdict("typed excel_time", &vector, verdict, |v| {
+                    v["nanos"].as_u64().expect("nanos")
+                });
+            }
+            "excel_duration" => {
+                let verdict = hypercast::excel_duration(value).map_err(spanned);
+                assert_verdict("typed excel_duration", &vector, verdict, |v| hypercast::Duration {
+                    seconds: v["seconds"].as_i64().expect("seconds"),
+                    nanos: v["nanos"].as_i64().expect("nanos") as i32,
+                });
+            }
+            other => panic!("typed: unknown door {other}"),
+        }
+        doors.insert(door.to_owned());
+    }
+    assert_eq!(doors.len(), 4, "every typed door has vectors");
+}

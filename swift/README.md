@@ -47,6 +47,15 @@ func column<T: NumericCastTarget>(_ cells: [String], as _: T.Type, format: NumFo
 }
 ```
 
+## Numbers a workbook already holds
+
+A spreadsheet stores a numeric cell as a `Double`, and four doors read one directly, with no
+text in between: `Cast.decimalFromDouble` (the shortest decimal that names the double, the
+digits the file holds — `0.1` is one tenth), `Cast.excelSerialFromDouble(_:epoch:)` (the
+`DateComponents` `dateTime` returns, under a declared `ExcelEpoch`), `Cast.excelTime` (a
+serial's fraction, as `time` returns it) and `Cast.excelDuration` (days as a `Duration`). A
+typed door's `Fault` has no span: its offset and length are 0.
+
 ## Why not `Int32("...")` / `ISO8601FormatStyle`?
 
 1. **Verdicts with location** — Swift's failable initializers return `nil` with no reason

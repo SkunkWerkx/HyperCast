@@ -41,8 +41,8 @@ namespace HyperCast;
 /// </para>
 /// </remarks>
 [SkipLocalsInit] // the UTF-16 doors stackalloc a 512-byte transcode buffer per call; without
-                 // this the JIT zeroes it every time — a measured double-digit-ns tax on
-                 // every char-door cast. No local here is read before it's written.
+				 // this the JIT zeroes it every time — a measured double-digit-ns tax on
+				 // every char-door cast. No local here is read before it's written.
 public static partial class Cast
 {
 	/// <summary>UTF-16 doors encode through a stack buffer of this size before renting.</summary>
@@ -270,6 +270,34 @@ public static partial class Cast
 	private static unsafe partial int cast_duration_browser(byte* ptr, nuint len, RawDuration* value, RawFault* fault);
 	private static unsafe int cast_duration(byte* ptr, nuint len, RawDuration* value, RawFault* fault) =>
 		OperatingSystem.IsBrowser() ? cast_duration_browser(ptr, len, value, fault) : cast_duration_native(ptr, len, value, fault);
+
+	[LibraryImport("hypercast", EntryPoint = "cast_decimal_from_f64")]
+	private static unsafe partial int cast_decimal_from_f64_native(double number, RawDecimal* value, RawFault* fault);
+	[LibraryImport("*", EntryPoint = "cast_decimal_from_f64")]
+	private static unsafe partial int cast_decimal_from_f64_browser(double number, RawDecimal* value, RawFault* fault);
+	private static unsafe int cast_decimal_from_f64(double number, RawDecimal* value, RawFault* fault) =>
+		OperatingSystem.IsBrowser() ? cast_decimal_from_f64_browser(number, value, fault) : cast_decimal_from_f64_native(number, value, fault);
+
+	[LibraryImport("hypercast", EntryPoint = "cast_excel_serial_from_f64")]
+	private static unsafe partial int cast_excel_serial_from_f64_native(double number, uint epoch, RawCivil* value, RawFault* fault);
+	[LibraryImport("*", EntryPoint = "cast_excel_serial_from_f64")]
+	private static unsafe partial int cast_excel_serial_from_f64_browser(double number, uint epoch, RawCivil* value, RawFault* fault);
+	private static unsafe int cast_excel_serial_from_f64(double number, uint epoch, RawCivil* value, RawFault* fault) =>
+		OperatingSystem.IsBrowser() ? cast_excel_serial_from_f64_browser(number, epoch, value, fault) : cast_excel_serial_from_f64_native(number, epoch, value, fault);
+
+	[LibraryImport("hypercast", EntryPoint = "cast_excel_time")]
+	private static unsafe partial int cast_excel_time_native(double number, ulong* value, RawFault* fault);
+	[LibraryImport("*", EntryPoint = "cast_excel_time")]
+	private static unsafe partial int cast_excel_time_browser(double number, ulong* value, RawFault* fault);
+	private static unsafe int cast_excel_time(double number, ulong* value, RawFault* fault) =>
+		OperatingSystem.IsBrowser() ? cast_excel_time_browser(number, value, fault) : cast_excel_time_native(number, value, fault);
+
+	[LibraryImport("hypercast", EntryPoint = "cast_excel_duration")]
+	private static unsafe partial int cast_excel_duration_native(double number, RawDuration* value, RawFault* fault);
+	[LibraryImport("*", EntryPoint = "cast_excel_duration")]
+	private static unsafe partial int cast_excel_duration_browser(double number, RawDuration* value, RawFault* fault);
+	private static unsafe int cast_excel_duration(double number, RawDuration* value, RawFault* fault) =>
+		OperatingSystem.IsBrowser() ? cast_excel_duration_browser(number, value, fault) : cast_excel_duration_native(number, value, fault);
 
 	const long UnixEpochTicks = 621_355_968_000_000_000L;
 

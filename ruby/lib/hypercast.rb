@@ -322,13 +322,7 @@ module HyperCast
     # fusing a real zone is the caller's job, and timestamp stays the strict RFC 3339
     # instant door. An unknown order is a caller bug (KeyError).
     def datetime(text, order)
-      declared(:cast_datetime, text, DATE_ORDERS.fetch(order), 16) do |out|
-        year, month, day, nanos = out.unpack("S<CCx4Q<")
-        second_of_day, frac = nanos.divmod(1_000_000_000)
-        hour, rest = second_of_day.divmod(3600)
-        minute, second = rest.divmod(60)
-        DateTime.new(year, month, day, hour, minute, second + Rational(frac, 1_000_000_000))
-      end
+      declared(:cast_datetime, text, DATE_ORDERS.fetch(order), 16) { |out| civil(out) }
     end
 
     # Casts an ISO 24-hour time-of-day to an exact Integer of nanoseconds since midnight
@@ -342,6 +336,43 @@ module HyperCast
     # window, no wrapping and no truncation.
     def duration(text)
       plain(:cast_duration, text, 16) do |out|
+        seconds, nanos = out.unpack("q<l<")
+        Rational(seconds * 1_000_000_000 + nanos, 1_000_000_000)
+      end
+    end
+
+    # Reads a number a caller already holds — an Integer, Float or Rational, the way Ruby's
+    # own Float conversion takes it; anything else, a String included, is a TypeError — as
+    # the exact Decimal it names: the shortest decimal that rounds back to the Float, the
+    # digits a spreadsheet writes for it. 0.1 is magnitude 1, scale 1, not the binary
+    # fraction nearest it; 0.1 + 0.2 is 0.30000000000000004. NaN is :malformed; an infinity,
+    # a magnitude past 2**96 - 1 or more than 28 places is :out_of_range. A typed door's
+    # Fault has no span: offset and length are 0.
+    def decimal_from_float(value)
+      typed(:cast_decimal_from_f64, float(value), 16) do |out|
+        lo, hi, scale, negative = out.unpack("Q<L<CCx2")
+        Decimal.new(magnitude: (hi << 64) | lo, scale: scale, negative: negative != 0)
+      end
+    end
+
+    # Reads an Excel serial number under a declared epoch Symbol (:y1900/:y1904) as the
+    # zone-less DateTime it names — the twin of excel_serial for a number a workbook reader
+    # already holds, on the same carrier datetime uses. The 1900 system's phantom serial 60
+    # is :out_of_range; a negative, NaN or infinite serial is :malformed.
+    def excel_serial_from_float(value, epoch)
+      number = float(value)
+      typed(:cast_excel_serial_from_f64, number, 16, EXCEL_EPOCHS.fetch(epoch)) { |out| civil(out) }
+    end
+
+    # Reads the fraction of an Excel serial number as an exact Integer of nanoseconds since
+    # midnight, as time does; 0.75 and 45292.75 are both 18:00.
+    def excel_time(value)
+      typed(:cast_excel_time, float(value), 8) { |out| out.unpack1("Q<") }
+    end
+
+    # Reads a number of days as exact Rational seconds, as duration does: 1.5 is 129600.
+    def excel_duration(value)
+      typed(:cast_excel_duration, float(value), 16) do |out|
         seconds, nanos = out.unpack("q<l<")
         Rational(seconds * 1_000_000_000 + nanos, 1_000_000_000)
       end
@@ -452,6 +483,34 @@ module HyperCast
       verdict(rc, fault, bytes) { yield(out[0, out_size]) }
     end
 
+    # A typed door's number, converted the way the extension's argument is (C's
+    # rb_num2dbl), with the same exception and message: a Numeric converts (a Complex with an
+    # imaginary part is Complex#to_f's RangeError), anything else is a TypeError — a String
+    # among them, which Kernel#Float would have parsed.
+    def float(value)
+      case value
+      when Float then value
+      when Numeric then Float(value)
+      when String then raise TypeError, "no implicit conversion to float from string"
+      when nil, true, false then raise TypeError, "no implicit conversion to float from #{value.inspect}"
+      else raise TypeError, "can't convert #{value.class} into Float"
+      end
+    end
+
+    # The shared body of the typed doors: a double instead of the text, then the declared
+    # u32 when the door takes one.
+    def typed(symbol, number, out_size, *declared)
+      out, fault = scratch
+      rc = Runtime.function(symbol).call(number, *declared, out, fault)
+      if rc.zero?
+        Success.new(value: yield(out[0, out_size]))
+      elsif rc == -1
+        raise "hypercast: libhypercast reported a contract violation — a binding bug, please report it"
+      else
+        Fault.new(reason: REASONS.fetch(rc), offset: 0, length: 0)
+      end
+    end
+
     # The loaded core's version word, major << 16 | minor << 8 | patch, straight from the
     # library's zero-argument hypercast_version export.
     def packed_version
@@ -481,6 +540,15 @@ module HyperCast
         pointer[0, 32] = format.packed
         cache[format] = pointer
       end.compare_by_identity
+    end
+
+    # Builds the zone-less DateTime a civil date-time names, with exact Rational seconds.
+    def civil(bytes)
+      year, month, day, nanos = bytes.unpack("S<CCx4Q<")
+      second_of_day, frac = nanos.divmod(1_000_000_000)
+      hour, rest = second_of_day.divmod(3600)
+      minute, second = rest.divmod(60)
+      DateTime.new(year, month, day, hour, minute, second + Rational(frac, 1_000_000_000))
     end
 
     # Builds a UTC Time from the core's protobuf-shaped {seconds, nanos} pair, exactly.

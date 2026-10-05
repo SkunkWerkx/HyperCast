@@ -12,17 +12,17 @@ final class CorpusTests: XCTestCase {
     /// `CastTests` and by swift/StaticSmokeTest instead.
     private static let corpusDirectory: URL? = {
         #if os(WASI)
-        return nil
+            return nil
         #else
-        var dir = URL(fileURLWithPath: #filePath)
-        while dir.path != "/" {
-            let candidate = dir.appendingPathComponent("corpus")
-            if FileManager.default.fileExists(atPath: candidate.path) {
-                return candidate
+            var dir = URL(fileURLWithPath: #filePath)
+            while dir.path != "/" {
+                let candidate = dir.appendingPathComponent("corpus")
+                if FileManager.default.fileExists(atPath: candidate.path) {
+                    return candidate
+                }
+                dir.deleteLastPathComponent()
             }
-            dir.deleteLastPathComponent()
-        }
-        fatalError("corpus directory not found above \(#filePath)")
+            fatalError("corpus directory not found above \(#filePath)")
         #endif
     }()
 
@@ -59,12 +59,13 @@ final class CorpusTests: XCTestCase {
             XCTAssertEqual(expect, "ok", "\(domain): '\(input)' unexpectedly parsed", file: file, line: line)
             XCTAssertEqual(value, expected, "\(domain): '\(input)'", file: file, line: line)
         case .fault(let fault):
-            let reason: CastFailure? = switch expect {
-            case "empty": .empty
-            case "malformed": .malformed
-            case "out_of_range": .outOfRange
-            default: nil
-            }
+            let reason: CastFailure? =
+                switch expect {
+                case "empty": .empty
+                case "malformed": .malformed
+                case "out_of_range": .outOfRange
+                default: nil
+                }
             XCTAssertEqual(fault.reason, reason, "\(domain): '\(input)'", file: file, line: line)
             if let span = vector["fault"] as? [Int] {
                 XCTAssertEqual(fault.offset, span[0], "\(domain): '\(input)' fault offset", file: file, line: line)
@@ -116,8 +117,9 @@ final class CorpusTests: XCTestCase {
             let number = vector["value"] as? NSNumber
             switch vector["type"] as! String {
             case "f32":
-                assertVerdict("real", vector, try Cast.f32(input, format: format),
-                              number.map { Float($0.doubleValue) })
+                assertVerdict(
+                    "real", vector, try Cast.f32(input, format: format),
+                    number.map { Float($0.doubleValue) })
             case "f64":
                 assertVerdict("real", vector, try Cast.f64(input, format: format), number?.doubleValue)
             case let other:
@@ -170,16 +172,18 @@ final class CorpusTests: XCTestCase {
     func testUnixCorpus() throws {
         for vector in try corpus("unix.json") {
             let precision = UnixPrecision(rawValue: UInt32(vector["precision"] as! Int))!
-            assertVerdict("unix", vector, try Cast.unix(inputBytes(vector), precision: precision),
-                          expectedInstant(vector))
+            assertVerdict(
+                "unix", vector, try Cast.unix(inputBytes(vector), precision: precision),
+                expectedInstant(vector))
         }
     }
 
     func testExcelSerialCorpus() throws {
         for vector in try corpus("excel_serial.json") {
             let epoch = ExcelEpoch(rawValue: UInt32(vector["epoch"] as! Int))!
-            assertVerdict("excel_serial", vector, try Cast.excelSerial(inputBytes(vector), epoch: epoch),
-                          expectedInstant(vector))
+            assertVerdict(
+                "excel_serial", vector, try Cast.excelSerial(inputBytes(vector), epoch: epoch),
+                expectedInstant(vector))
         }
     }
 
@@ -252,5 +256,71 @@ final class CorpusTests: XCTestCase {
             }
             assertVerdict("duration", vector, try Cast.duration(inputBytes(vector)), expected)
         }
+    }
+
+    /// The typed doors, by bits: each `Double` is rebuilt exactly from its IEEE 754 pattern —
+    /// NaN and the infinities included, which JSON cannot spell. A typed door's fault has no
+    /// span.
+    func testTypedCorpus() throws {
+        var doors = Set<String>()
+        for vector in try corpus("typed.json") {
+            let value = Double(bitPattern: UInt64(vector["bits"] as! String, radix: 16)!)
+            let door = vector["door"] as! String
+            doors.insert(door)
+            var faultSpan: (Int, Int)?
+            func note<T>(_ verdict: Verdict<T>) {
+                if case .fault(let fault) = verdict { faultSpan = (fault.offset, fault.length) }
+            }
+            switch door {
+            case "decimal":
+                let verdict = try Cast.decimalFromDouble(value)
+                assertVerdict(
+                    "typed decimal", vector, verdict, (vector["value"] as? String).map { Decimal(string: $0)! })
+                note(verdict)
+            case "excel_serial":
+                let epoch = ExcelEpoch(rawValue: UInt32(vector["epoch"] as! Int))!
+                var expected: DateComponents?
+                if let year = vector["year"] as? Int {
+                    let nanos = (vector["nanos_of_day"] as! NSNumber).uint64Value
+                    let secondOfDay = nanos / 1_000_000_000
+                    expected = DateComponents(
+                        year: year, month: (vector["month"] as! Int), day: (vector["day"] as! Int),
+                        hour: Int(secondOfDay / 3_600),
+                        minute: Int(secondOfDay % 3_600 / 60),
+                        second: Int(secondOfDay % 60),
+                        nanosecond: Int(nanos % 1_000_000_000))
+                }
+                let verdict = try Cast.excelSerialFromDouble(value, epoch: epoch)
+                assertVerdict("typed excel_serial", vector, verdict, expected)
+                note(verdict)
+            case "excel_time":
+                var expected: DateComponents?
+                if let nanosOfDay = (vector["nanos"] as? NSNumber)?.uint64Value {
+                    let (secondOfDay, nano) = nanosOfDay.quotientAndRemainder(dividingBy: 1_000_000_000)
+                    let (hour, rest) = secondOfDay.quotientAndRemainder(dividingBy: 3_600)
+                    let (minute, second) = rest.quotientAndRemainder(dividingBy: 60)
+                    expected = DateComponents(
+                        hour: Int(hour), minute: Int(minute), second: Int(second), nanosecond: Int(nano))
+                }
+                let verdict = try Cast.excelTime(value)
+                assertVerdict("typed excel_time", vector, verdict, expected)
+                note(verdict)
+            case "excel_duration":
+                var expected: Duration?
+                if let seconds = vector["seconds"] as? Int64 {
+                    expected = Duration.seconds(seconds) + .nanoseconds(vector["nanos"] as! Int64)
+                }
+                let verdict = try Cast.excelDuration(value)
+                assertVerdict("typed excel_duration", vector, verdict, expected)
+                note(verdict)
+            default:
+                XCTFail("typed: unknown door \(door)")
+            }
+            if let (offset, length) = faultSpan {
+                XCTAssertEqual(offset, 0, "typed \(door): '\(vector["input"] as! String)' span offset")
+                XCTAssertEqual(length, 0, "typed \(door): '\(vector["input"] as! String)' span length")
+            }
+        }
+        XCTAssertEqual(doors, ["decimal", "excel_serial", "excel_time", "excel_duration"])
     }
 }

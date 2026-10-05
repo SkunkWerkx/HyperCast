@@ -19,6 +19,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   returning the zone-less `CivilDateTime` the cell holds, its fraction rounded to the
   nearest nanosecond. `corpus/excel_serial.json` is replayed through both doors, so the
   two can no longer drift. *(crates.io)*
+- **Rust — the typed doors: every numeric cast for a number already held as an `f64`.**
+  A workbook stores a numeric cell as a double, and its reader had to convert that to an
+  integer, a decimal, a time or a span with rules of its own. `i8_from_f64` … `u64_from_f64`,
+  `f32_from_f64`, `bool_from_f64`, `decimal_from_f64`, `unix_from_f64`, `excel_time` and
+  `excel_duration` are the twins of the text doors, each with a bare `Reason` verdict. A double
+  is read as the one number it names, the shortest decimal that rounds back to it
+  (`shortest_digits`), which is the digits Excel and LibreOffice write into the file: `2.5` is
+  the decimal `2.5`, `0.1 + 0.2` is `0.30000000000000004`, an integer door takes a whole number
+  and never rounds a fraction, and above 2⁵³ an integer is that decimal's digits. Every twin is
+  held to its text door read on the double's shortest text, over 20,000 doubles.
+  `excel_serial` and `excel_time` share one statement of how a serial's fraction is read.
+  *(crates.io)*
+- **Every binding — four doors that read a number instead of text.** The typed doors a
+  workbook reader needs most cross the C ABI as four new exports (26 in all), each taking a
+  `double` and the usual `out`/`fault`: `cast_decimal_from_f64`, `cast_excel_serial_from_f64`
+  (with its epoch), `cast_excel_time` and `cast_excel_duration`. A typed door's fault span is
+  always empty — there is no text for it to index. Named after Rust's, in each language's
+  casing and float word: `Cast.DecimalFromDouble` / `ExcelSerialFromDouble` / `ExcelTime` /
+  `ExcelDuration` (C#), `decimalFromDouble`… (Java, Swift), `ExactFromFloat64` /
+  `ExcelSerialFromFloat64` / `ExcelTime` / `ExcelDuration` (Go), `cast_decimal_from_float`…
+  (Python), `decimal_from_float`… (Ruby), `Cast::decimalFromFloat`… (PHP). Each presents the
+  value as its binding's text twin does: the decimal as the decimal door's type, the serial
+  as the binding's zone-less civil date-time (as `datetime`/`DateTime` returns it), the time
+  of day and the duration as the time and duration doors do. `corpus/typed.json` names each
+  double by its IEEE 754 bits — NaN and the infinities included, which JSON cannot spell —
+  and every binding replays it, Ruby through both backends and Java through both FFM and
+  GraalWasm. *(all packages)*
 - **Rust — `CivilDateTime::assume_utc` and `Timestamp::utc_civil`.** The two conversions
   between a wall clock and an instant, for the caller who states the zone is UTC. The
   crate still never assumes it for them. *(crates.io)*
@@ -29,6 +56,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Every language is formatted, and CI holds it there — library, tests, benchmarks and
+  smoke tests alike.** Rust (`cargo fmt`) and Go (now `gofmt`, beside revive) already were.
+  New: ruff format and the docstring rules over all of `python/` (100 columns); PSR-12 via
+  phpcs over php's src, tests and bench (the doc rules stay on the public API); RuboCop,
+  layout cops only, over every Ruby file; `dotnet format whitespace` against
+  `csharp/.editorconfig` (tabs); Spotless with palantir-java-format (4 spaces, 120 columns)
+  over every Java source set; and `swift format` against `swift/.swift-format` (4 spaces,
+  120 columns, lint rules off). Whitespace and line breaks only — no behavior changed.
+  *(repository)*
 - **Every door is proven unable to panic — `cast_f32` and `cast_f64` were the exception.**
   They handed their normalized text to `core`'s float parser, which keeps slice-index
   checks the optimizer cannot remove, so the two real doors were the only C ABI exports
