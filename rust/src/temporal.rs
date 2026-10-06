@@ -106,6 +106,7 @@ fn is_leap_year(year: i64) -> bool {
     year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
 }
 
+#[inline]
 fn days_in_month(year: i64, month: u32) -> u32 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
@@ -187,6 +188,7 @@ impl Timestamp {
 }
 
 /// Reads exactly two ASCII digits at `at` — one bounds check, wrapping-sub digit test.
+#[inline]
 fn read2(text: &[u8], at: usize) -> Option<u32> {
     let pair: &[u8; 2] = text.get(at..at + 2)?.try_into().ok()?;
     let hi = pair[0].wrapping_sub(b'0');
@@ -198,6 +200,7 @@ fn read2(text: &[u8], at: usize) -> Option<u32> {
 }
 
 /// Reads exactly four ASCII digits at `at`.
+#[inline]
 fn read4(text: &[u8], at: usize) -> Option<u32> {
     Some(read2(text, at)? * 100 + read2(text, at + 2)?)
 }
@@ -208,6 +211,7 @@ fn read4(text: &[u8], at: usize) -> Option<u32> {
 /// rounded — rounding could carry into the second, and from `9999-12-31T23:59:59` out of
 /// the window. Excel's strict writer emits seventeen (`15:04:05.00000000000312325`). The
 /// RFC 3339/ISO-time doors: dot only.
+#[inline]
 fn read_fraction(text: &[u8], at: usize, start: usize) -> Result<(u32, usize), Fault> {
     read_fraction_marked(text, at, start, b".")
 }
@@ -216,6 +220,7 @@ fn read_fraction(text: &[u8], at: usize, start: usize) -> Result<(u32, usize), F
 /// takes ISO 8601's comma alongside the dot (`PT1,5S`, `0:00:01,5`, `1,5s` — eurozone
 /// feeds really send these), unambiguously — durations have no digit grouping, so a
 /// comma there can only be a decimal mark. RFC 3339 timestamps stay dot-only per spec.
+#[inline(always)]
 fn read_fraction_marked(
     text: &[u8],
     at: usize,
@@ -229,6 +234,17 @@ fn read_fraction_marked(
     let mut i = at + 1;
     let mut nanos: u32 = 0;
     let mut digits = 0;
+    // Eight digits at a time when the text has them — milli-, micro- and nanosecond
+    // fractions are the common case — then one at a time for the rest. Eight digits are
+    // below the nine kept, so the cap below is untouched.
+    if let Some(chunk) = text.get(i..).and_then(|rest| rest.first_chunk::<8>()) {
+        let chunk = u64::from_le_bytes(*chunk);
+        if crate::float::is_8digits(chunk) {
+            nanos = crate::float::parse_8digits(chunk) as u32;
+            digits = 8;
+            i += 8;
+        }
+    }
     while i < text.len() && text[i].is_ascii_digit() {
         if digits < 9 {
             nanos = nanos * 10 + (text[i] - b'0') as u32;
@@ -239,11 +255,10 @@ fn read_fraction_marked(
     if digits == 0 {
         return Err(Fault::malformed(start + at, 1));
     }
-    while digits < 9 {
-        nanos *= 10;
-        digits += 1;
-    }
-    Ok((nanos, i))
+    // Widen to nine digits with one multiplication. (A loop of `*= 10` here was
+    // vectorized into a SIMD power computation slower than the whole timestamp.)
+    let scale = POWERS_OF_TEN.get(9 - digits).copied().unwrap_or(1) as u32;
+    Ok((nanos * scale, i))
 }
 
 /// A `Malformed` fault at `at`, clamped to the trimmed text: a span that would start or
@@ -267,6 +282,7 @@ const ISO_DATE_SPANS: [(usize, usize); 3] = [(0, 4), (5, 2), (8, 2)];
 /// coordinates at the first piece that is wrong. The values are not checked here:
 /// [`check_date`] does that once the caller has read the rest of its input, so a shape
 /// fault anywhere in the text is reported ahead of an impossible value.
+#[inline]
 fn read_date(text: &[u8], start: usize) -> Result<(u32, u32, u32), Fault> {
     let year = read4(text, 0).ok_or_else(|| Fault::malformed(start, text.len().min(4)))?;
     if text.get(4) != Some(&b'-') {
@@ -284,6 +300,7 @@ fn read_date(text: &[u8], start: usize) -> Result<(u32, u32, u32), Fault> {
 /// fields' offsets and lengths within the trimmed text. Year 0000, a month outside 1–12 or
 /// a day the month does not have ⇒ `OutOfRange` at that field's digits: the text is shaped
 /// like a date, and names one that does not exist.
+#[inline]
 fn check_date(
     year: u32,
     month: u32,
@@ -354,6 +371,7 @@ impl DateOrder {
 /// Reads a run of 1..=4 ASCII digits at `at` (a calendar date field), returning the value
 /// and the index after the run. A zero-length or five-plus-digit run faults at the run
 /// itself. Thin wrapper over the duration parser's [`read_digit_run`].
+#[inline(always)]
 fn read_date_field(text: &[u8], at: usize, start: usize) -> Result<(u32, usize), Fault> {
     let (value, digits, after) = read_digit_run(text, at, start)?;
     if digits == 0 || digits > 4 {
@@ -370,6 +388,7 @@ struct OrderedDate {
 }
 
 impl OrderedDate {
+    #[inline]
     fn check(&self, start: usize) -> Result<Date, Fault> {
         let [year, month, day] = self.fields;
         check_date(year, month, day, self.spans, start)
@@ -380,6 +399,7 @@ impl OrderedDate {
 /// its shape, returning it and the index after it. Shared by [`cast_date_ordered`] (which
 /// then demands end-of-input) and [`cast_datetime`] (which continues into the time part);
 /// each range-checks it once the rest of the input has been read.
+#[inline(always)]
 fn read_ordered_date(
     text: &[u8],
     start: usize,
@@ -472,6 +492,7 @@ impl Clock {
     /// a minute past 59 or a second past 59 ⇒ `OutOfRange` at that field's digits. A leap
     /// second (`:60`) is out of range too: protobuf timestamps have no representation for
     /// it, and a deterministic core doesn't smear.
+    #[inline]
     fn check(&self, hours: RangeInclusive<u32>, start: usize) -> Result<(), Fault> {
         let fault = |(at, len): (usize, usize)| Fault::out_of_range(start + at, len);
         if !hours.contains(&self.hour) {
@@ -487,6 +508,7 @@ impl Clock {
     }
 
     /// Nanoseconds since midnight, with the (checked) hour given on the 24-hour clock.
+    #[inline]
     fn nanos_of_day(&self, hour: u32) -> u64 {
         let total = u64::from(hour) * 3_600 + u64::from(self.minute) * 60 + u64::from(self.second);
         total * 1_000_000_000 + u64::from(self.nanos)
@@ -498,6 +520,7 @@ impl Clock {
 /// `AM`/`PM` marker (preceding space optional). Without a marker minutes are mandatory (a
 /// bare trailing number is not a time). Returns the clock, the marker (`Some(true)` for
 /// PM) and the index after the time; [`civil_nanos`] range-checks them.
+#[inline(always)]
 fn read_civil_time(
     text: &[u8],
     at: usize,
@@ -548,6 +571,7 @@ fn read_civil_time(
 
 /// Range-checks a civil time and converts it to nanoseconds since midnight. With a marker
 /// the hour is `1..=12` (`12 AM` is midnight, `12 PM` noon); without one it is `0..=23`.
+#[inline]
 fn civil_nanos(clock: &Clock, pm: Option<bool>, start: usize) -> Result<u64, Fault> {
     let hour = match pm {
         Some(pm) => {
@@ -611,6 +635,7 @@ pub fn cast_time(input: impl AsRef<[u8]>) -> Result<u64, Fault> {
 
 /// Parses `HH:mm[:ss[.f+]]` at `at` for its shape, returning the clock (not yet
 /// range-checked) and the index after the time.
+#[inline]
 fn read_time(text: &[u8], at: usize, start: usize) -> Result<(Clock, usize), Fault> {
     let hour = read2(text, at)
         .ok_or_else(|| Fault::malformed(start + at, (text.len() - at).clamp(1, 2)))?;
@@ -870,7 +895,7 @@ const DAY_ODD_FACTOR: u64 = NANOS_PER_DAY >> 16;
 
 /// `nanos` rounded down to a multiple of `10^digits`, `digits` from 0 to 9: a match, so
 /// every arm divides by a constant, which compiles to a multiply.
-#[inline(always)]
+#[inline]
 fn floor_to_power(nanos: u64, digits: u32) -> u64 {
     match digits {
         9 => nanos / 1_000_000_000 * 1_000_000_000,
@@ -1157,25 +1182,34 @@ pub fn cast_duration(input: impl AsRef<[u8]>) -> Result<Duration, Fault> {
         parse_protobuf_duration(text, start)?
     };
 
-    let seconds = total_nanos / NANOS_PER_SECOND;
+    // Split with a native 64-bit division whenever the total fits one (±292 years); i128
+    // division is a software routine, and was an eighth of the door's time.
+    let (seconds, nanos) = match i64::try_from(total_nanos) {
+        Ok(total) => {
+            (i128::from(total / NANOS_PER_SECOND as i64), (total % NANOS_PER_SECOND as i64) as i32)
+        }
+        Err(_) => (total_nanos / NANOS_PER_SECOND, (total_nanos % NANOS_PER_SECOND) as i32),
+    };
     if seconds.unsigned_abs() > MAX_DURATION_SECONDS as u128 {
         return Err(Fault::out_of_range(start, text.len()));
     }
-    Ok(Duration { seconds: seconds as i64, nanos: (total_nanos % NANOS_PER_SECOND) as i32 })
+    Ok(Duration { seconds: seconds as i64, nanos })
 }
 
 /// Reads a bounded ASCII digit run, returning (value, digit count, next index).
+#[inline(always)]
 fn read_digit_run(text: &[u8], at: usize, start: usize) -> Result<(i128, usize, usize), Fault> {
     let mut i = at;
-    let mut value: i128 = 0;
+    // Eighteen digits fit a u64, so the run accumulates natively and widens once.
+    let mut value: u64 = 0;
     while i < text.len() && text[i].is_ascii_digit() {
         if i - at == MAX_DURATION_DIGITS {
             return Err(Fault::malformed(start + i, 1));
         }
-        value = value * 10 + (text[i] - b'0') as i128;
+        value = value * 10 + u64::from(text[i] - b'0');
         i += 1;
     }
-    Ok((value, i - at, i))
+    Ok((i128::from(value), i - at, i))
 }
 
 /// The ISO 8601 grammar, ported from Svartalfheim's `TryParseIso8601Duration`:
@@ -1239,8 +1273,15 @@ fn parse_iso_duration(text: &[u8], start: usize) -> Result<i128, Fault> {
             return Err(Fault::malformed(start + run_start, unit_pos - run_start + 1));
         }
 
-        total = value
-            .checked_mul(nanos_per_unit)
+        // A component under ~292 years scales with one native 64-bit multiplication; only a
+        // larger one pays for the 128-bit product.
+        let scaled = i64::try_from(value)
+            .ok()
+            .zip(i64::try_from(nanos_per_unit).ok())
+            .and_then(|(value, unit)| value.checked_mul(unit))
+            .map(i128::from)
+            .or_else(|| value.checked_mul(nanos_per_unit));
+        total = scaled
             .and_then(|scaled| scaled.checked_add(fraction_nanos))
             .and_then(|component| total.checked_add(component))
             .ok_or_else(|| Fault::out_of_range(start, text.len()))?;

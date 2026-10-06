@@ -9,6 +9,65 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **The temporal doors are about twice as fast.** Their small field readers — two digits,
+  a date, a clock, a fraction, a digit run — were real calls even under fat LTO, each
+  handing its result back through the stack, and the door read it straight back: a store
+  the CPU could not forward, on every field. The five that decide the time are now always
+  inlined, and the fraction reads eight digits at once. Padding a fraction to nine digits
+  was a loop of `* 10` that LLVM had vectorized into a SIMD power computation; it is one
+  multiplication by a table entry. A duration's total splits into seconds and nanos with
+  a native 64-bit division whenever it fits one (under 292 years), and each ISO component
+  scales with a native multiplication; `i128` division is a software routine, and was an
+  eighth of the door. On linux-x64: `cast_timestamp` 26.6 → 14.5 ns (the `time` crate's
+  RFC 3339 parser is 17.1), `cast_datetime` 29.3 → 13.9 ns for `1/7/2026 3:04 PM` and
+  31.9 → 13.3 ns for ISO, `cast_date_ordered` 17.5 → 8.5 ns, `cast_duration` 35.5 → 23.6
+  ns for ISO 8601 and 31.4 → 16.5 ns for the colon form. *(all packages)*
+- **`cast_f64` and `cast_f32` are 22-36% faster.** A plain token was scanned twice, once
+  to recognise the shape and once to convert it; the conversion already reads exactly
+  that grammar and declines anything else, so under any format that allows the exponent
+  it is now the shape check too. A new test holds the two grammars equal over every token
+  of up to seven characters. A money-shaped token — grouped, with a currency symbol, in
+  parentheses — had its digits copied one byte at a time into a buffer the conversion
+  then read back eight bytes at a time; the lane now accumulates the significand itself
+  and hands the conversion a number, and declines (to the full engine, as before) a
+  literal of more than nineteen significant digits or a value Eisel-Lemire cannot round.
+  Plain `12345.6789` 18.0 → 13.0 ns, `$12,345.67` 28.8 → 20.4 ns, separator detection on
+  `1.234.567,89` 38.6 → 29.0 ns. *(all packages)*
+- **`cast_uuid` is about 20% faster.** The D and N formats decode their 32 hex digits
+  eight at a time with plain integer arithmetic (SWAR) instead of 32 table lookups, and
+  build the 16 bytes in registers instead of 16 single-byte stores the caller read back
+  as one: 15.9 → 12.8 ns, against 11.1 for the `uuid` crate. A bad digit is still
+  reported at its exact byte — the pair-by-pair reader runs again to find it, only on
+  input that has one — and a new test holds the two readers to the same verdict for every
+  byte value at every position. B and P formats are D inside brackets and gain the same.
+  *(all packages)*
+- **The shared library is 10 KB larger** for the inlining above: 123,784 → 134,216 bytes
+  on linux-x64. Each of the five readers is now copied into every door that uses it;
+  inlining only the three most-called gave back half the datetime gain for 4.7 KB.
+  *(all packages)*
+- **What the bindings see.** Every harness ran twice in one session on the same linux-x64
+  box, once against the previous core and once against this one, one harness at a time.
+  How much of the core's gain survives depends on what the crossing costs. Swift links the
+  core in and keeps most of it: duration 45 → 33 ns, timestamp 44 → 37, messy datetime 96 →
+  82, eurozone f64 41 → 31, uuid 35 → 31. Java FFM: date-time and duration doors 23-28%
+  faster (`Cast.duration` 46.9 → 33.8 ns, ISO `Cast.dateTime` 58.5 → 43.4), timestamp
+  10-21%, the declared and detected f64 doors 14-15%. C#: `Cast.Duration` 49.1 → 31.6 ns,
+  declared-order `Cast.Date` 38.0 → 27.3, messy `Cast.DateTime` 49.9 → 37.9, the UTF-8
+  `Cast.Double` 31.2 → 25.2. Go pays ~45 ns of cgo a call and still gains 11-21% on
+  duration, the civil doors and separator detection. Python (PyO3) gains 5-13% on
+  timestamp, duration and the eurozone f64 doors. On Ruby (Magnus, 100-900 ns a call) and
+  PHP (ext-ffi, 250-800 ns) the change is within the run's noise, except PHP's duration
+  door, 414 → 344 ns. The Rust, C#, Java, Go, Ruby and Swift tables are re-measured from
+  these runs. The Python and PHP tables are not, because both moved for reasons that are
+  not the core and are not yet explained. Under PHP 8.5.10 every ext-ffi door ran 20-30%
+  above its recorded figure under the old core and the new one alike, while PHP's own
+  functions matched theirs. On a pyenv CPython 3.14.8 rather than the Fedora 3.14.7 the
+  table was recorded on, some stdlib rows moved by up to a third (`int()` 56 → 70 ns,
+  `uuid.UUID()` 798 ns → 1.06 µs) and others not at all (`fromisoformat`). A new table
+  would credit the core with either. *(repository)*
+
 ## [0.6.2] — 2026-10-06
 
 ### Added

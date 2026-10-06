@@ -54,11 +54,20 @@ macro_rules! real_doors {
             // hand the caller's own bytes straight to the conversion, no scratch buffer.
             // Non-plain input (declared separators, grouping, parens, percent, or any
             // stray byte) falls through to the full engine; verdicts are identical.
-            let value: $ty = if is_plain(text, format) {
-                match float::parse(text) {
-                    Some(value) => value,
-                    None => return Err(Fault::malformed(start, text.len())),
-                }
+            //
+            // `float::parse` reads exactly `is_plain`'s grammar and declines anything
+            // else, so when the format allows the exponent the parse is the shape check
+            // too, and the token is scanned once instead of twice. Without the exponent
+            // flag the parse would accept an `e` the format refuses, so `is_plain` decides.
+            let plain: Option<$ty> = if reads_plain(format) && format.allows(NumFormat::EXPONENT) {
+                float::parse(text)
+            } else if is_plain(text, format) {
+                float::parse(text)
+            } else {
+                None
+            };
+            let value: $ty = if let Some(value) = plain {
+                value
             } else if let Some(value) = lenient::<$ty>(text, format, lenient_lane) {
                 // The lenient lane (lane.rs): grouped digits, a declared currency symbol
                 // and accounting parentheses. The finite check below is the engine's own.
@@ -90,18 +99,18 @@ real_doors! {
     cast_f64 / real_f64 / engine_only_f64 => f64,
 }
 
-/// The lenient lane for a real: the lane copies the digits and the point, with every
-/// grouping separator, symbol and parenthesis left out, and `float::parse` reads that.
-/// The sign is applied afterwards, which is exact — negation flips one bit — and is why
-/// the copy never needs a byte for it. `None` falls through to the full engine.
+/// The lenient lane for a real: the lane reads the significant digits straight into a
+/// significand, with every grouping separator, symbol and parenthesis left out, and
+/// `float::from_significand` converts it. The sign is applied afterwards, which is exact —
+/// negation flips one bit. `None` falls through to the full engine.
 #[inline]
 fn lenient<T: Real>(text: &[u8], format: &NumFormat, lenient_lane: bool) -> Option<T> {
     if !lenient_lane {
         return None;
     }
-    let mut sink = lane::Text::new();
+    let mut sink = lane::Significand::default();
     let negative = lane::scan(text, format, true, &mut sink)?;
-    let value: T = float::parse(sink.as_str().as_bytes())?;
+    let value: T = float::from_significand(sink.value, -i64::from(sink.fraction_digits))?;
     Some(if negative { -value } else { value })
 }
 
@@ -273,4 +282,34 @@ pub(crate) fn normalize(
         return Err(Fault::malformed(start, text.len()));
     }
     Ok((out, percent))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The real doors let `float::parse` stand in for `is_plain` whenever the format allows
+    /// the exponent. That holds only while the two read the same grammar, so every token of
+    /// up to seven characters over the bytes that grammar is made of is held to it.
+    #[test]
+    fn float_parse_accepts_exactly_the_plain_shape() {
+        const ALPHABET: &[u8] = b"09.eE+-x";
+        let mut token = [0u8; 7];
+        for len in 0..=token.len() {
+            let total = ALPHABET.len().pow(len as u32);
+            for mut index in 0..total {
+                for slot in &mut token[..len] {
+                    *slot = ALPHABET[index % ALPHABET.len()];
+                    index /= ALPHABET.len();
+                }
+                let text = &token[..len];
+                assert_eq!(
+                    is_plain(text, &NumFormat::INVARIANT),
+                    float::parse::<f64>(text).is_some(),
+                    "{:?}",
+                    core::str::from_utf8(text)
+                );
+            }
+        }
+    }
 }

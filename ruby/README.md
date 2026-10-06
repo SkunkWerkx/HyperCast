@@ -173,12 +173,12 @@ and memoized by identity on every backend, so declaring a currency costs a cast 
    boundary).
 4. **Faster than the stdlib on the Magnus backend, where the carrier is cheap** —
    benchmark-ips (`ruby benchmark/cast_benchmark.rb`, linux-x64 on an Intel Core
-   i9-11900H, Ruby 4.0.7): timestamp **447 ns vs 2.97 µs `Time.iso8601`** (6.6x) — while
+   i9-11900H, Ruby 4.0.7): timestamp **404 ns vs 2.70 µs `Time.iso8601`** (6.7x) — while
    returning exact `Rational` durations on the duration door. The Fiddle fallback lands at
-   3.25 µs: a little behind `Time.iso8601`, sitting on Fiddle's per-call marshalling floor.
+   2.85 µs: a little behind `Time.iso8601`, sitting on Fiddle's per-call marshalling floor.
 
    Separator detection is nearly free here: `1.234.567,89` under `NumFormat::DETECT` runs
-   at 178 ns against 170 ns for the same text under a declared eurozone format. Both cost
+   at 154 ns against 145 ns for the same text under a declared eurozone format. Both cost
    nearly twice that in 0.1.0, for a reason that had nothing to do with parsing: every format other than `INVARIANT` paid three method dispatches and two
    `String` allocations per call to read its separators back out of the `Data`. `DETECT`
    is now identity-matched like `INVARIANT`, and any other format is resolved once per
@@ -217,14 +217,14 @@ both backends:
 
 | Door | Magnus | Fiddle |
 |---|---:|---:|
-| `bool` | 112 ns | 2.35 µs |
-| `i32` | 133 ns | 2.63 µs |
-| `f64` | 166 ns | 2.70 µs |
-| `uuid` | 223 ns | 3.47 µs |
-| `timestamp` | 447 ns | 3.25 µs |
-| `datetime` (`1/7/2026 3:04 PM`) | 904 ns | 3.98 µs |
-| `duration` (ISO) | 632 ns | 2.91 µs |
-| `i32`, a fault | 225 ns | 3.18 µs |
+| `bool` | 109 ns | 2.30 µs |
+| `i32` | 120 ns | 2.30 µs |
+| `f64` | 134 ns | 2.44 µs |
+| `uuid` | 209 ns | 3.28 µs |
+| `timestamp` | 404 ns | 2.85 µs |
+| `datetime` (`1/7/2026 3:04 PM`) | 877 ns | 3.71 µs |
+| `duration` (ISO) | 578 ns | 2.72 µs |
+| `i32`, a fault | 202 ns | 2.88 µs |
 
 A lean door on the Magnus backend is little more than the native call: the extension builds
 the `Success` or `Fault` it returns directly — allocated, its members stored, frozen —

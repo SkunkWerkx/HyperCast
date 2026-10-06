@@ -325,24 +325,24 @@ to zero.
 
 ## Benchmarks
 
-`go test -bench=. -benchmem ./...`. Measured on linux-x64 (an Intel Core i9-11900H, go1.27),
+`go test -bench=. -benchmem ./...`. Measured on linux-x64 (an Intel Core i9-11900H, go1.27.1),
 one session, median of three runs:
 
 | Door | HyperCast | stdlib |
 | --- | ---: | ---: |
-| `Timestamp` | **77 ns, 0 allocs** | 44 ns `time.Parse(RFC3339Nano)` |
-| `I32` | **73 ns, 0 allocs** | 7 ns `strconv.Atoi` |
-| `I32` (grouped) | **83 ns, 0 allocs** | — |
-| `F64` | **95 ns, 0 allocs** | 25 ns `strconv.ParseFloat` |
-| `Uuid` | **71 ns, 0 allocs** | 27 ns `google/uuid.Parse` |
-| `Span` (ISO) | **80 ns, 0 allocs** | 61 ns `ParseDuration` (Go dialect — different grammar) |
-| `Bool` | **51 ns, 0 allocs** | 2 ns `strconv.ParseBool` |
-| `TimeOfDay` | **66 ns, 0 allocs** | — |
-| `DateTime` (`1/7/2026 3:04 PM`) | **73 ns, 0 allocs** | 95 ns `time.Parse` w/ layout |
-| `DateOnlyOrdered` (`1/7/2026`) | **70 ns, 0 allocs** | 56 ns `time.Parse` w/ layout |
+| `Timestamp` | **73 ns, 0 allocs** | 45 ns `time.Parse(RFC3339Nano)` |
+| `I32` | **74 ns, 0 allocs** | 7 ns `strconv.Atoi` |
+| `I32` (grouped) | **82 ns, 0 allocs** | — |
+| `F64` | **82 ns, 0 allocs** | 24 ns `strconv.ParseFloat` |
+| `Uuid` | **62 ns, 0 allocs** | 26 ns `google/uuid.Parse` |
+| `Span` (ISO) | **62 ns, 0 allocs** | 60 ns `ParseDuration` (Go dialect — different grammar) |
+| `Bool` | **48 ns, 0 allocs** | 2 ns `strconv.ParseBool` |
+| `TimeOfDay` | **56 ns, 0 allocs** | — |
+| `DateTime` (`1/7/2026 3:04 PM`) | **65 ns, 0 allocs** | 97 ns `time.Parse` w/ layout |
+| `DateOnlyOrdered` (`1/7/2026`) | **57 ns, 0 allocs** | 57 ns `time.Parse` w/ layout |
 
-Separator detection costs ~13 ns: `1.234.567,89` under `Detect` is 117 ns against 104 ns
-for the same text under a declared eurozone format.
+Separator detection costs ~6 ns: `1.234.567,89` under `Detect` is 95 ns against 90 ns for
+the same text under a declared eurozone format.
 
 ## Verifying build provenance
 

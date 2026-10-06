@@ -72,16 +72,16 @@ typed door's `Fault` has no span: its offset and length are 0.
 
    | Door | HyperCast | mallocs/call | Foundation, same run |
    | --- | ---: | :---: | ---: |
-   | `Cast.dateTime` (messy civil) | **103 ns** | 0 | 34 µs `DateFormatter` (`M/d/yyyy h:mm a`, hoisted), 103 mallocs |
-   | `Cast.uuid` | **34 ns** | 0 | 523 ns `UUID(uuidString:)` — 15x |
-   | `Cast.timestamp` | **51 ns** | 0 | 642 ns `Date.ISO8601FormatStyle` — 12.6x |
-   | `Cast.decimal` | **40 ns** | 0 | 445 ns `Decimal(string:)` — 11x |
-   | `Cast.f64` | **40 ns** | 0 | 68 ns `Double(String)` — 1.7x |
-   | `Cast.i32` | 23 ns | 0 | 7 ns `Int(String)` — honest loss, see below |
-   | `Cast.i32` (grouped) | 29 ns | 0 | — |
-   | `Cast.date` (declared order) | 79 ns | 0 | — |
-   | `Cast.duration` | 46 ns | 0 | — |
-   | `Cast.bool` | 18 ns | 0 | — |
+   | `Cast.dateTime` (messy civil) | **82 ns** | 0 | 33 µs `DateFormatter` (`M/d/yyyy h:mm a`, hoisted), 103 mallocs |
+   | `Cast.uuid` | **31 ns** | 0 | 479 ns `UUID(uuidString:)` — 15x |
+   | `Cast.timestamp` | **37 ns** | 0 | 627 ns `Date.ISO8601FormatStyle` — 17x |
+   | `Cast.decimal` | **39 ns** | 0 | 419 ns `Decimal(string:)` — 11x |
+   | `Cast.f64` | **30 ns** | 0 | 68 ns `Double(String)` — 2.3x |
+   | `Cast.i32` | 20 ns | 0 | 7 ns `Int(String)` — honest loss, see below |
+   | `Cast.i32` (grouped) | 26 ns | 0 | — |
+   | `Cast.date` (declared order) | 65 ns | 0 | — |
+   | `Cast.duration` | 33 ns | 0 | — |
+   | `Cast.bool` | 15 ns | 0 | — |
 
    **What makes the doors this cheap** is the carrier, not the parse: nothing is allocated
    around the call. The input crosses as a view of the string's own UTF-8 (`withUTF8`), the
@@ -98,7 +98,7 @@ typed door's `Fault` has no span: its offset and length are 0.
    not carried over.
 
    Separator detection shows its true cost, because the carrier is thin enough to see it:
-   `1.234.567,89` under `.detect` is 75 ns against 52 ns for the same text under a declared
+   `1.234.567,89` under `.detect` is 54 ns against 31 ns for the same text under a declared
    eurozone format.
 
 **The honest trade-off:** a native dependency — a prebuilt static library per platform,
