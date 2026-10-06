@@ -1409,9 +1409,9 @@ mod tests {
     #[test]
     fn the_lenient_lane_changes_no_verdict_at_its_own_limits() {
         // Where each sink stops and hands the token back: nineteen digits for an integer,
-        // twenty-eight for a decimal, forty-eight characters for a real — and an f32 that
-        // overflows to infinity well inside that. One digit either side of each, bare and
-        // dressed.
+        // twenty-eight for a decimal, nineteen significant digits for a real (leading
+        // zeros not counted) — and an f32 that overflows to infinity well inside that. One
+        // digit either side of each, bare and dressed.
         let formats = lane_formats();
         for digits in [18usize, 19, 20, 27, 28, 29, 30, 38, 39, 40, 47, 48, 49, 50, 60] {
             for digit in ["9", "1", "0"] {
@@ -1429,6 +1429,7 @@ mod tests {
                     format!("{run}.5"),
                     format!("{grouped}.50"),
                     format!("0.{run}"),
+                    format!("0.000{run}"),
                 ] {
                     for dressed in [
                         body.clone(),
@@ -1441,6 +1442,55 @@ mod tests {
                             lane_agrees_with_the_engine(dressed.as_bytes(), format);
                         }
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_lenient_lane_rounds_reals_exactly_as_the_engine_does() {
+        // The real lane hands the engine's conversion a significand rather than text, so
+        // its rounding is held to the engine's at the digit counts where rounding is
+        // decided — fifteen to nineteen significant digits, which is where a double stops
+        // being exact — and at values that sit on or beside a halfway point.
+        let formats = lane_formats();
+        let mut bodies = vec![
+            "9,007,199,254,740,993".to_string(),
+            "9,007,199,254,740,993.0".to_string(),
+            "9,007,199,254,740,995".to_string(),
+            "18,446,744,073,709,551,615".to_string(),
+            "0.1".to_string(),
+            "2.2250738585072011e-308".to_string(),
+            "1,234,567,890,123,456,789".to_string(),
+            "0.000000000000000000000000000001".to_string(),
+        ];
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        for _ in 0..4_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let digits = 15 + (state % 5) as usize;
+            let text = (state >> 8).to_string();
+            let run = &text[..digits.min(text.len())];
+            let point = (state >> 3) as usize % run.len();
+            let (whole, fraction) = run.split_at(point.max(1));
+            let grouped: String = whole
+                .as_bytes()
+                .rchunks(3)
+                .rev()
+                .map(|chunk| str::from_utf8(chunk).unwrap())
+                .collect::<Vec<_>>()
+                .join(",");
+            bodies.push(if fraction.is_empty() {
+                grouped
+            } else {
+                format!("{grouped}.{fraction}")
+            });
+        }
+        for body in &bodies {
+            for dressed in [body.clone(), format!("(${body})"), format!("-{body}$")] {
+                for format in &formats {
+                    lane_agrees_with_the_engine(dressed.as_bytes(), format);
                 }
             }
         }

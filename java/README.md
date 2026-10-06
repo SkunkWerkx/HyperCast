@@ -124,38 +124,38 @@ wasm path wants the same flag, for Truffle's own native library rather than this
    backend, on every build).
 4. **Faster where it matters, and the input no longer copies.** JMH, `-prof gc` for the
    allocation column, the profile `./gradlew :benchmarks:jmh` runs: 1 fork, 3 warmup + 5
-   measurement iterations of one second (linux-x64 on an Intel Core i9-11900H, Temurin 25).
+   measurement iterations of one second (linux-x64 on an Intel Core i9-11900H, Temurin 25.0.4).
    The error bars are that short profile's; the verdicts are far outside them.
 
    | Door | HyperCast | JDK | Verdict |
    | --- | ---: | ---: | --- |
-   | `Cast.time` vs `LocalTime.parse` | 33.8 ± 3.8 ns | 415.3 ± 31.8 ns | **12.3x faster** |
-   | `Cast.timestamp` vs `Instant.parse` | 50.7 ± 11.7 ns | 614.8 ± 139.9 ns | **12.1x faster** |
-   | `Cast.dateTime` vs `LocalDateTime.parse` (ISO) | 62.4 ± 8.0 ns | 571.2 ± 28.8 ns | **9.2x faster** |
-   | `Cast.dateTime` vs a `M/d/yyyy h:mm a` formatter | 56.7 ± 1.4 ns | 392.6 ± 78.0 ns | **6.9x faster** |
-   | `Cast.duration` vs `Duration.parse` | 54.6 ± 3.6 ns | 348.6 ± 48.6 ns | **6.4x faster** |
-   | `Cast.date` (declared order) vs a `M/d/yyyy` formatter | 37.1 ± 3.2 ns | 169.9 ± 43.5 ns | **4.6x faster** |
-   | `Cast.f64` (eurozone) vs `NumberFormat` (de-DE) | 58.5 ± 5.5 ns | 160.0 ± 10.7 ns | **2.7x faster** |
-   | `Cast.i32` (grouped) vs `NumberFormat` | 32.5 ± 5.8 ns | 85.8 ± 14.5 ns | **2.6x faster** |
-   | `Cast.f64` vs `Double.parseDouble` | 41.8 ± 5.5 ns | 43.3 ± 8.9 ns | wash |
-   | `Cast.uuid` vs `UUID.fromString` | 35.2 ± 1.7 ns | 25.6 ± 2.5 ns | 1.4x slower — see below |
-   | `Cast.decimal` vs `new BigDecimal(String)` | 52.1 ± 16.9 ns | 22.6 ± 4.7 ns | 2.3x slower — see below |
-   | `Cast.bool` vs `Boolean.parseBoolean` | 14.2 ± 3.6 ns | 0.48 ns | honest loss — see below |
+   | `Cast.time` vs `LocalTime.parse` | 29.6 ± 1.7 ns | 371.6 ± 25.5 ns | **12.6x faster** |
+   | `Cast.timestamp` vs `Instant.parse` | 50.4 ± 6.3 ns | 553.8 ± 53.3 ns | **11.0x faster** |
+   | `Cast.dateTime` vs `LocalDateTime.parse` (ISO) | 43.4 ± 2.8 ns | 552.6 ± 59.2 ns | **12.7x faster** |
+   | `Cast.dateTime` vs a `M/d/yyyy h:mm a` formatter | 40.5 ± 2.0 ns | 348.9 ± 7.6 ns | **8.6x faster** |
+   | `Cast.duration` vs `Duration.parse` | 33.8 ± 4.4 ns | 334.7 ± 10.8 ns | **9.9x faster** |
+   | `Cast.date` (declared order) vs a `M/d/yyyy` formatter | 23.7 ± 1.0 ns | 152.5 ± 7.8 ns | **6.4x faster** |
+   | `Cast.f64` (eurozone) vs `NumberFormat` (de-DE) | 42.6 ± 4.9 ns | 146.7 ± 13.3 ns | **3.4x faster** |
+   | `Cast.i32` (grouped) vs `NumberFormat` | 36.1 ± 2.8 ns | 74.9 ± 4.3 ns | **2.1x faster** |
+   | `Cast.f64` vs `Double.parseDouble` | 38.1 ± 2.9 ns | 40.4 ± 2.4 ns | wash |
+   | `Cast.uuid` vs `UUID.fromString` | 29.2 ± 1.4 ns | 23.0 ± 1.5 ns | 1.3x slower — see below |
+   | `Cast.decimal` vs `new BigDecimal(String)` | 46.7 ± 2.6 ns | 20.3 ± 1.1 ns | 2.3x slower — see below |
+   | `Cast.bool` vs `Boolean.parseBoolean` | 13.1 ± 2.0 ns | 0.50 ns | honest loss — see below |
 
    The `String` rows above include the UTF-8 encode. A caller already holding bytes skips
    it, and the raw crossing is what round three's chunk layer will pay per cell:
 
    | Door (UTF-8 in hand) | `byte[]` | `MemorySegment` slice | allocation |
    | --- | ---: | ---: | ---: |
-   | `Cast.timestamp` | 42.2 ± 4.8 ns | 40.8 ± 2.8 ns | 40 B (the `Instant` + record) |
-   | `Cast.i32` (grouped) | 28.0 ± 4.2 ns | 30.9 ± 4.7 ns | 32 B (the `Integer` + record) |
-   | `Cast.uuid` | 29.1 ± 2.5 ns | — | 48 B (the `UUID` + record) |
+   | `Cast.timestamp` | 41.8 ± 1.0 ns | 38.5 ± 2.7 ns | 40 B (the `Instant` + record) |
+   | `Cast.i32` (grouped) | 32.7 ± 2.9 ns | 27.1 ± 0.7 ns | 32 B (the `Integer` + record) |
+   | `Cast.uuid` | 26.4 ± 1.3 ns | — | 48 B (the `UUID` + record) |
 
    Separator detection costs what the core says it costs: `NumFormat.DETECT` on
-   `1.234.567,89` measures 73.0 ± 13.5 ns against 58.5 ± 5.5 ns declared — the structural
+   `1.234.567,89` measures 49.8 ± 2.7 ns against 42.6 ± 4.9 ns declared — the structural
    resolution pass, visible because the carrier around it is thin. The
-   `DateTimeFormatter.ISO_OFFSET_DATE_TIME` control measures 790.1 ± 52.5 ns for the text
-   the timestamp door reads in 54.6.
+   `DateTimeFormatter.ISO_OFFSET_DATE_TIME` control measures 715.5 ± 43.6 ns for the text
+   the timestamp door reads in 52.5.
 
 **What changed, twice.** 0.1.0's first tuning removed the `Arena.ofConfined()` every door
 used to open per call — one `ThreadLocal` holds the out/fault/format segments for the life

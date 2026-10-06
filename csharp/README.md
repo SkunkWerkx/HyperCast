@@ -79,15 +79,15 @@ fraction as a `TimeOnly`) and `Cast.ExcelDuration` (days as a `TimeSpan`). A typ
 
    | Door | HyperCast | BCL | Verdict |
    | --- | ---: | ---: | --- |
-   | `Cast.DateTime` (`1/7/2026 3:04 PM`) vs `DateTime.TryParse` (en-US) | 48.2 ns | 186.0 ns | **3.9x faster** |
-   | `Cast.Timestamp` vs `DateTimeOffset.TryParse` | 52.5 ns | 128.3 ns | **2.4x faster** |
-   | `Cast.Duration` vs `TimeSpan.TryParse` | 49.0 ns | 118.7 ns | **2.4x faster** |
-   | `Cast.Date` (declared order) vs `DateOnly.TryParse` (en-US) | 41.5 ns | 91.6 ns | **2.2x faster** |
-   | `Cast.Int32` (grouped) vs `int.TryParse` | 46.2 ns | 48.7 ns | wash |
-   | `Cast.Double` vs `double.TryParse` | 51.9 ns | 49.5 ns | wash |
-   | `Cast.Double` (eurozone) vs `double.TryParse` (de-DE) | 66.8 ns | 64.4 ns | wash |
-   | `Cast.Uuid` vs `Guid.TryParse` | 40.3 ns | 27.4 ns | 1.5x slower — while also taking N/B/P/X and `urn:uuid:` |
-   | `Cast.Boolean` vs `bool.TryParse` | 21.2 ns | JIT-folded | honest loss — the twenty-lexeme vocabulary is why anyone calls this door |
+   | `Cast.DateTime` (`1/7/2026 3:04 PM`) vs `DateTime.TryParse` (en-US) | 37.9 ns | 171.5 ns | **4.5x faster** |
+   | `Cast.Timestamp` vs `DateTimeOffset.TryParse` | 57.0 ns | 125.6 ns | **2.2x faster** |
+   | `Cast.Duration` vs `TimeSpan.TryParse` | 31.6 ns | 116.5 ns | **3.7x faster** |
+   | `Cast.Date` (declared order) vs `DateOnly.TryParse` (en-US) | 27.3 ns | 91.9 ns | **3.4x faster** |
+   | `Cast.Int32` (grouped) vs `int.TryParse` | 38.3 ns | 45.0 ns | 1.2x faster |
+   | `Cast.Double` vs `double.TryParse` | 43.3 ns | 46.4 ns | 1.1x faster |
+   | `Cast.Double` (eurozone) vs `double.TryParse` (de-DE) | 47.4 ns | 62.0 ns | **1.3x faster** |
+   | `Cast.Uuid` vs `Guid.TryParse` | 37.8 ns | 25.6 ns | 1.5x slower — while also taking N/B/P/X and `urn:uuid:` |
+   | `Cast.Boolean` vs `bool.TryParse` | 19.7 ns | JIT-folded | honest loss — the twenty-lexeme vocabulary is why anyone calls this door |
 
    Reproduce: `dotnet run -c Release --project csharp/HyperCast.Benchmarks`, from the repo
    root.
@@ -99,10 +99,10 @@ fraction as a `TimeOnly`) and `Cast.ExcelDuration` (days as a `TimeSpan`). A typ
 
    | Door (UTF-8 in hand) | HyperCast | `string` door | BCL, same run |
    | --- | ---: | ---: | ---: |
-   | `Cast.Timestamp` | **41.9 ns** | 52.5 ns | 128.3 ns `DateTimeOffset.TryParse` |
-   | `Cast.Int32` (grouped) | **28.0 ns** | 46.2 ns | 48.7 ns `int.TryParse` — the wash becomes a win |
-   | `Cast.Double` | **35.9 ns** | 51.9 ns | 49.5 ns `double.TryParse` — and so does this one |
-   | `Cast.Uuid` | 29.8 ns | 40.3 ns | 27.4 ns `Guid.TryParse` — still a loss, by 2.4 ns |
+   | `Cast.Timestamp` | **40.7 ns** | 57.0 ns | 125.6 ns `DateTimeOffset.TryParse` |
+   | `Cast.Int32` (grouped) | **24.2 ns** | 38.3 ns | 45.0 ns `int.TryParse` — the win nearly doubles |
+   | `Cast.Double` | **25.2 ns** | 43.3 ns | 46.4 ns `double.TryParse` — and so does this one |
+   | `Cast.Uuid` | 27.2 ns | 37.8 ns | 25.6 ns `Guid.TryParse` — still a loss, by 1.6 ns |
 
    The UTF-16 doors try the stack buffer first and rent from the pool only when the
    encoder says the text did not fit, rather than sizing by the 3-bytes-per-char worst
@@ -115,18 +115,18 @@ fraction as a `TimeOnly`) and `Cast.ExcelDuration` (days as a `TimeSpan`). A typ
 
    | Door | HyperCast | BCL | Verdict |
    | --- | ---: | ---: | --- |
-   | `Cast.Decimal` (`12,345.6789`) vs `decimal.TryParse` | 55.3 ns | 60.2 ns | 1.1x faster — and exact, canonical, never rounded |
-   | `Cast.Decimal` (`($1,234.50)`, en-US `$`) vs `decimal.TryParse` `NumberStyles.Currency` | 66.9 ns | 59.4 ns | 1.1x slower |
-   | `Cast.Double` (same text, same format) vs `double.TryParse` `NumberStyles.Currency` | 74.8 ns | 58.9 ns | 1.3x slower |
+   | `Cast.Decimal` (`12,345.6789`) vs `decimal.TryParse` | 57.2 ns | 59.8 ns | 1.05x faster — and exact, canonical, never rounded |
+   | `Cast.Decimal` (`($1,234.50)`, en-US `$`) vs `decimal.TryParse` `NumberStyles.Currency` | 64.1 ns | 58.4 ns | 1.1x slower |
+   | `Cast.Double` (same text, same format) vs `double.TryParse` `NumberStyles.Currency` | 60.9 ns | 57.4 ns | 1.06x slower |
 
    Grouping, a declared symbol and accounting parentheses are read in one pass by the
    core's lenient fast lane (`rust/src/lane.rs`): in the Rust suite a `cast_decimal` of
-   `$12,345.67` costs 20.6 ns against 14.1 ns plain. The same lane is why the grouped
-   `Cast.Int32` row and the eurozone `Cast.Double` row are washes. What the currency rows
+   `$12,345.67` costs 18.1 ns against 13.6 ns plain. The same lane is why the grouped
+   `Cast.Int32` row and the eurozone `Cast.Double` row are wins. What the currency rows
    pay is the crossing and the transcode, against a BCL parser that has neither.
 
    **Separator detection is nearly free**: `NumFormat.Detect` on `1.234.567,89` costs
-   75.7 ns against 66.8 ns for the same text under a declared eurozone format — ~9 ns for
+   54.6 ns against 47.4 ns for the same text under a declared eurozone format — ~7 ns for
    resolving the `.`/`,` roles structurally instead of being told them.
 
 **The honest trade-off:** the currency rows and `Guid` are losses, expected ones, and

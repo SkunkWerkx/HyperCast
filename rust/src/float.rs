@@ -143,7 +143,8 @@ fn digits_of(text: &[u8]) -> (&[u8], &[u8]) {
 }
 
 /// True when all eight bytes of `chunk`, read little-endian, are ASCII digits.
-fn is_8digits(chunk: u64) -> bool {
+#[inline(always)]
+pub(crate) fn is_8digits(chunk: u64) -> bool {
     let above = chunk.wrapping_add(0x4646_4646_4646_4646);
     let below = chunk.wrapping_sub(0x3030_3030_3030_3030);
     (above | below) & 0x8080_8080_8080_8080 == 0
@@ -151,7 +152,8 @@ fn is_8digits(chunk: u64) -> bool {
 
 /// The value of eight ASCII digits read little-endian: pairs, then fours, then all eight,
 /// three multiplications instead of eight.
-fn parse_8digits(chunk: u64) -> u64 {
+#[inline(always)]
+pub(crate) fn parse_8digits(chunk: u64) -> u64 {
     const MASK: u64 = 0x0000_00FF_0000_00FF;
     const MUL1: u64 = 0x000F_4240_0000_0064;
     const MUL2: u64 = 0x0000_2710_0000_0001;
@@ -281,6 +283,21 @@ pub(crate) fn parse<T: Real>(text: &[u8]) -> Option<T> {
         }
     };
     Some(if negative { -magnitude } else { magnitude })
+}
+
+/// `w * 10^q` to the nearest `T`, for a significand of nineteen digits or fewer that some
+/// other scanner has already read — the lenient lane, which reads the digits once on its
+/// own and has no text to hand over. The same first two steps [`parse`] takes for such a
+/// significand; where Eisel-Lemire cannot settle the rounding, `None`, and the caller
+/// falls back to the full engine, whose `parse` runs the exact division.
+pub(crate) fn from_significand<T: Real>(w: u64, q: i64) -> Option<T> {
+    if w == 0 {
+        return Some(T::zero());
+    }
+    if let Some(value) = T::exact(w, q) {
+        return Some(value);
+    }
+    eisel_lemire::<T>(q, w).map(Fields::pack::<T>)
 }
 
 /// The binary exponent of `10^q`'s leading bit: `floor(q * log2(10)) + 63`, by an integer

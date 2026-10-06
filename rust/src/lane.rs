@@ -28,7 +28,7 @@ use crate::verdict::NumFormat;
 
 /// Where the lane hands what it reads. One per door family: the integer door accumulates a
 /// value and refuses a decimal point, the decimal door accumulates a magnitude and counts
-/// fraction digits, the real doors copy the invariant text for `float::parse`.
+/// fraction digits, the real doors accumulate a significand for `float::from_significand`.
 pub(crate) trait Sink {
     /// One digit, as its value `0..=9`. `false` takes the token out of the lane.
     fn digit(&mut self, digit: u8) -> bool;
@@ -219,47 +219,39 @@ impl Sink for Exact {
     }
 }
 
-/// The real doors' sink: the invariant text `digits[.digits]`, unsigned, for
-/// `float::parse`. The
-/// buffer is deliberately small: it is zeroed on every call, and a literal with more than
-/// forty-eight significant characters is rare enough to leave to the engine.
-pub(crate) struct Text {
-    buf: [u8; Self::CAPACITY],
-    len: usize,
+/// The real doors' sink: the significand and the count of fraction digits, for
+/// [`float::from_significand`](crate::float::from_significand). Nineteen significant digits
+/// at most, which always fit a `u64`; zeros ahead of the first nonzero digit are not
+/// significant and are only counted. A longer literal is left to the engine.
+///
+/// This replaced a sink that copied the digits into a text buffer for `float::parse` to
+/// read again: the byte-at-a-time copy read back as eight-byte words was a store the CPU
+/// could not forward, and the second scan cost as much as the first.
+#[derive(Default)]
+pub(crate) struct Significand {
+    pub(crate) value: u64,
+    digits: u32,
+    pub(crate) fraction_digits: u32,
+    seen_point: bool,
 }
 
-impl Text {
-    const CAPACITY: usize = 48;
-
-    pub(crate) fn new() -> Text {
-        Text { buf: [0; Self::CAPACITY], len: 0 }
-    }
-
-    pub(crate) fn as_str(&self) -> &str {
-        // SAFETY: only ASCII digits and `.` are ever written.
-        unsafe { str::from_utf8_unchecked(self.buf.get(..self.len).unwrap_or_default()) }
-    }
-
-    /// Appends `byte`; `false` when the buffer is full.
-    #[inline]
-    fn push(&mut self, byte: u8) -> bool {
-        let Some(slot) = self.buf.get_mut(self.len) else {
-            return false;
-        };
-        *slot = byte;
-        self.len += 1;
-        true
-    }
-}
-
-impl Sink for Text {
+impl Sink for Significand {
     #[inline]
     fn digit(&mut self, digit: u8) -> bool {
-        self.push(b'0' + digit)
+        if self.value != 0 || digit != 0 {
+            if self.digits == 19 {
+                return false;
+            }
+            self.value = self.value * 10 + u64::from(digit);
+            self.digits += 1;
+        }
+        self.fraction_digits += u32::from(self.seen_point);
+        true
     }
 
     #[inline]
     fn point(&mut self) -> bool {
-        self.push(b'.')
+        self.seen_point = true;
+        true
     }
 }

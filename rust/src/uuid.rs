@@ -98,28 +98,95 @@ const D_PAIRS: [usize; 16] = [0, 2, 4, 6, 9, 11, 14, 16, 19, 21, 24, 26, 28, 30,
 
 /// D format: `dddddddd-dddd-dddd-dddd-dddddddddddd`.
 fn parse_d(text: &[u8], start: usize) -> Result<[u8; 16], Fault> {
-    if text.len() != 36 {
+    let Ok(d) = <&[u8; 36]>::try_from(text) else {
         return Err(Fault::malformed(start, text.len()));
-    }
+    };
     for hyphen in [8usize, 13, 18, 23] {
-        if text.get(hyphen) != Some(&b'-') {
+        if d[hyphen] != b'-' {
             return Err(Fault::malformed(start + hyphen, char_len_at(text, hyphen)));
         }
     }
-    let mut out = [0u8; 16];
-    for (slot, &at) in out.iter_mut().zip(&D_PAIRS) {
-        *slot = hex_pair(text, at, start)?;
-    }
-    Ok(out)
+    // The 32 digits as four little-endian words of eight: the first group, the two groups
+    // of four on either side of each middle hyphen joined, and the last eight digits.
+    let word =
+        |at: usize| d.get(at..at + 8).and_then(|w| w.try_into().ok()).map(u64::from_le_bytes);
+    let half = |at: usize| {
+        u64::from(d.get(at..at + 4).and_then(|w| w.try_into().ok()).map_or(0, u32::from_le_bytes))
+    };
+    let words = [
+        word(0).unwrap_or(0),
+        half(9) | half(14) << 32,
+        half(19) | half(24) << 32,
+        word(28).unwrap_or(0),
+    ];
+    decode_words(words).ok_or_else(|| first_bad_pair(text, &D_PAIRS, start))
 }
 
 /// N format: 32 bare hex digits.
 fn parse_n(text: &[u8], start: usize) -> Result<[u8; 16], Fault> {
-    let mut out = [0u8; 16];
-    for (slot, at) in out.iter_mut().zip((0..32).step_by(2)) {
-        *slot = hex_pair(text, at, start)?;
+    let Ok(n) = <&[u8; 32]>::try_from(text) else {
+        return Err(Fault::malformed(start, text.len()));
+    };
+    let (words, _) = n.as_chunks::<8>();
+    let mut packed = [0u64; 4];
+    for (slot, word) in packed.iter_mut().zip(words) {
+        *slot = u64::from_le_bytes(*word);
     }
-    Ok(out)
+    decode_words(packed).ok_or_else(|| first_bad_pair(text, &N_PAIRS, start))
+}
+
+/// The 16 hex-pair positions of the N format: every other byte of 32.
+const N_PAIRS: [usize; 16] = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30];
+
+/// Decodes 32 hex digits held as four little-endian words of eight into the UUID's 16
+/// bytes, or `None` when any digit is not hex.
+///
+/// SWAR: each word is checked and converted eight digits at a time with plain integer
+/// arithmetic, no table and no branch per digit, and the four results are joined in
+/// registers and stored once. The table loop this replaced wrote sixteen single bytes the
+/// caller then read back as one 16-byte value — a store the CPU cannot forward.
+#[inline(always)]
+fn decode_words(words: [u64; 4]) -> Option<[u8; 16]> {
+    let mut value = 0u128;
+    let mut valid = true;
+    for (index, word) in words.into_iter().enumerate() {
+        let (bytes, ok) = decode8(word);
+        valid &= ok;
+        value |= u128::from(bytes) << (32 * index);
+    }
+    valid.then(|| value.to_le_bytes())
+}
+
+/// Eight hex digits (a little-endian word, first digit in the low byte) to their four
+/// bytes (first byte in the low byte), and whether all eight were hex digits.
+#[inline(always)]
+fn decode8(word: u64) -> (u32, bool) {
+    const ONES: u64 = 0x0101_0101_0101_0101;
+    const HIGH: u64 = 0x8080_8080_8080_8080;
+    // Bytewise `byte >= floor`, as each byte's high bit, for bytes below 0x80: setting the
+    // high bit first means the subtraction never borrows across bytes.
+    let at_least = |x: u64, floor: u8| ((x | HIGH) - ONES * u64::from(floor)) & HIGH;
+    let lower = word | (ONES * 0x20);
+    let digit = at_least(word, b'0') & !at_least(word, b'9' + 1);
+    let letter = at_least(lower, b'a') & !at_least(lower, b'f' + 1);
+    let valid = word & HIGH == 0 && (digit | letter) == HIGH;
+    // '0'-'9' end in their value; 'A'-'F' and 'a'-'f' have bit 6 set and end in value - 9.
+    let nibbles = (word & (ONES * 0x0F)) + ((word >> 6) & ONES) * 9;
+    // Each even byte takes its digit as the high nibble and the next as the low one...
+    let pairs = ((nibbles << 4) | (nibbles >> 8)) & 0x00FF_00FF_00FF_00FF;
+    // ...and the four pair bytes close ranks.
+    let pairs = (pairs | pairs >> 8) & 0x0000_FFFF_0000_FFFF;
+    ((pairs | pairs >> 16) as u32, valid)
+}
+
+/// The fault for text [`decode_words`] refused: the first pair at `pairs` holding a non-hex
+/// byte, read again one pair at a time. Only reached on bad input.
+#[cold]
+fn first_bad_pair(text: &[u8], pairs: &[usize; 16], start: usize) -> Fault {
+    pairs
+        .iter()
+        .find_map(|&at| hex_pair(text, at, start).err())
+        .unwrap_or(Fault::malformed(start, text.len()))
 }
 
 /// B and P formats: a D-format UUID wrapped in `{}` or `()`.
@@ -198,4 +265,76 @@ fn parse_x(text: &[u8], start: usize) -> Result<[u8; 16], Fault> {
         return Err(Fault::malformed(start + i, char_len_at(text, i)));
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The pair-by-pair decoder the SWAR one replaced, kept as its reference.
+    fn by_pairs(text: &[u8], pairs: &[usize; 16], start: usize) -> Result<[u8; 16], Fault> {
+        let mut out = [0u8; 16];
+        for (slot, &at) in out.iter_mut().zip(pairs) {
+            *slot = hex_pair(text, at, start)?;
+        }
+        Ok(out)
+    }
+
+    /// Every byte value at every digit position of a D and an N UUID, mixed-case digits
+    /// around it: the SWAR decoder must give the reference's bytes or its exact fault.
+    #[test]
+    fn swar_decode_matches_pairwise_for_every_byte_at_every_position() {
+        let d = *b"0aB1c2D3-e4F5-a6b7-C8d9-E0f1A2b3C4d5";
+        let n = *b"0aB1c2D3e4F5a6b7C8d9E0f1A2b3C4d5";
+        for position in 0..36 {
+            if D_PAIRS.iter().all(|&at| at != position && at + 1 != position) {
+                continue;
+            }
+            for byte in 0..=255u8 {
+                let mut text = d;
+                text[position] = byte;
+                assert_eq!(
+                    parse_d(&text, 3),
+                    by_pairs(&text, &D_PAIRS, 3),
+                    "D, byte {byte:#04x} at {position}"
+                );
+            }
+        }
+        for position in 0..32 {
+            for byte in 0..=255u8 {
+                let mut text = n;
+                text[position] = byte;
+                assert_eq!(
+                    parse_n(&text, 3),
+                    by_pairs(&text, &N_PAIRS, 3),
+                    "N, byte {byte:#04x} at {position}"
+                );
+            }
+        }
+    }
+
+    /// Two bad digits: the fault is the first, as the pairwise reader reports it.
+    #[test]
+    fn swar_decode_faults_at_the_first_bad_digit() {
+        let text = b"0aB1c2D3-e4F5-a6b7-C8d9-E0f1A2bXCgd5";
+        assert_eq!(parse_d(text, 0), by_pairs(text, &D_PAIRS, 0));
+        assert_eq!(parse_d(text, 0), Err(Fault::malformed(31, 1)));
+    }
+
+    /// The decoded bytes are the `uuid` crate's for a spread of values.
+    #[test]
+    fn swar_decode_matches_uuid_crate() {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        for _ in 0..10_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let value = u128::from(state) << 64 | u128::from(state.rotate_left(29) ^ 0xA5A5);
+            let reference = uuid::Uuid::from_u128(value);
+            let hyphenated = reference.hyphenated().to_string();
+            let simple = reference.simple().to_string().to_uppercase();
+            assert_eq!(cast_uuid(&hyphenated), Ok(*reference.as_bytes()), "{hyphenated}");
+            assert_eq!(cast_uuid(&simple), Ok(*reference.as_bytes()), "{simple}");
+        }
+    }
 }

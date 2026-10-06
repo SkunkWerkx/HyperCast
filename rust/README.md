@@ -257,19 +257,19 @@ the doors' raw cost:
 
 | Door | HyperCast | Closest Rust parser |
 | --- | ---: | --- |
-| `cast_date_ordered` (`1/7/2026`) | 17.1 ns | no stdlib parser takes it |
-| `cast_uuid` (D format) | 16.8 ns | 11.3 ns — `uuid` crate |
-| `cast_i64` | 10.1 ns | 7.8 ns — `str::parse` |
-| `cast_f64` | 20.6 ns | 14.1 ns — `str::parse` |
-| `cast_decimal` (`12345.6789`) | 14.1 ns | no stdlib parser — an exact `u96`+scale, never rounded |
-| `cast_decimal` (`$12,345.67`, declared `$`) | 20.6 ns | the currency symbol and grouping, read in one pass: what a culture-shaped feed actually costs |
-| `cast_datetime` (`1/7/2026 3:04 PM`) | 25.7 ns | no stdlib parser takes it |
-| `cast_timestamp` (RFC 3339) | 23.1 ns | 17.5 ns — `time` crate |
-| `cast_datetime` (ISO) | 28.6 ns | — |
-| `cast_duration` (ISO 8601) | 36.6 ns | no stdlib parser takes it |
+| `cast_date_ordered` (`1/7/2026`) | 8.5 ns | no stdlib parser takes it |
+| `cast_uuid` (D format) | 12.8 ns | 11.1 ns — `uuid` crate |
+| `cast_i64` | 8.7 ns | 7.1 ns — `str::parse` |
+| `cast_f64` | 13.0 ns | 10.5 ns — `str::parse` |
+| `cast_decimal` (`12345.6789`) | 13.6 ns | no stdlib parser — an exact `u96`+scale, never rounded |
+| `cast_decimal` (`$12,345.67`, declared `$`) | 18.1 ns | the currency symbol and grouping, read in one pass: what a culture-shaped feed actually costs |
+| `cast_datetime` (`1/7/2026 3:04 PM`) | 13.9 ns | no stdlib parser takes it |
+| `cast_timestamp` (RFC 3339) | 14.5 ns | 17.1 ns — `time` crate |
+| `cast_datetime` (ISO) | 13.3 ns | — |
+| `cast_duration` (ISO 8601) | 23.6 ns | no stdlib parser takes it |
 
 Separator detection costs one extra scan and nothing more: `1.234.567,89` under
-`NumFormat::DETECT` is 43.3 ns against 33.5 ns for the same text under a declared eurozone
+`NumFormat::DETECT` is 29.0 ns against 19.2 ns for the same text under a declared eurozone
 format — ~10 ns, and invisible behind any FFI boundary (the Java and Swift bindings measure
 detection as free at their crossing).
 
@@ -280,16 +280,18 @@ several times as much — under a declared `$` and `,`:
 
 | Shape | `cast_i64` | `cast_decimal` | `cast_f64` |
 | --- | ---: | ---: | ---: |
-| plain (`12345.67`) | 6.0 ns | 12.2 ns | 18.9 ns |
-| grouped (`12,345.67`) | 13.7 ns | 23.8 ns | 31.9 ns |
-| grouped, with the symbol (`$12,345.67`) | 13.5 ns | 22.2 ns | 32.7 ns |
-| the same in parentheses (`($12,345.67)`) | 13.6 ns | 23.2 ns | 33.0 ns |
+| plain (`12345.67`) | 6.7 ns | 11.3 ns | 12.2 ns |
+| grouped (`12,345.67`) | 12.8 ns | 21.5 ns | 21.6 ns |
+| grouped, with the symbol (`$12,345.67`) | 12.8 ns | 19.0 ns | 20.4 ns |
+| the same in parentheses (`($12,345.67)`) | 13.0 ns | 18.7 ns | 21.0 ns |
 
 (The integer door reads the same four shapes of `1234567`.)
 
 **Correction, and the reason this file carries a table instead of a boast:** an earlier
 version of this README claimed `cast_uuid` beat the `uuid` crate (15.4 vs 17.4 ns). It
-doesn't anymore — our number is unchanged, and `uuid` 1.26 got materially faster. Against
+doesn't anymore — `uuid` 1.26 got materially faster, and our SWAR decode (15.9 → 12.8 ns)
+narrowed the gap without closing it. `cast_timestamp` is the one door ahead of its Rust
+counterpart, and only since its field readers were inlined (26.6 → 14.5 ns). Against
 in-process Rust parsers these doors trade raw speed for what they return (a verdict with a
 span, not a panic or a bare `Option`) and what they accept (five `Guid` text forms, declared
 grouping and separators, three duration grammars). The speed story belongs to the *bindings*,
