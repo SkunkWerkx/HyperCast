@@ -96,4 +96,59 @@ impl RawNumFormat {
         };
         Some(NumFormat { decimal_sep, group_sep, flags: self.flags, currency })
     }
+
+    /// The 32 bytes in the layout's own order, little-endian — what a binding hands a C ABI
+    /// that takes a format, and what Ruby's and Python's `NumFormat.packed` are.
+    pub fn to_le_bytes(&self) -> [u8; 32] {
+        let mut bytes = [0u8; 32];
+        let words = [self.decimal_sep, self.group_sep, self.flags, self.currency_len];
+        for (slot, word) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(words) {
+            *slot = word.to_le_bytes();
+        }
+        if let Some(currency) = bytes.get_mut(16..) {
+            currency.copy_from_slice(&self.currency);
+        }
+        bytes
+    }
+
+    /// The layout read back from [`to_le_bytes`](Self::to_le_bytes)'s 32 bytes. Nothing is
+    /// checked here: [`resolve`](Self::resolve) says whether the format they spell is one.
+    pub fn from_le_bytes(bytes: [u8; 32]) -> RawNumFormat {
+        let word = |at: usize| {
+            let mut word = [0u8; 4];
+            if let Some(source) = bytes.get(at..at + 4) {
+                word.copy_from_slice(source);
+            }
+            u32::from_le_bytes(word)
+        };
+        let mut currency = [0u8; CurrencySymbol::MAX_BYTES];
+        if let Some(source) = bytes.get(16..) {
+            currency.copy_from_slice(source);
+        }
+        RawNumFormat {
+            decimal_sep: word(0),
+            group_sep: word(4),
+            flags: word(8),
+            currency_len: word(12),
+            currency,
+        }
+    }
+}
+
+impl From<NumFormat> for RawNumFormat {
+    /// The layout a format crosses the ABI in — [`resolve`](RawNumFormat::resolve)'s inverse.
+    fn from(format: NumFormat) -> RawNumFormat {
+        let symbol = format.currency.as_str().as_bytes();
+        let mut currency = [0u8; CurrencySymbol::MAX_BYTES];
+        if let Some(slot) = currency.get_mut(..symbol.len()) {
+            slot.copy_from_slice(symbol);
+        }
+        RawNumFormat {
+            decimal_sep: u32::from(format.decimal_sep),
+            group_sep: u32::from(format.group_sep),
+            flags: format.flags,
+            currency_len: symbol.len() as u32,
+            currency,
+        }
+    }
 }

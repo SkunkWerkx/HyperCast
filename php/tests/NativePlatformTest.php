@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace HyperCast\Tests;
 
-use HyperCast\NativePlatform;
+use HyperCast\Interop\NativePlatform;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
@@ -39,7 +39,7 @@ final class NativePlatformTest extends TestCase
         string $rid,
         string $library
     ): void {
-        $this->assertSame([$rid, $library], NativePlatform::resolve($osFamily, $machine, 8, $musl));
+        $this->assertSame([$rid, $library], NativePlatform::resolve('hypercast', $osFamily, $machine, 8, $musl));
     }
 
     /** @return iterable<string, array{string, string, int}> */
@@ -59,12 +59,12 @@ final class NativePlatformTest extends TestCase
     {
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('hypercast: unsupported platform');
-        NativePlatform::resolve($osFamily, $machine, $intSize, false);
+        NativePlatform::resolve('hypercast', $osFamily, $machine, $intSize, false);
     }
 
     public function testTheRunningPlatformResolves(): void
     {
-        [$rid, $library] = NativePlatform::ridAndLibraryName();
+        [$rid, $library] = NativePlatform::ridAndLibraryName('hypercast');
         $this->assertMatchesRegularExpression('/\A(linux(-musl)?|osx|win)-(x64|arm64)\z/', $rid);
         $this->assertStringContainsString('hypercast', $library);
     }

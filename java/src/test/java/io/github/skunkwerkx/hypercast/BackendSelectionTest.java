@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import io.github.skunkwerkx.hypercast.interop.NativePlatform;
 import java.lang.reflect.InvocationTargetException;
 import java.net.URI;
 import java.net.URL;
@@ -58,7 +59,7 @@ class BackendSelectionTest {
 
     @Test
     void aBundledLibraryThatWillNotLoadFallsBackToTheWasmModule(@TempDir Path dir) throws Exception {
-        NativePlatform.Target target = NativePlatform.current();
+        NativePlatform.Target target = NativePlatform.current("hypercast");
         assumeTrue(target != null, "no native build for this platform, so nothing to fail to load");
         Path library = dir.resolve(target.resourcePath().substring(1));
         Files.createDirectories(library.getParent());

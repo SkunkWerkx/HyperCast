@@ -6,6 +6,8 @@ namespace HyperCast;
 
 use DateTimeImmutable;
 use FFI;
+use HyperCast\Interop\NativePlatform;
+use HyperCast\Interop\NativeValues;
 
 /**
  * Allocation-lean scalar casts — booleans, numerics (integer, real and exact decimal),
@@ -57,7 +59,6 @@ final class Cast
     private static ?FFI\CData $faultPtr = null;
     private static ?FFI\CData $formatPtr = null;
     private static ?NumFormat $formatKey = null;
-    private static bool $fastInstants = false;
     private static ?bool $available = null;
 
     /** Static-only facade — never instantiated. */
@@ -90,7 +91,7 @@ final class Cast
                 'hypercast: libhypercast reported a contract violation — a binding bug, please report it'
             );
         }
-        return new Fault(CastFailure::from($rc), self::$fault->offset, self::$fault->length);
+        return NativeValues::fault($rc, self::$fault->offset, self::$fault->length);
     }
 
     /**
@@ -105,13 +106,7 @@ final class Cast
     private static function declare(NumFormat $format): void
     {
         if (self::$formatKey !== $format) {
-            [$decimal, $group] = $format->codePoints();
-            $packed = self::$format;
-            $packed->decimal_sep = $decimal;
-            $packed->group_sep = $group;
-            $packed->flags = $format->flags;
-            $packed->currency_len = \strlen($format->currency);
-            FFI::memcpy($packed->currency, str_pad($format->currency, 16, "\0"), 16);
+            NativeValues::writeFormat($format, self::$format);
             self::$formatKey = $format;
         }
     }
@@ -415,11 +410,7 @@ final class Cast
         if ($rc !== 0) {
             return self::fail($rc);
         }
-        $hex = bin2hex(FFI::string(self::$out16, 16));
-        return new Success(
-            substr($hex, 0, 8) . '-' . substr($hex, 8, 4) . '-' . substr($hex, 12, 4)
-            . '-' . substr($hex, 16, 4) . '-' . substr($hex, 20)
-        );
+        return new Success(NativeValues::uuid(FFI::string(self::$out16, 16)));
     }
 
     /**
@@ -446,14 +437,7 @@ final class Cast
      */
     private static function instant(): DateTimeImmutable
     {
-        $seconds = self::$outPair->seconds;
-        $micros = intdiv(self::$outPair->nanos, 1000);
-        if (self::$fastInstants) {
-            $instant = DateTimeImmutable::createFromTimestamp($seconds);
-            return $micros === 0 ? $instant : $instant->setMicrosecond($micros);
-        }
-        $instant = new DateTimeImmutable("@{$seconds}");
-        return $micros === 0 ? $instant : $instant->modify("+{$micros} microseconds");
+        return NativeValues::instant(self::$outPair->seconds, self::$outPair->nanos);
     }
 
     /**
@@ -547,39 +531,7 @@ final class Cast
         if ($rc !== 0) {
             return self::fail($rc);
         }
-        $year = self::$outDate->year;
-        $month = self::$outDate->month;
-        $day = self::$outDate->day;
-        $shifted = $month <= 2 ? $year - 1 : $year;
-        $era = intdiv($shifted >= 0 ? $shifted : $shifted - 399, 400);
-        $yearOfEra = $shifted - $era * 400;
-        $dayOfYear = intdiv(153 * ($month + ($month > 2 ? -3 : 9)) + 2, 5) + $day - 1;
-        $dayOfEra = $yearOfEra * 365 + intdiv($yearOfEra, 4) - intdiv($yearOfEra, 100) + $dayOfYear;
-        $seconds = ($era * 146_097 + $dayOfEra - 719_468) * 86_400;
-        return new Success(
-            self::$fastInstants
-                ? DateTimeImmutable::createFromTimestamp($seconds)
-                : new DateTimeImmutable("@{$seconds}")
-        );
-    }
-
-    /**
-     * Epoch seconds at midnight of a civil date — Hinnant's days_from_civil, the same
-     * math the core itself uses.
-     *
-     * @param int $year the civil year
-     * @param int $month the civil month
-     * @param int $day the civil day
-     * @return int seconds since the epoch at that date's midnight
-     */
-    private static function epochSeconds(int $year, int $month, int $day): int
-    {
-        $shifted = $month <= 2 ? $year - 1 : $year;
-        $era = intdiv($shifted >= 0 ? $shifted : $shifted - 399, 400);
-        $yearOfEra = $shifted - $era * 400;
-        $dayOfYear = intdiv(153 * ($month + ($month > 2 ? -3 : 9)) + 2, 5) + $day - 1;
-        $dayOfEra = $yearOfEra * 365 + intdiv($yearOfEra, 4) - intdiv($yearOfEra, 100) + $dayOfYear;
-        return ($era * 146_097 + $dayOfEra - 719_468) * 86_400;
+        return new Success(NativeValues::date(self::$outDate->year, self::$outDate->month, self::$outDate->day));
     }
 
     /**
@@ -618,16 +570,12 @@ final class Cast
      */
     private static function civil(): DateTimeImmutable
     {
-        $nanos = self::$outCivil->nanos;
-        $seconds = self::epochSeconds(self::$outCivil->year, self::$outCivil->month, self::$outCivil->day)
-            + intdiv($nanos, 1_000_000_000);
-        $micros = intdiv($nanos % 1_000_000_000, 1000);
-        if (self::$fastInstants) {
-            $instant = DateTimeImmutable::createFromTimestamp($seconds);
-            return $micros === 0 ? $instant : $instant->setMicrosecond($micros);
-        }
-        $instant = new DateTimeImmutable("@{$seconds}");
-        return $micros === 0 ? $instant : $instant->modify("+{$micros} microseconds");
+        return NativeValues::civil(
+            self::$outCivil->year,
+            self::$outCivil->month,
+            self::$outCivil->day,
+            self::$outCivil->nanos
+        );
     }
 
     /**
@@ -767,8 +715,7 @@ final class Cast
     public static function nativeVersion(): string
     {
         $ffi = self::$ffi ?? self::load();
-        $packed = $ffi->hypercast_version();
-        return sprintf('%d.%d.%d', $packed >> 16, ($packed >> 8) & 0xFF, $packed & 0xFF);
+        return NativeValues::version($ffi->hypercast_version());
     }
 
     /**
@@ -781,28 +728,10 @@ final class Cast
      */
     private static function load(): FFI
     {
-        [$rid, $libName] = NativePlatform::ridAndLibraryName();
-        $path = __DIR__ . "/native/{$rid}/{$libName}";
-        // Development loop: HYPERCAST_NATIVE_LIBRARY names a library to load instead of the
-        // staged one, so the suite runs against a core built from the checkout without
-        // replacing committed files (.github/scripts/local-core.sh builds one and prints it).
-        $override = getenv('HYPERCAST_NATIVE_LIBRARY');
-        if (\is_string($override) && $override !== '') {
-            $path = $override;
-        } elseif (!is_file($path)) {
-            // Development loop: fall back to the in-repo cargo build, exactly what the
-            // other bindings' local staging does.
-            $repoBuild = \dirname(__DIR__, 2) . "/rust/target/release/{$libName}";
-            if (is_file($repoBuild)) {
-                $path = $repoBuild;
-            }
-        }
-        if (!is_file($path)) {
-            throw new \RuntimeException(
-                "hypercast: {$path} not found (unsupported platform, or this package was built "
-                . 'without a native library for it)'
-            );
-        }
+        // HYPERCAST_NATIVE_LIBRARY names a library to load instead of the staged one, so the
+        // suite runs against a core built from the checkout without replacing committed files
+        // (.github/scripts/local-core.sh builds one and prints it).
+        $path = NativePlatform::libraryPath('hypercast', __DIR__, 'HYPERCAST_NATIVE_LIBRARY');
 
         $numeric = '(const char *ptr, size_t len, const void *format, void *out, void *fault)';
         $plain = '(const char *ptr, size_t len, void *out, void *fault)';
@@ -854,8 +783,6 @@ final class Cast
         self::$outDecimalPtr = FFI::addr(self::$outDecimal);
         self::$faultPtr = FFI::addr(self::$fault);
         self::$formatPtr = FFI::addr(self::$format);
-        self::$fastInstants = method_exists(DateTimeImmutable::class, 'createFromTimestamp')
-            && method_exists(DateTimeImmutable::class, 'setMicrosecond');
         return self::$ffi;
     }
 }

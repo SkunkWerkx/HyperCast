@@ -217,7 +217,7 @@ func callPlain(sym plainSymbol, ptr unsafe.Pointer, length uintptr) result {
 	return fromC(C.call_plain(sym, (*C.uint8_t)(ptr), C.size_t(length)))
 }
 
-func callNumeric(sym numericSymbol, ptr unsafe.Pointer, length uintptr, format rawNumFormat) result {
+func callNumeric(sym numericSymbol, ptr unsafe.Pointer, length uintptr, format RawNumFormat) result {
 	// The currency bytes travel as two little-endian u64 halves so nothing here takes the
 	// address of a local for the C side — the shim reassembles them byte by byte.
 	return fromC(C.call_numeric(sym, (*C.uint8_t)(ptr), C.size_t(length),

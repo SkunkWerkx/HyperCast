@@ -59,6 +59,9 @@ class NumFormat:
     def flags(self) -> int: ...
     @property
     def currency(self) -> str: ...
+    @property
+    def packed(self) -> bytes:
+        """The 32 bytes this format crosses a C ABI as, for a library with one of its own."""
     @staticmethod
     def from_localeconv(conv: dict[str, Any] | None = None) -> NumFormat: ...
 

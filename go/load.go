@@ -1,9 +1,6 @@
 package hypercast
 
-import (
-	"errors"
-	"fmt"
-)
+import "errors"
 
 // ErrNativeUnavailable is never returned and never panicked with: the core is linked into
 // the binary, so there is no load that can fail.
@@ -28,6 +25,5 @@ func LoadError() error {
 // core itself, not from this module — so a deployment can confirm which build of the archive
 // went into the binary. It cannot fail.
 func NativeVersion() string {
-	v := packedVersion()
-	return fmt.Sprintf("%d.%d.%d", v>>16, (v>>8)&0xFF, v&0xFF)
+	return FormatVersion(packedVersion())
 }

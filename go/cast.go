@@ -31,7 +31,6 @@ import (
 	"math/bits"
 	"runtime"
 	"time"
-	"unicode/utf8"
 	"unsafe"
 
 	"github.com/google/uuid"
@@ -129,20 +128,6 @@ func read[V any](r *result) V {
 	return *(*V)(unsafe.Pointer(&r.out))
 }
 
-// NumFormat as it crosses the ABI — 32 bytes, 4-aligned: the separators as code points,
-// the flags, and the currency symbol as CurrencyLen UTF-8 bytes held inline (zero-padded;
-// a zero length declares none).
-type rawNumFormat struct {
-	DecimalSep  uint32
-	GroupSep    uint32
-	Flags       uint32
-	CurrencyLen uint32
-	Currency    [currencyMaxBytes]byte
-}
-
-// currencyMaxBytes is the inline capacity of the ABI's currency symbol, in UTF-8 bytes.
-const currencyMaxBytes = 16
-
 // The core's Decimal as it crosses the ABI: lo at 0, hi at 8, scale at 12, negative (0/1)
 // at 13, two tail bytes of padding — 16 bytes with 8-byte alignment.
 type rawDecimal struct {
@@ -153,36 +138,12 @@ type rawDecimal struct {
 	_        [2]byte
 }
 
-type rawTimestamp struct {
-	Seconds int64
-	Nanos   int32
-	_       int32 // tail padding, matching the repr(C) layout's 16-byte size
-}
-
-type rawDate struct {
-	Year  uint16
-	Month uint8
-	Day   uint8
-}
-
-type rawCivil struct {
-	Year  uint16
-	Month uint8
-	Day   uint8
-	_     [4]byte // tail padding before the u64, matching the repr(C) layout
-	Nanos uint64
-}
-
 // Each shape above at the size rust/src/abi.rs pins for it, checked at compile time: an
 // array of any other length is another type, so a drift on this side fails the build. The
 // out-value holds the widest of them.
 var (
 	_ [8]byte  = [unsafe.Sizeof(rawFault{})]byte{}
-	_ [32]byte = [unsafe.Sizeof(rawNumFormat{})]byte{}
 	_ [16]byte = [unsafe.Sizeof(rawDecimal{})]byte{}
-	_ [16]byte = [unsafe.Sizeof(rawTimestamp{})]byte{}
-	_ [4]byte  = [unsafe.Sizeof(rawDate{})]byte{}
-	_ [16]byte = [unsafe.Sizeof(rawCivil{})]byte{}
 	_ [16]byte = [unsafe.Sizeof(result{}.out)]byte{}
 )
 
@@ -246,26 +207,12 @@ var Invariant = NumFormat{DecimalSep: '.', GroupSep: ',', Styles: AllStyles}
 // SeparatorDetect's structural rules.
 var Detect = NumFormat{DecimalSep: '.', GroupSep: ',', Styles: AllStyles | SeparatorDetect}
 
-func (f NumFormat) raw() rawNumFormat {
-	if f.DecimalSep == f.GroupSep {
-		panic(fmt.Sprintf("hypercast: decimal and group separators must differ; both are %q", f.DecimalSep))
+// raw is Raw for the doors, which treat a malformed format as the caller bug it is.
+func (f NumFormat) raw() RawNumFormat {
+	raw, err := f.Raw()
+	if err != nil {
+		panic("hypercast: " + err.Error())
 	}
-	raw := rawNumFormat{DecimalSep: uint32(f.DecimalSep), GroupSep: uint32(f.GroupSep), Flags: uint32(f.Styles)}
-	if len(f.Currency) > currencyMaxBytes {
-		panic(fmt.Sprintf("hypercast: currency symbol %q exceeds %d UTF-8 bytes", f.Currency, currencyMaxBytes))
-	}
-	if !utf8.ValidString(f.Currency) {
-		panic(fmt.Sprintf("hypercast: currency symbol %q is not valid UTF-8", f.Currency))
-	}
-	for i := 0; i < len(f.Currency); i++ {
-		// The core's rule verbatim: an ASCII digit or ASCII whitespace (space, \t, \n, \f,
-		// \r) would collide with the digit scan and the trimming around the symbol.
-		switch b := f.Currency[i]; {
-		case b >= '0' && b <= '9', b == ' ', b == '\t', b == '\n', b == '\f', b == '\r':
-			panic(fmt.Sprintf("hypercast: currency symbol %q must not contain an ASCII digit or whitespace", f.Currency))
-		}
-	}
-	raw.CurrencyLen = uint32(copy(raw.Currency[:], f.Currency))
 	return raw
 }
 
@@ -416,7 +363,11 @@ func failed(code int32, fault *rawFault) *Fault {
 	if code == -1 {
 		panic("hypercast: libhypercast reported a contract violation — a binding bug, please report it")
 	}
-	return &Fault{Reason: CastFailure(code), Offset: int(fault.Offset), Length: int(fault.Length)}
+	f, ok := FaultFromCode(uint32(code), fault.Offset, fault.Length)
+	if !ok {
+		panic(fmt.Sprintf("hypercast: libhypercast returned unknown verdict code %d", code))
+	}
+	return f
 }
 
 // Bool casts boolean text: true/false plus the conventions untrusted sources actually send
@@ -590,8 +541,7 @@ func instantDoor[T Text](text T, precision UnixPrecision) (time.Time, *Fault) {
 	if r.code != 0 {
 		return time.Time{}, failed(r.code, &r.fault)
 	}
-	out := read[rawTimestamp](&r)
-	return time.Unix(out.Seconds, int64(out.Nanos)).UTC(), nil
+	return read[RawTimestamp](&r).Time(), nil
 }
 
 // Timestamp casts an RFC 3339 instant — zone mandatory — to a UTC time.Time at full
@@ -631,8 +581,7 @@ func ExcelSerial[T Text](text T, epoch ExcelEpoch) (time.Time, *Fault) {
 	if r.code != 0 {
 		return time.Time{}, failed(r.code, &r.fault)
 	}
-	out := read[rawTimestamp](&r)
-	return time.Unix(out.Seconds, int64(out.Nanos)).UTC(), nil
+	return read[RawTimestamp](&r).Time(), nil
 }
 
 // DateOnly casts a strict ISO 8601 yyyy-MM-dd calendar date.
@@ -643,8 +592,7 @@ func DateOnly[T Text](text T) (Date, *Fault) {
 	if r.code != 0 {
 		return Date{}, failed(r.code, &r.fault)
 	}
-	out := read[rawDate](&r)
-	return Date{Year: int(out.Year), Month: time.Month(out.Month), Day: int(out.Day)}, nil
+	return read[RawDate](&r).Date(), nil
 }
 
 // DateOnlyOrdered casts a separated calendar date — three digit fields joined by one
@@ -662,8 +610,7 @@ func DateOnlyOrdered[T Text](text T, order DateOrder) (Date, *Fault) {
 	if r.code != 0 {
 		return Date{}, failed(r.code, &r.fault)
 	}
-	out := read[rawDate](&r)
-	return Date{Year: int(out.Year), Month: time.Month(out.Month), Day: int(out.Day)}, nil
+	return read[RawDate](&r).Date(), nil
 }
 
 // DateTime casts a zone-less civil date-time — the shape untrusted feeds actually send
@@ -682,11 +629,7 @@ func DateTime[T Text](text T, order DateOrder) (CivilDateTime, *Fault) {
 	if r.code != 0 {
 		return CivilDateTime{}, failed(r.code, &r.fault)
 	}
-	out := read[rawCivil](&r)
-	return CivilDateTime{
-		Date:      Date{Year: int(out.Year), Month: time.Month(out.Month), Day: int(out.Day)},
-		TimeOfDay: time.Duration(out.Nanos),
-	}, nil
+	return read[RawCivil](&r).CivilDateTime(), nil
 }
 
 // TimeOfDay casts an ISO 24-hour time-of-day to a time.Duration since midnight —
@@ -710,7 +653,7 @@ func Span[T Text](text T) (Duration, *Fault) {
 	if r.code != 0 {
 		return Duration{}, failed(r.code, &r.fault)
 	}
-	out := read[rawTimestamp](&r)
+	out := read[RawTimestamp](&r)
 	return Duration{Seconds: out.Seconds, Nanos: out.Nanos}, nil
 }
 
@@ -747,11 +690,7 @@ func ExcelSerialFromFloat64(value float64, epoch ExcelEpoch) (CivilDateTime, *Fa
 	if r.code != 0 {
 		return CivilDateTime{}, failed(r.code, &r.fault)
 	}
-	out := read[rawCivil](&r)
-	return CivilDateTime{
-		Date:      Date{Year: int(out.Year), Month: time.Month(out.Month), Day: int(out.Day)},
-		TimeOfDay: time.Duration(out.Nanos),
-	}, nil
+	return read[RawCivil](&r).CivilDateTime(), nil
 }
 
 // ExcelTime reads the fraction of an Excel serial the caller already holds as a float64 as a
@@ -776,6 +715,6 @@ func ExcelDuration(value float64) (Duration, *Fault) {
 	if r.code != 0 {
 		return Duration{}, failed(r.code, &r.fault)
 	}
-	out := read[rawTimestamp](&r)
+	out := read[RawTimestamp](&r)
 	return Duration{Seconds: out.Seconds, Nanos: out.Nanos}, nil
 }

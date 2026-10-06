@@ -1,5 +1,6 @@
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using HyperCast.Interop;
 
 namespace HyperCast;
 
@@ -177,7 +178,7 @@ public static partial class Cast
 		fixed (byte* ptr = utf8)
 			code = cast_decimal(ptr, (nuint)utf8.Length, &raw, &value, &fault);
 		return code == 0
-			? new decimal((int)value.Lo, (int)(value.Lo >> 32), (int)value.Hi, value.Negative != 0, value.Scale)
+			? value.ToDecimal()
 			: Failed<decimal>(code, fault);
 	}
 
