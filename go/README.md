@@ -235,6 +235,35 @@ stays only so code that tests for it keeps compiling.
 [HyperUuid](https://github.com/SkunkWerkx/HyperUuid)'s Go binding has the same three entry
 points.
 
+## Interop: building on HyperCast's C ABI
+
+For a module that carries HyperCast's verdicts across a C ABI of its own (HyperTabular and
+HyperWorkbook do): the layouts the core writes, the conversions every door applies to them,
+the checked codes of the declared options, and the packed version word — the same code the
+doors run, so a value read out of another library's buffer is the value the door of the
+same name would have returned.
+
+- `RawTimestamp` (16 bytes) → `.Time()`, `RawDate` (4) → `.Date()`, `RawCivil` (16) →
+  `.CivilDateTime()`. `Decimal` and `Duration` need no raw twin: each is laid out exactly as
+  the core writes one, checked at compile time, so a buffer of them can be viewed as a
+  `[]Decimal` or `[]Duration` in place.
+- `RawNumFormat` — the 32 bytes a format crosses as, with the symbol inline up to
+  `CurrencyMaxBytes` (16). `NumFormat.Raw()` builds one, returning the doors' check as an
+  error instead of their panic.
+- `Valid()` on `UnixPrecision`, `DateOrder` and `ExcelEpoch`; `UnixPrecisionFromCode`,
+  `DateOrderFromCode`, `ExcelEpochFromCode` and `ReasonFromCode` turn an ABI code back into
+  the type, and `false` for any other value.
+- `FaultFromCode(code, offset, length)` — the `*Fault` a nonzero verdict code and its span
+  name; `false` when the code names no reason, a binding bug rather than data.
+- `FormatVersion(packed)` — a `*_version()` export's `major<<16 | minor<<8 | patch` word as
+  `"major.minor.patch"`.
+
+```go
+raw, err := hypercast.NumFormat{DecimalSep: ',', GroupSep: '.', Styles: hypercast.AllStyles, Currency: "€"}.Raw()
+// raw crosses to the other library's C ABI; its verdicts come back as codes and spans:
+fault, ok := hypercast.FaultFromCode(code, offset, length)
+```
+
 ## Platforms
 
 | Platform | Archive linked | Also links |

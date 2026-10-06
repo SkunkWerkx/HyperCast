@@ -208,6 +208,31 @@ The packed format the core reads is 32 bytes (two separator code points, the fla
 symbol length and 16 symbol bytes); `Cast` writes it once per distinct `NumFormat` instance,
 so hoist a format rather than constructing one per call.
 
+## Interop: building on HyperCast's C ABI
+
+For a package that carries HyperCast's verdicts across a C ABI of its own, as HyperTabular
+does: it reads the core's fields out of its own buffers and needs the values `Cast` would
+have returned. `HyperCast\Interop` holds the code the doors themselves use, so the two cannot
+drift:
+
+- `NativeValues` — the value builders `instant($seconds, $nanos)`,
+  `date($year, $month, $day)`, `civil($year, $month, $day, $nanosOfDay)` and `uuid($bytes)`;
+  `writeFormat(NumFormat, FFI\CData)`, which fills the core's 32-byte format struct as every
+  numeric door does; `fault($code, $offset, $length)`, a `\LogicException` for a code that
+  names no reason; and `version($packed)`, a `*_version()` word as `"major.minor.patch"`. A
+  decimal is built by `Decimal::fromLimbs()` and a span by `new Duration(...)`, both public
+  already.
+- `NativePlatform` — parameterized by the library's base name:
+  `ridAndLibraryName('hypertabular')` is this process's `native/{rid}/` directory and file
+  name, `resolve()` the same table as a pure function, and
+  `libraryPath($baseName, $sourceDir, $override)` the library to load — the staged build,
+  the file the `$override` environment variable names, or the in-repo cargo build — exactly
+  as `Cast` finds `libhypercast`.
+
+`HyperCast\Interop\NativePlatform` replaces the `@internal` `HyperCast\NativePlatform`, which
+is gone; code that used the old class moves to the new namespace and passes the base name
+(`'hypercast'`) explicitly.
+
 ## Why not `filter_var` / `DateTimeImmutable::createFromFormat`?
 
 1. **Verdicts with location** — `filter_var` hands back `false` (indistinguishable from a

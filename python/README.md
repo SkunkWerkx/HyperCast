@@ -216,6 +216,28 @@ assume.
 from the same packed `hypercast_version` export every other binding probes.
 `hypercast.BACKEND` is always `"native"`, the PyO3 extension.
 
+## Interop: building on HyperCast's C ABI
+
+For a library that carries HyperCast's verdicts across a C ABI of its own — HyperTabular's
+and HyperWorkbook's — and has to hand its native layer a format in the core's own layout
+rather than a copy of it. `NumFormat.packed` is those 32 bytes: the decimal and group
+separators as code points, the flags and the currency symbol's byte length as
+little-endian `u32`s, then the symbol's UTF-8, zero-padded to 16 — the same bytes as the
+Rust crate's `RawNumFormat::to_le_bytes`. A format's `repr` is the constructor call that
+builds it again, so one can be logged and restored:
+
+```python
+fmt = hypercast.NumFormat(".", ",", hypercast.NumFormat.ALL, "$")
+fmt          # NumFormat('.', ',', 95, '$')
+fmt.packed   # b'.\x00\x00\x00,\x00\x00\x00_\x00\x00\x00\x01\x00\x00\x00$' + bytes(15)
+```
+
+The values themselves are built on the Rust side: an extension module of its own that
+presents them enables the crate's `python-values` feature and uses
+`hypercast::python::Values`, the conversions this package's own extension makes, so a
+`datetime`, `decimal.Decimal` or `uuid.UUID` it hands out is the object `cast_*` would have
+returned (see [rust/README.md](../rust/README.md#interop-building-on-hypercasts-c-abi)).
+
 ## In the browser (Pyodide)
 
 The same PyO3 extension, compiled for Pyodide's Emscripten target, is published to PyPI as

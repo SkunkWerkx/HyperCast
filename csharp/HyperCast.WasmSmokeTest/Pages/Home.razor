@@ -26,7 +26,7 @@
         // in the statically linked wasm module via LibraryImport("*"), so a door missing from
         // build/HyperCast.targets' EmccExportedFunction list fails here at runtime, not
         // at the link. That only holds for a door this page actually calls, so it calls all
-        // twenty-two entry points: the twenty-one cast_* functions and hypercast_version.
+        // twenty-six entry points: the twenty-five cast_* functions and hypercast_version.
         void Check<T>(string name, Verdict<T> verdict, T expected) where T : struct
         {
             if (verdict.TryGetValue(out Success<T> success) && success.Value.Equals(expected))

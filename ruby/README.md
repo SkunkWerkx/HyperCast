@@ -160,6 +160,38 @@ Across the ABI a `NumFormat` is a 32-byte struct — the two separators as code 
 flags, and the symbol's length and UTF-8 bytes held inline — packed once per format object
 and memoized by identity on every backend, so declaring a currency costs a cast nothing.
 
+## Interop: building on HyperCast's C ABI
+
+For a gem that carries HyperCast's verdicts across a C ABI of its own, as HyperTabular does:
+it reads the core's out-values out of its own buffers and needs the values the doors would
+have returned. `HyperCast::Interop` is the code the Fiddle backend's doors decode with, so
+the two cannot drift. It is loaded on every backend.
+
+- `SCALARS` — the `String#unpack` directive for one value of each scalar door (`:i32` is
+  `"l<"`; a bool is the byte 0 or 1).
+- `RECORDS` — for each record door (`:decimal`, `:uuid`, `:timestamp`, `:date`, …), the
+  directive that unpacks one value, how many fields that yields, and a lambda
+  `(fields, at)` that builds the Ruby value from them. To decode a column, append `"*"` and
+  step that many fields at a time.
+- `VALUE_BYTES` — the bytes one value of each door takes.
+- `decode(door, bytes)` — one value, from the bytes the core wrote for it.
+- `fault(code, offset, length)` — the `Fault` a nonzero verdict code names; a code that names
+  no reason is a `KeyError`.
+- `characters(bytes, offset, length)` — the core's byte span as the character span
+  `String#[]` slices by.
+- `version(word)` — a packed `*_version` word as `"major.minor.patch"`.
+- `library_path(library, native_dir, repo_root)` — the shared library to `dlopen`: the
+  staged `native/{rid}/` build, else the in-repo cargo build, else `nil`.
+
+`NativePlatform.rid_and_library_name(library: "hypertabular")` gives the `{rid}` directory
+and file name for any SkunkWerkx core; `library:` defaults to `"hypercast"`.
+
+```ruby
+HyperCast::Interop.decode(:i32, [-7].pack("l<"))           # => -7
+HyperCast::Interop.fault(2, 3, 1)                          # => Fault, reason :malformed
+HyperCast::Interop.version(0x000700)                       # => "0.7.0"
+```
+
 ## Why not `Integer()` / `Time.iso8601` / `Float()`?
 
 1. **Verdicts, not exceptions** — bad data is the expected case for untrusted text; a

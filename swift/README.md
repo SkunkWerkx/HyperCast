@@ -136,6 +136,28 @@ let enUs = NumFormat.from(locale: Locale(identifier: "en_US"))   // "$", from th
 try Cast.i32("-$5", format: enUs)                                  // .success(-5)
 ```
 
+## Interop: building on HyperCast's C ABI
+
+The `Interop` namespace is for a package that carries HyperCast's verdicts across a C ABI
+of its own (HyperTabular and HyperWorkbook do): it reads the value layouts the core writes
+through exactly the conversions every `Cast` door applies, so a value read out of another
+library's buffer is the value the door of the same name would have returned. Each reader
+takes an `UnsafeRawBufferPointer` starting at one value, aligned for its widest field.
+
+- Out-values: `Interop.decimal` → `Decimal`, `uuid` → `UUID`, `instant` → `Date`, `date`,
+  `civil` and `time` → `DateComponents`, `duration` → `Duration`.
+- `Interop.rawFormat(_:)` — a `NumFormat` as the core reads it, the 32-byte
+  `Interop.RawNumFormat` tuple, the symbol inline up to `Interop.currencyMaxBytes` (16).
+- `Interop.fault(code:offset:length:)` — the `Fault` a nonzero verdict code and its byte
+  span name; any code other than 1–3 is a precondition failure, a binding bug.
+- `Interop.version(_:)` — a `*_version()` export's packed `major << 16 | minor << 8 | patch`
+  word as `"major.minor.patch"`.
+
+```swift
+let amount = buffer.withUnsafeBytes { Interop.decimal(UnsafeRawBufferPointer(rebasing: $0[offset..<offset + 16])) }
+let format = Interop.rawFormat(.invariant)   // 32 bytes, ready for the other library's ABI
+```
+
 ## Requirements
 
 - **Swift 6.2 or later.** The manifests declare `swift-tools-version:6.2`: the first release

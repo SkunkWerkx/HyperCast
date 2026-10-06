@@ -47,12 +47,12 @@ no-panic = { version = "0.1", optional = true }
 # rather than relying on the default.
 default = ["std", "exports"]
 std = []
-# The 21 `cast_*` C ABI symbols, and `hypercast_version` as a symbol rather than only a Rust
+# The 25 `cast_*` C ABI symbols, and `hypercast_version` as a symbol rather than only a Rust
 # function. On by default, and implied by every feature that builds a library of this
 # crate's own, so nothing this repo ships changes. It exists to be turned off: a
 # `#[no_mangle]` item is exported from whatever library the crate is linked into, so a
 # crate that links this one as an rlib and exports a C ABI of its own (the tabular layer)
-# would carry all 22 symbols in its own library, and its static archive could not be
+# would carry all 26 symbols in its own library, and its static archive could not be
 # linked into one program with libhypercast.a (`multiple definition of cast_bool`). Such a
 # consumer takes `default-features = false` and names `std` again if it wants it.
 exports = []

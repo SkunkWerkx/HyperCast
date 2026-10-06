@@ -1,5 +1,5 @@
 // Proves the binding under Native AOT for real: this program publishes with PublishAot and
-// crosses every native entry point the binding declares — the twenty-one cast_* functions and
+// crosses every native entry point the binding declares — the twenty-five cast_* functions and
 // hypercast_version — against the real native library, including the generic door and the
 // union's compile-checked consumption. Exit code 0 only if every cast lands as expected.
 

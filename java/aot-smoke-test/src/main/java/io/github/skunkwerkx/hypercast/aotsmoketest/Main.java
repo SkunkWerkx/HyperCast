@@ -72,7 +72,8 @@ public final class Main {
             System.out.println("FAIL version: " + version + " (expected major.minor.patch)");
             failures++;
         }
-        // All twenty-one doors, each through its String form.
+        // All twenty-five doors: each text door through its String form, the four typed doors
+        // through a double.
         check("bool", Cast.bool("enabled"), true);
         check("i8", Cast.i8("-128", NumFormat.INVARIANT), (byte) -128);
         check("i16", Cast.i16("-32,768", NumFormat.INVARIANT), (short) -32768);

@@ -384,6 +384,30 @@ Native AOT on five desktop RIDs (every one but `osx-x64`, which is cross-built a
 executes the resulting binary, and requires exit 0. Each leg's log uploads as an
 `aot-report-{rid}` artifact.
 
+## Interop: building on HyperCast's C ABI
+
+For a library that carries HyperCast's verdicts across a C ABI of its own — HyperTabular
+and HyperWorkbook do — and so reads the core's out-values, numeric format, verdict codes and
+fault spans out of its own buffers. The `HyperCast.Interop` namespace is the code the `Cast`
+doors themselves use, so a value read that way is the value the door would have returned.
+
+- `RawTimestamp`, `RawDate`, `RawCivil`, `RawDuration`, `RawDecimal` — the core's
+  `#[repr(C)]` out-value layouts, each with its door's conversion: `ToDateTimeOffset()`,
+  `ToDateOnly()`, `ToDateTime()` (`DateTimeKind.Unspecified`), `ToTimeSpan()`,
+  `ToDecimal()`; sub-tick nanoseconds truncate exactly as the doors truncate them.
+- `RawFault` — a fault's byte span, `Offset` and `Length`.
+- `RawNumFormat` — the core's 32-byte numeric format: four `uint`s, then the currency
+  symbol's UTF-8 inline in a `RawCurrency`. `NumFormat.ToRaw()` builds it, validating as
+  every numeric door does (`ArgumentException` on a caller bug).
+- `Abi` — `Code(UnixPrecision)`, `Code(DateOrder)` and `Code(ExcelEpoch)`, checked
+  (`ArgumentOutOfRangeException` for an undefined value), and the way back as
+  `UnixPrecisionFrom`, `DateOrderFrom`, `ExcelEpochFrom` and `ReasonFrom`, each `null` for a
+  code it does not name; `ToFault(code, RawFault)`; `ToTimeOnly(nanosOfDay)` and
+  `ToGuid(rfc9562)` for the time and UUID out-values; `ToVersion(packed)` for a
+  `*_version()` word; and `ProbeVersion(Func<uint>)`, the probe `Cast.IsAvailable` and
+  `Cast.NativeVersion` rest on — `null` when the library did not load — for any library's
+  version export.
+
 ## Install
 
 Published to [nuget.org](https://www.nuget.org/packages/HyperCast) — no extra package source

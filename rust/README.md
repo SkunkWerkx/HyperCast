@@ -166,6 +166,48 @@ CI has already placed the library explicitly (`runtimes/<rid>/native/`,
 `src/main/resources/native/<rid>/`); the first collapsed-job run failed every Linux leg on
 `undefined symbol: PyExc_SystemError` before that gate existed.
 
+## Interop: building on HyperCast's C ABI
+
+For a crate that links this one as an rlib and exports a C ABI of its own carrying
+HyperCast's verdicts — HyperTabular's and HyperWorkbook's native layers. The value types
+(`Decimal`, `Timestamp`, `Date`, `CivilDateTime`, `Duration`) are `#[repr(C)]` and are the
+out-values themselves; the rest is what turns the ABI's codes and format back into them,
+the same code the doors and `ffi.rs` use:
+
+- **The `exports` feature**, on by default, is the 25 `cast_*` symbols and
+  `hypercast_version` as a symbol. A `#[no_mangle]` item is exported from whatever library
+  the crate ends up in, so a crate building its own `cdylib` or `staticlib` takes
+  `default-features = false`, naming `std` again if it wants it — otherwise its library
+  carries all 26, and its static archive cannot be linked into one program with
+  `libhypercast.a` (`multiple definition of cast_bool`). `hypercast_version()` stays a Rust
+  function either way.
+- **`RawNumFormat`** is `NumFormat` as it crosses the ABI: 32 bytes, 4-aligned — the two
+  separators as code points, the flags, the currency symbol's length and its UTF-8 inline.
+  `RawNumFormat::from(format)` builds it, `to_le_bytes`/`from_le_bytes` are its exact
+  bytes (what Python's and Ruby's `NumFormat.packed` are), and `resolve()` returns the
+  `NumFormat` or `None` for a contract violation.
+- **`from_code`** — a `const fn` on `Reason`, `UnixPrecision`, `ExcelEpoch` and `DateOrder`
+  — reads a verdict code or a declared option back, `None` for any code that names none
+  (`Reason::from_code(0)`, success, included).
+- **The `python-values` feature** exposes `hypercast::python::Values`, the conversions this
+  crate's own extension uses (`Values::import`, then `instant`, `date`, `civil`, `time`,
+  `duration`, `decimal`, `uuid`), so another PyO3 extension hands out the same `datetime`,
+  `decimal.Decimal` and `uuid.UUID` objects `hypercast.cast_*` would. The `python` feature
+  builds on it.
+
+```toml
+[dependencies]
+hypercast = { version = "0.7", default-features = false, features = ["std"] }
+```
+
+```rust
+use hypercast::{NumFormat, RawNumFormat, Reason};
+
+let raw = RawNumFormat::from(NumFormat::new(',', '.', NumFormat::ALL));
+assert_eq!(RawNumFormat::from_le_bytes(raw.to_le_bytes()).resolve(), raw.resolve());
+assert_eq!(Reason::from_code(3), Some(Reason::OutOfRange));
+```
+
 ## Proven panic-free, and proven right
 
 Every C export is checked at link time: the `no-panic` feature wraps each one in dtolnay's
@@ -180,7 +222,7 @@ the exports; thin LTO and `codegen-units = 1` are not enough:
 
 ```toml
 [dependencies]
-hypercast = { version = "0.6", features = ["no-panic"] }
+hypercast = { version = "0.7", features = ["no-panic"] }
 
 [profile.release]
 lto = true
