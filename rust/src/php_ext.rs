@@ -210,14 +210,8 @@ pub fn hypercast_native_cast_timestamp(text: Binary<u8>) -> Reply {
 #[php_function]
 #[php(name = "hypercast_native_cast_unix")]
 pub fn hypercast_native_cast_unix(text: Binary<u8>, precision: u32) -> Reply {
-    let precision = match precision {
-        1 => UnixPrecision::Seconds,
-        2 => UnixPrecision::Millis,
-        3 => UnixPrecision::Micros,
-        4 => UnixPrecision::Nanos,
-        other => {
-            return Err(PhpException::from_message(format!("undefined UnixPrecision {other}")));
-        }
+    let Some(precision) = UnixPrecision::from_code(precision) else {
+        return Err(PhpException::from_message(format!("undefined UnixPrecision {precision}")));
     };
     reply(core::cast_unix(text.as_slice(), precision), timestamp)
 }
@@ -225,21 +219,15 @@ pub fn hypercast_native_cast_unix(text: Binary<u8>, precision: u32) -> Reply {
 #[php_function]
 #[php(name = "hypercast_native_cast_excel_serial")]
 pub fn hypercast_native_cast_excel_serial(text: Binary<u8>, epoch: u32) -> Reply {
-    let epoch = match epoch {
-        1 => ExcelEpoch::Y1900,
-        2 => ExcelEpoch::Y1904,
-        other => return Err(PhpException::from_message(format!("undefined ExcelEpoch {other}"))),
+    let Some(epoch) = ExcelEpoch::from_code(epoch) else {
+        return Err(PhpException::from_message(format!("undefined ExcelEpoch {epoch}")));
     };
     reply(core::cast_excel_serial(text.as_slice(), epoch), timestamp)
 }
 
 fn order(order: u32) -> PhpResult<DateOrder> {
-    match order {
-        1 => Ok(DateOrder::YearMonthDay),
-        2 => Ok(DateOrder::MonthDayYear),
-        3 => Ok(DateOrder::DayMonthYear),
-        other => Err(PhpException::from_message(format!("undefined DateOrder {other}"))),
-    }
+    DateOrder::from_code(order)
+        .ok_or_else(|| PhpException::from_message(format!("undefined DateOrder {order}")))
 }
 
 #[php_function]
@@ -302,10 +290,8 @@ pub fn hypercast_native_cast_decimal_from_f64(value: f64) -> Reply {
 #[php_function]
 #[php(name = "hypercast_native_cast_excel_serial_from_f64")]
 pub fn hypercast_native_cast_excel_serial_from_f64(value: f64, epoch: u32) -> Reply {
-    let epoch = match epoch {
-        1 => ExcelEpoch::Y1900,
-        2 => ExcelEpoch::Y1904,
-        other => return Err(PhpException::from_message(format!("undefined ExcelEpoch {other}"))),
+    let Some(epoch) = ExcelEpoch::from_code(epoch) else {
+        return Err(PhpException::from_message(format!("undefined ExcelEpoch {epoch}")));
     };
     typed(core::excel_serial(value, epoch), |table, civil| {
         date(table, civil.date)?;

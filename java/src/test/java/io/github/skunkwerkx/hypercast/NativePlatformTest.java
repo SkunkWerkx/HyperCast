@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.github.skunkwerkx.hypercast.interop.NativePlatform;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 
@@ -16,7 +17,7 @@ import org.junit.jupiter.api.Test;
 class NativePlatformTest {
 
     private static String rid(String osName, String osArch, boolean musl) {
-        return NativePlatform.resolve(osName, osArch, musl).rid();
+        return NativePlatform.resolve("hypercast", osName, osArch, musl).rid();
     }
 
     @Test
@@ -35,13 +36,15 @@ class NativePlatformTest {
     void theLibraryIsNamedTheWayEachOsNamesOne() {
         assertEquals(
                 "/native/linux-musl-x64/libhypercast.so",
-                NativePlatform.resolve("Linux", "amd64", true).resourcePath());
+                NativePlatform.resolve("hypercast", "Linux", "amd64", true).resourcePath());
         assertEquals(
                 "/native/osx-arm64/libhypercast.dylib",
-                NativePlatform.resolve("Mac OS X", "aarch64", false).resourcePath());
+                NativePlatform.resolve("hypercast", "Mac OS X", "aarch64", false)
+                        .resourcePath());
         assertEquals(
                 "/native/win-x64/hypercast.dll",
-                NativePlatform.resolve("Windows Server 2025", "amd64", false).resourcePath());
+                NativePlatform.resolve("hypercast", "Windows Server 2025", "amd64", false)
+                        .resourcePath());
     }
 
     @Test
@@ -54,14 +57,14 @@ class NativePlatformTest {
     void anArchitectureWithNoBuildResolvesToNothingRatherThanTheNearestRid() {
         // Each of these used to come back as *-x64 or *-arm64, and then fail at load.
         for (String arch : new String[] {"riscv64", "ppc64le", "s390x", "loongarch64", "x86", "i386", "arm"}) {
-            assertNull(NativePlatform.resolve("Linux", arch, false), arch);
+            assertNull(NativePlatform.resolve("hypercast", "Linux", arch, false), arch);
         }
     }
 
     @Test
     void anOsWithNoBuildResolvesToNothing() {
         for (String os : new String[] {"FreeBSD", "AIX", "SunOS", "OpenBSD"}) {
-            assertNull(NativePlatform.resolve(os, "amd64", false), os);
+            assertNull(NativePlatform.resolve("hypercast", os, "amd64", false), os);
         }
     }
 

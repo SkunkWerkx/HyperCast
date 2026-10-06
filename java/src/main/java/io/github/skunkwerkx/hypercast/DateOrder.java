@@ -4,6 +4,7 @@ import java.time.chrono.IsoChronology;
 import java.time.format.DateTimeFormatterBuilder;
 import java.time.format.FormatStyle;
 import java.util.Locale;
+import java.util.Optional;
 
 /**
  * The caller-declared field order of a separated calendar date. There is no guessing —
@@ -27,8 +28,29 @@ public enum DateOrder {
         this.code = code;
     }
 
-    int code() {
+    /**
+     * The native core's discriminant for this constant — what a library declaring this
+     * option across its own C ABI passes.
+     *
+     * @return the ABI discriminant
+     */
+    public int code() {
         return code;
+    }
+
+    /**
+     * The constant whose ABI discriminant is {@code code}.
+     *
+     * @param code the discriminant: 1 year-month-day, 2 month-day-year, 3 day-month-year
+     * @return the constant, or empty for any other value
+     */
+    public static Optional<DateOrder> fromCode(int code) {
+        for (DateOrder member : values()) {
+            if (member.code == code) {
+                return Optional.of(member);
+            }
+        }
+        return Optional.empty();
     }
 
     /**

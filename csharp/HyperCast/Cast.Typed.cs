@@ -1,3 +1,5 @@
+using HyperCast.Interop;
+
 namespace HyperCast;
 
 public static partial class Cast
@@ -21,7 +23,7 @@ public static partial class Cast
 		RawFault fault = default;
 		var code = cast_decimal_from_f64(value, &raw, &fault);
 		return code == 0
-			? new decimal((int)raw.Lo, (int)(raw.Lo >> 32), (int)raw.Hi, raw.Negative != 0, raw.Scale)
+			? raw.ToDecimal()
 			: Failed<decimal>(code, fault);
 	}
 
@@ -44,14 +46,11 @@ public static partial class Cast
 	/// <exception cref="ArgumentOutOfRangeException"><paramref name="epoch"/> is undefined — a caller bug, not a data verdict.</exception>
 	public static unsafe Verdict<System.DateTime> ExcelSerialFromDouble(double value, ExcelEpoch epoch)
 	{
-		GuardEpoch(epoch);
+		var declared = Abi.Code(epoch);
 		RawCivil raw = default;
 		RawFault fault = default;
-		var code = cast_excel_serial_from_f64(value, (uint)epoch, &raw, &fault);
-		return code == 0
-			? new System.DateTime(raw.Year, raw.Month, raw.Day, 0, 0, 0, DateTimeKind.Unspecified)
-				.AddTicks((long)(raw.NanosOfDay / 100))
-			: Failed<System.DateTime>(code, fault);
+		var code = cast_excel_serial_from_f64(value, declared, &raw, &fault);
+		return code == 0 ? raw.ToDateTime() : Failed<System.DateTime>(code, fault);
 	}
 
 	/// <summary>
@@ -68,7 +67,7 @@ public static partial class Cast
 		ulong nanos = 0;
 		RawFault fault = default;
 		var code = cast_excel_time(value, &nanos, &fault);
-		return code == 0 ? new TimeOnly((long)(nanos / 100)) : Failed<TimeOnly>(code, fault);
+		return code == 0 ? Abi.ToTimeOnly(nanos) : Failed<TimeOnly>(code, fault);
 	}
 
 	/// <summary>
@@ -85,8 +84,6 @@ public static partial class Cast
 		RawDuration raw = default;
 		RawFault fault = default;
 		var code = cast_excel_duration(value, &raw, &fault);
-		return code == 0
-			? new TimeSpan(raw.Seconds * TimeSpan.TicksPerSecond + raw.Nanos / 100)
-			: Failed<TimeSpan>(code, fault);
+		return code == 0 ? raw.ToTimeSpan() : Failed<TimeSpan>(code, fault);
 	}
 }

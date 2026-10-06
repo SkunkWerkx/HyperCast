@@ -45,6 +45,21 @@ pub enum UnixPrecision {
     Nanos = 4,
 }
 
+impl UnixPrecision {
+    /// The precision whose ABI discriminant is `code` (`1` seconds … `4` nanoseconds), or
+    /// `None` for any other value — the one decoding every binding and every crate that
+    /// carries a declared precision across its own C ABI shares.
+    pub const fn from_code(code: u32) -> Option<UnixPrecision> {
+        Some(match code {
+            1 => UnixPrecision::Seconds,
+            2 => UnixPrecision::Millis,
+            3 => UnixPrecision::Micros,
+            4 => UnixPrecision::Nanos,
+            _ => return None,
+        })
+    }
+}
+
 /// The date system an Excel serial number is expressed in. Spreadsheets carry no marker for
 /// this — it is a workbook-level setting — so the caller states it, the same way
 /// [`UnixPrecision`] and [`DateOrder`] are declared rather than guessed.
@@ -57,6 +72,18 @@ pub enum ExcelEpoch {
     /// The 1904 system (legacy Macintosh workbooks, still selectable today): serial `0` is
     /// `1904-01-01`, with no phantom day anywhere in it.
     Y1904 = 2,
+}
+
+impl ExcelEpoch {
+    /// The date system whose ABI discriminant is `code` (`1` the 1900 system, `2` the 1904
+    /// system), or `None` for any other value.
+    pub const fn from_code(code: u32) -> Option<ExcelEpoch> {
+        Some(match code {
+            1 => ExcelEpoch::Y1900,
+            2 => ExcelEpoch::Y1904,
+            _ => return None,
+        })
+    }
 }
 
 /// Serial `0` of the 1900 system as days from the Unix epoch: `1899-12-30`, which is *two*
@@ -309,6 +336,19 @@ pub enum DateOrder {
     MonthDayYear = 2,
     /// Day, month, year — the en-GB/most-of-the-world order (`1/7/2026` is July 1st).
     DayMonthYear = 3,
+}
+
+impl DateOrder {
+    /// The order whose ABI discriminant is `code` (`1` year-month-day, `2` month-day-year,
+    /// `3` day-month-year), or `None` for any other value.
+    pub const fn from_code(code: u32) -> Option<DateOrder> {
+        Some(match code {
+            1 => DateOrder::YearMonthDay,
+            2 => DateOrder::MonthDayYear,
+            3 => DateOrder::DayMonthYear,
+            _ => return None,
+        })
+    }
 }
 
 /// Reads a run of 1..=4 ASCII digits at `at` (a calendar date field), returning the value

@@ -1,5 +1,7 @@
 package io.github.skunkwerkx.hypercast;
 
+import java.util.Optional;
+
 /**
  * The declared unit of a Unix-epoch value. There is no magnitude guessing — the caller
  * states the unit, so a bare number is never silently interpreted as seconds or
@@ -21,7 +23,28 @@ public enum UnixPrecision {
         this.code = code;
     }
 
-    int code() {
+    /**
+     * The native core's discriminant for this constant — what a library declaring this
+     * option across its own C ABI passes.
+     *
+     * @return the ABI discriminant
+     */
+    public int code() {
         return code;
+    }
+
+    /**
+     * The constant whose ABI discriminant is {@code code}.
+     *
+     * @param code the discriminant: 1 seconds … 4 nanoseconds
+     * @return the constant, or empty for any other value
+     */
+    public static Optional<UnixPrecision> fromCode(int code) {
+        for (UnixPrecision member : values()) {
+            if (member.code == code) {
+                return Optional.of(member);
+            }
+        }
+        return Optional.empty();
     }
 }

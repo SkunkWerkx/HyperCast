@@ -64,12 +64,7 @@ module HyperCast
       # development loop — the in-repo cargo build, exactly what the other bindings' local
       # staging does. Nil when neither exists.
       def library_path
-        rid, lib_name = NativePlatform.rid_and_library_name
-        path = File.join(NATIVE_DIR, rid, lib_name)
-        return path if File.exist?(path)
-
-        repo_build = File.expand_path(File.join(__dir__, "../../../rust/target/release", lib_name))
-        File.exist?(repo_build) ? repo_build : nil
+        Interop.library_path("hypercast", NATIVE_DIR, File.expand_path("../../..", __dir__))
       end
 
       # Why Fiddle found nothing to load. A precompiled platform gem is the one install where

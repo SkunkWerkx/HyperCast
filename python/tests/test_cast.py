@@ -343,3 +343,15 @@ def test_datetime_reads_the_messy_civil_shapes():
             assert reason is hypercast.CastFailure.MALFORMED
         case other:
             raise AssertionError(f"zoned text parsed through the civil door: {other!r}")
+
+
+def test_a_format_packs_as_the_core_reads_it():
+    """A format's packed bytes are the core's 32-byte layout, and its repr builds it again."""
+    packed = NumFormat(",", ".", NumFormat.ALL, "€").packed
+    assert len(packed) == 32
+    assert packed[:4] == ord(",").to_bytes(4, "little")
+    assert packed[4:8] == ord(".").to_bytes(4, "little")
+    assert packed[8:12] == NumFormat.ALL.to_bytes(4, "little")
+    assert packed[12:16] == (3).to_bytes(4, "little")
+    assert packed[16:] == "€".encode() + bytes(13)
+    assert repr(NumFormat.INVARIANT) == f"NumFormat('.', ',', {NumFormat.ALL}, '')"

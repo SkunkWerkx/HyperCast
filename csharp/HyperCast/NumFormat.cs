@@ -108,20 +108,24 @@ public readonly record struct NumFormat(char DecimalSeparator, char GroupSeparat
 		return new(decimalSeparator, groupSeparator, NumStyles.All, numberFormat.CurrencySymbol);
 	}
 
-	/// <summary>Validates and converts to the native core's layout.</summary>
+	/// <summary>
+	/// Validates and converts to the native core's 32-byte layout — what every numeric door
+	/// does with its format argument, public for a library that declares numeric columns
+	/// across a C ABI of its own.
+	/// </summary>
 	/// <exception cref="ArgumentException">
 	/// The separators are equal, a separator is a UTF-16 surrogate half (not a whole code
 	/// point), or the currency symbol is too long or carries a digit or whitespace — either
 	/// way a caller bug, not a data verdict.
 	/// </exception>
-	internal Cast.RawNumFormat ToRaw()
+	public Interop.RawNumFormat ToRaw()
 	{
 		if (DecimalSeparator == GroupSeparator)
 			throw new ArgumentException(
 				$"Decimal and group separators must differ; both are '{DecimalSeparator}'.", DoorParameter);
 		if (char.IsSurrogate(DecimalSeparator) || char.IsSurrogate(GroupSeparator))
 			throw new ArgumentException("Separators must be whole code points, not surrogate halves.", DoorParameter);
-		var raw = new Cast.RawNumFormat
+		var raw = new Interop.RawNumFormat
 		{
 			DecimalSep = DecimalSeparator,
 			GroupSep = GroupSeparator,

@@ -1,5 +1,6 @@
 require "date"
 require_relative "hypercast/native_platform"
+require_relative "hypercast/interop"
 require_relative "hypercast/runtime"
 
 # Allocation-lean scalar casts — booleans, numerics, exact decimals, UUIDs, temporals —
@@ -216,13 +217,12 @@ module HyperCast
     # (t/f, yes/no, y/n, 1/0, on/off, enabled/disabled, active/inactive,
     # checked/unchecked, in/out), ASCII case-insensitive.
     def bool(text)
-      plain(:cast_bool, text, 1) { |out| out.unpack1("C") != 0 }
+      plain(:cast_bool, text, 1) { |out| Interop.decode(:bool, out) }
     end
 
-    { i8: "c", i16: "s<", i32: "l<", i64: "q<", u8: "C", u16: "S<", u32: "L<", u64: "Q<" }
-      .each do |door, unpack|
-      sizes = { "c" => 1, "C" => 1, "s<" => 2, "S<" => 2, "l<" => 4, "L<" => 4, "q<" => 8, "Q<" => 8 }
-      size = sizes.fetch(unpack)
+    %i[i8 i16 i32 i64 u8 u16 u32 u64].each do |door|
+      unpack = Interop::SCALARS.fetch(door)
+      size = Interop::VALUE_BYTES.fetch(door)
       # Resolved once here, not inside the method: interpolating a Symbol per call built a
       # String and interned it on every integer cast.
       symbol = :"cast_#{door}"
@@ -237,12 +237,12 @@ module HyperCast
     # Casts real text to an IEEE single (widened losslessly on the way out): finite values
     # only, declared separators and grouping, parens, exponent, and trailing percent.
     def f32(text, format)
-      numeric(:cast_f32, text, format, 4) { |out| out.unpack1("e") }
+      numeric(:cast_f32, text, format, 4) { |out| Interop.decode(:f32, out) }
     end
 
     # Casts real text to an IEEE double. Notation rules as f32.
     def f64(text, format)
-      numeric(:cast_f64, text, format, 8) { |out| out.unpack1("E") }
+      numeric(:cast_f64, text, format, 8) { |out| Interop.decode(:f64, out) }
     end
 
     # Casts decimal text to an exact Decimal — the real doors' grammar (declared separators
@@ -252,32 +252,27 @@ module HyperCast
     # A magnitude past 2**96 - 1, or more fractional precision than 28 places can hold, is
     # an :out_of_range Fault — the door never rounds.
     def decimal(text, format)
-      numeric(:cast_decimal, text, format, 16) do |out|
-        lo, hi, scale, negative = out.unpack("Q<L<CCx2")
-        Decimal.new(magnitude: (hi << 64) | lo, scale: scale, negative: negative != 0)
-      end
+      numeric(:cast_decimal, text, format, 16) { |out| Interop.decode(:decimal, out) }
     end
 
     # Casts UUID text — all five .NET Guid formats (D/N/B/P/X) plus urn:uuid:/GUID:/UUID:
     # prefixes — to Ruby's UUID lingua franca: the lowercase hyphenated String (the same
     # shape SecureRandom.uuid returns).
     def uuid(text)
-      plain(:cast_uuid, text, 16) do |out|
-        out.unpack("H8H4H4H4H12").join("-")
-      end
+      plain(:cast_uuid, text, 16) { |out| Interop.decode(:uuid, out) }
     end
 
     # Casts an RFC 3339 instant — zone mandatory — to a UTC Time at full nanosecond
     # fidelity across the whole 0001-9999 window.
     def timestamp(text)
-      plain(:cast_timestamp, text, 16) { |out| instant(out) }
+      plain(:cast_timestamp, text, 16) { |out| Interop.decode(:timestamp, out) }
     end
 
     # Casts an integer Unix-epoch value under a caller-declared unit Symbol
     # (:seconds/:milliseconds/:microseconds/:nanoseconds) to a UTC Time. An unknown unit
     # is a caller bug (KeyError), never a verdict.
     def unix(text, precision)
-      declared(:cast_unix, text, UNIX_PRECISIONS.fetch(precision), 16) { |out| instant(out) }
+      declared(:cast_unix, text, UNIX_PRECISIONS.fetch(precision), 16) { |out| Interop.decode(:unix, out) }
     end
 
     # Casts an Excel date serial under a caller-declared epoch Symbol (:y1900/:y1904) to a
@@ -291,7 +286,7 @@ module HyperCast
     # the text "1900-02-29" — so every serial above it is shifted one day against a naive
     # count. An unknown epoch is a caller bug (KeyError), never a verdict.
     def excel_serial(text, epoch)
-      declared(:cast_excel_serial, text, EXCEL_EPOCHS.fetch(epoch), 16) { |out| instant(out) }
+      declared(:cast_excel_serial, text, EXCEL_EPOCHS.fetch(epoch), 16) { |out| Interop.decode(:excel_serial, out) }
     end
 
     # Casts a calendar date to a Date. With no order declared: the strict ISO 8601
@@ -301,15 +296,9 @@ module HyperCast
     # caller bug (KeyError), never a verdict.
     def date(text, order = nil)
       if order.nil?
-        plain(:cast_date, text, 4) do |out|
-          year, month, day = out.unpack("S<CC")
-          Date.new(year, month, day)
-        end
+        plain(:cast_date, text, 4) { |out| Interop.decode(:date, out) }
       else
-        declared(:cast_date_ordered, text, DATE_ORDERS.fetch(order), 4) do |out|
-          year, month, day = out.unpack("S<CC")
-          Date.new(year, month, day)
-        end
+        declared(:cast_date_ordered, text, DATE_ORDERS.fetch(order), 4) { |out| Interop.decode(:date_ordered, out) }
       end
     end
 
@@ -322,23 +311,20 @@ module HyperCast
     # fusing a real zone is the caller's job, and timestamp stays the strict RFC 3339
     # instant door. An unknown order is a caller bug (KeyError).
     def datetime(text, order)
-      declared(:cast_datetime, text, DATE_ORDERS.fetch(order), 16) { |out| civil(out) }
+      declared(:cast_datetime, text, DATE_ORDERS.fetch(order), 16) { |out| Interop.decode(:datetime, out) }
     end
 
     # Casts an ISO 24-hour time-of-day to an exact Integer of nanoseconds since midnight
     # (Ruby has no time-of-day type; the integer keeps every digit).
     def time(text)
-      plain(:cast_time, text, 8) { |out| out.unpack1("Q<") }
+      plain(:cast_time, text, 8) { |out| Interop.decode(:time, out) }
     end
 
     # Casts a duration (ISO 8601 fixed components, invariant colon form, or protobuf JSON
     # seconds) to exact Rational seconds — full fidelity across the core's ±10,000-year
     # window, no wrapping and no truncation.
     def duration(text)
-      plain(:cast_duration, text, 16) do |out|
-        seconds, nanos = out.unpack("q<l<")
-        Rational(seconds * 1_000_000_000 + nanos, 1_000_000_000)
-      end
+      plain(:cast_duration, text, 16) { |out| Interop.decode(:duration, out) }
     end
 
     # Reads a number a caller already holds — an Integer, Float or Rational, the way Ruby's
@@ -349,10 +335,7 @@ module HyperCast
     # a magnitude past 2**96 - 1 or more than 28 places is :out_of_range. A typed door's
     # Fault has no span: offset and length are 0.
     def decimal_from_float(value)
-      typed(:cast_decimal_from_f64, float(value), 16) do |out|
-        lo, hi, scale, negative = out.unpack("Q<L<CCx2")
-        Decimal.new(magnitude: (hi << 64) | lo, scale: scale, negative: negative != 0)
-      end
+      typed(:cast_decimal_from_f64, float(value), 16) { |out| Interop.decode(:decimal, out) }
     end
 
     # Reads an Excel serial number under a declared epoch Symbol (:y1900/:y1904) as the
@@ -361,21 +344,18 @@ module HyperCast
     # is :out_of_range; a negative, NaN or infinite serial is :malformed.
     def excel_serial_from_float(value, epoch)
       number = float(value)
-      typed(:cast_excel_serial_from_f64, number, 16, EXCEL_EPOCHS.fetch(epoch)) { |out| civil(out) }
+      typed(:cast_excel_serial_from_f64, number, 16, EXCEL_EPOCHS.fetch(epoch)) { |out| Interop.decode(:datetime, out) }
     end
 
     # Reads the fraction of an Excel serial number as an exact Integer of nanoseconds since
     # midnight, as time does; 0.75 and 45292.75 are both 18:00.
     def excel_time(value)
-      typed(:cast_excel_time, float(value), 8) { |out| out.unpack1("Q<") }
+      typed(:cast_excel_time, float(value), 8) { |out| Interop.decode(:time, out) }
     end
 
     # Reads a number of days as exact Rational seconds, as duration does: 1.5 is 129600.
     def excel_duration(value)
-      typed(:cast_excel_duration, float(value), 16) do |out|
-        seconds, nanos = out.unpack("q<l<")
-        Rational(seconds * 1_000_000_000 + nanos, 1_000_000_000)
-      end
+      typed(:cast_excel_duration, float(value), 16) { |out| Interop.decode(:duration, out) }
     end
 
     # The version of the native core actually loaded, as "major.minor.patch" — read from
@@ -384,14 +364,10 @@ module HyperCast
     # not). The cheapest possible probe that the backend resolved at all: takes nothing,
     # cannot fail.
     def native_version
-      word = packed_version
-      "#{word >> 16}.#{(word >> 8) & 0xFF}.#{word & 0xFF}"
+      Interop.version(packed_version)
     end
 
     private
-
-    # Encodings whose bytes already are the UTF-8 (or byte-identical) form the core reads.
-    BYTE_COMPATIBLE = [Encoding::UTF_8, Encoding::US_ASCII, Encoding::ASCII_8BIT].freeze
 
     # Presents the input as UTF-8 bytes: already-compatible text crosses as-is (Fiddle
     # passes a String's own bytes for void* — no copy of them); only foreign encodings pay
@@ -407,7 +383,7 @@ module HyperCast
           raise TypeError, "no implicit conversion of #{text.class} into String"
         text = converted
       end
-      BYTE_COMPATIBLE.include?(text.encoding) ? text : text.encode(Encoding::UTF_8)
+      Interop::BYTE_COMPATIBLE.include?(text.encoding) ? text : text.encode(Encoding::UTF_8)
     end
 
     # Fiddle spells a null pointer as nil — the core's contract for empty input.
@@ -439,20 +415,8 @@ module HyperCast
       elsif rc == -1
         raise "hypercast: libhypercast reported a contract violation — a binding bug, please report it"
       else
-        offset, length = characters(bytes, *fault[0, 8].unpack("L<L<"))
-        Fault.new(reason: REASONS.fetch(rc), offset: offset, length: length)
+        Interop.fault(rc, *Interop.characters(bytes, *fault[0, 8].unpack("L<L<")))
       end
-    end
-
-    # The core's byte span in the units String#[] slices by: an identity for a binary
-    # String (its characters are its bytes) and for ASCII text (`ascii_only?` reads the
-    # cached coderange — no scan), a byte-to-character remap otherwise. Character counts
-    # survive transcoding, so a span mapped on the UTF-8 form indexes the caller's own
-    # String whatever encoding it arrived in. Failure path only: a Success never pays.
-    def characters(bytes, offset, length)
-      return [offset, length] if bytes.encoding == Encoding::ASCII_8BIT || bytes.ascii_only?
-
-      [bytes.byteslice(0, offset).length, bytes.byteslice(offset, length).length]
     end
 
     # The shared body of every format-free door: one native call over the scratch buffers.
@@ -507,7 +471,7 @@ module HyperCast
       elsif rc == -1
         raise "hypercast: libhypercast reported a contract violation — a binding bug, please report it"
       else
-        Fault.new(reason: REASONS.fetch(rc), offset: 0, length: 0)
+        Interop.fault(rc, 0, 0)
       end
     end
 
@@ -540,21 +504,6 @@ module HyperCast
         pointer[0, 32] = format.packed
         cache[format] = pointer
       end.compare_by_identity
-    end
-
-    # Builds the zone-less DateTime a civil date-time names, with exact Rational seconds.
-    def civil(bytes)
-      year, month, day, nanos = bytes.unpack("S<CCx4Q<")
-      second_of_day, frac = nanos.divmod(1_000_000_000)
-      hour, rest = second_of_day.divmod(3600)
-      minute, second = rest.divmod(60)
-      DateTime.new(year, month, day, hour, minute, second + Rational(frac, 1_000_000_000))
-    end
-
-    # Builds a UTC Time from the core's protobuf-shaped {seconds, nanos} pair, exactly.
-    def instant(bytes)
-      seconds, nanos = bytes.unpack("q<l<")
-      Time.at(seconds, nanos, :nanosecond, in: "UTC")
     end
   end
 end

@@ -143,6 +143,8 @@ mod verdict;
 
 #[cfg(feature = "php")]
 mod php_ext;
+#[cfg(feature = "python-values")]
+pub mod python;
 #[cfg(feature = "python")]
 mod python_ext;
 #[cfg(feature = "ruby")]
@@ -678,6 +680,53 @@ mod tests {
             cast_timestamp(b"1969-12-31T23:59:59.5Z"),
             Ok(Timestamp { seconds: -1, nanos: 500_000_000 })
         );
+    }
+
+    // --- ABI codes ---
+
+    #[test]
+    fn a_format_crosses_as_its_bytes_and_comes_back() {
+        let format = NumFormat::new(',', '.', NumFormat::ALL)
+            .with_currency(CurrencySymbol::new("€").unwrap());
+        let raw = RawNumFormat::from(format);
+        assert_eq!(raw.resolve(), Some(format));
+        let bytes = raw.to_le_bytes();
+        assert_eq!(&bytes[..4], &u32::from(',').to_le_bytes());
+        assert_eq!(&bytes[12..16], &3u32.to_le_bytes());
+        assert_eq!(&bytes[16..19], "€".as_bytes());
+        assert!(bytes[19..].iter().all(|&byte| byte == 0));
+        assert_eq!(RawNumFormat::from_le_bytes(bytes), raw);
+        assert_eq!(RawNumFormat::from(NumFormat::INVARIANT).resolve(), Some(NumFormat::INVARIANT));
+    }
+
+    #[test]
+    fn every_code_decodes_to_the_member_it_names_and_nothing_else_decodes() {
+        for precision in [
+            UnixPrecision::Seconds,
+            UnixPrecision::Millis,
+            UnixPrecision::Micros,
+            UnixPrecision::Nanos,
+        ] {
+            assert_eq!(UnixPrecision::from_code(precision as u32), Some(precision));
+        }
+        for epoch in [ExcelEpoch::Y1900, ExcelEpoch::Y1904] {
+            assert_eq!(ExcelEpoch::from_code(epoch as u32), Some(epoch));
+        }
+        for order in [DateOrder::YearMonthDay, DateOrder::MonthDayYear, DateOrder::DayMonthYear] {
+            assert_eq!(DateOrder::from_code(order as u32), Some(order));
+        }
+        for reason in [Reason::Empty, Reason::Malformed, Reason::OutOfRange] {
+            assert_eq!(Reason::from_code(reason as u32), Some(reason));
+        }
+        for outside in [0, 5, u32::MAX] {
+            assert_eq!(UnixPrecision::from_code(outside), None);
+            assert_eq!(ExcelEpoch::from_code(outside), None);
+            assert_eq!(DateOrder::from_code(outside), None);
+            assert_eq!(Reason::from_code(outside), None);
+        }
+        assert_eq!(ExcelEpoch::from_code(3), None);
+        assert_eq!(DateOrder::from_code(4), None);
+        assert_eq!(Reason::from_code(4), None);
     }
 
     // --- unix ---

@@ -77,7 +77,11 @@ staticlib = ["exports"]
 # abort here, only without the message printed first. Off by default, and never for an
 # rlib consumer.
 cdylib = ["staticlib"]
-python = ["dep:pyo3", "std"]
+# The core's values as Python objects (src/python.rs, `hypercast::python`), for any crate
+# whose own CPython extension presents them — this crate's extension below, and
+# HyperTabular's.
+python-values = ["dep:pyo3", "std"]
+python = ["python-values"]
 ruby = ["dep:magnus", "dep:rb-sys", "std"]
 php = ["dep:ext-php-rs", "std"]
 # Proves at link time that no C ABI export can panic: `cargo no-panic` (.cargo/config.toml)

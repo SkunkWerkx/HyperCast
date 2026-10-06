@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
+using HyperCast.Interop;
 
 namespace HyperCast;
 
@@ -47,75 +48,6 @@ public static partial class Cast
 {
 	/// <summary>UTF-16 doors encode through a stack buffer of this size before renting.</summary>
 	const int Utf8StackBytes = 512;
-
-	/// <summary>The native core's 32-byte format layout: four <c>u32</c>s, then the symbol's UTF-8 bytes inline.</summary>
-	[StructLayout(LayoutKind.Sequential)]
-	internal struct RawNumFormat
-	{
-		public uint DecimalSep;
-		public uint GroupSep;
-		public uint Flags;
-		public uint CurrencyLen;
-		public CurrencyBytes Currency;
-	}
-
-	/// <summary>The inline currency buffer — <see cref="NumFormat.MaxCurrencyBytes"/> bytes, zero-padded.</summary>
-	[InlineArray(NumFormat.MaxCurrencyBytes)]
-	internal struct CurrencyBytes
-	{
-		byte _element0;
-	}
-
-	[StructLayout(LayoutKind.Sequential)]
-	readonly struct RawFault
-	{
-		public readonly uint Offset;
-		public readonly uint Length;
-	}
-
-	[StructLayout(LayoutKind.Sequential)]
-	readonly struct RawDecimal
-	{
-		public readonly ulong Lo;
-		public readonly uint Hi;
-		public readonly byte Scale;
-		public readonly byte Negative;
-		// 2 bytes of C-struct tail padding follow; Sequential layout reproduces them because
-		// the ulong demands 8-byte alignment.
-	}
-
-	[StructLayout(LayoutKind.Sequential)]
-	readonly struct RawTimestamp
-	{
-		public readonly long Seconds;
-		public readonly int Nanos;
-	}
-
-	[StructLayout(LayoutKind.Sequential)]
-	readonly struct RawDate
-	{
-		public readonly ushort Year;
-		public readonly byte Month;
-		public readonly byte Day;
-	}
-
-	[StructLayout(LayoutKind.Sequential)]
-	readonly struct RawCivil
-	{
-		public readonly ushort Year;
-		public readonly byte Month;
-		public readonly byte Day;
-		// 4 bytes of C-struct padding sit here; Sequential layout reproduces them because
-		// the ulong below demands 8-byte alignment.
-		public readonly ulong NanosOfDay;
-	}
-
-	[StructLayout(LayoutKind.Sequential)]
-	readonly struct RawDuration
-	{
-		public readonly long Seconds;
-		public readonly int Nanos;
-	}
 
 	[LibraryImport("hypercast", EntryPoint = "cast_bool")]
 	private static unsafe partial int cast_bool_native(byte* ptr, nuint len, byte* value, RawFault* fault);
@@ -299,8 +231,6 @@ public static partial class Cast
 	private static unsafe int cast_excel_duration(double number, RawDuration* value, RawFault* fault) =>
 		OperatingSystem.IsBrowser() ? cast_excel_duration_browser(number, value, fault) : cast_excel_duration_native(number, value, fault);
 
-	const long UnixEpochTicks = 621_355_968_000_000_000L;
-
 	static ReadOnlySpan<byte> Utf8(ReadOnlySpan<char> chars, Span<byte> stack, ref byte[]? rented)
 	{
 		// Try the stack first and let the encoder say whether it fit, rather than sizing by
@@ -340,27 +270,14 @@ public static partial class Cast
 		code == -1
 			? throw new InvalidOperationException(
 				"libhypercast reported a contract violation — a binding bug, please report it.")
-			: new(new Fault((CastFailure)code, (int)fault.Offset, (int)fault.Length));
-
-	static readonly Lazy<Version?> _nativeVersion = new(ProbeNativeVersion, LazyThreadSafetyMode.PublicationOnly);
+			: new(Abi.ToFault((uint)code, fault));
 
 	// The one place the binding catches: loading is the caller's environment, not their
 	// data, and the point of the probe is to answer "did the native library resolve" without
 	// making the first real cast the thing that finds out. Every other door lets a load
 	// failure propagate, exactly as before.
-	static Version? ProbeNativeVersion()
-	{
-		try
-		{
-			var packed = hypercast_version();
-			return new Version((int)(packed >> 16), (int)((packed >> 8) & 0xFF), (int)(packed & 0xFF));
-		}
-		catch (Exception e) when (e is DllNotFoundException or EntryPointNotFoundException
-			or BadImageFormatException or PlatformNotSupportedException or TypeInitializationException)
-		{
-			return null;
-		}
-	}
+	static readonly Lazy<Version?> _nativeVersion =
+		new(() => Abi.ProbeVersion(hypercast_version), LazyThreadSafetyMode.PublicationOnly);
 
 	/// <summary>
 	/// <see langword="true"/> when the native library resolved and answered the version

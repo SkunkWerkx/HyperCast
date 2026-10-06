@@ -1,8 +1,7 @@
 package io.github.skunkwerkx.hypercast;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.UncheckedIOException;
+import io.github.skunkwerkx.hypercast.interop.NativePlatform;
+import io.github.skunkwerkx.hypercast.interop.NativeValues;
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.Linker;
@@ -12,12 +11,7 @@ import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
 import java.lang.reflect.InvocationTargetException;
 import java.math.BigDecimal;
-import java.math.BigInteger;
-import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -154,12 +148,6 @@ public final class Cast {
                 CRITICAL);
         // () -> packed version — the probe. Nothing crosses, so it is not linked critical.
         private static final MethodHandle VERSION = LINKER.downcallHandle(FunctionDescriptor.of(ValueLayout.JAVA_INT));
-
-        // The uuid door's out-value read as two big-endian longs. Here for the same reason the
-        // handles are: a layout is read through a VarHandle, and one that is not a constant in
-        // the image costs ~70 ns a load there instead of one instruction.
-        private static final ValueLayout.OfLong BIG_ENDIAN_LONG =
-                ValueLayout.JAVA_LONG.withOrder(java.nio.ByteOrder.BIG_ENDIAN);
     }
 
     /**
@@ -173,6 +161,9 @@ public final class Cast {
      */
     private static final class Core {
         private Core() {}
+
+        /** The library's base name: {@code libhypercast.so}, {@code hypercast.dll}. */
+        private static final String LIBRARY = "hypercast";
 
         /**
          * Non-null only when the wasm path was selected — see the static block below. Every door
@@ -203,18 +194,18 @@ public final class Cast {
                 throw new IllegalStateException(
                         BACKEND_PROPERTY + " must be \"native\" or \"wasm\"; got \"" + choice + "\"");
             }
-            NativePlatform.Target target = NativePlatform.current();
+            NativePlatform.Target target = NativePlatform.current(LIBRARY);
             Backend wasm = null;
             SymbolLookup lookup = null;
             if ("wasm".equals(choice)) {
                 wasm = startWasm(null);
             } else if ("native".equals(choice)) {
-                lookup = loadLibrary(target);
+                lookup = NativePlatform.load(Cast.class, LIBRARY, target);
             } else if (target == null || Cast.class.getResource(target.resourcePath()) == null) {
-                wasm = startWasm(nativeMissing(target));
+                wasm = startWasm(NativePlatform.missing(LIBRARY, target));
             } else {
                 try {
-                    lookup = loadLibrary(target);
+                    lookup = NativePlatform.load(Cast.class, LIBRARY, target);
                 } catch (RuntimeException | LinkageError nativeFailure) {
                     try {
                         wasm = startWasm("the bundled native library would not load (" + nativeFailure + ")");
@@ -264,15 +255,6 @@ public final class Cast {
             return LOOKUP == null ? null : LOOKUP.find(symbol).orElseThrow();
         }
 
-        // Why there is no native library to load, for the messages below: no build exists for
-        // this platform at all, or one should and this jar was packed without it.
-        private static String nativeMissing(NativePlatform.Target target) {
-            return target == null
-                    ? "hypercast: this jar carries no native library for " + NativePlatform.describe()
-                    : target.resourcePath() + " classpath resource not found (this jar was built "
-                            + "without a native library for this platform)";
-        }
-
         /**
          * Starts the GraalWasm backend. {@code nativeUnavailable} is why the native path was
          * not taken, or {@code null} when wasm was asked for by name — it only shapes the
@@ -311,27 +293,6 @@ public final class Cast {
                     throw re;
                 }
                 throw new IllegalStateException("hypercast: could not start the wasm backend", cause);
-            }
-        }
-
-        // The library must outlive every downcall made through it, so it's loaded into the
-        // JDK-provided global arena that lives for the process's lifetime.
-        private static SymbolLookup loadLibrary(NativePlatform.Target target) {
-            if (target == null) {
-                throw new IllegalStateException(nativeMissing(null));
-            }
-            try (InputStream resource = Cast.class.getResourceAsStream(target.resourcePath())) {
-                if (resource == null) {
-                    throw new IllegalStateException(nativeMissing(target));
-                }
-                String libraryFileName = target.libraryFileName();
-                String extension = libraryFileName.substring(libraryFileName.lastIndexOf('.'));
-                Path tmp = Files.createTempFile("hypercast", extension);
-                tmp.toFile().deleteOnExit();
-                Files.copy(resource, tmp, StandardCopyOption.REPLACE_EXISTING);
-                return SymbolLookup.libraryLookup(tmp, Arena.global());
-            } catch (IOException e) {
-                throw new UncheckedIOException(e);
             }
         }
     }
@@ -410,8 +371,7 @@ public final class Cast {
                 throw new AssertionError("hypercast: hypercast_version downcall failed unexpectedly", t);
             }
         }
-        // major << 16 | minor << 8 | patch, per ffi.rs.
-        return (packed >>> 16) + "." + ((packed >>> 8) & 0xFF) + "." + (packed & 0xFF);
+        return NativeValues.version(packed);
     }
 
     // The five ABI shapes, each one line on the wasm path and one downcall on the native
@@ -485,15 +445,6 @@ public final class Cast {
         }
     }
 
-    /** Fault span out-param: {@code {u32 offset, u32 length}}. */
-    private static final long FAULT_BYTES = 8;
-
-    /**
-     * NumFormat in-param: {@code {u32 decimal_sep, u32 group_sep, u32 flags, u32 currency_len,
-     * u8[16] currency}} — the symbol's UTF-8 bytes inline, zero-padded (32 bytes).
-     */
-    private static final long FORMAT_BYTES = 32;
-
     /**
      * Per-thread scratch for the downcall out-params. Every door used to open its own
      * {@link Arena#ofConfined()} — a fresh native allocation plus a scope teardown on every
@@ -519,8 +470,8 @@ public final class Cast {
         // read JAVA_LONG out of `out`, which a 1-byte-aligned segment rejects outright.
         private final Arena fixed = Arena.ofAuto();
         final MemorySegment out = fixed.allocate(16, 8);
-        final MemorySegment fault = fixed.allocate(FAULT_BYTES, 4);
-        private final MemorySegment formatSegment = fixed.allocate(FORMAT_BYTES, 4);
+        final MemorySegment fault = fixed.allocate(NativeValues.FAULT_BYTES, 4);
+        private final MemorySegment formatSegment = fixed.allocate(NativeValues.FORMAT_BYTES, 4);
         private NumFormat formatKey;
 
         MemorySegment format(NumFormat declared) {
@@ -529,15 +480,9 @@ public final class Cast {
             // encode — on the overwhelming majority of calls; the same memo the Python and
             // Ruby bindings keep.
             if (formatKey != declared) {
-                formatSegment.set(ValueLayout.JAVA_INT, 0, declared.decimalSeparator());
-                formatSegment.set(ValueLayout.JAVA_INT, 4, declared.groupSeparator());
-                formatSegment.set(ValueLayout.JAVA_INT, 8, declared.styles());
-                byte[] symbol = declared.currencySymbol().getBytes(StandardCharsets.UTF_8);
-                formatSegment.set(ValueLayout.JAVA_INT, 12, symbol.length);
-                // The whole 16-byte symbol field is zeroed before the copy: the memo means a
-                // shorter symbol after a longer one must not leave the tail behind.
-                formatSegment.asSlice(16, 16).fill((byte) 0);
-                MemorySegment.copy(symbol, 0, formatSegment, ValueLayout.JAVA_BYTE, 16, symbol.length);
+                // The whole 16-byte symbol field is written, zero past the symbol: the memo
+                // means a shorter symbol after a longer one must not leave the tail behind.
+                NativeValues.writeFormat(declared, formatSegment, 0);
                 formatKey = declared;
             }
             return formatSegment;
@@ -551,8 +496,7 @@ public final class Cast {
             throw new IllegalStateException(
                     "libhypercast reported a contract violation — a binding bug, please report it");
         }
-        return new Fault<>(
-                CastFailure.fromCode(code), fault.get(ValueLayout.JAVA_INT, 0), fault.get(ValueLayout.JAVA_INT, 4));
+        return NativeValues.fault(code, fault.get(ValueLayout.JAVA_INT, 0), fault.get(ValueLayout.JAVA_INT, 4));
     }
 
     private static byte[] utf8(String text) {
@@ -1166,18 +1110,8 @@ public final class Cast {
         return numeric(Core.CAST_DECIMAL, Door.DECIMAL, input(utf8), utf8.byteSize(), format, Cast::readDecimal);
     }
 
-    // The core's Decimal out-param: {u64 lo, u32 hi, u8 scale, u8 negative} — a 96-bit
-    // magnitude and a base-10 scale, the very triple BigDecimal is built from. BigInteger
-    // takes its magnitude big-endian, so the two little-endian words are laid out high word
-    // first; the core never hands back a negative zero, so the signum needs no zero check.
     private static BigDecimal readDecimal(MemorySegment out) {
-        long lo = out.get(ValueLayout.JAVA_LONG, 0);
-        int hi = out.get(ValueLayout.JAVA_INT, 8);
-        int scale = out.get(ValueLayout.JAVA_BYTE, 12);
-        int signum = out.get(ValueLayout.JAVA_BYTE, 13) != 0 ? -1 : 1;
-        byte[] magnitude = new byte[12];
-        ByteBuffer.wrap(magnitude).putInt(hi).putLong(lo);
-        return new BigDecimal(new BigInteger(signum, magnitude), scale);
+        return NativeValues.decimal(out, 0);
     }
 
     // --- uuid ---
@@ -1224,18 +1158,10 @@ public final class Cast {
         if (code != 0) {
             return failed(code, fault);
         }
-        // RFC 9562 order is exactly UUID's msb/lsb decomposition — no swapping, unlike Guid —
-        // so the 16 bytes are two big-endian longs, read as such; `out` is 8-aligned for it.
-        return new Success<>(new UUID(out.get(Downcalls.BIG_ENDIAN_LONG, 0), out.get(Downcalls.BIG_ENDIAN_LONG, 8)));
+        return new Success<>(NativeValues.uuid(out, 0));
     }
 
     // --- temporals ---
-
-    /** Timestamp out-param: {@code {i64 seconds, i32 nanos}} (protobuf layout, 16 bytes with padding). */
-    private static final long TIMESTAMP_BYTES = 16;
-
-    /** CivilDateTime out-param: {@code {u16 y, u8 m, u8 d, pad, u64 nanos-of-day}} (16 bytes). */
-    private static final long CIVIL_BYTES = 16;
 
     // A zero precision means the RFC 3339 door's plain shape; anything else is a declared
     // unit or epoch on the unix shape.
@@ -1247,10 +1173,7 @@ public final class Cast {
         int code = precision == 0
                 ? plain(export, door, in, len, out, fault)
                 : declared(export, door, in, len, precision, out, fault);
-        return code == 0
-                ? new Success<>(
-                        Instant.ofEpochSecond(out.get(ValueLayout.JAVA_LONG, 0), out.get(ValueLayout.JAVA_INT, 8)))
-                : failed(code, fault);
+        return code == 0 ? new Success<>(NativeValues.instant(out, 0)) : failed(code, fault);
     }
 
     /**
@@ -1411,12 +1334,7 @@ public final class Cast {
         MemorySegment out = scratch.out;
         MemorySegment fault = scratch.fault;
         int code = plain(Core.CAST_DATE, Door.DATE, in, len, out, fault);
-        return code == 0
-                ? new Success<>(LocalDate.of(
-                        Short.toUnsignedInt(out.get(ValueLayout.JAVA_SHORT, 0)),
-                        out.get(ValueLayout.JAVA_BYTE, 2),
-                        out.get(ValueLayout.JAVA_BYTE, 3)))
-                : failed(code, fault);
+        return code == 0 ? new Success<>(NativeValues.date(out, 0)) : failed(code, fault);
     }
 
     /**
@@ -1465,12 +1383,7 @@ public final class Cast {
         MemorySegment out = scratch.out;
         MemorySegment fault = scratch.fault;
         int code = declared(Core.CAST_DATE_ORDERED, Door.DATE_ORDERED, in, len, order.code(), out, fault);
-        return code == 0
-                ? new Success<>(LocalDate.of(
-                        Short.toUnsignedInt(out.get(ValueLayout.JAVA_SHORT, 0)),
-                        out.get(ValueLayout.JAVA_BYTE, 2),
-                        out.get(ValueLayout.JAVA_BYTE, 3)))
-                : failed(code, fault);
+        return code == 0 ? new Success<>(NativeValues.date(out, 0)) : failed(code, fault);
     }
 
     /**
@@ -1521,14 +1434,7 @@ public final class Cast {
         MemorySegment out = scratch.out;
         MemorySegment fault = scratch.fault;
         int code = declared(Core.CAST_DATETIME, Door.DATETIME, in, len, order.code(), out, fault);
-        return code == 0
-                ? new Success<>(LocalDateTime.of(
-                        LocalDate.of(
-                                Short.toUnsignedInt(out.get(ValueLayout.JAVA_SHORT, 0)),
-                                out.get(ValueLayout.JAVA_BYTE, 2),
-                                out.get(ValueLayout.JAVA_BYTE, 3)),
-                        LocalTime.ofNanoOfDay(out.get(ValueLayout.JAVA_LONG, 8))))
-                : failed(code, fault);
+        return code == 0 ? new Success<>(NativeValues.civil(out, 0)) : failed(code, fault);
     }
 
     /**
@@ -1572,9 +1478,7 @@ public final class Cast {
         MemorySegment out = scratch.out;
         MemorySegment fault = scratch.fault;
         int code = plain(Core.CAST_TIME, Door.TIME, in, len, out, fault);
-        return code == 0
-                ? new Success<>(LocalTime.ofNanoOfDay(out.get(ValueLayout.JAVA_LONG, 0)))
-                : failed(code, fault);
+        return code == 0 ? new Success<>(NativeValues.time(out, 0)) : failed(code, fault);
     }
 
     /**
@@ -1619,10 +1523,7 @@ public final class Cast {
         MemorySegment out = scratch.out;
         MemorySegment fault = scratch.fault;
         int code = plain(Core.CAST_DURATION, Door.DURATION, in, len, out, fault);
-        // Duration.ofSeconds normalizes the core's same-signed nanos adjustment correctly.
-        return code == 0
-                ? new Success<>(Duration.ofSeconds(out.get(ValueLayout.JAVA_LONG, 0), out.get(ValueLayout.JAVA_INT, 8)))
-                : failed(code, fault);
+        return code == 0 ? new Success<>(NativeValues.duration(out, 0)) : failed(code, fault);
     }
 
     // --- typed doors: a number the caller already holds ---
@@ -1668,14 +1569,7 @@ public final class Cast {
         MemorySegment out = scratch.out;
         int code = typedDeclared(
                 Core.CAST_EXCEL_SERIAL_FROM_F64, Door.EXCEL_SERIAL_FROM_F64, value, epoch.code(), out, scratch.fault);
-        return code == 0
-                ? new Success<>(LocalDateTime.of(
-                        LocalDate.of(
-                                Short.toUnsignedInt(out.get(ValueLayout.JAVA_SHORT, 0)),
-                                out.get(ValueLayout.JAVA_BYTE, 2),
-                                out.get(ValueLayout.JAVA_BYTE, 3)),
-                        LocalTime.ofNanoOfDay(out.get(ValueLayout.JAVA_LONG, 8))))
-                : failed(code, scratch.fault);
+        return code == 0 ? new Success<>(NativeValues.civil(out, 0)) : failed(code, scratch.fault);
     }
 
     /**
@@ -1691,9 +1585,7 @@ public final class Cast {
     public static Verdict<LocalTime> excelTime(double value) {
         Scratch scratch = SCRATCH.get();
         int code = typed(Core.CAST_EXCEL_TIME, Door.EXCEL_TIME, value, scratch.out, scratch.fault);
-        return code == 0
-                ? new Success<>(LocalTime.ofNanoOfDay(scratch.out.get(ValueLayout.JAVA_LONG, 0)))
-                : failed(code, scratch.fault);
+        return code == 0 ? new Success<>(NativeValues.time(scratch.out, 0)) : failed(code, scratch.fault);
     }
 
     /**
@@ -1710,8 +1602,6 @@ public final class Cast {
         Scratch scratch = SCRATCH.get();
         MemorySegment out = scratch.out;
         int code = typed(Core.CAST_EXCEL_DURATION, Door.EXCEL_DURATION, value, out, scratch.fault);
-        return code == 0
-                ? new Success<>(Duration.ofSeconds(out.get(ValueLayout.JAVA_LONG, 0), out.get(ValueLayout.JAVA_INT, 8)))
-                : failed(code, scratch.fault);
+        return code == 0 ? new Success<>(NativeValues.duration(out, 0)) : failed(code, scratch.fault);
     }
 }

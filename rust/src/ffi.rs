@@ -179,12 +179,8 @@ pub extern "C" fn cast_unix(
     out: *mut Timestamp,
     fault: *mut RawFault,
 ) -> i32 {
-    let precision = match precision {
-        1 => UnixPrecision::Seconds,
-        2 => UnixPrecision::Millis,
-        3 => UnixPrecision::Micros,
-        4 => UnixPrecision::Nanos,
-        _ => return CONTRACT_VIOLATION,
+    let Some(precision) = UnixPrecision::from_code(precision) else {
+        return CONTRACT_VIOLATION;
     };
     // SAFETY: caller guarantees the pointer contracts, per the module doc.
     unsafe { finish(temporal::cast_unix(text(ptr, len), precision), out, fault) }
@@ -202,10 +198,8 @@ pub extern "C" fn cast_excel_serial(
     out: *mut Timestamp,
     fault: *mut RawFault,
 ) -> i32 {
-    let epoch = match epoch {
-        1 => ExcelEpoch::Y1900,
-        2 => ExcelEpoch::Y1904,
-        _ => return CONTRACT_VIOLATION,
+    let Some(epoch) = ExcelEpoch::from_code(epoch) else {
+        return CONTRACT_VIOLATION;
     };
     // SAFETY: caller guarantees the pointer contracts, per the module doc.
     unsafe { finish(temporal::cast_excel_serial(text(ptr, len), epoch), out, fault) }
@@ -223,11 +217,8 @@ pub extern "C" fn cast_date_ordered(
     out: *mut Date,
     fault: *mut RawFault,
 ) -> i32 {
-    let order = match order {
-        1 => DateOrder::YearMonthDay,
-        2 => DateOrder::MonthDayYear,
-        3 => DateOrder::DayMonthYear,
-        _ => return CONTRACT_VIOLATION,
+    let Some(order) = DateOrder::from_code(order) else {
+        return CONTRACT_VIOLATION;
     };
     // SAFETY: caller guarantees the pointer contracts, per the module doc.
     unsafe { finish(temporal::cast_date_ordered(text(ptr, len), order), out, fault) }
@@ -245,11 +236,8 @@ pub extern "C" fn cast_datetime(
     out: *mut CivilDateTime,
     fault: *mut RawFault,
 ) -> i32 {
-    let order = match order {
-        1 => DateOrder::YearMonthDay,
-        2 => DateOrder::MonthDayYear,
-        3 => DateOrder::DayMonthYear,
-        _ => return CONTRACT_VIOLATION,
+    let Some(order) = DateOrder::from_code(order) else {
+        return CONTRACT_VIOLATION;
     };
     // SAFETY: caller guarantees the pointer contracts, per the module doc.
     unsafe { finish(temporal::cast_datetime(text(ptr, len), order), out, fault) }
@@ -320,10 +308,8 @@ pub extern "C" fn cast_excel_serial_from_f64(
     out: *mut CivilDateTime,
     fault: *mut RawFault,
 ) -> i32 {
-    let epoch = match epoch {
-        1 => ExcelEpoch::Y1900,
-        2 => ExcelEpoch::Y1904,
-        _ => return CONTRACT_VIOLATION,
+    let Some(epoch) = ExcelEpoch::from_code(epoch) else {
+        return CONTRACT_VIOLATION;
     };
     // SAFETY: caller guarantees the pointer contracts, per the module doc.
     unsafe { finish(spanless(temporal::excel_serial(value, epoch)), out, fault) }

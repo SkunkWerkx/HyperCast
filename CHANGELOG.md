@@ -9,8 +9,44 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.2] — 2026-10-06
+
 ### Added
 
+- **Every binding — a public interop surface for libraries that carry HyperCast's verdicts
+  across a C ABI of their own.** HyperTabular's bindings had to copy the private code that
+  turns the core's raw out-values, numeric format, reason codes and fault spans into each
+  language's types, and its platform table and library loader; now every binding exposes
+  them, and the Cast doors use exactly the same code, so a value read out of another
+  library's buffer is the value the door would have returned. *(every package)*
+  - Rust: `UnixPrecision`, `DateOrder`, `ExcelEpoch` and `Reason` gain `const fn
+    from_code`; `RawNumFormat` gains `From<NumFormat>`, `to_le_bytes` and `from_le_bytes`;
+    and the `python-values` feature exposes `hypercast::python::Values`, the conversions to
+    `datetime`, `decimal.Decimal` and `uuid.UUID` (the `python` feature builds on it).
+  - C#: the `HyperCast.Interop` namespace — `RawTimestamp`, `RawDate`, `RawCivil`,
+    `RawDuration`, `RawDecimal`, `RawFault` and `RawNumFormat` with their conversions, and
+    `Abi` for checked codes both ways, faults, versions and the version probe;
+    `NumFormat.ToRaw()` is public.
+  - Java: the `io.github.skunkwerkx.hypercast.interop` package — `NativeValues` (every
+    out-value reader, the format writer, faults, versions) and `NativePlatform`
+    (parameterized by library name, with the jar loader); the enums' `code()` is public and
+    each gains `fromCode`, an `Optional`, as `CastFailure.fromCode` now is.
+  - Go: `RawTimestamp`, `RawDate`, `RawCivil` and `RawNumFormat` with their conversions,
+    `NumFormat.Raw()` (the doors' check as an error), `Valid()` and `*FromCode` for each
+    declared option and the reason, `FaultFromCode`, `FormatVersion` and
+    `CurrencyMaxBytes`; `Decimal` and `Duration` are documented and checked as the core's
+    own layout. `NumFormat` now also refuses a separator that is no Unicode scalar value,
+    as the core does, instead of panicking with a contract violation.
+  - Swift: the `Interop` namespace — the out-value readers, `rawFormat`, `fault` and
+    `version`.
+  - PHP: `HyperCast\Interop\NativeValues` (the value builders, `writeFormat`, `fault`,
+    `version`) and `HyperCast\Interop\NativePlatform` (parameterized by library name, with
+    the library-path lookup), which replaces the `@internal` `HyperCast\NativePlatform`.
+  - Ruby: `HyperCast::Interop` — `SCALARS`, `RECORDS` and `VALUE_BYTES` (each door's
+    unpack directive, field count and builder), `decode`, `fault`, `characters`, `version`
+    and `library_path`; `NativePlatform.rid_and_library_name` takes `library:`.
+  - Python: `NumFormat.packed`, the 32 bytes a format crosses a C ABI as, and a `repr` that
+    builds the format again.
 - **Rust — `excel_serial`, the Excel-serial door for a number.** `cast_excel_serial` reads
   serial *text*; a workbook reader holds the `f64` the file stores and had to re-implement
   the rules to convert it. `excel_serial(serial, epoch)` is the same two date systems from
@@ -106,6 +142,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`prepare-release.yml` left `rust/browser-test/Cargo.lock` out of its commit.** It
+  regenerated the lockfile's own entry for the new version and then staged every manifest
+  but that one. *(repository)*
 - **Rust — the README's consumer no-panic recipe could not fail for a `cdylib`.** no-panic
   reports a surviving panic path as an undefined symbol, which a Linux shared library is
   allowed to have, so a `cdylib` built from the recipe linked cleanly even against 0.6.0,
@@ -1094,7 +1133,8 @@ notes: [v0.1.0 release](https://github.com/SkunkWerkx/HyperCast/releases/tag/v0.
   found in that window, in the gap between "the publish succeeded" and "a consumer can use it",
   and none of them could have failed a build in this repository.
 
-[Unreleased]: https://github.com/SkunkWerkx/HyperCast/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/SkunkWerkx/HyperCast/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/SkunkWerkx/HyperCast/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/SkunkWerkx/HyperCast/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.4.0...v0.6.0
 [0.4.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.3.0...v0.4.0

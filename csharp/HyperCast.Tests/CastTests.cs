@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Reflection;
 using System.Runtime.CompilerServices;
 
 namespace HyperCast.Tests;
@@ -340,7 +339,7 @@ public sealed class CastTests
 	{
 		// Restated by hand from rust/src/verdict.rs and ffi.rs, whose sizes rust/src/abi.rs
 		// pins; Sequential layout has to reproduce the C padding to land on the same numbers.
-		var raw = typeof(Cast).GetNestedType(name, BindingFlags.NonPublic).ShouldNotBeNull();
+		var raw = typeof(Cast).Assembly.GetType($"HyperCast.Interop.{name}").ShouldNotBeNull();
 		var sizeOf = typeof(Unsafe).GetMethod(nameof(Unsafe.SizeOf))!.MakeGenericMethod(raw);
 		sizeOf.Invoke(null, null).ShouldBe(size);
 	}

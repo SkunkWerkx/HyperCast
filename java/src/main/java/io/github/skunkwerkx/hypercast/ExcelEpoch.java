@@ -1,5 +1,7 @@
 package io.github.skunkwerkx.hypercast;
 
+import java.util.Optional;
+
 /**
  * The date system an Excel serial number is expressed in. Spreadsheets carry no marker for
  * this — it is a workbook-level setting — so the caller states it, the same way
@@ -24,7 +26,28 @@ public enum ExcelEpoch {
         this.code = code;
     }
 
-    int code() {
+    /**
+     * The native core's discriminant for this constant — what a library declaring this
+     * option across its own C ABI passes.
+     *
+     * @return the ABI discriminant
+     */
+    public int code() {
         return code;
+    }
+
+    /**
+     * The constant whose ABI discriminant is {@code code}.
+     *
+     * @param code the discriminant: 1 the 1900 system, 2 the 1904 system
+     * @return the constant, or empty for any other value
+     */
+    public static Optional<ExcelEpoch> fromCode(int code) {
+        for (ExcelEpoch member : values()) {
+            if (member.code == code) {
+                return Optional.of(member);
+            }
+        }
+        return Optional.empty();
     }
 }

@@ -1,5 +1,7 @@
 package io.github.skunkwerkx.hypercast;
 
+import java.util.Optional;
+
 /**
  * The closed set of reasons a cast can fail — the native core's verdict codes, verbatim.
  * Adding a member is a deliberate breaking change: every exhaustive switch over this enum
@@ -33,12 +35,18 @@ public enum CastFailure {
         return code;
     }
 
-    static CastFailure fromCode(int code) {
+    /**
+     * The reason whose native verdict code is {@code code}.
+     *
+     * @param code the verdict code: 1 empty, 2 malformed, 3 out of range
+     * @return the reason, or empty for any other value — {@code 0}, success, included
+     */
+    public static Optional<CastFailure> fromCode(int code) {
         return switch (code) {
-            case 1 -> EMPTY;
-            case 2 -> MALFORMED;
-            case 3 -> OUT_OF_RANGE;
-            default -> throw new IllegalStateException("libhypercast returned unknown verdict code " + code);
+            case 1 -> Optional.of(EMPTY);
+            case 2 -> Optional.of(MALFORMED);
+            case 3 -> Optional.of(OUT_OF_RANGE);
+            default -> Optional.empty();
         };
     }
 }

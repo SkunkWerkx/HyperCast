@@ -138,7 +138,7 @@ func callPlain(sym plainSymbol, ptr unsafe.Pointer, length uintptr) (r result) {
 	return r
 }
 
-func callNumeric(sym numericSymbol, ptr unsafe.Pointer, length uintptr, format rawNumFormat) (r result) {
+func callNumeric(sym numericSymbol, ptr unsafe.Pointer, length uintptr, format RawNumFormat) (r result) {
 	r.code = int32(sym((*C.uint8_t)(ptr), C.size_t(length), unsafe.Pointer(&format),
 		unsafe.Pointer(&r.out), unsafe.Pointer(&r.fault)))
 	return r

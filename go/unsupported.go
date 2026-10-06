@@ -35,7 +35,7 @@ var (
 
 func packedVersion() uint32                                                       { return 0 }
 func callPlain(plainSymbol, unsafe.Pointer, uintptr) (r result)                   { return r }
-func callNumeric(numericSymbol, unsafe.Pointer, uintptr, rawNumFormat) (r result) { return r }
+func callNumeric(numericSymbol, unsafe.Pointer, uintptr, RawNumFormat) (r result) { return r }
 func callUnix(unsafe.Pointer, uintptr, uint32) (r result)                         { return r }
 func callDateOrdered(unsafe.Pointer, uintptr, uint32) (r result)                  { return r }
 func callDateTime(unsafe.Pointer, uintptr, uint32) (r result)                     { return r }

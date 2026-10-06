@@ -1,3 +1,5 @@
+using HyperCast.Interop;
+
 namespace HyperCast;
 
 public static partial class Cast
@@ -17,7 +19,7 @@ public static partial class Cast
 		fixed (byte* ptr = utf8)
 		fixed (byte* value = bytes)
 			code = cast_uuid(ptr, (nuint)utf8.Length, value, &fault);
-		return code == 0 ? new Guid(bytes, bigEndian: true) : Failed<Guid>(code, fault);
+		return code == 0 ? Abi.ToGuid(bytes) : Failed<Guid>(code, fault);
 	}
 
 	/// <inheritdoc cref="Uuid(ReadOnlySpan{byte})"/>
@@ -52,7 +54,7 @@ public static partial class Cast
 		int code;
 		fixed (byte* ptr = utf8)
 			code = cast_timestamp(ptr, (nuint)utf8.Length, &value, &fault);
-		return code == 0 ? ToDateTimeOffset(value) : Failed<DateTimeOffset>(code, fault);
+		return code == 0 ? value.ToDateTimeOffset() : Failed<DateTimeOffset>(code, fault);
 	}
 
 	/// <inheritdoc cref="Timestamp(ReadOnlySpan{byte})"/>
@@ -82,13 +84,13 @@ public static partial class Cast
 	/// <exception cref="ArgumentOutOfRangeException"><paramref name="precision"/> is undefined — a caller bug, not a data verdict.</exception>
 	public static unsafe Verdict<DateTimeOffset> Unix(ReadOnlySpan<byte> utf8, UnixPrecision precision)
 	{
-		GuardPrecision(precision);
+		var declared = Abi.Code(precision);
 		RawTimestamp value = default;
 		RawFault fault = default;
 		int code;
 		fixed (byte* ptr = utf8)
-			code = cast_unix(ptr, (nuint)utf8.Length, (uint)precision, &value, &fault);
-		return code == 0 ? ToDateTimeOffset(value) : Failed<DateTimeOffset>(code, fault);
+			code = cast_unix(ptr, (nuint)utf8.Length, declared, &value, &fault);
+		return code == 0 ? value.ToDateTimeOffset() : Failed<DateTimeOffset>(code, fault);
 	}
 
 	/// <inheritdoc cref="Unix(ReadOnlySpan{byte}, UnixPrecision)"/>
@@ -127,13 +129,13 @@ public static partial class Cast
 	/// <exception cref="ArgumentOutOfRangeException"><paramref name="epoch"/> is undefined — a caller bug, not a data verdict.</exception>
 	public static unsafe Verdict<DateTimeOffset> ExcelSerial(ReadOnlySpan<byte> utf8, ExcelEpoch epoch)
 	{
-		GuardEpoch(epoch);
+		var declared = Abi.Code(epoch);
 		RawTimestamp value = default;
 		RawFault fault = default;
 		int code;
 		fixed (byte* ptr = utf8)
-			code = cast_excel_serial(ptr, (nuint)utf8.Length, (uint)epoch, &value, &fault);
-		return code == 0 ? ToDateTimeOffset(value) : Failed<DateTimeOffset>(code, fault);
+			code = cast_excel_serial(ptr, (nuint)utf8.Length, declared, &value, &fault);
+		return code == 0 ? value.ToDateTimeOffset() : Failed<DateTimeOffset>(code, fault);
 	}
 
 	/// <inheritdoc cref="ExcelSerial(ReadOnlySpan{byte}, ExcelEpoch)"/>
@@ -168,7 +170,7 @@ public static partial class Cast
 		fixed (byte* ptr = utf8)
 			code = cast_date(ptr, (nuint)utf8.Length, &value, &fault);
 		return code == 0
-			? new DateOnly(value.Year, value.Month, value.Day)
+			? value.ToDateOnly()
 			: Failed<DateOnly>(code, fault);
 	}
 
@@ -202,14 +204,14 @@ public static partial class Cast
 	/// <exception cref="ArgumentOutOfRangeException"><paramref name="order"/> is undefined — a caller bug, not a data verdict.</exception>
 	public static unsafe Verdict<DateOnly> Date(ReadOnlySpan<byte> utf8, DateOrder order)
 	{
-		GuardOrder(order);
+		var declared = Abi.Code(order);
 		RawDate value = default;
 		RawFault fault = default;
 		int code;
 		fixed (byte* ptr = utf8)
-			code = cast_date_ordered(ptr, (nuint)utf8.Length, (uint)order, &value, &fault);
+			code = cast_date_ordered(ptr, (nuint)utf8.Length, declared, &value, &fault);
 		return code == 0
-			? new DateOnly(value.Year, value.Month, value.Day)
+			? value.ToDateOnly()
 			: Failed<DateOnly>(code, fault);
 	}
 
@@ -248,16 +250,13 @@ public static partial class Cast
 	/// <exception cref="ArgumentOutOfRangeException"><paramref name="order"/> is undefined — a caller bug, not a data verdict.</exception>
 	public static unsafe Verdict<System.DateTime> DateTime(ReadOnlySpan<byte> utf8, DateOrder order)
 	{
-		GuardOrder(order);
+		var declared = Abi.Code(order);
 		RawCivil value = default;
 		RawFault fault = default;
 		int code;
 		fixed (byte* ptr = utf8)
-			code = cast_datetime(ptr, (nuint)utf8.Length, (uint)order, &value, &fault);
-		return code == 0
-			? new System.DateTime(value.Year, value.Month, value.Day, 0, 0, 0, DateTimeKind.Unspecified)
-				.AddTicks((long)(value.NanosOfDay / 100))
-			: Failed<System.DateTime>(code, fault);
+			code = cast_datetime(ptr, (nuint)utf8.Length, declared, &value, &fault);
+		return code == 0 ? value.ToDateTime() : Failed<System.DateTime>(code, fault);
 	}
 
 	/// <inheritdoc cref="DateTime(ReadOnlySpan{byte}, DateOrder)"/>
@@ -292,7 +291,7 @@ public static partial class Cast
 		int code;
 		fixed (byte* ptr = utf8)
 			code = cast_time(ptr, (nuint)utf8.Length, &nanos, &fault);
-		return code == 0 ? new TimeOnly((long)(nanos / 100)) : Failed<TimeOnly>(code, fault);
+		return code == 0 ? Abi.ToTimeOnly(nanos) : Failed<TimeOnly>(code, fault);
 	}
 
 	/// <inheritdoc cref="Time(ReadOnlySpan{byte})"/>
@@ -327,9 +326,7 @@ public static partial class Cast
 		int code;
 		fixed (byte* ptr = utf8)
 			code = cast_duration(ptr, (nuint)utf8.Length, &value, &fault);
-		return code == 0
-			? new TimeSpan(value.Seconds * TimeSpan.TicksPerSecond + value.Nanos / 100)
-			: Failed<TimeSpan>(code, fault);
+		return code == 0 ? value.ToTimeSpan() : Failed<TimeSpan>(code, fault);
 	}
 
 	/// <inheritdoc cref="Duration(ReadOnlySpan{byte})"/>
@@ -346,31 +343,5 @@ public static partial class Cast
 		{
 			Recycle(rented);
 		}
-	}
-
-	static DateTimeOffset ToDateTimeOffset(in RawTimestamp timestamp) =>
-		new(UnixEpochTicks + timestamp.Seconds * TimeSpan.TicksPerSecond + timestamp.Nanos / 100,
-			TimeSpan.Zero);
-
-	static void GuardOrder(DateOrder order)
-	{
-		if (order is not (DateOrder.YearMonthDay or DateOrder.MonthDayYear or DateOrder.DayMonthYear))
-			throw new ArgumentOutOfRangeException(nameof(order), order,
-				"Order must be YearMonthDay, MonthDayYear, or DayMonthYear.");
-	}
-
-	static void GuardPrecision(UnixPrecision precision)
-	{
-		if (precision is not (UnixPrecision.Seconds or UnixPrecision.Milliseconds
-			or UnixPrecision.Microseconds or UnixPrecision.Nanoseconds))
-			throw new ArgumentOutOfRangeException(nameof(precision), precision,
-				"Precision must be Seconds, Milliseconds, Microseconds, or Nanoseconds.");
-	}
-
-	static void GuardEpoch(ExcelEpoch epoch)
-	{
-		if (epoch is not (ExcelEpoch.Y1900 or ExcelEpoch.Y1904))
-			throw new ArgumentOutOfRangeException(nameof(epoch), epoch,
-				"Epoch must be Y1900 or Y1904.");
 	}
 }

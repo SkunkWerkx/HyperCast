@@ -34,6 +34,19 @@ pub struct Fault {
     pub len: u32,
 }
 
+impl Reason {
+    /// The reason whose ABI verdict code is `code` (`1` empty, `2` malformed, `3` out of
+    /// range), or `None` for any other value — `0`, the code for success, included.
+    pub const fn from_code(code: u32) -> Option<Reason> {
+        Some(match code {
+            1 => Reason::Empty,
+            2 => Reason::Malformed,
+            3 => Reason::OutOfRange,
+            _ => return None,
+        })
+    }
+}
+
 impl core::fmt::Display for Reason {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(match self {
