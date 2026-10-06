@@ -666,7 +666,13 @@ mod tests {
     #[test]
     fn timestamp_fraction_carries_nanosecond_fidelity() {
         assert_eq!(cast_timestamp(b"1970-01-01T00:00:00.000000001Z").unwrap().nanos, 1);
-        assert_eq!(reason(cast_timestamp(b"1970-01-01T00:00:00.0000000001Z")), Reason::Malformed);
+        // Past the ninth digit the fraction truncates, never rounds: the last instant of the
+        // window stays in it rather than carrying out.
+        assert_eq!(cast_timestamp(b"1970-01-01T00:00:00.0000000001Z").unwrap().nanos, 0);
+        assert_eq!(
+            cast_timestamp(b"9999-12-31T23:59:59.99999999999999999Z"),
+            Ok(Timestamp { seconds: MAX_TIMESTAMP_SECONDS, nanos: 999_999_999 })
+        );
         // Sub-second nanos count forward even before the epoch (protobuf convention).
         assert_eq!(
             cast_timestamp(b"1969-12-31T23:59:59.5Z"),
@@ -1082,11 +1088,14 @@ mod tests {
         assert_eq!(cast_time(b"15:04"), Ok(54_240_000_000_000));
         assert_eq!(cast_time(b"00:00:00"), Ok(0));
         assert_eq!(cast_time(b"23:59:59.999999999"), Ok(86_399_999_999_999));
+        // Excel's strict writer: seventeen digits, truncated to nine, no carry into the day.
+        assert_eq!(cast_time(b"15:04:05.00000000000312325"), Ok(54_245_000_000_000));
+        assert_eq!(cast_time(b"23:59:59.9999999999"), Ok(86_399_999_999_999));
     }
 
     #[test]
     fn time_rejects_non_iso_readings() {
-        for text in ["3:04:05 PM", "noon", "1:04", "15:04:05.0000000001", "25:00x"] {
+        for text in ["3:04:05 PM", "noon", "1:04", "25:00x"] {
             assert_eq!(reason(cast_time(text.as_bytes())), Reason::Malformed, "{text}");
         }
         for (text, at) in

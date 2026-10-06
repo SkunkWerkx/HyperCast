@@ -31,8 +31,10 @@ public static partial class Cast
 	/// <see cref="ExcelSerial(ReadOnlySpan{byte}, ExcelEpoch)"/> for a workbook reader that has
 	/// the cell's number and no text. The result is the zone-less wall clock the cell holds, a
 	/// <see cref="System.DateTime"/> of <see cref="DateTimeKind.Unspecified"/> as
-	/// <see cref="DateTime(ReadOnlySpan{byte}, DateOrder)"/> returns; the fraction is rounded to
-	/// the nearest nanosecond, then sub-tick nanoseconds truncate. The 1900 system's phantom
+	/// <see cref="DateTime(ReadOnlySpan{byte}, DateOrder)"/> returns; the fraction is snapped to
+	/// the time with the fewest fractional-second digits that the same double stores (so
+	/// Excel's 23:59:59 is read on the second, not the float noise the double carries), then
+	/// sub-tick nanoseconds truncate. The 1900 system's phantom
 	/// serial <c>60</c>, a serial below the system's first day and one past 9999-12-31 are
 	/// <see cref="CastFailure.OutOfRange"/>; a negative, NaN or infinite serial is
 	/// <see cref="CastFailure.Malformed"/>.
@@ -54,8 +56,8 @@ public static partial class Cast
 
 	/// <summary>
 	/// Reads the fraction of an Excel serial a caller already holds as a <see cref="double"/>
-	/// as a <see cref="TimeOnly"/>: <c>0.75</c> and <c>45292.75</c> are both 18:00. Rounded to
-	/// the nearest nanosecond, a fraction that rounds to a whole day is midnight, and sub-tick
+	/// as a <see cref="TimeOnly"/>: <c>0.75</c> and <c>45292.75</c> are both 18:00. Snapped as
+	/// the serial door snaps, a fraction that snaps to a whole day is midnight, and sub-tick
 	/// nanoseconds truncate. A negative, NaN or infinite serial is
 	/// <see cref="CastFailure.Malformed"/>; one past 9999-12-31 is
 	/// <see cref="CastFailure.OutOfRange"/>.
@@ -72,8 +74,8 @@ public static partial class Cast
 	/// <summary>
 	/// Reads a number of days a caller already holds as a <see cref="double"/> — what an
 	/// elapsed-time format (<c>[h]:mm:ss</c>) stores — as a <see cref="TimeSpan"/>: <c>1.5</c>
-	/// is a day and twelve hours, and a negative span is negative. Rounded to the nearest
-	/// nanosecond, then sub-tick nanoseconds truncate. NaN or an infinity is
+	/// is a day and twelve hours, and a negative span is negative, its size
+	/// snapped as a serial's time, then sub-tick nanoseconds truncate. NaN or an infinity is
 	/// <see cref="CastFailure.Malformed"/>; beyond ±10,000 years is
 	/// <see cref="CastFailure.OutOfRange"/>.
 	/// </summary>

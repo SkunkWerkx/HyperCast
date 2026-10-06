@@ -37,11 +37,11 @@ public static partial class Cast
 	}
 
 	/// <summary>
-	/// Casts an RFC 3339 instant — <c>yyyy-MM-ddTHH:mm:ss[.f{1..9}](Z|±hh:mm)</c>, zone
+	/// Casts an RFC 3339 instant — <c>yyyy-MM-ddTHH:mm:ss[.f+](Z|±hh:mm)</c>, zone
 	/// <b>mandatory</b> — to a UTC <see cref="DateTimeOffset"/>. A zone-less or
 	/// space-separated form is <see cref="CastFailure.Malformed"/>; an instant outside
-	/// 0001-01-01 to 9999-12-31 UTC is <see cref="CastFailure.OutOfRange"/>. The tenth
-	/// fractional digit onward has no .NET representation and the core rejects it; the
+	/// 0001-01-01 to 9999-12-31 UTC is <see cref="CastFailure.OutOfRange"/>. The core
+	/// truncates the fraction to nanoseconds (the tenth digit onward is dropped), and the
 	/// eighth and ninth (sub-tick nanoseconds) truncate to ticks.
 	/// </summary>
 	/// <param name="utf8">The raw scalar text as UTF-8 bytes.</param>
@@ -236,7 +236,7 @@ public static partial class Cast
 	/// <see cref="DateOrder"/> to a <see cref="System.DateTime"/> with
 	/// <see cref="DateTimeKind.Unspecified"/>. The date part follows
 	/// <see cref="Date(ReadOnlySpan{byte}, DateOrder)"/>'s grammar; the optional time part
-	/// (one space or <c>T</c> after the date) is 24-hour <c>h:mm[:ss[.f{1..9}]]</c> or
+	/// (one space or <c>T</c> after the date) is 24-hour <c>h:mm[:ss[.f+]]</c> or
 	/// 12-hour with an <c>AM</c>/<c>PM</c> marker; absent, the time is midnight. No zone is
 	/// read and none is invented — the text named no instant, so the Kind is honestly
 	/// Unspecified and fusing a zone is the caller's job
@@ -279,7 +279,7 @@ public static partial class Cast
 
 	/// <summary>
 	/// Casts an ISO 8601 24-hour time-of-day — <c>HH:mm</c>, <c>HH:mm:ss</c>, or
-	/// <c>HH:mm:ss.f{1..9}</c> — to a <see cref="TimeOnly"/>, <c>00:00</c> through
+	/// <c>HH:mm:ss.f+</c> — to a <see cref="TimeOnly"/>, <c>00:00</c> through
 	/// <c>23:59:59.999…</c>. A well-formed hour past 23 or minute or second past 59
 	/// (<c>24:00</c>, <c>15:04:60</c>) is <see cref="CastFailure.OutOfRange"/>, at that field.
 	/// Sub-tick nanoseconds truncate.

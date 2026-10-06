@@ -15,7 +15,9 @@
   { "input": "15:60", "expect": "out_of_range", "fault": [3, 2] },
   { "input": "15:04:60", "expect": "out_of_range", "fault": [6, 2] },
   { "input": "15:04:05.", "expect": "malformed", "fault": [8, 1] },
-  { "input": "15:04:05.0000000001", "expect": "malformed", "fault": [18, 1] },
+  { "input": "15:04:05.0000000001", "expect": "ok", "nanos": 54245000000000 },
+  { "input": "15:04:05.00000000000312325", "expect": "ok", "nanos": 54245000000000 },
+  { "input": "23:59:59.9999999999", "expect": "ok", "nanos": 86399999999999 },
   { "input": "15:04.5", "expect": "malformed", "fault": [5, 1] },
   { "input": "", "expect": "empty" },
   { "input": " \t\r\n\f ", "expect": "empty" }

@@ -287,7 +287,8 @@ fn excel_serial_typed_agrees_with_the_text_door() {
     );
     // A fraction within half a nanosecond of a whole day rounds up to it and carries into
     // the date. Only a small serial can sit that close: one ulp under 45,000 is already
-    // 629 ns short of midnight, and stays on its own day.
+    // 629 ns short of midnight, and stays on its own day — snapped to the 100 ns its
+    // midpoints admit, 600 ns short.
     assert_eq!(
         hypercast::excel_serial(2.0 - f64::EPSILON, ExcelEpoch::Y1900),
         Ok(hypercast::CivilDateTime {
@@ -299,7 +300,7 @@ fn excel_serial_typed_agrees_with_the_text_door() {
         hypercast::excel_serial(45_000.0 - 45_000.0 * f64::EPSILON / 2.0, ExcelEpoch::Y1900),
         Ok(hypercast::CivilDateTime {
             date: hypercast::Date { year: 2023, month: 3, day: 14 },
-            nanos_of_day: 86_399_999_999_371,
+            nanos_of_day: 86_399_999_999_400,
         })
     );
 }

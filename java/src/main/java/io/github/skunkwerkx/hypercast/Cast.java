@@ -1254,7 +1254,7 @@ public final class Cast {
     }
 
     /**
-     * Casts an RFC 3339 instant — {@code yyyy-MM-ddTHH:mm:ss[.f{1..9}](Z|±hh:mm)}, zone
+     * Casts an RFC 3339 instant — {@code yyyy-MM-ddTHH:mm:ss[.f+](Z|±hh:mm)}, zone
      * <b>mandatory</b> — to an {@link Instant}, normalized to UTC at full nanosecond
      * fidelity. A zone-less or space-separated form is {@link CastFailure#MALFORMED}; an
      * instant outside 0001-01-01 to 9999-12-31 UTC is {@link CastFailure#OUT_OF_RANGE}.
@@ -1478,7 +1478,7 @@ public final class Cast {
      * ({@code 1/7/2026 3:04 PM}, {@code 2026-01-07 15:04:05}) — under the caller-declared
      * {@link DateOrder} to a {@link LocalDateTime} at full nanosecond fidelity. The date
      * part follows {@link #date(String, DateOrder)}'s grammar; the optional time part (one
-     * space or {@code T} after the date) is 24-hour {@code h:mm[:ss[.f{1..9}]]} or 12-hour
+     * space or {@code T} after the date) is 24-hour {@code h:mm[:ss[.f+]]} or 12-hour
      * with an {@code AM}/{@code PM} marker; absent, the time is midnight. No zone is read
      * and none is invented — the text named no instant, which is exactly what
      * {@link LocalDateTime} says; fusing a zone is the caller's job
@@ -1533,7 +1533,7 @@ public final class Cast {
 
     /**
      * Casts an ISO 8601 24-hour time-of-day — {@code HH:mm}, {@code HH:mm:ss}, or
-     * {@code HH:mm:ss.f{1..9}} — to a {@link LocalTime} at full nanosecond fidelity,
+     * {@code HH:mm:ss.f+} — to a {@link LocalTime} at full nanosecond fidelity,
      * {@code 00:00} through {@code 23:59:59.999999999}. A well-formed hour past 23 or minute
      * or second past 59 ({@code 24:00}, {@code 15:04:60}) is
      * {@link CastFailure#OUT_OF_RANGE}, at that field.
@@ -1652,7 +1652,9 @@ public final class Cast {
      * {@link ExcelEpoch} — the twin of {@link #excelSerial(String, ExcelEpoch)} for a workbook
      * reader that has the cell's number and no text. The result is the zone-less wall clock
      * the cell holds, a {@link LocalDateTime} as {@link #dateTime(String, DateOrder)} returns,
-     * its fraction rounded to the nearest nanosecond. The 1900 system's phantom serial
+     * its fraction snapped: the time with the fewest fractional-second digits that the same double
+     * stores, so Excel's 23:59:59 is read on the second rather than the nanoseconds of float
+     * noise the double carries. The 1900 system's phantom serial
      * {@code 60}, a serial below the system's first day and one past 9999-12-31 are
      * {@link CastFailure#OUT_OF_RANGE}; a negative, NaN or infinite serial is
      * {@link CastFailure#MALFORMED}.
@@ -1679,8 +1681,8 @@ public final class Cast {
     /**
      * Reads the fraction of an Excel serial the caller already holds as a {@code double} as a
      * {@link LocalTime} at full nanosecond fidelity: {@code 0.75} and {@code 45292.75} are
-     * both 18:00. Rounded to the nearest nanosecond, and a fraction that rounds to a whole day
-     * is midnight. A negative, NaN or infinite serial is {@link CastFailure#MALFORMED}; one
+     * both 18:00. Snapped as the serial door snaps, and a fraction that snaps to a whole day is
+     * midnight. A negative, NaN or infinite serial is {@link CastFailure#MALFORMED}; one
      * past 9999-12-31 is {@link CastFailure#OUT_OF_RANGE}.
      *
      * @param value the serial
@@ -1698,7 +1700,7 @@ public final class Cast {
      * Reads a number of days the caller already holds as a {@code double} — what an
      * elapsed-time format ({@code [h]:mm:ss}) stores — as a {@link Duration} at full
      * nanosecond fidelity: {@code 1.5} is a day and twelve hours, and a negative span is
-     * negative. Rounded to the nearest nanosecond. NaN or an infinity is
+     * negative, its size snapped as a serial's time. NaN or an infinity is
      * {@link CastFailure#MALFORMED}; beyond ±10,000 years is {@link CastFailure#OUT_OF_RANGE}.
      *
      * @param value the number of days
