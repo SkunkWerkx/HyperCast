@@ -6,6 +6,7 @@
   { "input": "1/7/2026 12:00 AM", "order": 2, "expect": "ok", "year": 2026, "month": 1, "day": 7, "nanos_of_day": 0 },
   { "input": "1/7/2026 12:30 PM", "order": 2, "expect": "ok", "year": 2026, "month": 1, "day": 7, "nanos_of_day": 45000000000000 },
   { "input": "1/7/2026 15:04:05.123456789", "order": 3, "expect": "ok", "year": 2026, "month": 7, "day": 1, "nanos_of_day": 54245123456789 },
+  { "input": "1/7/2026 15:04:05.12345678999", "order": 3, "expect": "ok", "year": 2026, "month": 7, "day": 1, "nanos_of_day": 54245123456789 },
   { "input": "1/7/2026 9:05", "order": 2, "expect": "ok", "year": 2026, "month": 1, "day": 7, "nanos_of_day": 32700000000000 },
   { "input": "1/7/2026", "order": 2, "expect": "ok", "year": 2026, "month": 1, "day": 7, "nanos_of_day": 0 },
   { "input": "2026-01-07T15:04:05", "order": 2, "expect": "ok", "year": 2026, "month": 1, "day": 7, "nanos_of_day": 54245000000000 },

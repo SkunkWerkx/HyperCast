@@ -13,7 +13,7 @@
 //! exactly as HyperUuid left the wall clock to the host.
 
 use crate::integer::char_len_at;
-use crate::typed::{rounded, whole};
+use crate::typed::whole;
 use crate::verdict::{CivilDateTime, Date, Duration, Fault, Reason, Timestamp, trim};
 use core::num::NonZero;
 use core::ops::RangeInclusive;
@@ -175,9 +175,12 @@ fn read4(text: &[u8], at: usize) -> Option<u32> {
     Some(read2(text, at)? * 100 + read2(text, at + 2)?)
 }
 
-/// Reads `.f{1..=9}` at `at` when present, returning the value widened to nanoseconds and
-/// the index after the fraction. A tenth fractional digit is `Malformed` — nanos is the
-/// core's full fidelity. The RFC 3339/ISO-time doors: dot only.
+/// Reads `.f+` at `at` when present, returning the value widened to nanoseconds and the
+/// index after the fraction. ISO 8601, RFC 3339 and XSD put no cap on fraction digits, but
+/// protobuf's `nanos` holds nine: digits past the ninth are consumed and truncated, never
+/// rounded — rounding could carry into the second, and from `9999-12-31T23:59:59` out of
+/// the window. Excel's strict writer emits seventeen (`15:04:05.00000000000312325`). The
+/// RFC 3339/ISO-time doors: dot only.
 fn read_fraction(text: &[u8], at: usize, start: usize) -> Result<(u32, usize), Fault> {
     read_fraction_marked(text, at, start, b".")
 }
@@ -200,11 +203,10 @@ fn read_fraction_marked(
     let mut nanos: u32 = 0;
     let mut digits = 0;
     while i < text.len() && text[i].is_ascii_digit() {
-        if digits == 9 {
-            return Err(Fault::malformed(start + i, 1));
+        if digits < 9 {
+            nanos = nanos * 10 + (text[i] - b'0') as u32;
+            digits += 1;
         }
-        nanos = nanos * 10 + (text[i] - b'0') as u32;
-        digits += 1;
         i += 1;
     }
     if digits == 0 {
@@ -452,7 +454,7 @@ impl Clock {
 }
 
 /// Reads the civil time part of [`cast_datetime`] at `at` for its shape:
-/// `h[:mm[:ss[.f{1..9}]]]`, hour one or two digits, with an optional case-insensitive
+/// `h[:mm[:ss[.f+]]]`, hour one or two digits, with an optional case-insensitive
 /// `AM`/`PM` marker (preceding space optional). Without a marker minutes are mandatory (a
 /// bare trailing number is not a time). Returns the clock, the marker (`Some(true)` for
 /// PM) and the index after the time; [`civil_nanos`] range-checks them.
@@ -525,7 +527,7 @@ fn civil_nanos(clock: &Clock, pm: Option<bool>, start: usize) -> Result<u64, Fau
 /// caller-declared [`DateOrder`], to a [`CivilDateTime`]. The date part follows
 /// [`cast_date_ordered`]'s grammar (year-first forms, ISO included, parse under any
 /// declared order); the optional time part — separated by one space or `T` — is 24-hour
-/// `h:mm[:ss[.f{1..9}]]` or 12-hour with an `AM`/`PM` marker (`3 PM` allowed, `12 AM` is
+/// `h:mm[:ss[.f+]]` or 12-hour with an `AM`/`PM` marker (`3 PM` allowed, `12 AM` is
 /// midnight); absent, the time is midnight. No zone is read and none is invented — a
 /// zone-less text names no instant, so fusing a zone is the caller's job
 /// ([`cast_timestamp`] remains the strict RFC 3339 instant door).
@@ -549,7 +551,7 @@ pub fn cast_datetime(input: impl AsRef<[u8]>, order: DateOrder) -> Result<CivilD
     Ok(CivilDateTime { date, nanos_of_day: civil_nanos(&clock, pm, start)? })
 }
 
-/// Casts an ISO 8601 24-hour time-of-day — `HH:mm`, `HH:mm:ss`, or `HH:mm:ss.f{1..9}` —
+/// Casts an ISO 8601 24-hour time-of-day — `HH:mm`, `HH:mm:ss`, or `HH:mm:ss.f+` —
 /// to nanoseconds since midnight, `00:00` through `23:59:59.999999999`. Empty ⇒ `Empty`;
 /// a well-formed hour past 23, minute past 59 or second past 59 (`24:00`, `15:04:60`) ⇒
 /// `OutOfRange` at that field; anything else wrong ⇒ `Malformed`.
@@ -567,7 +569,7 @@ pub fn cast_time(input: impl AsRef<[u8]>) -> Result<u64, Fault> {
     Ok(clock.nanos_of_day(clock.hour))
 }
 
-/// Parses `HH:mm[:ss[.f{1..9}]]` at `at` for its shape, returning the clock (not yet
+/// Parses `HH:mm[:ss[.f+]]` at `at` for its shape, returning the clock (not yet
 /// range-checked) and the index after the time.
 fn read_time(text: &[u8], at: usize, start: usize) -> Result<(Clock, usize), Fault> {
     let hour = read2(text, at)
@@ -590,7 +592,7 @@ fn read_time(text: &[u8], at: usize, start: usize) -> Result<(Clock, usize), Fau
     Ok((clock, i))
 }
 
-/// Casts an RFC 3339 instant — `yyyy-MM-ddTHH:mm:ss[.f{1..9}](Z|±hh:mm)` — to a protobuf
+/// Casts an RFC 3339 instant — `yyyy-MM-ddTHH:mm:ss[.f+](Z|±hh:mm)` — to a protobuf
 /// [`Timestamp`], normalized to UTC. The zone is mandatory (a zone-less or space-separated
 /// form is `Malformed`, Svartalfheim parity); `-00:00` is accepted as UTC; `T`/`Z` are
 /// case-insensitive; seconds are mandatory. Every piece is checked for shape before any
@@ -778,10 +780,12 @@ const fn excel_day_number(days: i64, epoch: ExcelEpoch) -> Option<i64> {
 ///
 /// The result is the zone-less wall clock the cell holds, a [`CivilDateTime`];
 /// [`CivilDateTime::assume_utc`] makes it the instant the text door returns. The fraction
-/// is rounded to the nearest nanosecond, where the text door truncates digits it was given
-/// exactly: a double near serial 45,000 resolves about 0.6 µs, so its last digits are
-/// noise either way, and rounding is what keeps `0.5` at noon when the stored double sits
-/// one ulp under it. A fraction that rounds up to a whole day carries into the date.
+/// is snapped, where the text door truncates digits it was given exactly: a double near
+/// serial 45,000 resolves about 0.6 µs and one near `9999-12-31` about 40 µs, so the
+/// nearest nanosecond is noise (Excel's own `9999-12-31 23:59:59` reads 5,424 ns late).
+/// The time read is the one with the fewest fractional-second digits that the writer's
+/// conversion would have stored as this same double — see [`snap`]. A fraction that
+/// snaps to a whole day carries into the date.
 ///
 /// The verdict is a bare [`Reason`]: there is no text for a [`Fault`]'s span to index.
 pub fn excel_serial(serial: f64, epoch: ExcelEpoch) -> Result<CivilDateTime, Reason> {
@@ -797,8 +801,8 @@ pub fn excel_serial(serial: f64, epoch: ExcelEpoch) -> Result<CivilDateTime, Rea
 /// Reads the time of day of an Excel serial already held as the number a workbook stores:
 /// its fraction, nanoseconds since midnight as [`cast_time`] returns them — the typed twin
 /// of that door for a cell formatted as a time, whether or not the serial also carries a
-/// date (`0.75` and `45292.75` are both `18:00`). Rounded to the nearest nanosecond as
-/// [`excel_serial`] rounds, and a fraction that rounds up to a whole day is midnight. A
+/// date (`0.75` and `45292.75` are both `18:00`). Snapped as [`excel_serial`] snaps, and a
+/// fraction that snaps to a whole day is midnight. A
 /// negative, NaN or infinite value is `Malformed`; a serial past either system's last day
 /// is `OutOfRange`. No date system is asked for: the fraction means the same in both.
 pub fn excel_time(serial: f64) -> Result<u64, Reason> {
@@ -806,37 +810,164 @@ pub fn excel_time(serial: f64) -> Result<u64, Reason> {
 }
 
 /// Splits a non-negative serial into whole days and the nanoseconds of its fractional day,
-/// rounding the fraction to the nearest nanosecond and carrying into the day if that
-/// rounds up to a whole one — the one statement of how a serial's fraction is read.
+/// snapped by [`snap`] and carried into the day if that lands on a whole one — the one
+/// statement of how a serial's fraction is read.
 fn split_serial(serial: f64) -> Result<(i64, u64), Reason> {
     if !serial.is_finite() || serial < 0.0 {
         return Err(Reason::Malformed);
     }
-    // Past either system's last day; also what keeps the casts below exact.
+    // Past either system's last day; also what keeps the serial below snap's 2^22.
     if serial >= (MAX_EXCEL_1900_SERIAL + 1) as f64 {
         return Err(Reason::OutOfRange);
     }
-    // `core` has no `floor` or `round`. The value is non-negative and far below 2^53, so
-    // the cast truncates to its floor exactly, and the remainder decides the rounding.
-    let mut days = serial as i64;
-    let scaled = (serial - days as f64) * NANOS_PER_DAY as f64;
-    let mut nanos_of_day = scaled as u64;
-    if scaled - nanos_of_day as f64 >= 0.5 {
-        nanos_of_day += 1;
+    let (days, nanos_of_day) = snap(serial);
+    Ok((days as i64, nanos_of_day))
+}
+
+/// `NANOS_PER_DAY` is `2^16 × DAY_ODD_FACTOR`: dividing a nanosecond count below 2^71 by
+/// it is a shift and then a `u64` division, with no 128-bit division routine brought along.
+const DAY_ODD_FACTOR: u64 = NANOS_PER_DAY >> 16;
+
+/// `nanos` rounded down to a multiple of `10^digits`, `digits` from 0 to 9: a match, so
+/// every arm divides by a constant, which compiles to a multiply.
+#[inline(always)]
+fn floor_to_power(nanos: u64, digits: u32) -> u64 {
+    match digits {
+        9 => nanos / 1_000_000_000 * 1_000_000_000,
+        8 => nanos / 100_000_000 * 100_000_000,
+        7 => nanos / 10_000_000 * 10_000_000,
+        6 => nanos / 1_000_000 * 1_000_000,
+        5 => nanos / 100_000 * 100_000,
+        4 => nanos / 10_000 * 10_000,
+        3 => nanos / 1_000 * 1_000,
+        2 => nanos / 100 * 100,
+        1 => nanos / 10 * 10,
+        _ => nanos,
     }
-    if nanos_of_day >= NANOS_PER_DAY {
-        days += 1;
-        nanos_of_day -= NANOS_PER_DAY;
+}
+
+const POWERS_OF_TEN: [u64; 10] =
+    [1, 10, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000, 1_000_000_000];
+
+/// For [`snap`], once whole seconds have not fit: the largest power of ten below a second
+/// with a multiple in `first..=last`, as that unit and its largest multiple there — or
+/// `None` if not even a whole nanosecond fits. A power that fits makes every smaller one
+/// fit, so the count of powers that fit picks the unit: every power is tried and the answer
+/// picked by index, with no branch per power, since which powers fit is as unpredictable
+/// as the double.
+#[inline(never)]
+fn finer_unit(first: i64, last: u64) -> Option<(u64, u64)> {
+    if (last as i64) < first {
+        return None;
     }
-    Ok((days, nanos_of_day))
+    let mut floors = [last; 9];
+    let mut power = 0;
+    for exponent in 1..=8 {
+        floors[exponent as usize] = floor_to_power(last, exponent);
+        power += usize::from(floors[exponent as usize] as i64 >= first);
+    }
+    // At most eight powers fit; the bound is spelled out so no index check is left behind.
+    let power = power.min(8);
+    Some((floors[power], POWERS_OF_TEN[power]))
+}
+
+/// Reads `days`, finite, non-negative and below 2^22, as whole days and the nanoseconds of
+/// the day after them, snapped. A workbook writer stores a time as the double nearest the
+/// exact serial, so every real number between this double's midpoints with its neighbours
+/// is a time the writer could have meant; all of them are stored as this same double. Of
+/// those, this reads the one with the fewest fractional-second digits: whole seconds if one
+/// lies between the midpoints, else whole tenths, and so on down to the nanosecond, the
+/// candidate nearest the double winning when two qualify. It is [`shortest_digits`]'s rule
+/// — the shortest value that round-trips — counted in time instead of decimal places, so
+/// Excel's `9999-12-31 23:59:59` (stored 5,424 ns late, all a double holds there) is read
+/// back on the second, while a real sub-millisecond time a double can resolve is kept. A
+/// double too close to its neighbours for any whole nanosecond to lie between the
+/// midpoints is read as the nearest nanosecond, halves up.
+///
+/// Exact, in integers: the double is `m × 2^q`, and in quarter-ulps its midpoints are
+/// `4m ± 2` (`4m − 1` below a power of two, where the gap beneath is half as wide). Scaled
+/// to nanoseconds by `NANOS_PER_DAY` (under 2^47), every bound is below 2^102, over a
+/// denominator `2^(2 − q)`. A midpoint itself rounds to the even mantissa, so it belongs to
+/// this double exactly when `m` is even.
+///
+/// [`shortest_digits`]: crate::shortest_digits
+fn snap(days: f64) -> (u64, u64) {
+    let bits = days.to_bits();
+    let biased = ((bits >> 52) & 0x7FF) as u32;
+    // Below 2^-72 days (and zero, and the subnormals) is under 2^-25 ns: zero. The bound
+    // also keeps the shift below under 128.
+    if biased < 950 {
+        return (0, 0);
+    }
+    let mantissa = bits & ((1 << 52) - 1) | 1 << 52;
+    let shift = 1_077 - biased;
+    let per_day = u128::from(NANOS_PER_DAY);
+    // 55 bits by 47: a single 64 × 64 → 128 multiply, and the midpoints are a day's
+    // nanoseconds (one or two of them) to either side.
+    let center = u128::from(mantissa << 2) * per_day;
+    let low = center - if mantissa == 1 << 52 { per_day } else { per_day << 1 };
+    let high = center + (per_day << 1);
+    let inclusive = mantissa & 1 == 0;
+    let mask = (1u128 << shift) - 1;
+
+    // Counted from the midnight before the double: the whole nanoseconds between the
+    // midpoints are `first..=last` (empty if first > last), `last` at least `within`, the
+    // double's own floor, and `first` at most a day early.
+    let floor = center >> shift;
+    let day = ((floor >> 16) as u64) / DAY_ODD_FACTOR;
+    let day_start = u128::from(day) * per_day;
+    let within = (floor - day_start) as u64;
+    let first =
+        ((low >> shift) + u128::from(low & mask != 0 || !inclusive)).wrapping_sub(day_start) as i64;
+    let last = ((high >> shift) - u128::from(high & mask == 0 && !inclusive))
+        .wrapping_sub(day_start) as u64;
+
+    // The midpoints are at most 80 µs apart (an ulp at 9999-12-31), so a unit of 100 µs or
+    // more has at most one multiple between them: the largest one up to `last`, if that is
+    // not below `first`. Whole seconds are tried first, inline — what a typed time almost
+    // always snaps to — and anything finer out of line, so this path never pays for it.
+    let seconds = floor_to_power(last, 9);
+    let nanos = if seconds as i64 >= first {
+        seconds
+    } else {
+        match finer_unit(first, last) {
+            None => within + u64::from(center & mask >= 1 << (shift - 1)),
+            Some((highest, unit)) if (highest as i64) - (unit as i64) < first => highest,
+            // Several multiples fit: the one nearest the double is one of the two around
+            // its floor, found with the only division by a variable here.
+            Some((_, unit)) => {
+                // `unit` is a power of ten; the zero case is spelled out so that no
+                // division-by-zero check is left behind.
+                let below = within - within.checked_rem(unit).unwrap_or(0);
+                let above = below + unit;
+                match (below as i64 >= first, above <= last) {
+                    (true, false) => below,
+                    (false, _) => above,
+                    // Two fit only when the midpoints are a nanosecond or more apart, so the
+                    // shift is under 50 and twice the center compares with their sum
+                    // shifted unclipped.
+                    (true, true) => {
+                        let sum = (day_start << 1) + u128::from(below + above);
+                        if sum.leading_zeros() >= shift && center << 1 > sum << shift {
+                            above
+                        } else {
+                            below
+                        }
+                    }
+                }
+            }
+        }
+    };
+    if nanos >= NANOS_PER_DAY { (day + 1, nanos - NANOS_PER_DAY) } else { (day, nanos) }
 }
 
 /// Reads a span of days already held as the number a workbook stores — what an elapsed-time
 /// format (`[h]:mm:ss`) or an ODS `office:time-value` converted to days says — as a
 /// protobuf [`Duration`]: the typed twin of [`cast_duration`]. `1.5` is a day and twelve
-/// hours, and a negative span is negative, `seconds` and `nanos` same-signed. Rounded to
-/// the nearest nanosecond, halves away from zero. NaN or an infinity is `Malformed`; past
-/// ±10,000 years of seconds is `OutOfRange`.
+/// hours, and a negative span is negative, `seconds` and `nanos` same-signed. Its size is
+/// snapped as [`excel_serial`] snaps a time, the sign put back after, so a span and its
+/// negation read alike. NaN or an infinity is `Malformed`; past ±10,000 years of seconds
+/// is `OutOfRange`.
 pub fn excel_duration(days: f64) -> Result<Duration, Reason> {
     if !days.is_finite() {
         return Err(Reason::Malformed);
@@ -845,7 +976,13 @@ pub fn excel_duration(days: f64) -> Result<Duration, Reason> {
     if seconds.abs() > MAX_DURATION_SECONDS as f64 {
         return Err(Reason::OutOfRange);
     }
-    let total = rounded(seconds * 1e9);
+    // ±10,000 years is about 3.65 million days, inside snap's 2^22.
+    let (whole, nanos) = snap(days.abs());
+    let size = i128::from(whole) * i128::from(NANOS_PER_DAY) + i128::from(nanos);
+    if size / NANOS_PER_SECOND > i128::from(MAX_DURATION_SECONDS) {
+        return Err(Reason::OutOfRange);
+    }
+    let total = if days < 0.0 { -size } else { size };
     Ok(Duration {
         seconds: (total / NANOS_PER_SECOND) as i64,
         nanos: (total % NANOS_PER_SECOND) as i32,
@@ -961,9 +1098,9 @@ const MAX_DURATION_DIGITS: usize = 18;
 
 /// Casts a duration in any of three cleanly-partitioned shapes to a protobuf [`Duration`]:
 /// a leading `[-]P` is an ISO 8601 duration restricted to fixed components (`nW`/`nD`, then
-/// `T` with `nH`/`nM`/`n[.f{1..9}]S` — years and months are not fixed durations and are
+/// `T` with `nH`/`nM`/`n[.f+]S` — years and months are not fixed durations and are
 /// `Malformed`); a token containing `:` is the invariant colon form `[-][d.]hh:mm[:ss[.f]]`;
-/// `[-]digits[.f{1..9}]s` is the protobuf JSON form. Beyond ±10,000 years of whole seconds
+/// `[-]digits[.f+]s` is the protobuf JSON form. Beyond ±10,000 years of whole seconds
 /// ⇒ `OutOfRange`. `seconds` and `nanos` come out same-signed.
 pub fn cast_duration(input: impl AsRef<[u8]>) -> Result<Duration, Fault> {
     let input = input.as_ref();
@@ -1079,7 +1216,7 @@ fn parse_iso_duration(text: &[u8], start: usize) -> Result<i128, Fault> {
     Ok(if negative { -total } else { total })
 }
 
-/// The invariant colon form `[-][d.]hh:mm[:ss[.f{1..9}]]` — hours 0–23 (a larger total
+/// The invariant colon form `[-][d.]hh:mm[:ss[.f+]]` — hours 0–23 (a larger total
 /// needs the day part), minutes and seconds 0–59, each 1–2 digits, .NET's invariant
 /// `TimeSpan` profile with the fraction widened to nanos. Shape first, as everywhere: a
 /// well-formed field past its range (`25:00:00`, `01:60:00`) ⇒ `OutOfRange` at its digits,
@@ -1162,7 +1299,7 @@ fn parse_colon_duration(text: &[u8], start: usize) -> Result<i128, Fault> {
     Ok(if negative { -total } else { total })
 }
 
-/// The protobuf JSON form `[-]digits[.f{1..9}]s`, case-insensitive suffix.
+/// The protobuf JSON form `[-]digits[.f+]s`, case-insensitive suffix.
 fn parse_protobuf_duration(text: &[u8], start: usize) -> Result<i128, Fault> {
     let last = text.len() - 1;
     if (text[last] | 0x20) != b's' {

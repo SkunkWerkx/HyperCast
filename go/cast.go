@@ -733,7 +733,9 @@ func ExactFromFloat64(value float64) (Decimal, *Fault) {
 // ExcelSerialFromFloat64 reads an Excel date serial the caller already holds as a float64
 // under a caller-declared ExcelEpoch — the twin of ExcelSerial for a workbook reader that
 // has the cell's number and no text. The result is the zone-less wall clock the cell holds,
-// a CivilDateTime as DateTime returns, its fraction rounded to the nearest nanosecond. The
+// a CivilDateTime as DateTime returns, its fraction snapped: the time with the fewest
+// fractional-second digits that the same float64 stores, so Excel's 23:59:59 is read on the
+// second rather than the nanoseconds of float noise the double carries. The
 // 1900 system's phantom serial 60, a serial below the system's first day and one past
 // 9999-12-31 are OutOfRange; a negative, NaN or infinite serial is Malformed. An undefined
 // epoch is a caller bug and panics, never a verdict.
@@ -754,7 +756,8 @@ func ExcelSerialFromFloat64(value float64, epoch ExcelEpoch) (CivilDateTime, *Fa
 
 // ExcelTime reads the fraction of an Excel serial the caller already holds as a float64 as a
 // time.Duration since midnight, as TimeOfDay returns: 0.75 and 45292.75 are both 18h.
-// Rounded to the nearest nanosecond, and a fraction that rounds to a whole day is midnight.
+// Snapped as ExcelSerialFromFloat64 snaps, and a fraction that snaps to a whole day is
+// midnight.
 // A negative, NaN or infinite serial is Malformed; one past 9999-12-31 is OutOfRange.
 func ExcelTime(value float64) (time.Duration, *Fault) {
 	r := callExcelTime(value)
@@ -766,7 +769,7 @@ func ExcelTime(value float64) (time.Duration, *Fault) {
 
 // ExcelDuration reads a number of days the caller already holds as a float64 — what an
 // elapsed-time format ([h]:mm:ss) stores — as the protobuf pair Span returns: 1.5 is a day
-// and twelve hours, and a negative span is negative. Rounded to the nearest nanosecond. NaN
+// and twelve hours, and a negative span is negative, its size snapped as a serial's time. NaN
 // or an infinity is Malformed; beyond ±10,000 years is OutOfRange.
 func ExcelDuration(value float64) (Duration, *Fault) {
 	r := callExcelDuration(value)

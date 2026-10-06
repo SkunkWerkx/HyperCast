@@ -680,7 +680,7 @@ public enum Cast {
     /// (`1/7/2026 3:04 PM`, `2026-01-07 15:04:05`) — under the caller-declared
     /// ``DateOrder`` to `DateComponents` (year through nanosecond, no zone). The date part
     /// follows ``date(_:order:)-swift.type.method``'s grammar; the optional time part (one
-    /// space or `T` after the date) is 24-hour `h:mm[:ss[.f{1..9}]]` or 12-hour with an
+    /// space or `T` after the date) is 24-hour `h:mm[:ss[.f+]]` or 12-hour with an
     /// `AM`/`PM` marker; absent, the time is midnight. No zone is read and none is
     /// invented — the text named no instant, so no `timeZone` component is set; fusing one
     /// is the caller's job (``timestamp(_:)-swift.type.method`` stays the strict RFC 3339
@@ -788,7 +788,9 @@ public enum Cast {
     /// ``ExcelEpoch`` — the twin of ``excelSerial(_:epoch:)-swift.type.method`` for a workbook
     /// reader that has the cell's number and no text — as the zone-less wall clock the cell
     /// holds, in the `DateComponents` ``dateTime(_:order:)-swift.type.method`` returns, its
-    /// fraction rounded to the nearest nanosecond. The 1900 system's phantom serial `60`, a
+    /// fraction snapped: the time with the fewest fractional-second digits that the same
+    /// double stores, so Excel's 23:59:59 is read on the second rather than the nanoseconds of
+    /// float noise the double carries. The 1900 system's phantom serial `60`, a
     /// serial below the system's first day and one past 9999-12-31 are `.outOfRange`; a
     /// negative, NaN or infinite serial is `.malformed`.
     public static func excelSerialFromDouble(_ value: Double, epoch: ExcelEpoch) throws -> Verdict<DateComponents> {
@@ -798,8 +800,8 @@ public enum Cast {
 
     /// Reads the fraction of an Excel serial the caller already holds as a `Double` as a time
     /// of day, in the components ``time(_:)-swift.type.method`` returns: `0.75` and
-    /// `45292.75` are both 18:00. Rounded to the nearest nanosecond, and a fraction that
-    /// rounds to a whole day is midnight. A negative, NaN or infinite serial is `.malformed`;
+    /// `45292.75` are both 18:00. Snapped as the serial door snaps, and a fraction that snaps
+    /// to a whole day is midnight. A negative, NaN or infinite serial is `.malformed`;
     /// one past 9999-12-31 is `.outOfRange`.
     public static func excelTime(_ value: Double) throws -> Verdict<DateComponents> {
         let fn = try loaded().excelTime
@@ -808,7 +810,7 @@ public enum Cast {
 
     /// Reads a number of days the caller already holds as a `Double` — what an elapsed-time
     /// format (`[h]:mm:ss`) stores — as a `Duration`: `1.5` is a day and twelve hours, and a
-    /// negative span is negative. Rounded to the nearest nanosecond. NaN or an infinity is
+    /// negative span is negative, its size snapped as a serial's time. NaN or an infinity is
     /// `.malformed`; beyond ±10,000 years is `.outOfRange`.
     public static func excelDuration(_ value: Double) throws -> Verdict<Duration> {
         let fn = try loaded().excelDuration

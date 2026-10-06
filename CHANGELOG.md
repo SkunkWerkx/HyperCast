@@ -16,8 +16,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the rules to convert it. `excel_serial(serial, epoch)` is the same two date systems from
   the same code — the phantom serial `60`, a serial below the system's first day and one
   past `9999-12-31` are `OutOfRange`; a negative, NaN or infinite value is `Malformed` —
-  returning the zone-less `CivilDateTime` the cell holds, its fraction rounded to the
-  nearest nanosecond. `corpus/excel_serial.json` is replayed through both doors, so the
+  returning the zone-less `CivilDateTime` the cell holds, its fraction snapped (below). `corpus/excel_serial.json` is replayed through both doors, so the
   two can no longer drift. *(crates.io)*
 - **Rust — the typed doors: every numeric cast for a number already held as an `f64`.**
   A workbook stores a numeric cell as a double, and its reader had to convert that to an
@@ -46,6 +45,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   double by its IEEE 754 bits — NaN and the infinities included, which JSON cannot spell —
   and every binding replays it, Ruby through both backends and Java through both FFM and
   GraalWasm. *(all packages)*
+- **Every door that reads a serial held as a number snaps its time.** A double resolves
+  about 0.6 µs at today's serials and 40 µs at `9999-12-31`, so the nearest nanosecond is
+  the double's float noise: Excel's own `9999-12-31 23:59:59` would read 5,424 ns late, and
+  the number `1234.56` as a time `13:26:23.999999995`. `excel_serial`, `excel_time` and
+  `excel_duration` (and their exports) read the time with the fewest fractional-second
+  digits — whole seconds, else tenths, down to the nanosecond — that the writer's
+  conversion would have stored as the same double: the shortest round-trip,
+  `decimal_from_f64`'s rule counted in time. Excel's and Google's times read back exactly,
+  and a real sub-millisecond time a double can resolve is kept. Exact, integer-only,
+  allocation- and panic-free; checked against an exact rational reference over 240,000
+  serials. One writer loss it cannot undo: LibreOffice writes serials to 15 significant
+  digits, so its `9999-12-31 23:59:59` is a different double, 370 µs late. *(all packages)*
 - **Rust — `CivilDateTime::assume_utc` and `Timestamp::utc_civil`.** The two conversions
   between a wall clock and an instant, for the caller who states the zone is UTC. The
   crate still never assumes it for them. *(crates.io)*
@@ -56,6 +67,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **A fraction of a second past nine digits truncates to nanoseconds instead of failing.**
+  ISO 8601, RFC 3339 (`time-secfrac = "." 1*DIGIT`) and XSD put no cap on fraction digits,
+  and Excel's strict writer emits seventeen (`15:04:05.00000000000312325`), so a tenth
+  digit was valid input refused as `Malformed`. Every door that reads a fraction —
+  timestamp, time, local datetime, duration — now keeps the first nine digits, protobuf's
+  `nanos`, and drops the rest. Truncated, never rounded: rounding could carry into the
+  second, and `9999-12-31T23:59:59.9999999999Z` out of the window. *(every package)*
 - **Every language is formatted, and CI holds it there — library, tests, benchmarks and
   smoke tests alike.** Rust (`cargo fmt`) and Go (now `gofmt`, beside revive) already were.
   New: ruff format and the docstring rules over all of `python/` (100 columns); PSR-12 via
@@ -73,11 +91,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   on fixed stack arrays for what those cannot settle. Same bits as before for every input —
   held to `core`'s answer over about a million and a half generated strings, exact halfway points
   and 1,100-digit expansions among them, on every path — at the same speed (within 4%
-  either way on five workloads, linux-x64) and 1.7 KB more library. All 22 exports are in
+  either way on five workloads, linux-x64) and 1.7 KB more library. All 26 exports are in
   the proof now, on every PR. *(every package)*
 - **Rust — the C ABI symbols are an `exports` feature, on by default.** A `#[no_mangle]`
   item is exported from whatever library the crate ends up in, so a crate that linked
-  `hypercast` as an rlib and built a shared or static library of its own carried all 22
+  `hypercast` as an rlib and built a shared or static library of its own carried all 26
   `cast_*`/`hypercast_version` symbols, and its static archive failed to link into one
   program with `libhypercast.a` (`multiple definition of cast_bool`). Nothing changes for
   a default build, or for any library this repository ships: `staticlib` and `cdylib`

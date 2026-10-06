@@ -39,23 +39,6 @@ fn is_integral(value: f64) -> bool {
     value.abs() >= 4_503_599_627_370_496.0 || (value as i64) as f64 == value
 }
 
-/// An integral double below 2^127 in magnitude as the integer it is, read out of its bits:
-/// a conversion the compiler would otherwise hand to a runtime routine (`__fixdfti`) that a
-/// static library would then have to bring along.
-fn integral(value: f64) -> i128 {
-    let bits = value.to_bits();
-    let biased = ((bits >> 52) & 0x7FF) as u32;
-    // Below one there is only zero; from 2^127 up (and for NaN and ∞) the caller's own range
-    // check has already said no.
-    if !(1_023..1_023 + 127).contains(&biased) {
-        return 0;
-    }
-    let mantissa = i128::from(bits & ((1 << 52) - 1) | 1 << 52);
-    let size =
-        if biased >= 1_075 { mantissa << (biased - 1_075) } else { mantissa >> (1_075 - biased) };
-    if bits >> 63 != 0 { -size } else { size }
-}
-
 /// The whole number a double names, as an `i128`: non-integral (NaN and ∞ among them) is
 /// `Malformed`, past the `i128` range is `OutOfRange`. Below 2^53 in magnitude it is the
 /// double's own value; from there up it is the shortest decimal's, zeros and all.
@@ -74,23 +57,6 @@ pub(crate) fn whole(value: f64) -> Result<i128, Reason> {
         size = size.checked_mul(10).ok_or(Reason::OutOfRange)?;
     }
     Ok(if value < 0.0 { -size } else { size })
-}
-
-/// A double below 2^127 in magnitude rounded to the nearest integer, halves away from zero.
-pub(crate) fn rounded(value: f64) -> i128 {
-    // Every double from 2^52 up is an integer already.
-    if value.is_nan() || value.abs() >= 4_503_599_627_370_496.0 {
-        return integral(value);
-    }
-    let whole = value as i64;
-    let rest = value - whole as f64;
-    i128::from(if rest >= 0.5 {
-        whole + 1
-    } else if rest <= -0.5 {
-        whole - 1
-    } else {
-        whole
-    })
 }
 
 macro_rules! integer_door {
