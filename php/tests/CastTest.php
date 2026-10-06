@@ -336,6 +336,25 @@ final class CastTest extends TestCase
         }
     }
 
+    public function testDeclaredShapesAreTheSizesTheCorePins(): void
+    {
+        // The cdef restates rust/src/verdict.rs's and ffi.rs's #[repr(C)] shapes by hand;
+        // rust/src/abi.rs pins their sizes, and the declarations have to land on the same.
+        Cast::nativeVersion();
+        $ffi = (new \ReflectionProperty(Cast::class, 'ffi'))->getValue();
+        $pinned = [
+            'hc_fault' => 8,
+            'hc_pair' => 16,
+            'hc_date' => 4,
+            'hc_civil' => 16,
+            'hc_decimal' => 16,
+            'hc_format' => 32,
+        ];
+        foreach ($pinned as $type => $size) {
+            self::assertSame($size, \FFI::sizeof($ffi->type($type)), $type);
+        }
+    }
+
     public function testDateOrderDisambiguatesLikeTheCulturesDo(): void
     {
         // The canonical ambiguity: 1/7/2026 is January 7th under en-US's month-first short
@@ -372,10 +391,14 @@ final class CastTest extends TestCase
      */
     private static function probe(string $src, string ...$phpFlags): string
     {
+        // Without the dev-loop override, or the probe would load the library it names.
+        $env = array_diff_key(getenv(), ['HYPERCAST_NATIVE_LIBRARY' => true]);
         $process = proc_open(
             [PHP_BINARY, ...$phpFlags, __DIR__ . '/fixtures/probe.php', $src],
             [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
-            $pipes
+            $pipes,
+            null,
+            $env
         );
         self::assertIsResource($process);
         $stdout = stream_get_contents($pipes[1]);

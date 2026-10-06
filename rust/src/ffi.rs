@@ -34,6 +34,9 @@ pub struct RawFault {
     pub len: u32,
 }
 
+// Pinned like abi.rs's shapes: every binding restates it as two u32s.
+const _: () = assert!(size_of::<RawFault>() == 8 && align_of::<RawFault>() == 4);
+
 /// # Safety
 /// Caller guarantees `ptr` points to `len` live bytes when `len > 0`.
 unsafe fn text<'caller>(ptr: *const u8, len: usize) -> &'caller [u8] {

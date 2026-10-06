@@ -204,6 +204,14 @@ final class CastTests: XCTestCase {
         XCTAssertEqual(MemoryLayout<Cast.RawNumFormat>.stride, 32)
     }
 
+    func testScratchHoldsTheNativeShapes() {
+        // The out-value is the widest shape a door writes (Decimal, Timestamp, CivilDateTime
+        // and Duration are 16 bytes, 8-aligned) and the fault span is RawFault's two u32s.
+        XCTAssertEqual(MemoryLayout<Cast.OutScratch>.size, 16)
+        XCTAssertEqual(MemoryLayout<Cast.OutScratch>.alignment, 8)
+        XCTAssertEqual(MemoryLayout<Cast.FaultScratch>.size, 8)
+    }
+
     func testCurrencySymbolPacksAsItsUtf8Bytes() {
         // `kr.` is 0x6B 0x72 0x2E; the low word's in-memory bytes must be exactly those.
         let danish = NumFormat(decimalSeparator: ",", groupSeparator: ".", styles: .all, currencySymbol: "kr.")

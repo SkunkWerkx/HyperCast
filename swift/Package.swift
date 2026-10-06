@@ -1,6 +1,14 @@
 // swift-tools-version:6.2
 import PackageDescription
 
+// The development loop: HYPERCAST_LOCAL_CORE=1 links the bundle .github/scripts/local-core.sh
+// builds from the checkout, under rust/target/ (which git ignores), in place of the committed
+// one, so the suite can run against the core as it stands without replacing a committed
+// archive. The repository root's Package.swift, which consumers resolve, has no such switch.
+let coreBundle =
+    Context.environment["HYPERCAST_LOCAL_CORE"] == nil
+    ? "HyperCastCore.artifactbundle" : "../rust/target/local-core/swift/HyperCastCore.artifactbundle"
+
 let package = Package(
     name: "HyperCast",
     // macOS 13 floor: the duration door presents Swift's own Duration type, which (with
@@ -21,7 +29,7 @@ let package = Package(
         // `HyperCastCore` module, and the build stops there rather than at run time.
         .binaryTarget(
             name: "HyperCastCore",
-            path: "HyperCastCore.artifactbundle"
+            path: coreBundle
         ),
         .target(
             name: "HyperCast",

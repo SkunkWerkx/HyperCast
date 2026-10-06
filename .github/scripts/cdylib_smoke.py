@@ -1,4 +1,4 @@
-"""Loads the shared library every FFI binding loads and calls all twenty-two C exports.
+"""Loads the shared library every FFI binding loads and calls all twenty-six C exports.
 
 ci.yml's check-cdylib job runs this against a freshly built no_std library on every platform
 the forge ships: a library that links but will not load, or loads but misbehaves at the ABI,
@@ -134,6 +134,11 @@ def fails(name, text, reason, *extra, span=None):
         check((fault.offset, fault.len) == span,
               f"{name}({text!r}) fault {(fault.offset, fault.len)}, expected {span}")
 
+
+for shape, size in ((Fault, 8), (NumFormat, 32), (Decimal, 16), (Timestamp, 16), (Duration, 16),
+                    (Date, 4), (CivilDateTime, 16)):
+    check(ctypes.sizeof(shape) == size,
+          f"{shape.__name__} is {ctypes.sizeof(shape)} bytes; rust/src/abi.rs pins {size}")
 
 v = lib.hypercast_version()
 got = f"{v >> 16}.{(v >> 8) & 0xFF}.{v & 0xFF}"

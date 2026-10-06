@@ -150,9 +150,10 @@ public enum Cast {
     // timestamp or a civil date-time — two UInt64s so the core's i64/u64 stores land
     // 8-aligned) and 8 for the fault span. These used to be three heap `[UInt8]` arrays
     // per call (four with the format), which was most of what a door cost; a tuple of
-    // fixed-width integers has no heap existence at all.
-    private typealias OutScratch = (UInt64, UInt64)
-    private typealias FaultScratch = (UInt32, UInt32)
+    // fixed-width integers has no heap existence at all. Internal, not private, so the test
+    // suite can pin both sizes to the ones rust/src/abi.rs and ffi.rs pin.
+    typealias OutScratch = (UInt64, UInt64)
+    typealias FaultScratch = (UInt32, UInt32)
     // The native `RawNumFormat`, 32 bytes: decimal separator, group separator, flags and
     // currency length as `u32`s at 0/4/8/12, then the symbol's 16 UTF-8 bytes at 16 —
     // carried as two words whose in-memory bytes are the symbol's, in order (see

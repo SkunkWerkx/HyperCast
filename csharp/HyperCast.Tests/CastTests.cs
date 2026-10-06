@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Reflection;
+using System.Runtime.CompilerServices;
 
 namespace HyperCast.Tests;
 
@@ -324,5 +326,22 @@ public sealed class CastTests
 	{
 		Should.Throw<ArgumentNullException>(() => DateOrders.From(null!)).ParamName.ShouldBe("culture");
 		Should.Throw<ArgumentNullException>(() => NumFormat.From((CultureInfo)null!)).ParamName.ShouldBe("culture");
+	}
+
+	[Theory]
+	[InlineData("RawFault", 8)]
+	[InlineData("RawNumFormat", 32)]
+	[InlineData("RawDecimal", 16)]
+	[InlineData("RawTimestamp", 16)]
+	[InlineData("RawDate", 4)]
+	[InlineData("RawCivil", 16)]
+	[InlineData("RawDuration", 16)]
+	void Raw_structs_are_the_sizes_the_core_pins(string name, int size)
+	{
+		// Restated by hand from rust/src/verdict.rs and ffi.rs, whose sizes rust/src/abi.rs
+		// pins; Sequential layout has to reproduce the C padding to land on the same numbers.
+		var raw = typeof(Cast).GetNestedType(name, BindingFlags.NonPublic).ShouldNotBeNull();
+		var sizeOf = typeof(Unsafe).GetMethod(nameof(Unsafe.SizeOf))!.MakeGenericMethod(raw);
+		sizeOf.Invoke(null, null).ShouldBe(size);
 	}
 }
