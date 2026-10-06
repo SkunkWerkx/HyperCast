@@ -54,13 +54,20 @@ func corpus(t *testing.T, name string) []vector {
 		t.Fatal(err)
 	}
 	for {
-		candidate := filepath.Join(dir, "corpus", name)
-		if data, err := os.ReadFile(candidate); err == nil {
-			var vectors []vector
-			if err := json.Unmarshal(data, &vectors); err != nil {
-				t.Fatalf("parsing %s: %v", candidate, err)
+		// testdata/corpus is the copy CI stages for the iOS simulator: Go's go_ios_exec
+		// carries the module's files and testdata directories into the app, and nothing
+		// above the module, so the repository's corpus/ is not there to walk up to.
+		for _, candidate := range []string{
+			filepath.Join(dir, "corpus", name),
+			filepath.Join(dir, "testdata", "corpus", name),
+		} {
+			if data, err := os.ReadFile(candidate); err == nil {
+				var vectors []vector
+				if err := json.Unmarshal(data, &vectors); err != nil {
+					t.Fatalf("parsing %s: %v", candidate, err)
+				}
+				return vectors
 			}
-			return vectors
 		}
 		// The root is its own parent on every OS — "/" here, "C:\" on Windows, where a
 		// comparison against "/" never becomes true and the walk would never end.

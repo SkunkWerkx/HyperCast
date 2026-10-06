@@ -178,10 +178,11 @@ unaffected: it cannot link an archive, and loads the shared library as before.
 
 ## WebAssembly (Blazor)
 
-One compiled assembly covers browser-wasm too — every native entry point is declared twice
-(`"hypercast"` for dlopen platforms, `"*"` for the statically-linked wasm module), sharing
-the same `EntryPoint`, with `OperatingSystem.IsBrowser()` picked at the call site and
-constant-folded by the linker. CI builds the `wasm32-unknown-emscripten` staticlib on every
+One compiled assembly covers browser-wasm too — every native entry point is declared three
+times (`"hypercast"` for dlopen platforms, `"*"` for the statically-linked wasm module, and
+`"__Internal"` for iOS and Mac Catalyst; see [Platform support](#platform-support)), sharing
+the same `EntryPoint`, with `OperatingSystem.IsBrowser()` and `OperatingSystem.IsIOS()`
+picked at the call site and constant-folded by the linker. CI builds the `wasm32-unknown-emscripten` staticlib on every
 PR; the release pack stages it under `runtimes/browser-wasm/nativeassets/`, and
 `build/net11.0/HyperCast.targets` ships inside the package to wire it up for a consumer with
 no configuration at all.
@@ -235,7 +236,8 @@ no action needed from a consumer.
 
 ## Platform support
 
-Native binaries ship inside the package for eight RIDs, plus a WebAssembly static library:
+Native binaries ship inside the package for eight RIDs, plus static libraries for
+WebAssembly, iOS and Mac Catalyst:
 
 | Platform | RIDs | Native asset |
 | --- | --- | --- |
@@ -244,6 +246,8 @@ Native binaries ship inside the package for eight RIDs, plus a WebAssembly stati
 | macOS | `osx-x64`, `osx-arm64` | `libhypercast.dylib` |
 | Windows | `win-x64`, `win-arm64` | `hypercast.dll` |
 | Blazor WebAssembly (.NET 11+) | `browser-wasm` | `libhypercast.a` (static — see above) |
+| iOS | `ios-arm64`, `iossimulator-arm64` | `libhypercast.a` (static — see below) |
+| Mac Catalyst | `maccatalyst-arm64`, `maccatalyst-x64` | `libhypercast.a` (static — see below) |
 
 **musl is its own build, not the glibc one relabeled.** A glibc `libhypercast.so` does not
 load under musl's dynamic loader, and NuGet's RID graph falls back from `linux-musl-x64` to
@@ -262,29 +266,34 @@ On any platform outside that table the package still restores and compiles — t
 assembly is platform-neutral — and `Cast.IsAvailable` is how an app finds out at run time
 that no native library came with it.
 
-**Known gap: iOS, Mac Catalyst, and Android are not supported.** A .NET MAUI app can reference
-this package for its Windows and macOS heads, which the RIDs above cover, but not for its mobile
-heads — the package neither ships those native assets nor declares those target frameworks. Stated
-here as an explicit gap rather than left for a consumer to discover at link time.
+**iOS and Mac Catalyst: the core is linked into the app.** A .NET iOS, MAUI or Mac Catalyst
+app (`net11.0-ios`, `net11.0-maccatalyst`) references the package like any other and writes
+nothing else. Those platforms have no `runtimes/{rid}/native/` to load a library from: the
+.NET SDK for them links native code into the app's own executable, and a P/Invoke reaches it
+under the library name `__Internal`. So the package carries the core as a static library for
+each of the four RIDs above, `build/net11.0/HyperCast.targets` hands the one for the RID being
+built to the SDK as a
+[`NativeReference` with `Kind=Static`](https://learn.microsoft.com/dotnet/maui/migration/ios-binding-projects),
+and `Cast` declares every entry point a third time against `__Internal`, picked by
+`OperatingSystem.IsIOS()` (which is true on Mac Catalyst too). It is the SDK's own native
+link that takes the archive, so the same wiring serves an app compiled by Mono's AOT
+compiler, one that runs interpreted, and one published with
+[Native AOT](https://learn.microsoft.com/dotnet/core/deploying/native-aot/ios-like-platforms/);
+the Native AOT wiring under [AOT](#aot) stands aside for these RIDs. A universal Mac Catalyst
+app is built once per RID and merged, and each half links its own archive.
 
-Android is the smaller half: it needs an NDK cross-build added to the release matrix, but
-resolution is then ordinary `dlopen` of a `.so` out of `runtimes/{rid}/native/`, exactly like the
-Linux RIDs already do.
+`HyperCast.AppleSmokeTest` is the Native AOT smoke test's `Program.cs` as an app, crossing
+every native entry point, and CI's `test-apple-mobile` job builds it three ways on a Mac from
+that run's archives: as a Mac Catalyst app, run as a process; for the iOS simulator, installed
+and launched; and for an iOS device with signing off, where the check is that the app's
+executable defines the core's symbols, since no runner has a device to run it on.
 
-Apple mobile is a packaging change, not a matrix row.
-[Native AOT for iOS-like platforms](https://learn.microsoft.com/dotnet/core/deploying/native-aot/ios-like-platforms/)
-(.NET 9+) does cover `ios-arm64`, `iossimulator-arm64`/`-x64` and `maccatalyst-arm64`/`-x64` — but a
-native dependency on those targets is linked statically into the app, via
-[`NativeReference` with `Kind=Static`](https://learn.microsoft.com/dotnet/maui/migration/ios-binding-projects)
-or Native AOT's
-[`NativeLibrary`/`DirectPInvoke`](https://learn.microsoft.com/dotnet/core/deploying/native-aot/interop),
-rather than resolved at runtime from `runtimes/{rid}/native/`. That is structurally the same problem
-the WebAssembly support above already solves: build the Rust core as a `.a` rather than a shared
-library, and let this package's own auto-imported `build/net11.0/HyperCast.targets` inject the
-reference so a consumer still writes nothing but a `PackageReference`. The packaging mechanism is
-therefore already proven in this repo; what is *not* yet established is how the managed
-`LibraryImport` declaration should resolve against a statically-linked core on iOS, which is the
-first thing to settle whenever this is picked up.
+**Known gap: Android, tvOS, and the iOS simulator on Intel Macs are not supported.** The
+package carries no native asset for them. On Android it restores and compiles, and
+`Cast.IsAvailable` answers `false`; it needs an NDK cross-build added to the release matrix,
+after which resolution is ordinary `dlopen` of a `.so` out of `runtimes/{rid}/native/`,
+exactly like the Linux RIDs. `iossimulator-x64` and tvOS have no archive, so an app for them
+fails at its native link on the undefined `cast_*` symbols, at build time and not at run time.
 
 ## Native binary provenance
 

@@ -73,6 +73,12 @@ SITES = [
         (),
     ),
     (
+        "C# (iOS and Mac Catalyst)",
+        [("csharp/HyperCast/*.cs", r'LibraryImport\("__Internal", EntryPoint = "(\w+)"\)')],
+        "all",
+        (),
+    ),
+    (
         "Java (FFM)",
         [("java/src/main/java/io/github/skunkwerkx/hypercast/Cast.java", r'export\("(\w+)"\)')],
         "all",

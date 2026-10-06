@@ -12,18 +12,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [0.7.0] — 2026-10-06
 
 Three themes, all driven by the libraries that build on HyperCast — HyperTabular and
-HyperWorkbook. *Interop*: every binding now exposes the code that turns the core's raw
-out-values, numeric format, reason codes and fault spans into its own types, so a library
-that carries HyperCast's verdicts across a C ABI of its own reads them exactly as the doors
-do; and the crate's C symbols become an `exports` feature such a library can turn off.
-*Numbers already held*: four typed doors read the `f64` a workbook stores rather than text
-— as an exact decimal, an Excel serial, a time of day and a span — taking the C ABI to 25
-`cast_*` exports plus `hypercast_version`, and Rust gains the whole typed family. *Faster*:
-in Rust the temporal doors are about twice as fast, `cast_f64` 22-36% and `cast_uuid` about
-20%, and the bindings that cross cheaply keep most of it. One set of verdicts changes on
-purpose: a fraction of a second past nine digits now truncates to the nanosecond instead
-of failing. The manifests read 0.6.2 between releases, but no 0.6.2 was ever published;
-everything since 0.6.1 is here.
+HyperWorkbook — and one new platform family: C#, Swift and Go now link the core into iOS and
+Mac Catalyst apps, as HyperUuid's 0.7.0 does. *Interop*: every binding now exposes the code
+that turns the core's raw out-values, numeric format, reason codes and fault spans into its
+own types, so a library that carries HyperCast's verdicts across a C ABI of its own reads
+them exactly as the doors do; and the crate's C symbols become an `exports` feature such a
+library can turn off. *Numbers already held*: four typed doors read the `f64` a workbook
+stores rather than text — as an exact decimal, an Excel serial, a time of day and a span —
+taking the C ABI to 25 `cast_*` exports plus `hypercast_version`, and Rust gains the whole
+typed family. *Faster*: in Rust the temporal doors are about twice as fast, `cast_f64`
+22-36% and `cast_uuid` about 20%, and the bindings that cross cheaply keep most of it. One
+set of verdicts changes on purpose: a fraction of a second past nine digits now truncates to
+the nanosecond instead of failing. The manifests read 0.6.2 between releases, but no 0.6.2
+was ever published; everything since 0.6.1 is here.
 
 ### Added
 
@@ -116,6 +117,35 @@ everything since 0.6.1 is here.
   code points, the flags, the currency symbol inline), with `resolve()` returning the
   `NumFormat` or `None` for a contract violation, so a crate exporting a C ABI of its own
   declares a numeric column in the same layout instead of a copy of it. *(crates.io)*
+- **C# — iOS and Mac Catalyst.** A .NET iOS, MAUI or Mac Catalyst app (`net11.0-ios`,
+  `net11.0-maccatalyst`) can reference the package and nothing else. Those platforms load
+  no libraries, so the package now carries the core as a static library for `ios-arm64`,
+  `iossimulator-arm64`, `maccatalyst-arm64` and `maccatalyst-x64`,
+  `build/net11.0/HyperCast.targets` hands the one for the RID being built to the SDK as a
+  static `NativeReference`, and `Cast` declares every entry point a third time against
+  `__Internal`, the name a P/Invoke reaches the app's own executable by, picked by
+  `OperatingSystem.IsIOS()`. One wiring covers Mono's AOT compiler, the interpreter and
+  Native AOT, because the native link is the SDK's in all three. CI builds
+  `HyperCast.AppleSmokeTest` on a Mac from that run's archives: run as a Mac Catalyst
+  process, installed and launched in an iOS simulator, and linked for an iOS device.
+  Android, tvOS and the iOS simulator on Intel Macs remain unsupported. *(NuGet)*
+- **Swift — iOS and Mac Catalyst.** The package builds for iOS 16, the iOS simulator and
+  Mac Catalyst 16 on arm64 (16 because the duration door returns Swift's `Duration`),
+  linking the core from a second binary target, `swift/HyperCastCoreApple.xcframework`: an
+  app for those platforms is built by Xcode, which links a static library out of an
+  XCFramework and does not read the static-library artifact bundle the other platforms use.
+  Both targets define the one `HyperCastCore` module, and the manifest declares the
+  XCFramework only on a Mac, so Linux, Windows and WebAssembly builds see the package they
+  saw before. CI runs the suite on an iOS simulator and as a Mac Catalyst process, and
+  builds the package for an iOS device. *(SwiftPM)*
+- **Go — iOS and Mac Catalyst.** A cgo build for an iOS device, the iOS simulator on Apple
+  silicon, or Mac Catalyst on either architecture links the core from its own archive under
+  `go/staticlib/`. Go builds all of them as `GOOS=ios`, so build tags choose: none for a
+  device, `iossimulator` for the simulator (nothing sets it, so it is passed by hand), and
+  `maccatalyst`, which `gomobile` sets for that target. CI holds every platform and tag
+  combination to the archive it should select (`.github/scripts/check_go_archives.sh`),
+  runs the suite, corpus included, in an iOS simulator through Go's own `go_ios_exec`
+  wrapper, and links a device build. *(`go get`)*
 
 ### Changed
 
@@ -212,6 +242,13 @@ everything since 0.6.1 is here.
   `uuid.UUID()` 798 ns → 1.06 µs) and others not at all (`fromisoformat`). A new table
   would credit the core with either. *(repository)*
 
+- **Go — Android is a compile error instead of a Linux build.** `GOOS=android` satisfies
+  Go's `linux` constraint, so an Android cgo build linked the Linux archive, which nothing
+  had ever tested there. It now lands on the same `undefined:
+  hypercast_needs_cgo_and_a_C_compiler_…` stop as every other platform without an archive
+  of its own, as does `GOOS=ios` on amd64 outside Mac Catalyst, the simulator on an Intel
+  Mac. *(`go get`)*
+
 ### Fixed
 
 - **`prepare-release.yml` left `rust/browser-test/Cargo.lock` out of its commit.** It
@@ -225,7 +262,7 @@ everything since 0.6.1 is here.
 
 ### Upgrade note
 
-Source-compatible for almost every consumer, with four things to know; the first is the
+Source-compatible for almost every consumer, with five things to know; the first is the
 only one most will meet.
 
 Every package: a fraction of a second longer than nine digits (`15:04:05.0000000001`) is
@@ -248,6 +285,10 @@ Java: `CastFailure.fromCode` is public and returns `Optional<CastFailure>`, empt
 code that is not a failure, where it threw `IllegalStateException`. It was package-private,
 so only code compiled into the `io.github.skunkwerkx.hypercast` package itself can see the
 change.
+
+Go: a cgo build for Android (`GOOS=android`) no longer compiles. It used to link the Linux
+archive, untested; a module that needs it there should say so in an issue rather than rely
+on that accident.
 
 ## [0.6.1] — 2026-10-03
 

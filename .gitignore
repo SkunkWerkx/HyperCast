@@ -117,3 +117,7 @@ php/.phpunit.result.cache
 rust/fuzz/corpus/
 rust/fuzz/artifacts/
 rust/fuzz/coverage/
+
+# The corpus copy test-apple-mobile stages for the Go suite in the iOS simulator
+# (go_ios_exec carries only the module's testdata), if made by hand.
+go/testdata/corpus/

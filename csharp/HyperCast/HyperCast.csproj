@@ -6,7 +6,7 @@
     <PackageId>HyperCast</PackageId>
     <!-- The committed version prepare-release.yml bumps — the same single mechanical sweep
          that keeps every binding's manifest in lockstep with rust/Cargo.toml. -->
-    <Version>0.6.2</Version>
+    <Version>0.7.0</Version>
     <!-- Windows filesystems are case-insensitive: the managed assembly's default filename
          (HyperCast.dll) and the native library's (hypercast.dll, from
          [LibraryImport("hypercast")]'s auto-resolution) differ only by case, so one silently
@@ -89,9 +89,10 @@
          a real Blazor consumer failed at wasm-ld. -->
     <None Include="build/**" Pack="true" PackagePath="build" />
     <None Include="buildTransitive/**" Pack="true" PackagePath="buildTransitive" />
-    <!-- The core as a static library, one per RID, for a Native AOT publish to link in
-         instead of loading the shared library; build/net11.0/HyperCast.targets has the wiring and
-         the reasons. Staged here before packing, like runtimes/, and not committed. -->
+    <!-- The core as a static library, one per RID: for a Native AOT publish to link in
+         instead of loading the shared library, and for an iOS or Mac Catalyst app, which
+         can only link it. build/net11.0/HyperCast.targets has the wiring and the reasons.
+         Staged here before packing, like runtimes/, and not committed. -->
     <None Include="staticlibs/**" Pack="true" PackagePath="staticlibs" />
     <!-- Local dev loop: when the Rust core has been built in-repo (`cargo cdylib` in
          rust/), copy that fresh native library straight to the output so tests and
