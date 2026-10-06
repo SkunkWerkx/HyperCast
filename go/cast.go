@@ -173,6 +173,19 @@ type rawCivil struct {
 	Nanos uint64
 }
 
+// Each shape above at the size rust/src/abi.rs pins for it, checked at compile time: an
+// array of any other length is another type, so a drift on this side fails the build. The
+// out-value holds the widest of them.
+var (
+	_ [8]byte  = [unsafe.Sizeof(rawFault{})]byte{}
+	_ [32]byte = [unsafe.Sizeof(rawNumFormat{})]byte{}
+	_ [16]byte = [unsafe.Sizeof(rawDecimal{})]byte{}
+	_ [16]byte = [unsafe.Sizeof(rawTimestamp{})]byte{}
+	_ [4]byte  = [unsafe.Sizeof(rawDate{})]byte{}
+	_ [16]byte = [unsafe.Sizeof(rawCivil{})]byte{}
+	_ [16]byte = [unsafe.Sizeof(result{}.out)]byte{}
+)
+
 // NumStyles are the lenience flags of NumFormat — bit-for-bit the native core's flags.
 type NumStyles uint32
 

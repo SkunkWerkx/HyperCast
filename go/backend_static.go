@@ -38,16 +38,24 @@
 // allocates nothing (allocs_test.go holds that).
 //
 // The archives are committed (staticlib/README.md): a Go module is whatever is in the tree at
-// the resolved version, with no packing step to stage them in.
+// the resolved version, with no packing step to stage them in. The hypercast_local build tag
+// links the archive .github/scripts/local-core.sh builds from the checkout instead, so the
+// suite can run against the core as it stands without replacing a committed archive.
 package hypercast
 
 /*
-#cgo linux,amd64 LDFLAGS: ${SRCDIR}/staticlib/linux_amd64/libhypercast.a
-#cgo linux,arm64 LDFLAGS: ${SRCDIR}/staticlib/linux_arm64/libhypercast.a
-#cgo darwin,amd64 LDFLAGS: ${SRCDIR}/staticlib/darwin_amd64/libhypercast.a
-#cgo darwin,arm64 LDFLAGS: ${SRCDIR}/staticlib/darwin_arm64/libhypercast.a
-#cgo windows,amd64 LDFLAGS: ${SRCDIR}/staticlib/windows_amd64/libhypercast.a
-#cgo windows,arm64 LDFLAGS: ${SRCDIR}/staticlib/windows_arm64/libhypercast.a
+#cgo linux,amd64,!hypercast_local LDFLAGS: ${SRCDIR}/staticlib/linux_amd64/libhypercast.a
+#cgo linux,arm64,!hypercast_local LDFLAGS: ${SRCDIR}/staticlib/linux_arm64/libhypercast.a
+#cgo darwin,amd64,!hypercast_local LDFLAGS: ${SRCDIR}/staticlib/darwin_amd64/libhypercast.a
+#cgo darwin,arm64,!hypercast_local LDFLAGS: ${SRCDIR}/staticlib/darwin_arm64/libhypercast.a
+#cgo windows,amd64,!hypercast_local LDFLAGS: ${SRCDIR}/staticlib/windows_amd64/libhypercast.a
+#cgo windows,arm64,!hypercast_local LDFLAGS: ${SRCDIR}/staticlib/windows_arm64/libhypercast.a
+#cgo linux,amd64,hypercast_local LDFLAGS: ${SRCDIR}/../rust/target/local-core/go/staticlib/linux_amd64/libhypercast.a
+#cgo linux,arm64,hypercast_local LDFLAGS: ${SRCDIR}/../rust/target/local-core/go/staticlib/linux_arm64/libhypercast.a
+#cgo darwin,amd64,hypercast_local LDFLAGS: ${SRCDIR}/../rust/target/local-core/go/staticlib/darwin_amd64/libhypercast.a
+#cgo darwin,arm64,hypercast_local LDFLAGS: ${SRCDIR}/../rust/target/local-core/go/staticlib/darwin_arm64/libhypercast.a
+#cgo windows,amd64,hypercast_local LDFLAGS: ${SRCDIR}/../rust/target/local-core/go/staticlib/windows_amd64/libhypercast.a
+#cgo windows,arm64,hypercast_local LDFLAGS: ${SRCDIR}/../rust/target/local-core/go/staticlib/windows_arm64/libhypercast.a
 #include <stddef.h>
 #include <stdint.h>
 
@@ -95,6 +103,10 @@ typedef struct { uint32_t decimal_sep; uint32_t group_sep; uint32_t flags; uint3
 // date-time — 8-aligned because the core writes an i64/u64 into it), the code, and the
 // fault span. Every door reads its own prefix of `out`.
 typedef struct { uint64_t out[2]; int32_t code; uint32_t offset; uint32_t len; } hc_result;
+
+// At the sizes rust/src/abi.rs and ffi.rs pin for RawFault and RawNumFormat.
+_Static_assert(sizeof(hc_fault) == 8, "RawFault");
+_Static_assert(sizeof(hc_format) == 32, "RawNumFormat");
 
 static hc_result call_plain(void *fn, const uint8_t *ptr, size_t len) {
 	hc_result r = {{0, 0}, 0, 0, 0};

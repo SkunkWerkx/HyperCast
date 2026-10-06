@@ -4,7 +4,35 @@
 //! rlib to export a C ABI of its own takes the core with `exports` off, so its library
 //! carries none of them, while still declaring a numeric column in exactly this layout.
 
-use crate::verdict::{CurrencySymbol, NumFormat};
+use crate::verdict::{
+    CivilDateTime, CurrencySymbol, Date, Decimal, Duration, NumFormat, Timestamp,
+};
+
+// The size and alignment of every shape that crosses the ABI, pinned here because the
+// bindings restate them by hand (C# structs, Go and PHP C declarations, ctypes in
+// cdylib_smoke.py, Swift scratch tuples) and each of those asserts the same numbers. A
+// layout change fails to compile here first, and these numbers are what every binding's
+// assertion has to move to. `RawFault` is pinned beside its definition in ffi.rs.
+//
+// Only where a u64 is 8-aligned, which is every target a binding ships for. Where it is
+// not (i686's SysV ABI), the shapes are other sizes and no binding runs there, so the Rust
+// API still builds.
+macro_rules! pin_layout {
+    ($($ty:ty => ($size:literal, $align:literal)),+ $(,)?) => {$(
+        const _: () = assert!(
+            align_of::<u64>() != 8 || (size_of::<$ty>() == $size && align_of::<$ty>() == $align)
+        );
+    )+};
+}
+
+pin_layout! {
+    RawNumFormat => (32, 4),
+    Decimal => (16, 8),
+    Timestamp => (16, 8),
+    Date => (4, 2),
+    CivilDateTime => (16, 8),
+    Duration => (16, 8),
+}
 
 /// This library's version, packed `major << 16 | minor << 8 | patch` from the crate's own
 /// manifest — so a host can prove the library it loaded is the one its binding was built
