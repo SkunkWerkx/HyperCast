@@ -124,8 +124,9 @@ was ever published; everything since 0.6.1 is here.
   `build/net11.0/HyperCast.targets` hands the one for the RID being built to the SDK as a
   static `NativeReference`, and `Cast` declares every entry point a third time against
   `__Internal`, the name a P/Invoke reaches the app's own executable by, picked by
-  `OperatingSystem.IsIOS()`. One wiring covers Mono's AOT compiler, the interpreter and
-  Native AOT, because the native link is the SDK's in all three. CI builds
+  `OperatingSystem.IsIOS()`. One wiring covers CoreCLR (the .NET 11 default there), Mono's
+  AOT compiler and interpreter, and Native AOT, because the native link is the SDK's in all
+  of them. CI builds
   `HyperCast.AppleSmokeTest` on a Mac from that run's archives: run as a Mac Catalyst
   process, installed and launched in an iOS simulator, and linked for an iOS device.
   Android, tvOS and the iOS simulator on Intel Macs remain unsupported. *(NuGet)*

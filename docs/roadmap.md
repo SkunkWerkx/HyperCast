@@ -198,15 +198,16 @@ the record of what shipped; this is the record of why.
    throw (Codex's review of the PR found the same hole independently). `hypercast_version`
    is the zero-argument probe, and every binding fronts it with an availability check plus
    the loaded core's version.
-4. **musl builds — built; mobile — open.** The forge built the three desktop OS families
+4. **musl builds — built; iOS and Mac Catalyst — built (0.7.0); Android — open.** The forge built the three desktop OS families
    on x64 and arm64 plus browser-wasm, and nothing for `ios-*`, `android-*` or
    `linux-musl-*`. That gap is the sole reason the PR carries several hundred lines of
    managed fallback grammar duplicating this core — RFC 3339, the three-shape duration
    grammar, separator detection. `linux-musl-x64` and `linux-musl-arm64` are now built in
    Alpine containers, attested, and shipped in every binding that has a dynamic-loading
    story on musl; Swift, which has none, links the core in statically instead. Alpine no
-   longer takes the fallback. `ios-*` and
-   `android-*` remain HyperForge work, shared with HyperUuid.
+   longer takes the fallback. Since 0.7.0, C#, Swift and Go link the core into iOS and Mac
+   Catalyst apps from static archives built in the same job, as HyperUuid's do. `android-*`
+   remains HyperForge work, shared with HyperUuid.
 5. **A corpus content package — declined.** The consumer vendored the corpus files plus a
    snapshot SHA by hand and asked for a package. The ruling is that the corpus is this
    repository's receipt, not a product: a downstream suite takes `corpus/*.json` from the

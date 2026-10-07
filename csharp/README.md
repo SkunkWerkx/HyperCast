@@ -276,8 +276,9 @@ built to the SDK as a
 [`NativeReference` with `Kind=Static`](https://learn.microsoft.com/dotnet/maui/migration/ios-binding-projects),
 and `Cast` declares every entry point a third time against `__Internal`, picked by
 `OperatingSystem.IsIOS()` (which is true on Mac Catalyst too). It is the SDK's own native
-link that takes the archive, so the same wiring serves an app compiled by Mono's AOT
-compiler, one that runs interpreted, and one published with
+link that takes the archive, so the same wiring serves an app on CoreCLR (the .NET 11
+default for these platforms), one compiled by Mono's AOT compiler or run by its interpreter,
+and one published with
 [Native AOT](https://learn.microsoft.com/dotnet/core/deploying/native-aot/ios-like-platforms/);
 the Native AOT wiring under [AOT](#aot) stands aside for these RIDs. A universal Mac Catalyst
 app is built once per RID and merged, and each half links its own archive.
@@ -287,6 +288,14 @@ every native entry point, and CI's `test-apple-mobile` job builds it three ways 
 that run's archives: as a Mac Catalyst app, run as a process; for the iOS simulator, installed
 and launched; and for an iOS device with signing off, where the check is that the app's
 executable defines the core's symbols, since no runner has a device to run it on.
+
+Two .NET 11 RC1 SDK behaviors shape that project, and an app on RC1 may meet them too; neither
+is HyperCast's. A Release build links only the frameworks the trimmer sees the app use, while
+the SDK's own runtime library still needs UIKit, so an app that touches no UIKit type fails
+its native link; the smoke test, a console-style program, asks for UIKit by hand. And a
+Release Mac Catalyst build on RC1's new default registrar, `trimmable-static`, aborted in CI
+before `Main` (`xamarin_bridge_call_runtime_initialize: failed to create delegate`); the
+smoke test sets `Registrar` to `managed-static` there, the default before RC1.
 
 **Known gap: Android, tvOS, and the iOS simulator on Intel Macs are not supported.** The
 package carries no native asset for them. On Android it restores and compiles, and
