@@ -59,6 +59,7 @@ cgo, and so a C compiler wherever the module is **built** — nothing at run tim
 | macOS x64 / arm64 | the Xcode command-line tools (`xcode-select --install`) |
 | Windows x64 | MinGW-w64 gcc |
 | Windows arm64 | [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) |
+| iOS, the iOS simulator, Mac Catalyst | Xcode's clang for that platform's SDK; see [iOS and Mac Catalyst](#ios-and-mac-catalyst) |
 
 Every other build fails at compile time, by name:
 
@@ -68,8 +69,9 @@ undefined: hypercast_needs_cgo_and_a_C_compiler_on_linux_darwin_or_windows_amd64
 
 That is `CGO_ENABLED=0` (which is also Go's default for a cross-compile — see
 [Building and cross-compiling](#building-and-cross-compiling)), any OS or architecture
-outside the six above, and stock Go compiled to WebAssembly (`GOOS=wasip1`, `GOOS=js`): Go's
-wasm toolchain links Go code only, with no cgo, so a foreign library has nowhere to go.
+outside the ones above (Android and the iOS simulator on an Intel Mac among them, which
+Go's own rules would otherwise count as Linux and macOS), and stock Go compiled to
+WebAssembly (`GOOS=wasip1`, `GOOS=js`): Go's wasm toolchain links Go code only, with no cgo, so a foreign library has nowhere to go.
 For WebAssembly, build with [TinyGo](#in-the-browser-tinygo), which links the core there,
 browser included.
 
@@ -235,6 +237,35 @@ stays only so code that tests for it keeps compiling.
 [HyperUuid](https://github.com/SkunkWerkx/HyperUuid)'s Go binding has the same three entry
 points.
 
+## Interop: building on HyperCast's C ABI
+
+For a module that carries HyperCast's verdicts across a C ABI of its own (HyperTabular and
+HyperWorkbook do): the layouts the core writes, the conversions every door applies to them,
+the checked codes of the declared options, and the packed version word — the same code the
+doors run, so a value read out of another library's buffer is the value the door of the
+same name would have returned.
+
+- `RawTimestamp` (16 bytes) → `.Time()`, `RawDate` (4) → `.Date()`, `RawCivil` (16) →
+  `.CivilDateTime()`. `Decimal` and `Duration` need no raw twin: each is laid out exactly as
+  the core writes one, checked at compile time, so a buffer of them can be viewed as a
+  `[]Decimal` or `[]Duration` in place.
+- `RawNumFormat` — the 32 bytes a format crosses as, with the symbol inline up to
+  `CurrencyMaxBytes` (16). `NumFormat.Raw()` builds one, returning the doors' check as an
+  error instead of their panic.
+- `Valid()` on `UnixPrecision`, `DateOrder` and `ExcelEpoch`; `UnixPrecisionFromCode`,
+  `DateOrderFromCode`, `ExcelEpochFromCode` and `ReasonFromCode` turn an ABI code back into
+  the type, and `false` for any other value.
+- `FaultFromCode(code, offset, length)` — the `*Fault` a nonzero verdict code and its span
+  name; `false` when the code names no reason, a binding bug rather than data.
+- `FormatVersion(packed)` — a `*_version()` export's `major<<16 | minor<<8 | patch` word as
+  `"major.minor.patch"`.
+
+```go
+raw, err := hypercast.NumFormat{DecimalSep: ',', GroupSep: '.', Styles: hypercast.AllStyles, Currency: "€"}.Raw()
+// raw crosses to the other library's C ABI; its verdicts come back as codes and spans:
+fault, ok := hypercast.FaultFromCode(code, offset, length)
+```
+
 ## Platforms
 
 | Platform | Archive linked | Also links |
@@ -242,6 +273,8 @@ points.
 | Linux x64 / arm64, glibc and musl (Alpine) | `staticlib/linux_amd64`, `staticlib/linux_arm64` | the C library |
 | macOS x64 / arm64 | `staticlib/darwin_amd64`, `staticlib/darwin_arm64` | the C library |
 | Windows x64 / arm64 | `staticlib/windows_amd64`, `staticlib/windows_arm64` | nothing (the C runtime) |
+| iOS arm64 — device, simulator | `staticlib/ios_arm64`, `staticlib/iossimulator_arm64` | the C library |
+| Mac Catalyst arm64 / x64 | `staticlib/maccatalyst_arm64`, `staticlib/maccatalyst_amd64` | the C library |
 | WebAssembly under [TinyGo](#in-the-browser-tinygo) — browser, WASI | `staticlib/wasm` | nothing |
 
 Each build names one archive on its link line and that is all it takes from this module:
@@ -257,6 +290,34 @@ the C library for nothing glibc and musl do not both have (`memcpy`, `memset`, `
 links. MinGW's linker reads MSVC's COFF objects, and what the archive asks of the C runtime
 resolves against `msvcrt.dll` through MinGW's own import library, so the link line names
 nothing else.
+
+### iOS and Mac Catalyst
+
+Go builds for all three as `GOOS=ios`, with cgo and the platform's own clang, which is what
+[`gomobile`](https://pkg.go.dev/golang.org/x/mobile/cmd/gomobile) arranges and what Go's own
+`misc/ios/clangwrap.sh` does for the simulator. A Mach-O object says which platform it was
+built for and the linker refuses a mismatch, so each has its own archive, and since the
+three are one `GOOS`/`GOARCH` pair to Go, build tags choose between them:
+
+| Building for | Tags | Archive |
+| --- | --- | --- |
+| An iOS device | none | `staticlib/ios_arm64` |
+| The iOS simulator, Apple silicon | `iossimulator` | `staticlib/iossimulator_arm64` |
+| Mac Catalyst | `maccatalyst` | `staticlib/maccatalyst_arm64`, `staticlib/maccatalyst_amd64` |
+
+`gomobile` sets `maccatalyst` itself for that target. Nothing sets `iossimulator`: gomobile
+builds a device and a simulator with the same tags, so a simulator build passes
+`-tags iossimulator` by hand, and a build that omits it links the device archive and fails
+at the simulator link. A `gomobile bind` covering both in one invocation gives them one set
+of tags, so they take two invocations. The simulator on an Intel Mac has no archive and is
+a compile error.
+
+CI checks that every platform and tag combination selects its own archive
+(`.github/scripts/check_go_archives.sh`), runs this suite in an iOS simulator through Go's
+`misc/ios/go_ios_exec.go`, with the corpus staged as `testdata/corpus` since that wrapper
+carries nothing above the module into the simulator, and links a device build. Mac Catalyst
+is not linked from Go there; its archives are the ones the Swift and C# bindings link and
+run in the same job.
 
 ### Deploying
 
@@ -295,8 +356,14 @@ not found` — install the one for your platform from [Requirements](#requiremen
 GitHub's `ubuntu-latest` and `macos-latest` runner images ship one by default (`gcc` and the
 Xcode command-line tools' `clang`).
 
+The `hypercast_local` build tag is for working on the core in a checkout of this repository:
+`go test -tags hypercast_local ./...` links the archive `.github/scripts/local-core.sh` builds
+from the checkout, under `rust/target/local-core/`, in place of the committed one. A module
+fetched with `go get` has no such archive, so the tag fails at link time there.
+
 This repo's own CI runs `go test ./...` natively, never cross-compiled, on every leg —
-Linux and Windows on x64 and arm64, macOS on arm64 — and on Alpine.
+Linux and Windows on x64 and arm64, macOS on arm64 — and on Alpine. The iOS simulator run
+in `test-apple-mobile` is the one exception; see [iOS and Mac Catalyst](#ios-and-mac-catalyst).
 
 ## Why not `strconv` / `time.Parse`?
 

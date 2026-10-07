@@ -26,7 +26,8 @@ Door names mirror the native ABI (`i32`, `f64`, `decimal`, `timestamp`, …); ev
 takes raw UTF-8 `[UInt8]` for callers already holding bytes. Swift-flavored fidelity:
 `Duration` is attosecond-backed, so the duration door keeps every nanosecond the core
 parses; the `Duration` presentation is also why `Package.swift` carries a `.macOS(.v13)`
-floor (Linux has no availability gates — this only sets the Darwin deployment target).
+floor, and `.iOS(.v16)` and `.macCatalyst(.v16)` beside it (Linux has no availability
+gates — these only set the Darwin deployment targets).
 `Cast.decimal` presents Foundation's `Decimal`, whose 38-digit mantissa holds every value
 the core's 96-bit, 28-place decimal produces exactly — `0.1` is one tenth, `50%` is exactly
 `0.5`, and excess precision is `outOfRange` rather than rounded. The core's result is
@@ -136,6 +137,28 @@ let enUs = NumFormat.from(locale: Locale(identifier: "en_US"))   // "$", from th
 try Cast.i32("-$5", format: enUs)                                  // .success(-5)
 ```
 
+## Interop: building on HyperCast's C ABI
+
+The `Interop` namespace is for a package that carries HyperCast's verdicts across a C ABI
+of its own (HyperTabular and HyperWorkbook do): it reads the value layouts the core writes
+through exactly the conversions every `Cast` door applies, so a value read out of another
+library's buffer is the value the door of the same name would have returned. Each reader
+takes an `UnsafeRawBufferPointer` starting at one value, aligned for its widest field.
+
+- Out-values: `Interop.decimal` → `Decimal`, `uuid` → `UUID`, `instant` → `Date`, `date`,
+  `civil` and `time` → `DateComponents`, `duration` → `Duration`.
+- `Interop.rawFormat(_:)` — a `NumFormat` as the core reads it, the 32-byte
+  `Interop.RawNumFormat` tuple, the symbol inline up to `Interop.currencyMaxBytes` (16).
+- `Interop.fault(code:offset:length:)` — the `Fault` a nonzero verdict code and its byte
+  span name; any code other than 1–3 is a precondition failure, a binding bug.
+- `Interop.version(_:)` — a `*_version()` export's packed `major << 16 | minor << 8 | patch`
+  word as `"major.minor.patch"`.
+
+```swift
+let amount = buffer.withUnsafeBytes { Interop.decimal(UnsafeRawBufferPointer(rebasing: $0[offset..<offset + 16])) }
+let format = Interop.rawFormat(.invariant)   // 32 bytes, ready for the other library's ABI
+```
+
 ## Requirements
 
 - **Swift 6.2 or later.** The manifests declare `swift-tools-version:6.2`: the first release
@@ -144,12 +167,14 @@ try Cast.i32("-$5", format: enUs)                                  // .success(-
   runs Linux (glibc and musl) and WebAssembly again on 6.2 in Swift's own containers. macOS
   and Windows are tested on 6.4 only.
 - **Platforms.** Linux on glibc and on musl (Swift's static Linux SDK), macOS and Windows,
-  each on x86_64 and arm64, and WebAssembly (`wasm32-unknown-wasip1`), in WASI hosts and in
-  the browser. macOS 13 is the declared deployment floor, for `Duration`.
-- **Not supported: everything else.** iOS, tvOS, watchOS, visionOS, Android, and any other
-  architecture on the supported systems have no prebuilt core here, so the build stops at
-  compile time with no `HyperCastCore` module (Swift Build first warns that the artifact
-  bundle has no matching variant) — never at run time.
+  each on x86_64 and arm64, WebAssembly (`wasm32-unknown-wasip1`), in WASI hosts and in
+  the browser, and iOS, the iOS simulator and Mac Catalyst on arm64. The declared
+  deployment floors are macOS 13, iOS 16 and Mac Catalyst 16, for `Duration`.
+- **Not supported: everything else.** tvOS, watchOS, visionOS, Android, the iOS simulator
+  and Mac Catalyst on Intel Macs, and any other architecture on the supported systems have
+  no prebuilt core here, so the build stops at compile time with no `HyperCastCore` module
+  (Swift Build first warns that the artifact bundle has no matching variant) — never at
+  run time.
 
 ## Linking and deployment
 
@@ -167,6 +192,18 @@ every door still carries is left from when macOS and Windows loaded a shared lib
 could fail to load, so existing `try` call sites keep compiling. `Cast.isAvailable` is
 always `true`, and the `NativeLibraryError` type is deprecated and has no cases, for the
 same reason: code that checks either still compiles.
+
+iOS, the iOS simulator and Mac Catalyst get the same archives from a second binary target,
+`HyperCastCoreApple.xcframework`: an app for those is built by Xcode, which links a static
+library out of an XCFramework and does not read a static-library artifact bundle. The
+manifest declares it only on a Mac, where those platforms can be built at all, and only
+when the XCFramework is in the tree; both targets define the one `HyperCastCore` module the
+binding imports. CI's `test-apple-mobile` job runs the suite on an iOS simulator and as a
+Mac Catalyst process with `xcodebuild test`, and builds the package for an iOS device.
+
+In a checkout of this repository, `HYPERCAST_LOCAL_CORE=1 swift test` run from `swift/` links
+the bundle `.github/scripts/local-core.sh` builds from the checkout's core in place of the
+committed one. The root `Package.swift`, the one a dependency resolves, has no such switch.
 
 On Swift 6.3 with `--build-system swiftbuild` (opt-in there), a package that depends on
 this one fails with `missing required module 'HyperCastCore'`: that release's Swift Build
@@ -273,7 +310,8 @@ requires `Package.swift` at the repository root with no monorepo-subdirectory su
 is why [the root's own `Package.swift`](../Package.swift) exists, with its targets pointed at
 the real sources under `swift/` via `path:`. The native binaries — the static libraries
 under `HyperCastCore.artifactbundle/{triple}/` (`hypercast.lib` for the two Windows triples,
-`libhypercast.a` for the rest) — are committed straight to git for the same reason as the
+`libhypercast.a` for the rest) and the iOS and Mac Catalyst slices of
+`HyperCastCoreApple.xcframework/` — are committed straight to git for the same reason as the
 tag itself: SwiftPM has no packing step, so the tree at the resolved tag is what a
 consumer's build links.
 

@@ -32,13 +32,15 @@ namespace HyperCast;
 /// runtime reflection), so this type publishes cleanly under <c>PublishAot</c>. Needs the
 /// platform-specific native binary. No separate <c>browser-wasm</c> build anymore —
 /// HyperUuid's single-assembly pattern, ported home: every native entry point is declared
-/// twice, once against <c>"hypercast"</c> (dlopen on every real native platform), once
+/// three times, once against <c>"hypercast"</c> (dlopen on every real native platform), once
 /// against <c>"*"</c> (resolves against the current module — the only thing that works for
-/// a statically-linked WASM native), sharing the same
+/// a statically-linked WASM native), and once against <c>"__Internal"</c> (the app's own
+/// executable, which is where .NET for iOS and Mac Catalyst link a static library and the
+/// name their AOT compiler turns into a direct call), sharing the same
 /// <see cref="LibraryImportAttribute.EntryPoint"/>. <see cref="OperatingSystem.IsBrowser"/>
-/// picks the right one at the call site — a real runtime check the .NET linker knows how to
-/// constant-fold per publish target, so a trimmed build still ships only the reachable
-/// branch.
+/// and <see cref="OperatingSystem.IsIOS"/> (true on Mac Catalyst as well) pick the right one
+/// at the call site — real runtime checks the .NET linker knows how to constant-fold per
+/// publish target, so a trimmed build still ships only the reachable branch.
 /// </para>
 /// </remarks>
 [SkipLocalsInit] // the UTF-16 doors stackalloc a 512-byte transcode buffer per call; without
@@ -53,183 +55,287 @@ public static partial class Cast
 	private static unsafe partial int cast_bool_native(byte* ptr, nuint len, byte* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_bool")]
 	private static unsafe partial int cast_bool_browser(byte* ptr, nuint len, byte* value, RawFault* fault);
+	[LibraryImport("__Internal", EntryPoint = "cast_bool")]
+	private static unsafe partial int cast_bool_internal(byte* ptr, nuint len, byte* value, RawFault* fault);
 	private static unsafe int cast_bool(byte* ptr, nuint len, byte* value, RawFault* fault) =>
-		OperatingSystem.IsBrowser() ? cast_bool_browser(ptr, len, value, fault) : cast_bool_native(ptr, len, value, fault);
+		OperatingSystem.IsBrowser() ? cast_bool_browser(ptr, len, value, fault)
+			: OperatingSystem.IsIOS() ? cast_bool_internal(ptr, len, value, fault)
+			: cast_bool_native(ptr, len, value, fault);
 
 	[LibraryImport("hypercast", EntryPoint = "cast_i8")]
 	private static unsafe partial int cast_i8_native(byte* ptr, nuint len, RawNumFormat* format, sbyte* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_i8")]
 	private static unsafe partial int cast_i8_browser(byte* ptr, nuint len, RawNumFormat* format, sbyte* value, RawFault* fault);
+	[LibraryImport("__Internal", EntryPoint = "cast_i8")]
+	private static unsafe partial int cast_i8_internal(byte* ptr, nuint len, RawNumFormat* format, sbyte* value, RawFault* fault);
 	private static unsafe int cast_i8(byte* ptr, nuint len, RawNumFormat* format, sbyte* value, RawFault* fault) =>
-		OperatingSystem.IsBrowser() ? cast_i8_browser(ptr, len, format, value, fault) : cast_i8_native(ptr, len, format, value, fault);
+		OperatingSystem.IsBrowser() ? cast_i8_browser(ptr, len, format, value, fault)
+			: OperatingSystem.IsIOS() ? cast_i8_internal(ptr, len, format, value, fault)
+			: cast_i8_native(ptr, len, format, value, fault);
 
 	[LibraryImport("hypercast", EntryPoint = "cast_i16")]
 	private static unsafe partial int cast_i16_native(byte* ptr, nuint len, RawNumFormat* format, short* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_i16")]
 	private static unsafe partial int cast_i16_browser(byte* ptr, nuint len, RawNumFormat* format, short* value, RawFault* fault);
+	[LibraryImport("__Internal", EntryPoint = "cast_i16")]
+	private static unsafe partial int cast_i16_internal(byte* ptr, nuint len, RawNumFormat* format, short* value, RawFault* fault);
 	private static unsafe int cast_i16(byte* ptr, nuint len, RawNumFormat* format, short* value, RawFault* fault) =>
-		OperatingSystem.IsBrowser() ? cast_i16_browser(ptr, len, format, value, fault) : cast_i16_native(ptr, len, format, value, fault);
+		OperatingSystem.IsBrowser() ? cast_i16_browser(ptr, len, format, value, fault)
+			: OperatingSystem.IsIOS() ? cast_i16_internal(ptr, len, format, value, fault)
+			: cast_i16_native(ptr, len, format, value, fault);
 
 	[LibraryImport("hypercast", EntryPoint = "cast_i32")]
 	private static unsafe partial int cast_i32_native(byte* ptr, nuint len, RawNumFormat* format, int* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_i32")]
 	private static unsafe partial int cast_i32_browser(byte* ptr, nuint len, RawNumFormat* format, int* value, RawFault* fault);
+	[LibraryImport("__Internal", EntryPoint = "cast_i32")]
+	private static unsafe partial int cast_i32_internal(byte* ptr, nuint len, RawNumFormat* format, int* value, RawFault* fault);
 	private static unsafe int cast_i32(byte* ptr, nuint len, RawNumFormat* format, int* value, RawFault* fault) =>
-		OperatingSystem.IsBrowser() ? cast_i32_browser(ptr, len, format, value, fault) : cast_i32_native(ptr, len, format, value, fault);
+		OperatingSystem.IsBrowser() ? cast_i32_browser(ptr, len, format, value, fault)
+			: OperatingSystem.IsIOS() ? cast_i32_internal(ptr, len, format, value, fault)
+			: cast_i32_native(ptr, len, format, value, fault);
 
 	[LibraryImport("hypercast", EntryPoint = "cast_i64")]
 	private static unsafe partial int cast_i64_native(byte* ptr, nuint len, RawNumFormat* format, long* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_i64")]
 	private static unsafe partial int cast_i64_browser(byte* ptr, nuint len, RawNumFormat* format, long* value, RawFault* fault);
+	[LibraryImport("__Internal", EntryPoint = "cast_i64")]
+	private static unsafe partial int cast_i64_internal(byte* ptr, nuint len, RawNumFormat* format, long* value, RawFault* fault);
 	private static unsafe int cast_i64(byte* ptr, nuint len, RawNumFormat* format, long* value, RawFault* fault) =>
-		OperatingSystem.IsBrowser() ? cast_i64_browser(ptr, len, format, value, fault) : cast_i64_native(ptr, len, format, value, fault);
+		OperatingSystem.IsBrowser() ? cast_i64_browser(ptr, len, format, value, fault)
+			: OperatingSystem.IsIOS() ? cast_i64_internal(ptr, len, format, value, fault)
+			: cast_i64_native(ptr, len, format, value, fault);
 
 	[LibraryImport("hypercast", EntryPoint = "cast_u8")]
 	private static unsafe partial int cast_u8_native(byte* ptr, nuint len, RawNumFormat* format, byte* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_u8")]
 	private static unsafe partial int cast_u8_browser(byte* ptr, nuint len, RawNumFormat* format, byte* value, RawFault* fault);
+	[LibraryImport("__Internal", EntryPoint = "cast_u8")]
+	private static unsafe partial int cast_u8_internal(byte* ptr, nuint len, RawNumFormat* format, byte* value, RawFault* fault);
 	private static unsafe int cast_u8(byte* ptr, nuint len, RawNumFormat* format, byte* value, RawFault* fault) =>
-		OperatingSystem.IsBrowser() ? cast_u8_browser(ptr, len, format, value, fault) : cast_u8_native(ptr, len, format, value, fault);
+		OperatingSystem.IsBrowser() ? cast_u8_browser(ptr, len, format, value, fault)
+			: OperatingSystem.IsIOS() ? cast_u8_internal(ptr, len, format, value, fault)
+			: cast_u8_native(ptr, len, format, value, fault);
 
 	[LibraryImport("hypercast", EntryPoint = "cast_u16")]
 	private static unsafe partial int cast_u16_native(byte* ptr, nuint len, RawNumFormat* format, ushort* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_u16")]
 	private static unsafe partial int cast_u16_browser(byte* ptr, nuint len, RawNumFormat* format, ushort* value, RawFault* fault);
+	[LibraryImport("__Internal", EntryPoint = "cast_u16")]
+	private static unsafe partial int cast_u16_internal(byte* ptr, nuint len, RawNumFormat* format, ushort* value, RawFault* fault);
 	private static unsafe int cast_u16(byte* ptr, nuint len, RawNumFormat* format, ushort* value, RawFault* fault) =>
-		OperatingSystem.IsBrowser() ? cast_u16_browser(ptr, len, format, value, fault) : cast_u16_native(ptr, len, format, value, fault);
+		OperatingSystem.IsBrowser() ? cast_u16_browser(ptr, len, format, value, fault)
+			: OperatingSystem.IsIOS() ? cast_u16_internal(ptr, len, format, value, fault)
+			: cast_u16_native(ptr, len, format, value, fault);
 
 	[LibraryImport("hypercast", EntryPoint = "cast_u32")]
 	private static unsafe partial int cast_u32_native(byte* ptr, nuint len, RawNumFormat* format, uint* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_u32")]
 	private static unsafe partial int cast_u32_browser(byte* ptr, nuint len, RawNumFormat* format, uint* value, RawFault* fault);
+	[LibraryImport("__Internal", EntryPoint = "cast_u32")]
+	private static unsafe partial int cast_u32_internal(byte* ptr, nuint len, RawNumFormat* format, uint* value, RawFault* fault);
 	private static unsafe int cast_u32(byte* ptr, nuint len, RawNumFormat* format, uint* value, RawFault* fault) =>
-		OperatingSystem.IsBrowser() ? cast_u32_browser(ptr, len, format, value, fault) : cast_u32_native(ptr, len, format, value, fault);
+		OperatingSystem.IsBrowser() ? cast_u32_browser(ptr, len, format, value, fault)
+			: OperatingSystem.IsIOS() ? cast_u32_internal(ptr, len, format, value, fault)
+			: cast_u32_native(ptr, len, format, value, fault);
 
 	[LibraryImport("hypercast", EntryPoint = "cast_u64")]
 	private static unsafe partial int cast_u64_native(byte* ptr, nuint len, RawNumFormat* format, ulong* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_u64")]
 	private static unsafe partial int cast_u64_browser(byte* ptr, nuint len, RawNumFormat* format, ulong* value, RawFault* fault);
+	[LibraryImport("__Internal", EntryPoint = "cast_u64")]
+	private static unsafe partial int cast_u64_internal(byte* ptr, nuint len, RawNumFormat* format, ulong* value, RawFault* fault);
 	private static unsafe int cast_u64(byte* ptr, nuint len, RawNumFormat* format, ulong* value, RawFault* fault) =>
-		OperatingSystem.IsBrowser() ? cast_u64_browser(ptr, len, format, value, fault) : cast_u64_native(ptr, len, format, value, fault);
+		OperatingSystem.IsBrowser() ? cast_u64_browser(ptr, len, format, value, fault)
+			: OperatingSystem.IsIOS() ? cast_u64_internal(ptr, len, format, value, fault)
+			: cast_u64_native(ptr, len, format, value, fault);
 
 	[LibraryImport("hypercast", EntryPoint = "cast_f32")]
 	private static unsafe partial int cast_f32_native(byte* ptr, nuint len, RawNumFormat* format, float* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_f32")]
 	private static unsafe partial int cast_f32_browser(byte* ptr, nuint len, RawNumFormat* format, float* value, RawFault* fault);
+	[LibraryImport("__Internal", EntryPoint = "cast_f32")]
+	private static unsafe partial int cast_f32_internal(byte* ptr, nuint len, RawNumFormat* format, float* value, RawFault* fault);
 	private static unsafe int cast_f32(byte* ptr, nuint len, RawNumFormat* format, float* value, RawFault* fault) =>
-		OperatingSystem.IsBrowser() ? cast_f32_browser(ptr, len, format, value, fault) : cast_f32_native(ptr, len, format, value, fault);
+		OperatingSystem.IsBrowser() ? cast_f32_browser(ptr, len, format, value, fault)
+			: OperatingSystem.IsIOS() ? cast_f32_internal(ptr, len, format, value, fault)
+			: cast_f32_native(ptr, len, format, value, fault);
 
 	[LibraryImport("hypercast", EntryPoint = "cast_f64")]
 	private static unsafe partial int cast_f64_native(byte* ptr, nuint len, RawNumFormat* format, double* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_f64")]
 	private static unsafe partial int cast_f64_browser(byte* ptr, nuint len, RawNumFormat* format, double* value, RawFault* fault);
+	[LibraryImport("__Internal", EntryPoint = "cast_f64")]
+	private static unsafe partial int cast_f64_internal(byte* ptr, nuint len, RawNumFormat* format, double* value, RawFault* fault);
 	private static unsafe int cast_f64(byte* ptr, nuint len, RawNumFormat* format, double* value, RawFault* fault) =>
-		OperatingSystem.IsBrowser() ? cast_f64_browser(ptr, len, format, value, fault) : cast_f64_native(ptr, len, format, value, fault);
+		OperatingSystem.IsBrowser() ? cast_f64_browser(ptr, len, format, value, fault)
+			: OperatingSystem.IsIOS() ? cast_f64_internal(ptr, len, format, value, fault)
+			: cast_f64_native(ptr, len, format, value, fault);
 
 	[LibraryImport("hypercast", EntryPoint = "cast_decimal")]
 	private static unsafe partial int cast_decimal_native(byte* ptr, nuint len, RawNumFormat* format, RawDecimal* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_decimal")]
 	private static unsafe partial int cast_decimal_browser(byte* ptr, nuint len, RawNumFormat* format, RawDecimal* value, RawFault* fault);
+	[LibraryImport("__Internal", EntryPoint = "cast_decimal")]
+	private static unsafe partial int cast_decimal_internal(byte* ptr, nuint len, RawNumFormat* format, RawDecimal* value, RawFault* fault);
 	private static unsafe int cast_decimal(byte* ptr, nuint len, RawNumFormat* format, RawDecimal* value, RawFault* fault) =>
-		OperatingSystem.IsBrowser() ? cast_decimal_browser(ptr, len, format, value, fault) : cast_decimal_native(ptr, len, format, value, fault);
+		OperatingSystem.IsBrowser() ? cast_decimal_browser(ptr, len, format, value, fault)
+			: OperatingSystem.IsIOS() ? cast_decimal_internal(ptr, len, format, value, fault)
+			: cast_decimal_native(ptr, len, format, value, fault);
 
 	[LibraryImport("hypercast", EntryPoint = "hypercast_version")]
 	private static partial uint hypercast_version_native();
 	[LibraryImport("*", EntryPoint = "hypercast_version")]
 	private static partial uint hypercast_version_browser();
+	[LibraryImport("__Internal", EntryPoint = "hypercast_version")]
+	private static partial uint hypercast_version_internal();
 	private static uint hypercast_version() =>
-		OperatingSystem.IsBrowser() ? hypercast_version_browser() : hypercast_version_native();
+		OperatingSystem.IsBrowser() ? hypercast_version_browser()
+			: OperatingSystem.IsIOS() ? hypercast_version_internal()
+			: hypercast_version_native();
 
 	[LibraryImport("hypercast", EntryPoint = "cast_uuid")]
 	private static unsafe partial int cast_uuid_native(byte* ptr, nuint len, byte* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_uuid")]
 	private static unsafe partial int cast_uuid_browser(byte* ptr, nuint len, byte* value, RawFault* fault);
+	[LibraryImport("__Internal", EntryPoint = "cast_uuid")]
+	private static unsafe partial int cast_uuid_internal(byte* ptr, nuint len, byte* value, RawFault* fault);
 	private static unsafe int cast_uuid(byte* ptr, nuint len, byte* value, RawFault* fault) =>
-		OperatingSystem.IsBrowser() ? cast_uuid_browser(ptr, len, value, fault) : cast_uuid_native(ptr, len, value, fault);
+		OperatingSystem.IsBrowser() ? cast_uuid_browser(ptr, len, value, fault)
+			: OperatingSystem.IsIOS() ? cast_uuid_internal(ptr, len, value, fault)
+			: cast_uuid_native(ptr, len, value, fault);
 
 	[LibraryImport("hypercast", EntryPoint = "cast_timestamp")]
 	private static unsafe partial int cast_timestamp_native(byte* ptr, nuint len, RawTimestamp* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_timestamp")]
 	private static unsafe partial int cast_timestamp_browser(byte* ptr, nuint len, RawTimestamp* value, RawFault* fault);
+	[LibraryImport("__Internal", EntryPoint = "cast_timestamp")]
+	private static unsafe partial int cast_timestamp_internal(byte* ptr, nuint len, RawTimestamp* value, RawFault* fault);
 	private static unsafe int cast_timestamp(byte* ptr, nuint len, RawTimestamp* value, RawFault* fault) =>
-		OperatingSystem.IsBrowser() ? cast_timestamp_browser(ptr, len, value, fault) : cast_timestamp_native(ptr, len, value, fault);
+		OperatingSystem.IsBrowser() ? cast_timestamp_browser(ptr, len, value, fault)
+			: OperatingSystem.IsIOS() ? cast_timestamp_internal(ptr, len, value, fault)
+			: cast_timestamp_native(ptr, len, value, fault);
 
 	[LibraryImport("hypercast", EntryPoint = "cast_unix")]
 	private static unsafe partial int cast_unix_native(byte* ptr, nuint len, uint precision, RawTimestamp* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_unix")]
 	private static unsafe partial int cast_unix_browser(byte* ptr, nuint len, uint precision, RawTimestamp* value, RawFault* fault);
+	[LibraryImport("__Internal", EntryPoint = "cast_unix")]
+	private static unsafe partial int cast_unix_internal(byte* ptr, nuint len, uint precision, RawTimestamp* value, RawFault* fault);
 	private static unsafe int cast_unix(byte* ptr, nuint len, uint precision, RawTimestamp* value, RawFault* fault) =>
-		OperatingSystem.IsBrowser() ? cast_unix_browser(ptr, len, precision, value, fault) : cast_unix_native(ptr, len, precision, value, fault);
+		OperatingSystem.IsBrowser() ? cast_unix_browser(ptr, len, precision, value, fault)
+			: OperatingSystem.IsIOS() ? cast_unix_internal(ptr, len, precision, value, fault)
+			: cast_unix_native(ptr, len, precision, value, fault);
 
 	[LibraryImport("hypercast", EntryPoint = "cast_excel_serial")]
 	private static unsafe partial int cast_excel_serial_native(byte* ptr, nuint len, uint epoch, RawTimestamp* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_excel_serial")]
 	private static unsafe partial int cast_excel_serial_browser(byte* ptr, nuint len, uint epoch, RawTimestamp* value, RawFault* fault);
+	[LibraryImport("__Internal", EntryPoint = "cast_excel_serial")]
+	private static unsafe partial int cast_excel_serial_internal(byte* ptr, nuint len, uint epoch, RawTimestamp* value, RawFault* fault);
 	private static unsafe int cast_excel_serial(byte* ptr, nuint len, uint epoch, RawTimestamp* value, RawFault* fault) =>
-		OperatingSystem.IsBrowser() ? cast_excel_serial_browser(ptr, len, epoch, value, fault) : cast_excel_serial_native(ptr, len, epoch, value, fault);
+		OperatingSystem.IsBrowser() ? cast_excel_serial_browser(ptr, len, epoch, value, fault)
+			: OperatingSystem.IsIOS() ? cast_excel_serial_internal(ptr, len, epoch, value, fault)
+			: cast_excel_serial_native(ptr, len, epoch, value, fault);
 
 	[LibraryImport("hypercast", EntryPoint = "cast_date")]
 	private static unsafe partial int cast_date_native(byte* ptr, nuint len, RawDate* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_date")]
 	private static unsafe partial int cast_date_browser(byte* ptr, nuint len, RawDate* value, RawFault* fault);
+	[LibraryImport("__Internal", EntryPoint = "cast_date")]
+	private static unsafe partial int cast_date_internal(byte* ptr, nuint len, RawDate* value, RawFault* fault);
 	private static unsafe int cast_date(byte* ptr, nuint len, RawDate* value, RawFault* fault) =>
-		OperatingSystem.IsBrowser() ? cast_date_browser(ptr, len, value, fault) : cast_date_native(ptr, len, value, fault);
+		OperatingSystem.IsBrowser() ? cast_date_browser(ptr, len, value, fault)
+			: OperatingSystem.IsIOS() ? cast_date_internal(ptr, len, value, fault)
+			: cast_date_native(ptr, len, value, fault);
 
 	[LibraryImport("hypercast", EntryPoint = "cast_date_ordered")]
 	private static unsafe partial int cast_date_ordered_native(byte* ptr, nuint len, uint order, RawDate* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_date_ordered")]
 	private static unsafe partial int cast_date_ordered_browser(byte* ptr, nuint len, uint order, RawDate* value, RawFault* fault);
+	[LibraryImport("__Internal", EntryPoint = "cast_date_ordered")]
+	private static unsafe partial int cast_date_ordered_internal(byte* ptr, nuint len, uint order, RawDate* value, RawFault* fault);
 	private static unsafe int cast_date_ordered(byte* ptr, nuint len, uint order, RawDate* value, RawFault* fault) =>
-		OperatingSystem.IsBrowser() ? cast_date_ordered_browser(ptr, len, order, value, fault) : cast_date_ordered_native(ptr, len, order, value, fault);
+		OperatingSystem.IsBrowser() ? cast_date_ordered_browser(ptr, len, order, value, fault)
+			: OperatingSystem.IsIOS() ? cast_date_ordered_internal(ptr, len, order, value, fault)
+			: cast_date_ordered_native(ptr, len, order, value, fault);
 
 	[LibraryImport("hypercast", EntryPoint = "cast_datetime")]
 	private static unsafe partial int cast_datetime_native(byte* ptr, nuint len, uint order, RawCivil* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_datetime")]
 	private static unsafe partial int cast_datetime_browser(byte* ptr, nuint len, uint order, RawCivil* value, RawFault* fault);
+	[LibraryImport("__Internal", EntryPoint = "cast_datetime")]
+	private static unsafe partial int cast_datetime_internal(byte* ptr, nuint len, uint order, RawCivil* value, RawFault* fault);
 	private static unsafe int cast_datetime(byte* ptr, nuint len, uint order, RawCivil* value, RawFault* fault) =>
-		OperatingSystem.IsBrowser() ? cast_datetime_browser(ptr, len, order, value, fault) : cast_datetime_native(ptr, len, order, value, fault);
+		OperatingSystem.IsBrowser() ? cast_datetime_browser(ptr, len, order, value, fault)
+			: OperatingSystem.IsIOS() ? cast_datetime_internal(ptr, len, order, value, fault)
+			: cast_datetime_native(ptr, len, order, value, fault);
 
 	[LibraryImport("hypercast", EntryPoint = "cast_time")]
 	private static unsafe partial int cast_time_native(byte* ptr, nuint len, ulong* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_time")]
 	private static unsafe partial int cast_time_browser(byte* ptr, nuint len, ulong* value, RawFault* fault);
+	[LibraryImport("__Internal", EntryPoint = "cast_time")]
+	private static unsafe partial int cast_time_internal(byte* ptr, nuint len, ulong* value, RawFault* fault);
 	private static unsafe int cast_time(byte* ptr, nuint len, ulong* value, RawFault* fault) =>
-		OperatingSystem.IsBrowser() ? cast_time_browser(ptr, len, value, fault) : cast_time_native(ptr, len, value, fault);
+		OperatingSystem.IsBrowser() ? cast_time_browser(ptr, len, value, fault)
+			: OperatingSystem.IsIOS() ? cast_time_internal(ptr, len, value, fault)
+			: cast_time_native(ptr, len, value, fault);
 
 	[LibraryImport("hypercast", EntryPoint = "cast_duration")]
 	private static unsafe partial int cast_duration_native(byte* ptr, nuint len, RawDuration* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_duration")]
 	private static unsafe partial int cast_duration_browser(byte* ptr, nuint len, RawDuration* value, RawFault* fault);
+	[LibraryImport("__Internal", EntryPoint = "cast_duration")]
+	private static unsafe partial int cast_duration_internal(byte* ptr, nuint len, RawDuration* value, RawFault* fault);
 	private static unsafe int cast_duration(byte* ptr, nuint len, RawDuration* value, RawFault* fault) =>
-		OperatingSystem.IsBrowser() ? cast_duration_browser(ptr, len, value, fault) : cast_duration_native(ptr, len, value, fault);
+		OperatingSystem.IsBrowser() ? cast_duration_browser(ptr, len, value, fault)
+			: OperatingSystem.IsIOS() ? cast_duration_internal(ptr, len, value, fault)
+			: cast_duration_native(ptr, len, value, fault);
 
 	[LibraryImport("hypercast", EntryPoint = "cast_decimal_from_f64")]
 	private static unsafe partial int cast_decimal_from_f64_native(double number, RawDecimal* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_decimal_from_f64")]
 	private static unsafe partial int cast_decimal_from_f64_browser(double number, RawDecimal* value, RawFault* fault);
+	[LibraryImport("__Internal", EntryPoint = "cast_decimal_from_f64")]
+	private static unsafe partial int cast_decimal_from_f64_internal(double number, RawDecimal* value, RawFault* fault);
 	private static unsafe int cast_decimal_from_f64(double number, RawDecimal* value, RawFault* fault) =>
-		OperatingSystem.IsBrowser() ? cast_decimal_from_f64_browser(number, value, fault) : cast_decimal_from_f64_native(number, value, fault);
+		OperatingSystem.IsBrowser() ? cast_decimal_from_f64_browser(number, value, fault)
+			: OperatingSystem.IsIOS() ? cast_decimal_from_f64_internal(number, value, fault)
+			: cast_decimal_from_f64_native(number, value, fault);
 
 	[LibraryImport("hypercast", EntryPoint = "cast_excel_serial_from_f64")]
 	private static unsafe partial int cast_excel_serial_from_f64_native(double number, uint epoch, RawCivil* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_excel_serial_from_f64")]
 	private static unsafe partial int cast_excel_serial_from_f64_browser(double number, uint epoch, RawCivil* value, RawFault* fault);
+	[LibraryImport("__Internal", EntryPoint = "cast_excel_serial_from_f64")]
+	private static unsafe partial int cast_excel_serial_from_f64_internal(double number, uint epoch, RawCivil* value, RawFault* fault);
 	private static unsafe int cast_excel_serial_from_f64(double number, uint epoch, RawCivil* value, RawFault* fault) =>
-		OperatingSystem.IsBrowser() ? cast_excel_serial_from_f64_browser(number, epoch, value, fault) : cast_excel_serial_from_f64_native(number, epoch, value, fault);
+		OperatingSystem.IsBrowser() ? cast_excel_serial_from_f64_browser(number, epoch, value, fault)
+			: OperatingSystem.IsIOS() ? cast_excel_serial_from_f64_internal(number, epoch, value, fault)
+			: cast_excel_serial_from_f64_native(number, epoch, value, fault);
 
 	[LibraryImport("hypercast", EntryPoint = "cast_excel_time")]
 	private static unsafe partial int cast_excel_time_native(double number, ulong* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_excel_time")]
 	private static unsafe partial int cast_excel_time_browser(double number, ulong* value, RawFault* fault);
+	[LibraryImport("__Internal", EntryPoint = "cast_excel_time")]
+	private static unsafe partial int cast_excel_time_internal(double number, ulong* value, RawFault* fault);
 	private static unsafe int cast_excel_time(double number, ulong* value, RawFault* fault) =>
-		OperatingSystem.IsBrowser() ? cast_excel_time_browser(number, value, fault) : cast_excel_time_native(number, value, fault);
+		OperatingSystem.IsBrowser() ? cast_excel_time_browser(number, value, fault)
+			: OperatingSystem.IsIOS() ? cast_excel_time_internal(number, value, fault)
+			: cast_excel_time_native(number, value, fault);
 
 	[LibraryImport("hypercast", EntryPoint = "cast_excel_duration")]
 	private static unsafe partial int cast_excel_duration_native(double number, RawDuration* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_excel_duration")]
 	private static unsafe partial int cast_excel_duration_browser(double number, RawDuration* value, RawFault* fault);
+	[LibraryImport("__Internal", EntryPoint = "cast_excel_duration")]
+	private static unsafe partial int cast_excel_duration_internal(double number, RawDuration* value, RawFault* fault);
 	private static unsafe int cast_excel_duration(double number, RawDuration* value, RawFault* fault) =>
-		OperatingSystem.IsBrowser() ? cast_excel_duration_browser(number, value, fault) : cast_excel_duration_native(number, value, fault);
+		OperatingSystem.IsBrowser() ? cast_excel_duration_browser(number, value, fault)
+			: OperatingSystem.IsIOS() ? cast_excel_duration_internal(number, value, fault)
+			: cast_excel_duration_native(number, value, fault);
 
 	static ReadOnlySpan<byte> Utf8(ReadOnlySpan<char> chars, Span<byte> stack, ref byte[]? rented)
 	{

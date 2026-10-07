@@ -35,12 +35,12 @@ Requirements that hold across every round, stated up front so no layer designs t
 ## Round one — the scalar core (done)
 
 One Rust `cdylib` (`rust/`, `libhypercast`), HyperUuid's proven FFI mechanics: 21 `cast_*`
-exports over UTF-8 bytes and caller-owned out-buffers, verdict codes (`0` ok, `1` empty,
-`2` malformed, `3` out of range) with the offending byte span through a nullable fault
-out-param. Semantics ported from Svartalfheim's `Norse.Primitives` parser family; temporals
-land in protobuf's dual-integer forms (`{seconds, nanos}` timestamp/duration, `{y, m, d}`
-date, nanos-since-midnight time) so every binding presents them at its platform's own
-fidelity. Allocation-free on success *and* failure paths, asserted by a counting global
+exports (25 since 0.7.0 added four typed doors) over UTF-8 bytes and caller-owned
+out-buffers, verdict codes (`0` ok, `1` empty, `2` malformed, `3` out of range) with the
+offending byte span through a nullable fault out-param. Semantics ported from Svartalfheim's
+`Norse.Primitives` parser family; temporals land in protobuf's dual-integer forms
+(`{seconds, nanos}` timestamp/duration, `{y, m, d}` date, nanos-since-midnight time) so
+every binding presents them at its platform's own fidelity. Allocation-free on success *and* failure paths, asserted by a counting global
 allocator, and `corpus/*.json` is the byte-for-byte conformance contract every binding
 replays.
 
@@ -102,8 +102,10 @@ Design constraints round one already locked in on purpose:
 - **The batch entry point is additive.** Nothing about the scalar ABI changes. The batch
   lives beside it, not beneath it: `hypertabular` links `hypercast` as an rlib and each
   provider's cdylib exports the batch surface, so `libhypercast` itself never gains a batch
-  export — and because the link is static, each provider's library also carries the 21
-  `cast_*` exports.
+  export. The link is static, so each provider takes the crate with `default-features =
+  false`: the `cast_*` symbols are an `exports` feature (0.7.0), and leaving it off keeps
+  them out of the provider's library, which would otherwise collide with `libhypercast`'s
+  own when both are linked into one program.
 
 One piece of this round already landed, ahead of schedule and on purpose:
 

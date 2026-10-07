@@ -3,11 +3,12 @@ name: Release — publish to real, public registries
 # PR -> ci (see ci.yml), tag -> release: this file is the only place a real, permanent,
 # public publish can happen. Ported whole from HyperUuid's proven v0.1.0 pipeline.
 #
-# STATUS: every leg publishes cleanly. v0.0.2 (run 33425431665) shipped all five in a single
-# green run and each is confirmed served: crates.io, nuget.org, PyPI (6 wheels), RubyGems
-# (5 gems) and Maven Central, with Go/Swift resolving from the tag and PHP from Packagist.
-# No `if: false` gates remain, and none should be added except to record "this leg already
-# published at the current version" mid-recovery.
+# STATUS: every leg publishes cleanly, and has on every release since v0.0.2 (run
+# 33425431665), the first to ship all five registries in a single green run: crates.io,
+# nuget.org, PyPI (9 wheels as of 0.6.1), RubyGems (8 gems plus hypercast-wasm) and Maven
+# Central, with Go/Swift resolving from the tag and PHP from Packagist. No `if: false` gates
+# remain, and none should be added except to record "this leg already published at the
+# current version" mid-recovery.
 #
 # Propagation is not failure: nuget.org's index and Central's mirror to repo1.maven.org both
 # lag their publish by tens of minutes (v0.0.2 measured ~5 and ~6), and search.maven.org's
@@ -49,9 +50,11 @@ name: Release — publish to real, public registries
 # on those, so a retag can't double-publish where a publish already landed) and debug the
 # failure on its own; the failure is then the only thing a retag exercises.
 #
-# workflow_dispatch stays enabled while legs are being proven. Once every leg has published
-# for real, it comes off this file entirely so a public publish can only ever happen from a
-# deliberate tag push.
+# workflow_dispatch was first kept only while legs were being proven. Every leg has since
+# published for real, and it stays for one reason: its ci_run_id input is the recovery path
+# for a fix confined to this file, which reuses an already-green ci.yml run instead of
+# rebuilding the matrix. A dispatch publishes the version in the manifests at the commit
+# it runs on, exactly as the tag would; it is never the way a release starts.
 
 on:
   push:

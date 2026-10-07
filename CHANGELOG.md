@@ -9,8 +9,182 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-10-06
+
+Three themes, all driven by the libraries that build on HyperCast — HyperTabular and
+HyperWorkbook — and one new platform family: C#, Swift and Go now link the core into iOS and
+Mac Catalyst apps, as HyperUuid's 0.7.0 does. *Interop*: every binding now exposes the code
+that turns the core's raw out-values, numeric format, reason codes and fault spans into its
+own types, so a library that carries HyperCast's verdicts across a C ABI of its own reads
+them exactly as the doors do; and the crate's C symbols become an `exports` feature such a
+library can turn off. *Numbers already held*: four typed doors read the `f64` a workbook
+stores rather than text — as an exact decimal, an Excel serial, a time of day and a span —
+taking the C ABI to 25 `cast_*` exports plus `hypercast_version`, and Rust gains the whole
+typed family. *Faster*: in Rust the temporal doors are about twice as fast, `cast_f64`
+22-36% and `cast_uuid` about 20%, and the bindings that cross cheaply keep most of it. One
+set of verdicts changes on purpose: a fraction of a second past nine digits now truncates to
+the nanosecond instead of failing. The manifests read 0.6.2 between releases, but no 0.6.2
+was ever published; everything since 0.6.1 is here.
+
+### Added
+
+- **Every binding — a public interop surface for libraries that carry HyperCast's verdicts
+  across a C ABI of their own.** HyperTabular's bindings had to copy the private code that
+  turns the core's raw out-values, numeric format, reason codes and fault spans into each
+  language's types, and its platform table and library loader; now every binding exposes
+  them, and the Cast doors use exactly the same code, so a value read out of another
+  library's buffer is the value the door would have returned. *(every package)*
+  - Rust: `UnixPrecision`, `DateOrder`, `ExcelEpoch` and `Reason` gain `const fn
+    from_code`; `RawNumFormat` gains `From<NumFormat>`, `to_le_bytes` and `from_le_bytes`;
+    and the `python-values` feature exposes `hypercast::python::Values`, the conversions to
+    `datetime`, `decimal.Decimal` and `uuid.UUID` (the `python` feature builds on it).
+  - C#: the `HyperCast.Interop` namespace — `RawTimestamp`, `RawDate`, `RawCivil`,
+    `RawDuration`, `RawDecimal`, `RawFault` and `RawNumFormat` with their conversions, and
+    `Abi` for checked codes both ways, faults, versions and the version probe;
+    `NumFormat.ToRaw()` is public.
+  - Java: the `io.github.skunkwerkx.hypercast.interop` package — `NativeValues` (every
+    out-value reader, the format writer, faults, versions) and `NativePlatform`
+    (parameterized by library name, with the jar loader); the enums' `code()` is public and
+    each gains `fromCode`, an `Optional`, as `CastFailure.fromCode` now is.
+  - Go: `RawTimestamp`, `RawDate`, `RawCivil` and `RawNumFormat` with their conversions,
+    `NumFormat.Raw()` (the doors' check as an error), `Valid()` for each declared
+    option, `*FromCode` for each option and the reason, `FaultFromCode`, `FormatVersion` and
+    `CurrencyMaxBytes`; `Decimal` and `Duration` are documented and checked as the core's
+    own layout. `NumFormat` now also refuses a separator that is no Unicode scalar value,
+    as the core does, instead of panicking with a contract violation.
+  - Swift: the `Interop` namespace — the out-value readers, `rawFormat`, `fault` and
+    `version`.
+  - PHP: `HyperCast\Interop\NativeValues` (the value builders, `writeFormat`, `fault`,
+    `version`) and `HyperCast\Interop\NativePlatform` (parameterized by library name, with
+    the library-path lookup), which replaces the `@internal` `HyperCast\NativePlatform`.
+  - Ruby: `HyperCast::Interop` — `SCALARS` (each scalar door's unpack directive),
+    `RECORDS` (each record door's directive, field count and builder), `VALUE_BYTES`,
+    `decode`, `fault`, `characters`, `version` and `library_path`;
+    `NativePlatform.rid_and_library_name` takes `library:`.
+  - Python: `NumFormat.packed`, the 32 bytes a format crosses a C ABI as, and a `repr` that
+    builds the format again.
+- **Rust — `excel_serial`, the Excel-serial door for a number.** `cast_excel_serial` reads
+  serial *text*; a workbook reader holds the `f64` the file stores and had to re-implement
+  the rules to convert it. `excel_serial(serial, epoch)` is the same two date systems from
+  the same code — the phantom serial `60`, a serial below the system's first day and one
+  past `9999-12-31` are `OutOfRange`; a negative, NaN or infinite value is `Malformed` —
+  returning the zone-less `CivilDateTime` the cell holds, its fraction snapped (below).
+  `corpus/excel_serial.json` is replayed through both doors, so the two can no longer drift.
+  *(crates.io)*
+- **Rust — the typed doors: every numeric cast for a number already held as an `f64`.**
+  A workbook stores a numeric cell as a double, and its reader had to convert that to an
+  integer, a decimal, a time or a span with rules of its own. `i8_from_f64` … `u64_from_f64`,
+  `f32_from_f64`, `bool_from_f64`, `decimal_from_f64`, `unix_from_f64`, `excel_time` and
+  `excel_duration` are the twins of the text doors, each with a bare `Reason` verdict. A double
+  is read as the one number it names, the shortest decimal that rounds back to it
+  (`shortest_digits`), which is the digits Excel and LibreOffice write into the file: `2.5` is
+  the decimal `2.5`, `0.1 + 0.2` is `0.30000000000000004`, an integer door takes a whole number
+  and never rounds a fraction, and above 2⁵³ an integer is that decimal's digits. Every twin is
+  held to its text door read on the double's shortest text, over 20,000 doubles.
+  `excel_serial` and `excel_time` share one statement of how a serial's fraction is read.
+  *(crates.io)*
+- **Every binding — four doors that read a number instead of text.** The typed doors a
+  workbook reader needs most cross the C ABI as four new exports (26 in all), each taking a
+  `double` and the usual `out`/`fault`: `cast_decimal_from_f64`, `cast_excel_serial_from_f64`
+  (with its epoch), `cast_excel_time` and `cast_excel_duration`. A typed door's fault span is
+  always empty — there is no text for it to index. Named after Rust's, in each language's
+  casing and float word: `Cast.DecimalFromDouble` / `ExcelSerialFromDouble` / `ExcelTime` /
+  `ExcelDuration` (C#), `decimalFromDouble`… (Java, Swift), `ExactFromFloat64` /
+  `ExcelSerialFromFloat64` / `ExcelTime` / `ExcelDuration` (Go), `cast_decimal_from_float`…
+  (Python), `decimal_from_float`… (Ruby), `Cast::decimalFromFloat`… (PHP). Each presents the
+  value as its binding's text twin does: the decimal as the decimal door's type, the serial
+  as the binding's zone-less civil date-time (as `datetime`/`DateTime` returns it), the time
+  of day and the duration as the time and duration doors do. `corpus/typed.json` names each
+  double by its IEEE 754 bits — NaN and the infinities included, which JSON cannot spell —
+  and every binding replays it, Ruby through both backends and Java through both FFM and
+  GraalWasm. *(all packages)*
+- **Every door that reads a serial held as a number snaps its time.** A double resolves
+  about 0.6 µs at today's serials and 40 µs at `9999-12-31`, so the nearest nanosecond is
+  the double's float noise: Excel's own `9999-12-31 23:59:59` would read 5,424 ns late, and
+  the number `1234.56` as a time `13:26:23.999999995`. `excel_serial`, `excel_time` and
+  `excel_duration` (and their exports) read the time with the fewest fractional-second
+  digits — whole seconds, else tenths, down to the nanosecond — that the writer's
+  conversion would have stored as the same double: the shortest round-trip,
+  `decimal_from_f64`'s rule counted in time. Excel's and Google's times read back exactly,
+  and a real sub-millisecond time a double can resolve is kept. Exact, integer-only,
+  allocation- and panic-free; checked against an exact rational reference over 240,000
+  serials. One writer loss it cannot undo: LibreOffice writes serials to 15 significant
+  digits, so its `9999-12-31 23:59:59` is a different double, 370 µs late. *(all packages)*
+- **Rust — `CivilDateTime::assume_utc` and `Timestamp::utc_civil`.** The two conversions
+  between a wall clock and an instant, for the caller who states the zone is UTC. The
+  crate still never assumes it for them. *(crates.io)*
+- **Rust — `RawNumFormat` is public.** `NumFormat` as it crosses the C ABI (32 bytes: two
+  code points, the flags, the currency symbol inline), with `resolve()` returning the
+  `NumFormat` or `None` for a contract violation, so a crate exporting a C ABI of its own
+  declares a numeric column in the same layout instead of a copy of it. *(crates.io)*
+- **C# — iOS and Mac Catalyst.** A .NET iOS, MAUI or Mac Catalyst app (`net11.0-ios`,
+  `net11.0-maccatalyst`) can reference the package and nothing else. Those platforms load
+  no libraries, so the package now carries the core as a static library for `ios-arm64`,
+  `iossimulator-arm64`, `maccatalyst-arm64` and `maccatalyst-x64`,
+  `build/net11.0/HyperCast.targets` hands the one for the RID being built to the SDK as a
+  static `NativeReference`, and `Cast` declares every entry point a third time against
+  `__Internal`, the name a P/Invoke reaches the app's own executable by, picked by
+  `OperatingSystem.IsIOS()`. One wiring covers Mono's AOT compiler, the interpreter and
+  Native AOT, because the native link is the SDK's in all three. CI builds
+  `HyperCast.AppleSmokeTest` on a Mac from that run's archives: run as a Mac Catalyst
+  process, installed and launched in an iOS simulator, and linked for an iOS device.
+  Android, tvOS and the iOS simulator on Intel Macs remain unsupported. *(NuGet)*
+- **Swift — iOS and Mac Catalyst.** The package builds for iOS 16, the iOS simulator and
+  Mac Catalyst 16 on arm64 (16 because the duration door returns Swift's `Duration`),
+  linking the core from a second binary target, `swift/HyperCastCoreApple.xcframework`: an
+  app for those platforms is built by Xcode, which links a static library out of an
+  XCFramework and does not read the static-library artifact bundle the other platforms use.
+  Both targets define the one `HyperCastCore` module, and the manifest declares the
+  XCFramework only on a Mac, so Linux, Windows and WebAssembly builds see the package they
+  saw before. CI runs the suite on an iOS simulator and as a Mac Catalyst process, and
+  builds the package for an iOS device. *(SwiftPM)*
+- **Go — iOS and Mac Catalyst.** A cgo build for an iOS device, the iOS simulator on Apple
+  silicon, or Mac Catalyst on either architecture links the core from its own archive under
+  `go/staticlib/`. Go builds all of them as `GOOS=ios`, so build tags choose: none for a
+  device, `iossimulator` for the simulator (nothing sets it, so it is passed by hand), and
+  `maccatalyst`, which `gomobile` sets for that target. CI holds every platform and tag
+  combination to the archive it should select (`.github/scripts/check_go_archives.sh`),
+  runs the suite, corpus included, in an iOS simulator through Go's own `go_ios_exec`
+  wrapper, and links a device build. *(`go get`)*
+
 ### Changed
 
+- **A fraction of a second past nine digits truncates to nanoseconds instead of failing.**
+  ISO 8601, RFC 3339 (`time-secfrac = "." 1*DIGIT`) and XSD put no cap on fraction digits,
+  and Excel's strict writer emits seventeen (`15:04:05.00000000000312325`), so a tenth
+  digit was valid input refused as `Malformed`. Every door that reads a fraction —
+  timestamp, time, local datetime, duration — now keeps the first nine digits, protobuf's
+  `nanos`, and drops the rest. Truncated, never rounded: rounding could carry into the
+  second, and `9999-12-31T23:59:59.9999999999Z` out of the window. *(every package)*
+- **Every language is formatted, and CI holds it there — library, tests, benchmarks and
+  smoke tests alike.** Rust (`cargo fmt`) and Go (now `gofmt`, beside revive) already were.
+  New: ruff format and the docstring rules over all of `python/` (100 columns); PSR-12 via
+  phpcs over php's src, tests and bench (the doc rules stay on the public API); RuboCop,
+  layout cops only, over every Ruby file; `dotnet format whitespace` against
+  `csharp/.editorconfig` (tabs); Spotless with palantir-java-format (4 spaces, 120 columns)
+  over every Java source set; and `swift format` against `swift/.swift-format` (4 spaces,
+  120 columns, lint rules off). Whitespace and line breaks only — no behavior changed.
+  *(repository)*
+- **Every door is proven unable to panic — `cast_f32` and `cast_f64` were the exception.**
+  They handed their normalized text to `core`'s float parser, which keeps slice-index
+  checks the optimizer cannot remove, so the two real doors were the only C ABI exports
+  outside the no-panic proof. The conversion is now this crate's own (`float.rs`):
+  Clinger's fast path and Eisel-Lemire, as `core` runs them, and an exact integer division
+  on fixed stack arrays for what those cannot settle. Same bits as before for every input —
+  held to `core`'s answer over about a million and a half generated strings, exact halfway points
+  and 1,100-digit expansions among them, on every path — at the same speed (within 4%
+  either way on five workloads, linux-x64) and 1.7 KB more library. All 26 exports are in
+  the proof now, on every PR. *(every package)*
+- **Rust — the C ABI symbols are an `exports` feature, on by default.** A `#[no_mangle]`
+  item is exported from whatever library the crate ends up in, so a crate that linked
+  `hypercast` as an rlib and built a shared or static library of its own carried all 26
+  `cast_*`/`hypercast_version` symbols, and its static archive failed to link into one
+  program with `libhypercast.a` (`multiple definition of cast_bool`). Nothing changes for
+  a default build, or for any library this repository ships: `staticlib` and `cdylib`
+  imply the feature. A consumer exporting its own C ABI takes `default-features = false`
+  (naming `std` again if it wants it) and gets none of them; `hypercast_version()` stays a
+  Rust function either way. A `default-features = false` build that relied on the symbols
+  now has to name `exports`. *(crates.io)*
 - **The temporal doors are about twice as fast.** Their small field readers — two digits,
   a date, a clock, a fraction, a digit run — were real calls even under fat LTO, each
   handing its result back through the stack, and the door read it straight back: a store
@@ -68,136 +242,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `uuid.UUID()` 798 ns → 1.06 µs) and others not at all (`fromisoformat`). A new table
   would credit the core with either. *(repository)*
 
-## [0.6.2] — 2026-10-06
-
-### Added
-
-- **Every binding — a public interop surface for libraries that carry HyperCast's verdicts
-  across a C ABI of their own.** HyperTabular's bindings had to copy the private code that
-  turns the core's raw out-values, numeric format, reason codes and fault spans into each
-  language's types, and its platform table and library loader; now every binding exposes
-  them, and the Cast doors use exactly the same code, so a value read out of another
-  library's buffer is the value the door would have returned. *(every package)*
-  - Rust: `UnixPrecision`, `DateOrder`, `ExcelEpoch` and `Reason` gain `const fn
-    from_code`; `RawNumFormat` gains `From<NumFormat>`, `to_le_bytes` and `from_le_bytes`;
-    and the `python-values` feature exposes `hypercast::python::Values`, the conversions to
-    `datetime`, `decimal.Decimal` and `uuid.UUID` (the `python` feature builds on it).
-  - C#: the `HyperCast.Interop` namespace — `RawTimestamp`, `RawDate`, `RawCivil`,
-    `RawDuration`, `RawDecimal`, `RawFault` and `RawNumFormat` with their conversions, and
-    `Abi` for checked codes both ways, faults, versions and the version probe;
-    `NumFormat.ToRaw()` is public.
-  - Java: the `io.github.skunkwerkx.hypercast.interop` package — `NativeValues` (every
-    out-value reader, the format writer, faults, versions) and `NativePlatform`
-    (parameterized by library name, with the jar loader); the enums' `code()` is public and
-    each gains `fromCode`, an `Optional`, as `CastFailure.fromCode` now is.
-  - Go: `RawTimestamp`, `RawDate`, `RawCivil` and `RawNumFormat` with their conversions,
-    `NumFormat.Raw()` (the doors' check as an error), `Valid()` and `*FromCode` for each
-    declared option and the reason, `FaultFromCode`, `FormatVersion` and
-    `CurrencyMaxBytes`; `Decimal` and `Duration` are documented and checked as the core's
-    own layout. `NumFormat` now also refuses a separator that is no Unicode scalar value,
-    as the core does, instead of panicking with a contract violation.
-  - Swift: the `Interop` namespace — the out-value readers, `rawFormat`, `fault` and
-    `version`.
-  - PHP: `HyperCast\Interop\NativeValues` (the value builders, `writeFormat`, `fault`,
-    `version`) and `HyperCast\Interop\NativePlatform` (parameterized by library name, with
-    the library-path lookup), which replaces the `@internal` `HyperCast\NativePlatform`.
-  - Ruby: `HyperCast::Interop` — `SCALARS`, `RECORDS` and `VALUE_BYTES` (each door's
-    unpack directive, field count and builder), `decode`, `fault`, `characters`, `version`
-    and `library_path`; `NativePlatform.rid_and_library_name` takes `library:`.
-  - Python: `NumFormat.packed`, the 32 bytes a format crosses a C ABI as, and a `repr` that
-    builds the format again.
-- **Rust — `excel_serial`, the Excel-serial door for a number.** `cast_excel_serial` reads
-  serial *text*; a workbook reader holds the `f64` the file stores and had to re-implement
-  the rules to convert it. `excel_serial(serial, epoch)` is the same two date systems from
-  the same code — the phantom serial `60`, a serial below the system's first day and one
-  past `9999-12-31` are `OutOfRange`; a negative, NaN or infinite value is `Malformed` —
-  returning the zone-less `CivilDateTime` the cell holds, its fraction snapped (below). `corpus/excel_serial.json` is replayed through both doors, so the
-  two can no longer drift. *(crates.io)*
-- **Rust — the typed doors: every numeric cast for a number already held as an `f64`.**
-  A workbook stores a numeric cell as a double, and its reader had to convert that to an
-  integer, a decimal, a time or a span with rules of its own. `i8_from_f64` … `u64_from_f64`,
-  `f32_from_f64`, `bool_from_f64`, `decimal_from_f64`, `unix_from_f64`, `excel_time` and
-  `excel_duration` are the twins of the text doors, each with a bare `Reason` verdict. A double
-  is read as the one number it names, the shortest decimal that rounds back to it
-  (`shortest_digits`), which is the digits Excel and LibreOffice write into the file: `2.5` is
-  the decimal `2.5`, `0.1 + 0.2` is `0.30000000000000004`, an integer door takes a whole number
-  and never rounds a fraction, and above 2⁵³ an integer is that decimal's digits. Every twin is
-  held to its text door read on the double's shortest text, over 20,000 doubles.
-  `excel_serial` and `excel_time` share one statement of how a serial's fraction is read.
-  *(crates.io)*
-- **Every binding — four doors that read a number instead of text.** The typed doors a
-  workbook reader needs most cross the C ABI as four new exports (26 in all), each taking a
-  `double` and the usual `out`/`fault`: `cast_decimal_from_f64`, `cast_excel_serial_from_f64`
-  (with its epoch), `cast_excel_time` and `cast_excel_duration`. A typed door's fault span is
-  always empty — there is no text for it to index. Named after Rust's, in each language's
-  casing and float word: `Cast.DecimalFromDouble` / `ExcelSerialFromDouble` / `ExcelTime` /
-  `ExcelDuration` (C#), `decimalFromDouble`… (Java, Swift), `ExactFromFloat64` /
-  `ExcelSerialFromFloat64` / `ExcelTime` / `ExcelDuration` (Go), `cast_decimal_from_float`…
-  (Python), `decimal_from_float`… (Ruby), `Cast::decimalFromFloat`… (PHP). Each presents the
-  value as its binding's text twin does: the decimal as the decimal door's type, the serial
-  as the binding's zone-less civil date-time (as `datetime`/`DateTime` returns it), the time
-  of day and the duration as the time and duration doors do. `corpus/typed.json` names each
-  double by its IEEE 754 bits — NaN and the infinities included, which JSON cannot spell —
-  and every binding replays it, Ruby through both backends and Java through both FFM and
-  GraalWasm. *(all packages)*
-- **Every door that reads a serial held as a number snaps its time.** A double resolves
-  about 0.6 µs at today's serials and 40 µs at `9999-12-31`, so the nearest nanosecond is
-  the double's float noise: Excel's own `9999-12-31 23:59:59` would read 5,424 ns late, and
-  the number `1234.56` as a time `13:26:23.999999995`. `excel_serial`, `excel_time` and
-  `excel_duration` (and their exports) read the time with the fewest fractional-second
-  digits — whole seconds, else tenths, down to the nanosecond — that the writer's
-  conversion would have stored as the same double: the shortest round-trip,
-  `decimal_from_f64`'s rule counted in time. Excel's and Google's times read back exactly,
-  and a real sub-millisecond time a double can resolve is kept. Exact, integer-only,
-  allocation- and panic-free; checked against an exact rational reference over 240,000
-  serials. One writer loss it cannot undo: LibreOffice writes serials to 15 significant
-  digits, so its `9999-12-31 23:59:59` is a different double, 370 µs late. *(all packages)*
-- **Rust — `CivilDateTime::assume_utc` and `Timestamp::utc_civil`.** The two conversions
-  between a wall clock and an instant, for the caller who states the zone is UTC. The
-  crate still never assumes it for them. *(crates.io)*
-- **Rust — `RawNumFormat` is public.** `NumFormat` as it crosses the C ABI (32 bytes: two
-  code points, the flags, the currency symbol inline), with `resolve()` returning the
-  `NumFormat` or `None` for a contract violation, so a crate exporting a C ABI of its own
-  declares a numeric column in the same layout instead of a copy of it. *(crates.io)*
-
-### Changed
-
-- **A fraction of a second past nine digits truncates to nanoseconds instead of failing.**
-  ISO 8601, RFC 3339 (`time-secfrac = "." 1*DIGIT`) and XSD put no cap on fraction digits,
-  and Excel's strict writer emits seventeen (`15:04:05.00000000000312325`), so a tenth
-  digit was valid input refused as `Malformed`. Every door that reads a fraction —
-  timestamp, time, local datetime, duration — now keeps the first nine digits, protobuf's
-  `nanos`, and drops the rest. Truncated, never rounded: rounding could carry into the
-  second, and `9999-12-31T23:59:59.9999999999Z` out of the window. *(every package)*
-- **Every language is formatted, and CI holds it there — library, tests, benchmarks and
-  smoke tests alike.** Rust (`cargo fmt`) and Go (now `gofmt`, beside revive) already were.
-  New: ruff format and the docstring rules over all of `python/` (100 columns); PSR-12 via
-  phpcs over php's src, tests and bench (the doc rules stay on the public API); RuboCop,
-  layout cops only, over every Ruby file; `dotnet format whitespace` against
-  `csharp/.editorconfig` (tabs); Spotless with palantir-java-format (4 spaces, 120 columns)
-  over every Java source set; and `swift format` against `swift/.swift-format` (4 spaces,
-  120 columns, lint rules off). Whitespace and line breaks only — no behavior changed.
-  *(repository)*
-- **Every door is proven unable to panic — `cast_f32` and `cast_f64` were the exception.**
-  They handed their normalized text to `core`'s float parser, which keeps slice-index
-  checks the optimizer cannot remove, so the two real doors were the only C ABI exports
-  outside the no-panic proof. The conversion is now this crate's own (`float.rs`):
-  Clinger's fast path and Eisel-Lemire, as `core` runs them, and an exact integer division
-  on fixed stack arrays for what those cannot settle. Same bits as before for every input —
-  held to `core`'s answer over about a million and a half generated strings, exact halfway points
-  and 1,100-digit expansions among them, on every path — at the same speed (within 4%
-  either way on five workloads, linux-x64) and 1.7 KB more library. All 26 exports are in
-  the proof now, on every PR. *(every package)*
-- **Rust — the C ABI symbols are an `exports` feature, on by default.** A `#[no_mangle]`
-  item is exported from whatever library the crate ends up in, so a crate that linked
-  `hypercast` as an rlib and built a shared or static library of its own carried all 26
-  `cast_*`/`hypercast_version` symbols, and its static archive failed to link into one
-  program with `libhypercast.a` (`multiple definition of cast_bool`). Nothing changes for
-  a default build, or for any library this repository ships: `staticlib` and `cdylib`
-  imply the feature. A consumer exporting its own C ABI takes `default-features = false`
-  (naming `std` again if it wants it) and gets none of them; `hypercast_version()` stays a
-  Rust function either way. A `default-features = false` build that relied on the symbols
-  now has to name `exports`. *(crates.io)*
+- **Go — Android is a compile error instead of a Linux build.** `GOOS=android` satisfies
+  Go's `linux` constraint, so an Android cgo build linked the Linux archive, which nothing
+  had ever tested there. It now lands on the same `undefined:
+  hypercast_needs_cgo_and_a_C_compiler_…` stop as every other platform without an archive
+  of its own, as does `GOOS=ios` on amd64 outside Mac Catalyst, the simulator on an Intel
+  Mac. *(`go get`)*
 
 ### Fixed
 
@@ -209,6 +259,36 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   allowed to have, so a `cdylib` built from the recipe linked cleanly even against 0.6.0,
   whose `cast_uuid` fails the proof. The recipe now adds `-C link-arg=-Wl,--no-undefined`,
   as this repository's own `cargo no-panic` always has. Documentation only. *(crates.io)*
+
+### Upgrade note
+
+Source-compatible for almost every consumer, with five things to know; the first is the
+only one most will meet.
+
+Every package: a fraction of a second longer than nine digits (`15:04:05.0000000001`) is
+now a success, truncated to the nanosecond, where it was `Malformed` (Changed, first
+entry). Code that leaned on that refusal to reject over-precise input has to check the text
+itself; code that only reads verdicts needs nothing.
+
+Rust: a build with `default-features = false` no longer carries the C ABI symbols. A crate
+that relied on them — one that links `hypercast` into a library of its own and expected
+`cast_*` to be exported from it — names `exports` beside `std`
+(`features = ["std", "exports"]`). Default builds, and every library this repository ships,
+are unchanged.
+
+PHP: `HyperCast\NativePlatform` is now `HyperCast\Interop\NativePlatform`, and its
+`ridAndLibraryName`, `resolve` and `libraryPath` take the library's base name first
+(`'hypercast'` for this one). The old class was `@internal`, but PHP cannot enforce that;
+code that called it needs the new name and the argument.
+
+Java: `CastFailure.fromCode` is public and returns `Optional<CastFailure>`, empty for any
+code that is not a failure, where it threw `IllegalStateException`. It was package-private,
+so only code compiled into the `io.github.skunkwerkx.hypercast` package itself can see the
+change.
+
+Go: a cgo build for Android (`GOOS=android`) no longer compiles. It used to link the Linux
+archive, untested; a module that needs it there should say so in an issue rather than rely
+on that accident.
 
 ## [0.6.1] — 2026-10-03
 
@@ -1192,8 +1272,8 @@ notes: [v0.1.0 release](https://github.com/SkunkWerkx/HyperCast/releases/tag/v0.
   found in that window, in the gap between "the publish succeeded" and "a consumer can use it",
   and none of them could have failed a build in this repository.
 
-[Unreleased]: https://github.com/SkunkWerkx/HyperCast/compare/v0.6.2...HEAD
-[0.6.2]: https://github.com/SkunkWerkx/HyperCast/compare/v0.6.1...v0.6.2
+[Unreleased]: https://github.com/SkunkWerkx/HyperCast/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/SkunkWerkx/HyperCast/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.4.0...v0.6.0
 [0.4.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.3.0...v0.4.0

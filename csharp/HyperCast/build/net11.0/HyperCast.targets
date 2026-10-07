@@ -105,6 +105,34 @@
     </ItemGroup>
   </Target>
 
+  <!-- iOS and Mac Catalyst: link the core in, always.
+
+       An app on these platforms has no runtimes/{rid}/native/ to load a library from: the
+       .NET SDK for them links native code into the app's own executable, and a P/Invoke
+       reaches it under the library name "__Internal" (Cast.cs declares every entry point a
+       third time against that name, picked by OperatingSystem.IsIOS(), which is true on Mac
+       Catalyst too). NativeReference with Kind=Static is the item that SDK links, the same
+       one a binding project uses, and it is the SDK's own native link that consumes it
+       whether the app is compiled by Mono's AOT compiler, runs interpreted, or is published
+       with Native AOT. So this is one branch for all three, and the Native AOT block below
+       stands aside for these RIDs: its DirectPInvoke and NativeLibrary items are for ILC's
+       own link, which is not the one that runs here.
+
+       The archives are the same no_std static libraries, in staticlibs/{rid}/ for
+       ios-arm64, iossimulator-arm64, maccatalyst-arm64 and maccatalyst-x64. A universal Mac
+       Catalyst app (RuntimeIdentifiers with both) is built once per RID and merged by the
+       SDK, and each of those inner builds evaluates this with its own RuntimeIdentifier. An
+       RID with no archive here (iossimulator-x64, tvOS) gets nothing, and the app fails at
+       its native link on the undefined cast_* symbols: at build time, not at run time. -->
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
+    <_HyperCastAppleMobile Condition="$(RuntimeIdentifier.StartsWith('ios-')) Or $(RuntimeIdentifier.StartsWith('iossimulator-')) Or $(RuntimeIdentifier.StartsWith('maccatalyst-'))">true</_HyperCastAppleMobile>
+    <_HyperCastAppleMobileLibrary Condition="'$(_HyperCastAppleMobile)' == 'true'">$(MSBuildThisFileDirectory)../../staticlibs/$(RuntimeIdentifier)/libhypercast.a</_HyperCastAppleMobileLibrary>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(_HyperCastAppleMobile)' == 'true' And Exists('$(_HyperCastAppleMobileLibrary)')">
+    <NativeReference Include="$(_HyperCastAppleMobileLibrary)" Kind="Static" />
+  </ItemGroup>
+
   <!-- Native AOT: link the core in.
 
        A Native AOT publish used to produce an executable with libhypercast.so (or the .dylib,
@@ -124,9 +152,10 @@
        applies and the publish loads the shared library exactly as it always did. Setting
        HyperCastStaticLink to false asks for that on purpose.
 
-       Not for browser-wasm, which has its own wiring above, and not for anything but an AOT
-       publish: a JIT process cannot link an archive, so it still loads the shared library. -->
-  <PropertyGroup Condition="'$(PublishAot)' == 'true' And '$(RuntimeIdentifier)' != '' And '$(RuntimeIdentifier)' != 'browser-wasm' And '$(HyperCastStaticLink)' != 'false'">
+       Not for browser-wasm or for iOS and Mac Catalyst, which have their own wiring above,
+       and not for anything but an AOT publish: a JIT process cannot link an archive, so it
+       still loads the shared library. -->
+  <PropertyGroup Condition="'$(PublishAot)' == 'true' And '$(RuntimeIdentifier)' != '' And '$(RuntimeIdentifier)' != 'browser-wasm' And '$(_HyperCastAppleMobile)' != 'true' And '$(HyperCastStaticLink)' != 'false'">
     <_HyperCastStaticLibrary Condition="$(RuntimeIdentifier.StartsWith('win'))">$(MSBuildThisFileDirectory)../../staticlibs/$(RuntimeIdentifier)/hypercast.lib</_HyperCastStaticLibrary>
     <_HyperCastStaticLibrary Condition="!$(RuntimeIdentifier.StartsWith('win'))">$(MSBuildThisFileDirectory)../../staticlibs/$(RuntimeIdentifier)/libhypercast.a</_HyperCastStaticLibrary>
     <_HyperCastStaticLibrary Condition="!Exists('$(_HyperCastStaticLibrary)')"></_HyperCastStaticLibrary>

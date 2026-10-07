@@ -353,6 +353,28 @@ which reads like a bad signature but is only an identity mismatch — see
 [csharp/README.md's provenance section](../csharp/README.md#native-binary-provenance) for the
 full breakdown of which artifacts in this project are signed from which repo and why.
 
+## Interop: building on HyperCast's C ABI
+
+For a library that carries HyperCast's verdicts across a C ABI of its own — HyperTabular
+and HyperWorkbook do — and so reads the core's out-values, numeric format, verdict codes and
+fault spans out of its own buffers. The `io.github.skunkwerkx.hypercast.interop` package is
+the code `Cast` itself uses, so a value read that way is the value the door would have
+returned.
+
+- `NativeValues` — every out-value reader, each taking a `MemorySegment` and a byte offset:
+  `instant`, `date`, `civil`, `time`, `duration`, `decimal`, `uuid`; `writeFormat`, the
+  32-byte `NumFormat` layout every numeric door reads; `fault(code, offset, length)`;
+  `version(packed)` for a `*_version()` word; and the `*_BYTES` constants, each layout's
+  size and so the stride of an array of them (`FORMAT_BYTES` is 32, `FAULT_BYTES` 8).
+- `NativePlatform` — the platform table and the jar loader, parameterized by library base
+  name: `current("hypertabular")` resolves this JVM's `Target` (RID and file name, or `null`
+  when no build exists for the platform), `load(anchor, baseName, target)` copies
+  `/native/{rid}/{file}` out of the anchor class's jar and opens it as a `SymbolLookup` for
+  the life of the process, and `missing` names what was absent.
+- `UnixPrecision`, `DateOrder`, `ExcelEpoch` and `CastFailure` each have a public `code()`
+  and a `fromCode(int)` returning an `Optional` — empty for a code the enum does not name,
+  so `CastFailure.fromCode(0)`, success, is empty.
+
 ## Install
 
 Published to [Maven Central](https://central.sonatype.com/artifact/io.github.skunkwerkx/hypercast)

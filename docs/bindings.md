@@ -177,7 +177,7 @@ when the absence is deliberate.
 
 [^typed-reason]: Rust's typed doors return a bare `Reason`, since a double has no text to
     index. The C ABI exports and every binding return their ordinary fault with an empty
-    span (offset 0, length 0) instead (CHANGELOG, Unreleased).
+    span (offset 0, length 0) instead (CHANGELOG, 0.7.0).
 
 [^excel-serial-name]: The Rust twin of `cast_excel_serial` for a held `f64` is
     `excel_serial`; the export is `cast_excel_serial_from_f64` and the bindings follow the
@@ -192,7 +192,7 @@ when the absence is deliberate.
     callers have the concrete doors.
 
 [^rust-only]: Only four typed doors cross the C ABI, the ones a workbook reader needs most
-    (CHANGELOG, Unreleased); the rest of the typed family and the conversion helpers are
+    (CHANGELOG, 0.7.0); the rest of the typed family and the conversion helpers are
     Rust API only.
 
 [^unspecified]: C#'s enums also carry `Unspecified = 0`, the CLR default, which no cast
