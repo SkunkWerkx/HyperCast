@@ -29,4 +29,13 @@
 	     csharp/HyperCast/staticlibs/{rid}/, staged from the static-libs artifact. -->
 	<Import Project="../HyperCast/build/net11.0/HyperCast.targets" />
 
+	<!-- UIKit, by hand, because this app never touches it. From .NET 11 the SDK links only the
+	     frameworks the trimmer sees the app use, and the runtime's own libxamarin still
+	     references UIApplicationDidReceiveMemoryWarningNotification, so a Release build that
+	     uses no UIKit type fails its native link on that symbol. Every real iOS or Mac Catalyst
+	     app uses UIKit, so the package itself does not ask for it; only this test does. -->
+	<ItemGroup Condition="'$(_HyperCastAppleMobile)' == 'true'">
+		<NativeReference Update="$(_HyperCastAppleMobileLibrary)" Frameworks="UIKit" />
+	</ItemGroup>
+
 </Project>
