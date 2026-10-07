@@ -121,3 +121,20 @@ rust/fuzz/coverage/
 # The corpus copy test-apple-mobile stages for the Go suite in the iOS simulator
 # (go_ios_exec carries only the module's testdata), if made by hand.
 go/testdata/corpus/
+
+# CI artifacts downloaded to the repository root (`gh run download` with no --dir lands one
+# folder per artifact here): native libraries, wheels, gems, packages and AOT reports from a
+# ci.yml run. Committed binaries come only from stage-native-binaries.yml, into their own
+# paths, after their provenance checks; these never belong in a commit. Anchored to the root
+# so nothing tracked below it is touched.
+/aot-report-*/
+/native-*/
+/nuget-org-*/
+/php-native-*/
+/pypi-wheels-*/
+/ruby-native-*/
+/ruby-wasm-*/
+/static-libs/
+/swift-static/
+/wasm-emscripten-staticlib/
+/wasm-wasip1-module/
