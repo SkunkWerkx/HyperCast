@@ -270,7 +270,7 @@ jobs:
   # unwind tables. Both are per-platform — `.hidden` on ELF, `.private_extern` on Mach-O,
   # msvcrt on Windows — and a gap in either is a library that links but will not load, so
   # every platform the forge ships is built and loaded here rather than assumed. Each leg
-  # checks the export surface is the 26 C ABI symbols and nothing else where the platform's
+  # checks the export surface is the 27 C ABI symbols and nothing else where the platform's
   # nm can list it, then loads it through Python's ctypes and calls every export with a
   # valid and an invalid input (.github/scripts/cdylib_smoke.py), so the library is dlopen'd
   # and called exactly as a host would. The musl legs build in Alpine and also hold the
@@ -303,7 +303,7 @@ jobs:
         working-directory: rust
         run: cargo cdylib
 
-      - name: Exports are the 26 C ABI symbols, and nothing else
+      - name: Exports are the 27 C ABI symbols, and nothing else
         if: ${{ !matrix.musl && runner.os != 'Windows' }}
         working-directory: rust
         run: |
@@ -317,8 +317,8 @@ jobs:
           echo "$exports"
           count=$(echo "$exports" | wc -l | tr -d ' ')
           extra=$(echo "$exports" | grep -v -E '^(cast_[a-z0-9_]+|hypercast_version)$' || true)
-          if [ "$count" != 26 ] || [ -n "$extra" ]; then
-            echo "::error::expected the 26 C ABI exports and nothing else, found $count${extra:+ (unexpected: $extra)}"
+          if [ "$count" != 27 ] || [ -n "$extra" ]; then
+            echo "::error::expected the 27 C ABI exports and nothing else, found $count${extra:+ (unexpected: $extra)}"
             exit 1
           fi
 
