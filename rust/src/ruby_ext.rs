@@ -24,8 +24,10 @@ use rb_sys::VALUE;
 
 use crate as core;
 
-/// Constant-referenced objects (classes, INVARIANT, DETECT) are anchored by Ruby constants
-/// and never collected, so caching them by raw VALUE is GC-safe. The Symbols are static
+/// Constant-referenced objects (classes, INVARIANT, DETECT) are anchored by Ruby constants,
+/// so they are never collected — but a compacting GC can still move them, rewriting every
+/// reference it can see, which these statics are not. `build_cache` registers each one
+/// with the GC, which pins it, so the cached VALUEs stay theirs. The Symbols are static
 /// symbols — interned once, immortal — so their raw VALUEs are stable too: every `:seconds`
 /// a caller writes is the same VALUE, and a pointer compare resolves it.
 struct Cached {
@@ -54,17 +56,21 @@ fn build_cache(ruby: &Ruby, hypercast: RModule) -> Result<Cached, Error> {
     let num_format: Value = hypercast.const_get("NumFormat")?;
     let invariant: Value = num_format.funcall("const_get", ("INVARIANT",))?;
     let detect: Value = num_format.funcall("const_get", ("DETECT",))?;
+    let success: Value = hypercast.const_get("Success")?;
+    let fault: Value = hypercast.const_get("Fault")?;
+    let date_class: Value = ruby.class_object().funcall("const_get", ("Date",))?;
+    let datetime_class: Value = ruby.class_object().funcall("const_get", ("DateTime",))?;
+    let decimal_class: Value = hypercast.const_get("Decimal")?;
+    for pinned in [invariant, detect, success, fault, date_class, datetime_class, decimal_class] {
+        ruby.gc_register_mark_object(pinned);
+    }
     let sym = |name: &str| ruby.to_symbol(name).as_raw();
     Ok(Cached {
-        success: Opaque::from(hypercast.const_get::<_, Value>("Success")?),
-        fault: Opaque::from(hypercast.const_get::<_, Value>("Fault")?),
-        date_class: Opaque::from(
-            ruby.class_object().funcall::<_, _, Value>("const_get", ("Date",))?,
-        ),
-        datetime_class: Opaque::from(
-            ruby.class_object().funcall::<_, _, Value>("const_get", ("DateTime",))?,
-        ),
-        decimal_class: Opaque::from(hypercast.const_get::<_, Value>("Decimal")?),
+        success: Opaque::from(success),
+        fault: Opaque::from(fault),
+        date_class: Opaque::from(date_class),
+        datetime_class: Opaque::from(datetime_class),
+        decimal_class: Opaque::from(decimal_class),
         invariant_raw: invariant.as_raw(),
         detect_raw: detect.as_raw(),
         empty: Opaque::from(ruby.to_symbol("empty")),

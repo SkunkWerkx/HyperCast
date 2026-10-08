@@ -144,4 +144,25 @@ RSpec.describe "native backend" do
       expect(fiddle_eval(format(rescued, source))).to eq(native), source
     end
   end
+
+  # The extension caches Ruby objects in Rust statics, out of the garbage collector's sight. A
+  # constant keeps them from being collected but not from being moved, so each is pinned when the
+  # extension loads; unpinned, a compacting collection moved them and the next call used whatever
+  # took their place (a segfault, or a Success or Fault that was some other object). Every movable
+  # object is moved here first, in a subprocess so a regression fails this example, not the run.
+  it "keeps working after a compacting collection has moved everything it can" do
+    skip "this Ruby's GC does not compact" unless GC.respond_to?(:verify_compaction_references)
+
+    lib = File.expand_path("../lib", __dir__)
+    script = <<~RUBY
+      GC.verify_compaction_references(expand_heap: true, toward: :empty)
+      print HyperCast::BACKEND, " ",
+            HyperCast.i32("(1,234)", HyperCast::NumFormat::INVARIANT).inspect, " ",
+            HyperCast.i32("1€", HyperCast::NumFormat::INVARIANT).inspect
+    RUBY
+    out, status = Open3.capture2e(RbConfig.ruby, "-I", lib, "-r", "hypercast", "-e", script)
+    want = "native #<data HyperCast::Success value=-1234> " \
+           "#<data HyperCast::Fault reason=:malformed, offset=1, length=1>"
+    expect([status.success?, out]).to eq([true, want])
+  end
 end
