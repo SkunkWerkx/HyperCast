@@ -41,6 +41,9 @@ esac
 
 rm -rf "$stage"
 mkdir -p "$stage"
+# Absolute from here on: the Go build runs with -C go/, which would otherwise resolve a
+# relative stage against that directory instead of the caller's.
+stage="$(cd "$stage" && pwd)"
 cp -r "$repo/corpus" "$stage/corpus"
 
 # Each test executable is linked with 16 KB pages, as NDK r28 and later do by default and an
