@@ -1,4 +1,4 @@
-//go:build cgo && !tinygo && !android && (darwin || linux || windows) && (amd64 || arm64) && !(ios && amd64 && !maccatalyst)
+//go:build cgo && !tinygo && (darwin || linux || windows) && (amd64 || arm64) && !(ios && amd64 && !maccatalyst)
 
 // The native backend: libhypercast linked into the binary. The core is a static library
 // under staticlib/{goos}_{goarch}/, named on the cgo link line below, and every door is an
@@ -30,11 +30,16 @@
 //
 // iOS and Mac Catalyst link an archive of their own, since Go builds for both as GOOS=ios
 // and every Mach-O object says which platform it was built for. GOOS=ios also satisfies the
-// darwin constraint (as android satisfies linux), so the macOS lines below say !ios, and the
-// constraint above turns Android away rather than hand it the Linux archive. The three
-// that share ios/arm64 are told apart by build tag: `maccatalyst`, which gomobile sets for
-// that target; `iossimulator`, which nothing sets, so a simulator build passes it by hand;
-// and neither, for a device. There is no archive for the simulator on amd64.
+// darwin constraint, so the macOS lines below say !ios. The three that share ios/arm64 are
+// told apart by build tag: `maccatalyst`, which gomobile sets for that target;
+// `iossimulator`, which nothing sets, so a simulator build passes it by hand; and neither,
+// for a device. There is no archive for the simulator on amd64.
+//
+// Android links an archive of its own too, for arm64 and amd64: the core built for the
+// Android targets, which asks Bionic for what it asks musl for. GOOS=android satisfies the
+// linux constraint, so the Linux lines below say !android. Building for it takes the NDK's
+// clang as CC (CC=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
+// GOOS=android GOARCH=arm64 CGO_ENABLED=1), as any cgo package on Android does.
 //
 // cgo cannot call a function pointer directly — it needs a statically-typed C call site —
 // hence one shim per ABI shape (plain, numeric, unix, version), each taking its door as a
@@ -52,8 +57,8 @@
 package hypercast
 
 /*
-#cgo linux,amd64,!hypercast_local LDFLAGS: ${SRCDIR}/staticlib/linux_amd64/libhypercast.a
-#cgo linux,arm64,!hypercast_local LDFLAGS: ${SRCDIR}/staticlib/linux_arm64/libhypercast.a
+#cgo linux,!android,amd64,!hypercast_local LDFLAGS: ${SRCDIR}/staticlib/linux_amd64/libhypercast.a
+#cgo linux,!android,arm64,!hypercast_local LDFLAGS: ${SRCDIR}/staticlib/linux_arm64/libhypercast.a
 #cgo darwin,!ios,amd64,!hypercast_local LDFLAGS: ${SRCDIR}/staticlib/darwin_amd64/libhypercast.a
 #cgo darwin,!ios,arm64,!hypercast_local LDFLAGS: ${SRCDIR}/staticlib/darwin_arm64/libhypercast.a
 #cgo ios,arm64,!iossimulator,!maccatalyst LDFLAGS: ${SRCDIR}/staticlib/ios_arm64/libhypercast.a
@@ -62,12 +67,16 @@ package hypercast
 #cgo ios,amd64,maccatalyst LDFLAGS: ${SRCDIR}/staticlib/maccatalyst_amd64/libhypercast.a
 #cgo windows,amd64,!hypercast_local LDFLAGS: ${SRCDIR}/staticlib/windows_amd64/libhypercast.a
 #cgo windows,arm64,!hypercast_local LDFLAGS: ${SRCDIR}/staticlib/windows_arm64/libhypercast.a
-#cgo linux,amd64,hypercast_local LDFLAGS: ${SRCDIR}/../rust/target/local-core/go/staticlib/linux_amd64/libhypercast.a
-#cgo linux,arm64,hypercast_local LDFLAGS: ${SRCDIR}/../rust/target/local-core/go/staticlib/linux_arm64/libhypercast.a
+#cgo android,amd64,!hypercast_local LDFLAGS: ${SRCDIR}/staticlib/android_amd64/libhypercast.a
+#cgo android,arm64,!hypercast_local LDFLAGS: ${SRCDIR}/staticlib/android_arm64/libhypercast.a
+#cgo linux,!android,amd64,hypercast_local LDFLAGS: ${SRCDIR}/../rust/target/local-core/go/staticlib/linux_amd64/libhypercast.a
+#cgo linux,!android,arm64,hypercast_local LDFLAGS: ${SRCDIR}/../rust/target/local-core/go/staticlib/linux_arm64/libhypercast.a
 #cgo darwin,!ios,amd64,hypercast_local LDFLAGS: ${SRCDIR}/../rust/target/local-core/go/staticlib/darwin_amd64/libhypercast.a
 #cgo darwin,!ios,arm64,hypercast_local LDFLAGS: ${SRCDIR}/../rust/target/local-core/go/staticlib/darwin_arm64/libhypercast.a
 #cgo windows,amd64,hypercast_local LDFLAGS: ${SRCDIR}/../rust/target/local-core/go/staticlib/windows_amd64/libhypercast.a
 #cgo windows,arm64,hypercast_local LDFLAGS: ${SRCDIR}/../rust/target/local-core/go/staticlib/windows_arm64/libhypercast.a
+#cgo android,amd64,hypercast_local LDFLAGS: ${SRCDIR}/../rust/target/local-core/go/staticlib/android_amd64/libhypercast.a
+#cgo android,arm64,hypercast_local LDFLAGS: ${SRCDIR}/../rust/target/local-core/go/staticlib/android_arm64/libhypercast.a
 #include <stddef.h>
 #include <stdint.h>
 

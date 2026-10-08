@@ -67,9 +67,9 @@ jobs:
       # Four more static libraries in the static-libs artifact: iOS, the iOS simulator and
       # Mac Catalyst (test-apple-mobile, below, is what links and runs them).
       apple_mobile: true
-      # The C# package on Android: the shared library for android-arm64 and android-x64 (what
-      # an app on CoreCLR loads out of its APK) and their Native AOT archives in static-libs.
-      # test-android, below, is what runs them.
+      # Android: the shared library for android-arm64 and android-x64 (what a C# app on
+      # CoreCLR loads out of its APK), and in static-libs their archives for C#'s Native AOT,
+      # Go's go/staticlib and Swift's bundle. test-android, below, is what runs them.
       android: true
       csharp_test_project: csharp/HyperCast.Tests/HyperCast.Tests.csproj
       # .NET 11 is HyperCast's floor for the native [Union] Verdict types — preview quality
@@ -557,7 +557,9 @@ jobs:
           done
           echo "the iOS device app defines the core's exports"
 
-  # The C# package on Android, in an emulator: HyperCast.AndroidSmokeTest, which runs the Native
+  # Android, in an emulator, for the three bindings that reach it: C#, Go and Swift.
+  #
+  # C#: HyperCast.AndroidSmokeTest, which runs the Native
   # AOT smoke test's Program.cs from an Activity, against the package as a MAUI app would
   # take it — packed here from build-native's Android libraries and static-libs archives, and
   # restored from a local folder, so that what is proven is the .nupkg's own layout (NuGet's
@@ -572,6 +574,12 @@ jobs:
   # CoreCLR APK must carry libhypercast.so for its ABI and pass zipalign -P 16 (the check
   # Google Play applies), and each Native AOT APK must not carry it at all, because the core
   # is linked into the app; the x64 one then passing in the emulator is the proof that it was.
+  #
+  # Go and Swift: each binding's whole suite, corpus replay included, cross-compiled for
+  # Android against this run's archives (the static-libs artifact lands them in go/staticlib
+  # and the Swift bundle) and run on the same emulator through adb, by the two scripts that
+  # also run it against a local one: android_build_suite.sh and android_device_test.sh.
+  # The aarch64 builds are linked, not run. Swift's SDK for Android needs Swift 6.3 or later.
   test-android:
     needs: build-native
     runs-on: ubuntu-26.04
@@ -677,13 +685,31 @@ jobs:
             echo "$rid: the CoreCLR APK carries lib/$abi/libhypercast.so; the Native AOT APK links the core in; both pass zipalign -P 16"
           done
 
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go/go.mod
+
+      # After the APKs: setup-swift puts its toolchain's clang first on PATH.
+      - uses: SwiftyLab/setup-swift@v1.14.1
+        with:
+          swift-version: "6.4"
+
+      - name: Go and Swift — cross-build the suites for Android
+        run: |
+          set -euo pipefail
+          export ANDROID_NDK_HOME="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          for arch in x86_64 aarch64; do
+            .github/scripts/android_build_suite.sh go "$arch" "stage/go-$arch"
+            .github/scripts/android_build_suite.sh swift "$arch" "stage/swift-$arch"
+          done
+
       - name: Enable KVM for the emulator
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Run the x64 APKs in an emulator
+      - name: Run the x64 APKs and the Go and Swift suites in an emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 36
@@ -691,7 +717,11 @@ jobs:
           target: google_apis_ps16k
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
-          script: .github/scripts/android_smoke.sh "$APP_ID" "$(sed -n 's/^version = "\(.*\)"/\1/p' rust/Cargo.toml | head -1)" apks/coreclr-android-x64.apk apks/aot-android-x64.apk
+          # One command per line: the action runs each on its own and fails on the first that does.
+          script: |
+            .github/scripts/android_smoke.sh "$APP_ID" "$(sed -n 's/^version = "\(.*\)"/\1/p' rust/Cargo.toml | head -1)" apks/coreclr-android-x64.apk apks/aot-android-x64.apk
+            .github/scripts/android_device_test.sh stage/go-x86_64 ./hypercast.test -test.v
+            .github/scripts/android_device_test.sh stage/swift-x86_64 ./HyperCastPackageTests.xctest
 
   # Formatting and lints for the crate, its fuzz target and its browser test crate, every
   # PR. rust/rustfmt.toml is the house style; clippy runs over each configuration that

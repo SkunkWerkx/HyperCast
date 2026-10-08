@@ -9,11 +9,15 @@ final class CastTests: XCTestCase {
     /// The core crate's own `version = "..."` from `rust/Cargo.toml`, found by walking up
     /// from this file the way `CorpusTests` finds `corpus/` — so the version assertion
     /// follows a release bump instead of going stale on it. `nil` only under WASI, where the
-    /// test module runs sandboxed with no view of the source tree.
+    /// test module runs sandboxed with no view of the source tree. A device run (Android,
+    /// through adb) has no source tree either, and is handed the version instead.
     private static let crateVersion: String? = {
         #if os(WASI)
             return nil
         #else
+            if let handed = ProcessInfo.processInfo.environment["HYPERCAST_CRATE_VERSION"] {
+                return handed
+            }
             var dir = URL(fileURLWithPath: #filePath)
             while true {
                 let manifest = dir.appendingPathComponent("rust/Cargo.toml")

@@ -191,7 +191,14 @@ func TestExactIsExact(t *testing.T) {
 
 func TestNativeVersionMatchesTheCrate(t *testing.T) {
 	// The expectation is the crate's own manifest, walked up to the way corpus_test.go finds
-	// corpus/, so a release bump never leaves a stale literal here.
+	// corpus/, so a release bump never leaves a stale literal here. A device run (Android,
+	// through .github/scripts/android_device_test.sh) has no source tree and is handed it.
+	if want := os.Getenv("HYPERCAST_CRATE_VERSION"); want != "" {
+		if got := NativeVersion(); got != want {
+			t.Fatalf("got %q, HYPERCAST_CRATE_VERSION says %q", got, want)
+		}
+		return
+	}
 	dir, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)

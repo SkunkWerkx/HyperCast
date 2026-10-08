@@ -214,6 +214,18 @@ when the XCFramework is in the tree; both targets define the one `HyperCastCore`
 binding imports. CI's `test-apple-mobile` job runs the suite on an iOS simulator and as a
 Mac Catalyst process with `xcodebuild test`, and builds the package for an iOS device.
 
+Android uses the same artifact bundle: it carries the core for `aarch64-unknown-linux-android`
+and `x86_64-unknown-linux-android`, and a package built with the
+[Swift SDK for Android](https://www.swift.org/documentation/articles/swift-sdk-for-android-getting-started.html)
+(`swift build --swift-sdk aarch64-unknown-linux-android28`; Swift 6.3 or later, API 28 or
+later) links it like any other triple. Page alignment is the final link's, which the SDK
+does with the NDK's linker; NDK r28 and later align to the 16 KB pages Android 15 devices
+may use by default. CI cross-builds this suite with the SDK for x86_64 and runs it in an emulator
+whose image uses 16 KB pages, through `.github/scripts/android_build_suite.sh` and
+`android_device_test.sh`, which run the same way against a local emulator; the aarch64
+build is linked. The Swift runtime on Android is shared libraries, which an app packages
+the way the SDK's documentation describes; the core adds nothing to them.
+
 In a checkout of this repository, `HYPERCAST_LOCAL_CORE=1 swift test` run from `swift/` links
 the bundle `.github/scripts/local-core.sh` builds from the checkout's core in place of the
 committed one. The root `Package.swift`, the one a dependency resolves, has no such switch.

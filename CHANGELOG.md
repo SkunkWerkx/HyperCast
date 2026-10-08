@@ -43,6 +43,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `staticlibs/android-{rid}/libhypercast.a` instead. CI builds an app both ways for both
   RIDs from a package packed in the same run, runs the x64 pair in a 16 KB-page emulator
   and checks the arm64 APKs' contents and alignment. *(csharp)*
+- **Go and Swift — Android.** The same arm64 and x86_64 archives the C# Native AOT publish
+  links. Go links `go/staticlib/android_{arm64,amd64}` under `GOOS=android`, with the
+  NDK's clang as `CC`; Swift links the artifact bundle's `*-unknown-linux-android` variants
+  with the Swift SDK for Android (Swift 6.3+, API 28+). CI cross-builds both suites and runs
+  them, corpus included, in the same 16 KB-page emulator, through
+  `.github/scripts/android_build_suite.sh` and `android_device_test.sh`; both also run
+  against a local emulator. *(go, swift)*
 
 ### Fixed
 

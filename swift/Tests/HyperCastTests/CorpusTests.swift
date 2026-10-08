@@ -14,6 +14,11 @@ final class CorpusTests: XCTestCase {
         #if os(WASI)
             return nil
         #else
+            // A device run (Android, through adb) has the corpus pushed beside the test
+            // bundle, nowhere above the host path #filePath names.
+            if let pushed = ProcessInfo.processInfo.environment["HYPERCAST_CORPUS"] {
+                return URL(fileURLWithPath: pushed)
+            }
             var dir = URL(fileURLWithPath: #filePath)
             while dir.path != "/" {
                 let candidate = dir.appendingPathComponent("corpus")

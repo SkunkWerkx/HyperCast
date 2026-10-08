@@ -291,6 +291,7 @@ fault, ok := hypercast.FaultFromCode(code, offset, length)
 | Windows x64 / arm64 | `staticlib/windows_amd64`, `staticlib/windows_arm64` | nothing (the C runtime) |
 | iOS arm64 — device, simulator | `staticlib/ios_arm64`, `staticlib/iossimulator_arm64` | the C library |
 | Mac Catalyst arm64 / x64 | `staticlib/maccatalyst_arm64`, `staticlib/maccatalyst_amd64` | the C library |
+| [Android](#android) arm64 / x64 (API 21+) | `staticlib/android_arm64`, `staticlib/android_amd64` | Bionic, the C library |
 | WebAssembly under [TinyGo](#in-the-browser-tinygo) — browser, WASI | `staticlib/wasm` | nothing |
 
 Each build names one archive on its link line and that is all it takes from this module:
@@ -334,6 +335,28 @@ CI checks that every platform and tag combination selects its own archive
 carries nothing above the module into the simulator, and links a device build. Mac Catalyst
 is not linked from Go there; its archives are the ones the Swift and C# bindings link and
 run in the same job.
+
+### Android
+
+`GOOS=android` with cgo, the NDK's clang as `CC`, as `gomobile` arranges and as any cgo
+package on Android needs:
+
+```shell
+CC=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang \
+  GOOS=android GOARCH=arm64 CGO_ENABLED=1 go build ./...
+```
+
+(`x86_64-linux-android21-clang` and `GOARCH=amd64` for the emulator.) `GOOS=android` also
+satisfies Go's `linux` constraint, so the Linux link lines exclude it and it takes its own
+archives, built for Android against Bionic. Page alignment is the final link's: NDK r28 and
+later align to the 16 KB pages Android 15 devices may use by default, and an older NDK
+needs `-extldflags=-Wl,-z,max-page-size=16384`.
+
+CI checks that both select their own archive (`.github/scripts/check_go_archives.sh`),
+cross-compiles this whole suite for `android/amd64`, and runs it in an x86_64 emulator whose
+image uses 16 KB pages (`.github/scripts/android_build_suite.sh` and
+`android_device_test.sh`, which run the same way against a local emulator); `android/arm64`
+is linked.
 
 ### Deploying
 
