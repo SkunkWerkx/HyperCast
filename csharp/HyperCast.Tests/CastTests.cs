@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using System.Text;
 
 namespace HyperCast.Tests;
 
@@ -242,6 +243,118 @@ public sealed class CastTests
 		// The fault travels through untouched.
 		(Cast.Numeric<byte>("256", NumFormat.Invariant) is Fault { Reason: CastFailure.OutOfRange }).ShouldBeTrue();
 		Should.Throw<NotSupportedException>(() => Cast.Numeric<Int128>("1", NumFormat.Invariant));
+	}
+
+	[Fact]
+	void Char_reads_one_character_verbatim_or_a_declared_code_point()
+	{
+		(Cast.Char(" ") is Success<char> { Value: ' ' }).ShouldBeTrue();
+		(Cast.Char("6") is Success<char> { Value: '6' }).ShouldBeTrue();
+		(Cast.Char("é"u8) is Success<char> { Value: 'é' }).ShouldBeTrue();
+		(Cast.Char("U+00E9") is Success<char> { Value: 'é' }).ShouldBeTrue();
+		(Cast.Char("&#x41;"u8) is Success<char> { Value: 'A' }).ShouldBeTrue();
+		(Cast.Char("65x") is Fault { Reason: CastFailure.Malformed, Offset: 2, Length: 1 }).ShouldBeTrue();
+		(Cast.Char("  ") is Fault { Reason: CastFailure.Empty }).ShouldBeTrue();
+		(Cast.Char("U+D800") is Fault { Reason: CastFailure.OutOfRange, Offset: 0, Length: 6 }).ShouldBeTrue();
+	}
+
+	[Fact]
+	void Char_past_the_basic_plane_is_out_of_range_over_the_trimmed_input()
+	{
+		// The core accepts U+1F600; one char can't hold it. The span is in the caller's units.
+		(Cast.Char("😀"u8) is Fault { Reason: CastFailure.OutOfRange, Offset: 0, Length: 4 }).ShouldBeTrue();
+		(Cast.Char("😀") is Fault { Reason: CastFailure.OutOfRange, Offset: 0, Length: 2 }).ShouldBeTrue();
+		(Cast.Char(" U+1F600\t"u8) is Fault { Reason: CastFailure.OutOfRange, Offset: 1, Length: 7 }).ShouldBeTrue();
+		(Cast.Char(" &#128512; ") is Fault { Reason: CastFailure.OutOfRange, Offset: 1, Length: 9 }).ShouldBeTrue();
+		(Cast.Char("U+FFFF") is Success<char> { Value: '\uFFFF' }).ShouldBeTrue();
+	}
+
+	[Fact]
+	void Char_utf16_door_returns_a_lone_surrogate_verbatim()
+	{
+		// One UTF-16 code unit is "exactly one character" and never crosses into the core.
+		(Cast.Char("\uD800") is Success<char> { Value: '\uD800' }).ShouldBeTrue();
+		(Cast.Char("\uDFFF") is Success<char> { Value: '\uDFFF' }).ShouldBeTrue();
+		// Inside longer text it transcodes to U+FFFD like any other door's input.
+		(Cast.Char("\uD800x") is Fault { Reason: CastFailure.Malformed, Offset: 0, Length: 1 }).ShouldBeTrue();
+	}
+
+	delegate Verdict<T> Utf8Door<T>(ReadOnlySpan<byte> utf8) where T : struct;
+	delegate Verdict<T> Utf16Door<T>(ReadOnlySpan<char> input) where T : struct;
+
+	// Scalar<T> must hand back exactly what the concrete door does, success and fault, through
+	// both overloads; a non-ASCII prefix makes the UTF-16 overload remap its fault span.
+	static void ScalarRow<T>(string ok, string bad, Utf8Door<T> utf8Door, Utf16Door<T> utf16Door) where T : struct
+	{
+		var format = NumFormat.Invariant;
+		// TryGetValue, not case patterns: an open T blocks union pattern matching (CS8780).
+		Cast.Scalar<T>(Encoding.UTF8.GetBytes(ok), format).TryGetValue(out Success<T> _).ShouldBeTrue($"{typeof(T)} '{ok}'");
+		Cast.Scalar<T>(bad, format).TryGetValue(out Fault _).ShouldBeTrue($"{typeof(T)} '{bad}'");
+		foreach (var text in new[] { ok, bad, "€" + bad, "" })
+		{
+			Cast.Scalar<T>(Encoding.UTF8.GetBytes(text), format).ShouldBe(utf8Door(Encoding.UTF8.GetBytes(text)), $"{typeof(T)} utf-8 '{text}'");
+			Cast.Scalar<T>(text, format).ShouldBe(utf16Door(text), $"{typeof(T)} utf-16 '{text}'");
+		}
+	}
+
+	[Fact]
+	void Scalar_dispatches_every_door_by_type()
+	{
+		var f = NumFormat.Invariant;
+		ScalarRow<bool>("yes", "maybe", Cast.Boolean, Cast.Boolean);
+		ScalarRow<sbyte>("-128", "128", u => Cast.SByte(u, f), s => Cast.SByte(s, f));
+		ScalarRow<short>("(1,234)", "1.5", u => Cast.Int16(u, f), s => Cast.Int16(s, f));
+		ScalarRow<int>("0x2A", "4x", u => Cast.Int32(u, f), s => Cast.Int32(s, f));
+		ScalarRow<long>("1e3", "1e", u => Cast.Int64(u, f), s => Cast.Int64(s, f));
+		ScalarRow<byte>("255", "256", u => Cast.Byte(u, f), s => Cast.Byte(s, f));
+		ScalarRow<ushort>("65535", "65536", u => Cast.UInt16(u, f), s => Cast.UInt16(s, f));
+		ScalarRow<uint>("4294967295", "-1", u => Cast.UInt32(u, f), s => Cast.UInt32(s, f));
+		ScalarRow<ulong>("18446744073709551615", "18446744073709551616", u => Cast.UInt64(u, f), s => Cast.UInt64(s, f));
+		ScalarRow<float>("2.5", "NaN", u => Cast.Single(u, f), s => Cast.Single(s, f));
+		ScalarRow<double>("25.5%", "1e999", u => Cast.Double(u, f), s => Cast.Double(s, f));
+		ScalarRow<decimal>("1.10", "1.1.1", u => Cast.Decimal(u, f), s => Cast.Decimal(s, f));
+		ScalarRow<char>("U+00E9", "65x", Cast.Char, Cast.Char);
+		ScalarRow<Guid>("{6ba7b810-9dad-11d1-80b4-00c04fd430c8}", "6ba7b810", Cast.Uuid, Cast.Uuid);
+		ScalarRow<DateOnly>("2026-01-07", "2026-13-01", Cast.Date, Cast.Date);
+		ScalarRow<TimeOnly>("15:04:05", "24:00", Cast.Time, Cast.Time);
+		ScalarRow<DateTimeOffset>("2026-01-02T15:04:05+05:00", "2026-01-02T15:04:05", Cast.Timestamp, Cast.Timestamp);
+		ScalarRow<TimeSpan>("P1DT6H", "P1Y", Cast.Duration, Cast.Duration);
+	}
+
+	[Fact]
+	void Scalar_char_keeps_the_utf16_one_code_unit_rule()
+	{
+		(Cast.Scalar<char>("\uD800", NumFormat.Invariant) is Success<char> { Value: '\uD800' }).ShouldBeTrue();
+		Cast.Scalar<char>("😀", NumFormat.Invariant).ShouldBe(Cast.Char("😀"));
+	}
+
+	[Fact]
+	void Scalar_reads_DateTime_as_the_RFC_3339_instant_in_UTC()
+	{
+		Cast.Scalar<DateTime>("2026-01-02T15:04:05+05:00", NumFormat.Invariant).TryGetValue(out Success<DateTime> utc).ShouldBeTrue();
+		utc.Value.ShouldBe(new DateTime(2026, 1, 2, 10, 4, 5, DateTimeKind.Utc));
+		utc.Value.Kind.ShouldBe(DateTimeKind.Utc);
+		Cast.Scalar<DateTime>("2026-01-02T15:04:05+05:00"u8, NumFormat.Invariant).ShouldBe(utc);
+		// Zone-less text names no instant: the timestamp door's fault, untouched.
+		Cast.Scalar<DateTime>("2026-01-02T15:04:05", NumFormat.Invariant).TryGetValue(out Fault fault).ShouldBeTrue();
+		(Cast.Timestamp("2026-01-02T15:04:05") is Fault expected && fault == expected).ShouldBeTrue();
+	}
+
+	[Fact]
+	void Scalar_refuses_a_type_with_no_door_before_any_native_call()
+	{
+		Should.Throw<NotSupportedException>(() => Cast.Scalar<Int128>("1", NumFormat.Invariant)).Message.ShouldContain("Int128");
+		Should.Throw<NotSupportedException>(() => Cast.Scalar<Half>("1"u8, NumFormat.Invariant)).Message.ShouldContain("Half");
+		Should.Throw<NotSupportedException>(() => Cast.Scalar<nint>("1", NumFormat.Invariant));
+		Should.Throw<NotSupportedException>(() => Cast.Scalar<DayOfWeek>("1", NumFormat.Invariant));
+		Should.Throw<NotSupportedException>(() => Cast.Scalar<Fault>("1", NumFormat.Invariant));
+	}
+
+	[Fact]
+	void Optional_composes_with_Scalar()
+	{
+		Cast.Optional(Cast.Scalar<Guid>("  ", NumFormat.Invariant)).ShouldBeNull();
+		Cast.Optional(Cast.Scalar<int>("7", NumFormat.Invariant)).ShouldBe(Cast.Int32("7", NumFormat.Invariant));
 	}
 
 	[Fact]

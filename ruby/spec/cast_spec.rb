@@ -39,6 +39,20 @@ RSpec.describe HyperCast do
                                invariant)).to eq(HyperCast::Fault.new(reason: :malformed, offset: 4, length: 1))
   end
 
+  it "casts a char verbatim or from a declared code point, as a one-character UTF-8 String" do
+    expect(described_class.char(" ")).to eq(HyperCast::Success.new(value: " "))
+    expect(described_class.char("6")).to eq(HyperCast::Success.new(value: "6"))
+    expect(described_class.char("&#233;")).to eq(HyperCast::Success.new(value: "é"))
+    expect(described_class.char(" U+1F600 ")).to eq(HyperCast::Success.new(value: "😀"))
+    expect(described_class.char("U+0041").value.encoding).to eq(Encoding::UTF_8)
+    expect(described_class.char("é".encode(Encoding::ISO_8859_1))).to eq(HyperCast::Success.new(value: "é"))
+    expect(described_class.char("U+D800")).to eq(HyperCast::Fault.new(reason: :out_of_range, offset: 0, length: 6))
+    expect(described_class.char("   ")).to eq(HyperCast::Fault.new(reason: :empty, offset: 0, length: 0))
+    # The offending é is one character of text, two bytes of a binary String.
+    expect(described_class.char("U+é")).to eq(HyperCast::Fault.new(reason: :malformed, offset: 2, length: 1))
+    expect(described_class.char("U+é".b)).to eq(HyperCast::Fault.new(reason: :malformed, offset: 2, length: 2))
+  end
+
   it "honors declared separators" do
     eurozone = HyperCast::NumFormat.new(decimal_sep: ",", group_sep: ".", flags: HyperCast::ALL_STYLES)
     expect(described_class.f64("1.234,5", eurozone)).to eq(HyperCast::Success.new(value: 1234.5))

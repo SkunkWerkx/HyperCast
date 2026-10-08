@@ -196,6 +196,62 @@ final class CastTests: XCTestCase {
         XCTAssertNil(Cast.optional(empty))
     }
 
+    func testCharDoorReadsVerbatimAndDeclaredCodePoints() throws {
+        XCTAssertEqual(try Cast.char("A"), .success("A"))
+        // Verbatim is checked before trimming: one space is a space, one digit is that digit.
+        XCTAssertEqual(try Cast.char(" "), .success(" "))
+        XCTAssertEqual(try Cast.char("6"), .success("6"))
+        XCTAssertEqual(try Cast.char("😀"), .success("\u{1F600}"))
+        for spelling in ["65", "U+0041", "u+41", "0x41", "&H41", "&#65;", "&#x41;", "  U+0041  "] {
+            XCTAssertEqual(try Cast.char(spelling), .success("A"), spelling)
+        }
+        XCTAssertEqual(try Cast.char(Array("U+00E9".utf8)), .success("é"))
+        XCTAssertEqual(try Cast.char("65x"), .fault(Fault(reason: .malformed, offset: 2, length: 1)))
+        XCTAssertEqual(try Cast.char("&#65"), .fault(Fault(reason: .malformed, offset: 0, length: 4)))
+        XCTAssertEqual(try Cast.char("U+D800"), .fault(Fault(reason: .outOfRange, offset: 0, length: 6)))
+        XCTAssertEqual(try Cast.char("U+110000"), .fault(Fault(reason: .outOfRange, offset: 0, length: 8)))
+        XCTAssertNil(Cast.optional(try Cast.char("   ")))
+    }
+
+    func testGenericScalarDoorReachesEveryTarget() throws {
+        let invariant = NumFormat.invariant
+        XCTAssertEqual(try Cast.scalar("yes", format: invariant), Verdict<Bool>.success(true))
+        XCTAssertEqual(try Cast.scalar("-8", format: invariant), Verdict<Int8>.success(-8))
+        XCTAssertEqual(try Cast.scalar("-16", format: invariant), Verdict<Int16>.success(-16))
+        XCTAssertEqual(try Cast.scalar("(32)", format: invariant), Verdict<Int32>.success(-32))
+        XCTAssertEqual(try Cast.scalar("-64", format: invariant), Verdict<Int64>.success(-64))
+        XCTAssertEqual(try Cast.scalar("255", format: invariant), Verdict<UInt8>.success(255))
+        XCTAssertEqual(try Cast.scalar("65535", format: invariant), Verdict<UInt16>.success(65535))
+        XCTAssertEqual(try Cast.scalar("0xFFFFFFFF", format: invariant), Verdict<UInt32>.success(.max))
+        XCTAssertEqual(
+            try Cast.scalar("18446744073709551615", format: invariant), Verdict<UInt64>.success(.max))
+        XCTAssertEqual(try Cast.scalar("1.5", format: invariant), Verdict<Float>.success(1.5))
+        XCTAssertEqual(try Cast.scalar("50%", format: invariant), Verdict<Double>.success(0.5))
+        XCTAssertEqual(
+            try Cast.scalar("0.1", format: invariant), Verdict<Decimal>.success(Decimal(string: "0.1")!))
+        XCTAssertEqual(
+            try Cast.scalar("{01234567-89ab-cdef-0123-456789abcdef}", format: invariant),
+            Verdict<UUID>.success(UUID(uuidString: "01234567-89AB-CDEF-0123-456789ABCDEF")!))
+        XCTAssertEqual(
+            try Cast.scalar("1970-01-01T00:00:01Z", format: invariant),
+            Verdict<Date>.success(Date(timeIntervalSince1970: 1)))
+        XCTAssertEqual(try Cast.scalar("PT1M30S", format: invariant), Verdict<Duration>.success(.seconds(90)))
+        XCTAssertEqual(try Cast.scalar("&#233;", format: invariant), Verdict<Unicode.Scalar>.success("é"))
+        // Each target keeps its own door's rules, faults included, and the format reaches
+        // only the numeric doors.
+        let eurozone = NumFormat(decimalSeparator: ",", groupSeparator: ".", styles: .grouping)
+        XCTAssertEqual(try Cast.scalar("1.234,5", format: eurozone), Verdict<Double>.success(1234.5))
+        // A zone-less instant is the timestamp door's fault, not a guess.
+        let zoneless: Verdict<Date> = try Cast.scalar("2026-01-02T03:04:05", format: invariant)
+        XCTAssertEqual(zoneless, try Cast.timestamp("2026-01-02T03:04:05"))
+        if case .success = zoneless { XCTFail("a zone-less instant parsed") }
+        XCTAssertEqual(
+            try Cast.scalar("maybe", format: invariant),
+            Verdict<Bool>.fault(Fault(reason: .malformed, offset: 0, length: 5)))
+        // The bytes form routes the same way.
+        XCTAssertEqual(try Cast.scalar(Array("U+41".utf8), format: invariant), Verdict<Unicode.Scalar>.success("A"))
+    }
+
     func testRawNumFormatIsTheNativeStructsThirtyTwoBytes() {
         // u32 × 4 at 0/4/8/12, then the 16 symbol bytes at 16: 32 bytes, no padding
         // between the words. Swift's 8-byte alignment for the tuple is stricter than the

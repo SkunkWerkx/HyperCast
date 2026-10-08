@@ -26,7 +26,7 @@
         // in the statically linked wasm module via LibraryImport("*"), so a door missing from
         // build/HyperCast.targets' EmccExportedFunction list fails here at runtime, not
         // at the link. That only holds for a door this page actually calls, so it calls all
-        // twenty-six entry points: the twenty-five cast_* functions and hypercast_version.
+        // twenty-seven entry points: the twenty-six cast_* functions and hypercast_version.
         void Check<T>(string name, Verdict<T> verdict, T expected) where T : struct
         {
             if (verdict.TryGetValue(out Success<T> success) && success.Value.Equals(expected))
@@ -38,6 +38,10 @@
         try
         {
             Check("bool", Cast.Boolean("enabled"), true);
+            Check("char", Cast.Char("U+00E9"), 'é');
+            Check("scalar char", Cast.Scalar<char>("&#x41;", NumFormat.Invariant), 'A');
+            Check("scalar uuid", Cast.Scalar<Guid>("{01020304-0506-0708-090a-0b0c0d0e0f10}", NumFormat.Invariant),
+                new Guid("01020304-0506-0708-090a-0b0c0d0e0f10"));
             Check("i8", Cast.SByte("-128", NumFormat.Invariant), (sbyte)-128);
             Check("i16", Cast.Int16("0x7FFF", NumFormat.Invariant), (short)32767);
             Check("i32", Cast.Int32("(1,234)", NumFormat.Invariant), -1234);

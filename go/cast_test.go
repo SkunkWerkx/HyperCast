@@ -240,6 +240,57 @@ func numericTarget[V Number](t *testing.T, text string, door func(string, NumFor
 	}
 }
 
+// scalarTarget pins Scalar[V] to its concrete door for one target, on a success and on a
+// failure: the same value, or the same fault with the same span.
+func scalarTarget[V ScalarTarget](t *testing.T, good, bad string, door func(string, NumFormat) (V, *Fault)) {
+	t.Helper()
+	got, gotFault := Scalar[V](good, Invariant)
+	want, wantFault := door(good, Invariant)
+	if gotFault != nil || wantFault != nil {
+		t.Fatalf("%T %q: unexpected fault %v / %v", want, good, gotFault, wantFault)
+	}
+	if got != want {
+		t.Fatalf("%T %q: Scalar gave %v, door gave %v", want, good, got, want)
+	}
+	_, gotFault = Scalar[V](bad, Invariant)
+	_, wantFault = door(bad, Invariant)
+	if gotFault == nil || wantFault == nil || *gotFault != *wantFault {
+		t.Fatalf("%T %q: Scalar faulted %v, door faulted %v", want, bad, gotFault, wantFault)
+	}
+}
+
+// ignoring adapts a door that takes no format to the shape scalarTarget compares against.
+func ignoring[V any](door func(string) (V, *Fault)) func(string, NumFormat) (V, *Fault) {
+	return func(text string, _ NumFormat) (V, *Fault) { return door(text) }
+}
+
+func TestScalarDispatchesToEveryDoor(t *testing.T) {
+	scalarTarget(t, "enabled", "maybe", ignoring(Bool[string]))
+	scalarTarget(t, "{01020304-0506-0708-090a-0b0c0d0e0f10}", "01020304-0506", ignoring(Uuid[string]))
+	scalarTarget(t, "2026-01-02T15:04:05.123456789+05:00", "2026-01-02T15:04:05", ignoring(Timestamp[string]))
+	scalarTarget(t, "2024-02-29", "2023-02-29", ignoring(DateOnly[string]))
+	scalarTarget(t, "P1DT6H30M15.5S", "P1Y", ignoring(Span[string]))
+	scalarTarget(t, "-128", "-129", I8[string])
+	scalarTarget(t, "-32,768", "32768", I16[string])
+	scalarTarget(t, "(2,147,483,648)", "12x4", I32[string])
+	scalarTarget(t, "9223372036854775807", "9223372036854775808", I64[string])
+	scalarTarget(t, "255", "256", U8[string])
+	scalarTarget(t, "0xFFFF", "-1", U16[string])
+	scalarTarget(t, "4,294,967,295", "4,294,967,296", U32[string])
+	scalarTarget(t, "18446744073709551615", "", U64[string])
+	scalarTarget(t, "1.5e3", "NaN", F32[string])
+	scalarTarget(t, "50%", "1e400", F64[string])
+	scalarTarget(t, "1,234.50", "1.2.3", Exact[string])
+	// The format reaches the numeric doors and nothing else.
+	eurozone := NumFormat{DecimalSep: ',', GroupSep: '.', Styles: AllStyles}
+	if value, fault := Scalar[float64]("1.234,5", eurozone); fault != nil || value != 1234.5 {
+		t.Fatalf("Scalar[float64] under a declared format: %v %v", value, fault)
+	}
+	if value, fault := Scalar[bool]([]byte("on"), eurozone); fault != nil || !value {
+		t.Fatalf("Scalar[bool]([]byte): %v %v", value, fault)
+	}
+}
+
 func TestNumericDispatchesToEveryDoor(t *testing.T) {
 	numericTarget[int8](t, "-128", I8[string])
 	numericTarget[int16](t, "-32,768", I16[string])

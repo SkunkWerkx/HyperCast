@@ -18,6 +18,7 @@ module HyperCast
     # The doors whose value is a record: the directive that unpacks one, how many fields that
     # yields, and what builds the door's Ruby value from them, starting at field +at+.
     RECORDS = {
+      char: ["L<", 1, ->(fields, at) { fields[at].chr(Encoding::UTF_8) }],
       decimal: ["Q<L<CCx2", 4, ->(fields, at) { decimal(fields[at], fields[at + 1], fields[at + 2], fields[at + 3]) }],
       uuid: ["H8H4H4H4H12", 5, ->(fields, at) { fields[at, 5].join("-") }],
       timestamp: ["q<l<x4", 2, ->(fields, at) { instant(fields[at], fields[at + 1]) }],
@@ -31,7 +32,7 @@ module HyperCast
 
     # The bytes one value of each door takes.
     VALUE_BYTES = {
-      bool: 1, i8: 1, u8: 1, i16: 2, u16: 2, i32: 4, u32: 4, f32: 4, date: 4, date_ordered: 4,
+      bool: 1, i8: 1, u8: 1, i16: 2, u16: 2, i32: 4, u32: 4, f32: 4, char: 4, date: 4, date_ordered: 4,
       i64: 8, u64: 8, f64: 8, time: 8,
       decimal: 16, uuid: 16, timestamp: 16, unix: 16, excel_serial: 16, datetime: 16, duration: 16
     }.freeze

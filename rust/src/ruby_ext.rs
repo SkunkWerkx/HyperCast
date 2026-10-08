@@ -308,6 +308,16 @@ fn bool_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
     verdict(ruby, text, with_bytes(text, |bytes| core::cast_bool(bytes)))
 }
 
+/// The scalar as a one-character UTF-8 String — what hypercast.rb's `Integer#chr(UTF_8)`
+/// yields on the Fiddle backend.
+fn char_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
+    let text = utf8(ruby, text)?;
+    match with_bytes(text, |bytes| core::cast_char(bytes)) {
+        Ok(scalar) => success(ruby, ruby.str_new(scalar.encode_utf8(&mut [0; 4]))),
+        Err(failed) => fault(ruby, text, failed),
+    }
+}
+
 macro_rules! numeric_doors {
     ($($door:ident => $core:ident),+ $(,)?) => {$(
         fn $door(ruby: &Ruby, text: RString, format: Value) -> Result<Value, Error> {
@@ -577,6 +587,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     let hypercast = ruby.define_module("HyperCast")?;
     let _ = CACHED.set(build_cache(ruby, hypercast)?);
     hypercast.define_singleton_method("bool", function!(bool_door, 1))?;
+    hypercast.define_singleton_method("char", function!(char_door, 1))?;
     hypercast.define_singleton_method("i8", function!(i8_door, 2))?;
     hypercast.define_singleton_method("i16", function!(i16_door, 2))?;
     hypercast.define_singleton_method("i32", function!(i32_door, 2))?;

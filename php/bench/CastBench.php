@@ -43,6 +43,11 @@ final class CastBench
         Cast::bool('true');
     }
 
+    public function benchCastChar(): void
+    {
+        Cast::char('U+00E9');
+    }
+
     public function benchCastI32(): void
     {
         Cast::i32(self::INT, $this->invariant);

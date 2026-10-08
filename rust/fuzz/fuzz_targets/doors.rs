@@ -12,10 +12,10 @@
 #![no_main]
 
 use hypercast::{
-    CurrencySymbol, DateOrder, ExcelEpoch, Fault, NumFormat, UnixPrecision, cast_bool, cast_date,
-    cast_date_ordered, cast_datetime, cast_decimal, cast_duration, cast_excel_serial, cast_f32,
-    cast_f64, cast_i8, cast_i16, cast_i32, cast_i64, cast_time, cast_timestamp, cast_u8, cast_u16,
-    cast_u32, cast_u64, cast_unix, cast_uuid,
+    CurrencySymbol, DateOrder, ExcelEpoch, Fault, NumFormat, UnixPrecision, cast_bool, cast_char,
+    cast_date, cast_date_ordered, cast_datetime, cast_decimal, cast_duration, cast_excel_serial,
+    cast_f32, cast_f64, cast_i8, cast_i16, cast_i32, cast_i64, cast_time, cast_timestamp, cast_u8,
+    cast_u16, cast_u32, cast_u64, cast_unix, cast_uuid,
 };
 use libfuzzer_sys::fuzz_target;
 
@@ -64,7 +64,7 @@ fuzz_target!(|data: &[u8]| {
         _ => UnixPrecision::Nanos,
     };
 
-    match door % 21 {
+    match door % 22 {
         0 => check(input, cast_bool(input)),
         1 => check(input, cast_i8(input, &format)),
         2 => check(input, cast_i16(input, &format)),
@@ -85,6 +85,7 @@ fuzz_target!(|data: &[u8]| {
         17 => check(input, cast_time(input)),
         18 => check(input, cast_excel_serial(input, epoch)),
         19 => check(input, cast_decimal(input, &format)),
+        20 => check(input, cast_char(input)),
         _ => check(input, cast_duration(input)),
     }
 });

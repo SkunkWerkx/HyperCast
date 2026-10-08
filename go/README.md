@@ -128,6 +128,7 @@ rather than silently wrapping.
 | Door | Returns | Declares |
 | --- | --- | --- |
 | `Bool` | `bool` | — |
+| `Char` | `rune` — one character verbatim, or a declared code point (`U+00E9`, `0xE9`, `&H41`, `&#233;`, `&#x41;`, decimal `233`) | — |
 | `I8` `I16` `I32` `I64` `U8` `U16` `U32` `U64` | the Go integer | `NumFormat` |
 | `F32` `F64` | `float32` / `float64` | `NumFormat` |
 | `Exact` | `Decimal` — sign, 96-bit magnitude, scale 0..=28 | `NumFormat` |
@@ -171,6 +172,21 @@ func column[V hypercast.Number](cells []string, format hypercast.NumFormat) ([]V
     }
     return out, nil
 }
+```
+
+### Scalar — one door generic over every target
+
+`Scalar[V ScalarTarget, T Text]` widens `Numeric` to every target with a door of its
+own: each `Number`, plus `bool` (`Bool`), `uuid.UUID` (`Uuid`), `time.Time` (`Timestamp` —
+RFC 3339, zone mandatory, normalized to UTC), `Date` (`DateOnly`, strict `yyyy-MM-dd`) and
+`Duration` (`Span`). The `NumFormat` argument is read by the numeric doors only. The
+verdicts are the concrete door's, and as with `Numeric` an unsupported `V` fails to
+compile. Three types are left out on purpose: `rune` is `int32`, so `Scalar[int32]` is the
+integer door and a character is `Char`'s; `time.Duration` is what `TimeOfDay` returns, but
+every Go reader takes it for a span; and `CivilDateTime` needs a declared `DateOrder`.
+
+```go
+v, fault := hypercast.Scalar[time.Time]("2026-01-02T15:04:05+05:00", hypercast.Invariant)
 ```
 
 ### Exact decimals

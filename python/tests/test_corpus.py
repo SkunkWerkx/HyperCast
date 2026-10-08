@@ -77,6 +77,16 @@ def test_boolean_corpus():
         _assert_verdict("boolean", vector, hypercast.cast_bool(_input(vector)), vector.get("value"))
 
 
+def test_char_corpus():
+    """Replays corpus/char.json; the vector pins the code point, the door returns the str."""
+    for vector in _corpus("char.json"):
+        verdict = hypercast.cast_char(_input(vector))
+        if isinstance(verdict, Success):
+            assert len(verdict.value) == 1, f"char: {vector['input']!r} -> {verdict.value!r}"
+            verdict = Success(ord(verdict.value))
+        _assert_verdict("char", vector, verdict, vector.get("value"))
+
+
 _INT_DOORS = {
     "i8": hypercast.cast_i8,
     "i16": hypercast.cast_i16,

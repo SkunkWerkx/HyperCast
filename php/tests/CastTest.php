@@ -49,6 +49,18 @@ final class CastTest extends TestCase
         $this->assertEquals(new Success(1234.5), Cast::f64('1 234,5', $french));
     }
 
+    /** The char door's carrier is the scalar's UTF-8, every width of it. */
+    public function testCharIsTheScalarsUtf8(): void
+    {
+        $this->assertSame('A', Cast::char('U+0041')->value);
+        $this->assertSame("\u{E9}", Cast::char('&#233;')->value);
+        $this->assertSame("\u{20AC}", Cast::char('0x20AC')->value);
+        $this->assertSame("\u{1F600}", Cast::char('&#x1F600;')->value);
+        $this->assertSame("\u{1F600}", Cast::char("\u{1F600}")->value);
+        $this->assertSame(' ', Cast::char(' ')->value);
+        $this->assertEquals(new Fault(CastFailure::Malformed, 2, 2), Cast::char("U+\u{E9}9"));
+    }
+
     public function testU64CarriesTheBitPattern(): void
     {
         $verdict = Cast::u64('18446744073709551615', NumFormat::invariant());

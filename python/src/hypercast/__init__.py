@@ -58,6 +58,7 @@ __all__ = [
     "ExcelEpoch",
     "optional",
     "cast_bool",
+    "cast_char",
     "cast_i8",
     "cast_i16",
     "cast_i32",
@@ -143,6 +144,7 @@ Fault = _native.Fault
 NumFormat = _native.NumFormat
 
 cast_bool = _native.cast_bool
+cast_char = _native.cast_char
 cast_i8 = _native.cast_i8
 cast_i16 = _native.cast_i16
 cast_i32 = _native.cast_i32

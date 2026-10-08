@@ -6,13 +6,14 @@ A change that adds a door or a concept adds its row here in the same change.
 
 ## Doors
 
-The 25 `cast_*` exports of `rust/src/ffi.rs`, in export order by group. Every binding door
+The 26 `cast_*` exports of `rust/src/ffi.rs`, in export order by group. Every binding door
 also takes the text first (or the `f64` for the four typed doors) and returns that
 language's verdict (see [Verdict](#verdict)).
 
 | Export | Rust | C# | Java | Go | Swift | PHP | Ruby | Python |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `cast_bool` | `cast_bool` | `Cast.Boolean` | `Cast.bool` | `Bool` | `Cast.bool(_:)` | `Cast::bool` | `HyperCast.bool` | `cast_bool` |
+| `cast_char` | `cast_char` | `Cast.Char` | `Cast.character` [^java-char] | `Char` | `Cast.char(_:)` | `Cast::char` | `HyperCast.char` | `cast_char` |
 | `cast_i8` | `cast_i8` | `Cast.SByte` | `Cast.i8` | `I8` | `Cast.i8(_:format:)` | `Cast::i8` | `HyperCast.i8` | `cast_i8` |
 | `cast_i16` | `cast_i16` | `Cast.Int16` | `Cast.i16` | `I16` | `Cast.i16(_:format:)` | `Cast::i16` | `HyperCast.i16` | `cast_i16` |
 | `cast_i32` | `cast_i32` | `Cast.Int32` | `Cast.i32` | `I32` | `Cast.i32(_:format:)` | `Cast::i32` | `HyperCast.i32` | `cast_i32` |
@@ -46,6 +47,7 @@ Python). Every Swift door is `throws` [^swift-throws].
 | Concept | Rust | C# | Java | Go | Swift | PHP | Ruby | Python |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | One numeric door generic over the target | — | `Cast.Numeric<T>` (`T : struct, INumber<T>`) | — [^generic] | `Numeric[V Number, T Text]` | `Cast.numeric<T: NumericCastTarget>(_:format:)` | — [^generic] | — [^generic] | — [^generic] |
+| One door generic over every target [^scalar] | — | `Cast.Scalar<T>` (`T : struct`; `NotSupportedException` otherwise) | — [^generic] | `Scalar[V ScalarTarget, T Text]` | `Cast.scalar<T: ScalarCastTarget>(_:format:)` | — [^generic] | — [^generic] | — [^generic] |
 | Remaining typed doors (a number already held) | `i8_from_f64` … `u64_from_f64`, `f32_from_f64`, `bool_from_f64`, `unix_from_f64` | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] |
 | Shortest digits of an `f64` | `shortest_digits` → `Option<ShortestDigits>` | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] |
 | Civil ↔ instant, stated UTC | `CivilDateTime::assume_utc`, `Timestamp::utc_civil` | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] |
@@ -68,6 +70,7 @@ What a successful door returns. Ranges and fidelity follow each binding's README
 | Door | Rust | C# | Java | Go | Swift | PHP | Ruby | Python |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | boolean | `bool` | `bool` | `Boolean` | `bool` | `Bool` | `bool` | `true`/`false` | `bool` |
+| char | `char` | `char` [^utf16-char] | `Character` [^utf16-char] | `rune` | `Unicode.Scalar` | the scalar's UTF-8 `string` | one-character UTF-8 `String` | one-character `str` |
 | i8, i16, i32, i64 | `i8` … `i64` | `sbyte`, `short`, `int`, `long` | `Byte`, `Short`, `Integer`, `Long` | `int8` … `int64` | `Int8` … `Int64` | `int` | `Integer` | `int` |
 | u8, u16, u32, u64 | `u8` … `u64` | `byte`, `ushort`, `uint`, `ulong` | `Integer`, `Integer`, `Long`, `Long` (u64 as the two's-complement bit pattern) | `uint8` … `uint64` | `UInt8` … `UInt64` | `int` (u64 as the two's-complement bit pattern) | `Integer` (u64 the true value) | `int` (u64 the true value) |
 | f32, f64 | `f32`, `f64` | `float`, `double` | `Float`, `Double` | `float32`, `float64` | `Float`, `Double` | `float` | `Float` | `float` |
@@ -190,6 +193,24 @@ when the absence is deliberate.
 [^generic]: Not in Java, which has no generics over primitives, nor in the dynamic
     bindings, where the per-width doors are the idiom (`docs/roadmap.md`, CHANGELOG). Rust
     callers have the concrete doors.
+
+[^scalar]: One entry point that picks the door from the requested type, for a caller
+    holding a generic `T` (#21). `format` is read only by the numeric doors. Each binding
+    covers the types that name exactly one door: C#'s table covers `bool`, the numerics,
+    `Guid`, `DateOnly`, `TimeOnly`, `DateTimeOffset`, `TimeSpan`, `char` and `DateTime`.
+    `DateTime` reads RFC 3339 and comes out as `.UtcDateTime` (`Kind = Utc`), not through
+    the civil `Cast.DateTime` door, which needs a declared order. Go leaves out `rune`
+    (it is `int32`, the integer door), `time.Duration` (what `TimeOfDay` returns) and
+    `CivilDateTime` (needs an order), and the union constraint makes any of them a compile
+    error. Swift leaves out `DateComponents`, which the date, time and date-time doors
+    all return.
+
+[^java-char]: `char` is a Java keyword, so the door is `character`.
+
+[^utf16-char]: A UTF-16 `char` holds no scalar past `U+FFFF`, so C# and Java return such a
+    scalar as `OutOfRange`, over the input less its ASCII whitespace edges, in the
+    caller's units. A string of exactly one UTF-16 unit, including a lone surrogate, is
+    returned as it is, without calling the core.
 
 [^rust-only]: Only four typed doors cross the C ABI, the ones a workbook reader needs most
     (CHANGELOG, 0.7.0); the rest of the typed family and the conversion helpers are

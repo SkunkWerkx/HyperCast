@@ -71,11 +71,12 @@ package hypercast
 #include <stddef.h>
 #include <stdint.h>
 
-// The core's C ABI — rust/src/ffi.rs, the twenty-six exports every binding calls.
+// The core's C ABI — rust/src/ffi.rs, the twenty-seven exports every binding calls.
 // `out`, `format` and `fault` are untyped because the shims below fill and read them as
 // the raw layouts ffi.rs declares.
 uint32_t hypercast_version(void);
 int32_t cast_bool(const uint8_t *ptr, size_t len, void *out, void *fault);
+int32_t cast_char(const uint8_t *ptr, size_t len, void *out, void *fault);
 int32_t cast_i8(const uint8_t *ptr, size_t len, const void *format, void *out, void *fault);
 int32_t cast_i16(const uint8_t *ptr, size_t len, const void *format, void *out, void *fault);
 int32_t cast_i32(const uint8_t *ptr, size_t len, const void *format, void *out, void *fault);
@@ -192,6 +193,7 @@ type (
 // Each door's address, resolved by the linker — nothing to look up at run time.
 var (
 	symBool      = plainSymbol(C.cast_bool)
+	symChar      = plainSymbol(C.cast_char)
 	symUuid      = plainSymbol(C.cast_uuid)
 	symTimestamp = plainSymbol(C.cast_timestamp)
 	symDate      = plainSymbol(C.cast_date)

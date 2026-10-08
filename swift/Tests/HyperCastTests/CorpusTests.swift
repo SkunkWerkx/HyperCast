@@ -80,6 +80,15 @@ final class CorpusTests: XCTestCase {
         }
     }
 
+    func testCharCorpus() throws {
+        // The corpus pins the scalar as its code-point integer; every scalar fits
+        // `Unicode.Scalar`, so the comparison is exact with no narrowing.
+        for vector in try corpus("char.json") {
+            let expected = (vector["value"] as? Int).flatMap { Unicode.Scalar(UInt32($0)) }
+            assertVerdict("char", vector, try Cast.char(inputBytes(vector)), expected)
+        }
+    }
+
     func testIntegerCorpus() throws {
         for vector in try corpus("integer.json") {
             let input = inputBytes(vector)

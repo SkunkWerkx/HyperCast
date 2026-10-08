@@ -3,7 +3,12 @@ package hypercast
 // The README's zero-allocation claim, held as tests rather than as a benchmark somebody
 // has to remember to read. The by-value shims in backend_static.go are what make these zero.
 
-import "testing"
+import (
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+)
 
 func assertAllocs(t *testing.T, name string, want float64, f func()) {
 	t.Helper()
@@ -27,6 +32,7 @@ func TestEveryDoorIsAllocationFreeOnSuccess(t *testing.T) {
 		call func() *Fault
 	}{
 		{"Bool", func() *Fault { _, f := Bool("true"); return f }},
+		{"Char", func() *Fault { _, f := Char("&#x1F600;"); return f }},
 		{"I8", func() *Fault { _, f := I8("-128", Invariant); return f }},
 		{"I16", func() *Fault { _, f := I16("-32,768", Invariant); return f }},
 		{"I32", func() *Fault { _, f := I32("1,234,567", Invariant); return f }},
@@ -82,6 +88,19 @@ func TestNumericDispatchIsAllocationFree(t *testing.T) {
 	assertAllocs(t, "Numeric[int64]", 0, func() { Numeric[int64]("9223372036854775807", Invariant) })
 	assertAllocs(t, "Numeric[float64]", 0, func() { Numeric[float64]("12345.6789", Invariant) })
 	assertAllocs(t, "Numeric[Decimal]", 0, func() { Numeric[Decimal]("1,234.50", Invariant) })
+}
+
+// Scalar dispatches the same way Numeric does, over every target it admits.
+func TestScalarDispatchIsAllocationFree(t *testing.T) {
+	assertAllocs(t, "Scalar[bool]", 0, func() { Scalar[bool]("yes", Invariant) })
+	assertAllocs(t, "Scalar[int64]", 0, func() { Scalar[int64]("9223372036854775807", Invariant) })
+	assertAllocs(t, "Scalar[Decimal]", 0, func() { Scalar[Decimal]("1,234.50", Invariant) })
+	assertAllocs(t, "Scalar[uuid.UUID]", 0, func() {
+		Scalar[uuid.UUID]("01020304-0506-0708-090a-0b0c0d0e0f10", Invariant)
+	})
+	assertAllocs(t, "Scalar[time.Time]", 0, func() { Scalar[time.Time]("2026-01-02T15:04:05Z", Invariant) })
+	assertAllocs(t, "Scalar[Date]", 0, func() { Scalar[Date]("2026-01-07", Invariant) })
+	assertAllocs(t, "Scalar[Duration]", 0, func() { Scalar[Duration]("PT1H30M", Invariant) })
 }
 
 // The zero is the success path's. A failed cast returns a *Fault, and that pointer is the

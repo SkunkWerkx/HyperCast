@@ -97,6 +97,41 @@ final class CorpusTest extends TestCase
         }
     }
 
+    public function testCharCorpus(): void
+    {
+        foreach (self::corpus('char.json') as $vector) {
+            $verdict = Cast::char($vector['input']);
+            if ($verdict instanceof Success) {
+                // The corpus pins the code point; decode the door's UTF-8 back to compare.
+                $verdict = new Success(self::codePoint($verdict->value));
+            }
+            $this->assertVerdict('char', $vector, $verdict, $vector['value'] ?? null);
+        }
+    }
+
+    /**
+     * Decodes one UTF-8 scalar — the corpus's integer shape for a char value.
+     *
+     * @param string $utf8 exactly one UTF-8-encoded scalar
+     * @return int its code point
+     */
+    private static function codePoint(string $utf8): int
+    {
+        $bytes = \array_values(\unpack('C*', $utf8));
+        $lead = $bytes[0];
+        [$scalar, $trail] = match (true) {
+            $lead < 0x80 => [$lead, 0],
+            $lead < 0xE0 => [$lead & 0x1F, 1],
+            $lead < 0xF0 => [$lead & 0x0F, 2],
+            default => [$lead & 0x07, 3],
+        };
+        self::assertCount($trail + 1, $bytes, 'char: one scalar');
+        for ($i = 1; $i <= $trail; $i++) {
+            $scalar = $scalar << 6 | $bytes[$i] & 0x3F;
+        }
+        return $scalar;
+    }
+
     public function testIntegerCorpus(): void
     {
         foreach (self::corpus('integer.json') as $vector) {

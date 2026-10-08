@@ -107,6 +107,63 @@ public sealed class CorpusTests
 				static v => v.GetProperty("value").GetBoolean());
 	}
 
+	/// <summary>
+	/// A char vector pins the scalar as its code-point integer. Replayed through both doors:
+	/// a scalar above U+FFFF is one the core accepts and a <see cref="char"/> cannot hold, so
+	/// this binding expects <see cref="CastFailure.OutOfRange"/> over the trimmed input there;
+	/// the UTF-16 door's spans are the vector's byte spans re-expressed in chars.
+	/// </summary>
+	[Fact]
+	void Char_corpus()
+	{
+		foreach (var vector in Corpus("char.json"))
+		{
+			var text = vector.GetProperty("input").GetString()!;
+			var bytes = Encoding.UTF8.GetBytes(text);
+			AssertChar(vector, Cast.Char(bytes), bytes, utf16: false);
+			AssertChar(vector, Cast.Char(text), bytes, utf16: true);
+		}
+	}
+
+	static void AssertChar(JsonElement vector, Verdict<char> verdict, byte[] bytes, bool utf16)
+	{
+		var label = $"char ({(utf16 ? "utf-16" : "utf-8")}): '{vector.GetProperty("input").GetString()}'";
+		int Units(int byteCount) => utf16 ? Encoding.UTF8.GetCharCount(bytes, 0, byteCount) : byteCount;
+		void Span(Fault fault, int offset, int length)
+		{
+			fault.Offset.ShouldBe(Units(offset), $"{label} fault offset");
+			fault.Length.ShouldBe(Units(offset + length) - Units(offset), $"{label} fault length");
+		}
+
+		var expect = vector.GetProperty("expect").GetString()!;
+		if (expect == "ok")
+		{
+			var scalar = vector.GetProperty("value").GetUInt32();
+			if (scalar <= char.MaxValue)
+			{
+				verdict.TryGetValue(out Success<char> success).ShouldBeTrue($"{label} should parse");
+				success.Value.ShouldBe((char)scalar, label);
+				return;
+			}
+			verdict.TryGetValue(out Fault wide).ShouldBeTrue($"{label} is past one char");
+			wide.Reason.ShouldBe(CastFailure.OutOfRange, label);
+			var trimmed = bytes.AsSpan().TrimStart(" \t\n\f\r"u8);
+			var start = bytes.Length - trimmed.Length;
+			Span(wide, start, trimmed.TrimEnd(" \t\n\f\r"u8).Length);
+			return;
+		}
+		verdict.TryGetValue(out Fault fault).ShouldBeTrue($"{label} unexpectedly parsed");
+		fault.Reason.ShouldBe(expect switch
+		{
+			"empty" => CastFailure.Empty,
+			"malformed" => CastFailure.Malformed,
+			"out_of_range" => CastFailure.OutOfRange,
+			_ => throw new InvalidOperationException($"{label}: unexpected label '{expect}'"),
+		}, label);
+		if (vector.TryGetProperty("fault", out var span))
+			Span(fault, span[0].GetInt32(), span[1].GetInt32());
+	}
+
 	[Fact]
 	void Integer_corpus()
 	{

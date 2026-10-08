@@ -43,6 +43,17 @@ digits the file holds — `0.1` is one tenth, not what `new BigDecimal(0.1)` spe
 `Cast.excelTime` (a serial's fraction as a `LocalTime`) and `Cast.excelDuration` (days as a
 `Duration`). A typed door's `Fault` has no span: its offset and length are 0.
 
+## One character
+
+`Cast.character` (`char` being a keyword) reads one character: the input verbatim when it
+is exactly one character, `" "` and `"6"` included, or a declared code point (`65`,
+`U+00E9`, `0x41`, `&H41`, `&#233;`, `&#xE9;`). It returns a `Verdict<Character>`, and a
+`char` holds only the Basic Multilingual Plane, so a supplementary character the core
+accepts (`😀`, `U+1F600`) is `OUT_OF_RANGE` here, spanning the input less its ASCII
+whitespace edges, not split into half a surrogate pair. That is the one verdict where this
+binding departs from the core's by design. A `String` of exactly one UTF-16 code unit comes
+back as that `char` without crossing into the core, a lone surrogate included.
+
 ## NumFormat: declared, never guessed
 
 Every integer, real and decimal door takes a `NumFormat`: the two separators, the `STYLE_*`
@@ -184,7 +195,7 @@ choice.
 ## AOT
 
 The GraalVM Native Image smoke test (`./gradlew :aot-smoke-test:nativeRun`) builds and
-runs the `isAvailable()`/`nativeVersion()` probe, all twenty-five doors through their
+runs the `isAvailable()`/`nativeVersion()` probe, all twenty-six doors through their
 `String` form, the `byte[]` and `MemorySegment` forms (heap slice and native segment) once
 per ABI shape, and the exhaustive union switch as a true native binary; `-Pwasm` does the
 same through the GraalWasm backend (see [WebAssembly](#webassembly-graalwasm)). Native Image needs two separate registrations

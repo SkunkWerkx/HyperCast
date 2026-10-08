@@ -30,7 +30,8 @@ var message = Cast.Int32("(1,234)", NumFormat.From(culture)) switch
 
 Door names mirror the native ABI (`Int32`, `Double`, `Decimal`, `Timestamp`, …) so the
 polyglot surface reads identically across bindings; `Cast.Numeric<T>` fronts all eleven
-numeric doors for a caller that is itself generic over the target. Culture never lives in
+numeric doors for a caller that is itself generic over the target, and `Cast.Scalar<T>`
+fronts every text door (see [One door for a generic `T`](#one-door-for-a-generic-t)). Culture never lives in
 the core — `NumFormat.From(CultureInfo)` (or `From(IFormatProvider)`, the shape every BCL
 `TryParse` already takes) bridges .NET's culture machinery to the caller-declared format
 the native side actually reads: separators, lenience flags, and the culture's currency
@@ -50,6 +51,51 @@ gates on, instead of catching `DllNotFoundException` around its first real call.
 probed once and never throws; every door lets a load failure propagate. A library that
 loaded but predates the probe reads as unavailable too: a stale binary beside a newer
 binding is exactly the mismatch it exists to name.
+
+## One character
+
+`Cast.Char` reads one `char`: an input that is exactly one character is that character,
+taken before any trimming (`" "` is a space, `"6"` is the digit six); otherwise, with ASCII
+whitespace trimmed, exactly one code-point spelling — `65`, `U+0041`, `0x41`, `&H41`, or an
+HTML numeric entity `&#65;` / `&#x41;` (the `;` required), case-insensitive on the prefix. A
+surrogate or anything past `U+10FFFF` spelled as a code point is `OutOfRange`. So is a real
+scalar above `U+FFFF` (`U+1F600`, or a verbatim emoji): the core accepts it, but one
+`System.Char` can't hold it, so this binding faults `OutOfRange` over the trimmed input. The
+`string`/`ReadOnlySpan<char>` overload returns a single UTF-16 code unit as it is without
+crossing into the core, a lone surrogate included, because "exactly one character" is
+what it was handed; inside longer text a lone surrogate transcodes to U+FFFD like any other
+door's input.
+
+## One door for a generic `T`
+
+`Cast.Scalar<T>(text, format)` dispatches on `typeof(T)` to the door that reads `T`, for a
+caller generic over the target (a `System.Text.Json` converter, a parsing gateway) that would
+otherwise keep its own table mirroring `Cast`. The verdict is exactly the concrete door's,
+spans included:
+
+| `T` | Door |
+| --- | --- |
+| `bool` | `Boolean` |
+| `sbyte` … `ulong`, `float`, `double`, `decimal` | the numeric doors, under `format` |
+| `char` | `Char` |
+| `Guid` | `Uuid` |
+| `DateOnly` | `Date`, strict ISO `yyyy-MM-dd` (no `DateOrder`) |
+| `TimeOnly` | `Time` |
+| `DateTimeOffset` | `Timestamp` (RFC 3339, zone mandatory) |
+| `DateTime` | `Timestamp`, projected to `.UtcDateTime` (`DateTimeKind.Utc`) |
+| `TimeSpan` | `Duration` |
+
+`DateTime` here is **not** `Cast.DateTime`'s civil door. That one needs a declared
+`DateOrder` and returns `DateTimeKind.Unspecified`, and a generic caller has no order to
+declare. The reading that needs no declaration is the RFC 3339 instant, so `Scalar<DateTime>`
+is that instant in UTC, and zone-less text is `Malformed`. A caller that wants the civil
+reading special-cases `DateTime` and calls `Cast.DateTime(text, order)` itself.
+
+`format` is read only by the numeric doors. Any other `T` (`Int128`, `Half`, `nint`, an
+enum, your own struct) throws `NotSupportedException` naming the type, before any native
+call. That is a caller bug, not a data verdict, so a gateway can try `Scalar<T>` first and
+fall back. `Cast.Optional(Cast.Scalar<T>(...))` composes as with any door, and the `typeof`
+tests fold per instantiation under the JIT and Native AOT alike.
 
 ## Numbers a workbook already holds
 
@@ -149,8 +195,8 @@ trim/Native-AOT analyzers via `IsAotCompatible`.
 
 That claim is reproducible rather than asserted. `HyperCast.AotSmokeTest/` is a real
 AOT-published console app that crosses every native entry point the binding declares — the
-twenty-five `cast_*` functions and `hypercast_version` — plus the generic `Cast.Numeric<T>`
-door, a UTF-8 door, and the union's exhaustive two-arm `switch`, and returns a nonzero exit
+twenty-six `cast_*` functions and `hypercast_version` — plus the generic `Cast.Numeric<T>`
+and `Cast.Scalar<T>` doors, a UTF-8 door, and the union's exhaustive two-arm `switch`, and returns a nonzero exit
 code on any mismatch:
 
 ```shell
@@ -203,7 +249,7 @@ net10.0"), so the file needs no target-framework gate of its own. (HyperUuid's p
 net10.0 for its native platforms, so its copy sits in `build/` and has one.)
 
 `HyperCast.WasmSmokeTest` proves the whole chain in a real browser: a Blazor WebAssembly app
-that imports that targets file, calls every native entry point — the twenty-five `cast_*`
+that imports that targets file, calls every native entry point — the twenty-six `cast_*`
 functions and `hypercast_version` — through the public `Cast` surface, and renders `PASS` or
 `FAIL` into the page. Every one, because that is the only way the check means what it says:
 a door missing from the `EmccExportedFunction` list links fine and fails only when called.
@@ -236,8 +282,9 @@ no action needed from a consumer.
 
 ## Platform support
 
-Native binaries ship inside the package for eight RIDs, plus static libraries for
-WebAssembly, iOS and Mac Catalyst:
+Native binaries ship inside the package for ten RIDs, plus static libraries for
+WebAssembly, iOS and Mac Catalyst. With Windows, macOS, iOS, Mac Catalyst and Android, that
+is every platform .NET MAUI targets:
 
 | Platform | RIDs | Native asset |
 | --- | --- | --- |
@@ -248,6 +295,7 @@ WebAssembly, iOS and Mac Catalyst:
 | Blazor WebAssembly (.NET 11+) | `browser-wasm` | `libhypercast.a` (static — see above) |
 | iOS | `ios-arm64`, `iossimulator-arm64` | `libhypercast.a` (static — see below) |
 | Mac Catalyst | `maccatalyst-arm64`, `maccatalyst-x64` | `libhypercast.a` (static — see below) |
+| Android (API 21+) | `android-arm64`, `android-x64` | `libhypercast.so`; `libhypercast.a` for Native AOT (see below) |
 
 **musl is its own build, not the glibc one relabeled.** A glibc `libhypercast.so` does not
 load under musl's dynamic loader, and NuGet's RID graph falls back from `linux-musl-x64` to
@@ -283,7 +331,7 @@ and one published with
 the Native AOT wiring under [AOT](#aot) stands aside for these RIDs. A universal Mac Catalyst
 app is built once per RID and merged, and each half links its own archive.
 
-`HyperCast.AppleSmokeTest` is the Native AOT smoke test's `Program.cs` as an app, crossing
+`HyperCast.AppleSmokeTest` is the Native AOT smoke test (`SmokeTest.cs`) as an app, crossing
 every native entry point, and CI's `test-apple-mobile` job builds it three ways on a Mac from
 that run's archives: as a Mac Catalyst app, run as a process; for the iOS simulator, installed
 and launched; and for an iOS device with signing off, where the check is that the app's
@@ -297,12 +345,41 @@ Release Mac Catalyst build on RC1's new default registrar, `trimmable-static`, a
 before `Main` (`xamarin_bridge_call_runtime_initialize: failed to create delegate`); the
 smoke test sets `Registrar` to `managed-static` there, the default before RC1.
 
-**Known gap: Android, tvOS, and the iOS simulator on Intel Macs are not supported.** The
-package carries no native asset for them. On Android it restores and compiles, and
-`Cast.IsAvailable` answers `false`; it needs an NDK cross-build added to the release matrix,
-after which resolution is ordinary `dlopen` of a `.so` out of `runtimes/{rid}/native/`,
-exactly like the Linux RIDs. `iossimulator-x64` and tvOS have no archive, so an app for them
-fails at its native link on the undefined `cast_*` symbols, at build time and not at run time.
+**Android: the shared library, out of the APK.** A .NET for Android or MAUI app
+(`net11.0-android`, API 24 and later, .NET 11's floor) references the package and writes
+nothing else. On CoreCLR, .NET 11's Android runtime (Mono is no longer supported there), the
+SDK takes `runtimes/android-arm64/native/libhypercast.so` and its x64 twin out of the package
+and stores each in the APK under `lib/arm64-v8a/` and `lib/x86_64/`, and the ordinary
+`"hypercast"` import opens it, exactly as on Linux. The libraries are cross-built with the
+NDK for API level 21, below any app that can reference them, and their segments are aligned
+to 16 KB: Android 15 devices may use 16 KB pages, a library aligned for 4 KB does not load on
+one, and Google Play requires the alignment of every new app. A
+Native AOT publish (`PublishAot`, `-r android-arm64`) takes the
+[AOT](#aot) wiring instead, linking `staticlibs/android-{rid}/libhypercast.a` into the app's
+own native library, and the shared one is left out of the APK. `android-arm64` covers
+effectively every Android device in use and `android-x64` the emulator; these are the two
+RIDs .NET for Android builds by default. The 32-bit `android-arm` and `android-x86` are not
+in the package, so an app that adds them gets `Cast.IsAvailable == false` on those ABIs.
+
+`HyperCast.AndroidSmokeTest` is the Native AOT smoke test's `SmokeTest.Run()` again, started from
+an Activity, and unlike the other smoke tests it takes HyperCast as a package, from a local
+folder CI packs it into, because the package's layout is what Android needs proven. CI's
+`test-android` job builds it four ways from that run's libraries: CoreCLR and Native AOT,
+for each RID. The x64 pair runs in an x86_64 emulator whose image uses 16 KB pages, so a
+library aligned for 4 KB would fail to load there. Nothing hosted runs arm64 Android, so the
+arm64 pair is inspected instead: each CoreCLR APK must carry `libhypercast.so` for its ABI,
+each Native AOT APK must not carry it at all, and all four must pass `zipalign -P 16`.
+
+Two .NET 11 RC1 workload behaviors shape that job, and an app on RC1 may meet them too. The
+android workload's build tasks require JDK 21 (`XA0030` on newer). And the workload RC1
+resolves was built against a runtime newer than RC1 on nuget.org, so a Native AOT publish
+fails to restore `Microsoft.NETCore.App.Runtime.NativeAOT.android-*` by exact version until
+the .NET 11 daily feed (`https://pkgs.dev.azure.com/dnceng/public/_packaging/dotnet11/nuget/v3/index.json`)
+is added as a source; the job adds it.
+
+**Known gap: tvOS and the iOS simulator on Intel Macs are not supported.**
+`iossimulator-x64` and tvOS have no archive, so an app for them fails at its native link on
+the undefined `cast_*` symbols, at build time and not at run time.
 
 ## Native binary provenance
 
@@ -327,7 +404,7 @@ cd rust && cargo cdylib
 
 Drop the result into `csharp/HyperCast/runtimes/<rid>/native/` and the package's own MSBuild
 globs will pick it up, or point `dlopen` at it however you prefer — the C ABI in
-`rust/src/ffi.rs` is the entire contract: the twenty-five `cast_*` functions and
+`rust/src/ffi.rs` is the entire contract: the twenty-six `cast_*` functions and
 `hypercast_version`, taking plain pointers into your own buffers. For local development
 nothing needs dropping anywhere: when no library has been staged under `runtimes/` for your
 machine's RID, the project copies `rust/target/release/` straight to the output, so

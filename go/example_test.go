@@ -3,6 +3,7 @@ package hypercast_test
 import (
 	"fmt"
 	"log"
+	"time"
 
 	// The import path ends in /go, so the package name has to be spelled out.
 	hypercast "github.com/SkunkWerkx/HyperCast/go"
@@ -78,6 +79,26 @@ func ExampleNumeric() {
 	d, _ := hypercast.Numeric[hypercast.Decimal]("1.10", hypercast.Invariant)
 	fmt.Println(n, f, d)
 	// Output: 42 0.5 1.1
+}
+
+func ExampleChar() {
+	// One character, verbatim or as a declared code point.
+	a, _ := hypercast.Char("A")
+	e, _ := hypercast.Char("U+00E9")
+	smile, _ := hypercast.Char("&#x1F600;")
+	_, fault := hypercast.Char("U+D800")
+	fmt.Println(string(a), string(e), string(smile), fault.Reason)
+	// Output: A é 😀 out of range
+}
+
+func ExampleScalar() {
+	// One door generic over every target with a door of its own: Scalar[bool] is Bool,
+	// Scalar[time.Time] is Timestamp, Scalar[int32] is I32.
+	b, _ := hypercast.Scalar[bool]("yes", hypercast.Invariant)
+	at, _ := hypercast.Scalar[time.Time]("2026-01-02T15:04:05+05:00", hypercast.Invariant)
+	n, _ := hypercast.Scalar[int32]("1,234", hypercast.Invariant)
+	fmt.Println(b, at.Format(time.RFC3339), n)
+	// Output: true 2026-01-02T10:04:05Z 1234
 }
 
 func ExampleUuid() {

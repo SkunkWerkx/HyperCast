@@ -16,6 +16,7 @@ RSpec.describe HyperCast::Interop do
     expect(described_class.decode(:uuid, ["550e8400e29b41d4a716446655440000"].pack("H*")))
       .to eq("550e8400-e29b-41d4-a716-446655440000")
     expect(described_class.decode(:bool, "\x01".b)).to be(true)
+    expect(described_class.decode(:char, [0xE9].pack("L<"))).to eq(HyperCast.char("U+00E9").value)
     expect(described_class.decode(:u64, [2**64 - 1].pack("Q<"))).to eq(2**64 - 1)
   end
 

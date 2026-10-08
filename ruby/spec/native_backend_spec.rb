@@ -90,6 +90,15 @@ RSpec.describe "native backend" do
       .to eq(HyperCast.decimal(big, HyperCast::NumFormat::INVARIANT).value.magnitude.to_s)
   end
 
+  it "agrees with the Fiddle backend on the char door" do
+    ['"U+00E9"', '"😀"', '" "', '"&#65"', '"U+110000"', '"U+é".b'].each do |text|
+      expect(fiddle_eval("HyperCast.char(#{text}).inspect"))
+        .to eq(HyperCast.char(eval(text)).inspect) # rubocop:disable Security/Eval
+    end
+    expect(fiddle_eval('HyperCast.char("&#x1F600;").value.encoding'))
+      .to eq(HyperCast.char("&#x1F600;").value.encoding.to_s)
+  end
+
   it "agrees with the Fiddle backend on the core's version and availability" do
     expect(fiddle_eval("HyperCast.native_version")).to eq(HyperCast.native_version)
     expect(fiddle_eval("HyperCast.available?")).to eq(HyperCast.available?.to_s)

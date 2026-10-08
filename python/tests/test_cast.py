@@ -305,6 +305,24 @@ def test_bytes_and_str_doors_agree():
     assert hypercast.cast_bool("yes") == hypercast.cast_bool(b"yes") == Success(True)
 
 
+def test_char_reads_one_scalar_verbatim_or_a_declared_code_point():
+    """A single character is itself (a lone space or digit included); anything longer must spell
+    a code point, and a str fault is spanned in code points.
+    """
+    assert hypercast.cast_char(" ") == Success(" ")
+    assert hypercast.cast_char("6") == Success("6")
+    assert hypercast.cast_char("😀") == hypercast.cast_char(b"\xf0\x9f\x98\x80") == Success("😀")
+    for spelling in ("233", "U+00E9", "u+e9", "0xE9", "&HE9", "&#233;", "&#xE9;", "  U+00E9  "):
+        assert hypercast.cast_char(spelling) == Success("é"), spelling
+    assert hypercast.cast_char("   ") == Fault(CastFailure.EMPTY, 0, 0)
+    assert hypercast.cast_char("&#65") == Fault(CastFailure.MALFORMED, 0, 4)
+    assert hypercast.cast_char("U+D800") == Fault(CastFailure.OUT_OF_RANGE, 0, 6)
+    # é is two UTF-8 bytes but one code point: the str span is in code points, bytes in bytes.
+    assert hypercast.cast_char("éx") == Fault(CastFailure.MALFORMED, 0, 1)
+    assert hypercast.cast_char("U+é") == Fault(CastFailure.MALFORMED, 2, 1)
+    assert hypercast.cast_char("U+é".encode()) == Fault(CastFailure.MALFORMED, 2, 2)
+
+
 def test_date_order_disambiguates_like_the_cultures_do():
     """The canonical ambiguity: 1/7/2026 is January 7th under en-US's month-first short dates and
     July 1st under en-GB's day-first ones — resolved only by declaration.

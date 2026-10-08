@@ -119,6 +119,16 @@ fn boolean_corpus() {
     }
 }
 
+/// A char vector pins the scalar as its code-point integer, the shape every binding
+/// compares whatever its own char type.
+#[test]
+fn char_corpus() {
+    for vector in corpus("char.json") {
+        let verdict = hypercast::cast_char(input(&vector).as_bytes()).map(u32::from);
+        assert_verdict("char", &vector, verdict, |v| v["value"].as_u64().expect("value") as u32);
+    }
+}
+
 #[test]
 fn integer_corpus() {
     for vector in corpus("integer.json") {

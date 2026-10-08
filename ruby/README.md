@@ -39,6 +39,7 @@ midnight, durations come back as exact `Rational` seconds across the core's whol
 | Door | Value | Declares |
 |---|---|---|
 | `bool(text)` | `true`/`false` | — |
+| `char(text)` | one-character UTF-8 `String` — the text verbatim when it is one character (`" "` is a space), else a declared code point (`65`, `U+0041`, `0x41`, `&H41`, `&#65;`, `&#x41;`) | — |
 | `i8` `i16` `i32` `i64` `u8` `u16` `u32` `u64` `(text, format)` | `Integer` (unbounded — u64 is the true unsigned value) | a `NumFormat` |
 | `f32` `f64` `(text, format)` | `Float` (f32 widened losslessly) | a `NumFormat` |
 | `decimal(text, format)` | `HyperCast::Decimal` — exact sign, 96-bit magnitude, base-10 scale | a `NumFormat` |

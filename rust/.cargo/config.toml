@@ -21,7 +21,7 @@ rustflags = ["-C", "link-arg=-Wl,-undefined,dynamic_lookup"]
 # input text, the out-value, the fault span, the NumFormat. wasi-libc's malloc/free are
 # already linked in (Rust's std allocator on this target sits on them); exporting them costs nothing and keeps ffi.rs's "plain pointers, no
 # allocator protocol" contract untouched for every native platform. Linker flags rather than
-# #[no_mangle] shims, so the C ABI surface stays exactly the twenty-five cast_* exports and
+# #[no_mangle] shims, so the C ABI surface stays exactly the twenty-six cast_* exports and
 # hypercast_version on every other target.
 #
 # Using the guest's allocator, rather than a host-picked offset past the data segments, is

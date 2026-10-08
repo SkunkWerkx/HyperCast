@@ -107,6 +107,7 @@ Every door takes the text first — `str` or `bytes` — and returns `Success(va
 | Door | Reads | `Success.value` |
 | --- | --- | --- |
 | `cast_bool(text)` | the natural-language boolean lexicon | `bool` |
+| `cast_char(text)` | one character verbatim, or a declared code point (`65`, `U+0041`, `0x41`, `&H41`, `&#65;`, `&#x41;`) | `str` of length 1 |
 | `cast_i8` `cast_i16` `cast_i32` `cast_i64` `(text, fmt)` | a signed integer under a declared `NumFormat` | `int` |
 | `cast_u8` `cast_u16` `cast_u32` `cast_u64` `(text, fmt)` | an unsigned integer under a declared `NumFormat` | `int` |
 | `cast_f32` `cast_f64` `(text, fmt)` | a real under a declared `NumFormat` | `float` |

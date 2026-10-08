@@ -82,6 +82,7 @@ def test_text_that_is_neither_str_nor_bytes_is_a_type_error(door, text):
         "cast_excel_serial": (ExcelEpoch.Y1900,),
         "cast_datetime": (DateOrder.YEAR_MONTH_DAY,),
         "cast_bool": (),
+        "cast_char": (),
         "cast_uuid": (),
         "cast_timestamp": (),
         "cast_date": (),
@@ -157,7 +158,12 @@ def test_a_str_that_is_not_encodable_is_the_one_exception_a_door_raises_for_data
     report: the str itself is rejected before any door runs. Every other piece of bad data is a
     Fault.
     """
-    for door in (hypercast.cast_bool, hypercast.cast_uuid, hypercast.cast_timestamp):
+    for door in (
+        hypercast.cast_bool,
+        hypercast.cast_char,
+        hypercast.cast_uuid,
+        hypercast.cast_timestamp,
+    ):
         with pytest.raises(UnicodeEncodeError):
             door("\ud800")
     with pytest.raises(UnicodeEncodeError):

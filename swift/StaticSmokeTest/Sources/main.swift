@@ -20,6 +20,10 @@ do {
     check(version.split(separator: ".").count == 3, "nativeVersion is major.minor.patch, got \(version)")
 
     check(try Cast.bool("yes") == .success(true), "bool")
+    check(try Cast.char("U+00E9") == .success("é"), "char")
+    check(try Cast.char(" ") == .success(" "), "char verbatim")
+    let generic: Verdict<Unicode.Scalar> = try Cast.scalar("&#x41;", format: .invariant)
+    check(generic == .success("A"), "scalar char")
     check(try Cast.i32("-42", format: .invariant) == .success(-42), "i32")
     check(try Cast.i64("9223372036854775807", format: .invariant) == .success(.max), "i64 max")
     check(try Cast.u64("18446744073709551615", format: .invariant) == .success(.max), "u64 max")

@@ -48,6 +48,19 @@ func column<T: NumericCastTarget>(_ cells: [String], as _: T.Type, format: NumFo
 }
 ```
 
+`Cast.scalar<T>(_:format:)` widens that to every door a type alone can choose, over the
+closed `ScalarCastTarget` set: `Bool`, the eleven numeric targets, `UUID`, `Date` (the
+RFC 3339 `timestamp` door, zone mandatory), `Duration` and `Unicode.Scalar` (the `char`
+door). `format` is read by the numeric doors only. `DateComponents` is deliberately not a
+target: the `date`, `time` and `dateTime` doors all return it, so the type cannot say which
+was meant, and a caller names that door instead.
+
+`Cast.char` reads one `Unicode.Scalar`: an input that is exactly one scalar is taken
+verbatim before any trimming (`" "` is a space, `"6"` the digit six), and otherwise the
+trimmed text must be one code-point spelling — `65`, `U+0041`, `0x41`, `&H41`, `&#65;`,
+`&#x41;` — with a spelling past `U+10FFFF` or naming a surrogate `outOfRange`. Every scalar
+fits `Unicode.Scalar`, so nothing narrows.
+
 ## Numbers a workbook already holds
 
 A spreadsheet stores a numeric cell as a `Double`, and four doors read one directly, with no
@@ -145,7 +158,7 @@ through exactly the conversions every `Cast` door applies, so a value read out o
 library's buffer is the value the door of the same name would have returned. Each reader
 takes an `UnsafeRawBufferPointer` starting at one value, aligned for its widest field.
 
-- Out-values: `Interop.decimal` → `Decimal`, `uuid` → `UUID`, `instant` → `Date`, `date`,
+- Out-values: `Interop.scalar` → `Unicode.Scalar`, `decimal` → `Decimal`, `uuid` → `UUID`, `instant` → `Date`, `date`,
   `civil` and `time` → `DateComponents`, `duration` → `Duration`.
 - `Interop.rawFormat(_:)` — a `NumFormat` as the core reads it, the 32-byte
   `Interop.RawNumFormat` tuple, the symbol inline up to `Interop.currencyMaxBytes` (16).

@@ -20,8 +20,8 @@
 use crate::abi::RawNumFormat;
 use crate::verdict::{CivilDateTime, Date, Decimal, Duration, Fault, NumFormat, Timestamp};
 use crate::{
-    DateOrder, ExcelEpoch, Reason, UnixPrecision, boolean, decimal, integer, real, temporal, typed,
-    uuid,
+    DateOrder, ExcelEpoch, Reason, UnixPrecision, boolean, character, decimal, integer, real,
+    temporal, typed, uuid,
 };
 use core::slice;
 
@@ -91,6 +91,20 @@ fn spanless<T>(verdict: Result<T, Reason>) -> Result<T, Fault> {
 pub extern "C" fn cast_bool(ptr: *const u8, len: usize, out: *mut u8, fault: *mut RawFault) -> i32 {
     // SAFETY: caller guarantees the pointer contracts, per the module doc.
     unsafe { finish(boolean::cast_bool(text(ptr, len)).map(u8::from), out, fault) }
+}
+
+/// Casts char text at `ptr`/`len` into `out` as a Unicode scalar value (never a surrogate,
+/// never past U+10FFFF). See [`character::cast_char`].
+#[unsafe(no_mangle)]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub extern "C" fn cast_char(
+    ptr: *const u8,
+    len: usize,
+    out: *mut u32,
+    fault: *mut RawFault,
+) -> i32 {
+    // SAFETY: caller guarantees the pointer contracts, per the module doc.
+    unsafe { finish(character::cast_char(text(ptr, len)).map(u32::from), out, fault) }
 }
 
 macro_rules! numeric_exports {
