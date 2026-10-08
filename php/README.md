@@ -494,8 +494,8 @@ watches, with no subdirectory support. Its `autoload` PSR-4 mapping points into 
 Keep both in sync by hand when `require`/`autoload` change here.
 
 The native libraries under `src/native/{rid}/` are committed to git, not built by Packagist —
-Packagist has no packing step, so the git tree at the tag *is* the package. They are kept
-fresh automatically by `stage-native-binaries.yml`; see `src/native/README.md`.
+Packagist has no packing step, so the git tree at the tag *is* the package. They are restaged
+for each release by `stage-native-binaries.yml`; see `src/native/README.md`.
 
 See [the repo root README](../README.md) for the full door table, the receipts, and the
 state of every other language binding.

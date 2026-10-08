@@ -218,8 +218,8 @@ from the same packed `hypercast_version` export every other binding probes.
 
 ## Interop: building on HyperCast's C ABI
 
-For a library that carries HyperCast's verdicts across a C ABI of its own — HyperTabular's
-and HyperWorkbook's — and has to hand its native layer a format in the core's own layout
+For a library that carries HyperCast's verdicts across a C ABI of its own — HyperTabular's,
+for one — and has to hand its native layer a format in the core's own layout
 rather than a copy of it. `NumFormat.packed` is those 32 bytes: the decimal and group
 separators as code points, the flags and the currency symbol's byte length as
 little-endian `u32`s, then the symbol's UTF-8, zero-padded to 16 — the same bytes as the

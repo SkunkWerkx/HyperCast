@@ -44,8 +44,8 @@ reads as if the package were called `go`.
 
 Go modules have no separate registry — `go get` resolves straight from a git tag, and because
 this module lives in a monorepo subdirectory its tags are prefixed (`go/vX.Y.Z`). The core's
-static libraries under `staticlib/` are committed to git and kept fresh by
-`stage-native-binaries.yml`: a `go get` consumer has no packing step, so whatever is
+static libraries under `staticlib/` are committed to git and restaged for each
+release by `stage-native-binaries.yml`: a `go get` consumer has no packing step, so whatever is
 literally in the tree at the resolved tag is what gets linked (see `staticlib/README.md`).
 `github.com/google/uuid` is the module's only dependency.
 
@@ -239,8 +239,8 @@ points.
 
 ## Interop: building on HyperCast's C ABI
 
-For a module that carries HyperCast's verdicts across a C ABI of its own (HyperTabular and
-HyperWorkbook do): the layouts the core writes, the conversions every door applies to them,
+For a module that carries HyperCast's verdicts across a C ABI of its own (HyperTabular
+does): the layouts the core writes, the conversions every door applies to them,
 the checked codes of the declared options, and the packed version word — the same code the
 doors run, so a value read out of another library's buffer is the value the door of the
 same name would have returned.
