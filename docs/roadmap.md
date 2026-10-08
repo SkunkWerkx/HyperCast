@@ -24,7 +24,7 @@ Requirements that hold across every round, stated up front so no layer designs t
   `wasm32-wasip1`
   (`CARGO_TARGET_WASM32_WASIP1_RUNNER="wasmtime --dir <repo>" cargo test --target
   wasm32-wasip1`; the preopen is only so the conformance test can read `corpus/`), and the
-  browser targets run in headless Chrome on every pull request (see the root README's
+  browser targets run in headless Chrome in CI, all but ruby.wasm on every pull request (see the root README's
   WebAssembly section). The in-process wasm backends Ruby, Python and Go carried from 0.3.0
   through 0.4.0 are gone in 0.6.0: each binding now links the core or loads a native
   library on every platform it ships for, so the fallback had nothing left to catch.
@@ -64,7 +64,7 @@ heavyweight culture-machinery parsers that tax vanishes into a large win; agains
 platform's leanest single-purpose call it can eat the margin. That asymmetry is not a flaw
 to fix in round two — it is the setup for round three.
 
-## Round three — the payoff: tabular ingestion
+## Round three — the payoff: tabular ingestion (done)
 
 **The endgame is CSV/TSV/delimited parsing and XLSX parsing built on top of the scalar
 core, so the FFI boundary is crossed once per chunk instead of once per cell.**
@@ -79,22 +79,15 @@ collapsing ~5,000 crossings into one. Svartalfheim already sketched the consumer
 too — `Primitives.Ingestion`'s `TabularReader`/`SepTabularReader`/`ExcelTabularReader` are
 the origin blueprint for what this layer's binding surface looks like.
 
-This round lives in three repositories of its own, not in this one, and each has a Rust
-crate with a green test suite against this repo's master today:
-
-- **[HyperTabular](https://github.com/SkunkWerkx/HyperTabular)** — the contract every
-  provider speaks: the format-neutral `Cell`, the caller-declared `Plan` of doors, the cast
-  engine, the column-major `Batch`, and the `#[repr(C)]` shapes the bindings share. An
-  rlib; it consumes `hypercast` as a git dependency on this repo's master. Its
-  `docs/design.md` and `docs/prior-art.md` are the design record for all three.
-- **[HyperDelimited](https://github.com/SkunkWerkx/HyperDelimited)** — CSV/TSV/any
-  single-byte ASCII separator, with the SIMD structural scanner. A cdylib.
-- **[HyperWorkbook](https://github.com/SkunkWerkx/HyperWorkbook)** — XLSX and ODS: the zip
-  container, streaming inflate, a sheet-XML tokenizer, styles and shared strings. A cdylib.
-
-Not there yet: the seven bindings, and the conformance corpus (HyperTabular's `corpus/`
-directory is empty of xlsx and ods fixtures; HyperWorkbook's tests run on synthetic
-fixtures built by openpyxl and by hand).
+This round shipped as **[HyperTabular](https://github.com/SkunkWerkx/HyperTabular)** 0.7.0
+(2026-10-07): delimited text and XLSX/ODS workbooks, one crate and one native library, on
+this repo's 0.7.0, in all eight languages, with a 231-case conformance corpus that includes
+files written by Excel, LibreOffice and Google Sheets. It began as three repositories — a
+contract crate and two provider cdylibs, HyperDelimited and HyperWorkbook — and was folded
+into one when the linker ruled on that shape: two provider archives each carried Rust's
+standard library and this crate's `cast_*` symbols, so no binding that links the core
+rather than loading it (Go, Swift, C# Native AOT) could take both. HyperTabular's
+`docs/design.md` ("One repository, one library") has the record.
 
 Design constraints round one already locked in on purpose:
 
@@ -103,14 +96,14 @@ Design constraints round one already locked in on purpose:
   nothing and need no string materialization — a failed cell is a row/column index plus a
   span, reported in a parallel verdict array.
 - **The batch entry point is additive.** Nothing about the scalar ABI changes. The batch
-  lives beside it, not beneath it: `hypertabular` links `hypercast` as an rlib and each
-  provider's cdylib exports the batch surface, so `libhypercast` itself never gains a batch
-  export. The link is static, so each provider takes the crate with `default-features =
+  lives beside it, not beneath it: `hypertabular` links `hypercast` as an rlib and its own
+  library, `libhypertabular`, exports the batch surface, so `libhypercast` itself never gains a batch
+  export. The link is static, so HyperTabular takes the crate with `default-features =
   false`: the `cast_*` symbols are an `exports` feature (0.7.0), and leaving it off keeps
-  them out of the provider's library, which would otherwise collide with `libhypercast`'s
+  them out of HyperTabular's library, which would otherwise collide with `libhypercast`'s
   own when both are linked into one program.
 
-One piece of this round already landed, ahead of schedule and on purpose:
+One piece of this round landed here, ahead of schedule and on purpose:
 
 - **Excel serial dates — done.** XLSX cells don't carry RFC 3339: dates are serial numbers
   under a workbook-level epoch (1900 or 1904), plus the deliberate `1900-02-29` phantom at
@@ -126,26 +119,27 @@ One piece of this round already landed, ahead of schedule and on purpose:
   and a duration read from the same `f64`, is now exported to every binding as well, and
   `corpus/typed.json` holds the four byte-identical across all eight languages.
 
-Two designs this file once parked are now recorded and built:
+Two designs this file once parked are now built, and recorded in HyperTabular's docs:
 
-- **XLSX container handling** — HyperWorkbook's `docs/design.md`, "Container and
-  streaming": a hand-rolled central-directory zip reader, streaming inflate through
-  `flate2` on the `zlib-rs` backend (the one external crate in the three repositories),
-  and the shared-string preload as the documented allocating boundary. (This line used to
-  compare it to HyperUuid's batch scratch buffer; HyperUuid has since retired that
-  allocation, so the preload is the series' one documented allocating path.)
-- **Delimited-text dialect surface** — HyperDelimited's `docs/design.md`: one ASCII byte
-  as separator, `"` as the only quote with RFC 4180 doubling, `\n`/`\r\n`/`\r` terminators,
-  column count fixed by the first record. The same caller-declares-everything philosophy
-  as `NumFormat`: no sniffing, no guessing.
+- **XLSX container handling** — `docs/workbook.md`, "Container and streaming": a
+  hand-rolled central-directory zip reader (zip64 honoured, encryption refused), the core's
+  own inflate into a sliding window the caller provides, and one pull tokenizer for every
+  XML part. It allocates nothing — the shared-string preload this file once expected to be
+  the series' one allocating path never became one.
+- **Delimited-text dialect surface** — `docs/delimited.md`, "What is fixed here, and why":
+  one ASCII byte as separator, `"` as the only quote with RFC 4180 doubling,
+  `\n`/`\r\n`/`\r` terminators, column count fixed by the first record. The same
+  caller-declares-everything philosophy as `NumFormat`: no sniffing, no guessing.
 
 Pattern prior art, studied and recorded in HyperTabular's `docs/prior-art.md` (direct
 reads of each project's source, 2026-08-28): **nietras/Sep** is the model for what an
 allocation-free, span-first C# tabular surface looks like (Svartalfheim's
 `SepTabularReader` already sits on it), and that lesson then carries to
 **Sylvan.Data.Excel** for the XLSX reader shape. Public flowers — the README
-acknowledgment both deserve as the inspiration — wait until the end goal is achieved and
-the numbers are in hand; this note is the engineering lineage, not the celebration.
+acknowledgment both deserve as the inspiration — were to wait until the end goal was
+achieved and the numbers were in hand. Both now are, and HyperTabular's README does not
+yet carry that acknowledgment; its `docs/design.md` records the lineage, which is the
+engineering record, not the celebration.
 
 ## What the first consumer asked for (2026-09-04)
 

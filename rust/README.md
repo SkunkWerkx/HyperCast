@@ -169,7 +169,7 @@ CI has already placed the library explicitly (`runtimes/<rid>/native/`,
 ## Interop: building on HyperCast's C ABI
 
 For a crate that links this one as an rlib and exports a C ABI of its own carrying
-HyperCast's verdicts — HyperTabular's and HyperWorkbook's native layers. The value types
+HyperCast's verdicts — HyperTabular's native layer, for one. The value types
 (`Decimal`, `Timestamp`, `Date`, `CivilDateTime`, `Duration`) are `#[repr(C)]` and are the
 out-values themselves; the rest is what turns the ABI's codes and format back into them,
 the same code the doors and `ffi.rs` use:

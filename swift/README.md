@@ -140,7 +140,7 @@ try Cast.i32("-$5", format: enUs)                                  // .success(-
 ## Interop: building on HyperCast's C ABI
 
 The `Interop` namespace is for a package that carries HyperCast's verdicts across a C ABI
-of its own (HyperTabular and HyperWorkbook do): it reads the value layouts the core writes
+of its own (HyperTabular does): it reads the value layouts the core writes
 through exactly the conversions every `Cast` door applies, so a value read out of another
 library's buffer is the value the door of the same name would have returned. Each reader
 takes an `UnsafeRawBufferPointer` starting at one value, aligned for its widest field.

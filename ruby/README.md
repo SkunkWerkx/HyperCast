@@ -347,7 +347,7 @@ one at `require` time:
 | 3.3 (the floor, until its EOL 2027-03-31) | Fiddle | universal |
 
 What stands behind each cell: CI replays the whole suite, shared corpus included, through
-each Magnus extension on every push — Ruby 3.4 and 4.0 on all seven platform-gem platforms,
+each Magnus extension — Ruby 4.0 on every pull request and Ruby 3.4 in the weekly and release builds, on all seven platform-gem platforms,
 the two musl ones inside each Ruby's own Alpine image — and the Fiddle suite on Ruby 4.0 on
 every one of them, plus on Ruby 3.3 inside Alpine. Intel macOS has no CI leg: its library is
 cross-built and tested at the core, and Ruby there runs the universal gem's Fiddle backend

@@ -13,7 +13,7 @@ name: CI — build native, build wasm, test every binding
 # way round. When the forge assumes something HyperUuid's crate has and this one lacks,
 # this crate gets the same thing — never a forge input, opt-out, or auto-detection to
 # route around the difference. The receipt: the forge builds `--features php` on every
-# darwin/linux leg, this crate had no such feature, and the fix was carrying HyperUuid's
+# darwin/linux leg (in release mode), this crate had no such feature, and the fix was carrying HyperUuid's
 # ext-php-rs spike behind a `php` feature (rust/src/php_ext.rs), not gating the forge.
 #
 # CI's job is build, test, and upload reusable artifacts. Every native leg builds+tests
@@ -38,6 +38,15 @@ name: CI — build native, build wasm, test every binding
 on:
   pull_request:
   workflow_dispatch:
+  # The whole release-mode board once a week, so arm64, musl, iOS, the wheels and the second
+  # Ruby ABI are exercised between releases instead of first on release day.
+  schedule:
+    - cron: "0 6 * * 1"
+
+# A new push to a PR supersedes its running board; anything else runs to completion.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-native:
@@ -50,6 +59,8 @@ jobs:
       id-token: write
       attestations: write
     with:
+      # pr: every leg and suite, nothing only a release needs (see the forge's README).
+      mode: ${{ github.event_name == 'pull_request' && 'pr' || 'release' }}
       project: HyperCast
       crate: hypercast
       pure_env: HYPERCAST_PURE
@@ -107,14 +118,17 @@ jobs:
       id-token: write
       attestations: write
     with:
+      # pr: every leg and suite, nothing only a release needs (see the forge's README).
+      mode: ${{ github.event_name == 'pull_request' && 'pr' || 'release' }}
       crate: hypercast
       project: HyperCast
       # Every browser target runs in headless Chrome, not just built: the Blazor smoke app
       # linking the archive above, the crate itself for wasm32-unknown-unknown, and the Go
       # binding compiled by TinyGo with this commit's wasm32-wasip1 archive linked in. And
-      # the Magnus extension, built for each Ruby minor the -wasm gem carries, linked into a
-      # ruby.wasm interpreter and run under Node and in headless Chrome; those archives are
-      # uploaded as ruby-wasm-{minor} for release.yml.
+      # in release mode (weekly and release, not PRs) the Magnus extension, built for each
+      # Ruby minor the -wasm gem carries, linked into a ruby.wasm interpreter and run under
+      # Node and in headless Chrome; those archives are uploaded as ruby-wasm-{minor} for
+      # release.yml.
       blazor_check: csharp/HyperCast.WasmSmokeTest/check.sh
       rust_browser_test: rust/browser-test
       go_tinygo_smoke: go/internal/tinygosmoke
@@ -136,6 +150,8 @@ jobs:
       id-token: write
       attestations: write
     with:
+      # pr: the Pyodide wheel and its in-browser suite only; the native wheels are packaging.
+      mode: ${{ github.event_name == 'pull_request' && 'pr' || 'release' }}
       crate: hypercast
 
   # rust/Cargo.toml publishes categories = ["no-std"], and rust/src/lib.rs is #![no_std]
@@ -365,6 +381,8 @@ jobs:
   # what is checked.
   test-apple-mobile:
     needs: build-native
+    # 28 minutes of simulators, behind the slowest build-native leg: release mode only.
+    if: github.event_name != 'pull_request'
     runs-on: macos-latest
     env:
       APP_ID: io.github.skunkwerkx.hypercast.applesmoketest

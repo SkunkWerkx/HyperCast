@@ -383,8 +383,8 @@ published-with-the-signature-removed — and asserts that the third equals the f
 claim is checked on every release rather than asserted here, so if nuget.org ever changes how
 it finalizes packages, the run says so instead of this README quietly going stale.
 
-Attestations are produced on pushes, releases, and same-repo pull requests. Only pull
-requests *from forks* go unattested, because a fork's token can't sign. The post-publish half
+Attestations are produced by every release-mode build — the release's own run and the
+weekly one. Pull requests build in `pr` mode, which ships nothing and so signs nothing. The post-publish half
 is non-blocking: the push is irreversible, so a slow nuget.org validation is never allowed to
 turn a successful publish into a failed release.
 
@@ -405,7 +405,7 @@ executes the resulting binary, and requires exit 0. Each leg's log uploads as an
 ## Interop: building on HyperCast's C ABI
 
 For a library that carries HyperCast's verdicts across a C ABI of its own — HyperTabular
-and HyperWorkbook do — and so reads the core's out-values, numeric format, verdict codes and
+does — and so reads the core's out-values, numeric format, verdict codes and
 fault spans out of its own buffers. The `HyperCast.Interop` namespace is the code the `Cast`
 doors themselves use, so a value read that way is the value the door would have returned.
 

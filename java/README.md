@@ -356,7 +356,7 @@ full breakdown of which artifacts in this project are signed from which repo and
 ## Interop: building on HyperCast's C ABI
 
 For a library that carries HyperCast's verdicts across a C ABI of its own — HyperTabular
-and HyperWorkbook do — and so reads the core's out-values, numeric format, verdict codes and
+does — and so reads the core's out-values, numeric format, verdict codes and
 fault spans out of its own buffers. The `io.github.skunkwerkx.hypercast.interop` package is
 the code `Cast` itself uses, so a value read that way is the value the door would have
 returned.
