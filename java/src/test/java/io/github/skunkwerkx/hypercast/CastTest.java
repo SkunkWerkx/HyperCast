@@ -3,6 +3,7 @@ package io.github.skunkwerkx.hypercast;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -10,6 +11,7 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.text.DecimalFormatSymbols;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -382,5 +384,68 @@ final class CastTest {
         assertEquals(
                 new Success<>(UUID.fromString("f1e2d3c4-b5a6-9788-8968-5a4b3c2d1e0f")),
                 Cast.uuid("f1e2d3c4-b5a6-9788-8968-5a4b3c2d1e0f"));
+    }
+
+    /** {@code 1<group>234<decimal>5} spelled in the locale's own separators. */
+    private static String grouped(Locale locale) {
+        DecimalFormatSymbols symbols = DecimalFormatSymbols.getInstance(locale);
+        return "1" + symbols.getGroupingSeparator() + "234" + symbols.getDecimalSeparator() + "5";
+    }
+
+    @Test
+    void localeOverloadsReadTheLocalesOwnNotation() {
+        // fr-FR groups with a no-break space (U+202F in current CLDR data), de-DE with a dot.
+        for (Locale locale : List.of(Locale.US, Locale.GERMANY, Locale.FRANCE)) {
+            String text = grouped(locale);
+            byte[] utf8 = text.getBytes(StandardCharsets.UTF_8);
+            assertEquals(new Success<>(1234.5), Cast.f64(text, locale), locale.toString());
+            assertEquals(new Success<>(1234.5f), Cast.f32(text, locale), locale.toString());
+            assertEquals(new Success<>(new BigDecimal("1234.5")), Cast.decimal(utf8, locale), locale.toString());
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment segment =
+                        arena.allocateFrom(text, StandardCharsets.UTF_8).asSlice(0, utf8.length);
+                assertEquals(new Success<>(1234.5), Cast.f64(segment, locale), locale.toString());
+            }
+            String integer = text.substring(0, text.length() - 2);
+            assertEquals(new Success<>(1234), Cast.i32(integer, locale), locale.toString());
+            assertEquals(new Success<>(1234L), Cast.i64(integer.getBytes(StandardCharsets.UTF_8), locale));
+        }
+    }
+
+    @Test
+    void localeOverloadsAreTheBridgeExactly() {
+        // Every overload is its NumFormat door under NumFormat.from(locale): same verdict, fault
+        // spans included, success or not.
+        List<String> inputs = List.of("1,234", "1.234", "(12)", "1e3", "0x7F", "50%", "€5", "12,5", "nope", "");
+        for (Locale locale : List.of(Locale.US, Locale.GERMANY, Locale.FRANCE)) {
+            NumFormat format = NumFormat.from(locale);
+            for (String text : inputs) {
+                byte[] utf8 = text.getBytes(StandardCharsets.UTF_8);
+                assertEquals(Cast.i8(text, format), Cast.i8(text, locale));
+                assertEquals(Cast.i16(utf8, format), Cast.i16(utf8, locale));
+                assertEquals(Cast.i32(text, format), Cast.i32(text, locale));
+                assertEquals(Cast.i64(text, format), Cast.i64(text, locale));
+                assertEquals(Cast.u8(text, format), Cast.u8(text, locale));
+                assertEquals(Cast.u16(text, format), Cast.u16(text, locale));
+                assertEquals(Cast.u32(utf8, format), Cast.u32(utf8, locale));
+                assertEquals(Cast.u64(text, format), Cast.u64(text, locale));
+                assertEquals(Cast.f32(text, format), Cast.f32(text, locale));
+                assertEquals(Cast.f64(utf8, format), Cast.f64(utf8, locale));
+                assertEquals(Cast.decimal(text, format), Cast.decimal(text, locale));
+            }
+        }
+    }
+
+    @Test
+    void aNullLocaleIsRefusedNotDefaulted() {
+        assertThrows(NullPointerException.class, () -> Cast.i32("1", (Locale) null));
+        assertThrows(NullPointerException.class, () -> Cast.decimal(new byte[] {'1'}, (Locale) null));
+        assertThrows(NullPointerException.class, () -> NumFormat.from((Locale) null));
+    }
+
+    @Test
+    void aLocalesFormatIsDerivedOnceAndShared() {
+        assertSame(NumFormat.from(Locale.GERMANY), NumFormat.from(Locale.GERMANY));
+        assertEquals(NumFormat.from(Locale.FRANCE), NumFormat.from(Locale.forLanguageTag("fr-FR")));
     }
 }

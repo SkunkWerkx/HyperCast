@@ -7,6 +7,7 @@ import io.github.skunkwerkx.hypercast.Verdict;
 import java.lang.foreign.MemorySegment;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.text.DecimalFormatSymbols;
 import java.text.NumberFormat;
 import java.text.ParseException;
 import java.time.Duration;
@@ -83,6 +84,25 @@ public class CastBenchmarks {
     @Benchmark
     public Verdict<Integer> castI32GroupedSlice() {
         return Cast.i32(intSlice, INVARIANT);
+    }
+
+    @Benchmark
+    public Verdict<Integer> castI32GroupedLocale() {
+        // The Locale overload: NumFormat.from(Locale.US) on every call, served from its cache.
+        return Cast.i32(intText, Locale.US);
+    }
+
+    @Benchmark
+    public Verdict<Integer> castI32GroupedLocaleUncached() {
+        // What the overload would cost deriving the format every call, for the cache's receipt.
+        DecimalFormatSymbols symbols = DecimalFormatSymbols.getInstance(Locale.US);
+        return Cast.i32(
+                intText,
+                new NumFormat(
+                        symbols.getDecimalSeparator(),
+                        symbols.getGroupingSeparator(),
+                        NumFormat.STYLE_ALL,
+                        symbols.getCurrencySymbol()));
     }
 
     @Benchmark

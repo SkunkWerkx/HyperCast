@@ -68,6 +68,24 @@ Cast.i32("($5)", us);                                          // -5: parenthese
 Cast.decimal("1.234,50 €", NumFormat.from(Locale.GERMANY));    // 1234.5 — scale 1, exact
 ```
 
+Or hand the door the `Locale` itself: every numeric door, in every input form, has a
+`Locale` overload that is exactly that door under `NumFormat.from(locale)`, the shape
+`NumberFormat.getInstance(Locale)` already gives Java code:
+
+```java
+Cast.f64("1.234,5", Locale.GERMANY);                           // 1234.5
+Cast.i32("1\u202F234", Locale.FRANCE);                          // 1234 — fr-FR groups with U+202F
+Cast.f64(text, Locale.getDefault(Locale.Category.FORMAT));     // the default, said out loud
+```
+
+A `null` locale is a `NullPointerException`, never a silent default: pass
+`Locale.getDefault(Locale.Category.FORMAT)` to mean the JVM's. Deriving a format reads
+`DecimalFormatSymbols`, which builds a new object each time, so `NumFormat.from` keeps each
+locale's format once derived (a bounded cache of 64) and the overloads cost what the
+`NumFormat` doors do: a grouped `Cast.i32` measured 52.6 ± 21.1 ns through `Locale.US`
+against 43.6 ± 7.6 ns through `NumFormat.INVARIANT`, where deriving the format on every call
+measured 437.6 ns and 1.5 KB (JMH, linux-x64, Temurin 25).
+
 The symbol is matched whole, once, at either edge of the numeric body — leading (`$5`,
 `-$5`, `$ -5`) or trailing (`5 €`, `1.234,50 kr.`) with optional whitespace between it and
 the digits — and only while `STYLE_CURRENCY` (part of `STYLE_ALL`) is set: declared without
@@ -215,7 +233,7 @@ separate linker handling for each OS, so it is deliberately not done; the forge'
 [levers not pulled](https://github.com/SkunkWerkx/.github#levers-deliberately-not-pulled)
 table has the full reasoning, the proven recipe, and what would change the answer.
 
-`NumFormat.from(Locale)` needs the locale in the image. Native Image includes only the
+`NumFormat.from(Locale)`, and so every `Locale` overload, needs the locale in the image. Native Image includes only the
 locale it was built in unless told otherwise, and for any other locale `DecimalFormatSymbols`
 quietly returns the root locale's `.` and `,`, so a German format built from
 `Locale.GERMANY` reads `1.234,5` as `Malformed` in the image while the JVM reads it as 1234.5.

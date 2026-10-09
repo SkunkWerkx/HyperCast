@@ -78,6 +78,10 @@ public final class Main {
         check("character", Cast.character("U+00E9"), '\u00e9');
         check("i8", Cast.i8("-128", NumFormat.INVARIANT), (byte) -128);
         check("i16", Cast.i16("-32,768", NumFormat.INVARIANT), (short) -32768);
+        // A Locale overload: the format derived from the JDK's locale data rather than declared.
+        // en-US, the locale the image is built in and so the one it carries without
+        // -H:IncludeLocales (see the README's AOT section).
+        check("f64 (en-US locale)", Cast.f64("1,234.5", Locale.US), 1234.5);
         check("i32", Cast.i32("(1,234)", NumFormat.INVARIANT), -1234);
         check("i64", Cast.i64("9223372036854775807", NumFormat.INVARIANT), Long.MAX_VALUE);
         check("u8", Cast.u8("255", NumFormat.INVARIANT), 255);

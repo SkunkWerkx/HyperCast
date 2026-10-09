@@ -17,6 +17,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.util.Locale;
 import java.util.UUID;
 
 /**
@@ -712,6 +713,21 @@ public final class Cast {
     }
 
     /**
+     * See {@link #i8(String, NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param text the text to cast
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Byte> i8(String text, Locale locale) {
+        return i8(text, NumFormat.from(locale));
+    }
+
+    /**
      * See {@link #i8(String, NumFormat)}; input as raw UTF-8 bytes.
      *
      * @param utf8 the raw UTF-8 input bytes
@@ -721,6 +737,21 @@ public final class Cast {
     public static Verdict<Byte> i8(byte[] utf8, NumFormat format) {
         return numeric(
                 Core.CAST_I8, Door.I8, input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_BYTE, 0));
+    }
+
+    /**
+     * See {@link #i8(byte[], NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Byte> i8(byte[] utf8, Locale locale) {
+        return i8(utf8, NumFormat.from(locale));
     }
 
     /**
@@ -738,6 +769,21 @@ public final class Cast {
     }
 
     /**
+     * See {@link #i8(MemorySegment, NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Byte> i8(MemorySegment utf8, Locale locale) {
+        return i8(utf8, NumFormat.from(locale));
+    }
+
+    /**
      * Casts integer text to a signed 16-bit value. Notation rules as {@link #i8(String, NumFormat)}.
      *
      * @param text the text to cast
@@ -750,6 +796,21 @@ public final class Cast {
     }
 
     /**
+     * See {@link #i16(String, NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param text the text to cast
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Short> i16(String text, Locale locale) {
+        return i16(text, NumFormat.from(locale));
+    }
+
+    /**
      * See {@link #i16(String, NumFormat)}; input as raw UTF-8 bytes.
      *
      * @param utf8 the raw UTF-8 input bytes
@@ -759,6 +820,21 @@ public final class Cast {
     public static Verdict<Short> i16(byte[] utf8, NumFormat format) {
         return numeric(
                 Core.CAST_I16, Door.I16, input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_SHORT, 0));
+    }
+
+    /**
+     * See {@link #i16(byte[], NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Short> i16(byte[] utf8, Locale locale) {
+        return i16(utf8, NumFormat.from(locale));
     }
 
     /**
@@ -781,6 +857,21 @@ public final class Cast {
     }
 
     /**
+     * See {@link #i16(MemorySegment, NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Short> i16(MemorySegment utf8, Locale locale) {
+        return i16(utf8, NumFormat.from(locale));
+    }
+
+    /**
      * Casts integer text to a signed 32-bit value. Notation rules as {@link #i8(String, NumFormat)}.
      *
      * @param text the text to cast
@@ -793,6 +884,21 @@ public final class Cast {
     }
 
     /**
+     * See {@link #i32(String, NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param text the text to cast
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Integer> i32(String text, Locale locale) {
+        return i32(text, NumFormat.from(locale));
+    }
+
+    /**
      * See {@link #i32(String, NumFormat)}; input as raw UTF-8 bytes.
      *
      * @param utf8 the raw UTF-8 input bytes
@@ -802,6 +908,21 @@ public final class Cast {
     public static Verdict<Integer> i32(byte[] utf8, NumFormat format) {
         return numeric(
                 Core.CAST_I32, Door.I32, input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_INT, 0));
+    }
+
+    /**
+     * See {@link #i32(byte[], NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Integer> i32(byte[] utf8, Locale locale) {
+        return i32(utf8, NumFormat.from(locale));
     }
 
     /**
@@ -819,6 +940,21 @@ public final class Cast {
     }
 
     /**
+     * See {@link #i32(MemorySegment, NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Integer> i32(MemorySegment utf8, Locale locale) {
+        return i32(utf8, NumFormat.from(locale));
+    }
+
+    /**
      * Casts integer text to a signed 64-bit value. Notation rules as {@link #i8(String, NumFormat)}.
      *
      * @param text the text to cast
@@ -831,6 +967,21 @@ public final class Cast {
     }
 
     /**
+     * See {@link #i64(String, NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param text the text to cast
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Long> i64(String text, Locale locale) {
+        return i64(text, NumFormat.from(locale));
+    }
+
+    /**
      * See {@link #i64(String, NumFormat)}; input as raw UTF-8 bytes.
      *
      * @param utf8 the raw UTF-8 input bytes
@@ -840,6 +991,21 @@ public final class Cast {
     public static Verdict<Long> i64(byte[] utf8, NumFormat format) {
         return numeric(
                 Core.CAST_I64, Door.I64, input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_LONG, 0));
+    }
+
+    /**
+     * See {@link #i64(byte[], NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Long> i64(byte[] utf8, Locale locale) {
+        return i64(utf8, NumFormat.from(locale));
     }
 
     /**
@@ -862,6 +1028,21 @@ public final class Cast {
     }
 
     /**
+     * See {@link #i64(MemorySegment, NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Long> i64(MemorySegment utf8, Locale locale) {
+        return i64(utf8, NumFormat.from(locale));
+    }
+
+    /**
      * Casts integer text to an unsigned 8-bit value, widened to {@code int} ({@code 0..255})
      * — Java has no unsigned primitives. Notation rules as {@link #i8(String, NumFormat)}.
      *
@@ -872,6 +1053,21 @@ public final class Cast {
     public static Verdict<Integer> u8(String text, NumFormat format) {
         byte[] utf8 = utf8(text);
         return chars(u8(utf8, format), text, utf8);
+    }
+
+    /**
+     * See {@link #u8(String, NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param text the text to cast
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Integer> u8(String text, Locale locale) {
+        return u8(text, NumFormat.from(locale));
     }
 
     /**
@@ -889,6 +1085,21 @@ public final class Cast {
                 utf8.length,
                 format,
                 out -> Byte.toUnsignedInt(out.get(ValueLayout.JAVA_BYTE, 0)));
+    }
+
+    /**
+     * See {@link #u8(byte[], NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Integer> u8(byte[] utf8, Locale locale) {
+        return u8(utf8, NumFormat.from(locale));
     }
 
     /**
@@ -911,6 +1122,21 @@ public final class Cast {
     }
 
     /**
+     * See {@link #u8(MemorySegment, NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Integer> u8(MemorySegment utf8, Locale locale) {
+        return u8(utf8, NumFormat.from(locale));
+    }
+
+    /**
      * Casts integer text to an unsigned 16-bit value, widened to {@code int} ({@code 0..65535}).
      *
      * @param text the text to cast
@@ -920,6 +1146,21 @@ public final class Cast {
     public static Verdict<Integer> u16(String text, NumFormat format) {
         byte[] utf8 = utf8(text);
         return chars(u16(utf8, format), text, utf8);
+    }
+
+    /**
+     * See {@link #u16(String, NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param text the text to cast
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Integer> u16(String text, Locale locale) {
+        return u16(text, NumFormat.from(locale));
     }
 
     /**
@@ -937,6 +1178,21 @@ public final class Cast {
                 utf8.length,
                 format,
                 out -> Short.toUnsignedInt(out.get(ValueLayout.JAVA_SHORT, 0)));
+    }
+
+    /**
+     * See {@link #u16(byte[], NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Integer> u16(byte[] utf8, Locale locale) {
+        return u16(utf8, NumFormat.from(locale));
     }
 
     /**
@@ -959,6 +1215,21 @@ public final class Cast {
     }
 
     /**
+     * See {@link #u16(MemorySegment, NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Integer> u16(MemorySegment utf8, Locale locale) {
+        return u16(utf8, NumFormat.from(locale));
+    }
+
+    /**
      * Casts integer text to an unsigned 32-bit value, widened to {@code long}.
      *
      * @param text the text to cast
@@ -968,6 +1239,21 @@ public final class Cast {
     public static Verdict<Long> u32(String text, NumFormat format) {
         byte[] utf8 = utf8(text);
         return chars(u32(utf8, format), text, utf8);
+    }
+
+    /**
+     * See {@link #u32(String, NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param text the text to cast
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Long> u32(String text, Locale locale) {
+        return u32(text, NumFormat.from(locale));
     }
 
     /**
@@ -985,6 +1271,21 @@ public final class Cast {
                 utf8.length,
                 format,
                 out -> Integer.toUnsignedLong(out.get(ValueLayout.JAVA_INT, 0)));
+    }
+
+    /**
+     * See {@link #u32(byte[], NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Long> u32(byte[] utf8, Locale locale) {
+        return u32(utf8, NumFormat.from(locale));
     }
 
     /**
@@ -1007,6 +1308,21 @@ public final class Cast {
     }
 
     /**
+     * See {@link #u32(MemorySegment, NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Long> u32(MemorySegment utf8, Locale locale) {
+        return u32(utf8, NumFormat.from(locale));
+    }
+
+    /**
      * Casts integer text to an unsigned 64-bit value, carried as {@code long}'s
      * two's-complement bit pattern — render with {@link Long#toUnsignedString(long)} and
      * compare with {@link Long#compareUnsigned(long, long)}.
@@ -1021,6 +1337,21 @@ public final class Cast {
     }
 
     /**
+     * See {@link #u64(String, NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param text the text to cast
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Long> u64(String text, Locale locale) {
+        return u64(text, NumFormat.from(locale));
+    }
+
+    /**
      * See {@link #u64(String, NumFormat)}; input as raw UTF-8 bytes.
      *
      * @param utf8 the raw UTF-8 input bytes
@@ -1030,6 +1361,21 @@ public final class Cast {
     public static Verdict<Long> u64(byte[] utf8, NumFormat format) {
         return numeric(
                 Core.CAST_U64, Door.U64, input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_LONG, 0));
+    }
+
+    /**
+     * See {@link #u64(byte[], NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Long> u64(byte[] utf8, Locale locale) {
+        return u64(utf8, NumFormat.from(locale));
     }
 
     /**
@@ -1051,6 +1397,21 @@ public final class Cast {
                 out -> out.get(ValueLayout.JAVA_LONG, 0));
     }
 
+    /**
+     * See {@link #u64(MemorySegment, NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Long> u64(MemorySegment utf8, Locale locale) {
+        return u64(utf8, NumFormat.from(locale));
+    }
+
     // --- reals ---
 
     /**
@@ -1069,6 +1430,21 @@ public final class Cast {
     }
 
     /**
+     * See {@link #f32(String, NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param text the text to cast
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Float> f32(String text, Locale locale) {
+        return f32(text, NumFormat.from(locale));
+    }
+
+    /**
      * See {@link #f32(String, NumFormat)}; input as raw UTF-8 bytes.
      *
      * @param utf8 the raw UTF-8 input bytes
@@ -1078,6 +1454,21 @@ public final class Cast {
     public static Verdict<Float> f32(byte[] utf8, NumFormat format) {
         return numeric(
                 Core.CAST_F32, Door.F32, input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_FLOAT, 0));
+    }
+
+    /**
+     * See {@link #f32(byte[], NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Float> f32(byte[] utf8, Locale locale) {
+        return f32(utf8, NumFormat.from(locale));
     }
 
     /**
@@ -1100,6 +1491,21 @@ public final class Cast {
     }
 
     /**
+     * See {@link #f32(MemorySegment, NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Float> f32(MemorySegment utf8, Locale locale) {
+        return f32(utf8, NumFormat.from(locale));
+    }
+
+    /**
      * Casts real text to {@code double}. Notation rules as {@link #f32(String, NumFormat)}.
      *
      * @param text the text to cast
@@ -1112,6 +1518,21 @@ public final class Cast {
     }
 
     /**
+     * See {@link #f64(String, NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param text the text to cast
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Double> f64(String text, Locale locale) {
+        return f64(text, NumFormat.from(locale));
+    }
+
+    /**
      * See {@link #f64(String, NumFormat)}; input as raw UTF-8 bytes.
      *
      * @param utf8 the raw UTF-8 input bytes
@@ -1121,6 +1542,21 @@ public final class Cast {
     public static Verdict<Double> f64(byte[] utf8, NumFormat format) {
         return numeric(
                 Core.CAST_F64, Door.F64, input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_DOUBLE, 0));
+    }
+
+    /**
+     * See {@link #f64(byte[], NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Double> f64(byte[] utf8, Locale locale) {
+        return f64(utf8, NumFormat.from(locale));
     }
 
     /**
@@ -1140,6 +1576,21 @@ public final class Cast {
                 utf8.byteSize(),
                 format,
                 out -> out.get(ValueLayout.JAVA_DOUBLE, 0));
+    }
+
+    /**
+     * See {@link #f64(MemorySegment, NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<Double> f64(MemorySegment utf8, Locale locale) {
+        return f64(utf8, NumFormat.from(locale));
     }
 
     // --- decimal ---
@@ -1166,6 +1617,21 @@ public final class Cast {
     }
 
     /**
+     * See {@link #decimal(String, NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param text the text to cast
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<BigDecimal> decimal(String text, Locale locale) {
+        return decimal(text, NumFormat.from(locale));
+    }
+
+    /**
      * See {@link #decimal(String, NumFormat)}; input as raw UTF-8 bytes.
      *
      * @param utf8 the raw UTF-8 input bytes
@@ -1174,6 +1640,21 @@ public final class Cast {
      */
     public static Verdict<BigDecimal> decimal(byte[] utf8, NumFormat format) {
         return numeric(Core.CAST_DECIMAL, Door.DECIMAL, input(utf8), utf8.length, format, Cast::readDecimal);
+    }
+
+    /**
+     * See {@link #decimal(byte[], NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<BigDecimal> decimal(byte[] utf8, Locale locale) {
+        return decimal(utf8, NumFormat.from(locale));
     }
 
     /**
@@ -1187,6 +1668,21 @@ public final class Cast {
      */
     public static Verdict<BigDecimal> decimal(MemorySegment utf8, NumFormat format) {
         return numeric(Core.CAST_DECIMAL, Door.DECIMAL, input(utf8), utf8.byteSize(), format, Cast::readDecimal);
+    }
+
+    /**
+     * See {@link #decimal(MemorySegment, NumFormat)}, with the notation the locale's: its decimal and
+     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
+     * derives it.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param locale the locale whose number formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<BigDecimal> decimal(MemorySegment utf8, Locale locale) {
+        return decimal(utf8, NumFormat.from(locale));
     }
 
     private static BigDecimal readDecimal(MemorySegment out) {

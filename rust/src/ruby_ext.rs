@@ -18,7 +18,8 @@ use magnus::rb_sys::{AsRawValue, FromRawValue};
 use magnus::scan_args::scan_args;
 use magnus::value::{Opaque, ReprValue};
 use magnus::{
-    Error, IntoValue, RModule, RString, RStruct, Ruby, Symbol, Value, function, prelude::*,
+    Error, IntoValue, KwArgs, RHash, RModule, RString, RStruct, Ruby, Symbol, Value, function,
+    prelude::*,
 };
 use rb_sys::VALUE;
 
@@ -318,11 +319,30 @@ fn char_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
     }
 }
 
+/// A numeric door's `(text, format, separator: nil, delimiter: nil, unit: nil)`. With no
+/// keywords — the plain call, `(text, format)` — it is the two conversions every numeric
+/// door always made and nothing else: no `scan_args`, no Hash. With keywords, the format is
+/// put through the package's own `NumFormat#override`, so the overridden format is built,
+/// validated and refused (an unknown keyword included) by the same Ruby code the Fiddle
+/// backend runs, with the same messages.
+fn numeric_args(ruby: &Ruby, args: &[Value]) -> Result<(RString, core::NumFormat), Error> {
+    // SAFETY: called on the Ruby thread, inside the method call whose arguments these are.
+    let keywords = unsafe { rb_sys::rb_keyword_given_p() } != 0;
+    if let ([text, format], false) = (args, keywords) {
+        let text = utf8(ruby, RString::try_convert(*text)?)?;
+        return Ok((text, resolve_format(ruby, *format)?));
+    }
+    let scanned = scan_args::<(RString, Value), (), (), (), RHash, ()>(args)?;
+    let (text, format) = scanned.required;
+    let text = utf8(ruby, text)?;
+    let format: Value = format.funcall("override", (KwArgs(scanned.keywords),))?;
+    Ok((text, resolve_format(ruby, format)?))
+}
+
 macro_rules! numeric_doors {
     ($($door:ident => $core:ident),+ $(,)?) => {$(
-        fn $door(ruby: &Ruby, text: RString, format: Value) -> Result<Value, Error> {
-            let text = utf8(ruby, text)?;
-            let resolved = resolve_format(ruby, format)?;
+        fn $door(ruby: &Ruby, args: &[Value]) -> Result<Value, Error> {
+            let (text, resolved) = numeric_args(ruby, args)?;
             verdict(ruby, text, with_bytes(text, |bytes| core::$core(bytes, &resolved)))
         }
     )+};
@@ -344,9 +364,8 @@ numeric_doors! {
 /// The decimal door's value is the package's own `Decimal` Data (magnitude, scale,
 /// negative): the 96-bit magnitude becomes one Ruby Integer — a Fixnum while it fits,
 /// a Bignum past 2⁶⁴ — the scale a small Integer, and the sign a Boolean.
-fn decimal_door(ruby: &Ruby, text: RString, format: Value) -> Result<Value, Error> {
-    let text = utf8(ruby, text)?;
-    let resolved = resolve_format(ruby, format)?;
+fn decimal_door(ruby: &Ruby, args: &[Value]) -> Result<Value, Error> {
+    let (text, resolved) = numeric_args(ruby, args)?;
     match with_bytes(text, |bytes| core::cast_decimal(bytes, &resolved)) {
         Ok(decimal) => decimal_value(ruby, decimal),
         Err(failed) => fault(ruby, text, failed),
@@ -588,17 +607,17 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     let _ = CACHED.set(build_cache(ruby, hypercast)?);
     hypercast.define_singleton_method("bool", function!(bool_door, 1))?;
     hypercast.define_singleton_method("char", function!(char_door, 1))?;
-    hypercast.define_singleton_method("i8", function!(i8_door, 2))?;
-    hypercast.define_singleton_method("i16", function!(i16_door, 2))?;
-    hypercast.define_singleton_method("i32", function!(i32_door, 2))?;
-    hypercast.define_singleton_method("i64", function!(i64_door, 2))?;
-    hypercast.define_singleton_method("u8", function!(u8_door, 2))?;
-    hypercast.define_singleton_method("u16", function!(u16_door, 2))?;
-    hypercast.define_singleton_method("u32", function!(u32_door, 2))?;
-    hypercast.define_singleton_method("u64", function!(u64_door, 2))?;
-    hypercast.define_singleton_method("f32", function!(f32_door, 2))?;
-    hypercast.define_singleton_method("f64", function!(f64_door, 2))?;
-    hypercast.define_singleton_method("decimal", function!(decimal_door, 2))?;
+    hypercast.define_singleton_method("i8", function!(i8_door, -1))?;
+    hypercast.define_singleton_method("i16", function!(i16_door, -1))?;
+    hypercast.define_singleton_method("i32", function!(i32_door, -1))?;
+    hypercast.define_singleton_method("i64", function!(i64_door, -1))?;
+    hypercast.define_singleton_method("u8", function!(u8_door, -1))?;
+    hypercast.define_singleton_method("u16", function!(u16_door, -1))?;
+    hypercast.define_singleton_method("u32", function!(u32_door, -1))?;
+    hypercast.define_singleton_method("u64", function!(u64_door, -1))?;
+    hypercast.define_singleton_method("f32", function!(f32_door, -1))?;
+    hypercast.define_singleton_method("f64", function!(f64_door, -1))?;
+    hypercast.define_singleton_method("decimal", function!(decimal_door, -1))?;
     hypercast.define_singleton_method("uuid", function!(uuid_door, 1))?;
     hypercast.define_singleton_method("timestamp", function!(timestamp_door, 1))?;
     hypercast.define_singleton_method("unix", function!(unix_door, 2))?;

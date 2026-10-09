@@ -35,7 +35,9 @@ fronts every text door (see [One door for a generic `T`](#one-door-for-a-generic
 the core — `NumFormat.From(CultureInfo)` (or `From(IFormatProvider)`, the shape every BCL
 `TryParse` already takes) bridges .NET's culture machinery to the caller-declared format
 the native side actually reads: separators, lenience flags, and the culture's currency
-symbol. Or spell the format directly — `new NumFormat(',', '\u00A0', NumStyles.All, "€")`
+symbol. Every numeric door, `Numeric<T>` and `Scalar<T>` also take that `IFormatProvider?`
+directly, as `TryParse` does (see [A culture, the way the BCL takes one](#a-culture-the-way-the-bcl-takes-one)).
+Or spell the format directly — `new NumFormat(',', '\u00A0', NumStyles.All, "€")`
 declares an arbitrary pair, and `NumStyles.None` turns every lenience off. .NET-flavored
 fidelity, stated honestly: `DateTimeOffset`/`TimeOnly`/`TimeSpan` resolve to 100 ns
 ticks, so sub-tick nanoseconds truncate (the core carries full nanosecond fidelity; .NET's
@@ -96,6 +98,39 @@ enum, your own struct) throws `NotSupportedException` naming the type, before an
 call. That is a caller bug, not a data verdict, so a gateway can try `Scalar<T>` first and
 fall back. `Cast.Optional(Cast.Scalar<T>(...))` composes as with any door, and the `typeof`
 tests fold per instantiation under the JIT and Native AOT alike.
+
+## A culture, the way the BCL takes one
+
+Every door that takes a `NumFormat` — the eight integers, `Single`, `Double`, `Decimal`,
+`Numeric<T>` and `Scalar<T>`, for `ReadOnlySpan<char>` and UTF-8 input alike — has an
+overload taking the `IFormatProvider?` a BCL `TryParse` or `ISpanParsable<T>` takes, so code
+that is already provider-shaped passes what it was handed straight through:
+
+```csharp
+// A parsing gateway in ISpanParsable's shape, routing through HyperCast in one call.
+static T ParseRequired<T>(ReadOnlySpan<char> text, IFormatProvider? provider) where T : struct =>
+    Cast.Scalar<T>(text, provider) switch
+    {
+        Success<T> s => s.Value,
+        Fault f => throw new FormatException($"{f.Reason} at {f.Offset}+{f.Length}"),
+    };
+
+Cast.Double("1.234,5", CultureInfo.GetCultureInfo("de-DE"));   // 1234.5
+Cast.Int32("1.234", null);                                       // under the current culture
+```
+
+The provider maps through `NumFormat.From(IFormatProvider)`: the culture's decimal and group
+separators and its currency symbol, with every lenience on. `null` means the current
+culture, exactly as it does for `TryParse` (`NumberFormatInfo.GetInstance(null)`), so the
+overloads are a drop-in where a BCL call stood; pass a `NumFormat` for anything stricter, or
+for a format that must not follow the machine. `Scalar<T>` reads the provider only for the
+numeric targets. The mapping allocates nothing and costs nothing measurable beside the door
+itself (77 ns either way for a grouped `Int32` on the machine that measured it).
+
+`default` as the second argument still means `default(NumFormat)`, the equal-separators
+caller bug it always was: the provider overloads carry `[OverloadResolutionPriority(-1)]`,
+so they are chosen only for an argument a `NumFormat` cannot be — `null`, a `CultureInfo`, a
+`NumberFormatInfo`.
 
 ## Numbers a workbook already holds
 

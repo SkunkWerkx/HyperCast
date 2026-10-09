@@ -380,4 +380,84 @@ final class CastTests: XCTestCase {
         XCTAssertEqual(fault.reason, .malformed)
     }
 
+    // MARK: - locale: doors
+
+    func testLocaleDoorsReadEachLocalesSpelling() throws {
+        let enUs = Locale(identifier: "en_US")
+        let deDe = Locale(identifier: "de_DE")
+        let frFr = Locale(identifier: "fr_FR")
+        XCTAssertEqual(try Cast.i32("1,234", locale: enUs), .success(1234))
+        XCTAssertEqual(try Cast.i32("1.234", locale: deDe), .success(1234))
+        XCTAssertEqual(try Cast.f64("1,234.5", locale: enUs), .success(1234.5))
+        XCTAssertEqual(try Cast.f64("1.234,5", locale: deDe), .success(1234.5))
+        XCTAssertEqual(try Cast.decimal("(1.234,50)", locale: deDe), .success(Decimal(string: "-1234.5")!))
+        // French groups with whatever the locale data says (a narrow no-break space in
+        // current CLDR), so the test spells it the same way rather than hard-coding it.
+        let frGroup = try XCTUnwrap(frFr.groupingSeparator)
+        XCTAssertEqual(try Cast.f64("1\(frGroup)234,5", locale: frFr), .success(1234.5))
+        // The same text under the wrong locale is read the other locale's way, or refused.
+        guard case .fault(let fault) = try Cast.f64("1.234,5", locale: enUs) else {
+            return XCTFail("1.234,5 under en_US should fault")
+        }
+        XCTAssertEqual(fault.reason, .malformed)
+    }
+
+    func testLocaleDoorsMatchTheBridgedFormat() throws {
+        for identifier in ["en_US", "de_DE", "fr_FR", "de_CH", "ja_JP"] {
+            let locale = Locale(identifier: identifier)
+            let format = NumFormat.from(locale: locale)
+            for text in [
+                "1234", "-12", "1.234", "1,234", "1.234,5", "1,234.5", "(42)", "1e3", "50%", "0x7F", "abc", "",
+            ] {
+                XCTAssertEqual(
+                    try Cast.i8(text, locale: locale), try Cast.i8(text, format: format), "\(identifier) \(text)")
+                XCTAssertEqual(try Cast.i16(text, locale: locale), try Cast.i16(text, format: format))
+                XCTAssertEqual(try Cast.i32(text, locale: locale), try Cast.i32(text, format: format))
+                XCTAssertEqual(try Cast.i64(text, locale: locale), try Cast.i64(text, format: format))
+                XCTAssertEqual(try Cast.u8(text, locale: locale), try Cast.u8(text, format: format))
+                XCTAssertEqual(try Cast.u16(text, locale: locale), try Cast.u16(text, format: format))
+                XCTAssertEqual(try Cast.u32(text, locale: locale), try Cast.u32(text, format: format))
+                XCTAssertEqual(try Cast.u64(text, locale: locale), try Cast.u64(text, format: format))
+                XCTAssertEqual(try Cast.f32(text, locale: locale), try Cast.f32(text, format: format))
+                XCTAssertEqual(try Cast.f64(text, locale: locale), try Cast.f64(text, format: format))
+                XCTAssertEqual(try Cast.decimal(text, locale: locale), try Cast.decimal(text, format: format))
+                let bytes = Array(text.utf8)
+                XCTAssertEqual(try Cast.i32(bytes, locale: locale), try Cast.i32(bytes, format: format))
+                try bytes.withUnsafeBytes { raw in
+                    XCTAssertEqual(try Cast.f64(raw, locale: locale), try Cast.f64(raw, format: format))
+                }
+                let viaNumeric: Verdict<Int32> = try Cast.numeric(text, locale: locale)
+                XCTAssertEqual(viaNumeric, try Cast.i32(text, format: format))
+                let viaScalar: Verdict<Double> = try Cast.scalar(text, locale: locale)
+                XCTAssertEqual(viaScalar, try Cast.f64(text, format: format))
+            }
+        }
+    }
+
+    func testScalarLocaleDoorReachesNumericAndOtherTargets() throws {
+        let deDe = Locale(identifier: "de_DE")
+        let grouped: Verdict<Int32> = try Cast.scalar("1.234", locale: deDe)
+        XCTAssertEqual(grouped, .success(1234))
+        let bytes: Verdict<Decimal> = try Cast.scalar(Array("1.234,5".utf8), locale: deDe)
+        XCTAssertEqual(bytes, .success(Decimal(string: "1234.5")!))
+        // A locale changes nothing for a door that takes no format.
+        let flag: Verdict<Bool> = try Cast.scalar("yes", locale: deDe)
+        XCTAssertEqual(flag, .success(true))
+        let id: Verdict<UUID> = try Cast.scalar("01020304-0506-0708-090a-0b0c0d0e0f10", locale: deDe)
+        XCTAssertEqual(id, try Cast.uuid("01020304-0506-0708-090a-0b0c0d0e0f10"))
+        let letter: Verdict<Unicode.Scalar> = try Cast.scalar("U+00E9", locale: deDe)
+        XCTAssertEqual(letter, .success("é"))
+    }
+
+    func testLocaleFormatsAreCachedByIdentifierAndBounded() {
+        let cache = LocaleFormats()
+        let deDe = Locale(identifier: "de_DE")
+        XCTAssertEqual(cache.format(for: deDe), NumFormat.from(locale: deDe))
+        XCTAssertEqual(cache.format(for: Locale(identifier: "de_DE")), NumFormat.from(locale: deDe))
+        // More distinct locales than the bound: every answer stays right as entries are dropped.
+        for identifier in Locale.availableIdentifiers.prefix(100) {
+            let locale = Locale(identifier: identifier)
+            XCTAssertEqual(cache.format(for: locale), NumFormat.from(locale: locale), identifier)
+        }
+    }
 }

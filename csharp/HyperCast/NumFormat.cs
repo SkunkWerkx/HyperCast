@@ -9,8 +9,9 @@ namespace HyperCast;
 /// core's declared fields. A call site parsing culture-sensitive text declares its format
 /// out loud (<see cref="Invariant"/>, <see cref="From(CultureInfo)"/>,
 /// <see cref="From(IFormatProvider)"/>, or the constructor with the separators spelled
-/// directly) — there is no defaulting overload, the same stance Svartalfheim took with
-/// <c>IFormatProvider</c>.
+/// directly), or hands each numeric door the <see cref="IFormatProvider"/> it would hand a
+/// BCL <c>TryParse</c>: those overloads map it through <see cref="From(IFormatProvider)"/>,
+/// and read <see langword="null"/> as the current culture, as the BCL does.
 /// </summary>
 /// <remarks>
 /// Separators are single UTF-16 code units, which covers every separator any real culture

@@ -205,6 +205,31 @@ $format = NumFormat::fromLocaleconv(['decimal_point' => ',', 'thousands_sep' => 
 Cast::f64('1.234,50 €', $format);        // Success(1234.5)
 ```
 
+### From an intl `NumberFormatter`
+
+Every numeric door (the eight integers, `f32`, `f64`, `decimal`) takes an intl
+`\NumberFormatter` in place of a `NumFormat`: PHP's per-object locale formatting, with none
+of `localeconv()`'s process state. The door declares the formatter's decimal separator,
+grouping separator and currency symbol, with every lenience on, the same as
+`NumFormat::fromNumberFormatter()`, which derives the `NumFormat` itself:
+
+```php
+$fr = new \NumberFormatter('fr_FR', \NumberFormatter::DECIMAL);
+Cast::f64("1\u{202F}234,5", $fr);         // Success(1234.5): ICU groups French with U+202F
+Cast::i32('1 234', $fr);                 // Fault Malformed: a plain space is not U+202F
+NumFormat::fromNumberFormatter($fr);     // NumFormat(',', "\u{202F}", NumFormat::ALL, '€')
+```
+
+The conversion is remembered per formatter, so passing the same formatter call after call
+costs about what a hoisted `NumFormat` does; its three symbols are still read on every call,
+because a formatter is mutable (`setSymbol()`) and a changed one is declared again. Symbols
+the core cannot carry (a separator of more than one character, an over-long currency symbol)
+are an `InvalidArgumentException`, as through the constructor.
+
+ext-intl is optional: it is a `suggest` in `composer.json`, nothing in the package loads it,
+and without it the doors take a `NumFormat` exactly as before. CI's Alpine suite runs with
+ext-ffi alone and covers that.
+
 The packed format the core reads is 32 bytes (two separator code points, the flags, the
 symbol length and 16 symbol bytes); `Cast` writes it once per distinct `NumFormat` instance,
 so hoist a format rather than constructing one per call.

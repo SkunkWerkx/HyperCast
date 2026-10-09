@@ -117,6 +117,31 @@ RSpec.describe "native backend" do
       .to eq(HyperCast.i32("1€x".encode(Encoding::UTF_16LE), HyperCast::NumFormat::INVARIANT).inspect)
   end
 
+  it "agrees with the Fiddle backend on format overrides, their verdicts and their caller bugs" do
+    rescued = 'begin; (%s).inspect; rescue StandardError => e; "#{e.class}: #{e.message}"; end'
+    inv = "HyperCast::NumFormat::INVARIANT"
+    [
+      "HyperCast.i32('1.234', #{inv}, separator: ',', delimiter: '.')",
+      "HyperCast.u64('1.234', #{inv}, separator: ',', delimiter: '.')",
+      "HyperCast.f64('1.234,5', #{inv}, separator: ',', delimiter: '.')",
+      "HyperCast.decimal('€1.234,50', #{inv}, separator: ',', delimiter: '.', unit: '€')",
+      "HyperCast.i32('1,234', #{inv}, separator: nil)",
+      "HyperCast.i32('1', #{inv}, separator: ',')",
+      "HyperCast.i32('1', #{inv}, precision: 2)",
+      "HyperCast.f32('1', #{inv}, unit: '12')",
+      "HyperCast.i32('1', nil, unit: '$')",
+      "HyperCast.i32('1')",
+      "HyperCast::NumFormat.from_i18n({ separator: ',', delimiter: '' })"
+    ].each do |source|
+      native = begin
+        eval(source).inspect # rubocop:disable Security/Eval -- the same source, run on both backends
+      rescue StandardError => e
+        "#{e.class}: #{e.message}"
+      end
+      expect(fiddle_eval(format(rescued, source))).to eq(native), source
+    end
+  end
+
   it "agrees with the Fiddle backend on an explicit nil date order" do
     expect(fiddle_eval('HyperCast.date("2026-01-07", nil).inspect')).to eq(HyperCast.date("2026-01-07", nil).inspect)
     expect(fiddle_eval('HyperCast.date("1/7/2026", nil).inspect')).to eq(HyperCast.date("1/7/2026", nil).inspect)

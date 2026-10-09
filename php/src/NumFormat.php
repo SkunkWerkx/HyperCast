@@ -142,15 +142,60 @@ final readonly class NumFormat
         $decimalSep = $conv['decimal_point'] ?? '';
         $groupSep = $conv['thousands_sep'] ?? '';
         $currency = $conv['currency_symbol'] ?? '';
-        // An empty field takes its invariant default unless the other separator already
-        // holds that character, in which case it takes the other of the ./, pair.
+        return self::fromSymbols(
+            \is_string($decimalSep) ? $decimalSep : '',
+            \is_string($groupSep) ? $groupSep : '',
+            \is_string($currency) ? $currency : '',
+        );
+    }
+
+    /**
+     * Declares the notation an intl `NumberFormatter` describes — PHP's per-object locale
+     * formatting, where {@see fromLocaleconv()} reads process-global state. Reads the
+     * formatter's decimal separator, grouping separator and currency symbol, with every
+     * lenience on, and fills an empty field the way {@see fromLocaleconv()} does. Every
+     * numeric door also takes a `NumberFormatter` in place of a `NumFormat` and calls this.
+     *
+     * A formatter's symbols are whatever ICU's data for its locale says, so a locale whose
+     * separator is more than one character, or whose currency symbol the core cannot carry,
+     * is an InvalidArgumentException here exactly as it would be through the constructor.
+     * Requires ext-intl; nothing else in this package does.
+     *
+     * @param \NumberFormatter $formatter the formatter whose symbols declare the notation
+     * @return self the format the formatter describes, every lenience on
+     * @throws \InvalidArgumentException When the formatter's symbols cannot be declared.
+     */
+    public static function fromNumberFormatter(\NumberFormatter $formatter): self
+    {
+        $decimalSep = $formatter->getSymbol(\NumberFormatter::DECIMAL_SEPARATOR_SYMBOL);
+        $groupSep = $formatter->getSymbol(\NumberFormatter::GROUPING_SEPARATOR_SYMBOL);
+        $currency = $formatter->getSymbol(\NumberFormatter::CURRENCY_SYMBOL);
+        return self::fromSymbols(
+            \is_string($decimalSep) ? $decimalSep : '',
+            \is_string($groupSep) ? $groupSep : '',
+            \is_string($currency) ? $currency : '',
+        );
+    }
+
+    /**
+     * The shared tail of both locale factories: an empty separator takes its invariant
+     * default unless the other separator already holds that character, in which case it
+     * takes the other of the ./, pair, and every lenience is on.
+     *
+     * @param string $decimalSep the locale's decimal separator, or '' for none
+     * @param string $groupSep the locale's group separator, or '' for none
+     * @param string $currency the locale's currency symbol, or '' for none
+     * @return self the declared format
+     */
+    private static function fromSymbols(string $decimalSep, string $groupSep, string $currency): self
+    {
         if ($decimalSep === '') {
             $decimalSep = $groupSep === '.' ? ',' : '.';
         }
         if ($groupSep === '') {
             $groupSep = $decimalSep === ',' ? '.' : ',';
         }
-        return new self($decimalSep, $groupSep, self::ALL, \is_string($currency) ? $currency : '');
+        return new self($decimalSep, $groupSep, self::ALL, $currency);
     }
 
     /**

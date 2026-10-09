@@ -31,10 +31,15 @@ final class CastBench
     private const ISO_SPAN = 'PT1H30M15.5S';
 
     private NumFormat $invariant;
+    private NumFormat $enUs;
+    private \NumberFormatter $enUsFormatter;
 
     public function warmUp(): void
     {
         $this->invariant = NumFormat::invariant();
+        // ext-intl is optional for the package but required for these two rows.
+        $this->enUsFormatter = new \NumberFormatter('en_US', \NumberFormatter::DECIMAL);
+        $this->enUs = NumFormat::fromNumberFormatter($this->enUsFormatter);
         Cast::bool('true');
     }
 
@@ -56,6 +61,18 @@ final class CastBench
     public function benchCastI32Grouped(): void
     {
         Cast::i32(self::INT_GROUPED, $this->invariant);
+    }
+
+    /** The same grouped text under a format derived once from an intl formatter. */
+    public function benchCastI32GroupedFromFormatter(): void
+    {
+        Cast::i32(self::INT_GROUPED, $this->enUs);
+    }
+
+    /** The formatter itself passed to the door, which declares its symbols per call. */
+    public function benchCastI32GroupedFormatter(): void
+    {
+        Cast::i32(self::INT_GROUPED, $this->enUsFormatter);
     }
 
     public function benchIntval(): void

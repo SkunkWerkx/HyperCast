@@ -150,6 +150,18 @@ let enUs = NumFormat.from(locale: Locale(identifier: "en_US"))   // "$", from th
 try Cast.i32("-$5", format: enUs)                                  // .success(-5)
 ```
 
+Every numeric door, and the generic `numeric` and `scalar` doors, also takes the `Locale`
+itself, the type Foundation's own number parsing is configured with:
+`Cast.i32("1.234", locale: Locale(identifier: "de_DE"))` is `.success(1234)`, exactly
+`Cast.i32("1.234", format: .from(locale:))`. The locale is not optional, as Foundation's
+are not: pass `.current` or `.autoupdatingCurrent` to mean the user's settings, since
+nothing here falls back to one. Deriving a format reads the locale's separators through
+ICU, about 200–300 ns, so the doors cache formats by locale identifier, and a `locale:`
+call costs roughly 60 ns over a prebuilt format. The identifier does not carry the
+per-user number-format overrides Apple platforms allow on `Locale.current`. When those must
+be honored, derive the format once with `NumFormat.from(locale:)` and pass it, which is
+also the fastest form in a hot loop.
+
 ## Interop: building on HyperCast's C ABI
 
 The `Interop` namespace is for a package that carries HyperCast's verdicts across a C ABI
