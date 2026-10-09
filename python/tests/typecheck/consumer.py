@@ -57,6 +57,7 @@ assert_type(fmt.decimal_sep, str)
 assert_type(fmt.flags, int)
 
 assert_type(hypercast.cast_bool("yes"), Success[bool] | Fault)
+assert_type(hypercast.cast_char("U+00E9"), Success[str] | Fault)
 assert_type(hypercast.cast_i8(b"1", fmt), Success[int] | Fault)
 assert_type(hypercast.cast_i32("1", fmt), Success[int] | Fault)
 assert_type(hypercast.cast_u64("1", fmt), Success[int] | Fault)

@@ -14,6 +14,11 @@ final class CorpusTests: XCTestCase {
         #if os(WASI)
             return nil
         #else
+            // A device run (Android, through adb) has the corpus pushed beside the test
+            // bundle, nowhere above the host path #filePath names.
+            if let pushed = ProcessInfo.processInfo.environment["HYPERCAST_CORPUS"] {
+                return URL(fileURLWithPath: pushed)
+            }
             var dir = URL(fileURLWithPath: #filePath)
             while dir.path != "/" {
                 let candidate = dir.appendingPathComponent("corpus")
@@ -77,6 +82,15 @@ final class CorpusTests: XCTestCase {
     func testBooleanCorpus() throws {
         for vector in try corpus("boolean.json") {
             assertVerdict("boolean", vector, try Cast.bool(inputBytes(vector)), vector["value"] as? Bool)
+        }
+    }
+
+    func testCharCorpus() throws {
+        // The corpus pins the scalar as its code-point integer; every scalar fits
+        // `Unicode.Scalar`, so the comparison is exact with no narrowing.
+        for vector in try corpus("char.json") {
+            let expected = (vector["value"] as? Int).flatMap { Unicode.Scalar(UInt32($0)) }
+            assertVerdict("char", vector, try Cast.char(inputBytes(vector)), expected)
         }
     }
 

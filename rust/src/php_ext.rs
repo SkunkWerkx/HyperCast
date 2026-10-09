@@ -98,6 +98,15 @@ pub fn hypercast_native_cast_bool(text: Binary<u8>) -> Reply {
     reply(core::cast_bool(text.as_slice()), push)
 }
 
+/// The scalar crosses as its code point, the raw layer's shape; `Cast.php` encodes it.
+#[php_function]
+#[php(name = "hypercast_native_cast_char")]
+pub fn hypercast_native_cast_char(text: Binary<u8>) -> Reply {
+    reply(core::cast_char(text.as_slice()), |table, scalar| {
+        push(table, i64::from(u32::from(scalar)))
+    })
+}
+
 macro_rules! integer_doors {
     ($($php:ident, $name:literal => $core:ident),+ $(,)?) => {$(
         // Named explicitly: ext-php-rs derives a default by snake-casing the Rust
@@ -318,6 +327,7 @@ pub fn hypercast_native_cast_excel_duration(value: f64) -> Reply {
 pub fn get_module(module: ModuleBuilder) -> ModuleBuilder {
     module
         .function(wrap_function!(hypercast_native_cast_bool))
+        .function(wrap_function!(hypercast_native_cast_char))
         .function(wrap_function!(hypercast_native_cast_i8))
         .function(wrap_function!(hypercast_native_cast_i16))
         .function(wrap_function!(hypercast_native_cast_i32))

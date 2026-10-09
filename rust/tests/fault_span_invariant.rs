@@ -62,6 +62,7 @@ fn every_door(input: &[u8]) {
         assert_span(input, hypercast::cast_decimal(input, format), "cast_decimal");
     }
     assert_span(input, hypercast::cast_bool(input), "cast_bool");
+    assert_span(input, hypercast::cast_char(input), "cast_char");
     assert_span(input, hypercast::cast_uuid(input), "cast_uuid");
     assert_span(input, hypercast::cast_timestamp(input), "cast_timestamp");
     assert_span(input, hypercast::cast_unix(input, UnixPrecision::Millis), "cast_unix");

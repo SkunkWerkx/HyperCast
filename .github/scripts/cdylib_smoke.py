@@ -1,4 +1,4 @@
-"""Loads the shared library every FFI binding loads and calls all twenty-six C exports.
+"""Loads the shared library every FFI binding loads and calls all twenty-seven C exports.
 
 ci.yml's check-cdylib job runs this against a freshly built no_std library on every platform
 the forge ships: a library that links but will not load, or loads but misbehaves at the ABI,
@@ -72,7 +72,7 @@ txt, size, u32, i32, P = ctypes.c_char_p, ctypes.c_size_t, ctypes.c_uint32, ctyp
 FaultP, FormatP = P(Fault), P(NumFormat)
 
 lib.hypercast_version.restype, lib.hypercast_version.argtypes = u32, []
-PLAIN = {"cast_bool": ctypes.c_uint8, "cast_uuid": ctypes.c_uint8 * 16, "cast_timestamp": Timestamp,
+PLAIN = {"cast_bool": ctypes.c_uint8, "cast_char": ctypes.c_uint32, "cast_uuid": ctypes.c_uint8 * 16, "cast_timestamp": Timestamp,
          "cast_date": Date, "cast_time": ctypes.c_uint64, "cast_duration": Duration}
 NUMERIC = {"cast_i8": ctypes.c_int8, "cast_i16": ctypes.c_int16, "cast_i32": ctypes.c_int32,
            "cast_i64": ctypes.c_int64, "cast_u8": ctypes.c_uint8, "cast_u16": ctypes.c_uint16,
@@ -147,6 +147,9 @@ check(got == want, f"hypercast_version reports {got}, rust/Cargo.toml says {want
 check(ok("cast_bool", "Yes").value == 1 and ok("cast_bool", "off").value == 0, "cast_bool value")
 fails("cast_bool", "maybe", MALFORMED, span=(0, 5))
 fails("cast_bool", "  ", EMPTY)
+check(ok("cast_char", "U+00E9").value == 0xE9 and ok("cast_char", " ").value == 0x20, "cast_char value")
+fails("cast_char", "65x", MALFORMED, span=(2, 1))
+fails("cast_char", "U+D800", OUT_OF_RANGE, span=(0, 6))
 
 want_uuid = uuid.UUID("01020304-0506-0708-090a-0b0c0d0e0f10")
 check(bytes(ok("cast_uuid", "{01020304-0506-0708-090A-0B0C0D0E0F10}")) == want_uuid.bytes, "cast_uuid value")
@@ -237,5 +240,5 @@ status, span, _ = typed("cast_excel_duration", -0.25)
 check(status == OK and (span.seconds, span.nanos) == (-21600, 0), "cast_excel_duration value")
 check(typed("cast_excel_duration", 1e10)[0] == OUT_OF_RANGE, "cast_excel_duration window")
 
-check(len(called) == 25, f"called {len(called)} cast exports, expected 25: {sorted(OUT_TYPES.keys() - called)}")
-print(f"cdylib smoke: {lib_path} {got}, all 26 exports called")
+check(len(called) == 26, f"called {len(called)} cast exports, expected 26: {sorted(OUT_TYPES.keys() - called)}")
+print(f"cdylib smoke: {lib_path} {got}, all 27 exports called")

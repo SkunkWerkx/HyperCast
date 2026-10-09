@@ -49,6 +49,42 @@ final class CastTest {
     }
 
     @Test
+    void characterReadsVerbatimOrDeclaredCodePoints() {
+        assertEquals(new Success<>('A'), Cast.character("A"));
+        assertEquals(new Success<>(' '), Cast.character(" "));
+        assertEquals(new Success<>('\u00e9'), Cast.character("&#233;"));
+        assertEquals(new Success<>('\u00e9'), Cast.character("  u+00E9  ".getBytes(StandardCharsets.UTF_8)));
+        assertEquals(new Fault<Character>(CastFailure.EMPTY, 0, 0), Cast.character(""));
+        assertEquals(new Fault<Character>(CastFailure.MALFORMED, 2, 1), Cast.character("65x"));
+    }
+
+    @Test
+    void characterKeepsALoneSurrogateVerbatim() {
+        // One UTF-16 code unit is the char as-is, never transcoded to U+FFFD on the way in.
+        assertEquals(new Success<>('\uD800'), Cast.character("\uD800"));
+        assertEquals(new Success<>('\uDFFF'), Cast.character("\uDFFF"));
+        // Spelled as a code point, a surrogate names no scalar: the core's out-of-range.
+        assertEquals(new Fault<Character>(CastFailure.OUT_OF_RANGE, 0, 6), Cast.character("U+D800"));
+    }
+
+    @Test
+    void characterFaultsASupplementaryScalarInTheCallersUnits() {
+        // "😀" is two chars in a String, four bytes in UTF-8: the span covers it whole in each.
+        assertEquals(new Fault<Character>(CastFailure.OUT_OF_RANGE, 0, 2), Cast.character("\uD83D\uDE00"));
+        assertEquals(
+                new Fault<Character>(CastFailure.OUT_OF_RANGE, 0, 4),
+                Cast.character("\uD83D\uDE00".getBytes(StandardCharsets.UTF_8)));
+        // The trimmed edges stay outside the span.
+        assertEquals(new Fault<Character>(CastFailure.OUT_OF_RANGE, 2, 7), Cast.character("  U+1F600 "));
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment text = arena.allocateFrom("\t&#x1F600;\n");
+            assertEquals(
+                    new Fault<Character>(CastFailure.OUT_OF_RANGE, 1, 9),
+                    Cast.character(text.asSlice(0, text.byteSize() - 1)));
+        }
+    }
+
+    @Test
     void numFormatBridgesFromARealLocale() {
         NumFormat german = NumFormat.from(Locale.GERMANY);
         assertEquals(',', german.decimalSeparator());

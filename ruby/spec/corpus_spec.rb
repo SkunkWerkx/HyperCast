@@ -63,6 +63,16 @@ RSpec.describe "conformance corpus" do
     end
   end
 
+  # The corpus pins a char as its code-point Integer; the door returns the one-character
+  # String, so the comparison goes through #ord.
+  it "replays char.json" do
+    corpus("char.json").each do |vector|
+      verdict = HyperCast.char(vector["input"])
+      verdict = HyperCast::Success.new(value: verdict.value.ord) if verdict in HyperCast::Success
+      assert_verdict("char", vector, verdict, vector["value"])
+    end
+  end
+
   it "replays integer.json" do
     corpus("integer.json").each do |vector|
       door = vector.fetch("type").to_sym

@@ -247,6 +247,7 @@ public final class Cast {
         private static final MemorySegment CAST_EXCEL_SERIAL_FROM_F64 = export("cast_excel_serial_from_f64");
         private static final MemorySegment CAST_EXCEL_TIME = export("cast_excel_time");
         private static final MemorySegment CAST_EXCEL_DURATION = export("cast_excel_duration");
+        private static final MemorySegment CAST_CHAR = export("cast_char");
         private static final MemorySegment HYPERCAST_VERSION = export("hypercast_version");
 
         // Null when the wasm backend is active — the addresses above are then never used, and
@@ -602,6 +603,84 @@ public final class Cast {
         MemorySegment fault = scratch.fault;
         int code = plain(Core.CAST_BOOL, Door.BOOL, in, len, out, fault);
         return code == 0 ? new Success<>(out.get(ValueLayout.JAVA_BYTE, 0) != 0) : failed(code, fault);
+    }
+
+    // --- char ---
+
+    /**
+     * Casts char text: one character, either verbatim — the input is exactly one character,
+     * read <em>before</em> trimming, so {@code " "} is a space and {@code "6"} is the digit
+     * six — or a declared code point, ASCII-whitespace-trimmed and ASCII case-insensitive on
+     * the prefix: decimal {@code 65}, {@code U+0041}, {@code 0x41}, {@code &H41}, or an HTML
+     * numeric entity {@code &#65;} / {@code &#x41;} (the closing {@code ;} required).
+     * Culture-insensitive — no {@link NumFormat}.
+     *
+     * <p>A code point past {@code U+10FFFF} or in the surrogate range is
+     * {@link CastFailure#OUT_OF_RANGE}, as is any scalar above {@code U+FFFF}: a supplementary
+     * character is a surrogate pair, not one {@code char}, so it faults over the trimmed input
+     * rather than being split. A {@code String} of exactly one UTF-16 code unit is that
+     * {@code char} as-is, a lone surrogate included, without crossing into the core.
+     *
+     * @param text the text to cast
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<Character> character(String text) {
+        if (text.length() == 1) {
+            return new Success<>(text.charAt(0));
+        }
+        byte[] utf8 = utf8(text);
+        return chars(character(utf8), text, utf8);
+    }
+
+    /**
+     * See {@link #character(String)}; input as raw UTF-8 bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<Character> character(byte[] utf8) {
+        return charDoor(input(utf8), utf8.length);
+    }
+
+    /**
+     * See {@link #character(String)}; input as a {@link MemorySegment} view of UTF-8 bytes —
+     * heap or native — crossing without a copy.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<Character> character(MemorySegment utf8) {
+        return charDoor(input(utf8), utf8.byteSize());
+    }
+
+    private static Verdict<Character> charDoor(MemorySegment in, long len) {
+        Scratch scratch = SCRATCH.get();
+        MemorySegment out = scratch.out;
+        MemorySegment fault = scratch.fault;
+        int code = plain(Core.CAST_CHAR, Door.CHAR, in, len, out, fault);
+        if (code != 0) {
+            return failed(code, fault);
+        }
+        int scalar = out.get(ValueLayout.JAVA_INT, 0);
+        if (scalar <= Character.MAX_VALUE) {
+            return new Success<>((char) scalar);
+        }
+        // A supplementary scalar the core accepted but one char cannot hold: out of range
+        // over the token the core read, the input less its ASCII whitespace edges.
+        long start = 0;
+        long end = len;
+        while (start < end && asciiWhitespace(in.get(ValueLayout.JAVA_BYTE, start))) {
+            start++;
+        }
+        while (end > start && asciiWhitespace(in.get(ValueLayout.JAVA_BYTE, end - 1))) {
+            end--;
+        }
+        return new Fault<>(CastFailure.OUT_OF_RANGE, (int) start, (int) (end - start));
+    }
+
+    // The core's trim set: Rust's u8::is_ascii_whitespace (no vertical tab).
+    private static boolean asciiWhitespace(byte b) {
+        return b == ' ' || b == '\t' || b == '\n' || b == '\f' || b == '\r';
     }
 
     // --- integers ---

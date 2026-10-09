@@ -9,6 +9,48 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **A char door, in the core and every binding.** It reads exactly one character verbatim,
+  checked before trimming, so `" "` is a space and `"6"` the digit six. Otherwise it reads
+  one declared code point: decimal `65`, `U+0041`, `0x41`, `&H41`, or an HTML entity
+  `&#65;` / `&#x41;` (the `;` is required), ASCII case-insensitive on the prefix. A
+  surrogate or anything past `U+10FFFF` is `OutOfRange`. It is the twenty-sixth C ABI export,
+  `cast_char`, writing a `u32` scalar, and `corpus/char.json` is replayed by every suite
+  ([#22](https://github.com/SkunkWerkx/HyperCast/issues/22)). *(every package)*
+  - Rust `cast_char` → `char`; C# `Cast.Char` → `char`; Java `Cast.character` → `Character`;
+    Go `Char` → `rune`; Swift `Cast.char` → `Unicode.Scalar`; PHP `Cast::char`, Ruby
+    `HyperCast.char` and Python `cast_char` → a one-character string.
+  - C# and Java return a scalar past `U+FFFF` as `OutOfRange`, since their `char` is one
+    UTF-16 unit. A string of exactly one UTF-16 unit, a lone surrogate included, comes back
+    as it is without calling the core.
+- **One door generic over every target.** It picks the door from the requested type, so a
+  caller holding a generic `T` routes through HyperCast in one call
+  ([#21](https://github.com/SkunkWerkx/HyperCast/issues/21)). *(csharp, go, swift)*
+  - C#: `Cast.Scalar<T>` over `bool`, the numerics, `Guid`, `DateOnly`, `TimeOnly`,
+    `DateTimeOffset`, `TimeSpan`, `char` and `DateTime`. `DateTime` reads RFC 3339 as
+    `UtcDateTime`, not through the civil `Cast.DateTime` door. Any other `T` throws
+    `NotSupportedException` before calling the core.
+  - Go: `Scalar[V ScalarTarget, T Text]`. A type outside the union is a compile error.
+  - Swift: `Cast.scalar<T: ScalarCastTarget>(_:format:)`.
+- **C# — Android, for .NET MAUI.** The package carries the core for `android-arm64` and
+  `android-x64`, so a MAUI app has it on every platform MAUI targets (Windows, macOS
+  through Mac Catalyst, iOS and Android) with nothing but the package reference. On
+  CoreCLR, .NET 11's Android runtime, the SDK puts
+  `runtimes/android-{rid}/native/libhypercast.so` in the APK and the ordinary import opens
+  it. The libraries are NDK-built for API level 21 and 16 KB-aligned, as Android 15 devices
+  and Google Play require. A Native AOT publish links the core in from
+  `staticlibs/android-{rid}/libhypercast.a` instead. CI builds an app both ways for both
+  RIDs from a package packed in the same run, runs the x64 pair in a 16 KB-page emulator
+  and checks the arm64 APKs' contents and alignment. *(csharp)*
+- **Go and Swift — Android.** The same arm64 and x86_64 archives the C# Native AOT publish
+  links. Go links `go/staticlib/android_{arm64,amd64}` under `GOOS=android`, with the
+  NDK's clang as `CC`; Swift links the artifact bundle's `*-unknown-linux-android` variants
+  with the Swift SDK for Android (Swift 6.3+, API 28+). CI cross-builds both suites and runs
+  them, corpus included, in the same 16 KB-page emulator, through
+  `.github/scripts/android_build_suite.sh` and `android_device_test.sh`; both also run
+  against a local emulator. *(go, swift)*
+
 ### Fixed
 
 - **Ruby — the Magnus extension survives a compacting garbage collection.** It kept

@@ -22,6 +22,7 @@ check.("u64 at its maximum", value.(HyperCast.u64("18446744073709551615", inv)),
 check.("i64 at its minimum", value.(HyperCast.i64("-9223372036854775808", inv)), -9_223_372_036_854_775_808)
 check.("f64", value.(HyperCast.f64("1.5e3", inv)), 1500.0)
 check.("bool", value.(HyperCast.bool("true")), true)
+check.("char", value.(HyperCast.char("&#233;")), "é")
 check.("uuid", value.(HyperCast.uuid("{2ED6657D-E927-568B-95E1-2665A8AEA6A2}")), "2ed6657d-e927-568b-95e1-2665a8aea6a2")
 fault = HyperCast.i32("1€", inv)
 check.("fault span", [fault.reason, fault.offset, fault.length], [:malformed, 1, 1])

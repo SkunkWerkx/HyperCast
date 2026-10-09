@@ -15,7 +15,7 @@ import org.graalvm.polyglot.io.ByteSequence;
 /**
  * The Rust core as a {@code wasm32-wasip1} module, run inside the JVM by
  * <a href="https://www.graalvm.org/webassembly/">GraalWasm</a>. No native binary, no
- * {@code java.lang.foreign} downcall: the same twenty-five {@code cast_*} exports (and the
+ * {@code java.lang.foreign} downcall: the same twenty-six {@code cast_*} exports (and the
  * {@code hypercast_version} probe) {@link Cast} downcalls into natively are called through
  * the polyglot API instead, on the module bundled at
  * {@code /native/wasm32-wasip1/hypercast.wasm}. The typed doors take a {@code double}, which

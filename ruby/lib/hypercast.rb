@@ -220,6 +220,14 @@ module HyperCast
       plain(:cast_bool, text, 1) { |out| Interop.decode(:bool, out) }
     end
 
+    # Casts char text to a one-character UTF-8 String: an input of exactly one character is
+    # that character verbatim (" " is a space), otherwise one declared code point — 65,
+    # U+0041, 0x41, &H41, &#65; or &#x41; — surrounded by optional ASCII whitespace. A code
+    # point past U+10FFFF, or a surrogate, is :out_of_range.
+    def char(text)
+      plain(:cast_char, text, 4) { |out| Interop.decode(:char, out) }
+    end
+
     %i[i8 i16 i32 i64 u8 u16 u32 u64].each do |door|
       unpack = Interop::SCALARS.fetch(door)
       size = Interop::VALUE_BYTES.fetch(door)

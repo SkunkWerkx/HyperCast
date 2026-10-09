@@ -94,6 +94,41 @@ final class CorpusTest {
         }
     }
 
+    /**
+     * The corpus pins a char as its code point. A {@code char} holds only the BMP, so a
+     * supplementary scalar the core accepts is this binding's out-of-range over the trimmed
+     * input — the one place a Java verdict departs from the core's, by design.
+     */
+    @Test
+    void charCorpus() {
+        for (JsonElement element : corpus("char.json")) {
+            JsonObject vector = element.getAsJsonObject().deepCopy();
+            Character expected = null;
+            if (vector.has("value")) {
+                int scalar = vector.get("value").getAsInt();
+                if (scalar > Character.MAX_VALUE) {
+                    byte[] bytes = inputBytes(vector);
+                    int start = 0;
+                    int end = bytes.length;
+                    while (start < end && " \t\n\f\r".indexOf(bytes[start]) >= 0) {
+                        start++;
+                    }
+                    while (end > start && " \t\n\f\r".indexOf(bytes[end - 1]) >= 0) {
+                        end--;
+                    }
+                    vector.addProperty("expect", "out_of_range");
+                    JsonArray span = new JsonArray();
+                    span.add(start);
+                    span.add(end - start);
+                    vector.add("fault", span);
+                } else {
+                    expected = (char) scalar;
+                }
+            }
+            assertVerdict("char", vector, Cast.character(inputBytes(vector)), expected);
+        }
+    }
+
     @Test
     void booleanCorpus() {
         for (JsonElement element : corpus("boolean.json")) {

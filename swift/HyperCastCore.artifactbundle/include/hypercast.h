@@ -1,4 +1,4 @@
-// The C ABI of the hypercast core: the twenty-six functions rust/src/ffi.rs exports, which
+// The C ABI of the hypercast core: the twenty-seven functions rust/src/ffi.rs exports, which
 // is everything the static libraries in this bundle define. The Swift binding imports this
 // as the module HyperCastCore where the core is linked in (Linux and WebAssembly); every
 // other binding declares the same signatures in its own language.
@@ -23,6 +23,7 @@ extern "C" {
 uint32_t hypercast_version(void);
 
 int32_t cast_bool(const uint8_t *ptr, uintptr_t len, void *out, void *fault);
+int32_t cast_char(const uint8_t *ptr, uintptr_t len, void *out, void *fault);
 
 int32_t cast_i8(const uint8_t *ptr, uintptr_t len, const void *format, void *out, void *fault);
 int32_t cast_i16(const uint8_t *ptr, uintptr_t len, const void *format, void *out, void *fault);

@@ -42,6 +42,15 @@ public enum Interop {
         return Decimal(sign: negative ? .minus : .plus, exponent: -Int(scale), significand: magnitude)
     }
 
+    /// A Unicode scalar: its value as a `u32`, which the core guarantees is at most `U+10FFFF`
+    /// and never a surrogate: the char door's value.
+    public static func scalar(_ raw: UnsafeRawBufferPointer) -> Unicode.Scalar {
+        guard let scalar = Unicode.Scalar(raw.load(as: UInt32.self)) else {
+            preconditionFailure("libhypercast returned a non-scalar code point — a binding bug, please report it")
+        }
+        return scalar
+    }
+
     /// A UUID: 16 bytes in RFC 9562 order, which is `uuid_t`'s tuple layout exactly: the uuid
     /// door's value.
     public static func uuid(_ raw: UnsafeRawBufferPointer) -> UUID {

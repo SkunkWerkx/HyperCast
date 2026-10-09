@@ -464,6 +464,16 @@ fn cast_bool(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
     })
 }
 
+/// Casts one character — the text verbatim when it is exactly one scalar, otherwise a declared
+/// code point (``65``, ``U+0041``, ``0x41``, ``&H41``, ``&#65;``, ``&#x41;``) — to a
+/// one-character ``str``. Past ``U+10FFFF`` or a surrogate is ``OUT_OF_RANGE``.
+#[pyfunction]
+fn cast_char(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
+    verdict(py, &text, core::cast_char(text.bytes()?), |py, value| {
+        Ok(value.into_pyobject(py)?.into_any().unbind())
+    })
+}
+
 /// Casts UUID text — every .NET ``Guid`` form plus ``urn:uuid:``-style prefixes — to a
 /// ``uuid.UUID``.
 #[pyfunction]
@@ -599,6 +609,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Fault>()?;
     m.add_class::<NumFormat>()?;
     m.add_function(wrap_pyfunction!(cast_bool, m)?)?;
+    m.add_function(wrap_pyfunction!(cast_char, m)?)?;
     m.add_function(wrap_pyfunction!(cast_i8, m)?)?;
     m.add_function(wrap_pyfunction!(cast_i16, m)?)?;
     m.add_function(wrap_pyfunction!(cast_i32, m)?)?;

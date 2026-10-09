@@ -63,6 +63,7 @@ fn allocation_free() {
     let format = NumFormat::INVARIANT;
 
     assert_allocation_free("cast_bool", || hypercast::cast_bool(b"enabled").unwrap());
+    assert_allocation_free("cast_char", || hypercast::cast_char(b"&#x1F600;").unwrap());
     assert_allocation_free("cast_i64", || hypercast::cast_i64(b"(1,234,567)", &format).unwrap());
     assert_allocation_free("cast_u64", || {
         hypercast::cast_u64(b"18446744073709551615", &format).unwrap()
@@ -129,6 +130,7 @@ fn allocation_free() {
 
     // The failure paths must stay allocation-free too — a fault is a span, never captured text.
     assert_allocation_free("cast_bool failure", || hypercast::cast_bool(b"maybe").unwrap_err());
+    assert_allocation_free("cast_char failure", || hypercast::cast_char(b"U+D800").unwrap_err());
     assert_allocation_free("cast_i32 failure", || {
         hypercast::cast_i32(b"99999999999999999999", &format).unwrap_err()
     });

@@ -1,10 +1,12 @@
-//! Allocation-free parsers for scalars from untrusted text — booleans, numerics, UUIDs,
+//! Allocation-free parsers for scalars from untrusted text — booleans, characters, numerics, UUIDs,
 //! and temporals. Every cast returns a verdict: the value, or a [`Fault`] carrying a closed
 //! [`Reason`] and the offending byte span. Never panics on bad input, never allocates —
 //! semantics ported from Svartalfheim's `Norse.Primitives` parser family, mechanics from
 //! this project's own HyperUuid (one Rust `cdylib`, every host binding calls straight in).
 //!
 //! - [`cast_bool`] — the natural-language boolean lexicon
+//! - [`cast_char`] — one Unicode scalar, verbatim or as a declared code point (`U+00E9`,
+//!   `&#233;`)
 //! - [`cast_i8`]…[`cast_u64`] — the integer family under a caller-declared [`NumFormat`]
 //! - [`cast_f32`] / [`cast_f64`] — finite reals only, percent notation included
 //! - [`cast_decimal`] — the same grammar to an exact [`Decimal`] (sign, 96-bit magnitude,
@@ -128,6 +130,7 @@ unsafe extern "C" {}
 
 mod abi;
 mod boolean;
+mod character;
 mod decimal;
 #[cfg(feature = "exports")]
 mod ffi;
@@ -152,6 +155,7 @@ mod ruby_ext;
 
 pub use abi::{RawNumFormat, hypercast_version};
 pub use boolean::cast_bool;
+pub use character::cast_char;
 pub use decimal::cast_decimal;
 pub use integer::{cast_i8, cast_i16, cast_i32, cast_i64, cast_u8, cast_u16, cast_u32, cast_u64};
 pub use real::{cast_f32, cast_f64};
@@ -227,6 +231,33 @@ mod tests {
     fn bool_fault_spans_the_trimmed_token() {
         let fault = cast_bool(b"  maybe  ").unwrap_err();
         assert_eq!((fault.offset, fault.len), (2, 5));
+    }
+
+    // --- char (the rest of its grammar is corpus/char.json) ---
+
+    fn span<T: core::fmt::Debug>(verdict: Result<T, Fault>) -> (Reason, u32, u32) {
+        let fault = verdict.unwrap_err();
+        (fault.reason, fault.offset, fault.len)
+    }
+
+    #[test]
+    fn char_is_never_verbatim_for_ill_formed_utf8() {
+        // Bytes no JSON corpus can carry: a lone continuation, a lead byte cut short, an
+        // encoded surrogate and an overlong encoding are none of them one scalar.
+        assert_eq!(span(cast_char([0x80])), (Reason::Malformed, 0, 1));
+        assert_eq!(span(cast_char([0xC3])), (Reason::Malformed, 0, 1));
+        assert_eq!(span(cast_char([0xED, 0xA0, 0x80])), (Reason::Malformed, 0, 3));
+        assert_eq!(span(cast_char([0xC0, 0x80])), (Reason::Malformed, 0, 2));
+        assert_eq!(span(cast_char(b" \xFF ")), (Reason::Malformed, 1, 1));
+        // A lead byte at the end of a spelling spans what is there, never past the input.
+        assert_eq!(span(cast_char(b"U+4\xE2")), (Reason::Malformed, 3, 1));
+    }
+
+    #[test]
+    fn char_saturates_rather_than_wrapping_back_into_range() {
+        // 2^32 + 65 would wrap to 'A' in a u32 accumulator.
+        assert_eq!(reason(cast_char(b"4294967361")), Reason::OutOfRange);
+        assert_eq!(reason(cast_char(b"0x100000041")), Reason::OutOfRange);
     }
 
     // --- integers ---

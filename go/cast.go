@@ -383,6 +383,22 @@ func Bool[T Text](text T) (bool, *Fault) {
 	return read[uint8](&r) != 0, nil
 }
 
+// Char casts one character: text that is exactly one UTF-8 scalar is that scalar verbatim,
+// before any trimming (" " is a space, "6" is the digit six); otherwise, ASCII whitespace
+// trimmed, exactly one declared code point — decimal 65, U+0041, 0x41, &H41, or an HTML
+// numeric entity &#65; / &#x41; (the ; required), prefixes ASCII case-insensitive. A
+// code point past U+10FFFF or a surrogate is OutOfRange; the rune returned is always a
+// valid Unicode scalar.
+func Char[T Text](text T) (rune, *Fault) {
+	ptr, length := textPtr(text)
+	r := callPlain(symChar, ptr, length)
+	runtime.KeepAlive(text)
+	if r.code != 0 {
+		return 0, failed(r.code, &r.fault)
+	}
+	return rune(read[uint32](&r)), nil
+}
+
 func numericDoor[T Text, V any](sym numericSymbol, text T, format NumFormat) (V, *Fault) {
 	raw := format.raw()
 	ptr, length := textPtr(text)
@@ -655,6 +671,72 @@ func Span[T Text](text T) (Duration, *Fault) {
 	}
 	out := read[RawTimestamp](&r)
 	return Duration{Seconds: out.Seconds, Nanos: out.Nanos}, nil
+}
+
+// ScalarTarget is the closed set of types Scalar casts to: every Number, plus bool,
+// uuid.UUID, time.Time, Date and Duration — each the one type a single door returns
+// without a declared argument. Three are left out on purpose:
+//
+//   - rune: it is int32, so Scalar[int32] is I32's integer door; call Char for a character.
+//   - time.Duration: TimeOfDay returns one, but a Go reader takes time.Duration for a span,
+//     and Span returns Duration because time.Duration cannot hold the core's window.
+//   - CivilDateTime: zone-less date-times need a declared DateOrder; call DateTime.
+type ScalarTarget interface {
+	Number | bool | uuid.UUID | time.Time | Date | Duration
+}
+
+// Scalar casts text to V by dispatching to V's own door, the way Numeric does for the
+// numeric targets: Scalar[bool] is Bool, Scalar[uuid.UUID] is Uuid, Scalar[time.Time] is
+// Timestamp (RFC 3339, zone mandatory, normalized to UTC), Scalar[Date] is DateOnly
+// (strict yyyy-MM-dd), Scalar[Duration] is Span, and every Number is Numeric. format is
+// read only by the numeric doors. The rules and verdicts are the concrete door's,
+// unchanged, and an unsupported V is a compile error: ScalarTarget lists exactly the types
+// that have a door.
+func Scalar[V ScalarTarget, T Text](text T, format NumFormat) (V, *Fault) {
+	// A pointer to the out-value, as in Numeric, keeps the dispatch allocation-free.
+	var out V
+	var fault *Fault
+	switch p := any(&out).(type) {
+	case *bool:
+		*p, fault = Bool(text)
+	case *uuid.UUID:
+		*p, fault = Uuid(text)
+	case *time.Time:
+		*p, fault = Timestamp(text)
+	case *Date:
+		*p, fault = DateOnly(text)
+	case *Duration:
+		*p, fault = Span(text)
+	case *int8:
+		*p, fault = I8(text, format)
+	case *int16:
+		*p, fault = I16(text, format)
+	case *int32:
+		*p, fault = I32(text, format)
+	case *int64:
+		*p, fault = I64(text, format)
+	case *uint8:
+		*p, fault = U8(text, format)
+	case *uint16:
+		*p, fault = U16(text, format)
+	case *uint32:
+		*p, fault = U32(text, format)
+	case *uint64:
+		*p, fault = U64(text, format)
+	case *float32:
+		*p, fault = F32(text, format)
+	case *float64:
+		*p, fault = F64(text, format)
+	case *Decimal:
+		*p, fault = Exact(text, format)
+	default:
+		panic("unreachable: ScalarTarget admits no other type")
+	}
+	if fault != nil {
+		var zero V
+		return zero, fault
+	}
+	return out, nil
 }
 
 // ExactFromFloat64 reads a number the caller already holds — the float64 a workbook stores

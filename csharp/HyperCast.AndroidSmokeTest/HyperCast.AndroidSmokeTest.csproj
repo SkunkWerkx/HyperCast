@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<!-- The package on Android, as an app: the same SmokeTest.Run() the Native AOT smoke test
+	     runs, crossing every native entry point, started from an Activity (SmokeActivity.cs),
+	     since an Android app has no Main of its own. It needs the android workload, so it is not in
+	     HyperCast.slnx, which every other leg builds; CI's test-android job builds it on Mono
+	     and under Native AOT, for both RIDs, and runs the x64 builds in an emulator.
+
+	     Unlike the other smoke tests, this one takes HyperCast as a package, not a project
+	     reference. What Android needs proving is the package's own layout: that the .NET for
+	     Android SDK finds runtimes/{rid}/native/libhypercast.so in the .nupkg and puts it in
+	     the APK under lib/{abi}/, and that build/net11.0/HyperCast.targets, imported by NuGet
+	     and not by hand, hands a Native AOT publish staticlibs/{rid}/libhypercast.a. A project
+	     reference would take neither path. CI packs the package from the staged native
+	     binaries into a local folder and passes it in:
+
+	       dotnet build -p:HyperCastVersion=<version> -p:RestoreAdditionalProjectSources=<folder> -->
+	<PropertyGroup>
+		<TargetFramework>net11.0-android</TargetFramework>
+		<SupportedOSPlatformVersion>24</SupportedOSPlatformVersion>
+		<OutputType>Exe</OutputType>
+		<IsPackable>false</IsPackable>
+		<ApplicationId>io.github.skunkwerkx.hypercast.androidsmoketest</ApplicationId>
+		<ApplicationTitle>HyperCast smoke test</ApplicationTitle>
+		<ApplicationVersion>1</ApplicationVersion>
+		<ApplicationDisplayVersion>1.0</ApplicationDisplayVersion>
+		<InvariantGlobalization>true</InvariantGlobalization>
+		<!-- An .apk, which installs with a plain `adb install`; an .aab needs bundletool. -->
+		<AndroidPackageFormat>apk</AndroidPackageFormat>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<Compile Include="../HyperCast.AotSmokeTest/SmokeTest.cs" Link="SmokeTest.cs" />
+		<PackageReference Include="HyperCast" Version="$(HyperCastVersion)" />
+	</ItemGroup>
+
+	<Target Name="_RequireHyperCastVersion" BeforeTargets="CollectPackageReferences" Condition="'$(HyperCastVersion)' == ''">
+		<Error Text="Pass -p:HyperCastVersion=... and -p:RestoreAdditionalProjectSources=... naming a locally packed HyperCast (see this project's header)." />
+	</Target>
+
+</Project>

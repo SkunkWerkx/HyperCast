@@ -48,6 +48,19 @@ func column<T: NumericCastTarget>(_ cells: [String], as _: T.Type, format: NumFo
 }
 ```
 
+`Cast.scalar<T>(_:format:)` widens that to every door a type alone can choose, over the
+closed `ScalarCastTarget` set: `Bool`, the eleven numeric targets, `UUID`, `Date` (the
+RFC 3339 `timestamp` door, zone mandatory), `Duration` and `Unicode.Scalar` (the `char`
+door). `format` is read by the numeric doors only. `DateComponents` is deliberately not a
+target: the `date`, `time` and `dateTime` doors all return it, so the type cannot say which
+was meant, and a caller names that door instead.
+
+`Cast.char` reads one `Unicode.Scalar`: an input that is exactly one scalar is taken
+verbatim before any trimming (`" "` is a space, `"6"` the digit six), and otherwise the
+trimmed text must be one code-point spelling — `65`, `U+0041`, `0x41`, `&H41`, `&#65;`,
+`&#x41;` — with a spelling past `U+10FFFF` or naming a surrogate `outOfRange`. Every scalar
+fits `Unicode.Scalar`, so nothing narrows.
+
 ## Numbers a workbook already holds
 
 A spreadsheet stores a numeric cell as a `Double`, and four doors read one directly, with no
@@ -145,7 +158,7 @@ through exactly the conversions every `Cast` door applies, so a value read out o
 library's buffer is the value the door of the same name would have returned. Each reader
 takes an `UnsafeRawBufferPointer` starting at one value, aligned for its widest field.
 
-- Out-values: `Interop.decimal` → `Decimal`, `uuid` → `UUID`, `instant` → `Date`, `date`,
+- Out-values: `Interop.scalar` → `Unicode.Scalar`, `decimal` → `Decimal`, `uuid` → `UUID`, `instant` → `Date`, `date`,
   `civil` and `time` → `DateComponents`, `duration` → `Duration`.
 - `Interop.rawFormat(_:)` — a `NumFormat` as the core reads it, the 32-byte
   `Interop.RawNumFormat` tuple, the symbol inline up to `Interop.currencyMaxBytes` (16).
@@ -200,6 +213,18 @@ manifest declares it only on a Mac, where those platforms can be built at all, a
 when the XCFramework is in the tree; both targets define the one `HyperCastCore` module the
 binding imports. CI's `test-apple-mobile` job runs the suite on an iOS simulator and as a
 Mac Catalyst process with `xcodebuild test`, and builds the package for an iOS device.
+
+Android uses the same artifact bundle: it carries the core for `aarch64-unknown-linux-android`
+and `x86_64-unknown-linux-android`, and a package built with the
+[Swift SDK for Android](https://www.swift.org/documentation/articles/swift-sdk-for-android-getting-started.html)
+(`swift build --swift-sdk aarch64-unknown-linux-android28`; Swift 6.3 or later, API 28 or
+later) links it like any other triple. Page alignment is the final link's, which the SDK
+does with the NDK's linker; NDK r28 and later align to the 16 KB pages Android 15 devices
+may use by default. CI cross-builds this suite with the SDK for x86_64 and runs it in an emulator
+whose image uses 16 KB pages, through `.github/scripts/android_build_suite.sh` and
+`android_device_test.sh`, which run the same way against a local emulator; the aarch64
+build is linked. The Swift runtime on Android is shared libraries, which an app packages
+the way the SDK's documentation describes; the core adds nothing to them.
 
 In a checkout of this repository, `HYPERCAST_LOCAL_CORE=1 swift test` run from `swift/` links
 the bundle `.github/scripts/local-core.sh` builds from the checkout's core in place of the

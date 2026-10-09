@@ -62,6 +62,17 @@ public static partial class Cast
 			: OperatingSystem.IsIOS() ? cast_bool_internal(ptr, len, value, fault)
 			: cast_bool_native(ptr, len, value, fault);
 
+	[LibraryImport("hypercast", EntryPoint = "cast_char")]
+	private static unsafe partial int cast_char_native(byte* ptr, nuint len, uint* value, RawFault* fault);
+	[LibraryImport("*", EntryPoint = "cast_char")]
+	private static unsafe partial int cast_char_browser(byte* ptr, nuint len, uint* value, RawFault* fault);
+	[LibraryImport("__Internal", EntryPoint = "cast_char")]
+	private static unsafe partial int cast_char_internal(byte* ptr, nuint len, uint* value, RawFault* fault);
+	private static unsafe int cast_char(byte* ptr, nuint len, uint* value, RawFault* fault) =>
+		OperatingSystem.IsBrowser() ? cast_char_browser(ptr, len, value, fault)
+			: OperatingSystem.IsIOS() ? cast_char_internal(ptr, len, value, fault)
+			: cast_char_native(ptr, len, value, fault);
+
 	[LibraryImport("hypercast", EntryPoint = "cast_i8")]
 	private static unsafe partial int cast_i8_native(byte* ptr, nuint len, RawNumFormat* format, sbyte* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_i8")]

@@ -195,7 +195,7 @@ the record of what shipped; this is the record of why.
    throw (Codex's review of the PR found the same hole independently). `hypercast_version`
    is the zero-argument probe, and every binding fronts it with an availability check plus
    the loaded core's version.
-4. **musl builds — built; iOS and Mac Catalyst — built (0.7.0); Android — open.** The forge built the three desktop OS families
+4. **musl builds — built; iOS and Mac Catalyst — built (0.7.0); Android — built (0.8.0).** The forge built the three desktop OS families
    on x64 and arm64 plus browser-wasm, and nothing for `ios-*`, `android-*` or
    `linux-musl-*`. That gap is the sole reason the PR carries several hundred lines of
    managed fallback grammar duplicating this core — RFC 3339, the three-shape duration
@@ -203,8 +203,11 @@ the record of what shipped; this is the record of why.
    Alpine containers, attested, and shipped in every binding that has a dynamic-loading
    story on musl; Swift, which has none, links the core in statically instead. Alpine no
    longer takes the fallback. Since 0.7.0, C#, Swift and Go link the core into iOS and Mac
-   Catalyst apps from static archives built in the same job, as HyperUuid's do. `android-*`
-   remains HyperForge work, shared with HyperUuid.
+   Catalyst apps from static archives built in the same job, as HyperUuid's do. Since 0.8.0
+   the same three reach Android, arm64 and x86_64: the C# package carries the shared library
+   and Native AOT archives, so a MAUI app has the core on every platform MAUI targets, and Go
+   and Swift link the same archives. The forge gained an opt-in `android` input to build
+   them, for HyperUuid to turn on when it wants the same.
 5. **A corpus content package — declined.** The consumer vendored the corpus files plus a
    snapshot SHA by hand and asked for a package. The ruling is that the corpus is this
    repository's receipt, not a product: a downstream suite takes `corpus/*.json` from the
@@ -266,3 +269,29 @@ the type tag directly, and the two inputs now cost the same.
 Not found: any core hot-path optimization evidenced by the PR. The consumer's own re-measured
 ratios sit inside the crossing-tax band the C# README already describes, and its one outlier turned out to
 be a missing routing branch on its side. The wins on offer are capability gaps, not speed.
+
+## What the consumer asked for next (2026-10-08)
+
+Norse is removing its last hand-written scalar parsers in favour of HyperCast and filed two
+issues against the C# binding. Both landed in every binding where the language can express
+the idea; neither stayed C#-only.
+
+- **A char door ([#22](https://github.com/SkunkWerkx/HyperCast/issues/22)) — core, built.**
+  Norse's `CharParser` was the one scalar grammar with no counterpart here: exactly one
+  character taken verbatim (before trimming, so `" "` is a space), or one declared code
+  point (`65`, `U+0041`, `0x41`, `&H41`, `&#65;`, `&#x41;`). The grammar lives once in the
+  core as `cast_char`, the twenty-sixth export, and `corpus/char.json` is its contract.
+  The issue planned for the other bindings to add the door later. It shipped in all eight at
+  once, because the corpus claim ("all eight replay every file") is only worth anything if it
+  stays true. Each binding returns its own character type, so the decision was what to do
+  where that type is narrower than a scalar: C# and Java's UTF-16 `char` turns a scalar
+  past `U+FFFF` into `OutOfRange` (the issue's choice, and Norse will converge on it) rather
+  than returning half a surrogate pair.
+- **One door generic over every target ([#21](https://github.com/SkunkWerkx/HyperCast/issues/21))
+  — binding, built where `Numeric<T>` already lives.** `Cast.Scalar<T>` in C#, `Scalar[V]`
+  in Go, `Cast.scalar<T>` in Swift; not in Java or the dynamic bindings, for the reasons the
+  numeric door gave. The decision that needed making was `DateTime`, which in C# names two
+  doors. `Scalar<DateTime>` reads RFC 3339 and comes out as `UtcDateTime`, the one reading
+  that needs no declared order; a caller wanting the civil door calls `Cast.DateTime`
+  directly. The same question excluded types elsewhere: Go's `rune` is its `int32`, and
+  Swift's `DateComponents` is the result of three doors, so neither is dispatchable.

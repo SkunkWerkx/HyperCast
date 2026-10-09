@@ -127,6 +127,45 @@ final class Cast
     }
 
     /**
+     * Casts char text: an input that is exactly one UTF-8 scalar is that scalar, checked
+     * before trimming (" " is a space, "6" the digit); otherwise one declared code point,
+     * ASCII case-insensitive on the prefix — decimal 65, U+0041, 0x41, &H41, &#65; or
+     * &#x41;. A code point past U+10FFFF, or a surrogate, is OutOfRange.
+     *
+     * @param string $text the text to cast
+     * @return Success|Fault the verdict: a Success carrying the scalar as a UTF-8 string, or a Fault
+     */
+    public static function char(string $text): Success|Fault
+    {
+        $ffi = self::$ffi ?? self::load();
+        self::$outI64->cdata = 0;
+        $rc = $ffi->cast_char($text === '' ? null : $text, \strlen($text), self::$outI64Ptr, self::$faultPtr);
+        return $rc === 0 ? new Success(self::utf8(self::$outI64->cdata)) : self::fail($rc);
+    }
+
+    /**
+     * UTF-8 for a scalar the core already range-checked — by hand, so the door needs no
+     * mbstring or intl.
+     *
+     * @param int $scalar a Unicode scalar value
+     * @return string its UTF-8 encoding
+     */
+    private static function utf8(int $scalar): string
+    {
+        if ($scalar < 0x80) {
+            return \chr($scalar);
+        }
+        if ($scalar < 0x800) {
+            return \chr(0xC0 | $scalar >> 6) . \chr(0x80 | $scalar & 0x3F);
+        }
+        if ($scalar < 0x10000) {
+            return \chr(0xE0 | $scalar >> 12) . \chr(0x80 | $scalar >> 6 & 0x3F) . \chr(0x80 | $scalar & 0x3F);
+        }
+        return \chr(0xF0 | $scalar >> 18) . \chr(0x80 | $scalar >> 12 & 0x3F)
+            . \chr(0x80 | $scalar >> 6 & 0x3F) . \chr(0x80 | $scalar & 0x3F);
+    }
+
+    /**
      * Integer doors: the target type's own range, declared grouping, accounting parens,
      * non-negative exponent, and 0x/&H/0b two's-complement radix prefixes. Every width
      * funnels through one zeroed 64-bit scratch slot (the supported RIDs are all
@@ -748,6 +787,7 @@ final class Cast
             . ' uint8_t currency[16]; } hc_format;'
             . 'uint32_t hypercast_version(void);'
             . "int cast_bool{$plain};"
+            . "int cast_char{$plain};"
             . "int cast_i8{$numeric}; int cast_i16{$numeric}; int cast_i32{$numeric}; int cast_i64{$numeric};"
             . "int cast_u8{$numeric}; int cast_u16{$numeric}; int cast_u32{$numeric}; int cast_u64{$numeric};"
             . "int cast_f32{$numeric}; int cast_f64{$numeric}; int cast_decimal{$numeric};"

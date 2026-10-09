@@ -137,6 +137,24 @@ func TestBooleanCorpus(t *testing.T) {
 	}
 }
 
+// A char vector's value is the code point as an integer.
+func TestCharCorpus(t *testing.T) {
+	for _, v := range corpus(t, "char.json") {
+		var expected rune
+		if v.Value != nil {
+			n, err := strconv.ParseInt(string(v.Value), 10, 32)
+			if err != nil {
+				t.Fatalf("char: %q value %s: %v", v.Input, v.Value, err)
+			}
+			expected = rune(n)
+		}
+		value, fault := Char(v.Input)
+		assertVerdict(t, "char", &v, value, fault, expected)
+		bytesValue, bytesFault := Char([]byte(v.Input))
+		assertVerdict(t, "char", &v, bytesValue, bytesFault, expected)
+	}
+}
+
 func TestIntegerCorpus(t *testing.T) {
 	for _, v := range corpus(t, "integer.json") {
 		format := v.format()

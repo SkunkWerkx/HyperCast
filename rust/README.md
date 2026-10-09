@@ -4,10 +4,10 @@
 [![crates.io](https://img.shields.io/crates/v/hypercast.svg)](https://crates.io/crates/hypercast)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/SkunkWerkx/HyperCast/blob/master/LICENSE)
 
-**The core itself: allocation-free parsers for scalars from untrusted text — booleans, the
-full integer family, reals, UUIDs, and temporals — where every parse returns a verdict (the
-value, or a closed reason plus the offending byte span), never a panic and never an
-allocation.**
+**The core itself: allocation-free parsers for scalars from untrusted text — booleans, single
+characters, the full integer family, reals, UUIDs, and temporals — where every parse returns a
+verdict (the value, or a closed reason plus the offending byte span), never a panic and never
+an allocation.**
 
 `str::parse` gives you the type's grammar; untrusted text doesn't speak it. This crate's
 doors take what sources actually send — `yes`/`on`/`enabled`, `(1,234)` accounting
@@ -174,7 +174,7 @@ HyperCast's verdicts — HyperTabular's native layer, for one. The value types
 out-values themselves; the rest is what turns the ABI's codes and format back into them,
 the same code the doors and `ffi.rs` use:
 
-- **The `exports` feature**, on by default, is the 25 `cast_*` symbols and
+- **The `exports` feature**, on by default, is the 26 `cast_*` symbols and
   `hypercast_version` as a symbol. A `#[no_mangle]` item is exported from whatever library
   the crate ends up in, so a crate building its own `cdylib` or `staticlib` takes
   `default-features = false`, naming `std` again if it wants it — otherwise its library

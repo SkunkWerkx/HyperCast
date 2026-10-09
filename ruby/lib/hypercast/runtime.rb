@@ -21,7 +21,7 @@ module HyperCast
     # typed doors take a double instead of the text and its length: typed is (value, out,
     # fault), typed_declared adds the u32 after the value.
     DOORS = {
-      cast_bool: :plain,
+      cast_bool: :plain, cast_char: :plain,
       cast_i8: :numeric, cast_i16: :numeric, cast_i32: :numeric, cast_i64: :numeric,
       cast_u8: :numeric, cast_u16: :numeric, cast_u32: :numeric, cast_u64: :numeric,
       cast_f32: :numeric, cast_f64: :numeric, cast_decimal: :numeric,

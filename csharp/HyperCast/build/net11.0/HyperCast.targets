@@ -45,6 +45,7 @@
   <ItemGroup Condition="'$(RuntimeIdentifier)' == 'browser-wasm'">
     <NativeFileReference Include="$(MSBuildThisFileDirectory)../../runtimes/browser-wasm/nativeassets/net10.0/libhypercast.a" />
     <EmccExportedFunction Include="_cast_bool" />
+    <EmccExportedFunction Include="_cast_char" />
     <EmccExportedFunction Include="_cast_i8" />
     <EmccExportedFunction Include="_cast_i16" />
     <EmccExportedFunction Include="_cast_i32" />

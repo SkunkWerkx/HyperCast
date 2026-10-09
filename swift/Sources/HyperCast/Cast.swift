@@ -50,6 +50,7 @@ public enum Cast {
     // Immutable once built, and C function pointers carry no state of their own.
     private final class LoadedLibrary: Sendable {
         let bool: PlainFn
+        let char: PlainFn
         let i8: NumericFn
         let i16: NumericFn
         let i32: NumericFn
@@ -79,7 +80,7 @@ public enum Cast {
         let version: VersionFn
 
         init(
-            bool: PlainFn,
+            bool: PlainFn, char: PlainFn,
             i8: NumericFn, i16: NumericFn, i32: NumericFn, i64: NumericFn,
             u8: NumericFn, u16: NumericFn, u32: NumericFn, u64: NumericFn,
             f32: NumericFn, f64: NumericFn, decimal: NumericFn, uuid: PlainFn, timestamp: PlainFn,
@@ -89,6 +90,7 @@ public enum Cast {
             excelDuration: TypedFn, version: VersionFn
         ) {
             self.bool = bool
+            self.char = char
             self.i8 = i8; self.i16 = i16; self.i32 = i32; self.i64 = i64
             self.u8 = u8; self.u16 = u16; self.u32 = u32; self.u64 = u64
             self.f32 = f32; self.f64 = f64; self.decimal = decimal
@@ -105,6 +107,7 @@ public enum Cast {
     // Linked in: the C declarations are the table, and there is nothing to find or open.
     private static let library = LoadedLibrary(
         bool: cast_bool,
+        char: cast_char,
         i8: cast_i8, i16: cast_i16, i32: cast_i32, i64: cast_i64,
         u8: cast_u8, u16: cast_u16, u32: cast_u32, u64: cast_u64,
         f32: cast_f32, f64: cast_f64,
@@ -265,6 +268,31 @@ public enum Cast {
     /// buffer (or a slice of one) to cast out of without copying.
     public static func bool(_ utf8: UnsafeRawBufferPointer) throws -> Verdict<Bool> {
         plainDoor(try loaded().bool, utf8) { $0.load(as: UInt8.self) != 0 }
+    }
+
+    // MARK: - char
+
+    /// Casts char text to one `Unicode.Scalar`, verbatim or as a declared code point. An
+    /// input that is exactly one scalar is that scalar, checked before any trimming — so
+    /// `" "` is a space and `"6"` the digit six. Otherwise ASCII whitespace is trimmed and
+    /// the text must be exactly one code-point spelling, ASCII case-insensitive on the
+    /// prefix: decimal `65`, `U+0041`, `0x41`, `&H41`, or an HTML numeric entity `&#65;` /
+    /// `&#x41;` (the `;` required). A spelling past `U+10FFFF` or naming a surrogate is
+    /// `.outOfRange`. Every scalar fits `Unicode.Scalar`, so nothing narrows here.
+    public static func char(_ text: String) throws -> Verdict<Unicode.Scalar> {
+        try withUTF8(text) { try char($0) }
+    }
+
+    /// See ``char(_:)-swift.type.method``; input as raw UTF-8 bytes.
+    public static func char(_ utf8: [UInt8]) throws -> Verdict<Unicode.Scalar> {
+        try utf8.withUnsafeBytes { try char($0) }
+    }
+
+    /// See ``char(_:)-swift.type.method``; input as a raw view of UTF-8 bytes —
+    /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
+    /// buffer (or a slice of one) to cast out of without copying.
+    public static func char(_ utf8: UnsafeRawBufferPointer) throws -> Verdict<Unicode.Scalar> {
+        plainDoor(try loaded().char, utf8, read: Interop.scalar)
     }
 
     // MARK: - integers (the type's own range; grouping, parens, exponent, radix prefixes, currency per format)
@@ -504,6 +532,36 @@ public enum Cast {
         -> Verdict<T>
     {
         try T.castNumeric(utf8, format: format)
+    }
+
+    // MARK: - generic scalar (every door a type alone can choose)
+
+    /// Casts text to whichever ``ScalarCastTarget`` `T` is — the door a caller that is itself
+    /// generic over its target reaches for, across every door `T` alone picks out: `Bool`,
+    /// the eleven ``NumericCastTarget`` types, `UUID`, `Date` (the RFC 3339
+    /// ``timestamp(_:)-swift.type.method`` door, zone mandatory), `Duration` and
+    /// `Unicode.Scalar` (the ``char(_:)-swift.type.method`` door), each through its own
+    /// concrete door under that door's rules. `format` is read by the numeric doors only.
+    ///
+    /// `DateComponents` is not a target: the date, time and date-time doors all return it,
+    /// so the type cannot say which was meant — call that door by name. Resolved
+    /// statically, so any other `T` is refused by the compiler, not at run time.
+    public static func scalar<T: ScalarCastTarget>(_ text: String, format: NumFormat) throws -> Verdict<T> {
+        try withUTF8(text) { try scalar($0, format: format) }
+    }
+
+    /// See ``scalar(_:format:)-swift.type.method``; input as raw UTF-8 bytes.
+    public static func scalar<T: ScalarCastTarget>(_ utf8: [UInt8], format: NumFormat) throws -> Verdict<T> {
+        try utf8.withUnsafeBytes { try scalar($0, format: format) }
+    }
+
+    /// See ``scalar(_:format:)-swift.type.method``; input as a raw view of UTF-8 bytes —
+    /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
+    /// buffer (or a slice of one) to cast out of without copying.
+    public static func scalar<T: ScalarCastTarget>(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws
+        -> Verdict<T>
+    {
+        try T.castScalar(utf8, format: format)
     }
 
     // MARK: - uuid
@@ -846,5 +904,73 @@ extension Decimal: NumericCastTarget {
     /// ``Cast/decimal(_:format:)-swift.type.method``, reached generically.
     public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Decimal> {
         try Cast.decimal(utf8, format: format)
+    }
+}
+
+/// The closed set of targets ``Cast/scalar(_:format:)-swift.type.method`` resolves over:
+/// every type exactly one door produces — `Bool`, the eleven ``NumericCastTarget`` types,
+/// `UUID`, `Date`, `Duration` and `Unicode.Scalar`. `DateComponents` is left out because
+/// three doors return it. The conformances are this binding's to declare, below, and a
+/// caller's own type has no door to route to, so conforming anything else is unsupported.
+public protocol ScalarCastTarget {
+    /// Routes to this type's own door. ``Cast/scalar(_:format:)-swift.type.method`` is the
+    /// entry point; this is the hook it dispatches through.
+    static func castScalar(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Self>
+}
+
+extension ScalarCastTarget where Self: NumericCastTarget {
+    /// The numeric target's own door, as ``Cast/numeric(_:format:)-swift.type.method`` reaches it.
+    public static func castScalar(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Self> {
+        try castNumeric(utf8, format: format)
+    }
+}
+
+extension Int8: ScalarCastTarget {}
+extension Int16: ScalarCastTarget {}
+extension Int32: ScalarCastTarget {}
+extension Int64: ScalarCastTarget {}
+extension UInt8: ScalarCastTarget {}
+extension UInt16: ScalarCastTarget {}
+extension UInt32: ScalarCastTarget {}
+extension UInt64: ScalarCastTarget {}
+extension Float: ScalarCastTarget {}
+extension Double: ScalarCastTarget {}
+extension Decimal: ScalarCastTarget {}
+
+extension Bool: ScalarCastTarget {
+    /// ``Cast/bool(_:)-swift.type.method``, reached generically; `format` is not read.
+    public static func castScalar(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Bool> {
+        try Cast.bool(utf8)
+    }
+}
+
+extension UUID: ScalarCastTarget {
+    /// ``Cast/uuid(_:)-swift.type.method``, reached generically; `format` is not read.
+    public static func castScalar(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<UUID> {
+        try Cast.uuid(utf8)
+    }
+}
+
+extension Date: ScalarCastTarget {
+    /// ``Cast/timestamp(_:)-swift.type.method`` — RFC 3339, zone mandatory — reached
+    /// generically; `format` is not read.
+    public static func castScalar(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Date> {
+        try Cast.timestamp(utf8)
+    }
+}
+
+extension Duration: ScalarCastTarget {
+    /// ``Cast/duration(_:)-swift.type.method``, reached generically; `format` is not read.
+    public static func castScalar(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Duration> {
+        try Cast.duration(utf8)
+    }
+}
+
+extension Unicode.Scalar: ScalarCastTarget {
+    /// ``Cast/char(_:)-swift.type.method``, reached generically; `format` is not read.
+    public static func castScalar(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws
+        -> Verdict<Unicode.Scalar>
+    {
+        try Cast.char(utf8)
     }
 }

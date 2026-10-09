@@ -34,9 +34,10 @@ package hypercast
 #include <stddef.h>
 #include <stdint.h>
 
-// The core's C ABI — rust/src/ffi.rs, the twenty-six exports every binding calls.
+// The core's C ABI — rust/src/ffi.rs, the twenty-seven exports every binding calls.
 uint32_t hypercast_version(void);
 int32_t cast_bool(const uint8_t *ptr, size_t len, void *out, void *fault);
+int32_t cast_char(const uint8_t *ptr, size_t len, void *out, void *fault);
 int32_t cast_i8(const uint8_t *ptr, size_t len, const void *format, void *out, void *fault);
 int32_t cast_i16(const uint8_t *ptr, size_t len, const void *format, void *out, void *fault);
 int32_t cast_i32(const uint8_t *ptr, size_t len, const void *format, void *out, void *fault);
@@ -77,6 +78,9 @@ type (
 var (
 	symBool plainSymbol = func(p *C.uint8_t, n C.size_t, out, fault unsafe.Pointer) C.int32_t {
 		return C.cast_bool(p, n, out, fault)
+	}
+	symChar plainSymbol = func(p *C.uint8_t, n C.size_t, out, fault unsafe.Pointer) C.int32_t {
+		return C.cast_char(p, n, out, fault)
 	}
 	symUuid plainSymbol = func(p *C.uint8_t, n C.size_t, out, fault unsafe.Pointer) C.int32_t {
 		return C.cast_uuid(p, n, out, fault)

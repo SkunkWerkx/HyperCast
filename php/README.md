@@ -126,6 +126,7 @@ does not see.
 | Door | Value on `Success` |
 | --- | --- |
 | `Cast::bool` | `bool` |
+| `Cast::char` (`A`, `U+00E9`, `&#233;`, `0x41`) | `string` — the one scalar, UTF-8-encoded |
 | `Cast::i8` … `Cast::i64`, `Cast::u8` … `Cast::u64` | `int` (u64 as the bit pattern) |
 | `Cast::f32`, `Cast::f64` | `float` |
 | `Cast::decimal` | `Decimal` — exact sign, 96-bit magnitude, base-10 scale |

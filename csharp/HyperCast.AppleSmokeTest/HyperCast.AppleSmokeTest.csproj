@@ -33,6 +33,7 @@
 
 	<ItemGroup>
 		<Compile Include="../HyperCast.AotSmokeTest/Program.cs" Link="Program.cs" />
+		<Compile Include="../HyperCast.AotSmokeTest/SmokeTest.cs" Link="SmokeTest.cs" />
 		<ProjectReference Include="../HyperCast/HyperCast.csproj" />
 	</ItemGroup>
 
