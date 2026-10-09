@@ -76,6 +76,22 @@
             "headerPaths": ["include"],
             "moduleMapPath": "include/module.modulemap"
           }
+        },
+        {
+          "path": "aarch64-unknown-linux-android/libhypercast.a",
+          "supportedTriples": ["aarch64-unknown-linux-android"],
+          "staticLibraryMetadata": {
+            "headerPaths": ["include"],
+            "moduleMapPath": "include/module.modulemap"
+          }
+        },
+        {
+          "path": "x86_64-unknown-linux-android/libhypercast.a",
+          "supportedTriples": ["x86_64-unknown-linux-android"],
+          "staticLibraryMetadata": {
+            "headerPaths": ["include"],
+            "moduleMapPath": "include/module.modulemap"
+          }
         }
       ]
     }
