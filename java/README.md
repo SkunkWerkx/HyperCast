@@ -9,8 +9,8 @@ verdict of every cast: the value, or a closed reason plus the exact byte span th
 offended. A two-arm switch with no default is proven exhaustive by `javac`; an unhandled
 disposition is a compile failure.**
 
-Allocation-lean scalar casts — booleans, the full integer family, reals, exact decimals,
-UUIDs, temporals — via `java.lang.foreign` (FFM) downcalls straight into the native `libhypercast` Rust core.
+Allocation-lean scalar casts — booleans, characters, the full integer family, reals, exact
+decimals, UUIDs, temporals — via `java.lang.foreign` (FFM) downcalls straight into the native `libhypercast` Rust core.
 JDK 25 is the floor: the first long-term-support release with the final FFM API (JEP 454
 finalized it in JDK 22, and 22 through 24 are past end of life), comfortably past the
 Verdict union's own requirement — sealed interface + record patterns + exhaustive switch,
@@ -28,7 +28,8 @@ String message = switch (Cast.i32("(1,234)", NumFormat.INVARIANT)) {
 Door names mirror the native ABI (`i32`, `f64`, `timestamp`, …) so the polyglot surface
 reads identically across bindings; every door also takes raw UTF-8 `byte[]` for callers
 already holding bytes. `NumFormat.from(Locale)` bridges Java's own locale machinery —
-separators and currency symbol — to the caller-declared format the native side reads.
+separators and currency symbol — to the caller-declared format the native side reads, and
+every numeric door also takes the `Locale` itself.
 JVM-flavored fidelity, stated proudly: `Instant`, `LocalTime`, and `Duration` keep all nine
 fractional digits, so nothing the core parses is truncated on the way out — full nanosecond
 precision, end to end — and `Cast.decimal` lands in a `BigDecimal` built straight from the

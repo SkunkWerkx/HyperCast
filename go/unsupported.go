@@ -28,7 +28,7 @@ type (
 )
 
 var (
-	symBool, symUuid, symTimestamp, symDate, symTime, symDuration                plainSymbol
+	symBool, symUuid, symTimestamp, symDate, symTime, symDuration, symChar       plainSymbol
 	symI8, symI16, symI32, symI64, symU8, symU16, symU32, symU64, symF32, symF64 numericSymbol
 	symDecimal                                                                   numericSymbol
 )

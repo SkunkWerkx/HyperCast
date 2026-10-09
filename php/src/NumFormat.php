@@ -179,7 +179,6 @@ final readonly class NumFormat
      * symbol. Every lenience is on, radix prefixes and percent included; narrow the flags, or
      * construct a NumFormat outright, for anything stricter.
      *
-
      * @param \NumberFormatter $formatter the formatter whose symbols declare the notation
      * @return self the format the formatter describes, every lenience on
      * @throws \InvalidArgumentException When the formatter's symbols cannot be declared.

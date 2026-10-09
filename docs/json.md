@@ -1,8 +1,10 @@
 # JSON ingestion — parked design
 
 Banked from a design conversation (2026-08-31) so it doesn't get lost. **Status: parked.**
-Nothing here is committed work: the round-three tabular layer ([roadmap](roadmap.md)) comes
-first, and JSON rides the same contract once that exists. The reasoning is written down
+Nothing here is committed work. The round-three tabular layer it was waiting on has shipped
+as [HyperTabular](https://github.com/SkunkWerkx/HyperTabular)
+([roadmap](roadmap.md#round-three--the-payoff-tabular-ingestion-done)), and JSON rides that
+same columnar contract. The reasoning is written down
 alongside the conclusions so future-us can disagree with the specifics without re-deriving
 the argument.
 
@@ -21,8 +23,8 @@ project's world in two separate ways.
    be `OutOfRange` with a span, which no JSON library gives you.
 
 So the division of labor is: **structure parsing from a JSON library, scalar semantics from
-the one engine that's byte-identical in eight languages.** Same split the roadmap already
-parks for XLSX.
+the one engine that's byte-identical in eight languages.** The same split HyperTabular's
+workbook reader already ships for XLSX.
 
 ## What we need from the structure parser
 
@@ -134,8 +136,8 @@ numbers (serde already parsed them), but as an ergonomic on-ramp it's nearly fre
 
 ## Sequencing
 
-1. Round-three tabular layer lands first — the columnar verdict contract is the engine, and
-   it serves CSV/XLSX/JSON alike.
+1. Round-three tabular layer — done. HyperTabular 0.7.0 (2026-10-07) is the columnar verdict
+   contract, serving CSV, XLSX and ODS today and JSON next.
 2. JSON provider on the boring structure tier, tier-1 hand-written glue, proving the schema
    descriptor end to end.
 3. Benchmark a SIMD structure parser against it, with receipts, before adopting one.

@@ -8,8 +8,8 @@
 byte span that offended — with the Rust core linked straight into CPython as a native
 extension. No dlopen, no ctypes marshalling, no runtime bridge.**
 
-Allocation-lean scalar casts — booleans, the full integer family, reals, exact decimals,
-UUIDs, temporals.
+Allocation-lean scalar casts — booleans, characters, the full integer family, reals, exact
+decimals, UUIDs, temporals.
 The PyO3 extension (`hypercast._native`) is the backend every wheel ships — a door is an
 ordinary `METH_FASTCALL` extension call into a direct Rust call, and the wheel maturin
 builds is the whole package (the interim ctypes fallback is gone). Python 3.11 is the floor,
@@ -185,7 +185,9 @@ the `.`/`,` roles are resolved per input from its structure (`1.234.567,89` and
 `1,234,567.89` both read) and an undecidable one is a `MALFORMED` fault, never a guess;
 `NumFormat.from_localeconv()` bridges `locale.localeconv()` — `decimal_point`,
 `thousands_sep`, and `currency_symbol`. A format is immutable and reads back through
-`decimal_sep`, `group_sep`, `flags` and `currency`.
+`decimal_sep`, `group_sep`, `flags` and `currency`. Unlike the C#, Java, Swift, PHP and Ruby
+doors, these take no platform format object: Python's `locale` is process-global, and
+`from_localeconv()` already reads it.
 
 A currency symbol is declared, never guessed. With `CURRENCY` set and a symbol declared, the
 symbol is accepted once, leading (before or after the sign: `$5`, `-$5`, `$ -5`) or trailing

@@ -9,7 +9,7 @@ union — the value, or `Empty`/`Malformed`/`OutOfRange` plus the exact span tha
 the units of the input you passed — and an unhandled case is a compile error, not a review
 nit.**
 
-Allocation-free scalar casts — booleans, the full integer family, reals, an exact
+Allocation-free scalar casts — booleans, characters, the full integer family, reals, an exact
 `decimal`, UUIDs, temporals — as source-generated `[LibraryImport]` P/Invoke straight into
 the native `libhypercast` Rust core. No runtime bridge, no reflection anywhere in the
 assembly. .NET 11 is the floor deliberately: `Verdict<T>` is a real `[Union]`, and CS8509
@@ -167,7 +167,7 @@ fraction as a `TimeOnly`) and `Cast.ExcelDuration` (days as a `TimeSpan`). A typ
    protobuf JSON durations, a declared currency symbol at either edge — much of it grammar
    the BCL has no knob for at any price.
 3. **One engine across a polyglot system** — the same Rust core, bit-for-bit verdicts,
-   proven by the shared conformance corpus every binding replays: here, all thirteen files
+   proven by the shared conformance corpus every binding replays: here, all fifteen files
    through real P/Invoke, fault spans asserted byte for byte.
 4. **Not slower — mostly faster.** BenchmarkDotNet, `[MemoryDiagnoser]`, lenience matched
    where the BCL has the knob, FFI crossing and UTF-16→UTF-8 transcode *included* in every

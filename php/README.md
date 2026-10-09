@@ -8,8 +8,8 @@
 reason plus the exact byte span that offended — over PHP's own built-in ext-ffi. Zero
 Composer runtime dependencies, no extension to compile, no runtime bridge.**
 
-Allocation-lean scalar casts — booleans, the full integer family, reals, exact decimals,
-UUIDs, temporals — calling directly into the native `libhypercast` Rust core. PHP 8.2 is
+Allocation-lean scalar casts — booleans, characters, the full integer family, reals, exact
+decimals, UUIDs, temporals — calling directly into the native `libhypercast` Rust core. PHP 8.2 is
 the floor (readonly classes, enums); both verdict classes are `final` and every door's
 return type declares the union, which is as closed as PHP's type system can state it.
 Bundles a native build for every supported platform (see [Requirements](#requirements))
@@ -37,7 +37,9 @@ exact triple (`Decimal`) because PHP has no decimal type at all.
 
 - **PHP 8.2 or later**, 64-bit.
 - **`ext-ffi`**, loaded and permitted for your SAPI — see [Enabling FFI](#enabling-ffi)
-  below. No other extension (not even mbstring) and no Composer dependency.
+  below. No other extension is required (not even mbstring), and there is no Composer
+  dependency; ext-intl is an optional `suggest`, needed only to pass a `\NumberFormatter`
+  ([below](#from-an-intl-numberformatter)).
 - **A supported platform.** The package bundles one native library per platform and picks
   at load:
 
@@ -139,7 +141,8 @@ does not see.
 
 Every numeric door takes a `NumFormat` — `NumFormat::invariant()`, `NumFormat::detect()`
 (the `.`/`,` roles resolved per input from structure, ambiguous input a `Malformed` fault),
-or a constructed one — and `Cast::optional()` presents an `Empty` fault as `null`. Context
+or a constructed one — or an intl `\NumberFormatter`
+([below](#from-an-intl-numberformatter)), and `Cast::optional()` presents an `Empty` fault as `null`. Context
 the text cannot carry is declared, never guessed, through backed enums:
 
 ```php
@@ -190,7 +193,8 @@ Cast::decimal('$ 19.99', $usd);          // Success(Decimal 19.99)
 ### From locale data
 
 `NumFormat::fromLocaleconv(?array $conv = null)` is the platform-data factory the other
-bindings carry (C# `From(CultureInfo)`, Java `from(Locale)`, Python `from_localeconv`): it
+bindings carry (C# `From(CultureInfo)`, Java `from(Locale)`, Swift `from(locale:)`, Ruby
+`from_i18n`, Python `from_localeconv`): it
 reads `decimal_point`, `thousands_sep` and `currency_symbol` from the given array, or from
 `localeconv()` when null, defaulting to `.`, `,` and no symbol wherever a field is empty,
 every lenience on. An empty separator never collides with the declared one: a comma-decimal

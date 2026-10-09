@@ -849,7 +849,7 @@ const fn excel_day_number(days: i64, epoch: ExcelEpoch) -> Option<i64> {
 /// serial 45,000 resolves about 0.6 µs and one near `9999-12-31` about 40 µs, so the
 /// nearest nanosecond is noise (Excel's own `9999-12-31 23:59:59` reads 5,424 ns late).
 /// The time read is the one with the fewest fractional-second digits that the writer's
-/// conversion would have stored as this same double — see [`snap`]. A fraction that
+/// conversion would have stored as this same double — see `snap`. A fraction that
 /// snaps to a whole day carries into the date.
 ///
 /// The verdict is a bare [`Reason`]: there is no text for a [`Fault`]'s span to index.

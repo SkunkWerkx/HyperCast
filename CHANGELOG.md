@@ -9,6 +9,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-10-08
+
+Driven by Norse Architecture, which is replacing its last hand-written scalar parsers with
+HyperCast and filed the two issues behind the first two themes. *A char door*, in the core
+and all eight packages, takes the C ABI to 26 `cast_*` exports plus `hypercast_version`.
+*One door generic over every target* lets C#, Go and Swift route a generic `T` through
+HyperCast in one call. *The platform's own format object*: the numeric doors in C#, Java,
+Swift, PHP and Ruby take a culture or locale directly, and every bridge now documents what a
+culture carries that the core's format cannot yet. One new platform family: C#, Go and Swift
+reach Android on arm64 and x86_64, so a .NET MAUI app has the core on every platform MAUI
+targets. Ruby's native extension no longer crashes after a compacting garbage collection.
+Everything here is additive; no input reads a different verdict than it did in 0.7.0.
+
 ### Added
 
 - **A char door, in the core and every binding.** It reads exactly one character verbatim,
@@ -54,6 +67,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     an `I18n.t("number.format")` Hash. A call without them is unchanged and allocates no more.
   - Python and Go keep taking a `NumFormat`. Neither standard library has a per-object locale
     to take; Python's `locale` is process-global, which `NumFormat.from_localeconv` reads.
+  - Every bridge (`NumFormat.From`, `NumFormat.from(Locale)`, `NumFormat.from(locale:)`,
+    `fromLocaleconv`, `fromNumberFormatter`, `from_i18n`, `from_localeconv`) now documents
+    what does not carry over: a minus sign other than ASCII `-` (U+2212 in `et-EE` and
+    `eu-ES`), currency separators that differ from the number ones, and a percent symbol
+    other than `%`. `docs/roadmap.md` ("Culture fidelity — the sweep") plans the round
+    that closes those gaps.
 - **C# — Android, for .NET MAUI.** The package carries the core for `android-arm64` and
   `android-x64`, so a MAUI app has it on every platform MAUI targets (Windows, macOS
   through Mac Catalyst, iOS and Android) with nothing but the package reference. On
@@ -81,6 +100,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   their place — a segfault, reproduced with `GC.verify_compaction_references`. Each is
   pinned when the extension loads, and a new spec moves every movable object before
   calling a door. *(ruby)*
+
+### Changed
+
+- **CI runs a lighter board on pull requests.** A pull request now runs every native leg
+  and every binding's suite but skips the native Python wheels, the Apple mobile job and
+  the ruby.wasm build, none of which a pull request ships. Superseded PR runs are
+  cancelled. The full board runs on every release and once a week, and only those runs are
+  ever staged or released from. Nothing published changes. *(repository)*
+
+### Upgrade note
+
+Source-compatible for every consumer but one narrow case. Java: a call that passed a literal
+`null` as the format, such as `Cast.i32(text, null)`, no longer compiles, because the new
+`Locale` overload makes it ambiguous. It threw at run time before, so no working code
+depends on it.
 
 ## [0.7.0] — 2026-10-06
 
@@ -1346,7 +1380,8 @@ notes: [v0.1.0 release](https://github.com/SkunkWerkx/HyperCast/releases/tag/v0.
   found in that window, in the gap between "the publish succeeded" and "a consumer can use it",
   and none of them could have failed a build in this repository.
 
-[Unreleased]: https://github.com/SkunkWerkx/HyperCast/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/SkunkWerkx/HyperCast/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/SkunkWerkx/HyperCast/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.4.0...v0.6.0

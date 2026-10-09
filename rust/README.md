@@ -117,6 +117,22 @@ decimal_from_f64(0.1 + 0.2).map(|d| d.to_string()); // Ok("0.30000000000000004")
 i32_from_f64(2.5);                                  // Err(Reason::Malformed), never rounded
 ```
 
+## One character
+
+`cast_char` reads one Unicode scalar. Text that is exactly one character is taken verbatim,
+checked before trimming, so `" "` is a space and `"6"` the digit six; anything longer is one
+declared code point: `65`, `U+0041`, `0x41`, `&H41`, or `&#65;` / `&#x41;` (the `;`
+required). A surrogate or anything past `U+10FFFF` is `OutOfRange`. It takes no `NumFormat`,
+since nothing in the grammar is cultural:
+
+```rust
+use hypercast::cast_char;
+
+cast_char("U+00E9"); // Ok('é')
+cast_char(" ");      // Ok(' '), verbatim rather than Empty
+cast_char("U+D800"); // Err: OutOfRange, a surrogate
+```
+
 ## Optional native-extension features
 
 Three additive cargo features link this same core straight into an interpreter as a real
@@ -197,7 +213,7 @@ the same code the doors and `ffi.rs` use:
 
 ```toml
 [dependencies]
-hypercast = { version = "0.7", default-features = false, features = ["std"] }
+hypercast = { version = "0.8", default-features = false, features = ["std"] }
 ```
 
 ```rust
@@ -222,7 +238,7 @@ the exports; thin LTO and `codegen-units = 1` are not enough:
 
 ```toml
 [dependencies]
-hypercast = { version = "0.7", features = ["no-panic"] }
+hypercast = { version = "0.8", features = ["no-panic"] }
 
 [profile.release]
 lto = true

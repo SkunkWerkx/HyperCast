@@ -8,10 +8,10 @@
 *compiler-mandatory* — not an opt-in analyzer flag, not a review convention. The value, or a
 closed reason plus the exact byte span that offended.**
 
-Allocation-lean scalar casts — booleans, the full integer family, reals, exact decimals,
-UUIDs, temporals — calling directly into the native `hypercast` Rust core through
+Allocation-lean scalar casts — booleans, characters, the full integer family, reals, exact
+decimals, UUIDs, temporals — calling directly into the native `hypercast` Rust core through
 `@convention(c)` function pointers, no shim layer. On every platform it supports — Linux
-(glibc and musl), macOS, Windows and WebAssembly — the core is linked into your executable
+(glibc and musl), macOS, Windows, iOS, Mac Catalyst, Android and WebAssembly — the core is linked into your executable
 as a static library, so there is nothing to load at run time and nothing to deploy beside
 it.
 
@@ -153,7 +153,7 @@ try Cast.i32("-$5", format: enUs)                                  // .success(-
 Every numeric door, and the generic `numeric` and `scalar` doors, also takes the `Locale`
 itself, the type Foundation's own number parsing is configured with:
 `Cast.i32("1.234", locale: Locale(identifier: "de_DE"))` is `.success(1234)`, exactly
-`Cast.i32("1.234", format: .from(locale:))`. The locale is not optional, as Foundation's
+`Cast.i32("1.234", format: .from(locale: Locale(identifier: "de_DE")))`. The locale is not optional, as Foundation's
 are not: pass `.current` or `.autoupdatingCurrent` to mean the user's settings, since
 nothing here falls back to one. Deriving a format reads the locale's separators through
 ICU, about 200–300 ns, so the doors cache formats by locale identifier, and a `locale:`
@@ -194,8 +194,10 @@ let format = Interop.rawFormat(.invariant)   // 32 bytes, ready for the other li
 - **Platforms.** Linux on glibc and on musl (Swift's static Linux SDK), macOS and Windows,
   each on x86_64 and arm64, WebAssembly (`wasm32-unknown-wasip1`), in WASI hosts and in
   the browser, and iOS, the iOS simulator and Mac Catalyst on arm64. The declared
-  deployment floors are macOS 13, iOS 16 and Mac Catalyst 16, for `Duration`.
-- **Not supported: everything else.** tvOS, watchOS, visionOS, Android, the iOS simulator
+  deployment floors are macOS 13, iOS 16 and Mac Catalyst 16, for `Duration`. Android on
+  arm64 and x86_64 builds with the Swift SDK for Android (Swift 6.3 or later, API 28 or
+  later); see [Linking and deployment](#linking-and-deployment).
+- **Not supported: everything else.** tvOS, watchOS, visionOS, the iOS simulator
   and Mac Catalyst on Intel Macs, and any other architecture on the supported systems have
   no prebuilt core here, so the build stops at compile time with no `HyperCastCore` module
   (Swift Build first warns that the artifact bundle has no matching variant) — never at

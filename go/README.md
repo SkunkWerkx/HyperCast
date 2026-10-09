@@ -9,8 +9,8 @@ or a closed reason plus the exact byte span that offended. `*Fault` implements `
 composition, but the doors never panic on input; a panic here means a caller bug, never
 data.**
 
-Allocation-lean scalar casts — booleans, the full integer family, reals, exact decimals,
-UUIDs, temporals — calling directly into the native `hypercast` Rust core, **linked into
+Allocation-lean scalar casts — booleans, characters, the full integer family, reals, exact
+decimals, UUIDs, temporals — calling directly into the native `hypercast` Rust core, **linked into
 your binary through cgo** (`backend_static.go`). The core is a static library on the link
 line: nothing is embedded, nothing is extracted, nothing is `dlopen`ed, nothing can fail to
 load, and the binary runs from a read-only filesystem or a `scratch` image. `go get` is the
@@ -60,6 +60,7 @@ cgo, and so a C compiler wherever the module is **built** — nothing at run tim
 | Windows x64 | MinGW-w64 gcc |
 | Windows arm64 | [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) |
 | iOS, the iOS simulator, Mac Catalyst | Xcode's clang for that platform's SDK; see [iOS and Mac Catalyst](#ios-and-mac-catalyst) |
+| Android arm64 / x64 | the NDK's clang for that ABI as `CC`; see [Android](#android) |
 
 Every other build fails at compile time, by name:
 
@@ -69,8 +70,8 @@ undefined: hypercast_needs_cgo_and_a_C_compiler_on_linux_darwin_or_windows_amd64
 
 That is `CGO_ENABLED=0` (which is also Go's default for a cross-compile — see
 [Building and cross-compiling](#building-and-cross-compiling)), any OS or architecture
-outside the ones above (Android and the iOS simulator on an Intel Mac among them, which
-Go's own rules would otherwise count as Linux and macOS), and stock Go compiled to
+outside the ones above (the iOS simulator on an Intel Mac among them, which Go's own rules
+would otherwise count as macOS), and stock Go compiled to
 WebAssembly (`GOOS=wasip1`, `GOOS=js`): Go's wasm toolchain links Go code only, with no cgo, so a foreign library has nowhere to go.
 For WebAssembly, build with [TinyGo](#in-the-browser-tinygo), which links the core there,
 browser included.
@@ -402,7 +403,8 @@ fetched with `go get` has no such archive, so the tag fails at link time there.
 
 This repo's own CI runs `go test ./...` natively, never cross-compiled, on every leg —
 Linux and Windows on x64 and arm64, macOS on arm64 — and on Alpine. The iOS simulator run
-in `test-apple-mobile` is the one exception; see [iOS and Mac Catalyst](#ios-and-mac-catalyst).
+in `test-apple-mobile` and the Android emulator run in `test-android` are the two
+exceptions; see [iOS and Mac Catalyst](#ios-and-mac-catalyst) and [Android](#android).
 
 ## Why not `strconv` / `time.Parse`?
 

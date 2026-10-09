@@ -9,8 +9,8 @@ Symbol plus the exact span that offended. Two backends, one public surface: a Ma
 native extension where a precompiled platform gem covers you, stdlib Fiddle as the last
 resort everywhere else — selected automatically, zero compiles either way.**
 
-Allocation-lean scalar casts — booleans, the full integer family, reals, exact decimals,
-UUIDs, temporals — calling directly into the native `libhypercast` Rust core. Ruby 3.3 is the
+Allocation-lean scalar casts — booleans, characters, the full integer family, reals, exact
+decimals, UUIDs, temporals — calling directly into the native `libhypercast` Rust core. Ruby 3.3 is the
 floor. The fast path links the core straight into a Ruby extension (Magnus): on require it
 redefines the doors in place on the `HyperCast` module — no delegation layer, no second
 surface, which is exactly what keeps the backends provably in agreement.
@@ -66,7 +66,8 @@ to `nil`. Beside the doors, `native_version` returns the loaded core's
 Bad data is never an exception — it is a `Fault`. What raises is a caller bug, and it raises
 the same exception on every backend:
 
-- `ArgumentError` from `NumFormat.new` for a malformed format: separators that are not single
+- `ArgumentError` from `NumFormat.new`, `NumFormat#override` (and so the `separator:`,
+  `delimiter:` and `unit:` keywords) or `NumFormat.from_i18n` for a malformed format: separators that are not single
   characters or not distinct, a currency symbol that is too long or carries an ASCII digit or
   whitespace.
 - `KeyError` — `Hash#fetch`'s own, `key not found: …` — for a precision, epoch or date order

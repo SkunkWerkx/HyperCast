@@ -38,7 +38,7 @@ Requirements that hold across every round, stated up front so no layer designs t
 ## Round one — the scalar core (done)
 
 One Rust `cdylib` (`rust/`, `libhypercast`), HyperUuid's proven FFI mechanics: 21 `cast_*`
-exports (25 since 0.7.0 added four typed doors) over UTF-8 bytes and caller-owned
+exports (25 since 0.7.0 added four typed doors, 26 since 0.8.0 added the char door) over UTF-8 bytes and caller-owned
 out-buffers, verdict codes (`0` ok, `1` empty, `2` malformed, `3` out of range) with the
 offending byte span through a nullable fault out-param. Semantics ported from Svartalfheim's
 `Norse.Primitives` parser family; temporals land in protobuf's dual-integer forms
