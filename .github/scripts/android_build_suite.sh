@@ -70,10 +70,15 @@ sdk = next((p for p in release.get("platforms", []) if p.get("platform") == "and
 print(release.get("tag", "-"), sdk["checksum"] if sdk else "-")' "$version")
     [ "$checksum" != - ] || { echo "error: swift.org lists no Android SDK for Swift $version" >&2; exit 1; }
     sdk="${tag}_android"
+    # Swift 6.4's `swift sdk install` on Linux can abort on its way out (Foundation's
+    # "_MultiHandle deallocated with non-zero retain count", exit 134) after it has verified
+    # and installed the bundle, so the listing, not the exit status, says whether it worked.
     if ! swift sdk list | grep -qx "$sdk"; then
       swift sdk install \
         "https://download.swift.org/${tag,,}/android-sdk/$tag/$sdk.artifactbundle.tar.gz" \
-        --checksum "$checksum"
+        --checksum "$checksum" \
+        || swift sdk list | grep -qx "$sdk" \
+        || { echo "error: swift sdk install did not install $sdk" >&2; exit 1; }
     fi
     bundle="$(swift sdk configure --show-configuration "$sdk" "$arch-unknown-linux-android28" \
       | sed -n 's|^sdkRootPath: \(.*\)/swift-android/ndk-sysroot$|\1|p')"
