@@ -236,7 +236,13 @@ when the absence is deliberate.
     (intl stays optional); Ruby takes Rails' `number.format` vocabulary as keywords. Swift's
     cache is keyed by locale identifier, so per-user number-format overrides on Apple
     platforms reach a door only through `NumFormat.from(locale:)`; Java's Native Image
-    carries only the locales named at build time (`-H:IncludeLocales`).
+    carries only the locales named at build time (`-H:IncludeLocales`). In every binding,
+    and through the bridges above too, only the separators and the currency symbol carry
+    over: the core reads ASCII `+`, `-` and `%` only, so a locale with another minus sign
+    (U+2212 for Estonian and Basque) faults on its own negative numbers, and a currency amount
+    is read with the number separators, not the locale's monetary ones, which differ in some
+    locales. Closing these the right way, in the core and every bridge at once, is the
+    [culture fidelity sweep](roadmap.md#culture-fidelity--the-sweep-open).
 
 [^python-format]: Python's standard library has no per-object locale: `locale` is
     process-global, which `NumFormat.from_localeconv` already reads, so the doors keep taking

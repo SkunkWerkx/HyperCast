@@ -133,6 +133,14 @@ public struct NumFormat: Equatable, Sendable {
     /// locale doesn't say, and to no symbol where it names none — or names one the native
     /// format cannot carry (see ``currencySymbol``), since a locale is process/user state
     /// and no cast should trap on it.
+    ///
+    /// Only the separators and the currency symbol carry over; the native format has no field
+    /// for the rest. The core reads ASCII `+` and `-` only, so a locale whose minus sign is
+    /// something else (U+2212 for Estonian and Basque, for instance) faults on its own negative
+    /// numbers; a currency amount is read with the number separators, not the locale's monetary
+    /// ones, which differ in some locales; and percent is an ASCII `%`, not the locale's percent
+    /// symbol. Every lenience is on, radix prefixes and percent included; narrow the styles, or
+    /// declare a `NumFormat` outright, for anything stricter.
     public static func from(locale: Locale) -> NumFormat {
         let decimal = locale.decimalSeparator?.unicodeScalars.first ?? "."
         let group = locale.groupingSeparator?.unicodeScalars.first ?? ","

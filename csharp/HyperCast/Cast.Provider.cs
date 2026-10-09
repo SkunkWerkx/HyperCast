@@ -25,7 +25,7 @@ public static partial class Cast
 
 	/// <summary>
 	/// <see cref="SByte(ReadOnlySpan{byte}, NumFormat)"/> under the number formatting <paramref name="provider"/> resolves
-	/// to, as a BCL <c>TryParse</c> reads it: <see langword="null"/> means the current culture.
+	/// to, resolved as a BCL <c>TryParse</c> resolves one: <see langword="null"/> means the current culture.
 	/// The format is <see cref="NumFormat.From(IFormatProvider)"/>'s — the culture's separators
 	/// and currency symbol, every lenience on; pass a <see cref="NumFormat"/> for anything
 	/// stricter.
@@ -37,7 +37,7 @@ public static partial class Cast
 
 	/// <summary>
 	/// <see cref="SByte(ReadOnlySpan{char}, NumFormat)"/> under the number formatting <paramref name="provider"/> resolves
-	/// to, as a BCL <c>TryParse</c> reads it: <see langword="null"/> means the current culture.
+	/// to, resolved as a BCL <c>TryParse</c> resolves one: <see langword="null"/> means the current culture.
 	/// The format is <see cref="NumFormat.From(IFormatProvider)"/>'s — the culture's separators
 	/// and currency symbol, every lenience on; pass a <see cref="NumFormat"/> for anything
 	/// stricter.
@@ -49,7 +49,7 @@ public static partial class Cast
 
 	/// <summary>
 	/// <see cref="Int16(ReadOnlySpan{byte}, NumFormat)"/> under the number formatting <paramref name="provider"/> resolves
-	/// to, as a BCL <c>TryParse</c> reads it: <see langword="null"/> means the current culture.
+	/// to, resolved as a BCL <c>TryParse</c> resolves one: <see langword="null"/> means the current culture.
 	/// The format is <see cref="NumFormat.From(IFormatProvider)"/>'s — the culture's separators
 	/// and currency symbol, every lenience on; pass a <see cref="NumFormat"/> for anything
 	/// stricter.
@@ -61,7 +61,7 @@ public static partial class Cast
 
 	/// <summary>
 	/// <see cref="Int16(ReadOnlySpan{char}, NumFormat)"/> under the number formatting <paramref name="provider"/> resolves
-	/// to, as a BCL <c>TryParse</c> reads it: <see langword="null"/> means the current culture.
+	/// to, resolved as a BCL <c>TryParse</c> resolves one: <see langword="null"/> means the current culture.
 	/// The format is <see cref="NumFormat.From(IFormatProvider)"/>'s — the culture's separators
 	/// and currency symbol, every lenience on; pass a <see cref="NumFormat"/> for anything
 	/// stricter.
@@ -73,7 +73,7 @@ public static partial class Cast
 
 	/// <summary>
 	/// <see cref="Int32(ReadOnlySpan{byte}, NumFormat)"/> under the number formatting <paramref name="provider"/> resolves
-	/// to, as a BCL <c>TryParse</c> reads it: <see langword="null"/> means the current culture.
+	/// to, resolved as a BCL <c>TryParse</c> resolves one: <see langword="null"/> means the current culture.
 	/// The format is <see cref="NumFormat.From(IFormatProvider)"/>'s — the culture's separators
 	/// and currency symbol, every lenience on; pass a <see cref="NumFormat"/> for anything
 	/// stricter.
@@ -85,7 +85,7 @@ public static partial class Cast
 
 	/// <summary>
 	/// <see cref="Int32(ReadOnlySpan{char}, NumFormat)"/> under the number formatting <paramref name="provider"/> resolves
-	/// to, as a BCL <c>TryParse</c> reads it: <see langword="null"/> means the current culture.
+	/// to, resolved as a BCL <c>TryParse</c> resolves one: <see langword="null"/> means the current culture.
 	/// The format is <see cref="NumFormat.From(IFormatProvider)"/>'s — the culture's separators
 	/// and currency symbol, every lenience on; pass a <see cref="NumFormat"/> for anything
 	/// stricter.
@@ -97,7 +97,7 @@ public static partial class Cast
 
 	/// <summary>
 	/// <see cref="Int64(ReadOnlySpan{byte}, NumFormat)"/> under the number formatting <paramref name="provider"/> resolves
-	/// to, as a BCL <c>TryParse</c> reads it: <see langword="null"/> means the current culture.
+	/// to, resolved as a BCL <c>TryParse</c> resolves one: <see langword="null"/> means the current culture.
 	/// The format is <see cref="NumFormat.From(IFormatProvider)"/>'s — the culture's separators
 	/// and currency symbol, every lenience on; pass a <see cref="NumFormat"/> for anything
 	/// stricter.
@@ -109,7 +109,7 @@ public static partial class Cast
 
 	/// <summary>
 	/// <see cref="Int64(ReadOnlySpan{char}, NumFormat)"/> under the number formatting <paramref name="provider"/> resolves
-	/// to, as a BCL <c>TryParse</c> reads it: <see langword="null"/> means the current culture.
+	/// to, resolved as a BCL <c>TryParse</c> resolves one: <see langword="null"/> means the current culture.
 	/// The format is <see cref="NumFormat.From(IFormatProvider)"/>'s — the culture's separators
 	/// and currency symbol, every lenience on; pass a <see cref="NumFormat"/> for anything
 	/// stricter.
@@ -121,7 +121,7 @@ public static partial class Cast
 
 	/// <summary>
 	/// <see cref="Byte(ReadOnlySpan{byte}, NumFormat)"/> under the number formatting <paramref name="provider"/> resolves
-	/// to, as a BCL <c>TryParse</c> reads it: <see langword="null"/> means the current culture.
+	/// to, resolved as a BCL <c>TryParse</c> resolves one: <see langword="null"/> means the current culture.
 	/// The format is <see cref="NumFormat.From(IFormatProvider)"/>'s — the culture's separators
 	/// and currency symbol, every lenience on; pass a <see cref="NumFormat"/> for anything
 	/// stricter.
@@ -133,7 +133,7 @@ public static partial class Cast
 
 	/// <summary>
 	/// <see cref="Byte(ReadOnlySpan{char}, NumFormat)"/> under the number formatting <paramref name="provider"/> resolves
-	/// to, as a BCL <c>TryParse</c> reads it: <see langword="null"/> means the current culture.
+	/// to, resolved as a BCL <c>TryParse</c> resolves one: <see langword="null"/> means the current culture.
 	/// The format is <see cref="NumFormat.From(IFormatProvider)"/>'s — the culture's separators
 	/// and currency symbol, every lenience on; pass a <see cref="NumFormat"/> for anything
 	/// stricter.
@@ -145,7 +145,7 @@ public static partial class Cast
 
 	/// <summary>
 	/// <see cref="UInt16(ReadOnlySpan{byte}, NumFormat)"/> under the number formatting <paramref name="provider"/> resolves
-	/// to, as a BCL <c>TryParse</c> reads it: <see langword="null"/> means the current culture.
+	/// to, resolved as a BCL <c>TryParse</c> resolves one: <see langword="null"/> means the current culture.
 	/// The format is <see cref="NumFormat.From(IFormatProvider)"/>'s — the culture's separators
 	/// and currency symbol, every lenience on; pass a <see cref="NumFormat"/> for anything
 	/// stricter.
@@ -157,7 +157,7 @@ public static partial class Cast
 
 	/// <summary>
 	/// <see cref="UInt16(ReadOnlySpan{char}, NumFormat)"/> under the number formatting <paramref name="provider"/> resolves
-	/// to, as a BCL <c>TryParse</c> reads it: <see langword="null"/> means the current culture.
+	/// to, resolved as a BCL <c>TryParse</c> resolves one: <see langword="null"/> means the current culture.
 	/// The format is <see cref="NumFormat.From(IFormatProvider)"/>'s — the culture's separators
 	/// and currency symbol, every lenience on; pass a <see cref="NumFormat"/> for anything
 	/// stricter.
@@ -169,7 +169,7 @@ public static partial class Cast
 
 	/// <summary>
 	/// <see cref="UInt32(ReadOnlySpan{byte}, NumFormat)"/> under the number formatting <paramref name="provider"/> resolves
-	/// to, as a BCL <c>TryParse</c> reads it: <see langword="null"/> means the current culture.
+	/// to, resolved as a BCL <c>TryParse</c> resolves one: <see langword="null"/> means the current culture.
 	/// The format is <see cref="NumFormat.From(IFormatProvider)"/>'s — the culture's separators
 	/// and currency symbol, every lenience on; pass a <see cref="NumFormat"/> for anything
 	/// stricter.
@@ -181,7 +181,7 @@ public static partial class Cast
 
 	/// <summary>
 	/// <see cref="UInt32(ReadOnlySpan{char}, NumFormat)"/> under the number formatting <paramref name="provider"/> resolves
-	/// to, as a BCL <c>TryParse</c> reads it: <see langword="null"/> means the current culture.
+	/// to, resolved as a BCL <c>TryParse</c> resolves one: <see langword="null"/> means the current culture.
 	/// The format is <see cref="NumFormat.From(IFormatProvider)"/>'s — the culture's separators
 	/// and currency symbol, every lenience on; pass a <see cref="NumFormat"/> for anything
 	/// stricter.
@@ -193,7 +193,7 @@ public static partial class Cast
 
 	/// <summary>
 	/// <see cref="UInt64(ReadOnlySpan{byte}, NumFormat)"/> under the number formatting <paramref name="provider"/> resolves
-	/// to, as a BCL <c>TryParse</c> reads it: <see langword="null"/> means the current culture.
+	/// to, resolved as a BCL <c>TryParse</c> resolves one: <see langword="null"/> means the current culture.
 	/// The format is <see cref="NumFormat.From(IFormatProvider)"/>'s — the culture's separators
 	/// and currency symbol, every lenience on; pass a <see cref="NumFormat"/> for anything
 	/// stricter.
@@ -205,7 +205,7 @@ public static partial class Cast
 
 	/// <summary>
 	/// <see cref="UInt64(ReadOnlySpan{char}, NumFormat)"/> under the number formatting <paramref name="provider"/> resolves
-	/// to, as a BCL <c>TryParse</c> reads it: <see langword="null"/> means the current culture.
+	/// to, resolved as a BCL <c>TryParse</c> resolves one: <see langword="null"/> means the current culture.
 	/// The format is <see cref="NumFormat.From(IFormatProvider)"/>'s — the culture's separators
 	/// and currency symbol, every lenience on; pass a <see cref="NumFormat"/> for anything
 	/// stricter.
@@ -217,7 +217,7 @@ public static partial class Cast
 
 	/// <summary>
 	/// <see cref="Single(ReadOnlySpan{byte}, NumFormat)"/> under the number formatting <paramref name="provider"/> resolves
-	/// to, as a BCL <c>TryParse</c> reads it: <see langword="null"/> means the current culture.
+	/// to, resolved as a BCL <c>TryParse</c> resolves one: <see langword="null"/> means the current culture.
 	/// The format is <see cref="NumFormat.From(IFormatProvider)"/>'s — the culture's separators
 	/// and currency symbol, every lenience on; pass a <see cref="NumFormat"/> for anything
 	/// stricter.
@@ -229,7 +229,7 @@ public static partial class Cast
 
 	/// <summary>
 	/// <see cref="Single(ReadOnlySpan{char}, NumFormat)"/> under the number formatting <paramref name="provider"/> resolves
-	/// to, as a BCL <c>TryParse</c> reads it: <see langword="null"/> means the current culture.
+	/// to, resolved as a BCL <c>TryParse</c> resolves one: <see langword="null"/> means the current culture.
 	/// The format is <see cref="NumFormat.From(IFormatProvider)"/>'s — the culture's separators
 	/// and currency symbol, every lenience on; pass a <see cref="NumFormat"/> for anything
 	/// stricter.
@@ -241,7 +241,7 @@ public static partial class Cast
 
 	/// <summary>
 	/// <see cref="Double(ReadOnlySpan{byte}, NumFormat)"/> under the number formatting <paramref name="provider"/> resolves
-	/// to, as a BCL <c>TryParse</c> reads it: <see langword="null"/> means the current culture.
+	/// to, resolved as a BCL <c>TryParse</c> resolves one: <see langword="null"/> means the current culture.
 	/// The format is <see cref="NumFormat.From(IFormatProvider)"/>'s — the culture's separators
 	/// and currency symbol, every lenience on; pass a <see cref="NumFormat"/> for anything
 	/// stricter.
@@ -253,7 +253,7 @@ public static partial class Cast
 
 	/// <summary>
 	/// <see cref="Double(ReadOnlySpan{char}, NumFormat)"/> under the number formatting <paramref name="provider"/> resolves
-	/// to, as a BCL <c>TryParse</c> reads it: <see langword="null"/> means the current culture.
+	/// to, resolved as a BCL <c>TryParse</c> resolves one: <see langword="null"/> means the current culture.
 	/// The format is <see cref="NumFormat.From(IFormatProvider)"/>'s — the culture's separators
 	/// and currency symbol, every lenience on; pass a <see cref="NumFormat"/> for anything
 	/// stricter.
@@ -265,7 +265,7 @@ public static partial class Cast
 
 	/// <summary>
 	/// <see cref="Decimal(ReadOnlySpan{byte}, NumFormat)"/> under the number formatting <paramref name="provider"/> resolves
-	/// to, as a BCL <c>TryParse</c> reads it: <see langword="null"/> means the current culture.
+	/// to, resolved as a BCL <c>TryParse</c> resolves one: <see langword="null"/> means the current culture.
 	/// The format is <see cref="NumFormat.From(IFormatProvider)"/>'s — the culture's separators
 	/// and currency symbol, every lenience on; pass a <see cref="NumFormat"/> for anything
 	/// stricter.
@@ -277,7 +277,7 @@ public static partial class Cast
 
 	/// <summary>
 	/// <see cref="Decimal(ReadOnlySpan{char}, NumFormat)"/> under the number formatting <paramref name="provider"/> resolves
-	/// to, as a BCL <c>TryParse</c> reads it: <see langword="null"/> means the current culture.
+	/// to, resolved as a BCL <c>TryParse</c> resolves one: <see langword="null"/> means the current culture.
 	/// The format is <see cref="NumFormat.From(IFormatProvider)"/>'s — the culture's separators
 	/// and currency symbol, every lenience on; pass a <see cref="NumFormat"/> for anything
 	/// stricter.
@@ -289,7 +289,7 @@ public static partial class Cast
 
 	/// <summary>
 	/// <see cref="Numeric{T}(ReadOnlySpan{byte}, NumFormat)"/> under the number formatting <paramref name="provider"/> resolves
-	/// to, as a BCL <c>TryParse</c> reads it: <see langword="null"/> means the current culture.
+	/// to, resolved as a BCL <c>TryParse</c> resolves one: <see langword="null"/> means the current culture.
 	/// The format is <see cref="NumFormat.From(IFormatProvider)"/>'s — the culture's separators
 	/// and currency symbol, every lenience on; pass a <see cref="NumFormat"/> for anything
 	/// stricter.
@@ -303,7 +303,7 @@ public static partial class Cast
 
 	/// <summary>
 	/// <see cref="Numeric{T}(ReadOnlySpan{char}, NumFormat)"/> under the number formatting <paramref name="provider"/> resolves
-	/// to, as a BCL <c>TryParse</c> reads it: <see langword="null"/> means the current culture.
+	/// to, resolved as a BCL <c>TryParse</c> resolves one: <see langword="null"/> means the current culture.
 	/// The format is <see cref="NumFormat.From(IFormatProvider)"/>'s — the culture's separators
 	/// and currency symbol, every lenience on; pass a <see cref="NumFormat"/> for anything
 	/// stricter.
@@ -317,7 +317,7 @@ public static partial class Cast
 
 	/// <summary>
 	/// <see cref="Scalar{T}(ReadOnlySpan{byte}, NumFormat)"/> under the number formatting <paramref name="provider"/> resolves
-	/// to, as a BCL <c>TryParse</c> reads it: <see langword="null"/> means the current culture.
+	/// to, resolved as a BCL <c>TryParse</c> resolves one: <see langword="null"/> means the current culture.
 	/// The format is <see cref="NumFormat.From(IFormatProvider)"/>'s — the culture's separators
 	/// and currency symbol, every lenience on; pass a <see cref="NumFormat"/> for anything
 	/// stricter.
@@ -331,7 +331,7 @@ public static partial class Cast
 
 	/// <summary>
 	/// <see cref="Scalar{T}(ReadOnlySpan{char}, NumFormat)"/> under the number formatting <paramref name="provider"/> resolves
-	/// to, as a BCL <c>TryParse</c> reads it: <see langword="null"/> means the current culture.
+	/// to, resolved as a BCL <c>TryParse</c> resolves one: <see langword="null"/> means the current culture.
 	/// The format is <see cref="NumFormat.From(IFormatProvider)"/>'s — the culture's separators
 	/// and currency symbol, every lenience on; pass a <see cref="NumFormat"/> for anything
 	/// stricter.

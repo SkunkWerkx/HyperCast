@@ -135,6 +135,16 @@ public record NumFormat(char decimalSeparator, char groupSeparator, int styles, 
      * Derives a format from a locale's number formatting symbols — separators and currency
      * symbol — with every lenience on.
      *
+     * <p>Only the decimal separator, grouping separator and currency symbol of the locale's
+     * {@link java.text.DecimalFormatSymbols} carry over; the native format has no field for the
+     * rest. The core reads ASCII {@code +} and {@code -} only, so a locale whose
+     * {@code getMinusSign()} is something else (U+2212 for Estonian and Basque, for instance)
+     * faults on its own negative numbers; a currency amount is read with the number separators,
+     * not {@code getMonetaryDecimalSeparator()} and {@code getMonetaryGroupingSeparator()},
+     * which differ in some locales; and percent is an ASCII {@code %}, not {@code getPercent()}.
+     * Every lenience is on, radix prefixes and percent included; narrow the styles, or declare
+     * a {@code NumFormat} outright, for anything stricter.
+     *
      * @param locale the locale to derive from, never null
      * @return the locale's separators and currency symbol with every lenience style enabled
      * @throws NullPointerException if {@code locale} is null

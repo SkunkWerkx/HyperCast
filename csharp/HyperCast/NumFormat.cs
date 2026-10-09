@@ -97,6 +97,31 @@ public readonly record struct NumFormat(char DecimalSeparator, char GroupSeparat
 	}
 
 	/// <summary>Derives a format from number-format data directly: separators, currency symbol, every lenience on.</summary>
+	/// <remarks>
+	/// Only <see cref="NumberFormatInfo.NumberDecimalSeparator"/>, the first character of
+	/// <see cref="NumberFormatInfo.NumberGroupSeparator"/> and
+	/// <see cref="NumberFormatInfo.CurrencySymbol"/> carry over; the native format has no field
+	/// for the rest, so a culture that relies on them reads differently from the BCL's
+	/// <c>TryParse</c> under the same culture:
+	/// <list type="bullet">
+	/// <item><description>Signs. The core reads ASCII <c>+</c> and <c>-</c> only, so a culture
+	/// whose <see cref="NumberFormatInfo.NegativeSign"/> is something else (U+2212 in et-EE and
+	/// eu-ES, for instance) faults on its own negative numbers where <c>int.TryParse</c> reads
+	/// them.</description></item>
+	/// <item><description>Currency separators. The BCL switches to
+	/// <see cref="NumberFormatInfo.CurrencyDecimalSeparator"/> and
+	/// <see cref="NumberFormatInfo.CurrencyGroupSeparator"/> when it sees the currency symbol;
+	/// here a currency amount is read with the number separators, which differ in some cultures
+	/// (several English-in-Europe ones, en-DE among them, write a decimal comma in numbers and a
+	/// decimal point in currency).</description></item>
+	/// <item><description>Percent. The core reads an ASCII <c>%</c>, not the culture's
+	/// <see cref="NumberFormatInfo.PercentSymbol"/>.</description></item>
+	/// </list>
+	/// The leniences are HyperCast's, not <c>TryParse</c>'s: every one is on, so percent and
+	/// radix prefixes (<c>0x</c>, <c>&amp;H</c>, <c>0b</c>) are read where <c>TryParse</c> would
+	/// reject them. Narrow them on the result (<c>From(culture) with { Styles = … }</c>), or
+	/// declare a <see cref="NumFormat"/> outright.
+	/// </remarks>
 	/// <param name="numberFormat">The number formatting to derive from. Never null.</param>
 	/// <exception cref="ArgumentNullException"><paramref name="numberFormat"/> is null.</exception>
 	public static NumFormat From(NumberFormatInfo numberFormat)

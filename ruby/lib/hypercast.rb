@@ -106,6 +106,14 @@ module HyperCast
     # grouping — turns GROUPING off rather than declaring a separator, since a NumFormat
     # always carries one; the placeholder it gets is whichever of "," and "." the decimal
     # mark is not. flags defaults to every lenience, the same as INVARIANT.
+    #
+    # Only the separators and the unit carry over; the native format has no field for the
+    # rest. The core reads ASCII "+" and "-" only, so a locale that writes negatives with
+    # another sign (U+2212 for Estonian and Basque, for instance) faults on them; currency
+    # amounts in a locale whose number.currency.format separators differ from number.format's
+    # read with whichever Hash is passed, so pass the currency one for currency columns; and
+    # percent is an ASCII "%". Every lenience is on, radix prefixes and percent included;
+    # narrow flags: for anything stricter.
     def self.from_i18n(number_format, flags: ALL_STYLES)
       raise ArgumentError, "expected a Hash-like number format; got #{number_format.inspect}" unless
         number_format.respond_to?(:to_h)

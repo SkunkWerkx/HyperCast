@@ -133,6 +133,15 @@ final readonly class NumFormat
      * this factory is for the caller that genuinely wants "whatever the process locale
      * says", the same stance the C# doc takes on `CultureInfo.CurrentCulture`.
      *
+     * Only the separators and the currency symbol carry over; the native format has no field
+     * for the rest. The core reads ASCII `+` and `-` only, so a locale whose minus sign is
+     * something else (U+2212 for Estonian and Basque, for instance) faults on its own negative
+     * numbers; a currency amount is read with the number separators, not the locale's monetary
+     * ones (`mon_decimal_point`, `mon_thousands_sep`),
+     * which differ in some locales; and percent is an ASCII `%`, not the locale's percent
+     * symbol. Every lenience is on, radix prefixes and percent included; narrow the flags, or
+     * construct a NumFormat outright, for anything stricter.
+     *
      * @param array<string, mixed>|null $conv a localeconv()-shaped array, or null to read localeconv()
      * @return self the format the locale data describes, every lenience on
      */
@@ -161,6 +170,16 @@ final readonly class NumFormat
      * is an InvalidArgumentException here exactly as it would be through the constructor.
      * Requires ext-intl; nothing else in this package does.
      *
+     * Only the separators and the currency symbol carry over; the native format has no field
+     * for the rest. The core reads ASCII `+` and `-` only, so a locale whose minus sign is
+     * something else (U+2212 for Estonian and Basque, for instance) faults on its own negative
+     * numbers; a currency amount is read with the number separators, not the locale's monetary
+     * ones (`MONETARY_SEPARATOR_SYMBOL`, `MONETARY_GROUPING_SEPARATOR_SYMBOL`),
+     * which differ in some locales; and percent is an ASCII `%`, not the locale's percent
+     * symbol. Every lenience is on, radix prefixes and percent included; narrow the flags, or
+     * construct a NumFormat outright, for anything stricter.
+     *
+
      * @param \NumberFormatter $formatter the formatter whose symbols declare the notation
      * @return self the format the formatter describes, every lenience on
      * @throws \InvalidArgumentException When the formatter's symbols cannot be declared.

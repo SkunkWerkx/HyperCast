@@ -121,10 +121,26 @@ Cast.Int32("1.234", null);                                       // under the cu
 
 The provider maps through `NumFormat.From(IFormatProvider)`: the culture's decimal and group
 separators and its currency symbol, with every lenience on. `null` means the current
-culture, exactly as it does for `TryParse` (`NumberFormatInfo.GetInstance(null)`), so the
-overloads are a drop-in where a BCL call stood; pass a `NumFormat` for anything stricter, or
-for a format that must not follow the machine. `Scalar<T>` reads the provider only for the
-numeric targets. The mapping allocates nothing and costs nothing measurable beside the door
+culture, resolved exactly as `TryParse` resolves it (`NumberFormatInfo.GetInstance(null)`).
+`Scalar<T>` reads the provider only for the numeric targets.
+
+The provider is resolved the BCL's way, but the text is read HyperCast's way, and that
+differs from `TryParse` under the same culture in four places:
+
+- **Leniences.** Every one is on, so a trailing `%` and a radix prefix (`0x`, `&H`, `0b`) are
+  read where `int.TryParse` would reject them. Narrow them with
+  `NumFormat.From(provider) with { Styles = … }`, or declare a `NumFormat` outright.
+- **Signs.** The core reads ASCII `+` and `-` only. A culture whose `NegativeSign` is
+  something else (U+2212 in `et-EE` and `eu-ES`, for instance) faults on its own negative
+  numbers, where `int.TryParse` reads them.
+- **Currency separators.** The BCL switches to `CurrencyDecimalSeparator` and
+  `CurrencyGroupSeparator` when it sees the currency symbol. Here a currency amount is read
+  with the number separators, and some cultures use different ones for currency (several
+  English-in-Europe cultures, `en-DE` among them, write a decimal comma in numbers and a
+  decimal point in currency).
+- **Percent symbol.** The core reads an ASCII `%`, not the culture's `PercentSymbol`.
+
+Pass a `NumFormat` for anything stricter, or for a format that must not follow the machine. The mapping allocates nothing and costs nothing measurable beside the door
 itself (77 ns either way for a grouped `Int32` on the machine that measured it).
 
 `default` as the second argument still means `default(NumFormat)`, the equal-separators

@@ -218,6 +218,14 @@ impl NumFormat {
     /// takes the other of the pair — so a comma-decimal locale with no thousands separator
     /// groups on ``.`` rather than colliding. Two separators the locale itself declares
     /// equal are still the ``ValueError`` the constructor raises.
+    ///
+    /// Only the separators and the currency symbol carry over; the native format has no field
+    /// for the rest. The core reads ASCII ``+`` and ``-`` only, so a locale whose
+    /// ``negative_sign`` is something else (U+2212 for Estonian and Basque, for instance) faults
+    /// on its own negative numbers; a currency amount is read with the number separators, not
+    /// ``mon_decimal_point`` and ``mon_thousands_sep``, which differ in some locales; and
+    /// percent is an ASCII ``%``. Every lenience is on, radix prefixes and percent included;
+    /// narrow the flags, or construct a ``NumFormat`` outright, for anything stricter.
     #[staticmethod]
     #[pyo3(signature = (conv = None))]
     fn from_localeconv(py: Python<'_>, conv: Option<Bound<'_, PyDict>>) -> PyResult<Self> {

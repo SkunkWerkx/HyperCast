@@ -295,3 +295,40 @@ the idea; neither stayed C#-only.
   that needs no declared order; a caller wanting the civil door calls `Cast.DateTime`
   directly. The same question excluded types elsewhere: Go's `rune` is its `int32`, and
   Swift's `DateComponents` is the result of three doors, so neither is dispatchable.
+
+## Culture fidelity — the sweep (open)
+
+Every binding now takes its platform's own culture object (`IFormatProvider`, `Locale`,
+`NumberFormatter`, Rails' `number.format`), but what reaches the core is still mostly the
+en-US shape: the bridges can only fill the fields `NumFormat` has, and the core hard-codes the
+rest as ASCII and English. A culture that differs in any of the ways below reads differently
+from its own platform's parser. This is documented on every bridge and in
+[`bindings.md`](bindings.md#numformat) as a known gap, and it is meant to be fixed properly,
+not worked around per consumer. Found while landing the `IFormatProvider` overloads for
+Norse Architecture (2026-10-08). None of it blocks Norse, which never passes these cultures.
+
+The rule for the fix is the project's own: **culture is declared, never sniffed.** Each gap
+becomes something a format (or a declared order) can carry, the core reads exactly what is
+declared, defaulting to today's behavior, and every binding's bridge fills it from its
+platform's data, all in the same release, with corpus vectors for each.
+
+| Gap | Today | The fix | Where |
+| --- | --- | --- | --- |
+| **Sign** | Only ASCII `+` and `-`. 96 .NET/ICU cultures declare another minus (U+2212 in `et-EE` and `eu-ES`), and `int.TryParse("−5", et-EE)` is -5 where `Cast.Int32` is Malformed. | Declarable minus and plus signs (UTF-8) in `NumFormat`. | Core, ABI, every bridge |
+| **Trailing sign** | `5-` is Malformed. .NET's `AllowTrailingSign` and a culture's negative pattern (`n-`) read it. | A lenience flag for a trailing sign, filled from the culture's negative pattern. | Core, every bridge |
+| **Currency separators** | A currency amount is read with the number separators. 13 cultures use other ones for currency (`en-DE`, `en-NL`, `en-FR`, `fr-CH` and others: a decimal comma in numbers, a decimal point in currency), and the BCL switches when it sees the symbol. | A declarable currency decimal and group separator, used when the declared symbol is present. | Core, ABI, every bridge |
+| **Percent symbol** | Only an ASCII `%` (Arabic `٪` is Malformed). | A declarable percent symbol. | Core, ABI, every bridge |
+| **Native digits** | Only ASCII `0`–`9` (Arabic-Indic `١٢٣` and fullwidth `１２` are Malformed). The BCL reads ASCII only too, but Java's `DecimalFormat` and ICU read a locale's native digits. | A declarable digit set (the zero code point of a contiguous block, as ICU and Java describe it). | Core, ABI, bridges that have the data |
+| **AM/PM designators** | Only English `AM`/`PM` (Korean `오후`, German `nachm.` and even `p.m.` are Malformed). | Declarable day-period designators beside the declared `DateOrder`, filled from the culture's designators. | Core, ABI, the `DateOrder` bridges |
+| **Separators wider than one character** | `NumFormat` holds one character per separator. The C# bridge takes the first character, and the PHP bridge rejects the locale. | Separators as short UTF-8 strings, like the currency symbol already is. | Core, ABI, every bridge |
+| **Boolean words** | Svartalfheim's English lexicon only (`ja` and `oui` are Malformed). | A declarable lexicon, or a documented decision that the boolean door stays English. Decide when the sweep starts. | Core |
+| **Swift per-user overrides** | The `locale:` overloads cache by locale identifier, so a user's own number-format overrides on Apple platforms are honored only through `NumFormat.from(locale:)`. | Key the cache by the derived symbols, or skip it for `.current`, and measure. | Swift |
+
+Not gaps, for the record: Indian lakh grouping (`12,34,567`) is already accepted; Python's and
+Go's standard libraries have no per-object locale to take; Java's Native Image includes only
+the locales named at build time (`-H:IncludeLocales`), which is the consumer's choice.
+
+Most of the table grows `RawNumFormat`, whose 32-byte layout every binding pins, so the
+sweep is one versioned ABI change rather than a field at a time: a size-tagged v2 layout or
+an extension struct, decided once, with the date-order designators alongside. That makes it
+a minor-version round of its own, after 0.8.0.
