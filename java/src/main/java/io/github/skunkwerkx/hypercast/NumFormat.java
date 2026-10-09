@@ -3,6 +3,8 @@ package io.github.skunkwerkx.hypercast;
 import java.nio.charset.StandardCharsets;
 import java.text.DecimalFormatSymbols;
 import java.util.Locale;
+import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Caller-declared numeric notation for the integer, real and decimal doors. The native core
@@ -135,10 +137,34 @@ public record NumFormat(char decimalSeparator, char groupSeparator, int styles, 
      *
      * @param locale the locale to derive from, never null
      * @return the locale's separators and currency symbol with every lenience style enabled
+     * @throws NullPointerException if {@code locale} is null
      */
     public static NumFormat from(Locale locale) {
+        Objects.requireNonNull(locale, "locale");
+        NumFormat cached = BY_LOCALE.get(locale);
+        if (cached != null) {
+            return cached;
+        }
         DecimalFormatSymbols symbols = DecimalFormatSymbols.getInstance(locale);
-        return new NumFormat(
+        NumFormat derived = new NumFormat(
                 symbols.getDecimalSeparator(), symbols.getGroupingSeparator(), STYLE_ALL, symbols.getCurrencySymbol());
+        // Bounded by clearing rather than evicting: a process casts under a handful of
+        // locales, and one that cycles through more than this many only pays the derivation
+        // again. A NumFormat is an immutable record, so one instance is shared by every caller.
+        if (BY_LOCALE.size() >= LOCALE_CACHE_LIMIT) {
+            BY_LOCALE.clear();
+        }
+        BY_LOCALE.put(locale, derived);
+        return derived;
     }
+
+    /** How many locales {@link #from(Locale)} keeps derived formats for. */
+    private static final int LOCALE_CACHE_LIMIT = 64;
+
+    /**
+     * {@link #from(Locale)}'s derived formats, by locale. {@link DecimalFormatSymbols#getInstance}
+     * builds a new symbols object on every call, and the {@code Locale} overloads of the
+     * numeric doors call {@code from} on every cast.
+     */
+    private static final ConcurrentHashMap<Locale, NumFormat> BY_LOCALE = new ConcurrentHashMap<>();
 }

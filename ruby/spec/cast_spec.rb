@@ -257,6 +257,97 @@ RSpec.describe HyperCast do
   # Caller bugs raise the same exception on every backend — this suite runs under all three.
   # The Magnus extension replaces the doors themselves, so each of these was once a place
   # the two implementations of a door disagreed.
+  describe "format overrides (separator:, delimiter:, unit:)" do
+    eurozone = { separator: ",", delimiter: "." }
+
+    it "replaces the named fields of the declared format on every numeric door" do
+      expect(described_class.i8("1.00", invariant, **eurozone)).to eq(HyperCast::Success.new(value: 100))
+      %i[i16 i32 i64 u16 u32 u64].each do |door|
+        expect(described_class.public_send(door, "1.234", invariant, **eurozone))
+          .to eq(HyperCast::Success.new(value: 1234)), door.to_s
+      end
+      expect(described_class.u8("2.50", invariant, **eurozone)).to eq(HyperCast::Success.new(value: 250))
+      expect(described_class.f32("1.234,5", invariant, **eurozone)).to eq(HyperCast::Success.new(value: 1234.5))
+      expect(described_class.f64("1.234,5", invariant, **eurozone)).to eq(HyperCast::Success.new(value: 1234.5))
+      expect(described_class.decimal("€1.234,50", invariant, **eurozone, unit: "€"))
+        .to eq(HyperCast::Success.new(value: HyperCast::Decimal.new(magnitude: 12_345, scale: 1, negative: false)))
+    end
+
+    it "changes nothing for nil keywords, and nothing without them" do
+      expect(described_class.i32("1,234", invariant, separator: nil, delimiter: nil, unit: nil))
+        .to eq(described_class.i32("1,234", invariant))
+      expect(described_class.i32("1,234", invariant)).to eq(HyperCast::Success.new(value: 1234))
+      expect(invariant.override).to equal(invariant)
+      expect(invariant.override(separator: nil)).to equal(invariant)
+    end
+
+    it "overrides only what is named, leaving the format's other fields and flags alone" do
+      dollars = HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",", flags: HyperCast::ALL_STYLES, currency: "$")
+      expect(dollars.override(delimiter: "'"))
+        .to eq(HyperCast::NumFormat.new(decimal_sep: ".", group_sep: "'", flags: HyperCast::ALL_STYLES, currency: "$"))
+      expect(described_class.f64("$1'234.5", dollars, delimiter: "'")).to eq(HyperCast::Success.new(value: 1234.5))
+      # A unit: on a format without CURRENCY is declared, not honored — the same verdict the
+      # constructor would give.
+      off = HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",", flags: HyperCast::GROUPING)
+      expect(described_class.f64("$5", off, unit: "$"))
+        .to eq(described_class.f64("$5", HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",",
+                                                                  flags: HyperCast::GROUPING, currency: "$")))
+      expect(described_class.f64("$5", off, unit: "$").reason).to eq(:malformed)
+    end
+
+    it "validates the overridden format like any other, and refuses an unknown keyword" do
+      expect { described_class.i32("1", invariant, separator: ",") }
+        .to raise_error(ArgumentError, 'decimal and group separators must differ; both are ","')
+      expect { described_class.i32("1", invariant, separator: ",,") }
+        .to raise_error(ArgumentError, "separators must be single characters")
+      expect {
+        described_class.f64("1", invariant, unit: "12")
+      }.to raise_error(ArgumentError, /must not contain an ASCII digit/)
+      expect {
+        described_class.i32("1", invariant, precision: 2)
+      }.to raise_error(ArgumentError, "unknown keyword: :precision")
+      expect {
+        described_class.i32("1")
+      }.to raise_error(ArgumentError, "wrong number of arguments (given 1, expected 2)")
+    end
+
+    describe "NumFormat.from_i18n" do
+      it "reads an I18n number.format Hash, Symbol or String keys, ignoring the rest" do
+        expect(HyperCast::NumFormat.from_i18n({ separator: ",", delimiter: ".", precision: 3, format: "%n" }))
+          .to eq(HyperCast::NumFormat.new(decimal_sep: ",", group_sep: ".", flags: HyperCast::ALL_STYLES))
+        expect(HyperCast::NumFormat.from_i18n({ "separator" => ",", "delimiter" => "\u00A0", "unit" => "kr." }))
+          .to eq(HyperCast::NumFormat.new(decimal_sep: ",", group_sep: "\u00A0", flags: HyperCast::ALL_STYLES,
+                                          currency: "kr."))
+      end
+
+      it "keeps the invariant's fields for missing or nil keys" do
+        expect(HyperCast::NumFormat.from_i18n({})).to eq(invariant)
+        expect(HyperCast::NumFormat.from_i18n({ separator: nil, delimiter: nil, unit: nil })).to eq(invariant)
+      end
+
+      it "turns grouping off for an empty delimiter, keeping a placeholder distinct from the decimal mark" do
+        no_grouping = HyperCast::NumFormat.from_i18n({ separator: ",", delimiter: "" })
+        expect(no_grouping).to eq(HyperCast::NumFormat.new(decimal_sep: ",", group_sep: ".",
+                                                           flags: HyperCast::ALL_STYLES & ~HyperCast::GROUPING))
+        expect(described_class.f64("1234,5", no_grouping)).to eq(HyperCast::Success.new(value: 1234.5))
+        expect(described_class.f64("1.234,5", no_grouping).reason).to eq(:malformed)
+        expect(HyperCast::NumFormat.from_i18n({ delimiter: "" }).group_sep).to eq(",")
+      end
+
+      it "takes declared flags, and casts with the result" do
+        detect = HyperCast::NumFormat.from_i18n({ separator: ",", delimiter: "." },
+                                                flags: HyperCast::ALL_STYLES | HyperCast::SEPARATOR_DETECT)
+        expect(detect.flags).to eq(HyperCast::ALL_STYLES | HyperCast::SEPARATOR_DETECT)
+        expect(described_class.decimal("1.234,50", HyperCast::NumFormat.from_i18n({ separator: ",", delimiter: "." })))
+          .to eq(HyperCast::Success.new(value: HyperCast::Decimal.new(magnitude: 12_345, scale: 1, negative: false)))
+      end
+
+      it "refuses what is not Hash-like" do
+        expect { HyperCast::NumFormat.from_i18n("de") }.to raise_error(ArgumentError, /Hash-like/)
+      end
+    end
+  end
+
   describe "caller bugs" do
     it "takes an explicit nil order as the strict ISO door, exactly like leaving it off" do
       expect(described_class.date("2026-01-07", nil)).to eq(HyperCast::Success.new(value: Date.new(2026, 1, 7)))

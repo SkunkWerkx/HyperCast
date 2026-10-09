@@ -48,6 +48,10 @@ internal static class SmokeTest
 		Check("scalar uuid", Cast.Scalar<Guid>("{01020304-0506-0708-090a-0b0c0d0e0f10}", NumFormat.Invariant),
 			new Guid("01020304-0506-0708-090a-0b0c0d0e0f10"));
 		Check("scalar char", Cast.Scalar<char>("&#x41;", NumFormat.Invariant), 'A');
+		// The IFormatProvider overloads, with a NumberFormatInfo built by hand: the smoke apps
+		// run under InvariantGlobalization, where no named culture but the invariant exists.
+		var commaDecimal = new System.Globalization.NumberFormatInfo { NumberDecimalSeparator = ",", NumberGroupSeparator = "." };
+		Check("scalar provider", Cast.Scalar<int>("1.234", commaDecimal), 1234);
 		Check("scalar datetime", Cast.Scalar<DateTime>("2026-01-02T15:04:05+05:00", NumFormat.Invariant),
 			new DateTime(2026, 1, 2, 10, 4, 5, DateTimeKind.Utc));
 		Check("uuid", Cast.Uuid("urn:uuid:01020304-0506-0708-090a-0b0c0d0e0f10"),

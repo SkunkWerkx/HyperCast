@@ -33,6 +33,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     `NotSupportedException` before calling the core.
   - Go: `Scalar[V ScalarTarget, T Text]`. A type outside the union is a compile error.
   - Swift: `Cast.scalar<T: ScalarCastTarget>(_:format:)`.
+- **The numeric doors take the platform's own format object.** A caller holding a culture
+  or locale passes it straight through instead of mapping it to a `NumFormat` first. Each
+  maps to the core's format with every lenience on, as the existing culture bridges do, and a
+  `NumFormat` remains the way to declare anything stricter. *(csharp, java, swift, php, ruby)*
+  - C#: an `IFormatProvider? provider` overload of every numeric door, `Numeric<T>` and
+    `Scalar<T>`, for UTF-16 and UTF-8 input. As in `TryParse(s, provider)` and
+    `ISpanParsable<T>`, `null` is the current culture. The overloads rank below the
+    `NumFormat` ones, so `Cast.Int32(s, default)` still means `NumFormat`.
+  - Java: a `Locale` overload of every numeric door, for each input form. A null `Locale`
+    throws. `NumFormat.from(Locale)` now caches per locale (52.6 ns per call against 437.6
+    uncached, in JMH).
+  - Swift: a `locale:` overload of every numeric door, `numeric` and `scalar`, cached per
+    locale identifier. Per-user number-format overrides on Apple platforms reach a door only
+    through `NumFormat.from(locale:)`.
+  - PHP: every numeric door accepts `NumFormat|\NumberFormatter`, and there is a new
+    `NumFormat::fromNumberFormatter`. intl stays optional, and the package works without it.
+  - Ruby: `separator:`, `delimiter:` and `unit:` keywords (Rails' `number.format` vocabulary)
+    on every numeric door, through a new `NumFormat#override`, and `NumFormat.from_i18n` for
+    an `I18n.t("number.format")` Hash. A call without them is unchanged and allocates no more.
+  - Python and Go keep taking a `NumFormat`. Neither standard library has a per-object locale
+    to take; Python's `locale` is process-global, which `NumFormat.from_localeconv` reads.
 - **C# — Android, for .NET MAUI.** The package carries the core for `android-arm64` and
   `android-x64`, so a MAUI app has it on every platform MAUI targets (Windows, macOS
   through Mac Catalyst, iOS and Android) with nothing but the package reference. On

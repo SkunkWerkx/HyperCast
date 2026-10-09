@@ -117,7 +117,8 @@ truncate instants to microseconds. Each binding's README states its own fidelity
 | Declare a symbol | `.with_currency(symbol)`, `CurrencySymbol::new(&str)` → `Option<CurrencySymbol>` | constructor argument | constructor argument | `Currency:` field | `currencySymbol:` argument | `$currency` argument | `currency:` keyword | `currency` argument |
 | No symbol | `CurrencySymbol::NONE` | `""` | `""` | `""` | `""` | `''` | `""` | `""` |
 | Symbol limit (16 UTF-8 bytes) | `CurrencySymbol::MAX_BYTES` | `NumFormat.MaxCurrencyBytes` | — (private) | — (unexported) | — (internal) | `NumFormat::CURRENCY_MAX_BYTES` | `NumFormat::CURRENCY_MAX_BYTES` | — |
-| Platform culture bridge | — [^no-bridge] | `NumFormat.From(CultureInfo)`, `From(IFormatProvider)`, `From(NumberFormatInfo)` | `NumFormat.from(Locale)` | — [^no-bridge] | `NumFormat.from(locale:)` | `NumFormat::fromLocaleconv(?array $conv = null)` | — [^no-bridge] | `NumFormat.from_localeconv(conv=None)` |
+| Platform culture bridge | — [^no-bridge] | `NumFormat.From(CultureInfo)`, `From(IFormatProvider)`, `From(NumberFormatInfo)` | `NumFormat.from(Locale)` | — [^no-bridge] | `NumFormat.from(locale:)` | `NumFormat::fromLocaleconv(?array $conv = null)`, `NumFormat::fromNumberFormatter(\NumberFormatter)` | `NumFormat.from_i18n(hash)` (an I18n `number.format` Hash) [^no-bridge] | `NumFormat.from_localeconv(conv=None)` |
+| A numeric door taking the platform's own format [^platform-format] | — | an `IFormatProvider? provider` overload of every numeric door, `Numeric<T>` and `Scalar<T>`; `null` is the current culture | a `Locale` overload of every numeric door | — [^no-bridge] | a `locale:` overload of every numeric door, `numeric` and `scalar` | `NumFormat\|\NumberFormatter` as the format argument | `separator:`, `delimiter:`, `unit:` keywords on every numeric door (`NumFormat#override`) | — [^python-format] |
 
 ### Styles
 
@@ -223,6 +224,23 @@ when the absence is deliberate.
     their standard libraries (`docs/roadmap.md`). PHP's standard library has no per-locale
     date pattern, so it bridges `NumFormat` from `localeconv()` but has no `DateOrder`
     bridge (`php/src/DateOrder.php`).
+
+[^platform-format]: So a caller holding its platform's own culture or format object passes it
+    straight through instead of mapping it first; each maps to the core's `NumFormat` with
+    every lenience on, as the bridge above does, and a `NumFormat` remains the way to declare
+    anything stricter. The shapes follow each platform: C# matches `TryParse(s, provider)`
+    and `ISpanParsable<T>` (a `null` provider is the current culture, as there, and the
+    overloads rank below the `NumFormat` ones, so `default` still means `NumFormat`); Java
+    and Swift take a non-null `Locale` (pass `Locale.getDefault(Locale.Category.FORMAT)` or
+    `.current`), each cached per locale; PHP takes intl's per-object `\NumberFormatter`
+    (intl stays optional); Ruby takes Rails' `number.format` vocabulary as keywords. Swift's
+    cache is keyed by locale identifier, so per-user number-format overrides on Apple
+    platforms reach a door only through `NumFormat.from(locale:)`; Java's Native Image
+    carries only the locales named at build time (`-H:IncludeLocales`).
+
+[^python-format]: Python's standard library has no per-object locale: `locale` is
+    process-global, which `NumFormat.from_localeconv` already reads, so the doors keep taking
+    a `NumFormat`.
 
 [^rust-probe]: The crate is the core, so there is nothing to load and nothing to probe;
     `hypercast_version()` is re-exported for a crate that fronts its own C ABI.

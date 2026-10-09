@@ -40,9 +40,9 @@ midnight, durations come back as exact `Rational` seconds across the core's whol
 |---|---|---|
 | `bool(text)` | `true`/`false` | — |
 | `char(text)` | one-character UTF-8 `String` — the text verbatim when it is one character (`" "` is a space), else a declared code point (`65`, `U+0041`, `0x41`, `&H41`, `&#65;`, `&#x41;`) | — |
-| `i8` `i16` `i32` `i64` `u8` `u16` `u32` `u64` `(text, format)` | `Integer` (unbounded — u64 is the true unsigned value) | a `NumFormat` |
-| `f32` `f64` `(text, format)` | `Float` (f32 widened losslessly) | a `NumFormat` |
-| `decimal(text, format)` | `HyperCast::Decimal` — exact sign, 96-bit magnitude, base-10 scale | a `NumFormat` |
+| `i8` `i16` `i32` `i64` `u8` `u16` `u32` `u64` `(text, format)` [^overrides] | `Integer` (unbounded — u64 is the true unsigned value) | a `NumFormat` |
+| `f32` `f64` `(text, format)` [^overrides] | `Float` (f32 widened losslessly) | a `NumFormat` |
+| `decimal(text, format)` [^overrides] | `HyperCast::Decimal` — exact sign, 96-bit magnitude, base-10 scale | a `NumFormat` |
 | `uuid(text)` | lowercase hyphenated `String` (`SecureRandom.uuid`'s shape) | — |
 | `timestamp(text)` | UTC `Time`, full nanoseconds | — |
 | `unix(text, precision)` | UTC `Time` | `:seconds` / `:milliseconds` / `:microseconds` / `:nanoseconds` |
@@ -160,6 +160,38 @@ HyperCast.i32("$5", HyperCast::NumFormat::INVARIANT)   # => Fault(reason: :malfo
 Across the ABI a `NumFormat` is a 32-byte struct — the two separators as code points, the
 flags, and the symbol's length and UTF-8 bytes held inline — packed once per format object
 and memoized by identity on every backend, so declaring a currency costs a cast nothing.
+
+### Rails' words for a format: `separator:`, `delimiter:`, `unit:`
+
+Ruby's standard library carries no locale number data, so the vocabulary Ruby code already
+speaks is Rails' — the number helpers' and I18n's `number.format`: `separator` (the decimal
+mark), `delimiter` (grouping) and `unit` (the currency symbol). Every numeric door takes
+them as keywords that replace those fields of the format for the call, and
+`NumFormat.from_i18n` builds a format from the Hash I18n hands back:
+
+```ruby
+inv = HyperCast::NumFormat::INVARIANT
+HyperCast.f64("1.234,5", inv, separator: ",", delimiter: ".")         # => Success(value: 1234.5)
+HyperCast.decimal("1.234,50 kr.", inv, separator: ",", delimiter: ".", unit: "kr.")
+
+german = HyperCast::NumFormat.from_i18n(I18n.t("number.format"))      # {separator: ",", delimiter: ".", ...}
+HyperCast.i32("1.234", german)                                        # => Success(value: 1234)
+```
+
+The keywords go through `NumFormat#override`, which is public: the result is validated like
+any `NumFormat`, and the flags are left alone, so a `unit:` on a format without `CURRENCY`
+is declared but not honored, as it would be in the constructor. `from_i18n` reads Symbol or
+String keys and ignores every other key, so `number.currency.format` works as well. Missing
+keys keep the invariant's fields. An empty `delimiter` (a locale that writes no grouping)
+turns `GROUPING` off. `flags:` defaults to `ALL_STYLES`.
+
+A call without the keywords is exactly the call it was, with no extra allocation on either
+backend. A call with them builds a format each time (a few microseconds), so in a loop,
+build it once with `override` or `from_i18n` and pass that instead.
+
+[^overrides]: Plus the optional keywords `separator:`, `delimiter:` and `unit:`, which
+    override those fields of `format` for the call. See
+    [Rails' words for a format](#rails-words-for-a-format-separator-delimiter-unit).
 
 ## Interop: building on HyperCast's C ABI
 

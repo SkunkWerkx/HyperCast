@@ -84,6 +84,42 @@ module HyperCast
       super(decimal_sep: decimal_sep, group_sep: group_sep, flags: flags, currency: symbol)
     end
 
+    # This format with the fields Ruby's number vocabulary names replaced — the words Rails'
+    # number helpers and I18n's number.format use: separator: (the decimal mark),
+    # delimiter: (grouping) and unit: (the currency symbol). A nil keyword leaves its
+    # field alone, so with none given this is the format itself, not a copy. The result is
+    # validated like any NumFormat (single, distinct separators; a declarable symbol), and
+    # the flags are untouched: a unit: declared on a format without CURRENCY is a :malformed
+    # Fault at the symbol, exactly as declaring it in the constructor would be. Every
+    # numeric door takes the same three keywords and applies them through this method.
+    def override(separator: nil, delimiter: nil, unit: nil)
+      return self unless separator || delimiter || unit
+
+      with(**{ decimal_sep: separator, group_sep: delimiter, currency: unit }.compact)
+    end
+
+    # A format from a Hash shaped like I18n's number.format (or number.currency.format):
+    # :separator, :delimiter and :unit, Symbol or String keys, every other key (precision,
+    # format, significant, ...) ignored — so `NumFormat.from_i18n(I18n.t("number.format"))`
+    # drops a Rails locale straight in, with no I18n dependency here. A missing or nil key
+    # keeps the invariant's "." / "," / no symbol. An empty delimiter — the locale writes no
+    # grouping — turns GROUPING off rather than declaring a separator, since a NumFormat
+    # always carries one; the placeholder it gets is whichever of "," and "." the decimal
+    # mark is not. flags defaults to every lenience, the same as INVARIANT.
+    def self.from_i18n(number_format, flags: ALL_STYLES)
+      raise ArgumentError, "expected a Hash-like number format; got #{number_format.inspect}" unless
+        number_format.respond_to?(:to_h)
+
+      entries = number_format.to_h.transform_keys { |key| key.respond_to?(:to_sym) ? key.to_sym : key }
+      separator = entries[:separator] || "."
+      delimiter = entries[:delimiter] || ","
+      if delimiter == ""
+        flags &= ~GROUPING
+        delimiter = separator == "," ? "." : ","
+      end
+      new(decimal_sep: separator, group_sep: delimiter, flags: flags, currency: entries[:unit] || "")
+    end
+
     # The 32-byte little-endian form the native ABI's NumFormat struct expects: the two
     # separators as code points, the flags, the symbol's byte length, then the symbol's
     # UTF-8 bytes zero-padded to 16.
@@ -236,20 +272,29 @@ module HyperCast
       symbol = :"cast_#{door}"
       # Integer doors: the target type's own range, declared grouping, accounting parens,
       # non-negative exponent, and 0x/&H/0b two's-complement radix prefixes. Ruby Integer
-      # is unbounded, so u64 comes back as the true unsigned value.
-      define_method(door) do |text, format|
+      # is unbounded, so u64 comes back as the true unsigned value. separator:, delimiter:
+      # and unit: override those fields of format for this call (NumFormat#override).
+      define_method(door) do |text, format, separator: nil, delimiter: nil, unit: nil|
+        format = format.override(separator: separator, delimiter: delimiter, unit: unit) if
+          separator || delimiter || unit
         numeric(symbol, text, format, size) { |out| out.unpack1(unpack) }
       end
     end
 
     # Casts real text to an IEEE single (widened losslessly on the way out): finite values
     # only, declared separators and grouping, parens, exponent, and trailing percent.
-    def f32(text, format)
+    # separator:, delimiter: and unit: override those fields of format for this call
+    # (NumFormat#override), on this door and every other numeric one.
+    def f32(text, format, separator: nil, delimiter: nil, unit: nil)
+      format = format.override(separator: separator, delimiter: delimiter, unit: unit) if
+        separator || delimiter || unit
       numeric(:cast_f32, text, format, 4) { |out| Interop.decode(:f32, out) }
     end
 
     # Casts real text to an IEEE double. Notation rules as f32.
-    def f64(text, format)
+    def f64(text, format, separator: nil, delimiter: nil, unit: nil)
+      format = format.override(separator: separator, delimiter: delimiter, unit: unit) if
+        separator || delimiter || unit
       numeric(:cast_f64, text, format, 8) { |out| Interop.decode(:f64, out) }
     end
 
@@ -259,7 +304,9 @@ module HyperCast
     # "1.10" is canonical magnitude 11, scale 1 — exact trailing zeros are always trimmed.
     # A magnitude past 2**96 - 1, or more fractional precision than 28 places can hold, is
     # an :out_of_range Fault — the door never rounds.
-    def decimal(text, format)
+    def decimal(text, format, separator: nil, delimiter: nil, unit: nil)
+      format = format.override(separator: separator, delimiter: delimiter, unit: unit) if
+        separator || delimiter || unit
       numeric(:cast_decimal, text, format, 16) { |out| Interop.decode(:decimal, out) }
     end
 
