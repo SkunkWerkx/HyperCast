@@ -48,8 +48,8 @@ public sealed class CastTests
 	void NumFormat_bridges_from_a_real_culture()
 	{
 		var german = NumFormat.From(CultureInfo.GetCultureInfo("de-DE"));
-		german.DecimalSeparator.ShouldBe(',');
-		german.GroupSeparator.ShouldBe('.');
+		german.DecimalSeparator.ShouldBe(",");
+		german.GroupSeparator.ShouldBe(".");
 		(Cast.Double("1.234,5", german) is Success<double> { Value: 1234.5 }).ShouldBeTrue();
 	}
 
@@ -141,6 +141,21 @@ public sealed class CastTests
 			&& gb == new DateTime(2026, 7, 1, 15, 4, 0)).ShouldBeTrue();
 		// A zone suffix is not this door's business — Timestamp is the instant door.
 		(Cast.DateTime("1/7/2026 15:04:05Z", enUs) is Fault { Reason: CastFailure.Malformed }).ShouldBeTrue();
+		// The marker is read ahead of the clock too, and a declared pair beside it, exactly.
+		(Cast.DateTime("1/7/2026 PM 3:04", enUs) is Success<DateTime> { Value: var ahead }
+			&& ahead == new DateTime(2026, 1, 7, 15, 4, 0)).ShouldBeTrue();
+		var german = new DateFormat(DateOrder.DayMonthYear, "vorm.", "nachm.");
+		(Cast.DateTime("1.7.2026 3:04 nachm.", german) is Success<DateTime> { Value: var pm }
+			&& pm == new DateTime(2026, 7, 1, 15, 4, 0)).ShouldBeTrue();
+		(Cast.DateTime("1.7.2026 3:04 vorm.", german) is Success<DateTime> { Value: var am }
+			&& am == new DateTime(2026, 7, 1, 3, 4, 0)).ShouldBeTrue();
+		(Cast.DateTime("1.7.2026 3:04 PM", german) is Success<DateTime> { Value: var english }
+			&& english == new DateTime(2026, 7, 1, 15, 4, 0)).ShouldBeTrue();
+		(Cast.DateTime("1.7.2026 3:04 Nachm.", german) is Fault { Reason: CastFailure.Malformed }).ShouldBeTrue();
+		(Cast.DateTime("1.7.2026 3:04 nachm.", DateOrder.DayMonthYear) is Fault { Reason: CastFailure.Malformed }).ShouldBeTrue();
+		// `default` still means default(DateOrder), the undefined order it always was.
+		Should.Throw<ArgumentOutOfRangeException>(() => Cast.DateTime("1/7/2026", default)).ParamName.ShouldBe("order");
+		Should.Throw<ArgumentOutOfRangeException>(() => Cast.DateTime("1/7/2026", default(DateFormat))).ParamName.ShouldBe("format");
 	}
 
 	[Fact]
@@ -407,21 +422,29 @@ public sealed class CastTests
 		// default(NumFormat) never ran the property initializer, so its symbol field is null;
 		// carried forward through `with`, it must read back as "no symbol", not surface as a
 		// NullReferenceException inside the first door that reads it.
-		var fromDefault = default(NumFormat) with { DecimalSeparator = '.', GroupSeparator = ',', Styles = NumStyles.All };
+		var fromDefault = default(NumFormat) with { DecimalSeparator = ".", GroupSeparator = ",", Styles = NumStyles.All };
 		fromDefault.CurrencySymbol.ShouldBe("");
+		(fromDefault.CurrencyDecimalSeparator, fromDefault.CurrencyGroupSeparator, fromDefault.MinusSign, fromDefault.PlusSign, fromDefault.PercentSymbol)
+			.ShouldBe(("", "", "", "", ""));
+		fromDefault.DigitZero.ShouldBeNull();
 		(Cast.Int32("(1,234)", fromDefault) is Success<int> { Value: -1234 }).ShouldBeTrue();
 
 		// The same for a null handed over explicitly, by either route.
 		var fromConstructor = new NumFormat('.', ',', NumStyles.All, null!);
 		fromConstructor.CurrencySymbol.ShouldBe("");
 		(Cast.Decimal("1,234.50", fromConstructor) is Success<decimal> { Value: 1234.50m }).ShouldBeTrue();
-		var fromInitializer = NumFormat.Invariant with { CurrencySymbol = null! };
+		var fromInitializer = NumFormat.Invariant with { CurrencySymbol = null!, MinusSign = null!, PercentSymbol = null! };
 		fromInitializer.CurrencySymbol.ShouldBe("");
+		fromInitializer.MinusSign.ShouldBe("");
 		(Cast.Double("25.5%", fromInitializer) is Success<double> { Value: 0.255 }).ShouldBeTrue();
+		new NumFormat(null!, null!, NumStyles.All).DecimalSeparator.ShouldBe("");
 
 		// And default(NumFormat) itself is still the caller bug it always was: both
-		// separators are U+0000, which is "equal separators", not a null dereference.
-		Should.Throw<ArgumentException>(() => Cast.Int32("42", default));
+		// separators are empty, which is "no separators declared", not a null dereference.
+		Should.Throw<ArgumentException>(() => Cast.Int32("42", default)).ParamName.ShouldBe("format");
+		// The same for default(DateFormat): nothing declared, and the undefined order.
+		default(DateFormat).AMDesignator.ShouldBe("");
+		default(DateFormat).HasDesignators.ShouldBeFalse();
 	}
 
 	[Fact]
@@ -436,13 +459,20 @@ public sealed class CastTests
 	[Fact]
 	void Culture_bridges_reject_a_null_culture_by_name()
 	{
-		Should.Throw<ArgumentNullException>(() => DateOrders.From(null!)).ParamName.ShouldBe("culture");
+		Should.Throw<ArgumentNullException>(() => DateOrders.From((CultureInfo)null!)).ParamName.ShouldBe("culture");
+		Should.Throw<ArgumentNullException>(() => DateOrders.From((DateTimeFormatInfo)null!)).ParamName.ShouldBe("dateTimeFormat");
 		Should.Throw<ArgumentNullException>(() => NumFormat.From((CultureInfo)null!)).ParamName.ShouldBe("culture");
+		Should.Throw<ArgumentNullException>(() => DateFormat.From((CultureInfo)null!)).ParamName.ShouldBe("culture");
+		Should.Throw<ArgumentNullException>(() => DateFormat.From((IFormatProvider)null!)).ParamName.ShouldBe("provider");
+		Should.Throw<ArgumentNullException>(() => DateFormat.From((DateTimeFormatInfo)null!)).ParamName.ShouldBe("dateTimeFormat");
 	}
 
 	[Theory]
 	[InlineData("RawFault", 8)]
-	[InlineData("RawNumFormat", 32)]
+	[InlineData("RawNumFormat", 92)]
+	[InlineData("RawSymbol", 9)]
+	[InlineData("RawWideSymbol", 17)]
+	[InlineData("RawDayPeriods", 40)]
 	[InlineData("RawDecimal", 16)]
 	[InlineData("RawTimestamp", 16)]
 	[InlineData("RawDate", 4)]

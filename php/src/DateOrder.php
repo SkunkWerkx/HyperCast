@@ -10,7 +10,8 @@ namespace HyperCast;
  * only because the caller said which. Values match the native core's discriminants.
  * PHP's stdlib carries no per-locale date-pattern source (that's ext-intl territory), so
  * unlike NumFormat there is no locale bridge here — declare the order the text actually
- * speaks.
+ * speaks. The datetime door takes a {@see DayPeriods} beside the order the same way, for
+ * a culture whose 12-hour clock says something other than AM/PM.
  */
 enum DateOrder: int
 {

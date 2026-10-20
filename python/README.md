@@ -22,9 +22,18 @@ pip install hypercast
 ```
 
 Real platform-specific wheels, so it lands at native speed with nothing to compile — no
-compiler needed and no dependencies at all; the PyO3 extension *is* the package. The wheels
-are `abi3` (abi3-py311), so one per platform covers every CPython from the 3.11 floor up —
-eight native ones, plus a ninth for Pyodide in the browser ([below](#in-the-browser-pyodide)):
+compiler needed and no dependencies at all; the PyO3 extension *is* the package. Each
+platform gets three wheels, which between them cover every CPython from the 3.11 floor up,
+with the GIL or without it:
+
+| Wheel | Interpreters |
+| --- | --- |
+| `cp311-abi3` | CPython 3.11 and newer, with the GIL |
+| `cp314-cp314t` | free-threaded CPython 3.14 |
+| `cp315-abi3.abi3t` | CPython 3.15 and newer, free-threaded or not ([PEP 803](https://peps.python.org/pep-0803/)) |
+
+on each of eight platforms, plus a twenty-fifth wheel for Pyodide in the browser
+([below](#in-the-browser-pyodide)):
 
 | | x64 | arm64 |
 | --- | :---: | :---: |
@@ -34,24 +43,21 @@ eight native ones, plus a ninth for Pyodide in the browser ([below](#in-the-brow
 | Windows | ✓ | ✓ |
 
 **Only wheels are published — there is no sdist.** An interpreter none of the wheels matches
-(a glibc older than 2.28, PyPy, free-threaded CPython) gets `No matching distribution found`
+(a glibc older than 2.28, PyPy, free-threaded 3.13) gets `No matching distribution found`
 from pip, not a source build.
 
 On Alpine the musl wheel needs nothing beyond the base image — it carries its own copy of
 `libgcc_s` — and the whole suite passes on a bare `python:3.14-alpine`.
 
-**Not yet covered: free-threaded (no-GIL) CPython (`3.13t`/`3.14t`).** An `abi3` wheel is
-ignored by a free-threaded interpreter (it's a genuinely separate ABI, not a compatibility
-flag), so closing this gap means building and shipping additional version-specific
-`cp313t`/`cp314t` wheels alongside the existing ones, not just a build-flag change. PyO3
-itself has supported free-threading (opt-in, `gil_used = false`) since 0.23; the cleaner
-long-term fix — [PEP 803](https://peps.python.org/pep-0803/)'s `abi3t` stable ABI, one build
-covering both GIL and no-GIL — needs Python 3.15+, not yet released. Revisiting once that
-lands or free-threaded adoption justifies the extra wheel legs. The stance in the code
-today: the extension module does not declare `gil_used = false`, so a build from a checkout
-for a free-threaded interpreter imports with the GIL switched back on (CPython says so in a
-`RuntimeWarning`) — correct, just not parallel. And no door releases the GIL: each is tens
-to hundreds of nanoseconds of pure Rust, less than the handoff would cost.
+**Free-threaded CPython runs it without the GIL.** The extension declares it needs no GIL, so a
+free-threaded interpreter keeps the GIL off after `import hypercast` (no `RuntimeWarning`), and
+every door is safe to call from any number of threads at once: the verdict types and
+`NumFormat` are immutable, the objects a door builds its values with are bound once at import
+and only read after, and a door reads its `str` or `bytes` argument in place, both immutable.
+The bindings are written once, for free-threading; a GIL build runs the same code. No door
+releases the GIL on a GIL build: each is tens to hundreds of nanoseconds of pure Rust, less
+than the handoff would cost. CI runs the whole suite on free-threaded 3.15 on every platform,
+and installs each wheel on its own interpreters before it is published.
 
 The package is typed: it ships `py.typed` and a stub for the extension module, so mypy and
 pyright see each door's own `Success[...] | Fault` rather than `Any` — which is what makes
@@ -66,7 +72,7 @@ match hypercast.cast_i32("(1,234)", hypercast.NumFormat.INVARIANT):
     case hypercast.Success(value):
         print("got", value)                       # -1234, accounting negative
     case hypercast.Fault(reason, offset, length):
-        print(reason.name, "at byte", offset)
+        print(reason.name, "at char", offset)
 ```
 
 Door names mirror the native ABI (`cast_i32`, `cast_f64`, `cast_decimal`, `cast_timestamp`,
@@ -118,7 +124,7 @@ Every door takes the text first — `str` or `bytes` — and returns `Success(va
 | `cast_excel_serial(text, epoch)` | an Excel date serial in a declared `ExcelEpoch` | `datetime`, aware, UTC |
 | `cast_date(text)` | a strict ISO `yyyy-MM-dd` date | `date` |
 | `cast_date(text, order)` | a separated date in a declared `DateOrder` | `date` |
-| `cast_datetime(text, order)` | a zone-less civil date-time in a declared `DateOrder` | `datetime`, naive |
+| `cast_datetime(text, order, *, am="", pm="")` | a zone-less civil date-time in a declared `DateOrder`, a culture's day periods declared beside the English `AM`/`PM` | `datetime`, naive |
 | `cast_time(text)` | an ISO 24-hour time of day | `time` |
 | `cast_duration(text)` | ISO 8601, the invariant colon form, or protobuf JSON seconds | `timedelta` |
 | `cast_decimal_from_float(value)` | a `float` as the shortest decimal that names it (`0.1` is one tenth) | `decimal.Decimal` |
@@ -148,9 +154,21 @@ hypercast.cast_date("1/7/2026", DateOrder.DAY_MONTH_YEAR)
 # Success(value=datetime.date(2026, 7, 1))
 hypercast.cast_datetime("1/7/2026 3:04 PM", DateOrder.MONTH_DAY_YEAR)
 # Success(value=datetime.datetime(2026, 1, 7, 15, 4))
+hypercast.cast_datetime("2026-01-07 오후 3:04", DateOrder.YEAR_MONTH_DAY, am="오전", pm="오후")
+# Success(value=datetime.datetime(2026, 1, 7, 15, 4))
 hypercast.cast_duration("PT1H30M")
 # Success(value=datetime.timedelta(seconds=5400))
 ```
+
+`cast_datetime` reads the English `AM`/`PM` whatever is declared — ASCII, either case, after
+the clock (`3:04 PM`) or ahead of it (`PM 3:04`). A culture's own designators are declared
+beside them as the keyword-only `am` and `pm` — German `vorm.`/`nachm.`, Korean `오전`/`오후`,
+Spanish `a. m.`/`p. m.` — and read exactly as spelled, after the clock with an optional space
+before (`3:04 nachm.`) or ahead of it with an optional space after (`오후 3:04`). Nothing is
+guessed from the text: undeclared, `nachm.` is the first offending character of a `MALFORMED`
+fault. A designator is 1 to 16 UTF-8 bytes with no ASCII digit and no whitespace at either
+end (inside is fine, as in `a. m.`); anything else is a `ValueError` at the call, a caller's
+bug like a `NumFormat` that cannot be.
 
 A `Fault`'s `reason` is a `CastFailure` — `EMPTY` (nothing there, or only whitespace),
 `MALFORMED` (present, but not the target type) or `OUT_OF_RANGE` (well-formed, outside the
@@ -165,7 +183,8 @@ hypercast.optional(hypercast.cast_i32("abc", hypercast.NumFormat.INVARIANT))    
 
 Bad data is always a `Fault`. What raises is a caller's bug: `TypeError` for an argument of the wrong type (text that is neither `str` nor
 `bytes`, a format that is not a `NumFormat`), `ValueError` for a declaration that names no
-member of its enum or a `NumFormat` that cannot be (below), `OverflowError` for an integer
+member of its enum, a `NumFormat` that cannot be (below) or a day-period designator that
+cannot be, `OverflowError` for an integer
 too wide for the 32 unsigned bits a flag set or a declaration is. The one exception that is
 about data: a `str` holding a lone surrogate has no UTF-8 form, so it is a
 `UnicodeEncodeError` before any door runs.
@@ -173,19 +192,25 @@ about data: a `str` holding a lone surrogate has no UTF-8 form, so it is a
 See [the repo root README](../README.md) for the receipts and the state of every other
 language binding.
 
-## Declared formats: separators, lenience flags, currency
+## Declared formats: separators, lenience flags, currency, signs, digits
 
 Every numeric door — the integer family, `cast_f32`/`cast_f64`, and `cast_decimal` — takes
-a `NumFormat`: the decimal and group separators, a bitwise OR of the lenience flags
-(`GROUPING`, `PARENTHESES`, `EXPONENT`, `RADIX_PREFIXES`, `PERCENT`, `CURRENCY`; `ALL` is
-all six — `SEPARATOR_DETECT` is a separator *policy*, not a lenience, and is opted into
-separately), and an optional currency symbol. `NumFormat.INVARIANT` is `.`/`,` with every
-lenience on and no symbol; `NumFormat.DETECT` is the same with `SEPARATOR_DETECT` added, so
-the `.`/`,` roles are resolved per input from its structure (`1.234.567,89` and
-`1,234,567.89` both read) and an undecidable one is a `MALFORMED` fault, never a guess;
-`NumFormat.from_localeconv()` bridges `locale.localeconv()` — `decimal_point`,
-`thousands_sep`, and `currency_symbol`. A format is immutable and reads back through
-`decimal_sep`, `group_sep`, `flags` and `currency`. Unlike the C#, Java, Swift, PHP and Ruby
+a `NumFormat`: the decimal and group separators (one or two characters each: `,` and `.`, a
+no-break space, the `, ` some feeds carry), a bitwise OR of the lenience flags (`GROUPING`,
+`PARENTHESES`, `EXPONENT`, `RADIX_PREFIXES`, `PERCENT`, `CURRENCY`; `ALL` is all six —
+`TRAILING_SIGN` is opted into separately, from a culture's negative pattern, and
+`SEPARATOR_DETECT` is a separator *policy*, not a lenience, opted into separately too), an
+optional currency symbol, and then, as keyword arguments, what a culture spells differently:
+`currency_decimal_sep` and `currency_group_sep`, the separators a currency amount is read
+with; `minus_sign`, `plus_sign` and `percent`, further spellings of the signs and the
+percent symbol; and `digit_zero`, the zero of a set of native digits. `NumFormat.INVARIANT`
+is `.`/`,` with every lenience on and nothing else declared; `NumFormat.DETECT` is the same
+with `SEPARATOR_DETECT` added, so the `.`/`,` roles are resolved per input from its
+structure (`1.234.567,89` and `1,234,567.89` both read) and an undecidable one is a
+`MALFORMED` fault, never a guess; `NumFormat.from_localeconv()` bridges
+`locale.localeconv()` ([below](#the-locale-bridge)). A format is immutable and reads back
+through `decimal_sep`, `group_sep`, `flags`, `currency` and the keyword fields by their
+own names, each `""` when it declares nothing. Unlike the C#, Java, Swift, PHP and Ruby
 doors, these take no platform format object: Python's `locale` is process-global, and
 `from_localeconv()` already reads it.
 
@@ -206,6 +231,60 @@ krone = hypercast.NumFormat(",", ".", hypercast.NumFormat.ALL, currency="kr.")
 hypercast.cast_decimal("1.234,50 kr.", krone)    # Success(value=Decimal('1234.5'))
 ```
 
+The one rule behind every declared symbol: **the ASCII spelling is always read, and a
+declared symbol is a further spelling read beside it** — so nothing that parsed before a
+declaration stops parsing after it. What each field adds:
+
+- **Signs** — `minus_sign` and `plus_sign` are read wherever ASCII `-` and `+` are: ahead of
+  the digits, before or after a leading currency symbol (`−5`, `€−5`, `−€5` with U+2212, as
+  Estonian and Basque write it). Two signs are `MALFORMED` at the second.
+- **`TRAILING_SIGN`** — the sign after the digits, as a culture whose negative pattern is
+  `n-` writes it: `5-`, `5 -`, `5+`, `5 €-`, `5- €`, `2.5%-`, `2.5-%`; ASCII or declared,
+  never beside a leading sign and never inside accounting parentheses. Not in `ALL`:
+  `from_localeconv()` sets it from the locale's sign position, and you set it from yours.
+- **Currency separators** — with `CURRENCY` set, a symbol declared, *and* the symbol found
+  in the text (either edge), the digits are read with `currency_decimal_sep` and
+  `currency_group_sep`, each falling back to its number counterpart when not declared —
+  the way the BCL switches to a culture's `CurrencyDecimalSeparator` when it sees the
+  symbol (Swiss German groups a number on `'` and writes money with a `,` decimal). A plain
+  number keeps the number separators. Under `SEPARATOR_DETECT` detection governs the whole
+  token and the currency separators are ignored.
+- **Percent** — `percent` is read exactly as a trailing ASCII `%` is, under `PERCENT`, on
+  the real and decimal doors (`50٪` is `0.5`); the integer doors never read a percent.
+- **Native digits** — the ten code points from `digit_zero` (`٠` U+0660 declares the
+  Arabic-Indic digits, `０` U+FF10 the fullwidth ones) are digits everywhere ASCII `0`–`9`
+  are: integer part, fraction, exponent, mixed with ASCII in one token. Radix-prefixed
+  (`0x`, `0b`) digits stay ASCII.
+
+```python
+estonian = hypercast.NumFormat(",", "\u00a0", hypercast.NumFormat.ALL, "€", minus_sign="−")
+hypercast.cast_f64("−1\u00a0234,5", estonian)    # Success(value=-1234.5)
+hypercast.cast_f64("-1\u00a0234,5", estonian)    # Success(value=-1234.5) — ASCII is always read
+
+swiss = hypercast.NumFormat(
+    ".", "'", hypercast.NumFormat.ALL | hypercast.NumFormat.TRAILING_SIGN, "CHF",
+    currency_decimal_sep=",",
+)
+hypercast.cast_decimal("CHF 1'234,50", swiss)    # Success(value=Decimal('1234.5'))
+hypercast.cast_decimal("1'234.50", swiss)        # Success(value=Decimal('1234.5')) — no symbol, the number separators
+hypercast.cast_decimal("1'234,50 CHF-", swiss)   # Success(value=Decimal('-1234.5'))
+
+arabic = hypercast.NumFormat("٫", "٬", hypercast.NumFormat.ALL, percent="٪", digit_zero="٠")
+hypercast.cast_f64("١٬٢٣٤٫٥", arabic)            # Success(value=1234.5)
+hypercast.cast_decimal("٥٠٪", arabic)            # Success(value=Decimal('0.5'))
+```
+
+What the core refuses to carry is refused at construction, as a `ValueError` — the C ABI's
+own contract rules, so a `NumFormat` that exists is one the core reads: a separator that is
+not one or two characters or contains an ASCII digit, equal separators (the number pair, or
+the pair in force for a currency amount, counting what each falls back to), a sign or percent
+symbol with ASCII whitespace in it, a symbol longer than its field (8 UTF-8 bytes; 16 for the
+currency symbol), a digit zero that is ASCII or starts no Unicode digit block.
+
+Not declared, by decision: `cast_bool`'s lexicon stays English-only. No platform carries
+culture data for a boolean vocabulary, so no bridge could fill such a field — a caller maps
+a culture's words before the door.
+
 `cast_decimal` is the real doors' grammar with an exact result: a `decimal.Decimal` built
 from the core's sign, 96-bit magnitude and base-10 scale, never a float in between. The
 result is canonical: exact trailing zeros in the fraction are trimmed, so `"0.1"` is one
@@ -215,6 +294,29 @@ Text past 96 bits of magnitude or 28 nonzero places is `OUT_OF_RANGE` — nothin
 ever dropped, never rounded, the one thing a caller who reached for a decimal is entitled to
 assume.
 
+### The locale bridge
+
+`NumFormat.from_localeconv()` reads `locale.localeconv()` — or a dict shaped like it — and
+fills every field the C locale has a column for: `decimal_point` and `thousands_sep` as the
+separators, `currency_symbol`, `mon_decimal_point` and `mon_thousands_sep` as the currency
+separators, `negative_sign` and `positive_sign` as the signs (U+2212 for Estonian and Basque;
+an ASCII sign is already read, so it declares nothing), and an `n_sign_posn` of `2` or `4` —
+the sign after the amount — as `TRAILING_SIGN`. `localeconv()` has no percent symbol and no
+digits, so those stay ASCII. A separator the locale leaves empty takes its default (`.`/`,`
+for the number pair, the number pair for the currency pair) unless the other separator
+already holds that character, in which case it takes the other of the pair — a comma-decimal
+locale with no thousands separator groups on `.` rather than colliding. Every lenience is on;
+narrow the flags, or construct a `NumFormat` outright, for anything stricter.
+
+```python
+# With no argument, the process's own locale; here the fields et_EE.UTF-8 reports.
+fmt = hypercast.NumFormat.from_localeconv(
+    {"decimal_point": ",", "thousands_sep": "\xa0", "currency_symbol": "€", "negative_sign": "−"}
+)
+fmt                                       # NumFormat(',', '\xa0', 95, '€', minus_sign='−')
+hypercast.cast_f64("−1\xa0234,5", fmt)    # Success(value=-1234.5)
+```
+
 `hypercast.native_version()` names the core actually loaded, `"major.minor.patch"`, decoded
 from the same packed `hypercast_version` export every other binding probes.
 `hypercast.BACKEND` is always `"native"`, the PyO3 extension.
@@ -223,16 +325,24 @@ from the same packed `hypercast_version` export every other binding probes.
 
 For a library that carries HyperCast's verdicts across a C ABI of its own — HyperTabular's,
 for one — and has to hand its native layer a format in the core's own layout
-rather than a copy of it. `NumFormat.packed` is those 32 bytes: the decimal and group
-separators as code points, the flags and the currency symbol's byte length as
-little-endian `u32`s, then the symbol's UTF-8, zero-padded to 16 — the same bytes as the
-Rust crate's `RawNumFormat::to_le_bytes`. A format's `repr` is the constructor call that
-builds it again, so one can be logged and restored:
+rather than a copy of it. `NumFormat.packed` is those 92 bytes, the size-tagged layout the
+core reads in place: the size (`92`), the flags and the native digits' zero code point (`0`
+for none) as little-endian `u32`s at offsets 0, 4 and 8; then each symbol as its UTF-8
+zero-padded to its field, followed by its byte length — 8 + 1 bytes each for the decimal
+separator (offset 12), group separator (21), currency decimal separator (30), currency group
+separator (39), minus sign (48), plus sign (57) and percent symbol (66), and 16 + 1 for the
+currency symbol (75) — the same bytes as the Rust crate's `RawNumFormat::to_le_bytes`. A
+symbol declared empty is all zeros. A format's `repr` is the constructor call that builds it
+again — the four positional arguments, then only the keywords that declare something — so one
+can be logged and restored:
 
 ```python
 fmt = hypercast.NumFormat(".", ",", hypercast.NumFormat.ALL, "$")
 fmt          # NumFormat('.', ',', 95, '$')
-fmt.packed   # b'.\x00\x00\x00,\x00\x00\x00_\x00\x00\x00\x01\x00\x00\x00$' + bytes(15)
+fmt.packed   # b'\\\x00\x00\x00' + b'_\x00\x00\x00' + bytes(4)         size 92, flags 95, no native digits
+             #   + b'.' + bytes(7) + b'\x01' + b',' + bytes(7) + b'\x01'  the separators, each its UTF-8 then its length
+             #   + bytes(45)                                            five symbols declared empty
+             #   + b'$' + bytes(15) + b'\x01'                           the currency symbol
 ```
 
 The values themselves are built on the Rust side: an extension module of its own that
@@ -271,9 +381,10 @@ and the next line is covered by the release that adds its build.
 1. **Verdicts, not exceptions** — bad data is the expected case for untrusted text, and a
    `Fault` is a reason plus a span, not a `ValueError` to catch and regex.
 2. **The vocabulary untrusted sources actually send** — twenty boolean lexemes, accounting
-   parentheses, declared separators and currency symbols, radix prefixes, all five .NET
-   `Guid` text forms plus `urn:uuid:` prefixes, protobuf JSON durations — with each
-   lenience individually declared, never guessed.
+   parentheses, declared separators, currency symbols, signs, percent symbols and native
+   digits, radix prefixes, a culture's day periods, all five .NET `Guid` text forms plus
+   `urn:uuid:` prefixes, protobuf JSON durations — with each lenience individually
+   declared, never guessed.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
    held by the shared corpus (the whole suite green, in CPython and in Pyodide, the full
    corpus replayed).
@@ -317,10 +428,25 @@ the cheapest way the stable ABI allows: a `uuid.UUID` is allocated and its slots
 the C API with no `__init__` (the core has already validated the text); a `datetime`, `date`
 or `time` comes from the packed form the `datetime` module's own pickling uses; and a
 `timedelta` from subtracting two datetimes, which is several times cheaper than its
-constructor. One `abi3` wheel still covers every CPython from 3.11.
+constructor. All of it is inside the stable ABI, so one `abi3` wheel still covers every
+CPython from 3.11 with the GIL, and one `abi3t` wheel every CPython from 3.15.
 
 Separator detection costs ~15 ns: `1.234.567,89` under `NumFormat.DETECT` is 157 ns
 against 142 ns for the same text under a declared eurozone format.
+
+A declared currency symbol costs nothing measurable here: `cast_i32("1,234,567")` is 104 ns
+under `NumFormat.INVARIANT` and under a format declaring `$`. Rejection is where the verdict
+pays off. `cast_i32("1,234x567")` returns its `Fault` in 140 ns, while `int("1234x567")`
+takes 645 ns to raise its `ValueError` and have it caught: 4.6x.
+
+The culture fields are free until used: a `NumFormat` is resolved once, at construction, and
+a door hands the core the same pre-resolved struct whatever it declares, so signs, percent,
+currency separators and native digits cost a door nothing on text that does not carry them.
+`cast_datetime`'s keyword-only `am` and `pm` are the one declaration parsed per call: with
+nothing declared the door takes the core's English path and pays about 15 ns for the
+keyword signature (measured before and after on the same build, interleaved), and declaring
+a pair costs about 75 ns more — two keyword arguments extracted and checked against the
+designator rules on every call.
 
 Reproduce: `maturin develop --release` (from `python/`, inside a virtualenv — `pyproject.toml`
 already points maturin at `../rust/Cargo.toml` and the `python` feature) to build the release

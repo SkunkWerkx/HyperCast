@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.skunkwerkx.hypercast.CastFailure;
 import io.github.skunkwerkx.hypercast.DateOrder;
+import io.github.skunkwerkx.hypercast.DateTimeFormat;
 import io.github.skunkwerkx.hypercast.ExcelEpoch;
 import io.github.skunkwerkx.hypercast.Fault;
 import io.github.skunkwerkx.hypercast.NumFormat;
@@ -119,21 +120,84 @@ class NativeValuesTest {
         }
     }
 
+    // One symbol field of the expected image: the UTF-8 bytes at `at`, the length after
+    // the field's capacity.
+    private static void symbol(byte[] image, int at, int capacity, String symbol) {
+        byte[] utf8 = symbol.getBytes(StandardCharsets.UTF_8);
+        System.arraycopy(utf8, 0, image, at, utf8.length);
+        image[at + capacity] = (byte) utf8.length;
+    }
+
+    private static void word(byte[] image, int at, int value) {
+        for (int i = 0; i < 4; i++) {
+            image[at + i] = (byte) (value >>> (8 * i));
+        }
+    }
+
+    /**
+     * The 92-byte layout the core reads in place, pinned byte for byte — size 0, flags 4,
+     * digit zero 8, then the seven 9-byte symbol fields at 12, 21, 30, 39, 48, 57 and 66
+     * and the 17-byte currency field at 75 — after a format with every field wide, so a
+     * tail left behind in any field would show.
+     */
     @Test
     void aFormatWritesTheCoresLayoutAndLeavesNoTailOfAnEarlierOne() {
+        assertEquals(92, NativeValues.FORMAT_BYTES);
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment segment = arena.allocate(NativeValues.FORMAT_BYTES + 4, 4);
-            NativeValues.writeFormat(new NumFormat('.', ',', NumFormat.STYLE_ALL, "US$"), segment, 4);
-            NativeValues.writeFormat(new NumFormat(',', '.', NumFormat.STYLE_ALL, "€"), segment, 4);
-            assertEquals(',', segment.get(ValueLayout.JAVA_INT, 4));
-            assertEquals('.', segment.get(ValueLayout.JAVA_INT, 8));
-            assertEquals(NumFormat.STYLE_ALL, segment.get(ValueLayout.JAVA_INT, 12));
-            byte[] euro = "€".getBytes(StandardCharsets.UTF_8);
-            assertEquals(euro.length, segment.get(ValueLayout.JAVA_INT, 16));
-            byte[] symbol = segment.asSlice(20, 16).toArray(ValueLayout.JAVA_BYTE);
-            byte[] expected = new byte[16];
-            System.arraycopy(euro, 0, expected, 0, euro.length);
-            assertArrayEquals(expected, symbol);
+            NumFormat wide =
+                    new NumFormat("٫", "٬", NumFormat.STYLE_ALL, "€".repeat(5), "' ", ", ", "−", "＋", "٪", 0x0660);
+            NativeValues.writeFormat(wide, segment, 4);
+            NumFormat format = new NumFormat(",", ".", NumFormat.STYLE_ALL | NumFormat.STYLE_TRAILING_SIGN, "€")
+                    .withSigns("−", "");
+            NativeValues.writeFormat(format, segment, 4);
+
+            byte[] expected = new byte[92];
+            word(expected, 0, 92);
+            word(expected, 4, NumFormat.STYLE_ALL | NumFormat.STYLE_TRAILING_SIGN);
+            word(expected, 8, 0);
+            symbol(expected, 12, 8, ",");
+            symbol(expected, 21, 8, ".");
+            symbol(expected, 30, 8, "");
+            symbol(expected, 39, 8, "");
+            symbol(expected, 48, 8, "−");
+            symbol(expected, 57, 8, "");
+            symbol(expected, 66, 8, "");
+            symbol(expected, 75, 16, "€");
+            assertArrayEquals(expected, segment.asSlice(4, 92).toArray(ValueLayout.JAVA_BYTE));
+            assertEquals(1, segment.get(ValueLayout.JAVA_BYTE, 4 + 20));
+            assertEquals(3, segment.get(ValueLayout.JAVA_BYTE, 4 + 56));
+            assertEquals(3, segment.get(ValueLayout.JAVA_BYTE, 4 + 91));
+
+            // The wide one, for the record: every field filled, the digit zero as its code point.
+            NativeValues.writeFormat(wide, segment, 4);
+            assertEquals(0x0660, segment.get(ValueLayout.JAVA_INT, 4 + 8));
+            assertEquals(2, segment.get(ValueLayout.JAVA_BYTE, 4 + 20));
+            assertEquals(2, segment.get(ValueLayout.JAVA_BYTE, 4 + 38));
+            assertEquals(2, segment.get(ValueLayout.JAVA_BYTE, 4 + 47));
+            assertEquals(3, segment.get(ValueLayout.JAVA_BYTE, 4 + 65));
+            assertEquals(2, segment.get(ValueLayout.JAVA_BYTE, 4 + 74));
+            assertEquals(15, segment.get(ValueLayout.JAVA_BYTE, 4 + 91));
+        }
+    }
+
+    /**
+     * The 40-byte designator layout, pinned the same way — size 0, AM at 4 with its length
+     * at 20, PM at 21 with its length at 37, two bytes of padding — after wider designators.
+     */
+    @Test
+    void dayPeriodsWriteTheCoresLayoutAndLeaveNoTailOfEarlierOnes() {
+        assertEquals(40, NativeValues.DAY_PERIODS_BYTES);
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment segment = arena.allocate(NativeValues.DAY_PERIODS_BYTES + 4, 4);
+            NativeValues.writeDayPeriods(
+                    new DateTimeFormat(DateOrder.DAY_MONTH_YEAR, "ante meridiem", "post meridiem"), segment, 4);
+            NativeValues.writeDayPeriods(new DateTimeFormat(DateOrder.DAY_MONTH_YEAR, "a. m.", "p. m."), segment, 4);
+            byte[] expected = new byte[40];
+            word(expected, 0, 40);
+            symbol(expected, 4, 16, "a. m.");
+            symbol(expected, 21, 16, "p. m.");
+            assertArrayEquals(expected, segment.asSlice(4, 40).toArray(ValueLayout.JAVA_BYTE));
         }
     }
 

@@ -7,8 +7,9 @@ the library the way a host does (dlopen, LoadLibrary), with nothing compiled in 
 
 Every export is called at least twice: once with input it accepts, the value checked, and
 once with input it rejects, the reason (and the fault span where one is set) checked. The
-out-structs mirror rust/src/verdict.rs's #[repr(C)] layouts and RawNumFormat mirrors
-rust/src/ffi.rs's, as the Go and Swift bindings do; a layout drift reads back wrong values.
+out-structs mirror rust/src/verdict.rs's #[repr(C)] layouts and NumFormat and DayPeriods
+mirror rust/src/abi.rs's RawNumFormat and RawDayPeriods, as the Go and Swift bindings do; a
+layout drift reads back wrong values.
 
 usage: python cdylib_smoke.py <path-to-library> <rust/Cargo.toml>
 """
@@ -29,10 +30,24 @@ class Fault(ctypes.Structure):
     _fields_ = [("offset", ctypes.c_uint32), ("len", ctypes.c_uint32)]
 
 
+class Symbol8(ctypes.Structure):
+    _fields_ = [("bytes", ctypes.c_uint8 * 8), ("len", ctypes.c_uint8)]
+
+
+class Symbol16(ctypes.Structure):
+    _fields_ = [("bytes", ctypes.c_uint8 * 16), ("len", ctypes.c_uint8)]
+
+
 class NumFormat(ctypes.Structure):
-    _fields_ = [("decimal_sep", ctypes.c_uint32), ("group_sep", ctypes.c_uint32),
-                ("flags", ctypes.c_uint32), ("currency_len", ctypes.c_uint32),
-                ("currency", ctypes.c_uint8 * 16)]
+    _fields_ = [("size", ctypes.c_uint32), ("flags", ctypes.c_uint32), ("digit_zero", ctypes.c_uint32),
+                ("decimal_sep", Symbol8), ("group_sep", Symbol8),
+                ("currency_decimal_sep", Symbol8), ("currency_group_sep", Symbol8),
+                ("minus_sign", Symbol8), ("plus_sign", Symbol8), ("percent", Symbol8),
+                ("currency", Symbol16)]
+
+
+class DayPeriods(ctypes.Structure):
+    _fields_ = [("size", ctypes.c_uint32), ("am", Symbol16), ("pm", Symbol16), ("padding", ctypes.c_uint8 * 2)]
 
 
 class Decimal(ctypes.Structure):
@@ -56,20 +71,35 @@ class CivilDateTime(ctypes.Structure):
     _fields_ = [("date", Date), ("nanos_of_day", ctypes.c_uint64)]
 
 
-GROUPING, PARENS, EXPONENT, RADIX_PREFIX, PERCENT, _, CURRENCY = (1 << i for i in range(7))
+GROUPING, PARENS, EXPONENT, RADIX_PREFIX, PERCENT, _, CURRENCY, TRAILING_SIGN = (1 << i for i in range(8))
 ALL = GROUPING | PARENS | EXPONENT | RADIX_PREFIX | PERCENT | CURRENCY
 
 
-def num_format(decimal_sep, group_sep, flags, currency=""):
-    raw = currency.encode()
-    fmt = NumFormat(ord(decimal_sep), ord(group_sep), flags, len(raw))
-    fmt.currency[:len(raw)] = list(raw)
+def symbol(field, text):
+    """Writes `text` into an inline symbol field: its UTF-8 bytes, then the length."""
+    raw = text.encode()
+    field.bytes[:len(raw)] = list(raw)
+    field.len = len(raw)
+
+
+def num_format(decimal_sep, group_sep, flags, currency="", digit_zero="", **symbols):
+    """A format in the 92-byte layout; `symbols` names any other field (`minus_sign=`)."""
+    fmt = NumFormat(ctypes.sizeof(NumFormat), flags, ord(digit_zero) if digit_zero else 0)
+    for name, text in {"decimal_sep": decimal_sep, "group_sep": group_sep, "currency": currency, **symbols}.items():
+        symbol(getattr(fmt, name), text)
     return fmt
+
+
+def day_periods(am, pm):
+    periods = DayPeriods(ctypes.sizeof(DayPeriods))
+    symbol(periods.am, am)
+    symbol(periods.pm, pm)
+    return periods
 
 
 lib = ctypes.CDLL(lib_path)
 txt, size, u32, i32, P = ctypes.c_char_p, ctypes.c_size_t, ctypes.c_uint32, ctypes.c_int32, ctypes.POINTER
-FaultP, FormatP = P(Fault), P(NumFormat)
+FaultP, FormatP, PeriodsP = P(Fault), P(NumFormat), P(DayPeriods)
 
 lib.hypercast_version.restype, lib.hypercast_version.argtypes = u32, []
 PLAIN = {"cast_bool": ctypes.c_uint8, "cast_char": ctypes.c_uint32, "cast_uuid": ctypes.c_uint8 * 16, "cast_timestamp": Timestamp,
@@ -78,8 +108,9 @@ NUMERIC = {"cast_i8": ctypes.c_int8, "cast_i16": ctypes.c_int16, "cast_i32": cty
            "cast_i64": ctypes.c_int64, "cast_u8": ctypes.c_uint8, "cast_u16": ctypes.c_uint16,
            "cast_u32": ctypes.c_uint32, "cast_u64": ctypes.c_uint64, "cast_f32": ctypes.c_float,
            "cast_f64": ctypes.c_double, "cast_decimal": Decimal}
-SELECTOR = {"cast_unix": Timestamp, "cast_excel_serial": Timestamp, "cast_date_ordered": Date,
-            "cast_datetime": CivilDateTime}
+SELECTOR = {"cast_unix": Timestamp, "cast_excel_serial": Timestamp, "cast_date_ordered": Date}
+# The civil date-time door takes the declared day periods after the order (null: AM/PM only).
+DATETIME = {"cast_datetime": CivilDateTime}
 for name, out in PLAIN.items():
     fn = getattr(lib, name)
     fn.restype, fn.argtypes = i32, [txt, size, P(out), FaultP]
@@ -89,13 +120,16 @@ for name, out in NUMERIC.items():
 for name, out in SELECTOR.items():
     fn = getattr(lib, name)
     fn.restype, fn.argtypes = i32, [txt, size, u32, P(out), FaultP]
+for name, out in DATETIME.items():
+    fn = getattr(lib, name)
+    fn.restype, fn.argtypes = i32, [txt, size, u32, PeriodsP, P(out), FaultP]
 # The typed doors take a double instead of text, and give a fault no span.
 TYPED = {"cast_decimal_from_f64": (Decimal, []), "cast_excel_serial_from_f64": (CivilDateTime, [u32]),
          "cast_excel_time": (ctypes.c_uint64, []), "cast_excel_duration": (Duration, [])}
 for name, (out, extra) in TYPED.items():
     fn = getattr(lib, name)
     fn.restype, fn.argtypes = i32, [ctypes.c_double, *extra, P(out), FaultP]
-OUT_TYPES = {**PLAIN, **NUMERIC, **SELECTOR, **{name: out for name, (out, _) in TYPED.items()}}
+OUT_TYPES = {**PLAIN, **NUMERIC, **SELECTOR, **DATETIME, **{name: out for name, (out, _) in TYPED.items()}}
 called = set()
 
 
@@ -135,8 +169,8 @@ def fails(name, text, reason, *extra, span=None):
               f"{name}({text!r}) fault {(fault.offset, fault.len)}, expected {span}")
 
 
-for shape, size in ((Fault, 8), (NumFormat, 32), (Decimal, 16), (Timestamp, 16), (Duration, 16),
-                    (Date, 4), (CivilDateTime, 16)):
+for shape, size in ((Fault, 8), (NumFormat, 92), (DayPeriods, 40), (Decimal, 16), (Timestamp, 16),
+                    (Duration, 16), (Date, 4), (CivilDateTime, 16)):
     check(ctypes.sizeof(shape) == size,
           f"{shape.__name__} is {ctypes.sizeof(shape)} bytes; rust/src/abi.rs pins {size}")
 
@@ -199,6 +233,26 @@ fails("cast_decimal", "1.2.3", MALFORMED, None)
 # A format the core cannot honor is a contract violation, not a verdict about the text.
 same = num_format(".", ".", ALL)
 fails("cast_decimal", "1", CONTRACT_VIOLATION, ctypes.byref(same))
+unsized = num_format(".", ",", ALL)
+unsized.size = 0
+fails("cast_decimal", "1", CONTRACT_VIOLATION, ctypes.byref(unsized))
+
+# The sweep's fields, each read beside its ASCII default: a declared minus sign and a
+# trailing sign, the currency separators once the symbol is seen, a declared percent,
+# native digits, and a separator of two characters.
+estonian = num_format(",", "\u00a0", ALL | TRAILING_SIGN, minus_sign="\u2212")
+check(ok("cast_i32", "\u22125", ctypes.byref(estonian)).value == -5, "cast_i32 with a declared minus sign")
+check(ok("cast_i32", "5-", ctypes.byref(estonian)).value == -5, "cast_i32 with a trailing sign")
+fails("cast_i32", "\u22125", MALFORMED, ctypes.byref(german), span=(0, 3))
+en_de = num_format(",", ".", ALL, "\u20ac", currency_decimal_sep=".", currency_group_sep=",")
+check(ok("cast_f64", "\u20ac1,234.50", ctypes.byref(en_de)).value == 1234.5, "cast_f64 with currency separators")
+check(ok("cast_f64", "1.234,50", ctypes.byref(en_de)).value == 1234.5, "cast_f64 number separators without the symbol")
+arabic = num_format("\u066b", "\u066c", ALL, digit_zero="\u0660", percent="\u066a")
+check(ok("cast_f64", "\u0661\u066c\u0662\u0663\u0664\u066b\u0665", ctypes.byref(arabic)).value == 1234.5,
+      "cast_f64 with native digits")
+check(ok("cast_f64", "\u0665\u0660\u066a", ctypes.byref(arabic)).value == 0.5, "cast_f64 with a declared percent")
+wide = num_format(".", ", ", ALL)
+check(ok("cast_i32", "1, 234", ctypes.byref(wide)).value == 1234, "cast_i32 with a two-character separator")
 
 u = ok("cast_unix", "1700000000123", 2)
 check((u.seconds, u.nanos) == (1700000000, 123000000), "cast_unix value")
@@ -217,11 +271,18 @@ check((d.year, d.month, d.day) == (2026, 7, 1), "cast_date_ordered value")
 fails("cast_date_ordered", "13/7/2026", OUT_OF_RANGE, 2, span=(0, 2))
 fails("cast_date_ordered", "1/7/2026", CONTRACT_VIOLATION, 4)
 
-dt = ok("cast_datetime", "1/7/2026 3:04 PM", 2)
+dt = ok("cast_datetime", "1/7/2026 3:04 PM", 2, None)
 check((dt.date.year, dt.date.month, dt.date.day, dt.nanos_of_day) == (2026, 1, 7, 54240000000000),
       "cast_datetime value")
-fails("cast_datetime", "1/7/2026 25:04", OUT_OF_RANGE, 2, span=(9, 2))
-fails("cast_datetime", "1/7/2026 3:04 PM", CONTRACT_VIOLATION, 0)
+fails("cast_datetime", "1/7/2026 25:04", OUT_OF_RANGE, 2, None, span=(9, 2))
+fails("cast_datetime", "1/7/2026 3:04 PM", CONTRACT_VIOLATION, 0, None)
+# Declared day periods, read beside AM/PM; one with whitespace at an edge is a caller bug.
+german_day = day_periods("vorm.", "nachm.")
+dt = ok("cast_datetime", "1/7/2026 3:04 nachm.", 3, ctypes.byref(german_day))
+check((dt.date.year, dt.date.month, dt.date.day, dt.nanos_of_day) == (2026, 7, 1, 54240000000000),
+      "cast_datetime with declared day periods")
+fails("cast_datetime", "1/7/2026 3:04 nachm.", MALFORMED, 3, None, span=(13, 1))
+fails("cast_datetime", "1/7/2026 3:04 PM", CONTRACT_VIOLATION, 2, ctypes.byref(day_periods(" am", "pm")))
 
 status, dec, _ = typed("cast_decimal_from_f64", 0.1 + 0.2)
 check(status == OK and (dec.lo, dec.hi, dec.scale, dec.negative) == (30000000000000004, 0, 17, False),

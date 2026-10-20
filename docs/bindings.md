@@ -52,7 +52,8 @@ Python). Every Swift door is `throws` [^swift-throws].
 | Shortest digits of an `f64` | `shortest_digits` → `Option<ShortestDigits>` | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] |
 | Civil ↔ instant, stated UTC | `CivilDateTime::assume_utc`, `Timestamp::utc_civil` | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] |
 | Window constants | `MIN_TIMESTAMP_SECONDS`, `MAX_TIMESTAMP_SECONDS`, `MAX_DURATION_SECONDS` | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] |
-| Format as it crosses the ABI | `RawNumFormat` (`resolve()`) | — | — | — | — | — | — | — |
+| Format as it crosses the ABI (92 bytes) [^layout] | `RawNumFormat` (`resolve()`, `to_le_bytes`) | `Interop.RawNumFormat` (`NumFormat.ToRaw()`) | `NativeValues.writeFormat` (`FORMAT_BYTES`) | `RawNumFormat` (`NumFormat.Raw()`) | `Interop.RawNumFormat` (`rawFormat(_:)`) | `NumFormat::packed()` | `NumFormat#packed` | `NumFormat.packed` |
+| Day periods as they cross the ABI (40 bytes) [^layout] | `RawDayPeriods` (`resolve()`) | `Interop.RawDayPeriods` (`DateFormat.ToRaw()`) | `NativeValues.writeDayPeriods` (`DAY_PERIODS_BYTES`) | `RawDayPeriods` (`DateFormat.Raw()`) | `Interop.RawDayPeriods` (`rawDayPeriods(_:)`) | `DayPeriods::packed()` | — (Fiddle scratch) | — (calls the Rust API) |
 
 ## Inputs
 
@@ -107,17 +108,22 @@ truncate instants to microseconds. Each binding's README states its own fidelity
 | Concept | Rust | C# | Java | Go | Swift | PHP | Ruby | Python |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Type | `NumFormat` | `NumFormat` (record struct) | `NumFormat` (record) | `NumFormat` (struct) | `NumFormat` (struct) | `NumFormat` (readonly class) | `HyperCast::NumFormat` (`Data`) | `NumFormat` |
-| Construct | `NumFormat::new(decimal_sep, group_sep, flags)` | `new NumFormat(decimalSeparator, groupSeparator, styles[, currencySymbol])` | `new NumFormat(decimalSeparator, groupSeparator, styles[, currencySymbol])` | `NumFormat{DecimalSep, GroupSep, Styles, Currency}` literal | `NumFormat(decimalSeparator:groupSeparator:styles:currencySymbol:)` | `new NumFormat($decimalSep, $groupSep, $flags, $currency = '')` | `NumFormat.new(decimal_sep:, group_sep:, flags:, currency: "")` | `NumFormat(decimal_sep, group_sep, flags, currency="")` |
+| Construct | `NumFormat::new(decimal_sep, group_sep, flags)`, `with_separators(..)` | `new NumFormat(decimalSeparator, groupSeparator, styles[, currencySymbol])` with init-only properties | `new NumFormat(decimalSeparator, groupSeparator, styles[, currencySymbol])`, `with*` | `NumFormat{DecimalSep, GroupSep, Styles, Currency, ...}` literal | `NumFormat(decimalSeparator:groupSeparator:styles:currencySymbol:...)` | `new NumFormat($decimalSep, $groupSep, $flags, $currency = '', ...)` (named arguments) | `NumFormat.new(decimal_sep:, group_sep:, flags:, currency: "", ...)`, `with` | `NumFormat(decimal_sep, group_sep, flags, currency="", *, ...)` |
 | Invariant | `NumFormat::INVARIANT` (also `Default`) | `NumFormat.Invariant` | `NumFormat.INVARIANT` | `Invariant` | `NumFormat.invariant` | `NumFormat::invariant()` | `NumFormat::INVARIANT` | `NumFormat.INVARIANT` |
 | Detect | `NumFormat::DETECT` | `NumFormat.Detect` | `NumFormat.DETECT` | `Detect` | `NumFormat.detect` | `NumFormat::detect()` | `NumFormat::DETECT` | `NumFormat.DETECT` |
-| Decimal separator | `decimal_sep` (`char`) | `DecimalSeparator` (`char`) | `decimalSeparator()` (`char`) | `DecimalSep` (`rune`) | `decimalSeparator` (`Unicode.Scalar`) | `decimalSep` (`string`) | `decimal_sep` | `decimal_sep` |
-| Group separator | `group_sep` (`char`) | `GroupSeparator` (`char`) | `groupSeparator()` (`char`) | `GroupSep` (`rune`) | `groupSeparator` (`Unicode.Scalar`) | `groupSep` (`string`) | `group_sep` | `group_sep` |
+| Decimal separator (1–2 chars) [^symbol] | `decimal_sep` (`Symbol<8>`) | `DecimalSeparator` (`string`) | `decimalSeparator()` (`String`) | `DecimalSep` (`string`) | `decimalSeparator` (`String`) | `decimalSep` (`string`) | `decimal_sep` | `decimal_sep` |
+| Group separator (1–2 chars) [^symbol] | `group_sep` (`Symbol<8>`) | `GroupSeparator` (`string`) | `groupSeparator()` (`String`) | `GroupSep` (`string`) | `groupSeparator` (`String`) | `groupSep` (`string`) | `group_sep` | `group_sep` |
+| Currency separators (read once the declared symbol is found; empty keeps the number pair) | `currency_decimal_sep`, `currency_group_sep` (`with_currency_separators`) | `CurrencyDecimalSeparator`, `CurrencyGroupSeparator` | `currencyDecimalSeparator()`, `currencyGroupSeparator()` | `CurrencyDecimalSep`, `CurrencyGroupSep` | `currencyDecimalSeparator`, `currencyGroupSeparator` | `currencyDecimalSep`, `currencyGroupSep` | `currency_decimal_sep`, `currency_group_sep` | `currency_decimal_sep`, `currency_group_sep` |
+| Declared minus and plus signs (read beside ASCII) | `minus_sign`, `plus_sign` (`with_signs`) | `MinusSign`, `PlusSign` | `minusSign()`, `plusSign()` | `MinusSign`, `PlusSign` | `minusSign`, `plusSign` | `minusSign`, `plusSign` | `minus_sign`, `plus_sign` | `minus_sign`, `plus_sign` |
+| Declared percent symbol (read beside `%`) | `percent` (`with_percent`) | `PercentSymbol` | `percentSymbol()` | `Percent` | `percentSymbol` | `percent` | `percent` | `percent` |
+| Native digits (the zero of a digit block, read beside ASCII) | `digits` (`NativeDigits`, `with_digits`) | `DigitZero` (`Rune?`) | `digitZero()` (`int` code point, 0 = none) | `DigitZero` (`rune`, 0 = none) | `digitZero` (`Unicode.Scalar?`) | `digitZero` (`string`, `''` = none) | `digit_zero` (`""` = none) | `digit_zero` (`""` = none) |
 | Styles field | `flags` (`u32`) | `Styles` (`NumStyles`) | `styles()` (`int`) | `Styles` (`NumStyles`) | `styles` (`NumStyles`) | `flags` (`int`) | `flags` | `flags` |
 | Currency symbol field | `currency` (`CurrencySymbol`) | `CurrencySymbol` (`string`) | `currencySymbol()` (`String`) | `Currency` (`string`) | `currencySymbol` (`String`) | `currency` (`string`) | `currency` | `currency` |
 | Declare a symbol | `.with_currency(symbol)`, `CurrencySymbol::new(&str)` → `Option<CurrencySymbol>` | constructor argument | constructor argument | `Currency:` field | `currencySymbol:` argument | `$currency` argument | `currency:` keyword | `currency` argument |
 | No symbol | `CurrencySymbol::NONE` | `""` | `""` | `""` | `""` | `''` | `""` | `""` |
-| Symbol limit (16 UTF-8 bytes) | `CurrencySymbol::MAX_BYTES` | `NumFormat.MaxCurrencyBytes` | — (private) | — (unexported) | — (internal) | `NumFormat::CURRENCY_MAX_BYTES` | `NumFormat::CURRENCY_MAX_BYTES` | — |
-| Platform culture bridge | — [^no-bridge] | `NumFormat.From(CultureInfo)`, `From(IFormatProvider)`, `From(NumberFormatInfo)` | `NumFormat.from(Locale)` | — [^no-bridge] | `NumFormat.from(locale:)` | `NumFormat::fromLocaleconv(?array $conv = null)`, `NumFormat::fromNumberFormatter(\NumberFormatter)` | `NumFormat.from_i18n(hash)` (an I18n `number.format` Hash) [^no-bridge] | `NumFormat.from_localeconv(conv=None)` |
+| Symbol limit (16 UTF-8 bytes) | `CurrencySymbol::MAX_BYTES` | `NumFormat.MaxCurrencyBytes` | — (private) | `CurrencyMaxBytes` | `Interop.currencyMaxBytes` | `NumFormat::CURRENCY_MAX_BYTES` | `NumFormat::CURRENCY_MAX_BYTES` | — |
+| Separator and sign limit (8 UTF-8 bytes) | `Symbol::<8>::MAX_BYTES` | `NumFormat.MaxSymbolBytes` | — (private) | `SymbolMaxBytes` | `Interop.symbolMaxBytes` | `NumFormat::SYMBOL_MAX_BYTES` | `NumFormat::SYMBOL_MAX_BYTES` | — |
+| Platform culture bridge (fills every field above) [^bridge-fields] | — [^no-bridge] | `NumFormat.From(CultureInfo)`, `From(IFormatProvider)`, `From(NumberFormatInfo)` | `NumFormat.from(Locale)`, `from(DecimalFormat)` | — [^no-bridge] | `NumFormat.from(locale:)`, `from(formatter:)` | `NumFormat::fromLocaleconv(?array $conv = null)`, `NumFormat::fromNumberFormatter(\NumberFormatter)` | `NumFormat.from_i18n(hash, currency_format:)` (I18n `number.format` and `number.currency.format` Hashes) [^no-bridge] | `NumFormat.from_localeconv(conv=None)` |
 | A numeric door taking the platform's own format [^platform-format] | — | an `IFormatProvider? provider` overload of every numeric door, `Numeric<T>` and `Scalar<T>`; `null` is the current culture | a `Locale` overload of every numeric door | — [^no-bridge] | a `locale:` overload of every numeric door, `numeric` and `scalar` | `NumFormat\|\NumberFormatter` as the format argument | `separator:`, `delimiter:`, `unit:` keywords on every numeric door (`NumFormat#override`) | — [^python-format] |
 
 ### Styles
@@ -133,6 +139,7 @@ truncate instants to microseconds. Each binding's README states its own fidelity
 | Percent (`1 << 4`) | `NumFormat::PERCENT` | `NumStyles.Percent` | `NumFormat.STYLE_PERCENT` | `Percent` | `.percent` | `NumFormat::PERCENT` | `HyperCast::PERCENT` | `NumFormat.PERCENT` |
 | Separator detect (`1 << 5`) | `NumFormat::SEPARATOR_DETECT` | `NumStyles.SeparatorDetect` | `NumFormat.STYLE_SEPARATOR_DETECT` | `SeparatorDetect` | `.separatorDetect` | `NumFormat::SEPARATOR_DETECT` | `HyperCast::SEPARATOR_DETECT` | `NumFormat.SEPARATOR_DETECT` |
 | Currency (`1 << 6`) | `NumFormat::CURRENCY` | `NumStyles.Currency` | `NumFormat.STYLE_CURRENCY` | `CurrencySymbol` | `.currency` | `NumFormat::CURRENCY` | `HyperCast::CURRENCY` | `NumFormat.CURRENCY` |
+| Trailing sign (`1 << 7`; not in All; set by each bridge from the culture's negative pattern) | `NumFormat::TRAILING_SIGN` | `NumStyles.TrailingSign` | `NumFormat.STYLE_TRAILING_SIGN` | `TrailingSign` | `.trailingSign` | `NumFormat::TRAILING_SIGN` | `HyperCast::TRAILING_SIGN` | `NumFormat.TRAILING_SIGN` |
 | All leniences (not separator detect) | `NumFormat::ALL` | `NumStyles.All` | `NumFormat.STYLE_ALL` | `AllStyles` | `.all` | `NumFormat::ALL` | `HyperCast::ALL_STYLES` | `NumFormat.ALL` |
 
 ## Declared enums
@@ -152,6 +159,8 @@ truncate instants to microseconds. Each binding's README states its own fidelity
 | Month, day, year (`2`) | `DateOrder::MonthDayYear` | `DateOrder.MonthDayYear` | `DateOrder.MONTH_DAY_YEAR` | `MonthDayYear` | `.monthDayYear` | `DateOrder::Mdy` | `:month_day_year` | `DateOrder.MONTH_DAY_YEAR` |
 | Day, month, year (`3`) | `DateOrder::DayMonthYear` | `DateOrder.DayMonthYear` | `DateOrder.DAY_MONTH_YEAR` | `DayMonthYear` | `.dayMonthYear` | `DateOrder::Dmy` | `:day_month_year` | `DateOrder.DAY_MONTH_YEAR` |
 | Date order from the platform locale | — [^no-bridge] | `DateOrders.From(CultureInfo)` | `DateOrder.from(Locale)` | — [^no-bridge] | `DateOrder.from(locale:)` | — [^no-bridge] | — [^no-bridge] | — |
+| Day-period designators beside the order (the culture's `AM`/`PM`, read beside English) [^periods] | `DayPeriods::new(am, pm)` with `cast_datetime_with` | `new DateFormat(order, amDesignator, pmDesignator)` with `Cast.DateTime` | `DateTimeFormat(order, am, pm)` with `Cast.dateTime` | `DateFormat{Order, AM, PM}` with `DateTimeWith` | `DateFormat(order:amSymbol:pmSymbol:)` with `Cast.dateTime(_:format:)` | `new DayPeriods($am, $pm)`, third argument of `Cast::datetime` | `am:`, `pm:` keywords on `HyperCast.datetime` | `am=`, `pm=` keyword-only on `cast_datetime` |
+| Day periods from the platform locale | — [^no-bridge] | `DateFormat.From(CultureInfo)`, `From(IFormatProvider)`, `From(DateTimeFormatInfo)`, and an `IFormatProvider?` overload of `Cast.DateTime` | `DateTimeFormat.from(Locale)`, and a `Locale` overload of `Cast.dateTime` | — [^no-bridge] | `DateFormat.from(locale:)`, and `Cast.dateTime(_:locale:)` | — [^no-bridge] | — [^no-bridge] | — |
 
 ## The native library
 
@@ -223,7 +232,35 @@ when the absence is deliberate.
 [^no-bridge]: The Rust core carries no culture data. Go and Ruby have no locale data in
     their standard libraries (`docs/roadmap.md`). PHP's standard library has no per-locale
     date pattern, so it bridges `NumFormat` from `localeconv()` but has no `DateOrder`
-    bridge (`php/src/DateOrder.php`).
+    bridge (`php/src/DateOrder.php`). The same holds for day-period designators: no locale
+    data in Go, Ruby or PHP's standard library names a culture's `AM`/`PM`, and Python's
+    `localeconv()` carries none, so those four declare them by hand, as they do the order.
+
+[^layout]: Since 0.9.0 the format crosses the C ABI as a size-tagged, 92-byte layout, the
+    `#[repr(C)]` `NumFormat` itself behind a size word, read in place; day periods cross as a
+    40-byte `RawDayPeriods` after the date order, null for English only. `rust/src/abi.rs`
+    has the offset table every binding restates and pins in its interop tests.
+
+[^symbol]: One or two characters, up to 8 UTF-8 bytes, containing no ASCII digit; the two
+    must differ. A format read across the ABI that breaks a rule is a contract violation,
+    which each binding reports as its platform's argument error before the call.
+
+[^bridge-fields]: Each bridge declares a symbol only where the platform's own differs from
+    what the core reads anyway (ASCII `-`, `+`, `%`, `0`, and currency separators equal to
+    the number ones); the reading is identical either way, and the check stays on its fast
+    path. The C#, Java and Swift bridges never throw on their platform's data: a symbol or
+    designator the core would refuse (over its bytes, an ASCII digit in it, whitespace where
+    none may be) is left undeclared, and a culture whose two separators coincide groups with
+    the other ASCII one. PHP's `fromNumberFormatter` raises `InvalidArgumentException` for a
+    symbol it cannot carry, as its constructor does, by its own documented decision. Trailing-sign lenience comes from the culture's negative pattern: .NET's
+    `NumberNegativePattern`, ICU's negative suffix with an empty prefix (Java, Swift, PHP's
+    `NumberFormatter`), `n_sign_posn` 2 or 4 from `localeconv()` (PHP, Python), and a
+    `negative_format` with the sign after `%n` in Rails.
+
+[^periods]: A declared designator is read exactly as spelled, ahead of the clock or after
+    it, beside the English `AM`/`PM`, which are read case-insensitively. Each is 1 to 16
+    UTF-8 bytes with no ASCII digit and no ASCII whitespace at either end (`a. m.` is fine).
+    The plain `DateOrder` door is unchanged in every binding and reads English only.
 
 [^platform-format]: So a caller holding its platform's own culture or format object passes it
     straight through instead of mapping it first; each maps to the core's `NumFormat` with
@@ -234,15 +271,14 @@ when the absence is deliberate.
     and Swift take a non-null `Locale` (pass `Locale.getDefault(Locale.Category.FORMAT)` or
     `.current`), each cached per locale; PHP takes intl's per-object `\NumberFormatter`
     (intl stays optional); Ruby takes Rails' `number.format` vocabulary as keywords. Swift's
-    cache is keyed by locale identifier, so per-user number-format overrides on Apple
-    platforms reach a door only through `NumFormat.from(locale:)`; Java's Native Image
-    carries only the locales named at build time (`-H:IncludeLocales`). In every binding,
-    and through the bridges above too, only the separators and the currency symbol carry
-    over: the core reads ASCII `+`, `-` and `%` only, so a locale with another minus sign
-    (U+2212 for Estonian and Basque) faults on its own negative numbers, and a currency amount
-    is read with the number separators, not the locale's monetary ones, which differ in some
-    locales. Closing these the right way, in the core and every bridge at once, is the
-    [culture fidelity sweep](roadmap.md#culture-fidelity--the-sweep-open).
+    cache is keyed by locale identifier for an explicit locale, and skipped for `.current`
+    and `.autoupdatingCurrent`, so a user's own number-format overrides on Apple platforms
+    are honored; Java's Native Image carries only the locales named at build time
+    (`-H:IncludeLocales`). In every binding, and through the bridges above too, everything
+    the culture declares carries over since 0.9.0 — its signs, a trailing-sign pattern, the
+    separators of a currency amount, its percent symbol, its digits — each read beside the
+    ASCII default, never instead of it; the
+    [culture fidelity sweep](roadmap.md#culture-fidelity--the-sweep-built-090) has every row.
 
 [^python-format]: Python's standard library has no per-object locale: `locale` is
     process-global, which `NumFormat.from_localeconv` already reads, so the doors keep taking

@@ -30,7 +30,7 @@ require_relative "hypercast/runtime"
 module HyperCast
   # This gem's own version — kept in lockstep with hypercast.gemspec by the
   # prepare-release workflow, so the two can never drift apart again.
-  VERSION = "0.8.0"
+  VERSION = "0.9.0"
 
   # The success case of a verdict: a cast value.
   Success = Data.define(:value)
@@ -48,50 +48,72 @@ module HyperCast
 
   # Caller-declared numeric notation for the integer, real and decimal doors — declared out
   # loud (INVARIANT, or a literal), never defaulted, the same stance every binding takes.
-  # The currency symbol is the one field a culture table would fill in: it is declared
-  # here, never looked up, and honored only while the CURRENCY flag is set — declared with
-  # the flag off, the symbol is a :malformed Fault at the symbol, and the flag with no
-  # symbol ("" — the default) matches nothing. Equal separators, or a symbol longer than
-  # 16 UTF-8 bytes or carrying an ASCII digit or ASCII whitespace, are a caller bug
-  # (ArgumentError), never a verdict.
-  NumFormat = Data.define(:decimal_sep, :group_sep, :flags, :currency) do
-    # Validates the declared separators up front — single characters, and distinct from
-    # each other — and the currency symbol (a String of at most 16 UTF-8 bytes with no
-    # ASCII digit or ASCII whitespace, since those would collide with the digit scan and
-    # the trimming around the symbol), so a malformed format fails loudly as the caller bug
-    # it is. All three are stored transcoded to UTF-8, the encoding the core reads — a
-    # separator handed over in another encoding (a no-break space read from a Latin-1
-    # file, say) is the same code point on every backend rather than whatever its bytes
-    # happened to spell in the encoding it arrived in.
-    def initialize(decimal_sep:, group_sep:, flags:, currency: "")
-      raise ArgumentError, "separators must be single characters" unless
-        decimal_sep.is_a?(String) && decimal_sep.length == 1 &&
-        group_sep.is_a?(String) && group_sep.length == 1
-
-      decimal_sep = decimal_sep.encode(Encoding::UTF_8)
-      group_sep = group_sep.encode(Encoding::UTF_8)
+  # Past the separators and the flags, every field is one a culture table would fill in,
+  # and each is declared here, never looked up: the currency symbol; the separators a
+  # currency amount is written with (currency_decimal_sep, currency_group_sep — read in
+  # place of the number separators when the symbol is found in the text, each "" keeping
+  # its number counterpart); further spellings of the minus and plus signs and of the
+  # percent symbol; and the culture's own digits (digit_zero — the ten code points from
+  # that zero up, "٠" for the Arabic-Indic digits). A declared symbol is read *beside* its
+  # ASCII default, never instead of it — ASCII "-", "+", "%" and 0-9 are always read — so a
+  # format that declares nothing ("" everywhere; the default) reads exactly as the
+  # invariant culture, and nothing that parsed before stops parsing. The currency symbol is
+  # honored only while the CURRENCY flag is set — declared with the flag off, the symbol is
+  # a :malformed Fault at the symbol, and the flag with no symbol matches nothing — and the
+  # percent symbol while PERCENT is. A separator may be one or two characters (", " —
+  # comma, space — is a separator), up to 8 UTF-8 bytes. A malformed format is a caller bug
+  # (ArgumentError), never a verdict: an empty or over-long separator, equal separators (or
+  # an equal pair in force for currency amounts), a symbol carrying an ASCII digit, a sign
+  # or percent symbol carrying ASCII whitespace, a currency symbol longer than 16 bytes or
+  # carrying a digit or whitespace, or a digit zero that is ASCII or starts no digit block.
+  NumFormat = Data.define(:decimal_sep, :group_sep, :flags, :currency,
+                          :currency_decimal_sep, :currency_group_sep,
+                          :minus_sign, :plus_sign, :percent, :digit_zero) do
+    # Validates every declared field up front — the separators (1 to 8 UTF-8 bytes each,
+    # distinct from each other, and so the pair in force for currency amounts), the signs,
+    # the percent and currency symbols (no ASCII digit, since a digit is a digit before it
+    # is anything else, and no ASCII whitespace, which would collide with the trimming
+    # around them) and the digit zero (one non-ASCII character whose ten successors share
+    # its UTF-8 prefix, which every Unicode digit block's zero does) — so a malformed
+    # format fails loudly as the caller bug it is. Every field is stored transcoded to
+    # UTF-8, the encoding the core reads — a separator handed over in another encoding (a
+    # no-break space read from a Latin-1 file, say) is the same code point on every backend
+    # rather than whatever its bytes happened to spell in the encoding it arrived in.
+    def initialize(decimal_sep:, group_sep:, flags:, currency: "", currency_decimal_sep: "",
+                   currency_group_sep: "", minus_sign: "", plus_sign: "", percent: "", digit_zero: "")
+      limit = self.class::SYMBOL_MAX_BYTES
+      decimal_sep = declared("decimal separator", decimal_sep, limit, required: true)
+      group_sep = declared("group separator", group_sep, limit, required: true)
       raise ArgumentError, "decimal and group separators must differ; both are #{decimal_sep.inspect}" if
         decimal_sep == group_sep
-      raise ArgumentError, "currency symbol must be a String; got #{currency.inspect}" unless currency.is_a?(String)
 
-      symbol = currency.encode(Encoding::UTF_8)
-      limit = self.class::CURRENCY_MAX_BYTES
-      raise ArgumentError, "currency symbol #{currency.inspect} exceeds #{limit} UTF-8 bytes" if
-        symbol.bytesize > limit
-      raise ArgumentError, "currency symbol #{currency.inspect} must not contain an ASCII digit or whitespace" if
-        symbol.match?(/[0-9\t\n\f\r ]/)
+      currency_decimal_sep = declared("currency decimal separator", currency_decimal_sep, limit)
+      currency_group_sep = declared("currency group separator", currency_group_sep, limit)
+      money_decimal = currency_decimal_sep.empty? ? decimal_sep : currency_decimal_sep
+      money_group = currency_group_sep.empty? ? group_sep : currency_group_sep
+      raise ArgumentError, "currency decimal and group separators must differ; both are #{money_decimal.inspect}" if
+        money_decimal == money_group
 
-      super(decimal_sep: decimal_sep, group_sep: group_sep, flags: flags, currency: symbol)
+      super(decimal_sep: decimal_sep, group_sep: group_sep, flags: flags,
+            currency: declared("currency symbol", currency, self.class::CURRENCY_MAX_BYTES, flush: true),
+            currency_decimal_sep: currency_decimal_sep, currency_group_sep: currency_group_sep,
+            minus_sign: declared("minus sign", minus_sign, limit, flush: true),
+            plus_sign: declared("plus sign", plus_sign, limit, flush: true),
+            percent: declared("percent symbol", percent, limit, flush: true),
+            digit_zero: digit_zero_of(digit_zero))
     end
 
     # This format with the fields Ruby's number vocabulary names replaced — the words Rails'
     # number helpers and I18n's number.format use: separator: (the decimal mark),
     # delimiter: (grouping) and unit: (the currency symbol). A nil keyword leaves its
     # field alone, so with none given this is the format itself, not a copy. The result is
-    # validated like any NumFormat (single, distinct separators; a declarable symbol), and
-    # the flags are untouched: a unit: declared on a format without CURRENCY is a :malformed
-    # Fault at the symbol, exactly as declaring it in the constructor would be. Every
-    # numeric door takes the same three keywords and applies them through this method.
+    # validated like any NumFormat (declarable, distinct separators; a declarable symbol),
+    # and the flags and every other field are untouched: a unit: declared on a format
+    # without CURRENCY is a :malformed Fault at the symbol, exactly as declaring it in the
+    # constructor would be. Every numeric door takes the same three keywords and applies
+    # them through this method; the fields Rails has no word for (the signs, the percent
+    # symbol, the digits, the currency separators) are declared in the constructor or
+    # through Data#with.
     def override(separator: nil, delimiter: nil, unit: nil)
       return self unless separator || delimiter || unit
 
@@ -99,40 +121,129 @@ module HyperCast
     end
 
     # A format from a Hash shaped like I18n's number.format (or number.currency.format):
-    # :separator, :delimiter and :unit, Symbol or String keys, every other key (precision,
-    # format, significant, ...) ignored — so `NumFormat.from_i18n(I18n.t("number.format"))`
-    # drops a Rails locale straight in, with no I18n dependency here. A missing or nil key
-    # keeps the invariant's "." / "," / no symbol. An empty delimiter — the locale writes no
-    # grouping — turns GROUPING off rather than declaring a separator, since a NumFormat
-    # always carries one; the placeholder it gets is whichever of "," and "." the decimal
-    # mark is not. flags defaults to every lenience, the same as INVARIANT.
+    # :separator, :delimiter, :unit and :negative_format, Symbol or String keys, every other
+    # key (precision, format, significant, ...) ignored — so
+    # `NumFormat.from_i18n(I18n.t("number.format"))` drops a Rails locale straight in, with
+    # no I18n dependency here. A missing or nil key keeps the invariant's "." / "," / no
+    # symbol. An empty delimiter — the locale writes no grouping — turns GROUPING off rather
+    # than declaring a separator, since a NumFormat always carries one; the placeholder it
+    # gets is whichever of "," and "." the decimal mark is not. A negative_format that writes
+    # the sign after the number ("%n-", "%n %u-") turns TRAILING_SIGN on; "-%n", the Rails
+    # default, leaves it off. flags defaults to every lenience, the same as INVARIANT.
     #
-    # Only the separators and the unit carry over; the native format has no field for the
-    # rest. The core reads ASCII "+" and "-" only, so a locale that writes negatives with
-    # another sign (U+2212 for Estonian and Basque, for instance) faults on them; currency
-    # amounts in a locale whose number.currency.format separators differ from number.format's
-    # read with whichever Hash is passed, so pass the currency one for currency columns; and
-    # percent is an ASCII "%". Every lenience is on, radix prefixes and percent included;
+    # currency_format: takes the locale's number.currency.format Hash beside number.format,
+    # for a column that mixes plain numbers and currency amounts in a locale whose two
+    # differ (the Swiss German franc, say — "1'234.50" beside "1.234,50"): its separator and
+    # delimiter become the currency separators, read in place of the number ones when the
+    # unit is found in the text, and its unit the currency symbol. A missing key there
+    # declares nothing, keeping the number separator it stands in for; an explicitly empty
+    # delimiter gets the same placeholder rule as above; its negative_format turns
+    # TRAILING_SIGN on the same way. Passed alone, number.currency.format reads as the one
+    # number format, as before.
+    #
+    # The rest of the format is what the Hash cannot offer: Rails carries no minus or plus
+    # sign, no percent symbol and no digits, so those stay undeclared here — the core reads
+    # ASCII "-", "+", "%" and 0-9 — and a locale that writes negatives with another sign
+    # (U+2212 for Estonian and Basque, for instance) declares it on the result with
+    # Data#with (minus_sign: "−"). Every lenience is on, radix prefixes and percent included;
     # narrow flags: for anything stricter.
-    def self.from_i18n(number_format, flags: ALL_STYLES)
-      raise ArgumentError, "expected a Hash-like number format; got #{number_format.inspect}" unless
-        number_format.respond_to?(:to_h)
-
-      entries = number_format.to_h.transform_keys { |key| key.respond_to?(:to_sym) ? key.to_sym : key }
+    def self.from_i18n(number_format, currency_format: nil, flags: ALL_STYLES)
+      entries = i18n_entries(number_format)
       separator = entries[:separator] || "."
       delimiter = entries[:delimiter] || ","
       if delimiter == ""
         flags &= ~GROUPING
         delimiter = separator == "," ? "." : ","
       end
-      new(decimal_sep: separator, group_sep: delimiter, flags: flags, currency: entries[:unit] || "")
+      flags |= TRAILING_SIGN if trailing_sign?(entries[:negative_format])
+      currency = entries[:unit] || ""
+      currency_separator = currency_delimiter = ""
+      if currency_format
+        money = i18n_entries(currency_format)
+        currency = money[:unit] || currency
+        currency_separator = money[:separator] || ""
+        currency_delimiter = money[:delimiter] || ""
+        currency_delimiter = (money[:separator] || separator) == "," ? "." : "," if money[:delimiter] == ""
+        flags |= TRAILING_SIGN if trailing_sign?(money[:negative_format])
+      end
+      new(decimal_sep: separator, group_sep: delimiter, flags: flags, currency: currency,
+          currency_decimal_sep: currency_separator, currency_group_sep: currency_delimiter)
     end
 
-    # The 32-byte little-endian form the native ABI's NumFormat struct expects: the two
-    # separators as code points, the flags, the symbol's byte length, then the symbol's
-    # UTF-8 bytes zero-padded to 16.
+    # The I18n Hash's entries under Symbol keys, whatever keys it arrived with.
+    def self.i18n_entries(number_format)
+      raise ArgumentError, "expected a Hash-like number format; got #{number_format.inspect}" unless
+        number_format.respond_to?(:to_h)
+
+      number_format.to_h.transform_keys { |key| key.respond_to?(:to_sym) ? key.to_sym : key }
+    end
+    private_class_method :i18n_entries
+
+    # Whether an I18n negative_format ("-%n", "%n-", "-%u%n", "%n %u-") writes the sign
+    # after the number: a "-" to the right of the "%n" placeholder.
+    def self.trailing_sign?(negative_format)
+      return false unless negative_format.is_a?(String)
+
+      number = negative_format.index("%n")
+      sign = negative_format.rindex("-")
+      !number.nil? && !sign.nil? && sign > number
+    end
+    private_class_method :trailing_sign?
+
+    # The 92-byte little-endian form of the native ABI's size-tagged NumFormat struct, the
+    # layout the core reads in place: the size word (92), the flags, the digit zero's code
+    # point (0 for none), then each symbol as its UTF-8 bytes zero-padded to its field
+    # followed by its byte length — eight bytes and a length for each of the two number
+    # separators, the two currency separators, the two signs and the percent symbol, in
+    # that order; sixteen and a length for the currency symbol. A length of 0 declares
+    # nothing.
     def packed
-      [decimal_sep.ord, group_sep.ord, flags, currency.bytesize].pack("L<L<L<L<") + [currency].pack("a16")
+      head = [self.class::PACKED_BYTES, flags, digit_zero.empty? ? 0 : digit_zero.ord].pack("L<L<L<")
+      symbols = [decimal_sep, group_sep, currency_decimal_sep, currency_group_sep, minus_sign, plus_sign, percent]
+      head + symbols.map { |symbol| [symbol, symbol.bytesize].pack("a8C") }.join +
+        [currency, currency.bytesize].pack("a16C")
+    end
+
+    private
+
+    # The declared text of one field as the UTF-8 the core reads: a String of 1 to `limit`
+    # UTF-8 bytes with no ASCII digit — nor, for a symbol that sits flush against the
+    # digits (the signs, the percent and currency symbols), any ASCII whitespace — or ""
+    # where the field may be left undeclared. Anything else is the caller bug it names.
+    def declared(field, text, limit, flush: false, required: false)
+      raise ArgumentError, "#{field} must be a String; got #{text.inspect}" unless text.is_a?(String)
+
+      symbol = text.encode(Encoding::UTF_8)
+      if symbol.empty?
+        raise ArgumentError, "#{field} must not be empty" if required
+
+        return symbol
+      end
+      raise ArgumentError, "#{field} #{text.inspect} exceeds #{limit} UTF-8 bytes" if symbol.bytesize > limit
+
+      if flush
+        raise ArgumentError, "#{field} #{text.inspect} must not contain an ASCII digit or whitespace" if
+          symbol.match?(/[0-9\t\n\f\r ]/)
+      elsif symbol.match?(/[0-9]/)
+        raise ArgumentError, "#{field} #{text.inspect} must not contain an ASCII digit"
+      end
+      symbol
+    end
+
+    # The declared digit zero as UTF-8: "" for none, else exactly one character that is not
+    # ASCII and whose code point modulo 64 is at most 54 — true of the zero of every decimal
+    # digit block Unicode defines, and the shape the core recognises a digit by its last
+    # byte from.
+    def digit_zero_of(text)
+      raise ArgumentError, "digit zero must be a String; got #{text.inspect}" unless text.is_a?(String)
+
+      zero = text.encode(Encoding::UTF_8)
+      return zero if zero.empty?
+
+      raise ArgumentError, "digit zero #{text.inspect} must be one non-ASCII character that starts a digit block" unless
+        zero.length == 1 && zero.ord >= 0x80 && zero.ord % 64 <= 54
+
+      zero
     end
   end
 
@@ -140,6 +251,13 @@ module HyperCast
   # here rather than inside the Data.define block above: a constant written in that block
   # is scoped lexically, and landed on HyperCast instead of on NumFormat.
   NumFormat::CURRENCY_MAX_BYTES = 16
+
+  # The widest separator, sign or percent symbol the native ABI carries inline, in UTF-8
+  # bytes: one or two characters of any script.
+  NumFormat::SYMBOL_MAX_BYTES = 8
+
+  # The size of NumFormat#packed — the native ABI's size-tagged NumFormat layout — in bytes.
+  NumFormat::PACKED_BYTES = 92
 
   # Permit the group separator between digits (sizes not validated — between digits is the rule).
   GROUPING = 1
@@ -149,7 +267,8 @@ module HyperCast
   EXPONENT = 1 << 2
   # Permit 0x/&H/0b two's-complement radix prefixes (0xFF is -1 for an i8).
   RADIX_PREFIXES = 1 << 3
-  # Permit a trailing %, dividing by 100. Real and decimal doors only.
+  # Permit a trailing % (or the format's declared percent symbol), dividing by 100. Real
+  # and decimal doors only.
   PERCENT = 1 << 4
   # Resolve the ./, roles per input from structure instead of the declared separators
   # (which are ignored while this flag is set). Detection, not sniffing: a repeated
@@ -165,8 +284,15 @@ module HyperCast
   # along with the digits ("($5)"). With no symbol declared the flag matches nothing.
   # Integer, real and decimal doors.
   CURRENCY = 1 << 6
-  # Every lenience on (SEPARATOR_DETECT is a separator policy, not a lenience, and is
-  # deliberately not included).
+  # Permit the sign after the digits ("5-", "5 -", "5 €-", "5- €"), the way a locale whose
+  # negative_format is "%n-" writes it: ASCII - and + or the format's declared signs, once,
+  # with optional ASCII whitespace before it, and never beside a leading sign or inside
+  # accounting parentheses. Not part of ALL_STYLES — NumFormat.from_i18n sets it from the
+  # locale's own negative_format rather than assuming it.
+  TRAILING_SIGN = 1 << 7
+  # Every lenience on — every one there was before TRAILING_SIGN, which is declared from a
+  # locale's pattern rather than assumed (SEPARATOR_DETECT is a separator policy, not a
+  # lenience, and is deliberately not included either).
   ALL_STYLES = GROUPING | PARENTHESES | EXPONENT | RADIX_PREFIXES | PERCENT | CURRENCY
 
   # The invariant profile — '.' decimal, ',' grouping, every lenience on, no currency
@@ -373,8 +499,21 @@ module HyperCast
     # artifact, not data (the same caveat PHP's UTC-labeled DateTimeImmutable carries);
     # fusing a real zone is the caller's job, and timestamp stays the strict RFC 3339
     # instant door. An unknown order is a caller bug (KeyError).
-    def datetime(text, order)
-      declared(:cast_datetime, text, DATE_ORDERS.fetch(order), 16) { |out| Interop.decode(:datetime, out) }
+    #
+    # A 12-hour clock's AM/PM is read, before or after the clock ("3:04 PM", "PM 3:04"),
+    # ASCII case-insensitively; am: and pm: declare a culture's own designators beside
+    # them — "vorm."/"nachm.", "오전"/"오후", "a. m."/"p. m." — matched exactly, after the
+    # clock ("3:04 nachm.") or ahead of it ("오후 3:04"), with or without a space between.
+    # Declared, never looked up, like a NumFormat's symbols; nil (the default) declares
+    # nothing, so a call without them is exactly the call it was. A designator is 1 to 16
+    # UTF-8 bytes with no ASCII digit and no ASCII whitespace at either end (a space inside
+    # is fine); anything else is a caller bug (ArgumentError). The designators are read,
+    # validated and packed per call: a call that declares them costs about twice the plain
+    # call on the Magnus backend (the keyword scan itself — nil keywords pay the same) and
+    # about half again here on Fiddle.
+    def datetime(text, order, am: nil, pm: nil)
+      periods = packed_day_periods(am, pm) if am || pm
+      civil(:cast_datetime, text, DATE_ORDERS.fetch(order), periods, 16) { |out| Interop.decode(:datetime, out) }
     end
 
     # Casts an ISO 24-hour time-of-day to an exact Integer of nanoseconds since midnight
@@ -454,18 +593,19 @@ module HyperCast
       bytes.empty? ? nil : bytes
     end
 
-    # One 24-byte scratch allocation per thread, reused by every call: out-value at 0
+    # One 64-byte scratch allocation per thread, reused by every call: out-value at 0
     # (16 bytes covers every door, and malloc's alignment covers the decimal's 8), fault
-    # span at 16. Two Fiddle::Pointer.malloc(..., RUBY_FREE) calls per cast — each
-    # registering a GC finalizer — measured as the dominant per-call cost by an order of
-    # magnitude. The NumFormat no longer lives here: each format owns its own packed
-    # pointer (see packed_cache), so a numeric call copies nothing into scratch before
-    # crossing. Allocated through Runtime.buffer, which loads the library first, so a
-    # missing one is reported as such before Fiddle is touched.
+    # span at 16, and the datetime door's packed day periods at 24 (40 bytes, 4-aligned,
+    # written only by a call that declares them). Two Fiddle::Pointer.malloc(..., RUBY_FREE)
+    # calls per cast — each registering a GC finalizer — measured as the dominant per-call
+    # cost by an order of magnitude. The NumFormat does not live here: each format owns
+    # its own packed pointer (see packed_cache), so a numeric call copies nothing into
+    # scratch before crossing. Allocated through Runtime.buffer, which loads the library
+    # first, so a missing one is reported as such before Fiddle is touched.
     def scratch
       Thread.current[:hypercast_scratch] ||= begin
-        base = Runtime.buffer(24)
-        [base, base + 16]
+        base = Runtime.buffer(64)
+        [base, base + 16, base + 24]
       end
     end
 
@@ -491,13 +631,54 @@ module HyperCast
     end
 
     # The shared body of the integer/real/decimal doors: plain, plus the format's own
-    # packed pointer, passed straight through — no per-call copy of the 32 bytes into
+    # packed pointer, passed straight through — no per-call copy of the 92 bytes into
     # scratch.
     def numeric(symbol, text, format, out_size)
       bytes = utf8(text)
       out, fault = scratch
       rc = Runtime.function(symbol).call(input_ptr(bytes), bytes.bytesize, packed_cache[format], out, fault)
       verdict(rc, fault, bytes) { yield(out[0, out_size]) }
+    end
+
+    # The civil date-time door's body: declared, plus the day periods after the order — the
+    # 40 packed bytes copied into this thread's scratch and passed from there, or nil
+    # (Fiddle's null) when none are declared, which the core reads as English AM/PM only.
+    def civil(symbol, text, code, periods, out_size)
+      bytes = utf8(text)
+      out, fault, slot = scratch
+      if periods
+        slot[0, periods.bytesize] = periods
+      else
+        slot = nil
+      end
+      rc = Runtime.function(symbol).call(input_ptr(bytes), bytes.bytesize, code, slot, out, fault)
+      verdict(rc, fault, bytes) { yield(out[0, out_size]) }
+    end
+
+    # The 40-byte little-endian form of the native ABI's size-tagged DayPeriods struct: the
+    # size word (40), then each designator as its UTF-8 bytes zero-padded to 16 followed by
+    # its byte length — am, then pm — and two bytes of padding. A nil designator is a
+    # length of 0: nothing declared beside AM or PM.
+    def packed_day_periods(am, pm)
+      am = designator("am", am)
+      pm = designator("pm", pm)
+      [40].pack("L<") + [am, am.bytesize, pm, pm.bytesize].pack("a16Ca16C") + "\0\0"
+    end
+
+    # A declared day-period designator as the UTF-8 the core reads — 1 to 16 bytes, no
+    # ASCII digit, no ASCII whitespace at either end (the grammar around it reads that) —
+    # or "" for nil. Anything else is the caller bug it names, the same ArgumentError on
+    # every backend.
+    def designator(name, text)
+      return "" if text.nil?
+      raise ArgumentError, "#{name} designator must be a String; got #{text.inspect}" unless text.is_a?(String)
+
+      designator = text.encode(Encoding::UTF_8)
+      unless designator.bytesize.between?(1, 16) && !designator.match?(/[0-9]|\A[\t\n\f\r ]|[\t\n\f\r ]\z/)
+        raise ArgumentError, "#{name} designator #{text.inspect} must be 1 to 16 UTF-8 bytes with no ASCII digit " \
+                             "and no ASCII whitespace at either end"
+      end
+      designator
     end
 
     # The shared body of the four doors that take a caller-declared u32 — a precision, an
@@ -550,21 +731,22 @@ module HyperCast
     PACKED_CACHE_LIMIT = 64
 
     # Identity-keyed memo (compare_by_identity — a pointer hash, not Data's structural
-    # #hash over three Strings and an Integer) of a native 32-byte RawNumFormat per format
+    # #hash over nine Strings and an Integer) of a native 92-byte RawNumFormat per format
     # object, filled once from NumFormat#packed. Formats are reused constants in practice,
     # so the common call finds its pointer in one lookup and packs nothing. The Hash holds
     # the format, so a key can never be a recycled address; the race is benign (idempotent).
     #
     # Bounded, oldest entry out first (a Hash keeps insertion order): unbounded, it held
-    # every format ever cast with and its 32-byte allocation for the life of the process,
+    # every format ever cast with and its 92-byte allocation for the life of the process,
     # which a consumer building a format per request experienced as a leak. A format
     # evicted and then used again is simply packed again, and an evicted pointer stays
     # alive for any call already holding it — the caller's own reference outlives the cache's.
     def packed_cache
       @packed_cache ||= Hash.new do |cache, format|
         cache.shift while cache.size >= PACKED_CACHE_LIMIT
-        pointer = Runtime.buffer(32)
-        pointer[0, 32] = format.packed
+        size = NumFormat::PACKED_BYTES
+        pointer = Runtime.buffer(size)
+        pointer[0, size] = format.packed
         cache[format] = pointer
       end.compare_by_identity
     end

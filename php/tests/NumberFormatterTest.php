@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace HyperCast\Tests;
 
 use HyperCast\Cast;
+use HyperCast\CastFailure;
 use HyperCast\Decimal;
 use HyperCast\Fault;
 use HyperCast\NumFormat;
@@ -82,6 +83,95 @@ final class NumberFormatterTest extends TestCase
     }
 
     #[RequiresPhpExtension('intl')]
+    public function testTheMinusSignCarriesOver(): void
+    {
+        // ICU writes Swedish, Finnish and Estonian negatives with U+2212; declared, the
+        // locale's own negatives are read, and ASCII '-' still is beside it.
+        $swedish = new \NumberFormatter('sv_SE', \NumberFormatter::DECIMAL);
+        $format = NumFormat::fromNumberFormatter($swedish);
+        $this->assertSame("\u{2212}", $format->minusSign);
+        $this->assertSame('', $format->plusSign);
+        $this->assertSame(0, $format->flags & NumFormat::TRAILING_SIGN);
+        $this->assertEquals(new Success(-1234.5), Cast::f64("\u{2212}1\u{A0}234,5", $swedish));
+        $this->assertEquals(new Success(-1234.5), Cast::f64("-1\u{A0}234,5", $swedish));
+        $this->assertEquals(new Success(-5), Cast::i32($swedish->format(-5), $swedish));
+        // Arabic's and Hebrew's signs carry a bidi mark ahead of the hyphen; Persian's is
+        // a mark and U+2212. Each is a symbol of its own, and the plain hyphen is still read.
+        $hebrew = new \NumberFormatter('he_IL', \NumberFormatter::DECIMAL);
+        $this->assertSame("\u{200E}-", NumFormat::fromNumberFormatter($hebrew)->minusSign);
+        $this->assertEquals(new Success(-5), Cast::i32($hebrew->format(-5), $hebrew));
+        $this->assertEquals(new Success(-5), Cast::i32('-5', $hebrew));
+        // An ASCII minus sign (nearly every locale) declares nothing further.
+        $american = new \NumberFormatter('en_US', \NumberFormatter::DECIMAL);
+        $this->assertSame('', NumFormat::fromNumberFormatter($american)->minusSign);
+    }
+
+    #[RequiresPhpExtension('intl')]
+    public function testTheMonetarySeparatorsCarryOver(): void
+    {
+        // Austrian German groups a number with a no-break space and an amount with '.':
+        // the monetary group separator is declared, the monetary decimal (the same ',') is not.
+        $austrian = new \NumberFormatter('de_AT', \NumberFormatter::DECIMAL);
+        $format = NumFormat::fromNumberFormatter($austrian);
+        $this->assertSame([',', "\u{A0}", '', '.', '€'], [
+            $format->decimalSep,
+            $format->groupSep,
+            $format->currencyDecimalSep,
+            $format->currencyGroupSep,
+            $format->currency,
+        ]);
+        $this->assertEquals(new Success(1234.5), Cast::f64("1\u{A0}234,50", $austrian));
+        $this->assertEquals(new Success(1234.5), Cast::f64('1.234,50 €', $austrian));
+        $this->assertEquals(new Success(1234.5), Cast::f64('€ 1.234,50', $austrian));
+        $this->assertEquals(new Fault(CastFailure::Malformed, 1, 1), Cast::f64('1.234,50', $austrian));
+        // A locale whose monetary pair is the number pair declares none.
+        $german = NumFormat::fromNumberFormatter(new \NumberFormatter('de_DE', \NumberFormatter::DECIMAL));
+        $this->assertSame(['', ''], [$german->currencyDecimalSep, $german->currencyGroupSep]);
+    }
+
+    #[RequiresPhpExtension('intl')]
+    public function testTheNativeDigitsAndPercentCarryOver(): void
+    {
+        // Egyptian Arabic: Arabic-Indic digits from U+0660, its own separators, a percent
+        // symbol with a bidi mark after it, and a sign with one before.
+        $egyptian = new \NumberFormatter('ar_EG', \NumberFormatter::DECIMAL);
+        $format = NumFormat::fromNumberFormatter($egyptian);
+        $this->assertSame(["\u{660}", "\u{66A}\u{61C}", "\u{61C}-", "\u{66B}", "\u{66C}"], [
+            $format->digitZero, $format->percent, $format->minusSign, $format->decimalSep, $format->groupSep,
+        ]);
+        $this->assertEquals(new Success(1234.5), Cast::f64($egyptian->format(1234.5), $egyptian));
+        $this->assertEquals(new Success(-1234.5), Cast::f64($egyptian->format(-1234.5), $egyptian));
+        $this->assertEquals(new Success(1234), Cast::i32("\u{661}\u{66C}\u{662}\u{663}\u{664}", $egyptian));
+        $this->assertEquals(new Success(0.5), Cast::f64("\u{665}\u{660}\u{66A}\u{61C}", $egyptian));
+        $this->assertEquals(new Success(1234), Cast::i32("1\u{66C}234", $egyptian));
+        // Persian's zero is U+06F0 (the extended Arabic-Indic block).
+        $persian = NumFormat::fromNumberFormatter(new \NumberFormatter('fa_IR', \NumberFormatter::DECIMAL));
+        $this->assertSame("\u{6F0}", $persian->digitZero);
+        // ASCII '0' (nearly every locale) declares nothing.
+        $japanese = new \NumberFormatter('ja_JP', \NumberFormatter::DECIMAL);
+        $this->assertSame('', NumFormat::fromNumberFormatter($japanese)->digitZero);
+    }
+
+    #[RequiresPhpExtension('intl')]
+    public function testATrailingNegativePatternSetsTheFlag(): void
+    {
+        // A pattern whose negative subpattern has a suffix and no prefix is read with
+        // TRAILING_SIGN; every CLDR decimal pattern leads with its sign, so none sets it.
+        $formatter = new \NumberFormatter('en_US', \NumberFormatter::DECIMAL);
+        $this->assertSame(0, NumFormat::fromNumberFormatter($formatter)->flags & NumFormat::TRAILING_SIGN);
+        $this->assertInstanceOf(Fault::class, Cast::i32('1,234-', $formatter));
+        $formatter->setPattern('#,##0.###;#,##0.###-');
+        $this->assertSame(NumFormat::ALL | NumFormat::TRAILING_SIGN, NumFormat::fromNumberFormatter($formatter)->flags);
+        // The changed pattern is seen by the doors' memo too, not only by a fresh factory call.
+        $this->assertEquals(new Success(-1234), Cast::i32('1,234-', $formatter));
+        $this->assertEquals(new Success(-1234), Cast::i32($formatter->format(-1234), $formatter));
+        $this->assertEquals(new Success(-1234), Cast::i32('-1,234', $formatter));
+        // A negative pattern with a prefix (parentheses, say) is not a trailing sign.
+        $formatter->setPattern('#,##0.###;(#,##0.###)');
+        $this->assertSame(0, NumFormat::fromNumberFormatter($formatter)->flags & NumFormat::TRAILING_SIGN);
+    }
+
+    #[RequiresPhpExtension('intl')]
     public function testAFormattersChangedSymbolsAreReadAgain(): void
     {
         // A formatter is mutable, and the doors remember the format each one declared: the
@@ -92,6 +182,10 @@ final class NumberFormatterTest extends TestCase
         $formatter->setSymbol(\NumberFormatter::GROUPING_SEPARATOR_SYMBOL, '.');
         $this->assertEquals(new Success(1234.5), Cast::f64('1.234,5', $formatter));
         $this->assertInstanceOf(Fault::class, Cast::f64('1,234.5', $formatter));
+        // The new symbols are part of the memo too.
+        $this->assertInstanceOf(Fault::class, Cast::f64("\u{2212}1.234,5", $formatter));
+        $formatter->setSymbol(\NumberFormatter::MINUS_SIGN_SYMBOL, "\u{2212}");
+        $this->assertEquals(new Success(-1234.5), Cast::f64("\u{2212}1.234,5", $formatter));
     }
 
     #[RequiresPhpExtension('intl')]

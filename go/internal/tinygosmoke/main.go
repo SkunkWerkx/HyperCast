@@ -6,10 +6,12 @@
 // trap part-way through looks like.
 //
 // Every ABI shape crosses at least once — a plain door (Bool, Uuid, Timestamp, DateOnly,
-// TimeOfDay, Span), a numeric one with a format (I32, F64, Exact with a currency symbol), a
-// discriminated one (Unix, ExcelSerial, DateTime) — and so does a fault with its span,
-// since TinyGo hands the core pointers into Go memory for the out-value and the fault
-// rather than the by-value shims the cgo backend uses.
+// TimeOfDay, Span), a numeric one with a format (I32, F64, Exact with a currency symbol,
+// and a format declaring every symbol the 92-byte layout carries), a discriminated one
+// (Unix, ExcelSerial, DateTime), the day periods beside the order (DateTimeWith) — and so
+// does a fault with its span, since TinyGo hands the core pointers into Go memory for the
+// out-value, the fault, the format and the periods rather than the by-value shims the cgo
+// backend uses.
 //
 // The expected core version comes from rust/Cargo.toml at build time
 // (`-ldflags "-X main.wantVersion=..."`), so the page proves the archive that was linked is
@@ -58,9 +60,25 @@ func main() {
 	f, fault := hypercast.F64("50%", hypercast.Invariant)
 	check(fault == nil && f == 0.5, "F64 percent")
 
-	dollars := hypercast.NumFormat{DecimalSep: '.', GroupSep: ',', Styles: hypercast.AllStyles, Currency: "$"}
+	dollars := hypercast.NumFormat{DecimalSep: ".", GroupSep: ",", Styles: hypercast.AllStyles, Currency: "$"}
 	d, fault := hypercast.Exact("($1,234.50)", dollars)
 	check(fault == nil && d.String() == "-1234.5" && d.Scale == 1 && d.Negative, "Exact with a currency symbol")
+
+	estonian := hypercast.NumFormat{
+		DecimalSep: ",", GroupSep: " ", Styles: hypercast.AllStyles | hypercast.TrailingSign,
+		Currency: "€", MinusSign: "−",
+	}
+	minus, fault := hypercast.F64("1 234,5 €−", estonian)
+	check(fault == nil && minus == -1234.5, "F64 declared minus sign, trailing")
+
+	everything := hypercast.NumFormat{
+		DecimalSep: "٫", GroupSep: "٬", Styles: hypercast.AllStyles, Currency: "€",
+		CurrencyDecimalSep: ".", CurrencyGroupSep: ",", MinusSign: "−", PlusSign: "＋", Percent: "٪", DigitZero: '٠',
+	}
+	digits, fault := hypercast.Exact("١٬٢٣٤٫٥٪", everything)
+	check(fault == nil && digits.String() == "12.345", "Exact native digits and declared percent")
+	euros, fault := hypercast.F64("€1,234.50", everything)
+	check(fault == nil && euros == 1234.5, "F64 currency separators")
 
 	n, fault := hypercast.Numeric[uint64]("0xFF", hypercast.Invariant)
 	check(fault == nil && n == 255, "Numeric[uint64] radix prefix")
@@ -83,6 +101,13 @@ func main() {
 	civil, fault := hypercast.DateTime("1/7/2026 3:04 PM", hypercast.MonthDayYear)
 	check(fault == nil && civil.Date == hypercast.Date{Year: 2026, Month: time.January, Day: 7} &&
 		civil.TimeOfDay == 15*time.Hour+4*time.Minute, "DateTime 12-hour")
+
+	german := hypercast.DateFormat{Order: hypercast.DayMonthYear, AM: "vorm.", PM: "nachm."}
+	civil, fault = hypercast.DateTimeWith("1/7/2026 3:04 nachm.", german)
+	check(fault == nil && civil.Date == hypercast.Date{Year: 2026, Month: time.July, Day: 1} &&
+		civil.TimeOfDay == 15*time.Hour+4*time.Minute, "DateTimeWith declared day periods")
+	_, fault = hypercast.DateTime("1/7/2026 3:04 nachm.", hypercast.DayMonthYear)
+	check(fault != nil && fault.Reason == hypercast.Malformed, "DateTime reads English only")
 
 	tod, fault := hypercast.TimeOfDay("23:59:59.5")
 	check(fault == nil && tod == 23*time.Hour+59*time.Minute+59*time.Second+500*time.Millisecond, "TimeOfDay")

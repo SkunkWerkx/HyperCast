@@ -48,6 +48,7 @@ final class Cast
     private static ?FFI\CData $outDecimal = null;
     private static ?FFI\CData $fault = null;
     private static ?FFI\CData $format = null;
+    private static ?FFI\CData $periods = null;
     // Pre-taken addresses: FFI auto-decays arrays to pointers but not scalars/structs, and
     // FFI::addr() per call would be a fresh CData allocation on the hot path.
     private static ?FFI\CData $outPairPtr = null;
@@ -58,7 +59,9 @@ final class Cast
     private static ?FFI\CData $outDecimalPtr = null;
     private static ?FFI\CData $faultPtr = null;
     private static ?FFI\CData $formatPtr = null;
+    private static ?FFI\CData $periodsPtr = null;
     private static ?NumFormat $formatKey = null;
+    private static ?DayPeriods $periodsKey = null;
     /** @var \WeakMap<\NumberFormatter, array{string, NumFormat}>|null */
     private static ?\WeakMap $formatters = null;
     private static ?bool $available = null;
@@ -98,9 +101,9 @@ final class Cast
 
     /**
      * Re-stores the declared format only when it actually changes (identity check). The
-     * currency bytes are always written as the full 16, zero-padded — the memo means a
-     * shorter symbol can follow a longer one into the same scratch, and the core's contract
-     * is zero-padding beyond `currency_len`.
+     * whole 92-byte layout is written each time, every symbol zero-padded to its field —
+     * the memo means a shorter symbol can follow a longer one into the same scratch, and
+     * the core reads a symbol by its length byte.
      *
      * A `NumberFormatter` is converted first, through {@see fromFormatter()}.
      *
@@ -122,10 +125,13 @@ final class Cast
      * The format a `NumberFormatter` declares ({@see NumFormat::fromNumberFormatter()}),
      * remembered per formatter so that passing the same one call after call converts it,
      * and re-stores it in the native scratch, once rather than every time (measured: a
-     * grouped i32 through a formatter costs 1.88 µs converted per call, against 0.47 µs for a
-     * NumFormat derived once). A formatter is mutable (`setSymbol()`), so its three symbols
-     * are read on every call and the remembered format is used only while they still match.
-     * Keyed weakly, so a formatter the caller drops takes its entry with it.
+     * grouped i32 through a formatter costs 3.7 µs remembered against 6.7 µs converted on
+     * every call, and 0.6 µs for a NumFormat derived once). A formatter is mutable
+     * (`setSymbol()`, `setPattern()`), so the ten symbols and the two negative-pattern
+     * attributes the factory reads are read on every call — twelve intl calls, which is
+     * where the remembered path's cost over a hoisted NumFormat goes — and the remembered
+     * format is used only while they all still match. Keyed weakly, so a formatter the
+     * caller drops takes its entry with it.
      *
      * @param \NumberFormatter $formatter the formatter whose symbols declare the notation
      * @return NumFormat the declared format, the same instance while the symbols are unchanged
@@ -134,7 +140,15 @@ final class Cast
     {
         $symbols = $formatter->getSymbol(\NumberFormatter::DECIMAL_SEPARATOR_SYMBOL) . "\0"
             . $formatter->getSymbol(\NumberFormatter::GROUPING_SEPARATOR_SYMBOL) . "\0"
-            . $formatter->getSymbol(\NumberFormatter::CURRENCY_SYMBOL);
+            . $formatter->getSymbol(\NumberFormatter::CURRENCY_SYMBOL) . "\0"
+            . $formatter->getSymbol(\NumberFormatter::MONETARY_SEPARATOR_SYMBOL) . "\0"
+            . $formatter->getSymbol(\NumberFormatter::MONETARY_GROUPING_SEPARATOR_SYMBOL) . "\0"
+            . $formatter->getSymbol(\NumberFormatter::MINUS_SIGN_SYMBOL) . "\0"
+            . $formatter->getSymbol(\NumberFormatter::PLUS_SIGN_SYMBOL) . "\0"
+            . $formatter->getSymbol(\NumberFormatter::PERCENT_SYMBOL) . "\0"
+            . $formatter->getSymbol(\NumberFormatter::ZERO_DIGIT_SYMBOL) . "\0"
+            . $formatter->getTextAttribute(\NumberFormatter::NEGATIVE_PREFIX) . "\0"
+            . $formatter->getTextAttribute(\NumberFormatter::NEGATIVE_SUFFIX);
         self::$formatters ??= new \WeakMap();
         $remembered = self::$formatters[$formatter] ?? null;
         if ($remembered !== null && $remembered[0] === $symbols) {
@@ -201,7 +215,9 @@ final class Cast
 
     /**
      * Integer doors: the target type's own range, declared grouping, accounting parens,
-     * non-negative exponent, and 0x/&H/0b two's-complement radix prefixes. Every width
+     * non-negative exponent, 0x/&H/0b two's-complement radix prefixes, and whatever
+     * further symbols the format declares (a currency symbol and its own separators, a
+     * minus sign, native digits, a trailing sign) beside the ASCII ones. Every width
      * funnels through one zeroed 64-bit scratch slot (the supported RIDs are all
      * little-endian); narrow signed widths sign-extend on readback. Each door is written
      * out flat — one literal FFI call, no shared helper — the same rule the real doors
@@ -622,24 +638,35 @@ final class Cast
      * Casts a zone-less civil date-time — the shape untrusted feeds actually send
      * ("1/7/2026 3:04 PM", "2026-01-07 15:04:05") — under the caller-declared DateOrder.
      * The date part follows date()'s declared-order grammar; the optional time part (one
-     * space or T after the date) is 24-hour h:mm[:ss[.f]] or 12-hour with an AM/PM
-     * marker; absent, the time is midnight. PHP has no zone-less datetime type, so the
-     * civil value rides a UTC-labeled DateTimeImmutable — the label is a carrier
-     * artifact, not data: no zone was read and none was applied, and fusing a real zone
-     * is the caller's job (timestamp() stays the strict RFC 3339 instant door).
-     * Sub-microsecond nanoseconds truncate (PHP's ceiling).
+     * space or T after the date) is 24-hour h:mm[:ss[.f]] or 12-hour with a day-period
+     * marker after the clock ("3:04 PM") or ahead of it ("PM 3:04"): the English AM/PM,
+     * ASCII case-insensitively, always, and the declared {@see DayPeriods} byte for byte
+     * beside them ("3:04 nachm.", "오후 3:04"); absent, the time is midnight. PHP has no
+     * zone-less datetime type, so the civil value rides a UTC-labeled DateTimeImmutable —
+     * the label is a carrier artifact, not data: no zone was read and none was applied,
+     * and fusing a real zone is the caller's job (timestamp() stays the strict RFC 3339
+     * instant door). Sub-microsecond nanoseconds truncate (PHP's ceiling).
      *
      * @param string $text the text to cast
      * @param DateOrder $order the declared field order
+     * @param DayPeriods|null $periods the declared day-period designators; null is the English AM/PM only
      * @return Success|Fault the verdict: a Success carrying the cast value, or a Fault
      */
-    public static function datetime(string $text, DateOrder $order): Success|Fault
+    public static function datetime(string $text, DateOrder $order, ?DayPeriods $periods = null): Success|Fault
     {
         $ffi = self::$ffi ?? self::load();
+        // The same identity memo the numeric doors keep on their format: re-stored only
+        // when the declared pair changes, and null crosses as the null pointer the core
+        // reads as the English pair alone.
+        if ($periods !== null && self::$periodsKey !== $periods) {
+            NativeValues::writeDayPeriods($periods, self::$periods);
+            self::$periodsKey = $periods;
+        }
         $rc = $ffi->cast_datetime(
             $text === '' ? null : $text,
             \strlen($text),
             $order->value,
+            $periods === null ? null : self::$periodsPtr,
             self::$outCivilPtr,
             self::$faultPtr
         );
@@ -828,8 +855,12 @@ final class Cast
             . 'typedef union { float f32; double f64; } hc_real;'
             . 'typedef struct { uint64_t lo; uint32_t hi; uint8_t scale; uint8_t negative;'
             . ' uint8_t pad[2]; } hc_decimal;'
-            . 'typedef struct { uint32_t decimal_sep; uint32_t group_sep; uint32_t flags; uint32_t currency_len;'
-            . ' uint8_t currency[16]; } hc_format;'
+            . 'typedef struct { uint8_t bytes[8]; uint8_t len; } hc_symbol8;'
+            . 'typedef struct { uint8_t bytes[16]; uint8_t len; } hc_symbol16;'
+            . 'typedef struct { uint32_t size; uint32_t flags; uint32_t digit_zero; hc_symbol8 decimal_sep;'
+            . ' hc_symbol8 group_sep; hc_symbol8 currency_decimal_sep; hc_symbol8 currency_group_sep;'
+            . ' hc_symbol8 minus_sign; hc_symbol8 plus_sign; hc_symbol8 percent; hc_symbol16 currency; } hc_format;'
+            . 'typedef struct { uint32_t size; hc_symbol16 am; hc_symbol16 pm; uint8_t pad[2]; } hc_periods;'
             . 'uint32_t hypercast_version(void);'
             . "int cast_bool{$plain};"
             . "int cast_char{$plain};"
@@ -842,7 +873,8 @@ final class Cast
             . 'int cast_excel_serial(const char *ptr, size_t len, uint32_t epoch, void *out, void *fault);'
             . "int cast_date{$plain};"
             . 'int cast_date_ordered(const char *ptr, size_t len, uint32_t order, void *out, void *fault);'
-            . 'int cast_datetime(const char *ptr, size_t len, uint32_t order, void *out, void *fault);'
+            . 'int cast_datetime(const char *ptr, size_t len, uint32_t order, const void *periods, void *out,'
+            . ' void *fault);'
             . "int cast_time{$plain};"
             . "int cast_duration{$plain};"
             . 'int cast_decimal_from_f64(double value, void *out, void *fault);'
@@ -860,6 +892,7 @@ final class Cast
         self::$outDecimal = self::$ffi->new('hc_decimal');
         self::$fault = self::$ffi->new('hc_fault');
         self::$format = self::$ffi->new('hc_format');
+        self::$periods = self::$ffi->new('hc_periods');
         self::$outPairPtr = FFI::addr(self::$outPair);
         self::$outDatePtr = FFI::addr(self::$outDate);
         self::$outCivilPtr = FFI::addr(self::$outCivil);
@@ -868,6 +901,7 @@ final class Cast
         self::$outDecimalPtr = FFI::addr(self::$outDecimal);
         self::$faultPtr = FFI::addr(self::$fault);
         self::$formatPtr = FFI::addr(self::$format);
+        self::$periodsPtr = FFI::addr(self::$periods);
         return self::$ffi;
     }
 }

@@ -11,7 +11,7 @@ import java.lang.foreign.MemorySegment;
  * dependency is never touched, unless it was actually selected — the reference {@code Cast}
  * holds is typed as this interface, and the implementation is instantiated by name.
  *
- * <p>Five of the methods are the five ABI shapes in {@code ffi.rs}, one level below the
+ * <p>Six of the methods are the six ABI shapes in {@code ffi.rs}, one level below the
  * verdict: each takes the caller's input bytes and the caller's own out-value and fault-span
  * segments (the per-thread scratch {@code Cast} already keeps), performs the crossing, fills
  * the segments exactly as the native call would have, and returns the verdict code. Folding
@@ -36,6 +36,21 @@ interface Backend {
      * precision, epoch, or field order.
      */
     int declared(Door door, MemorySegment in, long len, int discriminant, MemorySegment out, MemorySegment fault);
+
+    /**
+     * The {@code (ptr, len, u32, periods, out, fault)} shape: the civil date-time door, which
+     * takes a declared field order and the day-period designators — {@code format} is null
+     * for the {@code DateOrder} overloads, and the native side passes a null pointer when
+     * nothing is declared either way.
+     */
+    int civil(
+            Door door,
+            MemorySegment in,
+            long len,
+            int order,
+            DateTimeFormat format,
+            MemorySegment out,
+            MemorySegment fault);
 
     /** The {@code (f64, out, fault)} shape: the typed doors that read a number. */
     int typed(Door door, double value, MemorySegment out, MemorySegment fault);

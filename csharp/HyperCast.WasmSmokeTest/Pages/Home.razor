@@ -54,6 +54,22 @@
             Check("f64", Cast.Double("25.5%", NumFormat.Invariant), 0.255);
             Check("decimal", Cast.Decimal("(1,234.50)", NumFormat.Invariant), -1234.50m);
             Check("currency", Cast.Int32("($1,234)", new NumFormat('.', ',', NumStyles.All, "$")), -1234);
+            // Every field of the 92-byte format, declared by hand, each read beside its ASCII default.
+            var declared = new NumFormat(",", ". ", NumStyles.All | NumStyles.TrailingSign, "€")
+            {
+                CurrencyDecimalSeparator = ".",
+                CurrencyGroupSeparator = ",",
+                MinusSign = "−",
+                PlusSign = "＋",
+                PercentSymbol = "٪",
+                DigitZero = new System.Text.Rune(0x0660),
+            };
+            Check("wide separator", Cast.Int32("1. 234. 567", declared), 1_234_567);
+            Check("currency separators", Cast.Decimal("€1,234.50", declared), 1234.50m);
+            Check("minus sign", Cast.Int32("−5", declared), -5);
+            Check("trailing sign", Cast.Int32("5 −", declared), -5);
+            Check("percent symbol", Cast.Double("٥٠٪", declared), 0.5);
+            Check("native digits", Cast.Int64("١٢٣", declared), 123L);
             Check("uuid", Cast.Uuid("urn:uuid:01020304-0506-0708-090a-0b0c0d0e0f10"),
                 new Guid("01020304-0506-0708-090a-0b0c0d0e0f10"));
             Check("timestamp", Cast.Timestamp("2026-01-02T15:04:05+05:00"),
@@ -65,6 +81,9 @@
             Check("date", Cast.Date("2026-01-02"), new DateOnly(2026, 1, 2));
             Check("date (ordered)", Cast.Date("1/7/2026", DateOrder.MonthDayYear), new DateOnly(2026, 1, 7));
             Check("datetime", Cast.DateTime("1/7/2026 3:04 PM", DateOrder.MonthDayYear),
+                new DateTime(2026, 1, 7, 15, 4, 0));
+            // The same door with day periods declared — the one pointer argument that is null above.
+            Check("datetime (periods)", Cast.DateTime("2026-01-07 오후 3:04", new DateFormat(DateOrder.YearMonthDay, "오전", "오후")),
                 new DateTime(2026, 1, 7, 15, 4, 0));
             Check("time", Cast.Time("15:04:05"), new TimeOnly(15, 4, 5));
             Check("duration", Cast.Duration("P1DT6H"), new TimeSpan(1, 6, 0, 0));

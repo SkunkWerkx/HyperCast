@@ -1,6 +1,7 @@
 package io.github.skunkwerkx.hypercast.interop;
 
 import io.github.skunkwerkx.hypercast.CastFailure;
+import io.github.skunkwerkx.hypercast.DateTimeFormat;
 import io.github.skunkwerkx.hypercast.Fault;
 import io.github.skunkwerkx.hypercast.NumFormat;
 import java.lang.foreign.MemorySegment;
@@ -19,8 +20,8 @@ import java.util.UUID;
 
 /**
  * The native core's C ABI values, read and written: every out-value layout a door fills, the
- * 32-byte numeric format it reads, the verdict code and span of a fault, and the packed
- * version word. Public for a library that carries HyperCast's verdicts across a C ABI of its
+ * 92-byte numeric format and the 40-byte day-period designators it reads, the verdict code
+ * and span of a fault, and the packed version word. Public for a library that carries HyperCast's verdicts across a C ABI of its
  * own (HyperTabular does) — it reads these out of its own buffers through exactly the
  * conversions every {@link io.github.skunkwerkx.hypercast.Cast} door uses, so a value it hands
  * out is the value the door would have.
@@ -52,10 +53,21 @@ public final class NativeValues {
     public static final long UUID_BYTES = 16;
 
     /**
-     * {@code {u32 decimal_sep, u32 group_sep, u32 flags, u32 currency_len, u8[16] currency}} —
-     * the symbol's UTF-8 bytes inline, zero-padded.
+     * The numeric format, size-tagged: {@code u32 size} (92), {@code u32 flags},
+     * {@code u32 digit_zero}, then each symbol as its UTF-8 bytes inline and a length byte,
+     * packed with no padding — 8 bytes and the length for the decimal, group,
+     * currency-decimal and currency-group separators, the minus and plus signs and the
+     * percent symbol (at 12, 21, 30, 39, 48, 57 and 66), 16 and the length for the currency
+     * symbol (at 75). A length of 0 declares nothing.
      */
-    public static final long FORMAT_BYTES = 32;
+    public static final long FORMAT_BYTES = 92;
+
+    /**
+     * The day-period designators, size-tagged: {@code u32 size} (40), then the AM and PM
+     * designators as 16 UTF-8 bytes inline and a length byte each (at 4 and 21), and 2 bytes
+     * of padding. A length of 0 declares nothing beside the English designator.
+     */
+    public static final long DAY_PERIODS_BYTES = 40;
 
     /** A fault's span: {@code {u32 offset, u32 length}}, in bytes of the input. */
     public static final long FAULT_BYTES = 8;
@@ -157,8 +169,8 @@ public final class NativeValues {
     }
 
     /**
-     * Writes a format in the core's layout, the whole {@link #FORMAT_BYTES} of it: the
-     * symbol field is zeroed past the symbol, so a segment reused for another format keeps no
+     * Writes a format in the core's layout, the whole {@link #FORMAT_BYTES} of it: every
+     * symbol field is zeroed past its symbol, so a segment reused for another format keeps no
      * tail. The format was validated when it was built.
      *
      * @param format the declared format
@@ -166,13 +178,45 @@ public final class NativeValues {
      * @param at the byte offset to write at, 4-byte aligned
      */
     public static void writeFormat(NumFormat format, MemorySegment segment, long at) {
-        segment.set(ValueLayout.JAVA_INT, at, format.decimalSeparator());
-        segment.set(ValueLayout.JAVA_INT, at + 4, format.groupSeparator());
-        segment.set(ValueLayout.JAVA_INT, at + 8, format.styles());
-        byte[] symbol = format.currencySymbol().getBytes(StandardCharsets.UTF_8);
-        segment.set(ValueLayout.JAVA_INT, at + 12, symbol.length);
-        segment.asSlice(at + 16, 16).fill((byte) 0);
-        MemorySegment.copy(symbol, 0, segment, ValueLayout.JAVA_BYTE, at + 16, symbol.length);
+        segment.asSlice(at, FORMAT_BYTES).fill((byte) 0);
+        segment.set(ValueLayout.JAVA_INT, at, (int) FORMAT_BYTES);
+        segment.set(ValueLayout.JAVA_INT, at + 4, format.styles());
+        segment.set(ValueLayout.JAVA_INT, at + 8, format.digitZero());
+        long next = symbol(format.decimalSeparator(), 8, segment, at + 12);
+        next = symbol(format.groupSeparator(), 8, segment, next);
+        next = symbol(format.currencyDecimalSeparator(), 8, segment, next);
+        next = symbol(format.currencyGroupSeparator(), 8, segment, next);
+        next = symbol(format.minusSign(), 8, segment, next);
+        next = symbol(format.plusSign(), 8, segment, next);
+        next = symbol(format.percentSymbol(), 8, segment, next);
+        symbol(format.currencySymbol(), 16, segment, next);
+    }
+
+    /**
+     * Writes a date-time format's day-period designators in the core's layout, the whole
+     * {@link #DAY_PERIODS_BYTES} of it, zeroed past each designator as {@link #writeFormat}
+     * zeroes past each symbol. The order crosses beside it as its own
+     * {@link io.github.skunkwerkx.hypercast.DateOrder#code() code}, and a format declaring
+     * no designator is what the door passes as a null pointer instead.
+     *
+     * @param format the declared format
+     * @param segment the segment to write into
+     * @param at the byte offset to write at, 4-byte aligned
+     */
+    public static void writeDayPeriods(DateTimeFormat format, MemorySegment segment, long at) {
+        segment.asSlice(at, DAY_PERIODS_BYTES).fill((byte) 0);
+        segment.set(ValueLayout.JAVA_INT, at, (int) DAY_PERIODS_BYTES);
+        long next = symbol(format.amDesignator(), 16, segment, at + 4);
+        symbol(format.pmDesignator(), 16, segment, next);
+    }
+
+    // One symbol field: the symbol's UTF-8 bytes at `at`, into a field `capacity` bytes wide
+    // (already zeroed), and its length in the byte after. Returns the offset after the field.
+    private static long symbol(String symbol, int capacity, MemorySegment segment, long at) {
+        byte[] utf8 = symbol.getBytes(StandardCharsets.UTF_8);
+        MemorySegment.copy(utf8, 0, segment, ValueLayout.JAVA_BYTE, at, utf8.length);
+        segment.set(ValueLayout.JAVA_BYTE, at + capacity, (byte) utf8.length);
+        return at + capacity + 1;
     }
 
     /**

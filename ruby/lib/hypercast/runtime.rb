@@ -16,10 +16,11 @@ module HyperCast
 
     # Each door's C signature, by shape — resolved to Fiddle types only in load_functions,
     # so nothing here touches Fiddle until the Fiddle backend actually runs: plain is
-    # (text, len, out, fault), numeric adds the packed NumFormat pointer before out, and
-    # declared a caller-declared u32 (precision, epoch, field order) in the same place. The
-    # typed doors take a double instead of the text and its length: typed is (value, out,
-    # fault), typed_declared adds the u32 after the value.
+    # (text, len, out, fault), numeric adds the packed NumFormat pointer before out,
+    # declared a caller-declared u32 (precision, epoch, field order) in the same place, and
+    # civil the field order then the packed DayPeriods pointer (null for none). The typed
+    # doors take a double instead of the text and its length: typed is (value, out, fault),
+    # typed_declared adds the u32 after the value.
     DOORS = {
       cast_bool: :plain, cast_char: :plain,
       cast_i8: :numeric, cast_i16: :numeric, cast_i32: :numeric, cast_i64: :numeric,
@@ -27,7 +28,7 @@ module HyperCast
       cast_f32: :numeric, cast_f64: :numeric, cast_decimal: :numeric,
       cast_uuid: :plain,
       cast_timestamp: :plain, cast_unix: :declared, cast_excel_serial: :declared,
-      cast_date: :plain, cast_date_ordered: :declared, cast_datetime: :declared,
+      cast_date: :plain, cast_date_ordered: :declared, cast_datetime: :civil,
       cast_time: :plain, cast_duration: :plain,
       cast_decimal_from_f64: :typed, cast_excel_serial_from_f64: :typed_declared,
       cast_excel_time: :typed, cast_excel_duration: :typed
@@ -114,6 +115,7 @@ module HyperCast
           plain: plain,
           numeric: plain.dup.insert(2, Fiddle::TYPE_VOIDP),
           declared: plain.dup.insert(2, Fiddle::TYPE_UINT32_T),
+          civil: plain.dup.insert(2, Fiddle::TYPE_UINT32_T, Fiddle::TYPE_VOIDP),
           typed: [Fiddle::TYPE_DOUBLE, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP],
           typed_declared: [Fiddle::TYPE_DOUBLE, Fiddle::TYPE_UINT32_T, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP]
         }

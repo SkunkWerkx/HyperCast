@@ -3,6 +3,7 @@ package io.github.skunkwerkx.hypercast.aotsmoketest;
 import io.github.skunkwerkx.hypercast.Cast;
 import io.github.skunkwerkx.hypercast.CastFailure;
 import io.github.skunkwerkx.hypercast.DateOrder;
+import io.github.skunkwerkx.hypercast.DateTimeFormat;
 import io.github.skunkwerkx.hypercast.ExcelEpoch;
 import io.github.skunkwerkx.hypercast.Fault;
 import io.github.skunkwerkx.hypercast.NumFormat;
@@ -83,6 +84,13 @@ public final class Main {
         // -H:IncludeLocales (see the README's AOT section).
         check("f64 (en-US locale)", Cast.f64("1,234.5", Locale.US), 1234.5);
         check("i32", Cast.i32("(1,234)", NumFormat.INVARIANT), -1234);
+        // A format with the 0.9.0 fields declared, crossing in the 92-byte layout.
+        check(
+                "i32 (declared minus, native digits)",
+                Cast.i32(
+                        "\u2212\u0661,\u0662\u0663\u0664",
+                        NumFormat.INVARIANT.withSigns("\u2212", "").withDigitZero(0x0660)),
+                -1234);
         check("i64", Cast.i64("9223372036854775807", NumFormat.INVARIANT), Long.MAX_VALUE);
         check("u8", Cast.u8("255", NumFormat.INVARIANT), 255);
         check("u16", Cast.u16("65535", NumFormat.INVARIANT), 65535);
@@ -107,6 +115,13 @@ public final class Main {
         check(
                 "dateTime",
                 Cast.dateTime("1/7/2026 3:04 PM", DateOrder.MONTH_DAY_YEAR),
+                LocalDateTime.of(2026, 1, 7, 15, 4));
+        // The same door with a culture's designators declared: the one ABI shape that takes a
+        // declared order and a pointer, crossing with the 40-byte layout where the line above
+        // crossed with NULL — its own downcall signature in reachability-metadata.json.
+        check(
+                "dateTime (declared designators)",
+                Cast.dateTime("1/7/2026 3:04 p. m.", new DateTimeFormat(DateOrder.MONTH_DAY_YEAR, "a. m.", "p. m.")),
                 LocalDateTime.of(2026, 1, 7, 15, 4));
         check("time", Cast.time("15:04:05"), LocalTime.of(15, 4, 5));
         check("duration", Cast.duration("P1DT6H"), Duration.ofHours(30));

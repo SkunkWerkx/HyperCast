@@ -43,12 +43,16 @@ java/src/main/resources/native/
 **/dist/
 **/.pytest_cache/
 # The staged PyO3 extension for local dev/test — nested at hypercast._native (the maturin
-# module-name), built from the core crate's python feature. abi3 wheels carry one build per
-# platform regardless of Python version (hence the plain and .abi3 spellings, not a
-# per-version-tagged glob); .pyd covers Windows.
+# module-name), built from the core crate's python feature. The abi3 and abi3t builds carry
+# one file per platform regardless of Python version (the plain, .abi3 and .abi3t
+# spellings); a free-threaded 3.14 build is tagged per version (`maturin develop` names it
+# _native.cpython-314t-<platform>.so), hence the glob; .pyd covers Windows.
 python/src/hypercast/_native.so
 python/src/hypercast/_native.abi3.so
+python/src/hypercast/_native.abi3t.so
+python/src/hypercast/_native.cpython-*t-*.so
 python/src/hypercast/_native.pyd
+python/src/hypercast/_native.*.pyd
 
 # Swift
 # The static libraries under swift/HyperCastCore.artifactbundle/{triple}/ are committed, not

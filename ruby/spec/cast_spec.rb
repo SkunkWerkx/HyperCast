@@ -254,6 +254,206 @@ RSpec.describe HyperCast do
       .to raise_error(ArgumentError, /must differ/)
   end
 
+  # The fields a culture table fills in. Each declared symbol is read beside its ASCII
+  # default, never instead of it, so every example also checks the ASCII spelling still reads.
+  describe "declared symbols beside their ASCII defaults" do
+    def declare(**fields)
+      HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",", flags: HyperCast::ALL_STYLES, **fields)
+    end
+
+    it "reads a declared minus and plus sign wherever ASCII - and + are read" do
+      signs = declare(minus_sign: "\u2212", plus_sign: "\uFF0B", currency: "$")
+      expect(described_class.i32("\u22125", signs)).to eq(HyperCast::Success.new(value: -5))
+      expect(described_class.i32("-5", signs)).to eq(HyperCast::Success.new(value: -5))
+      expect(described_class.i32("\uFF0B5", signs)).to eq(HyperCast::Success.new(value: 5))
+      expect(described_class.i32("$\u22125", signs)).to eq(HyperCast::Success.new(value: -5))
+      expect(described_class.f64("\u22122.5", signs)).to eq(HyperCast::Success.new(value: -2.5))
+      expect(described_class.decimal("\u22122.5", signs))
+        .to eq(HyperCast::Success.new(value: HyperCast::Decimal.new(magnitude: 25, scale: 1, negative: true)))
+      # Two signs are malformed at the later one; undeclared, U+2212 is simply not a sign.
+      expect(described_class.i32("\u2212-5",
+                                 signs)).to eq(HyperCast::Fault.new(reason: :malformed, offset: 1, length: 1))
+      expect(described_class.i32("\u22125",
+                                 invariant)).to eq(HyperCast::Fault.new(reason: :malformed, offset: 0, length: 1))
+    end
+
+    it "reads a trailing sign only under TRAILING_SIGN, which ALL_STYLES leaves off" do
+      expect(HyperCast::ALL_STYLES & HyperCast::TRAILING_SIGN).to eq(0)
+      trailing = declare(currency: "\u20AC", minus_sign: "\u2212").with(flags: HyperCast::ALL_STYLES | HyperCast::TRAILING_SIGN)
+      expect(described_class.i32("5-", trailing)).to eq(HyperCast::Success.new(value: -5))
+      expect(described_class.i32("5 -", trailing)).to eq(HyperCast::Success.new(value: -5))
+      expect(described_class.i32("5+", trailing)).to eq(HyperCast::Success.new(value: 5))
+      expect(described_class.i32("5 \u20AC\u2212", trailing)).to eq(HyperCast::Success.new(value: -5))
+      expect(described_class.f64("2.5%-", trailing)).to eq(HyperCast::Success.new(value: -0.025))
+      # Never beside a leading sign, nor inside parentheses, nor without the flag.
+      expect(described_class.i32("-5-", trailing)).to eq(HyperCast::Fault.new(reason: :malformed, offset: 2, length: 1))
+      expect(described_class.i32("(5-)",
+                                 trailing)).to eq(HyperCast::Fault.new(reason: :malformed, offset: 2, length: 1))
+      expect(described_class.i32("5-", invariant)).to eq(HyperCast::Fault.new(reason: :malformed, offset: 1, length: 1))
+    end
+
+    it "reads a currency amount with the currency separators when the symbol is in the text" do
+      # A locale whose plain numbers and currency amounts swap separators.
+      francs = HyperCast::NumFormat.new(decimal_sep: ",", group_sep: ".", flags: HyperCast::ALL_STYLES,
+                                        currency: "\u20AC", currency_decimal_sep: ".", currency_group_sep: ",")
+      expect(described_class.f64("\u20AC1,234.50", francs)).to eq(HyperCast::Success.new(value: 1234.5))
+      expect(described_class.f64("1,234.50 \u20AC", francs)).to eq(HyperCast::Success.new(value: 1234.5))
+      expect(described_class.f64("1.234,50", francs)).to eq(HyperCast::Success.new(value: 1234.5))
+      expect(described_class.i32("\u20AC1.234",
+                                 francs)).to eq(HyperCast::Fault.new(reason: :malformed, offset: 2, length: 1))
+      expect(described_class.i32("1,234", francs)).to eq(HyperCast::Fault.new(reason: :malformed, offset: 1, length: 1))
+      # One declared keeps the number separator for the other.
+      half = HyperCast::NumFormat.new(decimal_sep: ",", group_sep: ".", flags: HyperCast::ALL_STYLES,
+                                      currency: "\u20AC", currency_group_sep: "'")
+      expect(described_class.f64("\u20AC1'234,50", half)).to eq(HyperCast::Success.new(value: 1234.5))
+      expect(described_class.f64("1.234,50", half)).to eq(HyperCast::Success.new(value: 1234.5))
+    end
+
+    it "reads a declared percent symbol as a trailing % is, under PERCENT" do
+      arabic = declare(percent: "\u066A")
+      expect(described_class.f64("50\u066A", arabic)).to eq(HyperCast::Success.new(value: 0.5))
+      expect(described_class.f64("50%", arabic)).to eq(HyperCast::Success.new(value: 0.5))
+      expect(described_class.decimal("50\u066A", arabic))
+        .to eq(HyperCast::Success.new(value: HyperCast::Decimal.new(magnitude: 5, scale: 1, negative: false)))
+      expect(described_class.f64("50\u066A",
+                                 invariant)).to eq(HyperCast::Fault.new(reason: :malformed, offset: 2, length: 1))
+      # Integer doors never read a percent, declared or not.
+      expect(described_class.i32("50\u066A", arabic).reason).to eq(:malformed)
+    end
+
+    it "reads the ten digits from a declared zero beside ASCII 0-9" do
+      arabic = HyperCast::NumFormat.new(decimal_sep: "\u066B", group_sep: "\u066C", flags: HyperCast::ALL_STYLES,
+                                        digit_zero: "\u0660")
+      expect(described_class.i32("\u0661\u0662\u0663", arabic)).to eq(HyperCast::Success.new(value: 123))
+      expect(described_class.i32("12\u0663", arabic)).to eq(HyperCast::Success.new(value: 123))
+      expect(described_class.f64("\u0661\u066C\u0662\u0663\u0664\u066B\u0665", arabic))
+        .to eq(HyperCast::Success.new(value: 1234.5))
+      expect(described_class.i32("\u0661e\u0663", arabic)).to eq(HyperCast::Success.new(value: 1000))
+      expect(described_class.i32("\uFF11\uFF12\uFF13",
+                                 declare(digit_zero: "\uFF10"))).to eq(HyperCast::Success.new(value: 123))
+      expect(described_class.i32("\u0661\u0662\u0663",
+                                 invariant)).to eq(HyperCast::Fault.new(reason: :malformed, offset: 0, length: 1))
+    end
+
+    it "takes a separator of two characters" do
+      spaced = HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ", ", flags: HyperCast::ALL_STYLES)
+      expect(described_class.i32("1, 234", spaced)).to eq(HyperCast::Success.new(value: 1234))
+      expect(described_class.i32("1,234", spaced)).to eq(HyperCast::Fault.new(reason: :malformed, offset: 1, length: 1))
+      expect(described_class.f64("1' 234.5", spaced.with(group_sep: "' "))).to eq(HyperCast::Success.new(value: 1234.5))
+    end
+
+    it "declares nothing by default, which reads exactly as before" do
+      expect(invariant.to_h.values_at(:currency, :currency_decimal_sep, :currency_group_sep, :minus_sign, :plus_sign,
+                                      :percent, :digit_zero)).to all(eq(""))
+      expect(declare).to eq(invariant)
+    end
+
+    it "treats a malformed field as a caller bug, naming the field" do
+      expect { declare(minus_sign: "- ") }.to raise_error(ArgumentError, /minus sign .* ASCII digit or whitespace/)
+      expect { declare(plus_sign: "+1") }.to raise_error(ArgumentError, /plus sign .* ASCII digit or whitespace/)
+      expect { declare(percent: "\u066A" * 5) }.to raise_error(ArgumentError, /percent symbol .* exceeds 8 UTF-8 bytes/)
+      expect { declare(percent: :percent) }.to raise_error(ArgumentError, /percent symbol must be a String/)
+      expect { declare(currency_decimal_sep: ",") }
+        .to raise_error(ArgumentError, 'currency decimal and group separators must differ; both are ","')
+      expect { declare(currency_decimal_sep: ";", currency_group_sep: ";") }
+        .to raise_error(ArgumentError, /currency decimal and group separators must differ/)
+      expect {
+        declare(currency_group_sep: "1")
+      }.to raise_error(ArgumentError, /currency group separator .* ASCII digit/)
+      expect { declare(digit_zero: "0") }.to raise_error(ArgumentError, /digit zero .* non-ASCII character/)
+      expect { declare(digit_zero: "\u0660\u0661") }.to raise_error(ArgumentError, /digit zero .* one non-ASCII/)
+      expect { declare(digit_zero: "\u00FF") }.to raise_error(ArgumentError, /starts a digit block/) # U+00FF % 64 == 63
+      expect { declare(digit_zero: 0) }.to raise_error(ArgumentError, /digit zero must be a String/)
+      expect { HyperCast::NumFormat.new(decimal_sep: "", group_sep: ",", flags: HyperCast::ALL_STYLES) }
+        .to raise_error(ArgumentError, "decimal separator must not be empty")
+      expect { HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",,,,,,,,,", flags: HyperCast::ALL_STYLES) }
+        .to raise_error(ArgumentError, /group separator .* exceeds 8 UTF-8 bytes/)
+    end
+
+    it "keeps the symbol limits on NumFormat, where they are documented" do
+      expect(HyperCast::NumFormat::SYMBOL_MAX_BYTES).to eq(8)
+      expect(HyperCast::NumFormat::PACKED_BYTES).to eq(92)
+      expect(HyperCast.const_defined?(:SYMBOL_MAX_BYTES, false)).to be(false)
+    end
+
+    # The native ABI's size-tagged layout, byte for byte: size 0, flags 4, digit zero 8, then
+    # each symbol's bytes followed by its length \u2014 decimal_sep 12/20, group_sep 21/29,
+    # currency_decimal_sep 30/38, currency_group_sep 39/47, minus_sign 48/56, plus_sign
+    # 57/65, percent 66/74 \u2014 and the currency symbol's sixteen bytes at 75 with its length
+    # at 91. What the Fiddle backend hands the core, and what the Magnus backend builds
+    # the same format from.
+    it "packs the ABI's 92-byte layout" do
+      everything = HyperCast::NumFormat.new(
+        decimal_sep: ",", group_sep: ". ", flags: HyperCast::ALL_STYLES | HyperCast::TRAILING_SIGN,
+        currency: "kr.", currency_decimal_sep: ".", currency_group_sep: ",", minus_sign: "\u2212",
+        plus_sign: "\uFF0B", percent: "\u066A", digit_zero: "\u0660"
+      )
+      packed = everything.packed
+      expect(packed.bytesize).to eq(92)
+      expect(packed.encoding).to eq(Encoding::ASCII_8BIT)
+      expect(packed[0, 12].unpack("L<L<L<")).to eq([92, 223, 0x660])
+      symbol = ->(at, width) { [packed[at, width].delete("\0"), packed[at + width].ord] }
+      expect(symbol.call(12, 8)).to eq([",", 1])
+      expect(symbol.call(21, 8)).to eq([". ", 2])
+      expect(symbol.call(30, 8)).to eq([".", 1])
+      expect(symbol.call(39, 8)).to eq([",", 1])
+      expect(symbol.call(48, 8)).to eq(["\u2212".b, 3])
+      expect(symbol.call(57, 8)).to eq(["\uFF0B".b, 3])
+      expect(symbol.call(66, 8)).to eq(["\u066A".b, 2])
+      expect(symbol.call(75, 16)).to eq(["kr.", 3])
+      # Nothing declared is a length of 0 and zero bytes, the invariant included.
+      expect(invariant.packed)
+        .to eq([92, HyperCast::ALL_STYLES,
+                0].pack("L<L<L<") + ".\0\0\0\0\0\0\0\x01,\0\0\0\0\0\0\0\x01".b + ("\0" * 62).b)
+      expect(HyperCast::NumFormat::DETECT.packed[4, 4].unpack1("L<")).to eq(HyperCast::ALL_STYLES | HyperCast::SEPARATOR_DETECT)
+    end
+  end
+
+  it "reads a culture's own day periods beside AM/PM on the datetime door" do
+    german = { am: "vorm.", pm: "nachm." }
+    expect(described_class.datetime("1/7/2026 3:04 nachm.", :day_month_year, **german))
+      .to eq(HyperCast::Success.new(value: DateTime.new(2026, 7, 1, 15, 4, 0)))
+    expect(described_class.datetime("1/7/2026 3:04 vorm.", :day_month_year, **german))
+      .to eq(HyperCast::Success.new(value: DateTime.new(2026, 7, 1, 3, 4, 0)))
+    # English is always read, before or after the clock, whatever is declared.
+    expect(described_class.datetime("1/7/2026 3:04 PM", :month_day_year, **german))
+      .to eq(HyperCast::Success.new(value: DateTime.new(2026, 1, 7, 15, 4, 0)))
+    expect(described_class.datetime("1/7/2026 pm 3:04", :month_day_year))
+      .to eq(HyperCast::Success.new(value: DateTime.new(2026, 1, 7, 15, 4, 0)))
+    # Korean writes the designator ahead of the clock; Spanish's has a space inside.
+    expect(described_class.datetime("2026-01-07 \uC624\uD6C4 3:04", :year_month_day, am: "\uC624\uC804",
+                                                                                     pm: "\uC624\uD6C4"))
+      .to eq(HyperCast::Success.new(value: DateTime.new(2026, 1, 7, 15, 4, 0)))
+    expect(described_class.datetime("2026-01-07 \uC624\uC804 12:00", :year_month_day, am: "\uC624\uC804",
+                                                                                      pm: "\uC624\uD6C4"))
+      .to eq(HyperCast::Success.new(value: DateTime.new(2026, 1, 7, 0, 0, 0)))
+    expect(described_class.datetime("1/7/2026 3:04 p. m.", :month_day_year, am: "a. m.", pm: "p. m."))
+      .to eq(HyperCast::Success.new(value: DateTime.new(2026, 1, 7, 15, 4, 0)))
+    # Undeclared, a culture's word is malformed text at the word; nil declares nothing.
+    expect(described_class.datetime("1/7/2026 3:04 nachm.", :day_month_year))
+      .to eq(HyperCast::Fault.new(reason: :malformed, offset: 13, length: 1))
+    expect(described_class.datetime("1/7/2026 3:04 nachm.", :day_month_year, am: nil, pm: nil))
+      .to eq(HyperCast::Fault.new(reason: :malformed, offset: 13, length: 1))
+    expect(described_class.datetime("1/7/2026 3:04 nachm.", :day_month_year, pm: "nachm."))
+      .to eq(HyperCast::Success.new(value: DateTime.new(2026, 7, 1, 15, 4, 0)))
+  end
+
+  it "treats a malformed day-period designator as a caller bug" do
+    expect { described_class.datetime("1/7/2026", :day_month_year, am: "vorm.", pm: " nachm.") }
+      .to raise_error(ArgumentError, /pm designator " nachm\." must be 1 to 16 UTF-8 bytes/)
+    expect { described_class.datetime("1/7/2026", :day_month_year, am: "") }
+      .to raise_error(ArgumentError, /am designator "" must be/)
+    expect {
+      described_class.datetime("1/7/2026", :day_month_year, am: "a1")
+    }.to raise_error(ArgumentError, /am designator/)
+    expect { described_class.datetime("1/7/2026", :day_month_year, pm: "\uC624\uD6C4" * 3) }
+      .to raise_error(ArgumentError, /pm designator/) # 18 bytes
+    expect { described_class.datetime("1/7/2026", :day_month_year, am: :vorm) }
+      .to raise_error(ArgumentError, "am designator must be a String; got :vorm")
+    expect { described_class.datetime("1/7/2026", :day_month_year, noon: "x") }
+      .to raise_error(ArgumentError, "unknown keyword: :noon")
+  end
+
   # Caller bugs raise the same exception on every backend — this suite runs under all three.
   # The Magnus extension replaces the doors themselves, so each of these was once a place
   # the two implementations of a door disagreed.
@@ -298,8 +498,12 @@ RSpec.describe HyperCast do
     it "validates the overridden format like any other, and refuses an unknown keyword" do
       expect { described_class.i32("1", invariant, separator: ",") }
         .to raise_error(ArgumentError, 'decimal and group separators must differ; both are ","')
-      expect { described_class.i32("1", invariant, separator: ",,") }
-        .to raise_error(ArgumentError, "separators must be single characters")
+      expect { described_class.i32("1", invariant, separator: " " * 5) }
+        .to raise_error(ArgumentError, /decimal separator .* exceeds 8 UTF-8 bytes/)
+      expect { described_class.i32("1", invariant, delimiter: "") }
+        .to raise_error(ArgumentError, "group separator must not be empty")
+      expect { described_class.i32("1", invariant, delimiter: "1") }
+        .to raise_error(ArgumentError, 'group separator "1" must not contain an ASCII digit')
       expect {
         described_class.f64("1", invariant, unit: "12")
       }.to raise_error(ArgumentError, /must not contain an ASCII digit/)
@@ -344,6 +548,54 @@ RSpec.describe HyperCast do
 
       it "refuses what is not Hash-like" do
         expect { HyperCast::NumFormat.from_i18n("de") }.to raise_error(ArgumentError, /Hash-like/)
+        expect { HyperCast::NumFormat.from_i18n({}, currency_format: "de") }.to raise_error(ArgumentError, /Hash-like/)
+      end
+
+      it "turns TRAILING_SIGN on from a negative_format that writes the sign after the number" do
+        trailing = HyperCast::NumFormat.from_i18n({ separator: ",", delimiter: ".", negative_format: "%n-" })
+        expect(trailing.flags).to eq(HyperCast::ALL_STYLES | HyperCast::TRAILING_SIGN)
+        expect(described_class.i32("1.234-", trailing)).to eq(HyperCast::Success.new(value: -1234))
+        expect(described_class.i32("1.234 -", trailing)).to eq(HyperCast::Success.new(value: -1234))
+        expect(HyperCast::NumFormat.from_i18n({ "negative_format" => "%n %u-" }).flags)
+          .to eq(HyperCast::ALL_STYLES | HyperCast::TRAILING_SIGN)
+        # The Rails default, and anything else that does not put a "-" after the number.
+        expect(HyperCast::NumFormat.from_i18n({ negative_format: "-%n" })).to eq(invariant)
+        expect(HyperCast::NumFormat.from_i18n({ negative_format: "-%u%n" })).to eq(invariant)
+        expect(HyperCast::NumFormat.from_i18n({ negative_format: "(%n)" })).to eq(invariant)
+        expect(HyperCast::NumFormat.from_i18n({ negative_format: nil })).to eq(invariant)
+      end
+
+      it "takes number.currency.format beside number.format for the unit and the currency separators" do
+        number = { separator: ",", delimiter: "." }
+        money = { separator: ".", delimiter: "'", unit: "CHF", format: "%u %n", negative_format: "%u -%n" }
+        francs = HyperCast::NumFormat.from_i18n(number, currency_format: money)
+        expect(francs).to eq(HyperCast::NumFormat.new(decimal_sep: ",", group_sep: ".", flags: HyperCast::ALL_STYLES,
+                                                      currency: "CHF", currency_decimal_sep: ".",
+                                                      currency_group_sep: "'"))
+        expect(described_class.f64("CHF 1'234.50", francs)).to eq(HyperCast::Success.new(value: 1234.5))
+        expect(described_class.f64("1.234,50", francs)).to eq(HyperCast::Success.new(value: 1234.5))
+        # A key the currency Hash lacks declares nothing — the number separator stands in —
+        # and an explicitly empty delimiter gets the placeholder rule.
+        expect(HyperCast::NumFormat.from_i18n(number, currency_format: { unit: "€" }))
+          .to eq(HyperCast::NumFormat.new(decimal_sep: ",", group_sep: ".", flags: HyperCast::ALL_STYLES,
+                                          currency: "€"))
+        expect(HyperCast::NumFormat.from_i18n(number,
+                                              currency_format: { separator: ".", delimiter: "" }).currency_group_sep)
+          .to eq(",")
+        expect(HyperCast::NumFormat.from_i18n(number, currency_format: { delimiter: "" }).currency_group_sep).to eq(".")
+        # Its negative_format counts the same way.
+        expect(HyperCast::NumFormat.from_i18n(number, currency_format: { negative_format: "%n %u-" }).flags)
+          .to eq(HyperCast::ALL_STYLES | HyperCast::TRAILING_SIGN)
+        # Passed alone, number.currency.format reads as the one number format, as before.
+        expect(HyperCast::NumFormat.from_i18n(money))
+          .to eq(HyperCast::NumFormat.new(decimal_sep: ".", group_sep: "'", flags: HyperCast::ALL_STYLES,
+                                          currency: "CHF"))
+      end
+
+      it "leaves the fields Rails has no word for to Data#with" do
+        estonian = HyperCast::NumFormat.from_i18n({ separator: ",", delimiter: " " }).with(minus_sign: "−")
+        expect(described_class.f64("−1 234,5", estonian)).to eq(HyperCast::Success.new(value: -1234.5))
+        expect(described_class.f64("-1 234,5", estonian)).to eq(HyperCast::Success.new(value: -1234.5))
       end
     end
   end

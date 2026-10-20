@@ -43,13 +43,30 @@ func ExampleBool() {
 
 func ExampleF64() {
 	// The caller declares the notation; nothing is guessed from the input.
-	euros := hypercast.NumFormat{DecimalSep: ',', GroupSep: '.', Styles: hypercast.AllStyles, Currency: "€"}
+	euros := hypercast.NumFormat{DecimalSep: ",", GroupSep: ".", Styles: hypercast.AllStyles, Currency: "€"}
 	value, fault := hypercast.F64("€ 1.234,50", euros)
 	if fault != nil {
 		log.Fatal(fault)
 	}
 	fmt.Println(value)
 	// Output: 1234.5
+}
+
+func ExampleNumFormat() {
+	// Everything past the separators declares a further spelling the core reads beside the
+	// ASCII one — the minus sign U+2212, a trailing sign, native digits — so "-5" keeps
+	// parsing under a format that also reads "−5", "5−" and "٥".
+	estonian := hypercast.NumFormat{
+		DecimalSep: ",", GroupSep: " ", Styles: hypercast.AllStyles | hypercast.TrailingSign,
+		Currency: "€", MinusSign: "−",
+	}
+	a, _ := hypercast.F64("−1 234,5 €", estonian)
+	b, _ := hypercast.F64("1 234,5 €−", estonian)
+	c, _ := hypercast.F64("-1234.5", hypercast.Invariant)
+	arabic := hypercast.NumFormat{DecimalSep: "٫", GroupSep: "٬", Styles: hypercast.AllStyles, DigitZero: '٠', Percent: "٪"}
+	d, _ := hypercast.F64("١٢٫٥٪", arabic)
+	fmt.Println(a, b, c, d)
+	// Output: -1234.5 -1234.5 -1234.5 0.125
 }
 
 func ExampleF64_detect() {
@@ -62,7 +79,7 @@ func ExampleF64_detect() {
 }
 
 func ExampleExact() {
-	dollars := hypercast.NumFormat{DecimalSep: '.', GroupSep: ',', Styles: hypercast.AllStyles, Currency: "$"}
+	dollars := hypercast.NumFormat{DecimalSep: ".", GroupSep: ",", Styles: hypercast.AllStyles, Currency: "$"}
 	d, fault := hypercast.Exact("($1,234.50)", dollars)
 	if fault != nil {
 		log.Fatal(fault)
@@ -178,6 +195,20 @@ func ExampleDateTime() {
 	}
 	fmt.Println(civil.Date.Year, civil.Date.Month, civil.Date.Day, civil.TimeOfDay)
 	// Output: 2026 January 7 15h4m0s
+}
+
+func ExampleDateTimeWith() {
+	// The culture's own day periods, declared beside the order; the English AM/PM are read
+	// whatever is declared.
+	german := hypercast.DateFormat{Order: hypercast.DayMonthYear, AM: "vorm.", PM: "nachm."}
+	civil, fault := hypercast.DateTimeWith("1.7.2026 3:04 nachm.", german)
+	if fault != nil {
+		log.Fatal(fault)
+	}
+	korean := hypercast.DateFormat{Order: hypercast.YearMonthDay, AM: "오전", PM: "오후"}
+	seoul, _ := hypercast.DateTimeWith("2026-07-01 오후 3:04", korean)
+	fmt.Println(civil.Date.Day, civil.Date.Month, civil.TimeOfDay, civil == seoul)
+	// Output: 1 July 15h4m0s true
 }
 
 func ExampleTimeOfDay() {

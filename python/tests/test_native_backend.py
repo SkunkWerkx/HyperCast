@@ -143,10 +143,24 @@ def test_num_format_arguments_are_checked_for_type_before_value():
     for flags in (-1, 2**32):
         with pytest.raises(OverflowError):
             NumFormat(".", ",", flags)
+    for keyword in (
+        "currency_decimal_sep",
+        "currency_group_sep",
+        "minus_sign",
+        "plus_sign",
+        "percent",
+        "digit_zero",
+    ):
+        for wrong_type in (b"x", 1, None):
+            with pytest.raises(TypeError):
+                NumFormat(".", ",", 0, **{keyword: wrong_type})
+    # The keywords are keyword-only: a fifth positional argument is a TypeError.
+    with pytest.raises(TypeError):
+        NumFormat(".", ",", 0, "", "")
     # A type error wins over a value error in the same call, as argument extraction does.
     with pytest.raises(TypeError):
         NumFormat("too long", ",", "0")
-    for args in (("", ",", 0), ("ab", ",", 0), (".", ".", 0)):
+    for args in (("", ",", 0), ("abc", ",", 0), (".", ".", 0)):
         with pytest.raises(ValueError):
             NumFormat(*args)
     with pytest.raises(TypeError):
@@ -181,7 +195,21 @@ def test_every_door_has_a_docstring(door):
 
 
 @pytest.mark.parametrize(
-    "member", ["from_localeconv", "decimal_sep", "group_sep", "flags", "currency"]
+    "member",
+    [
+        "from_localeconv",
+        "decimal_sep",
+        "group_sep",
+        "flags",
+        "currency",
+        "currency_decimal_sep",
+        "currency_group_sep",
+        "minus_sign",
+        "plus_sign",
+        "percent",
+        "digit_zero",
+        "packed",
+    ],
 )
 def test_num_format_members_have_docstrings(member):
     """Every NumFormat member carries a docstring."""

@@ -17,12 +17,14 @@
 //! `cast_excel_time`, `cast_excel_duration`) take a `double` instead of text and keep the
 //! same contract; there is no text for a span to index, so a fault's span is always empty.
 
-use crate::abi::RawNumFormat;
+use crate::abi::{RawDayPeriods, RawNumFormat};
+use crate::temporal::DayPeriods;
 use crate::verdict::{CivilDateTime, Date, Decimal, Duration, Fault, NumFormat, Timestamp};
 use crate::{
     DateOrder, ExcelEpoch, Reason, UnixPrecision, boolean, character, decimal, integer, real,
     temporal, typed, uuid,
 };
+use core::mem::MaybeUninit;
 use core::slice;
 
 const CONTRACT_VIOLATION: i32 = -1;
@@ -50,14 +52,71 @@ unsafe fn text<'caller>(ptr: *const u8, len: usize) -> &'caller [u8] {
     }
 }
 
+/// Reads a size-tagged layout in place, or, when the caller built fewer bytes than the
+/// core's own layout, exactly those bytes over `zero` in `scratch`, so a field the caller's
+/// layout predates declares nothing. `None` for a size the core does not read.
+///
 /// # Safety
-/// Caller guarantees `format` is null or points to a live [`RawNumFormat`].
-unsafe fn resolve_format(format: *const RawNumFormat) -> Option<NumFormat> {
-    // SAFETY: per the function contract.
-    match unsafe { format.as_ref() } {
-        None => Some(NumFormat::INVARIANT),
-        Some(raw) => raw.resolve(),
+/// Caller guarantees `ptr` points to a live, 4-byte aligned `u32` size word followed by
+/// that many bytes in all.
+#[inline]
+unsafe fn read_sized<T: Copy>(
+    ptr: *const T,
+    zero: T,
+    min_size: u32,
+    scratch: &mut MaybeUninit<T>,
+) -> Option<&T> {
+    let full = size_of::<T>() as u32;
+    // SAFETY: a non-null layout starts with its size word, per the function contract.
+    let size = unsafe { ptr.cast::<u32>().read() };
+    if size == full {
+        // SAFETY: the caller built the whole layout, and it outlives this call.
+        return Some(unsafe { &*ptr });
     }
+    if size < min_size || size > full {
+        return None;
+    }
+    let read = scratch.write(zero);
+    // SAFETY: the caller built `size` bytes, `size` is under `T`'s own, and `read` holds
+    // all of `T`; the two never overlap.
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            ptr.cast::<u8>(),
+            (&raw mut *read).cast::<u8>(),
+            size as usize,
+        )
+    };
+    Some(read)
+}
+
+/// # Safety
+/// Caller guarantees `format` is null or points to a live, 4-byte aligned [`RawNumFormat`]
+/// of the size its first word says.
+#[inline]
+unsafe fn resolve_format(
+    format: *const RawNumFormat,
+    scratch: &mut MaybeUninit<RawNumFormat>,
+) -> Option<&NumFormat> {
+    if format.is_null() {
+        return Some(&NumFormat::INVARIANT);
+    }
+    // SAFETY: per the function contract.
+    unsafe { read_sized(format, RawNumFormat::ZERO, RawNumFormat::MIN_SIZE, scratch) }?.resolve()
+}
+
+/// # Safety
+/// Caller guarantees `periods` is null or points to a live, 4-byte aligned
+/// [`RawDayPeriods`] of the size its first word says.
+#[inline]
+unsafe fn resolve_periods(
+    periods: *const RawDayPeriods,
+    scratch: &mut MaybeUninit<RawDayPeriods>,
+) -> Option<&DayPeriods> {
+    if periods.is_null() {
+        return Some(&DayPeriods::ENGLISH);
+    }
+    // SAFETY: per the function contract.
+    unsafe { read_sized(periods, RawDayPeriods::ZERO, RawDayPeriods::MIN_SIZE, scratch) }?.resolve()
 }
 
 /// # Safety
@@ -122,10 +181,11 @@ macro_rules! numeric_exports {
         ) -> i32 {
             // SAFETY: caller guarantees the pointer contracts, per the module doc.
             unsafe {
-                let Some(resolved) = resolve_format(format) else {
+                let mut scratch = MaybeUninit::uninit();
+                let Some(resolved) = resolve_format(format, &mut scratch) else {
                     return CONTRACT_VIOLATION;
                 };
-                finish($module::$export(text(ptr, len), &resolved), out, fault)
+                finish($module::$export(text(ptr, len), resolved), out, fault)
             }
         }
     )+};
@@ -240,13 +300,16 @@ pub extern "C" fn cast_date_ordered(
 
 /// Casts a zone-less civil date-time at `ptr`/`len` under the caller-declared field
 /// `order` (1 year-month-day, 2 month-day-year, 3 day-month-year — anything else is a
-/// contract violation) into `out`. See [`temporal::cast_datetime`].
+/// contract violation) and the declared day-period designators at `periods` (null ⇒ the
+/// English `AM`/`PM` only; an invalid designator is a contract violation) into `out`. See
+/// [`temporal::cast_datetime_with`].
 #[unsafe(no_mangle)]
 #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 pub extern "C" fn cast_datetime(
     ptr: *const u8,
     len: usize,
     order: u32,
+    periods: *const RawDayPeriods,
     out: *mut CivilDateTime,
     fault: *mut RawFault,
 ) -> i32 {
@@ -254,7 +317,13 @@ pub extern "C" fn cast_datetime(
         return CONTRACT_VIOLATION;
     };
     // SAFETY: caller guarantees the pointer contracts, per the module doc.
-    unsafe { finish(temporal::cast_datetime(text(ptr, len), order), out, fault) }
+    unsafe {
+        let mut scratch = MaybeUninit::uninit();
+        let Some(periods) = resolve_periods(periods, &mut scratch) else {
+            return CONTRACT_VIOLATION;
+        };
+        finish(temporal::cast_datetime_with(text(ptr, len), order, periods), out, fault)
+    }
 }
 
 /// Casts a strict `yyyy-MM-dd` date at `ptr`/`len` into `out`. See [`temporal::cast_date`].

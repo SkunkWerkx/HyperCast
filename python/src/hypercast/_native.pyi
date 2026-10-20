@@ -44,12 +44,24 @@ class NumFormat:
     RADIX_PREFIXES: ClassVar[int]
     PERCENT: ClassVar[int]
     CURRENCY: ClassVar[int]
+    TRAILING_SIGN: ClassVar[int]
     ALL: ClassVar[int]
     SEPARATOR_DETECT: ClassVar[int]
     INVARIANT: ClassVar[NumFormat]
     DETECT: ClassVar[NumFormat]
     def __new__(
-        cls, decimal_sep: str, group_sep: str, flags: int, currency: str = ""
+        cls,
+        decimal_sep: str,
+        group_sep: str,
+        flags: int,
+        currency: str = "",
+        *,
+        currency_decimal_sep: str = "",
+        currency_group_sep: str = "",
+        minus_sign: str = "",
+        plus_sign: str = "",
+        percent: str = "",
+        digit_zero: str = "",
     ) -> NumFormat: ...
     @property
     def decimal_sep(self) -> str: ...
@@ -60,8 +72,20 @@ class NumFormat:
     @property
     def currency(self) -> str: ...
     @property
+    def currency_decimal_sep(self) -> str: ...
+    @property
+    def currency_group_sep(self) -> str: ...
+    @property
+    def minus_sign(self) -> str: ...
+    @property
+    def plus_sign(self) -> str: ...
+    @property
+    def percent(self) -> str: ...
+    @property
+    def digit_zero(self) -> str: ...
+    @property
     def packed(self) -> bytes:
-        """The 32 bytes this format crosses a C ABI as, for a library with one of its own."""
+        """The 92 bytes this format crosses a C ABI as, for a library with one of its own."""
     @staticmethod
     def from_localeconv(conv: dict[str, Any] | None = None) -> NumFormat: ...
 
@@ -89,7 +113,9 @@ def cast_excel_serial(
 def cast_date(
     text: str | bytes, order: DateOrder | None = None
 ) -> Success[datetime.date] | Fault: ...
-def cast_datetime(text: str | bytes, order: DateOrder) -> Success[datetime.datetime] | Fault: ...
+def cast_datetime(
+    text: str | bytes, order: DateOrder, *, am: str = "", pm: str = ""
+) -> Success[datetime.datetime] | Fault: ...
 def cast_time(text: str | bytes) -> Success[datetime.time] | Fault: ...
 def cast_duration(text: str | bytes) -> Success[datetime.timedelta] | Fault: ...
 def cast_decimal_from_float(value: float) -> Success[decimal.Decimal] | Fault: ...

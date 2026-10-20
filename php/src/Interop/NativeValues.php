@@ -7,16 +7,18 @@ namespace HyperCast\Interop;
 use DateTimeImmutable;
 use FFI;
 use HyperCast\CastFailure;
+use HyperCast\DayPeriods;
 use HyperCast\Fault;
 use HyperCast\NumFormat;
 
 /**
  * The native core's C ABI values, presented: every out-value a door fills, built from the
- * fields the core writes; the 32-byte numeric format it reads; the verdict code and span of a
- * fault; and the packed version word. Public for a package that carries HyperCast's verdicts
- * across a C ABI of its own (HyperTabular does) — it reads the fields out of its own buffers
- * and builds each value through exactly the conversion every {@see \HyperCast\Cast} door
- * uses, so a value it hands out is the value the door would have.
+ * fields the core writes; the 92-byte numeric format and the 40-byte day periods it reads;
+ * the verdict code and span of a fault; and the packed version word. Public for a package
+ * that carries HyperCast's verdicts across a C ABI of its own (HyperTabular does) — it reads
+ * the fields out of its own buffers and builds each value through exactly the conversion
+ * every {@see \HyperCast\Cast} door uses, so a value it hands out is the value the door
+ * would have.
  *
  * A Decimal is built by {@see \HyperCast\Decimal::fromLimbs()}, a span by the
  * {@see \HyperCast\Duration} constructor; both are public already.
@@ -118,24 +120,32 @@ final class NativeValues
     }
 
     /**
-     * Writes a format into a native format struct — fields decimal_sep, group_sep, flags,
-     * currency_len and currency[16], the core's layout — as every numeric door does: the
-     * currency bytes are written as the full 16, zero-padded, so a struct reused for another
-     * format keeps no tail. The format was validated when it was built.
+     * Writes a format into a native format struct — the core's 92-byte size-tagged layout,
+     * {@see NumFormat::packed()} — as every numeric door does: every byte of the struct is
+     * written, each symbol zero-padded to its field, so a struct reused for another format
+     * keeps no tail. The format was validated when it was built.
      *
      * @param NumFormat $format the declared format
-     * @param FFI\CData $target the struct to write
+     * @param FFI\CData $target the struct to write, NumFormat::PACKED_BYTES long
      * @return void
      */
     public static function writeFormat(NumFormat $format, FFI\CData $target): void
     {
-        [$decimal, $group] = $format->codePoints();
-        $target->decimal_sep = $decimal;
-        $target->group_sep = $group;
-        $target->flags = $format->flags;
-        $target->currency_len = \strlen($format->currency);
-        $bytes = NumFormat::CURRENCY_MAX_BYTES;
-        FFI::memcpy($target->currency, str_pad($format->currency, $bytes, "\0"), $bytes);
+        FFI::memcpy($target, $format->packed(), NumFormat::PACKED_BYTES);
+    }
+
+    /**
+     * Writes day-period designators into a native day-periods struct — the core's 40-byte
+     * size-tagged layout, {@see DayPeriods::packed()} — as the datetime door does, every
+     * byte of the struct written. The designators were validated when they were built.
+     *
+     * @param DayPeriods $periods the declared designators
+     * @param FFI\CData $target the struct to write, DayPeriods::PACKED_BYTES long
+     * @return void
+     */
+    public static function writeDayPeriods(DayPeriods $periods, FFI\CData $target): void
+    {
+        FFI::memcpy($target, $periods->packed(), DayPeriods::PACKED_BYTES);
     }
 
     /**

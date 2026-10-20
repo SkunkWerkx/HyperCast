@@ -43,13 +43,20 @@ final class CorpusTests: XCTestCase {
         Array((vector["input"] as! String).utf8)
     }
 
+    /// The format a vector declares: the separators and flags always, and every further
+    /// key — a symbol, the currency separators, the digit zero — only where the vector
+    /// carries it; absent declares nothing.
     private func format(of vector: [String: Any]) -> NumFormat {
         guard let format = vector["format"] as? [String: Any] else { return .invariant }
+        let symbol = { (key: String) in format[key] as? String ?? "" }
         return NumFormat(
-            decimalSeparator: (format["decimal_sep"] as! String).unicodeScalars.first!,
-            groupSeparator: (format["group_sep"] as! String).unicodeScalars.first!,
+            decimalSeparator: symbol("decimal_sep"), groupSeparator: symbol("group_sep"),
             styles: NumStyles(rawValue: UInt32(format["flags"] as! Int)),
-            currencySymbol: format["currency"] as? String ?? "")
+            currencySymbol: symbol("currency"),
+            currencyDecimalSeparator: symbol("currency_decimal_sep"),
+            currencyGroupSeparator: symbol("currency_group_sep"),
+            minusSign: symbol("minus_sign"), plusSign: symbol("plus_sign"), percentSymbol: symbol("percent"),
+            digitZero: (format["digit_zero"] as? String)?.unicodeScalars.first)
     }
 
     private func assertVerdict<T: Equatable>(
@@ -244,7 +251,17 @@ final class CorpusTests: XCTestCase {
                     second: Int(secondOfDay % 60),
                     nanosecond: Int(nanos % 1_000_000_000))
             }
-            assertVerdict("datetime", vector, try Cast.dateTime(inputBytes(vector), order: order), expected)
+            // A vector declares its day periods together or not at all; without them the
+            // order-only door is the one under test.
+            let verdict: Verdict<DateComponents> =
+                if let am = vector["am"] as? String {
+                    try Cast.dateTime(
+                        inputBytes(vector),
+                        format: DateFormat(order: order, amSymbol: am, pmSymbol: vector["pm"] as! String))
+                } else {
+                    try Cast.dateTime(inputBytes(vector), order: order)
+                }
+            assertVerdict("datetime", vector, verdict, expected)
         }
     }
 

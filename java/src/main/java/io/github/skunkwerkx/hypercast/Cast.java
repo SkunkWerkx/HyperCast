@@ -25,8 +25,8 @@ import java.util.UUID;
  * into the native {@code libhypercast} shared library via the Java Foreign Function &amp;
  * Memory API (JEP 454; this binding's floor is JDK 25). Every door returns a {@link Verdict}: the
  * value, or a {@link Fault} with a closed reason and the offending byte span. Never throws
- * on bad input — the only exceptions here are caller bugs (a malformed {@link NumFormat}),
- * never data.
+ * on bad input — the only exceptions here are caller bugs (a malformed {@link NumFormat} or
+ * {@link DateTimeFormat}), never data.
  *
  * <p>Door names mirror the native ABI ({@code i32}, {@code f64}, {@code timestamp}, …) so
  * the polyglot surface reads identically across bindings. Each door takes a {@link String}
@@ -130,6 +130,18 @@ public final class Cast {
                         ValueLayout.ADDRESS,
                         ValueLayout.JAVA_LONG,
                         ValueLayout.JAVA_INT,
+                        ValueLayout.ADDRESS,
+                        ValueLayout.ADDRESS),
+                CRITICAL);
+        // (ptr, len, discriminant, periods, out, fault) -> code — the civil date-time door:
+        // the declared order, and the day-period designators or NULL for none.
+        private static final MethodHandle CIVIL = LINKER.downcallHandle(
+                FunctionDescriptor.of(
+                        ValueLayout.JAVA_INT,
+                        ValueLayout.ADDRESS,
+                        ValueLayout.JAVA_LONG,
+                        ValueLayout.JAVA_INT,
+                        ValueLayout.ADDRESS,
                         ValueLayout.ADDRESS,
                         ValueLayout.ADDRESS),
                 CRITICAL);
@@ -376,7 +388,7 @@ public final class Cast {
         return NativeValues.version(packed);
     }
 
-    // The five ABI shapes, each one line on the wasm path and one downcall on the native
+    // The six ABI shapes, each one line on the wasm path and one downcall on the native
     // one. Core.WASM is a static final, so the JIT folds the null check away on the FFM
     // path. Each shape has one handle, a static final constant in Downcalls; what a door
     // names is the address of its export, which is the handle's leading argument — a direct
@@ -419,6 +431,25 @@ public final class Cast {
         }
         try {
             return (int) Downcalls.DECLARED.invokeExact(export, in, len, discriminant, out, fault);
+        } catch (Throwable t) {
+            throw new AssertionError("hypercast: " + door.symbol() + " downcall failed unexpectedly", t);
+        }
+    }
+
+    private static int civil(
+            MemorySegment export,
+            Door door,
+            MemorySegment in,
+            long len,
+            int order,
+            DateTimeFormat format,
+            Scratch scratch) {
+        if (Core.WASM != null) {
+            return Core.WASM.civil(door, in, len, order, format, scratch.out, scratch.fault);
+        }
+        try {
+            return (int) Downcalls.CIVIL.invokeExact(
+                    export, in, len, order, scratch.periods(format), scratch.out, scratch.fault);
         } catch (Throwable t) {
             throw new AssertionError("hypercast: " + door.symbol() + " downcall failed unexpectedly", t);
         }
@@ -475,19 +506,35 @@ public final class Cast {
         final MemorySegment fault = fixed.allocate(NativeValues.FAULT_BYTES, 4);
         private final MemorySegment formatSegment = fixed.allocate(NativeValues.FORMAT_BYTES, 4);
         private NumFormat formatKey;
+        private final MemorySegment periodsSegment = fixed.allocate(NativeValues.DAY_PERIODS_BYTES, 4);
+        private DateTimeFormat periodsKey;
 
         MemorySegment format(NumFormat declared) {
             // Formats are reused constants in practice (INVARIANT, DETECT, a per-locale
-            // instance), so an identity check skips the stores — and the symbol's UTF-8
+            // instance), so an identity check skips the stores — and each symbol's UTF-8
             // encode — on the overwhelming majority of calls; the same memo the Python and
             // Ruby bindings keep.
             if (formatKey != declared) {
-                // The whole 16-byte symbol field is written, zero past the symbol: the memo
-                // means a shorter symbol after a longer one must not leave the tail behind.
+                // The whole layout is written, zero past each symbol: the memo means a
+                // shorter symbol after a longer one must not leave the tail behind.
                 NativeValues.writeFormat(declared, formatSegment, 0);
                 formatKey = declared;
             }
             return formatSegment;
+        }
+
+        // NULL when nothing is declared — the DateOrder overloads, or a DateTimeFormat with
+        // no designators — which the core reads exactly as it always has; otherwise the
+        // designators, under the same identity memo the format keeps.
+        MemorySegment periods(DateTimeFormat declared) {
+            if (declared == null || declared.englishOnly()) {
+                return MemorySegment.NULL;
+            }
+            if (periodsKey != declared) {
+                NativeValues.writeDayPeriods(declared, periodsSegment, 0);
+                periodsKey = declared;
+            }
+            return periodsSegment;
         }
     }
 
@@ -713,9 +760,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #i8(String, NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #i8(String, NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param text the text to cast
      * @param locale the locale whose number formatting declares the notation; pass
@@ -740,9 +787,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #i8(byte[], NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #i8(byte[], NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param utf8 the raw UTF-8 input bytes
      * @param locale the locale whose number formatting declares the notation; pass
@@ -769,9 +816,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #i8(MemorySegment, NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #i8(MemorySegment, NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param utf8 the UTF-8 input bytes
      * @param locale the locale whose number formatting declares the notation; pass
@@ -796,9 +843,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #i16(String, NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #i16(String, NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param text the text to cast
      * @param locale the locale whose number formatting declares the notation; pass
@@ -823,9 +870,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #i16(byte[], NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #i16(byte[], NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param utf8 the raw UTF-8 input bytes
      * @param locale the locale whose number formatting declares the notation; pass
@@ -857,9 +904,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #i16(MemorySegment, NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #i16(MemorySegment, NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param utf8 the UTF-8 input bytes
      * @param locale the locale whose number formatting declares the notation; pass
@@ -884,9 +931,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #i32(String, NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #i32(String, NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param text the text to cast
      * @param locale the locale whose number formatting declares the notation; pass
@@ -911,9 +958,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #i32(byte[], NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #i32(byte[], NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param utf8 the raw UTF-8 input bytes
      * @param locale the locale whose number formatting declares the notation; pass
@@ -940,9 +987,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #i32(MemorySegment, NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #i32(MemorySegment, NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param utf8 the UTF-8 input bytes
      * @param locale the locale whose number formatting declares the notation; pass
@@ -967,9 +1014,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #i64(String, NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #i64(String, NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param text the text to cast
      * @param locale the locale whose number formatting declares the notation; pass
@@ -994,9 +1041,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #i64(byte[], NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #i64(byte[], NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param utf8 the raw UTF-8 input bytes
      * @param locale the locale whose number formatting declares the notation; pass
@@ -1028,9 +1075,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #i64(MemorySegment, NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #i64(MemorySegment, NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param utf8 the UTF-8 input bytes
      * @param locale the locale whose number formatting declares the notation; pass
@@ -1056,9 +1103,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #u8(String, NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #u8(String, NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param text the text to cast
      * @param locale the locale whose number formatting declares the notation; pass
@@ -1088,9 +1135,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #u8(byte[], NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #u8(byte[], NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param utf8 the raw UTF-8 input bytes
      * @param locale the locale whose number formatting declares the notation; pass
@@ -1122,9 +1169,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #u8(MemorySegment, NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #u8(MemorySegment, NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param utf8 the UTF-8 input bytes
      * @param locale the locale whose number formatting declares the notation; pass
@@ -1149,9 +1196,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #u16(String, NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #u16(String, NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param text the text to cast
      * @param locale the locale whose number formatting declares the notation; pass
@@ -1181,9 +1228,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #u16(byte[], NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #u16(byte[], NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param utf8 the raw UTF-8 input bytes
      * @param locale the locale whose number formatting declares the notation; pass
@@ -1215,9 +1262,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #u16(MemorySegment, NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #u16(MemorySegment, NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param utf8 the UTF-8 input bytes
      * @param locale the locale whose number formatting declares the notation; pass
@@ -1242,9 +1289,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #u32(String, NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #u32(String, NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param text the text to cast
      * @param locale the locale whose number formatting declares the notation; pass
@@ -1274,9 +1321,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #u32(byte[], NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #u32(byte[], NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param utf8 the raw UTF-8 input bytes
      * @param locale the locale whose number formatting declares the notation; pass
@@ -1308,9 +1355,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #u32(MemorySegment, NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #u32(MemorySegment, NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param utf8 the UTF-8 input bytes
      * @param locale the locale whose number formatting declares the notation; pass
@@ -1337,9 +1384,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #u64(String, NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #u64(String, NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param text the text to cast
      * @param locale the locale whose number formatting declares the notation; pass
@@ -1364,9 +1411,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #u64(byte[], NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #u64(byte[], NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param utf8 the raw UTF-8 input bytes
      * @param locale the locale whose number formatting declares the notation; pass
@@ -1398,9 +1445,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #u64(MemorySegment, NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #u64(MemorySegment, NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param utf8 the UTF-8 input bytes
      * @param locale the locale whose number formatting declares the notation; pass
@@ -1430,9 +1477,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #f32(String, NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #f32(String, NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param text the text to cast
      * @param locale the locale whose number formatting declares the notation; pass
@@ -1457,9 +1504,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #f32(byte[], NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #f32(byte[], NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param utf8 the raw UTF-8 input bytes
      * @param locale the locale whose number formatting declares the notation; pass
@@ -1491,9 +1538,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #f32(MemorySegment, NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #f32(MemorySegment, NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param utf8 the UTF-8 input bytes
      * @param locale the locale whose number formatting declares the notation; pass
@@ -1518,9 +1565,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #f64(String, NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #f64(String, NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param text the text to cast
      * @param locale the locale whose number formatting declares the notation; pass
@@ -1545,9 +1592,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #f64(byte[], NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #f64(byte[], NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param utf8 the raw UTF-8 input bytes
      * @param locale the locale whose number formatting declares the notation; pass
@@ -1579,9 +1626,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #f64(MemorySegment, NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #f64(MemorySegment, NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param utf8 the UTF-8 input bytes
      * @param locale the locale whose number formatting declares the notation; pass
@@ -1617,9 +1664,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #decimal(String, NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #decimal(String, NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param text the text to cast
      * @param locale the locale whose number formatting declares the notation; pass
@@ -1643,9 +1690,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #decimal(byte[], NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #decimal(byte[], NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param utf8 the raw UTF-8 input bytes
      * @param locale the locale whose number formatting declares the notation; pass
@@ -1671,9 +1718,9 @@ public final class Cast {
     }
 
     /**
-     * See {@link #decimal(MemorySegment, NumFormat)}, with the notation the locale's: its decimal and
-     * group separators and currency symbol, every lenience on, as {@link NumFormat#from(Locale)}
-     * derives it.
+     * See {@link #decimal(MemorySegment, NumFormat)}, with the notation the locale's — separators, signs,
+     * percent and currency symbols, native digits, every default lenience on — as
+     * {@link NumFormat#from(Locale)} derives it.
      *
      * @param utf8 the UTF-8 input bytes
      * @param locale the locale whose number formatting declares the notation; pass
@@ -1967,10 +2014,13 @@ public final class Cast {
      * {@link DateOrder} to a {@link LocalDateTime} at full nanosecond fidelity. The date
      * part follows {@link #date(String, DateOrder)}'s grammar; the optional time part (one
      * space or {@code T} after the date) is 24-hour {@code h:mm[:ss[.f+]]} or 12-hour
-     * with an {@code AM}/{@code PM} marker; absent, the time is midnight. No zone is read
-     * and none is invented — the text named no instant, which is exactly what
-     * {@link LocalDateTime} says; fusing a zone is the caller's job
-     * ({@link #timestamp(String)} stays the strict RFC 3339 instant door).
+     * with an {@code AM}/{@code PM} marker, ASCII case-insensitive, after the clock or
+     * ahead of it ({@code PM 3:04}); absent, the time is midnight. A culture's own
+     * designators ({@code 오후 3:04}, {@code 3:04 p. m.}) are read only when declared, by
+     * {@link #dateTime(String, DateTimeFormat)}. No zone is read and none is invented —
+     * the text named no instant, which is exactly what {@link LocalDateTime} says; fusing a
+     * zone is the caller's job ({@link #timestamp(String)} stays the strict RFC 3339
+     * instant door).
      *
      * @param text the text to cast
      * @param order the declared field order
@@ -1982,6 +2032,36 @@ public final class Cast {
     }
 
     /**
+     * See {@link #dateTime(String, DateOrder)}, with the day-period designators the format
+     * declares read beside {@code AM}/{@code PM}: {@code 2026-01-07 오후 3:04} is 15:04 under
+     * {@code new DateTimeFormat(DateOrder.YEAR_MONTH_DAY, "오전", "오후")}, and
+     * {@link CastFailure#MALFORMED} at the designator under the order alone.
+     *
+     * @param text the text to cast
+     * @param format the declared field order and designators
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<LocalDateTime> dateTime(String text, DateTimeFormat format) {
+        byte[] utf8 = utf8(text);
+        return chars(dateTime(utf8, format), text, utf8);
+    }
+
+    /**
+     * See {@link #dateTime(String, DateOrder)}, with the notation the locale's — its
+     * short-date field order and its own day-period designators — as
+     * {@link DateTimeFormat#from(Locale)} derives it.
+     *
+     * @param text the text to cast
+     * @param locale the locale whose date formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<LocalDateTime> dateTime(String text, Locale locale) {
+        return dateTime(text, DateTimeFormat.from(locale));
+    }
+
+    /**
      * See {@link #dateTime(String, DateOrder)}; input as raw UTF-8 bytes.
      *
      * @param utf8 the raw UTF-8 input bytes
@@ -1989,7 +2069,33 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<LocalDateTime> dateTime(byte[] utf8, DateOrder order) {
-        return dateTimeDoor(input(utf8), utf8.length, order);
+        return dateTimeDoor(input(utf8), utf8.length, order, null);
+    }
+
+    /**
+     * See {@link #dateTime(String, DateTimeFormat)}; input as raw UTF-8 bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param format the declared field order and designators
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<LocalDateTime> dateTime(byte[] utf8, DateTimeFormat format) {
+        return dateTimeDoor(input(utf8), utf8.length, format.order(), format);
+    }
+
+    /**
+     * See {@link #dateTime(byte[], DateOrder)}, with the notation the locale's — its
+     * short-date field order and its own day-period designators — as
+     * {@link DateTimeFormat#from(Locale)} derives it.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param locale the locale whose date formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<LocalDateTime> dateTime(byte[] utf8, Locale locale) {
+        return dateTime(utf8, DateTimeFormat.from(locale));
     }
 
     /**
@@ -2001,15 +2107,42 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<LocalDateTime> dateTime(MemorySegment utf8, DateOrder order) {
-        return dateTimeDoor(input(utf8), utf8.byteSize(), order);
+        return dateTimeDoor(input(utf8), utf8.byteSize(), order, null);
     }
 
-    private static Verdict<LocalDateTime> dateTimeDoor(MemorySegment in, long len, DateOrder order) {
+    /**
+     * See {@link #dateTime(String, DateTimeFormat)}; input as a {@link MemorySegment} view of
+     * UTF-8 bytes — heap or native — crossing without a copy.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param format the declared field order and designators
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     */
+    public static Verdict<LocalDateTime> dateTime(MemorySegment utf8, DateTimeFormat format) {
+        return dateTimeDoor(input(utf8), utf8.byteSize(), format.order(), format);
+    }
+
+    /**
+     * See {@link #dateTime(MemorySegment, DateOrder)}, with the notation the locale's — its
+     * short-date field order and its own day-period designators — as
+     * {@link DateTimeFormat#from(Locale)} derives it.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param locale the locale whose date formatting declares the notation; pass
+     *     {@code Locale.getDefault(Locale.Category.FORMAT)} for the default
+     * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
+     * @throws NullPointerException if {@code locale} is null
+     */
+    public static Verdict<LocalDateTime> dateTime(MemorySegment utf8, Locale locale) {
+        return dateTime(utf8, DateTimeFormat.from(locale));
+    }
+
+    // `format` is null for the DateOrder overloads: no designators, a null pointer to the core.
+    private static Verdict<LocalDateTime> dateTimeDoor(
+            MemorySegment in, long len, DateOrder order, DateTimeFormat format) {
         Scratch scratch = SCRATCH.get();
-        MemorySegment out = scratch.out;
-        MemorySegment fault = scratch.fault;
-        int code = declared(Core.CAST_DATETIME, Door.DATETIME, in, len, order.code(), out, fault);
-        return code == 0 ? new Success<>(NativeValues.civil(out, 0)) : failed(code, fault);
+        int code = civil(Core.CAST_DATETIME, Door.DATETIME, in, len, order.code(), format, scratch);
+        return code == 0 ? new Success<>(NativeValues.civil(scratch.out, 0)) : failed(code, scratch.fault);
     }
 
     /**

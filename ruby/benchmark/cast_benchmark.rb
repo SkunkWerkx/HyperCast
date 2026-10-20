@@ -22,6 +22,7 @@ UUID_TEXT = "01020304-0506-0708-090a-0b0c0d0e0f10"
 TIMESTAMP = "2026-01-02T15:04:05.123456789Z"
 ISO_SPAN = "PT1H30M15.5S"
 INT_FAULT = "12345x7"
+DOLLARS = HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",", flags: HyperCast::ALL_STYLES, currency: "$")
 
 # Every number below belongs to one backend on one Ruby, so say which before printing any:
 # run it again under HYPERCAST_PURE=1 for the other one.
@@ -44,8 +45,10 @@ Benchmark.ips do |x|
   x.report("Integer()") { Integer(INT) }
   x.report("HyperCast.i32") { HyperCast.i32(INT, INVARIANT) }
   x.report("HyperCast.i32 grouped") { HyperCast.i32(INT_GROUPED, INVARIANT) }
+  x.report("HyperCast.i32 grouped, declared $") { HyperCast.i32(INT_GROUPED, DOLLARS) }
   # The failure path: a Fault built instead of a Success — the README's "`i32`, a fault" row.
   x.report("HyperCast.i32, a fault") { HyperCast.i32(INT_FAULT, INVARIANT) }
+  x.report("Integer(), a fault") { Integer(INT_FAULT, exception: false) }
   x.compare!
 end
 
@@ -80,6 +83,11 @@ Benchmark.ips do |x|
   # DateTime.strptime is the stdlib parser that accepts this text at all.
   x.report("DateTime.strptime") { DateTime.strptime(MESSY_DATETIME, "%m/%d/%Y %l:%M %p") }
   x.report("HyperCast.datetime") { HyperCast.datetime(MESSY_DATETIME, :month_day_year) }
+  # The same text with a culture's day periods declared: the designators are keywords,
+  # validated and packed per call — the README's "declared periods" figure.
+  x.report("HyperCast.datetime, declared periods") do
+    HyperCast.datetime(MESSY_DATETIME, :month_day_year, am: "vorm.", pm: "nachm.")
+  end
   x.compare!
 end
 

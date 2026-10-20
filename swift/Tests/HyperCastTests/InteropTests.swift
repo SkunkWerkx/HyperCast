@@ -54,16 +54,70 @@ final class InteropTests: XCTestCase {
         XCTAssertEqual(Interop.version(0x01_02_03), "1.2.3")
     }
 
+    /// A symbol field as the core reads it: the bytes up to the length byte after the
+    /// field's capacity, with the rest of the field zero.
+    private func symbol(
+        _ bytes: UnsafeRawBufferPointer, at offset: Int, capacity: Int, file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> String {
+        let length = Int(bytes[offset + capacity])
+        XCTAssertLessThanOrEqual(length, capacity, "length at \(offset + capacity)", file: file, line: line)
+        XCTAssertTrue(
+            bytes[(offset + length)..<(offset + capacity)].allSatisfy { $0 == 0 }, "padding at \(offset)", file: file,
+            line: line)
+        return String(decoding: bytes[offset..<(offset + length)], as: UTF8.self)
+    }
+
     func testAFormatPacksAsTheCoreReadsIt() {
+        // Every field declared, at the offsets rust/src/abi.rs pins: the size word, the
+        // flags, the digit zero, then each symbol's bytes with its length after them.
         var raw = Interop.rawFormat(
-            NumFormat(decimalSeparator: ",", groupSeparator: ".", styles: .all, currencySymbol: "€"))
-        XCTAssertEqual(MemoryLayout<Interop.RawNumFormat>.size, 32)
+            NumFormat(
+                decimalSeparator: ",", groupSeparator: ". ", styles: [.all, .trailingSign], currencySymbol: "€",
+                currencyDecimalSeparator: ".", currencyGroupSeparator: ",", minusSign: "−", plusSign: "＋",
+                percentSymbol: "٪", digitZero: "\u{0660}"))
+        XCTAssertEqual(MemoryLayout<Interop.RawNumFormat>.size, 92)
+        XCTAssertEqual(MemoryLayout<Interop.RawNumFormat>.alignment, 4)
+        XCTAssertEqual(Interop.rawFormatSize, 92)
         withUnsafeBytes(of: &raw) { bytes in
-            XCTAssertEqual(bytes.load(fromByteOffset: 0, as: UInt32.self), UInt32(UInt8(ascii: ",")))
-            XCTAssertEqual(bytes.load(fromByteOffset: 4, as: UInt32.self), UInt32(UInt8(ascii: ".")))
-            XCTAssertEqual(bytes.load(fromByteOffset: 8, as: UInt32.self), NumStyles.all.rawValue)
-            XCTAssertEqual(bytes.load(fromByteOffset: 12, as: UInt32.self), 3)
-            XCTAssertEqual(Array(bytes[16..<32]), Array("€".utf8) + [UInt8](repeating: 0, count: 13))
+            XCTAssertEqual(bytes.load(fromByteOffset: 0, as: UInt32.self), 92)
+            XCTAssertEqual(bytes.load(fromByteOffset: 4, as: UInt32.self), NumStyles.all.rawValue | 128)
+            XCTAssertEqual(bytes.load(fromByteOffset: 8, as: UInt32.self), 0x660)
+            XCTAssertEqual(symbol(bytes, at: 12, capacity: 8), ",")
+            XCTAssertEqual(symbol(bytes, at: 21, capacity: 8), ". ")
+            XCTAssertEqual(symbol(bytes, at: 30, capacity: 8), ".")
+            XCTAssertEqual(symbol(bytes, at: 39, capacity: 8), ",")
+            XCTAssertEqual(symbol(bytes, at: 48, capacity: 8), "−")
+            XCTAssertEqual(symbol(bytes, at: 57, capacity: 8), "＋")
+            XCTAssertEqual(symbol(bytes, at: 66, capacity: 8), "٪")
+            XCTAssertEqual(symbol(bytes, at: 75, capacity: 16), "€")
+            XCTAssertEqual(bytes[91], 3)
+        }
+        // Nothing declared beyond the separators: every other length is 0 and the digit
+        // zero word is 0, which the core reads as its defaults.
+        var invariant = Interop.rawFormat(.invariant)
+        withUnsafeBytes(of: &invariant) { bytes in
+            XCTAssertEqual(bytes.load(fromByteOffset: 8, as: UInt32.self), 0)
+            for length in [38, 47, 56, 65, 74, 91] {
+                XCTAssertEqual(bytes[length], 0, "length at \(length)")
+            }
+            XCTAssertEqual(symbol(bytes, at: 12, capacity: 8), ".")
+            XCTAssertEqual(symbol(bytes, at: 21, capacity: 8), ",")
+        }
+    }
+
+    func testDayPeriodsPackAsTheCoreReadsThem() {
+        var raw = Interop.rawDayPeriods(DateFormat(order: .dayMonthYear, amSymbol: "vorm.", pmSymbol: "nachm."))
+        XCTAssertEqual(MemoryLayout<Interop.RawDayPeriods>.size, 40)
+        XCTAssertEqual(MemoryLayout<Interop.RawDayPeriods>.alignment, 4)
+        XCTAssertEqual(Interop.rawDayPeriodsSize, 40)
+        withUnsafeBytes(of: &raw) { bytes in
+            XCTAssertEqual(bytes.load(fromByteOffset: 0, as: UInt32.self), 40)
+            XCTAssertEqual(symbol(bytes, at: 4, capacity: 16), "vorm.")
+            XCTAssertEqual(bytes[20], 5)
+            XCTAssertEqual(symbol(bytes, at: 21, capacity: 16), "nachm.")
+            XCTAssertEqual(bytes[37], 6)
+            XCTAssertEqual(Array(bytes[38..<40]), [0, 0])
         }
     }
 }

@@ -55,6 +55,51 @@ let benchmarks: @Sendable () -> Void = {
         }
     }
 
+    // A locale's format declares its currency symbol whether or not the text carries one:
+    // the same grouped integer under en_US's format, `$` included.
+    let enUs = NumFormat.from(locale: Locale(identifier: "en_US"))
+    Benchmark("Cast.i32 grouped (en_US format)") { benchmark in
+        for _ in benchmark.scaledIterations {
+            blackHole(try Cast.i32(intGrouped, format: enUs))
+        }
+    }
+
+    // The locale: overloads. An explicit identifier is served from the cache; `.current` is
+    // derived on every call, so a user's own number-format overrides are honored, and this
+    // row is what that costs. The last row is the derivation itself, which a caller pays
+    // once by holding the format.
+    let enUsLocale = Locale(identifier: "en_US")
+    Benchmark("Cast.i32 grouped (locale: en_US)") { benchmark in
+        for _ in benchmark.scaledIterations {
+            blackHole(try Cast.i32(intGrouped, locale: enUsLocale))
+        }
+    }
+
+    Benchmark("Cast.i32 grouped (locale: .current)") { benchmark in
+        for _ in benchmark.scaledIterations {
+            blackHole(try Cast.i32(intGrouped, locale: .current))
+        }
+    }
+
+    Benchmark("NumFormat.from(locale:)") { benchmark in
+        for _ in benchmark.scaledIterations {
+            blackHole(NumFormat.from(locale: enUsLocale))
+        }
+    }
+
+    // The rejection path, against Foundation's own failure on the same mistake.
+    Benchmark("Cast.i32 malformed") { benchmark in
+        for _ in benchmark.scaledIterations {
+            blackHole(try Cast.i32("1,234x567", format: invariant))
+        }
+    }
+
+    Benchmark("Int(String) malformed") { benchmark in
+        for _ in benchmark.scaledIterations {
+            blackHole(Int("1234x567"))
+        }
+    }
+
     Benchmark("Int(String)") { benchmark in
         for _ in benchmark.scaledIterations {
             blackHole(Int(intText))
@@ -123,6 +168,23 @@ let benchmarks: @Sendable () -> Void = {
     Benchmark("DateFormatter.date (M/d/yyyy h:mm a)") { benchmark in
         for _ in benchmark.scaledIterations {
             blackHole(usDateTimeFormatter.date(from: messyDateTimeText))
+        }
+    }
+
+    // The same civil shape with a culture's designators declared, and the locale: form of
+    // the door, which serves ko_KR's format from the cache.
+    let koreanDateTimeText = "2026-01-07 오후 3:04"
+    let korean = DateFormat(order: .yearMonthDay, amSymbol: "오전", pmSymbol: "오후")
+    let koKr = Locale(identifier: "ko_KR")
+    Benchmark("Cast.dateTime (declared day periods)") { benchmark in
+        for _ in benchmark.scaledIterations {
+            blackHole(try Cast.dateTime(koreanDateTimeText, format: korean))
+        }
+    }
+
+    Benchmark("Cast.dateTime (locale: ko_KR)") { benchmark in
+        for _ in benchmark.scaledIterations {
+            blackHole(try Cast.dateTime(koreanDateTimeText, locale: koKr))
         }
     }
 

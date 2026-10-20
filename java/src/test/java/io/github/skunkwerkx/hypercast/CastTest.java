@@ -11,7 +11,9 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.text.DecimalFormat;
 import java.text.DecimalFormatSymbols;
+import java.text.NumberFormat;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -89,9 +91,89 @@ final class CastTest {
     @Test
     void numFormatBridgesFromARealLocale() {
         NumFormat german = NumFormat.from(Locale.GERMANY);
-        assertEquals(',', german.decimalSeparator());
-        assertEquals('.', german.groupSeparator());
+        assertEquals(",", german.decimalSeparator());
+        assertEquals(".", german.groupSeparator());
         assertEquals(new Success<>(1234.5), Cast.f64("1.234,5", german));
+        // What the core reads anyway is left undeclared: an ASCII minus and percent, a '0'
+        // zero digit, monetary separators equal to the number ones, and no plus sign at all.
+        assertEquals(new NumFormat(",", ".", NumFormat.STYLE_ALL, "€"), german);
+    }
+
+    @Test
+    void everyDeclaredSymbolIsReadBesideTheAsciiOne() {
+        // Nothing that parsed before stops parsing: the ASCII spelling stays read beside the
+        // declared one, in every field.
+        NumFormat minus = NumFormat.INVARIANT.withSigns("\u2212", "");
+        assertEquals(new Success<>(-5), Cast.i32("\u22125", minus));
+        assertEquals(new Success<>(-5), Cast.i32("-5", minus));
+        assertEquals(new Fault<Integer>(CastFailure.MALFORMED, 0, 1), Cast.i32("\u22125", NumFormat.INVARIANT));
+        NumFormat percent = NumFormat.INVARIANT.withPercentSymbol("\u066a");
+        assertEquals(new Success<>(0.5), Cast.f64("50\u066a", percent));
+        assertEquals(new Success<>(0.5), Cast.f64("50%", percent));
+        NumFormat digits = NumFormat.INVARIANT.withDigitZero(0x0660);
+        assertEquals(new Success<>(123), Cast.i32("\u0661\u0662\u0663", digits));
+        assertEquals(new Success<>(123), Cast.i32("12\u0663", digits));
+        assertEquals(new Success<>(1000), Cast.i32("\u0661e\u0663", digits));
+        // A trailing sign is opt-in, never assumed.
+        NumFormat trailing = NumFormat.INVARIANT.withStyles(NumFormat.STYLE_ALL | NumFormat.STYLE_TRAILING_SIGN);
+        assertEquals(new Success<>(-5), Cast.i32("5-", trailing));
+        assertEquals(new Success<>(-5), Cast.i32("5 -", trailing));
+        assertEquals(new Fault<Integer>(CastFailure.MALFORMED, 1, 1), Cast.i32("5-", NumFormat.INVARIANT));
+        // The currency separators are read when the symbol is in the text, the number ones otherwise.
+        NumFormat swiss = new NumFormat(",", ".", NumFormat.STYLE_ALL, "€").withCurrencySeparators(".", ",");
+        assertEquals(new Success<>(1234.5), Cast.f64("€1,234.50", swiss));
+        assertEquals(new Success<>(1234.5), Cast.f64("1.234,50", swiss));
+        assertEquals(new Fault<Double>(CastFailure.MALFORMED, 5, 1), Cast.f64("1,234.50", swiss));
+        // A separator may be two characters.
+        NumFormat spaced = new NumFormat(".", ", ", NumFormat.STYLE_ALL);
+        assertEquals(new Success<>(1234), Cast.i32("1, 234", spaced));
+        assertEquals(new Fault<Integer>(CastFailure.MALFORMED, 1, 1), Cast.i32("1,234", spaced));
+    }
+
+    @Test
+    void theLocaleBridgeFillsEveryField() {
+        // Estonian writes its minus as U+2212; ASCII '-' stays read beside it.
+        NumFormat estonian = NumFormat.from(Locale.forLanguageTag("et-EE"));
+        assertEquals("\u2212", estonian.minusSign());
+        assertEquals(new Success<>(-5), Cast.i32("\u22125", Locale.forLanguageTag("et-EE")));
+        assertEquals(new Success<>(-5), Cast.i32("-5", Locale.forLanguageTag("et-EE")));
+        // Swiss French numbers take a decimal comma, Swiss French currency a decimal point.
+        Locale swissFrench = Locale.forLanguageTag("fr-CH");
+        NumFormat swiss = NumFormat.from(swissFrench);
+        assertEquals(",", swiss.decimalSeparator());
+        assertEquals(".", swiss.currencyDecimalSeparator());
+        assertEquals("", swiss.currencyGroupSeparator());
+        assertEquals("CHF", swiss.currencySymbol());
+        assertEquals(new Success<>(1234.5), Cast.f64("CHF 1\u202f234.50", swissFrench));
+        assertEquals(new Success<>(1234.5), Cast.f64("1\u202f234,50", swissFrench));
+        // Austrian German groups numbers with a no-break space and currency with a dot.
+        assertEquals(".", NumFormat.from(Locale.forLanguageTag("de-AT")).currencyGroupSeparator());
+        assertEquals(new Success<>(1234.5), Cast.f64("€ 1.234,50", Locale.forLanguageTag("de-AT")));
+        // Egyptian Arabic: native digits, its own separators and percent symbol.
+        Locale egypt = Locale.forLanguageTag("ar-EG");
+        NumFormat arabic = NumFormat.from(egypt);
+        assertEquals(0x0660, arabic.digitZero());
+        assertEquals("\u066a", arabic.percentSymbol());
+        assertEquals("\u066b", arabic.decimalSeparator());
+        assertEquals("\u066c", arabic.groupSeparator());
+        assertEquals(new Success<>(1234.5), Cast.f64("\u0661\u066c\u0662\u0663\u0664\u066b\u0665", egypt));
+        assertEquals(new Success<>(new BigDecimal("0.5")), Cast.decimal("50\u066a", egypt));
+        assertEquals(new Success<>(12), Cast.i32("12", egypt));
+        // The JDK's own data writes no locale's negative with a suffix alone, so the trailing
+        // sign comes from a DecimalFormat the caller shaped — the same bridge from(Locale) runs.
+        assertEquals(NumFormat.STYLE_ALL, NumFormat.from(Locale.US).styles());
+        DecimalFormat suffixed = (DecimalFormat) NumberFormat.getInstance(Locale.US);
+        suffixed.setNegativePrefix("");
+        suffixed.setNegativeSuffix("-");
+        NumFormat trailing = NumFormat.from(suffixed);
+        assertEquals(NumFormat.STYLE_ALL | NumFormat.STYLE_TRAILING_SIGN, trailing.styles());
+        assertEquals(new Success<>(-1234), Cast.i32("1,234-", trailing));
+        assertEquals(new Success<>(-1234), Cast.i32("-1,234", trailing));
+        assertEquals(new Fault<Integer>(CastFailure.MALFORMED, 5, 1), Cast.i32("1,234-", Locale.US));
+        // Every locale the JDK knows derives: nothing in its data is a contract violation.
+        for (Locale locale : Locale.getAvailableLocales()) {
+            assertDoesNotThrow(() -> NumFormat.from(locale), locale.toLanguageTag());
+        }
     }
 
     @Test
@@ -170,6 +252,41 @@ final class CastTest {
     @Test
     void equalSeparatorsAreACallerBugNotAVerdict() {
         assertThrows(IllegalArgumentException.class, () -> new NumFormat('.', '.', NumFormat.STYLE_ALL));
+        assertThrows(IllegalArgumentException.class, () -> new NumFormat(", ", ", ", NumFormat.STYLE_ALL));
+        // The pair in force for a currency amount must differ too: a declared currency group
+        // separator equal to the number decimal separator it is read beside.
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new NumFormat(".", ",", NumFormat.STYLE_ALL, "€").withCurrencySeparators("", "."));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new NumFormat(".", ",", NumFormat.STYLE_ALL, "€").withCurrencySeparators("'", "'"));
+    }
+
+    @Test
+    void malformedSymbolsAreACallerBugNotAVerdict() {
+        // The core's rules, enforced before the crossing: a separator 1 to 8 UTF-8 bytes, a
+        // sign or percent symbol at most 8 with no ASCII whitespace, every symbol whole code
+        // points with no ASCII digit, and a digit zero that starts a digit block.
+        assertThrows(IllegalArgumentException.class, () -> new NumFormat("", ",", NumFormat.STYLE_ALL));
+        assertThrows(IllegalArgumentException.class, () -> new NumFormat(".", "", NumFormat.STYLE_ALL));
+        assertThrows(IllegalArgumentException.class, () -> new NumFormat(".", "€€€", NumFormat.STYLE_ALL));
+        assertThrows(IllegalArgumentException.class, () -> new NumFormat(".", "1", NumFormat.STYLE_ALL));
+        assertThrows(IllegalArgumentException.class, () -> new NumFormat(".", "\ud83d", NumFormat.STYLE_ALL));
+        assertThrows(IllegalArgumentException.class, () -> NumFormat.INVARIANT.withSigns("- ", ""));
+        assertThrows(IllegalArgumentException.class, () -> NumFormat.INVARIANT.withSigns("", "+1"));
+        assertThrows(IllegalArgumentException.class, () -> NumFormat.INVARIANT.withSigns("", "€€€"));
+        assertThrows(IllegalArgumentException.class, () -> NumFormat.INVARIANT.withPercentSymbol(" %"));
+        assertThrows(IllegalArgumentException.class, () -> NumFormat.INVARIANT.withCurrencySeparators("1", ""));
+        assertThrows(IllegalArgumentException.class, () -> NumFormat.INVARIANT.withDigitZero('0'));
+        assertThrows(IllegalArgumentException.class, () -> NumFormat.INVARIANT.withDigitZero(0x00bf));
+        assertThrows(IllegalArgumentException.class, () -> NumFormat.INVARIANT.withDigitZero(0xd800));
+        assertThrows(IllegalArgumentException.class, () -> NumFormat.INVARIANT.withDigitZero(0x110000));
+        assertThrows(NullPointerException.class, () -> NumFormat.INVARIANT.withSigns(null, ""));
+        // The widest real ones fit: two-character separators, a sign with a bidi mark, every
+        // digit block Unicode defines, fullwidth and mathematical digits included.
+        assertDoesNotThrow(() -> new NumFormat(".", "' ", NumFormat.STYLE_ALL).withSigns("\u200e\u2212", "\uff0b"));
+        assertDoesNotThrow(() -> NumFormat.INVARIANT.withDigitZero(0xff10).withDigitZero(0x1d7ce));
     }
 
     @Test
@@ -288,6 +405,87 @@ final class CastTest {
         assertEquals(new Success<>(LocalDate.of(2026, 7, 1)), Cast.date("1/7/2026", enGb));
         // Undeclared, the door stays strict ISO — the ambiguity is never guessed at.
         assertEquals(new Fault<LocalDate>(CastFailure.MALFORMED, 0, 8), Cast.date("1/7/2026"));
+    }
+
+    @Test
+    void dateTimeReadsADeclaredDesignatorBesideTheEnglishOnes() {
+        // Korean designators, before the clock as Korean writes them, from the locale's own data.
+        DateTimeFormat korean = DateTimeFormat.from(Locale.KOREA);
+        assertEquals(new DateTimeFormat(DateOrder.YEAR_MONTH_DAY, "오전", "오후"), korean);
+        assertEquals(new Success<>(LocalDateTime.of(2026, 1, 7, 15, 4)), Cast.dateTime("2026-01-07 오후 3:04", korean));
+        assertEquals(new Success<>(LocalDateTime.of(2026, 1, 7, 0, 4)), Cast.dateTime("2026-01-07 오전 12:04", korean));
+        // English stays read beside them, in either position; the order alone reads no Korean.
+        assertEquals(new Success<>(LocalDateTime.of(2026, 1, 7, 15, 4)), Cast.dateTime("2026-01-07 3:04 pm", korean));
+        assertEquals(new Success<>(LocalDateTime.of(2026, 1, 7, 15, 4)), Cast.dateTime("2026-01-07 PM 3:04", korean));
+        assertEquals(
+                new Fault<LocalDateTime>(CastFailure.MALFORMED, 11, 1),
+                Cast.dateTime("2026-01-07 오후 3:04", DateOrder.YEAR_MONTH_DAY));
+        // Spanish, with a space inside the designator; German designators declared by hand,
+        // since the JDK's data for de-DE is the English pair, which from(Locale) leaves undeclared.
+        // (The JDK's CLDR data spells them with a no-break space, which the core reads: only
+        // ASCII whitespace at a designator's edges is refused.)
+        Locale spain = Locale.forLanguageTag("es-ES");
+        assertEquals(
+                new DateTimeFormat(DateOrder.DAY_MONTH_YEAR, "a.\u00a0m.", "p.\u00a0m."), DateTimeFormat.from(spain));
+        assertEquals(
+                new Success<>(LocalDateTime.of(2026, 1, 7, 15, 4)), Cast.dateTime("7/1/2026 3:04 p.\u00a0m.", spain));
+        assertEquals(
+                new Success<>(LocalDateTime.of(2026, 1, 7, 15, 4)),
+                Cast.dateTime("7/1/2026 3:04 p. m.", new DateTimeFormat(DateOrder.DAY_MONTH_YEAR, "a. m.", "p. m.")));
+        assertEquals(new DateTimeFormat(DateOrder.DAY_MONTH_YEAR), DateTimeFormat.from(Locale.GERMANY));
+        assertEquals(
+                new Success<>(LocalDateTime.of(2026, 1, 7, 15, 4)), Cast.dateTime("7.1.2026 3:04 PM", Locale.GERMANY));
+        DateTimeFormat german = new DateTimeFormat(DateOrder.DAY_MONTH_YEAR, "vorm.", "nachm.");
+        assertEquals(new Success<>(LocalDateTime.of(2026, 1, 7, 15, 4)), Cast.dateTime("7.1.2026 3:04 nachm.", german));
+        assertEquals(
+                new Fault<LocalDateTime>(CastFailure.MALFORMED, 13, 1),
+                Cast.dateTime("7.1.2026 3:04 nachm.", DateOrder.DAY_MONTH_YEAR));
+        // A designator the layout cannot hold is left undeclared, not refused: Nepali's are
+        // 27 and 21 UTF-8 bytes.
+        assertEquals(
+                new DateTimeFormat(DateOrder.from(Locale.forLanguageTag("ne-NP"))),
+                DateTimeFormat.from(Locale.forLanguageTag("ne-NP")));
+        for (Locale locale : Locale.getAvailableLocales()) {
+            assertDoesNotThrow(() -> DateTimeFormat.from(locale), locale.toLanguageTag());
+        }
+    }
+
+    @Test
+    void dateTimeLocaleOverloadsAreTheBridgeExactly() {
+        List<String> inputs =
+                List.of("2026-01-07 오후 3:04", "2026-01-07 3:04 PM", "2026-01-07T15:04:05.5", "1/7/2026", "nope", "");
+        for (Locale locale : List.of(Locale.KOREA, Locale.US, Locale.forLanguageTag("es-ES"))) {
+            DateTimeFormat format = DateTimeFormat.from(locale);
+            for (String text : inputs) {
+                byte[] utf8 = text.getBytes(StandardCharsets.UTF_8);
+                assertEquals(Cast.dateTime(text, format), Cast.dateTime(text, locale));
+                assertEquals(Cast.dateTime(utf8, format), Cast.dateTime(utf8, locale));
+                assertEquals(
+                        Cast.dateTime(MemorySegment.ofArray(utf8), format),
+                        Cast.dateTime(MemorySegment.ofArray(utf8), locale));
+            }
+        }
+        assertSame(DateTimeFormat.from(Locale.KOREA), DateTimeFormat.from(Locale.KOREA));
+        assertThrows(NullPointerException.class, () -> Cast.dateTime("1/7/2026", (Locale) null));
+        assertThrows(NullPointerException.class, () -> Cast.dateTime("1/7/2026", (DateTimeFormat) null));
+    }
+
+    @Test
+    void malformedDesignatorsAreACallerBugNotAVerdict() {
+        // The core's rules, enforced before the crossing: at most 16 UTF-8 bytes, no ASCII
+        // digit, no ASCII whitespace at either end — a space inside is fine.
+        assertThrows(IllegalArgumentException.class, () -> new DateTimeFormat(DateOrder.MONTH_DAY_YEAR, "am", "pm1"));
+        assertThrows(IllegalArgumentException.class, () -> new DateTimeFormat(DateOrder.MONTH_DAY_YEAR, " am", "pm"));
+        assertThrows(IllegalArgumentException.class, () -> new DateTimeFormat(DateOrder.MONTH_DAY_YEAR, "am", "pm "));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new DateTimeFormat(DateOrder.MONTH_DAY_YEAR, "ante meridiem now", "pm"));
+        assertThrows(
+                IllegalArgumentException.class, () -> new DateTimeFormat(DateOrder.MONTH_DAY_YEAR, "\ud83d", "pm"));
+        assertThrows(NullPointerException.class, () -> new DateTimeFormat(null, "am", "pm"));
+        assertThrows(NullPointerException.class, () -> new DateTimeFormat(DateOrder.MONTH_DAY_YEAR, null, "pm"));
+        assertDoesNotThrow(() -> new DateTimeFormat(DateOrder.MONTH_DAY_YEAR, "a. m.", "p. m."));
+        assertDoesNotThrow(() -> new DateTimeFormat(DateOrder.MONTH_DAY_YEAR, "ante meridiem.", ""));
     }
 
     @Test

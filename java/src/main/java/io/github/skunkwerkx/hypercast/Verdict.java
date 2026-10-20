@@ -11,7 +11,7 @@ package io.github.skunkwerkx.hypercast;
  * {@snippet :
  * String rendered = switch (Cast.i32("(1,234)", NumFormat.INVARIANT)) {
  *     case Success<Integer> s -> "got " + s.value();
- *     case Fault<Integer> f -> f.reason() + " at byte " + f.offset();
+ *     case Fault<Integer> f -> f.reason() + " at char " + f.offset();
  * };
  * }
  *

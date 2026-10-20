@@ -32,7 +32,10 @@ public enum NumStyles : uint
 	/// </summary>
 	RadixPrefixes = 8,
 
-	/// <summary>Permit a trailing <c>%</c>, dividing by 100 (<c>50%</c> is 0.5). Real and decimal doors only.</summary>
+	/// <summary>
+	/// Permit a trailing <c>%</c>, or the declared <see cref="NumFormat.PercentSymbol"/>,
+	/// dividing by 100 (<c>50%</c> is 0.5). Real and decimal doors only.
+	/// </summary>
 	Percent = 16,
 
 	/// <summary>
@@ -51,10 +54,27 @@ public enum NumStyles : uint
 	/// numeric body — leading, before or after a sign (<c>$5</c>, <c>-$5</c>, <c>$ -5</c>), or
 	/// trailing (<c>5 €</c>, <c>1.234,50 kr.</c>) — with optional whitespace between symbol
 	/// and digits; accounting parentheses wrap symbol and digits together (<c>($5)</c>).
-	/// With no symbol declared the flag matches nothing and changes nothing.
+	/// With the symbol in the text, the digits are read with the declared
+	/// <see cref="NumFormat.CurrencyDecimalSeparator"/> and
+	/// <see cref="NumFormat.CurrencyGroupSeparator"/>, each falling back to its number
+	/// counterpart. With no symbol declared the flag matches nothing and changes nothing.
 	/// </summary>
 	Currency = 64,
 
-	/// <summary>Every lenience on. <see cref="SeparatorDetect"/> is a separator policy, not a lenience, and is not included.</summary>
+	/// <summary>
+	/// Permit the sign after the digits — <c>5-</c>, <c>5 -</c>, <c>5 €-</c>, <c>5- €</c>,
+	/// <c>2.5%-</c> — the way a culture whose negative pattern is <c>n-</c> writes it and
+	/// .NET's <c>AllowTrailingSign</c> reads it: ASCII <c>-</c>/<c>+</c> or the declared signs,
+	/// once, with optional whitespace before it, never beside a leading sign or inside
+	/// accounting parentheses. Not part of <see cref="All"/>: <see cref="NumFormat.From(System.Globalization.NumberFormatInfo)"/>
+	/// sets it from the culture's own negative pattern rather than assuming it.
+	/// </summary>
+	TrailingSign = 128,
+
+	/// <summary>
+	/// Every lenience on. <see cref="SeparatorDetect"/> is a separator policy, not a
+	/// lenience, and <see cref="TrailingSign"/> is a culture's declaration, not a lenience to
+	/// assume; neither is included.
+	/// </summary>
 	All = Grouping | Parentheses | Exponent | RadixPrefixes | Percent | Currency
 }

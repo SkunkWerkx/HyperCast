@@ -38,13 +38,24 @@ type vector struct {
 	Negative  bool            `json:"negative"`
 	Door      string          `json:"door"`
 	Bits      string          `json:"bits"`
+	// A datetime vector's day-period designators, declared together or not at all.
+	AM string `json:"am"`
+	PM string `json:"pm"`
 }
 
+// A vector's declared format. Every key past the separators and flags is absent when the
+// vector declares nothing for it, which is the empty string here — NumFormat's own "none".
 type formatSpec struct {
-	DecimalSep string `json:"decimal_sep"`
-	GroupSep   string `json:"group_sep"`
-	Flags      uint32 `json:"flags"`
-	Currency   string `json:"currency"` // absent ⇒ none declared
+	DecimalSep         string `json:"decimal_sep"`
+	GroupSep           string `json:"group_sep"`
+	Flags              uint32 `json:"flags"`
+	Currency           string `json:"currency"`
+	CurrencyDecimalSep string `json:"currency_decimal_sep"`
+	CurrencyGroupSep   string `json:"currency_group_sep"`
+	MinusSign          string `json:"minus_sign"`
+	PlusSign           string `json:"plus_sign"`
+	Percent            string `json:"percent"`
+	DigitZero          string `json:"digit_zero"` // a one-character string
 }
 
 func corpus(t *testing.T, name string) []vector {
@@ -84,11 +95,21 @@ func (v *vector) format() NumFormat {
 	if v.Format == nil {
 		return Invariant
 	}
+	var zero rune
+	if v.Format.DigitZero != "" {
+		zero = []rune(v.Format.DigitZero)[0]
+	}
 	return NumFormat{
-		DecimalSep: []rune(v.Format.DecimalSep)[0],
-		GroupSep:   []rune(v.Format.GroupSep)[0],
-		Styles:     NumStyles(v.Format.Flags),
-		Currency:   v.Format.Currency,
+		DecimalSep:         v.Format.DecimalSep,
+		GroupSep:           v.Format.GroupSep,
+		Styles:             NumStyles(v.Format.Flags),
+		Currency:           v.Format.Currency,
+		CurrencyDecimalSep: v.Format.CurrencyDecimalSep,
+		CurrencyGroupSep:   v.Format.CurrencyGroupSep,
+		MinusSign:          v.Format.MinusSign,
+		PlusSign:           v.Format.PlusSign,
+		Percent:            v.Format.Percent,
+		DigitZero:          zero,
 	}
 }
 
@@ -320,7 +341,10 @@ func TestDateCorpus(t *testing.T) {
 	}
 }
 
+// A vector declaring designators replays through DateTimeWith; one declaring none through
+// DateTime, and through DateTimeWith with nothing declared, which must agree with it.
 func TestDateTimeCorpus(t *testing.T) {
+	declared := 0
 	for _, v := range corpus(t, "datetime.json") {
 		var expected CivilDateTime
 		if v.Year != nil {
@@ -329,8 +353,22 @@ func TestDateTimeCorpus(t *testing.T) {
 				TimeOfDay: time.Duration(v.NanosDay),
 			}
 		}
+		format := DateFormat{Order: DateOrder(v.Order), AM: v.AM, PM: v.PM}
+		if v.AM != "" || v.PM != "" {
+			declared++
+			value, fault := DateTimeWith(v.Input, format)
+			assertVerdict(t, "datetime (declared periods)", &v, value, fault, expected)
+			continue
+		}
 		value, fault := DateTime(v.Input, DateOrder(v.Order))
 		assertVerdict(t, "datetime", &v, value, fault, expected)
+		withValue, withFault := DateTimeWith(v.Input, format)
+		if withValue != value || (withFault == nil) != (fault == nil) || (fault != nil && *withFault != *fault) {
+			t.Errorf("datetime: %q DateTimeWith gave %v %v, DateTime gave %v %v", v.Input, withValue, withFault, value, fault)
+		}
+	}
+	if declared == 0 {
+		t.Error("datetime: no vector declared day periods")
 	}
 }
 

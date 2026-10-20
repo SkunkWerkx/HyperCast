@@ -1,12 +1,13 @@
 package io.github.skunkwerkx.hypercast;
 
+import io.github.skunkwerkx.hypercast.interop.NativeValues;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.nio.ByteOrder;
-import java.nio.charset.StandardCharsets;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
@@ -23,9 +24,10 @@ import org.graalvm.polyglot.io.ByteSequence;
  *
  * <p><b>Memory protocol.</b> A wasm guest only sees its own linear memory, so nothing here
  * can hand the core a pointer into a Java array the way the FFM path pins a {@code byte[]}.
- * The input text is copied into a grow-only guest buffer, and the three out-params the doors
- * fill — the 16-byte out-value, the 8-byte fault span, the 32-byte {@link NumFormat} — are
- * guest allocations made once at load. All of it comes from the module's own exported
+ * The input text is copied into a grow-only guest buffer, and the four buffers the doors
+ * read or fill — the 16-byte out-value, the 8-byte fault span, the 92-byte {@link NumFormat}
+ * and the 40-byte day-period designators of a {@link DateTimeFormat} — are guest
+ * allocations made once at load. All of it comes from the module's own exported
  * {@code malloc} (wasi-libc's, which is also what Rust's allocator sits on for this target)
  * and is read back out through the exported {@code memory} into the caller's own scratch
  * segments. Using the guest allocator rather than a host-picked offset is load-bearing:
@@ -58,7 +60,6 @@ final class WasmBackend implements Backend {
             + "(the latter is a POM-type dependency)";
 
     private static final ByteOrder BIG_ENDIAN = ByteOrder.BIG_ENDIAN;
-    private static final ByteOrder LITTLE_ENDIAN = ByteOrder.LITTLE_ENDIAN;
     // Eight input bytes at a time, in the order they sit in the caller's segment: read
     // big-endian, written big-endian, so the guest sees the same byte sequence.
     private static final ValueLayout.OfLong BE_LONG_UNALIGNED = ValueLayout.JAVA_LONG_UNALIGNED.withOrder(BIG_ENDIAN);
@@ -81,18 +82,29 @@ final class WasmBackend implements Backend {
 
     // Guest addresses allocated once for the process: the out-value (16 bytes covers the
     // widest door; malloc's alignment satisfies the i64 the temporal doors write), the
-    // fault span, and the NumFormat the numeric doors read.
+    // fault span, the NumFormat the numeric doors read, and the day periods the civil
+    // date-time door reads.
     private final int outPtr;
     private final int faultPtr;
     private final int formatPtr;
+    private final int periodsPtr;
+
+    // Host-side images of the two declared layouts, written by the same interop code the
+    // native path uses and copied into the guest byte for byte: one layout implementation,
+    // not two.
+    private final Arena images = Arena.ofAuto();
+    private final MemorySegment formatImage = images.allocate(NativeValues.FORMAT_BYTES, 4);
+    private final MemorySegment periodsImage = images.allocate(NativeValues.DAY_PERIODS_BYTES, 4);
 
     // Grow-only guest buffer the input text is copied into.
     private int inPtr;
     private int inCapacity;
 
-    // The format currently written at formatPtr — the same identity memo Cast's per-thread
-    // scratch keeps, valid because NumFormat is immutable and reused in practice.
+    // The format currently written at formatPtr, and the designators at periodsPtr — the
+    // same identity memos Cast's per-thread scratch keeps, valid because both records are
+    // immutable and reused in practice.
     private NumFormat formatKey;
+    private DateTimeFormat periodsKey;
 
     WasmBackend() {
         byte[] module;
@@ -127,7 +139,8 @@ final class WasmBackend implements Backend {
         }
         outPtr = malloc(16);
         faultPtr = malloc(8);
-        formatPtr = malloc(32);
+        formatPtr = malloc((int) NativeValues.FORMAT_BYTES);
+        periodsPtr = malloc((int) NativeValues.DAY_PERIODS_BYTES);
     }
 
     private static Value export(Value exports, String name) {
@@ -175,33 +188,48 @@ final class WasmBackend implements Backend {
             inPtr = malloc(n);
             inCapacity = n;
         }
-        // The polyglot buffer interface has a bulk read but no bulk write; eight bytes at a
-        // time is the widest single write it offers.
+        copyIn(in, n, inPtr);
+        return inPtr;
+    }
+
+    // Copies the first n bytes of a host segment into the guest at ptr, in the order they
+    // sit. The polyglot buffer interface has a bulk read but no bulk write; eight bytes at a
+    // time is the widest single write it offers.
+    private void copyIn(MemorySegment from, int n, int ptr) {
         int i = 0;
         for (; i + 8 <= n; i += 8) {
-            memory.writeBufferLong(BIG_ENDIAN, inPtr + i, in.get(BE_LONG_UNALIGNED, i));
+            memory.writeBufferLong(BIG_ENDIAN, ptr + i, from.get(BE_LONG_UNALIGNED, i));
         }
         for (; i < n; i++) {
-            memory.writeBufferByte(inPtr + i, in.get(ValueLayout.JAVA_BYTE, i));
+            memory.writeBufferByte(ptr + i, from.get(ValueLayout.JAVA_BYTE, i));
         }
-        return inPtr;
     }
 
     private int stageFormat(NumFormat format) {
         if (formatKey != format) {
-            memory.writeBufferInt(LITTLE_ENDIAN, formatPtr, format.decimalSeparator());
-            memory.writeBufferInt(LITTLE_ENDIAN, formatPtr + 4, format.groupSeparator());
-            memory.writeBufferInt(LITTLE_ENDIAN, formatPtr + 8, format.styles());
-            byte[] symbol = format.currencySymbol().getBytes(StandardCharsets.UTF_8);
-            memory.writeBufferInt(LITTLE_ENDIAN, formatPtr + 12, symbol.length);
-            // All sixteen symbol bytes every time, zero past the declared length: the memo
-            // means a shorter symbol after a longer one must not leave the tail behind.
-            for (int i = 0; i < 16; i++) {
-                memory.writeBufferByte(formatPtr + 16 + i, i < symbol.length ? symbol[i] : (byte) 0);
-            }
+            // The whole layout every time, zero past each declared symbol: the memo means a
+            // shorter symbol after a longer one must not leave the tail behind. wasm memory
+            // is little-endian by specification and so is every platform this jar supports,
+            // so the image's three words copy in as they are.
+            NativeValues.writeFormat(format, formatImage, 0);
+            copyIn(formatImage, (int) NativeValues.FORMAT_BYTES, formatPtr);
             formatKey = format;
         }
         return formatPtr;
+    }
+
+    // 0, the ABI's NULL, when nothing is declared: the core then reads exactly what the
+    // DateOrder overloads always read.
+    private int stagePeriods(DateTimeFormat format) {
+        if (format == null || format.englishOnly()) {
+            return 0;
+        }
+        if (periodsKey != format) {
+            NativeValues.writeDayPeriods(format, periodsImage, 0);
+            copyIn(periodsImage, (int) NativeValues.DAY_PERIODS_BYTES, periodsPtr);
+            periodsKey = format;
+        }
+        return periodsPtr;
     }
 
     /**
@@ -222,7 +250,7 @@ final class WasmBackend implements Backend {
         return code;
     }
 
-    // ---- the five ABI shapes, and the version probe -------------------------------------
+    // ---- the six ABI shapes, and the version probe --------------------------------------
 
     @Override
     public synchronized int plain(Door door, MemorySegment in, long len, MemorySegment out, MemorySegment fault) {
@@ -249,6 +277,22 @@ final class WasmBackend implements Backend {
         int input = stageInput(in, len);
         int code = doors[door.ordinal()]
                 .execute(input, (int) len, discriminant, outPtr, faultPtr)
+                .asInt();
+        return finish(code, out, fault);
+    }
+
+    @Override
+    public synchronized int civil(
+            Door door,
+            MemorySegment in,
+            long len,
+            int order,
+            DateTimeFormat format,
+            MemorySegment out,
+            MemorySegment fault) {
+        int input = stageInput(in, len);
+        int code = doors[door.ordinal()]
+                .execute(input, (int) len, order, stagePeriods(format), outPtr, faultPtr)
                 .asInt();
         return finish(code, out, fault);
     }

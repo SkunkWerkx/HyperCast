@@ -2,28 +2,81 @@ import Foundation
 
 /// The native core's C ABI, for a package that carries HyperCast's verdicts across a C ABI of
 /// its own (HyperTabular does): the value layouts the core writes, read through exactly the
-/// conversions every ``Cast`` door applies, the 32-byte numeric format it reads, the verdict
-/// code and span of a fault, and the packed version word. A value read out of another
-/// library's buffer through these is the value the door of the same name would have returned.
+/// conversions every ``Cast`` door applies, the 92-byte numeric format and the 40-byte day
+/// periods it reads in place, the verdict code and span of a fault, and the packed version
+/// word. A value read out of another library's buffer through these is the value the door
+/// of the same name would have returned.
 ///
 /// Each reader takes a view of one value's bytes, starting at the value, aligned for its
 /// widest field (8 bytes for the 16-byte values).
 public enum Interop {
-    /// The native `RawNumFormat`, 32 bytes: decimal separator, group separator, flags and
-    /// currency length as `u32`s at 0/4/8/12, then the symbol's 16 UTF-8 bytes at 16 —
-    /// carried as two words whose in-memory bytes are the symbol's, in order.
-    public typealias RawNumFormat = (UInt32, UInt32, UInt32, UInt32, UInt64, UInt64)
+    /// The native `RawNumFormat`, 92 bytes, 4-aligned, which the core reads in place: a
+    /// size word (92) at 0, the flags at 4 and the native digits' zero code point at 8
+    /// (`0` for none), then nine symbols, each its UTF-8 bytes followed by its length —
+    /// the decimal separator at 12 (length at 20), the group separator at 21 (29), the
+    /// currency decimal separator at 30 (38), the currency group separator at 39 (47),
+    /// the minus sign at 48 (56), the plus sign at 57 (65), the percent symbol at 66 (74),
+    /// eight bytes each, and the currency symbol at 75 with its length at 91, sixteen.
+    /// Carried as twenty-three `UInt32` words whose in-memory bytes are the layout's: the
+    /// three leading words are read natively, the symbols as bytes.
+    public typealias RawNumFormat = (
+        UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32,
+        UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32,
+        UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32
+    )
+
+    /// The native `RawDayPeriods`, 40 bytes, 4-aligned, read in place beside a declared
+    /// date order: a size word (40) at 0, the AM designator's sixteen UTF-8 bytes at 4 with
+    /// its length at 20, the PM designator's at 21 with its length at 37, and two bytes of
+    /// padding. Carried as ten `UInt32` words the same way.
+    public typealias RawDayPeriods = (
+        UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32
+    )
+
+    /// The size of the native format layout, in bytes, which its first word carries.
+    public static let rawFormatSize = 92
+
+    /// The size of the native day-periods layout, in bytes, which its first word carries.
+    public static let rawDayPeriodsSize = 40
 
     /// The inline capacity of the native format's currency field, in UTF-8 bytes.
     public static let currencyMaxBytes = 16
 
+    /// The inline capacity of every other symbol field of the native format — a separator,
+    /// a sign, the percent symbol — in UTF-8 bytes.
+    public static let symbolMaxBytes = 8
+
+    /// The inline capacity of a native day-period designator, in UTF-8 bytes.
+    public static let designatorMaxBytes = 16
+
     /// A format laid out as the core reads it — what every numeric door hands the core. The
     /// format was validated when it was declared.
     public static func rawFormat(_ format: NumFormat) -> RawNumFormat {
-        (
-            format.decimalSeparator.value, format.groupSeparator.value, format.styles.rawValue,
-            format.currencyLength, format.currencyLow, format.currencyHigh
-        )
+        format.raw
+    }
+
+    /// Day periods laid out as the core reads them — what the date-time door hands the core
+    /// when the format declares a designator (it passes null when neither is declared, the
+    /// English `AM`/`PM` only). The format was validated when it was declared.
+    public static func rawDayPeriods(_ format: DateFormat) -> RawDayPeriods {
+        format.raw
+    }
+
+    // Every byte zero: what a layout is filled in from.
+    static let zeroRawFormat: RawNumFormat = (
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    )
+    static let zeroRawDayPeriods: RawDayPeriods = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+
+    /// Writes a symbol into a layout's field: its UTF-8 bytes at `offset`, its length in
+    /// the byte after the field's `capacity`. The symbol was validated to fit.
+    static func store(_ symbol: String, in bytes: UnsafeMutableRawBufferPointer, at offset: Int, capacity: Int) {
+        var at = offset
+        for byte in symbol.utf8 {
+            bytes[at] = byte
+            at += 1
+        }
+        bytes[offset + capacity] = UInt8(symbol.utf8.count)
     }
 
     /// 2⁶⁴ — the weight of the core's high word, exact in `Decimal`.

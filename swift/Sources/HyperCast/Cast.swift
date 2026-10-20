@@ -34,6 +34,13 @@ public enum Cast {
         @convention(c) (
             UnsafePointer<UInt8>?, UInt, UInt32, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?
         ) -> Int32
+    // cast_datetime: the unix shape with the declared day periods (null = English AM/PM
+    // only) after the order.
+    private typealias DateTimeFn =
+        @convention(c) (
+            UnsafePointer<UInt8>?, UInt, UInt32, UnsafeRawPointer?, UnsafeMutableRawPointer?,
+            UnsafeMutableRawPointer?
+        ) -> Int32
     private typealias VersionFn = @convention(c) () -> UInt32
     // The typed doors read a double the caller holds instead of text.
     private typealias TypedFn =
@@ -68,9 +75,9 @@ public enum Cast {
         // cast_excel_serial shares the unix ABI shape too.
         let excelSerial: UnixFn
         let date: PlainFn
-        // cast_date_ordered and cast_datetime share the unix ABI shape (ptr, len, u32, out, fault).
+        // cast_date_ordered shares the unix ABI shape (ptr, len, u32, out, fault).
         let dateOrdered: UnixFn
-        let dateTime: UnixFn
+        let dateTime: DateTimeFn
         let time: PlainFn
         let duration: PlainFn
         let decimalFromF64: TypedFn
@@ -84,7 +91,7 @@ public enum Cast {
             i8: NumericFn, i16: NumericFn, i32: NumericFn, i64: NumericFn,
             u8: NumericFn, u16: NumericFn, u32: NumericFn, u64: NumericFn,
             f32: NumericFn, f64: NumericFn, decimal: NumericFn, uuid: PlainFn, timestamp: PlainFn,
-            unix: UnixFn, excelSerial: UnixFn, date: PlainFn, dateOrdered: UnixFn, dateTime: UnixFn,
+            unix: UnixFn, excelSerial: UnixFn, date: PlainFn, dateOrdered: UnixFn, dateTime: DateTimeFn,
             time: PlainFn, duration: PlainFn,
             decimalFromF64: TypedFn, excelSerialFromF64: TypedDeclaredFn, excelTime: TypedFn,
             excelDuration: TypedFn, version: VersionFn
@@ -154,8 +161,11 @@ public enum Cast {
     // suite can pin both sizes to the ones rust/src/abi.rs and ffi.rs pin.
     typealias OutScratch = (UInt64, UInt64)
     typealias FaultScratch = (UInt32, UInt32)
-    // The native `RawNumFormat`, under the name the test suite pins its size by.
+    // The native `RawNumFormat` and `RawDayPeriods`, under the names the test suite pins
+    // their sizes by. A format's layout is computed when it is declared; a door copies it
+    // onto the stack and hands the core a pointer, which it reads in place.
     typealias RawNumFormat = Interop.RawNumFormat
+    typealias RawDayPeriods = Interop.RawDayPeriods
 
     private static func inputPointer(_ utf8: UnsafeRawBufferPointer) -> UnsafePointer<UInt8>? {
         // An empty buffer may carry a nil base address; the ABI never dereferences at len 0.
@@ -184,7 +194,7 @@ public enum Cast {
         _ fn: NumericFn, _ utf8: UnsafeRawBufferPointer, _ format: NumFormat,
         read: (UnsafeRawBufferPointer) -> T
     ) -> Verdict<T> {
-        var rawFormat = Interop.rawFormat(format)
+        var rawFormat = format.raw
         var out: OutScratch = (0, 0)
         var faultOut: FaultScratch = (0, 0)
         let code = withUnsafeMutableBytes(of: &out) { outRaw in
@@ -214,6 +224,33 @@ public enum Cast {
                 fn(
                     inputPointer(utf8), UInt(utf8.count), discriminant, outRaw.baseAddress,
                     faultRaw.baseAddress)
+            }
+        }
+        if code == 0 {
+            return .success(withUnsafeBytes(of: &out, read))
+        }
+        return .fault(withUnsafeBytes(of: &faultOut) { fault(code, $0) })
+    }
+
+    /// The date-time shape: a declared order, then the declared day periods — the format's
+    /// layout on the stack, or null when nothing is declared, which is exactly the
+    /// order-only door's call.
+    private static func dateTimeDoor<T>(
+        _ fn: DateTimeFn, _ utf8: UnsafeRawBufferPointer, _ order: DateOrder, _ format: DateFormat?,
+        read: (UnsafeRawBufferPointer) -> T
+    ) -> Verdict<T> {
+        var periods: RawDayPeriods = format?.raw ?? Interop.zeroRawDayPeriods
+        let order = order.rawValue
+        let declared = format?.declaresPeriods ?? false
+        var out: OutScratch = (0, 0)
+        var faultOut: FaultScratch = (0, 0)
+        let code = withUnsafeMutableBytes(of: &out) { outRaw in
+            withUnsafeMutableBytes(of: &faultOut) { faultRaw in
+                withUnsafeBytes(of: &periods) { periodsRaw in
+                    fn(
+                        inputPointer(utf8), UInt(utf8.count), order, declared ? periodsRaw.baseAddress : nil,
+                        outRaw.baseAddress, faultRaw.baseAddress)
+                }
             }
         }
         if code == 0 {
@@ -695,10 +732,12 @@ public enum Cast {
     /// ``DateOrder`` to `DateComponents` (year through nanosecond, no zone). The date part
     /// follows ``date(_:order:)-swift.type.method``'s grammar; the optional time part (one
     /// space or `T` after the date) is 24-hour `h:mm[:ss[.f+]]` or 12-hour with an
-    /// `AM`/`PM` marker; absent, the time is midnight. No zone is read and none is
-    /// invented — the text named no instant, so no `timeZone` component is set; fusing one
-    /// is the caller's job (``timestamp(_:)-swift.type.method`` stays the strict RFC 3339
-    /// instant door).
+    /// `AM`/`PM` marker after the clock or ahead of it (`3:04 PM`, `PM 3:04`), ASCII
+    /// case-insensitive; absent, the time is midnight. A culture's own designators
+    /// (`오후`, `nachm.`) are read only when declared — ``dateTime(_:format:)-swift.type.method``.
+    /// No zone is read and none is invented — the text named no instant, so no `timeZone`
+    /// component is set; fusing one is the caller's job
+    /// (``timestamp(_:)-swift.type.method`` stays the strict RFC 3339 instant door).
     public static func dateTime(_ text: String, order: DateOrder) throws -> Verdict<DateComponents> {
         try withUTF8(text) { try dateTime($0, order: order) }
     }
@@ -712,7 +751,29 @@ public enum Cast {
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
     public static func dateTime(_ utf8: UnsafeRawBufferPointer, order: DateOrder) throws -> Verdict<DateComponents> {
-        unixDoor(try loaded().dateTime, utf8, order.rawValue, read: Interop.civil)
+        dateTimeDoor(try loaded().dateTime, utf8, order, nil, read: Interop.civil)
+    }
+
+    /// Casts a zone-less civil date-time under a declared ``DateFormat``: the field order
+    /// of ``dateTime(_:order:)-swift.type.method``, plus the day-period designators the
+    /// text's culture writes beside a 12-hour clock — `1/7/2026 3:04 nachm.`,
+    /// `2026-01-07 오후 3:04` — read after the clock (a space optional) or ahead of it,
+    /// beside the English `AM`/`PM`, which are read whatever is declared. A format that
+    /// declares no designator is exactly the order-only door.
+    public static func dateTime(_ text: String, format: DateFormat) throws -> Verdict<DateComponents> {
+        try withUTF8(text) { try dateTime($0, format: format) }
+    }
+
+    /// See ``dateTime(_:format:)-swift.type.method``; input as raw UTF-8 bytes.
+    public static func dateTime(_ utf8: [UInt8], format: DateFormat) throws -> Verdict<DateComponents> {
+        try utf8.withUnsafeBytes { try dateTime($0, format: format) }
+    }
+
+    /// See ``dateTime(_:format:)-swift.type.method``; input as a raw view of UTF-8 bytes —
+    /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
+    /// buffer (or a slice of one) to cast out of without copying.
+    public static func dateTime(_ utf8: UnsafeRawBufferPointer, format: DateFormat) throws -> Verdict<DateComponents> {
+        dateTimeDoor(try loaded().dateTime, utf8, format.order, format, read: Interop.civil)
     }
 
     /// Casts an ISO 24-hour time-of-day to `DateComponents` (hour, minute, second,

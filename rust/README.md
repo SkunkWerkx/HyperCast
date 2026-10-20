@@ -34,6 +34,62 @@ C#/Java/Go/Swift/Ruby/PHP/Python bindings, all held to byte-identical verdicts b
 shared `corpus/*.json` conformance vectors — and an ordinary `rlib` for plain Rust use.
 Zero runtime dependencies either way.
 
+## What a culture declares
+
+Separators and a currency symbol are what most text needs, and what `NumFormat::new` and
+`with_currency` declare. A culture declares more, and every one of those is a field too —
+read *beside* the ASCII default, never instead of it, so a format that declares nothing
+reads exactly as the invariant culture and a culture whose minus is U+2212 still reads the
+hyphen its users type:
+
+```rust
+use hypercast::{cast_f64, cast_i32, CurrencySymbol, NativeDigits, NumFormat, Symbol};
+
+let symbol = |text| Symbol::<8>::new(text).unwrap();
+
+// Estonian: a minus of U+2212, and a hyphen still read.
+let et = NumFormat::INVARIANT.with_signs(symbol("\u{2212}"), Symbol::NONE);
+cast_i32("\u{2212}5", &et);                               // Ok(-5)
+
+// A culture whose numbers and currency amounts use different separators (en-DE):
+// the currency separators apply once the declared symbol is found in the text.
+let en_de = NumFormat::new(',', '.', NumFormat::ALL)
+    .with_currency(CurrencySymbol::new("€").unwrap())
+    .with_currency_separators(symbol("."), symbol(","));
+cast_f64("1.234,5", &en_de);                              // Ok(1234.5)
+cast_f64("€1,234.50", &en_de);                            // Ok(1234.5)
+
+// Arabic-script separators, digits and percent symbol.
+let ar = NumFormat::with_separators(symbol("\u{66B}"), symbol("\u{66C}"), NumFormat::ALL)
+    .with_digits(NativeDigits::new('\u{660}').unwrap())
+    .with_percent(symbol("\u{66A}"));
+cast_f64("\u{661}\u{66C}\u{662}\u{663}\u{664}\u{66B}\u{665}", &ar); // Ok(1234.5)
+cast_f64("\u{665}\u{660}\u{66A}", &ar);                    // Ok(0.5)
+
+// A sign after the digits, the way a culture with an `n-` pattern writes it: a lenience
+// of its own, not in ALL, so a bridge sets it from the culture's negative pattern.
+let trailing = NumFormat { flags: NumFormat::ALL | NumFormat::TRAILING_SIGN, ..NumFormat::INVARIANT };
+cast_i32("5 -", &trailing);                               // Ok(-5)
+```
+
+Separators are `Symbol<8>`s — one or two characters, up to 8 UTF-8 bytes, so a culture
+whose group separator is a narrow no-break space or an LTR mark and a comma declares it
+whole. The civil date-time door takes the same declaration for the two halves of a 12-hour
+clock: `cast_datetime_with(text, order, &DayPeriods)` reads a culture's own designators
+after the clock (`3:04 nachm.`) or ahead of it (`오후 3:04`), beside `AM`/`PM`:
+
+```rust
+use hypercast::{cast_datetime_with, DateOrder, DayPeriods, Symbol};
+
+let de = DayPeriods::new(Symbol::new("vorm.").unwrap(), Symbol::new("nachm.").unwrap());
+cast_datetime_with("1.7.2026 3:04 nachm.", DateOrder::DayMonthYear, &de);
+// Ok(CivilDateTime { .. }) — 2026-07-01 15:04, no zone
+```
+
+The boolean door is deliberately not on this list: no platform's culture data carries a
+boolean lexicon, so nothing could fill one, and `cast_bool` stays English. Every row here
+is pinned by `corpus/`, and `docs/roadmap.md` has the sweep that built them.
+
 ## `no_std`
 
 The parsing core touches nothing outside `core` — so `default-features = false` gives a
@@ -141,7 +197,7 @@ path-depending back here:
 
 ```sh
 cargo cdylib                    # the plain shared library every FFI binding uses (no_std)
-cargo rustc --release --crate-type cdylib --features python  # the CPython extension module (PyO3, abi3-py311)
+cargo rustc --release --crate-type cdylib --features python  # the CPython extension module (PyO3: abi3, or abi3t/cp314t for a free-threaded PYO3_PYTHON)
 cargo ruby-ext                  # the Ruby extension (Magnus), in target/ruby/release/ (ruby/'s `rake native:dev` runs this and stages the result)
 cargo php-ext                   # the Zend extension (ext-php-rs) — benchmark spike only, in target/php/release/
 ```
@@ -197,11 +253,15 @@ the same code the doors and `ffi.rs` use:
   carries all 26, and its static archive cannot be linked into one program with
   `libhypercast.a` (`multiple definition of cast_bool`). `hypercast_version()` stays a Rust
   function either way.
-- **`RawNumFormat`** is `NumFormat` as it crosses the ABI: 32 bytes, 4-aligned — the two
-  separators as code points, the flags, the currency symbol's length and its UTF-8 inline.
+- **`RawNumFormat`** is `NumFormat` as it crosses the ABI: a size word, then the format
+  itself, byte for byte — 92 bytes, 4-aligned, every symbol its UTF-8 bytes then a length
+  byte (`NumFormat` is `#[repr(C)]` for exactly this; `abi.rs` has the offset table). The
+  core reads a caller's struct in place, so a cast pays for a check of it and no copy.
   `RawNumFormat::from(format)` builds it, `to_le_bytes`/`from_le_bytes` are its exact
   bytes (what Python's and Ruby's `NumFormat.packed` are), and `resolve()` returns the
-  `NumFormat` or `None` for a contract violation.
+  `&NumFormat` or `None` for a contract violation — a size the core does not read, or a
+  format `NumFormat::check` refuses. `RawDayPeriods` is the same shape around
+  `DayPeriods`, 40 bytes, for `cast_datetime`.
 - **`from_code`** — a `const fn` on `Reason`, `UnixPrecision`, `ExcelEpoch` and `DateOrder`
   — reads a verdict code or a declared option back, `None` for any code that names none
   (`Reason::from_code(0)`, success, included).
@@ -209,11 +269,13 @@ the same code the doors and `ffi.rs` use:
   crate's own extension uses (`Values::import`, then `instant`, `date`, `civil`, `time`,
   `duration`, `decimal`, `uuid`), so another PyO3 extension hands out the same `datetime`,
   `decimal.Decimal` and `uuid.UUID` objects `hypercast.cast_*` would. The `python` feature
-  builds on it.
+  builds on it. Its types are PyO3 0.30's, so the extension using it must be on PyO3 0.30
+  too (Cargo links one PyO3 per build). `Values` is `Sync` and only read once built, so a
+  free-threaded extension can share one across threads.
 
 ```toml
 [dependencies]
-hypercast = { version = "0.8", default-features = false, features = ["std"] }
+hypercast = { version = "0.9", default-features = false, features = ["std"] }
 ```
 
 ```rust
@@ -238,7 +300,7 @@ the exports; thin LTO and `codegen-units = 1` are not enough:
 
 ```toml
 [dependencies]
-hypercast = { version = "0.8", features = ["no-panic"] }
+hypercast = { version = "0.9", features = ["no-panic"] }
 
 [profile.release]
 lto = true
@@ -330,6 +392,12 @@ Separator detection costs one extra scan and nothing more: `1.234.567,89` under
 `NumFormat::DETECT` is 29.0 ns against 19.2 ns for the same text under a declared eurozone
 format — ~10 ns, and invisible behind any FFI boundary (the Java and Swift bindings measure
 detection as free at their crossing).
+
+A declared currency symbol costs text that does not carry one about 2 ns: `1,234,567` is
+13.3 ns under `NumFormat::INVARIANT` and 15.1 ns under a format declaring `$`. Rejection
+costs more than acceptance. `cast_i32` faults `1,234x567` in 37.3 ns, against 3.3 ns for
+`str::parse` failing on `1234x567`: the fast lanes read well-formed shapes only, so a fault
+falls through to the full engine, which rescans the text to report its reason and span.
 
 Grouping, a currency symbol and accounting parentheses each used to send a number through
 the full normalize-then-parse engine. A second fast lane (`src/lane.rs`) reads them in one

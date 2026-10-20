@@ -64,6 +64,15 @@ final class CastTests: XCTestCase {
         XCTAssertEqual(german.decimalSeparator, ",")
         XCTAssertEqual(german.groupSeparator, ".")
         XCTAssertEqual(try Cast.f64("1.234,5", format: german), .success(1234.5))
+        // A locale spelling every sign as ASCII declares none of them, and keeps the number
+        // separators for a currency amount: the format is the one it always was.
+        XCTAssertEqual(german.minusSign, "")
+        XCTAssertEqual(german.plusSign, "")
+        XCTAssertEqual(german.percentSymbol, "")
+        XCTAssertEqual(german.currencyDecimalSeparator, "")
+        XCTAssertEqual(german.currencyGroupSeparator, "")
+        XCTAssertNil(german.digitZero)
+        XCTAssertFalse(german.styles.contains(.trailingSign))
     }
 
     func testCurrencySymbolComesFromTheLocale() throws {
@@ -256,12 +265,15 @@ final class CastTests: XCTestCase {
         XCTAssertEqual(try Cast.scalar(Array("U+41".utf8), format: invariant), Verdict<Unicode.Scalar>.success("A"))
     }
 
-    func testRawNumFormatIsTheNativeStructsThirtyTwoBytes() {
-        // u32 × 4 at 0/4/8/12, then the 16 symbol bytes at 16: 32 bytes, no padding
-        // between the words. Swift's 8-byte alignment for the tuple is stricter than the
-        // native struct's 4, which is compatible in the caller-allocated direction.
-        XCTAssertEqual(MemoryLayout<Cast.RawNumFormat>.size, 32)
-        XCTAssertEqual(MemoryLayout<Cast.RawNumFormat>.stride, 32)
+    func testRawNumFormatIsTheNativeStructsNinetyTwoBytes() {
+        // A size word, flags, the digit zero and nine symbol fields with no padding: 92
+        // bytes, 4-aligned — rust/src/abi.rs pins the same — and the day periods 40.
+        XCTAssertEqual(MemoryLayout<Cast.RawNumFormat>.size, 92)
+        XCTAssertEqual(MemoryLayout<Cast.RawNumFormat>.stride, 92)
+        XCTAssertEqual(MemoryLayout<Cast.RawNumFormat>.alignment, 4)
+        XCTAssertEqual(MemoryLayout<Cast.RawDayPeriods>.size, 40)
+        XCTAssertEqual(MemoryLayout<Cast.RawDayPeriods>.stride, 40)
+        XCTAssertEqual(MemoryLayout<Cast.RawDayPeriods>.alignment, 4)
     }
 
     func testScratchHoldsTheNativeShapes() {
@@ -273,12 +285,15 @@ final class CastTests: XCTestCase {
     }
 
     func testCurrencySymbolPacksAsItsUtf8Bytes() {
-        // `kr.` is 0x6B 0x72 0x2E; the low word's in-memory bytes must be exactly those.
+        // `kr.` is 0x6B 0x72 0x2E at the symbol's offset, its length in the field's last byte.
         let danish = NumFormat(decimalSeparator: ",", groupSeparator: ".", styles: .all, currencySymbol: "kr.")
-        XCTAssertEqual(danish.currencyLength, 3)
-        XCTAssertEqual(withUnsafeBytes(of: danish.currencyLow) { Array($0.prefix(3)) }, Array("kr.".utf8))
-        XCTAssertEqual(danish.currencyHigh, 0)
-        XCTAssertEqual(NumFormat.invariant.currencyLength, 0)
+        var raw = danish.raw
+        withUnsafeBytes(of: &raw) { bytes in
+            XCTAssertEqual(Array(bytes[75..<78]), Array("kr.".utf8))
+            XCTAssertEqual(bytes[91], 3)
+        }
+        var invariant = NumFormat.invariant.raw
+        withUnsafeBytes(of: &invariant) { XCTAssertEqual($0[91], 0) }
     }
 
     func testUuidAgreesWithThePlatformsOwnParser() throws {
@@ -373,6 +388,8 @@ final class CastTests: XCTestCase {
         }
         XCTAssertEqual(gb.month, 7)
         XCTAssertEqual(gb.day, 1)
+        // The English marker is read ahead of the clock too, and case-insensitively.
+        XCTAssertEqual(try Cast.dateTime("1/7/2026 pm 3:04", order: .monthDayYear), .success(us))
         // A zone suffix is not this door's business — timestamp is the instant door.
         guard case .fault(let fault) = try Cast.dateTime("1/7/2026 15:04:05Z", order: .monthDayYear) else {
             return XCTFail("zoned text should be malformed through the civil door")
@@ -450,7 +467,7 @@ final class CastTests: XCTestCase {
     }
 
     func testLocaleFormatsAreCachedByIdentifierAndBounded() {
-        let cache = LocaleFormats()
+        let cache = LocaleFormats(derive: NumFormat.from(locale:))
         let deDe = Locale(identifier: "de_DE")
         XCTAssertEqual(cache.format(for: deDe), NumFormat.from(locale: deDe))
         XCTAssertEqual(cache.format(for: Locale(identifier: "de_DE")), NumFormat.from(locale: deDe))
@@ -459,5 +476,251 @@ final class CastTests: XCTestCase {
             let locale = Locale(identifier: identifier)
             XCTAssertEqual(cache.format(for: locale), NumFormat.from(locale: locale), identifier)
         }
+    }
+
+    // MARK: - declared symbols (0.9.0): read beside ASCII, never instead of it
+
+    func testSeparatorsMayBeTwoCharacters() throws {
+        let commaSpace = NumFormat(decimalSeparator: ".", groupSeparator: ", ", styles: .all)
+        XCTAssertEqual(try Cast.i32("1, 234, 567", format: commaSpace), .success(1_234_567))
+        XCTAssertEqual(try Cast.f64("1, 234.5", format: commaSpace), .success(1234.5))
+        // The scalar initializer still declares the one-character shape.
+        let fromScalars = NumFormat(
+            decimalSeparator: Unicode.Scalar(","), groupSeparator: Unicode.Scalar("."), styles: .all)
+        XCTAssertEqual(fromScalars, NumFormat(decimalSeparator: ",", groupSeparator: ".", styles: .all))
+    }
+
+    func testDeclaredSignsAreReadBesideAscii() throws {
+        let estonian = NumFormat(
+            decimalSeparator: ",", groupSeparator: " ", styles: .all, minusSign: "−", plusSign: "＋")
+        XCTAssertEqual(try Cast.i32("−5", format: estonian), .success(-5))
+        XCTAssertEqual(try Cast.i32("-5", format: estonian), .success(-5))
+        XCTAssertEqual(try Cast.i32("＋5", format: estonian), .success(5))
+        XCTAssertEqual(try Cast.f64("−2,5", format: estonian), .success(-2.5))
+        // Two signs, in either spelling, are malformed at the second.
+        XCTAssertEqual(try Cast.i32("−-5", format: estonian), .fault(Fault(reason: .malformed, offset: 3, length: 1)))
+        // Undeclared, U+2212 is no sign at all.
+        XCTAssertEqual(try Cast.i32("−5", format: .invariant), .fault(Fault(reason: .malformed, offset: 0, length: 3)))
+    }
+
+    func testTrailingSignIsOptIn() throws {
+        let trailing = NumFormat(
+            decimalSeparator: ".", groupSeparator: ",", styles: [.all, .trailingSign], minusSign: "−")
+        XCTAssertEqual(try Cast.i32("5-", format: trailing), .success(-5))
+        XCTAssertEqual(try Cast.i32("5 -", format: trailing), .success(-5))
+        XCTAssertEqual(try Cast.f64("2.5−", format: trailing), .success(-2.5))
+        XCTAssertEqual(try Cast.decimal("2.5%-", format: trailing), .success(Decimal(string: "-0.025")!))
+        // Not in `.all`: a trailing sign is a culture's pattern, declared, not assumed.
+        XCTAssertFalse(NumStyles.all.contains(.trailingSign))
+        guard case .fault(let fault) = try Cast.i32("5-", format: .invariant) else {
+            return XCTFail("a trailing sign under .invariant should be malformed")
+        }
+        XCTAssertEqual(fault.reason, .malformed)
+    }
+
+    func testCurrencySeparatorsApplyWhenTheSymbolIsPresent() throws {
+        // A decimal comma in numbers and a decimal point in prices (en_NL's shape): the
+        // currency separators are read only once the declared symbol is in the text.
+        let dutch = NumFormat(
+            decimalSeparator: ",", groupSeparator: ".", styles: .all, currencySymbol: "€",
+            currencyDecimalSeparator: ".", currencyGroupSeparator: ",")
+        XCTAssertEqual(try Cast.decimal("€1,234.50", format: dutch), .success(Decimal(string: "1234.5")!))
+        XCTAssertEqual(try Cast.decimal("1.234,50", format: dutch), .success(Decimal(string: "1234.5")!))
+        XCTAssertEqual(try Cast.f64("€ -1,234.5", format: dutch), .success(-1234.5))
+    }
+
+    func testDeclaredPercentAndNativeDigits() throws {
+        let arabic = NumFormat(
+            decimalSeparator: "٫", groupSeparator: "٬", styles: .all, percentSymbol: "٪", digitZero: "\u{0660}")
+        XCTAssertEqual(try Cast.i32("١٢٣", format: arabic), .success(123))
+        XCTAssertEqual(try Cast.i32("123", format: arabic), .success(123))
+        XCTAssertEqual(try Cast.decimal("١٢٫٥", format: arabic), .success(Decimal(string: "12.5")!))
+        XCTAssertEqual(try Cast.f64("50٪", format: arabic), .success(0.5))
+        XCTAssertEqual(try Cast.f64("50%", format: arabic), .success(0.5))
+        // Native digits reach the fraction and the exponent, but never a radix-prefixed body.
+        XCTAssertEqual(try Cast.f64("١٫٥e٢", format: arabic), .success(150))
+        guard case .fault(let fault) = try Cast.i32("0x١٢", format: arabic) else {
+            return XCTFail("native digits after a radix prefix should be malformed")
+        }
+        XCTAssertEqual(fault.reason, .malformed)
+        // An integer door never reads a percent, declared or not.
+        guard case .fault = try Cast.i32("50٪", format: arabic) else {
+            return XCTFail("a percent on an integer door should be malformed")
+        }
+    }
+
+    // MARK: - the locale bridge, field by field
+
+    /// The hour a civil verdict carries, or `nil` for a fault.
+    private func hour(of verdict: Verdict<DateComponents>) -> Int? {
+        if case .success(let components) = verdict { return components.hour }
+        return nil
+    }
+
+    func testLocaleBridgeDeclaresTheLocalesMinusSign() throws {
+        // Estonian and Basque write U+2212; the bridge declares it, and ASCII `-` still reads.
+        for identifier in ["et_EE", "eu_ES"] {
+            let locale = Locale(identifier: identifier)
+            let format = NumFormat.from(locale: locale)
+            XCTAssertEqual(format.minusSign, "−", identifier)
+            XCTAssertEqual(try Cast.i32("−5", locale: locale), .success(-5), identifier)
+            XCTAssertEqual(try Cast.i32("-5", locale: locale), .success(-5), identifier)
+            // What the locale's own formatter writes parses under its format.
+            let formatter = NumberFormatter()
+            formatter.locale = locale
+            formatter.numberStyle = .decimal
+            let written = try XCTUnwrap(formatter.string(from: -1234.5))
+            XCTAssertEqual(try Cast.f64(written, locale: locale), .success(-1234.5), "\(identifier): \(written)")
+        }
+    }
+
+    func testLocaleBridgeDeclaresNativeDigitsAndThePercentSymbol() throws {
+        // Arabic-Indic digits for ar_EG, extended Arabic-Indic for fa_IR, from the locale's
+        // numbering system; the percent symbol and the minus sign as ICU spells them (bidi
+        // marks included), so the locale's own output round-trips.
+        let egypt = Locale(identifier: "ar_EG")
+        let egyptian = NumFormat.from(locale: egypt)
+        XCTAssertEqual(egyptian.digitZero, "\u{0660}")
+        XCTAssertEqual(egyptian.decimalSeparator, "٫")
+        XCTAssertEqual(egyptian.groupSeparator, "٬")
+        let formatter = NumberFormatter()
+        formatter.locale = egypt
+        formatter.numberStyle = .decimal
+        XCTAssertEqual(egyptian.percentSymbol, formatter.percentSymbol)
+        XCTAssertEqual(egyptian.minusSign, formatter.minusSign)
+        XCTAssertEqual(try Cast.i32("١٢٣", locale: egypt), .success(123))
+        XCTAssertEqual(try Cast.decimal("١٢٫٥", locale: egypt), .success(Decimal(string: "12.5")!))
+        XCTAssertEqual(try Cast.f64("50\(egyptian.percentSymbol)", locale: egypt), .success(0.5))
+        XCTAssertEqual(try Cast.f64("50%", locale: egypt), .success(0.5))
+        let written = try XCTUnwrap(formatter.string(from: -1234.5))
+        XCTAssertEqual(try Cast.f64(written, locale: egypt), .success(-1234.5), written)
+        let persian = NumFormat.from(locale: Locale(identifier: "fa_IR"))
+        XCTAssertEqual(persian.digitZero, "\u{06F0}")
+        XCTAssertEqual(try Cast.i32("۱۲۳", format: persian), .success(123))
+        // A Latin-digit locale declares none; the known zeros start a digit block.
+        XCTAssertNil(NumFormat.from(locale: Locale(identifier: "en_US")).digitZero)
+        XCTAssertEqual(NumFormat.digitZero(ofNumberingSystem: "thai"), "\u{0E50}")
+        XCTAssertEqual(NumFormat.digitZero(ofNumberingSystem: "fullwide"), "\u{FF10}")
+        XCTAssertNil(NumFormat.digitZero(ofNumberingSystem: "hanidec"))
+    }
+
+    func testFormatterBridgeDeclaresTheTrailingSignAndCurrencySeparators() throws {
+        // No CLDR locale writes `n-` in its decimal pattern, so the pattern comes from a
+        // configured formatter, which is what `from(formatter:)` is for: a negative suffix
+        // with no prefix is a trailing sign.
+        let formatter = NumberFormatter()
+        formatter.locale = Locale(identifier: "en_US")
+        formatter.numberStyle = .decimal
+        formatter.negativePrefix = ""
+        formatter.negativeSuffix = "-"
+        let trailing = NumFormat.from(formatter: formatter)
+        XCTAssertTrue(trailing.styles.contains(.trailingSign))
+        XCTAssertEqual(trailing.currencySymbol, "$")
+        XCTAssertEqual(try Cast.i32("5-", format: trailing), .success(-5))
+        XCTAssertEqual(try Cast.decimal("$1,234.50-", format: trailing), .success(Decimal(string: "-1234.5")!))
+        // Parentheses are their own lenience, not a trailing sign.
+        formatter.negativePrefix = "("
+        formatter.negativeSuffix = ")"
+        XCTAssertFalse(NumFormat.from(formatter: formatter).styles.contains(.trailingSign))
+        // Monetary separators that differ from the number ones are declared; equal ones are
+        // left to the core's fallback, which is the same reading.
+        let dutch = NumberFormatter()
+        dutch.locale = Locale(identifier: "nl_NL")
+        dutch.numberStyle = .decimal
+        dutch.currencyDecimalSeparator = "."
+        dutch.currencyGroupingSeparator = ","
+        let prices = NumFormat.from(formatter: dutch)
+        XCTAssertEqual(prices.decimalSeparator, ",")
+        XCTAssertEqual(prices.currencyDecimalSeparator, ".")
+        XCTAssertEqual(prices.currencyGroupSeparator, ",")
+        XCTAssertEqual(try Cast.decimal("€ 1,234.50", format: prices), .success(Decimal(string: "1234.5")!))
+        XCTAssertEqual(try Cast.decimal("1.234,50", format: prices), .success(Decimal(string: "1234.5")!))
+        XCTAssertEqual(NumFormat.from(locale: Locale(identifier: "nl_NL")).currencyDecimalSeparator, "")
+    }
+
+    func testLocaleBridgeDeclaresTheDayPeriods() throws {
+        // Korean writes the designator ahead of the clock; the bridge reads it off a
+        // DateFormatter, and the English pair still reads beside it.
+        let korea = Locale(identifier: "ko_KR")
+        let korean = DateFormat.from(locale: korea)
+        XCTAssertEqual(korean.amSymbol, "오전")
+        XCTAssertEqual(korean.pmSymbol, "오후")
+        XCTAssertEqual(korean.order, DateOrder.from(locale: korea))
+        let afternoon = DateComponents(year: 2026, month: 1, day: 7, hour: 15, minute: 4, second: 0, nanosecond: 0)
+        XCTAssertEqual(try Cast.dateTime("2026-01-07 오후 3:04", locale: korea), .success(afternoon))
+        XCTAssertEqual(try Cast.dateTime("2026-01-07 오후3:04", format: korean), .success(afternoon))
+        XCTAssertEqual(try Cast.dateTime("2026-01-07 3:04 PM", locale: korea), .success(afternoon))
+        XCTAssertEqual(hour(of: try Cast.dateTime(Array("2026-01-07 오전 3:04".utf8), locale: korea)), 3)
+        // Spanish's designators carry a space inside, which is allowed; the ends are not.
+        let spain = Locale(identifier: "es_ES")
+        let spanish = DateFormat.from(locale: spain)
+        XCTAssertEqual(spanish.order, .dayMonthYear)
+        let spanishAfternoon = "7/1/2026 3:04 \(spanish.pmSymbol)"
+        XCTAssertEqual(try Cast.dateTime(spanishAfternoon, locale: spain), .success(afternoon), spanishAfternoon)
+        // Undeclared, a culture's designator is no designator.
+        guard case .fault(let fault) = try Cast.dateTime("2026-01-07 오후 3:04", order: .yearMonthDay) else {
+            return XCTFail("an undeclared designator should be malformed")
+        }
+        XCTAssertEqual(fault.reason, .malformed)
+    }
+
+    func testDayPeriodsTheFieldCannotCarryDeclareNone() throws {
+        // The pair is declared together or not at all; Persian's AM designator is longer
+        // than the 16-byte field, so neither is, and the text reads as English only.
+        let persia = Locale(identifier: "fa_IR")
+        let formatter = DateFormatter()
+        formatter.locale = persia
+        let fits = [formatter.amSymbol ?? "", formatter.pmSymbol ?? ""].allSatisfy {
+            !$0.isEmpty && $0.utf8.count <= Interop.designatorMaxBytes
+        }
+        let persian = DateFormat.from(locale: persia)
+        if fits {
+            XCTAssertEqual(persian.amSymbol, formatter.amSymbol)
+        } else {
+            XCTAssertEqual(persian.amSymbol, "")
+            XCTAssertEqual(persian.pmSymbol, "")
+            XCTAssertFalse(persian.declaresPeriods)
+        }
+        XCTAssertEqual(hour(of: try Cast.dateTime("2026-01-07 3:04 PM", locale: persia)), 15)
+    }
+
+    func testDeclaredDayPeriodsAreReadAtEitherSideOfTheClock() throws {
+        let german = DateFormat(order: .dayMonthYear, amSymbol: "vorm.", pmSymbol: "nachm.")
+        let afternoon = DateComponents(year: 2026, month: 7, day: 1, hour: 15, minute: 4, second: 0, nanosecond: 0)
+        XCTAssertEqual(try Cast.dateTime("1/7/2026 3:04 nachm.", format: german), .success(afternoon))
+        XCTAssertEqual(try Cast.dateTime("1/7/2026 nachm. 3:04", format: german), .success(afternoon))
+        XCTAssertEqual(hour(of: try Cast.dateTime("1/7/2026 3:04 vorm.", format: german)), 3)
+        XCTAssertEqual(try Cast.dateTime("1/7/2026 3:04 PM", format: german), .success(afternoon))
+        // A format declaring nothing is the order-only door, bit for bit.
+        let plain = DateFormat(order: .dayMonthYear)
+        XCTAssertFalse(plain.declaresPeriods)
+        for text in ["1/7/2026 3:04 PM", "1/7/2026 3:04 nachm.", "1/7/2026", "1/7/2026 15:04:05Z"] {
+            XCTAssertEqual(try Cast.dateTime(text, format: plain), try Cast.dateTime(text, order: .dayMonthYear), text)
+        }
+    }
+
+    func testTheUsersLocaleIsNeverCached() {
+        // `.current` and `.autoupdatingCurrent` derive on every call — their identifier
+        // does not carry a user's overrides — and an explicit identifier is served from the
+        // cache after the first.
+        final class Count: @unchecked Sendable {
+            var derived = 0
+        }
+        let count = Count()
+        let cache = LocaleFormats(derive: { locale -> NumFormat in
+            count.derived += 1
+            return NumFormat.from(locale: locale)
+        })
+        XCTAssertEqual(cache.format(for: .current), NumFormat.from(locale: .current))
+        XCTAssertEqual(cache.format(for: .current), NumFormat.from(locale: .current))
+        XCTAssertEqual(count.derived, 2)
+        _ = cache.format(for: .autoupdatingCurrent)
+        _ = cache.format(for: .autoupdatingCurrent)
+        XCTAssertEqual(count.derived, 4)
+        _ = cache.format(for: Locale(identifier: "de_DE"))
+        _ = cache.format(for: Locale(identifier: "de_DE"))
+        XCTAssertEqual(count.derived, 5)
+        // And the doors read the user's settings through it.
+        XCTAssertEqual(try Cast.i32("42", locale: .current), try Cast.i32("42", format: .from(locale: .current)))
     }
 }

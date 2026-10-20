@@ -153,16 +153,17 @@ mod python_ext;
 #[cfg(feature = "ruby")]
 mod ruby_ext;
 
-pub use abi::{RawNumFormat, hypercast_version};
+pub use abi::{RawDayPeriods, RawNumFormat, hypercast_version};
 pub use boolean::cast_bool;
 pub use character::cast_char;
 pub use decimal::cast_decimal;
 pub use integer::{cast_i8, cast_i16, cast_i32, cast_i64, cast_u8, cast_u16, cast_u32, cast_u64};
 pub use real::{cast_f32, cast_f64};
 pub use temporal::{
-    DateOrder, ExcelEpoch, MAX_DURATION_SECONDS, MAX_TIMESTAMP_SECONDS, MIN_TIMESTAMP_SECONDS,
-    UnixPrecision, cast_date, cast_date_ordered, cast_datetime, cast_duration, cast_excel_serial,
-    cast_time, cast_timestamp, cast_unix, excel_duration, excel_serial, excel_time, unix_from_f64,
+    DateOrder, DayPeriods, ExcelEpoch, MAX_DURATION_SECONDS, MAX_TIMESTAMP_SECONDS,
+    MIN_TIMESTAMP_SECONDS, UnixPrecision, cast_date, cast_date_ordered, cast_datetime,
+    cast_datetime_with, cast_duration, cast_excel_serial, cast_time, cast_timestamp, cast_unix,
+    excel_duration, excel_serial, excel_time, unix_from_f64,
 };
 pub use typed::{
     ShortestDigits, bool_from_f64, decimal_from_f64, f32_from_f64, i8_from_f64, i16_from_f64,
@@ -171,7 +172,8 @@ pub use typed::{
 };
 pub use uuid::cast_uuid;
 pub use verdict::{
-    CivilDateTime, CurrencySymbol, Date, Decimal, Duration, Fault, NumFormat, Reason, Timestamp,
+    CivilDateTime, CurrencySymbol, Date, Decimal, Duration, Fault, NativeDigits, NumFormat, Reason,
+    Symbol, Timestamp,
 };
 
 /// Presents a verdict optionally: an [`Reason::Empty`] fault becomes `Ok(None)` — Rust's
@@ -713,21 +715,494 @@ mod tests {
         );
     }
 
+    // --- culture fidelity (the 0.9.0 sweep): everything a format declares beyond its
+    // separators, each read beside the ASCII default, never instead of it ---
+
+    fn symbol(text: &str) -> Symbol<8> {
+        Symbol::new(text).unwrap()
+    }
+
+    #[test]
+    fn a_declared_sign_is_read_beside_the_ascii_one() {
+        let estonian = INVARIANT.with_signs(symbol("\u{2212}"), symbol("\u{FF0B}"));
+        assert_eq!(cast_i32("\u{2212}5".as_bytes(), &estonian), Ok(-5));
+        assert_eq!(cast_i32("\u{FF0B}5".as_bytes(), &estonian), Ok(5));
+        assert_eq!(cast_i32(b"-5", &estonian), Ok(-5));
+        assert_eq!(cast_f64("\u{2212}2.5".as_bytes(), &estonian), Ok(-2.5));
+        assert_eq!(cast_decimal("\u{2212}2.5".as_bytes(), &estonian).map(|d| d.negative), Ok(true));
+        // Ahead of or after a leading currency symbol, like the ASCII sign.
+        let dollars = estonian.with_currency(CurrencySymbol::new("$").unwrap());
+        assert_eq!(cast_i32("\u{2212}$5".as_bytes(), &dollars), Ok(-5));
+        assert_eq!(cast_i32("$\u{2212}5".as_bytes(), &dollars), Ok(-5));
+        // Undeclared, it is the malformed character it always was; declared twice over, the
+        // second sign is the fault, in its own width.
+        assert_eq!(span(cast_i32("\u{2212}5".as_bytes(), &INVARIANT)), (Reason::Malformed, 0, 3));
+        assert_eq!(span(cast_i32("-\u{2212}5".as_bytes(), &estonian)), (Reason::Malformed, 1, 3));
+        assert_eq!(span(cast_i32("\u{2212}-5".as_bytes(), &estonian)), (Reason::Malformed, 3, 1));
+        assert_eq!(span(cast_i32("(\u{2212}5)".as_bytes(), &estonian)), (Reason::Malformed, 1, 3));
+        // The plain fast paths never take part: the ASCII shape reads as written.
+        assert_eq!(cast_i64(b"-9223372036854775808", &estonian), Ok(i64::MIN));
+    }
+
+    #[test]
+    fn a_trailing_sign_needs_its_flag_and_stands_alone() {
+        let trailing = NumFormat { flags: NumFormat::ALL | NumFormat::TRAILING_SIGN, ..INVARIANT };
+        assert_eq!(cast_i32(b"5-", &trailing), Ok(-5));
+        assert_eq!(cast_i32(b"5 -", &trailing), Ok(-5));
+        assert_eq!(cast_i32(b"5+", &trailing), Ok(5));
+        assert_eq!(cast_f64(b"2.5-", &trailing), Ok(-2.5));
+        assert_eq!(cast_f64(b"2.5%-", &trailing).map(f64::to_bits), Ok((-0.025f64).to_bits()));
+        assert_eq!(cast_f64(b"2.5-%", &trailing).map(f64::to_bits), Ok((-0.025f64).to_bits()));
+        assert_eq!(cast_f64(b"2.5 %-", &trailing).map(f64::to_bits), Ok((-0.025f64).to_bits()));
+        assert_eq!(span(cast_f64(b"-2.5%-", &trailing)), (Reason::Malformed, 5, 1));
+        // Of two trailing signs, the later one is the fault, as with two leading ones.
+        assert_eq!(span(cast_f64(b"2.5-%-", &trailing)), (Reason::Malformed, 5, 1));
+        assert_eq!(
+            cast_decimal(b"1,234.5 -", &trailing).map(|d| d.to_string()),
+            Ok("-1234.5".into())
+        );
+        // Not in ALL: the invariant format reads it as it did.
+        assert_eq!(span(cast_i32(b"5-", &INVARIANT)), (Reason::Malformed, 1, 1));
+        // One sign in all, and none inside accounting parentheses.
+        assert_eq!(span(cast_i32(b"-5-", &trailing)), (Reason::Malformed, 2, 1));
+        assert_eq!(span(cast_i32(b"(5-)", &trailing)), (Reason::Malformed, 2, 1));
+        assert_eq!(span(cast_i32(b"5--", &trailing)), (Reason::Malformed, 1, 1));
+        // Around a trailing currency symbol, on either side of it.
+        let euros = trailing.with_currency(CurrencySymbol::new("\u{20AC}").unwrap());
+        assert_eq!(cast_i32("5 \u{20AC}-".as_bytes(), &euros), Ok(-5));
+        assert_eq!(cast_i32("5- \u{20AC}".as_bytes(), &euros), Ok(-5));
+        assert_eq!(cast_i32("\u{20AC}5-".as_bytes(), &euros), Ok(-5));
+        assert_eq!(span(cast_i32("-5 \u{20AC}-".as_bytes(), &euros)), (Reason::Malformed, 6, 1));
+        assert_eq!(span(cast_i32("(5 \u{20AC}-)".as_bytes(), &euros)), (Reason::Malformed, 6, 1));
+        // A bare sign is no number.
+        assert_eq!(span(cast_i32(b"-", &trailing)), (Reason::Malformed, 0, 1));
+        assert_eq!(span(cast_i32("\u{20AC}-".as_bytes(), &euros)), (Reason::Malformed, 0, 4));
+    }
+
+    #[test]
+    fn a_currency_amount_is_read_with_the_currency_separators_once_the_symbol_is_seen() {
+        // en-DE: a decimal comma in numbers, a decimal point in currency.
+        let en_de = NumFormat::new(',', '.', NumFormat::ALL)
+            .with_currency(CurrencySymbol::new("\u{20AC}").unwrap())
+            .with_currency_separators(symbol("."), symbol(","));
+        assert_eq!(cast_f64("\u{20AC}1,234.50".as_bytes(), &en_de), Ok(1234.5));
+        assert_eq!(cast_f64("1,234.50 \u{20AC}".as_bytes(), &en_de), Ok(1234.5));
+        assert_eq!(cast_f64("(\u{20AC}1,234.50)".as_bytes(), &en_de), Ok(-1234.5));
+        assert_eq!(cast_f64(b"1.234,50", &en_de), Ok(1234.5));
+        assert_eq!(cast_i32("\u{20AC}1,234".as_bytes(), &en_de), Ok(1234));
+        assert_eq!(cast_i32(b"1.234", &en_de), Ok(1234));
+        assert_eq!(
+            cast_decimal("\u{20AC}1,234.50".as_bytes(), &en_de).map(|d| d.to_string()),
+            Ok("1234.5".into())
+        );
+        // Without the symbol the number separators stand, so the currency shape is malformed
+        // at its own point, and with it a number-shaped amount is.
+        assert_eq!(span(cast_f64(b"1,234.50", &en_de)), (Reason::Malformed, 5, 1));
+        assert_eq!(span(cast_i32("\u{20AC}1.234".as_bytes(), &en_de)), (Reason::Malformed, 4, 1));
+        // One declared, the other keeps its number counterpart.
+        let half = NumFormat::new(',', '.', NumFormat::ALL)
+            .with_currency(CurrencySymbol::new("\u{20AC}").unwrap())
+            .with_currency_separators(symbol("."), Symbol::NONE);
+        assert_eq!(cast_f64("\u{20AC}1.5".as_bytes(), &half), Ok(1.5));
+        // Both `.` then: decimal semantics win, as they do for equal number separators.
+        assert_eq!(span(cast_f64("\u{20AC}1.234.5".as_bytes(), &half)), (Reason::Malformed, 8, 1));
+        // Detection governs the whole token, currency separators included.
+        let detect = NumFormat { flags: en_de.flags | NumFormat::SEPARATOR_DETECT, ..en_de };
+        assert_eq!(cast_f64("\u{20AC}1.234,50".as_bytes(), &detect), Ok(1234.5));
+        assert_eq!(cast_f64("\u{20AC}1,234.50".as_bytes(), &detect), Ok(1234.5));
+    }
+
+    #[test]
+    fn a_declared_percent_is_read_beside_the_ascii_one() {
+        let arabic = INVARIANT.with_percent(symbol("\u{66A}"));
+        assert_eq!(cast_f64("50\u{66A}".as_bytes(), &arabic), Ok(0.5));
+        assert_eq!(cast_f64(b"50%", &arabic), Ok(0.5));
+        assert_eq!(cast_f64("(2.5)\u{66A}".as_bytes(), &arabic), Ok(-0.025));
+        assert_eq!(cast_f64("50 \u{66A}".as_bytes(), &arabic), Ok(0.5));
+        assert_eq!(
+            cast_decimal("50\u{66A}".as_bytes(), &arabic).map(|d| d.to_string()),
+            Ok("0.5".into())
+        );
+        assert_eq!(span(cast_f64("50\u{66A}".as_bytes(), &INVARIANT)), (Reason::Malformed, 2, 2));
+        // Real doors only, and only with the flag, exactly as `%`.
+        assert_eq!(span(cast_i32("50\u{66A}".as_bytes(), &arabic)), (Reason::Malformed, 2, 2));
+        let strict = NumFormat { flags: 0, ..arabic };
+        assert_eq!(span(cast_f64("50\u{66A}".as_bytes(), &strict)), (Reason::Malformed, 2, 2));
+    }
+
+    #[test]
+    fn native_digits_are_read_beside_ascii_ones() {
+        let arabic_indic = INVARIANT.with_digits(NativeDigits::new('\u{660}').unwrap());
+        assert_eq!(cast_i32("\u{661}\u{662}\u{663}".as_bytes(), &arabic_indic), Ok(123));
+        assert_eq!(cast_i32("-\u{661}\u{662}\u{663}".as_bytes(), &arabic_indic), Ok(-123));
+        assert_eq!(cast_i32("\u{661},\u{662}\u{663}\u{664}".as_bytes(), &arabic_indic), Ok(1234));
+        assert_eq!(cast_i32("1\u{662}3".as_bytes(), &arabic_indic), Ok(123));
+        assert_eq!(cast_i32("\u{661}e\u{663}".as_bytes(), &arabic_indic), Ok(1000));
+        assert_eq!(cast_f64("\u{661}\u{662}.\u{665}".as_bytes(), &arabic_indic), Ok(12.5));
+        assert_eq!(cast_f64("\u{661}.\u{665}e\u{661}".as_bytes(), &arabic_indic), Ok(15.0));
+        assert_eq!(
+            cast_decimal("\u{661}\u{662}.\u{665}".as_bytes(), &arabic_indic).map(|d| d.to_string()),
+            Ok("12.5".into())
+        );
+        assert_eq!(cast_u8("\u{662}\u{665}\u{665}".as_bytes(), &arabic_indic), Ok(255));
+        assert_eq!(
+            reason(cast_u8("\u{662}\u{665}\u{666}".as_bytes(), &arabic_indic)),
+            Reason::OutOfRange
+        );
+        // The block's ten and no more: the character after nine is no digit, nor is the one
+        // before zero, and an undeclared block is malformed in its own width.
+        assert_eq!(span(cast_i32("\u{66A}".as_bytes(), &arabic_indic)), (Reason::Malformed, 0, 2));
+        assert_eq!(span(cast_i32("\u{65F}".as_bytes(), &arabic_indic)), (Reason::Malformed, 0, 2));
+        assert_eq!(
+            span(cast_i32("\u{661}\u{662}\u{663}".as_bytes(), &INVARIANT)),
+            (Reason::Malformed, 0, 2)
+        );
+        // Three-byte digits, and the fullwidth block.
+        let fullwidth = INVARIANT.with_digits(NativeDigits::new('\u{FF10}').unwrap());
+        assert_eq!(cast_i32("\u{FF11}\u{FF12}\u{FF13}".as_bytes(), &fullwidth), Ok(123));
+        assert_eq!(span(cast_i32("\u{FF11}x".as_bytes(), &fullwidth)), (Reason::Malformed, 3, 1));
+        // A group separator must still sit between digits, native ones included.
+        assert_eq!(span(cast_i32("\u{661},".as_bytes(), &arabic_indic)), (Reason::Malformed, 2, 1));
+        assert_eq!(span(cast_i32(",\u{661}".as_bytes(), &arabic_indic)), (Reason::Malformed, 0, 1));
+        // A zero that is ASCII, or whose block would cross a UTF-8 boundary, declares nothing.
+        assert!(NativeDigits::new('0').is_none());
+        assert!(NativeDigits::new('\u{67F}').is_none());
+        assert_eq!(NativeDigits::new('\u{660}').unwrap().zero(), Some('\u{660}'));
+        assert_eq!(NativeDigits::NONE.zero(), None);
+    }
+
+    #[test]
+    fn a_separator_may_be_wider_than_one_character() {
+        let wide = NumFormat::with_separators(symbol("."), symbol(", "), NumFormat::ALL);
+        assert_eq!(cast_i32(b"1, 234", &wide), Ok(1234));
+        assert_eq!(cast_f64(b"1, 234.5", &wide), Ok(1234.5));
+        assert_eq!(span(cast_i32(b"1,234", &wide)), (Reason::Malformed, 1, 1));
+        assert_eq!(span(cast_i32(b"1, x", &wide)), (Reason::Malformed, 1, 2));
+        let wide_decimal = NumFormat::with_separators(symbol("'."), symbol(","), NumFormat::ALL);
+        assert_eq!(cast_f64(b"1'.5", &wide_decimal), Ok(1.5));
+        assert_eq!(span(cast_i32(b"1'.5", &wide_decimal)), (Reason::Malformed, 1, 2));
+        assert_eq!(
+            cast_decimal(b"1,234'.5", &wide_decimal).map(|d| d.to_string()),
+            Ok("1234.5".into())
+        );
+        // NONE keeps the invariant separator; a two-character ASCII group separator sends
+        // the plain shape through the engine, to the same answer.
+        assert_eq!(
+            NumFormat::with_separators(Symbol::NONE, Symbol::NONE, NumFormat::ALL),
+            INVARIANT
+        );
+        let odd = NumFormat::with_separators(symbol("."), symbol("e."), NumFormat::ALL);
+        assert_eq!(cast_f64(b"1e3", &odd), Ok(1000.0));
+        assert_eq!(cast_i32(b"1e3", &odd), Ok(1000));
+        assert!(Symbol::<8>::new("").is_none());
+        assert!(Symbol::<8>::new("123456789").is_none());
+        assert!(Symbol::<8>::new("x1").is_none());
+        assert_eq!(symbol("\u{202F}").as_str(), "\u{202F}");
+    }
+
+    #[test]
+    fn declared_day_periods_are_read_beside_am_and_pm_on_either_side_of_the_clock() {
+        let german = DayPeriods::new(Symbol::new("vorm.").unwrap(), Symbol::new("nachm.").unwrap());
+        let korean = DayPeriods::new(
+            Symbol::new("\u{C624}\u{C804}").unwrap(),
+            Symbol::new("\u{C624}\u{D6C4}").unwrap(),
+        );
+        let dmy = DateOrder::DayMonthYear;
+        let ymd = DateOrder::YearMonthDay;
+        let at = |hour: u64, minute: u64| (hour * 3600 + minute * 60) * 1_000_000_000;
+        let nanos = |verdict: Result<CivilDateTime, Fault>| verdict.map(|value| value.nanos_of_day);
+        assert_eq!(nanos(cast_datetime_with(b"1/7/2026 3:04 nachm.", dmy, &german)), Ok(at(15, 4)));
+        assert_eq!(nanos(cast_datetime_with(b"1/7/2026 3:04 vorm.", dmy, &german)), Ok(at(3, 4)));
+        assert_eq!(nanos(cast_datetime_with(b"1/7/2026 3 nachm.", dmy, &german)), Ok(at(15, 0)));
+        assert_eq!(nanos(cast_datetime_with(b"1/7/2026 12:00 vorm.", dmy, &german)), Ok(at(0, 0)));
+        assert_eq!(nanos(cast_datetime_with(b"1/7/2026 3:04 PM", dmy, &german)), Ok(at(15, 4)));
+        assert_eq!(
+            nanos(cast_datetime_with("2026-01-07 \u{C624}\u{D6C4} 3:04".as_bytes(), ymd, &korean)),
+            Ok(at(15, 4))
+        );
+        assert_eq!(
+            nanos(cast_datetime_with("2026-01-07 \u{C624}\u{D6C4}3:04".as_bytes(), ymd, &korean)),
+            Ok(at(15, 4))
+        );
+        assert_eq!(
+            nanos(cast_datetime_with("2026-01-07 \u{C624}\u{C804} 12:00".as_bytes(), ymd, &korean)),
+            Ok(at(0, 0))
+        );
+        assert_eq!(
+            nanos(cast_datetime_with("2026-01-07T\u{C624}\u{D6C4} 3".as_bytes(), ymd, &korean)),
+            Ok(at(15, 0))
+        );
+        // A designator with a space inside it (es: `a. m.`), and one that begins with the
+        // English pair, which is tried after it.
+        let spanish = DayPeriods::new(Symbol::new("a. m.").unwrap(), Symbol::new("p. m.").unwrap());
+        assert_eq!(nanos(cast_datetime_with(b"1/7/2026 3:04 p. m.", dmy, &spanish)), Ok(at(15, 4)));
+        let dotted = DayPeriods::new(Symbol::new("AM.").unwrap(), Symbol::new("PM.").unwrap());
+        assert_eq!(nanos(cast_datetime_with(b"1/7/2026 3:04 PM.", dmy, &dotted)), Ok(at(15, 4)));
+        assert_eq!(nanos(cast_datetime_with(b"1/7/2026 3:04 PM", dmy, &dotted)), Ok(at(15, 4)));
+        // English ahead of the clock reads too, with nothing declared; a second marker is
+        // trailing text, and the clock under a marker is a 12-hour one.
+        assert_eq!(nanos(cast_datetime(b"1/7/2026 PM 3:04", dmy)), Ok(at(15, 4)));
+        assert_eq!(span(cast_datetime(b"1/7/2026 PM 3:04 PM", dmy)), (Reason::Malformed, 16, 1));
+        assert_eq!(span(cast_datetime(b"1/7/2026 PM 13:04", dmy)), (Reason::OutOfRange, 12, 2));
+        // Undeclared, a designator is trailing text at the space before it.
+        assert_eq!(span(cast_datetime(b"1/7/2026 3:04 nachm.", dmy)), (Reason::Malformed, 13, 1));
+        assert_eq!(
+            cast_datetime(b"1/7/2026 3:04 PM", dmy),
+            cast_datetime_with(b"1/7/2026 3:04 PM", dmy, &DayPeriods::ENGLISH)
+        );
+        // The ABI's own rules for a designator: a digit, or whitespace at an edge.
+        let raw =
+            |am: &str| RawDayPeriods::from(DayPeriods::new(Symbol::new(am).unwrap(), Symbol::NONE));
+        assert_eq!(
+            raw("vorm.").resolve(),
+            Some(&DayPeriods::new(Symbol::new("vorm.").unwrap(), Symbol::NONE))
+        );
+        assert_eq!(raw("a. m.").resolve().map(|p| p.am.as_str().to_string()), Some("a. m.".into()));
+        assert_eq!(raw(" am").resolve(), None);
+        assert_eq!(raw("am ").resolve(), None);
+        assert!(Symbol::<16>::new("a1").is_none());
+        assert_eq!(RawDayPeriods { size: 3, ..RawDayPeriods::ZERO }.resolve(), None);
+        assert_eq!(RawDayPeriods { size: 41, ..RawDayPeriods::ZERO }.resolve(), None);
+        assert_eq!(
+            RawDayPeriods { size: 4, ..RawDayPeriods::ZERO }.resolve(),
+            Some(&DayPeriods::ENGLISH)
+        );
+        assert_eq!(RawDayPeriods::from(german).resolve(), Some(&german));
+    }
+
     // --- ABI codes ---
+
+    /// The 92 bytes of a layout, built by hand: the size word, the flags, and whatever
+    /// `fill` writes at the offsets the bindings use.
+    fn layout(flags: u32, fill: impl FnOnce(&mut [u8; 92])) -> RawNumFormat {
+        let mut bytes = [0u8; 92];
+        bytes[..4].copy_from_slice(&92u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&flags.to_le_bytes());
+        // The invariant separators, which a caller always declares.
+        bytes[12] = b'.';
+        bytes[20] = 1;
+        bytes[21] = b',';
+        bytes[29] = 1;
+        fill(&mut bytes);
+        RawNumFormat::from_le_bytes(bytes)
+    }
 
     #[test]
     fn a_format_crosses_as_its_bytes_and_comes_back() {
         let format = NumFormat::new(',', '.', NumFormat::ALL)
             .with_currency(CurrencySymbol::new("€").unwrap());
         let raw = RawNumFormat::from(format);
-        assert_eq!(raw.resolve(), Some(format));
+        assert_eq!(raw.resolve(), Some(&format));
         let bytes = raw.to_le_bytes();
-        assert_eq!(&bytes[..4], &u32::from(',').to_le_bytes());
-        assert_eq!(&bytes[12..16], &3u32.to_le_bytes());
-        assert_eq!(&bytes[16..19], "€".as_bytes());
-        assert!(bytes[19..].iter().all(|&byte| byte == 0));
+        // The layout's own order: the size word, the flags, the digit zero, then each
+        // symbol's bytes followed by its length.
+        assert_eq!(&bytes[..4], &92u32.to_le_bytes());
+        assert_eq!(&bytes[4..8], &NumFormat::ALL.to_le_bytes());
+        assert_eq!(&bytes[8..12], &0u32.to_le_bytes());
+        assert_eq!((bytes[12], bytes[20]), (b',', 1));
+        assert_eq!((bytes[21], bytes[29]), (b'.', 1));
+        assert!(bytes[30..75].iter().all(|&byte| byte == 0));
+        assert_eq!(&bytes[75..78], "€".as_bytes());
+        assert!(bytes[78..91].iter().all(|&byte| byte == 0));
+        assert_eq!(bytes[91], 3);
         assert_eq!(RawNumFormat::from_le_bytes(bytes), raw);
-        assert_eq!(RawNumFormat::from(NumFormat::INVARIANT).resolve(), Some(NumFormat::INVARIANT));
+        assert_eq!(RawNumFormat::from(NumFormat::INVARIANT).resolve(), Some(&NumFormat::INVARIANT));
+        assert_eq!(layout(NumFormat::ALL, |_| {}).resolve(), Some(&NumFormat::INVARIANT));
+    }
+
+    #[test]
+    fn a_crossing_currency_symbol_is_held_to_the_same_rules_as_a_declared_one() {
+        let raw = |symbol: &[u8], len: u8, tail: u8| {
+            layout(NumFormat::ALL, |bytes| {
+                bytes[75..91].fill(tail);
+                bytes[75..75 + symbol.len()].copy_from_slice(symbol);
+                bytes[91] = len;
+            })
+        };
+        let declared =
+            |symbol: &str| NumFormat::INVARIANT.with_currency(CurrencySymbol::new(symbol).unwrap());
+        // Bytes past the length are no part of the symbol, whatever a binding left there.
+        for tail in [0, b'7', b' ', 0xFF] {
+            assert_eq!(raw(b"$", 1, tail).resolve(), Some(&declared("$")));
+            assert_eq!(raw("¤".as_bytes(), 2, tail).resolve(), Some(&declared("¤")));
+            assert_eq!(raw("руб.".as_bytes(), 7, tail).resolve(), Some(&declared("руб.")));
+        }
+        let sixteen = "ABCDEFGHIJKLMNOP";
+        assert_eq!(raw(sixteen.as_bytes(), 16, 0).resolve(), Some(&declared(sixteen)));
+        // The rules `CurrencySymbol::new` enforces, each on its own: a digit, every ASCII
+        // whitespace byte, broken UTF-8 (a lone lead byte, and a symbol cut mid-character),
+        // and a length past the inline capacity.
+        assert_eq!(raw(b"US1", 3, 0).resolve(), None);
+        for space in *b" \t\n\x0C\r" {
+            assert_eq!(raw(&[b'k', space, b'r'], 3, 0).resolve(), None);
+        }
+        assert_eq!(raw(&[0xC2], 1, 0).resolve(), None);
+        assert_eq!(raw("€".as_bytes(), 2, 0).resolve(), None);
+        assert_eq!(raw(b"$", 17, 0).resolve(), None);
+        // A vertical tab is not ASCII whitespace to Rust, so it stays a legal symbol byte.
+        assert_eq!(raw(&[b'k', 0x0B], 2, 0).resolve(), Some(&declared("k\u{0B}")));
+    }
+
+    #[test]
+    fn a_crossing_format_declares_each_field_or_keeps_the_default_for_it() {
+        let symbol = |text| Symbol::<8>::new(text).unwrap();
+        // Every field declared crosses and comes back as declared, by bytes and by value.
+        let declared = NumFormat::new(',', '\u{202F}', NumFormat::ALL | NumFormat::TRAILING_SIGN)
+            .with_currency_separators(symbol("."), symbol("'"))
+            .with_signs(symbol("\u{2212}"), symbol("\u{FF0B}"))
+            .with_percent(symbol("\u{66A}"))
+            .with_digits(NativeDigits::new('\u{660}').unwrap())
+            .with_currency(CurrencySymbol::new("kr.").unwrap());
+        let raw = RawNumFormat::from(declared);
+        assert_eq!(raw.resolve(), Some(&declared));
+        assert_eq!(RawNumFormat::from_le_bytes(raw.to_le_bytes()), raw);
+        assert_eq!(RawNumFormat::from_le_bytes(raw.to_le_bytes()).resolve(), Some(&declared));
+        let bytes = raw.to_le_bytes();
+        assert_eq!(&bytes[8..12], &0x660u32.to_le_bytes());
+        assert_eq!((&bytes[21..24], bytes[29]), ("\u{202F}".as_bytes(), 3));
+        assert_eq!((bytes[30], bytes[38]), (b'.', 1));
+        assert_eq!((bytes[39], bytes[47]), (b'\'', 1));
+        assert_eq!((&bytes[48..51], bytes[56]), ("\u{2212}".as_bytes(), 3));
+        assert_eq!((&bytes[57..60], bytes[65]), ("\u{FF0B}".as_bytes(), 3));
+        assert_eq!((&bytes[66..68], bytes[74]), ("\u{66A}".as_bytes(), 2));
+        assert_eq!((&bytes[75..78], bytes[91]), (b"kr.".as_slice(), 3));
+        // Each field's own rule: a missing or over-long number separator, equal separators
+        // (number or currency), a digit in any symbol, whitespace in a sign or the percent
+        // (but not in a separator), an ASCII zero, a block that would cross a UTF-8
+        // boundary, and a size the core does not read.
+        let all = NumFormat::ALL;
+        assert_eq!(layout(all, |b| b[20] = 0).resolve(), None);
+        assert_eq!(layout(all, |b| b[29] = 9).resolve(), None);
+        assert_eq!(layout(all, |b| b[21] = b'.').resolve(), None);
+        assert_eq!(
+            layout(all, |b| {
+                b[30] = b',';
+                b[38] = 1;
+            })
+            .resolve(),
+            None
+        );
+        assert!(
+            layout(all, |b| {
+                b[30] = b',';
+                b[38] = 1;
+                b[39] = b'.';
+                b[47] = 1;
+            })
+            .resolve()
+            .is_some()
+        );
+        assert_eq!(
+            layout(all, |b| {
+                b[21] = b'1';
+            })
+            .resolve(),
+            None
+        );
+        assert_eq!(
+            layout(all, |b| {
+                b[48] = b'1';
+                b[56] = 1;
+            })
+            .resolve(),
+            None
+        );
+        assert_eq!(
+            layout(all, |b| {
+                b[48] = b' ';
+                b[56] = 1;
+            })
+            .resolve(),
+            None
+        );
+        assert_eq!(
+            layout(all, |b| {
+                b[66] = b' ';
+                b[74] = 1;
+            })
+            .resolve(),
+            None
+        );
+        assert!(
+            layout(all, |b| {
+                b[21] = b' ';
+            })
+            .resolve()
+            .is_some()
+        );
+        assert_eq!(
+            layout(all, |b| b[8..12].copy_from_slice(&u32::from(b'0').to_le_bytes())).resolve(),
+            None
+        );
+        assert_eq!(
+            layout(all, |b| b[8..12].copy_from_slice(&0x67Fu32.to_le_bytes())).resolve(),
+            None
+        );
+        assert_eq!(
+            layout(all, |b| b[48..51].copy_from_slice(&[0xE2, 0x88, 0x92])).resolve(),
+            Some(&NumFormat::INVARIANT)
+        );
+        for size in [0u32, 29, 93] {
+            assert_eq!(
+                layout(all, |b| b[..4].copy_from_slice(&size.to_le_bytes())).resolve(),
+                None
+            );
+        }
+        assert_eq!(
+            layout(all, |b| b[..4].copy_from_slice(&30u32.to_le_bytes())).resolve(),
+            Some(&NumFormat::INVARIANT)
+        );
+    }
+
+    /// The C ABI reads a caller's layout in place, and a shorter one — a caller built
+    /// against an older layout — over zeros.
+    #[cfg(feature = "exports")]
+    #[test]
+    fn the_abi_reads_a_format_of_the_size_its_caller_declares() {
+        #[repr(C)]
+        struct RawFault {
+            offset: u32,
+            len: u32,
+        }
+        unsafe extern "C" {
+            fn cast_i32(
+                ptr: *const u8,
+                len: usize,
+                format: *const RawNumFormat,
+                out: *mut i32,
+                fault: *mut RawFault,
+            ) -> i32;
+        }
+        let door = |text: &[u8], format: *const RawNumFormat| {
+            let mut out = 0i32;
+            let mut fault = RawFault { offset: 0, len: 0 };
+            // SAFETY: the pointers are live for the call; `format` is a whole layout or null.
+            let code = unsafe { cast_i32(text.as_ptr(), text.len(), format, &mut out, &mut fault) };
+            (code, out, fault.offset, fault.len)
+        };
+        assert_eq!(door(b"1,234", core::ptr::null()), (0, 1234, 0, 0));
+        let trailing = layout(NumFormat::ALL | NumFormat::TRAILING_SIGN, |_| {});
+        assert_eq!(door(b"1,234-", &trailing), (0, -1234, 0, 0));
+        assert_eq!(door(b"1,234-", &layout(NumFormat::ALL, |_| {})), (2, 0, 5, 1));
+        // Thirty bytes: the separators and nothing after them, read as if the rest were
+        // zero — so a trailing sign flag works and a currency symbol is not there.
+        let shorter = layout(NumFormat::ALL | NumFormat::TRAILING_SIGN, |b| {
+            b[..4].copy_from_slice(&30u32.to_le_bytes());
+            b[75] = b'$';
+            b[91] = 1;
+        });
+        assert_eq!(door(b"$5", &shorter), (2, 0, 0, 1));
+        assert_eq!(door(b"5-", &shorter), (0, -5, 0, 0));
+        // A size the core does not know is the caller's bug.
+        for size in [0u32, 29, 93] {
+            let bad = layout(NumFormat::ALL, |b| b[..4].copy_from_slice(&size.to_le_bytes()));
+            assert_eq!(door(b"5", &bad), (-1, 0, 0, 0));
+        }
+        let eurozone = layout(NumFormat::ALL, |b| {
+            b[12] = b',';
+            b[21] = b'.';
+        });
+        assert_eq!(door(b"1.234", &eurozone), (0, 1234, 0, 0));
     }
 
     #[test]
@@ -1310,6 +1785,7 @@ mod tests {
 
     fn lane_formats() -> Vec<NumFormat> {
         let symbol = |text| CurrencySymbol::new(text).unwrap();
+        let wide = |text| Symbol::<8>::new(text).unwrap();
         let all = NumFormat::ALL;
         let usd = NumFormat::INVARIANT.with_currency(symbol("$"));
         let eurozone = NumFormat::new(',', '.', all);
@@ -1337,6 +1813,20 @@ mod tests {
             NumFormat::new('-', ',', all).with_currency(symbol("$")),
             NumFormat::new('.', '-', all).with_currency(symbol("$")),
             NumFormat::DETECT.with_currency(symbol("$")),
+            // The sweep's fields: declared signs, a trailing sign, currency separators, a
+            // declared percent, native digits, and a separator wider than one byte.
+            usd.with_signs(wide("\u{2212}"), wide("\u{FF0B}")),
+            NumFormat { flags: all | NumFormat::TRAILING_SIGN, ..usd },
+            NumFormat { flags: all | NumFormat::TRAILING_SIGN, ..usd }
+                .with_signs(wide("\u{2212}"), Symbol::NONE),
+            eurozone.with_currency(symbol("$")).with_currency_separators(wide("."), wide(",")),
+            usd.with_currency_separators(wide(","), wide(".")),
+            usd.with_percent(wide("\u{66A}")),
+            usd.with_percent(wide("e")),
+            usd.with_digits(NativeDigits::new('\u{660}').unwrap()),
+            NumFormat::with_separators(wide("."), wide(", "), all).with_currency(symbol("$")),
+            NumFormat::with_separators(wide("'."), wide(","), all).with_currency(symbol("$")),
+            NumFormat::with_separators(wide("."), wide("e."), all).with_currency(symbol("$")),
         ];
         // Each lenience switched off on its own, and all of them at once.
         for flag in [
@@ -1418,7 +1908,7 @@ mod tests {
         let formats = lane_formats();
         let vocabulary = [
             "-", "+", "(", ")", "$", "\u{20ac}", "kr.", "%", "&H", " ", "\u{a0}", ",", ".", "0",
-            "5", "12", "123", "e3", "E-2", "x",
+            "5", "12", "123", "e3", "E-2", "x", "\u{2212}", "\u{66A}", "\u{663}", "'",
         ];
         each_sequence(&vocabulary, 4, |input| {
             for format in &formats {

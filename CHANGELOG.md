@@ -9,6 +9,253 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+The culture-fidelity sweep: everything a culture declares beyond its separators — its signs,
+where the sign sits, the separators of a currency amount, its percent symbol, its digits, the
+words for the halves of a 12-hour clock — now crosses into the core, in one coordinated ABI
+change across the core and all seven bindings. One rule throughout: the ASCII or English
+default is always read, and a declared symbol is a further spelling read beside it, so no
+input that parsed in 0.8.0 reads differently. Also: free-threaded Python, and consumer
+feedback from Norse Architecture's Blazor WebAssembly integration.
+
+### Added
+
+- **Every numeric format carries what a culture declares.** `NumFormat` gains, beside the
+  separators, flags and currency symbol it had: `minus_sign` and `plus_sign` (U+2212 for
+  Estonian and Basque; an RTL mark and a hyphen); `currency_decimal_sep` and
+  `currency_group_sep`, read in place of the number separators once the declared currency
+  symbol is found in the text, as the BCL switches when it sees the symbol (`en-DE` writes
+  `1.234,5` and `€1,234.50`); `percent` (`٪`, `％`); and `digits`, the zero of a native digit
+  block read beside ASCII (`١٢٣`, `１２３`). The separators themselves may now be one or two
+  characters (`Symbol<8>`, up to 8 UTF-8 bytes) rather than one `char`. A new lenience,
+  `TRAILING_SIGN`, reads the sign after the digits (`5-`, `5 -`, `5 €-`, `2.5%-`), never
+  beside a leading sign or inside parentheses; it is not part of `ALL`, and every bridge sets
+  it from the culture's own negative pattern. The constructors are `with_separators`,
+  `with_signs`, `with_currency_separators`, `with_percent`, `with_digits`; `Symbol::new`
+  and `NativeDigits::new` validate (no ASCII digit in a symbol; a zero that starts a digit
+  block). `corpus/integer.json`, `real.json` and `decimal.json` pin every row. *(core)*
+- **Day-period designators beside the declared date order.** `cast_datetime_with(text,
+  order, &DayPeriods)` reads a culture's own `AM`/`PM` words — `오전`/`오후`, `vorm.`/
+  `nachm.`, `a. m.`/`p. m.` — after the clock or, as Korean and Chinese write them, ahead of
+  it, beside the English pair, which is now read ahead of the clock too. `cast_datetime`
+  is unchanged (`DayPeriods::ENGLISH`). The C ABI's `cast_datetime` takes a `RawDayPeriods`
+  pointer after the order, null for English only. `corpus/datetime.json` pins it. *(core,
+  every binding)*
+- **The boolean door stays English, by decision.** The sweep's rule is that every declared
+  field is filled by each bridge from its platform's data, and no platform's culture data
+  carries a boolean lexicon (`bool.Parse`, `Boolean.parseBoolean` and `bool()` are English
+  or not parsers at all), so a declarable lexicon could not be bridged. A feed that says
+  `ja`/`oui` maps its words before the door. `docs/roadmap.md` has the whole sweep. *(core)*
+
+- **C# — error `HYPERCAST002` when the `wasm-tools` workload is missing.** Without the workload
+  a Blazor WebAssembly publish skipped linking the native core with nothing louder than the
+  SDK's own warning, and shipped a runtime with no `cast_*` symbols; `NETSDK1147` never fires
+  for this. The package's targets now stop the build instead. An app that gates on
+  `Cast.IsAvailable` and keeps a managed fallback can set `HyperCastRequireWasmWorkload` to
+  `false`. HyperUuid's package carries the same check. *(C#)*
+- **Benchmark rows for a declared currency symbol and for rejection, in every binding.** Each
+  measures the same grouped integer with and without a declared currency symbol (a locale's
+  format where the binding has one), and a malformed value against the platform's own
+  failing parse. All were run before the sweep's layout change above, on a core whose
+  crossing cost the same within noise:
+  - C#: `Cast.Scalar<int>` under `NumFormat.Invariant`, `NumFormat.From(InvariantCulture)` held
+    in a field, and the provider mapped per call: 52.1, 68.6 and 68.4 ns. Mapping per call is
+    noise and not worth caching; the gap is the culture's `¤`. Malformed: 74.8 ns against
+    32.1 ns for `int.TryParse`.
+  - Rust: `$` costs 1.8 ns (13.3 to 15.1 ns). Malformed: 37.3 ns against 3.3 ns for
+    `str::parse`, because a fault leaves the fast lanes for the engine that reports its span.
+  - Python: `$` costs nothing measurable (104 ns both). Malformed: 140 ns against 645 ns for
+    `int()` raising, 4.6x faster.
+  - Java: `Locale.US` costs 7 ns (34.1 to 41.2 ns). Malformed: 60.3 ns against 984 ns for
+    `Integer.parseInt` throwing, 16x faster.
+  - Go: `$` costs 11 ns (82 to 94 ns), checked and encoded per call. Malformed: 129 ns and
+    one allocation against 43 ns for `strconv.Atoi`.
+  - Swift: en_US's format costs 3 ns (28 to 31 ns). Malformed: 52 ns, no allocation.
+  - Ruby (Magnus): `$` costs 6 ns (151 to 157 ns). A fault: 222 ns against 101 ns for
+    `Integer(..., exception: false)`.
+  - PHP: lost in the call's cost (449 against 472 ns, inside ±3%). Malformed: 684 ns against
+    30 ns for `filter_var`, which returns only `false`.
+
+  Today's runs read above the PHP and Ruby READMEs' tables across the board, about 45% for
+  PHP and 10-20% for Ruby, committed core included. Those two report the new figures against
+  same-run baselines instead of adding table rows. *(all bindings)*
+- **Python — free-threaded CPython, with the GIL off.** Each platform now gets three wheels
+  where it had one: `cp311-abi3` for CPython 3.11+ with the GIL as before, `cp314-cp314t` for
+  free-threaded 3.14, and `cp315-abi3.abi3t`, PEP 803's stable ABI for 3.15+, which serves 3.15
+  with or without the GIL. PyO3 0.30's modules declare they need no GIL, so a free-threaded
+  interpreter keeps it off after `import hypercast`, and every door is safe to call from many
+  threads at once. Nothing needed changing for that: the verdict types and `NumFormat` are
+  frozen, the objects the doors build values with are bound once at import and only read
+  after, and a door reads its immutable `str` or `bytes` argument in place. PyPI gets 25
+  wheels per release where it got 9. CI installs each wheel on its own interpreters and checks
+  the GIL stays off, and runs the whole suite on free-threaded 3.15 on every platform. A build
+  from a checkout needs maturin 1.15 or newer. *(PyPI)*
+
+### Changed
+
+- **Breaking — `RawNumFormat` is a new, size-tagged layout, and `NumFormat` is `#[repr(C)]`.**
+  The 32-byte layout with the separators as code points is gone. The format now crosses the
+  C ABI as a size word followed by `NumFormat` itself, byte for byte: 92 bytes, 4-aligned,
+  every symbol its UTF-8 bytes then a length byte (`rust/src/abi.rs` has the offset table).
+  The core reads the caller's struct in place, so a cast pays for a check of it and no copy;
+  a caller that built a shorter layout, against an older version, has the rest read as
+  declaring nothing, and a size the core does not know is a contract violation. Every
+  binding's separator fields became strings, and every binding restates the new layout.
+  Measured through the C ABI on one machine, a grouped `cast_i32` under a declared `$` went
+  from 21.9 ns on the 0.8.0 core to 19.6 ns, and under `¤` from 22.2 to 20.9 ns: the sweep
+  costs nothing at the crossing. (The first attempt copied the caller's layout into a
+  differently laid-out `NumFormat` and lost 11 ns per cast to store-forwarding stalls; the
+  in-place layout is what replaced it.) In process, the integer and real lanes read the
+  same within a 2 ns noise floor; the decimal door's grouped-currency rows and separator
+  detection read 2 to 4 ns slower on the larger struct, which no single branch accounts
+  for. In Rust, `NumFormat`'s `decimal_sep` and `group_sep`
+  are `Symbol<8>` where they were `char` (`NumFormat::new` still takes `char`s), the fields
+  are reordered to the layout's, `RawNumFormat::resolve` returns `Option<&NumFormat>`, and
+  `CurrencySymbol` keeps its rules. *(core, every binding)*
+- **PHP — `NumFormat` takes the whole declaration, and `Cast::datetime` takes `DayPeriods`.**
+  The constructor gains `currencyDecimalSep`, `currencyGroupSep`, `minusSign`, `plusSign`,
+  `percent` and `digitZero` as optional named arguments, each `''` for none, and
+  `NumFormat::TRAILING_SIGN`; separators are strings of one or two characters.
+  `fromLocaleconv` reads `mon_decimal_point`, `mon_thousands_sep`, `negative_sign`,
+  `positive_sign` and `n_sign_posn`; `fromNumberFormatter` reads the monetary separators,
+  the sign, percent and zero-digit symbols, and the negative suffix. Because a mutated
+  formatter is declared again, the per-call `fromNumberFormatter` memo now reads twelve
+  attributes where it read three and costs about four times a hoisted `NumFormat`
+  (2.4 µs against 0.6 µs here); hoist it. `new DayPeriods($am, $pm)` is the third,
+  optional argument of `Cast::datetime`; PHP's own locale data carries no day-period words,
+  so there is no bridge, as for `DateOrder`. `NumFormat::packed()` returns the 92-byte
+  layout and `DayPeriods::packed()` the 40, and `Interop\NativeValues::writeDayPeriods`
+  joins `writeFormat`. Removed: `NumFormat::codePoints()`, which fed only the old layout.
+  The Zend spike's numeric doors take the packed bytes, and its datetime door takes the
+  two designators. *(PHP)*
+- **Ruby — `NumFormat` takes the whole declaration, and `datetime` takes `am:` and `pm:`.**
+  The `Data` gains `currency_decimal_sep`, `currency_group_sep`, `minus_sign`, `plus_sign`,
+  `percent` and `digit_zero`, each a keyword defaulting to `""`, beside
+  `HyperCast::TRAILING_SIGN` (not in `ALL_STYLES`); separators may be two characters.
+  `NumFormat.from_i18n` reads `negative_format` (a sign after `%n` sets `TRAILING_SIGN`) and
+  takes `currency_format:`, the locale's `number.currency.format`, for the currency
+  separators and unit; Rails carries no signs, percent or digits, so those are declared with
+  `with`. `HyperCast.datetime(text, order, am:, pm:)` reads a culture's designators;
+  Ruby's locale data carries none, so there is no bridge, as for the date order. The
+  keyword scan costs about as much again as the plain call on Magnus and half again on
+  Fiddle, so a hot loop over one culture is a case for a memoised value, which is left for
+  later. `NumFormat#packed` returns the 92-byte layout, `NumFormat::PACKED_BYTES` and
+  `NumFormat::SYMBOL_MAX_BYTES` name its limits, and the Fiddle scratch carries the 40-byte
+  periods beside it. `override` keeps its three keywords. *(Ruby)*
+- **Python — `NumFormat` takes the whole declaration, and `cast_datetime` takes `am=` and
+  `pm=`.** The constructor gains keyword-only `currency_decimal_sep`, `currency_group_sep`,
+  `minus_sign`, `plus_sign`, `percent` and `digit_zero`, each `""` for none, with matching
+  getters and `NumFormat.TRAILING_SIGN`; separators may be two characters, and `repr` names
+  only what is declared, so `eval(repr(f))` rebuilds it. `NumFormat.from_localeconv` reads
+  `mon_decimal_point`, `mon_thousands_sep`, `negative_sign`, `positive_sign` and
+  `n_sign_posn`; `localeconv` carries no percent or digits. `cast_datetime(text, order,
+  am=, pm=)` reads a culture's designators as keyword-only strings, either alone; with
+  neither given the door takes the core's English-only path. The keyword signature costs the
+  English path about 15 ns and a declared pair about 75 ns more per call, measured before
+  and after on one build; the numeric doors are untouched. `packed` returns the 92-byte
+  layout. *(PyPI)*
+- **Swift — `NumFormat` takes the whole declaration, `DateFormat` carries the day periods,
+  and the locale cache skips `.current`.** `NumFormat`'s separators are `String` (one or two
+  characters); it gains `currencyDecimalSeparator`, `currencyGroupSeparator`, `minusSign`,
+  `plusSign`, `percentSymbol` and `digitZero` (a `Unicode.Scalar?`), and `NumStyles` gains
+  `.trailingSign`. The `Unicode.Scalar` initializer stays. `NumFormat.from(locale:)` reads
+  every field from a `NumberFormatter` and the locale's numbering system, and a new
+  `from(formatter:)` reads a caller's own; a non-empty negative suffix with an empty prefix
+  sets `.trailingSign`. The struct stores only the 92-byte layout and computes each field
+  from it: ten stored `String`s cost 90 ns more per cached `locale:` call. `DateFormat(order:,
+  amSymbol:, pmSymbol:)` sits beside `DateOrder`, `DateFormat.from(locale:)` reads both from
+  one `DateFormatter` (both or neither), and `Cast.dateTime(_:format:)` and
+  `dateTime(_:locale:)` join `dateTime(_:order:)`. Per the roadmap's decision, `locale:`
+  derives afresh for `.current` and `.autoupdatingCurrent` instead of caching by identifier,
+  because a user's overrides change under one identifier; on Linux Foundation that is 60 to
+  70 µs a call, so a hot loop passes an explicit locale or a held `NumFormat`. `Interop`
+  gains `RawDayPeriods`, `rawDayPeriods(_:)`, `rawFormatSize`, `rawDayPeriodsSize`,
+  `symbolMaxBytes` and `designatorMaxBytes`. *(Swift)*
+- **Java — `NumFormat` takes the whole declaration, and `DateTimeFormat` carries the day
+  periods.** The record's `decimalSeparator()` and `groupSeparator()` are `String` (one or two
+  characters; the `char` constructors stay), and it gains `currencyDecimalSeparator`,
+  `currencyGroupSeparator`, `minusSign`, `plusSign`, `percentSymbol` and `digitZero` (a code
+  point, 0 for none), `with*` methods for each, and `STYLE_TRAILING_SIGN`. `NumFormat.from(Locale)`
+  reads every field from the locale's `DecimalFormatSymbols`, declaring a symbol only where it
+  differs from what the core reads anyway; a new `from(DecimalFormat)` derives the same from
+  a caller's own formatter, and is the only way to reach `STYLE_TRAILING_SIGN` from Java,
+  since no JDK 25 locale puts the sign after the digits without a prefix. The bridge reads
+  `getMinusSign()`, so a locale whose negative prefix carries a bidi mark ahead of the sign
+  (`fa-IR`) declares the bare sign. `DateTimeFormat(order, amDesignator, pmDesignator)` sits
+  beside `DateOrder`; `DateTimeFormat.from(Locale)` reads `getAmPmStrings()`, leaving an
+  English pair or one over 16 bytes undeclared, so every JDK locale derives (126 have a longer
+  designator). `Cast.dateTime` gains `DateTimeFormat` and `Locale` overloads for `String`,
+  `byte[]` and `MemorySegment`; the `DateOrder` ones are unchanged. `NativeValues` gains
+  `DAY_PERIODS_BYTES` and `writeDayPeriods`, both backends marshal through its one layout,
+  and the Native Image metadata carries the sixth downcall shape. Measured on one machine
+  today, a declared Spanish pair costs `dateTime` about 20 ns over the order alone, and the
+  `Locale` overload costs nothing over it. *(Java)*
+- **C# — `NumFormat` takes the whole declaration, `DateFormat` carries the day periods,
+  and every bridge fills every field.** `NumFormat`'s `DecimalSeparator` and `GroupSeparator`
+  are `string` (one or two characters; the `char` constructors stay), and it gains init-only
+  `CurrencyDecimalSeparator`, `CurrencyGroupSeparator`, `MinusSign`, `PlusSign`,
+  `PercentSymbol` and `DigitZero` (a `Rune?`, since `ccp-BD`'s zero is supplementary), with
+  `NumStyles.TrailingSign`. `NumFormat.From(CultureInfo | IFormatProvider | NumberFormatInfo)`
+  reads each from `NumberFormatInfo`, declaring a symbol only where it differs from the ASCII
+  default, and sets `TrailingSign` from `NumberNegativePattern` 3 or 4 or a trailing-sign
+  `CurrencyNegativePattern` (`fy-NL`). `NumberFormatInfo.NativeDigits` clones ten strings on
+  every read, 104 bytes per provider-mapped cast, so the bridge reads the BCL's own
+  `_nativeDigits` field through `UnsafeAccessor`, falling back to the public getter once
+  should a runtime ever rename it. `DateFormat(order, amDesignator, pmDesignator)` sits beside
+  `DateOrder`; `DateFormat.From(CultureInfo | IFormatProvider | DateTimeFormatInfo)` reads the
+  order and the designators, leaving the English pair or one the core could not read
+  undeclared, and `DateOrders.From(DateTimeFormatInfo)` joins `From(CultureInfo)`. Neither
+  bridge throws on a runtime's data, whatever its ICU or NLS spells: a symbol or designator
+  the core would refuse (over its bytes, an ASCII digit in it as in Anii's `1ka`, whitespace
+  where none may be) is left undeclared, a culture whose two separators coincide
+  (`mn-Mong-MN` under NLS) groups with the other ASCII separator, and a currency pair that
+  would collide declares nothing; the suite checks every shipped culture against that rule
+  and pins the spellings on hand-built formatting data, so it holds on every runner's data. `Cast.DateTime` gains
+  `DateFormat` and `IFormatProvider?` overloads for UTF-8 and UTF-16, ranked below the
+  `DateOrder` ones so `default` still binds `DateOrder`. `NumFormat.ToRaw()` writes the
+  92-byte `Interop.RawNumFormat` (an ASCII fast lane keeps it at 7.9 ns, against 7.6 for
+  the old 30-byte layout) and `DateFormat.ToRaw()` the 40-byte `Interop.RawDayPeriods`;
+  `RawCurrency` is gone. Measured after the port on one machine, `Cast.Scalar<int>` under a
+  declared, culture-derived and per-call-mapped format reads 54.4, 71.8 and 83.6 ns, with
+  the per-call mapping allocation-free at about 12 ns; the README's earlier claim that the
+  mapping was lost in the noise is withdrawn. *(C#)*
+- **Breaking — the `python-values` feature is built on PyO3 0.30.** `hypercast::python`'s
+  `Values` takes and returns PyO3 0.30's `Python` and `Bound`, where it took 0.27's, so a crate
+  that presents HyperCast's values from its own extension moves to PyO3 0.30 with it: Cargo
+  refuses two PyO3 versions in one build, since each one's `pyo3-ffi` declares
+  `links = "python"`. The API is otherwise unchanged. HyperTabular's next release is built on
+  this one. *(crates.io)*
+- **C# — the browser-wasm archive moves to `runtimes/browser-wasm/nativeassets/net11.0/`**
+  from `net10.0/`, matching the only framework that links it. The package's targets name the
+  path directly, so nothing a consumer sets changes. The archive was already linked by the
+  .NET 11 toolchain (Emscripten 6.0.2). The folder name had only made that look like a
+  mismatch. *(C#)*
+
+### Fixed
+
+- **C# — the browser-wasm archive carries build provenance, and the package checks it.** Every
+  native in the 0.8.0 package verified with `gh attestation verify` except
+  `runtimes/browser-wasm/nativeassets/net10.0/libhypercast.a`, the archive a Blazor
+  WebAssembly app links: the forge's `hyper-build-wasm.yml` never attested it, and nothing
+  checked natives before packing, so the gap went unnoticed. The archive is now attested
+  where it is built, and `hyper-pack-nuget.yml` verifies every native it packs, failing
+  the release on one without provenance. Verify it like the other natives, with
+  `--signer-repo SkunkWerkx/.github`. *(C#)*
+- **C# README — the generic `ParseRequired<T>` example did not compile.** A `switch` over a
+  `Verdict<T>` whose `T` is still open cannot bind a variable in a case pattern (CS8780: the
+  compiler cannot tell a pattern on the union from one on its underlying value). The example
+  now uses the `TryGetValue` chain, and the top of the README shows that chain beside the
+  `switch` it replaces. The README also notes that the Blazor WebAssembly link happens even
+  when the trimmer removes `HyperCast.Managed`. The root README's C# example now says a
+  `string` door's fault offset is in chars, not bytes. *(C#)*
+- **README examples.** Every README example was compiled and run against the local build.
+  - Python and Java: the opening example printed a `str`/`String` door's fault offset as a
+    byte offset. It counts code points and UTF-16 units there, so it now says "at char"; the
+    same example in `hypercast/__init__.py` and `Verdict.java` is corrected too.
+  - PHP: the preload script compiled `src/*.php` only, which misses `src/Interop/`. Under a
+    web SAPI with the default `ffi.enable=preload`, the first numeric door then failed with
+    "FFI API is restricted". It now preloads both directories.
+  *(Python, Java, PHP)*
+
 ## [0.8.0] — 2026-10-08
 
 Driven by Norse Architecture, which is replacing its last hand-written scalar parsers with

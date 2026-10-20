@@ -22,7 +22,7 @@ use ext_php_rs::prelude::*;
 use ext_php_rs::types::ZendHashTable;
 
 use crate as core;
-use crate::{CurrencySymbol, DateOrder, ExcelEpoch, UnixPrecision};
+use crate::{DateOrder, DayPeriods, ExcelEpoch, RawNumFormat, Symbol, UnixPrecision};
 
 type Reply = PhpResult<ZBox<ZendHashTable>>;
 
@@ -52,33 +52,50 @@ fn reply<T>(
     Ok(table)
 }
 
-/// `currency` is the declared symbol's text — empty declares none — validated to the same
-/// rule `NumFormat.php` enforces at construction, so an invalid symbol throws here rather
-/// than becoming a contract violation deeper in.
-fn format(
-    decimal_sep: u32,
-    group_sep: u32,
-    flags: u32,
-    currency: &str,
-) -> PhpResult<core::NumFormat> {
-    let (Some(decimal_sep), Some(group_sep)) =
-        (char::from_u32(decimal_sep), char::from_u32(group_sep))
-    else {
-        return Err(PhpException::from_message("separators must be Unicode scalar values".into()));
-    };
-    if decimal_sep == group_sep {
-        return Err(PhpException::from_message("decimal and group separators must differ".into()));
-    }
-    let currency = if currency.is_empty() {
-        CurrencySymbol::NONE
-    } else {
-        CurrencySymbol::new(currency).ok_or_else(|| {
+/// `format` is the 92-byte layout `NumFormat::packed()` builds — the same bytes `Cast.php`
+/// hands the ext-ffi path — read through [`RawNumFormat::resolve`], the check the C ABI
+/// makes, so an invalid format throws here (`NumFormat.php` refuses one at construction,
+/// so only a hand-built string ever reaches this) rather than becoming a contract violation
+/// deeper in.
+fn format(format: &Binary<u8>) -> PhpResult<core::NumFormat> {
+    let bytes: [u8; 92] = format.as_slice().try_into().map_err(|_| {
+        PhpException::from_message(format!(
+            "format must be the 92-byte packed NumFormat layout; got {} bytes",
+            format.len()
+        ))
+    })?;
+    RawNumFormat::from_le_bytes(bytes).resolve().copied().ok_or_else(|| {
+        PhpException::from_message(
+            "format violates the core's contract: a missing, over-long or equal separator, a symbol \
+             with an ASCII digit in it or that is not UTF-8, whitespace in a sign, or a digit \
+             zero that starts no digit block"
+                .into(),
+        )
+    })
+}
+
+/// The day-period designators as `Cast.php`'s datetime door declares them — the AM and PM
+/// text, both empty for the English pair alone — validated to the rule `DayPeriods.php`
+/// enforces at construction ([`DayPeriods::check`]), so an invalid designator throws here.
+fn periods(am: &str, pm: &str) -> PhpResult<DayPeriods> {
+    let designator = |text: &str| -> PhpResult<Symbol<16>> {
+        if text.is_empty() {
+            return Ok(Symbol::NONE);
+        }
+        Symbol::new(text).ok_or_else(|| {
             PhpException::from_message(
-                "currency symbol must be at most 16 bytes of UTF-8 with no ASCII digit or whitespace".into(),
+                "a day-period designator must be at most 16 bytes of UTF-8 with no ASCII digit"
+                    .into(),
             )
-        })?
+        })
     };
-    Ok(core::NumFormat::new(decimal_sep, group_sep, flags).with_currency(currency))
+    let periods = DayPeriods::new(designator(am)?, designator(pm)?);
+    if !periods.check() {
+        return Err(PhpException::from_message(
+            "a day-period designator must not start or end with ASCII whitespace".into(),
+        ));
+    }
+    Ok(periods)
 }
 
 fn timestamp(table: &mut ZendHashTable, ts: core::Timestamp) -> PhpResult<()> {
@@ -113,8 +130,8 @@ macro_rules! integer_doors {
         // identifier, which splits the width off as its own word (`cast_i_8`).
         #[php_function]
         #[php(name = $name)]
-        pub fn $php(text: Binary<u8>, decimal_sep: u32, group_sep: u32, flags: u32, currency: String) -> Reply {
-            let format = format(decimal_sep, group_sep, flags, &currency)?;
+        pub fn $php(text: Binary<u8>, format: Binary<u8>) -> Reply {
+            let format = self::format(&format)?;
             reply(core::$core(text.as_slice(), &format), |table, value| push(table, i64::from(value)))
         }
     )+};
@@ -134,40 +151,22 @@ integer_doors! {
 /// pattern, exactly as `Cast.php`'s `u64` door presents it.
 #[php_function]
 #[php(name = "hypercast_native_cast_u64")]
-pub fn hypercast_native_cast_u64(
-    text: Binary<u8>,
-    decimal_sep: u32,
-    group_sep: u32,
-    flags: u32,
-    currency: String,
-) -> Reply {
-    let format = format(decimal_sep, group_sep, flags, &currency)?;
+pub fn hypercast_native_cast_u64(text: Binary<u8>, format: Binary<u8>) -> Reply {
+    let format = self::format(&format)?;
     reply(core::cast_u64(text.as_slice(), &format), |table, value| push(table, value as i64))
 }
 
 #[php_function]
 #[php(name = "hypercast_native_cast_f32")]
-pub fn hypercast_native_cast_f32(
-    text: Binary<u8>,
-    decimal_sep: u32,
-    group_sep: u32,
-    flags: u32,
-    currency: String,
-) -> Reply {
-    let format = format(decimal_sep, group_sep, flags, &currency)?;
+pub fn hypercast_native_cast_f32(text: Binary<u8>, format: Binary<u8>) -> Reply {
+    let format = self::format(&format)?;
     reply(core::cast_f32(text.as_slice(), &format), |table, value| push(table, f64::from(value)))
 }
 
 #[php_function]
 #[php(name = "hypercast_native_cast_f64")]
-pub fn hypercast_native_cast_f64(
-    text: Binary<u8>,
-    decimal_sep: u32,
-    group_sep: u32,
-    flags: u32,
-    currency: String,
-) -> Reply {
-    let format = format(decimal_sep, group_sep, flags, &currency)?;
+pub fn hypercast_native_cast_f64(text: Binary<u8>, format: Binary<u8>) -> Reply {
+    let format = self::format(&format)?;
     reply(core::cast_f64(text.as_slice(), &format), push)
 }
 
@@ -176,14 +175,8 @@ pub fn hypercast_native_cast_f64(
 /// the scale, and the sign.
 #[php_function]
 #[php(name = "hypercast_native_cast_decimal")]
-pub fn hypercast_native_cast_decimal(
-    text: Binary<u8>,
-    decimal_sep: u32,
-    group_sep: u32,
-    flags: u32,
-    currency: String,
-) -> Reply {
-    let format = format(decimal_sep, group_sep, flags, &currency)?;
+pub fn hypercast_native_cast_decimal(text: Binary<u8>, format: Binary<u8>) -> Reply {
+    let format = self::format(&format)?;
     reply(core::cast_decimal(text.as_slice(), &format), |table, value| {
         push(table, value.lo as i64)?;
         push(table, i64::from(value.hi))?;
@@ -252,11 +245,19 @@ pub fn hypercast_native_cast_date_ordered(text: Binary<u8>, order_code: u32) -> 
     reply(core::cast_date_ordered(text.as_slice(), order), date)
 }
 
+/// `am` and `pm` declare the day-period designators read beside `AM`/`PM`; both empty is
+/// the English pair alone, what `Cast::datetime()` passes when no `DayPeriods` is given.
 #[php_function]
 #[php(name = "hypercast_native_cast_datetime")]
-pub fn hypercast_native_cast_datetime(text: Binary<u8>, order_code: u32) -> Reply {
+pub fn hypercast_native_cast_datetime(
+    text: Binary<u8>,
+    order_code: u32,
+    am: String,
+    pm: String,
+) -> Reply {
     let order = order(order_code)?;
-    reply(core::cast_datetime(text.as_slice(), order), |table, civil| {
+    let periods = periods(&am, &pm)?;
+    reply(core::cast_datetime_with(text.as_slice(), order, &periods), |table, civil| {
         date(table, civil.date)?;
         push(table, civil.nanos_of_day as i64)
     })

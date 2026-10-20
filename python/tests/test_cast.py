@@ -78,6 +78,67 @@ def test_localeconv_bridge():
     # The C locale's shape: an empty thousands separator falls back to ",".
     c_locale = NumFormat.from_localeconv({"decimal_point": ".", "thousands_sep": ""})
     assert (c_locale.decimal_sep, c_locale.group_sep) == (".", ",")
+    # Nothing past the separators and the symbol declared: the rest reads as the invariant.
+    assert (c_locale.minus_sign, c_locale.plus_sign, c_locale.percent, c_locale.digit_zero) == (
+        "",
+        "",
+        "",
+        "",
+    )
+    assert (c_locale.currency_decimal_sep, c_locale.currency_group_sep) == ("", "")
+    assert c_locale.flags == NumFormat.ALL
+
+
+def test_localeconv_bridge_carries_the_signs_the_currency_separators_and_the_sign_position():
+    """Every field localeconv() has a column for crosses: negative_sign and positive_sign as further
+    spellings beside ASCII (Estonian's U+2212), mon_decimal_point and mon_thousands_sep as the pair
+    a currency amount is read with, and an n_sign_posn of 2 or 4 — the sign after the amount — as
+    TRAILING_SIGN. localeconv() has no percent symbol and no digits, so those stay undeclared.
+    """
+    estonian = NumFormat.from_localeconv(
+        {
+            "decimal_point": ",",
+            "thousands_sep": "\u00a0",
+            "currency_symbol": "€",
+            "negative_sign": "\u2212",
+            "positive_sign": "",
+            "n_sign_posn": 1,
+        }
+    )
+    assert (estonian.minus_sign, estonian.plus_sign) == ("\u2212", "")
+    assert hypercast.cast_f64("\u22121\u00a0234,5", estonian) == Success(-1234.5)
+    assert hypercast.cast_f64("-1\u00a0234,5", estonian) == Success(-1234.5)
+    assert not estonian.flags & NumFormat.TRAILING_SIGN
+    # A locale whose currency separators differ from its number separators (de_CH's shape:
+    # apostrophe groups, but a comma decimal for money) reads a currency amount with the pair
+    # it declares for one, and a plain number with the other.
+    swiss = NumFormat.from_localeconv(
+        {
+            "decimal_point": ".",
+            "thousands_sep": "'",
+            "currency_symbol": "CHF",
+            "mon_decimal_point": ",",
+            "mon_thousands_sep": "'",
+            "negative_sign": "-",
+            "positive_sign": "+",
+            "n_sign_posn": 2,
+        }
+    )
+    assert (swiss.currency_decimal_sep, swiss.currency_group_sep) == (",", "'")
+    assert hypercast.cast_decimal("CHF 1'234,50", swiss) == Success(Decimal("1234.5"))
+    assert hypercast.cast_decimal("1'234.50", swiss) == Success(Decimal("1234.5"))
+    # ASCII signs are read whatever is declared, so declaring them again says nothing.
+    assert (swiss.minus_sign, swiss.plus_sign) == ("", "")
+    # n_sign_posn 2 (and 4) put the sign after the amount: TRAILING_SIGN joins the flags.
+    assert swiss.flags == NumFormat.ALL | NumFormat.TRAILING_SIGN
+    assert hypercast.cast_decimal("1'234,50 CHF-", swiss) == Success(Decimal("-1234.5"))
+    assert NumFormat.from_localeconv({"n_sign_posn": 4}).flags & NumFormat.TRAILING_SIGN
+    for not_trailing in (0, 1, 3, 127, "2", None):
+        assert not NumFormat.from_localeconv({"n_sign_posn": not_trailing}).flags & (
+            NumFormat.TRAILING_SIGN
+        )
+    # The process's own locale, whatever it is, is a format: the C locale in CI.
+    assert isinstance(NumFormat.from_localeconv(), NumFormat)
 
 
 def test_localeconv_bridge_never_puts_one_character_in_both_roles():
@@ -96,6 +157,18 @@ def test_localeconv_bridge_never_puts_one_character_in_both_roles():
     # Two separators the locale itself declares equal are still the constructor's caller bug.
     with pytest.raises(ValueError, match="must differ"):
         NumFormat.from_localeconv({"decimal_point": ",", "thousands_sep": ","})
+    # The currency pair by the same rule, defaulting to the number pair: a monetary decimal
+    # that is the number group separator takes the number decimal as its group, never itself.
+    money = NumFormat.from_localeconv(
+        {"decimal_point": ".", "thousands_sep": ",", "mon_decimal_point": ","}
+    )
+    assert (money.currency_decimal_sep, money.currency_group_sep) == (",", ".")
+    groups = NumFormat.from_localeconv(
+        {"decimal_point": ".", "thousands_sep": ",", "mon_thousands_sep": "."}
+    )
+    assert (groups.currency_decimal_sep, groups.currency_group_sep) == (",", ".")
+    with pytest.raises(ValueError, match="Currency decimal and group separators must differ"):
+        NumFormat.from_localeconv({"mon_decimal_point": ".", "mon_thousands_sep": "."})
 
 
 def test_currency_symbol_is_declared_never_guessed():
@@ -300,6 +373,178 @@ def test_equal_separators_are_a_caller_bug():
         NumFormat(".", ".", NumFormat.ALL)
 
 
+def test_separators_are_one_or_two_characters():
+    """A separator is one or two characters (eight UTF-8 bytes at most) with no ASCII digit: the
+    comma-space and apostrophe-space groupings some feeds carry, read as declared.
+    """
+    comma_space = NumFormat(".", ", ", NumFormat.ALL)
+    assert comma_space.group_sep == ", "
+    assert hypercast.cast_i32("1, 234", comma_space) == Success(1234)
+    assert hypercast.cast_i32("1,234", comma_space) == Fault(CastFailure.MALFORMED, 1, 1)
+    assert hypercast.cast_f64("1' 234.5", NumFormat(".", "' ", NumFormat.ALL)) == Success(1234.5)
+    assert hypercast.cast_f64(
+        "1\u00a0\u00a0234,5", NumFormat(",", "\u00a0\u00a0", NumFormat.ALL)
+    ) == (Success(1234.5))
+    for bad in ("", "abc", "1", ".0", "\u00a0\u00a0\u00a0"):
+        with pytest.raises(ValueError, match="one or two characters"):
+            NumFormat(bad, ",", NumFormat.ALL)
+        with pytest.raises(ValueError, match="one or two characters"):
+            NumFormat(".", bad, NumFormat.ALL)
+
+
+def test_declared_signs_are_read_beside_ascii():
+    """A declared minus or plus is a further spelling wherever ASCII - or + is read: ahead of the
+    digits, either side of a leading currency symbol. ASCII is always read; two signs are a fault.
+    """
+    estonian = NumFormat(",", "\u00a0", NumFormat.ALL, "€", minus_sign="\u2212", plus_sign="\uff0b")
+    assert (estonian.minus_sign, estonian.plus_sign) == ("\u2212", "\uff0b")
+    assert hypercast.cast_i32("\u22125", estonian) == Success(-5)
+    assert hypercast.cast_i32("-5", estonian) == Success(-5)
+    assert hypercast.cast_i32("\uff0b5", estonian) == Success(5)
+    assert hypercast.cast_f64("\u22122,5", estonian) == Success(-2.5)
+    assert hypercast.cast_decimal("€\u22125", estonian) == Success(Decimal("-5"))
+    assert hypercast.cast_decimal("\u2212€5", estonian) == Success(Decimal("-5"))
+    assert hypercast.cast_i32("\u2212-5", estonian) == Fault(CastFailure.MALFORMED, 1, 1)
+    # Undeclared, U+2212 is just the first offending character.
+    assert hypercast.cast_i32("\u22125", NumFormat.INVARIANT) == Fault(CastFailure.MALFORMED, 0, 1)
+
+
+def test_trailing_sign_is_opted_into_not_assumed():
+    """TRAILING_SIGN reads the sign after the digits (a culture whose negative pattern is n-),
+    with optional whitespace before it and around a trailing symbol; it is not in ALL, and never
+    beside a leading sign or inside parentheses.
+    """
+    assert not NumFormat.ALL & NumFormat.TRAILING_SIGN
+    assert NumFormat.TRAILING_SIGN == 128
+    trailing = NumFormat(
+        ".", ",", NumFormat.ALL | NumFormat.TRAILING_SIGN, "€", minus_sign="\u2212"
+    )
+    assert hypercast.cast_i32("5-", trailing) == Success(-5)
+    assert hypercast.cast_i32("5 -", trailing) == Success(-5)
+    assert hypercast.cast_i32("5+", trailing) == Success(5)
+    assert hypercast.cast_i32("5\u2212", trailing) == Success(-5)
+    assert hypercast.cast_i32("5 €-", trailing) == Success(-5)
+    assert hypercast.cast_i32("5- €", trailing) == Success(-5)
+    assert hypercast.cast_decimal("2.5%-", trailing) == Success(Decimal("-0.025"))
+    assert hypercast.cast_decimal("2.5-%", trailing) == Success(Decimal("-0.025"))
+    assert hypercast.cast_i32("-5-", trailing) == Fault(CastFailure.MALFORMED, 2, 1)
+    assert hypercast.cast_i32("(5-)", trailing) == Fault(CastFailure.MALFORMED, 2, 1)
+    # Off by default: the same text is a fault at the sign.
+    assert hypercast.cast_i32("5-", NumFormat.INVARIANT) == Fault(CastFailure.MALFORMED, 1, 1)
+
+
+def test_currency_separators_apply_when_the_symbol_is_found():
+    """A currency amount is read with the currency separators — each falling back to its number
+    counterpart — when CURRENCY is set, the symbol is declared, and the symbol is in the text; a
+    plain number keeps the number separators. Under SEPARATOR_DETECT detection governs instead.
+    """
+    fmt = NumFormat(",", ".", NumFormat.ALL, "€", currency_decimal_sep=".", currency_group_sep=",")
+    assert (fmt.currency_decimal_sep, fmt.currency_group_sep) == (".", ",")
+    assert hypercast.cast_f64("1,234.50 €", fmt) == Success(1234.5)
+    assert hypercast.cast_decimal("€1,234.50", fmt) == Success(Decimal("1234.5"))
+    assert hypercast.cast_f64("1.234,50", fmt) == Success(1234.5)
+    assert hypercast.cast_f64("1,234.50", fmt) == Fault(CastFailure.MALFORMED, 5, 1)
+    # One declared: the other stays the number separator.
+    half = NumFormat(",", ".", NumFormat.ALL, "€", currency_decimal_sep="\u00b7")
+    assert (half.currency_decimal_sep, half.currency_group_sep) == ("\u00b7", "")
+    assert hypercast.cast_f64("1.234\u00b75 €", half) == Success(1234.5)
+    detect = NumFormat(
+        ",",
+        ".",
+        NumFormat.ALL | NumFormat.SEPARATOR_DETECT,
+        "€",
+        currency_decimal_sep=".",
+        currency_group_sep=",",
+    )
+    assert hypercast.cast_f64("1.234,50 €", detect) == Success(1234.5)
+    assert hypercast.cast_f64("1,234.50 €", detect) == Success(1234.5)
+
+
+def test_declared_percent_is_read_as_a_trailing_percent():
+    """A declared percent symbol is read exactly as a trailing ASCII % is — real and decimal doors
+    only, the integer doors never read one — and ASCII % is still read beside it.
+    """
+    arabic = NumFormat(".", ",", NumFormat.ALL, percent="\u066a")
+    assert arabic.percent == "\u066a"
+    assert hypercast.cast_decimal("50\u066a", arabic) == Success(Decimal("0.5"))
+    assert hypercast.cast_f64("50\u066a", arabic) == Success(0.5)
+    assert hypercast.cast_f64("50%", arabic) == Success(0.5)
+    assert hypercast.cast_i32("50\u066a", arabic) == Fault(CastFailure.MALFORMED, 2, 1)
+    assert hypercast.cast_f64("50\u066a", NumFormat.INVARIANT) == Fault(CastFailure.MALFORMED, 2, 1)
+
+
+def test_native_digits_are_read_beside_ascii():
+    """The ten code points from a declared zero are digits everywhere ASCII digits are — integer
+    part, fraction, exponent, mixed with ASCII — and radix-prefixed digits stay ASCII.
+    """
+    arabic = NumFormat("\u066b", "\u066c", NumFormat.ALL, digit_zero="\u0660")
+    assert arabic.digit_zero == "\u0660"
+    assert hypercast.cast_i32("\u0661\u0662\u0663", arabic) == Success(123)
+    assert hypercast.cast_i32("12\u0663", arabic) == Success(123)
+    assert hypercast.cast_f64("\u0661\u066c\u0662\u0663\u0664\u066b\u0665", arabic) == Success(
+        1234.5
+    )
+    assert hypercast.cast_f64("\u0661\u0662\u066b\u0665e\u0661", arabic) == Success(125.0)
+    assert hypercast.cast_decimal("\u0661\u0662\u066b\u0665", arabic) == Success(Decimal("12.5"))
+    assert hypercast.cast_i32("0x\u0661", arabic) == Fault(CastFailure.MALFORMED, 2, 1)
+    fullwidth = NumFormat(".", ",", NumFormat.ALL, digit_zero="\uff10")
+    assert hypercast.cast_i32("\uff11\uff12\uff13", fullwidth) == Success(123)
+    assert hypercast.cast_i32("\u0661\u0662\u0663", NumFormat.INVARIANT) == Fault(
+        CastFailure.MALFORMED, 0, 1
+    )
+
+
+def test_symbol_rules_are_a_caller_bug():
+    """The C ABI's contract rules, raised at construction so a format that exists is one the core
+    reads: a sign or percent with whitespace or a digit, a symbol too long for its field, equal
+    currency separators in force, a digit zero that is ASCII or starts no digit block.
+    """
+    for name in ("minus_sign", "plus_sign", "percent"):
+        for bad in ("- ", " -", "a b", "1", "abc", "\u2212" * 3):
+            with pytest.raises(ValueError):
+                NumFormat(".", ",", NumFormat.ALL, **{name: bad})
+    for name in ("currency_decimal_sep", "currency_group_sep"):
+        for bad in ("abc", "1", "\u00a0" * 3):
+            with pytest.raises(ValueError):
+                NumFormat(".", ",", NumFormat.ALL, **{name: bad})
+    # The pair in force for a currency amount must differ, counting what each falls back to.
+    with pytest.raises(ValueError, match="Currency decimal and group separators must differ"):
+        NumFormat(".", ",", NumFormat.ALL, "€", currency_decimal_sep=",")
+    with pytest.raises(ValueError, match="Currency decimal and group separators must differ"):
+        NumFormat(".", ",", NumFormat.ALL, "€", currency_group_sep=".")
+    with pytest.raises(ValueError, match="Currency decimal and group separators must differ"):
+        NumFormat(".", ",", NumFormat.ALL, "€", currency_decimal_sep="'", currency_group_sep="'")
+    # The same pair both ways round is fine.
+    NumFormat(".", ",", NumFormat.ALL, "€", currency_decimal_sep=",", currency_group_sep=".")
+    for bad in ("0", "٠٠", "a", "\u00bf", "\u00ff"):
+        with pytest.raises(ValueError, match="Digit zero"):
+            NumFormat(".", ",", NumFormat.ALL, digit_zero=bad)
+
+
+def test_a_formats_repr_builds_it_again():
+    """The repr is the constructor call: the four positional arguments always, then only the
+    keywords that declare something.
+    """
+    assert repr(NumFormat.INVARIANT) == f"NumFormat('.', ',', {NumFormat.ALL}, '')"
+    fmt = NumFormat(
+        ",",
+        "\u00a0",
+        NumFormat.ALL | NumFormat.TRAILING_SIGN,
+        "€",
+        currency_decimal_sep=".",
+        minus_sign="\u2212",
+        percent="\u066a",
+        digit_zero="\u0660",
+    )
+    # str's own repr spells each symbol, so a no-break space is escaped as it would be anywhere.
+    assert repr(fmt) == (
+        f"NumFormat(',', '\\xa0', {NumFormat.ALL | NumFormat.TRAILING_SIGN}, '€', "
+        "currency_decimal_sep='.', minus_sign='\u2212', percent='\u066a', digit_zero='\u0660')"
+    )
+    rebuilt = eval(repr(fmt), {"NumFormat": NumFormat})  # noqa: S307 - the repr is the test
+    assert repr(rebuilt) == repr(fmt) and rebuilt.packed == fmt.packed
+
+
 def test_bytes_and_str_doors_agree():
     """str and bytes input reach the same verdict."""
     assert hypercast.cast_bool("yes") == hypercast.cast_bool(b"yes") == Success(True)
@@ -363,13 +608,114 @@ def test_datetime_reads_the_messy_civil_shapes():
             raise AssertionError(f"zoned text parsed through the civil door: {other!r}")
 
 
+def test_datetime_reads_declared_day_periods_beside_am_pm():
+    """A culture's designators, declared as am= and pm=, are read exactly, after the clock or ahead
+    of it, beside the English AM/PM — which are read whatever is declared, ASCII case-insensitively,
+    and now ahead of the clock too. Undeclared, a designator is the first offending character.
+    """
+    mdy, ymd = hypercast.DateOrder.MONTH_DAY_YEAR, hypercast.DateOrder.YEAR_MONTH_DAY
+    three_pm = hypercast.Success(dt.datetime(2026, 1, 7, 15, 4))
+    german = {"am": "vorm.", "pm": "nachm."}
+    assert hypercast.cast_datetime("1/7/2026 3:04 nachm.", mdy, **german) == three_pm
+    assert hypercast.cast_datetime("1/7/2026 3:04nachm.", mdy, **german) == three_pm
+    assert hypercast.cast_datetime("1/7/2026 3:04 vorm.", mdy, **german) == hypercast.Success(
+        dt.datetime(2026, 1, 7, 3, 4)
+    )
+    assert hypercast.cast_datetime("1/7/2026 3:04 PM", mdy, **german) == three_pm
+    assert hypercast.cast_datetime("1/7/2026 pm 3:04", mdy, **german) == three_pm
+    korean = {"am": "오전", "pm": "오후"}
+    assert hypercast.cast_datetime("2026-01-07 오후 3:04", ymd, **korean) == three_pm
+    assert hypercast.cast_datetime("2026-01-07 오후3:04", ymd, **korean) == three_pm
+    assert hypercast.cast_datetime("2026-01-07 오전 12:00", ymd, **korean) == hypercast.Success(
+        dt.datetime(2026, 1, 7)
+    )
+    # Internal whitespace is part of a designator (Spanish); the edges may not be.
+    assert hypercast.cast_datetime("1/7/2026 3:04 p. m.", mdy, am="a. m.", pm="p. m.") == three_pm
+    # Declared designators match exact bytes; English matches either case. The fault sits
+    # where the clock ends — at the trailing text — as for anything else after it.
+    assert hypercast.cast_datetime("1/7/2026 3:04 NACHM.", mdy, **german) == hypercast.Fault(
+        CastFailure.MALFORMED, 13, 1
+    )
+    assert hypercast.cast_datetime("1/7/2026 3:04 nachm.", mdy) == hypercast.Fault(
+        CastFailure.MALFORMED, 13, 1
+    )
+    # One at a time is allowed, and bytes input reads the same.
+    assert hypercast.cast_datetime("2026-01-07 오후 3:04", ymd, pm="오후") == three_pm
+    assert hypercast.cast_datetime("2026-01-07 오후 3:04".encode(), ymd, **korean) == three_pm
+    for undeclared in ("2026-01-07 오후 3:04", "2026-01-07 오후 3:04".encode()):
+        assert hypercast.cast_datetime(undeclared, ymd) == hypercast.Fault(
+            CastFailure.MALFORMED, 11, 1
+        )
+
+
+def test_day_period_rules_are_a_caller_bug():
+    """A designator is 1 to 16 UTF-8 bytes with no ASCII digit and no ASCII whitespace at either
+    end — the C ABI's contract rule, raised at the call the way a format's rules are at
+    construction.
+    """
+    mdy = hypercast.DateOrder.MONTH_DAY_YEAR
+    for bad in (" am", "pm ", "a1", "x" * 17, "오" * 6):
+        with pytest.raises(ValueError, match="1 to 16 UTF-8 bytes"):
+            hypercast.cast_datetime("1/7/2026 3:04 PM", mdy, am=bad)
+        with pytest.raises(ValueError, match="1 to 16 UTF-8 bytes"):
+            hypercast.cast_datetime("1/7/2026 3:04 PM", mdy, pm=bad)
+    for wrong_type in (b"am", 1, None):
+        with pytest.raises(TypeError):
+            hypercast.cast_datetime("1/7/2026 3:04 PM", mdy, am=wrong_type)
+    # Positional designators are not a thing: the keywords are the declaration.
+    with pytest.raises(TypeError):
+        hypercast.cast_datetime("1/7/2026 3:04 PM", mdy, "vorm.", "nachm.")
+
+
+def _symbol(text: str, width: int) -> bytes:
+    """A symbol as it sits in the layout: its UTF-8 zero-padded to ``width``, then its length."""
+    utf8 = text.encode()
+    return utf8 + bytes(width - len(utf8)) + bytes([len(utf8)])
+
+
 def test_a_format_packs_as_the_core_reads_it():
-    """A format's packed bytes are the core's 32-byte layout, and its repr builds it again."""
+    """A format's packed bytes are the core's 92-byte size-tagged layout, field by field at the
+    offsets every binding pins: size 0, flags 4, digit zero 8, then the 8+1-byte separators,
+    signs and percent from 12, and the 16+1-byte currency symbol from 75.
+    """
     packed = NumFormat(",", ".", NumFormat.ALL, "€").packed
-    assert len(packed) == 32
-    assert packed[:4] == ord(",").to_bytes(4, "little")
-    assert packed[4:8] == ord(".").to_bytes(4, "little")
-    assert packed[8:12] == NumFormat.ALL.to_bytes(4, "little")
-    assert packed[12:16] == (3).to_bytes(4, "little")
-    assert packed[16:] == "€".encode() + bytes(13)
-    assert repr(NumFormat.INVARIANT) == f"NumFormat('.', ',', {NumFormat.ALL}, '')"
+    assert len(packed) == 92
+    assert packed[0:4] == (92).to_bytes(4, "little")
+    assert packed[4:8] == NumFormat.ALL.to_bytes(4, "little")
+    assert packed[8:12] == bytes(4)
+    assert packed[12:21] == _symbol(",", 8)
+    assert packed[21:30] == _symbol(".", 8)
+    assert packed[30:75] == bytes(45)  # nothing else declared: five empty symbols
+    assert packed[75:92] == _symbol("€", 16)
+    full = NumFormat(
+        "\u066b",
+        "\u066c",
+        NumFormat.ALL | NumFormat.TRAILING_SIGN,
+        "د.إ.",
+        currency_decimal_sep=".",
+        currency_group_sep=", ",
+        minus_sign="\u2212",
+        plus_sign="\uff0b",
+        percent="\u066a",
+        digit_zero="\u0660",
+    ).packed
+    assert len(full) == 92
+    assert full[0:4] == (92).to_bytes(4, "little")
+    assert full[4:8] == (NumFormat.ALL | NumFormat.TRAILING_SIGN).to_bytes(4, "little")
+    assert full[8:12] == (0x0660).to_bytes(4, "little")
+    assert full[12:21] == _symbol("\u066b", 8)
+    assert full[21:30] == _symbol("\u066c", 8)
+    assert full[30:39] == _symbol(".", 8)
+    assert full[39:48] == _symbol(", ", 8)
+    assert full[48:57] == _symbol("\u2212", 8)
+    assert full[57:66] == _symbol("\uff0b", 8)
+    assert full[66:75] == _symbol("\u066a", 8)
+    assert full[75:92] == _symbol("د.إ.", 16)
+    # The README's own example, byte for byte.
+    assert NumFormat(".", ",", NumFormat.ALL, "$").packed == (
+        b"\x5c\x00\x00\x00_\x00\x00\x00\x00\x00\x00\x00"
+        + b".\x00\x00\x00\x00\x00\x00\x00\x01"
+        + b",\x00\x00\x00\x00\x00\x00\x00\x01"
+        + bytes(45)
+        + b"$\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01"
+    )

@@ -21,15 +21,17 @@ right one at runtime, so a consumer adds one dependency and nothing else.
 ```java
 String message = switch (Cast.i32("(1,234)", NumFormat.INVARIANT)) {
     case Success<Integer> s -> "got " + s.value();          // -1234, accounting negative
-    case Fault<Integer> f -> f.reason() + " at byte " + f.offset();
+    case Fault<Integer> f -> f.reason() + " at char " + f.offset();
 };  // no third case: javac checked
 ```
 
 Door names mirror the native ABI (`i32`, `f64`, `timestamp`, …) so the polyglot surface
 reads identically across bindings; every door also takes raw UTF-8 `byte[]` for callers
 already holding bytes. `NumFormat.from(Locale)` bridges Java's own locale machinery —
-separators and currency symbol — to the caller-declared format the native side reads, and
-every numeric door also takes the `Locale` itself.
+separators, signs, percent and currency symbols, native digits, the negative pattern — to
+the caller-declared format the native side reads, `DateTimeFormat.from(Locale)` does the
+same for a date-time's field order and day-period designators, and every culture-sensitive
+door also takes the `Locale` itself.
 JVM-flavored fidelity, stated proudly: `Instant`, `LocalTime`, and `Duration` keep all nine
 fractional digits, so nothing the core parses is truncated on the way out — full nanosecond
 precision, end to end — and `Cast.decimal` lands in a `BigDecimal` built straight from the
@@ -58,15 +60,24 @@ back as that `char` without crossing into the core, a lone surrogate included.
 ## NumFormat: declared, never guessed
 
 Every integer, real and decimal door takes a `NumFormat`: the two separators, the `STYLE_*`
-lenience flags, and a currency symbol. `NumFormat.INVARIANT` is `.`/`,` with every lenience
-on and no symbol declared; `NumFormat.from(Locale)` reads all three from the locale's own
-`DecimalFormatSymbols`, so a US caller gets `$` and a German one `€`:
+lenience flags, a currency symbol, and everything else a culture spells differently — the
+separators a currency amount is written with, further spellings of the minus and plus signs
+and the percent symbol, and a block of native digits. One rule governs all of those: the
+ASCII default is *always* read, and a declared symbol is read beside it. `-5` parses under
+every format, `−5` (U+2212) too once that minus is declared, and nothing that parsed under
+a sparser format stops parsing under a fuller one. `NumFormat.INVARIANT` is `.`/`,` with
+every default lenience on and nothing else declared; `NumFormat.from(Locale)` fills every
+field from the locale's own `DecimalFormatSymbols`, so a US caller gets `$`, a German one
+`€`, an Estonian one its U+2212 minus and an Egyptian one `٠`–`٩`, `٫`, `٬` and `٪`:
 
 ```java
 NumFormat us = NumFormat.from(Locale.US);
 Cast.f64("$1,234.50", us);                                     // 1234.5
 Cast.i32("($5)", us);                                          // -5: parentheses wrap symbol and digits
 Cast.decimal("1.234,50 €", NumFormat.from(Locale.GERMANY));    // 1234.5 — scale 1, exact
+Cast.i32("−5", Locale.forLanguageTag("et-EE"));                 // -5: U+2212, and ASCII '-' still reads
+Cast.f64("١٬٢٣٤٫٥", Locale.forLanguageTag("ar-EG"));            // 1234.5: Arabic-Indic digits and separators
+Cast.f64("CHF 1\u202F234.50", Locale.forLanguageTag("fr-CH"));  // 1234.5: fr-CH currency takes a decimal point
 ```
 
 Or hand the door the `Locale` itself: every numeric door, in every input form, has a
@@ -80,19 +91,47 @@ Cast.f64(text, Locale.getDefault(Locale.Category.FORMAT));     // the default, s
 ```
 
 A `null` locale is a `NullPointerException`, never a silent default: pass
-`Locale.getDefault(Locale.Category.FORMAT)` to mean the JVM's. Deriving a format reads
-`DecimalFormatSymbols`, which builds a new object each time, so `NumFormat.from` keeps each
-locale's format once derived (a bounded cache of 64) and the overloads cost what the
-`NumFormat` doors do: a grouped `Cast.i32` measured 52.6 ± 21.1 ns through `Locale.US`
-against 43.6 ± 7.6 ns through `NumFormat.INVARIANT`, where deriving the format on every call
-measured 437.6 ns and 1.5 KB (JMH, linux-x64, Temurin 25).
+`Locale.getDefault(Locale.Category.FORMAT)` to mean the JVM's. Deriving a format reads the
+locale's `DecimalFormat` and `DecimalFormatSymbols`, which build new objects each time, so
+`NumFormat.from` keeps each locale's format once derived (a bounded cache of 64) and the
+overloads cost what the `NumFormat` doors do: a grouped `Cast.i32` measured 45.6 ± 5.5 ns
+through `Locale.US` against 50.2 ± 11.8 ns through `NumFormat.INVARIANT` — the lookup is
+inside the noise — where deriving the format on every call, every field of it, measured
+1199.0 ± 169.4 ns and 3.0 KB (JMH, linux-x64, Temurin 25).
 
-The symbol is matched whole, once, at either edge of the numeric body — leading (`$5`,
-`-$5`, `$ -5`) or trailing (`5 €`, `1.234,50 kr.`) with optional whitespace between it and
-the digits — and only while `STYLE_CURRENCY` (part of `STYLE_ALL`) is set: declared without
-it, the symbol is the `MALFORMED` span. The three-argument constructor declares no symbol. A
-symbol longer than 16 UTF-8 bytes or carrying an ASCII digit or whitespace is a caller bug
-(`IllegalArgumentException` at construction), never a verdict.
+The currency symbol is matched whole, once, at either edge of the numeric body — leading
+(`$5`, `-$5`, `$ -5`) or trailing (`5 €`, `1.234,50 kr.`) with optional whitespace between
+it and the digits — and only while `STYLE_CURRENCY` (part of `STYLE_ALL`) is set: declared
+without it, the symbol is the `MALFORMED` span. With the symbol in the text, the digits are
+read with the currency separators where the format declares them — Swiss French writes a
+decimal comma in numbers and a decimal point in currency, Austrian German groups numbers
+with a no-break space and currency with a dot, and `from(Locale)` fills them from
+`getMonetaryDecimalSeparator()` and `getMonetaryGroupingSeparator()` where they differ from
+the number separators; under `STYLE_SEPARATOR_DETECT` detection governs the whole token and
+they are ignored. The three-argument constructors declare no symbol.
+
+Declare a format outright with the `String` constructors and the `with*` methods: a
+separator is one or two characters — 1 to 8 UTF-8 bytes, so `new NumFormat(".", ", ",
+NumFormat.STYLE_ALL)` takes a comma-and-space group separator, and the `char` constructors
+remain for the one-character case — and
+`NumFormat.INVARIANT.withSigns("−", "").withPercentSymbol("٪").withDigitZero(0x0660)`
+declares the rest. Native digits are the ten code points from a declared zero, the way
+`DecimalFormatSymbols.getZeroDigit()` names a locale's digits, read beside ASCII
+everywhere digits are — integer part, fraction, exponent — and never after a radix prefix.
+`STYLE_TRAILING_SIGN` reads a sign after the digits (`5-`, `5 -`, `5 €-`, `2.5%-`), the way a
+culture whose negative pattern is `n-` writes it; it is deliberately not in `STYLE_ALL`,
+and `from(Locale)` sets it exactly when the locale's `DecimalFormat` writes a negative with
+a suffix and no prefix. No locale in the JDK's own CLDR data does, so
+`NumFormat.from(DecimalFormat)` — the same bridge, over a format you shaped — is how a
+suffix-negative format is declared from pattern data. Every rule the core enforces is
+enforced at construction and is a caller bug (`IllegalArgumentException`), never a
+verdict: separators of 1 to 8 bytes that differ (the pair in force for a currency amount
+too), signs and the percent symbol with no ASCII whitespace, no ASCII digit in any symbol,
+a currency symbol of at most 16 bytes, a zero that starts a decimal digit block.
+
+The boolean door's lexicon stays English (`true`/`yes`/`on`/`1` and the rest of the twenty),
+by decision: no platform carries culture data for yes/no words, so no bridge could fill one.
+A caller maps its own words before the door.
 
 `Cast.decimal` is the exact door, and a canonical one. No `double` is formed on the way:
 `0.1` is one tenth and `50%` is exactly `0.5`. Exact trailing zeros in the fraction are
@@ -100,6 +139,36 @@ trimmed, so the scale is minimal — `1.10`, `1.1` and `1.1000` all have a scale
 stays `100` (integer zeros are never touched), and zero is scale 0, never negative. Nothing
 but a zero is ever dropped: precision past 2^96−1 or 28 places is `OUT_OF_RANGE`, never
 rounded.
+
+## DateTimeFormat: the date order and the day periods
+
+`Cast.dateTime` reads `1/7/2026 3:04 PM` under a declared `DateOrder`, and the English
+`AM`/`PM` it always read are read ASCII case-insensitively, after the clock or ahead of it
+(`PM 3:04`). A culture's own designators are declared beside the order in a
+`DateTimeFormat` — `{order, amDesignator, pmDesignator}`, `NumFormat`'s parallel for the one
+temporal door that reads culture-sensitive text — and matched exactly, in either position,
+with the English pair still read beside them. `DateTimeFormat.from(Locale)` fills it from
+the locale's short-date pattern and `DateFormatSymbols.getAmPmStrings()`, the door takes
+the `Locale` itself, and the `DateOrder` overloads are unchanged: they declare nothing.
+
+```java
+Cast.dateTime("2026-01-07 오후 3:04", DateTimeFormat.from(Locale.KOREA));          // 15:04
+Cast.dateTime("2026-01-07 오후 3:04", Locale.KOREA);                                // the same, as a Locale
+Cast.dateTime("7.1.2026 3:04 nachm.",
+        new DateTimeFormat(DateOrder.DAY_MONTH_YEAR, "vorm.", "nachm."));           // 15:04, January 7th
+Cast.dateTime("2026-01-07 오후 3:04", DateOrder.YEAR_MONTH_DAY);                   // MALFORMED at 오: nothing declared
+```
+
+A designator is 1 to 16 UTF-8 bytes with no ASCII digit and no ASCII whitespace at either
+end (a space inside, as in Spanish's `a. m.`, is fine); anything else is an
+`IllegalArgumentException` at construction. `from(Locale)` leaves the English pair
+undeclared, since the core reads it anyway, and so leaves a designator the layout cannot
+hold — the JDK's data has over-16-byte ones for a hundred-odd locales — rather than
+refusing the locale, so those read exactly as they did before designators could be
+declared. Derived formats are cached per locale as `NumFormat.from`'s are: `Cast.dateTime`
+on `1/7/2026 3:04 PM` measured 74.1 ± 17.2 ns through `Locale.US` against 75.5 ± 14.4 ns under
+the `DateOrder` alone, and 97.5 ± 7.4 ns with Spanish designators declared and matched — the
+40-byte layout crossing where NULL did, and a longer designator read.
 
 ## Gating on the core, and what a span counts in
 
@@ -183,7 +252,13 @@ wasm path wants the same flag, for Truffle's own native library rather than this
 
    Separator detection costs what the core says it costs: `NumFormat.DETECT` on
    `1.234.567,89` measures 49.8 ± 2.7 ns against 42.6 ± 4.9 ns declared — the structural
-   resolution pass, visible because the carrier around it is thin. The
+   resolution pass, visible because the carrier around it is thin. The `Locale` overload
+   costs its cached format lookup and the currency symbol the locale declares: `Cast.i32` on
+   `1,234,567` with `Locale.US` measures 45.6 ± 5.5 ns against 50.2 ± 11.8 ns under
+   `NumFormat.INVARIANT` in the same run — inside the noise. Rejection
+   is where the verdict pays off: `Cast.i32` returns the `Fault` for `1,234x567` in
+   60.3 ± 3.6 ns and 128 B, while `Integer.parseInt("1234x567")` takes 984 ± 77 ns and 888 B
+   to throw its `NumberFormatException` and have it caught, 16x slower. The
    `DateTimeFormatter.ISO_OFFSET_DATE_TIME` control measures 715.5 ± 43.6 ns for the text
    the timestamp door reads in 52.5.
 
@@ -215,13 +290,14 @@ choice.
 
 The GraalVM Native Image smoke test (`./gradlew :aot-smoke-test:nativeRun`) builds and
 runs the `isAvailable()`/`nativeVersion()` probe, all twenty-six doors through their
-`String` form, the `byte[]` and `MemorySegment` forms (heap slice and native segment) once
-per ABI shape, and the exhaustive union switch as a true native binary; `-Pwasm` does the
+`String` form (the date-time door with designators declared too, and a format with the
+0.9.0 fields filled), the `byte[]` and `MemorySegment` forms (heap slice and native segment)
+once per ABI shape, and the exhaustive union switch as a true native binary; `-Pwasm` does the
 same through the GraalWasm backend (see [WebAssembly](#webassembly-graalwasm)). Native Image needs two separate registrations
 and the jar ships both in its `reachability-metadata.json` under
 `META-INF/native-image/io.github.skunkwerkx/hypercast/`, so a consumer inherits them with no
 configuration: the FFM downcall *signatures* (reachability is per-signature, not per-function
-— the doors share three shapes, and the version probe's `() -> int` is the fourth),
+— the doors share six shapes, and the version probe's `() -> int` is the seventh),
 and a `resources` glob covering `native/*/*`. A `native-image.properties` beside it has the
 class holding the downcall handles initialized at image build time, which is what keeps the
 doors compiled rather than interpreted in the image — 60-110 ns a door there
@@ -234,12 +310,13 @@ separate linker handling for each OS, so it is deliberately not done; the forge'
 [levers not pulled](https://github.com/SkunkWerkx/.github#levers-deliberately-not-pulled)
 table has the full reasoning, the proven recipe, and what would change the answer.
 
-`NumFormat.from(Locale)`, and so every `Locale` overload, needs the locale in the image. Native Image includes only the
-locale it was built in unless told otherwise, and for any other locale `DecimalFormatSymbols`
-quietly returns the root locale's `.` and `,`, so a German format built from
-`Locale.GERMANY` reads `1.234,5` as `Malformed` in the image while the JVM reads it as 1234.5.
-Name every locale the program declares formats from, e.g. `-H:IncludeLocales=de-DE,fr-FR`
-(or `-H:+IncludeAllLocales`). A `NumFormat` built from explicit separators needs nothing.
+`NumFormat.from(Locale)` and `DateTimeFormat.from(Locale)`, and so every `Locale` overload,
+need the locale in the image. Native Image includes only the locale it was built in unless
+told otherwise, and for any other locale `DecimalFormatSymbols` quietly returns the root
+locale's `.` and `,`, so a German format built from `Locale.GERMANY` reads `1.234,5` as
+`Malformed` in the image while the JVM reads it as 1234.5. Name every locale the program
+declares formats from, e.g. `-H:IncludeLocales=de-DE,fr-FR` (or `-H:+IncludeAllLocales`). A
+`NumFormat` or `DateTimeFormat` built from explicit symbols needs nothing.
 
 The resources half was missing from v0.0.1, and the failure mode is worth knowing because
 nothing catches it at build time: Native Image doesn't embed classpath resources unless they
@@ -258,8 +335,8 @@ WASI preview 1 instead of an OS.
 [GraalWasm](https://www.graalvm.org/webassembly/) runs that module inside the JVM, so `Cast`
 has a second interop path that needs no platform-specific binary and no FFM downcall: the
 polyglot API calls the exports, the input is copied into a guest buffer, and the guest's own
-exported `malloc` supplies the 16-byte out-value, 8-byte fault-span and 32-byte `NumFormat`
-buffers the core fills.
+exported `malloc` supplies the 16-byte out-value and 8-byte fault-span buffers the core
+fills and the 92-byte `NumFormat` and 40-byte day-period buffers it reads.
 The seam is one level below the verdict (`Backend`): the wasm class performs the crossing and
 fills the same per-thread scratch segments the native call would, and everything above it —
 every door, every reader, every exception and message — is one implementation for both paths.
@@ -393,14 +470,19 @@ returned.
 
 - `NativeValues` — every out-value reader, each taking a `MemorySegment` and a byte offset:
   `instant`, `date`, `civil`, `time`, `duration`, `decimal`, `uuid`; `writeFormat`, the
-  32-byte `NumFormat` layout every numeric door reads; `fault(code, offset, length)`;
+  92-byte size-tagged `NumFormat` layout every numeric door reads, and `writeDayPeriods`,
+  the 40-byte designator layout the date-time door reads; `fault(code, offset, length)`;
   `version(packed)` for a `*_version()` word; and the `*_BYTES` constants, each layout's
-  size and so the stride of an array of them (`FORMAT_BYTES` is 32, `FAULT_BYTES` 8).
+  size and so the stride of an array of them (`FORMAT_BYTES` is 92, `DAY_PERIODS_BYTES` 40,
+  `FAULT_BYTES` 8).
 - `NativePlatform` — the platform table and the jar loader, parameterized by library base
   name: `current("hypertabular")` resolves this JVM's `Target` (RID and file name, or `null`
   when no build exists for the platform), `load(anchor, baseName, target)` copies
   `/native/{rid}/{file}` out of the anchor class's jar and opens it as a `SymbolLookup` for
   the life of the process, and `missing` names what was absent.
+- `NumFormat` and `DateTimeFormat` validate every field by the core's own rules at
+  construction, so a value that exists is one the core accepts: a library building either
+  layout from one of them never sees the core's contract-violation code.
 - `UnixPrecision`, `DateOrder`, `ExcelEpoch` and `CastFailure` each have a public `code()`
   and a `fromCode(int)` returning an `Optional` — empty for a code the enum does not name,
   so `CastFailure.fromCode(0)`, success, is empty.

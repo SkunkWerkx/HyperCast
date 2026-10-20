@@ -6,10 +6,12 @@
 // Every door reads `len` bytes of UTF-8 at `ptr` (never dereferenced when `len` is 0) and
 // returns 0 with the value written to `out`, or a positive reason code with the offending
 // byte span written to `fault` (two uint32_t: offset, length). -1 is a contract violation
-// by the caller. `out`, `format` and `fault` are untyped here because this binding fills
-// and reads them as raw bytes; their layouts are the #[repr(C)] types in rust/src/ffi.rs
-// and rust/src/verdict.rs. A null `format` means the invariant number format. The four typed
-// doors at the end read a double instead of text, so their fault span is always empty.
+// by the caller. `out`, `format`, `periods` and `fault` are untyped here because this
+// binding fills and reads them as raw bytes; their layouts are the #[repr(C)] types in
+// rust/src/abi.rs, ffi.rs and verdict.rs. A null `format` means the invariant number format
+// (otherwise a size-tagged 92-byte RawNumFormat, read in place), and a null `periods` the
+// English AM/PM only (otherwise a size-tagged 40-byte RawDayPeriods). The four typed doors
+// at the end read a double instead of text, so their fault span is always empty.
 #ifndef HYPERCAST_H
 #define HYPERCAST_H
 
@@ -44,7 +46,7 @@ int32_t cast_unix(const uint8_t *ptr, uintptr_t len, uint32_t precision, void *o
 int32_t cast_excel_serial(const uint8_t *ptr, uintptr_t len, uint32_t epoch, void *out, void *fault);
 int32_t cast_date(const uint8_t *ptr, uintptr_t len, void *out, void *fault);
 int32_t cast_date_ordered(const uint8_t *ptr, uintptr_t len, uint32_t order, void *out, void *fault);
-int32_t cast_datetime(const uint8_t *ptr, uintptr_t len, uint32_t order, void *out, void *fault);
+int32_t cast_datetime(const uint8_t *ptr, uintptr_t len, uint32_t order, const void *periods, void *out, void *fault);
 int32_t cast_time(const uint8_t *ptr, uintptr_t len, void *out, void *fault);
 int32_t cast_duration(const uint8_t *ptr, uintptr_t len, void *out, void *fault);
 

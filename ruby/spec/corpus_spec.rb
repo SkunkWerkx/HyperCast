@@ -21,14 +21,19 @@ RSpec.describe "conformance corpus" do
     raise "corpus directory not found"
   end
 
+  # Every key past the separators and flags is optional in the corpus: absent means nothing
+  # declared for that field, which is the Data class's own default.
   def format_of(vector)
     spec = vector["format"]
     return HyperCast::NumFormat::INVARIANT unless spec
 
-    # "currency" is optional in the corpus: absent means no symbol declared.
     HyperCast::NumFormat.new(
       decimal_sep: spec["decimal_sep"], group_sep: spec["group_sep"], flags: spec["flags"],
-      currency: spec.fetch("currency", "")
+      currency: spec.fetch("currency", ""),
+      currency_decimal_sep: spec.fetch("currency_decimal_sep", ""),
+      currency_group_sep: spec.fetch("currency_group_sep", ""),
+      minus_sign: spec.fetch("minus_sign", ""), plus_sign: spec.fetch("plus_sign", ""),
+      percent: spec.fetch("percent", ""), digit_zero: spec.fetch("digit_zero", "")
     )
   end
 
@@ -154,6 +159,8 @@ RSpec.describe "conformance corpus" do
     end
   end
 
+  # A vector may declare day-period designators ("am" and "pm", together or not at all);
+  # without them the call is the plain two-argument one.
   it "replays datetime.json" do
     orders = HyperCast::DATE_ORDERS.invert
     corpus("datetime.json").each do |vector|
@@ -166,7 +173,12 @@ RSpec.describe "conformance corpus" do
         expected = DateTime.new(vector["year"], vector["month"], vector["day"],
                                 hour, minute, second + Rational(frac, 1_000_000_000))
       end
-      assert_verdict("datetime", vector, HyperCast.datetime(vector["input"], order), expected)
+      verdict = if vector.key?("am")
+                  HyperCast.datetime(vector["input"], order, am: vector["am"], pm: vector["pm"])
+                else
+                  HyperCast.datetime(vector["input"], order)
+                end
+      assert_verdict("datetime", vector, verdict, expected)
     end
   end
 

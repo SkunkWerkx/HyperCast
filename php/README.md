@@ -89,7 +89,8 @@ change it):
 
   ```php
   // preload.php
-  foreach (glob(__DIR__ . '/vendor/skunkwerkx/hypercast/php/src/*.php') as $file) {
+  $src = __DIR__ . '/vendor/skunkwerkx/hypercast/php/src';
+  foreach ([...glob("$src/*.php"), ...glob("$src/Interop/*.php")] as $file) {
       opcache_compile_file($file);
   }
   ```
@@ -143,16 +144,18 @@ Every numeric door takes a `NumFormat` — `NumFormat::invariant()`, `NumFormat:
 (the `.`/`,` roles resolved per input from structure, ambiguous input a `Malformed` fault),
 or a constructed one — or an intl `\NumberFormatter`
 ([below](#from-an-intl-numberformatter)), and `Cast::optional()` presents an `Empty` fault as `null`. Context
-the text cannot carry is declared, never guessed, through backed enums:
+the text cannot carry is declared, never guessed: through backed enums, and through
+`DayPeriods` for the words a culture's 12-hour clock uses ([below](#day-periods)):
 
 ```php
-use HyperCast\{Cast, DateOrder, ExcelEpoch, UnixPrecision};
+use HyperCast\{Cast, DateOrder, DayPeriods, ExcelEpoch, UnixPrecision};
 
 Cast::unix('1767348245123', UnixPrecision::Milliseconds);
 Cast::excelSerial('45292.75', ExcelEpoch::Y1900);        // 2024-01-01T18:00:00Z
 Cast::date('1/7/2026', DateOrder::Mdy);                  // January 7th; Dmy makes it July 1st
 Cast::date('2026-01-07');                                // no order: the strict ISO door
 Cast::datetime('1/7/2026 3:04 PM', DateOrder::Mdy);
+Cast::datetime('1/7/2026 3:04 nachm.', DateOrder::Dmy, new DayPeriods('vorm.', 'nachm.'));
 ```
 
 ### Decimal
@@ -190,6 +193,76 @@ Cast::i32('($1,234)', $usd);             // Success(-1234)
 Cast::decimal('$ 19.99', $usd);          // Success(Decimal 19.99)
 ```
 
+### The rest of a culture's notation
+
+`NumFormat` declares everything else a culture's number text can carry, each as an
+optional named argument after the currency symbol, `''` (nothing declared) by default. One
+rule covers all of them: **the ASCII spelling is always read, and a declared symbol is a
+further spelling read beside it** — so declaring a symbol never stops anything that parsed
+before from parsing. A symbol the core cannot carry (an ASCII digit inside one, whitespace
+in a sign, a currency pair that collides, a digit zero that starts no digit block) is an
+`InvalidArgumentException` from the constructor, the caller bug it is.
+
+| Argument | What it declares |
+| --- | --- |
+| `minusSign`, `plusSign` | A further spelling of each sign — U+2212 for Estonian, Swedish and Finnish; a bidi mark and a hyphen for Arabic and Hebrew — read wherever ASCII `-`/`+` are: ahead of the digits, before or after a leading currency symbol. Two signs is `Malformed` at the later one. |
+| `currencyDecimalSep`, `currencyGroupSep` | The separators a currency amount is read with: in force when `CURRENCY` is set, a symbol is declared *and* the symbol is found in the text. Each falls back to its number counterpart; under `SEPARATOR_DETECT` the structure governs the whole token and these are ignored. Austrian German groups a number with a no-break space and an amount with `.`. |
+| `percent` | A further spelling of `%` (`٪`, `％`), read as a trailing `%` is under `PERCENT`: the real and decimal doors only, since an integer door never reads a percent. |
+| `digitZero` | The zero of a set of native digits — `٠` (U+0660) for the Arabic-Indic digits, `۰` (U+06F0) for the extended ones, `０` (U+FF10) for the fullwidth ones. The ten code points from it are read beside `0`–`9` everywhere digits are (integer part, fraction, exponent), and the two may mix; radix-prefixed (`0x`, `0b`) digits stay ASCII. |
+
+The two number separators may be one or two characters each — up to 8 bytes of UTF-8 —
+for a culture that groups with `, ` or `' `. And the flags gain `NumFormat::TRAILING_SIGN`,
+which permits a sign after the digits (`5-`, `5 -`, `5+`, `5 €-`, `5- €`, `2.5%-`), never
+beside a leading sign nor inside parentheses. It is deliberately not part of
+`NumFormat::ALL`: the locale factories below set it from the locale's own negative pattern,
+and a hand-built format declares it when its text speaks that way.
+
+```php
+$estonian = new NumFormat(',', "\u{A0}", NumFormat::ALL | NumFormat::TRAILING_SIGN, '€', minusSign: "\u{2212}");
+Cast::f64("\u{2212}1\u{A0}234,5", $estonian);     // Success(-1234.5): the declared minus
+Cast::f64("-1\u{A0}234,5", $estonian);            // Success(-1234.5): ASCII is always read
+Cast::f64("1\u{A0}234,5 €\u{2212}", $estonian);   // Success(-1234.5): the sign after the amount
+
+$austrian = new NumFormat(',', "\u{A0}", NumFormat::ALL, '€', currencyGroupSep: '.');
+Cast::f64('€ 1.234,50', $austrian);              // Success(1234.5): an amount groups with '.'
+Cast::f64('1.234,50', $austrian);                // Fault Malformed at byte 1: a plain number does not
+
+$egyptian = new NumFormat("\u{66B}", "\u{66C}", NumFormat::ALL, digitZero: "\u{660}", percent: "\u{66A}");
+Cast::f64('١٬٢٣٤٫٥', $egyptian);                 // Success(1234.5)
+Cast::decimal('٥٠٪', $egyptian);                 // Success(Decimal 0.5)
+```
+
+### Day periods
+
+`Cast::datetime` takes a `DayPeriods` beside the `DateOrder`: the words a culture writes
+for the two halves of a 12-hour clock, declared the same way the order is. A declared
+designator is matched byte for byte after the clock (`3:04 nachm.`, an optional space
+before it) or ahead of it (`오후 3:04`, an optional space after), and the English `AM`/`PM`
+are always read in both places, ASCII case-insensitively — so a declared pair adds
+spellings and takes none away. Each designator is up to 16 bytes of UTF-8 with no ASCII
+digit and no ASCII whitespace at either end (an internal space is fine: Spanish's `a. m.`);
+anything else is an `InvalidArgumentException`. Only the datetime door reads them —
+`Cast::date` has no time part — and the two-argument call is exactly what it was.
+
+```php
+$german = new DayPeriods('vorm.', 'nachm.');
+Cast::datetime('1/7/2026 3:04 nachm.', DateOrder::Dmy, $german);   // 2026-07-01 15:04
+Cast::datetime('1/7/2026 3:04 PM', DateOrder::Dmy, $german);       // 15:04 as well: AM/PM are always read
+Cast::datetime('2026-01-07 오후 3:04', DateOrder::Ymd, new DayPeriods('오전', '오후'));   // ahead of the clock
+Cast::datetime('1/7/2026 3:04 nachm.', DateOrder::Dmy);            // Fault Malformed at byte 13: nothing declared
+```
+
+Like `DateOrder`, `DayPeriods` has no locale bridge: PHP's stdlib carries no day-period
+data, and ext-intl's `IntlDateFormatter` formats a period without exposing it as a symbol
+— declare the pair the text actually speaks.
+
+### Booleans stay English
+
+`Cast::bool`'s lexicon is English-only, by decision rather than omission: no platform
+carries culture data for its yes/no words — ICU has none to give a `NumberFormatter`'s
+counterpart — so no bridge could fill such a field, and the core has none. A caller that
+reads a culture's words maps them before the door.
+
 ### From locale data
 
 `NumFormat::fromLocaleconv(?array $conv = null)` is the platform-data factory the other
@@ -198,23 +271,38 @@ bindings carry (C# `From(CultureInfo)`, Java `from(Locale)`, Swift `from(locale:
 reads `decimal_point`, `thousands_sep` and `currency_symbol` from the given array, or from
 `localeconv()` when null, defaulting to `.`, `,` and no symbol wherever a field is empty,
 every lenience on. An empty separator never collides with the declared one: a comma-decimal
-locale that reports no thousands separator gets `.` for grouping, not a second `,`. PHP's
+locale that reports no thousands separator gets `.` for grouping, not a second `,`. The
+rest of what `localeconv()` carries comes over too: `mon_decimal_point` and
+`mon_thousands_sep` become the currency separators where they differ from the number ones;
+`negative_sign` and `positive_sign` are declared as further spellings of the signs where
+they are not the ASCII ones (the ASCII signs stay readable beside them); and an
+`n_sign_posn` of 2 or 4 — the sign after the amount — sets `TRAILING_SIGN`. `localeconv()`
+has no percent symbol and no native digits, so those stay undeclared. PHP's
 `localeconv()` reflects `setlocale(LC_NUMERIC | LC_MONETARY)`
 *process* state — shared across every request in the worker — so a caller that knows its
 notation should declare it explicitly; the factory is for the caller that genuinely wants
 whatever the process locale says.
 
 ```php
-$format = NumFormat::fromLocaleconv(['decimal_point' => ',', 'thousands_sep' => '.', 'currency_symbol' => '€']);
+$format = NumFormat::fromLocaleconv([
+    'decimal_point' => ',', 'thousands_sep' => '.', 'currency_symbol' => '€',
+    'negative_sign' => "\u{2212}", 'n_sign_posn' => 2,
+]);
 Cast::f64('1.234,50 €', $format);        // Success(1234.5)
+Cast::f64("1.234,50 €\u{2212}", $format); // Success(-1234.5): the locale's minus, after the amount
 ```
 
 ### From an intl `NumberFormatter`
 
 Every numeric door (the eight integers, `f32`, `f64`, `decimal`) takes an intl
 `\NumberFormatter` in place of a `NumFormat`: PHP's per-object locale formatting, with none
-of `localeconv()`'s process state. The door declares the formatter's decimal separator,
-grouping separator and currency symbol, with every lenience on, the same as
+of `localeconv()`'s process state. The door declares everything ICU's data for the locale
+says — the decimal and grouping separators and the currency symbol; the monetary separators
+(`MONETARY_SEPARATOR_SYMBOL`, `MONETARY_GROUPING_SEPARATOR_SYMBOL`) as the currency
+separators where they differ from the number ones; the minus, plus and percent symbols
+where they are not the ASCII ones; the zero digit (`ZERO_DIGIT_SYMBOL`) as the native digits
+where it is not `0`; and `TRAILING_SIGN` from a negative pattern with a suffix and no prefix
+(`NEGATIVE_SUFFIX`, `NEGATIVE_PREFIX`) — with every lenience on, the same as
 `NumFormat::fromNumberFormatter()`, which derives the `NumFormat` itself:
 
 ```php
@@ -222,21 +310,32 @@ $fr = new \NumberFormatter('fr_FR', \NumberFormatter::DECIMAL);
 Cast::f64("1\u{202F}234,5", $fr);         // Success(1234.5): ICU groups French with U+202F
 Cast::i32('1 234', $fr);                 // Fault Malformed: a plain space is not U+202F
 NumFormat::fromNumberFormatter($fr);     // NumFormat(',', "\u{202F}", NumFormat::ALL, '€')
+
+$sv = new \NumberFormatter('sv_SE', \NumberFormatter::DECIMAL);
+Cast::f64($sv->format(-1234.5), $sv);    // Success(-1234.5): ICU's U+2212 minus, declared
+$ar = new \NumberFormatter('ar_EG', \NumberFormatter::DECIMAL);
+Cast::f64($ar->format(1234.5), $ar);     // Success(1234.5): Arabic-Indic digits and separators
 ```
 
 The conversion is remembered per formatter, so passing the same formatter call after call
-costs about what a hoisted `NumFormat` does; its three symbols are still read on every call,
-because a formatter is mutable (`setSymbol()`) and a changed one is declared again. Symbols
-the core cannot carry (a separator of more than one character, an over-long currency symbol)
-are an `InvalidArgumentException`, as through the constructor.
+converts it once; but its ten symbols and two negative-pattern attributes are still read on
+every call, because a formatter is mutable (`setSymbol()`, `setPattern()`) and a changed one
+is declared again, and those twelve intl calls are what the formatter path costs over a
+hoisted `NumFormat` — about four times the call (2.4 µs against 0.6 µs in the run that
+measured the grouped `Cast::i32` at 645 ns), so derive the `NumFormat` once with
+`NumFormat::fromNumberFormatter()` on a hot path. Symbols the core cannot carry (a separator
+of more than 8 bytes, an over-long currency symbol) are an `InvalidArgumentException`, as
+through the constructor.
 
 ext-intl is optional: it is a `suggest` in `composer.json`, nothing in the package loads it,
 and without it the doors take a `NumFormat` exactly as before. CI's Alpine suite runs with
 ext-ffi alone and covers that.
 
-The packed format the core reads is 32 bytes (two separator code points, the flags, the
-symbol length and 16 symbol bytes); `Cast` writes it once per distinct `NumFormat` instance,
-so hoist a format rather than constructing one per call.
+The packed format the core reads is 92 bytes — a size word, the flags, the digit zero's
+code point, then each symbol as its bytes and its length; `NumFormat::packed()` is exactly
+those bytes. `Cast` writes it once per distinct `NumFormat` instance, so hoist a format
+rather than constructing one per call. A `DayPeriods` is written the same way — 40 bytes,
+`DayPeriods::packed()` — once per distinct instance.
 
 ## Interop: building on HyperCast's C ABI
 
@@ -247,8 +346,9 @@ drift:
 
 - `NativeValues` — the value builders `instant($seconds, $nanos)`,
   `date($year, $month, $day)`, `civil($year, $month, $day, $nanosOfDay)` and `uuid($bytes)`;
-  `writeFormat(NumFormat, FFI\CData)`, which fills the core's 32-byte format struct as every
-  numeric door does; `fault($code, $offset, $length)`, a `\LogicException` for a code that
+  `writeFormat(NumFormat, FFI\CData)`, which fills the core's 92-byte format struct as every
+  numeric door does, and `writeDayPeriods(DayPeriods, FFI\CData)`, its 40-byte day-periods
+  struct as the datetime door does; `fault($code, $offset, $length)`, a `\LogicException` for a code that
   names no reason; and `version($packed)`, a `*_version()` word as `"major.minor.patch"`. A
   decimal is built by `Decimal::fromLimbs()` and a span by `new Duration(...)`, both public
   already.
@@ -313,6 +413,12 @@ model makes static scratch safe), and `createFromTimestamp`/`setMicrosecond` on 
 instead of a date-string parse. Separator detection costs ~54 ns (441 ns vs 387 ns
 declared).
 
+A declared currency symbol is lost in the call's own cost: in a later run where
+`Cast::i32` (grouped) took 449 ns, the same text under `NumFormat::fromNumberFormatter` for
+en_US, `$` included, took 472 ns, inside that run's ±3%. Rejecting `1,234x567` took 684 ns
+there. PHP's validating parse, `filter_var('1234x567', FILTER_VALIDATE_INT)`, fails in
+30 ns, and returns `false` with no reason or span.
+
 When bytes are the destination — a `BINARY(16)` column bind, a wire format —
 `Cast::uuidBytes` returns the sixteen RFC-ordered octets as a binary string and skips the
 hex encoding and hyphen assembly `Cast::uuid` does to render the canonical form. The eight
@@ -366,11 +472,15 @@ here. If you want to try it anyway, here's how to build and load it yourself:
 4. **Call it.** This extension is a benchmark spike, not a polished second backend, so it
    exposes flat `hypercast_native_*` functions taking the raw text and returning a packed
    verdict array, not this package's `Cast` API: `[0, ...value]` on success, or
-   `[reason, offset, length]` on a fault:
+   `[reason, offset, length]` on a fault. A numeric door takes its format as the 92 packed
+   bytes `NumFormat::packed()` builds — the same bytes `Cast` hands the `ext-ffi` path — and
+   the datetime door its day-period designators as two strings, both empty for `AM`/`PM`
+   alone:
    ```php
    hypercast_native_cast_bool("yes");                  // [0, true]
    hypercast_native_cast_bool("maybe");                // [2, 0, 5] — reason, offset, length
-   hypercast_native_cast_u64("42", 46, 44, 0, "");     // [0, 42]
+   hypercast_native_cast_u64("42", NumFormat::invariant()->packed());             // [0, 42]
+   hypercast_native_cast_datetime("1/7/2026 3:04 nachm.", 3, "vorm.", "nachm."); // [0, 2026, 7, 1, 54240000000000]
    ```
    See [`rust/src/php_ext.rs`](../rust/src/php_ext.rs) for the full function list — one
    `hypercast_native_cast_*` per door, plus `hypercast_native_version`, which returns the

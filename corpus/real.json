@@ -42,5 +42,21 @@
   {"type": "f32", "input": "2.5 CHF", "format": {"decimal_sep": ".", "group_sep": "'", "flags": 95, "currency": "CHF"}, "expect": "ok", "value": 2.5},
   {"type": "f64", "input": "$1,234.50", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 31, "currency": "$"}, "expect": "malformed", "fault": [0, 1]},
   {"type": "f64", "input": "$", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 95, "currency": "$"}, "expect": "malformed", "fault": [0, 1]},
-  {"type": "f64", "input": "1.5$$", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 95, "currency": "$"}, "expect": "malformed", "fault": [3, 1]}
+  {"type": "f64", "input": "1.5$$", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 95, "currency": "$"}, "expect": "malformed", "fault": [3, 1]},
+  {"type": "f64", "input": "−2.5", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 95, "minus_sign": "−"}, "expect": "ok", "value": -2.5},
+  {"type": "f64", "input": "2.5−", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 223, "minus_sign": "−"}, "expect": "ok", "value": -2.5},
+  {"type": "f64", "input": "2.5 -", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 223}, "expect": "ok", "value": -2.5},
+  {"type": "f64", "input": "50٪", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 95, "percent": "٪"}, "expect": "ok", "value": 0.5},
+  {"type": "f64", "input": "50٪", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 95}, "expect": "malformed", "fault": [2, 2]},
+  {"type": "f64", "input": "50%", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 95, "percent": "٪"}, "expect": "ok", "value": 0.5},
+  {"type": "f64", "input": "(2.5)٪", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 95, "percent": "٪"}, "expect": "ok", "value": -0.025},
+  {"type": "f64", "input": "５０％", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 95, "digit_zero": "０", "percent": "％"}, "expect": "ok", "value": 0.5},
+  {"type": "f64", "input": "€1,234.50", "format": {"decimal_sep": ",", "group_sep": ".", "flags": 95, "currency": "€", "currency_decimal_sep": ".", "currency_group_sep": ","}, "expect": "ok", "value": 1234.5},
+  {"type": "f64", "input": "€ 1,234.50", "format": {"decimal_sep": ",", "group_sep": ".", "flags": 95, "currency": "€", "currency_decimal_sep": ".", "currency_group_sep": ","}, "expect": "ok", "value": 1234.5},
+  {"type": "f64", "input": "1,234.50 €", "format": {"decimal_sep": ",", "group_sep": ".", "flags": 95, "currency": "€", "currency_decimal_sep": ".", "currency_group_sep": ","}, "expect": "ok", "value": 1234.5},
+  {"type": "f64", "input": "1.234,50", "format": {"decimal_sep": ",", "group_sep": ".", "flags": 95, "currency": "€", "currency_decimal_sep": ".", "currency_group_sep": ","}, "expect": "ok", "value": 1234.5},
+  {"type": "f64", "input": "1,234.50", "format": {"decimal_sep": ",", "group_sep": ".", "flags": 95, "currency": "€", "currency_decimal_sep": ".", "currency_group_sep": ","}, "expect": "malformed", "fault": [5, 1]},
+  {"type": "f64", "input": "١٬٢٣٤٫٥", "format": {"decimal_sep": "٫", "group_sep": "٬", "flags": 95, "digit_zero": "٠"}, "expect": "ok", "value": 1234.5},
+  {"type": "f64", "input": "١٢٫٥e١", "format": {"decimal_sep": "٫", "group_sep": "٬", "flags": 95, "digit_zero": "٠"}, "expect": "ok", "value": 125.0},
+  {"type": "f64", "input": "1' 234.5", "format": {"decimal_sep": ".", "group_sep": "' ", "flags": 95}, "expect": "ok", "value": 1234.5}
 ]

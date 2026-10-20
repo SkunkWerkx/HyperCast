@@ -33,14 +33,14 @@ var (
 	symDecimal                                                                   numericSymbol
 )
 
-func packedVersion() uint32                                                       { return 0 }
-func callPlain(plainSymbol, unsafe.Pointer, uintptr) (r result)                   { return r }
-func callNumeric(numericSymbol, unsafe.Pointer, uintptr, RawNumFormat) (r result) { return r }
-func callUnix(unsafe.Pointer, uintptr, uint32) (r result)                         { return r }
-func callDateOrdered(unsafe.Pointer, uintptr, uint32) (r result)                  { return r }
-func callDateTime(unsafe.Pointer, uintptr, uint32) (r result)                     { return r }
-func callExcelSerial(unsafe.Pointer, uintptr, uint32) (r result)                  { return r }
-func callDecimalFromF64(float64) (r result)                                       { return r }
-func callExcelSerialFromF64(float64, uint32) (r result)                           { return r }
-func callExcelTime(float64) (r result)                                            { return r }
-func callExcelDuration(float64) (r result)                                        { return r }
+func packedVersion() uint32                                                        { return 0 }
+func callPlain(plainSymbol, unsafe.Pointer, uintptr) (r result)                    { return r }
+func callNumeric(numericSymbol, unsafe.Pointer, uintptr, *RawNumFormat) (r result) { return r }
+func callUnix(unsafe.Pointer, uintptr, uint32) (r result)                          { return r }
+func callDateOrdered(unsafe.Pointer, uintptr, uint32) (r result)                   { return r }
+func callDateTime(unsafe.Pointer, uintptr, uint32, *RawDayPeriods) (r result)      { return r }
+func callExcelSerial(unsafe.Pointer, uintptr, uint32) (r result)                   { return r }
+func callDecimalFromF64(float64) (r result)                                        { return r }
+func callExcelSerialFromF64(float64, uint32) (r result)                            { return r }
+func callExcelTime(float64) (r result)                                             { return r }
+func callExcelDuration(float64) (r result)                                         { return r }

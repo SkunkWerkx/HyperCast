@@ -30,9 +30,9 @@
        With only 1, the build succeeds and the app throws at runtime instead of failing at the
        link, which is strictly worse than the original bug.
 
-       net10.0 is the forge's own spelling for the staticlib directory, shared with HyperUuid's
-       package. It is only a folder name here: the reference below names the path directly, so
-       nothing selects on it and no rename is needed for this package's net11.0 consumers.
+       nativeassets/net11.0/ is the forge's spelling for the staticlib directory, shared with
+       HyperUuid's package, and matches the only framework that links it. It is only a folder
+       name: the reference below names the path directly, so nothing selects on it.
 
        No target-framework gate, unlike HyperUuid's copy of this file: the gate is the
        net11.0 folder this file sits in (and buildTransitive/'s copy beside it). The package
@@ -43,7 +43,7 @@
        below never meets a toolchain older than the .NET 11 one the last item group depends
        on. HyperUuid keeps a net10.0 floor, so its copy sits in build/ and gates itself. -->
   <ItemGroup Condition="'$(RuntimeIdentifier)' == 'browser-wasm'">
-    <NativeFileReference Include="$(MSBuildThisFileDirectory)../../runtimes/browser-wasm/nativeassets/net10.0/libhypercast.a" />
+    <NativeFileReference Include="$(MSBuildThisFileDirectory)../../runtimes/browser-wasm/nativeassets/net11.0/libhypercast.a" />
     <EmccExportedFunction Include="_cast_bool" />
     <EmccExportedFunction Include="_cast_char" />
     <EmccExportedFunction Include="_cast_i8" />
@@ -72,6 +72,25 @@
     <EmccExportedFunction Include="_cast_excel_duration" />
     <EmccExportedFunction Include="_hypercast_version" />
   </ItemGroup>
+
+  <!-- The link above happens only where the wasm-tools workload is installed. Without it the
+       SDK never relinks the runtime: @(NativeFileReference) is skipped with nothing louder
+       than the SDK's own warning, the publish succeeds, and the app ships the stock
+       dotnet.native.wasm with no cast_* symbols in it. NETSDK1147 does not fire for this,
+       and setting WasmBuildNative from here cannot make it: the workload manifest decides
+       whether the workload is needed before NuGet's package targets are imported.
+       WasmNativeWorkloadAvailable is settled by then, so the check reads it directly and
+       stops the build. An app that gates on Cast.IsAvailable and keeps a managed fallback
+       can set HyperCastRequireWasmWorkload to false. HyperUuid's package carries the same
+       check, as HYPERUUID002; the code is numbered to match it. HYPERUUID001 is HyperUuid's
+       warning for a consumer below its .NET 11 WebAssembly floor, which this package has no
+       need of (the net11.0 folder is the gate), so HYPERCAST001 is left unused. -->
+  <Target Name="_HyperCastErrorWasmWorkloadMissing"
+          BeforeTargets="BeforeBuild"
+          Condition="'$(RuntimeIdentifier)' == 'browser-wasm' And '$(WasmNativeWorkloadAvailable)' != 'true' And '$(HyperCastRequireWasmWorkload)' != 'false'">
+    <Error Code="HYPERCAST002"
+           Text="HyperCast's WebAssembly support links its native core into the runtime, which needs the wasm-tools workload, and it is not installed. Without it the publish succeeds but the app has no cast_* symbols, Cast.IsAvailable is false in the browser and every Cast call throws. Run 'dotnet workload install wasm-tools', or set HyperCastRequireWasmWorkload to false if the app keeps a managed fallback." />
+  </Target>
 
   <!-- .NET 11 and later link browser-wasm with the new (exnref) exception-handling encoding,
        while Rust's precompiled core and compiler_builtins inside the emscripten staticlib use

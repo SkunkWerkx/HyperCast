@@ -2,12 +2,13 @@ package io.github.skunkwerkx.hypercast.benchmarks;
 
 import io.github.skunkwerkx.hypercast.Cast;
 import io.github.skunkwerkx.hypercast.DateOrder;
+import io.github.skunkwerkx.hypercast.DateTimeFormat;
 import io.github.skunkwerkx.hypercast.NumFormat;
 import io.github.skunkwerkx.hypercast.Verdict;
 import java.lang.foreign.MemorySegment;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
-import java.text.DecimalFormatSymbols;
+import java.text.DecimalFormat;
 import java.text.NumberFormat;
 import java.text.ParseException;
 import java.time.Duration;
@@ -44,6 +45,8 @@ public class CastBenchmarks {
 
     private final String boolText = "true";
     private final String intText = "1,234,567";
+    private final String malformedIntText = "1,234x567";
+    private final String malformedPlainText = "1234x567";
     private final String doubleText = "12345.6789";
     private final String uuidText = "01020304-0506-0708-090a-0b0c0d0e0f10";
     private final String timestampText = "2026-01-02T15:04:05.123456789Z";
@@ -94,15 +97,25 @@ public class CastBenchmarks {
 
     @Benchmark
     public Verdict<Integer> castI32GroupedLocaleUncached() {
-        // What the overload would cost deriving the format every call, for the cache's receipt.
-        DecimalFormatSymbols symbols = DecimalFormatSymbols.getInstance(Locale.US);
-        return Cast.i32(
-                intText,
-                new NumFormat(
-                        symbols.getDecimalSeparator(),
-                        symbols.getGroupingSeparator(),
-                        NumFormat.STYLE_ALL,
-                        symbols.getCurrencySymbol()));
+        // What the overload would cost deriving the format every call, for the cache's
+        // receipt: the whole bridge, every field, from a fresh DecimalFormat.
+        return Cast.i32(intText, NumFormat.from((DecimalFormat) NumberFormat.getInstance(Locale.US)));
+    }
+
+    @Benchmark
+    public Verdict<Integer> castI32Malformed() {
+        // The rejection path: a fault leaves the fast lanes for the engine that owns its span.
+        return Cast.i32(malformedIntText, INVARIANT);
+    }
+
+    @Benchmark
+    public int jdkParseIntMalformed() {
+        // Integer.parseInt's rejection, caught: the JDK's failure path costs an exception.
+        try {
+            return Integer.parseInt(malformedPlainText);
+        } catch (NumberFormatException e) {
+            return -1;
+        }
     }
 
     @Benchmark
@@ -202,13 +215,28 @@ public class CastBenchmarks {
     private static final DateTimeFormatter US_DATE_TIME = DateTimeFormatter.ofPattern("M/d/yyyy h:mm a", Locale.US);
     private static final DateTimeFormatter US_DATE = DateTimeFormatter.ofPattern("M/d/yyyy", Locale.US);
 
+    private static final DateTimeFormat SPANISH = new DateTimeFormat(DateOrder.DAY_MONTH_YEAR, "a. m.", "p. m.");
+
     private final String messyDateTimeText = "1/7/2026 3:04 PM";
+    private final String spanishDateTimeText = "7/1/2026 3:04 p. m.";
     private final String isoDateTimeText = "2026-01-07T15:04:05";
     private final String messyDateText = "1/7/2026";
 
     @Benchmark
     public Verdict<LocalDateTime> castDateTimeMessy() {
         return Cast.dateTime(messyDateTimeText, DateOrder.MONTH_DAY_YEAR);
+    }
+
+    @Benchmark
+    public Verdict<LocalDateTime> castDateTimeMessyLocale() {
+        // The Locale overload: DateTimeFormat.from(Locale.US) on every call, served from its cache.
+        return Cast.dateTime(messyDateTimeText, Locale.US);
+    }
+
+    @Benchmark
+    public Verdict<LocalDateTime> castDateTimeMessyDeclared() {
+        // A culture's own designators declared: the 40-byte layout crosses beside the order.
+        return Cast.dateTime(spanishDateTimeText, SPANISH);
     }
 
     @Benchmark

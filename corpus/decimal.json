@@ -43,5 +43,12 @@
   {"input": "0.00000000000000000000000000001", "expect": "out_of_range"},
   {"input": "1e-29", "expect": "out_of_range"},
   {"input": "7922816251426433759354395033.51", "expect": "out_of_range"},
-  {"input": "1e400", "expect": "out_of_range"}
+  {"input": "1e400", "expect": "out_of_range"},
+  {"input": "−2.5", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 95, "minus_sign": "−"}, "expect": "ok", "magnitude": "25", "scale": 1, "negative": true, "value": "-2.5"},
+  {"input": "2.5−", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 223, "minus_sign": "−"}, "expect": "ok", "magnitude": "25", "scale": 1, "negative": true, "value": "-2.5"},
+  {"input": "5 -", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 223}, "expect": "ok", "magnitude": "5", "scale": 0, "negative": true, "value": "-5"},
+  {"input": "50٪", "format": {"decimal_sep": ".", "group_sep": ",", "flags": 95, "percent": "٪"}, "expect": "ok", "magnitude": "5", "scale": 1, "negative": false, "value": "0.5"},
+  {"input": "€1,234.50", "format": {"decimal_sep": ",", "group_sep": ".", "flags": 95, "currency": "€", "currency_decimal_sep": ".", "currency_group_sep": ","}, "expect": "ok", "magnitude": "12345", "scale": 1, "negative": false, "value": "1234.5"},
+  {"input": "1.234,50", "format": {"decimal_sep": ",", "group_sep": ".", "flags": 95, "currency": "€", "currency_decimal_sep": ".", "currency_group_sep": ","}, "expect": "ok", "magnitude": "12345", "scale": 1, "negative": false, "value": "1234.5"},
+  {"input": "١٢٫٥", "format": {"decimal_sep": "٫", "group_sep": "٬", "flags": 95, "digit_zero": "٠"}, "expect": "ok", "magnitude": "125", "scale": 1, "negative": false, "value": "12.5"}
 ]

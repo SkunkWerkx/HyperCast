@@ -7,6 +7,7 @@ namespace HyperCast\Bench;
 use DateTimeImmutable;
 use HyperCast\Cast;
 use HyperCast\DateOrder;
+use HyperCast\DayPeriods;
 use HyperCast\NumFormat;
 use PhpBench\Attributes as Bench;
 
@@ -32,7 +33,9 @@ final class CastBench
 
     private NumFormat $invariant;
     private NumFormat $enUs;
+    private NumFormat $cultured;
     private \NumberFormatter $enUsFormatter;
+    private DayPeriods $german;
 
     public function warmUp(): void
     {
@@ -40,6 +43,21 @@ final class CastBench
         // ext-intl is optional for the package but required for these two rows.
         $this->enUsFormatter = new \NumberFormatter('en_US', \NumberFormatter::DECIMAL);
         $this->enUs = NumFormat::fromNumberFormatter($this->enUsFormatter);
+        // Every optional symbol declared: the core's full check of a format, where the
+        // invariant one is decided on its separators alone.
+        $this->cultured = new NumFormat(
+            ',',
+            '.',
+            NumFormat::ALL | NumFormat::TRAILING_SIGN,
+            '€',
+            '.',
+            ',',
+            "\u{2212}",
+            "\u{FF0B}",
+            "\u{66A}",
+            "\u{660}"
+        );
+        $this->german = new DayPeriods('vorm.', 'nachm.');
         Cast::bool('true');
     }
 
@@ -73,6 +91,30 @@ final class CastBench
     public function benchCastI32GroupedFormatter(): void
     {
         Cast::i32(self::INT_GROUPED, $this->enUsFormatter);
+    }
+
+    /** The same grouped text under a format with every optional symbol declared. */
+    public function benchCastI32GroupedCultured(): void
+    {
+        Cast::i32('1.234.567', $this->cultured);
+    }
+
+    /** A negative written the way that format's culture writes one: trailing, U+2212. */
+    public function benchCastI32TrailingMinus(): void
+    {
+        Cast::i32("1.234.567 \u{2212}", $this->cultured);
+    }
+
+    /** The rejection path: a fault leaves the fast lanes for the engine that owns its span. */
+    public function benchCastI32Malformed(): void
+    {
+        Cast::i32('1,234x567', $this->invariant);
+    }
+
+    /** PHP's own validating integer parse, failing on the same mistake. */
+    public function benchFilterVarIntMalformed(): void
+    {
+        \filter_var('1234x567', \FILTER_VALIDATE_INT);
     }
 
     public function benchIntval(): void
@@ -121,6 +163,12 @@ final class CastBench
     public function benchCastDateTimeMessy(): void
     {
         Cast::datetime('1/7/2026 3:04 PM', DateOrder::Mdy);
+    }
+
+    /** The same civil shape with a declared day-period pair, read in the culture's own words. */
+    public function benchCastDateTimeMessyDayPeriods(): void
+    {
+        Cast::datetime('1/7/2026 3:04 nachm.', DateOrder::Dmy, $this->german);
     }
 
     public function benchDateTimeImmutableCreateFromFormat(): void

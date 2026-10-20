@@ -42,8 +42,13 @@ pub(crate) trait Sink {
 ///
 /// `percent_door` is whether the calling door reads a trailing `%` as "divide by 100" —
 /// the real and decimal doors do, the integer doors do not. Where it does, a token ending
-/// in `%` is the engine's: it strips the percent before anything else, so a declared
-/// currency symbol of `%` must not get to claim that byte first.
+/// in `%` (or the declared percent symbol) is the engine's: it strips the percent before
+/// anything else, so a declared currency symbol of `%` must not get to claim that byte
+/// first.
+///
+/// The lane reads ASCII signs and ASCII digits only; a declared sign, a native digit, a
+/// trailing sign and a separator wider than one byte are all the engine's, and each fails
+/// the scan below as a byte the lane does not read.
 #[inline(always)]
 pub(crate) fn scan<S: Sink>(
     text: &[u8],
@@ -51,14 +56,14 @@ pub(crate) fn scan<S: Sink>(
     percent_door: bool,
     sink: &mut S,
 ) -> Option<bool> {
-    // A separator outside ASCII is a multi-byte match; the engine has the machinery for it.
-    if !format.decimal_sep.is_ascii() || !format.group_sep.is_ascii() {
-        return None;
-    }
-    let decimal = format.decimal_sep as u8;
-    let group = format.group_sep as u8;
+    // A separator wider than one byte is a multi-byte match; the engine has the machinery.
+    let (mut decimal, mut group) =
+        (format.decimal_sep.single_ascii()?, format.group_sep.single_ascii()?);
     let grouping = format.allows(NumFormat::GROUPING);
-    if percent_door && text.last() == Some(&b'%') && format.allows(NumFormat::PERCENT) {
+    if percent_door
+        && format.allows(NumFormat::PERCENT)
+        && (text.last() == Some(&b'%') || format.percent.ends(text))
+    {
         return None;
     }
 
@@ -93,6 +98,8 @@ pub(crate) fn scan<S: Sink>(
         let symbol = format.currency.as_bytes();
         let leads = body.get(i) == symbol.first()
             && (symbol.len() == 1 || body.get(i..).is_some_and(|rest| rest.starts_with(symbol)));
+        let trails =
+            !leads && body.last() == symbol.last() && (symbol.len() == 1 || body.ends_with(symbol));
         if leads {
             i += symbol.len();
             // `$-5` is fine; `-$-5` and `($-5)` are not.
@@ -103,9 +110,15 @@ pub(crate) fn scan<S: Sink>(
                 negative = sign == b'-';
                 i += 1;
             }
-        } else if body.last() == symbol.last() && (symbol.len() == 1 || body.ends_with(symbol)) {
+        } else if trails {
             // The trailing symbol is cut off the body, so the loops below stop short of it.
             body = body.get(..body.len() - symbol.len()).unwrap_or_default();
+        }
+        if leads || trails {
+            // A currency amount is read with the currency separators where they are declared.
+            let (currency_decimal, currency_group) = format.separators(true);
+            decimal = currency_decimal.single_ascii()?;
+            group = currency_group.single_ascii()?;
         }
     }
 
