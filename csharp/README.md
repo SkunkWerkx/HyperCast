@@ -152,8 +152,13 @@ ones (U+2212 in `et-EE` and `eu-ES`, the bidi-marked signs of the Arabic-script 
 `٪`); the zero of its `NativeDigits` where it is not `0` (`ar-SA`, `fa-IR`, `bn-BD`); and
 `NumStyles.TrailingSign` when its negative pattern puts the sign after the digits
 (`NumberNegativePattern` 3 or 4, or a `CurrencyNegativePattern` of the same shape —
-`fy-NL` writes `€ 5,00-`) — with every lenience on. `null` means the current culture,
-resolved exactly as `TryParse` resolves it (`NumberFormatInfo.GetInstance(null)`).
+`fy-NL` writes `€ 5,00-`) — with every lenience on. Whatever a runtime's data holds, the
+bridge never throws: a symbol the core could not read (an ASCII digit in it, whitespace
+against the digits, past its buffer) is left undeclared and the ASCII spelling read alone;
+a group separator equal to the decimal one (NLS gives `mn-Mong-MN` a comma for both) takes
+the other of `.` and `,`; a currency pair that would collide declares nothing. `null` means
+the current culture, resolved exactly as `TryParse` resolves it
+(`NumberFormatInfo.GetInstance(null)`).
 `Scalar<T>` reads the provider only for the numeric targets.
 
 The provider is resolved the BCL's way, but the text is read HyperCast's way, and that
@@ -234,9 +239,11 @@ Cast.Date("2026. 1. 7.".Replace(" ", "").TrimEnd('.'), korean.Order);        // 
 A declared designator is matched exactly, after the clock (with or without a space before
 it) or ahead of it; the English pair is matched ASCII case-insensitively beside it, and it
 too is read ahead of the clock now (`PM 3:04`). `DateFormat.From` leaves the English pair
-undeclared, since the core reads it anyway, and leaves out a designator the 16-byte layout
-cannot carry (Thai's and Devanagari's words are past it), so such a culture reads the
-English pair only rather than throwing — every culture .NET ships maps without one. A
+undeclared, since the core reads it anyway, and leaves out a designator the core could not
+read — past the 16-byte layout (Thai's and Devanagari's words are), carrying an ASCII digit
+(Anii's `1ka`), or edged with ASCII whitespace — each judged on its own, so such a culture
+reads the English pair beside whatever is declared rather than throwing: every culture any
+runtime ships maps without one, whatever its ICU or NLS spells. A
 `DateTimeFormatInfo` built by hand maps the same way, so the `IFormatProvider?` overload
 serves a format that is no culture's.
 

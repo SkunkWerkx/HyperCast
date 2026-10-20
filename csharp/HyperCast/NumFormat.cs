@@ -205,6 +205,11 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 	/// <item><description><see cref="NumberFormatInfo.CurrencyDecimalSeparator"/> and
 	/// <see cref="NumberFormatInfo.CurrencyGroupSeparator"/>, each where it differs from the
 	/// number separator it stands in for, so a currency amount is read as the BCL reads one.</description></item>
+	/// <item><description>Whatever a runtime's data holds, the bridge never throws: a symbol
+	/// the core could not read (an ASCII digit in it, whitespace against the digits, past
+	/// its buffer) is left undeclared, and the ASCII spelling is read alone; a group separator
+	/// equal to the decimal one (NLS gives mn-Mong-MN a comma for both) takes the other of
+	/// <c>.</c> and <c>,</c>; a currency pair that would collide declares nothing.</description></item>
 	/// <item><description><see cref="NumberFormatInfo.NegativeSign"/>,
 	/// <see cref="NumberFormatInfo.PositiveSign"/> and <see cref="NumberFormatInfo.PercentSymbol"/>,
 	/// each where it is not the ASCII one the core reads anyway (U+2212 in et-EE and eu-ES;
@@ -232,19 +237,33 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 	public static NumFormat From(NumberFormatInfo numberFormat)
 	{
 		ArgumentNullException.ThrowIfNull(numberFormat);
-		var decimalSeparator = numberFormat.NumberDecimalSeparator;
-		var groupSeparator = numberFormat.NumberGroupSeparator is { Length: > 0 } group ? group : ",";
+		// The number pair: the culture's where the core can read it, else the ASCII default;
+		// and the two must differ, which a runtime's data does not promise (NLS gives
+		// mn-Mong-MN a comma for both), so a group separator equal to the decimal one takes
+		// the other of the ASCII pair, as the BCL itself then reads only the decimal.
+		var decimalSeparator = Separator(numberFormat.NumberDecimalSeparator, ".");
+		var groupSeparator = Separator(numberFormat.NumberGroupSeparator, ",");
+		if (groupSeparator == decimalSeparator)
+			groupSeparator = decimalSeparator == "," ? "." : ",";
+		// The currency pair, where it differs from the number pair; a pair in force that
+		// collides (a runtime's data again) declares nothing, and currency amounts read with
+		// the number pair.
+		var currencyDecimalSeparator = Declared(Separator(numberFormat.CurrencyDecimalSeparator, decimalSeparator), decimalSeparator);
+		var currencyGroupSeparator = Declared(Separator(numberFormat.CurrencyGroupSeparator, groupSeparator), groupSeparator);
+		if ((currencyDecimalSeparator.Length != 0 ? currencyDecimalSeparator : decimalSeparator)
+			== (currencyGroupSeparator.Length != 0 ? currencyGroupSeparator : groupSeparator))
+			currencyDecimalSeparator = currencyGroupSeparator = "";
 		var styles = NumStyles.All;
 		if (numberFormat.NumberNegativePattern is 3 or 4 || numberFormat.CurrencyNegativePattern is 3 or 6 or 7 or 10 or 11 or 13)
 			styles |= NumStyles.TrailingSign;
 		var digits = FirstNativeDigit(numberFormat);
-		return new(decimalSeparator, groupSeparator, styles, numberFormat.CurrencySymbol)
+		return new(decimalSeparator, groupSeparator, styles, Symbol(numberFormat.CurrencySymbol, "", MaxCurrencyBytes))
 		{
-			CurrencyDecimalSeparator = Declared(numberFormat.CurrencyDecimalSeparator, decimalSeparator),
-			CurrencyGroupSeparator = Declared(numberFormat.CurrencyGroupSeparator, groupSeparator),
-			MinusSign = Declared(numberFormat.NegativeSign, "-"),
-			PlusSign = Declared(numberFormat.PositiveSign, "+"),
-			PercentSymbol = Declared(numberFormat.PercentSymbol, "%"),
+			CurrencyDecimalSeparator = currencyDecimalSeparator,
+			CurrencyGroupSeparator = currencyGroupSeparator,
+			MinusSign = Symbol(numberFormat.NegativeSign, "-", MaxSymbolBytes),
+			PlusSign = Symbol(numberFormat.PositiveSign, "+", MaxSymbolBytes),
+			PercentSymbol = Symbol(numberFormat.PercentSymbol, "%", MaxSymbolBytes),
 			DigitZero = digits.Length != 0 && digits[0] != '0' && Rune.TryGetRuneAt(digits, 0, out var zero) && StartsDigitBlock(zero)
 				? zero
 				: null,
@@ -255,6 +274,46 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 	// Declaring the ASCII default again would be harmless, but a format that declares
 	// nothing past its separators is the one the core checks fastest, and most do.
 	static string Declared(string symbol, string ascii) => symbol == ascii ? "" : symbol;
+
+	// A culture's separator where the core can read it, else `fallback`: one to
+	// MaxSymbolBytes bytes of UTF-8 with no ASCII digit (whitespace is a separator some
+	// cultures declare, and is read as one).
+	static string Separator(string separator, string fallback) =>
+		Declarable(separator, MaxSymbolBytes, flush: false) ? separator : fallback;
+
+	// A culture's sign, percent or currency symbol where it differs from the ASCII one the
+	// core reads regardless and the core can read it, else nothing: the bridge never throws
+	// on a runtime's data, however a culture is spelled there.
+	static string Symbol(string symbol, string ascii, int maxBytes) =>
+		symbol != ascii && Declarable(symbol, maxBytes, flush: true) ? symbol : "";
+
+	// Whether `Encode` would accept the symbol: the same rules, answered rather than thrown,
+	// for a bridge that must map every culture a runtime ships.
+	internal static bool Declarable(string symbol, int maxBytes, bool flush)
+	{
+		if (symbol.Length == 0)
+			return false;
+		if (symbol.Length == 1 && char.IsAscii(symbol[0]))
+			return !char.IsAsciiDigit(symbol[0]) && !(flush && IsAsciiWhitespace(symbol[0]));
+		var bytes = 0;
+		for (var i = 0; i < symbol.Length; i++)
+		{
+			var c = symbol[i];
+			if (char.IsAsciiDigit(c) || (flush && IsAsciiWhitespace(c)))
+				return false;
+			if (char.IsSurrogate(c))
+			{
+				if (!(char.IsHighSurrogate(c) && ++i < symbol.Length && char.IsLowSurrogate(symbol[i])))
+					return false;
+				bytes += 4;
+			}
+			else
+				bytes += c < 0x80 ? 1 : c < 0x800 ? 2 : 3;
+		}
+		return bytes <= maxBytes;
+	}
+
+	internal static bool IsAsciiWhitespace(char c) => c is ' ' or '\t' or '\n' or '\f' or '\r';
 
 	// A zero the core can start a digit block at: outside ASCII, and with ten successors
 	// that share its UTF-8 prefix, which every Unicode digit block has.

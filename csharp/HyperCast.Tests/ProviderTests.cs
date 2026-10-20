@@ -181,7 +181,11 @@ public sealed class ProviderTests
 	[Fact]
 	void The_datetime_overload_is_its_DateFormat_door_under_DateFormat_From()
 	{
-		var korean = CultureInfo.GetCultureInfo("ko-KR");
+		// ko-KR's designators are 오전/오후 on this machine's ICU and the English pair on
+		// some runtimes' data, so the clone pins them: a culture object, not a spelling lookup.
+		var korean = (CultureInfo)CultureInfo.GetCultureInfo("ko-KR").Clone();
+		korean.DateTimeFormat.AMDesignator = "오전";
+		korean.DateTimeFormat.PMDesignator = "오후";
 		var custom = new DateTimeFormatInfo { ShortDatePattern = "dd/MM/yyyy", AMDesignator = "vorm.", PMDesignator = "nachm." };
 		foreach (var (text, provider) in new (string, IFormatProvider)[]
 		{

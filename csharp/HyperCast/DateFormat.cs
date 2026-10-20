@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.Runtime.CompilerServices;
-using System.Text;
 
 namespace HyperCast;
 
@@ -102,11 +101,11 @@ public readonly record struct DateFormat(DateOrder Order)
 	/// </summary>
 	/// <remarks>
 	/// A designator that is the English one (<c>AM</c>, <c>am</c>) is left undeclared, since
-	/// the core reads it regardless; so is one the layout cannot carry — past
+	/// the core reads it regardless; so is one the core could not read — past
 	/// <see cref="MaxDesignatorBytes"/> bytes of UTF-8, which the Thai, Devanagari and a few
-	/// other scripts' words are — and that culture reads the English pair only. Anything a
-	/// culture's data holds beyond those two cases fits, and every culture .NET ships maps
-	/// without a throw.
+	/// other scripts' words are, carrying an ASCII digit (Anii's <c>1ka</c>), or edged with
+	/// ASCII whitespace — and that culture reads the English pair only. Each designator is
+	/// judged on its own, and every culture any runtime ships maps without a throw.
 	/// </remarks>
 	/// <param name="dateTimeFormat">The date-time formatting to derive from. Never null.</param>
 	/// <exception cref="ArgumentNullException"><paramref name="dateTimeFormat"/> is null.</exception>
@@ -118,11 +117,15 @@ public readonly record struct DateFormat(DateOrder Order)
 	}
 
 	// A culture's designator where it is not the English one the core reads regardless, and
-	// not wider than the layout carries.
+	// the core can read it: within the layout's bytes, no ASCII digit (Anii writes `1ka`),
+	// no ASCII whitespace at either end. Anything else is left undeclared, so the bridge
+	// never throws on a runtime's data.
 	static string Declared(string designator, string english) =>
-		designator.Equals(english, StringComparison.OrdinalIgnoreCase) || Encoding.UTF8.GetByteCount(designator) > MaxDesignatorBytes
-			? ""
-			: designator;
+		!designator.Equals(english, StringComparison.OrdinalIgnoreCase)
+			&& NumFormat.Declarable(designator, MaxDesignatorBytes, flush: false)
+			&& !IsAsciiWhitespace(designator[0]) && !IsAsciiWhitespace(designator[^1])
+			? designator
+			: "";
 
 	/// <summary>
 	/// Validates and converts the designators to the native core's 40-byte layout — what the
@@ -150,5 +153,5 @@ public readonly record struct DateFormat(DateOrder Order)
 		return NumFormat.Encode(designator, bytes, what, flush: false);
 	}
 
-	static bool IsAsciiWhitespace(char c) => c is ' ' or '\t' or '\n' or '\f' or '\r';
+	static bool IsAsciiWhitespace(char c) => NumFormat.IsAsciiWhitespace(c);
 }

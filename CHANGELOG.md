@@ -202,8 +202,14 @@ feedback from Norse Architecture's Blazor WebAssembly integration.
   `_nativeDigits` field through `UnsafeAccessor`, falling back to the public getter once
   should a runtime ever rename it. `DateFormat(order, amDesignator, pmDesignator)` sits beside
   `DateOrder`; `DateFormat.From(CultureInfo | IFormatProvider | DateTimeFormatInfo)` reads the
-  order and the designators, leaving the English pair or one over 16 bytes undeclared, and
-  `DateOrders.From(DateTimeFormatInfo)` joins `From(CultureInfo)`. `Cast.DateTime` gains
+  order and the designators, leaving the English pair or one the core could not read
+  undeclared, and `DateOrders.From(DateTimeFormatInfo)` joins `From(CultureInfo)`. Neither
+  bridge throws on a runtime's data, whatever its ICU or NLS spells: a symbol or designator
+  the core would refuse (over its bytes, an ASCII digit in it as in Anii's `1ka`, whitespace
+  where none may be) is left undeclared, a culture whose two separators coincide
+  (`mn-Mong-MN` under NLS) groups with the other ASCII separator, and a currency pair that
+  would collide declares nothing; the suite checks every shipped culture against that rule
+  and pins the spellings on hand-built formatting data, so it holds on every runner's data. `Cast.DateTime` gains
   `DateFormat` and `IFormatProvider?` overloads for UTF-8 and UTF-16, ranked below the
   `DateOrder` ones so `default` still binds `DateOrder`. `NumFormat.ToRaw()` writes the
   92-byte `Interop.RawNumFormat` (an ASCII fast lane keeps it at 7.9 ns, against 7.6 for

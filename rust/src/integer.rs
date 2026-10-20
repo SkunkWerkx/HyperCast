@@ -79,20 +79,16 @@ pub(crate) fn frame<'t>(
     // Percent strips first, exactly as Svartalfheim checked `trimmed[^1]` first — the parens
     // and sign live inside the percent body: `(2.5)%` is -0.025. A trailing sign may follow
     // the percent (`2.5%-`); it is read here and applied below like any other.
-    let mut post_sign: Option<(bool, usize, usize)> = None;
+    let mut post_sign: Option<TrailingSign> = None;
     let (body, percent) = match strip_percent(text, format, percent_door) {
         Some(rest) => (rest.trim_ascii_end(), true),
-        None if percent_door
-            && format.allows(NumFormat::PERCENT)
-            && format.allows(NumFormat::TRAILING_SIGN)
-            && let Some((minus, len)) = read_trailing_sign(text, format)
-            && let Some(ahead) = text.get(..text.len() - len)
-            && let Some(rest) = strip_percent(ahead, format, true) =>
-        {
-            post_sign = Some((minus, start + text.len() - len, len));
-            (rest.trim_ascii_end(), true)
-        }
-        None => (text, false),
+        None => match strip_signed_percent(text, start, format, percent_door) {
+            Some((rest, sign)) => {
+                post_sign = Some(sign);
+                (rest.trim_ascii_end(), true)
+            }
+            None => (text, false),
+        },
     };
     if body.is_empty() {
         return Err(Fault::malformed(start, text.len()));
@@ -164,6 +160,30 @@ fn strip_percent<'t>(text: &'t [u8], format: &NumFormat, percent_door: bool) -> 
         return text.get(..text.len() - format.percent.len());
     }
     None
+}
+
+/// A trailing sign as `frame` records one: negative, offset in the caller's input, length.
+type TrailingSign = (bool, usize, usize);
+
+/// `2.5%-`: the trailing sign after the percent, on a door that reads the percent and
+/// under a format that reads a trailing sign. The body ahead of the percent, and the sign
+/// as `frame` records a trailing one (negative, offset, length).
+fn strip_signed_percent<'t>(
+    text: &'t [u8],
+    start: usize,
+    format: &NumFormat,
+    percent_door: bool,
+) -> Option<(&'t [u8], TrailingSign)> {
+    if !(percent_door
+        && format.allows(NumFormat::PERCENT)
+        && format.allows(NumFormat::TRAILING_SIGN))
+    {
+        return None;
+    }
+    let (minus, len) = read_trailing_sign(text, format)?;
+    let ahead = text.get(..text.len() - len)?;
+    let rest = strip_percent(ahead, format, true)?;
+    Some((rest, (minus, start + text.len() - len, len)))
 }
 
 /// Strips accounting parentheses when the flag permits, returning the re-trimmed body, its

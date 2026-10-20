@@ -248,7 +248,11 @@ when the absence is deliberate.
 [^bridge-fields]: Each bridge declares a symbol only where the platform's own differs from
     what the core reads anyway (ASCII `-`, `+`, `%`, `0`, and currency separators equal to
     the number ones); the reading is identical either way, and the check stays on its fast
-    path. Trailing-sign lenience comes from the culture's negative pattern: .NET's
+    path. The C#, Java and Swift bridges never throw on their platform's data: a symbol or
+    designator the core would refuse (over its bytes, an ASCII digit in it, whitespace where
+    none may be) is left undeclared, and a culture whose two separators coincide groups with
+    the other ASCII one. PHP's `fromNumberFormatter` raises `InvalidArgumentException` for a
+    symbol it cannot carry, as its constructor does, by its own documented decision. Trailing-sign lenience comes from the culture's negative pattern: .NET's
     `NumberNegativePattern`, ICU's negative suffix with an empty prefix (Java, Swift, PHP's
     `NumberFormatter`), `n_sign_posn` 2 or 4 from `localeconv()` (PHP, Python), and a
     `negative_format` with the sign after `%n` in Rails.
