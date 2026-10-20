@@ -67,7 +67,11 @@ public sealed class BridgeTests
 		// and the real culture is checked against the bridge's rule below.
 		var enDe = NumFormat.From(new NumberFormatInfo
 		{
-			NumberDecimalSeparator = ",", NumberGroupSeparator = ".", CurrencyDecimalSeparator = ".", CurrencyGroupSeparator = ",", CurrencySymbol = "€",
+			NumberDecimalSeparator = ",",
+			NumberGroupSeparator = ".",
+			CurrencyDecimalSeparator = ".",
+			CurrencyGroupSeparator = ",",
+			CurrencySymbol = "€",
 		});
 		(enDe.DecimalSeparator, enDe.GroupSeparator, enDe.CurrencySymbol).ShouldBe((",", ".", "€"));
 		(enDe.CurrencyDecimalSeparator, enDe.CurrencyGroupSeparator).ShouldBe((".", ","));
@@ -282,8 +286,14 @@ public sealed class BridgeTests
 		// could not read is left undeclared, and the ASCII spelling is read alone.
 		var odd = NumFormat.From(new NumberFormatInfo
 		{
-			NumberDecimalSeparator = "5", NumberGroupSeparator = "1", CurrencySymbol = "12", NegativeSign = "- ", PositiveSign = "+ ",
-			PercentSymbol = "pct 0", CurrencyDecimalSeparator = "abcdefghi", CurrencyGroupSeparator = ".",
+			NumberDecimalSeparator = "5",
+			NumberGroupSeparator = "1",
+			CurrencySymbol = "12",
+			NegativeSign = "- ",
+			PositiveSign = "+ ",
+			PercentSymbol = "pct 0",
+			CurrencyDecimalSeparator = "abcdefghi",
+			CurrencyGroupSeparator = ".",
 		});
 		(odd.DecimalSeparator, odd.GroupSeparator, odd.CurrencySymbol).ShouldBe((".", ",", ""));
 		(odd.MinusSign, odd.PlusSign, odd.PercentSymbol).ShouldBe(("", "", ""));
