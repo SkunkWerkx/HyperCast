@@ -50,7 +50,7 @@ def test_the_stub_and_the_loaded_backend_name_the_same_surface():
 def test_the_stub_and_the_loaded_backend_agree_on_parameter_names():
     """Parameter names are part of the surface — a keyword call must work."""
     for name, node in _functions(STUB.body).items():
-        expected = [arg.arg for arg in node.args.args]
+        expected = [arg.arg for arg in node.args.args + node.args.kwonlyargs]
         actual = list(inspect.signature(getattr(_native, name)).parameters)
         assert actual == expected, f"{name} on the extension"
 

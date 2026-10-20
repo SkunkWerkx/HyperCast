@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use HyperCast\Cast;
 use HyperCast\CastFailure;
 use HyperCast\DateOrder;
+use HyperCast\DayPeriods;
 use HyperCast\Decimal;
 use HyperCast\Duration;
 use HyperCast\Fault;
@@ -246,6 +247,192 @@ final class CastTest extends TestCase
         $this->assertTrue(Cast::isAvailable());
     }
 
+    public function testDeclaredSignsAreReadBesideTheAsciiOnes(): void
+    {
+        // Estonian's and Basque's minus is U+2212: declared, it is read; '-' still is too.
+        $format = new NumFormat('.', ',', NumFormat::ALL, '$', minusSign: "\u{2212}", plusSign: "\u{FF0B}");
+        $this->assertEquals(new Success(-5), Cast::i32("\u{2212}5", $format));
+        $this->assertEquals(new Success(-5), Cast::i32('-5', $format));
+        $this->assertEquals(new Success(5), Cast::i32("\u{FF0B}5", $format));
+        $this->assertEquals(new Success(-5.0), Cast::f64("\u{2212}\$5", $format));
+        $this->assertEquals(new Success(-5.0), Cast::f64("\$\u{2212}5", $format));
+        // Two signs is Malformed at the later one, whichever spelling each is.
+        $this->assertEquals(new Fault(CastFailure::Malformed, 3, 1), Cast::i32("\u{2212}-5", $format));
+        // Undeclared, U+2212 is just three bytes the grammar does not know.
+        $this->assertEquals(new Fault(CastFailure::Malformed, 0, 3), Cast::i32("\u{2212}5", NumFormat::invariant()));
+    }
+
+    public function testTrailingSignIsOptIn(): void
+    {
+        $trailing = new NumFormat('.', ',', NumFormat::ALL | NumFormat::TRAILING_SIGN, '€', minusSign: "\u{2212}");
+        $this->assertEquals(new Success(-5), Cast::i32('5-', $trailing));
+        $this->assertEquals(new Success(-5), Cast::i32('5 -', $trailing));
+        $this->assertEquals(new Success(5), Cast::i32('5+', $trailing));
+        $this->assertEquals(new Success(-5), Cast::i32('5 €-', $trailing));
+        $this->assertEquals(new Success(-5), Cast::i32("5 €\u{2212}", $trailing));
+        $this->assertEquals(new Success(-5), Cast::i32('5- €', $trailing));
+        $this->assertEquals(new Success(-0.025), Cast::f64('2.5%-', $trailing));
+        $this->assertEquals(new Success(new Decimal('25', 1, true)), Cast::decimal('2.5-', $trailing));
+        // Never beside a leading sign, never inside parentheses, and never without the flag:
+        // ALL does not include it, since a culture's negative pattern decides.
+        $this->assertEquals(new Fault(CastFailure::Malformed, 2, 1), Cast::i32('-5-', $trailing));
+        $this->assertEquals(new Fault(CastFailure::Malformed, 2, 1), Cast::i32('(5-)', $trailing));
+        $this->assertEquals(new Fault(CastFailure::Malformed, 1, 1), Cast::i32('5-', NumFormat::invariant()));
+        $this->assertSame(0, NumFormat::ALL & NumFormat::TRAILING_SIGN);
+    }
+
+    public function testCurrencyAmountsReadWithTheCurrencySeparators(): void
+    {
+        // A locale that writes a number with ',' and '.' but an amount the other way round:
+        // the currency separators apply exactly when the symbol is found in the text.
+        $format = new NumFormat(',', '.', NumFormat::ALL, '€', currencyDecimalSep: '.', currencyGroupSep: ',');
+        $this->assertEquals(new Success(1234.5), Cast::f64('€1,234.50', $format));
+        $this->assertEquals(new Success(1234.5), Cast::f64('1,234.50 €', $format));
+        $this->assertEquals(new Success(1234.5), Cast::f64('1.234,50', $format));
+        $this->assertEquals(new Fault(CastFailure::Malformed, 5, 1), Cast::f64('1,234.50', $format));
+        $this->assertEquals(new Fault(CastFailure::Malformed, 4, 1), Cast::i32('€1.234', $format));
+        // One declared alone falls back to its number counterpart for the other.
+        $halfDeclared = new NumFormat(',', "\u{A0}", NumFormat::ALL, '€', currencyGroupSep: '.');
+        $this->assertEquals(new Success(1234.5), Cast::f64('1.234,50 €', $halfDeclared));
+        $this->assertEquals(new Success(1234.5), Cast::f64("1\u{A0}234,50", $halfDeclared));
+        // Under detection the structure governs the whole token and the pair is ignored.
+        $detect = new NumFormat(',', '.', NumFormat::ALL | NumFormat::SEPARATOR_DETECT, '€', '.', ',');
+        $this->assertEquals(new Success(1234.5), Cast::f64('€1.234,50', $detect));
+    }
+
+    public function testDeclaredPercentAndNativeDigits(): void
+    {
+        $arabic = new NumFormat("\u{66B}", "\u{66C}", NumFormat::ALL, digitZero: "\u{660}", percent: "\u{66A}");
+        $this->assertSame("\u{660}", $arabic->digitZero);
+        // The ten code points from the zero, beside ASCII, in the integer part, the fraction
+        // and the exponent; the two scripts may even mix.
+        $this->assertEquals(
+            new Success(1234.5),
+            Cast::f64("\u{661}\u{66C}\u{662}\u{663}\u{664}\u{66B}\u{665}", $arabic)
+        );
+        $this->assertEquals(new Success(125.0), Cast::f64("\u{661}\u{662}\u{66B}\u{665}e\u{661}", $arabic));
+        $this->assertEquals(new Success(123), Cast::i32("12\u{663}", $arabic));
+        $this->assertEquals(new Success(-123), Cast::i32("-\u{661}\u{662}\u{663}", $arabic));
+        // The declared percent beside '%', on the real and decimal doors only.
+        $this->assertEquals(new Success(0.5), Cast::f64("\u{665}\u{660}\u{66A}", $arabic));
+        $this->assertEquals(new Success(0.5), Cast::f64('50%', $arabic));
+        $this->assertEquals(new Success(new Decimal('5', 1, false)), Cast::decimal("50\u{66A}", $arabic));
+        $this->assertInstanceOf(Fault::class, Cast::i32("50\u{66A}", $arabic));
+        // Undeclared, a native digit is Malformed at its first byte.
+        $this->assertEquals(
+            new Fault(CastFailure::Malformed, 0, 2),
+            Cast::i32("\u{661}\u{662}", NumFormat::invariant())
+        );
+        // Radix-prefixed digits stay ASCII.
+        $this->assertInstanceOf(Fault::class, Cast::i32("0x\u{661}", $arabic));
+        $fullwidth = new NumFormat('.', ',', NumFormat::ALL, digitZero: "\u{FF10}", percent: "\u{FF05}");
+        $this->assertEquals(new Success(0.5), Cast::f64("\u{FF15}\u{FF10}\u{FF05}", $fullwidth));
+    }
+
+    public function testSeparatorsMayBeTwoCharacters(): void
+    {
+        $spaced = new NumFormat('.', ', ', NumFormat::ALL);
+        $this->assertEquals(new Success(1234), Cast::i32('1, 234', $spaced));
+        $this->assertEquals(new Fault(CastFailure::Malformed, 1, 1), Cast::i32('1,234', $spaced));
+        $swiss = new NumFormat('.', "' ", NumFormat::ALL);
+        $this->assertEquals(new Success(1234.5), Cast::f64("1' 234.5", $swiss));
+        // Eight bytes is the ceiling: two four-byte characters fit, a ninth byte does not.
+        $this->assertSame("\u{1F600}\u{1F600}", (new NumFormat("\u{1F600}\u{1F600}", ',', 0))->decimalSep);
+        $this->expectException(\InvalidArgumentException::class);
+        new NumFormat("\u{1F600}\u{1F600}.", ',', 0);
+    }
+
+    public function testDayPeriodsAreReadBesideAmPm(): void
+    {
+        $german = new DayPeriods('vorm.', 'nachm.');
+        $this->assertSame(['vorm.', 'nachm.'], [$german->am, $german->pm]);
+        $afternoon = Cast::datetime('1/7/2026 3:04 nachm.', DateOrder::Dmy, $german);
+        $this->assertInstanceOf(Success::class, $afternoon);
+        $this->assertSame('2026-07-01 15:04:00', $afternoon->value->format('Y-m-d H:i:s'));
+        $clock = static fn (Success|Fault $verdict): string => $verdict->value->format('H:i');
+        $this->assertSame('03:04', $clock(Cast::datetime('1/7/2026 3:04 vorm.', DateOrder::Dmy, $german)));
+        // English stays read beside the declared pair, and ahead of the clock too.
+        $this->assertSame('15:04', $clock(Cast::datetime('1/7/2026 3:04 PM', DateOrder::Dmy, $german)));
+        $this->assertSame('15:04', $clock(Cast::datetime('1/7/2026 pm 3:04', DateOrder::Dmy)));
+        // Korean writes the period ahead of the clock, with or without a space.
+        $korean = new DayPeriods("\u{C624}\u{C804}", "\u{C624}\u{D6C4}");
+        $this->assertSame('15:04', $clock(Cast::datetime("2026-01-07 \u{C624}\u{D6C4} 3:04", DateOrder::Ymd, $korean)));
+        $this->assertSame('15:04', $clock(Cast::datetime("2026-01-07 \u{C624}\u{D6C4}3:04", DateOrder::Ymd, $korean)));
+        $midnight = Cast::datetime("2026-01-07 \u{C624}\u{C804} 12:00", DateOrder::Ymd, $korean);
+        $this->assertSame('00:00', $clock($midnight));
+        // An internal space is a designator's own business (Spanish).
+        $spanish = new DayPeriods('a. m.', 'p. m.');
+        $this->assertSame('15:04', $clock(Cast::datetime('1/7/2026 3:04 p. m.', DateOrder::Mdy, $spanish)));
+        // Undeclared, a culture's designator is Malformed where it starts — the existing
+        // signature, exactly as before.
+        $this->assertEquals(
+            new Fault(CastFailure::Malformed, 13, 1),
+            Cast::datetime('1/7/2026 3:04 nachm.', DateOrder::Dmy)
+        );
+        // Two markers is Malformed at the second.
+        $this->assertEquals(
+            new Fault(CastFailure::Malformed, 16, 1),
+            Cast::datetime('1/7/2026 PM 3:04 PM', DateOrder::Mdy)
+        );
+    }
+
+    public function testDayPeriodsScratchFollowsTheDeclaredPair(): void
+    {
+        // The identity memo rewrites the native struct per DayPeriods instance; a longer
+        // pair after a shorter one, then none at all, each read as declared.
+        $german = new DayPeriods('vorm.', 'nachm.');
+        $spanish = new DayPeriods('a. m.', 'p. m.');
+        $this->assertInstanceOf(Success::class, Cast::datetime('1/7/2026 3:04 p. m.', DateOrder::Mdy, $spanish));
+        $this->assertInstanceOf(Success::class, Cast::datetime('1/7/2026 3:04 nachm.', DateOrder::Mdy, $german));
+        $this->assertInstanceOf(Fault::class, Cast::datetime('1/7/2026 3:04 p. m.', DateOrder::Mdy, $german));
+        $this->assertInstanceOf(Fault::class, Cast::datetime('1/7/2026 3:04 nachm.', DateOrder::Mdy));
+        $this->assertInstanceOf(Success::class, Cast::datetime('1/7/2026 3:04 p. m.', DateOrder::Mdy, $spanish));
+    }
+
+    public function testDayPeriodValidationIsACallerBug(): void
+    {
+        foreach (['', ' am', 'am ', "pm\t", 'a1', "\xFF", str_repeat('오', 6)] as $bad) {
+            try {
+                new DayPeriods($bad, 'pm');
+                $this->fail("designator '{$bad}' should have been rejected");
+            } catch (\InvalidArgumentException) {
+                $this->addToAssertionCount(1);
+            }
+        }
+        // Sixteen bytes exactly is the ceiling, not over it; an internal space is fine.
+        $sixteen = str_repeat('오', 5) . 'x';
+        $this->assertSame($sixteen, (new DayPeriods($sixteen, 'p. m.'))->am);
+    }
+
+    public function testSymbolValidationIsACallerBug(): void
+    {
+        $cases = [
+            'a minus sign with whitespace' => ['minusSign' => ' -'],
+            'a plus sign with a digit' => ['plusSign' => '+1'],
+            'a percent symbol with whitespace' => ['percent' => "%\t"],
+            'an over-long minus sign' => ['minusSign' => str_repeat("\u{2212}", 3)],
+            'ill-formed UTF-8 in a sign' => ['minusSign' => "\xC3"],
+            'a currency decimal separator with a digit' => ['currencyDecimalSep' => '0'],
+            'an over-long currency group separator' => ['currencyGroupSep' => str_repeat(' ', 9)],
+            'a currency pair that collides' => ['currencyDecimalSep' => ','],
+            'a currency pair that collides the other way' => ['currencyGroupSep' => '.'],
+            'an ASCII digit zero' => ['digitZero' => '0'],
+            'a digit zero of two characters' => ['digitZero' => "\u{660}\u{661}"],
+            'a digit zero that starts no block' => ['digitZero' => "\u{FF3F}"],
+        ];
+        foreach ($cases as $name => $arguments) {
+            try {
+                new NumFormat('.', ',', NumFormat::ALL, ...$arguments);
+                $this->fail("{$name} should have been rejected");
+            } catch (\InvalidArgumentException) {
+                $this->addToAssertionCount(1);
+            }
+        }
+        // A currency pair declared in full may differ from the number pair in any way.
+        $swapped = new NumFormat('.', ',', NumFormat::ALL, '€', ',', '.');
+        $this->assertSame([',', '.'], [$swapped->currencyDecimalSep, $swapped->currencyGroupSep]);
+    }
+
     public function testFromLocaleconvReadsThePlatformShape(): void
     {
         // A de_DE-shaped localeconv(): comma decimal, point grouping, the euro.
@@ -267,6 +454,54 @@ final class CastTest extends TestCase
         $this->assertSame(['.', ',', ''], [$bare->decimalSep, $bare->groupSep, $bare->currency]);
     }
 
+    public function testFromLocaleconvReadsTheRestOfTheNotation(): void
+    {
+        // An et_EE-shaped localeconv(): U+2212 for the minus sign, a monetary group
+        // separator unlike the number one, and the sign after the amount (n_sign_posn 2).
+        $estonian = NumFormat::fromLocaleconv([
+            'decimal_point' => ',',
+            'thousands_sep' => "\u{A0}",
+            'currency_symbol' => '€',
+            'mon_decimal_point' => ',',
+            'mon_thousands_sep' => '.',
+            'negative_sign' => "\u{2212}",
+            'positive_sign' => '+',
+            'n_sign_posn' => 2,
+        ]);
+        $this->assertSame(NumFormat::ALL | NumFormat::TRAILING_SIGN, $estonian->flags);
+        $this->assertSame("\u{2212}", $estonian->minusSign);
+        // The monetary decimal point equals the number one, so it declares nothing; the
+        // ASCII plus sign likewise.
+        $this->assertSame(
+            ['', '.', ''],
+            [$estonian->currencyDecimalSep, $estonian->currencyGroupSep, $estonian->plusSign]
+        );
+        $this->assertEquals(new Success(-1234.5), Cast::f64("\u{2212}1\u{A0}234,5", $estonian));
+        $this->assertEquals(new Success(-1234.5), Cast::f64("1.234,50 €\u{2212}", $estonian));
+        $this->assertEquals(new Success(-1234.5), Cast::f64("-1\u{A0}234,5", $estonian));
+        // n_sign_posn 4 is the other trailing placement; 1 and 3 lead; CHAR_MAX is unset.
+        $trailing = static fn (int $posn): int => NumFormat::fromLocaleconv(['n_sign_posn' => $posn])->flags
+            & NumFormat::TRAILING_SIGN;
+        $this->assertSame(NumFormat::TRAILING_SIGN, $trailing(4));
+        $this->assertSame(0, $trailing(1));
+        $this->assertSame(0, $trailing(127));
+        // The C locale's empty everything, and the ASCII signs, declare nothing further.
+        $c = NumFormat::fromLocaleconv(['negative_sign' => '-', 'positive_sign' => '', 'mon_decimal_point' => '']);
+        $this->assertSame(
+            ['', '', '', ''],
+            [$c->minusSign, $c->plusSign, $c->currencyDecimalSep, $c->currencyGroupSep]
+        );
+        // A monetary decimal point that is the number group separator, with no monetary
+        // group separator reported: the empty one takes the other of the pair, the number
+        // pair's own rule, rather than colliding.
+        $crossed = NumFormat::fromLocaleconv([
+            'decimal_point' => ',',
+            'thousands_sep' => '.',
+            'mon_decimal_point' => '.',
+        ]);
+        $this->assertSame(['.', ','], [$crossed->currencyDecimalSep, $crossed->currencyGroupSep]);
+    }
+
     public function testFromLocaleconvNeverInventsACollidingSeparator(): void
     {
         // A comma-decimal locale that reports no thousands separator: the default ',' would
@@ -284,23 +519,22 @@ final class CastTest extends TestCase
         NumFormat::fromLocaleconv(['decimal_point' => ',', 'thousands_sep' => ',']);
     }
 
-    public function testSeparatorsCrossAsCodePointsAtEveryUtf8Width(): void
+    public function testSeparatorsCrossAsTheirBytesAtEveryUtf8Width(): void
     {
-        // One, two, three and four UTF-8 bytes — decoded without ext-mbstring.
-        $widths = ['.' => 0x2E, '·' => 0xB7, "\u{202F}" => 0x202F, "\u{1F600}" => 0x1F600];
-        foreach ($widths as $char => $codePoint) {
-            $this->assertSame([$codePoint, 0x2C], (new NumFormat((string) $char, ',', 0))->codePoints());
+        // One, two, three and four UTF-8 bytes, each in its field with its length after it.
+        foreach (['.', '·', "\u{202F}", "\u{1F600}", "\u{10FFFF}"] as $char) {
+            $packed = (new NumFormat($char, "\u{D7FF}", 0))->packed();
+            $this->assertSame(str_pad($char, 8, "\0") . \chr(\strlen($char)), substr($packed, 12, 9), bin2hex($char));
+            $this->assertSame("\u{D7FF}\0\0\0\0\0\x03", substr($packed, 21, 9));
         }
-        // The largest scalar value, and the last one before the surrogate gap.
-        $this->assertSame([0x10FFFF, 0xD7FF], (new NumFormat("\u{10FFFF}", "\u{D7FF}", 0))->codePoints());
         // A narrow no-break space is what fr_FR really groups with; it reaches the core intact.
         $french = new NumFormat(',', "\u{202F}", NumFormat::ALL);
         $this->assertEquals(new Success(1234.5), Cast::f64("1\u{202F}234,5", $french));
     }
 
-    public function testSeparatorsMustBeExactlyOneWellFormedCharacter(): void
+    public function testSeparatorsMustBeWellFormedUtf8OfAtMostEightBytes(): void
     {
-        foreach (['', '..', "\xFF", "\xC3", "\xE2\x82", "\xC0\xAF", "\xED\xA0\x80"] as $bad) {
+        foreach (['', "\xFF", "\xC3", "\xE2\x82", "\xC0\xAF", "\xED\xA0\x80", '1', str_repeat('.', 9)] as $bad) {
             try {
                 new NumFormat($bad, ',', NumFormat::ALL);
                 $this->fail('separator ' . bin2hex($bad) . ' should have been rejected');
@@ -360,7 +594,8 @@ final class CastTest extends TestCase
             'hc_date' => 4,
             'hc_civil' => 16,
             'hc_decimal' => 16,
-            'hc_format' => 32,
+            'hc_format' => 92,
+            'hc_periods' => 40,
         ];
         foreach ($pinned as $type => $size) {
             self::assertSame($size, \FFI::sizeof($ffi->type($type)), $type);

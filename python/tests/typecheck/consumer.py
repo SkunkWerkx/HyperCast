@@ -51,10 +51,28 @@ def by_isinstance(verdict: Success[float] | Fault) -> float | None:
 fmt = NumFormat.INVARIANT
 assert_type(fmt, NumFormat)
 assert_type(NumFormat(",", ".", NumFormat.ALL, currency="kr."), NumFormat)
+assert_type(
+    NumFormat(
+        ",",
+        "\u00a0",
+        NumFormat.ALL | NumFormat.TRAILING_SIGN,
+        "€",
+        currency_decimal_sep=".",
+        currency_group_sep=",",
+        minus_sign="\u2212",
+        plus_sign="+",
+        percent="٪",
+        digit_zero="٠",
+    ),
+    NumFormat,
+)
 assert_type(NumFormat.from_localeconv(), NumFormat)
 assert_type(NumFormat.ALL | NumFormat.SEPARATOR_DETECT, int)
 assert_type(fmt.decimal_sep, str)
 assert_type(fmt.flags, int)
+assert_type(fmt.minus_sign, str)
+assert_type(fmt.digit_zero, str)
+assert_type(fmt.packed, bytes)
 
 assert_type(hypercast.cast_bool("yes"), Success[bool] | Fault)
 assert_type(hypercast.cast_char("U+00E9"), Success[str] | Fault)
@@ -79,6 +97,10 @@ assert_type(hypercast.cast_date("…"), Success[datetime.date] | Fault)
 assert_type(hypercast.cast_date("…", DateOrder.DAY_MONTH_YEAR), Success[datetime.date] | Fault)
 assert_type(
     hypercast.cast_datetime("…", DateOrder.MONTH_DAY_YEAR), Success[datetime.datetime] | Fault
+)
+assert_type(
+    hypercast.cast_datetime("…", DateOrder.YEAR_MONTH_DAY, am="오전", pm="오후"),
+    Success[datetime.datetime] | Fault,
 )
 assert_type(hypercast.cast_time("…"), Success[datetime.time] | Fault)
 assert_type(hypercast.cast_duration("…"), Success[datetime.timedelta] | Fault)

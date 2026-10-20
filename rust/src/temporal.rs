@@ -14,7 +14,7 @@
 
 use crate::integer::char_len_at;
 use crate::typed::whole;
-use crate::verdict::{CivilDateTime, Date, Duration, Fault, Reason, Timestamp, trim};
+use crate::verdict::{CivilDateTime, Date, Duration, Fault, Reason, Symbol, Timestamp, trim};
 use core::num::NonZero;
 use core::ops::RangeInclusive;
 
@@ -368,6 +368,67 @@ impl DateOrder {
     }
 }
 
+/// Caller-declared day-period designators for [`cast_datetime_with`]: the words a culture
+/// writes for the two halves of a 12-hour clock (`오전`/`오후`, `vorm.`/`nachm.`, `a. m.`/
+/// `p. m.`), read beside the English `AM`/`PM`, which are always read. Declared, never
+/// looked up, like every other piece of culture here; a binding's bridge fills them from
+/// its platform's data. Up to 16 UTF-8 bytes each, with no ASCII digit and no ASCII
+/// whitespace at either end (the grammar around a designator reads that).
+///
+/// ABI layout: the two designators in place, 34 bytes with no alignment, each its 16 bytes
+/// then its length; [`RawDayPeriods`](crate::RawDayPeriods) puts a size word ahead of them.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DayPeriods {
+    /// The designator of the first half of the day; [`Symbol::NONE`] declares none beside `AM`.
+    pub am: Symbol<16>,
+    /// The designator of the second half; [`Symbol::NONE`] declares none beside `PM`.
+    pub pm: Symbol<16>,
+}
+
+impl DayPeriods {
+    /// Nothing declared: the English `AM`/`PM` only, which is what [`cast_datetime`] reads.
+    pub const ENGLISH: DayPeriods = DayPeriods { am: Symbol::NONE, pm: Symbol::NONE };
+
+    /// Declares both designators.
+    pub const fn new(am: Symbol<16>, pm: Symbol<16>) -> DayPeriods {
+        DayPeriods { am, pm }
+    }
+
+    /// Whether designators read across the ABI are ones this API would declare: each
+    /// empty or a [`Symbol`] with no ASCII whitespace at either end.
+    #[inline]
+    pub fn check(&self) -> bool {
+        let edges = |symbol: &Symbol<16>| {
+            symbol.check_optional(false)
+                && !symbol.as_bytes().first().is_some_and(u8::is_ascii_whitespace)
+                && !symbol.as_bytes().last().is_some_and(u8::is_ascii_whitespace)
+        };
+        edges(&self.am) && edges(&self.pm)
+    }
+
+    /// The designator at `text[at..]`, as `(pm, byte length)`: a declared one first, exact,
+    /// then the English pair, ASCII case-insensitive. The declared ones go first because a
+    /// culture's designator can begin with the English one (`PM.`).
+    #[inline]
+    fn read(&self, text: &[u8], at: usize) -> Option<(bool, usize)> {
+        if self.pm.matches(text, at) {
+            return Some((true, self.pm.len()));
+        }
+        if self.am.matches(text, at) {
+            return Some((false, self.am.len()));
+        }
+        match (
+            text.get(at).map(u8::to_ascii_lowercase),
+            text.get(at + 1).map(u8::to_ascii_lowercase),
+        ) {
+            (Some(b'a'), Some(b'm')) => Some((false, 2)),
+            (Some(b'p'), Some(b'm')) => Some((true, 2)),
+            _ => None,
+        }
+    }
+}
+
 /// Reads a run of 1..=4 ASCII digits at `at` (a calendar date field), returning the value
 /// and the index after the run. A zero-length or five-plus-digit run faults at the run
 /// itself. Thin wrapper over the duration parser's [`read_digit_run`].
@@ -516,16 +577,27 @@ impl Clock {
 }
 
 /// Reads the civil time part of [`cast_datetime`] at `at` for its shape:
-/// `h[:mm[:ss[.f+]]]`, hour one or two digits, with an optional case-insensitive
-/// `AM`/`PM` marker (preceding space optional). Without a marker minutes are mandatory (a
-/// bare trailing number is not a time). Returns the clock, the marker (`Some(true)` for
-/// PM) and the index after the time; [`civil_nanos`] range-checks them.
+/// `h[:mm[:ss[.f+]]]`, hour one or two digits, with an optional day-period marker — the
+/// English `AM`/`PM`, case-insensitive, or a declared designator — after the clock
+/// (preceding space optional) or, as Korean and Chinese write it, ahead of it (following
+/// space optional). Without a marker minutes are mandatory (a bare trailing number is not
+/// a time). Returns the clock, the marker (`Some(true)` for PM) and the index after the
+/// time; [`civil_nanos`] range-checks them.
 #[inline(always)]
 fn read_civil_time(
     text: &[u8],
     at: usize,
     start: usize,
+    periods: &DayPeriods,
 ) -> Result<(Clock, Option<bool>, usize), Fault> {
+    // A leading marker names the half of the day before the clock is read.
+    let (leading, at) = match periods.read(text, at) {
+        Some((pm, len)) => {
+            let after = at + len;
+            (Some(pm), if text.get(after) == Some(&b' ') { after + 1 } else { after })
+        }
+        None => (None, at),
+    };
     let (hour, hour_digits, mut i) = read_digit_run(text, at, start)?;
     if hour_digits == 0 || hour_digits > 2 {
         return Err(malformed_at(text, start, at, hour_digits.max(1)));
@@ -547,26 +619,24 @@ fn read_civil_time(
             i = after;
         }
     }
-    // Optional meridiem: [space] AM/PM, ASCII case-insensitive.
+    if leading.is_some() {
+        // One marker names the half of the day; a second one after the clock is left for
+        // the caller to fault as trailing text.
+        return Ok((clock, leading, i));
+    }
+    // Optional trailing meridiem: [space] AM/PM or a declared designator.
     let mut meridiem_at = i;
     if text.get(meridiem_at) == Some(&b' ') {
         meridiem_at += 1;
     }
-    let marker = match (
-        text.get(meridiem_at).map(u8::to_ascii_lowercase),
-        text.get(meridiem_at + 1).map(u8::to_ascii_lowercase),
-    ) {
-        (Some(b'a'), Some(b'm')) => Some(false),
-        (Some(b'p'), Some(b'm')) => Some(true),
-        _ => None,
-    };
+    let marker = periods.read(text, meridiem_at);
     match marker {
-        Some(_) => i = meridiem_at + 2,
+        Some((_, len)) => i = meridiem_at + len,
         // A bare trailing number is only a time when a meridiem names it one.
         None if !has_minutes => return Err(Fault::malformed(start + at, hour_digits)),
         None => {}
     }
-    Ok((clock, marker, i))
+    Ok((clock, marker.map(|(pm, _)| pm), i))
 }
 
 /// Range-checks a civil time and converts it to nanoseconds since midnight. With a marker
@@ -596,6 +666,16 @@ fn civil_nanos(clock: &Clock, pm: Option<bool>, start: usize) -> Result<u64, Fau
 /// zone-less text names no instant, so fusing a zone is the caller's job
 /// ([`cast_timestamp`] remains the strict RFC 3339 instant door).
 pub fn cast_datetime(input: impl AsRef<[u8]>, order: DateOrder) -> Result<CivilDateTime, Fault> {
+    cast_datetime_with(input, order, &DayPeriods::ENGLISH)
+}
+
+/// [`cast_datetime`] with the declared [`DayPeriods`] read beside `AM`/`PM`, before or
+/// after the clock (`1/7/2026 3:04 nachm.`, `2026. 1. 7. 오후 3:04`).
+pub fn cast_datetime_with(
+    input: impl AsRef<[u8]>,
+    order: DateOrder,
+    periods: &DayPeriods,
+) -> Result<CivilDateTime, Fault> {
     let input = input.as_ref();
     let (text, start) = trim(input);
     if text.is_empty() {
@@ -607,7 +687,7 @@ pub fn cast_datetime(input: impl AsRef<[u8]>, order: DateOrder) -> Result<CivilD
         Some(b' ' | b'T' | b't') => {}
         Some(_) => return Err(Fault::malformed(start + date_end, char_len_at(text, date_end))),
     }
-    let (clock, pm, end) = read_civil_time(text, date_end + 1, start)?;
+    let (clock, pm, end) = read_civil_time(text, date_end + 1, start, periods)?;
     if end != text.len() {
         return Err(Fault::malformed(start + end, char_len_at(text, end)));
     }

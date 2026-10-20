@@ -73,6 +73,43 @@ public class CastBenchmarks
 	public double BclDoubleTryParse() =>
 		double.TryParse(DoubleText, NumberStyles.Float, _invariantCulture, out var value) ? value : 0;
 
+	// --- what the IFormatProvider overloads cost over a declared NumFormat: the same door,
+	// the same text, the same invariant culture, once as a NumFormat held in a field and
+	// once as the provider a TryParse-shaped caller passes through, which maps it per call
+	// (NumberFormatInfo.GetInstance, then NumFormat.From). The gap is that mapping.
+
+	[Benchmark]
+	public int CastScalarInt32Declared() =>
+		Cast.Scalar<int>(IntText.AsSpan(), _invariant).TryGetValue(out Success<int> s) ? s.Value : 0;
+
+	// The provider's mapping done once, up front: what the provider row would cost if the
+	// mapping were cached. NumFormat.From(InvariantCulture) carries the culture's currency
+	// symbol (¤), which NumFormat.Invariant does not, so this row also separates the mapping
+	// from the per-call validation and encoding of that symbol.
+	static readonly NumFormat _fromInvariantCulture = NumFormat.From(CultureInfo.InvariantCulture);
+
+	[Benchmark]
+	public int CastScalarInt32FromCulture() =>
+		Cast.Scalar<int>(IntText.AsSpan(), _fromInvariantCulture).TryGetValue(out Success<int> s) ? s.Value : 0;
+
+	[Benchmark]
+	public int CastScalarInt32Provider() =>
+		Cast.Scalar<int>(IntText.AsSpan(), (IFormatProvider)_invariantCulture).TryGetValue(out Success<int> s) ? s.Value : 0;
+
+	// --- rejecting malformed input: a Fault with its reason and span against the BCL's
+	// bare false. Not a hot path anywhere sensible, measured so the cost is on record.
+
+	static readonly string MalformedIntText = "1,234x567";
+
+	[Benchmark]
+	public int CastInt32Malformed() => Cast.Int32(MalformedIntText, _invariant).TryGetValue(out Fault f) ? f.Offset : 0;
+
+	[Benchmark]
+	public int BclIntTryParseMalformed() =>
+		int.TryParse(MalformedIntText, NumberStyles.Integer | NumberStyles.AllowThousands, _invariantCulture, out var value)
+			? value
+			: -1;
+
 	// --- the exact decimal door vs decimal.TryParse, and the declared currency symbol vs
 	// NumberStyles.Currency under en-US: the two additions the first consumer asked for,
 	// measured the same way as every other row (string door, transcode included).

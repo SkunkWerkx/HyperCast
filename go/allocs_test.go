@@ -52,6 +52,10 @@ func TestEveryDoorIsAllocationFreeOnSuccess(t *testing.T) {
 		{"DateOnly", func() *Fault { _, f := DateOnly("2026-01-07"); return f }},
 		{"DateOnlyOrdered", func() *Fault { _, f := DateOnlyOrdered("1/7/2026", MonthDayYear); return f }},
 		{"DateTime", func() *Fault { _, f := DateTime("1/7/2026 3:04 PM", MonthDayYear); return f }},
+		{"DateTimeWith", func() *Fault {
+			_, f := DateTimeWith("1/7/2026 3:04 nachm.", DateFormat{Order: DayMonthYear, AM: "vorm.", PM: "nachm."})
+			return f
+		}},
 		{"TimeOfDay", func() *Fault { _, f := TimeOfDay("15:04:05.123456789"); return f }},
 		{"Span", func() *Fault { _, f := Span("PT1H30M15.5S"); return f }},
 		{"ExactFromFloat64", func() *Fault { _, f := ExactFromFloat64(0.1 + 0.2); return f }},
@@ -65,12 +69,21 @@ func TestEveryDoorIsAllocationFreeOnSuccess(t *testing.T) {
 	}
 }
 
-// A declared currency symbol rides inside the NumFormat by value, so it costs nothing either.
+// A declared currency symbol rides inside the NumFormat by value, so it costs nothing
+// either — and so does every other declared symbol, the whole 92-byte layout crossing by
+// value.
 func TestCurrencyFormatIsAllocationFree(t *testing.T) {
-	dollars := NumFormat{DecimalSep: '.', GroupSep: ',', Styles: AllStyles, Currency: "$"}
+	dollars := NumFormat{DecimalSep: ".", GroupSep: ",", Styles: AllStyles, Currency: "$"}
 	_, fault := Exact("($1,234.50)", dollars)
 	succeed(t, "Exact with currency", fault)
 	assertAllocs(t, "Exact with currency", 0, func() { Exact("($1,234.50)", dollars) })
+	everything := NumFormat{
+		DecimalSep: "٫", GroupSep: "٬", Styles: AllStyles | TrailingSign, Currency: "€",
+		CurrencyDecimalSep: ".", CurrencyGroupSep: ",", MinusSign: "−", PlusSign: "＋", Percent: "٪", DigitZero: '٠',
+	}
+	_, fault = Exact("١٬٢٣٤٫٥٪−", everything)
+	succeed(t, "Exact with every symbol declared", fault)
+	assertAllocs(t, "Exact with every symbol declared", 0, func() { Exact("١٬٢٣٤٫٥٪−", everything) })
 }
 
 // []byte crosses the same way string does: a pointer into memory that already exists.

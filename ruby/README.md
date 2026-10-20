@@ -48,7 +48,7 @@ midnight, durations come back as exact `Rational` seconds across the core's whol
 | `unix(text, precision)` | UTC `Time` | `:seconds` / `:milliseconds` / `:microseconds` / `:nanoseconds` |
 | `excel_serial(text, epoch)` | UTC `Time` | `:y1900` / `:y1904` |
 | `date(text, order = nil)` | `Date` | strict ISO, or `:year_month_day` / `:month_day_year` / `:day_month_year` |
-| `datetime(text, order)` | zone-less `DateTime`, exact `Rational` seconds | a field order, as `date` |
+| `datetime(text, order, am: nil, pm: nil)` | zone-less `DateTime`, exact `Rational` seconds | a field order, as `date`; optionally a culture's own AM/PM words, read beside the English ones — see [`datetime`: a culture's AM/PM](#datetime-a-cultures-ampm) |
 | `time(text)` | `Integer` nanoseconds since midnight | — |
 | `duration(text)` | exact `Rational` seconds | — |
 | `decimal_from_float(value)` | `HyperCast::Decimal`, the shortest that names the number (`0.1` is one tenth) | — |
@@ -67,9 +67,13 @@ Bad data is never an exception — it is a `Fault`. What raises is a caller bug,
 the same exception on every backend:
 
 - `ArgumentError` from `NumFormat.new`, `NumFormat#override` (and so the `separator:`,
-  `delimiter:` and `unit:` keywords) or `NumFormat.from_i18n` for a malformed format: separators that are not single
-  characters or not distinct, a currency symbol that is too long or carries an ASCII digit or
-  whitespace.
+  `delimiter:` and `unit:` keywords) or `NumFormat.from_i18n` for a malformed format: a
+  separator that is empty, longer than 8 UTF-8 bytes or not distinct from its partner
+  (the pair in force for currency amounts included), any symbol carrying an ASCII digit, a
+  sign, percent or currency symbol carrying ASCII whitespace, a currency symbol longer than
+  16 bytes, or a digit zero that is ASCII or starts no digit block. And from `datetime` for
+  a day-period designator that is empty, longer than 16 bytes, carries an ASCII digit or
+  starts or ends in ASCII whitespace.
 - `KeyError` — `Hash#fetch`'s own, `key not found: …` — for a precision, epoch or date order
   that names nothing: an unknown Symbol, or anything that is not a Symbol (`"seconds"`
   included). `date(text, nil)` is not one of these: an explicit `nil` order is the strict ISO
@@ -134,41 +138,98 @@ value.to_d   # => BigDecimal("-1234.5")
 `to_d` requires the `bigdecimal` gem lazily on first call — a bundled gem since Ruby 3.4,
 deliberately not a dependency of this one, so under Bundler add it to your own Gemfile.
 
-### `NumFormat`: declared separators, and a declared currency
+### `NumFormat`: declared separators, symbols and digits
 
 ```ruby
 HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",", flags: HyperCast::ALL_STYLES, currency: "$")
 ```
 
 The flags are `GROUPING`, `PARENTHESES`, `EXPONENT`, `RADIX_PREFIXES`, `PERCENT` and
-`CURRENCY` (`ALL_STYLES` is all six), plus the `SEPARATOR_DETECT` policy. The currency
-symbol is the one field a culture table would fill in: it is declared, never looked up, and
-honored only while `CURRENCY` is set — once, leading (`$5`, `-$5`, `$ -5`) or trailing
-(`5 €`, `1.234,50 kr.`), with optional ASCII whitespace between symbol and digits, and
-accounting parentheses wrapping symbol and digits together (`($5)`). Declared with the
-flag off, the symbol is a `:malformed` `Fault` at the symbol; the flag with nothing declared
-(`currency: ""`, the default — `INVARIANT` and `DETECT` declare none) matches nothing. A
-symbol longer than 16 UTF-8 bytes, or carrying an ASCII digit or ASCII whitespace, is an
-`ArgumentError` at construction, the same caller-bug treatment equal separators get.
+`CURRENCY` (`ALL_STYLES` is all six), plus `TRAILING_SIGN` — deliberately not in
+`ALL_STYLES`; see below — and the `SEPARATOR_DETECT` policy. A separator is one or two
+characters (`", "`, comma then space, is a separator), up to 8 UTF-8 bytes.
+
+Everything past the separators and the flags is what a culture table would fill in, and
+every such field is declared, never looked up — `from_i18n` fills what Rails' locale data
+offers, and the rest is a keyword on `new` or `Data#with`. The rule for all of them: **a
+declared symbol is read beside its ASCII default, never instead of it.** ASCII `-`, `+`,
+`%` and `0`–`9` are always read, so a format that declares nothing (`""` everywhere, the
+default — `INVARIANT` and `DETECT` declare none) reads exactly as the invariant culture,
+and nothing that parsed before stops parsing when a symbol is declared.
+
+- `currency:` — honored only while `CURRENCY` is set: once, leading (`$5`, `-$5`, `$ -5`)
+  or trailing (`5 €`, `1.234,50 kr.`), with optional ASCII whitespace between symbol and
+  digits, and accounting parentheses wrapping symbol and digits together (`($5)`). Declared
+  with the flag off, the symbol is a `:malformed` `Fault` at the symbol; the flag with
+  nothing declared matches nothing.
+- `currency_decimal_sep:`, `currency_group_sep:` — the separators a currency amount is
+  written with, for a culture whose plain numbers and amounts differ (Swiss German writes
+  `1.234,5` and `CHF 1'234.50`). Read in place of the number separators when `CURRENCY` is
+  set, the symbol is declared, and the symbol is found in the text at either edge; each
+  `""` keeps its number counterpart. Under `SEPARATOR_DETECT`, detection governs the whole
+  token and these are ignored.
+- `minus_sign:`, `plus_sign:` — further spellings of the signs (`"−"`, U+2212, for Estonian
+  and Basque; `"＋"` fullwidth), read wherever ASCII `-`/`+` are: ahead of the digits, before
+  or after a leading currency symbol. Two signs are `:malformed` at the later one.
+- `TRAILING_SIGN` — permits the sign *after* the digits, the way a locale whose negative
+  pattern is `n-` writes it: `5-`, `5 -`, `5+`, `5 €-`, `5- €`, `2.5%-`, ASCII or
+  declared, once, never beside a leading sign nor inside parentheses. It is a flag, not a
+  symbol, and it is not in `ALL_STYLES`: `from_i18n` turns it on from the locale's own
+  `negative_format` rather than assuming it.
+- `percent:` — a further spelling of the percent symbol (`"٪"` in Arabic-script cultures,
+  `"％"` fullwidth), read as a trailing `%` is while `PERCENT` is set, on the real and
+  decimal doors; integer doors never read a percent.
+- `digit_zero:` — the culture's own digits, as their zero: `"٠"` (U+0660) declares the ten
+  Arabic-Indic digits, `"０"` the fullwidth ones. They are read beside ASCII `0`–`9`
+  everywhere digits are — integer part, fraction, exponent — and may be mixed with them;
+  radix-prefixed (`0x`, `0b`) digits stay ASCII.
 
 ```ruby
 dollars = HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",", flags: HyperCast::ALL_STYLES, currency: "$")
 HyperCast.i32("($1,234)", dollars)        # => Success(value: -1234)
 HyperCast.decimal("$1,234.50", dollars)   # => Success(value: Decimal(magnitude: 12345, scale: 1, negative: false))
 HyperCast.i32("$5", HyperCast::NumFormat::INVARIANT)   # => Fault(reason: :malformed, offset: 0, length: 1)
+
+estonian = HyperCast::NumFormat.new(decimal_sep: ",", group_sep: " ", flags: HyperCast::ALL_STYLES, minus_sign: "−")
+HyperCast.f64("−1 234,5", estonian)       # => Success(value: -1234.5)   (U+2212 minus; ASCII "-" still reads)
+
+francs = HyperCast::NumFormat.new(decimal_sep: ",", group_sep: ".", flags: HyperCast::ALL_STYLES | HyperCast::TRAILING_SIGN,
+                                  currency: "CHF", currency_decimal_sep: ".", currency_group_sep: "'")
+HyperCast.f64("CHF 1'234.50", francs)     # => Success(value: 1234.5)    (the currency separators, the symbol being present)
+HyperCast.f64("1.234,50", francs)         # => Success(value: 1234.5)    (the number separators)
+HyperCast.i32("5 CHF-", francs)           # => Success(value: -5)        (TRAILING_SIGN)
+
+arabic = HyperCast::NumFormat.new(decimal_sep: "٫", group_sep: "٬", flags: HyperCast::ALL_STYLES, percent: "٪", digit_zero: "٠")
+HyperCast.f64("١٬٢٣٤٫٥", arabic)          # => Success(value: 1234.5)
+HyperCast.decimal("٥٠٪", arabic)          # => Success(value: Decimal(magnitude: 5, scale: 1, negative: false))
 ```
 
-Across the ABI a `NumFormat` is a 32-byte struct — the two separators as code points, the
-flags, and the symbol's length and UTF-8 bytes held inline — packed once per format object
-and memoized by identity on every backend, so declaring a currency costs a cast nothing.
+A malformed field is an `ArgumentError` at construction, naming the field — the same
+caller-bug treatment equal separators have always had: an empty or over-long separator, an
+equal pair (the number pair, or the pair in force for currency amounts), a symbol carrying
+an ASCII digit, a sign, percent or currency symbol carrying ASCII whitespace, a currency
+symbol over 16 bytes, a digit zero that is ASCII or does not start a digit block. The
+limits are `NumFormat::SYMBOL_MAX_BYTES` (8) and `NumFormat::CURRENCY_MAX_BYTES` (16).
+
+Across the ABI a `NumFormat` is a 92-byte, size-tagged struct that the core reads in
+place — `NumFormat#packed` is exactly those bytes: the size word, the flags, the digit
+zero's code point, then each symbol's UTF-8 bytes and length held inline. It is packed
+once per format object and memoized by identity on every backend, so declaring a currency
+or a culture's digits costs a cast nothing.
+
+**What stays English: the boolean lexicon.** `bool` reads its twenty lexemes
+(`true`/`false`, `yes`/`no`, `on`/`off`, …) in English only. No platform carries culture
+data for boolean words, so there is no bridge that could fill them; a caller with a
+localized source maps its words before the door.
 
 ### Rails' words for a format: `separator:`, `delimiter:`, `unit:`
 
 Ruby's standard library carries no locale number data, so the vocabulary Ruby code already
 speaks is Rails' — the number helpers' and I18n's `number.format`: `separator` (the decimal
-mark), `delimiter` (grouping) and `unit` (the currency symbol). Every numeric door takes
-them as keywords that replace those fields of the format for the call, and
-`NumFormat.from_i18n` builds a format from the Hash I18n hands back:
+mark), `delimiter` (grouping), `unit` (the currency symbol) and `negative_format` (where
+the sign goes). Every numeric door takes the first three as keywords that replace those
+fields of the format for the call, and `NumFormat.from_i18n` builds a format from the Hash
+I18n hands back:
 
 ```ruby
 inv = HyperCast::NumFormat::INVARIANT
@@ -177,18 +238,62 @@ HyperCast.decimal("1.234,50 kr.", inv, separator: ",", delimiter: ".", unit: "kr
 
 german = HyperCast::NumFormat.from_i18n(I18n.t("number.format"))      # {separator: ",", delimiter: ".", ...}
 HyperCast.i32("1.234", german)                                        # => Success(value: 1234)
+
+# A locale whose currency amounts use other separators than its numbers: both Hashes.
+swiss = HyperCast::NumFormat.from_i18n(I18n.t("number.format"), currency_format: I18n.t("number.currency.format"))
+HyperCast.f64("CHF 1'234.50", swiss)                                  # => Success(value: 1234.5)
+HyperCast.f64("1.234,50", swiss)                                      # => Success(value: 1234.5)
 ```
 
 The keywords go through `NumFormat#override`, which is public: the result is validated like
-any `NumFormat`, and the flags are left alone, so a `unit:` on a format without `CURRENCY`
-is declared but not honored, as it would be in the constructor. `from_i18n` reads Symbol or
-String keys and ignores every other key, so `number.currency.format` works as well. Missing
-keys keep the invariant's fields. An empty `delimiter` (a locale that writes no grouping)
-turns `GROUPING` off. `flags:` defaults to `ALL_STYLES`.
+any `NumFormat`, and the flags and every other field are left alone, so a `unit:` on a
+format without `CURRENCY` is declared but not honored, as it would be in the constructor.
+`from_i18n` reads Symbol or String keys and ignores every other key, so
+`number.currency.format` passed alone works as well. Missing keys keep the invariant's
+fields. An empty `delimiter` (a locale that writes no grouping) turns `GROUPING` off. A
+`negative_format` that writes the sign after the number (`"%n-"`, `"%n %u-"`) turns
+`TRAILING_SIGN` on; `"-%n"`, the Rails default, leaves it off. `currency_format:` takes
+`number.currency.format` beside `number.format`: its `separator` and `delimiter` become
+`currency_decimal_sep` and `currency_group_sep` (a key it lacks declares nothing, so the
+number separator stands in), its `unit` the currency symbol, and its `negative_format`
+counts the same way. `flags:` defaults to `ALL_STYLES`.
+
+That is everything the Hash offers. Rails carries no minus or plus sign, no percent symbol
+and no digits, so `from_i18n` leaves those undeclared — the core reads ASCII `-`, `+`, `%`
+and `0`–`9` — and a locale that writes them differently declares them on the result:
+`from_i18n(I18n.t("number.format")).with(minus_sign: "−")` for Estonian.
 
 A call without the keywords is exactly the call it was, with no extra allocation on either
 backend. A call with them builds a format each time (a few microseconds), so in a loop,
 build it once with `override` or `from_i18n` and pass that instead.
+
+### `datetime`: a culture's AM/PM
+
+The civil date-time door reads a 12-hour clock's `AM`/`PM` ASCII case-insensitively, after
+the clock (`3:04 PM`) or ahead of it (`PM 3:04`). `am:` and `pm:` declare a culture's own
+words beside the English ones — German's `vorm.`/`nachm.`, Korean's `오전`/`오후`
+(written ahead of the clock), Spanish's `a. m.`/`p. m.` (a space inside is fine) — matched
+exactly, with or without a space between word and clock. English is still read whatever is
+declared; `nil`, the default, declares nothing, so a call without the keywords is exactly
+the call it was. Like a `NumFormat`'s symbols the words are declared, never looked up:
+Ruby's stdlib has no day-period data, and `I18n.t("time.am")`/`("time.pm")` are where a
+Rails app finds them.
+
+```ruby
+HyperCast.datetime("1/7/2026 3:04 nachm.", :day_month_year, am: "vorm.", pm: "nachm.")
+# => Success(value: #<DateTime: 2026-07-01T15:04:00+00:00 ...>)
+HyperCast.datetime("2026-01-07 오후 3:04", :year_month_day, am: "오전", pm: "오후")
+# => Success(value: #<DateTime: 2026-01-07T15:04:00+00:00 ...>)
+HyperCast.datetime("1/7/2026 3:04 nachm.", :day_month_year)   # => Fault(reason: :malformed, offset: 13, length: 1)
+```
+
+A designator is 1 to 16 UTF-8 bytes with no ASCII digit and no ASCII whitespace at either
+end; anything else is an `ArgumentError`. Only `datetime` reads them — `date` has no time
+part. Across the ABI they are a 40-byte, size-tagged struct passed beside the order, null
+when nothing is declared. The designators are keywords, so they are read, validated and
+packed per call — the Fiddle backend packs them into its per-thread scratch — and a call
+that declares them costs about twice the plain call on the Magnus backend (the keyword
+scan is the cost: `am: nil, pm: nil` pays the same) and about half again on Fiddle.
 
 [^overrides]: Plus the optional keywords `separator:`, `delimiter:` and `unit:`, which
     override those fields of `format` for the call. See
@@ -250,6 +355,12 @@ HyperCast::Interop.version(0x000700)                       # => "0.7.0"
    is now identity-matched like `INVARIANT`, and any other format is resolved once per
    thread and memoized by identity — anchored in a thread-variable so the memo's key can
    never be a recycled address — which turned the per-call cost into one pointer compare.
+
+   A declared currency symbol costs text that does not carry one about 6 ns on the Magnus
+   backend: in one run, `1,234,567` took 151 ns under `INVARIANT` and 157 ns under a format
+   declaring `$`. A fault costs more than a success: the same run returned the `Fault` for
+   `12345x7` in 222 ns, against 101 ns for `Integer("12345x7", exception: false)` returning
+   `nil`. The door builds a reason and a span where `Integer()` hands back nothing.
    The three reason Symbols and the option Symbols (`:seconds`, `:month_day_year`, …) are
    cached the same way, so a fault or a declared option is a pointer compare too, never a
    `Symbol#name` materialization.

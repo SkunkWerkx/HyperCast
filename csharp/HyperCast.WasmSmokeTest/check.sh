@@ -19,7 +19,7 @@ if [ -z "$staticlib" ]; then
   (cd "$repo/rust" && cargo wasm-staticlib)
   staticlib="$repo/rust/target/wasm32-unknown-emscripten/release/libhypercast.a"
 fi
-dest="$here/../HyperCast/runtimes/browser-wasm/nativeassets/net10.0"
+dest="$here/../HyperCast/runtimes/browser-wasm/nativeassets/net11.0"
 mkdir -p "$dest"
 cp "$staticlib" "$dest/libhypercast.a"
 

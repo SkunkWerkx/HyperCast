@@ -23,10 +23,11 @@
 //     relative -L is resolved against the package directory instead, which is where the
 //     module cache puts staticlib/ too.
 //   - A C struct cannot cross by value (tinygo-org/tinygo#4489), so backend_static.go's
-//     shims, which hand the whole verdict back as one struct, are no use here. Each door
-//     instead calls the core's export directly with pointers to the Go result's out-value
-//     and fault span and to the Go copy of the format — the layouts cast.go already
-//     declares to match ffi.rs — the way the core's exports take them anyway.
+//     shims, which take the format by value and hand the whole verdict back as one struct,
+//     are no use here. Each door instead calls the core's export directly with pointers to
+//     the Go result's out-value and fault span and to the Go copy of the format or the day
+//     periods — the layouts interop.go already declares to match ffi.rs — the way the
+//     core's exports take them anyway.
 package hypercast
 
 /*
@@ -55,7 +56,7 @@ int32_t cast_unix(const uint8_t *ptr, size_t len, uint32_t precision, void *out,
 int32_t cast_excel_serial(const uint8_t *ptr, size_t len, uint32_t epoch, void *out, void *fault);
 int32_t cast_date(const uint8_t *ptr, size_t len, void *out, void *fault);
 int32_t cast_date_ordered(const uint8_t *ptr, size_t len, uint32_t order, void *out, void *fault);
-int32_t cast_datetime(const uint8_t *ptr, size_t len, uint32_t order, void *out, void *fault);
+int32_t cast_datetime(const uint8_t *ptr, size_t len, uint32_t order, const void *periods, void *out, void *fault);
 int32_t cast_time(const uint8_t *ptr, size_t len, void *out, void *fault);
 int32_t cast_duration(const uint8_t *ptr, size_t len, void *out, void *fault);
 int32_t cast_decimal_from_f64(double value, void *out, void *fault);
@@ -142,8 +143,8 @@ func callPlain(sym plainSymbol, ptr unsafe.Pointer, length uintptr) (r result) {
 	return r
 }
 
-func callNumeric(sym numericSymbol, ptr unsafe.Pointer, length uintptr, format RawNumFormat) (r result) {
-	r.code = int32(sym((*C.uint8_t)(ptr), C.size_t(length), unsafe.Pointer(&format),
+func callNumeric(sym numericSymbol, ptr unsafe.Pointer, length uintptr, format *RawNumFormat) (r result) {
+	r.code = int32(sym((*C.uint8_t)(ptr), C.size_t(length), unsafe.Pointer(format),
 		unsafe.Pointer(&r.out), unsafe.Pointer(&r.fault)))
 	return r
 }
@@ -160,8 +161,9 @@ func callDateOrdered(ptr unsafe.Pointer, length uintptr, order uint32) (r result
 	return r
 }
 
-func callDateTime(ptr unsafe.Pointer, length uintptr, order uint32) (r result) {
-	r.code = int32(C.cast_datetime((*C.uint8_t)(ptr), C.size_t(length), C.uint32_t(order),
+// nil periods declares nothing and crosses as null, the English-only call.
+func callDateTime(ptr unsafe.Pointer, length uintptr, order uint32, periods *RawDayPeriods) (r result) {
+	r.code = int32(C.cast_datetime((*C.uint8_t)(ptr), C.size_t(length), C.uint32_t(order), unsafe.Pointer(periods),
 		unsafe.Pointer(&r.out), unsafe.Pointer(&r.fault)))
 	return r
 }

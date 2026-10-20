@@ -50,6 +50,39 @@ func BenchmarkCastI32Grouped(b *testing.B) {
 	}
 }
 
+// A declared currency symbol the text does not carry: what it costs over Invariant.
+func BenchmarkCastI32GroupedDeclaredCurrency(b *testing.B) {
+	dollars := NumFormat{DecimalSep: ".", GroupSep: ",", Styles: AllStyles, Currency: "$"}
+	for b.Loop() {
+		I32(benchIntGroup, dollars)
+	}
+}
+
+// Every symbol the layout carries declared, on text that carries none of them: what a
+// fully bridged culture costs over Invariant.
+func BenchmarkCastI32GroupedDeclaredEverything(b *testing.B) {
+	everything := NumFormat{
+		DecimalSep: ".", GroupSep: ",", Styles: AllStyles | TrailingSign, Currency: "$",
+		CurrencyDecimalSep: ".", CurrencyGroupSep: ",", MinusSign: "−", PlusSign: "＋", Percent: "٪", DigitZero: '٠',
+	}
+	for b.Loop() {
+		I32(benchIntGroup, everything)
+	}
+}
+
+// The rejection path, against strconv's own failure on the same mistake.
+func BenchmarkCastI32Malformed(b *testing.B) {
+	for b.Loop() {
+		I32("1,234x567", Invariant)
+	}
+}
+
+func BenchmarkStdAtoiMalformed(b *testing.B) {
+	for b.Loop() {
+		_, _ = strconv.Atoi("1234x567")
+	}
+}
+
 func BenchmarkStdAtoi(b *testing.B) {
 	// No grouping knob exists in strconv at any price — ungrouped input only.
 	for b.Loop() {
@@ -121,6 +154,14 @@ func BenchmarkCastDateTimeMessy(b *testing.B) {
 	}
 }
 
+// The same text under declared day periods it does not use: what the periods cost.
+func BenchmarkCastDateTimeMessyDeclaredPeriods(b *testing.B) {
+	german := DateFormat{Order: MonthDayYear, AM: "vorm.", PM: "nachm."}
+	for b.Loop() {
+		DateTimeWith("1/7/2026 3:04 PM", german)
+	}
+}
+
 func BenchmarkStdTimeParseUSLayout(b *testing.B) {
 	for b.Loop() {
 		_, _ = time.Parse("1/2/2006 3:04 PM", "1/7/2026 3:04 PM")
@@ -146,7 +187,7 @@ func BenchmarkCastF64Detect(b *testing.B) {
 }
 
 func BenchmarkCastF64Declared(b *testing.B) {
-	declared := NumFormat{DecimalSep: ',', GroupSep: '.', Styles: AllStyles}
+	declared := NumFormat{DecimalSep: ",", GroupSep: ".", Styles: AllStyles}
 	for b.Loop() {
 		F64("1.234.567,89", declared)
 	}

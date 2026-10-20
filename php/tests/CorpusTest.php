@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use HyperCast\Cast;
 use HyperCast\DateOrder;
 use HyperCast\CastFailure;
+use HyperCast\DayPeriods;
 use HyperCast\Decimal;
 use HyperCast\ExcelEpoch;
 use HyperCast\Duration;
@@ -49,17 +50,34 @@ final class CorpusTest extends TestCase
         self::fail('corpus directory not found');
     }
 
+    /**
+     * The format a vector declares: the separators and flags, and every optional symbol
+     * the "format" object may carry — absent is undeclared, which is '' here.
+     */
     private static function formatOf(array $vector): NumFormat
     {
         if (!isset($vector['format'])) {
             return NumFormat::invariant();
         }
+        $format = $vector['format'];
         return new NumFormat(
-            $vector['format']['decimal_sep'],
-            $vector['format']['group_sep'],
-            $vector['format']['flags'],
-            $vector['format']['currency'] ?? ''
+            $format['decimal_sep'],
+            $format['group_sep'],
+            $format['flags'],
+            $format['currency'] ?? '',
+            $format['currency_decimal_sep'] ?? '',
+            $format['currency_group_sep'] ?? '',
+            $format['minus_sign'] ?? '',
+            $format['plus_sign'] ?? '',
+            $format['percent'] ?? '',
+            $format['digit_zero'] ?? ''
         );
+    }
+
+    /** The day periods a datetime vector declares ("am" and "pm", together or not at all). */
+    private static function periodsOf(array $vector): ?DayPeriods
+    {
+        return isset($vector['am']) ? new DayPeriods($vector['am'], $vector['pm']) : null;
     }
 
     private function assertVerdict(string $domain, array $vector, Success|Fault $verdict, mixed $expected): void
@@ -299,7 +317,8 @@ final class CorpusTest extends TestCase
                     new \DateTimeZone('UTC')
                 );
             }
-            $this->assertVerdict('datetime', $vector, Cast::datetime($vector['input'], $order), $expected);
+            $verdict = Cast::datetime($vector['input'], $order, self::periodsOf($vector));
+            $this->assertVerdict('datetime', $vector, $verdict, $expected);
         }
     }
 

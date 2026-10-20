@@ -7,7 +7,10 @@
 //! plus a per-domain value shape on "ok" vectors, an optional `"fault": [offset, len]`
 //! span assertion on failures, and `"type"`/`"format"`/`"precision"` where a door takes one.
 
-use hypercast::{CurrencySymbol, DateOrder, ExcelEpoch, Fault, NumFormat, Reason, UnixPrecision};
+use hypercast::{
+    CurrencySymbol, DateOrder, DayPeriods, ExcelEpoch, Fault, NativeDigits, NumFormat, Reason,
+    Symbol, UnixPrecision,
+};
 use serde_json::Value;
 use std::path::PathBuf;
 
@@ -63,23 +66,52 @@ fn assert_verdict<T: PartialEq + core::fmt::Debug>(
     }
 }
 
+/// The format a vector declares. Beyond the separators and flags every vector has, each
+/// field is optional and absent means not declared: `currency`, the two currency
+/// separators, `minus_sign`, `plus_sign`, `percent`, and `digit_zero` (one character).
 fn format_of(vector: &Value) -> NumFormat {
     let Some(format) = vector.get("format") else {
         return NumFormat::INVARIANT;
     };
-    let sep = |field: &str| {
-        format[field].as_str().and_then(|text| text.chars().next()).expect("single-char separator")
+    let symbol = |field: &str| -> Symbol<8> {
+        match format.get(field).and_then(Value::as_str) {
+            Some(text) => Symbol::new(text).unwrap_or_else(|| panic!("declarable {field}")),
+            None => Symbol::NONE,
+        }
     };
     let currency = match format.get("currency").and_then(Value::as_str) {
         Some(symbol) => CurrencySymbol::new(symbol).expect("declarable currency symbol"),
         None => CurrencySymbol::NONE,
     };
-    NumFormat::new(
-        sep("decimal_sep"),
-        sep("group_sep"),
+    let digits = match format.get("digit_zero").and_then(Value::as_str) {
+        Some(zero) => {
+            let zero = zero.chars().next().expect("a zero digit");
+            NativeDigits::new(zero).expect("declarable digit zero")
+        }
+        None => NativeDigits::NONE,
+    };
+    NumFormat::with_separators(
+        symbol("decimal_sep"),
+        symbol("group_sep"),
         format["flags"].as_u64().expect("flags") as u32,
     )
     .with_currency(currency)
+    .with_currency_separators(symbol("currency_decimal_sep"), symbol("currency_group_sep"))
+    .with_signs(symbol("minus_sign"), symbol("plus_sign"))
+    .with_percent(symbol("percent"))
+    .with_digits(digits)
+}
+
+/// The day-period designators a datetime vector declares (`am` and `pm`, together or not
+/// at all).
+fn periods_of(vector: &Value) -> DayPeriods {
+    let designator = |field: &str| -> Symbol<16> {
+        match vector.get(field).and_then(Value::as_str) {
+            Some(text) => Symbol::new(text).unwrap_or_else(|| panic!("declarable {field}")),
+            None => Symbol::NONE,
+        }
+    };
+    DayPeriods::new(designator("am"), designator("pm"))
 }
 
 /// A decimal vector pins the raw triple (`magnitude` as a decimal string, `scale`,
@@ -336,7 +368,8 @@ fn datetime_corpus() {
             3 => DateOrder::DayMonthYear,
             other => panic!("datetime: unknown order {other}"),
         };
-        let verdict = hypercast::cast_datetime(input(&vector).as_bytes(), order);
+        let periods = periods_of(&vector);
+        let verdict = hypercast::cast_datetime_with(input(&vector).as_bytes(), order, &periods);
         assert_verdict("datetime", &vector, verdict, |v| hypercast::CivilDateTime {
             date: hypercast::Date {
                 year: v["year"].as_u64().expect("year") as u16,

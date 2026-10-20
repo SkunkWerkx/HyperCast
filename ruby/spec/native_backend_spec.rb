@@ -142,6 +142,57 @@ RSpec.describe "native backend" do
     end
   end
 
+  # Every field a culture table fills in, and the day periods: the extension reads the Data
+  # class's fields into the core's own format and the designators into its own day periods,
+  # where Fiddle hands the core the packed layouts. Verdicts, spans and the caller bugs for a
+  # malformed field or designator must come out the same.
+  it "agrees with the Fiddle backend on every declared symbol, the day periods and their caller bugs" do
+    rescued = 'begin; (%s).inspect; rescue StandardError => e; "#{e.class}: #{e.message}"; end'
+    everything = 'HyperCast::NumFormat.new(decimal_sep: ",", group_sep: ". ", ' \
+                 "flags: HyperCast::ALL_STYLES | HyperCast::TRAILING_SIGN, " \
+                 'currency: "€", currency_decimal_sep: ".", currency_group_sep: ",", minus_sign: "−", ' \
+                 'plus_sign: "＋", percent: "٪", digit_zero: "٠")'
+    [
+      "HyperCast.i32('−5', #{everything})",
+      "HyperCast.i32('5 €−', #{everything})",
+      "HyperCast.i32('＋5-', #{everything})",
+      "HyperCast.f64('€1,234.50', #{everything})",
+      "HyperCast.f64('1. 234,50', #{everything})",
+      "HyperCast.f64('٥٠٪', #{everything})",
+      "HyperCast.decimal('١٢,٥-', #{everything})",
+      "HyperCast.i32('−-5', #{everything})",
+      "HyperCast.i32('1, 234', HyperCast::NumFormat.new(decimal_sep: '.', group_sep: ', ', flags: HyperCast::ALL_STYLES))",
+      "HyperCast::NumFormat.new(decimal_sep: '.', group_sep: ',', flags: 95, digit_zero: '0')",
+      "HyperCast::NumFormat.new(decimal_sep: '.', group_sep: ',', flags: 95, minus_sign: '- ')",
+      "HyperCast::NumFormat.new(decimal_sep: ',', group_sep: '.', flags: 95, currency_decimal_sep: '.')",
+      "HyperCast::NumFormat.new(decimal_sep: '.', group_sep: ',,,,,,,,,', flags: 95)",
+      "HyperCast::NumFormat.from_i18n({ separator: ',', delimiter: '.', negative_format: '%n-' }, " \
+      "currency_format: { separator: '.', delimiter: \"'\", unit: 'CHF' })",
+      "HyperCast.datetime('1/7/2026 3:04 nachm.', :day_month_year, am: 'vorm.', pm: 'nachm.')",
+      "HyperCast.datetime('2026-01-07 오후 3:04', :year_month_day, am: '오전', pm: '오후')",
+      "HyperCast.datetime('1/7/2026 3:04 p. m.', :month_day_year, am: 'a. m.', pm: 'p. m.')",
+      "HyperCast.datetime('1/7/2026 3:04 PM', :month_day_year, am: 'vorm.', pm: 'nachm.')",
+      "HyperCast.datetime('1/7/2026 3:04 nachm.', :day_month_year, am: nil, pm: nil)",
+      "HyperCast.datetime('1/7/2026 3:04 nachm.', :day_month_year, pm: 'nachm.')",
+      "HyperCast.datetime('1/7/2026 3:04 nachm.', :day_month_year, " \
+      "am: 'vorm.'.encode(Encoding::UTF_16LE), pm: 'nachm.')",
+      "HyperCast.datetime('1/7/2026', :day_month_year, am: ' vorm.', pm: 'nachm.')",
+      "HyperCast.datetime('1/7/2026', :day_month_year, am: 'vorm.', pm: '')",
+      "HyperCast.datetime('1/7/2026', :day_month_year, am: 'vorm.', pm: :nachm)",
+      "HyperCast.datetime('1/7/2026', :day_month_year, am: 'a1', pm: 'p1')",
+      "HyperCast.datetime('1/7/2026', :day_month_year, noon: 'x')",
+      "HyperCast.datetime('1/7/2026', :little_endian, am: 'vorm.', pm: 'nachm.')",
+      "HyperCast.datetime('1/7/2026', :day_month_year, :extra, am: 'vorm.')"
+    ].each do |source|
+      native = begin
+        eval(source).inspect # rubocop:disable Security/Eval -- the same source, run on both backends
+      rescue StandardError => e
+        "#{e.class}: #{e.message}"
+      end
+      expect(fiddle_eval(format(rescued, source))).to eq(native), source
+    end
+  end
+
   it "agrees with the Fiddle backend on an explicit nil date order" do
     expect(fiddle_eval('HyperCast.date("2026-01-07", nil).inspect')).to eq(HyperCast.date("2026-01-07", nil).inspect)
     expect(fiddle_eval('HyperCast.date("1/7/2026", nil).inspect')).to eq(HyperCast.date("1/7/2026", nil).inspect)

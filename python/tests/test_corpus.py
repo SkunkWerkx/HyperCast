@@ -47,7 +47,19 @@ def _format_of(vector: dict) -> NumFormat:
     fmt = vector.get("format")
     if fmt is None:
         return NumFormat.INVARIANT
-    return NumFormat(fmt["decimal_sep"], fmt["group_sep"], fmt["flags"], fmt.get("currency", ""))
+    # A key the vector leaves out declares nothing — the constructor's own default.
+    return NumFormat(
+        fmt["decimal_sep"],
+        fmt["group_sep"],
+        fmt["flags"],
+        fmt.get("currency", ""),
+        currency_decimal_sep=fmt.get("currency_decimal_sep", ""),
+        currency_group_sep=fmt.get("currency_group_sep", ""),
+        minus_sign=fmt.get("minus_sign", ""),
+        plus_sign=fmt.get("plus_sign", ""),
+        percent=fmt.get("percent", ""),
+        digit_zero=fmt.get("digit_zero", ""),
+    )
 
 
 def _assert_verdict(domain: str, vector: dict, verdict, expected) -> None:
@@ -218,9 +230,11 @@ def test_datetime_corpus():
             expected = dt.datetime(
                 vector["year"], vector["month"], vector["day"], hour, minute, second, nano // 1000
             )
-        _assert_verdict(
-            "datetime", vector, hypercast.cast_datetime(_input(vector), order), expected
+        # Declared day periods ride beside the order; a vector without them reads English only.
+        verdict = hypercast.cast_datetime(
+            _input(vector), order, am=vector.get("am", ""), pm=vector.get("pm", "")
         )
+        _assert_verdict("datetime", vector, verdict, expected)
 
 
 def test_time_corpus():

@@ -14,12 +14,19 @@ public sealed class ProviderTests
 	static readonly CultureInfo German = CultureInfo.GetCultureInfo("de-DE");
 	static readonly CultureInfo French = CultureInfo.GetCultureInfo("fr-FR");
 
-	// A format no shipped culture has, so a pass cannot be a coincidence of defaults.
+	// A format no shipped culture has, so a pass cannot be a coincidence of defaults:
+	// every field the bridge fills, spelled oddly, and a trailing-sign negative pattern.
 	static readonly NumberFormatInfo Custom = new()
 	{
 		NumberDecimalSeparator = "|",
 		NumberGroupSeparator = "_",
 		CurrencySymbol = "¤¤",
+		CurrencyDecimalSeparator = ";",
+		CurrencyGroupSeparator = ":",
+		NegativeSign = "~",
+		PositiveSign = "^",
+		PercentSymbol = "pct",
+		NumberNegativePattern = 3,
 	};
 
 	public static TheoryData<string> Providers => ["en-US", "de-DE", "fr-FR", "custom", "invariant"];
@@ -52,7 +59,9 @@ public sealed class ProviderTests
 		(Cast.Double(Spell(French, "1,234.5"), French) is Success<double> { Value: 1234.5 }).ShouldBeTrue();
 		(Cast.Decimal("1_234|50", Custom) is Success<decimal> { Value: 1234.5m }).ShouldBeTrue();
 		(Cast.Decimal("1.234,50 €", German) is Success<decimal> { Value: 1234.5m }).ShouldBeTrue();
-		(Cast.Decimal("¤¤1_234|50", Custom) is Success<decimal> { Value: 1234.5m }).ShouldBeTrue();
+		(Cast.Decimal("¤¤1:234;50", Custom) is Success<decimal> { Value: 1234.5m }).ShouldBeTrue();
+		// With the symbol present the custom currency separators are in force, not the number ones.
+		(Cast.Decimal("¤¤1_234|50", Custom) is Fault { Reason: CastFailure.Malformed }).ShouldBeTrue();
 		// The other culture's spelling is not accepted: the provider is a declaration.
 		(Cast.Double("1.234,5", English) is Fault).ShouldBeTrue();
 	}
@@ -89,7 +98,7 @@ public sealed class ProviderTests
 	{
 		var provider = Provider(name);
 		var format = NumFormat.From(provider);
-		foreach (var invariant in new[] { "42", "-1,234", "(5)", "1e3", "0x7F", "1,234.5", "50%", "nope", "", "99999999999999999999999999999999" })
+		foreach (var invariant in new[] { "42", "-1,234", "(5)", "1e3", "0x7F", "1,234.5", "50%", "nope", "", "99999999999999999999999999999999", "~7", "7~", "7 ~", "^7", "50pct", "¤¤1:234;5" })
 		{
 			var text = Spell(provider, invariant);
 			var utf8 = Encoding.UTF8.GetBytes(text);
@@ -142,6 +151,70 @@ public sealed class ProviderTests
 	}
 
 	[Fact]
+	void The_custom_provider_reads_every_field_it_declares()
+	{
+		var format = NumFormat.From(Custom);
+		format.Styles.ShouldBe(NumStyles.All | NumStyles.TrailingSign);
+		(format.CurrencyDecimalSeparator, format.CurrencyGroupSeparator, format.MinusSign, format.PlusSign, format.PercentSymbol)
+			.ShouldBe((";", ":", "~", "^", "pct"));
+		(Cast.Int32("~7", Custom) is Success<int> { Value: -7 }).ShouldBeTrue();
+		(Cast.Int32("7~", Custom) is Success<int> { Value: -7 }).ShouldBeTrue();
+		(Cast.Int32("7 -", Custom) is Success<int> { Value: -7 }).ShouldBeTrue();
+		(Cast.Int32("^7", Custom) is Success<int> { Value: 7 }).ShouldBeTrue();
+		(Cast.Double("50pct", Custom) is Success<double> { Value: 0.5 }).ShouldBeTrue();
+		(Cast.Decimal("¤¤1:234;5", Custom) is Success<decimal> { Value: 1234.5m }).ShouldBeTrue();
+		(Cast.Decimal("1_234|5", Custom) is Success<decimal> { Value: 1234.5m }).ShouldBeTrue();
+		(Cast.Decimal("¤¤1_234|5", Custom) is Fault { Reason: CastFailure.Malformed }).ShouldBeTrue();
+		// The ASCII spellings are read beside the declared ones, never instead of them.
+		(Cast.Int32("-7", Custom) is Success<int> { Value: -7 }).ShouldBeTrue();
+		(Cast.Double("50%", Custom) is Success<double> { Value: 0.5 }).ShouldBeTrue();
+		// Under en-US none of that is declared, and the same text is a fault.
+		(Cast.Int32("7~", English) is Fault).ShouldBeTrue();
+		(Cast.Int32("7-", English) is Fault).ShouldBeTrue();
+	}
+
+	/// <summary>
+	/// The civil date-time door's provider overload is its <see cref="DateFormat"/> door
+	/// under <see cref="DateFormat.From(IFormatProvider)"/>, <see langword="null"/> read as
+	/// the current culture.
+	/// </summary>
+	[Fact]
+	void The_datetime_overload_is_its_DateFormat_door_under_DateFormat_From()
+	{
+		var korean = CultureInfo.GetCultureInfo("ko-KR");
+		var custom = new DateTimeFormatInfo { ShortDatePattern = "dd/MM/yyyy", AMDesignator = "vorm.", PMDesignator = "nachm." };
+		foreach (var (text, provider) in new (string, IFormatProvider)[]
+		{
+			("2026-01-07 오후 3:04", korean), ("2026-01-07 3:04 PM", korean), ("2026-01-07 3:04 nachm.", korean),
+			("1/7/2026 3:04 nachm.", custom), ("1/7/2026 3:04 PM", custom), ("1/7/2026 nachm. 3:04", custom),
+			("1/7/2026 3:04 PM", English), ("1/7/2026 3:04 PM", German), ("1/7/2026 3:04 pm", French), ("1/7/2026 3:04 p.m.", English), ("", German),
+		})
+		{
+			var format = DateFormat.From(provider);
+			var utf8 = Encoding.UTF8.GetBytes(text);
+			Cast.DateTime(text, provider).ShouldBe(Cast.DateTime(text, format), text);
+			Cast.DateTime(utf8, provider).ShouldBe(Cast.DateTime(utf8, format), text);
+		}
+		(Cast.DateTime("2026-01-07 오후 3:04", korean) is Success<DateTime> { Value: var seoul } && seoul == new DateTime(2026, 1, 7, 15, 4, 0)).ShouldBeTrue();
+		(Cast.DateTime("1/7/2026 3:04 nachm.", custom) is Success<DateTime> { Value: var day } && day == new DateTime(2026, 7, 1, 15, 4, 0)).ShouldBeTrue();
+		(Cast.DateTime("1/7/2026 3:04 nachm.", English) is Fault { Reason: CastFailure.Malformed }).ShouldBeTrue();
+
+		var saved = CultureInfo.CurrentCulture;
+		try
+		{
+			CultureInfo.CurrentCulture = korean;
+			(Cast.DateTime("2026-01-07 오후 3:04", null) is Success<DateTime> { Value: var current } && current == new DateTime(2026, 1, 7, 15, 4, 0)).ShouldBeTrue();
+			CultureInfo.CurrentCulture = English;
+			(Cast.DateTime("2026-01-07 오후 3:04", null) is Fault { Reason: CastFailure.Malformed }).ShouldBeTrue();
+			(Cast.DateTime("1/7/2026", null) is Success<DateTime> { Value: var us } && us == new DateTime(2026, 1, 7)).ShouldBeTrue();
+		}
+		finally
+		{
+			CultureInfo.CurrentCulture = saved;
+		}
+	}
+
+	[Fact]
 	void Unsupported_targets_still_throw_before_reading_the_provider()
 	{
 		Should.Throw<NotSupportedException>(() => Cast.Scalar<Half>("1", German)).Message.ShouldContain("Half");
@@ -159,5 +232,10 @@ public sealed class ProviderTests
 		(Cast.Int32("12", NumFormat.Invariant) is Success<int> { Value: 12 }).ShouldBeTrue();
 		(Cast.Scalar<int>("12", null) is Success<int> { Value: 12 }).ShouldBeTrue();
 		(Cast.Numeric<int>("12"u8, null) is Success<int> { Value: 12 }).ShouldBeTrue();
+		(Cast.DateTime("2026-01-07", null) is Success<DateTime> { Value: var iso } && iso == new DateTime(2026, 1, 7)).ShouldBeTrue();
+		(Cast.DateTime("2026-01-07", CultureInfo.InvariantCulture) is Success<DateTime>).ShouldBeTrue();
+		(Cast.DateTime("2026-01-07", DateTimeFormatInfo.InvariantInfo) is Success<DateTime>).ShouldBeTrue();
+		(Cast.DateTime("2026-01-07", DateOrder.YearMonthDay) is Success<DateTime>).ShouldBeTrue();
+		(Cast.DateTime("2026-01-07", new DateFormat(DateOrder.YearMonthDay)) is Success<DateTime>).ShouldBeTrue();
 	}
 }

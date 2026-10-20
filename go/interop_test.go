@@ -99,19 +99,119 @@ func TestADecimalAndADurationAreTheCoresBytes(t *testing.T) {
 }
 
 func TestAFormatErrsWhereTheDoorsPanic(t *testing.T) {
-	raw, err := NumFormat{DecimalSep: ',', GroupSep: '.', Styles: AllStyles, Currency: "€"}.Raw()
-	if err != nil || raw.DecimalSep != ',' || raw.GroupSep != '.' || raw.CurrencyLen != 3 || string(raw.Currency[:3]) != "€" {
+	raw, err := NumFormat{DecimalSep: ",", GroupSep: ".", Styles: AllStyles, Currency: "€"}.Raw()
+	if err != nil || raw.Size != 92 || raw.Flags != uint32(AllStyles) || raw.DigitZero != 0 ||
+		raw.DecimalSep.String() != "," || raw.GroupSep.String() != "." || raw.Currency.Len != 3 || raw.Currency.String() != "€" ||
+		raw.CurrencyDecimalSep.Len != 0 || raw.MinusSign.Len != 0 || raw.Percent.Len != 0 {
+		t.Errorf("Raw() = %+v, %v", raw, err)
+	}
+	// Every new field lands in its own slot, the digit zero as its code point.
+	full := NumFormat{
+		DecimalSep: "٫", GroupSep: "٬", Styles: AllStyles | TrailingSign, Currency: "kr.",
+		CurrencyDecimalSep: ".", CurrencyGroupSep: ", ", MinusSign: "−", PlusSign: "＋", Percent: "٪", DigitZero: '٠',
+	}
+	raw, err = full.Raw()
+	if err != nil || raw.Flags != uint32(AllStyles|TrailingSign) || raw.DigitZero != 0x660 ||
+		raw.DecimalSep.String() != "٫" || raw.GroupSep.String() != "٬" ||
+		raw.CurrencyDecimalSep.String() != "." || raw.CurrencyGroupSep.String() != ", " ||
+		raw.MinusSign.String() != "−" || raw.PlusSign.String() != "＋" || raw.Percent.String() != "٪" || raw.Currency.String() != "kr." {
 		t.Errorf("Raw() = %+v, %v", raw, err)
 	}
 	for _, bad := range []NumFormat{
-		{DecimalSep: '.', GroupSep: '.'},
-		{DecimalSep: '.', GroupSep: 0xD800},
-		{DecimalSep: '.', GroupSep: ',', Currency: strings.Repeat("$", CurrencyMaxBytes+1)},
-		{DecimalSep: '.', GroupSep: ',', Currency: "\xff"},
-		{DecimalSep: '.', GroupSep: ',', Currency: "U S"},
+		{DecimalSep: ".", GroupSep: "."},
+		{DecimalSep: "", GroupSep: ","},
+		{DecimalSep: ".", GroupSep: ""},
+		{DecimalSep: ".", GroupSep: "\xff"},
+		{DecimalSep: ".", GroupSep: strings.Repeat(",", SymbolMaxBytes+1)},
+		{DecimalSep: ".", GroupSep: ",1"},
+		{DecimalSep: ".", GroupSep: ",", CurrencyDecimalSep: ","},
+		{DecimalSep: ".", GroupSep: ",", CurrencyGroupSep: "."},
+		{DecimalSep: ".", GroupSep: ",", CurrencyDecimalSep: "'", CurrencyGroupSep: "'"},
+		{DecimalSep: ".", GroupSep: ",", CurrencyGroupSep: strings.Repeat("'", SymbolMaxBytes+1)},
+		{DecimalSep: ".", GroupSep: ",", MinusSign: "- "},
+		{DecimalSep: ".", GroupSep: ",", MinusSign: "\xe2\x88"},
+		{DecimalSep: ".", GroupSep: ",", PlusSign: "+1"},
+		{DecimalSep: ".", GroupSep: ",", Percent: "\t%"},
+		{DecimalSep: ".", GroupSep: ",", Percent: strings.Repeat("%", SymbolMaxBytes+1)},
+		{DecimalSep: ".", GroupSep: ",", Currency: strings.Repeat("$", CurrencyMaxBytes+1)},
+		{DecimalSep: ".", GroupSep: ",", Currency: "\xff"},
+		{DecimalSep: ".", GroupSep: ",", Currency: "U S"},
+		{DecimalSep: ".", GroupSep: ",", DigitZero: '0'},
+		{DecimalSep: ".", GroupSep: ",", DigitZero: 0xD800},
+		{DecimalSep: ".", GroupSep: ",", DigitZero: 0x110000},
+		{DecimalSep: ".", GroupSep: ",", DigitZero: 0x6F7}, // ۷: modulo 64 past 54, no digit block starts there
 	} {
 		if _, err := bad.Raw(); err == nil {
 			t.Errorf("Raw() of %+v did not err", bad)
 		}
+	}
+	// A separator may carry a space (French grouping, ", "); a sign may not.
+	if _, err := (NumFormat{DecimalSep: ",", GroupSep: " ", CurrencyGroupSep: ", "}).Raw(); err != nil {
+		t.Errorf("Raw() of a spaced separator: %v", err)
+	}
+}
+
+func TestADateFormatErrsWhereTheDoorPanics(t *testing.T) {
+	raw, err := DateFormat{Order: DayMonthYear, AM: "vorm.", PM: "nachm."}.Raw()
+	if err != nil || raw.Size != 40 || raw.AM.String() != "vorm." || raw.PM.String() != "nachm." {
+		t.Errorf("Raw() = %+v, %v", raw, err)
+	}
+	// Nothing declared is a valid layout too — DateTimeWith reads it as DateTime does — and
+	// an inner space is fine (Spanish "a. m.").
+	if raw, err := (DateFormat{Order: YearMonthDay}).Raw(); err != nil || raw.Size != 40 || raw.AM.Len != 0 || raw.PM.Len != 0 {
+		t.Errorf("Raw() of nothing declared = %+v, %v", raw, err)
+	}
+	if _, err := (DateFormat{Order: MonthDayYear, AM: "a. m.", PM: "p. m."}).Raw(); err != nil {
+		t.Errorf("Raw() of an inner space: %v", err)
+	}
+	for _, bad := range []DateFormat{
+		{AM: " vorm.", PM: "nachm."},
+		{AM: "vorm.", PM: "nachm. "},
+		{AM: "vorm.", PM: "nachm.\t"},
+		{AM: "am1", PM: "pm"},
+		{AM: "\xff", PM: "pm"},
+		{AM: "am", PM: strings.Repeat("p", DesignatorMaxBytes+1)},
+	} {
+		if _, err := bad.Raw(); err == nil {
+			t.Errorf("Raw() of %+v did not err", bad)
+		}
+	}
+}
+
+// The layouts byte for byte, as rust/src/abi.rs pins them: the size word first, each
+// symbol's bytes then its length, nothing between one field and the next.
+func TestTheRawLayoutsAreTheCoresBytes(t *testing.T) {
+	raw, err := NumFormat{
+		DecimalSep: ",", GroupSep: ". ", Styles: AllStyles | TrailingSign, Currency: "€",
+		CurrencyDecimalSep: ".", CurrencyGroupSep: ",", MinusSign: "−", PlusSign: "+", Percent: "٪", DigitZero: '０',
+	}.Raw()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bytes := unsafe.Slice((*byte)(unsafe.Pointer(&raw)), unsafe.Sizeof(raw))
+	word := func(at int) uint32 {
+		return uint32(bytes[at]) | uint32(bytes[at+1])<<8 | uint32(bytes[at+2])<<16 | uint32(bytes[at+3])<<24
+	}
+	symbol := func(at, capacity int) string { return string(bytes[at : at+int(bytes[at+capacity])]) }
+	if len(bytes) != 92 || word(0) != 92 || word(4) != uint32(AllStyles|TrailingSign) || word(8) != 0xFF10 {
+		t.Errorf("head = %v", bytes[:12])
+	}
+	for _, field := range []struct {
+		at, capacity int
+		want         string
+	}{
+		{12, 8, ","}, {21, 8, ". "}, {30, 8, "."}, {39, 8, ","}, {48, 8, "−"}, {57, 8, "+"}, {66, 8, "٪"}, {75, 16, "€"},
+	} {
+		if got := symbol(field.at, field.capacity); got != field.want {
+			t.Errorf("symbol at %d = %q, want %q", field.at, got, field.want)
+		}
+	}
+	periods, err := DateFormat{Order: YearMonthDay, AM: "오전", PM: "오후"}.Raw()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bytes = unsafe.Slice((*byte)(unsafe.Pointer(&periods)), unsafe.Sizeof(periods))
+	if len(bytes) != 40 || word(0) != 40 || symbol(4, 16) != "오전" || symbol(21, 16) != "오후" || bytes[38] != 0 || bytes[39] != 0 {
+		t.Errorf("periods = %v", bytes)
 	}
 }

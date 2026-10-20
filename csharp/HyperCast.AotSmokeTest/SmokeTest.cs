@@ -42,6 +42,25 @@ internal static class SmokeTest
 		Check("f64", Cast.Double("25.5%", NumFormat.Invariant), 0.255);
 		Check("decimal", Cast.Decimal("(1,234.50)", NumFormat.Invariant), -1234.50m);
 		Check("currency", Cast.Int32("($1,234)", new NumFormat('.', ',', NumStyles.All, "$")), -1234);
+		// Every field of the 92-byte format, declared by hand (no named culture exists under
+		// InvariantGlobalization): a wide separator, both currency separators, the signs, the
+		// percent symbol, native digits and the trailing sign, each read beside its ASCII default.
+		var declared = new NumFormat(",", ". ", NumStyles.All | NumStyles.TrailingSign, "€")
+		{
+			CurrencyDecimalSeparator = ".",
+			CurrencyGroupSeparator = ",",
+			MinusSign = "−",
+			PlusSign = "＋",
+			PercentSymbol = "٪",
+			DigitZero = new System.Text.Rune(0x0660),
+		};
+		Check("wide separator", Cast.Int32("1. 234. 567", declared), 1_234_567);
+		Check("currency separators", Cast.Decimal("€1,234.50", declared), 1234.50m);
+		Check("minus sign", Cast.Int32("−5", declared), -5);
+		Check("plus sign", Cast.Int32("＋5", declared), 5);
+		Check("trailing sign", Cast.Int32("5 −", declared), -5);
+		Check("percent symbol", Cast.Double("٥٠٪", declared), 0.5);
+		Check("native digits", Cast.Int64("١٢٣", declared), 123L);
 		// The generic door's typeof dispatch has to fold under AOT's shared generics too.
 		Check("generic", Cast.Numeric<short>("0x7FFF", NumFormat.Invariant), (short)32767);
 		// ...and Scalar's wider table, through non-numeric instantiations.
@@ -66,6 +85,11 @@ internal static class SmokeTest
 		Check("date (ordered)", Cast.Date("1/7/2026", DateOrder.MonthDayYear), new DateOnly(2026, 1, 7));
 		Check("datetime", Cast.DateTime("1/7/2026 3:04 PM", DateOrder.MonthDayYear),
 			new DateTime(2026, 1, 7, 15, 4, 0));
+		// The same door with day periods declared — the one pointer argument that is null above.
+		Check("datetime (periods)", Cast.DateTime("2026-01-07 오후 3:04", new DateFormat(DateOrder.YearMonthDay, "오전", "오후")),
+			new DateTime(2026, 1, 7, 15, 4, 0));
+		var germanClock = new System.Globalization.DateTimeFormatInfo { ShortDatePattern = "dd.MM.yyyy", AMDesignator = "vorm.", PMDesignator = "nachm." };
+		Check("datetime provider", Cast.DateTime("1.7.2026 3:04 nachm.", germanClock), new DateTime(2026, 7, 1, 15, 4, 0));
 		Check("time", Cast.Time("15:04:05"), new TimeOnly(15, 4, 5));
 		Check("duration", Cast.Duration("P1DT6H"), new TimeSpan(1, 6, 0, 0));
 		// The typed doors take the double a workbook stores, not text.

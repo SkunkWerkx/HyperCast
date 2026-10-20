@@ -28,17 +28,33 @@ var message = Cast.Int32("(1,234)", NumFormat.From(culture)) switch
 };
 ```
 
+The `switch` needs the target type spelled out. Inside a method generic over it, where the
+verdict is a `Verdict<T>` with `T` still open, the compiler cannot tell a case pattern on the
+union from one on its underlying value and rejects binding a variable there (CS8780). Ask the
+union for each case with `TryGetValue` instead:
+
+```csharp
+var verdict = Cast.Scalar<T>(text, NumFormat.Invariant);
+if (verdict.TryGetValue(out Success<T> success)) return success.Value;
+verdict.TryGetValue(out Fault fault);                    // the only other case
+```
+
 Door names mirror the native ABI (`Int32`, `Double`, `Decimal`, `Timestamp`, …) so the
 polyglot surface reads identically across bindings; `Cast.Numeric<T>` fronts all eleven
 numeric doors for a caller that is itself generic over the target, and `Cast.Scalar<T>`
 fronts every text door (see [One door for a generic `T`](#one-door-for-a-generic-t)). Culture never lives in
 the core — `NumFormat.From(CultureInfo)` (or `From(IFormatProvider)`, the shape every BCL
 `TryParse` already takes) bridges .NET's culture machinery to the caller-declared format
-the native side actually reads: separators, lenience flags, and the culture's currency
-symbol. Every numeric door, `Numeric<T>` and `Scalar<T>` also take that `IFormatProvider?`
-directly, as `TryParse` does (see [A culture, the way the BCL takes one](#a-culture-the-way-the-bcl-takes-one)).
-Or spell the format directly — `new NumFormat(',', '\u00A0', NumStyles.All, "€")`
-declares an arbitrary pair, and `NumStyles.None` turns every lenience off. .NET-flavored
+the native side actually reads: separators, lenience flags, the currency symbol and the
+separators a currency amount is written with, the culture's own minus, plus and percent
+signs, and its native digits — each read beside the ASCII spelling the core reads
+regardless. `DateFormat.From(CultureInfo)` does the same for a date's field order and the
+culture's AM/PM designators. Every numeric door, `Numeric<T>`, `Scalar<T>` and the civil
+`DateTime` door also take that `IFormatProvider?` directly, as `TryParse` does (see
+[A culture, the way the BCL takes one](#a-culture-the-way-the-bcl-takes-one)). Or spell
+the format directly — `new NumFormat(',', '\u00A0', NumStyles.All, "€")` declares an
+arbitrary pair, `NumFormat.Invariant with { MinusSign = "−" }` a further sign, and
+`NumStyles.None` turns every lenience off. .NET-flavored
 fidelity, stated honestly: `DateTimeOffset`/`TimeOnly`/`TimeSpan` resolve to 100 ns
 ticks, so sub-tick nanoseconds truncate (the core carries full nanosecond fidelity; .NET's
 clock types don't). `Cast.Decimal` is exact and canonical — sign, 96-bit magnitude, trailing
@@ -102,51 +118,127 @@ tests fold per instantiation under the JIT and Native AOT alike.
 ## A culture, the way the BCL takes one
 
 Every door that takes a `NumFormat` — the eight integers, `Single`, `Double`, `Decimal`,
-`Numeric<T>` and `Scalar<T>`, for `ReadOnlySpan<char>` and UTF-8 input alike — has an
-overload taking the `IFormatProvider?` a BCL `TryParse` or `ISpanParsable<T>` takes, so code
-that is already provider-shaped passes what it was handed straight through:
+`Numeric<T>` and `Scalar<T>`, for `ReadOnlySpan<char>` and UTF-8 input alike — and the
+civil `DateTime` door, which takes a `DateFormat`, has an overload taking the
+`IFormatProvider?` a BCL `TryParse` or `ISpanParsable<T>` takes, so code that is already
+provider-shaped passes what it was handed straight through:
 
 ```csharp
 // A parsing gateway in ISpanParsable's shape, routing through HyperCast in one call.
-static T ParseRequired<T>(ReadOnlySpan<char> text, IFormatProvider? provider) where T : struct =>
-    Cast.Scalar<T>(text, provider) switch
-    {
-        Success<T> s => s.Value,
-        Fault f => throw new FormatException($"{f.Reason} at {f.Offset}+{f.Length}"),
-    };
+// Generic over T, so TryGetValue rather than a switch (CS8780; see the top of this page).
+static T ParseRequired<T>(ReadOnlySpan<char> text, IFormatProvider? provider) where T : struct
+{
+    var verdict = Cast.Scalar<T>(text, provider);
+    if (verdict.TryGetValue(out Success<T> success))
+        return success.Value;
+    verdict.TryGetValue(out Fault fault);
+    throw new FormatException($"{fault.Reason} at {fault.Offset}+{fault.Length}");
+}
 
 Cast.Double("1.234,5", CultureInfo.GetCultureInfo("de-DE"));   // 1234.5
 Cast.Int32("1.234", null);                                       // under the current culture
+Cast.Int32("−5", CultureInfo.GetCultureInfo("et-EE"));          // -5: Estonian's U+2212, and ASCII - too
+Cast.Decimal("€1,234.50", CultureInfo.GetCultureInfo("en-DE")); // 1234.50: the currency separators, as the BCL
+Cast.Double("۵۰٪", CultureInfo.GetCultureInfo("fa-IR"));        // 0.5: Persian digits and ٪
 ```
 
-The provider maps through `NumFormat.From(IFormatProvider)`: the culture's decimal and group
-separators and its currency symbol, with every lenience on. `null` means the current
-culture, resolved exactly as `TryParse` resolves it (`NumberFormatInfo.GetInstance(null)`).
+The provider maps through `NumFormat.From(IFormatProvider)`: every field the core reads,
+from the culture's own data — its decimal and group separators, whole, however many
+characters each is; its currency symbol, and the separators it writes a currency amount
+with where they differ (`en-DE` and a dozen others write a decimal comma in numbers and a
+decimal point in currency, and the BCL switches when it sees the symbol, so now does the
+core); its `NegativeSign`, `PositiveSign` and `PercentSymbol` where they are not the ASCII
+ones (U+2212 in `et-EE` and `eu-ES`, the bidi-marked signs of the Arabic-script cultures,
+`٪`); the zero of its `NativeDigits` where it is not `0` (`ar-SA`, `fa-IR`, `bn-BD`); and
+`NumStyles.TrailingSign` when its negative pattern puts the sign after the digits
+(`NumberNegativePattern` 3 or 4, or a `CurrencyNegativePattern` of the same shape —
+`fy-NL` writes `€ 5,00-`) — with every lenience on. `null` means the current culture,
+resolved exactly as `TryParse` resolves it (`NumberFormatInfo.GetInstance(null)`).
 `Scalar<T>` reads the provider only for the numeric targets.
 
 The provider is resolved the BCL's way, but the text is read HyperCast's way, and that
-differs from `TryParse` under the same culture in four places:
+differs from `TryParse` under the same culture in two places:
 
 - **Leniences.** Every one is on, so a trailing `%` and a radix prefix (`0x`, `&H`, `0b`) are
   read where `int.TryParse` would reject them. Narrow them with
   `NumFormat.From(provider) with { Styles = … }`, or declare a `NumFormat` outright.
-- **Signs.** The core reads ASCII `+` and `-` only. A culture whose `NegativeSign` is
-  something else (U+2212 in `et-EE` and `eu-ES`, for instance) faults on its own negative
-  numbers, where `int.TryParse` reads them.
-- **Currency separators.** The BCL switches to `CurrencyDecimalSeparator` and
-  `CurrencyGroupSeparator` when it sees the currency symbol. Here a currency amount is read
-  with the number separators, and some cultures use different ones for currency (several
-  English-in-Europe cultures, `en-DE` among them, write a decimal comma in numbers and a
-  decimal point in currency).
-- **Percent symbol.** The core reads an ASCII `%`, not the culture's `PercentSymbol`.
+- **ASCII beside the culture.** A declared symbol is a further spelling, never a
+  replacement: `-5` is -5 under `et-EE` exactly as `−5` is, `50%` is 0.5 under `fa-IR` as
+  `۵۰٪` is, and ASCII digits are read beside a culture's own. Nothing that parsed before a
+  symbol was declared stops parsing once it is, where `TryParse` reads the culture's
+  spelling only.
+
+Boolean words are the one culture-shaped thing no format carries, by decision:
+`Cast.Boolean`'s lexicon is English (`ja` and `oui` are `Malformed`), because no platform
+has culture data for one and so no bridge could fill it. A caller maps its own words before
+the door.
 
 Pass a `NumFormat` for anything stricter, or for a format that must not follow the machine. The mapping allocates nothing and costs nothing measurable beside the door
 itself (77 ns either way for a grouped `Int32` on the machine that measured it).
 
-`default` as the second argument still means `default(NumFormat)`, the equal-separators
+`default` as the second argument still means `default(NumFormat)`, the no-separators
 caller bug it always was: the provider overloads carry `[OverloadResolutionPriority(-1)]`,
 so they are chosen only for an argument a `NumFormat` cannot be — `null`, a `CultureInfo`, a
 `NumberFormatInfo`.
+
+Every field is declarable without a culture, and a declared format is the one to hold
+when the text's dialect is a property of the text rather than of the process:
+
+```csharp
+var swiss = new NumFormat(".", "’", NumStyles.All, "CHF");                 // separators are strings now: one or two characters
+var spaced = new NumFormat(".", ", ", NumStyles.All);                       // Cast.Int32("1, 234, 567", spaced) is 1234567
+var declared = NumFormat.Invariant with
+{
+    MinusSign = "−",                      // read wherever ASCII - is, which is still read
+    PlusSign = "＋",
+    PercentSymbol = "％",                  // read as a trailing % is, under NumStyles.Percent
+    DigitZero = new Rune(0x0660),         // ٠: the ten Arabic-Indic digits, beside 0-9
+    CurrencySymbol = "€",
+    CurrencyDecimalSeparator = ",",       // in force when € is in the text; else the number separators
+    CurrencyGroupSeparator = ".",
+    Styles = NumStyles.All | NumStyles.TrailingSign,   // 5-, 5 -, 5 €-; not in All, a culture declares it
+};
+Cast.Int32("−١٢٣", declared);              // -123
+Cast.Decimal("€1.234,50", declared);       // 1234.50
+Cast.Decimal("1,234.50", declared);        // 1234.50: no symbol, so the number separators
+Cast.Double("٥٠％", declared);             // 0.5
+Cast.Int32("5 −", declared);               // -5
+```
+
+The rules a format must keep are the core's own, checked before the crossing and reported
+as an `ArgumentException` against the `format` argument, never as a verdict: a separator is
+one to eight bytes of UTF-8 with no ASCII digit and the two differ (so does the currency
+pair in force); a sign, the percent and the currency symbol carry no ASCII digit or
+whitespace; `DigitZero` is never ASCII; and every symbol is whole code points.
+
+## A culture's date order and day periods
+
+A separated date is ambiguous on its face — `1/7/2026` is January 7th or July 1st — and
+the core never guesses: `Cast.Date` and `Cast.DateTime` take a declared `DateOrder`, and
+`DateOrders.From(culture)` reads it off the culture's short-date pattern. A 12-hour clock has
+the same problem in its marker: `3:04 nachm.`, `오후 3:04` and `3:04 p. m.` are each a
+culture's own word for the half of the day, and the core reads the English `AM`/`PM` alone
+unless told otherwise. `DateFormat` is that declaration for `Cast.DateTime` — the order and
+the two designators together, the temporal counterpart of `NumFormat`:
+
+```csharp
+var korean = DateFormat.From(CultureInfo.GetCultureInfo("ko-KR"));   // YearMonthDay, 오전 / 오후
+Cast.DateTime("2026-01-07 오후 3:04", korean);                       // 2026-01-07 15:04
+Cast.DateTime("2026-01-07 3:04 PM", korean);                         // the English pair is always read
+Cast.DateTime("1.7.2026 3:04 nachm.", new DateFormat(DateOrder.DayMonthYear, "vorm.", "nachm."));
+Cast.DateTime("1/7/2026 3:04 PM", DateOrder.MonthDayYear);           // the order alone, as before
+Cast.DateTime("2026-01-07 오후 3:04", CultureInfo.GetCultureInfo("ko-KR"));   // the provider overload
+Cast.Date("2026. 1. 7.".Replace(" ", "").TrimEnd('.'), korean.Order);        // Date has no time part: the order alone
+```
+
+A declared designator is matched exactly, after the clock (with or without a space before
+it) or ahead of it; the English pair is matched ASCII case-insensitively beside it, and it
+too is read ahead of the clock now (`PM 3:04`). `DateFormat.From` leaves the English pair
+undeclared, since the core reads it anyway, and leaves out a designator the 16-byte layout
+cannot carry (Thai's and Devanagari's words are past it), so such a culture reads the
+English pair only rather than throwing — every culture .NET ships maps without one. A
+`DateTimeFormatInfo` built by hand maps the same way, so the `IFormatProvider?` overload
+serves a format that is no culture's.
 
 ## Numbers a workbook already holds
 
@@ -164,8 +256,9 @@ fraction as a `TimeOnly`) and `Cast.ExcelDuration` (days as a `TimeSpan`). A typ
    against the BCL's bare `false`.
 2. **The vocabulary untrusted sources actually send** — twenty boolean lexemes, accounting
    parentheses, radix prefixes, all five `Guid` formats *plus* `urn:uuid:` prefixes,
-   protobuf JSON durations, a declared currency symbol at either edge — much of it grammar
-   the BCL has no knob for at any price.
+   protobuf JSON durations, a declared currency symbol at either edge, a culture's own
+   signs, digits and day periods read beside the ASCII ones — much of it grammar the BCL
+   has no knob for at any price.
 3. **One engine across a polyglot system** — the same Rust core, bit-for-bit verdicts,
    proven by the shared conformance corpus every binding replays: here, all fifteen files
    through real P/Invoke, fault spans asserted byte for byte.
@@ -213,8 +306,8 @@ fraction as a `TimeOnly`) and `Cast.ExcelDuration` (days as a `TimeSpan`). A typ
    | Door | HyperCast | BCL | Verdict |
    | --- | ---: | ---: | --- |
    | `Cast.Decimal` (`12,345.6789`) vs `decimal.TryParse` | 57.2 ns | 59.8 ns | 1.05x faster — and exact, canonical, never rounded |
-   | `Cast.Decimal` (`($1,234.50)`, en-US `$`) vs `decimal.TryParse` `NumberStyles.Currency` | 64.1 ns | 58.4 ns | 1.1x slower |
-   | `Cast.Double` (same text, same format) vs `double.TryParse` `NumberStyles.Currency` | 60.9 ns | 57.4 ns | 1.06x slower |
+   | `Cast.Decimal` (`($1,234.50)`, en-US `$`) vs `decimal.TryParse` `NumberStyles.Currency` | 70.0 ns | 55.8 ns | 1.25x slower |
+   | `Cast.Double` (same text, same format) vs `double.TryParse` `NumberStyles.Currency` | 67.0 ns | 55.6 ns | 1.2x slower |
 
    Grouping, a declared symbol and accounting parentheses are read in one pass by the
    core's lenient fast lane (`rust/src/lane.rs`): in the Rust suite a `cast_decimal` of
@@ -225,6 +318,33 @@ fraction as a `TimeOnly`) and `Cast.ExcelDuration` (days as a `TimeSpan`). A typ
    **Separator detection is nearly free**: `NumFormat.Detect` on `1.234.567,89` costs
    54.6 ns against 47.4 ns for the same text under a declared eurozone format — ~7 ns for
    resolving the `.`/`,` roles structurally instead of being told them.
+
+   **What an `IFormatProvider` costs over a declared `NumFormat`.** The same door, text and
+   culture, `Cast.Scalar<int>` on `1,234,567`, measured in a separate run on the same machine:
+
+   | Format argument | Mean |
+   | --- | ---: |
+   | `NumFormat.Invariant` | 54.4 ns |
+   | `NumFormat.From(CultureInfo.InvariantCulture)`, held in a field | 71.8 ns |
+   | `(IFormatProvider)CultureInfo.InvariantCulture`, mapped per call | 83.6 ns |
+
+   Mapping the provider on every call (`NumberFormatInfo.GetInstance`, then
+   `NumFormat.From` reading the culture's eleven fields) is about 12 ns and allocates nothing
+   — the one BCL getter that would, `NativeDigits`, clones its array on every read, so the
+   bridge reads the field it clones from. Hold the `NumFormat` in a field to keep it. The
+   gap under that is the currency symbol a culture carries and `NumFormat.Invariant` does not
+   (the invariant culture's is `¤`): a format whose every symbol is one ASCII character is
+   written to the layout without the encoder, and `¤` is not one, so that row pays the
+   encoder and the core's wider read. A caller that never reads currency can drop the
+   symbol: `NumFormat.From(provider) with { CurrencySymbol = "" }`.
+
+   **Rejecting input costs more than accepting it.** `Cast.Int32` on the malformed
+   `1,234x567` takes 74.8 ns against 32.1 ns for `int.TryParse` returning `false`, both
+   allocation-free. The core's fast lanes read well-formed shapes only, so a fault falls
+   through to the full engine, which rescans the text to report the fault's reason and span
+   (37 ns of it in the core, against 3 ns for Rust's own `str::parse` failing). Next to the
+   39.9 ns the same door takes on well-formed text, it is not a hot path anywhere sensible,
+   but it is measured, not assumed.
 
 **The honest trade-off:** the currency rows and `Guid` are losses, expected ones, and
 every row carries the same cause: a native dependency (shipped per-RID inside the package)
@@ -282,7 +402,7 @@ the same `EntryPoint`, with `OperatingSystem.IsBrowser()` and `OperatingSystem.I
 picked at the call site and constant-folded by the linker. CI builds the `wasm32-unknown-emscripten` staticlib on every
 PR; the release pack stages it under `runtimes/browser-wasm/nativeassets/`, and
 `build/net11.0/HyperCast.targets` ships inside the package to wire it up for a consumer with
-no configuration at all.
+no configuration beyond the `wasm-tools` workload.
 
 That targets file is load-bearing, and both halves of it are: a `NativeFileReference` hands
 the staticlib to the linker (restore never populates `@(NativeLibrary)` from a plain
@@ -312,8 +432,8 @@ names it, so the script skips building its own); it is not part of the solution,
 
 ```shell
 cd rust && cargo wasm-staticlib
-mkdir -p ../csharp/HyperCast/runtimes/browser-wasm/nativeassets/net10.0
-cp target/wasm32-unknown-emscripten/release/libhypercast.a ../csharp/HyperCast/runtimes/browser-wasm/nativeassets/net10.0/
+mkdir -p ../csharp/HyperCast/runtimes/browser-wasm/nativeassets/net11.0
+cp target/wasm32-unknown-emscripten/release/libhypercast.a ../csharp/HyperCast/runtimes/browser-wasm/nativeassets/net11.0/
 cd ../csharp/HyperCast.WasmSmokeTest && dotnet publish -c Release -o /tmp/hypercast-wasm
 cd /tmp/hypercast-wasm/wwwroot && python3 -m http.server 5099   # then open http://localhost:5099/
 ```
@@ -323,6 +443,19 @@ also resolves `runtimes/browser-wasm/nativeassets/` as a copy-local native asset
 own would copy the 3 MB `libhypercast.a` into `bin/` and the publish root of every Blazor
 WebAssembly consumer, never served and never read; the same targets file takes it back out of
 the copy-local list, so a consumer's output carries only the linked `dotnet.native.wasm`.
+
+That link happens whether or not the app ends up calling HyperCast. The targets file is
+evaluated before the trimmer runs and cannot see what it removes, so a client bundle whose
+trimmer drops `HyperCast.Managed` entirely still links the archive and exports all 27 entry
+points into `dotnet.native.wasm`. One Blazor consumer measured the cost of that, for this
+package and HyperUuid together, at 66 KB raw and 2 KB compressed.
+
+**Needs the `wasm-tools` workload.** Only the workload's toolchain relinks the runtime.
+Without it the SDK skips the link with nothing louder than its own warning, and the publish
+succeeds with a `dotnet.native.wasm` that has no `cast_*` symbols in it; `NETSDK1147` does
+not fire for this. So the targets file stops the build with error `HYPERCAST002` instead
+(`dotnet workload install wasm-tools`). An app that gates on `Cast.IsAvailable` and keeps a
+managed fallback can set `<HyperCastRequireWasmWorkload>false</HyperCastRequireWasmWorkload>`.
 
 **WebAssembly is .NET 11 and later only.** .NET 11 links browser-wasm with the new (exnref)
 exception-handling encoding, while Rust's precompiled `core` inside the static library uses
@@ -473,6 +606,7 @@ at three points, because the package is not the same bytes at every stage of its
 | Attested artifact | Where | How to verify |
 | --- | --- | --- |
 | Each native library, as built | `hyper-build-native.yml` | `gh attestation verify libhypercast.so --repo SkunkWerkx/HyperCast --signer-repo SkunkWerkx/.github` |
+| The browser-wasm archive, as built | `hyper-build-wasm.yml` | `gh attestation verify libhypercast.a --repo SkunkWerkx/HyperCast --signer-repo SkunkWerkx/.github` |
 | The `.nupkg` as packed, pre-push | `hyper-pack-nuget.yml` | strip the repo signature first (below) |
 | The `.nupkg` as published | `release.yml`, after the push | verify the downloaded file directly |
 
@@ -542,9 +676,15 @@ doors themselves use, so a value read that way is the value the door would have 
   `ToDateOnly()`, `ToDateTime()` (`DateTimeKind.Unspecified`), `ToTimeSpan()`,
   `ToDecimal()`; sub-tick nanoseconds truncate exactly as the doors truncate them.
 - `RawFault` — a fault's byte span, `Offset` and `Length`.
-- `RawNumFormat` — the core's 32-byte numeric format: four `uint`s, then the currency
-  symbol's UTF-8 inline in a `RawCurrency`. `NumFormat.ToRaw()` builds it, validating as
-  every numeric door does (`ArgumentException` on a caller bug).
+- `RawNumFormat` — the core's 92-byte numeric format: a size word, the `NumStyles` bits
+  and the native digits' zero, then every declared symbol in place, each its UTF-8 bytes
+  and then its length (`RawSymbol`, nine bytes, for the separators, the signs and the
+  percent symbol; `RawWideSymbol`, seventeen, for the currency symbol). The core reads it
+  where it stands. `NumFormat.ToRaw()` builds it, validating as every numeric door does
+  (`ArgumentException` on a caller bug).
+- `RawDayPeriods` — the core's 40-byte day-period layout: a size word, then the AM and PM
+  designators as `RawWideSymbol`s. `DateFormat.ToRaw()` builds it; the civil date-time door
+  passes null in its place when nothing is declared.
 - `Abi` — `Code(UnixPrecision)`, `Code(DateOrder)` and `Code(ExcelEpoch)`, checked
   (`ArgumentOutOfRangeException` for an undefined value), and the way back as
   `UnixPrecisionFrom`, `DateOrderFrom`, `ExcelEpochFrom` and `ReasonFrom`, each `null` for a

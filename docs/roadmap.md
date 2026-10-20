@@ -296,39 +296,48 @@ the idea; neither stayed C#-only.
   directly. The same question excluded types elsewhere: Go's `rune` is its `int32`, and
   Swift's `DateComponents` is the result of three doors, so neither is dispatchable.
 
-## Culture fidelity — the sweep (open)
+## Culture fidelity — the sweep (built, 0.9.0)
 
-Every binding now takes its platform's own culture object (`IFormatProvider`, `Locale`,
-`NumberFormatter`, Rails' `number.format`), but what reaches the core is still mostly the
-en-US shape: the bridges can only fill the fields `NumFormat` has, and the core hard-codes the
-rest as ASCII and English. A culture that differs in any of the ways below reads differently
-from its own platform's parser. This is documented on every bridge and in
-[`bindings.md`](bindings.md#numformat) as a known gap, and it is meant to be fixed properly,
-not worked around per consumer. Found while landing the `IFormatProvider` overloads for
-Norse Architecture (2026-10-08). None of it blocks Norse, which never passes these cultures.
+Every binding takes its platform's own culture object (`IFormatProvider`, `Locale`,
+`NumberFormatter`, Rails' `number.format`), but until 0.9.0 what reached the core was mostly
+the en-US shape: the bridges could only fill the fields `NumFormat` had, and the core
+hard-coded the rest as ASCII and English. Found while landing the `IFormatProvider` overloads
+for Norse Architecture (2026-10-08); fixed in one coordinated round, the core and all seven
+bindings at once, under the project's own rule: **culture is declared, never sniffed.** Each
+gap became something a format (or the datetime door's declaration) carries, the core reads
+exactly what is declared and defaults to the invariant behavior, every binding's bridge fills
+it from its platform's data, and `corpus/` pins each row.
 
-The rule for the fix is the project's own: **culture is declared, never sniffed.** Each gap
-becomes something a format (or a declared order) can carry, the core reads exactly what is
-declared, defaulting to today's behavior, and every binding's bridge fills it from its
-platform's data, all in the same release, with corpus vectors for each.
+One rule covers every new field: **the ASCII or English default is always read, and a
+declared symbol is a further spelling read beside it.** So nothing that parsed in 0.8.0
+reads differently, a bridge never has to re-declare `-` to keep it, and a culture whose
+minus is U+2212 still reads the hyphen its users type anyway (as the BCL does).
 
-| Gap | Today | The fix | Where |
-| --- | --- | --- | --- |
-| **Sign** | Only ASCII `+` and `-`. 96 .NET/ICU cultures declare another minus (U+2212 in `et-EE` and `eu-ES`), and `int.TryParse("−5", et-EE)` is -5 where `Cast.Int32` is Malformed. | Declarable minus and plus signs (UTF-8) in `NumFormat`. | Core, ABI, every bridge |
-| **Trailing sign** | `5-` is Malformed. .NET's `AllowTrailingSign` and a culture's negative pattern (`n-`) read it. | A lenience flag for a trailing sign, filled from the culture's negative pattern. | Core, every bridge |
-| **Currency separators** | A currency amount is read with the number separators. 13 cultures use other ones for currency (`en-DE`, `en-NL`, `en-FR`, `fr-CH` and others: a decimal comma in numbers, a decimal point in currency), and the BCL switches when it sees the symbol. | A declarable currency decimal and group separator, used when the declared symbol is present. | Core, ABI, every bridge |
-| **Percent symbol** | Only an ASCII `%` (Arabic `٪` is Malformed). | A declarable percent symbol. | Core, ABI, every bridge |
-| **Native digits** | Only ASCII `0`–`9` (Arabic-Indic `١٢٣` and fullwidth `１２` are Malformed). The BCL reads ASCII only too, but Java's `DecimalFormat` and ICU read a locale's native digits. | A declarable digit set (the zero code point of a contiguous block, as ICU and Java describe it). | Core, ABI, bridges that have the data |
-| **AM/PM designators** | Only English `AM`/`PM` (Korean `오후`, German `nachm.` and even `p.m.` are Malformed). | Declarable day-period designators beside the declared `DateOrder`, filled from the culture's designators. | Core, ABI, the `DateOrder` bridges |
-| **Separators wider than one character** | `NumFormat` holds one character per separator. The C# bridge takes the first character, and the PHP bridge rejects the locale. | Separators as short UTF-8 strings, like the currency symbol already is. | Core, ABI, every bridge |
-| **Boolean words** | Svartalfheim's English lexicon only (`ja` and `oui` are Malformed). | A declarable lexicon, or a documented decision that the boolean door stays English. Decide when the sweep starts. | Core |
-| **Swift per-user overrides** | The `locale:` overloads cache by locale identifier, so a user's own number-format overrides on Apple platforms are honored only through `NumFormat.from(locale:)`. | Key the cache by the derived symbols, or skip it for `.current`, and measure. | Swift |
+| Gap | 0.8.0 | Built |
+| --- | --- | --- |
+| **Sign** | Only ASCII `+` and `-`. | `minus_sign` and `plus_sign` in `NumFormat`, up to 8 UTF-8 bytes each, read wherever the ASCII signs are: ahead of the digits, before or after a leading currency symbol. Two signs fault at the later one. |
+| **Trailing sign** | `5-` was Malformed. | The `TRAILING_SIGN` lenience: `5-`, `5 -`, `5+`, `5 €-`, `5- €`, `2.5%-`, `2.5-%`; never beside a leading sign or inside parentheses. Not in `ALL`: each bridge sets it from the culture's negative pattern (`n-`, `n -`, `n-$`, a negative suffix, `n_sign_posn`). |
+| **Currency separators** | A currency amount was read with the number separators. | `currency_decimal_sep` and `currency_group_sep`, read in place of the number separators once the declared symbol is found in the text, as the BCL switches when it sees the symbol. Each falls back to its number counterpart when not declared; detection (`SEPARATOR_DETECT`) governs the whole token and ignores them. |
+| **Percent symbol** | Only an ASCII `%`. | `percent`, read as a trailing `%` is (`50٪`, `５０％`). Position is unchanged: a leading percent (`%50`, Turkish) is still Malformed, and is the one row left open below. |
+| **Native digits** | Only ASCII `0`–`9`. | `digits`, the zero code point of a contiguous block (`٠` U+0660, `０` U+FF10, as ICU and Java describe a locale's digits), read beside ASCII everywhere a digit is: integer part, fraction, exponent. Radix-prefixed digits stay ASCII. |
+| **AM/PM designators** | Only English `AM`/`PM`, after the clock. | `DayPeriods` beside the declared `DateOrder` (`cast_datetime_with`; the C ABI's `cast_datetime` takes a `RawDayPeriods` pointer after the order, null for English only). Read after the clock (`3:04 nachm.`) or ahead of it (`오후 3:04`, the CJK order) — and English is now read ahead of the clock too. Declared designators match exactly, up to 16 bytes with a space inside allowed (`a. m.`); English matches ASCII case-insensitively. |
+| **Separators wider than one character** | One `char` per separator. | Separators are `Symbol<8>`s: one or two characters, up to 8 UTF-8 bytes (`, `, an LTR mark and a comma). Every binding's separator fields became strings. |
+| **Boolean words** | Svartalfheim's English lexicon only. | **Decided: the boolean door stays English, documented.** No platform's culture data carries a boolean lexicon (`bool.Parse`, `Boolean.parseBoolean` and `bool()` are English or not parsers at all), so no bridge could fill one from its platform's data, which is the sweep's rule for every field. A feed that says `ja`/`oui` maps its words before the door. |
+| **Swift per-user overrides** | The `locale:` overloads cached by locale identifier. | The cache is skipped for `.current` and `.autoupdatingCurrent`, which are derived per call so a user's own number-format overrides are honored; explicit identifiers stay cached. Measured in `swift/README.md`: 60 to 70 µs a call on Linux Foundation, where `.current` carries no overrides at all, so a hot loop passes an explicit locale or a held `NumFormat`. |
 
-Not gaps, for the record: Indian lakh grouping (`12,34,567`) is already accepted; Python's and
-Go's standard libraries have no per-object locale to take; Java's Native Image includes only
-the locales named at build time (`-H:IncludeLocales`), which is the consumer's choice.
+**The ABI shape, decided once.** `RawNumFormat` is a size-tagged layout, and the layout is
+the core's own `#[repr(C)] NumFormat` behind a size word (92 bytes, 4-aligned; every symbol
+its bytes then its length). The core reads the caller's struct *in place* — a cast pays for
+a validation pass and no copy — which is why the first attempt, a copy into a differently
+laid-out `NumFormat`, lost 11 ns per crossing to store-forwarding stalls and was abandoned.
+The size word lets the layout grow again without a coordinated bump: a caller states how many
+bytes it built, the core reads those and defaults the rest, and a size it does not know is a
+contract violation. `RawDayPeriods` (40 bytes) has the same shape. Measured through the C ABI
+on one machine, a grouped `cast_i32` under a declared `$` went from 21.9 ns on the 0.8.0 core
+to 19.6 ns, and under `¤` from 22.2 to 20.9 ns; the sweep costs nothing at the crossing.
 
-Most of the table grows `RawNumFormat`, whose 32-byte layout every binding pins, so the
-sweep is one versioned ABI change rather than a field at a time: a size-tagged v2 layout or
-an extension struct, decided once, with the date-order designators alongside. That makes it
-a minor-version round of its own, after 0.8.0.
+Still open, for the record: a percent symbol ahead of the number (`%50`); separator
+detection, which counts ASCII digits only, so a token in native digits needs a declared
+format; and Indian lakh grouping was never a gap (`12,34,567` is accepted). Python's and
+Go's standard libraries have no per-object locale to take, and Java's Native Image includes
+only the locales named at build time (`-H:IncludeLocales`), which is the consumer's choice.

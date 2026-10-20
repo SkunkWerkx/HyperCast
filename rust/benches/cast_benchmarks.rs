@@ -74,6 +74,27 @@ fn benchmarks(c: &mut Criterion) {
     }
     group.finish();
 
+    // What declaring a currency symbol costs text that does not carry one: the same grouped
+    // integer under the invariant format and under one that declares `$`.
+    let mut group = c.benchmark_group("i32-declared-currency");
+    group.bench_function("invariant", |b| {
+        b.iter(|| hypercast::cast_i32(black_box(b"1,234,567"), &format).unwrap())
+    });
+    group.bench_function("declared $", |b| {
+        b.iter(|| hypercast::cast_i32(black_box(b"1,234,567"), &usd).unwrap())
+    });
+    group.finish();
+
+    // The rejection path: a fault falls out of the fast lanes into the full engine, which
+    // owns every fault span. Against the stdlib's own failing parse of the same mistake.
+    let mut group = c.benchmark_group("i32-malformed");
+    group.bench_function("hypercast", |b| {
+        b.iter(|| hypercast::cast_i32(black_box(b"1,234x567"), &format).unwrap_err())
+    });
+    group
+        .bench_function("stdlib", |b| b.iter(|| black_box("1234x567").parse::<i32>().unwrap_err()));
+    group.finish();
+
     let mut group = c.benchmark_group("decimal");
     group.bench_function("hypercast", |b| {
         b.iter(|| hypercast::cast_decimal(black_box(b"12345.6789"), &format).unwrap())

@@ -102,8 +102,10 @@ Use TinyGo's own `wasm_exec.js`, not stock Go's. The core itself imports nothing
 needs no clock, no randomness and no I/O — so the page loads one module and that is all.
 `-target=wasip1` works the same way under a WASI runtime (wasmtime, for one). CI builds
 [`internal/tinygosmoke`](internal/tinygosmoke) this way on every pull request and runs it
-in headless Chrome: every ABI shape — plain, numeric with a format and a currency symbol,
-discriminated — a fault with its span, and the core's version against `rust/Cargo.toml`.
+in headless Chrome: every ABI shape — plain, numeric with a format (a currency symbol, and
+every other symbol the layout carries), discriminated, the civil date-time door with
+declared day periods — a fault with its span, and the core's version against
+`rust/Cargo.toml`.
 
 TinyGo's cgo is narrower than Go's — no build constraints on `#cgo` lines, no `${SRCDIR}`,
 no C structs by value — which is why the browser build has a backend file of its own
@@ -140,6 +142,7 @@ rather than silently wrapping.
 | `DateOnly` | `Date` | — |
 | `DateOnlyOrdered` | `Date` | `DateOrder` |
 | `DateTime` | `CivilDateTime` | `DateOrder` |
+| `DateTimeWith` | `CivilDateTime` | `DateFormat` — the order plus the culture's AM/PM designators |
 | `TimeOfDay` | `time.Duration` since midnight | — |
 | `Span` | `Duration{Seconds, Nanos}` | — |
 | `ExactFromFloat64` | `Decimal`, the shortest that names the `float64` (`0.1` is one tenth) | — |
@@ -204,33 +207,99 @@ always scale 0.
 
 ```go
 d, fault := hypercast.Exact("($1,234.50)", hypercast.NumFormat{
-    DecimalSep: '.', GroupSep: ',', Styles: hypercast.AllStyles, Currency: "$",
+    DecimalSep: ".", GroupSep: ",", Styles: hypercast.AllStyles, Currency: "$",
 })
 // d == Decimal{Lo: 12345, Scale: 1, Negative: true}; d.String() == "-1234.5"
 ```
 
-### NumFormat and currency symbols
+### NumFormat: separators, currency, and the culture's own symbols
 
-Every numeric door takes a `NumFormat` — the caller's declared notation, never a guess:
-the decimal and group separators, the `NumStyles` lenience flags, and an optional
-`Currency` symbol. `Invariant` is `'.'`/`','` with `AllStyles` and no symbol;
-`Detect` adds `SeparatorDetect`. `AllStyles` is every lenience including `CurrencySymbol`
-(and excluding `SeparatorDetect`), so keyed literals that predate the symbol keep compiling
-and keep their meaning.
+Every numeric door takes a `NumFormat` — the caller's declared notation, never a guess.
+Go's standard library carries no culture data, so there is no `From(culture)` bridge here
+as the C#, Java and Swift bindings have; the struct literal is the whole API, and an
+application fills it from whatever culture data it holds. `Invariant` is `"."`/`","` with
+`AllStyles` and nothing else declared; `Detect` adds `SeparatorDetect`. `AllStyles` is
+every lenience including `CurrencySymbol` (and excluding `SeparatorDetect` and
+`TrailingSign`), so keyed literals that predate a field keep compiling and keep their
+meaning.
 
-With `CurrencySymbol` set and a `Currency` declared, the symbol is accepted once, whole, at
-either edge of the numeric body: leading, before or after a sign (`$5`, `-$5`, `$ -5`), or
-trailing (`5 €`, `1.234,50 kr.`), with optional ASCII whitespace between symbol and digits;
-accounting parentheses wrap symbol and digits together (`($5)`). It never takes part in
-the digit scan, so a symbol containing a separator character (`kr.` under `.` grouping) is
-fine. A symbol declared while the style is off is `Malformed` at the symbol; the style with
-no symbol declared is a no-op. The symbol is at most 16 UTF-8 bytes and may not contain an
-ASCII digit or ASCII whitespace — anything else is a caller bug and panics, the way equal
-separators do.
+| Field | Declares | Read |
+| --- | --- | --- |
+| `DecimalSep`, `GroupSep` | the number separators — one or two characters each (`"."`, `","`, `" "`, `", "`), at most 8 UTF-8 bytes, different from each other; the only required fields | always |
+| `Styles` | the `NumStyles` leniences | — |
+| `Currency` | the currency symbol (`"$"`, `"€"`, `"kr."`), at most 16 bytes | under `CurrencySymbol` |
+| `CurrencyDecimalSep`, `CurrencyGroupSep` | the separators of a currency amount, where a culture points and groups money differently from numbers; empty keeps the number separator | when `Currency` is declared and found in the text; ignored under `SeparatorDetect`, whose detection governs the whole token |
+| `MinusSign`, `PlusSign` | a further spelling of the sign (`"−"`, U+2212, in Estonian and Basque text) | wherever ASCII `-`/`+` are |
+| `Percent` | a further spelling of the percent symbol (`"٪"`, `"％"`) | as a trailing `%` is, under `Percent` — the real and decimal doors; the integer doors never read a percent |
+| `DigitZero` | native digits: the ten code points from this zero up (`'٠'` for the Arabic-Indic digits, `'０'` for fullwidth); `0` declares none | wherever a digit is — integer part, fraction, exponent; a `0x`/`0b` body stays ASCII |
+
+The rule for every field past the separators: **the ASCII spelling is always read, and a
+declared symbol is a further spelling read beside it.** Nothing that parsed before a symbol
+was declared stops parsing once it is: `"-5"` is -5 under a format declaring `"−"`, and so
+is `"−5"`; `"50%"` is 0.5 under a format declaring `"٪"`, and so is `"50٪"`; `"123"` is 123
+under a format declaring `'٠'`, and so are `"١٢٣"` and `"12٣"`. Two signs in any spelling
+are `Malformed` at the later one. Under `CurrencySymbol` with a `Currency` declared, the
+symbol is accepted once, whole, at either edge of the numeric body: leading, before or
+after a sign (`$5`, `-$5`, `$ -5`, `€−5`), or trailing (`5 €`, `1.234,50 kr.`), with
+optional ASCII whitespace between symbol and digits; accounting parentheses wrap symbol and
+digits together (`($5)`). It never takes part in the digit scan, so a symbol containing a
+separator character (`kr.` under `.` grouping) is fine. A symbol declared while the style
+is off is `Malformed` at the symbol; the style with no symbol declared is a no-op.
+
+`TrailingSign` is the one style that is not in `AllStyles`: it permits the sign after the
+digits (`5-`, `5 -`, `5+`, `5 €-`, `5- €`, `2.5%-`), in ASCII or the declared spelling,
+once, never beside a leading sign and never inside parentheses. A culture whose negative
+pattern is `n-` or `n -` sets it; everything else leaves it off, so `"5-"` stays
+`Malformed` under `Invariant`.
+
+A format the core would refuse is a caller bug and panics, never a verdict — the way equal
+separators always have: a number separator that is empty or longer than 8 bytes, equal
+number separators or equal separators in force for a currency amount, any symbol that is
+not valid UTF-8 or carries an ASCII digit, a sign, percent or currency symbol carrying ASCII
+whitespace, a `Currency` longer than 16 bytes, or a `DigitZero` that is ASCII or starts no
+Unicode digit block. `NumFormat.Raw()` reports the same check as an `error` for code that
+would rather not panic.
 
 ```go
-euros := hypercast.NumFormat{DecimalSep: ',', GroupSep: '.', Styles: hypercast.AllStyles, Currency: "€"}
-value, fault := hypercast.F64("€ 1.234,50", euros) // 1234.5
+estonian := hypercast.NumFormat{
+    DecimalSep: ",", GroupSep: " ", Styles: hypercast.AllStyles | hypercast.TrailingSign,
+    Currency: "€", MinusSign: "−",
+}
+value, fault := hypercast.F64("−1 234,5 €", estonian) // -1234.5; so is "1 234,5 €−", and "-1234,5"
+
+arabic := hypercast.NumFormat{DecimalSep: "٫", GroupSep: "٬", Styles: hypercast.AllStyles, DigitZero: '٠', Percent: "٪"}
+value, fault = hypercast.F64("١٢٫٥٪", arabic) // 0.125
+
+euros := hypercast.NumFormat{DecimalSep: ",", GroupSep: ".", Styles: hypercast.AllStyles, Currency: "€"}
+value, fault = hypercast.F64("€ 1.234,50", euros) // 1234.5
+```
+
+The boolean lexicon stays English (`true`/`yes`/`on`/`enabled`/… and their negatives): no
+platform has culture data for it, so no binding bridges one — a caller maps a culture's
+words before the door.
+
+### DateFormat: the culture's day periods
+
+`DateTime` reads a 12-hour clock's marker as the English `AM`/`PM`, ASCII
+case-insensitively, after the clock or ahead of it. `DateTimeWith` takes a `DateFormat`
+instead of the bare `DateOrder` — the same declarative shape as `NumFormat`: the order, and
+the words the culture writes for the two halves of the day. A declared designator is
+matched byte for byte, after the clock (`3:04 nachm.`, optional space before) or ahead of
+it (`오후 3:04`, optional space after), and the English pair is read whatever is declared.
+A `DateFormat` declaring no designators reads exactly what `DateTime` reads, and
+`DateTime` itself is unchanged. Only the civil date-time door reads them:
+`DateOnlyOrdered` has no time part.
+
+A designator is at most 16 UTF-8 bytes, carries no ASCII digit, and neither starts nor
+ends in ASCII whitespace (an inner space, as in Spanish `a. m.`, is fine); anything else
+is a caller bug and panics, and `DateFormat.Raw()` reports it as an `error`.
+
+```go
+german := hypercast.DateFormat{Order: hypercast.DayMonthYear, AM: "vorm.", PM: "nachm."}
+civil, fault := hypercast.DateTimeWith("1.7.2026 3:04 nachm.", german) // July 1st, 15:04
+
+korean := hypercast.DateFormat{Order: hypercast.YearMonthDay, AM: "오전", PM: "오후"}
+civil, fault = hypercast.DateTimeWith("2026-07-01 오후 3:04", korean) // the same wall clock
 ```
 
 ## The native library: `Available`, `LoadError`, `NativeVersion`
@@ -266,9 +335,15 @@ same name would have returned.
   `.CivilDateTime()`. `Decimal` and `Duration` need no raw twin: each is laid out exactly as
   the core writes one, checked at compile time, so a buffer of them can be viewed as a
   `[]Decimal` or `[]Duration` in place.
-- `RawNumFormat` — the 32 bytes a format crosses as, with the symbol inline up to
-  `CurrencyMaxBytes` (16). `NumFormat.Raw()` builds one, returning the doors' check as an
+- `RawNumFormat` — the 92 bytes a format crosses as, which the core reads in place: a
+  size word, the flags, the digit zero's code point, then every symbol inline as its bytes
+  followed by its length — `RawSymbol8` (9 bytes; `SymbolMaxBytes` is 8) for the
+  separators, signs and percent symbol, `RawSymbol16` (17 bytes; `CurrencyMaxBytes` is 16)
+  for the currency symbol. `NumFormat.Raw()` builds one, returning the doors' check as an
   error instead of their panic.
+- `RawDayPeriods` — the 40 bytes a `DateFormat`'s designators cross as beside the order: a
+  size word and the AM and PM designators as `RawSymbol16`s (`DesignatorMaxBytes` is 16);
+  a zero size is what crosses as null, nothing declared. `DateFormat.Raw()` builds one.
 - `Valid()` on `UnixPrecision`, `DateOrder` and `ExcelEpoch`; `UnixPrecisionFromCode`,
   `DateOrderFromCode`, `ExcelEpochFromCode` and `ReasonFromCode` turn an ABI code back into
   the type, and `false` for any other value.
@@ -278,7 +353,7 @@ same name would have returned.
   `"major.minor.patch"`.
 
 ```go
-raw, err := hypercast.NumFormat{DecimalSep: ',', GroupSep: '.', Styles: hypercast.AllStyles, Currency: "€"}.Raw()
+raw, err := hypercast.NumFormat{DecimalSep: ",", GroupSep: ".", Styles: hypercast.AllStyles, Currency: "€"}.Raw()
 // raw crosses to the other library's C ABI; its verdicts come back as codes and spans:
 fault, ok := hypercast.FaultFromCode(code, offset, length)
 ```
@@ -411,20 +486,22 @@ exceptions; see [iOS and Mac Catalyst](#ios-and-mac-catalyst) and [Android](#and
 1. **Verdicts with location** — a closed reason plus the offending span, against
    `strconv.NumError`'s wrapped string.
 2. **The vocabulary untrusted sources actually send** — twenty boolean lexemes, accounting
-   parentheses, declared separators and currency symbols, radix prefixes, all five .NET
-   `Guid` text forms plus `urn:uuid:` prefixes, protobuf JSON durations.
+   parentheses, declared separators, signs, currency symbols, percent symbols and native
+   digits, a culture's own AM/PM, radix prefixes, all five .NET `Guid` text forms plus
+   `urn:uuid:` prefixes, protobuf JSON durations.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other
    binding, held by the shared corpus (full corpus replay on every platform, and in the
    browser under TinyGo).
 
 **The honest trade-off, stated as plainly as the wins elsewhere: every Go door but one
 loses per-call to Go's stdlib.** Go's parsers are simply excellent (`time.Parse(RFC3339Nano)`
-at ~44 ns, `strconv.Atoi` at ~7 ns), and every HyperCast call pays a cgo crossing of about
+at ~58 ns, `strconv.Atoi` at ~9 ns), and every HyperCast call pays a cgo crossing of about
 50 ns. The exception is the messy date-time door, which beats `time.Parse` with a layout by
-1.3x because that is the one stdlib path slow enough to absorb the crossing. The crossing
-is all a door pays: any Go pointer handed to cgo escapes to the heap, so the C shims in
-`backend_static.go` declare the out-value, fault span and format on their own stack and
-return the verdict by value as one struct, and no Go pointer crosses but the input bytes —
+1.4x because that is the one stdlib path slow enough to absorb the crossing. The crossing
+is all a door pays: any Go pointer handed to cgo escapes to the heap, so the format and
+the day periods cross by value, the C shims in `backend_static.go` declare them, the
+out-value and the fault span on their own stack and return the verdict by value as one
+struct, and no Go pointer crosses but the input bytes —
 **0 B, 0 allocs on every door** on the success path. (A failed cast allocates exactly its
 `*Fault`; `allocs_test.go` holds both counts as tests.) In Go specifically, this binding
 earns its keep on the vocabulary, the closed error contract, and cross-language agreement —
@@ -433,24 +510,35 @@ to zero.
 
 ## Benchmarks
 
-`go test -bench=. -benchmem ./...`. Measured on linux-x64 (an Intel Core i9-11900H, go1.27.1),
-one session, median of three runs:
+`go test -bench=. -benchmem ./...`. Measured on linux-x64 (an Intel Core i9-11900H, go1.27.2),
+one session, median of five runs:
 
 | Door | HyperCast | stdlib |
 | --- | ---: | ---: |
-| `Timestamp` | **73 ns, 0 allocs** | 45 ns `time.Parse(RFC3339Nano)` |
-| `I32` | **74 ns, 0 allocs** | 7 ns `strconv.Atoi` |
-| `I32` (grouped) | **82 ns, 0 allocs** | — |
-| `F64` | **82 ns, 0 allocs** | 24 ns `strconv.ParseFloat` |
-| `Uuid` | **62 ns, 0 allocs** | 26 ns `google/uuid.Parse` |
-| `Span` (ISO) | **62 ns, 0 allocs** | 60 ns `ParseDuration` (Go dialect — different grammar) |
-| `Bool` | **48 ns, 0 allocs** | 2 ns `strconv.ParseBool` |
-| `TimeOfDay` | **56 ns, 0 allocs** | — |
-| `DateTime` (`1/7/2026 3:04 PM`) | **65 ns, 0 allocs** | 97 ns `time.Parse` w/ layout |
-| `DateOnlyOrdered` (`1/7/2026`) | **57 ns, 0 allocs** | 57 ns `time.Parse` w/ layout |
+| `Timestamp` | **90 ns, 0 allocs** | 58 ns `time.Parse(RFC3339Nano)` |
+| `I32` | **103 ns, 0 allocs** | 9 ns `strconv.Atoi` |
+| `I32` (grouped) | **108 ns, 0 allocs** | — |
+| `F64` | **121 ns, 0 allocs** | 30 ns `strconv.ParseFloat` |
+| `Uuid` | **76 ns, 0 allocs** | 33 ns `google/uuid.Parse` |
+| `Span` (ISO) | **78 ns, 0 allocs** | 73 ns `ParseDuration` (Go dialect — different grammar) |
+| `Bool` | **60 ns, 0 allocs** | 3 ns `strconv.ParseBool` |
+| `TimeOfDay` | **69 ns, 0 allocs** | — |
+| `DateTime` (`1/7/2026 3:04 PM`) | **84 ns, 0 allocs** | 118 ns `time.Parse` w/ layout |
+| `DateOnlyOrdered` (`1/7/2026`) | **67 ns, 0 allocs** | 72 ns `time.Parse` w/ layout |
 
-Separator detection costs ~6 ns: `1.234.567,89` under `Detect` is 95 ns against 90 ns for
-the same text under a declared eurozone format.
+Separator detection costs ~16 ns: `1.234.567,89` under `Detect` is 141 ns against 125 ns
+for the same text under a declared eurozone format.
+
+A format is checked and laid out on every call — the two separators in a few nanoseconds,
+every further symbol a little more — and the whole 92-byte layout crosses by value, so a
+declared symbol costs text that does not carry it: `I32("1,234,567")` is 108 ns under
+`Invariant`, 121 ns under a format declaring `$`, and 204 ns under one declaring every
+symbol there is (currency separators, both signs, percent, native digits). Declare what the
+feed actually carries. Day periods are the same story: `DateTime("1/7/2026 3:04 PM")` is
+84 ns, and `DateTimeWith` under a format declaring `vorm.`/`nachm.` reads the same text in
+135 ns. Rejection allocates where success does not: `I32("1,234x567")` takes 171 ns and one
+allocation, the `*Fault` it returns, against 49 ns and two allocations for `strconv.Atoi`
+failing on `1234x567`.
 
 ## Verifying build provenance
 

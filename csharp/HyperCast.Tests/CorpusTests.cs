@@ -35,16 +35,25 @@ public sealed class CorpusTests
 	static byte[] InputBytes(JsonElement vector) =>
 		Encoding.UTF8.GetBytes(vector.GetProperty("input").GetString()!);
 
+	// Every key a vector's format may carry; one it does not carry declares nothing.
 	static NumFormat FormatOf(JsonElement vector)
 	{
 		if (!vector.TryGetProperty("format", out var format))
 			return NumFormat.Invariant;
-		var currency = format.TryGetProperty("currency", out var symbol) ? symbol.GetString()! : "";
+		string Symbol(string key) => format.TryGetProperty(key, out var symbol) ? symbol.GetString()! : "";
 		return new(
-			format.GetProperty("decimal_sep").GetString()![0],
-			format.GetProperty("group_sep").GetString()![0],
+			format.GetProperty("decimal_sep").GetString()!,
+			format.GetProperty("group_sep").GetString()!,
 			(NumStyles)format.GetProperty("flags").GetUInt32(),
-			currency);
+			Symbol("currency"))
+		{
+			CurrencyDecimalSeparator = Symbol("currency_decimal_sep"),
+			CurrencyGroupSeparator = Symbol("currency_group_sep"),
+			MinusSign = Symbol("minus_sign"),
+			PlusSign = Symbol("plus_sign"),
+			PercentSymbol = Symbol("percent"),
+			DigitZero = format.TryGetProperty("digit_zero", out var zero) ? Rune.GetRuneAt(zero.GetString()!, 0) : null,
+		};
 	}
 
 	[Fact]
@@ -292,22 +301,35 @@ public sealed class CorpusTests
 					v.GetProperty("day").GetInt32()));
 	}
 
+	/// <summary>
+	/// A datetime vector declares its order, and its day-period designators (<c>am</c> and
+	/// <c>pm</c>, together) when it has any. Those go through the <see cref="DateFormat"/>
+	/// door; the rest through the bare <see cref="DateOrder"/> one, which a format declaring
+	/// nothing must agree with.
+	/// </summary>
 	[Fact]
 	void Datetime_corpus()
 	{
 		foreach (var vector in Corpus("datetime.json"))
-			AssertVerdict("datetime", vector,
-				Cast.DateTime(InputBytes(vector), (DateOrder)vector.GetProperty("order").GetUInt32()),
-				static v =>
-				{
-					var nanos = v.GetProperty("nanos_of_day").GetUInt64();
-					return new DateTime(
-							v.GetProperty("year").GetInt32(),
-							v.GetProperty("month").GetInt32(),
-							v.GetProperty("day").GetInt32(),
-							0, 0, 0, DateTimeKind.Unspecified)
-						.AddTicks((long)(nanos / 100));
-				});
+		{
+			var input = InputBytes(vector);
+			var order = (DateOrder)vector.GetProperty("order").GetUInt32();
+			var verdict = vector.TryGetProperty("am", out var am)
+				? Cast.DateTime(input, new DateFormat(order, am.GetString()!, vector.GetProperty("pm").GetString()!))
+				: Cast.DateTime(input, order);
+			if (!vector.TryGetProperty("am", out _))
+				Cast.DateTime(input, new DateFormat(order)).ShouldBe(verdict, vector.GetProperty("input").GetString());
+			AssertVerdict("datetime", vector, verdict, static v =>
+			{
+				var nanos = v.GetProperty("nanos_of_day").GetUInt64();
+				return new DateTime(
+						v.GetProperty("year").GetInt32(),
+						v.GetProperty("month").GetInt32(),
+						v.GetProperty("day").GetInt32(),
+						0, 0, 0, DateTimeKind.Unspecified)
+					.AddTicks((long)(nanos / 100));
+			});
+		}
 	}
 
 	[Fact]

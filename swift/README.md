@@ -75,8 +75,9 @@ typed door's `Fault` has no span: its offset and length are 0.
 1. **Verdicts with location** — Swift's failable initializers return `nil` with no reason
    and no span; formatters throw.
 2. **The vocabulary untrusted sources actually send** — twenty boolean lexemes, accounting
-   parentheses, declared separators, radix prefixes, all five .NET `Guid` text forms plus
-   `urn:uuid:` prefixes, protobuf JSON durations.
+   parentheses, declared separators, signs, percent symbols and native digits, radix
+   prefixes, a culture's own `AM`/`PM`, all five .NET `Guid` text forms plus `urn:uuid:`
+   prefixes, protobuf JSON durations.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
    held by the shared corpus (every corpus file replayed, with byte-exact fault spans).
 4. **Faster on the culture-machinery doors, and allocation-free** — numbers from
@@ -115,6 +116,12 @@ typed door's `Fault` has no span: its offset and length are 0.
    `1.234.567,89` under `.detect` is 54 ns against 31 ns for the same text under a declared
    eurozone format.
 
+   A locale's format declares its currency symbol whether or not the text carries one, and
+   that costs about 3 ns: `1,234,567` is 28 ns under `.invariant` and 31 ns under
+   `NumFormat.from(locale:)` for en_US, `$` included. Rejecting `1,234x567` takes 52 ns with
+   no allocation. `Int("1234x567")` fails in about 1 ns, at the first character it does not
+   take, where the door reads on to report the fault's reason and span.
+
 **The honest trade-off:** a native dependency — a prebuilt static library per platform,
 linked into your executable — and a call across the C ABI per cast. For plain invariant
 integers, `Int32("...")` is the reasonable choice.
@@ -129,16 +136,45 @@ delimited line) casts a slice of it without copying anything out first.
 
 The numeric doors take a `NumFormat` — declared separators plus `NumStyles` lenience flags
 — with no default argument: `.invariant` (`.` decimal, `,` grouping, every lenience on) or
-`NumFormat.from(locale:)`, which reads the locale's separators and its currency symbol. The
-core carries no culture table, so the symbol is the one field a culture has to supply, and
-it is declared, never looked up. With `.currency` in the styles (part of `.all`) the
-declared symbol is accepted once at either edge of the number — leading, before or after a
-sign (`$5`, `-$5`, `$ -5`), or trailing (`5 €`, `1.234,50 kr.`) — with optional whitespace
-between symbol and digits, and accounting parentheses wrap the two together (`($5)`). A
-symbol declared with the flag off is `malformed` at the symbol; the flag with no symbol
-declared changes nothing. The symbol is at most 16 UTF-8 bytes with no digit or whitespace
-in it — anything else is a precondition failure, a caller bug the same way equal separators
-are.
+`NumFormat.from(locale:)`, which reads the locale's own symbols. The core carries no culture
+table, so everything a culture spells differently is declared, never looked up — and every
+declared spelling is read *beside* the ASCII one, which the core reads whatever is declared.
+A declared minus sign does not stop `-` being read, a declared percent symbol does not stop
+`%`, native digits do not stop `0`–`9`: nothing that parsed before stops parsing, and a
+format that declares nothing reads exactly what it always did.
+
+- **Separators** (`decimalSeparator`, `groupSeparator`) are short strings: one or two
+  characters, up to 8 UTF-8 bytes, no ASCII digit — a comma and a space, a narrow no-break
+  space — and never equal to each other.
+- **Currency.** With `.currency` in the styles (part of `.all`) the declared
+  `currencySymbol` is accepted once at either edge of the number — leading, before or after
+  a sign (`$5`, `-$5`, `$ -5`), or trailing (`5 €`, `1.234,50 kr.`) — with optional
+  whitespace between symbol and digits, and accounting parentheses wrap the two together
+  (`($5)`). A symbol declared with the flag off is `malformed` at the symbol; the flag with
+  no symbol declared changes nothing. When the symbol is in the text, the digits are read
+  with `currencyDecimalSeparator` and `currencyGroupSeparator` where those are declared (a
+  decimal comma in numbers and a decimal point in prices, as `en_NL` writes them); empty
+  keeps the number separators. Under `.separatorDetect` detection governs the whole token
+  and the currency separators are ignored.
+- **Signs.** `minusSign` and `plusSign` are read wherever ASCII `-` and `+` are — ahead of
+  the digits, before or after a leading currency symbol (U+2212 in Estonian and Basque).
+  Two signs in one number, in either spelling, are `malformed` at the second.
+  `.trailingSign` reads the sign after the digits (`5-`, `5 -`, `5 €-`, `2.5%-`), never
+  beside a leading sign or inside parentheses. It is opt-in and deliberately not in `.all`:
+  a trailing sign is a culture's own negative pattern, and `from(locale:)` declares it from
+  the locale's rather than assuming it.
+- **Percent.** `percentSymbol` is read as a trailing `%` is while `.percent` is set (`٪` in
+  Arabic-script locales, `％` fullwidth). Real and decimal doors only; an integer door never
+  reads a percent.
+- **Native digits.** `digitZero` declares the ten code points from it up, read beside
+  `0`–`9` everywhere digits are — integer part, fraction, exponent (U+0660 for the
+  Arabic-Indic `٠`–`٩`, U+FF10 for the fullwidth digits); a radix-prefixed body stays ASCII.
+
+Every rule is a precondition on the initializer, a caller bug the same way equal separators
+are: a sign or percent symbol is 1 to 8 bytes with no ASCII digit or whitespace, the currency
+symbol at most 16 with neither, the digit zero non-ASCII and the start of a digit block.
+The core checks the same rules and reports a violation as a contract error, which no
+well-typed call here can reach.
 
 ```swift
 let danish = NumFormat(decimalSeparator: ",", groupSeparator: ".", styles: .all, currencySymbol: "kr.")
@@ -148,19 +184,76 @@ case .fault(let fault): print("\(fault.reason) at byte \(fault.offset)")
 }
 let enUs = NumFormat.from(locale: Locale(identifier: "en_US"))   // "$", from the locale's own data
 try Cast.i32("-$5", format: enUs)                                  // .success(-5)
+let estonian = NumFormat.from(locale: Locale(identifier: "et_EE"))   // minus sign U+2212, a space between groups
+try Cast.i32("−1 234", format: estonian)                             // .success(-1234); "-1234" reads too
+let egyptian = NumFormat.from(locale: Locale(identifier: "ar_EG"))   // Arabic-Indic digits, ٫ and ٬, its own percent
+try Cast.decimal("١٢٫٥", format: egyptian)                            // .success(12.5)
+let trailing = NumFormat(decimalSeparator: ".", groupSeparator: ",", styles: [.all, .trailingSign])
+try Cast.i32("5-", format: trailing)                                 // .success(-5); malformed under .invariant
 ```
 
-Every numeric door, and the generic `numeric` and `scalar` doors, also takes the `Locale`
-itself, the type Foundation's own number parsing is configured with:
+`NumFormat.from(locale:)` reads what Foundation's own number parsing reads, through a
+`NumberFormatter` in the decimal style and `Locale.numberingSystem`: the separators and the
+currency symbol, `minusSign`, `plusSign` and `percentSymbol`, `currencyDecimalSeparator` and
+`currencyGroupingSeparator`, a non-empty `negativeSuffix` with no `negativePrefix` as
+`.trailingSign` (the `n-` and `n -` patterns), and the numbering system's zero for the
+digits (`arab`, `arabext`, `fullwide`, `thai`, `mymr`, `khmr`, `laoo`, `tibt`, `mong` and
+the Indic scripts; `latn` declares none). A symbol the locale spells as the ASCII default is
+not declared, since that is read anyway, nor is one the native field cannot carry — a locale
+is process/user state and no cast should trap on it. ICU's symbols are declared as spelled,
+bidi marks included (an Arabic-script locale's minus is an Arabic letter mark then `-`), so
+a locale's own formatted output parses under its format, and so does the plain ASCII
+spelling. `NumFormat.from(formatter:)` does the same from a `NumberFormatter` you already
+configured, overrides and all.
+
+The boolean door stays English (`true`/`false`, `yes`/`no`, `on`/`off` and the rest):
+no platform carries a lexicon of boolean words, so there is nothing a bridge could fill a
+declared one from, and `ja` or `oui` is a caller's mapping ahead of the door, not a
+format's.
+
+### Day periods
+
+`Cast.dateTime` also takes a `DateFormat` — the `DateOrder` plus the day-period designators
+a culture writes beside a 12-hour clock, `amSymbol` and `pmSymbol` — beside the existing
+`order:` overload, which is the same door with nothing declared. A declared designator is
+read after the clock (`3:04 nachm.`, the space optional) or ahead of it (`오후 3:04`), by
+its exact bytes, beside the English `AM`/`PM`, which are read whatever is declared, ASCII
+case-insensitively, and now ahead of the clock as well as after it. A designator is 1 to 16
+UTF-8 bytes with no ASCII digit and no ASCII whitespace at either end (a space inside is
+fine: Spanish writes `a. m.`). `DateFormat.from(locale:)` reads the order off the locale's
+short-date pattern, as `DateOrder.from(locale:)` does, and the designators off a
+`DateFormatter`'s `amSymbol` and `pmSymbol`, both or neither — Persian's are longer than the
+field, so `fa_IR` declares none and reads English only.
+
+```swift
+let korean = DateFormat.from(locale: Locale(identifier: "ko_KR"))   // 오전 / 오후, year-month-day
+try Cast.dateTime("2026-01-07 오후 3:04", format: korean)             // .success(2026-01-07 15:04)
+let german = DateFormat(order: .dayMonthYear, amSymbol: "vorm.", pmSymbol: "nachm.")
+try Cast.dateTime("1/7/2026 3:04 nachm.", format: german)            // .success(2026-07-01 15:04)
+try Cast.dateTime("1/7/2026 3:04 PM", format: german)                // .success too: English is always read
+```
+
+### Taking the `Locale` itself
+
+Every numeric door, the generic `numeric` and `scalar` doors, and `dateTime` also take the
+`Locale` itself, the type Foundation's own parsing is configured with:
 `Cast.i32("1.234", locale: Locale(identifier: "de_DE"))` is `.success(1234)`, exactly
-`Cast.i32("1.234", format: .from(locale: Locale(identifier: "de_DE")))`. The locale is not optional, as Foundation's
-are not: pass `.current` or `.autoupdatingCurrent` to mean the user's settings, since
-nothing here falls back to one. Deriving a format reads the locale's separators through
-ICU, about 200–300 ns, so the doors cache formats by locale identifier, and a `locale:`
-call costs roughly 60 ns over a prebuilt format. The identifier does not carry the
-per-user number-format overrides Apple platforms allow on `Locale.current`. When those must
-be honored, derive the format once with `NumFormat.from(locale:)` and pass it, which is
-also the fastest form in a hot loop.
+`Cast.i32("1.234", format: .from(locale: Locale(identifier: "de_DE")))`, and
+`Cast.dateTime(text, locale:)` is the door under `DateFormat.from(locale:)`. The locale is
+not optional, as Foundation's are not: pass `.current` or `.autoupdatingCurrent` to mean the
+user's settings, since nothing here falls back to one. Deriving a format builds a
+Foundation formatter — 50–60 µs and 71 allocations for a `NumberFormatter` on this
+toolchain, where reading the separators alone was 270 ns and allocation-free — so the doors
+cache formats by locale identifier, and a `locale:` call with an explicit identifier costs
+150–250 ns over a prebuilt format: the lookup, and about 70 ns of telling the locale apart
+from the user's. `.current` and `.autoupdatingCurrent` are never cached: the per-user
+number-format overrides Apple platforms allow on them are not in the identifier, so those
+two derive on every call — the user's settings are read when they are asked for — at 60–70
+µs per call here, a thousand times the door. A hot loop over the user's locale derives once
+with `NumFormat.from(locale:)` and passes the format, which is also the fastest form in any
+loop. (The figures are the harness's `Cast.i32 grouped (locale: …)` and
+`NumFormat.from(locale:)` rows, p50, on the same machine as the table above but with other
+work running, so read them against that run's 41 ns for `Cast.i32 grouped`.)
 
 ## Interop: building on HyperCast's C ABI
 
@@ -172,8 +265,12 @@ takes an `UnsafeRawBufferPointer` starting at one value, aligned for its widest 
 
 - Out-values: `Interop.scalar` → `Unicode.Scalar`, `decimal` → `Decimal`, `uuid` → `UUID`, `instant` → `Date`, `date`,
   `civil` and `time` → `DateComponents`, `duration` → `Duration`.
-- `Interop.rawFormat(_:)` — a `NumFormat` as the core reads it, the 32-byte
-  `Interop.RawNumFormat` tuple, the symbol inline up to `Interop.currencyMaxBytes` (16).
+- `Interop.rawFormat(_:)` — a `NumFormat` as the core reads it in place, the 92-byte
+  `Interop.RawNumFormat` tuple: a size word, the flags, the digit zero, then every symbol
+  inline with its length after it, up to `Interop.symbolMaxBytes` (8) for a separator, a
+  sign or the percent symbol and `Interop.currencyMaxBytes` (16) for the currency symbol.
+- `Interop.rawDayPeriods(_:)` — a `DateFormat`'s designators as the core reads them, the
+  40-byte `Interop.RawDayPeriods` tuple, each up to `Interop.designatorMaxBytes` (16).
 - `Interop.fault(code:offset:length:)` — the `Fault` a nonzero verdict code and its byte
   span name; any code other than 1–3 is a precondition failure, a binding bug.
 - `Interop.version(_:)` — a `*_version()` export's packed `major << 16 | minor << 8 | patch`
@@ -181,7 +278,7 @@ takes an `UnsafeRawBufferPointer` starting at one value, aligned for its widest 
 
 ```swift
 let amount = buffer.withUnsafeBytes { Interop.decimal(UnsafeRawBufferPointer(rebasing: $0[offset..<offset + 16])) }
-let format = Interop.rawFormat(.invariant)   // 32 bytes, ready for the other library's ABI
+let format = Interop.rawFormat(.invariant)   // 92 bytes, ready for the other library's ABI
 ```
 
 ## Requirements

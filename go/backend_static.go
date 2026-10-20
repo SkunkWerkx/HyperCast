@@ -44,11 +44,12 @@
 // cgo cannot call a function pointer directly — it needs a statically-typed C call site —
 // hence one shim per ABI shape (plain, numeric, unix, version), each taking its door as a
 // pointer. The shims also own the out-params: any Go pointer handed to a cgo call escapes
-// to the heap, so instead of passing `&out` and `&fault` across, the C side declares the
-// out-value, the fault span and the format on its own stack and hands the whole verdict
-// back BY VALUE as one struct. No Go pointer crosses but the input bytes — a pointer value
-// into memory that already exists, not an address taken of a local — and the success path
-// allocates nothing (allocs_test.go holds that).
+// to the heap, so instead of passing `&out`, `&fault` and `&format` across, the format and
+// the day periods arrive BY VALUE, the C side declares them, the out-value and the fault
+// span on its own stack, and hands the whole verdict back BY VALUE as one struct. No Go
+// pointer crosses but the input bytes — a pointer value into memory that already exists,
+// not an address taken of a local — and the success path allocates nothing
+// (allocs_test.go holds that).
 //
 // The archives are committed (staticlib/README.md): a Go module is whatever is in the tree at
 // the resolved version, with no packing step to stage them in. The hypercast_local build tag
@@ -103,7 +104,7 @@ int32_t cast_unix(const uint8_t *ptr, size_t len, uint32_t precision, void *out,
 int32_t cast_excel_serial(const uint8_t *ptr, size_t len, uint32_t epoch, void *out, void *fault);
 int32_t cast_date(const uint8_t *ptr, size_t len, void *out, void *fault);
 int32_t cast_date_ordered(const uint8_t *ptr, size_t len, uint32_t order, void *out, void *fault);
-int32_t cast_datetime(const uint8_t *ptr, size_t len, uint32_t order, void *out, void *fault);
+int32_t cast_datetime(const uint8_t *ptr, size_t len, uint32_t order, const void *periods, void *out, void *fault);
 int32_t cast_time(const uint8_t *ptr, size_t len, void *out, void *fault);
 int32_t cast_duration(const uint8_t *ptr, size_t len, void *out, void *fault);
 int32_t cast_decimal_from_f64(double value, void *out, void *fault);
@@ -118,17 +119,35 @@ typedef uint32_t (*fn_version)(void);
 typedef int32_t (*fn_typed)(double, void*, void*);
 
 typedef struct { uint32_t offset; uint32_t len; } hc_fault;
-// RawNumFormat, 32 bytes: the currency symbol is currency_len UTF-8 bytes held inline.
-typedef struct { uint32_t decimal_sep; uint32_t group_sep; uint32_t flags; uint32_t currency_len; uint8_t currency[16]; } hc_format;
+// A symbol as the core reads it: its UTF-8 bytes inline, then its length — 9 bytes for a
+// separator, a sign or the percent symbol, 17 for the currency symbol and a day-period
+// designator. Field for field the Go RawSymbol8 and RawSymbol16.
+typedef struct { uint8_t bytes[8]; uint8_t len; } hc_symbol8;
+typedef struct { uint8_t bytes[16]; uint8_t len; } hc_symbol16;
+// RawNumFormat, 92 bytes, read by the core in place: the size word, the flags, the native
+// digits' zero code point, seven symbols and the currency symbol, with no padding between.
+// Field for field the Go RawNumFormat, which is what lets one convert to the other.
+typedef struct {
+	uint32_t size; uint32_t flags; uint32_t digit_zero;
+	hc_symbol8 decimal_sep, group_sep, currency_decimal_sep, currency_group_sep, minus_sign, plus_sign, percent;
+	hc_symbol16 currency;
+} hc_format;
+// RawDayPeriods, 40 bytes: the size word, the AM and PM designators, two bytes of padding.
+// Field for field the Go RawDayPeriods.
+typedef struct { uint32_t size; hc_symbol16 am, pm; } hc_periods;
 
 // The verdict, by value: 16 bytes of out-value (the widest door — a timestamp or a civil
 // date-time — 8-aligned because the core writes an i64/u64 into it), the code, and the
 // fault span. Every door reads its own prefix of `out`.
 typedef struct { uint64_t out[2]; int32_t code; uint32_t offset; uint32_t len; } hc_result;
 
-// At the sizes rust/src/abi.rs and ffi.rs pin for RawFault and RawNumFormat.
+// At the sizes and offsets rust/src/abi.rs and ffi.rs pin for RawFault, RawNumFormat and
+// RawDayPeriods.
 _Static_assert(sizeof(hc_fault) == 8, "RawFault");
-_Static_assert(sizeof(hc_format) == 32, "RawNumFormat");
+_Static_assert(sizeof(hc_format) == 92 && _Alignof(hc_format) == 4, "RawNumFormat");
+_Static_assert(offsetof(hc_format, decimal_sep) == 12 && offsetof(hc_format, currency) == 75, "RawNumFormat offsets");
+_Static_assert(sizeof(hc_periods) == 40 && _Alignof(hc_periods) == 4, "RawDayPeriods");
+_Static_assert(offsetof(hc_periods, am) == 4 && offsetof(hc_periods, pm) == 21, "RawDayPeriods offsets");
 
 static hc_result call_plain(void *fn, const uint8_t *ptr, size_t len) {
 	hc_result r = {{0, 0}, 0, 0, 0};
@@ -138,18 +157,23 @@ static hc_result call_plain(void *fn, const uint8_t *ptr, size_t len) {
 	r.len = f.len;
 	return r;
 }
-// The format arrives as scalars — the 16 currency bytes as two little-endian u64 halves —
-// and is assembled here on the C stack, so no Go pointer to a local crosses the call.
-static hc_result call_numeric(void *fn, const uint8_t *ptr, size_t len, uint32_t decimal_sep, uint32_t group_sep, uint32_t flags,
-                              uint32_t currency_len, uint64_t cur_lo, uint64_t cur_hi) {
+// The format arrives by value — its 92 bytes copied into this frame — so the pointer the
+// core reads it through is to the C stack, and no Go pointer to a local crosses the call.
+static hc_result call_numeric(void *fn, const uint8_t *ptr, size_t len, hc_format format) {
 	hc_result r = {{0, 0}, 0, 0, 0};
 	hc_fault f = {0, 0};
-	hc_format format = {decimal_sep, group_sep, flags, currency_len, {0}};
-	for (int i = 0; i < 8; i++) {
-		format.currency[i] = (uint8_t)(cur_lo >> (8 * i));
-		format.currency[8 + i] = (uint8_t)(cur_hi >> (8 * i));
-	}
 	r.code = ((fn_numeric)fn)(ptr, len, &format, r.out, &f);
+	r.offset = f.offset;
+	r.len = f.len;
+	return r;
+}
+// cast_datetime takes the day periods after the order, by pointer: the designators arrive
+// by value like the format, and a zero size word — nothing declared — crosses as null, the
+// English-only call.
+static hc_result call_datetime(const uint8_t *ptr, size_t len, uint32_t order, hc_periods periods) {
+	hc_result r = {{0, 0}, 0, 0, 0};
+	hc_fault f = {0, 0};
+	r.code = cast_datetime(ptr, len, order, periods.size != 0 ? &periods : NULL, r.out, &f);
 	r.offset = f.offset;
 	r.len = f.len;
 	return r;
@@ -186,10 +210,7 @@ static hc_result call_unix(void *fn, const uint8_t *ptr, size_t len, uint32_t di
 */
 import "C"
 
-import (
-	"encoding/binary"
-	"unsafe"
-)
+import "unsafe"
 
 // The backend-defined symbol types cast.go's doors are written against: here both are the
 // address of a linked C function, called through the statically-typed shims above;
@@ -240,28 +261,31 @@ func callPlain(sym plainSymbol, ptr unsafe.Pointer, length uintptr) result {
 	return fromC(C.call_plain(sym, (*C.uint8_t)(ptr), C.size_t(length)))
 }
 
-func callNumeric(sym numericSymbol, ptr unsafe.Pointer, length uintptr, format RawNumFormat) result {
-	// The currency bytes travel as two little-endian u64 halves so nothing here takes the
-	// address of a local for the C side — the shim reassembles them byte by byte.
-	return fromC(C.call_numeric(sym, (*C.uint8_t)(ptr), C.size_t(length),
-		C.uint32_t(format.DecimalSep), C.uint32_t(format.GroupSep), C.uint32_t(format.Flags),
-		C.uint32_t(format.CurrencyLen),
-		C.uint64_t(binary.LittleEndian.Uint64(format.Currency[:8])),
-		C.uint64_t(binary.LittleEndian.Uint64(format.Currency[8:]))))
+func callNumeric(sym numericSymbol, ptr unsafe.Pointer, length uintptr, format *RawNumFormat) result {
+	// The format travels by value, the door's local viewed as the C struct of the same
+	// layout (interop.go pins every offset) and copied once into the call, so nothing here
+	// hands the C side the address of a Go local.
+	return fromC(C.call_numeric(sym, (*C.uint8_t)(ptr), C.size_t(length), *(*C.hc_format)(unsafe.Pointer(format))))
 }
 
 func callUnix(ptr unsafe.Pointer, length uintptr, precision uint32) result {
 	return fromC(C.call_unix(unsafe.Pointer(C.cast_unix), (*C.uint8_t)(ptr), C.size_t(length), C.uint32_t(precision)))
 }
 
-// cast_date_ordered, cast_datetime and cast_excel_serial share the unix ABI shape (ptr,
-// len, u32, out, fault) — same C shim.
+// cast_date_ordered and cast_excel_serial share the unix ABI shape (ptr, len, u32, out,
+// fault) — same C shim.
 func callDateOrdered(ptr unsafe.Pointer, length uintptr, order uint32) result {
 	return fromC(C.call_unix(unsafe.Pointer(C.cast_date_ordered), (*C.uint8_t)(ptr), C.size_t(length), C.uint32_t(order)))
 }
 
-func callDateTime(ptr unsafe.Pointer, length uintptr, order uint32) result {
-	return fromC(C.call_unix(unsafe.Pointer(C.cast_datetime), (*C.uint8_t)(ptr), C.size_t(length), C.uint32_t(order)))
+// The day periods travel by value as the format does; nil declares nothing, crossing as a
+// zero size word the shim turns into null.
+func callDateTime(ptr unsafe.Pointer, length uintptr, order uint32, periods *RawDayPeriods) result {
+	var declared C.hc_periods
+	if periods != nil {
+		declared = *(*C.hc_periods)(unsafe.Pointer(periods))
+	}
+	return fromC(C.call_datetime((*C.uint8_t)(ptr), C.size_t(length), C.uint32_t(order), declared))
 }
 
 func callExcelSerial(ptr unsafe.Pointer, length uintptr, epoch uint32) result {

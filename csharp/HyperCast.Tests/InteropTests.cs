@@ -1,3 +1,6 @@
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Text;
 using HyperCast.Interop;
 
 namespace HyperCast.Tests;
@@ -81,12 +84,101 @@ public sealed class InteropTests
 	[Fact]
 	void A_format_packs_into_the_cores_layout()
 	{
-		var raw = new NumFormat(',', '.', NumStyles.All, "€").ToRaw();
-		raw.DecimalSep.ShouldBe((uint)',');
-		raw.GroupSep.ShouldBe((uint)'.');
-		raw.Flags.ShouldBe((uint)NumStyles.All);
-		raw.CurrencyLen.ShouldBe(3u);
-		((ReadOnlySpan<byte>)raw.Currency)[..3].ToArray().ShouldBe("€"u8.ToArray());
-		Should.Throw<ArgumentException>(() => new NumFormat('.', '.', NumStyles.None).ToRaw());
+		// Every field declared, each a different width, so a slip in any offset shows: the
+		// 92 bytes are read back as the core reads them — the three words, then each
+		// symbol's bytes at its offset and its length byte at the end of its slot.
+		var raw = new NumFormat(",", ". ", NumStyles.All | NumStyles.TrailingSign, "€")
+		{
+			CurrencyDecimalSeparator = ".",
+			CurrencyGroupSeparator = ",",
+			MinusSign = "−",
+			PlusSign = "＋",
+			PercentSymbol = "٪",
+			DigitZero = (Rune)'٠',
+		}.ToRaw();
+		Unsafe.SizeOf<RawNumFormat>().ShouldBe(92);
+		var bytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(in raw, 1));
+		bytes.Length.ShouldBe(92);
+		MemoryMarshal.Read<uint>(bytes).ShouldBe(92u);
+		MemoryMarshal.Read<uint>(bytes[4..]).ShouldBe(223u);
+		MemoryMarshal.Read<uint>(bytes[8..]).ShouldBe(0x0660u);
+		Symbol(bytes, 12, 9).ShouldBe(",");
+		Symbol(bytes, 21, 9).ShouldBe(". ");
+		Symbol(bytes, 30, 9).ShouldBe(".");
+		Symbol(bytes, 39, 9).ShouldBe(",");
+		Symbol(bytes, 48, 9).ShouldBe("−");
+		Symbol(bytes, 57, 9).ShouldBe("＋");
+		Symbol(bytes, 66, 9).ShouldBe("٪");
+		Symbol(bytes, 75, 17).ShouldBe("€");
+		// Nothing declared past the separators is all zero, length bytes included.
+		var invariant = NumFormat.Invariant.ToRaw();
+		var invariantBytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(in invariant, 1));
+		invariantBytes[30..].ToArray().ShouldAllBe(static b => b == 0);
+		invariantBytes[20].ShouldBe((byte)1);
+		invariantBytes[29].ShouldBe((byte)1);
+	}
+
+	// The symbol at `offset` in a layout: its bytes, as many as the length byte at the end
+	// of its `slot` says.
+	static string Symbol(ReadOnlySpan<byte> layout, int offset, int slot) =>
+		Encoding.UTF8.GetString(layout.Slice(offset, layout[offset + slot - 1]));
+
+	[Fact]
+	void Day_periods_pack_into_the_cores_layout()
+	{
+		var raw = new DateFormat(DateOrder.YearMonthDay, "오전", "p. m.").ToRaw();
+		Unsafe.SizeOf<RawDayPeriods>().ShouldBe(40);
+		var bytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(in raw, 1));
+		bytes.Length.ShouldBe(40);
+		MemoryMarshal.Read<uint>(bytes).ShouldBe(40u);
+		Symbol(bytes, 4, 17).ShouldBe("오전");
+		Symbol(bytes, 21, 17).ShouldBe("p. m.");
+		bytes[38..].ToArray().ShouldAllBe(static b => b == 0);
+		// Nothing declared is a layout of zero lengths, which the door never hands over.
+		var english = new DateFormat(DateOrder.YearMonthDay);
+		english.HasDesignators.ShouldBeFalse();
+		english.ToRaw().Am.Length.ShouldBe((byte)0);
+		new DateFormat(DateOrder.YearMonthDay, "", "nachm.").HasDesignators.ShouldBeTrue();
+	}
+
+	[Fact]
+	void A_format_the_core_would_refuse_is_a_caller_bug_here()
+	{
+		// Each rule of the core's own check, caught before the crossing, against the
+		// parameter the doors take the format in.
+		static void Refused(NumFormat format) =>
+			Should.Throw<ArgumentException>(() => format.ToRaw()).ParamName.ShouldBe("format");
+		Refused(default);
+		Refused(new NumFormat(".", ".", NumStyles.None));
+		Refused(new NumFormat("", ",", NumStyles.None));
+		Refused(new NumFormat(".", "", NumStyles.None));
+		Refused(new NumFormat(".", ",,,,,,,,,", NumStyles.None));
+		Refused(new NumFormat(".", "1", NumStyles.None));
+		Refused(new NumFormat(".", "\uD800", NumStyles.None));
+		Refused(NumFormat.Invariant with { CurrencyDecimalSeparator = "," });
+		Refused(NumFormat.Invariant with { CurrencyGroupSeparator = "." });
+		Refused(NumFormat.Invariant with { CurrencyDecimalSeparator = ";", CurrencyGroupSeparator = ";" });
+		Refused(NumFormat.Invariant with { MinusSign = "- " });
+		Refused(NumFormat.Invariant with { PlusSign = "+1" });
+		Refused(NumFormat.Invariant with { PercentSymbol = "％％％" });
+		Refused(NumFormat.Invariant with { CurrencySymbol = "US 1" });
+		Refused(NumFormat.Invariant with { CurrencySymbol = new string('€', 6) });
+		Refused(NumFormat.Invariant with { DigitZero = (Rune)'0' });
+		Refused(NumFormat.Invariant with { DigitZero = new Rune(0x0677) });
+		// A comma-space separator is two characters and fine; so is a separator with a
+		// non-ASCII space, and a sign with a bidi mark.
+		new NumFormat(".", ", ", NumStyles.All).ToRaw().GroupSep.Length.ShouldBe((byte)2);
+		new NumFormat(",", "\u202F", NumStyles.All).ToRaw().GroupSep.Length.ShouldBe((byte)3);
+		(NumFormat.Invariant with { MinusSign = "\u061C-" }).ToRaw().MinusSign.Length.ShouldBe((byte)3);
+		(NumFormat.Invariant with { DigitZero = new Rune(0x11136) }).ToRaw().DigitZero.ShouldBe(0x11136u);
+
+		static void RefusedPeriods(DateFormat format) =>
+			Should.Throw<ArgumentException>(() => format.ToRaw()).ParamName.ShouldBe("format");
+		RefusedPeriods(new DateFormat(DateOrder.YearMonthDay, " am", "pm"));
+		RefusedPeriods(new DateFormat(DateOrder.YearMonthDay, "am", "pm "));
+		RefusedPeriods(new DateFormat(DateOrder.YearMonthDay, "a1", "pm"));
+		RefusedPeriods(new DateFormat(DateOrder.YearMonthDay, "am", new string('오', 6)));
+		RefusedPeriods(new DateFormat(DateOrder.YearMonthDay, "\uDC00", "pm"));
+		new DateFormat(DateOrder.YearMonthDay, "a. m.", "p. m.").ToRaw().Pm.Length.ShouldBe((byte)5);
 	}
 }

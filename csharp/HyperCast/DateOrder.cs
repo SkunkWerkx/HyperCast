@@ -27,7 +27,8 @@ public enum DateOrder : uint
 
 /// <summary>
 /// Bridges .NET's culture machinery to a declared <see cref="DateOrder"/> — the date-order
-/// counterpart of <see cref="NumFormat.From(CultureInfo)"/>.
+/// counterpart of <see cref="NumFormat.From(CultureInfo)"/>. <see cref="DateFormat.From(CultureInfo)"/>
+/// takes the culture's day-period designators along with it, for the civil date-time door.
 /// </summary>
 public static class DateOrders
 {
@@ -44,8 +45,23 @@ public static class DateOrders
 	public static DateOrder From(CultureInfo culture)
 	{
 		ArgumentNullException.ThrowIfNull(culture);
+		return From(culture.DateTimeFormat);
+	}
+
+	/// <summary>
+	/// Derives the field order from date-time formatting data directly — its
+	/// <see cref="DateTimeFormatInfo.ShortDatePattern"/>, read as <see cref="From(CultureInfo)"/>
+	/// reads a culture's.
+	/// </summary>
+	/// <param name="dateTimeFormat">The date-time formatting whose short-date pattern declares the order. Never null.</param>
+	/// <returns>The field order.</returns>
+	/// <exception cref="ArgumentNullException"><paramref name="dateTimeFormat"/> is null.</exception>
+	/// <exception cref="ArgumentException">The pattern names none of y/M/d — a malformed culture, not a data verdict.</exception>
+	public static DateOrder From(DateTimeFormatInfo dateTimeFormat)
+	{
+		ArgumentNullException.ThrowIfNull(dateTimeFormat);
 		var inLiteral = false;
-		foreach (var ch in culture.DateTimeFormat.ShortDatePattern)
+		foreach (var ch in dateTimeFormat.ShortDatePattern)
 		{
 			if (ch == '\'')
 			{
@@ -62,7 +78,7 @@ public static class DateOrders
 			}
 		}
 		throw new ArgumentException(
-			$"Short date pattern '{culture.DateTimeFormat.ShortDatePattern}' names none of y/M/d.",
-			nameof(culture));
+			$"Short date pattern '{dateTimeFormat.ShortDatePattern}' names none of y/M/d.",
+			nameof(dateTimeFormat));
 	}
 }

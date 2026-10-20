@@ -11,7 +11,7 @@
 //! invariant, grouping stripped). Nothing allocates.
 
 use crate::float::{self, Real};
-use crate::integer::{Sep, char_len_at, is_digit_at, split_sign, strip_currency, strip_parens};
+use crate::integer::{Frame, char_len_at, frame, is_digit_at, read_digit, split_sign};
 use crate::lane;
 use crate::verdict::{Fault, NumFormat, trim};
 
@@ -115,10 +115,16 @@ fn lenient<T: Real>(text: &[u8], format: &NumFormat, lenient_lane: bool) -> Opti
 }
 
 /// True when `format`'s declared separators cannot reinterpret any byte of the plain
-/// invariant shape — the precondition for reading such a token as written.
+/// invariant shape — the precondition for reading such a token as written. A group
+/// separator of one ASCII byte outside that shape's alphabet, or starting outside ASCII,
+/// cannot; one of several ASCII bytes (`e3`) could, and sends every token to the engine.
 pub(crate) fn reads_plain(format: &NumFormat) -> bool {
-    format.decimal_sep == '.'
-        && !matches!(format.group_sep, '0'..='9' | '.' | 'e' | 'E' | '+' | '-')
+    format.decimal_sep.as_bytes() == b"."
+        && match format.group_sep.as_bytes() {
+            [byte] => !matches!(byte, b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-'),
+            [lead, ..] => *lead >= 0x80,
+            [] => true,
+        }
 }
 
 /// True when the trimmed token is exactly the invariant shape
@@ -176,17 +182,8 @@ pub(crate) fn normalize(
     format: &NumFormat,
     buf: &mut [u8; MAX_NORMALIZED],
 ) -> Result<(usize, bool), Fault> {
-    // Percent strips first, exactly as Svartalfheim checked `trimmed[^1]` first — the parens
-    // and sign live inside the percent body: `(2.5)%` is -0.025.
-    let (body, percent) = match text.strip_suffix(b"%") {
-        Some(rest) if format.allows(NumFormat::PERCENT) => (rest.trim_ascii_end(), true),
-        _ => (text, false),
-    };
-    if body.is_empty() {
-        return Err(Fault::malformed(start, text.len()));
-    }
-    let (body, base, parens) = strip_parens(body, start, format)?;
-    let (body, base, pre_sign) = strip_currency(body, base, format)?;
+    let Frame { body, base, negative, percent, currency } = frame(text, start, format, true)?;
+    let (decimal, group) = format.separators(currency);
 
     let mut out = 0;
     let mut push = |byte: u8, out: &mut usize| -> bool {
@@ -200,54 +197,41 @@ pub(crate) fn normalize(
     let overflow = Fault::malformed(start, text.len());
 
     let mut i = 0;
-    let mut negative = parens;
-    let (sign, _) = split_sign(body);
-    if let Some(pre_sign) = pre_sign {
-        // The sign sat ahead of a leading currency symbol (`-$5`); a second one after it,
-        // or one inside accounting parens, is double negation nonsense.
-        if parens || sign.is_some() {
-            return Err(Fault::malformed(base, 1));
-        }
-        negative = pre_sign == b'-';
-    } else if let Some(sign) = sign {
-        if parens {
-            return Err(Fault::malformed(base, 1));
-        }
-        negative = sign == b'-';
-        i = 1;
-    }
     if negative && !push(b'-', &mut out) {
         return Err(overflow);
     }
 
-    let decimal = Sep::new(format.decimal_sep);
-    let group = Sep::new(format.group_sep);
     let mut any_digit = false;
     let mut seen_decimal = false;
+    // Whether the byte before `i` was a digit — what a group separator must sit after.
+    let mut after_digit = false;
     while let Some(&byte) = body.get(i) {
-        if byte.is_ascii_digit() {
+        if let Some((digit, len)) = read_digit(body, i, format) {
             any_digit = true;
-            if !push(byte, &mut out) {
+            after_digit = true;
+            if !push(b'0' + digit, &mut out) {
                 return Err(overflow);
             }
-            i += 1;
+            i += len;
         } else if decimal.matches(body, i) {
             if seen_decimal {
-                return Err(Fault::malformed(base + i, decimal.len));
+                return Err(Fault::malformed(base + i, decimal.len()));
             }
             seen_decimal = true;
+            after_digit = false;
             if !push(b'.', &mut out) {
                 return Err(overflow);
             }
-            i += decimal.len;
+            i += decimal.len();
         } else if format.allows(NumFormat::GROUPING) && group.matches(body, i) {
-            let after = i + group.len;
+            let after = i + group.len();
             // Grouping lives in the integer part only, strictly between digits.
             let between_digits =
-                !seen_decimal && is_digit_at(body, i.wrapping_sub(1)) && is_digit_at(body, after);
+                !seen_decimal && after_digit && read_digit(body, after, format).is_some();
             if !between_digits {
-                return Err(Fault::malformed(base + i, group.len));
+                return Err(Fault::malformed(base + i, group.len()));
             }
+            after_digit = false;
             i = after;
         } else if (byte == b'e' || byte == b'E') && format.allows(NumFormat::EXPONENT) && any_digit
         {
@@ -258,17 +242,17 @@ pub(crate) fn normalize(
                 exp_sign = sign;
                 i += 1;
             }
-            if !is_digit_at(body, i) {
+            if read_digit(body, i, format).is_none() {
                 return Err(Fault::malformed(base + e_pos, 1));
             }
             if !push(b'e', &mut out) || (exp_sign != 0 && !push(exp_sign, &mut out)) {
                 return Err(overflow);
             }
-            while let Some(&digit @ b'0'..=b'9') = body.get(i) {
-                if !push(digit, &mut out) {
+            while let Some((digit, len)) = read_digit(body, i, format) {
+                if !push(b'0' + digit, &mut out) {
                     return Err(overflow);
                 }
-                i += 1;
+                i += len;
             }
             if i != body.len() {
                 return Err(Fault::malformed(base + i, char_len_at(body, i)));

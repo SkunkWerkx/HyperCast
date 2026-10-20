@@ -15,7 +15,7 @@ use std::sync::OnceLock;
 
 use magnus::encoding::EncodingCapable;
 use magnus::rb_sys::{AsRawValue, FromRawValue};
-use magnus::scan_args::scan_args;
+use magnus::scan_args::{get_kwargs, scan_args};
 use magnus::value::{Opaque, ReprValue};
 use magnus::{
     Error, IntoValue, KwArgs, RHash, RModule, RString, RStruct, Ruby, Symbol, Value, function,
@@ -247,7 +247,7 @@ fn anchor_format(ruby: &Ruby, format: Value) -> Result<(), Error> {
 }
 
 /// Resolves the declared format: INVARIANT and DETECT are identity-matched constants and
-/// cost a pointer compare; any other format costs four attribute reads the first time
+/// cost a pointer compare; any other format costs ten attribute reads the first time
 /// this thread sees it and a pointer compare after that.
 fn resolve_format(ruby: &Ruby, format: Value) -> Result<core::NumFormat, Error> {
     let raw = format.as_raw();
@@ -264,35 +264,53 @@ fn resolve_format(ruby: &Ruby, format: Value) -> Result<core::NumFormat, Error> 
     if let Some(resolved) = memo {
         return Ok(resolved);
     }
-    let decimal: RString = format.funcall("decimal_sep", ())?;
-    let group: RString = format.funcall("group_sep", ())?;
+    // Copied out (once per format per thread — this is the memo's miss path), and the
+    // whole format re-validated against the core's own rule below, so a Ruby-side check
+    // that drifted would surface here as an ArgumentError rather than a silent contract
+    // violation. Each field is the UTF-8 the Data class stored; "" declares nothing.
+    let malformed = |field: &str, text: &str| {
+        Error::new(
+            ruby.exception_arg_error(),
+            format!("{field} {text:?} is not a declarable symbol"),
+        )
+    };
+    let symbol = |field: &str| -> Result<core::Symbol<8>, Error> {
+        let text: String = format.funcall(field, ())?;
+        if text.is_empty() {
+            return Ok(core::Symbol::NONE);
+        }
+        core::Symbol::new(&text).ok_or_else(|| malformed(field, &text))
+    };
     let flags: u32 = format.funcall("flags", ())?;
-    // Copied out (once per format per thread — this is the memo's miss path): the symbol
-    // is re-validated against the core's own rule below, so a Ruby-side check that drifted
-    // would surface here as an ArgumentError rather than a silent contract violation.
+    let (decimal, group) = (symbol("decimal_sep")?, symbol("group_sep")?);
+    if decimal.is_empty() || group.is_empty() {
+        return Err(Error::new(ruby.exception_arg_error(), "separators must not be empty"));
+    }
     let currency: String = format.funcall("currency", ())?;
-    // The Data class validated single characters at construction; read each as a str
-    // straight from the RString's bytes — no Ruby call happens inside either borrow.
-    let first_char = |text: RString| -> Option<char> {
-        std::str::from_utf8(unsafe { text.as_slice() }).ok()?.chars().next()
-    };
-    let (Some(decimal), Some(group)) = (first_char(decimal), first_char(group)) else {
-        return Err(Error::new(ruby.exception_arg_error(), "separators must be single characters"));
-    };
-    let symbol = if currency.is_empty() {
+    let currency = if currency.is_empty() {
         core::CurrencySymbol::NONE
     } else {
-        core::CurrencySymbol::new(&currency).ok_or_else(|| {
-            Error::new(
-                ruby.exception_arg_error(),
-                format!(
-                    "currency symbol {currency:?} must be at most {} UTF-8 bytes with no ASCII digit or whitespace",
-                    core::CurrencySymbol::MAX_BYTES
-                ),
-            )
-        })?
+        core::CurrencySymbol::new(&currency).ok_or_else(|| malformed("currency", &currency))?
     };
-    let resolved = core::NumFormat::new(decimal, group, flags).with_currency(symbol);
+    let zero: String = format.funcall("digit_zero", ())?;
+    let digits = match zero.chars().next() {
+        None => core::NativeDigits::NONE,
+        Some(zero_char) => {
+            core::NativeDigits::new(zero_char).ok_or_else(|| malformed("digit_zero", &zero))?
+        }
+    };
+    let resolved = core::NumFormat::with_separators(decimal, group, flags)
+        .with_currency(currency)
+        .with_currency_separators(symbol("currency_decimal_sep")?, symbol("currency_group_sep")?)
+        .with_signs(symbol("minus_sign")?, symbol("plus_sign")?)
+        .with_percent(symbol("percent")?)
+        .with_digits(digits);
+    if !resolved.check() {
+        return Err(Error::new(
+            ruby.exception_arg_error(),
+            "malformed NumFormat: equal separators, or a symbol the core cannot read",
+        ));
+    }
     anchor_format(ruby, format)?;
     LAST_FORMAT.with(|last| *last.borrow_mut() = Some((raw, resolved)));
     Ok(resolved)
@@ -522,10 +540,64 @@ fn resolve_order(ruby: &Ruby, order: Value) -> Result<core::DateOrder, Error> {
     }
 }
 
-fn datetime_door(ruby: &Ruby, text: RString, order: Value) -> Result<Value, Error> {
+/// A declared day-period designator — hypercast.rb's `designator` rule, raising its
+/// ArgumentError worded the same: a String of 1 to 16 UTF-8 bytes with no ASCII digit and
+/// no ASCII whitespace at either end; nil declares nothing beside the English word.
+fn designator(ruby: &Ruby, name: &str, text: Option<Value>) -> Result<core::Symbol<16>, Error> {
+    let Some(text) = text.filter(|given| !given.is_nil()) else {
+        return Ok(core::Symbol::NONE);
+    };
+    let Some(string) = RString::from_value(text) else {
+        return Err(Error::new(
+            ruby.exception_arg_error(),
+            format!("{name} designator must be a String; got {}", text.inspect()),
+        ));
+    };
+    let string = utf8(ruby, string)?;
+    let declared = with_bytes(string, |bytes| {
+        let flush = |edge: Option<&u8>| edge.is_some_and(u8::is_ascii_whitespace);
+        if flush(bytes.first()) || flush(bytes.last()) {
+            return None;
+        }
+        std::str::from_utf8(bytes).ok().and_then(core::Symbol::<16>::new)
+    });
+    declared.ok_or_else(|| {
+        Error::new(
+            ruby.exception_arg_error(),
+            format!(
+                "{name} designator {} must be 1 to 16 UTF-8 bytes with no ASCII digit and no ASCII whitespace at either end",
+                text.inspect()
+            ),
+        )
+    })
+}
+
+/// The civil door's `(text, order, am: nil, pm: nil)`. With no keywords — the plain call,
+/// `(text, order)` — it is the two conversions the door always made and nothing else: no
+/// `scan_args`, no Hash. With keywords, the designators are read and validated here, by
+/// the rule hypercast.rb applies on the Fiddle backend, and read beside the English
+/// `AM`/`PM` for this call only — they are per-call text, not a memoized format object.
+fn datetime_door(ruby: &Ruby, args: &[Value]) -> Result<Value, Error> {
+    // SAFETY: called on the Ruby thread, inside the method call whose arguments these are.
+    let keywords = unsafe { rb_sys::rb_keyword_given_p() } != 0;
+    let (text, order, periods) = if let ([text, order], false) = (args, keywords) {
+        (RString::try_convert(*text)?, *order, core::DayPeriods::ENGLISH)
+    } else {
+        let scanned = scan_args::<(RString, Value), (), (), (), RHash, ()>(args)?;
+        let (text, order) = scanned.required;
+        let declared = get_kwargs::<_, (), (Option<Value>, Option<Value>), ()>(
+            scanned.keywords,
+            &[],
+            &["am", "pm"],
+        )?;
+        let (am, pm) = declared.optional;
+        let periods =
+            core::DayPeriods::new(designator(ruby, "am", am)?, designator(ruby, "pm", pm)?);
+        (text, order, periods)
+    };
     let order = resolve_order(ruby, order)?;
     let text = utf8(ruby, text)?;
-    match with_bytes(text, |bytes| core::cast_datetime(bytes, order)) {
+    match with_bytes(text, |bytes| core::cast_datetime_with(bytes, order, &periods)) {
         Ok(civil) => civil_value(ruby, civil),
         Err(failed) => fault(ruby, text, failed),
     }
@@ -623,7 +695,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     hypercast.define_singleton_method("unix", function!(unix_door, 2))?;
     hypercast.define_singleton_method("excel_serial", function!(excel_serial_door, 2))?;
     hypercast.define_singleton_method("date", function!(date_door, -1))?;
-    hypercast.define_singleton_method("datetime", function!(datetime_door, 2))?;
+    hypercast.define_singleton_method("datetime", function!(datetime_door, -1))?;
     hypercast.define_singleton_method("time", function!(time_door, 1))?;
     hypercast.define_singleton_method("duration", function!(duration_door, 1))?;
     hypercast

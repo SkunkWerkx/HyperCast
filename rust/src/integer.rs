@@ -8,6 +8,10 @@
 //! point is never accepted on an integer, so `1e3` casts to 1000 but `1.5e3` (and any
 //! negative exponent) is `Malformed`. Hex and binary are read as the two's-complement bit
 //! pattern, so `0xFF` is -1 for an i8; the pattern must fit the target's width.
+//!
+//! This module also holds the framing every numeric door shares — the percent, the
+//! parentheses, the currency symbol and the signs around the digits ([`frame`]) — and the
+//! digit reader that knows a declared native set ([`read_digit`]).
 
 use crate::lane;
 use crate::verdict::{Fault, NumFormat, trim};
@@ -33,33 +37,138 @@ fn char_len(byte: u8) -> usize {
     }
 }
 
-/// A declared separator pre-encoded to UTF-8, matchable at a byte position.
-pub(crate) struct Sep {
-    bytes: [u8; 4],
-    pub(crate) len: usize,
+/// The digit at `text[at..]`, as its value and byte length: an ASCII digit, or one of the
+/// declared native digits. A digit is a digit before it is anything else, so every engine
+/// loop asks this first.
+#[inline]
+pub(crate) fn read_digit(text: &[u8], at: usize, format: &NumFormat) -> Option<(u8, usize)> {
+    let &byte = text.get(at)?;
+    let digit = byte.wrapping_sub(b'0');
+    if digit <= 9 {
+        return Some((digit, 1));
+    }
+    if byte < 0x80 { None } else { format.digits.read(text, at) }
 }
 
-impl Sep {
-    pub(crate) fn new(sep: char) -> Sep {
-        let mut bytes = [0u8; 4];
-        let len = sep.encode_utf8(&mut bytes).len();
-        Sep { bytes, len }
+/// What surrounds the digits of a numeric token, in the engine's order of decisions: a
+/// trailing percent (the real and decimal doors), accounting parentheses, the declared
+/// currency symbol at either edge, and the sign — ahead of the digits, before or after a
+/// leading symbol, or (with [`NumFormat::TRAILING_SIGN`]) after them, after a trailing
+/// symbol included. What is left is the digits with their separators and an exponent,
+/// which each door reads its own way.
+pub(crate) struct Frame<'t> {
+    /// The digits, separators and exponent, nothing else.
+    pub(crate) body: &'t [u8],
+    /// Where `body` starts in the caller's input.
+    pub(crate) base: usize,
+    pub(crate) negative: bool,
+    /// A percent symbol was taken off the end.
+    pub(crate) percent: bool,
+    /// The declared currency symbol was found, so the currency separators apply.
+    pub(crate) currency: bool,
+}
+
+/// Reads the frame of the trimmed, non-empty `text` at offset `start` under `format`.
+/// `percent_door` is whether a trailing percent is this door's to read.
+pub(crate) fn frame<'t>(
+    text: &'t [u8],
+    start: usize,
+    format: &NumFormat,
+    percent_door: bool,
+) -> Result<Frame<'t>, Fault> {
+    // Percent strips first, exactly as Svartalfheim checked `trimmed[^1]` first — the parens
+    // and sign live inside the percent body: `(2.5)%` is -0.025. A trailing sign may follow
+    // the percent (`2.5%-`); it is read here and applied below like any other.
+    let mut post_sign: Option<(bool, usize, usize)> = None;
+    let (body, percent) = match strip_percent(text, format, percent_door) {
+        Some(rest) => (rest.trim_ascii_end(), true),
+        None if percent_door
+            && format.allows(NumFormat::PERCENT)
+            && format.allows(NumFormat::TRAILING_SIGN)
+            && let Some((minus, len)) = read_trailing_sign(text, format)
+            && let Some(ahead) = text.get(..text.len() - len)
+            && let Some(rest) = strip_percent(ahead, format, true) =>
+        {
+            post_sign = Some((minus, start + text.len() - len, len));
+            (rest.trim_ascii_end(), true)
+        }
+        None => (text, false),
+    };
+    if body.is_empty() {
+        return Err(Fault::malformed(start, text.len()));
+    }
+    let (body, base, parens) = strip_parens(body, start, format)?;
+    let symbol = strip_currency(body, base, format)?;
+    let Currency { mut body, mut base, pre_sign, post_sign: after_symbol, found: currency } =
+        symbol;
+    if let Some((_, at, len)) = after_symbol {
+        // A sign after the symbol and another after the percent: the inner one is the fault.
+        if post_sign.is_some() {
+            return Err(Fault::malformed(at, len));
+        }
+        post_sign = after_symbol;
     }
 
-    pub(crate) fn as_bytes(&self) -> &[u8] {
-        // `len` is at most 4 by construction; `get` says so without a bounds check.
-        self.bytes.get(..self.len).unwrap_or_default()
+    let mut negative = parens;
+    let mut signed = parens;
+    let leading = read_sign(body, format);
+    if let Some(pre) = pre_sign {
+        // The sign sat ahead of a leading currency symbol (`-$5`); a second one after it,
+        // or one inside accounting parens, is double negation nonsense.
+        if parens || leading.is_some() {
+            return Err(Fault::malformed(base, leading.map_or(1, |(_, len)| len)));
+        }
+        negative = pre;
+        signed = true;
+    } else if let Some((minus, len)) = leading {
+        if parens {
+            // A sign inside accounting parens is double negation nonsense.
+            return Err(Fault::malformed(base, len));
+        }
+        negative = minus;
+        signed = true;
+        body = body.get(len..).unwrap_or_default();
+        base += len;
     }
+    if format.allows(NumFormat::TRAILING_SIGN)
+        && let Some((minus, len)) = read_trailing_sign(body, format)
+    {
+        let at = body.len() - len;
+        if signed {
+            return Err(Fault::malformed(base + at, len));
+        }
+        negative = minus;
+        signed = true;
+        body = body.get(..at).unwrap_or_default().trim_ascii_end();
+    }
+    if let Some((minus, at, len)) = post_sign {
+        if signed {
+            return Err(Fault::malformed(at, len));
+        }
+        negative = minus;
+    }
+    Ok(Frame { body, base, negative, percent, currency })
+}
 
-    pub(crate) fn matches(&self, text: &[u8], at: usize) -> bool {
-        text.get(at..).is_some_and(|rest| rest.starts_with(self.as_bytes()))
+/// The text less its trailing percent symbol — ASCII `%` or the declared one — when the
+/// door reads one and the format permits it.
+#[inline]
+fn strip_percent<'t>(text: &'t [u8], format: &NumFormat, percent_door: bool) -> Option<&'t [u8]> {
+    if !percent_door || !format.allows(NumFormat::PERCENT) {
+        return None;
     }
+    if let Some(rest) = text.strip_suffix(b"%") {
+        return Some(rest);
+    }
+    if format.percent.ends(text) {
+        return text.get(..text.len() - format.percent.len());
+    }
+    None
 }
 
 /// Strips accounting parentheses when the flag permits, returning the re-trimmed body, its
-/// base offset in the caller's input, and whether the parens declared negation. Shared with
-/// the real doors.
-pub(crate) fn strip_parens<'t>(
+/// base offset in the caller's input, and whether the parens declared negation.
+fn strip_parens<'t>(
     text: &'t [u8],
     start: usize,
     format: &NumFormat,
@@ -77,42 +186,94 @@ pub(crate) fn strip_parens<'t>(
     Ok((inner, start + 1 + inner_start, true))
 }
 
+/// What [`strip_currency`] leaves: the body less the symbol, and the signs it read on the
+/// symbol's far side — ahead of a leading symbol (`-$5`), or after a trailing one
+/// (`5 €-`, with where it sits in the caller's input and its length).
+struct Currency<'t> {
+    body: &'t [u8],
+    base: usize,
+    pre_sign: Option<bool>,
+    post_sign: Option<(bool, usize, usize)>,
+    found: bool,
+}
+
 /// Strips the declared currency symbol when the flag permits, from either edge of the
 /// (already paren-stripped) body: leading — before or after a sign — or trailing, once,
-/// with ASCII whitespace between symbol and digits trimmed away. Returns the remaining
-/// body, its base offset, and the sign byte consumed ahead of a leading symbol (`-$5`),
-/// which the caller applies exactly as it would a sign it read itself. Shared with the
-/// real and decimal doors.
-pub(crate) fn strip_currency<'t>(
+/// with ASCII whitespace between symbol and digits trimmed away. The sign consumed ahead
+/// of a leading symbol, and a trailing sign after a trailing symbol, are reported for
+/// [`frame`] to apply exactly as it would a sign it read itself.
+fn strip_currency<'t>(
     body: &'t [u8],
     base: usize,
     format: &NumFormat,
-) -> Result<(&'t [u8], usize, Option<u8>), Fault> {
+) -> Result<Currency<'t>, Fault> {
+    let untouched = Currency { body, base, pre_sign: None, post_sign: None, found: false };
     if !format.allows(NumFormat::CURRENCY) || format.currency.is_empty() {
-        return Ok((body, base, None));
+        return Ok(untouched);
     }
     let symbol = format.currency.as_bytes();
-    let (sign, unsigned) = split_sign(body);
-    if let Some(after_symbol) = unsigned.strip_prefix(symbol) {
+    let (sign, sign_len) = match read_sign(body, format) {
+        Some((minus, len)) => (Some(minus), len),
+        None => (None, 0),
+    };
+    if let Some(after_symbol) = body.get(sign_len..).and_then(|rest| rest.strip_prefix(symbol)) {
         let after = body.len() - after_symbol.len();
         let (rest, rest_start) = trim(after_symbol);
         if rest.is_empty() {
             return Err(Fault::malformed(base, body.len()));
         }
-        return Ok((rest, base + after + rest_start, sign));
+        let base = base + after + rest_start;
+        return Ok(Currency { body: rest, base, pre_sign: sign, post_sign: None, found: true });
     }
-    if let Some(before_symbol) = body.strip_suffix(symbol) {
-        let (rest, rest_start) = trim(before_symbol);
-        if rest.is_empty() {
-            return Err(Fault::malformed(base, body.len()));
-        }
-        return Ok((rest, base + rest_start, None));
+    // A trailing symbol may be followed by a trailing sign (`5 €-`): look for the symbol
+    // just ahead of one.
+    let trailing = if format.allows(NumFormat::TRAILING_SIGN) {
+        read_trailing_sign(body, format).filter(|&(_, len)| len < body.len())
+    } else {
+        None
+    };
+    let ahead = match trailing {
+        Some((_, len)) => body.get(..body.len() - len).unwrap_or_default(),
+        None => body,
+    };
+    let Some(before_symbol) = ahead.strip_suffix(symbol) else {
+        return Ok(untouched);
+    };
+    let (rest, rest_start) = trim(before_symbol);
+    if rest.is_empty() {
+        return Err(Fault::malformed(base, body.len()));
     }
-    Ok((body, base, None))
+    let post_sign = trailing.map(|(minus, len)| (minus, base + body.len() - len, len));
+    Ok(Currency { body: rest, base: base + rest_start, pre_sign: None, post_sign, found: true })
 }
 
-/// Splits a leading `+`/`-` off `text`, returning the sign byte (if any) and the rest.
-/// Shared with the real and decimal doors.
+/// The sign at the head of `text`: ASCII `+`/`-` first, then the declared spellings.
+/// `Some((negative, byte length))`.
+#[inline]
+pub(crate) fn read_sign(text: &[u8], format: &NumFormat) -> Option<(bool, usize)> {
+    match text.first() {
+        Some(b'-') => Some((true, 1)),
+        Some(b'+') => Some((false, 1)),
+        Some(_) if format.minus_sign.matches(text, 0) => Some((true, format.minus_sign.len())),
+        Some(_) if format.plus_sign.matches(text, 0) => Some((false, format.plus_sign.len())),
+        _ => None,
+    }
+}
+
+/// The sign at the end of `text`, in the same spellings. `Some((negative, byte length))`.
+#[inline]
+fn read_trailing_sign(text: &[u8], format: &NumFormat) -> Option<(bool, usize)> {
+    match text.last() {
+        Some(b'-') => Some((true, 1)),
+        Some(b'+') => Some((false, 1)),
+        Some(_) if format.minus_sign.ends(text) => Some((true, format.minus_sign.len())),
+        Some(_) if format.plus_sign.ends(text) => Some((false, format.plus_sign.len())),
+        _ => None,
+    }
+}
+
+/// Splits a leading ASCII `+`/`-` off `text`, returning the sign byte (if any) and the
+/// rest — the plain shapes' own sign, which a declared spelling never takes part in.
 pub(crate) fn split_sign(text: &[u8]) -> (Option<u8>, &[u8]) {
     match text {
         [sign @ (b'+' | b'-'), rest @ ..] => (Some(*sign), rest),
@@ -257,58 +418,38 @@ fn parse_int(
         }
     }
 
-    let (body, base, parens) = strip_parens(text, start, format)?;
-    let (body, base, pre_sign) = strip_currency(body, base, format)?;
+    let Frame { body, base, negative, currency, .. } = frame(text, start, format, false)?;
+    let (decimal, group) = format.separators(currency);
 
     let mut i = 0;
-    let mut negative = parens;
-    let (sign, _) = split_sign(body);
-    if let Some(pre_sign) = pre_sign {
-        // The sign sat ahead of a leading currency symbol (`-$5`); a second one after it,
-        // or one inside accounting parens, is double negation nonsense.
-        if parens || sign.is_some() {
-            return Err(Fault::malformed(base, 1));
-        }
-        negative = pre_sign == b'-';
-    } else if let Some(sign) = sign {
-        if parens {
-            // A sign inside accounting parens is double negation nonsense.
-            return Err(Fault::malformed(base, 1));
-        }
-        negative = sign == b'-';
-        i = 1;
-    }
-
-    let decimal = Sep::new(format.decimal_sep);
-    let group = Sep::new(format.group_sep);
     let mut acc: i128 = 0;
     let mut over = false;
     let mut any_digit = false;
+    // Whether the byte before `i` was a digit — what a group separator must sit after.
+    let mut after_digit = false;
     let mut exp: u32 = 0;
     let mut exp_over = false;
     while let Some(&byte) = body.get(i) {
-        if byte.is_ascii_digit() {
+        if let Some((digit, len)) = read_digit(body, i, format) {
             any_digit = true;
-            acc = match acc
-                .checked_mul(10)
-                .and_then(|shifted| shifted.checked_add((byte - b'0') as i128))
-            {
+            after_digit = true;
+            acc = match acc.checked_mul(10).and_then(|shifted| shifted.checked_add(digit as i128)) {
                 Some(next) => next,
                 None => {
                     over = true;
                     acc
                 }
             };
-            i += 1;
+            i += len;
         } else if decimal.matches(body, i) {
             // A decimal point is never accepted on an integer.
-            return Err(Fault::malformed(base + i, decimal.len));
+            return Err(Fault::malformed(base + i, decimal.len()));
         } else if format.allows(NumFormat::GROUPING) && group.matches(body, i) {
-            let after = i + group.len;
-            let between_digits = is_digit_at(body, i.wrapping_sub(1)) && is_digit_at(body, after);
-            if !between_digits {
-                return Err(Fault::malformed(base + i, group.len));
+            let after = i + group.len();
+            if !after_digit || read_digit(body, after, format).is_none() {
+                return Err(Fault::malformed(base + i, group.len()));
             }
+            after_digit = false;
             i = after;
         } else if (byte == b'e' || byte == b'E') && format.allows(NumFormat::EXPONENT) && any_digit
         {
@@ -321,21 +462,20 @@ fn parse_int(
                 // A negative exponent demands a fraction — never integral.
                 return Err(Fault::malformed(base + i, 1));
             }
-            if !is_digit_at(body, i) {
+            if read_digit(body, i, format).is_none() {
                 return Err(Fault::malformed(base + e_pos, 1));
             }
-            while let Some(&digit @ b'0'..=b'9') = body.get(i) {
-                exp = match exp
-                    .checked_mul(10)
-                    .and_then(|shifted| shifted.checked_add((digit - b'0') as u32))
-                {
-                    Some(next) if next <= 100_000 => next,
-                    _ => {
-                        exp_over = true;
-                        exp
-                    }
-                };
-                i += 1;
+            while let Some((digit, len)) = read_digit(body, i, format) {
+                exp =
+                    match exp.checked_mul(10).and_then(|shifted| shifted.checked_add(digit as u32))
+                    {
+                        Some(next) if next <= 100_000 => next,
+                        _ => {
+                            exp_over = true;
+                            exp
+                        }
+                    };
+                i += len;
             }
             if i != body.len() {
                 return Err(Fault::malformed(base + i, char_len_at(body, i)));

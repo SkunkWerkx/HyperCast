@@ -4,7 +4,7 @@
 is an ordinary ``METH_FASTCALL`` extension call into a direct Rust call. Every door
 returns a verdict: :class:`Success` or :class:`Fault` (a closed reason plus the offending
 byte span), never an exception for bad data — the only exceptions here are caller bugs (a
-malformed :class:`NumFormat`), never data.
+:class:`NumFormat` or a day-period designator that cannot be), never data.
 
 Consume with ``match``/``case`` over the two case types — Python's answer to C#'s native
 union and Java's sealed interface. Exhaustiveness is the type checker's job here, not the
@@ -15,7 +15,7 @@ compile-time guarantee the static bindings get natively)::
         case hypercast.Success(value):
             print("got", value)                       # -1234, accounting negative
         case hypercast.Fault(reason, offset, length):
-            print(reason.name, "at byte", offset)
+            print(reason.name, "at char", offset)
 
 Door names mirror the native ABI (``cast_i32``, ``cast_f64``, ``cast_timestamp``, …) so the
 polyglot surface reads identically across bindings. Inputs are ``str`` (read as UTF-8) or
@@ -28,9 +28,11 @@ exact, canonical ``decimal.Decimal``;
 digits on the temporal doors (the JVM binding is the fidelity king; this is Python's honest
 ceiling).
 
-Ships as real platform-specific abi3 wheels (linux glibc and musl, macOS, Windows; x64 and
-arm64, plus Pyodide's ``pyemscripten`` wasm32 for the browser) built by ``maturin`` — no
-compiler needed to install. The package is typed:
+Ships as real platform-specific wheels (linux glibc and musl, macOS, Windows; x64 and arm64,
+plus Pyodide's ``pyemscripten`` wasm32 for the browser) built by ``maturin`` — no compiler
+needed to install: ``abi3`` for every CPython 3.11+, and ``cp314t`` and ``abi3t`` for
+free-threaded CPython, where the extension runs without the GIL and every door is safe to
+call from many threads at once. The package is typed:
 ``py.typed`` ships beside it, with a stub for the extension module, so a checker sees each
 door's own ``Success[...] | Fault`` rather than ``Any``.
 """
@@ -125,7 +127,9 @@ class DateOrder(IntEnum):
     ``"1/7/2026"`` is January 7th (:data:`MONTH_DAY_YEAR`, the en-US order) or July 1st
     (:data:`DAY_MONTH_YEAR`, the en-GB order) only because the caller said which. Passed
     as :func:`cast_date`'s optional second argument; without it, the door stays strict
-    ISO ``yyyy-MM-dd`` only.
+    ISO ``yyyy-MM-dd`` only. :func:`cast_datetime` takes one too, and beside it a culture's
+    day-period designators as keyword-only ``am`` and ``pm``, read alongside the English
+    ``AM``/``PM``.
     """
 
     YEAR_MONTH_DAY = 1

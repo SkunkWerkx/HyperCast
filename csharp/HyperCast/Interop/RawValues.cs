@@ -11,34 +11,134 @@ namespace HyperCast.Interop;
 // widest field fixes the alignment.
 
 /// <summary>
-/// The native core's 32-byte numeric-format layout — the Rust crate's <c>RawNumFormat</c>:
-/// four <c>u32</c>s, then the currency symbol's UTF-8 bytes inline. Built by
-/// <see cref="NumFormat.ToRaw"/>, which validates on the way.
+/// The native core's numeric-format layout — the Rust crate's <c>RawNumFormat</c>, 92
+/// bytes with 4-byte alignment: a size word, the <see cref="NumStyles"/> bits, the native
+/// digits' zero, then every declared symbol in place as its UTF-8 bytes followed by its
+/// length, with nothing between one field and the next. The core reads it where it stands,
+/// so a cast pays for a check of it and no copy. Built by <see cref="NumFormat.ToRaw"/>,
+/// which validates on the way.
 /// </summary>
+/// <remarks>
+/// <list type="table">
+/// <listheader><term>Offset</term><description>Field</description></listheader>
+/// <item><term>0</term><description><see cref="Size"/></description></item>
+/// <item><term>4</term><description><see cref="Flags"/></description></item>
+/// <item><term>8</term><description><see cref="DigitZero"/></description></item>
+/// <item><term>12</term><description><see cref="DecimalSep"/>, its length at 20</description></item>
+/// <item><term>21</term><description><see cref="GroupSep"/>, length at 29</description></item>
+/// <item><term>30</term><description><see cref="CurrencyDecimalSep"/>, length at 38</description></item>
+/// <item><term>39</term><description><see cref="CurrencyGroupSep"/>, length at 47</description></item>
+/// <item><term>48</term><description><see cref="MinusSign"/>, length at 56</description></item>
+/// <item><term>57</term><description><see cref="PlusSign"/>, length at 65</description></item>
+/// <item><term>66</term><description><see cref="Percent"/>, length at 74</description></item>
+/// <item><term>75</term><description><see cref="Currency"/>, length at 91</description></item>
+/// </list>
+/// The size word is first so the layout can grow without another coordinated change: a
+/// caller states how many bytes it built and the core reads exactly those, defaulting the
+/// rest. The 0.8.0 layout was 32 bytes with the separators as code points at its head; it
+/// has no size word and is not read.
+/// </remarks>
 [StructLayout(LayoutKind.Sequential)]
 public struct RawNumFormat
 {
-	/// <summary>The decimal separator's code point.</summary>
-	public uint DecimalSep;
-
-	/// <summary>The digit-group separator's code point.</summary>
-	public uint GroupSep;
+	/// <summary>The layout's size as the caller built it: 92.</summary>
+	public uint Size;
 
 	/// <summary>The <see cref="NumStyles"/> bits.</summary>
 	public uint Flags;
 
-	/// <summary>How many of <see cref="Currency"/>'s bytes are the symbol; 0 declares none.</summary>
-	public uint CurrencyLen;
+	/// <summary>The native digits' zero code point; 0 declares none.</summary>
+	public uint DigitZero;
 
-	/// <summary>The currency symbol's UTF-8 bytes, zero-padded.</summary>
-	public RawCurrency Currency;
+	/// <summary>The decimal separator. Always declared.</summary>
+	public RawSymbol DecimalSep;
+
+	/// <summary>The digit-group separator. Always declared, and never the decimal one.</summary>
+	public RawSymbol GroupSep;
+
+	/// <summary>The decimal separator of a currency amount; length 0 keeps <see cref="DecimalSep"/>.</summary>
+	public RawSymbol CurrencyDecimalSep;
+
+	/// <summary>The group separator of a currency amount; length 0 keeps <see cref="GroupSep"/>.</summary>
+	public RawSymbol CurrencyGroupSep;
+
+	/// <summary>A further minus sign; length 0 declares none beside ASCII <c>-</c>.</summary>
+	public RawSymbol MinusSign;
+
+	/// <summary>A further plus sign; length 0 declares none beside ASCII <c>+</c>.</summary>
+	public RawSymbol PlusSign;
+
+	/// <summary>A further percent symbol; length 0 declares none beside ASCII <c>%</c>.</summary>
+	public RawSymbol Percent;
+
+	/// <summary>The currency symbol; length 0 declares none.</summary>
+	public RawWideSymbol Currency;
 }
 
-/// <summary>The inline currency buffer of <see cref="RawNumFormat"/> — <see cref="NumFormat.MaxCurrencyBytes"/> bytes.</summary>
-[InlineArray(NumFormat.MaxCurrencyBytes)]
-public struct RawCurrency
+/// <summary>
+/// A declared symbol as it crosses the ABI — the Rust crate's <c>Symbol&lt;8&gt;</c>: up to
+/// <see cref="NumFormat.MaxSymbolBytes"/> bytes of UTF-8, zero-padded, then its length. 9
+/// bytes with no alignment. Bytes past <see cref="Length"/> are not the symbol.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct RawSymbol
+{
+	/// <summary>The symbol's UTF-8 bytes, zero-padded.</summary>
+	public RawSymbolBytes Bytes;
+
+	/// <summary>How many of <see cref="Bytes"/> are the symbol; 0 declares none.</summary>
+	public byte Length;
+}
+
+/// <summary>The inline buffer of a <see cref="RawSymbol"/> — <see cref="NumFormat.MaxSymbolBytes"/> bytes.</summary>
+[InlineArray(NumFormat.MaxSymbolBytes)]
+public struct RawSymbolBytes
 {
 	byte _element0;
+}
+
+/// <summary>
+/// A declared symbol with the wider buffer — the Rust crate's <c>CurrencySymbol</c> and
+/// <c>Symbol&lt;16&gt;</c>: up to <see cref="NumFormat.MaxCurrencyBytes"/> bytes of UTF-8,
+/// zero-padded, then its length. 17 bytes with no alignment. The currency symbol of a
+/// <see cref="RawNumFormat"/> and each designator of a <see cref="RawDayPeriods"/>.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct RawWideSymbol
+{
+	/// <summary>The symbol's UTF-8 bytes, zero-padded.</summary>
+	public RawWideSymbolBytes Bytes;
+
+	/// <summary>How many of <see cref="Bytes"/> are the symbol; 0 declares none.</summary>
+	public byte Length;
+}
+
+/// <summary>The inline buffer of a <see cref="RawWideSymbol"/> — <see cref="NumFormat.MaxCurrencyBytes"/> bytes.</summary>
+[InlineArray(NumFormat.MaxCurrencyBytes)]
+public struct RawWideSymbolBytes
+{
+	byte _element0;
+}
+
+/// <summary>
+/// The native core's day-period layout — the Rust crate's <c>RawDayPeriods</c>, 40 bytes
+/// with 4-byte alignment: a size word, then the two designators in place, the AM one's
+/// bytes and length (4 to 20) and the PM one's (21 to 37), and two bytes of padding. A
+/// length of 0 declares nothing beside the English pair. Built by
+/// <see cref="DateFormat.ToRaw"/>, which validates on the way; where the civil date-time
+/// door passes a pointer to one, null means the English <c>AM</c>/<c>PM</c> only.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct RawDayPeriods
+{
+	/// <summary>The layout's size as the caller built it: 40.</summary>
+	public uint Size;
+
+	/// <summary>The designator of the first half of the day; length 0 declares none beside <c>AM</c>.</summary>
+	public RawWideSymbol Am;
+
+	/// <summary>The designator of the second half; length 0 declares none beside <c>PM</c>.</summary>
+	public RawWideSymbol Pm;
 }
 
 /// <summary>A fault's span as the core writes it: byte offset and length into the input.</summary>

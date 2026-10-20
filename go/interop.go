@@ -18,19 +18,75 @@ import (
 // viewed as a []Decimal or []Duration in place. The core writes a decimal's sign as a 0 or
 // 1 byte, which is what a Go bool is.
 
+// SymbolMaxBytes is the inline capacity of the ABI's separators, signs and percent symbol,
+// in UTF-8 bytes: one or two characters.
+const SymbolMaxBytes = 8
+
 // CurrencyMaxBytes is the inline capacity of the ABI's currency symbol, in UTF-8 bytes.
 const CurrencyMaxBytes = 16
 
-// RawNumFormat is NumFormat as it crosses the ABI — 32 bytes, 4-aligned: the separators as
-// code points, the flags, and the currency symbol as CurrencyLen UTF-8 bytes held inline
-// (zero-padded; a zero length declares none). NumFormat.Raw builds one.
-type RawNumFormat struct {
-	DecimalSep  uint32
-	GroupSep    uint32
-	Flags       uint32
-	CurrencyLen uint32
-	Currency    [CurrencyMaxBytes]byte
+// DesignatorMaxBytes is the inline capacity of the ABI's day-period designators, in UTF-8
+// bytes.
+const DesignatorMaxBytes = 16
+
+// RawSymbol8 is a separator, sign or percent symbol as it crosses the ABI: its UTF-8 bytes
+// held inline (zero-padded) and their count, 9 bytes with no alignment. A zero length
+// declares none.
+type RawSymbol8 struct {
+	Bytes [SymbolMaxBytes]byte
+	Len   uint8
 }
+
+// RawSymbol16 is a currency symbol or a day-period designator as it crosses the ABI, the
+// same shape at 16 bytes of capacity: 17 bytes with no alignment.
+type RawSymbol16 struct {
+	Bytes [CurrencyMaxBytes]byte
+	Len   uint8
+}
+
+// String is the symbol's text — empty when none is declared.
+func (s RawSymbol8) String() string { return string(s.Bytes[:s.Len]) }
+
+// String is the symbol's text — empty when none is declared.
+func (s RawSymbol16) String() string { return string(s.Bytes[:s.Len]) }
+
+// RawNumFormat is NumFormat as it crosses the ABI — 92 bytes, 4-aligned, the core reading
+// the caller's struct in place: a size word (RawNumFormatSize, so the layout can grow
+// without another coordinated change), the flags, the native digits' zero code point (0
+// for none), then every symbol inline, its bytes followed by its length. Byte offsets:
+// Flags 4, DigitZero 8, DecimalSep 12, GroupSep 21, CurrencyDecimalSep 30, CurrencyGroupSep
+// 39, MinusSign 48, PlusSign 57, Percent 66, Currency 75. NumFormat.Raw builds one.
+type RawNumFormat struct {
+	Size               uint32
+	Flags              uint32
+	DigitZero          uint32
+	DecimalSep         RawSymbol8
+	GroupSep           RawSymbol8
+	CurrencyDecimalSep RawSymbol8
+	CurrencyGroupSep   RawSymbol8
+	MinusSign          RawSymbol8
+	PlusSign           RawSymbol8
+	Percent            RawSymbol8
+	Currency           RawSymbol16
+}
+
+// RawNumFormatSize is the size word a RawNumFormat carries: its own 92 bytes.
+const RawNumFormatSize = uint32(unsafe.Sizeof(RawNumFormat{}))
+
+// RawDayPeriods is a DateFormat's designators as they cross the ABI beside the declared
+// DateOrder — 40 bytes, 4-aligned: a size word (RawDayPeriodsSize), the AM designator
+// inline at byte 4 and the PM one at 21, each its bytes followed by its length, and two
+// bytes of padding. A zero length declares nothing beside the English marker; where the
+// core takes a pointer to one, null declares nothing at all. DateFormat.Raw builds one.
+type RawDayPeriods struct {
+	Size uint32
+	AM   RawSymbol16
+	PM   RawSymbol16
+	_    [2]byte
+}
+
+// RawDayPeriodsSize is the size word a RawDayPeriods carries: its own 40 bytes.
+const RawDayPeriodsSize = uint32(unsafe.Sizeof(RawDayPeriods{}))
 
 // RawTimestamp is an instant as the core writes it — protobuf's Timestamp: whole seconds
 // from the Unix epoch and the nanoseconds after them. 16 bytes.
@@ -74,33 +130,236 @@ func (r RawCivil) CivilDateTime() CivilDateTime {
 	}
 }
 
-// Raw validates the format and lays it out as the core reads it — what every numeric door
-// does with its format argument, as an error rather than the doors' panic: equal
-// separators, a separator that is no Unicode scalar value, or a currency symbol longer than
-// CurrencyMaxBytes, not UTF-8, or carrying an ASCII digit or whitespace.
-func (f NumFormat) Raw() (RawNumFormat, error) {
-	if f.DecimalSep == f.GroupSep {
-		return RawNumFormat{}, fmt.Errorf("decimal and group separators must differ; both are %q", f.DecimalSep)
+// asciiSpace reports an ASCII whitespace byte — the core's rule verbatim: space, \t, \n,
+// \f, \r (not \v), which would collide with the trimming around a symbol.
+func asciiSpace(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\f' || b == '\r'
+}
+
+// symbolOK is the core's rule for one declared symbol, decided without naming the fault:
+// at most capacity UTF-8 bytes, valid UTF-8, no ASCII digit, and — for a symbol the
+// grammar trims around (signs, percent, currency) — no ASCII whitespace. An empty symbol
+// passes: the caller decides whether that is "none declared" or a missing separator. This
+// runs on every cast, so the one-byte symbol nearly every format declares is decided
+// inline, and the rest in one pass over the bytes with no call out for ASCII.
+func symbolOK(symbol string, capacity int, flush bool) bool {
+	if len(symbol) == 1 {
+		b := symbol[0]
+		return b < 0x80 && !(b >= '0' && b <= '9') && !(flush && asciiSpace(b))
 	}
-	if !utf8.ValidRune(f.DecimalSep) || !utf8.ValidRune(f.GroupSep) {
-		return RawNumFormat{}, fmt.Errorf("separators %q and %q must be Unicode scalar values", f.DecimalSep, f.GroupSep)
+	return len(symbol) == 0 || symbolOKSlow(symbol, capacity, flush)
+}
+
+func symbolOKSlow(symbol string, capacity int, flush bool) bool {
+	if len(symbol) > capacity {
+		return false
 	}
-	if len(f.Currency) > CurrencyMaxBytes {
-		return RawNumFormat{}, fmt.Errorf("currency symbol %q exceeds %d UTF-8 bytes", f.Currency, CurrencyMaxBytes)
+	ascii := true
+	for i := 0; i < len(symbol); i++ {
+		b := symbol[i]
+		if b >= '0' && b <= '9' || flush && asciiSpace(b) {
+			return false
+		}
+		ascii = ascii && b < 0x80
 	}
-	if !utf8.ValidString(f.Currency) {
-		return RawNumFormat{}, fmt.Errorf("currency symbol %q is not valid UTF-8", f.Currency)
+	return ascii || utf8.ValidString(symbol)
+}
+
+// symbolFault names what symbolOK refused, as the doors' panic text.
+func symbolFault(what, symbol string, capacity int, flush bool) error {
+	if len(symbol) > capacity {
+		return fmt.Errorf("%s %q exceeds %d UTF-8 bytes", what, symbol, capacity)
 	}
-	for i := 0; i < len(f.Currency); i++ {
-		// The core's rule verbatim: an ASCII digit or ASCII whitespace (space, \t, \n, \f,
-		// \r) would collide with the digit scan and the trimming around the symbol.
-		switch b := f.Currency[i]; {
-		case b >= '0' && b <= '9', b == ' ', b == '\t', b == '\n', b == '\f', b == '\r':
-			return RawNumFormat{}, fmt.Errorf("currency symbol %q must not contain an ASCII digit or whitespace", f.Currency)
+	if !utf8.ValidString(symbol) {
+		return fmt.Errorf("%s %q is not valid UTF-8", what, symbol)
+	}
+	for i := 0; i < len(symbol); i++ {
+		switch b := symbol[i]; {
+		case b >= '0' && b <= '9':
+			return fmt.Errorf("%s %q must not contain an ASCII digit", what, symbol)
+		case flush && asciiSpace(b):
+			return fmt.Errorf("%s %q must not contain ASCII whitespace", what, symbol)
 		}
 	}
-	raw := RawNumFormat{DecimalSep: uint32(f.DecimalSep), GroupSep: uint32(f.GroupSep), Flags: uint32(f.Styles)}
-	raw.CurrencyLen = uint32(copy(raw.Currency[:], f.Currency))
+	return nil
+}
+
+// symbol8 and symbol16 lay a symbol valid has passed into its slot: a byte loop rather
+// than copy, which is a runtime call for every slot — eight of them on every cast, most
+// of them empty.
+func symbol8(raw *RawSymbol8, symbol string) {
+	for i := 0; i < len(symbol) && i < SymbolMaxBytes; i++ {
+		raw.Bytes[i] = symbol[i]
+	}
+	raw.Len = uint8(len(symbol))
+}
+
+func symbol16(raw *RawSymbol16, symbol string) {
+	for i := 0; i < len(symbol) && i < CurrencyMaxBytes; i++ {
+		raw.Bytes[i] = symbol[i]
+	}
+	raw.Len = uint8(len(symbol))
+}
+
+// currencySeparators are the separators in force for a currency amount, each falling back
+// to its number counterpart.
+func (f NumFormat) currencySeparators() (decimal, group string) {
+	decimal, group = f.CurrencyDecimalSep, f.CurrencyGroupSep
+	if decimal == "" {
+		decimal = f.DecimalSep
+	}
+	if group == "" {
+		group = f.GroupSep
+	}
+	return decimal, group
+}
+
+// digitZeroOK is the core's rule for the digit zero: 0, or a code point outside ASCII
+// that starts a run of ten digits sharing its UTF-8 prefix (every Unicode digit block
+// does; one whose value modulo 64 exceeds 54 does not).
+func (f NumFormat) digitZeroOK() bool {
+	return f.DigitZero == 0 || f.DigitZero >= 0x80 && utf8.ValidRune(f.DigitZero) && f.DigitZero%64 <= 54
+}
+
+// valid is the check every numeric door runs on its format, decided without naming the
+// fault — the fast path, since it runs on every cast; fault names what it refused.
+func (f NumFormat) valid() bool {
+	if f.DecimalSep == "" || f.GroupSep == "" || f.DecimalSep == f.GroupSep {
+		return false
+	}
+	if !symbolOK(f.DecimalSep, SymbolMaxBytes, false) || !symbolOK(f.GroupSep, SymbolMaxBytes, false) {
+		return false
+	}
+	// Everything below is declared by few formats and skipped in one test by the rest.
+	if f.Currency == "" && f.CurrencyDecimalSep == "" && f.CurrencyGroupSep == "" &&
+		f.MinusSign == "" && f.PlusSign == "" && f.Percent == "" && f.DigitZero == 0 {
+		return true
+	}
+	if !symbolOK(f.CurrencyDecimalSep, SymbolMaxBytes, false) || !symbolOK(f.CurrencyGroupSep, SymbolMaxBytes, false) {
+		return false
+	}
+	if decimal, group := f.currencySeparators(); decimal == group {
+		return false
+	}
+	return symbolOK(f.MinusSign, SymbolMaxBytes, true) && symbolOK(f.PlusSign, SymbolMaxBytes, true) &&
+		symbolOK(f.Percent, SymbolMaxBytes, true) && symbolOK(f.Currency, CurrencyMaxBytes, true) && f.digitZeroOK()
+}
+
+// fault names why valid refused the format, as the doors' panic text; nil when it did not.
+func (f NumFormat) fault() error {
+	if f.DecimalSep == "" || f.GroupSep == "" {
+		return fmt.Errorf("decimal separator %q and group separator %q must both be declared", f.DecimalSep, f.GroupSep)
+	}
+	if f.DecimalSep == f.GroupSep {
+		return fmt.Errorf("decimal and group separators must differ; both are %q", f.DecimalSep)
+	}
+	for _, symbol := range []struct {
+		what     string
+		text     string
+		capacity int
+		flush    bool
+	}{
+		{"decimal separator", f.DecimalSep, SymbolMaxBytes, false},
+		{"group separator", f.GroupSep, SymbolMaxBytes, false},
+		{"currency decimal separator", f.CurrencyDecimalSep, SymbolMaxBytes, false},
+		{"currency group separator", f.CurrencyGroupSep, SymbolMaxBytes, false},
+		{"minus sign", f.MinusSign, SymbolMaxBytes, true},
+		{"plus sign", f.PlusSign, SymbolMaxBytes, true},
+		{"percent symbol", f.Percent, SymbolMaxBytes, true},
+		{"currency symbol", f.Currency, CurrencyMaxBytes, true},
+	} {
+		if err := symbolFault(symbol.what, symbol.text, symbol.capacity, symbol.flush); err != nil {
+			return err
+		}
+	}
+	if decimal, group := f.currencySeparators(); decimal == group {
+		return fmt.Errorf("currency decimal and group separators must differ; both are %q", decimal)
+	}
+	if !f.digitZeroOK() {
+		return fmt.Errorf("digit zero %q starts no Unicode digit block", f.DigitZero)
+	}
+	return nil
+}
+
+// layout writes the format as the core reads it into raw, zero to begin with, for a
+// format valid has passed. Into the caller's own local rather than returned: the doors
+// hand the backends a pointer to it, so the 92 bytes are copied once, into the C call.
+func (f NumFormat) layout(raw *RawNumFormat) {
+	raw.Size = RawNumFormatSize
+	raw.Flags = uint32(f.Styles)
+	raw.DigitZero = uint32(f.DigitZero)
+	symbol8(&raw.DecimalSep, f.DecimalSep)
+	symbol8(&raw.GroupSep, f.GroupSep)
+	symbol8(&raw.CurrencyDecimalSep, f.CurrencyDecimalSep)
+	symbol8(&raw.CurrencyGroupSep, f.CurrencyGroupSep)
+	symbol8(&raw.MinusSign, f.MinusSign)
+	symbol8(&raw.PlusSign, f.PlusSign)
+	symbol8(&raw.Percent, f.Percent)
+	symbol16(&raw.Currency, f.Currency)
+}
+
+// Raw validates the format and lays it out as the core reads it — what every numeric door
+// does with its format argument, as an error rather than the doors' panic. The core's
+// rules verbatim: each number separator one to SymbolMaxBytes UTF-8 bytes with no ASCII
+// digit, the two different; each currency separator the same or empty, and the pair in
+// force for a currency amount different; each sign and the percent symbol the same or
+// empty, with no ASCII whitespace; the currency symbol at most CurrencyMaxBytes, no digit,
+// no whitespace; the digit zero 0, or a code point outside ASCII that starts a run of ten
+// digits sharing its UTF-8 prefix (every Unicode digit block does; one whose value modulo
+// 64 exceeds 54 does not).
+func (f NumFormat) Raw() (raw RawNumFormat, err error) {
+	if !f.valid() {
+		return RawNumFormat{}, f.fault()
+	}
+	f.layout(&raw)
+	return raw, nil
+}
+
+// designatorOK is the core's rule for one day-period designator, decided without naming
+// the fault: empty, or a symbol with no ASCII whitespace at either end.
+func designatorOK(designator string) bool {
+	return symbolOK(designator, DesignatorMaxBytes, false) &&
+		(designator == "" || !asciiSpace(designator[0]) && !asciiSpace(designator[len(designator)-1]))
+}
+
+// valid is the check DateTimeWith runs on its format's designators, the fast path; fault
+// names what it refused.
+func (f DateFormat) valid() bool {
+	return designatorOK(f.AM) && designatorOK(f.PM)
+}
+
+// fault names why valid refused the designators, as the door's panic text; nil when it
+// did not.
+func (f DateFormat) fault() error {
+	for _, designator := range []struct{ what, text string }{{"AM designator", f.AM}, {"PM designator", f.PM}} {
+		if err := symbolFault(designator.what, designator.text, DesignatorMaxBytes, false); err != nil {
+			return err
+		}
+		if text := designator.text; text != "" && (asciiSpace(text[0]) || asciiSpace(text[len(text)-1])) {
+			return fmt.Errorf("%s %q must not start or end in ASCII whitespace", designator.what, text)
+		}
+	}
+	return nil
+}
+
+// layout writes the designators as the core reads them into raw, zero to begin with, for
+// a format valid has passed.
+func (f DateFormat) layout(raw *RawDayPeriods) {
+	raw.Size = RawDayPeriodsSize
+	symbol16(&raw.AM, f.AM)
+	symbol16(&raw.PM, f.PM)
+}
+
+// Raw validates the format's designators and lays them out as the core reads them — what
+// DateTimeWith does with its format argument, as an error rather than the door's panic.
+// The core's rules verbatim: each designator empty or at most DesignatorMaxBytes of valid
+// UTF-8 with no ASCII digit and no ASCII whitespace at either end. The order is not
+// checked here: it crosses beside the designators, and DateOrder.Valid reports it.
+func (f DateFormat) Raw() (raw RawDayPeriods, err error) {
+	if !f.valid() {
+		return RawDayPeriods{}, f.fault()
+	}
+	f.layout(&raw)
 	return raw, nil
 }
 
@@ -157,11 +416,27 @@ func FormatVersion(packed uint32) string {
 	return fmt.Sprintf("%d.%d.%d", packed>>16, (packed>>8)&0xFF, packed&0xFF)
 }
 
-// The raw shapes at the sizes rust/src/abi.rs pins for them, and Decimal and Duration at
-// the core's layout, field by field: an array of any other length is another type, so a
-// drift on this side fails the build.
+// The raw shapes at the sizes and offsets rust/src/abi.rs pins for them, and Decimal and
+// Duration at the core's layout, field by field: an array of any other length is another
+// type, so a drift on this side fails the build.
 var (
-	_ [32]byte = [unsafe.Sizeof(RawNumFormat{})]byte{}
+	_ [9]byte  = [unsafe.Sizeof(RawSymbol8{})]byte{}
+	_ [17]byte = [unsafe.Sizeof(RawSymbol16{})]byte{}
+	_ [92]byte = [unsafe.Sizeof(RawNumFormat{})]byte{}
+	_ [0]byte  = [unsafe.Offsetof(RawNumFormat{}.Size)]byte{}
+	_ [4]byte  = [unsafe.Offsetof(RawNumFormat{}.Flags)]byte{}
+	_ [8]byte  = [unsafe.Offsetof(RawNumFormat{}.DigitZero)]byte{}
+	_ [12]byte = [unsafe.Offsetof(RawNumFormat{}.DecimalSep)]byte{}
+	_ [21]byte = [unsafe.Offsetof(RawNumFormat{}.GroupSep)]byte{}
+	_ [30]byte = [unsafe.Offsetof(RawNumFormat{}.CurrencyDecimalSep)]byte{}
+	_ [39]byte = [unsafe.Offsetof(RawNumFormat{}.CurrencyGroupSep)]byte{}
+	_ [48]byte = [unsafe.Offsetof(RawNumFormat{}.MinusSign)]byte{}
+	_ [57]byte = [unsafe.Offsetof(RawNumFormat{}.PlusSign)]byte{}
+	_ [66]byte = [unsafe.Offsetof(RawNumFormat{}.Percent)]byte{}
+	_ [75]byte = [unsafe.Offsetof(RawNumFormat{}.Currency)]byte{}
+	_ [40]byte = [unsafe.Sizeof(RawDayPeriods{})]byte{}
+	_ [4]byte  = [unsafe.Offsetof(RawDayPeriods{}.AM)]byte{}
+	_ [21]byte = [unsafe.Offsetof(RawDayPeriods{}.PM)]byte{}
 	_ [16]byte = [unsafe.Sizeof(RawTimestamp{})]byte{}
 	_ [4]byte  = [unsafe.Sizeof(RawDate{})]byte{}
 	_ [16]byte = [unsafe.Sizeof(RawCivil{})]byte{}

@@ -89,6 +89,210 @@ fn clamp(value: usize) -> u32 {
     value.try_into().unwrap_or(u32::MAX)
 }
 
+/// A short declared symbol, held inline so a [`NumFormat`] stays `Copy` and crosses the
+/// ABI as plain bytes: a separator, a sign, a percent symbol (`Symbol<8>`) or a day-period
+/// designator (`Symbol<16>`). Up to `N` bytes of UTF-8, which is wide enough for every
+/// value a real culture declares: a separator of one or two code points (`.`, U+202F, an
+/// LTR mark and a comma), a minus sign of up to two (U+2212; an RTL mark and a hyphen),
+/// `a. m.`. Empty is [`Symbol::NONE`]: nothing declared, so the core keeps its default for
+/// the field.
+///
+/// The one rule is that a symbol never contains an ASCII digit — a digit is a digit before
+/// it is anything else, so such a symbol could never be matched, and a sign made of one
+/// would read `15` as a signed `5`. [`CurrencySymbol`] keeps its own stricter rule.
+///
+/// ABI layout: the `N` bytes, then the length, `N + 1` bytes with no alignment — a
+/// [`NumFormat`] is read across the C ABI in place, so this is the shape it crosses in.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct Symbol<const N: usize> {
+    bytes: [u8; N],
+    len: u8,
+}
+
+/// Two symbols are equal when they declare the same bytes; what a layout read across the
+/// ABI holds past the length is no part of the symbol.
+impl<const N: usize> PartialEq for Symbol<N> {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_bytes() == other.as_bytes()
+    }
+}
+
+impl<const N: usize> Eq for Symbol<N> {}
+
+impl<const N: usize> Symbol<N> {
+    /// The inline capacity, in UTF-8 bytes.
+    pub const MAX_BYTES: usize = N;
+
+    /// Nothing declared.
+    pub const NONE: Symbol<N> = Symbol { bytes: [0; N], len: 0 };
+
+    /// Declares `symbol`. `None` when it is empty, longer than [`MAX_BYTES`](Self::MAX_BYTES)
+    /// bytes, or contains an ASCII digit.
+    #[inline]
+    pub const fn new(symbol: &str) -> Option<Symbol<N>> {
+        let source = symbol.as_bytes();
+        if source.is_empty() || source.len() > N {
+            return None;
+        }
+        let mut bytes = [0u8; N];
+        let mut i = 0;
+        while i < source.len() {
+            if source[i].is_ascii_digit() {
+                return None;
+            }
+            bytes[i] = source[i];
+            i += 1;
+        }
+        Some(Symbol { bytes, len: source.len() as u8 })
+    }
+
+    /// One character as a symbol, unchecked: the separators [`NumFormat::new`] takes as
+    /// `char`s. A digit declared this way is inert (the digit scan reads it first).
+    #[inline]
+    pub(crate) const fn from_char(symbol: char) -> Symbol<N> {
+        let code = symbol as u32;
+        let mut bytes = [0u8; N];
+        let len = if code < 0x80 {
+            bytes[0] = code as u8;
+            1
+        } else if code < 0x800 {
+            bytes[0] = 0xC0 | (code >> 6) as u8;
+            bytes[1] = 0x80 | (code & 0x3F) as u8;
+            2
+        } else if code < 0x10000 {
+            bytes[0] = 0xE0 | (code >> 12) as u8;
+            bytes[1] = 0x80 | ((code >> 6) & 0x3F) as u8;
+            bytes[2] = 0x80 | (code & 0x3F) as u8;
+            3
+        } else {
+            bytes[0] = 0xF0 | (code >> 18) as u8;
+            bytes[1] = 0x80 | ((code >> 12) & 0x3F) as u8;
+            bytes[2] = 0x80 | ((code >> 6) & 0x3F) as u8;
+            bytes[3] = 0x80 | (code & 0x3F) as u8;
+            4
+        };
+        Symbol { bytes, len }
+    }
+
+    /// Whether a symbol read across the ABI keeps [`new`](Self::new)'s rules — a length of
+    /// `1..=N`, no ASCII digit, well-formed UTF-8 — and, with `flush`, has no ASCII
+    /// whitespace in it either (a sign or a percent symbol sits flush against the digits).
+    /// Every numeric cast through the C ABI checks two separators, so the common one-byte
+    /// symbol is decided without a loop or a call, and UTF-8 is checked only once a byte is
+    /// outside ASCII.
+    #[inline]
+    pub(crate) fn check(&self, flush: bool) -> bool {
+        let len = usize::from(self.len);
+        if len == 0 || len > N {
+            return false;
+        }
+        if len == 1 {
+            let byte = self.bytes[0];
+            return byte < 0x80 && !byte.is_ascii_digit() && !(flush && byte.is_ascii_whitespace());
+        }
+        let symbol = self.as_bytes();
+        let mut ascii = true;
+        for &byte in symbol {
+            if byte.is_ascii_digit() || (flush && byte.is_ascii_whitespace()) {
+                return false;
+            }
+            ascii &= byte < 0x80;
+        }
+        ascii || utf8_ok(symbol)
+    }
+
+    /// [`check`](Self::check), with nothing declared passing too.
+    #[inline]
+    pub(crate) fn check_optional(&self, flush: bool) -> bool {
+        self.len == 0 || self.check(flush)
+    }
+
+    /// The symbol's UTF-8 bytes — empty for [`NONE`](Self::NONE).
+    #[inline]
+    pub fn as_bytes(&self) -> &[u8] {
+        // `len` never exceeds N (`new` checks); `get` says so without a bounds check.
+        self.bytes.get(..usize::from(self.len)).unwrap_or_default()
+    }
+
+    /// The symbol as text — empty for [`NONE`](Self::NONE).
+    pub fn as_str(&self) -> &str {
+        // SAFETY: every constructor stores the bytes of a `&str` or one encoded `char`,
+        // `NONE` stores nothing, and a symbol read across the ABI is only handed out once
+        // `check` has seen its bytes are UTF-8 (`RawNumFormat::resolve`).
+        unsafe { str::from_utf8_unchecked(self.as_bytes()) }
+    }
+
+    /// True when nothing is declared.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// The symbol's length in bytes.
+    pub(crate) fn len(&self) -> usize {
+        usize::from(self.len)
+    }
+
+    /// The one byte of a single-byte (so ASCII) symbol — what the fast lanes read.
+    #[inline]
+    pub(crate) fn single_ascii(&self) -> Option<u8> {
+        if self.len == 1 { self.bytes.first().copied() } else { None }
+    }
+
+    /// Whether the symbol sits at `text[at..]`. Never true for [`NONE`](Self::NONE).
+    #[inline]
+    pub(crate) fn matches(&self, text: &[u8], at: usize) -> bool {
+        self.len != 0 && text.get(at..).is_some_and(|rest| rest.starts_with(self.as_bytes()))
+    }
+
+    /// Whether the symbol ends `text`. Never true for [`NONE`](Self::NONE).
+    #[inline]
+    pub(crate) fn ends(&self, text: &[u8]) -> bool {
+        self.len != 0 && text.ends_with(self.as_bytes())
+    }
+}
+
+/// Whether `bytes` are well-formed UTF-8 — `core::str::from_utf8`'s answer, for the few
+/// bytes of a symbol read across the ABI, without the call: a numeric cast through the C
+/// ABI checks its format's symbols every time, and a culture's currency symbol is outside
+/// ASCII more often than not. Overlong forms, surrogates and code points past U+10FFFF are
+/// refused, exactly as there.
+#[inline]
+fn utf8_ok(bytes: &[u8]) -> bool {
+    let mut i = 0;
+    while let Some(&lead) = bytes.get(i) {
+        let (len, floor) = match lead {
+            0x00..=0x7F => (1, 0),
+            0xC2..=0xDF => (2, 0x80),
+            0xE0..=0xEF => (3, 0x800),
+            0xF0..=0xF4 => (4, 0x10000),
+            _ => return false,
+        };
+        let Some(sequence) = bytes.get(i..i + len) else {
+            return false;
+        };
+        let mut code = if len == 1 { u32::from(lead) } else { u32::from(lead) & (0x7F >> len) };
+        for &trail in sequence.iter().skip(1) {
+            if trail & 0xC0 != 0x80 {
+                return false;
+            }
+            code = (code << 6) | u32::from(trail & 0x3F);
+        }
+        if code < floor || code > 0x10FFFF || (0xD800..=0xDFFF).contains(&code) {
+            return false;
+        }
+        i += len;
+    }
+    true
+}
+
+impl<const N: usize> core::fmt::Display for Symbol<N> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// A caller-declared currency symbol, held inline so a [`NumFormat`] stays `Copy` and
 /// crosses the ABI as plain bytes. Up to [`CurrencySymbol::MAX_BYTES`] bytes of UTF-8 —
 /// wide enough for every symbol a real culture declares (`$`, `€`, `kr.`, `CHF`, `R$`,
@@ -99,11 +303,24 @@ fn clamp(value: usize) -> u32 {
 /// and only while [`NumFormat::CURRENCY`] is set. It never participates in the digit scan,
 /// so a symbol that happens to contain a separator character (`kr.` under `.` grouping)
 /// is fine.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// ABI layout: the 16 bytes, then the length, 17 bytes with no alignment, as a [`Symbol`].
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
 pub struct CurrencySymbol {
     bytes: [u8; Self::MAX_BYTES],
     len: u8,
 }
+
+/// Two symbols are equal when they declare the same bytes; what a layout read across the
+/// ABI holds past the length is no part of the symbol.
+impl PartialEq for CurrencySymbol {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_bytes() == other.as_bytes()
+    }
+}
+
+impl Eq for CurrencySymbol {}
 
 impl CurrencySymbol {
     /// The inline capacity, in UTF-8 bytes.
@@ -134,6 +351,29 @@ impl CurrencySymbol {
         Some(CurrencySymbol { bytes, len: source.len() as u8 })
     }
 
+    /// Whether a symbol read across the ABI keeps [`new`](Self::new)'s rules, nothing
+    /// declared passing too: a length of at most 16, no ASCII digit or whitespace, and
+    /// well-formed UTF-8, which is checked only once a byte is outside ASCII.
+    #[inline]
+    pub(crate) fn check(&self) -> bool {
+        let len = usize::from(self.len);
+        if len == 0 {
+            return true;
+        }
+        if len > Self::MAX_BYTES {
+            return false;
+        }
+        let symbol = self.as_bytes();
+        let mut ascii = true;
+        for &byte in symbol {
+            if byte.is_ascii_digit() || byte.is_ascii_whitespace() {
+                return false;
+            }
+            ascii &= byte < 0x80;
+        }
+        ascii || utf8_ok(symbol)
+    }
+
     /// The symbol's UTF-8 bytes — empty for [`NONE`](Self::NONE).
     pub fn as_bytes(&self) -> &[u8] {
         // `len` never exceeds MAX_BYTES (`new` checks); `get` says so without a bounds check.
@@ -152,22 +392,127 @@ impl CurrencySymbol {
     }
 }
 
+/// A caller-declared set of native digits, read beside ASCII `0`–`9`: the ten code points
+/// from a declared zero up (`٠`, U+0660, declares the Arabic-Indic digits; `０`, U+FF10,
+/// the fullwidth ones), the way ICU and Java's `DecimalFormatSymbols` describe a locale's
+/// digits. [`NativeDigits::NONE`] declares none, and ASCII digits are always read.
+///
+/// Every decimal digit block Unicode defines starts at a code point whose ten successors
+/// share its UTF-8 prefix, which is what lets a digit be recognised from its last byte;
+/// [`new`](Self::new) refuses a zero for which that does not hold, and any ASCII one.
+///
+/// ABI layout: the zero's code point as a `u32`, `0` for `NONE`.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeDigits {
+    zero: u32,
+}
+
+impl NativeDigits {
+    /// No native digits declared.
+    pub const NONE: NativeDigits = NativeDigits { zero: 0 };
+
+    /// Declares the ten digits starting at `zero`. `None` for an ASCII `zero`, or one whose
+    /// ten successors do not share its UTF-8 prefix (a code point whose value modulo 64 is
+    /// past 54 — no Unicode digit block starts at one).
+    pub const fn new(zero: char) -> Option<NativeDigits> {
+        let code = zero as u32;
+        if code < 0x80 || code % 64 > 54 {
+            return None;
+        }
+        Some(NativeDigits { zero: code })
+    }
+
+    /// The declared zero, or `None` for [`NONE`](Self::NONE).
+    pub fn zero(&self) -> Option<char> {
+        if self.zero == 0 { None } else { char::from_u32(self.zero) }
+    }
+
+    /// The ABI's spelling: the zero's code point, `0` for [`NONE`](Self::NONE).
+    pub(crate) const fn zero_code(&self) -> u32 {
+        self.zero
+    }
+
+    /// [`zero_code`](Self::zero_code)'s inverse, unchecked: what a layout read back as
+    /// bytes holds until [`check`](Self::check) has seen it.
+    pub(crate) const fn from_code(zero: u32) -> NativeDigits {
+        NativeDigits { zero }
+    }
+
+    /// True when no native digits are declared.
+    pub fn is_empty(&self) -> bool {
+        self.zero == 0
+    }
+
+    /// Whether a set read across the ABI is one [`new`](Self::new) would declare, nothing
+    /// declared passing too.
+    #[inline]
+    pub(crate) fn check(&self) -> bool {
+        self.zero == 0 || char::from_u32(self.zero).and_then(NativeDigits::new).is_some()
+    }
+
+    /// The native digit at `text[at..]`, as its value and byte length.
+    #[inline]
+    pub(crate) fn read(&self, text: &[u8], at: usize) -> Option<(u8, usize)> {
+        if self.zero == 0 {
+            return None;
+        }
+        let lead = Symbol::<4>::from_char(char::from_u32(self.zero)?);
+        let len = usize::from(lead.len);
+        let candidate = text.get(at..at + len)?;
+        let (prefix, last) = candidate.split_at_checked(len - 1)?;
+        if prefix != lead.bytes.get(..len - 1)? {
+            return None;
+        }
+        let zero = *lead.bytes.get(len - 1)?;
+        let value = last.first()?.wrapping_sub(zero);
+        if value <= 9 { Some((value, len)) } else { None }
+    }
+}
+
 /// Caller-declared numeric notation for the integer and real doors. The core carries no
 /// culture data — a binding maps its platform's culture to these fields (Svartalfheim
-/// leaned on `IFormatProvider` here). The currency symbol is the one field that needs a
-/// culture table to fill in; it is declared, never looked up.
+/// leaned on `IFormatProvider` here). Everything past the separators and the flags is
+/// declared, never looked up, and every one of those fields defaults to declaring nothing,
+/// which reads exactly as the invariant culture: ASCII signs and percent, ASCII digits,
+/// the number separators for a currency amount.
+///
+/// ABI layout: the format crosses the C ABI in place, so this is `#[repr(C)]` in exactly
+/// the field order below — `flags` and the digit zero as two `u32`s, then seven
+/// [`Symbol<8>`]s of nine bytes each and the [`CurrencySymbol`]'s seventeen, 88 bytes with
+/// 4-byte alignment; [`RawNumFormat`](crate::RawNumFormat) puts a size word ahead of it.
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NumFormat {
-    /// The declared decimal separator (`.` invariant, `,` in eurozone-style text).
-    pub decimal_sep: char,
-    /// The declared digit-group separator (`,` invariant, `.` or U+00A0 elsewhere).
-    /// Must differ from `decimal_sep`; the doors check the decimal separator first, so a
-    /// caller passing equal separators gets decimal semantics — the FFI layer rejects the
-    /// combination outright as a contract violation.
-    pub group_sep: char,
-    /// Bitwise OR of the `GROUPING`/`PARENS`/`EXPONENT`/`RADIX_PREFIX`/`PERCENT`/`CURRENCY`
-    /// flags, plus the `SEPARATOR_DETECT` policy.
+    /// Bitwise OR of the `GROUPING`/`PARENS`/`EXPONENT`/`RADIX_PREFIX`/`PERCENT`/`CURRENCY`/
+    /// `TRAILING_SIGN` flags, plus the `SEPARATOR_DETECT` policy.
     pub flags: u32,
+    /// Native digits read beside ASCII `0`–`9`. [`NativeDigits::NONE`] declares none.
+    pub digits: NativeDigits,
+    /// The declared decimal separator (`.` invariant, `,` in eurozone-style text): one or
+    /// two characters. An empty symbol matches nothing, so no fraction can be written.
+    pub decimal_sep: Symbol<8>,
+    /// The declared digit-group separator (`,` invariant, `.` or U+00A0 elsewhere). Must
+    /// differ from `decimal_sep`; the doors check the decimal separator first, so a caller
+    /// passing equal separators gets decimal semantics — the FFI layer rejects the
+    /// combination outright as a contract violation.
+    pub group_sep: Symbol<8>,
+    /// The decimal separator of a currency amount — read in place of `decimal_sep` when the
+    /// declared symbol is present in the text, as the BCL switches to a culture's
+    /// `CurrencyDecimalSeparator` when it sees the symbol. [`Symbol::NONE`] keeps
+    /// `decimal_sep`.
+    pub currency_decimal_sep: Symbol<8>,
+    /// The group separator of a currency amount, likewise. [`Symbol::NONE`] keeps `group_sep`.
+    pub currency_group_sep: Symbol<8>,
+    /// A further spelling of the minus sign, read wherever ASCII `-` is (U+2212 in Estonian
+    /// and Basque). ASCII `-` is always read; [`Symbol::NONE`] declares no other.
+    pub minus_sign: Symbol<8>,
+    /// A further spelling of the plus sign, likewise beside ASCII `+`.
+    pub plus_sign: Symbol<8>,
+    /// A further spelling of the percent symbol, read as a trailing `%` is while
+    /// [`PERCENT`](Self::PERCENT) is set (`٪` in Arabic-script cultures, `％` fullwidth).
+    /// ASCII `%` is always read.
+    pub percent: Symbol<8>,
     /// The declared currency symbol, honored only while [`CURRENCY`](Self::CURRENCY) is
     /// set. [`CurrencySymbol::NONE`] declares nothing.
     pub currency: CurrencySymbol,
@@ -186,7 +531,8 @@ impl NumFormat {
     /// Permit the culture-insensitive radix prefixes `0x`/`&H` (hex) and `0b` (binary),
     /// read as the two's-complement bit pattern (`0xFF` is -1 for an i8). Integer doors only.
     pub const RADIX_PREFIX: u32 = 1 << 3;
-    /// Permit a trailing `%`, dividing by 100 (`50%` is 0.5). Real doors only.
+    /// Permit a trailing `%` (or the declared [`percent`](Self::percent) symbol), dividing
+    /// by 100 (`50%` is 0.5). Real doors only.
     pub const PERCENT: u32 = 1 << 4;
     /// Resolve the `.`/`,` roles per input from structure instead of the declared fields
     /// (which are ignored while this flag is set). Detection, not sniffing — only
@@ -207,8 +553,15 @@ impl NumFormat {
     /// [`CurrencySymbol::NONE`] declared the flag matches nothing and changes nothing.
     /// Integer and real doors.
     pub const CURRENCY: u32 = 1 << 6;
-    /// Every lenience flag set (the declared-separator flags — [`SEPARATOR_DETECT`](Self::SEPARATOR_DETECT)
-    /// is a separator *policy*, not a lenience, and is deliberately not included).
+    /// Permit the sign after the digits (`5-`, `5 -`, `5 €-`, `5- €`), the way a culture
+    /// whose negative pattern is `n-` writes it and .NET's `AllowTrailingSign` reads it:
+    /// ASCII `-`/`+` or the declared signs, once, with optional ASCII whitespace before it,
+    /// and never beside a leading sign or inside accounting parentheses. Not part of
+    /// [`ALL`](Self::ALL): a bridge sets it from the culture's own negative pattern.
+    pub const TRAILING_SIGN: u32 = 1 << 7;
+    /// The default leniences — every lenience flag there was before `TRAILING_SIGN`, which
+    /// is declared from a culture's pattern rather than assumed ([`SEPARATOR_DETECT`](Self::SEPARATOR_DETECT)
+    /// is a separator *policy*, not a lenience, and is deliberately not included either).
     pub const ALL: u32 = Self::GROUPING
         | Self::PARENS
         | Self::EXPONENT
@@ -216,28 +569,64 @@ impl NumFormat {
         | Self::PERCENT
         | Self::CURRENCY;
 
-    /// The invariant profile — `.` decimal, `,` grouping, every lenience on, no currency
-    /// symbol declared. This is what the FFI doors use when the caller passes a null format.
-    pub const INVARIANT: NumFormat = NumFormat {
-        decimal_sep: '.',
-        group_sep: ',',
-        flags: Self::ALL,
+    /// The invariant profile — `.` decimal, `,` grouping, every default lenience on, nothing
+    /// else declared. This is what the FFI doors use when the caller passes a null format.
+    pub const INVARIANT: NumFormat = NumFormat::new('.', ',', Self::ALL);
+
+    /// Every field empty, the number separators included — not a format on its own (an
+    /// empty separator matches nothing, and the ABI refuses it), but the bytes a layout
+    /// read across the ABI starts from.
+    pub(crate) const EMPTY: NumFormat = NumFormat {
+        flags: 0,
+        digits: NativeDigits::NONE,
+        decimal_sep: Symbol::NONE,
+        group_sep: Symbol::NONE,
+        currency_decimal_sep: Symbol::NONE,
+        currency_group_sep: Symbol::NONE,
+        minus_sign: Symbol::NONE,
+        plus_sign: Symbol::NONE,
+        percent: Symbol::NONE,
         currency: CurrencySymbol::NONE,
     };
 
-    /// The detection profile — every lenience on, `.`/`,` roles resolved per input by
-    /// [`SEPARATOR_DETECT`](Self::SEPARATOR_DETECT)'s structural rules.
-    pub const DETECT: NumFormat = NumFormat {
-        decimal_sep: '.',
-        group_sep: ',',
-        flags: Self::ALL | Self::SEPARATOR_DETECT,
-        currency: CurrencySymbol::NONE,
-    };
+    /// The detection profile — every default lenience on, `.`/`,` roles resolved per input
+    /// by [`SEPARATOR_DETECT`](Self::SEPARATOR_DETECT)'s structural rules.
+    pub const DETECT: NumFormat = NumFormat::new('.', ',', Self::ALL | Self::SEPARATOR_DETECT);
 
-    /// Declares the separators and flags with no currency symbol — the three-field
-    /// constructor every binding's own format type maps onto.
+    /// Declares the separators and flags and nothing else — the three-field constructor
+    /// every binding's own format type maps onto. A separator that is an ASCII digit is
+    /// inert: the digit scan reads it first.
+    #[inline]
     pub const fn new(decimal_sep: char, group_sep: char, flags: u32) -> NumFormat {
-        NumFormat { decimal_sep, group_sep, flags, currency: CurrencySymbol::NONE }
+        NumFormat {
+            flags,
+            digits: NativeDigits::NONE,
+            decimal_sep: Symbol::from_char(decimal_sep),
+            group_sep: Symbol::from_char(group_sep),
+            currency_decimal_sep: Symbol::NONE,
+            currency_group_sep: Symbol::NONE,
+            minus_sign: Symbol::NONE,
+            plus_sign: Symbol::NONE,
+            percent: Symbol::NONE,
+            currency: CurrencySymbol::NONE,
+        }
+    }
+
+    /// [`new`](Self::new) with separators of one or two characters each (`Symbol::NONE`
+    /// takes the invariant `.` or `,`), for a culture whose separator is wider than one.
+    pub const fn with_separators(
+        decimal_sep: Symbol<8>,
+        group_sep: Symbol<8>,
+        flags: u32,
+    ) -> NumFormat {
+        let mut format = NumFormat::new('.', ',', flags);
+        if decimal_sep.len != 0 {
+            format.decimal_sep = decimal_sep;
+        }
+        if group_sep.len != 0 {
+            format.group_sep = group_sep;
+        }
+        format
     }
 
     /// The same format with `currency` declared. Pair with [`CURRENCY`](Self::CURRENCY)
@@ -246,15 +635,107 @@ impl NumFormat {
         NumFormat { currency, ..self }
     }
 
+    /// The same format with the separators a currency amount is read with, each
+    /// [`Symbol::NONE`] keeping the number separator it stands in for.
+    pub const fn with_currency_separators(
+        self,
+        decimal_sep: Symbol<8>,
+        group_sep: Symbol<8>,
+    ) -> NumFormat {
+        NumFormat { currency_decimal_sep: decimal_sep, currency_group_sep: group_sep, ..self }
+    }
+
+    /// The same format with further spellings of the minus and plus signs declared, each
+    /// [`Symbol::NONE`] declaring none.
+    pub const fn with_signs(self, minus_sign: Symbol<8>, plus_sign: Symbol<8>) -> NumFormat {
+        NumFormat { minus_sign, plus_sign, ..self }
+    }
+
+    /// The same format with a further spelling of the percent symbol declared.
+    pub const fn with_percent(self, percent: Symbol<8>) -> NumFormat {
+        NumFormat { percent, ..self }
+    }
+
+    /// The same format with native digits declared beside ASCII.
+    pub const fn with_digits(self, digits: NativeDigits) -> NumFormat {
+        NumFormat { digits, ..self }
+    }
+
     pub(crate) fn allows(&self, flag: u32) -> bool {
         self.flags & flag != 0
+    }
+
+    /// Whether a format read across the ABI is one this API would declare: each number
+    /// separator one to eight bytes with no ASCII digit, the two different; each currency
+    /// separator the same or empty, and the pair in force different; each sign and the
+    /// percent symbol the same or empty and with no ASCII whitespace; the currency symbol
+    /// a [`CurrencySymbol`] or empty; the digits a [`NativeDigits`] or none. Anything else
+    /// is a caller bug, not a data verdict, and the C ABI reports it as one.
+    #[inline]
+    pub fn check(&self) -> bool {
+        if !self.decimal_sep.check(false) || !self.group_sep.check(false) {
+            return false;
+        }
+        // Equal separators, decided on the first byte for nearly every format: a slice
+        // comparison is a call, and this runs on every cast through the C ABI.
+        if self.decimal_sep.bytes[0] == self.group_sep.bytes[0]
+            && self.decimal_sep.len == self.group_sep.len
+            && self.decimal_sep == self.group_sep
+        {
+            return false;
+        }
+        // Everything below is declared by few formats; one word of their lengths and the
+        // digit zero together decides the lot for the rest.
+        let rest = u32::from(self.currency_decimal_sep.len)
+            | u32::from(self.currency_group_sep.len)
+            | u32::from(self.minus_sign.len)
+            | u32::from(self.plus_sign.len)
+            | u32::from(self.percent.len)
+            | self.digits.zero;
+        if rest == 0 {
+            return self.currency.check();
+        }
+        if !self.currency_decimal_sep.check_optional(false)
+            || !self.currency_group_sep.check_optional(false)
+        {
+            return false;
+        }
+        let (decimal, group) = self.separators(true);
+        decimal != group
+            && self.minus_sign.check_optional(true)
+            && self.plus_sign.check_optional(true)
+            && self.percent.check_optional(true)
+            && self.currency.check()
+            && self.digits.check()
+    }
+
+    /// The separators a token is read with: the currency ones where they are declared and
+    /// the symbol was found, the number ones otherwise.
+    #[inline]
+    pub(crate) fn separators(&self, currency: bool) -> (&Symbol<8>, &Symbol<8>) {
+        if currency {
+            let decimal = if self.currency_decimal_sep.is_empty() {
+                &self.decimal_sep
+            } else {
+                &self.currency_decimal_sep
+            };
+            let group = if self.currency_group_sep.is_empty() {
+                &self.group_sep
+            } else {
+                &self.currency_group_sep
+            };
+            (decimal, group)
+        } else {
+            (&self.decimal_sep, &self.group_sep)
+        }
     }
 
     /// Resolves this format's `.`/`,` roles for `text` (trimmed, offset `start` in the
     /// caller's input) under [`SEPARATOR_DETECT`](Self::SEPARATOR_DETECT)'s rules,
     /// returning a concrete declared-separator format for the ordinary engines to run
-    /// with. The one fault detection itself can produce: `Malformed` at a structurally
-    /// undecidable separator.
+    /// with. The currency separators are resolved along with the number ones: detection
+    /// governs the whole token. The one fault detection itself can produce: `Malformed` at
+    /// a structurally undecidable separator.
     pub(crate) fn resolve_detected(&self, text: &[u8], start: usize) -> Result<NumFormat, Fault> {
         let flags = self.flags & !Self::SEPARATOR_DETECT;
         let (mut dots, mut commas) = (0usize, 0usize);
@@ -273,7 +754,14 @@ impl NumFormat {
             _ if last_dot > last_comma => ('.', ','),
             _ => (',', '.'),
         };
-        Ok(NumFormat { decimal_sep, group_sep, flags, currency: self.currency })
+        Ok(NumFormat {
+            flags,
+            decimal_sep: Symbol::from_char(decimal_sep),
+            group_sep: Symbol::from_char(group_sep),
+            currency_decimal_sep: Symbol::NONE,
+            currency_group_sep: Symbol::NONE,
+            ..*self
+        })
     }
 }
 

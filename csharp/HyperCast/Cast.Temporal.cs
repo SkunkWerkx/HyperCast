@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using HyperCast.Interop;
 
 namespace HyperCast;
@@ -239,11 +240,13 @@ public static partial class Cast
 	/// <see cref="DateTimeKind.Unspecified"/>. The date part follows
 	/// <see cref="Date(ReadOnlySpan{byte}, DateOrder)"/>'s grammar; the optional time part
 	/// (one space or <c>T</c> after the date) is 24-hour <c>h:mm[:ss[.f+]]</c> or
-	/// 12-hour with an <c>AM</c>/<c>PM</c> marker; absent, the time is midnight. No zone is
-	/// read and none is invented — the text named no instant, so the Kind is honestly
-	/// Unspecified and fusing a zone is the caller's job
-	/// (<see cref="Timestamp(ReadOnlySpan{byte})"/> stays the strict RFC 3339 instant
-	/// door). Sub-tick nanoseconds truncate.
+	/// 12-hour with an <c>AM</c>/<c>PM</c> marker, after the clock or ahead of it; absent,
+	/// the time is midnight. The marker is the English pair, ASCII case-insensitive — a
+	/// culture's own designators are declared with a <see cref="DateFormat"/>
+	/// (<see cref="DateTime(ReadOnlySpan{byte}, DateFormat)"/>). No zone is read and none is
+	/// invented — the text named no instant, so the Kind is honestly Unspecified and fusing a
+	/// zone is the caller's job (<see cref="Timestamp(ReadOnlySpan{byte})"/> stays the strict
+	/// RFC 3339 instant door). Sub-tick nanoseconds truncate.
 	/// </summary>
 	/// <param name="utf8">The raw scalar text as UTF-8 bytes.</param>
 	/// <param name="order">The declared field order. Never <see cref="DateOrder.Unspecified"/>.</param>
@@ -255,7 +258,7 @@ public static partial class Cast
 		RawFault fault = default;
 		int code;
 		fixed (byte* ptr = utf8)
-			code = cast_datetime(ptr, (nuint)utf8.Length, declared, &value, &fault);
+			code = cast_datetime(ptr, (nuint)utf8.Length, declared, null, &value, &fault);
 		return code == 0 ? value.ToDateTime() : Failed<System.DateTime>(code, fault);
 	}
 
@@ -269,6 +272,50 @@ public static partial class Cast
 		{
 			var utf8 = Utf8(input, stackalloc byte[Utf8StackBytes], ref rented);
 			return Remap(DateTime(utf8, order), utf8, input.Length);
+		}
+		finally
+		{
+			Recycle(rented);
+		}
+	}
+
+	/// <summary>
+	/// <see cref="DateTime(ReadOnlySpan{byte}, DateOrder)"/> under a declared
+	/// <see cref="DateFormat"/>: its <see cref="DateFormat.Order"/>, and its day-period
+	/// designators read beside the English <c>AM</c>/<c>PM</c>, exactly — after the clock
+	/// (<c>1.7.2026 3:04 nachm.</c>, with or without the space) or ahead of it
+	/// (<c>2026-01-07 오후 3:04</c>). A format declaring no designator is the bare
+	/// <see cref="DateOrder"/> cast; <see cref="DateFormat.From(System.Globalization.CultureInfo)"/>
+	/// fills one from a culture.
+	/// </summary>
+	/// <param name="utf8">The raw scalar text as UTF-8 bytes.</param>
+	/// <param name="format">The declared order and designators. Its order is never <see cref="DateOrder.Unspecified"/>.</param>
+	/// <exception cref="ArgumentOutOfRangeException">The format's order is undefined — a caller bug, not a data verdict.</exception>
+	/// <exception cref="ArgumentException">A designator the core cannot read (see <see cref="DateFormat.ToRaw"/>) — a caller bug, not a data verdict.</exception>
+	[OverloadResolutionPriority(-1)] // so `default` still binds the DateOrder door, as it did before this existed
+	public static unsafe Verdict<System.DateTime> DateTime(ReadOnlySpan<byte> utf8, DateFormat format)
+	{
+		var declared = Abi.Code(format.Order, nameof(format));
+		var periods = format.ToRaw();
+		RawCivil value = default;
+		RawFault fault = default;
+		int code;
+		fixed (byte* ptr = utf8)
+			code = cast_datetime(ptr, (nuint)utf8.Length, declared, format.HasDesignators ? &periods : null, &value, &fault);
+		return code == 0 ? value.ToDateTime() : Failed<System.DateTime>(code, fault);
+	}
+
+	/// <inheritdoc cref="DateTime(ReadOnlySpan{byte}, DateFormat)"/>
+	/// <param name="input">The raw scalar text.</param>
+	/// <param name="format">The declared order and designators. Its order is never <see cref="DateOrder.Unspecified"/>.</param>
+	[OverloadResolutionPriority(-1)]
+	public static Verdict<System.DateTime> DateTime(ReadOnlySpan<char> input, DateFormat format)
+	{
+		byte[]? rented = null;
+		try
+		{
+			var utf8 = Utf8(input, stackalloc byte[Utf8StackBytes], ref rented);
+			return Remap(DateTime(utf8, format), utf8, input.Length);
 		}
 		finally
 		{

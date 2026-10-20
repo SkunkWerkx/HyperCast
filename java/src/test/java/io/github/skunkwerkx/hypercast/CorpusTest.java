@@ -56,16 +56,32 @@ final class CorpusTest {
         return vector.get("input").getAsString().getBytes(StandardCharsets.UTF_8);
     }
 
+    /**
+     * The format a vector declares: the two separators and the flags always, every other
+     * field only where the vector names it — absent is not declared, exactly as the core's
+     * own replay reads it.
+     */
     private static NumFormat formatOf(JsonObject vector) {
         if (!vector.has("format")) {
             return NumFormat.INVARIANT;
         }
         JsonObject format = vector.getAsJsonObject("format");
+        String digitZero = symbolOf(format, "digit_zero");
         return new NumFormat(
-                format.get("decimal_sep").getAsString().charAt(0),
-                format.get("group_sep").getAsString().charAt(0),
+                format.get("decimal_sep").getAsString(),
+                format.get("group_sep").getAsString(),
                 format.get("flags").getAsInt(),
-                format.has("currency") ? format.get("currency").getAsString() : "");
+                symbolOf(format, "currency"),
+                symbolOf(format, "currency_decimal_sep"),
+                symbolOf(format, "currency_group_sep"),
+                symbolOf(format, "minus_sign"),
+                symbolOf(format, "plus_sign"),
+                symbolOf(format, "percent"),
+                digitZero.isEmpty() ? 0 : digitZero.codePointAt(0));
+    }
+
+    private static String symbolOf(JsonObject object, String key) {
+        return object.has(key) ? object.get(key).getAsString() : "";
     }
 
     private static <T> void assertVerdict(String domain, JsonObject vector, Verdict<T> verdict, T expected) {
@@ -334,7 +350,17 @@ final class CorpusTest {
                                     vector.get("day").getAsInt()),
                             LocalTime.ofNanoOfDay(vector.get("nanos_of_day").getAsLong()))
                     : null;
-            assertVerdict("datetime", vector, Cast.dateTime(inputBytes(vector), order), expected);
+            byte[] input = inputBytes(vector);
+            // A vector declaring designators goes through the DateTimeFormat door; one that
+            // declares none through the DateOrder door it always used, which must agree with
+            // a DateTimeFormat declaring none — the same null pointer either way.
+            DateTimeFormat format = new DateTimeFormat(order, symbolOf(vector, "am"), symbolOf(vector, "pm"));
+            if (format.englishOnly()) {
+                assertVerdict("datetime", vector, Cast.dateTime(input, order), expected);
+                assertEquals(Cast.dateTime(input, order), Cast.dateTime(input, format));
+            } else {
+                assertVerdict("datetime", vector, Cast.dateTime(input, format), expected);
+            }
         }
     }
 

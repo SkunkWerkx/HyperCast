@@ -179,41 +179,89 @@ const (
 	// this flag is off is Malformed at the symbol. Every integer, real and decimal door.
 	CurrencySymbol NumStyles = 1 << 6
 
-	// AllStyles is every lenience on.
+	// TrailingSign permits the sign after the digits ("5-", "5 -", "5+", "5 €-", "5- €",
+	// "2.5%-"), the way a culture whose negative pattern is "n-" writes it: ASCII '-'/'+'
+	// or the declared MinusSign/PlusSign, once, with optional ASCII whitespace before it,
+	// and never beside a leading sign or inside accounting parentheses. Not part of
+	// AllStyles: a caller sets it from the culture's own negative pattern.
+	TrailingSign NumStyles = 1 << 7
+
+	// AllStyles is every lenience on but TrailingSign, which is declared from a culture's
+	// negative pattern rather than assumed.
 	AllStyles = Grouping | Parentheses | Exponent | RadixPrefixes | Percent | CurrencySymbol
 )
 
 // NumFormat is the caller-declared numeric notation for the integer, real and decimal
-// doors. The core carries no culture data — a call site parsing culture-sensitive text
-// declares its format out loud (Invariant, or a literal); there is no default, the same
-// stance every binding in this repo takes. Equal separators are a caller bug and panic,
-// never a verdict; so is a Currency that is longer than 16 UTF-8 bytes, not valid UTF-8,
-// or carries an ASCII digit or ASCII whitespace.
+// doors. The core carries no culture data, and neither does Go's standard library, so
+// there is nothing here to bridge from — a call site parsing culture-sensitive text
+// declares its format out loud (Invariant, or a literal filled from whatever culture data
+// the application holds); there is no default, the same stance every binding in this repo
+// takes. The two number separators are the only required fields; every other field
+// declares a further spelling the core reads beside the ASCII one, so a format that
+// declares nothing else reads exactly what Invariant reads, and nothing that parsed
+// before a symbol was declared stops parsing once it is.
+//
+// A format the core would refuse is a caller bug and panics, never a verdict: a number
+// separator that is empty or longer than SymbolMaxBytes, equal number separators (or
+// equal separators in force for a currency amount), any symbol that is not valid UTF-8 or
+// carries an ASCII digit, a sign or percent symbol carrying ASCII whitespace, a Currency
+// longer than CurrencyMaxBytes or carrying ASCII whitespace, or a DigitZero that starts no
+// Unicode digit block. NumFormat.Raw reports the same check as an error.
 type NumFormat struct {
-	DecimalSep rune
-	GroupSep   rune
-	Styles     NumStyles
+	// DecimalSep is the decimal separator: one or two characters ('.' invariant, ',' in
+	// eurozone text), at most SymbolMaxBytes of UTF-8. Required.
+	DecimalSep string
+	// GroupSep is the digit-group separator (',' invariant, '.', ' ' or ", " elsewhere),
+	// likewise; must differ from DecimalSep. Required.
+	GroupSep string
+	Styles   NumStyles
 	// Currency is the symbol the CurrencySymbol style accepts ("$", "€", "kr.", "CHF") —
 	// matched whole at the edges of the numeric body, never inside the digit scan, so a
 	// symbol containing a separator character is fine. Empty declares none.
 	Currency string
+	// CurrencyDecimalSep is the decimal separator of a currency amount, read in place of
+	// DecimalSep when CurrencySymbol is set, Currency is declared and the symbol is found
+	// in the text — the way a culture's currency pattern may group and point differently
+	// from its number pattern. Empty keeps DecimalSep. Ignored under SeparatorDetect, whose
+	// detection governs the whole token.
+	CurrencyDecimalSep string
+	// CurrencyGroupSep is the group separator of a currency amount, likewise; empty keeps
+	// GroupSep.
+	CurrencyGroupSep string
+	// MinusSign is a further spelling of the minus sign ("−", U+2212, in Estonian and
+	// Basque text), read wherever ASCII '-' is: ahead of the digits, before or after a
+	// leading currency symbol, and after the digits under TrailingSign. ASCII '-' is always
+	// read; empty declares no other.
+	MinusSign string
+	// PlusSign is a further spelling of the plus sign, likewise beside ASCII '+'.
+	PlusSign string
+	// Percent is a further spelling of the percent symbol ("٪" in Arabic-script text, "％"
+	// fullwidth), read as a trailing '%' is while Percent is set — the real and decimal
+	// doors; the integer doors never read a percent. ASCII '%' is always read.
+	Percent string
+	// DigitZero declares native digits beside ASCII 0–9: the ten code points from this zero
+	// up ('٠', U+0660, declares the Arabic-Indic digits; '０', U+FF10, the fullwidth ones),
+	// read wherever a digit is — integer part, fraction, exponent; a radix-prefixed (0x/0b)
+	// body stays ASCII. 0 declares none. An ASCII zero is a caller bug, as is a code point
+	// that starts no Unicode digit block.
+	DigitZero rune
 }
 
 // Invariant is the invariant profile — '.' decimal, ',' grouping, every lenience on, no
-// currency symbol declared.
-var Invariant = NumFormat{DecimalSep: '.', GroupSep: ',', Styles: AllStyles}
+// currency symbol or other spelling declared.
+var Invariant = NumFormat{DecimalSep: ".", GroupSep: ",", Styles: AllStyles}
 
 // Detect is the detection profile — every lenience on, './,' roles resolved per input by
 // SeparatorDetect's structural rules.
-var Detect = NumFormat{DecimalSep: '.', GroupSep: ',', Styles: AllStyles | SeparatorDetect}
+var Detect = NumFormat{DecimalSep: ".", GroupSep: ",", Styles: AllStyles | SeparatorDetect}
 
-// raw is Raw for the doors, which treat a malformed format as the caller bug it is.
-func (f NumFormat) raw() RawNumFormat {
-	raw, err := f.Raw()
-	if err != nil {
-		panic("hypercast: " + err.Error())
+// raw is Raw for the doors, which treat a malformed format as the caller bug it is,
+// written into the door's own local.
+func (f NumFormat) raw(raw *RawNumFormat) {
+	if !f.valid() {
+		panic("hypercast: " + f.fault().Error())
 	}
-	return raw
+	f.layout(raw)
 }
 
 // Decimal is an exact decimal — a sign, a 96-bit unsigned magnitude, and a base-10 scale —
@@ -323,6 +371,37 @@ const (
 	DayMonthYear DateOrder = 3
 )
 
+// DateFormat is the caller-declared notation of a zone-less civil date-time for
+// DateTimeWith: the field order, and the words the culture writes for the two halves of
+// a 12-hour clock ("vorm."/"nachm.", "오전"/"오후", "a. m."/"p. m."), the way NumFormat
+// declares a numeric notation. Declared, never looked up — Go's standard library carries
+// no culture data, so an application fills these from its own. The English AM/PM are read
+// whatever is declared, ASCII case-insensitively; a declared designator is matched byte
+// for byte, after the clock ("3:04 nachm.", optional space before) or ahead of it
+// ("오후 3:04", optional space after). Empty designators declare nothing, which is exactly
+// what DateTime reads.
+//
+// A designator the core would refuse is a caller bug and panics, never a verdict: longer
+// than DesignatorMaxBytes of UTF-8, not valid UTF-8, carrying an ASCII digit, or starting
+// or ending in ASCII whitespace (the grammar around it reads that; an inner space, as in
+// "a. m.", is fine). DateFormat.Raw reports the same check as an error.
+type DateFormat struct {
+	Order DateOrder
+	// AM is the designator of the first half of the day; empty declares none beside AM.
+	AM string
+	// PM is the designator of the second half; empty declares none beside PM.
+	PM string
+}
+
+// raw is Raw for the door, which treats a malformed format as the caller bug it is,
+// written into the door's own local.
+func (f DateFormat) raw(raw *RawDayPeriods) {
+	if !f.valid() {
+		panic("hypercast: " + f.fault().Error())
+	}
+	f.layout(raw)
+}
+
 // Date is a calendar date with no time or zone — the protobuf google.type.Date fields.
 // Go has no standard date-only type; this keeps the core's digits exactly.
 type Date struct {
@@ -400,9 +479,10 @@ func Char[T Text](text T) (rune, *Fault) {
 }
 
 func numericDoor[T Text, V any](sym numericSymbol, text T, format NumFormat) (V, *Fault) {
-	raw := format.raw()
+	var raw RawNumFormat
+	format.raw(&raw)
 	ptr, length := textPtr(text)
-	r := callNumeric(sym, ptr, length, raw)
+	r := callNumeric(sym, ptr, length, &raw)
 	runtime.KeepAlive(text)
 	if r.code != 0 {
 		var zero V
@@ -632,15 +712,37 @@ func DateOnlyOrdered[T Text](text T, order DateOrder) (Date, *Fault) {
 // DateTime casts a zone-less civil date-time — the shape untrusted feeds actually send
 // ("1/7/2026 3:04 PM", "2026-01-07 15:04:05") — under the caller-declared DateOrder. The
 // date part follows DateOnlyOrdered's grammar; the optional time part (one space or 'T'
-// after the date) is 24-hour h:mm[:ss[.f]] or 12-hour with an AM/PM marker; absent, the
-// time is midnight. No zone is read and none is invented — Timestamp stays the strict
-// RFC 3339 instant door. An undefined order is a caller bug and panics, never a verdict.
+// after the date) is 24-hour h:mm[:ss[.f]] or 12-hour with an AM/PM marker, after the
+// clock or ahead of it; absent, the time is midnight. No zone is read and none is
+// invented — Timestamp stays the strict RFC 3339 instant door. The markers are the English
+// AM/PM only; DateTimeWith reads a culture's own beside them. An undefined order is a
+// caller bug and panics, never a verdict.
 func DateTime[T Text](text T, order DateOrder) (CivilDateTime, *Fault) {
 	if order < YearMonthDay || order > DayMonthYear {
 		panic(fmt.Sprintf("hypercast: undefined DateOrder %d", order))
 	}
+	return civilDoor(text, order, nil)
+}
+
+// DateTimeWith is DateTime under a declared DateFormat: the same grammar under its Order,
+// with its AM and PM designators read beside the English markers ("1/7/2026 3:04 nachm.",
+// "2026-01-07 오후 3:04"). A format declaring no designators reads exactly what DateTime
+// reads. An undefined order or a designator the core would refuse is a caller bug and
+// panics, never a verdict.
+func DateTimeWith[T Text](text T, format DateFormat) (CivilDateTime, *Fault) {
+	if format.Order < YearMonthDay || format.Order > DayMonthYear {
+		panic(fmt.Sprintf("hypercast: undefined DateOrder %d", format.Order))
+	}
+	var periods RawDayPeriods
+	format.raw(&periods)
+	return civilDoor(text, format.Order, &periods)
+}
+
+// civilDoor serves both civil date-time doors; nil periods declares nothing and crosses as
+// null, the English-only call.
+func civilDoor[T Text](text T, order DateOrder, periods *RawDayPeriods) (CivilDateTime, *Fault) {
 	ptr, length := textPtr(text)
-	r := callDateTime(ptr, length, uint32(order))
+	r := callDateTime(ptr, length, uint32(order), periods)
 	runtime.KeepAlive(text)
 	if r.code != 0 {
 		return CivilDateTime{}, failed(r.code, &r.fault)

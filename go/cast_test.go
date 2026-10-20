@@ -49,12 +49,12 @@ func TestStringAndBytesDoorsAgree(t *testing.T) {
 }
 
 func TestDeclaredSeparators(t *testing.T) {
-	eurozone := NumFormat{DecimalSep: ',', GroupSep: '.', Styles: AllStyles}
+	eurozone := NumFormat{DecimalSep: ",", GroupSep: ".", Styles: AllStyles}
 	value, fault := F64("1.234,5", eurozone)
 	if fault != nil || value != 1234.5 {
 		t.Fatalf("got %v %v", value, fault)
 	}
-	french := NumFormat{DecimalSep: ',', GroupSep: ' ', Styles: AllStyles}
+	french := NumFormat{DecimalSep: ",", GroupSep: " ", Styles: AllStyles}
 	value, fault = F64("1 234,5", french)
 	if fault != nil || value != 1234.5 {
 		t.Fatalf("got %v %v", value, fault)
@@ -98,7 +98,7 @@ func TestDurationPairAndCheckedConverter(t *testing.T) {
 }
 
 func TestCurrencySymbolAtEitherEdge(t *testing.T) {
-	dollars := NumFormat{DecimalSep: '.', GroupSep: ',', Styles: AllStyles, Currency: "$"}
+	dollars := NumFormat{DecimalSep: ".", GroupSep: ",", Styles: AllStyles, Currency: "$"}
 	for _, c := range []struct {
 		text string
 		want int32
@@ -112,7 +112,7 @@ func TestCurrencySymbolAtEitherEdge(t *testing.T) {
 	}
 	// The symbol is matched whole and never inside the digit scan, so a symbol that
 	// contains the grouping separator is fine.
-	danish := NumFormat{DecimalSep: ',', GroupSep: '.', Styles: AllStyles, Currency: "kr."}
+	danish := NumFormat{DecimalSep: ",", GroupSep: ".", Styles: AllStyles, Currency: "kr."}
 	value, fault := F64("1.234,50 kr.", danish)
 	if fault != nil || value != 1234.5 {
 		t.Fatalf("got %v %v", value, fault)
@@ -120,7 +120,7 @@ func TestCurrencySymbolAtEitherEdge(t *testing.T) {
 }
 
 func TestCurrencyDeclaredButStyleOffIsMalformedAtTheSymbol(t *testing.T) {
-	format := NumFormat{DecimalSep: '.', GroupSep: ',', Styles: AllStyles &^ CurrencySymbol, Currency: "$"}
+	format := NumFormat{DecimalSep: ".", GroupSep: ",", Styles: AllStyles &^ CurrencySymbol, Currency: "$"}
 	_, fault := I32("$5", format)
 	if fault == nil || fault.Reason != Malformed || fault.Offset != 0 || fault.Length != 1 {
 		t.Fatalf("got %v", fault)
@@ -139,11 +139,11 @@ func TestInvalidCurrencySymbolsPanic(t *testing.T) {
 					t.Errorf("%q: expected panic", symbol)
 				}
 			}()
-			I32("5", NumFormat{DecimalSep: '.', GroupSep: ',', Styles: AllStyles, Currency: symbol})
+			I32("5", NumFormat{DecimalSep: ".", GroupSep: ",", Styles: AllStyles, Currency: symbol})
 		}()
 	}
 	// Exactly 16 bytes is the ceiling, not past it.
-	sixteen := NumFormat{DecimalSep: '.', GroupSep: ',', Styles: AllStyles, Currency: "sixteen-bytes-ok"}
+	sixteen := NumFormat{DecimalSep: ".", GroupSep: ",", Styles: AllStyles, Currency: "sixteen-bytes-ok"}
 	if value, fault := I32("sixteen-bytes-ok 5", sixteen); fault != nil || value != 5 {
 		t.Fatalf("got %v %v", value, fault)
 	}
@@ -169,7 +169,7 @@ func TestExactIsExact(t *testing.T) {
 		t.Fatalf("got %v %v", value, fault)
 	}
 	// Accounting negative, currency, and the sign in String().
-	value, fault = Exact("($1,234.50)", NumFormat{DecimalSep: '.', GroupSep: ',', Styles: AllStyles, Currency: "$"})
+	value, fault = Exact("($1,234.50)", NumFormat{DecimalSep: ".", GroupSep: ",", Styles: AllStyles, Currency: "$"})
 	if fault != nil || value != (Decimal{Lo: 12345, Scale: 1, Negative: true}) || value.String() != "-1234.5" {
 		t.Fatalf("got %v %v", value, fault)
 	}
@@ -289,7 +289,7 @@ func TestScalarDispatchesToEveryDoor(t *testing.T) {
 	scalarTarget(t, "50%", "1e400", F64[string])
 	scalarTarget(t, "1,234.50", "1.2.3", Exact[string])
 	// The format reaches the numeric doors and nothing else.
-	eurozone := NumFormat{DecimalSep: ',', GroupSep: '.', Styles: AllStyles}
+	eurozone := NumFormat{DecimalSep: ",", GroupSep: ".", Styles: AllStyles}
 	if value, fault := Scalar[float64]("1.234,5", eurozone); fault != nil || value != 1234.5 {
 		t.Fatalf("Scalar[float64] under a declared format: %v %v", value, fault)
 	}
@@ -338,7 +338,182 @@ func TestEqualSeparatorsPanic(t *testing.T) {
 			t.Fatal("expected panic")
 		}
 	}()
-	I32("42", NumFormat{DecimalSep: '.', GroupSep: '.', Styles: AllStyles})
+	I32("42", NumFormat{DecimalSep: ".", GroupSep: ".", Styles: AllStyles})
+}
+
+// Every field past the separators declares a further spelling read beside the ASCII one,
+// so the ASCII form keeps parsing under every declaration below.
+
+func TestDeclaredSignsAreReadBesideASCII(t *testing.T) {
+	estonian := NumFormat{DecimalSep: ",", GroupSep: " ", Styles: AllStyles, MinusSign: "−", Currency: "€"}
+	for _, c := range []struct {
+		text string
+		want int32
+	}{
+		{"−5", -5}, {"-5", -5}, {"−€5", -5}, {"€−5", -5}, {"€ -5", -5},
+	} {
+		value, fault := I32(c.text, estonian)
+		if fault != nil || value != c.want {
+			t.Errorf("%q: got %v %v, want %d", c.text, value, fault, c.want)
+		}
+	}
+	// Two signs, in either spelling, is Malformed at the later one — a byte span.
+	if _, fault := I32("−-5", estonian); fault == nil || fault.Reason != Malformed || fault.Offset != 3 || fault.Length != 1 {
+		t.Errorf("−-5: got %v", fault)
+	}
+	if _, fault := I32("-−5", estonian); fault == nil || fault.Reason != Malformed || fault.Offset != 1 || fault.Length != 3 {
+		t.Errorf("-−5: got %v", fault)
+	}
+	// Undeclared, U+2212 is no sign at all.
+	if _, fault := I32("−5", Invariant); fault == nil || fault.Reason != Malformed {
+		t.Errorf("undeclared minus: got %v", fault)
+	}
+	fullwidth := NumFormat{DecimalSep: ".", GroupSep: ",", Styles: AllStyles, PlusSign: "＋"}
+	if value, fault := F64("＋2.5", fullwidth); fault != nil || value != 2.5 {
+		t.Errorf("＋2.5: got %v %v", value, fault)
+	}
+}
+
+func TestTrailingSignIsOptIn(t *testing.T) {
+	// Not in AllStyles: a culture whose negative pattern is "n-" declares it.
+	if _, fault := I32("5-", Invariant); fault == nil || fault.Reason != Malformed {
+		t.Errorf("5- under AllStyles: got %v", fault)
+	}
+	trailing := NumFormat{DecimalSep: ".", GroupSep: ",", Styles: AllStyles | TrailingSign, Currency: "€", MinusSign: "−"}
+	for _, c := range []struct {
+		text string
+		want int32
+	}{
+		{"5-", -5}, {"5 -", -5}, {"5+", 5}, {"5 €-", -5}, {"5- €", -5}, {"€5-", -5}, {"5 €−", -5}, {"-5", -5},
+	} {
+		value, fault := I32(c.text, trailing)
+		if fault != nil || value != c.want {
+			t.Errorf("%q: got %v %v, want %d", c.text, value, fault, c.want)
+		}
+	}
+	// Never beside a leading sign, never inside parentheses.
+	for _, text := range []string{"-5-", "(5-)", "-5 €-"} {
+		if _, fault := I32(text, trailing); fault == nil || fault.Reason != Malformed {
+			t.Errorf("%q: got %v", text, fault)
+		}
+	}
+	if value, fault := F64("2.5%-", trailing); fault != nil || value != -0.025 {
+		t.Errorf("2.5%%-: got %v %v", value, fault)
+	}
+	if value, fault := Exact("2.5−", trailing); fault != nil || value.String() != "-2.5" {
+		t.Errorf("2.5−: got %v %v", value, fault)
+	}
+}
+
+func TestCurrencySeparatorsApplyWhenTheSymbolIsPresent(t *testing.T) {
+	// A culture that points and groups a currency amount the other way round from a number.
+	format := NumFormat{
+		DecimalSep: ",", GroupSep: ".", Styles: AllStyles, Currency: "€",
+		CurrencyDecimalSep: ".", CurrencyGroupSep: ",",
+	}
+	for _, c := range []struct {
+		text string
+		want float64
+	}{
+		{"€1,234.50", 1234.5}, {"€ 1,234.50", 1234.5}, {"1,234.50 €", 1234.5}, {"1.234,50", 1234.5},
+	} {
+		value, fault := F64(c.text, format)
+		if fault != nil || value != c.want {
+			t.Errorf("%q: got %v %v, want %v", c.text, value, fault, c.want)
+		}
+	}
+	// Without the symbol the number separators govern; with it, the currency ones do.
+	if _, fault := F64("1,234.50", format); fault == nil || fault.Reason != Malformed || fault.Offset != 5 {
+		t.Errorf("1,234.50 without the symbol: got %v", fault)
+	}
+	if _, fault := I32("€1.234", format); fault == nil || fault.Reason != Malformed || fault.Offset != 4 {
+		t.Errorf("€1.234 with the symbol: got %v", fault)
+	}
+	// Under SeparatorDetect detection governs the whole token and the currency separators
+	// are ignored.
+	detect := format
+	detect.Styles |= SeparatorDetect
+	if value, fault := F64("€1.234.567,89", detect); fault != nil || value != 1234567.89 {
+		t.Errorf("detect: got %v %v", value, fault)
+	}
+}
+
+func TestDeclaredPercentIsReadBesideASCII(t *testing.T) {
+	arabic := NumFormat{DecimalSep: ".", GroupSep: ",", Styles: AllStyles, Percent: "٪"}
+	for _, text := range []string{"50٪", "50%"} {
+		if value, fault := F64(text, arabic); fault != nil || value != 0.5 {
+			t.Errorf("%q: got %v %v", text, value, fault)
+		}
+	}
+	if value, fault := Exact("(2.5)٪", arabic); fault != nil || value.String() != "-0.025" {
+		t.Errorf("(2.5)٪: got %v %v", value, fault)
+	}
+	// The integer doors never read a percent, declared or not.
+	if _, fault := I32("50٪", arabic); fault == nil || fault.Reason != Malformed {
+		t.Errorf("I32 50٪: got %v", fault)
+	}
+}
+
+func TestNativeDigitsAreReadBesideASCII(t *testing.T) {
+	arabic := NumFormat{DecimalSep: "٫", GroupSep: "٬", Styles: AllStyles, DigitZero: '٠'}
+	if value, fault := I32("١٢٣", arabic); fault != nil || value != 123 {
+		t.Errorf("١٢٣: got %v %v", value, fault)
+	}
+	if value, fault := I32("-12٣", arabic); fault != nil || value != -123 {
+		t.Errorf("-12٣: got %v %v", value, fault)
+	}
+	if value, fault := F64("١٬٢٣٤٫٥", arabic); fault != nil || value != 1234.5 {
+		t.Errorf("١٬٢٣٤٫٥: got %v %v", value, fault)
+	}
+	if value, fault := F64("١٢٫٥e١", arabic); fault != nil || value != 125 {
+		t.Errorf("exponent: got %v %v", value, fault)
+	}
+	// A radix-prefixed body stays ASCII.
+	if _, fault := I32("0x١", arabic); fault == nil || fault.Reason != Malformed {
+		t.Errorf("0x١: got %v", fault)
+	}
+	fullwidth := NumFormat{DecimalSep: ".", GroupSep: ",", Styles: AllStyles, DigitZero: '０', Percent: "％"}
+	if value, fault := F64("５０％", fullwidth); fault != nil || value != 0.5 {
+		t.Errorf("５０％: got %v %v", value, fault)
+	}
+	// Undeclared, the digits are no digits.
+	if _, fault := I32("١٢٣", Invariant); fault == nil || fault.Reason != Malformed {
+		t.Errorf("undeclared digits: got %v", fault)
+	}
+}
+
+func TestATwoCharacterSeparator(t *testing.T) {
+	spaced := NumFormat{DecimalSep: ".", GroupSep: ", ", Styles: AllStyles}
+	if value, fault := I32("1, 234", spaced); fault != nil || value != 1234 {
+		t.Errorf("1, 234: got %v %v", value, fault)
+	}
+	if _, fault := I32("1,234", spaced); fault == nil || fault.Reason != Malformed || fault.Offset != 1 {
+		t.Errorf("1,234 under \", \": got %v", fault)
+	}
+	swiss := NumFormat{DecimalSep: ".", GroupSep: "' ", Styles: AllStyles}
+	if value, fault := F64("1' 234.5", swiss); fault != nil || value != 1234.5 {
+		t.Errorf("1' 234.5: got %v %v", value, fault)
+	}
+}
+
+func TestAFormatTheCoreWouldRefusePanics(t *testing.T) {
+	for _, bad := range []NumFormat{
+		{DecimalSep: "", GroupSep: ",", Styles: AllStyles},
+		{DecimalSep: ".", GroupSep: ",", Styles: AllStyles, CurrencyDecimalSep: ","},
+		{DecimalSep: ".", GroupSep: ",", Styles: AllStyles, MinusSign: "- "},
+		{DecimalSep: ".", GroupSep: ",", Styles: AllStyles, Percent: "%1"},
+		{DecimalSep: ".", GroupSep: ",", Styles: AllStyles, DigitZero: '0'},
+		{DecimalSep: ".", GroupSep: "123456789", Styles: AllStyles},
+	} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("%+v: expected panic", bad)
+				}
+			}()
+			I32("5", bad)
+		}()
+	}
 }
 
 func TestDateOrderDisambiguatesLikeTheCulturesDo(t *testing.T) {
@@ -376,5 +551,72 @@ func TestDateTimeReadsTheMessyCivilShapes(t *testing.T) {
 	// A zone suffix is not this door's business — Timestamp is the instant door.
 	if _, fault := DateTime("1/7/2026 15:04:05Z", MonthDayYear); fault == nil || fault.Reason != Malformed {
 		t.Fatalf("zoned text should be Malformed through the civil door, got %v", fault)
+	}
+	// The marker is read ahead of the clock too.
+	value, fault = DateTime("1/7/2026 PM 3:04", MonthDayYear)
+	if fault != nil || value != want {
+		t.Fatalf("marker ahead: %v, %v", value, fault)
+	}
+}
+
+func TestDateTimeWithReadsTheCulturesDayPeriods(t *testing.T) {
+	german := DateFormat{Order: DayMonthYear, AM: "vorm.", PM: "nachm."}
+	korean := DateFormat{Order: YearMonthDay, AM: "오전", PM: "오후"}
+	spanish := DateFormat{Order: MonthDayYear, AM: "a. m.", PM: "p. m."}
+	afternoon := 15*time.Hour + 4*time.Minute
+	for _, c := range []struct {
+		text   string
+		format DateFormat
+		want   CivilDateTime
+	}{
+		{"1/7/2026 3:04 nachm.", german, CivilDateTime{Date{2026, time.July, 1}, afternoon}},
+		{"1/7/2026 3:04 vorm.", german, CivilDateTime{Date{2026, time.July, 1}, 3*time.Hour + 4*time.Minute}},
+		{"1/7/2026 3:04 PM", german, CivilDateTime{Date{2026, time.July, 1}, afternoon}},
+		{"2026-01-07 오후 3:04", korean, CivilDateTime{Date{2026, time.January, 7}, afternoon}},
+		{"2026-01-07 오후3:04", korean, CivilDateTime{Date{2026, time.January, 7}, afternoon}},
+		{"2026-01-07 오전 12:00", korean, CivilDateTime{Date{2026, time.January, 7}, 0}},
+		{"1/7/2026 3:04 p. m.", spanish, CivilDateTime{Date{2026, time.January, 7}, afternoon}},
+	} {
+		value, fault := DateTimeWith(c.text, c.format)
+		if fault != nil || value != c.want {
+			t.Errorf("%q: got %v %v, want %v", c.text, value, fault, c.want)
+		}
+	}
+	// A declared designator matches byte for byte; the English pair stays case-insensitive.
+	if _, fault := DateTimeWith("1/7/2026 3:04 NACHM.", german); fault == nil || fault.Reason != Malformed {
+		t.Errorf("NACHM.: got %v", fault)
+	}
+	if value, fault := DateTimeWith("1/7/2026 3:04 pm", german); fault != nil || value.TimeOfDay != afternoon {
+		t.Errorf("pm: got %v %v", value, fault)
+	}
+	// DateTime reads English only: a culture's word is Malformed there, and DateTimeWith
+	// with nothing declared is DateTime.
+	if _, fault := DateTime("1/7/2026 3:04 nachm.", DayMonthYear); fault == nil || fault.Reason != Malformed {
+		t.Errorf("DateTime nachm.: got %v", fault)
+	}
+	if _, fault := DateTimeWith("1/7/2026 3:04 nachm.", DateFormat{Order: DayMonthYear}); fault == nil || fault.Reason != Malformed {
+		t.Errorf("DateTimeWith nothing declared, nachm.: got %v", fault)
+	}
+	// []byte crosses the same way.
+	if value, fault := DateTimeWith([]byte("2026-01-07 오후 3:04"), korean); fault != nil || value.TimeOfDay != afternoon {
+		t.Errorf("[]byte: got %v %v", value, fault)
+	}
+}
+
+func TestADateFormatTheCoreWouldRefusePanics(t *testing.T) {
+	for _, bad := range []DateFormat{
+		{Order: DayMonthYear, AM: " vorm.", PM: "nachm."},
+		{Order: DayMonthYear, AM: "vorm.", PM: "nachm1"},
+		{Order: DayMonthYear, AM: "vorm.", PM: "seventeen-bytes!!"},
+		{Order: 0, AM: "vorm.", PM: "nachm."},
+	} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("%+v: expected panic", bad)
+				}
+			}()
+			DateTimeWith("1/7/2026 3:04 nachm.", bad)
+		}()
 	}
 }

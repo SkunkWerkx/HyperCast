@@ -11,8 +11,8 @@ namespace HyperCast;
 /// into the native <c>libhypercast</c> shared library via source-generated P/Invoke. Every
 /// door returns a <see cref="Verdict{T}"/> (the value, or a <see cref="Fault"/> with a
 /// closed reason and the offending span) and never throws on bad input; the only exceptions
-/// here are caller bugs (a malformed <see cref="NumFormat"/>, an undefined
-/// <see cref="UnixPrecision"/>), never data.
+/// here are caller bugs (a malformed <see cref="NumFormat"/> or <see cref="DateFormat"/>, an
+/// undefined <see cref="UnixPrecision"/>), never data.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -272,15 +272,15 @@ public static partial class Cast
 			: cast_date_ordered_native(ptr, len, order, value, fault);
 
 	[LibraryImport("hypercast", EntryPoint = "cast_datetime")]
-	private static unsafe partial int cast_datetime_native(byte* ptr, nuint len, uint order, RawCivil* value, RawFault* fault);
+	private static unsafe partial int cast_datetime_native(byte* ptr, nuint len, uint order, RawDayPeriods* periods, RawCivil* value, RawFault* fault);
 	[LibraryImport("*", EntryPoint = "cast_datetime")]
-	private static unsafe partial int cast_datetime_browser(byte* ptr, nuint len, uint order, RawCivil* value, RawFault* fault);
+	private static unsafe partial int cast_datetime_browser(byte* ptr, nuint len, uint order, RawDayPeriods* periods, RawCivil* value, RawFault* fault);
 	[LibraryImport("__Internal", EntryPoint = "cast_datetime")]
-	private static unsafe partial int cast_datetime_internal(byte* ptr, nuint len, uint order, RawCivil* value, RawFault* fault);
-	private static unsafe int cast_datetime(byte* ptr, nuint len, uint order, RawCivil* value, RawFault* fault) =>
-		OperatingSystem.IsBrowser() ? cast_datetime_browser(ptr, len, order, value, fault)
-			: OperatingSystem.IsIOS() ? cast_datetime_internal(ptr, len, order, value, fault)
-			: cast_datetime_native(ptr, len, order, value, fault);
+	private static unsafe partial int cast_datetime_internal(byte* ptr, nuint len, uint order, RawDayPeriods* periods, RawCivil* value, RawFault* fault);
+	private static unsafe int cast_datetime(byte* ptr, nuint len, uint order, RawDayPeriods* periods, RawCivil* value, RawFault* fault) =>
+		OperatingSystem.IsBrowser() ? cast_datetime_browser(ptr, len, order, periods, value, fault)
+			: OperatingSystem.IsIOS() ? cast_datetime_internal(ptr, len, order, periods, value, fault)
+			: cast_datetime_native(ptr, len, order, periods, value, fault);
 
 	[LibraryImport("hypercast", EntryPoint = "cast_time")]
 	private static unsafe partial int cast_time_native(byte* ptr, nuint len, ulong* value, RawFault* fault);
