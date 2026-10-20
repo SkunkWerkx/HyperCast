@@ -423,8 +423,8 @@ Blazor consumer's publish died at `wasm-ld` with `undefined symbol: cast_i32`.
 older, and the targets file sits under `build/net11.0/` (and `buildTransitive/net11.0/`) like
 the assembly under `lib/net11.0/`. With every framework-specific asset in a net11.0 folder,
 NuGet refuses the package to an older project at restore, with NU1202 ("not compatible with
-net10.0"), so the file needs no target-framework gate of its own. (HyperUuid's package targets
-net10.0 for its native platforms, so its copy sits in `build/` and has one.)
+net10.0"), so the file needs no target-framework gate of its own. (HyperUuid's package is laid
+out the same way.)
 
 `HyperCast.WasmSmokeTest` proves the whole chain in a real browser: a Blazor WebAssembly app
 that imports that targets file, calls every native entry point — the twenty-six `cast_*`
