@@ -343,3 +343,18 @@ detection, which counts ASCII digits only, so a token in native digits needs a d
 format; and Indian lakh grouping was never a gap (`12,34,567` is accepted). Python's and
 Go's standard libraries have no per-object locale to take, and Java's Native Image includes
 only the locales named at build time (`-H:IncludeLocales`), which is the consumer's choice.
+
+## Open follow-ups (as of 2026-10-21)
+
+- Benchmark tables were measured on the WSL2 i9-11900H box. When the dev machine changes,
+  re-measure every harness there before relabelling a table; never mix machines, and say
+  which tables predate a core change. A benchmarking workflow is an idea, not started.
+- The `EmccExportedFunction` list in
+  `csharp/HyperCast/build/net11.0/HyperCast.targets` may be dead weight: on .NET 11 rc.1
+  the wasm smoke test passed with every item removed (P/Invoke through `"*"` uses the
+  runtime's static pinvoke table). Re-verify on the current SDK in all three repos, then
+  drop the lists and correct the docs that call them load-bearing, together.
+- Java does not reach Android: the binding uses FFM, which ART lacks, so it would need a
+  JNI layer. Python, Ruby and PHP don't reach Android either.
+- A GraalVM Native Image static-link spike (the core linked into the image rather than
+  loaded) was parked for want of a Mac to try ld64; the Linux side is in the forge recipe.
