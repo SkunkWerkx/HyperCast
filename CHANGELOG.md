@@ -7,7 +7,7 @@ entry marks which packages it actually affects.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.9.0] — 2026-10-20
 
 The culture-fidelity sweep: everything a culture declares beyond its separators — its signs,
 where the sign sits, the separators of a currency amount, its percent symbol, its digits, the
@@ -218,6 +218,20 @@ feedback from Norse Architecture's Blazor WebAssembly integration.
   declared, culture-derived and per-call-mapped format reads 54.4, 71.8 and 83.6 ns, with
   the per-call mapping allocation-free at about 12 ns; the README's earlier claim that the
   mapping was lost in the noise is withdrawn. *(C#)*
+- **Go — `NumFormat` takes the whole declaration, and `DateTimeWith` takes a `DateFormat`.**
+  The struct gains `CurrencyDecimalSep`, `CurrencyGroupSep`, `MinusSign`, `PlusSign` and
+  `Percent` as strings, each `""` for none, and `DigitZero` as a `rune`, 0 for none, beside
+  `TrailingSign` (not in `AllStyles`); `DecimalSep` and `GroupSep` are strings of one or two
+  characters where they were runes. Keyed literals that predate a field keep compiling and
+  keep their meaning. A format the core would refuse is still a caller bug and panics, never a
+  verdict, and `NumFormat.Raw()` reports the same check as an error. `DateFormat{Order, AM,
+  PM}` sits beside `DateOrder`, and `DateTimeWith(text, format)` reads the designators beside
+  the English pair; `DateTime(text, order)` is unchanged. Go's standard library has no
+  per-object locale to read a culture from, so there is no bridge, as before. `Interop` gains
+  `RawSymbol8`, `RawSymbol16`, `RawDayPeriods`, `DateFormat.Raw()`, `RawNumFormatSize`,
+  `RawDayPeriodsSize`, `SymbolMaxBytes` and `DesignatorMaxBytes`; `RawNumFormat` is the
+  92-byte layout, and every backend (cgo, the static archives, TinyGo) passes the format and
+  the periods by pointer. *(Go)*
 - **Breaking — the `python-values` feature is built on PyO3 0.30.** `hypercast::python`'s
   `Values` takes and returns PyO3 0.30's `Python` and `Bound`, where it took 0.27's, so a crate
   that presents HyperCast's values from its own extension moves to PyO3 0.30 with it: Cargo
@@ -1627,7 +1641,7 @@ notes: [v0.1.0 release](https://github.com/SkunkWerkx/HyperCast/releases/tag/v0.
   found in that window, in the gap between "the publish succeeded" and "a consumer can use it",
   and none of them could have failed a build in this repository.
 
-[Unreleased]: https://github.com/SkunkWerkx/HyperCast/compare/v0.8.0...HEAD
+[0.9.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/SkunkWerkx/HyperCast/compare/v0.6.0...v0.6.1
