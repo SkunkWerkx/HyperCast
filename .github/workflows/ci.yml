@@ -49,8 +49,39 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  build-static:
+    uses: SkunkWerkx/.github/.github/workflows/hyper-build-static.yml@64522784d83ea5bab7f6c917fca84f0d27bb09e0
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    with:
+      crate: hypercast
+      project: HyperCast
+      mode: ${{ github.event_name == 'pull_request' && 'pr' || 'release' }}
+      apple_mobile: true
+      android: true
+
+  build-android:
+    uses: SkunkWerkx/.github/.github/workflows/hyper-build-android.yml@64522784d83ea5bab7f6c917fca84f0d27bb09e0
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    with:
+      crate: hypercast
+      mode: ${{ github.event_name == 'pull_request' && 'pr' || 'release' }}
+
+  test-swift-static:
+    needs: build-static
+    uses: SkunkWerkx/.github/.github/workflows/hyper-test-swift-static.yml@64522784d83ea5bab7f6c917fca84f0d27bb09e0
+    permissions:
+      contents: read
+    with:
+      project: HyperCast
+
   build-native:
-    uses: SkunkWerkx/.github/.github/workflows/hyper-build-native.yml@master
+    uses: SkunkWerkx/.github/.github/workflows/hyper-build-native.yml@64522784d83ea5bab7f6c917fca84f0d27bb09e0
     # attest-build-provenance signs with an OIDC token and records the result, and a reusable
     # workflow can never escalate beyond what its caller was granted — so these two scopes have
     # to be handed down from here. contents stays read: nothing in the called workflow writes.
@@ -59,6 +90,10 @@ jobs:
       id-token: write
       attestations: write
     with:
+      static_libs_artifact: false
+      swift_static_tests: false
+      android_shared_artifact: false
+      php_extension_schedule: parallel
       # pr: every leg and suite, nothing only a release needs (see the forge's README).
       mode: ${{ github.event_name == 'pull_request' && 'pr' || 'release' }}
       project: HyperCast
@@ -114,7 +149,7 @@ jobs:
   # The C#/NuGet browser-wasm staticlib — built on every PR, not just at release time, so
   # a wasm-breaking core change surfaces immediately.
   build-wasm:
-    uses: SkunkWerkx/.github/.github/workflows/hyper-build-wasm.yml@master
+    uses: SkunkWerkx/.github/.github/workflows/hyper-build-wasm.yml@64522784d83ea5bab7f6c917fca84f0d27bb09e0
     # Handed down for the same reason as build-native's: the ruby.wasm job attests the
     # archives the companion gem ships.
     permissions:
@@ -147,7 +182,7 @@ jobs:
   # were built in release.yml, 0.4.0's osx-x64 wheel failed its first install with four
   # registries already published.
   build-wheels:
-    uses: SkunkWerkx/.github/.github/workflows/hyper-build-wheels.yml@master
+    uses: SkunkWerkx/.github/.github/workflows/hyper-build-wheels.yml@64522784d83ea5bab7f6c917fca84f0d27bb09e0
     # Same two scopes build-native hands down, for the same reason: the forge attests each
     # wheel and cannot escalate past what this job was granted.
     permissions:
@@ -264,6 +299,10 @@ jobs:
         with:
           python-version: "3.14"
       - run: python .github/scripts/check_exports.py
+      - name: Install release-check toolchain
+        run: sudo apt-get update && sudo apt-get install -y llvm clang lld
+      - name: Check release preparation and artifact rejection paths
+        run: python -m unittest discover -s .github/scripts/tests -v
 
   # The shared library every binding loads is built without std (`cargo cdylib`; the
   # `cdylib` feature in rust/Cargo.toml has why), which leaves it carrying what std used to
@@ -385,8 +424,8 @@ jobs:
   # app also writes what it prints to a file in its container (SmokeLog.cs) and that file is
   # what is checked.
   test-apple-mobile:
-    needs: build-native
-    # 28 minutes of simulators, behind the slowest build-native leg: release mode only.
+    needs: build-static
+    # Start when the static archives are ready; release mode only.
     if: github.event_name != 'pull_request'
     # The .NET 11 RC2 ios and maccatalyst workloads (27.0.x) refuse any Xcode below 27.0, and
     # macos-latest (macOS 26) tops out at Xcode 26.6. The xcode-27 image is macOS 27 with
@@ -585,7 +624,7 @@ jobs:
   # also run it against a local one: android_build_suite.sh and android_device_test.sh.
   # The aarch64 builds are linked, not run. Swift's SDK for Android needs Swift 6.3 or later.
   test-android:
-    needs: build-native
+    needs: [build-static, build-android]
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     env:
