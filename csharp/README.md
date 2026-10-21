@@ -639,23 +639,23 @@ gh attestation verify HyperCast.X.Y.Z.nupkg \
 separate things: that the artifact came from repo X, and that the workflow which signed it
 also lives in X. Everything CI builds here comes from this repo, so the first half always
 holds — but the signing step's location varies. Anything signed inside a reusable workflow
-(`hyper-build-native.yml`, `hyper-pack-nuget.yml`, `hyper-publish-crate.yml`,
-`hyper-publish-maven.yml`) is signed by a file that physically lives in `SkunkWerkx/.github`,
+(`hyper-build-native.yml`, `hyper-pack-nuget.yml`, `hyper-pack-crate.yml`,
+`hyper-pack-maven.yml`) is signed by a file that physically lives in `SkunkWerkx/.github`,
 and that is what Fulcio records as the build signer; anything signed directly by this repo's
 own `release.yml` is signed by this repo. Get it wrong and `gh` reports
 `verifying with issuer "sigstore.dev"` with no further detail, which reads like a bad
 signature but is only an identity mismatch. `--owner SkunkWerkx` works for every row above if
 you would rather not track which is which.
 
-The release run's job summary prints all three digests — as packed, as published, and as
-published-with-the-signature-removed — and asserts that the third equals the first. That
-claim is checked on every release rather than asserted here, so if nuget.org ever changes how
-it finalizes packages, the run says so instead of this README quietly going stale.
+Before attesting the published package, the release's publish job downloads it from
+nuget.org, requires every zip entry but `.signature.p7s` to match the packed package byte for
+byte, and checks nuget.org's signature with `dotnet nuget verify --all`, so if nuget.org ever
+changes how it finalizes packages, the run says so instead of this README quietly going stale.
 
 Attestations are produced by every release-mode build — the release's own run and the
 weekly one. Pull requests build in `pr` mode, which ships nothing and so signs nothing. The post-publish half
-is non-blocking: the push is irreversible, so a slow nuget.org validation is never allowed to
-turn a successful publish into a failed release.
+blocks the release: it waits up to twenty minutes for nuget.org to serve the package, and
+the Go tag and GitHub Release are created only once it has matched.
 
 **Not currently done: NuGet author signing.** The package carries nuget.org's repository
 signature but no author signature of our own, which would need an X.509 code-signing

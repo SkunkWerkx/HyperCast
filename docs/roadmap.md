@@ -207,7 +207,7 @@ the record of what shipped; this is the record of why.
    the same three reach Android, arm64 and x86_64: the C# package carries the shared library
    and Native AOT archives, so a MAUI app has the core on every platform MAUI targets, and Go
    and Swift link the same archives. The forge gained an opt-in `android` input to build
-   them, for HyperUuid to turn on when it wants the same.
+   them, which HyperUuid has since turned on too.
 5. **A corpus content package — declined.** The consumer vendored the corpus files plus a
    snapshot SHA by hand and asked for a package. The ruling is that the corpus is this
    repository's receipt, not a product: a downstream suite takes `corpus/*.json` from the
@@ -257,8 +257,10 @@ grouping, a declared symbol, accounting parentheses — and brings an i64 from 4
 path went from 25.5 ns to 11.8 on the way. Through the C# binding, same machine and
 session, `Cast.Decimal` on `($1,234.50)` went from 104 ns to 66 against the BCL's 60, and
 `Cast.Double` from 83 ns to 74 against 52: the decimal door is level with
-`NumberStyles.Currency` now, and the real door still trails it, because a real has to be
-copied without its separators for `core`'s float parser where a decimal is read in place.
+`NumberStyles.Currency` now, and the real door still trailed it, because a real was
+copied without its separators for `core`'s float parser where a decimal is read in place —
+a copy 0.7.0 removed: the lane now hands the crate's own conversion (`float.rs`) the
+significand directly.
 And, **Python's `bytes` input cost about
 a microsecond more than the same text as `str`** on every native door, success and failure
 alike — `"42"` at 116 ns against `b"42"` at 1,179 ns on the same box. The cause was the

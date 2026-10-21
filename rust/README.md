@@ -428,8 +428,8 @@ pays for it.
 ## Verifying provenance
 
 The published `.crate` carries a GitHub build-provenance attestation, but not one signed by
-this repo directly — `release.yml`'s `pack-crates` job hands off to a reusable workflow
-(`hyper-publish-crate.yml`) that physically lives in `SkunkWerkx/.github`, and that's the
+this repo directly — `release.yml`'s `crate-pack` job hands off to a reusable workflow
+(`hyper-pack-crate.yml`) that physically lives in `SkunkWerkx/.github`, and that's the
 identity Fulcio records as the signer. `--repo` alone isn't enough; add `--signer-repo`,
 or use `--owner` in place of both:
 

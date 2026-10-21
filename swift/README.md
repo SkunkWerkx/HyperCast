@@ -398,7 +398,7 @@ supports has the core natively. The root README's
 Like PHP, there's no separate package registry to attest here — SwiftPM resolves a git tag
 directly against this repo. The native binaries the package carries — the static libraries
 under `swift/HyperCastCore.artifactbundle/`, staged by `stage-native-binaries.yml` — each
-carry their own build-provenance attestation from `hyper-build-native.yml`, which physically lives
+carry their own build-provenance attestation from `hyper-build-static.yml`, which physically lives
 in `SkunkWerkx/.github` — so verifying needs `--signer-repo` alongside `--repo`, or `gh`
 reports a bare `verifying with issuer "sigstore.dev"` that reads like a bad signature but is
 only an identity mismatch:

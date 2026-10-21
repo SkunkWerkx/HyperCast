@@ -439,8 +439,8 @@ concurrent-callers example runs under both.
 
 Every gem RubyGems.org serves — the universal fallback, each of the seven precompiled
 platform gems and `hypercast-wasm` — carries its own GitHub build-provenance attestation, signed directly by
-this repo's own `release.yml` (the `rubygems-publish` job attests `ruby/pkg/*.gem` right
-before the push), so plain `--repo` verifies any of them:
+this repo's own `release.yml` (the `ruby-pack` job attests `ruby/pkg/*.gem` as it builds them,
+before any registry push), so plain `--repo` verifies any of them:
 
 ```sh
 gem fetch hypercast -v X.Y.Z --platform <platform>   # or omit --platform for the universal gem
@@ -455,9 +455,9 @@ attestations — those are signed from `SkunkWerkx/.github` by `hyper-build-nati
 that check needs `--signer-repo SkunkWerkx/.github` added — and refuses to proceed on an
 unverified one.
 RubyGems.org has no unpublish and no duplicate-version overwrite, so this all happens while a
-bad artifact is still reversible. The release run's job summary then re-fetches every gem
-from the CDN and records attested-vs-served digests, turning "rubygems.org stores an upload
-verbatim" into a per-release measurement rather than an assumption — see
+bad artifact is still reversible. The `rubygems-publish` job then re-fetches every gem
+from rubygems.org and fails unless each served file matches the prepared bytes, turning
+"rubygems.org stores an upload verbatim" into a per-release check rather than an assumption — see
 [csharp/README.md's provenance section](../csharp/README.md#native-binary-provenance) for
 more on why `--signer-repo` is needed for some artifacts here and not others.
 
