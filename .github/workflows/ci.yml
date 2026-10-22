@@ -50,7 +50,7 @@ concurrency:
 
 jobs:
   build-static:
-    uses: SkunkWerkx/.github/.github/workflows/hyper-build-static.yml@e07bcd90b7bd369afe5b0e043e7a427bd312f081
+    uses: SkunkWerkx/.github/.github/workflows/hyper-build-static.yml@e29701eaf94a3893b2ac7dd7d50e44b7b125456f
     permissions:
       contents: read
       id-token: write
@@ -63,7 +63,7 @@ jobs:
       android: true
 
   build-android:
-    uses: SkunkWerkx/.github/.github/workflows/hyper-build-android.yml@e07bcd90b7bd369afe5b0e043e7a427bd312f081
+    uses: SkunkWerkx/.github/.github/workflows/hyper-build-android.yml@e29701eaf94a3893b2ac7dd7d50e44b7b125456f
     permissions:
       contents: read
       id-token: write
@@ -74,14 +74,14 @@ jobs:
 
   test-swift-static:
     needs: build-static
-    uses: SkunkWerkx/.github/.github/workflows/hyper-test-swift-static.yml@e07bcd90b7bd369afe5b0e043e7a427bd312f081
+    uses: SkunkWerkx/.github/.github/workflows/hyper-test-swift-static.yml@e29701eaf94a3893b2ac7dd7d50e44b7b125456f
     permissions:
       contents: read
     with:
       project: HyperCast
 
   build-native:
-    uses: SkunkWerkx/.github/.github/workflows/hyper-build-native.yml@e07bcd90b7bd369afe5b0e043e7a427bd312f081
+    uses: SkunkWerkx/.github/.github/workflows/hyper-build-native.yml@e29701eaf94a3893b2ac7dd7d50e44b7b125456f
     # attest-build-provenance signs with an OIDC token and records the result, and a reusable
     # workflow can never escalate beyond what its caller was granted — so these two scopes have
     # to be handed down from here. contents stays read: nothing in the called workflow writes.
@@ -108,7 +108,7 @@ jobs:
       android: true
       csharp_test_project: csharp/HyperCast.Tests/HyperCast.Tests.csproj
       # .NET 11 is HyperCast's floor for the native [Union] Verdict types — preview quality
-      # until the pinned SDK GAs (HyperForge's own default stays 8.0/ga for other repos).
+      # until the pinned SDK GAs.
       dotnet_version: "11.0.x"
       dotnet_quality: "preview"
       # Turns the package's Native AOT claim into a per-platform receipt: the forge publishes
@@ -149,7 +149,7 @@ jobs:
   # The C#/NuGet browser-wasm staticlib — built on every PR, not just at release time, so
   # a wasm-breaking core change surfaces immediately.
   build-wasm:
-    uses: SkunkWerkx/.github/.github/workflows/hyper-build-wasm.yml@e07bcd90b7bd369afe5b0e043e7a427bd312f081
+    uses: SkunkWerkx/.github/.github/workflows/hyper-build-wasm.yml@e29701eaf94a3893b2ac7dd7d50e44b7b125456f
     # Handed down for the same reason as build-native's: the ruby.wasm job attests the
     # archives the companion gem ships.
     permissions:
@@ -182,7 +182,7 @@ jobs:
   # were built in release.yml, 0.4.0's osx-x64 wheel failed its first install with four
   # registries already published.
   build-wheels:
-    uses: SkunkWerkx/.github/.github/workflows/hyper-build-wheels.yml@e07bcd90b7bd369afe5b0e043e7a427bd312f081
+    uses: SkunkWerkx/.github/.github/workflows/hyper-build-wheels.yml@e29701eaf94a3893b2ac7dd7d50e44b7b125456f
     # Same two scopes build-native hands down, for the same reason: the forge attests each
     # wheel and cannot escalate past what this job was granted.
     permissions:
