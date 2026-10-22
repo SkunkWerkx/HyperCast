@@ -576,6 +576,12 @@ Load `ruby.wasm` with [`@ruby/wasm-wasi`](https://www.npmjs.com/package/@ruby/wa
 - **No Rust toolchain.** The gem's `extconf.rb` only hands rbwasm the prebuilt archive, and
   rbwasm downloads its own wasi-sdk. The first `rbwasm build` compiles Ruby itself and takes
   15–20 minutes; later builds reuse it.
+- **macOS with Homebrew: limit pkg-config to `openssl@3`.** Run the build as
+  `PKG_CONFIG_LIBDIR="$(brew --prefix openssl@3)/lib/pkgconfig" bundle exec rbwasm build …`.
+  Without it Homebrew's pkg-config files reach into the build twice: its `openssl` is OpenSSL
+  4, which the native Ruby rbwasm builds first does not compile against, and its `libyaml`
+  is a macOS library that psych then links into the wasm interpreter, which fails for Ruby
+  4.0.
 - **`Decimal#to_d` needs `gem "bigdecimal"` in that Gemfile.** bigdecimal is a bundled gem
   with a C extension, and ruby.wasm builds a bundled gem's extension only when the Gemfile
   names it; without it, `to_d` raises `LoadError`. `to_s` and `to_r` need nothing.

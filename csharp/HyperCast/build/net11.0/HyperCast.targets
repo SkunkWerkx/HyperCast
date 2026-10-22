@@ -38,7 +38,7 @@
        buildTransitive/'s copy beside it). The package
        targets net11.0 and nothing older, because the binding is built on C#'s native union
        types; with every framework-specific asset under net11.0, NuGet refuses the package to
-       an older project at restore (NU1202, "not compatible with net10.0") instead of
+       an older project at restore (NU1202) instead of
        restoring it and leaving the build to fail on missing HyperCast types. So the wiring
        below never meets a toolchain older than the .NET 11 one the last item group depends
        on. HyperUuid's copy of this file is laid out the same way. -->
@@ -82,9 +82,8 @@
        WasmNativeWorkloadAvailable is settled by then, so the check reads it directly and
        stops the build. An app that gates on Cast.IsAvailable and keeps a managed fallback
        can set HyperCastRequireWasmWorkload to false. HyperUuid's package carries the same
-       check, as HYPERUUID002; the code is numbered to match it. HYPERUUID001 was HyperUuid's
-       warning for a consumer below its .NET 11 WebAssembly floor, retired when the package's
-       floor rose to .NET 11 as a whole, so HYPERCAST001 is left unused. -->
+       check, as HYPERUUID002; the code is numbered to match it, and 001 is unused in all
+       three packages. -->
   <Target Name="_HyperCastErrorWasmWorkloadMissing"
           BeforeTargets="BeforeBuild"
           Condition="'$(RuntimeIdentifier)' == 'browser-wasm' And '$(WasmNativeWorkloadAvailable)' != 'true' And '$(HyperCastRequireWasmWorkload)' != 'false'">
