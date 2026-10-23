@@ -1,0 +1,14 @@
+{
+  "crate": "hypercast",
+  "project": "HyperCast",
+  "exports": {
+    "sources": ["rust/src/ffi.rs", "rust/src/abi.rs"],
+    "patterns": [
+      "pub extern \"C\" fn (\\w+)",
+      {"block": "numeric_exports! \\{(.*?)\\n\\}", "name": "(\\w+) => \\("}
+    ],
+    "exclude": ["$export"],
+    "prefixes": ["cast_", "hypercast_"]
+  },
+  "cdylib_smoke": ".github/scripts/cdylib_smoke.py"
+}

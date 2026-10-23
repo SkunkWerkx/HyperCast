@@ -5,30 +5,25 @@
        happens after that project's own Sdk.targets import; a .props file is imported before
        the project body and would run too early to see it.
 
-       Ported from HyperUuid, whose C# binding hit both of the traps below first and paid for
-       them with a real headless-Chromium session. HyperCast's first publish (v0.0.1) shipped
+       Ported from HyperUuid, whose C# binding hit the trap below first and paid for it with a
+       real headless-Chromium session. HyperCast's first publish (v0.0.1) shipped
        without this file at all, and a Blazor wasm build against the package from nuget.org
        failed at wasm-ld with "undefined symbol: cast_i32" and one line per door called.
 
-       Two separate things are required, and having only the first is the dangerous state:
-
-       1. NativeFileReference. NuGet's runtimes/{rid}/nativeassets/{tfm}/ package convention is
-          real, and the WASM SDK's WasmApp.Common.targets does auto-promote @(NativeLibrary)
-          into @(NativeFileReference) — but restore never populates @(NativeLibrary) from a
-          plain PackageReference's nativeassets folder the way it does runtimes/{rid}/native/
-          for ordinary P/Invoke. So the staticlib ships, sits on disk, and is never handed to
-          the linker.
-
-       2. EmccExportedFunction, one per door. Linking the staticlib in does NOT make its
-          functions resolvable through LibraryImport("*") at runtime. The WASM SDK's emcc
-          invocation exports only the runtime's own baseline functions (malloc, free, the math
-          intrinsics) from wasm-props.json; it never scans P/Invoke declarations in the app's
-          assembly or in any referenced package to work out what else to export. Every native
-          function Cast.cs P/Invokes has to be named here, Emscripten style with a leading
-          underscore, or it links in and stays invisible.
-
-       With only 1, the build succeeds and the app throws at runtime instead of failing at the
-       link, which is strictly worse than the original bug.
+       The NativeFileReference is the whole wiring. NuGet's runtimes/{rid}/nativeassets/{tfm}/
+       package convention is real, and the WASM SDK's WasmApp.Common.targets does auto-promote
+       @(NativeLibrary) into @(NativeFileReference) — but restore never populates
+       @(NativeLibrary) from a plain PackageReference's nativeassets folder the way it does
+       runtimes/{rid}/native/ for ordinary P/Invoke. So without this item the staticlib ships,
+       sits on disk, and is never handed to the linker. With it, the SDK scans every assembly's
+       P/Invokes and generates a pinvoke table that calls each door by symbol, so the link itself
+       resolves them against the archive (with the archive missing, wasm-ld fails with an
+       undefined symbol per door: v0.0.1's failure) and LibraryImport("*") reaches each one
+       through that table. An @(EmccExportedFunction) entry per door used to be listed here too,
+       on the belief that "*" resolution needed the Emscripten export. It does not:
+       HyperCast.WasmSmokeTest calls all twenty-seven entry points with the list gone on .NET SDK
+       11.0.100-rc.2, and fails at the link with the archive unlinked, so the list was dead
+       weight and is not kept.
 
        nativeassets/net11.0/ is the forge's spelling for the staticlib directory, shared with
        HyperUuid's package, and matches the only framework that links it. It is only a folder
@@ -44,33 +39,6 @@
        on. HyperUuid's copy of this file is laid out the same way. -->
   <ItemGroup Condition="'$(RuntimeIdentifier)' == 'browser-wasm'">
     <NativeFileReference Include="$(MSBuildThisFileDirectory)../../runtimes/browser-wasm/nativeassets/net11.0/libhypercast.a" />
-    <EmccExportedFunction Include="_cast_bool" />
-    <EmccExportedFunction Include="_cast_char" />
-    <EmccExportedFunction Include="_cast_i8" />
-    <EmccExportedFunction Include="_cast_i16" />
-    <EmccExportedFunction Include="_cast_i32" />
-    <EmccExportedFunction Include="_cast_i64" />
-    <EmccExportedFunction Include="_cast_u8" />
-    <EmccExportedFunction Include="_cast_u16" />
-    <EmccExportedFunction Include="_cast_u32" />
-    <EmccExportedFunction Include="_cast_u64" />
-    <EmccExportedFunction Include="_cast_f32" />
-    <EmccExportedFunction Include="_cast_f64" />
-    <EmccExportedFunction Include="_cast_decimal" />
-    <EmccExportedFunction Include="_cast_uuid" />
-    <EmccExportedFunction Include="_cast_timestamp" />
-    <EmccExportedFunction Include="_cast_unix" />
-    <EmccExportedFunction Include="_cast_excel_serial" />
-    <EmccExportedFunction Include="_cast_date" />
-    <EmccExportedFunction Include="_cast_date_ordered" />
-    <EmccExportedFunction Include="_cast_datetime" />
-    <EmccExportedFunction Include="_cast_time" />
-    <EmccExportedFunction Include="_cast_duration" />
-    <EmccExportedFunction Include="_cast_decimal_from_f64" />
-    <EmccExportedFunction Include="_cast_excel_serial_from_f64" />
-    <EmccExportedFunction Include="_cast_excel_time" />
-    <EmccExportedFunction Include="_cast_excel_duration" />
-    <EmccExportedFunction Include="_hypercast_version" />
   </ItemGroup>
 
   <!-- The link above happens only where the wasm-tools workload is installed. Without it the

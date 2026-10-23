@@ -354,7 +354,7 @@ returned (see [rust/README.md](../rust/README.md#interop-building-on-hypercasts-
 ## In the browser (Pyodide)
 
 The same PyO3 extension, compiled for Pyodide's Emscripten target, is published to PyPI as
-`hypercast-X.Y.Z-cp311-abi3-pyemscripten_2026_0_wasm32.whl` (about 150 KB), so micropip
+`hypercast-<version>-cp311-abi3-pyemscripten_2026_0_wasm32.whl` (about 150 KB), so micropip
 finds it the way pip finds the native wheels:
 
 ```python
@@ -454,25 +454,33 @@ extension, then `pip install pyperf` and `python bench_cast.py --fast`.
 
 ## Verifying provenance
 
-Every wheel PyPI serves, the Pyodide one included, carries a GitHub build-provenance
-attestation. The wheels are built,
-installed and attested in CI by the shared `hyper-build-wheels.yml` workflow in
-`SkunkWerkx/.github`, and `release.yml` verifies each one before publishing it unchanged, so
-the verify command names that signer:
+Every wheel PyPI serves, the Pyodide one included, verifies from the release tag alone: the
+release attestation, signed by this repository's `release.yml` at the tag, names every one of
+them, with the release inventory as its predicate.
 
 ```sh
-pip download hypercast==X.Y.Z --no-deps -d .
-gh attestation verify hypercast-X.Y.Z-*.whl \
-  --repo SkunkWerkx/HyperCast --signer-repo SkunkWerkx/.github
-# or: gh attestation verify hypercast-X.Y.Z-*.whl --owner SkunkWerkx
+pip download hypercast==<version> --no-deps -d .
+gh attestation verify hypercast-<version>-*.whl --repo SkunkWerkx/HyperCast \
+  --source-ref refs/tags/v<version> --predicate-type https://github.com/SkunkWerkx/.github/predicates/release/v1
 ```
 
-This is a separate thing from the [PEP 740](https://peps.python.org/pep-0740/) attestations
-`gh-action-pypi-publish` already sends to PyPI itself, which PyPI-side tooling checks on its
-own — this is the GitHub/Sigstore transparency-log route, checked with `gh attestation
-verify`, the same route every other artifact in this project uses. See
-[csharp/README.md's provenance section](../csharp/README.md#native-binary-provenance) for why
-an artifact signed by the shared workflow needs `--signer-repo`.
+Each wheel also carries build provenance from where it was built, installed and attested:
+`hyper-build-wheels.yml` in `SkunkWerkx/.github`, at the preparation commit on master the
+release was prepared from (`release.yml` verifies each wheel against it before publishing it
+unchanged). That check names the signer, or uses `--owner` for both:
+
+```sh
+gh attestation verify hypercast-<version>-*.whl \
+  --repo SkunkWerkx/HyperCast --signer-repo SkunkWerkx/.github
+# or: gh attestation verify hypercast-<version>-*.whl --owner SkunkWerkx
+```
+
+Both are the GitHub/Sigstore transparency-log route, checked with `gh attestation verify`, the
+same route every other artifact in this project uses. Separately, PyPI itself holds a
+[PEP 740](https://peps.python.org/pep-0740/) publish attestation for every wheel, filed by
+`gh-action-pypi-publish` at publication and shown on each file's PyPI page, which PyPI-side
+tooling checks on its own. The root README's [Provenance](../README.md#provenance) section has
+the whole picture.
 
 ## License
 

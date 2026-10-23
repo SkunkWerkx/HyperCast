@@ -411,13 +411,16 @@ PR; the release pack stages it under `runtimes/browser-wasm/nativeassets/`, and
 `build/net11.0/HyperCast.targets` ships inside the package to wire it up for a consumer with
 no configuration beyond the `wasm-tools` workload.
 
-That targets file is load-bearing, and both halves of it are: a `NativeFileReference` hands
+That targets file is load-bearing, and its `NativeFileReference` is the whole wiring: it hands
 the staticlib to the linker (restore never populates `@(NativeLibrary)` from a plain
-`PackageReference`'s `nativeassets/` folder the way it does `runtimes/{rid}/native/`), and an
-`EmccExportedFunction` per door makes the linked-in symbols resolvable through
-`LibraryImport("*")` at runtime — the WASM SDK exports only its own baseline set and never
-scans P/Invoke declarations to find the rest. v0.0.1 shipped without that file, and a real
-Blazor consumer's publish died at `wasm-ld` with `undefined symbol: cast_i32`.
+`PackageReference`'s `nativeassets/` folder the way it does `runtimes/{rid}/native/`), and the
+SDK scans every assembly's P/Invokes and generates a pinvoke table that calls each door by
+symbol, so the link resolves them against the archive and `LibraryImport("*")` reaches each one
+through that table. v0.0.1 shipped without that file, and a real Blazor consumer's publish died
+at `wasm-ld` with `undefined symbol: cast_i32`, which is exactly the failure the smoke test
+below reproduces with the archive unlinked. The file used to list an `EmccExportedFunction` per
+door as well, on the belief that `"*"` resolution needed the Emscripten export. It does not: the
+smoke test passes with the list removed on .NET SDK 11.0.100-rc.2, so the list is gone.
 
 **Target frameworks.** One floor here, not two: the package targets net11.0 and nothing
 older, and the targets file sits under `build/net11.0/` (and `buildTransitive/net11.0/`) like
@@ -428,8 +431,8 @@ target-framework gate of its own. (HyperUuid's package is laid out the same way.
 `HyperCast.WasmSmokeTest` proves the whole chain in a real browser: a Blazor WebAssembly app
 that imports that targets file, calls every native entry point — the twenty-six `cast_*`
 functions and `hypercast_version` — through the public `Cast` surface, and renders `PASS` or
-`FAIL` into the page. Every one, because that is the only way the check means what it says:
-a door missing from the `EmccExportedFunction` list links fine and fails only when called.
+`FAIL` into the page. Every one: the link proves each symbol is in the archive, and only a call proves it works
+through the pinvoke table and the exception-handling translation.
 `./check.sh` in that directory stages the wasm static library, publishes the app, loads it in
 headless Chromium and requires `PASS`. CI runs the same script on every PR, in headless Chrome
 with the `wasm-tools` workload, against the static library that run just built (`STATICLIB`
@@ -606,55 +609,39 @@ change the hash — so "rebuild it and compare hashes" is not a verification pat
 can rely on. The mechanism that does work is a cryptographic attestation binding each
 artifact to the workflow run and commit that produced it.
 
-**Signed provenance.** CI emits [SLSA build provenance](https://github.com/actions/attest-build-provenance)
-at three points, because the package is not the same bytes at every stage of its life:
+**Signed provenance.** Because rebuild-and-compare doesn't work across machines, the mechanism that does is a cryptographic attestation binding each artifact to the workflow run and commit that produced it. Two kinds cover the package.
 
-| Attested artifact | Where | How to verify |
-| --- | --- | --- |
-| Each native library, as built | `hyper-build-native.yml` | `gh attestation verify libhypercast.so --repo SkunkWerkx/HyperCast --signer-repo SkunkWerkx/.github` |
-| The browser-wasm archive, as built | `hyper-build-wasm.yml` | `gh attestation verify libhypercast.a --repo SkunkWerkx/HyperCast --signer-repo SkunkWerkx/.github` |
-| The `.nupkg` as packed, pre-push | `hyper-pack-nuget.yml` | strip the repo signature first (below) |
-| The `.nupkg` as published | `release.yml`, after the push | verify the downloaded file directly |
-
-The reason for the last two rows: **nuget.org adds its repository signature as a
-`.signature.p7s` entry inside the `.nupkg` zip during validation**, which changes the file's
-SHA-256. So the package you download is not the package that was built, and one attestation
-cannot cover both. Rather than pick, the pipeline takes both — and because the mutation is
-exactly one added zip entry, the pre-push attestation stays recoverable:
+The *release attestation* is one statement, signed by this repository's `release.yml` at the release tag, whose subjects are every file the release ships — the `.nupkg` as packed and as nuget.org serves it, every other registry package, and every native library committed for Go, Swift and PHP — and whose predicate is the release inventory (`inventory.json`: every file's size, SHA-256 and the commit it was built from). One command verifies any of them from the tag alone:
 
 ```shell
-# verify the published bytes directly — nothing to undo.
-# Signed by release.yml, which lives in this repo, so no --signer-repo is needed.
-gh attestation verify HyperCast.X.Y.Z.nupkg --repo SkunkWerkx/HyperCast
+gh attestation verify HyperCast.<version>.nupkg --repo SkunkWerkx/HyperCast \
+  --source-ref refs/tags/v<version> --predicate-type https://github.com/SkunkWerkx/.github/predicates/release/v1
+```
 
-# or recover the as-built artifact and verify that instead.
-# Signed by hyper-pack-nuget.yml over in the forge repo, so this half needs --signer-repo.
-zip -d HyperCast.X.Y.Z.nupkg .signature.p7s
-gh attestation verify HyperCast.X.Y.Z.nupkg \
+*Build provenance* ([SLSA](https://github.com/actions/attest-build-provenance)) is the second layer, emitted where the bytes are made, which for this package is four places, because it is not the same bytes at every stage of its life:
+
+| Attested artifact | Where | Signer |
+| --- | --- | --- |
+| Each native library, as built | `hyper-build-native.yml` | `SkunkWerkx/.github` |
+| The browser-wasm archive, as built | `hyper-build-wasm.yml` | `SkunkWerkx/.github` |
+| The `.nupkg` as packed, pre-push | `hyper-pack-nuget.yml` | `SkunkWerkx/.github` |
+| The `.nupkg` as published | `release.yml`, after the push | `SkunkWerkx/HyperCast` |
+
+The reason for the last two rows: **nuget.org adds its repository signature as a `.signature.p7s` entry inside the `.nupkg` zip during validation**, which changes the file's SHA-256. So the package you download is not the package that was built, and one attestation cannot cover both. The pipeline takes both, and the release attestation is made for both: once in the publication gate over the packed bytes, once after the push over the served bytes, with the same inventory as predicate. The signer column is the flag that changes: an artifact signed by a reusable workflow in `SkunkWerkx/.github` needs `--signer-repo SkunkWerkx/.github` beside `--repo` (or `--owner SkunkWerkx` in place of both); one signed by this repository's `release.yml` verifies with `--repo` alone. Get it wrong and `gh` reports a bare `verifying with issuer "sigstore.dev"`, which reads like a bad signature but is only an identity mismatch.
+
+```shell
+# the published bytes, signed by release.yml
+gh attestation verify HyperCast.<version>.nupkg --repo SkunkWerkx/HyperCast
+
+# the as-built package, recovered by removing nuget.org's one added entry; signed by the Forge
+zip -d HyperCast.<version>.nupkg .signature.p7s
+gh attestation verify HyperCast.<version>.nupkg \
   --repo SkunkWerkx/HyperCast --signer-repo SkunkWerkx/.github
 ```
 
-**Why `--signer-repo` appears on some of these and not others.** `--repo X` asserts two
-separate things: that the artifact came from repo X, and that the workflow which signed it
-also lives in X. Everything CI builds here comes from this repo, so the first half always
-holds — but the signing step's location varies. Anything signed inside a reusable workflow
-(`hyper-build-native.yml`, `hyper-pack-nuget.yml`, `hyper-pack-crate.yml`,
-`hyper-pack-maven.yml`) is signed by a file that physically lives in `SkunkWerkx/.github`,
-and that is what Fulcio records as the build signer; anything signed directly by this repo's
-own `release.yml` is signed by this repo. Get it wrong and `gh` reports
-`verifying with issuer "sigstore.dev"` with no further detail, which reads like a bad
-signature but is only an identity mismatch. `--owner SkunkWerkx` works for every row above if
-you would rather not track which is which.
+The release run downloads the package nuget.org serves, runs `dotnet nuget verify` on it, and requires every entry but `.signature.p7s` to match the packed package before attesting it. That claim is checked on every release rather than asserted here, so if nuget.org ever changes how it finalizes packages, the run says so instead of the README quietly going stale.
 
-Before attesting the published package, the release's publish job downloads it from
-nuget.org, requires every zip entry but `.signature.p7s` to match the packed package byte for
-byte, and checks nuget.org's signature with `dotnet nuget verify --all`, so if nuget.org ever
-changes how it finalizes packages, the run says so instead of this README quietly going stale.
-
-Attestations are produced by every release-mode build — the release's own run and the
-weekly one. Pull requests build in `pr` mode, which ships nothing and so signs nothing. The post-publish half
-blocks the release: it waits up to twenty minutes for nuget.org to serve the package, and
-the Go tag and GitHub Release are created only once it has matched.
+Attestations are produced by every release-mode build — the release's own run and the weekly one. Pull requests build in `pr` mode, which ships nothing and so signs nothing. The release itself is two acts at one tag: the tag push packs, attests and preserves everything without uploading, and a dispatch of `release.yml` publishes from those preserved bytes, waiting up to 20 minutes for nuget.org to serve the package before attesting the served bytes; the Go tag and GitHub Release wait on it. A slower validation is recovered by dispatching again with `publication_run_id`, which pushes nothing twice (see [RELEASING.md](../.github/RELEASING.md)). The root README's [Provenance](../README.md#provenance) section has the whole picture across the eight bindings.
 
 **Not currently done: NuGet author signing.** The package carries nuget.org's repository
 signature but no author signature of our own, which would need an X.509 code-signing
