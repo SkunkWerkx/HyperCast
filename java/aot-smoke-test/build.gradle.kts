@@ -3,7 +3,7 @@
 // (docs/roadmap.md): `./gradlew :aot-smoke-test:nativeRun` under a GraalVM JAVA_HOME.
 plugins {
     application
-    id("org.graalvm.buildtools.native") version "1.1.10"
+    id("org.graalvm.buildtools.native") version "1.1.14"
 }
 
 repositories {
