@@ -62,9 +62,14 @@ HyperTabular and move together.
 
 ## Forge coupling and releases
 
-- The Forge is pinned to one exact commit in `ci.yml`, `release.yml` and `RELEASING.md`.
-  Repin all of them, and HyperUuid and HyperTabular with them, as one reviewed change. This
-  repo conforms to the Forge; it doesn't add opt-outs (`ci.yml` header).
+- The Forge is called at master, deliberately unpinned: a Forge merge reaches every consumer
+  at once, and breakage it causes is fixed forward. `release.yml` resolves master to one
+  commit per run (`find-ci-run`'s `forge_sha`), because the package inventory records it and
+  recovery requires it unchanged. Don't merge Forge changes while a release is in flight.
+- Third-party actions are pinned to a commit with the version in a trailing comment, and
+  `.github/dependabot.yml` moves them with every other ecosystem in one monthly pull request.
+  It ignores the Forge and `dtolnay/rust-toolchain` (branch heads, refreshed by hand).
+- This repo conforms to the Forge; it doesn't add opt-outs (`ci.yml` header).
 - Registry versions can never be replaced. Release and recovery: `.github/RELEASING.md`
   and the Forge's `docs/release-runbook.md`.
 
