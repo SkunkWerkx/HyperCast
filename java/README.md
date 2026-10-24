@@ -174,14 +174,14 @@ the `DateOrder` alone, and 97.5 ± 7.4 ns with Spanish designators declared and 
 
 Nothing loads until the first door is called. A consumer with a managed fallback gates on
 `Cast.isAvailable()` first: probed once, cached, never throws — `false` when the platform
-library will not open, the jar carries no core for this OS/arch, GraalWasm is missing on the
-wasm path, or an older core lacks an export this binding was built against. The doors do
+library will not open, the jar carries no core for this OS/arch, or an older core lacks an
+export this binding was built against. The doors do
 not fall back. The first one to need a core that failed to load throws
 `ExceptionInInitializerError`, and every later one `NoClassDefFoundError`; either way the
 original failure is in its cause chain.
 `Cast.nativeVersion()` reports the loaded core's `major.minor.patch`, and succeeds exactly
 when `isAvailable()` is `true` — the pair that proves the library that resolved is the one
-this jar was built against. `Cast.backend()` says which path won.
+this jar was built against.
 
 A `Fault`'s `offset`/`length` count in the input's own unit. Through a `byte[]` or
 `MemorySegment` door they are the core's byte span into the UTF-8, verbatim. Through a
@@ -207,8 +207,7 @@ The jar's manifest carries `Automatic-Module-Name: io.github.skunkwerkx.hypercas
 module-path form has a stable name to grant rather than one derived from the jar's file
 name. An executable jar can make the same grant in its own manifest
 (`Enable-Native-Access: ALL-UNNAMED`). Under `--illegal-native-access=deny` with no grant
-the library cannot be loaded at all: `isAvailable()` is `false` and the doors throw. The
-wasm path wants the same flag, for Truffle's own native library rather than this one.
+the library cannot be loaded at all: `isAvailable()` is `false` and the doors throw.
 
 ## Why not `Integer.parseInt` / `Instant.parse` / the formatter zoo?
 
@@ -219,8 +218,7 @@ wasm path wants the same flag, for Truffle's own native library rather than this
    parentheses, radix prefixes, all five .NET `Guid` text forms, protobuf JSON durations.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
    held by the shared corpus (the whole suite green, full corpus replay through
-   real FFM downcalls with byte-exact fault spans — and a second time through the GraalWasm
-   backend, on every build).
+   real FFM downcalls with byte-exact fault spans).
 4. **Faster where it matters, and the input no longer copies.** JMH, `-prof gc` for the
    allocation column, the profile `./gradlew :benchmarks:jmh` runs: 1 fork, 3 warmup + 5
    measurement iterations of one second (linux-x64 on an Intel Core i9-11900H, Temurin 25.0.4).
@@ -292,16 +290,16 @@ The GraalVM Native Image smoke test (`./gradlew :aot-smoke-test:nativeRun`) buil
 runs the `isAvailable()`/`nativeVersion()` probe, all twenty-six doors through their
 `String` form (the date-time door with designators declared too, and a format with the
 0.9.0 fields filled), the `byte[]` and `MemorySegment` forms (heap slice and native segment)
-once per ABI shape, and the exhaustive union switch as a true native binary; `-Pwasm` does the
-same through the GraalWasm backend (see [WebAssembly](#webassembly-graalwasm)). Native Image needs two separate registrations
+once per ABI shape, and the exhaustive union switch as a true native binary. Native Image
+needs two separate registrations
 and the jar ships both in its `reachability-metadata.json` under
 `META-INF/native-image/io.github.skunkwerkx/hypercast/`, so a consumer inherits them with no
 configuration: the FFM downcall *signatures* (reachability is per-signature, not per-function
 — the doors share six shapes, and the version probe's `() -> int` is the seventh),
 and a `resources` glob covering `native/*/*`. A `native-image.properties` beside it has the
 class holding the downcall handles initialized at image build time, which is what keeps the
-doors compiled rather than interpreted in the image — 60-110 ns a door there
-([the numbers](#webassembly-graalwasm)).
+doors compiled rather than interpreted in the image — 60-110 ns a door there (the table
+below).
 
 A native image still loads the core's shared library at startup, extracted from the jar as on
 the JVM, rather than linking the static archive into the executable the way C# Native AOT and
@@ -327,118 +325,25 @@ build file — so it proved only that *this repo* could be configured to work. T
 gone now; the test passes on the packaged metadata alone, which is the only thing that
 actually proves a consumer is fine.
 
-## WebAssembly (GraalWasm)
-
-The jar carries the Rust core a second time, as `native/wasm32-wasip1/hypercast.wasm` — the
-exact same `cast_*` C exports (and the `hypercast_version` probe), compiled for
-WASI preview 1 instead of an OS.
-[GraalWasm](https://www.graalvm.org/webassembly/) runs that module inside the JVM, so `Cast`
-has a second interop path that needs no platform-specific binary and no FFM downcall: the
-polyglot API calls the exports, the input is copied into a guest buffer, and the guest's own
-exported `malloc` supplies the 16-byte out-value and 8-byte fault-span buffers the core
-fills and the 92-byte `NumFormat` and 40-byte day-period buffers it reads.
-The seam is one level below the verdict (`Backend`): the wasm class performs the crossing and
-fills the same per-thread scratch segments the native call would, and everything above it —
-every door, every reader, every exception and message — is one implementation for both paths.
-The full test suite runs twice on every build (`./gradlew test testWasm`), corpus replay
-included, once through each.
-
-This is not the Java binding compiled *to* WebAssembly (the root README's WebAssembly table
-still says why that path is blocked). It is the opposite direction: the Rust core running
-*as* WebAssembly inside an ordinary JVM.
-
-**Enabling it.** GraalWasm is deliberately not a dependency of this jar — its POM lists
-nothing, so the default FFM path pulls in nothing extra. Add the two artifacts yourself
-(`wasm` is a POM-type dependency that fans out into the Truffle runtime):
-
-```kotlin
-dependencies {
-    implementation("io.github.skunkwerkx:hypercast:<version>")
-    implementation("org.graalvm.polyglot:polyglot:25.4.4.1.1")
-    runtimeOnly("org.graalvm.polyglot:wasm:25.4.4.1.1")
-}
-```
-
-Then either set `-Dhypercast.backend=wasm` to force it, or do nothing: with the property
-unset, `Cast` takes the FFM path when the jar has a native build for the running platform
-and that library loads, and falls back to the wasm module otherwise. "No native build" is
-decided exactly, not by nearest match: an architecture other than x64/arm64 (riscv64,
-ppc64le, s390x, 32-bit anything) or an OS other than Linux, macOS and Windows resolves to no
-library at all, and on Linux a musl process (Alpine) gets the musl build, never the glibc
-one. "Will not load" covers a bundled library the dynamic loader refuses — a temp directory
-mounted `noexec`, say; if the wasm path cannot start either, the failure thrown is the
-native one, with the wasm one attached as suppressed. `-Dhypercast.backend=native` forces
-FFM and fails loudly on a platform without a bundled library, or with one that will not
-load. `Cast.backend()` reports `"native"` or `"wasm"` for whichever won. Selecting wasm
-without GraalWasm on the classpath fails when the core is first needed — `isAvailable()` is
-`false`, and every door throws — with a message naming the two artifacts; the
-`org.graalvm.polyglot` classes are never loaded otherwise.
-
-**What it costs**, measured with the JMH suite on linux-x64 (an Intel Core i9-11900H), same
-session, three ways: the FFM downcall (`./gradlew :benchmarks:jmh`; GraalVM CE 25.4 and
-Temurin 25 agree within noise on that row), then the wasm path (`-Pwasm`) on a GraalVM JDK,
-where Truffle JIT-compiles the guest, and on a stock Temurin 25, where it cannot:
-
-| Door | FFM downcall | GraalWasm, GraalVM CE 25.4 (JIT) | GraalWasm, Temurin 25 (interpreter) |
-| --- | ---: | ---: | ---: |
-| `bool` | 14 ns, 40 B | 133 ns, 488 B | 1.9 µs, 2.6 KB |
-| `i32` (grouped) | 33 ns, 64 B | 134 ns, 480 B | 5.0 µs, 2.8 KB |
-| `uuid` | 35 ns, 104 B | 261 ns, 928 B | 5.3 µs, 4.0 KB |
-| `f64` | 42 ns, 72 B | 172 ns, 544 B | 6.2 µs, 4.5 KB |
-| `timestamp` | 51 ns, 88 B | 285 ns, 936 B | 7.9 µs, 6.1 KB |
-| `duration` (ISO) | 55 ns, 72 B | 232 ns, 632 B | 14.1 µs, 11.8 KB |
-| `dateTime` (`1/7/2026 3:04 PM`) | 57 ns, 120 B | 183 ns, 552 B | 9.2 µs, 8.0 KB |
-
-Two things those rows say plainly. Under GraalVM's JIT the wasm path costs 3-9x the
-downcall — the polyglot crossing, the input copy and the lock, with the parse itself
-invisible behind them — and the JIT column needed a longer warmup than the FFM suite runs
-(`-Pwasm` raises it), because the first seconds measure Truffle compiling the guest rather
-than the door. On a stock OpenJDK, GraalWasm has no JIT: the engine prints a fallback-runtime
-warning at startup (`-Dpolyglot.engine.WarnInterpreterOnly=false` silences it) and runs the
-module interpreted, so the cost scales with how much wasm the parse executes — a two-lexeme
-boolean is over 100x the downcall, an ISO duration over 250x — and the kilobytes per call
-are the interpreter's, not this binding's. Nothing in this jar can change which of those a
-consumer gets. Unlike HyperUuid there is no batch door to amortize the crossing behind; that
-is round three's chunk layer.
-
-Keep `org.graalvm.polyglot:polyglot` and `:wasm` at the same release as the GraalVM JDK you
-run on (25.4.4.1.1 here): Truffle will not use a compiler from a different release, so a
-mismatched pair runs the interpreter on the JVM and fails a Native Image build.
-
 **Under GraalVM Native Image** JMH cannot run, so these are a hand loop (warm up, one
 million calls per door, best of five rounds) built into a native image with the metadata the
 jar ships, same machine, the same loop on the JVM beside it:
 
-| Door | FFM downcall, JVM | FFM downcall, Native Image | GraalWasm, Native Image |
-| --- | ---: | ---: | ---: |
-| `bool` | 18 ns | 60 ns | 266 ns |
-| `i32` (grouped) | 32 ns | 91 ns | 400 ns |
-| `f64` | 41 ns | 106 ns | 452 ns |
-| `timestamp` | 52 ns | 111 ns | 773 ns |
+| Door | FFM downcall, JVM | FFM downcall, Native Image |
+| --- | ---: | ---: |
+| `bool` | 18 ns | 60 ns |
+| `i32` (grouped) | 32 ns | 91 ns |
+| `f64` | 41 ns | 106 ns |
+| `timestamp` | 52 ns | 111 ns |
 
 A native image runs the FFM doors at two to three times their JVM cost — the ordinary price
-of an ahead-of-time compiler without a profile — and the wasm path keeps its JIT there.
+of an ahead-of-time compiler without a profile.
 
 The FFM doors are compiled in the image, not interpreted, because the downcall handles are
 constants there: one per ABI shape, created from the C signature alone in a class that needs
 nothing from the library, taking the export's address as its first argument, with
 `META-INF/native-image/.../native-image.properties` in the jar initializing that class at
 image build time. A consumer's `native-image` build inherits it with no configuration.
-
-**Threading.** A polyglot context does not allow concurrent access from multiple threads, so
-every call on the wasm path is serialized on one lock; one context and one module instance
-serve the whole process. The FFM path has no lock. A hot, multi-threaded caster should
-expect that difference, not just the per-call one.
-
-**Native Image.** The bundled `reachability-metadata.json` registers `WasmBackend`'s
-constructor for reflection and the `native/*/*` resource glob already covers the module, so a
-consumer's `native-image` build of the wasm path needs no extra configuration on this jar's
-account — proven the same way the FFM path is: `./gradlew :aot-smoke-test:nativeRun -Pwasm`
-puts GraalWasm on the smoke test's classpath and runs the binary with
-`-Dhypercast.backend=wasm`, and every door plus the union switch passes with the binary
-reporting `backend: wasm`. The same test without the property builds the FFM-only binary
-(16.5 MiB against 50.4 MiB with the Truffle runtime linked in) and reports `backend:
-native`.
 
 ## Verifying provenance
 
@@ -456,8 +361,7 @@ gh attestation verify hypercast-<version>.jar --repo SkunkWerkx/HyperCast \
 Its build provenance is the second check. The bundle is assembled by `hyper-pack-maven.yml`,
 a reusable workflow that lives in `SkunkWerkx/.github`, and that is the identity Fulcio
 records as the signer, so `--repo` alone is not enough there: add `--signer-repo`, or use
-`--owner` in place of both. The native libraries and the `wasm32-wasip1` module inside the jar
-carry their own, from the Forge's build workflows at the preparation commit on master, and the
+`--owner` in place of both. The native libraries inside the jar carry their own, from the Forge's build workflows at the preparation commit on master, and the
 pack job verifies each of them before it goes into the jar.
 
 ```sh

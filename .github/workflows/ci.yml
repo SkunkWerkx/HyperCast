@@ -147,10 +147,6 @@ jobs:
       # drift. Ruby 3.4 goes EOL 2028-03-31 — clear this line then and 3.4 consumers fall
       # back to the universal Fiddle gem, which is exactly what it's there for.
       ruby_compat_version: "3.4"
-      # The core as a wasm32-wasip1 module too, and the Java suite a second time through its
-      # in-process GraalWasm backend. The module is what the jar carries beside the native
-      # libraries so a JVM on a platform with no native build still has a working backend.
-      wasip1_module: true
 
   # The C#/NuGet browser-wasm staticlib — built on every PR, not just at release time, so
   # a wasm-breaking core change surfaces immediately.

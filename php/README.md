@@ -590,8 +590,8 @@ then the same calls in headless Chrome) and somewhere to publish the modules and
 [levers not pulled](https://github.com/SkunkWerkx/.github#levers-deliberately-not-pulled)
 table carries the decision for both packages.
 
-**Running the core as wasm inside PHP**, the way the Java binding does with GraalWasm: there
-is no maintained wasm engine PHP can embed, so there is nothing to stand that on. The root
+**Running the core as wasm inside PHP** is not built: there is no maintained wasm engine PHP
+can embed, so there is nothing to stand that on. The root
 README's [WebAssembly section](../README.md#webassembly) tracks both directions for every
 binding.
 

@@ -12,29 +12,13 @@ repositories {
 
 dependencies {
     implementation(rootProject)
-    // -Pwasm: the same smoke test with GraalWasm on the classpath and the binary run with
-    // -Dhypercast.backend=wasm, so the wasm path is proven under Native Image too — the
-    // library's own reachability-metadata.json (the WasmBackend reflection entry, the
-    // native/*/* resource glob) is what has to carry it, exactly as for the FFM path.
-    // Off by default: the plain run keeps proving the FFM path with nothing extra linked in.
-    if (project.hasProperty("wasm")) {
-        runtimeOnly("org.graalvm.polyglot:polyglot:25.4.4.1.1")
-        runtimeOnly("org.graalvm.polyglot:wasm:25.4.4.1.1")
-    }
 }
 
 application {
     mainClass.set("io.github.skunkwerkx.hypercast.aotsmoketest.Main")
-    // `:aot-smoke-test:run` is the same program on an ordinary JVM: with the flag a consumer
-    // passes (README.md's "Native access"), and with -Pwasm selecting the wasm backend
-    // exactly as it does for the native binary below.
-    applicationDefaultJvmArgs = buildList {
-        add("--enable-native-access=ALL-UNNAMED")
-        if (project.hasProperty("wasm")) {
-            add("-Dhypercast.backend=wasm")
-            add("-Dpolyglot.engine.WarnInterpreterOnly=false")
-        }
-    }
+    // `:aot-smoke-test:run` is the same program on an ordinary JVM, with the flag a consumer
+    // passes (README.md's "Native access").
+    applicationDefaultJvmArgs = listOf("--enable-native-access=ALL-UNNAMED")
 }
 
 java {
@@ -54,9 +38,6 @@ graalvmNative {
             // report so a failed reachability/linking analysis is diagnosable.
             buildArgs.add("--enable-native-access=ALL-UNNAMED")
             buildArgs.add("-H:+ReportExceptionStackTraces")
-            if (project.hasProperty("wasm")) {
-                runtimeArgs.add("-Dhypercast.backend=wasm")
-            }
             // Deliberately NO `resources { includedPatterns.add("native/.*") }` here.
             //
             // Native Image doesn't embed classpath resources by default, so without that

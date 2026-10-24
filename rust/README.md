@@ -343,27 +343,7 @@ and runs the boolean, integer, real, decimal, UUID, timestamp, date and duration
 the version export inside a real browser; CI runs it in headless Chrome on every PR
 (`wasm-pack test --headless --chrome` there).
 
-One wasm build of this crate is not left to the consumer, because the Java binding in this
-repo ships it: the `cdylib` for `wasm32-wasip1`, built from inside this directory so that
-`.cargo/config.toml` applies —
-
-```sh
-cargo wasm-module
-# rust/target/wasm32-wasip1/release/hypercast.wasm
-```
-
-Unlike the native library, the module is built with `std`: its allocator exports come from
-wasi-libc by way of `std`'s allocator, and a `no_std` module does not link wasi-libc at all.
-
-That config adds two linker flags for this target only, `--export=malloc` and
-`--export=free`, so the module's exports are the `cast_*` functions and `hypercast_version` from `ffi.rs`
-plus wasi-libc's allocator. A wasm host cannot hand this library a pointer into its own
-memory, so its embedder — GraalWasm inside the Java binding — copies the input text into a
-guest buffer, points the door at guest buffers for the out-value, the fault span and the
-`NumFormat`, and reads the result back out of the exported `memory`. The exported allocator is what makes that safe: dlmalloc claims
-the tail of the initial linear memory on its first use, so a host-chosen offset past the
-data segments is not free, and HyperUuid observed a buffer written there corrupted by the
-next allocation. The module imports four `wasi_snapshot_preview1` functions — wasi-libc's
+A `wasm32-wasip1` build of the crate imports four `wasi_snapshot_preview1` functions — wasi-libc's
 `environ_get`, `environ_sizes_get`, `fd_write` and `proc_exit`, from its startup and panic
 paths — and nothing else: no clock and no entropy, because the core is pure computation
 over the bytes it is handed. `ffi.rs` itself is untouched by any of this; on every native

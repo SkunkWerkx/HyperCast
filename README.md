@@ -58,7 +58,7 @@ Culture never lives in the core: numeric doors take a caller-declared format —
   Three of the four bugs this project has shipped were found exactly there, in the gap between those two claims, and none of them could fail a build in this repo. v0.0.1's first tag landed four of five registries: Maven died in *our* Gradle config, where `sourcesJar` read `stageNativeLibrary`'s output without declaring the dependency — invisible to CI, which never builds a sources jar. Then v0.0.1's published artifacts turned out to be broken in two ways for AOT and wasm consumers specifically (see the Java AOT and WebAssembly notes below), which v0.0.2 fixes. The recovery protocol — rerun at the same tag from the preserved, attested packages, uploading only what a registry has not already accepted — is in [`.github/RELEASING.md`](.github/RELEASING.md), because a version is only ever burned where it was actually accepted.
 - **Fast paths pay for the lenience** — plain-shaped input takes allocation-free fast lanes; only text that actually uses the forgiveness pays for it. Measured with criterion against Rust's own best-in-class (linux-x64, an Intel Core i9-11900H): `cast_timestamp` 14.5 vs 17.1 ns `time`, `cast_uuid` 12.8 ns against the `uuid` crate's 11.1 ns, `cast_i64` 8.7 vs 7.1 ns `str::parse`. The timestamp door is the one ahead of its Rust counterpart, and only since 0.7.0 inlined its field readers (26.6 → 14.5 ns); elsewhere, in-process against Rust's own parsers, these doors trade a few nanoseconds for what they *return* (a verdict with a span) and what they *accept*, and the speed story belongs to the bindings, where the competition is culture machinery. **Correction on the record:** an earlier version of this line claimed the UUID door beat the `uuid` crate (15.4 vs 17.4 ns). `uuid` 1.26 got faster, and a SWAR hex decode (15.9 → 12.8 ns) narrowed the gap without closing it. Receipts get re-run, and this one changed.
 - **Fuzzed, and it found real bugs** — a `cargo-fuzz` target (`rust/fuzz/`) drives every door under every format profile and every declared order/precision/epoch, asserting two invariants every binding silently relies on: a door never panics on any byte sequence, and every fault span stays inside the caller's buffer (`offset + len <= input.len()`, which bindings slice with). It caught two real classes within a minute — truncation faults pointing one byte past the input, and `char_len` spans overrunning on text ending mid-UTF-8-character — both since fixed structurally and pinned by `rust/tests/fault_span_invariant.rs` (every corpus input truncated at every byte boundary, through every door) so they fail plain `cargo test`. The following 550M-execution session found nothing.
-- **WASM, for the core and in the browser for six of the bindings** — the full Rust test suite (unit tests, the allocation proof, every corpus replay, the fault-span invariant sweeps) passes under `wasmtime` on `wasm32-wasip1`. No clock, no randomness, no dependencies: strictly easier freight than HyperUuid, whose wasm train this rides. In the browser, the crate itself (`wasm32-unknown-unknown`), C# under Blazor, Python under Pyodide, Go under TinyGo, Swift through its WebAssembly SDK and Ruby through ruby.wasm each link the core in, and CI runs every one of them in headless Chrome — Python's whole pytest suite included — on every pull request but Ruby, whose ruby.wasm interpreter build per Ruby minor runs in the weekly and release builds instead. The JVM keeps the core as a `wasm32-wasip1` module inside the jar, where GraalWasm runs it in-process as a second backend and the Java suite runs a second time through it on every CI leg. See [WebAssembly](#webassembly).
+- **WASM, for the core and in the browser for six of the bindings** — the full Rust test suite (unit tests, the allocation proof, every corpus replay, the fault-span invariant sweeps) passes under `wasmtime` on `wasm32-wasip1`. No clock, no randomness, no dependencies: strictly easier freight than HyperUuid, whose wasm train this rides. In the browser, the crate itself (`wasm32-unknown-unknown`), C# under Blazor, Python under Pyodide, Go under TinyGo, Swift through its WebAssembly SDK and Ruby through ruby.wasm each link the core in, and CI runs every one of them in headless Chrome — Python's whole pytest suite included — on every pull request but Ruby, whose ruby.wasm interpreter build per Ruby minor runs in the weekly and release builds instead. See [WebAssembly](#webassembly).
 - **C# binding on .NET 11, union-native** — `Verdict<T>` is a real discriminated union: two case arms, no default, and a missing disposition is a **compile error** (CS8509 as error). The whole suite is green including the full corpus replay; source-generated `LibraryImport` only, and the AOT smoke test publishes under `PublishAot` into a genuine native binary that runs every door — proven, not configured.
 - **C# vs. the BCL** — BenchmarkDotNet, `[MemoryDiagnoser]`, lenience matched where the BCL has the knob (`AllowThousands`, invariant culture, UTC styles), FFI crossing and UTF-16→UTF-8 transcode *included* in every HyperCast number. Measured on linux-x64 (an Intel Core i9-11900H), .NET 11 RC 1 (in-process toolchain — BDN doesn't know the net11 moniker yet); zero managed allocation on every row, both sides:
 
@@ -144,8 +144,6 @@ The musl libraries are built so that they depend on musl's libc and nothing else
 
 **Runtime floors** follow upstream support: a version that has reached end of life is not a floor. Today that is .NET 11, JDK 25, Go 1.26, Python 3.11, Ruby 3.3 and PHP 8.2, and the musl job runs the PHP, Ruby and Python suites on those oldest versions as well as the newest. Swift's floor is 6.2 for a different reason: it is the first release whose package manager can link a static library, which is how the binding reaches musl and WebAssembly at all. CI runs it on 6.2 as well as 6.4. The crate's own floor is Rust 1.88 (`rust-version` in its manifest, for `let` chains), and CI builds the library on exactly that toolchain.
 
-Every leg also builds the core as a `wasm32-wasip1` module and runs the Java suite a second time through its in-process GraalWasm backend — see [WebAssembly](#webassembly).
-
 ## Provenance
 
 Every file a release ships verifies from the tag alone. One release attestation, signed by
@@ -191,11 +189,10 @@ the command on its own artifact: [Rust](rust/#verifying-provenance),
 
 WebAssembly meets a binding in one of two directions, and they share nothing mechanically:
 
-- **The core runs as wasm inside the binding.** The process stays native. The Rust core
-  arrives as a `wasm32-wasip1` module, `hypercast.wasm`, and a wasm engine the ecosystem
-  already has runs it in-process: no `dlopen`, no per-platform binary, the same
-  C-ABI exports. The engine is an optional dependency the consumer adds only if they want
-  this path.
+- **The core runs as wasm inside the binding.** The process stays native and a wasm engine
+  the ecosystem already has runs a `wasm32-wasip1` build of the core in-process, in place of
+  a per-platform binary. No binding ships this today: each links or loads the core natively
+  on every platform it supports, so the column below says why for each.
 - **The binding is compiled to wasm.** The whole consumer app becomes a wasm module
   (Blazor, a `wasm32` Rust crate, Python under Pyodide) and the Rust core has to be linked
   into that build by the ecosystem's own toolchain.
@@ -204,9 +201,9 @@ Where each of the eight stands, today:
 
 | Binding | Core as wasm inside the binding | Binding compiled to wasm |
 | --- | --- | --- |
-| Rust | Not applicable: the crate *is* the core, and the wasip1 build of it is the module the JVM embeds. | **Yes.** The full suite passes under [wasmtime](https://wasmtime.dev/) on `wasm32-wasip1`; no clock, no entropy, nothing to stub. On `wasm32-unknown-unknown` the crate needs nothing from a consumer, and `rust/browser-test` runs it in headless Chrome on every PR. See [`rust/README.md`](rust/README.md#webassembly). |
+| Rust | Not applicable: the crate *is* the core. | **Yes.** The full suite passes under [wasmtime](https://wasmtime.dev/) on `wasm32-wasip1`; no clock, no entropy, nothing to stub. On `wasm32-unknown-unknown` the crate needs nothing from a consumer, and `rust/browser-test` runs it in headless Chrome on every PR. See [`rust/README.md`](rust/README.md#webassembly). |
 | C# | Not built. | **Yes, on .NET 11+.** `dotnet add package HyperCast` into a Blazor WebAssembly project links the staticlib, exports all 26 doors and applies the exception-handling translation .NET 11 needs, all through the shipped `.targets`; it needs the `wasm-tools` workload, and the build stops with `HYPERCAST002` without it. Proven in headless Chromium by `csharp/HyperCast.WasmSmokeTest`, which calls all 27 native entry points; see [`csharp/README.md`](csharp/README.md#webassembly-blazor). |
-| Java | **Yes.** [GraalWasm](https://www.graalvm.org/webassembly/); `-Dhypercast.backend=wasm`, or automatic when the jar has no native build for the platform. | Blocked. No Java-to-wasm compiler supports the Foreign Function & Memory API this binding is built on: GraalVM's Web Image (`--tool:svm-wasm`) is labeled experimental and never lists it, and neither TeaVM nor CheerpJ has it. Loading the core as a module of its own and calling it through Web Image's JavaScript interop would work, but that is a second binding with its own glue, not this one; revisit when Web Image is mature and can call or link native code. |
+| Java | Not built. The jar reaches the core through FFM downcalls into the native library it bundles for every platform it ships for, so there is no platform for a wasm backend to fill in for. | Blocked. No Java-to-wasm compiler supports the Foreign Function & Memory API this binding is built on: GraalVM's Web Image (`--tool:svm-wasm`) is labeled experimental and never lists it, and neither TeaVM nor CheerpJ has it. Loading the core as a module of its own and calling it through Web Image's JavaScript interop would work, but that is a second binding with its own glue, not this one; revisit when Web Image is mature and can call or link native code. |
 | Ruby | Not built. The `wasmtime` gem ships precompiled only for platforms the universal gem already carries a native library for; anywhere else it compiles from source with a Rust toolchain, so a wasm backend would reach nothing the Fiddle backend does not. | **Yes, through `rbwasm build`.** ruby.wasm links extensions into the interpreter when it is built, so a browser app lists `hypercast-wasm` instead of `hypercast` in the Gemfile it hands `rbwasm build` (ruby_wasm 2.10+, Ruby 3.4 or 4.0). That gem carries the same Magnus extension prebuilt for `wasm32-wasip1`, one archive per Ruby minor, so the consumer needs no Rust toolchain, and it shares an interpreter with HyperUuid's `hyperuuid-wasm`. CI links it into both minors' interpreters and runs a smoke test under Node and in headless Chrome; see [`ruby/README.md`](ruby/README.md#ruby-in-the-browser). |
 | Python | Not built. Only platform wheels are published, each carrying the PyO3 extension, and no sdist, so there is no install a wasm backend could fill in for. | **Yes, on [Pyodide](https://pyodide.org/) 314.x.** `await micropip.install("hypercast")` in the browser: the PyO3 extension built for Pyodide's Emscripten target ships to PyPI as a twenty-fifth wheel (`cp311-abi3-pyemscripten_2026_0_wasm32`, ~150 KB), the same native backend with no JavaScript bridge. CI runs the binding's whole pytest suite inside Pyodide, under Node and in headless Chrome. Each Pyodide ABI year needs its own wheel; see [`python/README.md`](python/README.md#in-the-browser-pyodide). |
 | Go | Not built. The binding links the core in on every platform it supports, so there is no platform for a wasm backend to fill in for. | **Yes, through [TinyGo](https://tinygo.org) 0.42+.** `tinygo build -target=wasm` links the core in from the module's own `staticlib/wasm` archive (the `wasm32-wasip1` build); the core imports nothing, so the page loads one module. CI runs a smoke program covering every ABI shape in headless Chrome on every PR. Stock Go cannot: its wasm toolchain links Go code only, so `GOOS=wasip1`/`js` is a compile error. See [`go/README.md`](go/README.md#in-the-browser-tinygo). |
@@ -228,33 +225,6 @@ loader, and it is what a JVM on a platform with no native build falls back to.
 
 ### The in-process backend
 
-One artifact, `hypercast.wasm`, built from the same crate with wasi-libc's `malloc`/`free`
-exported (two linker flags in `rust/.cargo/config.toml`, no source change), ships beside the
-native libraries in the jar. CI builds it on every leg and runs the Java suite a second time
-through it. The numbers below were measured through the shipped binding on one linux-x64 box
-in one session, native column beside it; [java/README](java/#webassembly-graalwasm) has the
-mechanics, the exact loop, and more doors.
-
-| Binding | Engine dependency | `i32`, one call | `timestamp`, one call | Native, same box |
-| --- | --- | ---: | ---: | --- |
-| Java | `org.graalvm.polyglot:wasm`, `compileOnly`, never in the POM | 134 ns (grouped) on GraalVM CE 25.4 (JIT); 5.0 µs on Temurin 25 (interpreter) | 285 ns (JIT); 7.9 µs (interpreter) | 33 ns / 51 ns |
-
-Two footnotes to that row. On a stock JDK GraalWasm has no JIT and runs the module
-interpreted, with a startup warning, so its cost scales with how much wasm the parse
-executes; under GraalVM's JIT the same doors sit at 3-9x the FFM downcall, and the wasm path
-also survives a GraalVM Native Image build on the jar's own reachability metadata (the Java
-README has the receipts); keep the GraalWasm artifacts at the same release as the GraalVM
-JDK. And unlike HyperUuid there is no batch door anywhere in this crate to amortize the
-crossing behind — a per-cell workload pays it per cell — so the backend is a portability
-answer, not a speed option, until round three's chunk layer crosses once per chunk.
-
-Two facts the backend is built on, both learned the hard way in HyperUuid. The host
-must take its buffers from the guest's own allocator: a host-picked offset past the data
-segments looked free and was not, because dlmalloc claims the tail of the initial memory on
-first use, and the next allocation overwrote a buffer mid-way. And every call is serialized
-under a lock, because a GraalWasm `Context` is not safe for concurrent use; the native
-backends stay lock-free.
-
 ## Aspirations — the queue that turns into receipts
 
 Stated the way this project states things: each of these becomes a measured table or a CI matrix row, or it gets cut. Details in [docs/roadmap.md](docs/roadmap.md).
@@ -270,7 +240,7 @@ Stated the way this project states things: each of these becomes a measured tabl
 corpus/     the shared conformance vectors — the cross-language contract
 rust/       the core: 26 cast_* exports plus hypercast_version, zero runtime dependencies; a cdylib (and two for Android) and fifteen static archives (four for iOS and Mac Catalyst, two for Android)
 csharp/     the .NET 11 binding: Verdict<T> union, LibraryImport, corpus replay, AOT smoke test
-java/       the JDK 25+ binding: sealed-interface union, FFM + GraalWasm backends, corpus replay, Native Image smoke test
+java/       the JDK 25+ binding: sealed-interface union, FFM downcalls, corpus replay, Native Image smoke test
 python/     the 3.11+ binding: match/case verdicts, PyO3 native extension (abi3 and free-threaded wheels, Pyodide in the browser)
 swift/      the SwiftPM binding: enum verdicts (mandatory-exhaustive switch); the core linked in as a static library on every platform
 go/         the Go binding: (value, *Fault) verdicts; the core linked in through cgo, and under TinyGo in the browser

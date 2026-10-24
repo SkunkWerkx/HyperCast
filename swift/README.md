@@ -387,9 +387,8 @@ CI builds the smoke executable for WebAssembly on Swift 6.4 and runs it this way
 Chrome on every PR, failing unless it exits 0. An executable that imports Foundation is
 large (tens of MB, most of it ICU data); `-c release` and `wasm-opt` bring that down.
 
-The other direction — running the core as wasm *inside* a native Swift process, the way the
-Java binding does — is not built: no wasm engine ships as a Swift
-package with a stable API, and nothing here needs one, since every platform this binding
+The other direction — running the core as wasm *inside* a native Swift process — is not
+built: no wasm engine ships as a Swift package with a stable API, and nothing here needs one, since every platform this binding
 supports has the core natively. The root README's
 [WebAssembly section](../README.md#webassembly) tracks both directions for every binding.
 

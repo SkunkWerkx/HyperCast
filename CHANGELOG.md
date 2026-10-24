@@ -42,6 +42,17 @@ minor release can still break both, as 0.9.0 did.
   one monthly pull request, every third-party action is pinned to a commit, and CodeQL runs
   weekly. *(repository only)*
 
+### Removed
+
+- **Java — the GraalWasm backend.** The jar no longer carries the core a second time as a
+  `wasm32-wasip1` module, and `Cast.backend()`, the `hypercast.backend` property and the
+  fall-back to the module on a platform without a native build are gone: the binding is FFM
+  downcalls into the library it bundles, as the other bindings link or load theirs. The module
+  served a platform nobody had asked for, and in HyperTabular, which carried the same backend,
+  replaying the suite through it in interpreter mode had become the longest step of every CI
+  leg. `cargo wasm-module`, the `wasm32-wasip1` export flags in `rust/.cargo/config.toml` and
+  the `-Pwasm` runs of the JMH suite and the Native Image smoke test leave with it. *(Java)*
+
 ## [0.9.0] — 2026-10-20
 
 The culture-fidelity sweep: everything a culture declares beyond its separators — its signs,

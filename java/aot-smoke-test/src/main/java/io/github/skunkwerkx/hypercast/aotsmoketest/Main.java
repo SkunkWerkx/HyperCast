@@ -55,15 +55,12 @@ public final class Main {
      * @param args ignored
      */
     public static void main(String[] args) {
-        // Which interop path this binary took — "native" (FFM) or "wasm" (GraalWasm) — so a
-        // -Dhypercast.backend=wasm run is visibly proving the path it claims to.
         // The non-throwing gate first: under AOT a missing resource registration would make
         // the core unloadable, and this is the probe a consumer would notice that through.
         System.out.println("available: " + Cast.isAvailable());
         if (!Cast.isAvailable()) {
             failures++;
         }
-        System.out.println("backend: " + Cast.backend());
         // The version probe is the one export linked without the critical option, so it
         // needs its own downcall signature in reachability-metadata.json — this is what
         // proves the registration reached the binary.
