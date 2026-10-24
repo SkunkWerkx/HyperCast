@@ -39,8 +39,7 @@ no-panic = { version = "0.1", optional = true }
 # PHP package is ext-ffi; see src/php_ext.rs.
 [features]
 # On by default for the crates.io consumer, the test suite and the benchmarks; no artifact
-# this repo ships is built with it except the extension modules and the wasm32-wasip1
-# module (whose hosts depend on the malloc/free exports std's allocator brings). The parsing
+# this repo ships is built with it except the extension modules. The parsing
 # core itself is core-only — `default-features = false` gives a genuine `#![no_std]` rlib on
 # every target, which is what the crate's published `no-std` category means. The extension
 # backends all require std through their own dependencies, so they name it explicitly
@@ -131,8 +130,7 @@ harness = false
 # strip drops the symbol table and debug info from what is linked, never the exports, and
 # never the code: the stripped linux-x64 library's .text is byte-identical to the unstripped one.
 # Measured on local linux-x64 builds, stripped against unstripped: the shared library goes
-# 110,048 → 104,496 bytes (the last one CI staged unstripped was 109,736), the wasm32-wasip1 module
-# 137,432 → 126,724 and the Linux Magnus extension 551,736 → 457,400 (a platform gem ships
+# 110,048 → 104,496 bytes (the last one CI staged unstripped was 109,736) and the Linux Magnus extension 551,736 → 457,400 (a platform gem ships
 # two). Windows already got this for the Magnus build from the forge's RUSTFLAGS; this is
 # every other leg.
 # A static library is not linked, so the archives keep their symbols — they are how the

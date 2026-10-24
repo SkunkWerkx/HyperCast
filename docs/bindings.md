@@ -169,7 +169,7 @@ truncate instants to microseconds. Each binding's README states its own fidelity
 | Version probe (`hypercast_version`) | `hypercast_version()` → `u32`, packed `major << 16 \| minor << 8 \| patch` | `Cast.NativeVersion` → `Version?` | `Cast.nativeVersion()` → `String` | `NativeVersion()` → `string` | `Cast.nativeVersion()` → `String` | `Cast::nativeVersion()` → `string` | `HyperCast.native_version` → `String` | `native_version()` → `str` |
 | Availability, never throws | — [^rust-probe] | `Cast.IsAvailable` | `Cast.isAvailable()` | `Available()`, always `true` [^linked] | `Cast.isAvailable`, always `true` [^linked] | `Cast::isAvailable()` | `HyperCast.available?` | — |
 | Load failure | — | — | — | `LoadError()`, always `nil` [^linked] | — | — | — | — |
-| Backend in use | — | — | `Cast.backend()` → `"native"` or `"wasm"` (`Cast.BACKEND_PROPERTY` selects) | — | — | — | `HyperCast::BACKEND` → `:native` or `:fiddle` | `BACKEND`, always `"native"` |
+| Backend in use | — | — | — | — | — | — | `HyperCast::BACKEND` → `:native` or `:fiddle` | `BACKEND`, always `"native"` |
 
 Rust is the crate's own API (the `rust/src/lib.rs` re-exports). The other names are
 relative to C# namespace `HyperCast`, Java package `io.github.skunkwerkx.hypercast`, Go

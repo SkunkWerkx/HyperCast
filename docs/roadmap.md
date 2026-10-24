@@ -15,8 +15,7 @@ Requirements that hold across every round, stated up front so no layer designs t
 - **The scalar core and its bindings must ride alongside HyperUuid's wasm train.** The
   same proven shapes: the Rust core under `wasm32-wasip1` and `wasm32-unknown-unknown`,
   C# via Blazor's `NativeFileReference` static linking, Python as a Pyodide wheel, Go
-  through TinyGo and Swift through its WebAssembly SDK, each linking the core in, and the
-  core running as a `wasm32-wasip1` module *inside* the JVM through GraalWasm. HyperCast's
+  through TinyGo and Swift through its WebAssembly SDK, each linking the core in. HyperCast's
   core is strictly easier freight than HyperUuid's here — pure computation over caller
   bytes, zero dependencies, no WASI clock or randomness imports at all — and every leg is
   proven, not projected: the full test suite (unit tests, the counting-allocator proof,
@@ -32,8 +31,7 @@ Requirements that hold across every round, stated up front so no layer designs t
   with wasm out of scope. It turned out to need no contortions: HyperTabular's core is
   no_std, allocation-free and imports nothing, so zip, inflate and XML run over caller
   bytes in a sandbox exactly as natively, and from 0.7.0 it ships every leg HyperCast
-  does — Blazor, TinyGo, Swift's WebAssembly SDK, Pyodide, ruby.wasm and GraalWasm inside
-  the JVM.
+  does — Blazor, TinyGo, Swift's WebAssembly SDK, Pyodide and ruby.wasm.
 
 ## Round one — the scalar core (done)
 

@@ -9,7 +9,6 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.SymbolLookup;
 import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
-import java.lang.reflect.InvocationTargetException;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -50,30 +49,12 @@ import java.util.UUID;
  * verdict record, the boxed value it carries, and (for the {@link String} doors) the UTF-8
  * encode; the Rust core itself never allocates.
  *
- * <p>The same core also ships inside this jar as a {@code wasm32-wasip1} module, run by
- * <a href="https://www.graalvm.org/webassembly/">GraalWasm</a> when {@link #BACKEND_PROPERTY}
- * says so, when no native build exists for the running platform, or when the bundled one
- * will not load. That path needs
- * {@code org.graalvm.polyglot:polyglot} and {@code org.graalvm.polyglot:wasm} on the
- * classpath (optional dependencies, never pulled in transitively), serializes every call on
- * one lock, and costs several times a native downcall per door; {@link #backend()} reports
- * which path is active. Everything else — every door, every verdict, every exception and
- * message — is identical between the two.
- *
  * <p>Nothing loads until the first door is called. A consumer with a managed fallback gates
  * on {@link #isAvailable()} first — the one probe that never throws — because the doors do
  * not fall back: a core that failed to load is thrown from every door as the failure it was.
  */
 public final class Cast {
     private Cast() {}
-
-    /**
-     * Name of the system property that picks the interop path: {@code "native"} for the FFM
-     * downcalls into the bundled platform library, {@code "wasm"} for the bundled
-     * {@code wasm32-wasip1} module run by GraalWasm. Unset means native when this platform's
-     * library is bundled and loads, wasm otherwise.
-     */
-    public static final String BACKEND_PROPERTY = "hypercast.backend";
 
     /**
      * The downcall handles: one per ABI shape the core exports, none of them bound to an
@@ -164,10 +145,10 @@ public final class Cast {
     }
 
     /**
-     * The loaded core: which path won, the library it resolved to, and the address of every
+     * The loaded core: the library it resolved to, and the address of every
      * export in it — all {@code static final}, all resolved in this holder's own class init.
      * A holder rather than fields on {@code Cast} itself so that nothing loads until the
-     * first door (or {@link Cast#backend()}/{@link Cast#nativeVersion()}) touches it, and so
+     * first door (or {@link Cast#nativeVersion()}) touches it, and so
      * that {@link Cast#isAvailable()} can observe a load failure without {@code Cast} having failed
      * to initialize: a door after a failed load throws the {@link NoClassDefFoundError} for
      * this class, exactly as it used to throw it for {@code Cast}.
@@ -178,59 +159,8 @@ public final class Cast {
         /** The library's base name: {@code libhypercast.so}, {@code hypercast.dll}. */
         private static final String LIBRARY = "hypercast";
 
-        /**
-         * Non-null only when the wasm path was selected — see the static block below. Every door
-         * checks this one {@code static final} against {@code null} before its FFM path; the JIT
-         * folds that check away, so the native path costs exactly what it did before a second
-         * backend existed.
-         */
-        private static final Backend WASM;
-
-        // Null on the wasm path: there is no library to look symbols up in, and the native
-        // linker is never asked for (Downcalls stays uninitialized) — a platform the JDK has
-        // no linker for can still run the module.
-        private static final SymbolLookup LOOKUP;
-
-        /*
-         * Decides the interop path once, at class init, and never again. BACKEND_PROPERTY set
-         * to "wasm" forces the GraalWasm backend; "native" forces FFM, and fails loudly when
-         * this platform has no bundled library or the library will not load. Unset takes FFM
-         * when this platform's native library is bundled and loads, and the wasm module
-         * otherwise — an OS, architecture or C library this jar ships no native build for
-         * still works, just through the module, and so does a bundled library that will not
-         * open (a temp directory mounted noexec, say). When that last fallback cannot start
-         * either, the failure thrown is the native one, with the wasm one suppressed on it.
-         */
-        static {
-            String choice = System.getProperty(BACKEND_PROPERTY);
-            if (choice != null && !"native".equals(choice) && !"wasm".equals(choice)) {
-                throw new IllegalStateException(
-                        BACKEND_PROPERTY + " must be \"native\" or \"wasm\"; got \"" + choice + "\"");
-            }
-            NativePlatform.Target target = NativePlatform.current(LIBRARY);
-            Backend wasm = null;
-            SymbolLookup lookup = null;
-            if ("wasm".equals(choice)) {
-                wasm = startWasm(null);
-            } else if ("native".equals(choice)) {
-                lookup = NativePlatform.load(Cast.class, LIBRARY, target);
-            } else if (target == null || Cast.class.getResource(target.resourcePath()) == null) {
-                wasm = startWasm(NativePlatform.missing(LIBRARY, target));
-            } else {
-                try {
-                    lookup = NativePlatform.load(Cast.class, LIBRARY, target);
-                } catch (RuntimeException | LinkageError nativeFailure) {
-                    try {
-                        wasm = startWasm("the bundled native library would not load (" + nativeFailure + ")");
-                    } catch (RuntimeException wasmFailure) {
-                        nativeFailure.addSuppressed(wasmFailure);
-                        throw nativeFailure;
-                    }
-                }
-            }
-            WASM = wasm;
-            LOOKUP = lookup;
-        }
+        private static final SymbolLookup LOOKUP =
+                NativePlatform.load(Cast.class, LIBRARY, NativePlatform.current(LIBRARY));
 
         // Where each export lives in the loaded library — the leading argument of the
         // Downcalls handle with its shape. Looked up here, once, so an export missing from an
@@ -263,72 +193,16 @@ public final class Cast {
         private static final MemorySegment CAST_CHAR = export("cast_char");
         private static final MemorySegment HYPERCAST_VERSION = export("hypercast_version");
 
-        // Null when the wasm backend is active — the addresses above are then never used, and
-        // there is no library to look symbols up in.
         private static MemorySegment export(String symbol) {
-            return LOOKUP == null ? null : LOOKUP.find(symbol).orElseThrow();
-        }
-
-        /**
-         * Starts the GraalWasm backend. {@code nativeUnavailable} is why the native path was
-         * not taken, or {@code null} when wasm was asked for by name — it only shapes the
-         * message of a failure here.
-         *
-         * <p>{@link WasmBackend} is instantiated by name so that {@code org.graalvm.polyglot} is
-         * never loaded unless it is actually going to be used: it is a {@code compileOnly}
-         * dependency of this jar, present at runtime only if the consumer added it.
-         */
-        private static Backend startWasm(String nativeUnavailable) {
-            if (Cast.class.getResource(WasmBackend.RESOURCE_PATH) == null) {
-                throw new IllegalStateException(
-                        nativeUnavailable == null
-                                ? WasmBackend.RESOURCE_PATH + " classpath resource not found (this jar was built "
-                                        + "without the wasm module)"
-                                : nativeUnavailable + ", and " + WasmBackend.RESOURCE_PATH + " is not bundled either");
-            }
-            try {
-                return (Backend) Class.forName(Cast.class.getPackageName() + ".WasmBackend")
-                        .getDeclaredConstructor()
-                        .newInstance();
-            } catch (ReflectiveOperationException | LinkageError e) {
-                // The constructor is where GraalWasm is first touched, so its absence arrives
-                // wrapped: newInstance hands back whatever the constructor threw — an Error
-                // included — inside an InvocationTargetException.
-                Throwable cause = e instanceof InvocationTargetException && e.getCause() != null ? e.getCause() : e;
-                if (cause instanceof NoClassDefFoundError) {
-                    throw new IllegalStateException(
-                            WasmBackend.GRAALWASM_MISSING
-                                    + (nativeUnavailable == null
-                                            ? ""
-                                            : "; wasm was selected because " + nativeUnavailable),
-                            cause);
-                }
-                if (cause instanceof RuntimeException re) {
-                    throw re;
-                }
-                throw new IllegalStateException("hypercast: could not start the wasm backend", cause);
-            }
+            return LOOKUP.find(symbol).orElseThrow();
         }
     }
 
     /**
-     * Which interop path this process is using: {@code "native"} (FFM downcalls into the
-     * bundled platform library) or {@code "wasm"} (the bundled {@code wasm32-wasip1} module run
-     * by GraalWasm). Decided once, when the core is first loaded; see
-     * {@link #BACKEND_PROPERTY}.
-     *
-     * @return {@code "native"} or {@code "wasm"}
-     */
-    public static String backend() {
-        return Core.WASM == null ? "native" : Core.WASM.name();
-    }
-
-    /**
-     * Whether the core resolved: the bundled platform library — or, on the wasm path, the
-     * module — loaded, and every export this binding was built against was found in it.
-     * Probed once, on first call, and cached; never throws. A library that will not open, a
-     * jar built without a core for this platform, GraalWasm absent when the wasm path was
-     * selected, an export missing from an older core — all come back {@code false}. This is
+     * Whether the core resolved: the bundled platform library loaded, and every export this
+     * binding was built against was found in it. Probed once, on first call, and cached;
+     * never throws. A library that will not open, a jar built without a core for this
+     * platform, an export missing from an older core — all come back {@code false}. This is
      * what a consumer with a managed fallback gates on before the first door: the doors
      * themselves throw the load failure they hit rather than fall back, because a door that
      * quietly answered from somewhere else would be a verdict lie. {@code true} exactly when
@@ -365,8 +239,8 @@ public final class Cast {
     }
 
     /**
-     * The version of the core this process actually loaded — the bundled platform library
-     * or the wasm module — as {@code major.minor.patch}, decoded from the core's own
+     * The version of the core this process actually loaded — the bundled platform library —
+     * as {@code major.minor.patch}, decoded from the core's own
      * {@code hypercast_version} export. The probe a host uses to prove the library it
      * resolved is the one this binding was built against, before making the first cast.
      * Takes nothing and touches nothing; the only way it fails is the core not having
@@ -376,105 +250,72 @@ public final class Cast {
      */
     public static String nativeVersion() {
         int packed;
-        if (Core.WASM != null) {
-            packed = Core.WASM.version();
-        } else {
-            try {
-                packed = (int) Downcalls.VERSION.invokeExact(Core.HYPERCAST_VERSION);
-            } catch (Throwable t) {
-                throw new AssertionError("hypercast: hypercast_version downcall failed unexpectedly", t);
-            }
+        try {
+            packed = (int) Downcalls.VERSION.invokeExact(Core.HYPERCAST_VERSION);
+        } catch (Throwable t) {
+            throw new AssertionError("hypercast: hypercast_version downcall failed unexpectedly", t);
         }
         return NativeValues.version(packed);
     }
 
-    // The six ABI shapes, each one line on the wasm path and one downcall on the native
-    // one. Core.WASM is a static final, so the JIT folds the null check away on the FFM
-    // path. Each shape has one handle, a static final constant in Downcalls; what a door
-    // names is the address of its export, which is the handle's leading argument — a direct
-    // downcall, exactly as before a second backend existed.
-    private static int plain(
-            MemorySegment export, Door door, MemorySegment in, long len, MemorySegment out, MemorySegment fault) {
-        if (Core.WASM != null) {
-            return Core.WASM.plain(door, in, len, out, fault);
-        }
+    // The six ABI shapes, one downcall each. Each shape has one handle, a static final
+    // constant in Downcalls; what a door names is the address of its export, which is the
+    // handle's leading argument — a direct downcall.
+    private static int plain(MemorySegment export, MemorySegment in, long len, MemorySegment out, MemorySegment fault) {
         try {
             return (int) Downcalls.PLAIN.invokeExact(export, in, len, out, fault);
         } catch (Throwable t) {
-            throw new AssertionError("hypercast: " + door.symbol() + " downcall failed unexpectedly", t);
+            throw new AssertionError("hypercast: downcall failed unexpectedly", t);
         }
     }
 
-    private static int numeric(
-            MemorySegment export, Door door, MemorySegment in, long len, NumFormat format, Scratch scratch) {
-        if (Core.WASM != null) {
-            return Core.WASM.numeric(door, in, len, format, scratch.out, scratch.fault);
-        }
+    private static int numeric(MemorySegment export, MemorySegment in, long len, NumFormat format, Scratch scratch) {
         try {
             return (int)
                     Downcalls.NUMERIC.invokeExact(export, in, len, scratch.format(format), scratch.out, scratch.fault);
         } catch (Throwable t) {
-            throw new AssertionError("hypercast: " + door.symbol() + " downcall failed unexpectedly", t);
+            throw new AssertionError("hypercast: downcall failed unexpectedly", t);
         }
     }
 
     private static int declared(
             MemorySegment export,
-            Door door,
             MemorySegment in,
             long len,
             int discriminant,
             MemorySegment out,
             MemorySegment fault) {
-        if (Core.WASM != null) {
-            return Core.WASM.declared(door, in, len, discriminant, out, fault);
-        }
         try {
             return (int) Downcalls.DECLARED.invokeExact(export, in, len, discriminant, out, fault);
         } catch (Throwable t) {
-            throw new AssertionError("hypercast: " + door.symbol() + " downcall failed unexpectedly", t);
+            throw new AssertionError("hypercast: downcall failed unexpectedly", t);
         }
     }
 
     private static int civil(
-            MemorySegment export,
-            Door door,
-            MemorySegment in,
-            long len,
-            int order,
-            DateTimeFormat format,
-            Scratch scratch) {
-        if (Core.WASM != null) {
-            return Core.WASM.civil(door, in, len, order, format, scratch.out, scratch.fault);
-        }
+            MemorySegment export, MemorySegment in, long len, int order, DateTimeFormat format, Scratch scratch) {
         try {
             return (int) Downcalls.CIVIL.invokeExact(
                     export, in, len, order, scratch.periods(format), scratch.out, scratch.fault);
         } catch (Throwable t) {
-            throw new AssertionError("hypercast: " + door.symbol() + " downcall failed unexpectedly", t);
+            throw new AssertionError("hypercast: downcall failed unexpectedly", t);
         }
     }
 
-    private static int typed(MemorySegment export, Door door, double value, MemorySegment out, MemorySegment fault) {
-        if (Core.WASM != null) {
-            return Core.WASM.typed(door, value, out, fault);
-        }
+    private static int typed(MemorySegment export, double value, MemorySegment out, MemorySegment fault) {
         try {
             return (int) Downcalls.TYPED.invokeExact(export, value, out, fault);
         } catch (Throwable t) {
-            throw new AssertionError("hypercast: " + door.symbol() + " downcall failed unexpectedly", t);
+            throw new AssertionError("hypercast: downcall failed unexpectedly", t);
         }
     }
 
     private static int typedDeclared(
-            MemorySegment export, Door door, double value, int discriminant, MemorySegment out, MemorySegment fault) {
-        if (Core.WASM != null) {
-            return Core.WASM.typedDeclared(door, value, discriminant, out, fault);
-        }
+            MemorySegment export, double value, int discriminant, MemorySegment out, MemorySegment fault) {
         try {
             return (int) Downcalls.TYPED_DECLARED.invokeExact(export, value, discriminant, out, fault);
         } catch (Throwable t) {
-            throw new AssertionError("hypercast: " + door.symbol() + " downcall failed unexpectedly", t);
+            throw new AssertionError("hypercast: downcall failed unexpectedly", t);
         }
     }
 
@@ -649,7 +490,7 @@ public final class Cast {
         Scratch scratch = SCRATCH.get();
         MemorySegment out = scratch.out;
         MemorySegment fault = scratch.fault;
-        int code = plain(Core.CAST_BOOL, Door.BOOL, in, len, out, fault);
+        int code = plain(Core.CAST_BOOL, in, len, out, fault);
         return code == 0 ? new Success<>(out.get(ValueLayout.JAVA_BYTE, 0) != 0) : failed(code, fault);
     }
 
@@ -705,7 +546,7 @@ public final class Cast {
         Scratch scratch = SCRATCH.get();
         MemorySegment out = scratch.out;
         MemorySegment fault = scratch.fault;
-        int code = plain(Core.CAST_CHAR, Door.CHAR, in, len, out, fault);
+        int code = plain(Core.CAST_CHAR, in, len, out, fault);
         if (code != 0) {
             return failed(code, fault);
         }
@@ -738,9 +579,9 @@ public final class Cast {
     }
 
     private static <T> Verdict<T> numeric(
-            MemorySegment export, Door door, MemorySegment in, long len, NumFormat format, IntReader<T> reader) {
+            MemorySegment export, MemorySegment in, long len, NumFormat format, IntReader<T> reader) {
         Scratch scratch = SCRATCH.get();
-        int code = numeric(export, door, in, len, format, scratch);
+        int code = numeric(export, in, len, format, scratch);
         return code == 0 ? new Success<>(reader.read(scratch.out)) : failed(code, scratch.fault);
     }
 
@@ -782,8 +623,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Byte> i8(byte[] utf8, NumFormat format) {
-        return numeric(
-                Core.CAST_I8, Door.I8, input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_BYTE, 0));
+        return numeric(Core.CAST_I8, input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_BYTE, 0));
     }
 
     /**
@@ -811,8 +651,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Byte> i8(MemorySegment utf8, NumFormat format) {
-        return numeric(
-                Core.CAST_I8, Door.I8, input(utf8), utf8.byteSize(), format, out -> out.get(ValueLayout.JAVA_BYTE, 0));
+        return numeric(Core.CAST_I8, input(utf8), utf8.byteSize(), format, out -> out.get(ValueLayout.JAVA_BYTE, 0));
     }
 
     /**
@@ -865,8 +704,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Short> i16(byte[] utf8, NumFormat format) {
-        return numeric(
-                Core.CAST_I16, Door.I16, input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_SHORT, 0));
+        return numeric(Core.CAST_I16, input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_SHORT, 0));
     }
 
     /**
@@ -894,13 +732,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Short> i16(MemorySegment utf8, NumFormat format) {
-        return numeric(
-                Core.CAST_I16,
-                Door.I16,
-                input(utf8),
-                utf8.byteSize(),
-                format,
-                out -> out.get(ValueLayout.JAVA_SHORT, 0));
+        return numeric(Core.CAST_I16, input(utf8), utf8.byteSize(), format, out -> out.get(ValueLayout.JAVA_SHORT, 0));
     }
 
     /**
@@ -953,8 +785,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Integer> i32(byte[] utf8, NumFormat format) {
-        return numeric(
-                Core.CAST_I32, Door.I32, input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_INT, 0));
+        return numeric(Core.CAST_I32, input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_INT, 0));
     }
 
     /**
@@ -982,8 +813,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Integer> i32(MemorySegment utf8, NumFormat format) {
-        return numeric(
-                Core.CAST_I32, Door.I32, input(utf8), utf8.byteSize(), format, out -> out.get(ValueLayout.JAVA_INT, 0));
+        return numeric(Core.CAST_I32, input(utf8), utf8.byteSize(), format, out -> out.get(ValueLayout.JAVA_INT, 0));
     }
 
     /**
@@ -1036,8 +866,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Long> i64(byte[] utf8, NumFormat format) {
-        return numeric(
-                Core.CAST_I64, Door.I64, input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_LONG, 0));
+        return numeric(Core.CAST_I64, input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_LONG, 0));
     }
 
     /**
@@ -1065,13 +894,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Long> i64(MemorySegment utf8, NumFormat format) {
-        return numeric(
-                Core.CAST_I64,
-                Door.I64,
-                input(utf8),
-                utf8.byteSize(),
-                format,
-                out -> out.get(ValueLayout.JAVA_LONG, 0));
+        return numeric(Core.CAST_I64, input(utf8), utf8.byteSize(), format, out -> out.get(ValueLayout.JAVA_LONG, 0));
     }
 
     /**
@@ -1127,7 +950,6 @@ public final class Cast {
     public static Verdict<Integer> u8(byte[] utf8, NumFormat format) {
         return numeric(
                 Core.CAST_U8,
-                Door.U8,
                 input(utf8),
                 utf8.length,
                 format,
@@ -1161,7 +983,6 @@ public final class Cast {
     public static Verdict<Integer> u8(MemorySegment utf8, NumFormat format) {
         return numeric(
                 Core.CAST_U8,
-                Door.U8,
                 input(utf8),
                 utf8.byteSize(),
                 format,
@@ -1220,7 +1041,6 @@ public final class Cast {
     public static Verdict<Integer> u16(byte[] utf8, NumFormat format) {
         return numeric(
                 Core.CAST_U16,
-                Door.U16,
                 input(utf8),
                 utf8.length,
                 format,
@@ -1254,7 +1074,6 @@ public final class Cast {
     public static Verdict<Integer> u16(MemorySegment utf8, NumFormat format) {
         return numeric(
                 Core.CAST_U16,
-                Door.U16,
                 input(utf8),
                 utf8.byteSize(),
                 format,
@@ -1313,7 +1132,6 @@ public final class Cast {
     public static Verdict<Long> u32(byte[] utf8, NumFormat format) {
         return numeric(
                 Core.CAST_U32,
-                Door.U32,
                 input(utf8),
                 utf8.length,
                 format,
@@ -1347,7 +1165,6 @@ public final class Cast {
     public static Verdict<Long> u32(MemorySegment utf8, NumFormat format) {
         return numeric(
                 Core.CAST_U32,
-                Door.U32,
                 input(utf8),
                 utf8.byteSize(),
                 format,
@@ -1406,8 +1223,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Long> u64(byte[] utf8, NumFormat format) {
-        return numeric(
-                Core.CAST_U64, Door.U64, input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_LONG, 0));
+        return numeric(Core.CAST_U64, input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_LONG, 0));
     }
 
     /**
@@ -1435,13 +1251,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Long> u64(MemorySegment utf8, NumFormat format) {
-        return numeric(
-                Core.CAST_U64,
-                Door.U64,
-                input(utf8),
-                utf8.byteSize(),
-                format,
-                out -> out.get(ValueLayout.JAVA_LONG, 0));
+        return numeric(Core.CAST_U64, input(utf8), utf8.byteSize(), format, out -> out.get(ValueLayout.JAVA_LONG, 0));
     }
 
     /**
@@ -1499,8 +1309,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Float> f32(byte[] utf8, NumFormat format) {
-        return numeric(
-                Core.CAST_F32, Door.F32, input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_FLOAT, 0));
+        return numeric(Core.CAST_F32, input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_FLOAT, 0));
     }
 
     /**
@@ -1528,13 +1337,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Float> f32(MemorySegment utf8, NumFormat format) {
-        return numeric(
-                Core.CAST_F32,
-                Door.F32,
-                input(utf8),
-                utf8.byteSize(),
-                format,
-                out -> out.get(ValueLayout.JAVA_FLOAT, 0));
+        return numeric(Core.CAST_F32, input(utf8), utf8.byteSize(), format, out -> out.get(ValueLayout.JAVA_FLOAT, 0));
     }
 
     /**
@@ -1587,8 +1390,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Double> f64(byte[] utf8, NumFormat format) {
-        return numeric(
-                Core.CAST_F64, Door.F64, input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_DOUBLE, 0));
+        return numeric(Core.CAST_F64, input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_DOUBLE, 0));
     }
 
     /**
@@ -1616,13 +1418,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Double> f64(MemorySegment utf8, NumFormat format) {
-        return numeric(
-                Core.CAST_F64,
-                Door.F64,
-                input(utf8),
-                utf8.byteSize(),
-                format,
-                out -> out.get(ValueLayout.JAVA_DOUBLE, 0));
+        return numeric(Core.CAST_F64, input(utf8), utf8.byteSize(), format, out -> out.get(ValueLayout.JAVA_DOUBLE, 0));
     }
 
     /**
@@ -1686,7 +1482,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<BigDecimal> decimal(byte[] utf8, NumFormat format) {
-        return numeric(Core.CAST_DECIMAL, Door.DECIMAL, input(utf8), utf8.length, format, Cast::readDecimal);
+        return numeric(Core.CAST_DECIMAL, input(utf8), utf8.length, format, Cast::readDecimal);
     }
 
     /**
@@ -1714,7 +1510,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<BigDecimal> decimal(MemorySegment utf8, NumFormat format) {
-        return numeric(Core.CAST_DECIMAL, Door.DECIMAL, input(utf8), utf8.byteSize(), format, Cast::readDecimal);
+        return numeric(Core.CAST_DECIMAL, input(utf8), utf8.byteSize(), format, Cast::readDecimal);
     }
 
     /**
@@ -1776,7 +1572,7 @@ public final class Cast {
         Scratch scratch = SCRATCH.get();
         MemorySegment out = scratch.out;
         MemorySegment fault = scratch.fault;
-        int code = plain(Core.CAST_UUID, Door.UUID, in, len, out, fault);
+        int code = plain(Core.CAST_UUID, in, len, out, fault);
         if (code != 0) {
             return failed(code, fault);
         }
@@ -1787,14 +1583,12 @@ public final class Cast {
 
     // A zero precision means the RFC 3339 door's plain shape; anything else is a declared
     // unit or epoch on the unix shape.
-    private static Verdict<Instant> instantDoor(
-            MemorySegment export, Door door, MemorySegment in, long len, int precision) {
+    private static Verdict<Instant> instantDoor(MemorySegment export, MemorySegment in, long len, int precision) {
         Scratch scratch = SCRATCH.get();
         MemorySegment out = scratch.out;
         MemorySegment fault = scratch.fault;
-        int code = precision == 0
-                ? plain(export, door, in, len, out, fault)
-                : declared(export, door, in, len, precision, out, fault);
+        int code =
+                precision == 0 ? plain(export, in, len, out, fault) : declared(export, in, len, precision, out, fault);
         return code == 0 ? new Success<>(NativeValues.instant(out, 0)) : failed(code, fault);
     }
 
@@ -1819,7 +1613,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Instant> timestamp(byte[] utf8) {
-        return instantDoor(Core.CAST_TIMESTAMP, Door.TIMESTAMP, input(utf8), utf8.length, 0);
+        return instantDoor(Core.CAST_TIMESTAMP, input(utf8), utf8.length, 0);
     }
 
     /**
@@ -1830,7 +1624,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Instant> timestamp(MemorySegment utf8) {
-        return instantDoor(Core.CAST_TIMESTAMP, Door.TIMESTAMP, input(utf8), utf8.byteSize(), 0);
+        return instantDoor(Core.CAST_TIMESTAMP, input(utf8), utf8.byteSize(), 0);
     }
 
     /**
@@ -1856,7 +1650,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Instant> unix(byte[] utf8, UnixPrecision precision) {
-        return instantDoor(Core.CAST_UNIX, Door.UNIX, input(utf8), utf8.length, precision.code());
+        return instantDoor(Core.CAST_UNIX, input(utf8), utf8.length, precision.code());
     }
 
     /**
@@ -1868,7 +1662,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Instant> unix(MemorySegment utf8, UnixPrecision precision) {
-        return instantDoor(Core.CAST_UNIX, Door.UNIX, input(utf8), utf8.byteSize(), precision.code());
+        return instantDoor(Core.CAST_UNIX, input(utf8), utf8.byteSize(), precision.code());
     }
 
     /**
@@ -1901,7 +1695,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Instant> excelSerial(byte[] utf8, ExcelEpoch epoch) {
-        return instantDoor(Core.CAST_EXCEL_SERIAL, Door.EXCEL_SERIAL, input(utf8), utf8.length, epoch.code());
+        return instantDoor(Core.CAST_EXCEL_SERIAL, input(utf8), utf8.length, epoch.code());
     }
 
     /**
@@ -1913,7 +1707,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Instant> excelSerial(MemorySegment utf8, ExcelEpoch epoch) {
-        return instantDoor(Core.CAST_EXCEL_SERIAL, Door.EXCEL_SERIAL, input(utf8), utf8.byteSize(), epoch.code());
+        return instantDoor(Core.CAST_EXCEL_SERIAL, input(utf8), utf8.byteSize(), epoch.code());
     }
 
     /**
@@ -1955,7 +1749,7 @@ public final class Cast {
         Scratch scratch = SCRATCH.get();
         MemorySegment out = scratch.out;
         MemorySegment fault = scratch.fault;
-        int code = plain(Core.CAST_DATE, Door.DATE, in, len, out, fault);
+        int code = plain(Core.CAST_DATE, in, len, out, fault);
         return code == 0 ? new Success<>(NativeValues.date(out, 0)) : failed(code, fault);
     }
 
@@ -2004,7 +1798,7 @@ public final class Cast {
         Scratch scratch = SCRATCH.get();
         MemorySegment out = scratch.out;
         MemorySegment fault = scratch.fault;
-        int code = declared(Core.CAST_DATE_ORDERED, Door.DATE_ORDERED, in, len, order.code(), out, fault);
+        int code = declared(Core.CAST_DATE_ORDERED, in, len, order.code(), out, fault);
         return code == 0 ? new Success<>(NativeValues.date(out, 0)) : failed(code, fault);
     }
 
@@ -2141,7 +1935,7 @@ public final class Cast {
     private static Verdict<LocalDateTime> dateTimeDoor(
             MemorySegment in, long len, DateOrder order, DateTimeFormat format) {
         Scratch scratch = SCRATCH.get();
-        int code = civil(Core.CAST_DATETIME, Door.DATETIME, in, len, order.code(), format, scratch);
+        int code = civil(Core.CAST_DATETIME, in, len, order.code(), format, scratch);
         return code == 0 ? new Success<>(NativeValues.civil(scratch.out, 0)) : failed(code, scratch.fault);
     }
 
@@ -2185,7 +1979,7 @@ public final class Cast {
         Scratch scratch = SCRATCH.get();
         MemorySegment out = scratch.out;
         MemorySegment fault = scratch.fault;
-        int code = plain(Core.CAST_TIME, Door.TIME, in, len, out, fault);
+        int code = plain(Core.CAST_TIME, in, len, out, fault);
         return code == 0 ? new Success<>(NativeValues.time(out, 0)) : failed(code, fault);
     }
 
@@ -2230,7 +2024,7 @@ public final class Cast {
         Scratch scratch = SCRATCH.get();
         MemorySegment out = scratch.out;
         MemorySegment fault = scratch.fault;
-        int code = plain(Core.CAST_DURATION, Door.DURATION, in, len, out, fault);
+        int code = plain(Core.CAST_DURATION, in, len, out, fault);
         return code == 0 ? new Success<>(NativeValues.duration(out, 0)) : failed(code, fault);
     }
 
@@ -2252,7 +2046,7 @@ public final class Cast {
      */
     public static Verdict<BigDecimal> decimalFromDouble(double value) {
         Scratch scratch = SCRATCH.get();
-        int code = typed(Core.CAST_DECIMAL_FROM_F64, Door.DECIMAL_FROM_F64, value, scratch.out, scratch.fault);
+        int code = typed(Core.CAST_DECIMAL_FROM_F64, value, scratch.out, scratch.fault);
         return code == 0 ? new Success<>(readDecimal(scratch.out)) : failed(code, scratch.fault);
     }
 
@@ -2275,8 +2069,7 @@ public final class Cast {
     public static Verdict<LocalDateTime> excelSerialFromDouble(double value, ExcelEpoch epoch) {
         Scratch scratch = SCRATCH.get();
         MemorySegment out = scratch.out;
-        int code = typedDeclared(
-                Core.CAST_EXCEL_SERIAL_FROM_F64, Door.EXCEL_SERIAL_FROM_F64, value, epoch.code(), out, scratch.fault);
+        int code = typedDeclared(Core.CAST_EXCEL_SERIAL_FROM_F64, value, epoch.code(), out, scratch.fault);
         return code == 0 ? new Success<>(NativeValues.civil(out, 0)) : failed(code, scratch.fault);
     }
 
@@ -2292,7 +2085,7 @@ public final class Cast {
      */
     public static Verdict<LocalTime> excelTime(double value) {
         Scratch scratch = SCRATCH.get();
-        int code = typed(Core.CAST_EXCEL_TIME, Door.EXCEL_TIME, value, scratch.out, scratch.fault);
+        int code = typed(Core.CAST_EXCEL_TIME, value, scratch.out, scratch.fault);
         return code == 0 ? new Success<>(NativeValues.time(scratch.out, 0)) : failed(code, scratch.fault);
     }
 
@@ -2309,7 +2102,7 @@ public final class Cast {
     public static Verdict<Duration> excelDuration(double value) {
         Scratch scratch = SCRATCH.get();
         MemorySegment out = scratch.out;
-        int code = typed(Core.CAST_EXCEL_DURATION, Door.EXCEL_DURATION, value, out, scratch.fault);
+        int code = typed(Core.CAST_EXCEL_DURATION, value, out, scratch.fault);
         return code == 0 ? new Success<>(NativeValues.duration(out, 0)) : failed(code, scratch.fault);
     }
 }
