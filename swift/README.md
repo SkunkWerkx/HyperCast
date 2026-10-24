@@ -395,23 +395,32 @@ supports has the core natively. The root README's
 
 ## Verifying provenance
 
-Like PHP, there's no separate package registry to attest here — SwiftPM resolves a git tag
-directly against this repo. The native binaries the package carries — the static libraries
-under `swift/HyperCastCore.artifactbundle/`, staged by `stage-native-binaries.yml` — each
-carry their own build-provenance attestation from `hyper-build-static.yml`, which physically lives
-in `SkunkWerkx/.github` — so verifying needs `--signer-repo` alongside `--repo`, or `gh`
-reports a bare `verifying with issuer "sigstore.dev"` that reads like a bad signature but is
-only an identity mismatch:
+Like PHP, there is no separate package registry to attest here: SwiftPM resolves a git tag
+directly against this repo, and what it fetches is the tree at that tag, the static libraries
+under `swift/HyperCastCore.artifactbundle/` and `swift/HyperCastCoreApple.xcframework/`
+included. Each verifies from the release tag alone: the release attestation, signed by this
+repository's `release.yml` at the tag, names every one of them, with the release inventory as
+its predicate.
 
 ```sh
 gh attestation verify swift/HyperCastCore.artifactbundle/arm64-apple-macosx/libhypercast.a \
-  --repo SkunkWerkx/HyperCast --signer-repo SkunkWerkx/.github
+  --repo SkunkWerkx/HyperCast --source-ref refs/tags/v<version> --predicate-type https://github.com/SkunkWerkx/.github/predicates/release/v1
+```
+
+Each archive also carries build provenance from `hyper-build-static.yml` in
+`SkunkWerkx/.github`, at the preparation commit the tagged commit was staged from
+(`stage-native-binaries.yml` verifies that before committing a byte), so that check needs
+`--signer-repo` beside `--repo`:
+
+```sh
 gh attestation verify swift/HyperCastCore.artifactbundle/x86_64-unknown-linux-gnu/libhypercast.a \
   --repo SkunkWerkx/HyperCast --signer-repo SkunkWerkx/.github
 ```
 
-See [csharp/README.md's provenance section](../csharp/README.md#native-binary-provenance)
-for more on why `--signer-repo` is needed for some artifacts here and not others.
+Get the signer wrong and `gh` reports a bare `verifying with issuer "sigstore.dev"`, which
+reads like a bad signature but is only an identity mismatch. The root README's
+[Provenance](../README.md#provenance) section has the whole picture: the inventory, which
+artifacts are signed from where, and the gates every byte passes before publication.
 
 ## Install
 
@@ -427,7 +436,7 @@ uses it:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/SkunkWerkx/HyperCast", from: "…"),   // the tag on the badge above
+    .package(url: "https://github.com/SkunkWerkx/HyperCast", from: "<version>"),   // the tag on the badge above
 ],
 targets: [
     .target(

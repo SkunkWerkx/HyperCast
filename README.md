@@ -53,7 +53,7 @@ Culture never lives in the core: numeric doors take a caller-declared format —
 
 - **Allocation-free is asserted by a counting allocator, not a doc comment** — `rust/tests/allocation_free.rs` wraps `#[global_allocator]` around 1000 calls to every door, success *and* failure paths, and demands zero. A fault is a byte span into the caller's input; nothing is ever captured or formatted on the error path.
 - **The corpus is the contract** — `corpus/*.json` (seeded from the [Svartalfheim](https://github.com/NorseArchitecture/Svartalfheim) `Norse.Primitives` test suites this project descends from) replays through the Rust core's suite *and* every binding's. All eight replay the full fifteen-file set today — C# through real P/Invoke, Java through FFM downcalls, Ruby through *both* its Magnus and Fiddle backends.
-- **Published, to all five registries, and consumable from all eight languages** — every binding is published and installable from its real registry, with the live version on each badge above: [crates.io](https://crates.io/crates/hypercast), [nuget.org](https://www.nuget.org/packages/HyperCast), [PyPI](https://pypi.org/project/hypercast/) (25 wheels — `abi3`, free-threaded `cp314t` and `abi3t` on each of eight platforms, two of them `musllinux`, and one for Pyodide in the browser), [RubyGems](https://rubygems.org/gems/hypercast) (8 gems — one universal Fiddle, seven precompiled Magnus, each fat across Ruby 3.4 and 4.0 since a Magnus extension is tied to one Ruby minor) and [Maven Central](https://central.sonatype.com/artifact/io.github.skunkwerkx/hypercast); Go and Swift resolve from the tag itself (Go's prefixed `go/vX.Y.Z`), PHP from [Packagist](https://packagist.org/packages/skunkwerkx/hypercast). Trusted Publishing/OIDC wherever the registry offers it — no long-lived tokens for NuGet, RubyGems, or PyPI. Every one of the eight was then installed from its real registry into a clean project and run, because "the publish succeeded" and "a consumer can use it" are different claims: identical verdicts across all eight, and Java AOT plus C# AOT and Blazor wasm verified against the published artifacts rather than the working tree.
+- **Published, to all five registries, and consumable from all eight languages** — every binding is published and installable from its real registry, with the live version on each badge above: [crates.io](https://crates.io/crates/hypercast), [nuget.org](https://www.nuget.org/packages/HyperCast), [PyPI](https://pypi.org/project/hypercast/) (25 wheels — `abi3`, free-threaded `cp314t` and `abi3t` on each of eight platforms, two of them `musllinux`, and one for Pyodide in the browser), [RubyGems](https://rubygems.org/gems/hypercast) (8 gems — one universal Fiddle, seven precompiled Magnus, each fat across Ruby 3.4 and 4.0 since a Magnus extension is tied to one Ruby minor) and [Maven Central](https://central.sonatype.com/artifact/io.github.skunkwerkx/hypercast); Go and Swift resolve from the tag itself (Go's prefixed `go/v<version>`), PHP from [Packagist](https://packagist.org/packages/skunkwerkx/hypercast). Trusted Publishing/OIDC wherever the registry offers it — no long-lived tokens for NuGet, RubyGems, or PyPI. Every one of the eight was then installed from its real registry into a clean project and run, because "the publish succeeded" and "a consumer can use it" are different claims: identical verdicts across all eight, and Java AOT plus C# AOT and Blazor wasm verified against the published artifacts rather than the working tree.
 
   Three of the four bugs this project has shipped were found exactly there, in the gap between those two claims, and none of them could fail a build in this repo. v0.0.1's first tag landed four of five registries: Maven died in *our* Gradle config, where `sourcesJar` read `stageNativeLibrary`'s output without declaring the dependency — invisible to CI, which never builds a sources jar. Then v0.0.1's published artifacts turned out to be broken in two ways for AOT and wasm consumers specifically (see the Java AOT and WebAssembly notes below), which v0.0.2 fixes. The recovery protocol — rerun at the same tag from the preserved, attested packages, uploading only what a registry has not already accepted — is in [`.github/RELEASING.md`](.github/RELEASING.md), because a version is only ever burned where it was actually accepted.
 - **Fast paths pay for the lenience** — plain-shaped input takes allocation-free fast lanes; only text that actually uses the forgiveness pays for it. Measured with criterion against Rust's own best-in-class (linux-x64, an Intel Core i9-11900H): `cast_timestamp` 14.5 vs 17.1 ns `time`, `cast_uuid` 12.8 ns against the `uuid` crate's 11.1 ns, `cast_i64` 8.7 vs 7.1 ns `str::parse`. The timestamp door is the one ahead of its Rust counterpart, and only since 0.7.0 inlined its field readers (26.6 → 14.5 ns); elsewhere, in-process against Rust's own parsers, these doors trade a few nanoseconds for what they *return* (a verdict with a span) and what they *accept*, and the speed story belongs to the bindings, where the competition is culture machinery. **Correction on the record:** an earlier version of this line claimed the UUID door beat the `uuid` crate (15.4 vs 17.4 ns). `uuid` 1.26 got faster, and a SWAR hex decode (15.9 → 12.8 ns) narrowed the gap without closing it. Receipts get re-run, and this one changed.
@@ -148,26 +148,40 @@ Every leg also builds the core as a `wasm32-wasip1` module and runs the Java sui
 
 ## Provenance
 
-Every published artifact across all eight bindings — the package itself where a registry
-has one, and the native binaries underneath it either way — carries a GitHub build-provenance
-attestation, checkable with `gh attestation verify`. Which flags that needs depends on where
-the signing workflow physically lives, not on which registry the artifact ended up in:
-artifacts signed directly inside this repo's own `release.yml` — the RubyGems gems and the
-published NuGet package — verify with plain `--repo SkunkWerkx/HyperCast`.
-Artifacts signed by a reusable workflow hosted in `SkunkWerkx/.github` — the crates.io crate,
-the Maven jar, the PyPI wheels, the pre-push NuGet package, every native library (which is the entire
-story for Go, Swift, and PHP, none of which has a package-level attestation of its own), and
-the `wasm32-wasip1` module that rides inside the jar —
-need `--signer-repo SkunkWerkx/.github` added, or `--owner SkunkWerkx` in place of both
-flags. Get it wrong and `gh` reports a bare `verifying with issuer "sigstore.dev"`, which
-reads like a bad signature but is only an identity mismatch.
+Every file a release ships verifies from the tag alone. One release attestation, signed by
+this repository's own `release.yml` at the tag, names every registry package (the `.nupkg` as
+packed and as nuget.org serves it, the gems, the wheels, the crate, the Maven files) and every
+native library committed for Go, Swift and PHP, and its predicate is the release inventory:
+every file's path, size, SHA-256, the commit it was built from and the repository that signed
+its build provenance. One command, any file:
 
-The gates run on the way in, not just on the way out: `stage-native-binaries.yml` verifies
-each native library's attestation before committing it for the Go/Swift/PHP consumers, the
-RubyGems job verifies every native artifact it packs before building a gem, and both the
-crate and the gems are attested *before* their irreversible push — a signing failure stops
-the release while it can still be retried. See each binding's own README for its exact
-verify command and artifact: [Rust](rust/#verifying-provenance),
+```sh
+gh attestation verify <file> --repo SkunkWerkx/HyperCast \
+  --source-ref refs/tags/v<version> --predicate-type https://github.com/SkunkWerkx/.github/predicates/release/v1
+```
+
+Underneath it, every artifact also carries GitHub build provenance from the run that made it,
+and there the flags depend on where the signing workflow lives, not on the registry. The gems,
+`inventory.json` and the published NuGet package are signed inside this repository's
+`release.yml` and verify with plain `--repo SkunkWerkx/HyperCast`. The crate, the jar, the
+wheels, the pre-push NuGet package, every native library (the whole story for Go, Swift and
+PHP, which have no package of their own) and the `wasm32-wasip1` module inside the jar are
+signed by reusable workflows in `SkunkWerkx/.github`: the crate and the Maven files at the
+tagged commit, the wheels, the natives and the module at the preparation commit on master they
+were built from. Add `--signer-repo SkunkWerkx/.github` (and `--source-digest <commit>` to pin
+either), or `--owner SkunkWerkx` in place of both. Get the
+signer wrong and `gh` reports a bare `verifying with issuer "sigstore.dev"`, which reads like a
+bad signature but is only an identity mismatch. PyPI additionally holds a
+[PEP 740](https://peps.python.org/pep-0740/) publish attestation for every wheel, filed by the
+publish action and shown on each file's PyPI page.
+
+The gates run on the way in, not just on the way out: `stage-native-binaries.yml` verifies each
+native library's attestation before committing it for the Go, Swift and PHP consumers, the gem
+job verifies every native artifact it packs before building a gem, every package is attested
+and preserved before anything is uploaded, and the upload itself is a second, deliberate
+dispatch of `release.yml` from those preserved bytes ([RELEASING.md](.github/RELEASING.md)), so
+a failed check stops the release while nothing is yet irreversible. Each binding's README shows
+the command on its own artifact: [Rust](rust/#verifying-provenance),
 [C#](csharp/#native-binary-provenance), [Java](java/#verifying-provenance),
 [Ruby](ruby/#verifying-provenance), [Python](python/#verifying-provenance),
 [PHP](php/#verifying-provenance), [Swift](swift/#verifying-provenance),
