@@ -142,3 +142,6 @@ go/testdata/corpus/
 /swift-static/
 /wasm-emscripten-staticlib/
 /wasm-wasip1-module/
+
+# What Finder writes into any folder it opens.
+.DS_Store
