@@ -16,6 +16,13 @@ minor release can still break both, as 0.9.0 did.
 
 ### Changed
 
+- **Rust — safe scalar representation boundaries.** `Symbol<N>` rejects strings longer
+  than its one-byte length can carry, including when `N` exceeds 255, preserving
+  UTF-8 boundaries. `Decimal` display handles every public scale byte without a
+  panic, allocation, clamping or precision loss; its public fields and ABI remain
+  unchanged. Typed integer documentation makes the existing shortest-decimal
+  behavior above 2^53 explicit.
+
 - **C# — `HyperCast.targets` no longer lists an `EmccExportedFunction` per entry point.** The
   `NativeFileReference` is the whole Blazor WebAssembly wiring: the SDK's generated pinvoke
   table calls each native function by symbol, so the link resolves them against the archive

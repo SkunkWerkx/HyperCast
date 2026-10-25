@@ -4,6 +4,10 @@ One row per concept, one column per language, each cell the public spelling of t
 in that package, so drift between the Rust template and the seven bindings shows at a glance.
 A change that adds a door or a concept adds its row here in the same change.
 
+Rust's generic `Symbol<N>` accepts at most `min(N, 255)` UTF-8 bytes: its length
+crosses the ABI as one byte. The fixed 8- and 16-byte symbols in the bindings retain
+their limits below.
+
 ## Doors
 
 The 26 `cast_*` exports of `rust/src/ffi.rs`, in export order by group. Every binding door

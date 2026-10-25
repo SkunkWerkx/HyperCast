@@ -1791,3 +1791,40 @@ fn the_lenient_lane_rounds_reals_exactly_as_the_engine_does() {
         }
     }
 }
+
+#[test]
+fn symbol_lengths_fit_in_the_abi_without_truncating_utf8() {
+    let largest = format!("é{}", "x".repeat(253));
+    assert_eq!(largest.len(), 255);
+    assert_eq!(Symbol::<257>::new(&largest).unwrap().as_str(), largest);
+    assert!(Symbol::<257>::new(&"x".repeat(256)).is_none());
+    // Before the fix the length wrapped to 1, splitting the initial UTF-8 character.
+    assert!(Symbol::<257>::new(&format!("é{}", "x".repeat(255))).is_none());
+    assert_eq!(Symbol::<257>::MAX_BYTES, 255);
+    assert!(Symbol::<0>::new("x").is_none());
+    assert_eq!(Symbol::<8>::new("éééé").unwrap().as_str(), "éééé");
+    assert_eq!(Symbol::<16>::new("é".repeat(8).as_str()).unwrap().as_str(), "é".repeat(8));
+}
+
+#[test]
+fn decimal_display_handles_every_public_scale_without_losing_value() {
+    for scale in 0..=u8::MAX {
+        for magnitude in [0, 1, (1u128 << 96) - 1] {
+            for negative in [false, true] {
+                let value = decimal(magnitude, scale, negative);
+                let digits = magnitude.to_string();
+                let fractional = usize::from(scale);
+                let expected = if fractional == 0 {
+                    digits
+                } else if fractional >= digits.len() {
+                    format!("0.{}{}", "0".repeat(fractional - digits.len()), digits)
+                } else {
+                    let point = digits.len() - fractional;
+                    format!("{}.{}", &digits[..point], &digits[point..])
+                };
+                let expected = if negative { format!("-{expected}") } else { expected };
+                assert_eq!(value.to_string(), expected, "{value:?}");
+            }
+        }
+    }
+}

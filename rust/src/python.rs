@@ -189,7 +189,9 @@ impl Values {
     /// rendered on the stack. Measured against the `(sign, digits, exponent)` tuple
     /// constructor (which has to build a Python int per digit): the text path was faster on
     /// every shape tried, `1234.50` at 405 ns vs 556 ns and the 29-digit ceiling at 788 ns vs
-    /// 1189 ns (CPython 3.14, linux-arm64, timeit best of five).
+    /// 1189 ns (CPython 3.14, linux-arm64, timeit best of five). Cast results fit the
+    /// stack buffer. A directly constructed value whose formatted text exceeds it
+    /// returns a Python `ValueError`.
     pub fn decimal<'py>(
         &self,
         py: Python<'py>,
@@ -243,8 +245,9 @@ impl Values {
     }
 }
 
-/// The core's canonical decimal text (`Display`), rendered on the stack — at most a sign,
-/// 29 digits and a point — so the host `Decimal` comes straight out of `_decimal`'s C
+/// Decimal text rendered on the stack. Cast results need at most a sign, 29 digits
+/// and a point; longer raw representations return a formatting error. The host
+/// `Decimal` comes straight out of `_decimal`'s C
 /// string constructor with nothing allocated on this side.
 struct Canonical {
     buf: [u8; 48],

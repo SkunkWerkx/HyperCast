@@ -91,8 +91,8 @@ fn clamp(value: usize) -> u32 {
 
 /// A short declared symbol, held inline so a [`NumFormat`] stays `Copy` and crosses the
 /// ABI as plain bytes: a separator, a sign, a percent symbol (`Symbol<8>`) or a day-period
-/// designator (`Symbol<16>`). Up to `N` bytes of UTF-8, which is wide enough for every
-/// value a real culture declares: a separator of one or two code points (`.`, U+202F, an
+/// designator (`Symbol<16>`). Up to `min(N, 255)` bytes of UTF-8, wide enough for
+/// every value a real culture declares: a separator of one or two code points (`.`, U+202F, an
 /// LTR mark and a comma), a minus sign of up to two (U+2212; an RTL mark and a hyphen),
 /// `a. m.`. Empty is [`Symbol::NONE`]: nothing declared, so the core keeps its default for
 /// the field.
@@ -121,8 +121,9 @@ impl<const N: usize> PartialEq for Symbol<N> {
 impl<const N: usize> Eq for Symbol<N> {}
 
 impl<const N: usize> Symbol<N> {
-    /// The inline capacity, in UTF-8 bytes.
-    pub const MAX_BYTES: usize = N;
+    /// The maximum accepted UTF-8 length: the inline capacity, capped at 255
+    /// because the ABI stores the length in one byte.
+    pub const MAX_BYTES: usize = if N < u8::MAX as usize { N } else { u8::MAX as usize };
 
     /// Nothing declared.
     pub const NONE: Symbol<N> = Symbol { bytes: [0; N], len: 0 };
@@ -132,7 +133,7 @@ impl<const N: usize> Symbol<N> {
     #[inline]
     pub const fn new(symbol: &str) -> Option<Symbol<N>> {
         let source = symbol.as_bytes();
-        if source.is_empty() || source.len() > N {
+        if source.is_empty() || source.len() > Self::MAX_BYTES {
             return None;
         }
         let mut bytes = [0u8; N];
@@ -768,11 +769,13 @@ impl NumFormat {
 /// An exact decimal — a sign, a 96-bit unsigned magnitude, and a base-10 scale — the
 /// shape .NET's `decimal` stores natively and Java's `BigDecimal`, Python's `Decimal` and
 /// Ruby's `BigDecimal` build from directly. The value is `(-1)^negative × (hi·2⁶⁴ + lo) ×
-/// 10⁻ˢᶜᵃˡᵉ`, in canonical form — exact trailing zeros in the fraction are trimmed, so the
-/// scale is the smallest that represents the value and zero is scale 0. Never rounded:
+/// 10⁻ˢᶜᵃˡᵉ`. Casts produce canonical values: exact trailing fraction zeros are trimmed,
+/// the scale is minimal, and zero has scale 0 and no negative sign. Casts never round:
 /// text carrying more nonzero precision than 96 bits and 28 places can hold is
-/// `OutOfRange`, not silently approximated. ABI layout: `lo` at offset 0, `hi` at 8,
-/// `scale` at 12, `negative` at 13, 16 bytes with 8-byte alignment.
+/// `OutOfRange`. The public fields also permit directly constructed, noncanonical
+/// values; display preserves their declared scale and sign without clamping.
+/// ABI layout: `lo` at offset 0, `hi` at 8, `scale` at 12, `negative` at 13,
+/// 16 bytes with 8-byte alignment.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Decimal {
@@ -780,10 +783,12 @@ pub struct Decimal {
     pub lo: u64,
     /// The high 32 bits of the magnitude; the magnitude never exceeds 2⁹⁶ − 1.
     pub hi: u32,
-    /// Base-10 scale, `0..=28`: the number of places the magnitude is shifted right. Minimal
-    /// by construction — the magnitude never ends in a zero while the scale is positive.
+    /// Base-10 scale: the number of places the magnitude is shifted right. Casts
+    /// produce `0..=28`, with no trailing magnitude zeros at a positive scale.
+    /// This public ABI representation can also be constructed directly; display
+    /// handles every scale byte without clamping or changing its value.
     pub scale: u8,
-    /// True for a negative value. Zero is never negative.
+    /// True for a negative value. Casts never produce a negative zero.
     pub negative: bool,
 }
 
@@ -794,12 +799,13 @@ impl Decimal {
     }
 }
 
-/// Renders the canonical text form — `-1234.5`, no trailing fraction zeros — the same string the
-/// conformance corpus pins as `value`, so any binding's host decimal can be checked against
-/// it by parsing.
+/// Renders the exact value without allocation. Cast results are canonical —
+/// `-1234.5`, no trailing fraction zeros — as pinned by the conformance corpus.
+/// Directly constructed values retain their declared scale and sign, including
+/// scales above the range casts produce.
 impl core::fmt::Display for Decimal {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        // 39 digits covers u128; one more for a leading zero when scale >= digit count.
+        // 39 digits covers u128. Fractional padding is written directly to the formatter.
         let mut digits = [b'0'; 40];
         let mut magnitude = self.magnitude();
         let mut len = 0;
@@ -809,19 +815,25 @@ impl core::fmt::Display for Decimal {
             len += 1;
         }
         let scale = usize::from(self.scale);
-        while len <= scale {
-            len += 1; // pad with leading zeros so at least one digit precedes the point
-        }
         let text = &digits[40 - len..];
-        let (whole, fraction) = text.split_at(len - scale);
         if self.negative {
             f.write_str("-")?;
         }
-        // SAFETY: only ASCII digits were written.
-        f.write_str(unsafe { str::from_utf8_unchecked(whole) })?;
-        if scale > 0 {
-            f.write_str(".")?;
-            f.write_str(unsafe { str::from_utf8_unchecked(fraction) })?;
+        if scale >= len {
+            f.write_str("0.")?;
+            for _ in 0..scale - len {
+                f.write_str("0")?;
+            }
+            // SAFETY: only ASCII digits were written.
+            f.write_str(unsafe { str::from_utf8_unchecked(text) })?;
+        } else {
+            let (whole, fraction) = text.split_at(len - scale);
+            // SAFETY: only ASCII digits were written.
+            f.write_str(unsafe { str::from_utf8_unchecked(whole) })?;
+            if scale > 0 {
+                f.write_str(".")?;
+                f.write_str(unsafe { str::from_utf8_unchecked(fraction) })?;
+            }
         }
         Ok(())
     }
