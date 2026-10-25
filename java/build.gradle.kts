@@ -15,7 +15,7 @@ group = "io.github.skunkwerkx"
 // The committed version, which prepare-release.yml bumps (the Forge's hyper_config.py
 // matches this line exactly). HYPERCAST_VERSION overrides it for a one-off build; nothing in
 // CI sets it for Gradle, so the Central bundle release.yml packs always carries the committed version.
-version = System.getenv("HYPERCAST_VERSION") ?: "0.9.0"
+version = System.getenv("HYPERCAST_VERSION") ?: "1.0.0"
 
 repositories {
     mavenCentral()
