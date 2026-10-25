@@ -64,7 +64,8 @@ macro_rules! integer_door {
         #[doc = concat!(
             "Reads a number already held as an `f64` as an `", stringify!($ty), "` — the typed ",
             "twin of [`", stringify!($text), "`](crate::", stringify!($text), "). An integral ",
-            "value in range is itself; a fractional, NaN or infinite one is `Malformed`, ",
+            "shortest-decimal value in range is returned; above 2^53 this can differ from ",
+            "the exact binary integer. A fractional, NaN or infinite value is `Malformed`, ",
             "never rounded; an integral one past the type's range is `OutOfRange`."
         )]
         pub fn $door(value: f64) -> Result<$ty, Reason> {

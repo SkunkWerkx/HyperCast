@@ -20,8 +20,9 @@
 //!   under the same rules, to a zone-less [`CivilDateTime`]; [`excel_time`] and
 //!   [`excel_duration`] read the same `f64` as a time of day and as a span of days
 //! - [`decimal_from_f64`], [`i32_from_f64`] and their kin — the typed twins of the numeric
-//!   doors, for a number a workbook already stores as a double: an integer only when the
-//!   double is one, a decimal as the shortest that names the double ([`shortest_digits`])
+//!   doors, for a number a workbook already stores as a double. They read its shortest
+//!   decimal representation ([`shortest_digits`]); integer doors require that number
+//!   to be whole and in range, and can differ from the exact binary integer above 2^53
 //! - [`cast_date`] / [`cast_time`] / [`cast_duration`] — the remaining temporal shapes,
 //!   likewise protobuf-formed
 //! - [`cast_date_ordered`] — separated calendar dates under a caller-declared [`DateOrder`]

@@ -173,6 +173,17 @@ decimal_from_f64(0.1 + 0.2).map(|d| d.to_string()); // Ok("0.30000000000000004")
 i32_from_f64(2.5);                                  // Err(Reason::Malformed), never rounded
 ```
 
+Above 2^53, a double's shortest decimal integer can differ from its exact binary
+integer. Typed integer doors use those shortest decimal digits, just as their text twins
+would, rather than switching to binary-integer semantics:
+
+```rust
+assert_eq!(
+    hypercast::u64_from_f64(9_223_372_036_854_775_808.0),
+    Ok(9_223_372_036_854_776_000),
+);
+```
+
 ## One character
 
 `cast_char` reads one Unicode scalar. Text that is exactly one character is taken verbatim,
@@ -245,6 +256,13 @@ HyperCast's verdicts — HyperTabular's native layer, for one. The value types
 (`Decimal`, `Timestamp`, `Date`, `CivilDateTime`, `Duration`) are `#[repr(C)]` and are the
 out-values themselves; the rest is what turns the ABI's codes and format back into them,
 the same code the doors and `ffi.rs` use:
+
+`Decimal` keeps public fields for that raw representation. Cast results are canonical,
+with scale `0..=28`, no trailing fraction zeros and no negative zero. Directly constructed
+values can be noncanonical; `Display` preserves every declared scale byte and sign,
+without clamping or allocation. Rust's generic `Symbol<N>` accepts at most `min(N, 255)`
+UTF-8 bytes because its ABI length is one byte; the 8- and 16-byte culture symbols use
+their existing limits and layouts.
 
 - **The `exports` feature**, on by default, is the 26 `cast_*` symbols and
   `hypercast_version` as a symbol. A `#[no_mangle]` item is exported from whatever library
