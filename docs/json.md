@@ -137,7 +137,7 @@ numbers (serde already parsed them), but as an ergonomic on-ramp it's nearly fre
 ## Sequencing
 
 1. Round-three tabular layer — done. HyperTabular 0.7.0 (2026-10-07) is the columnar verdict
-   contract, serving CSV, XLSX and ODS today and JSON next.
+   contract, serving CSV, XLSX, ODS and Numbers today and JSON next.
 2. JSON provider on the boring structure tier, tier-1 hand-written glue, proving the schema
    descriptor end to end.
 3. Benchmark a SIMD structure parser against it, with receipts, before adopting one.

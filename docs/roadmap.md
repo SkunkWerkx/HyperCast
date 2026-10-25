@@ -26,7 +26,8 @@ Requirements that hold across every round, stated up front so no layer designs t
   browser targets run in headless Chrome in CI, all but ruby.wasm on every pull request (see the root README's
   WebAssembly section). The in-process wasm backends Ruby, Python and Go carried from 0.3.0
   through 0.4.0 are gone in 0.6.0: each binding now links the core or loads a native
-  library on every platform it ships for, so the fallback had nothing left to catch.
+  library on every platform it ships for, so the fallback had nothing left to catch. Java's,
+  the last, went on 2026-10-24: the jar is FFM downcalls into the library it bundles.
 - **The tabular layer rides the wasm train too.** This line once called it server domain,
   with wasm out of scope. It turned out to need no contortions: HyperTabular's core is
   no_std, allocation-free and imports nothing, so zip, inflate and XML run over caller
