@@ -151,7 +151,7 @@ public final class Cast {
      * first door (or {@link Cast#nativeVersion()}) touches it, and so
      * that {@link Cast#isAvailable()} can observe a load failure without {@code Cast} having failed
      * to initialize: a door after a failed load throws the {@link NoClassDefFoundError} for
-     * this class, exactly as it used to throw it for {@code Cast}.
+     * this class, the error a failed load inside {@code Cast} itself would raise.
      */
     private static final class Core {
         private Core() {}
@@ -320,11 +320,11 @@ public final class Cast {
     }
 
     /**
-     * Per-thread scratch for the downcall out-params. Every door used to open its own
-     * {@link Arena#ofConfined()} — a fresh native allocation plus a scope teardown on every
-     * single cast, measured at roughly 100 ns and the dominant cost of the lean doors.
-     * Confined arenas are thread-confined by design, so the replacement is thread-confined
-     * too: one {@link ThreadLocal} holding segments that live as long as the thread does.
+     * Per-thread scratch for the downcall out-params, in place of an
+     * {@link Arena#ofConfined()} per door: that is a fresh native allocation plus a scope
+     * teardown on every single cast, measured at roughly 100 ns and the dominant cost of a
+     * lean door. A confined arena is thread-confined by design, so this scratch is too: one
+     * {@link ThreadLocal} holding segments that live as long as the thread does.
      *
      * <p>{@code out} is sized for the widest out-param (16 bytes — a protobuf timestamp, a
      * civil date-time or a decimal) and each door reads only its own prefix, after the
@@ -334,10 +334,9 @@ public final class Cast {
      * footprint per <em>virtual</em> thread, not per carrier — a few dozen bytes each, but
      * scaling with however many a server runs.
      *
-     * <p>There is deliberately no input buffer here any more. The input used to be copied
-     * into a per-thread native staging segment on every call; the downcalls are now linked
-     * {@code critical(true)}, so the caller's own array crosses as a pinned heap segment and
-     * the copy — and the growable buffer behind it — went with it.
+     * <p>There is deliberately no input buffer here: the downcalls are linked
+     * {@code critical(true)}, so the caller's own array crosses as a pinned heap segment,
+     * with no copy into a native staging segment and no growable buffer behind one.
      */
     private static final class Scratch {
         // Explicit alignment rather than allocate(size)'s implicit 1: the temporal doors

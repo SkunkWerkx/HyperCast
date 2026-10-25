@@ -208,8 +208,8 @@ const (
 // longer than CurrencyMaxBytes or carrying ASCII whitespace, or a DigitZero that starts no
 // Unicode digit block. NumFormat.Raw reports the same check as an error.
 type NumFormat struct {
-	// DecimalSep is the decimal separator: one or two characters ('.' invariant, ',' in
-	// eurozone text), at most SymbolMaxBytes of UTF-8. Required.
+	// DecimalSep is the decimal separator ('.' invariant, ',' in eurozone text): 1 to
+	// SymbolMaxBytes bytes of UTF-8 with no ASCII digit. Required.
 	DecimalSep string
 	// GroupSep is the digit-group separator (',' invariant, '.', ' ' or ", " elsewhere),
 	// likewise; must differ from DecimalSep. Required.

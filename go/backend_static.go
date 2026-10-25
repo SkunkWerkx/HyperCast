@@ -11,20 +11,19 @@
 // the Xcode command-line tools on macOS, a MinGW-w64 gcc (or llvm-mingw on arm64) on
 // Windows. TinyGo compiling to WebAssembly links the same core from backend_tinygo.go — its
 // cgo cannot parse this file's per-platform #cgo lines, hence `!tinygo` above. Anything else
-// does not compile; unsupported.go says so by name. There used to be three more backends — a
-// purego one for CGO_ENABLED=0 and Windows that extracted an embedded shared library to a
-// temp file, a cgo one that loaded that library instead of linking it, and a wasmtime one —
-// and none of them reached a platform this one does not: wasmtime-go itself needs cgo and
-// ships engines only for these same platforms.
+// does not compile; unsupported.go says so by name. No other backend would reach a platform
+// this one does not: a purego one extracting an embedded shared library, a cgo one loading
+// that library instead of linking it, or a wasmtime one, since wasmtime-go itself needs cgo
+// and ships engines only for these same platforms.
 //
 // One archive serves both C libraries on Linux. cgo has no build constraint that tells
 // glibc from musl, so there cannot be one per libc; the archive is the core built for the
 // musl target, which asks the C library for nothing glibc and musl do not both have (memcpy,
-// memset, bcmp, abort). The suite runs against it on Debian and on Alpine.
+// memset, bcmp). The suite runs against it on Debian and on Alpine.
 //
 // Windows links the same MSVC archive C#'s Native AOT publish does: MinGW's linker reads
 // MSVC's COFF objects, and what the archive asks of the C runtime — memcpy, memset, memcmp,
-// abort, __CxxFrameHandler3 — resolves against msvcrt.dll through MinGW's own import
+// and on x64 _fltused — resolves against msvcrt.dll through MinGW's own import
 // library, so the link line names nothing else. The core imports nothing from Windows
 // itself: parsing needs no system call.
 //

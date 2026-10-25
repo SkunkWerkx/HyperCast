@@ -44,12 +44,7 @@ from typing import TypeVar, Union
 
 from . import _native
 
-#: Which backend this process loaded: always ``"native"``, the PyO3 extension that links the
-#: Rust core straight into CPython — the only backend, and the one every published wheel ships.
-BACKEND: str = "native"
-
 __all__ = [
-    "BACKEND",
     "CastFailure",
     "Success",
     "Fault",

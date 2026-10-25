@@ -613,8 +613,8 @@ impl NumFormat {
         }
     }
 
-    /// [`new`](Self::new) with separators of one or two characters each (`Symbol::NONE`
-    /// takes the invariant `.` or `,`), for a culture whose separator is wider than one.
+    /// [`new`](Self::new) with separators of up to 8 UTF-8 bytes each (`Symbol::NONE`
+    /// takes the invariant `.` or `,`), for a culture whose separator is wider than one character.
     pub const fn with_separators(
         decimal_sep: Symbol<8>,
         group_sep: Symbol<8>,

@@ -24,14 +24,12 @@ Requirements that hold across every round, stated up front so no layer designs t
   (`CARGO_TARGET_WASM32_WASIP1_RUNNER="wasmtime --dir <repo>" cargo test --target
   wasm32-wasip1`; the preopen is only so the conformance test can read `corpus/`), and the
   browser targets run in headless Chrome in CI, all but ruby.wasm on every pull request (see the root README's
-  WebAssembly section). The in-process wasm backends Ruby, Python and Go carried from 0.3.0
-  through 0.4.0 are gone in 0.6.0: each binding now links the core or loads a native
-  library on every platform it ships for, so the fallback had nothing left to catch. Java's,
-  the last, went on 2026-10-24: the jar is FFM downcalls into the library it bundles.
-- **The tabular layer rides the wasm train too.** This line once called it server domain,
-  with wasm out of scope. It turned out to need no contortions: HyperTabular's core is
-  no_std, allocation-free and imports nothing, so zip, inflate and XML run over caller
-  bytes in a sandbox exactly as natively, and from 0.7.0 it ships every leg HyperCast
+  WebAssembly section). No binding carries an in-process wasm backend: each links the core
+  or loads a native library on every platform it ships for, so a fallback would have
+  nothing to catch, and the jar is FFM downcalls into the library it bundles.
+- **The tabular layer rides the wasm train too.** It needs no contortions: HyperTabular's
+  core is no_std, allocation-free and imports nothing, so zip, inflate and XML run over
+  caller bytes in a sandbox exactly as natively, and it ships every leg HyperCast
   does — Blazor, TinyGo, Swift's WebAssembly SDK, Pyodide and ruby.wasm.
 
 ## Round one — the scalar core (done)
@@ -87,7 +85,8 @@ into one when the linker ruled on that shape: two provider archives each carried
 standard library and this crate's `cast_*` symbols, so no binding that links the core
 rather than loading it (Go, Swift, C# Native AOT) could take both. HyperTabular's
 `docs/design.md` ("One repository, one library") has the record. Apple Numbers documents
-have joined XLSX and ODS since, on the same scalar doors.
+have since joined XLSX and ODS on HyperTabular's master, for its next release, on the same
+scalar doors.
 
 Design constraints round one already locked in on purpose:
 
@@ -229,8 +228,9 @@ language has an idiomatic home for it, with the exceptions named:
   beside `From(CultureInfo)`; PHP `fromLocaleconv`; Java, Swift and Python already had one.
   Go and Ruby have no locale data in their standard libraries.
 - **An availability probe.** The binding half of item 3: a probe-once, never-throwing check
-  in every binding, so a consumer with a fallback gates on it instead of catching a load
-  failure around its first real cast.
+  in every binding that loads or links a library (Python's extension is the package itself,
+  so a successful import is the probe), so a consumer with a fallback gates on it instead of
+  catching a load failure around its first real cast.
 - **Fault spans in the caller's own units.** The core reports UTF-8 byte offsets; the C#
   `string` doors, Java `String` doors, Python `str` and Ruby text inputs now remap to
   char/code-point offsets on a non-ASCII failure, so slicing the offending text back out of
@@ -323,7 +323,7 @@ minus is U+2212 still reads the hyphen its users type anyway (as the BCL does).
 | **Percent symbol** | Only an ASCII `%`. | `percent`, read as a trailing `%` is (`50٪`, `５０％`). Position is unchanged: a leading percent (`%50`, Turkish) is still Malformed, and is the one row left open below. |
 | **Native digits** | Only ASCII `0`–`9`. | `digits`, the zero code point of a contiguous block (`٠` U+0660, `０` U+FF10, as ICU and Java describe a locale's digits), read beside ASCII everywhere a digit is: integer part, fraction, exponent. Radix-prefixed digits stay ASCII. |
 | **AM/PM designators** | Only English `AM`/`PM`, after the clock. | `DayPeriods` beside the declared `DateOrder` (`cast_datetime_with`; the C ABI's `cast_datetime` takes a `RawDayPeriods` pointer after the order, null for English only). Read after the clock (`3:04 nachm.`) or ahead of it (`오후 3:04`, the CJK order) — and English is now read ahead of the clock too. Declared designators match exactly, up to 16 bytes with a space inside allowed (`a. m.`); English matches ASCII case-insensitively. |
-| **Separators wider than one character** | One `char` per separator. | Separators are `Symbol<8>`s: one or two characters, up to 8 UTF-8 bytes (`, `, an LTR mark and a comma). Every binding's separator fields became strings. |
+| **Separators wider than one character** | One `char` per separator. | Separators are `Symbol<8>`s: 1 to 8 UTF-8 bytes (`, `, an LTR mark and a comma). Every binding's separator fields became strings. |
 | **Boolean words** | Svartalfheim's English lexicon only. | **Decided: the boolean door stays English, documented.** No platform's culture data carries a boolean lexicon (`bool.Parse`, `Boolean.parseBoolean` and `bool()` are English or not parsers at all), so no bridge could fill one from its platform's data, which is the sweep's rule for every field. A feed that says `ja`/`oui` maps its words before the door. |
 | **Swift per-user overrides** | The `locale:` overloads cached by locale identifier. | The cache is skipped for `.current` and `.autoupdatingCurrent`, which are derived per call so a user's own number-format overrides are honored; explicit identifiers stay cached. Measured in `swift/README.md`: 60 to 70 µs a call on Linux Foundation, where `.current` carries no overrides at all, so a hot loop passes an explicit locale or a held `NumFormat`. |
 
@@ -352,4 +352,5 @@ only the locales named at build time (`-H:IncludeLocales`), which is the consume
 - Java does not reach Android: the binding uses FFM, which ART lacks, so it would need a
   JNI layer. Python, Ruby and PHP don't reach Android either.
 - A GraalVM Native Image static-link spike (the core linked into the image rather than
-  loaded) was parked for want of a Mac to try ld64; the Linux side is in the forge recipe.
+  loaded) was proven on linux-x64 and parked, because the only way in is GraalVM's internal
+  API; the Forge README's ledger has the recipe and the trigger to revisit.

@@ -12,10 +12,9 @@ plugins {
 // an interim personal-account namespace; this repo never needs that step — it starts on the
 // org coordinate directly).
 group = "io.github.skunkwerkx"
-// CI overrides this (0.1.0-ci.<run_number>) via HYPERCAST_VERSION so repeated manual
-// workflow_dispatch runs during testing don't collide with an already-published version —
-// the real Maven Central publish (release.yml, tag-triggered) never sets that env var, so
-// it always uses this committed version as-is.
+// The committed version, which prepare-release.yml bumps (the Forge's hyper_config.py
+// matches this line exactly). HYPERCAST_VERSION overrides it for a one-off build; nothing in
+// CI sets it for Gradle, so the Central bundle release.yml packs always carries the committed version.
 version = System.getenv("HYPERCAST_VERSION") ?: "0.9.0"
 
 repositories {

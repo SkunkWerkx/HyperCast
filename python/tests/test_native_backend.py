@@ -160,7 +160,7 @@ def test_num_format_arguments_are_checked_for_type_before_value():
     # A type error wins over a value error in the same call, as argument extraction does.
     with pytest.raises(TypeError):
         NumFormat("too long", ",", "0")
-    for args in (("", ",", 0), ("abc", ",", 0), (".", ".", 0)):
+    for args in (("", ",", 0), ("x" * 9, ",", 0), (".", ".", 0)):
         with pytest.raises(ValueError):
             NumFormat(*args)
     with pytest.raises(TypeError):

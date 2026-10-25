@@ -88,7 +88,7 @@ final class CorpusTests: XCTestCase {
 
     func testBooleanCorpus() throws {
         for vector in try corpus("boolean.json") {
-            assertVerdict("boolean", vector, try Cast.bool(inputBytes(vector)), vector["value"] as? Bool)
+            assertVerdict("boolean", vector, Cast.bool(inputBytes(vector)), vector["value"] as? Bool)
         }
     }
 
@@ -97,7 +97,7 @@ final class CorpusTests: XCTestCase {
         // `Unicode.Scalar`, so the comparison is exact with no narrowing.
         for vector in try corpus("char.json") {
             let expected = (vector["value"] as? Int).flatMap { Unicode.Scalar(UInt32($0)) }
-            assertVerdict("char", vector, try Cast.char(inputBytes(vector)), expected)
+            assertVerdict("char", vector, Cast.char(inputBytes(vector)), expected)
         }
     }
 
@@ -110,21 +110,21 @@ final class CorpusTests: XCTestCase {
             let number = vector["value"] as? NSNumber
             switch vector["type"] as! String {
             case "i8":
-                assertVerdict("integer", vector, try Cast.i8(input, format: format), number?.int8Value)
+                assertVerdict("integer", vector, Cast.i8(input, format: format), number?.int8Value)
             case "i16":
-                assertVerdict("integer", vector, try Cast.i16(input, format: format), number?.int16Value)
+                assertVerdict("integer", vector, Cast.i16(input, format: format), number?.int16Value)
             case "i32":
-                assertVerdict("integer", vector, try Cast.i32(input, format: format), number?.int32Value)
+                assertVerdict("integer", vector, Cast.i32(input, format: format), number?.int32Value)
             case "i64":
-                assertVerdict("integer", vector, try Cast.i64(input, format: format), number?.int64Value)
+                assertVerdict("integer", vector, Cast.i64(input, format: format), number?.int64Value)
             case "u8":
-                assertVerdict("integer", vector, try Cast.u8(input, format: format), number?.uint8Value)
+                assertVerdict("integer", vector, Cast.u8(input, format: format), number?.uint8Value)
             case "u16":
-                assertVerdict("integer", vector, try Cast.u16(input, format: format), number?.uint16Value)
+                assertVerdict("integer", vector, Cast.u16(input, format: format), number?.uint16Value)
             case "u32":
-                assertVerdict("integer", vector, try Cast.u32(input, format: format), number?.uint32Value)
+                assertVerdict("integer", vector, Cast.u32(input, format: format), number?.uint32Value)
             case "u64":
-                assertVerdict("integer", vector, try Cast.u64(input, format: format), number?.uint64Value)
+                assertVerdict("integer", vector, Cast.u64(input, format: format), number?.uint64Value)
             case let other:
                 XCTFail("integer: unknown type \(other)")
             }
@@ -139,10 +139,10 @@ final class CorpusTests: XCTestCase {
             switch vector["type"] as! String {
             case "f32":
                 assertVerdict(
-                    "real", vector, try Cast.f32(input, format: format),
+                    "real", vector, Cast.f32(input, format: format),
                     number.map { Float($0.doubleValue) })
             case "f64":
-                assertVerdict("real", vector, try Cast.f64(input, format: format), number?.doubleValue)
+                assertVerdict("real", vector, Cast.f64(input, format: format), number?.doubleValue)
             case let other:
                 XCTFail("real: unknown type \(other)")
             }
@@ -157,7 +157,7 @@ final class CorpusTests: XCTestCase {
             // (`magnitude`/`scale`/`negative`) is not exposed by this binding.
             let expected = (vector["value"] as? String).map { Decimal(string: $0)! }
             assertVerdict(
-                "decimal", vector, try Cast.decimal(inputBytes(vector), format: format(of: vector)), expected)
+                "decimal", vector, Cast.decimal(inputBytes(vector), format: format(of: vector)), expected)
         }
     }
 
@@ -174,7 +174,7 @@ final class CorpusTests: XCTestCase {
                 }
                 expected = bytes.withUnsafeBytes { UUID(uuid: $0.load(as: uuid_t.self)) }
             }
-            assertVerdict("uuid", vector, try Cast.uuid(inputBytes(vector)), expected)
+            assertVerdict("uuid", vector, Cast.uuid(inputBytes(vector)), expected)
         }
     }
 
@@ -186,7 +186,7 @@ final class CorpusTests: XCTestCase {
 
     func testTimestampCorpus() throws {
         for vector in try corpus("timestamp.json") {
-            assertVerdict("timestamp", vector, try Cast.timestamp(inputBytes(vector)), expectedInstant(vector))
+            assertVerdict("timestamp", vector, Cast.timestamp(inputBytes(vector)), expectedInstant(vector))
         }
     }
 
@@ -194,7 +194,7 @@ final class CorpusTests: XCTestCase {
         for vector in try corpus("unix.json") {
             let precision = UnixPrecision(rawValue: UInt32(vector["precision"] as! Int))!
             assertVerdict(
-                "unix", vector, try Cast.unix(inputBytes(vector), precision: precision),
+                "unix", vector, Cast.unix(inputBytes(vector), precision: precision),
                 expectedInstant(vector))
         }
     }
@@ -203,7 +203,7 @@ final class CorpusTests: XCTestCase {
         for vector in try corpus("excel_serial.json") {
             let epoch = ExcelEpoch(rawValue: UInt32(vector["epoch"] as! Int))!
             assertVerdict(
-                "excel_serial", vector, try Cast.excelSerial(inputBytes(vector), epoch: epoch),
+                "excel_serial", vector, Cast.excelSerial(inputBytes(vector), epoch: epoch),
                 expectedInstant(vector))
         }
     }
@@ -215,7 +215,7 @@ final class CorpusTests: XCTestCase {
                 expected = DateComponents(
                     year: year, month: (vector["month"] as! Int), day: (vector["day"] as! Int))
             }
-            assertVerdict("date", vector, try Cast.date(inputBytes(vector)), expected)
+            assertVerdict("date", vector, Cast.date(inputBytes(vector)), expected)
         }
     }
 
@@ -230,7 +230,7 @@ final class CorpusTests: XCTestCase {
                 expected = DateComponents(
                     year: year, month: (vector["month"] as! Int), day: (vector["day"] as! Int))
             }
-            assertVerdict("date_order", vector, try Cast.date(inputBytes(vector), order: order), expected)
+            assertVerdict("date_order", vector, Cast.date(inputBytes(vector), order: order), expected)
         }
     }
 
@@ -255,11 +255,11 @@ final class CorpusTests: XCTestCase {
             // order-only door is the one under test.
             let verdict: Verdict<DateComponents> =
                 if let am = vector["am"] as? String {
-                    try Cast.dateTime(
+                    Cast.dateTime(
                         inputBytes(vector),
                         format: DateFormat(order: order, amSymbol: am, pmSymbol: vector["pm"] as! String))
                 } else {
-                    try Cast.dateTime(inputBytes(vector), order: order)
+                    Cast.dateTime(inputBytes(vector), order: order)
                 }
             assertVerdict("datetime", vector, verdict, expected)
         }
@@ -275,7 +275,7 @@ final class CorpusTests: XCTestCase {
                 expected = DateComponents(
                     hour: Int(hour), minute: Int(minute), second: Int(second), nanosecond: Int(nano))
             }
-            assertVerdict("time", vector, try Cast.time(inputBytes(vector)), expected)
+            assertVerdict("time", vector, Cast.time(inputBytes(vector)), expected)
         }
     }
 
@@ -285,7 +285,7 @@ final class CorpusTests: XCTestCase {
             if let seconds = vector["seconds"] as? Int64 {
                 expected = Duration.seconds(seconds) + .nanoseconds(vector["nanos"] as! Int64)
             }
-            assertVerdict("duration", vector, try Cast.duration(inputBytes(vector)), expected)
+            assertVerdict("duration", vector, Cast.duration(inputBytes(vector)), expected)
         }
     }
 
@@ -304,7 +304,7 @@ final class CorpusTests: XCTestCase {
             }
             switch door {
             case "decimal":
-                let verdict = try Cast.decimalFromDouble(value)
+                let verdict = Cast.decimalFromDouble(value)
                 assertVerdict(
                     "typed decimal", vector, verdict, (vector["value"] as? String).map { Decimal(string: $0)! })
                 note(verdict)
@@ -321,7 +321,7 @@ final class CorpusTests: XCTestCase {
                         second: Int(secondOfDay % 60),
                         nanosecond: Int(nanos % 1_000_000_000))
                 }
-                let verdict = try Cast.excelSerialFromDouble(value, epoch: epoch)
+                let verdict = Cast.excelSerialFromDouble(value, epoch: epoch)
                 assertVerdict("typed excel_serial", vector, verdict, expected)
                 note(verdict)
             case "excel_time":
@@ -333,7 +333,7 @@ final class CorpusTests: XCTestCase {
                     expected = DateComponents(
                         hour: Int(hour), minute: Int(minute), second: Int(second), nanosecond: Int(nano))
                 }
-                let verdict = try Cast.excelTime(value)
+                let verdict = Cast.excelTime(value)
                 assertVerdict("typed excel_time", vector, verdict, expected)
                 note(verdict)
             case "excel_duration":
@@ -341,7 +341,7 @@ final class CorpusTests: XCTestCase {
                 if let seconds = vector["seconds"] as? Int64 {
                     expected = Duration.seconds(seconds) + .nanoseconds(vector["nanos"] as! Int64)
                 }
-                let verdict = try Cast.excelDuration(value)
+                let verdict = Cast.excelDuration(value)
                 assertVerdict("typed excel_duration", vector, verdict, expected)
                 note(verdict)
             default:

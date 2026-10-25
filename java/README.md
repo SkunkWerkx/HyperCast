@@ -26,7 +26,7 @@ String message = switch (Cast.i32("(1,234)", NumFormat.INVARIANT)) {
 ```
 
 Door names mirror the native ABI (`i32`, `f64`, `timestamp`, …) so the polyglot surface
-reads identically across bindings; every door also takes raw UTF-8 `byte[]` for callers
+reads identically across bindings; every text door also takes raw UTF-8 `byte[]` for callers
 already holding bytes. `NumFormat.from(Locale)` bridges Java's own locale machinery —
 separators, signs, percent and currency symbols, native digits, the negative pattern — to
 the caller-declared format the native side reads, `DateTimeFormat.from(Locale)` does the
@@ -94,8 +94,9 @@ A `null` locale is a `NullPointerException`, never a silent default: pass
 `Locale.getDefault(Locale.Category.FORMAT)` to mean the JVM's. Deriving a format reads the
 locale's `DecimalFormat` and `DecimalFormatSymbols`, which build new objects each time, so
 `NumFormat.from` keeps each locale's format once derived (a bounded cache of 64) and the
-overloads cost what the `NumFormat` doors do: a grouped `Cast.i32` measured 45.6 ± 5.5 ns
-through `Locale.US` against 50.2 ± 11.8 ns through `NumFormat.INVARIANT` — the lookup is
+overloads cost what the `NumFormat` doors do: in a run for 0.9.0, a grouped `Cast.i32`
+measured 45.6 ± 5.5 ns through `Locale.US` against 50.2 ± 11.8 ns through
+`NumFormat.INVARIANT` — the lookup is
 inside the noise — where deriving the format on every call, every field of it, measured
 1199.0 ± 169.4 ns and 3.0 KB (JMH, linux-x64, Temurin 25).
 
@@ -111,7 +112,7 @@ the number separators; under `STYLE_SEPARATOR_DETECT` detection governs the whol
 they are ignored. The three-argument constructors declare no symbol.
 
 Declare a format outright with the `String` constructors and the `with*` methods: a
-separator is one or two characters — 1 to 8 UTF-8 bytes, so `new NumFormat(".", ", ",
+separator is 1 to 8 UTF-8 bytes with no ASCII digit, so `new NumFormat(".", ", ",
 NumFormat.STYLE_ALL)` takes a comma-and-space group separator, and the `char` constructors
 remain for the one-character case — and
 `NumFormat.INVARIANT.withSigns("−", "").withPercentSymbol("٪").withDigitZero(0x0660)`
@@ -143,13 +144,13 @@ rounded.
 ## DateTimeFormat: the date order and the day periods
 
 `Cast.dateTime` reads `1/7/2026 3:04 PM` under a declared `DateOrder`, and the English
-`AM`/`PM` it always read are read ASCII case-insensitively, after the clock or ahead of it
+`AM`/`PM` are always read, ASCII case-insensitively, after the clock or ahead of it
 (`PM 3:04`). A culture's own designators are declared beside the order in a
 `DateTimeFormat` — `{order, amDesignator, pmDesignator}`, `NumFormat`'s parallel for the one
 temporal door that reads culture-sensitive text — and matched exactly, in either position,
 with the English pair still read beside them. `DateTimeFormat.from(Locale)` fills it from
 the locale's short-date pattern and `DateFormatSymbols.getAmPmStrings()`, the door takes
-the `Locale` itself, and the `DateOrder` overloads are unchanged: they declare nothing.
+the `Locale` itself, and the `DateOrder` overloads declare no designators.
 
 ```java
 Cast.dateTime("2026-01-07 오후 3:04", DateTimeFormat.from(Locale.KOREA));          // 15:04
@@ -163,10 +164,9 @@ A designator is 1 to 16 UTF-8 bytes with no ASCII digit and no ASCII whitespace 
 end (a space inside, as in Spanish's `a. m.`, is fine); anything else is an
 `IllegalArgumentException` at construction. `from(Locale)` leaves the English pair
 undeclared, since the core reads it anyway, and so leaves a designator the layout cannot
-hold — the JDK's data has over-16-byte ones for a hundred-odd locales — rather than
-refusing the locale, so those read exactly as they did before designators could be
-declared. Derived formats are cached per locale as `NumFormat.from`'s are: `Cast.dateTime`
-on `1/7/2026 3:04 PM` measured 74.1 ± 17.2 ns through `Locale.US` against 75.5 ± 14.4 ns under
+hold — the JDK's data has over-16-byte ones for dozens of locales (78 of 1,158 on Temurin
+25.0.4.1) — rather than refusing the locale, so those locales read the English pair only. Derived formats are cached per locale as `NumFormat.from`'s are: in a run for 0.9.0
+(separate from the Benchmarks table), `Cast.dateTime` on `1/7/2026 3:04 PM` measured 74.1 ± 17.2 ns through `Locale.US` against 75.5 ± 14.4 ns under
 the `DateOrder` alone, and 97.5 ± 7.4 ns with Spanish designators declared and matched — the
 40-byte layout crossing where NULL did, and a longer designator read.
 
@@ -219,7 +219,7 @@ the library cannot be loaded at all: `isAvailable()` is `false` and the doors th
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
    held by the shared corpus (the whole suite green, full corpus replay through
    real FFM downcalls with byte-exact fault spans).
-4. **Faster where it matters, and the input no longer copies.** JMH, `-prof gc` for the
+4. **Faster where it matters, and the input is never copied.** JMH, `-prof gc` for the
    allocation column, the profile `./gradlew :benchmarks:jmh` runs: 1 fork, 3 warmup + 5
    measurement iterations of one second (linux-x64 on an Intel Core i9-11900H, Temurin 25.0.4).
    The error bars are that short profile's; the verdicts are far outside them.
@@ -253,31 +253,30 @@ the library cannot be loaded at all: `isAvailable()` is `false` and the doors th
    resolution pass, visible because the carrier around it is thin. The `Locale` overload
    costs its cached format lookup and the currency symbol the locale declares: `Cast.i32` on
    `1,234,567` with `Locale.US` measures 45.6 ± 5.5 ns against 50.2 ± 11.8 ns under
-   `NumFormat.INVARIANT` in the same run — inside the noise. Rejection
+   `NumFormat.INVARIANT` in a separate run for 0.9.0 —
+   inside the noise. Rejection
    is where the verdict pays off: `Cast.i32` returns the `Fault` for `1,234x567` in
    60.3 ± 3.6 ns and 128 B, while `Integer.parseInt("1234x567")` takes 984 ± 77 ns and 888 B
    to throw its `NumberFormatException` and have it caught, 16x slower. The
    `DateTimeFormatter.ISO_OFFSET_DATE_TIME` control measures 715.5 ± 43.6 ns for the text
    the timestamp door reads in 52.5.
 
-**What changed, twice.** 0.1.0's first tuning removed the `Arena.ofConfined()` every door
-used to open per call — one `ThreadLocal` holds the out/fault/format segments for the life
-of the thread — worth ~100 ns a call. 0.2.0 removed the copy that was left: every downcall
-is now linked `Linker.Option.critical(true)`, so the caller's own `byte[]` crosses as a
-pinned heap segment instead of being copied into a per-thread native staging buffer, and
-that buffer and its arena are gone. Sound because every door is a short, non-blocking
+**What keeps the crossing thin.** No door opens an arena per call: one `ThreadLocal` holds
+the out/fault/format segments for the life of the thread. Every downcall is linked
+`Linker.Option.critical(true)`, so the caller's own `byte[]` crosses as a pinned heap
+segment, never copied into a native staging buffer. Sound because every door is a short, non-blocking
 parse over those bytes that never calls back into Java — the profile that option exists
 for — and `reachability-metadata.json` registers the option, so the GraalVM Native Image
-smoke test proves it under AOT too. Every door also gained a `MemorySegment` overload: slice
-one buffer holding many values (a mapped file, a direct buffer, one line of a CSV) and cast
-a value out of it with nothing copied. The UUID door reads its sixteen bytes as two
-big-endian longs instead of one byte at a time, which took about a third off that row.
+smoke test proves it under AOT too. Every text door also has a `MemorySegment` overload:
+slice one buffer holding many values (a mapped file, a direct buffer, one line of a CSV) and
+cast a value out of it with nothing copied. The UUID door reads its sixteen bytes as two
+big-endian longs rather than one byte at a time.
 
 **The honest trade-off:** three rows lose, each to a JDK method with no boundary to cross
 and one shape to read. `Boolean.parseBoolean` is unbeatable by construction: JIT folds a
 loop-invariant `parseBoolean` into nothing, which an FFM downcall structurally can't match
 — the twenty-lexeme vocabulary is why anyone calls this door. `UUID.fromString` is pure
-bit-twiddling over one text form; what this door adds for its ten nanoseconds is the
+bit-twiddling over one text form; what this door adds for its six nanoseconds is the
 N/B/P/X forms and `urn:uuid:` prefixes that method doesn't accept. `new BigDecimal(String)`
 reads plain digits and throws on anything else; `Cast.decimal` reads the same grouping,
 currency and parentheses every other numeric door does and returns a verdict. It's also a
@@ -287,9 +286,9 @@ choice.
 ## AOT
 
 The GraalVM Native Image smoke test (`./gradlew :aot-smoke-test:nativeRun`) builds and
-runs the `isAvailable()`/`nativeVersion()` probe, all twenty-six doors through their
-`String` form (the date-time door with designators declared too, and a format with the
-0.9.0 fields filled), the `byte[]` and `MemorySegment` forms (heap slice and native segment)
+runs the `isAvailable()`/`nativeVersion()` probe, all twenty-six doors (the text doors
+through their `String` form, the four typed doors through a `double`; the date-time door
+with designators declared too, and a format with signs, percent and native digits declared), the `byte[]` and `MemorySegment` forms (heap slice and native segment)
 once per ABI shape, and the exhaustive union switch as a true native binary. Native Image
 needs two separate registrations
 and the jar ships both in its `reachability-metadata.json` under
@@ -316,14 +315,12 @@ locale's `.` and `,`, so a German format built from `Locale.GERMANY` reads `1.23
 declares formats from, e.g. `-H:IncludeLocales=de-DE,fr-FR` (or `-H:+IncludeAllLocales`). A
 `NumFormat` or `DateTimeFormat` built from explicit symbols needs nothing.
 
-The resources half was missing from v0.0.1, and the failure mode is worth knowing because
-nothing catches it at build time: Native Image doesn't embed classpath resources unless they
-are registered, so `Cast`'s `getResourceAsStream("/native/{rid}/{lib}")` returned null and a
-consumer's binary compiled clean, then died on its first call with "classpath resource not
-found". The in-repo smoke test was green throughout, because it declared the glob in its own
-build file — so it proved only that *this repo* could be configured to work. That override is
-gone now; the test passes on the packaged metadata alone, which is the only thing that
-actually proves a consumer is fine.
+The resources half has a failure mode worth knowing, because nothing catches it at build
+time: Native Image doesn't embed classpath resources unless they are registered, so without
+the glob `Cast`'s `getResourceAsStream("/native/{rid}/{lib}")` returns null and a consumer's
+binary compiles clean, then dies on its first call with "classpath resource not found". The
+smoke test declares no glob of its own, so it passes on the packaged metadata alone, which is
+what proves a consumer is fine.
 
 **Under GraalVM Native Image** JMH cannot run, so these are a hand loop (warm up, one
 million calls per door, best of five rounds) built into a native image with the metadata the

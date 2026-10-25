@@ -3,7 +3,7 @@
 	<!-- The package on Android, as an app: the same SmokeTest.Run() the Native AOT smoke test
 	     runs, crossing every native entry point, started from an Activity (SmokeActivity.cs),
 	     since an Android app has no Main of its own. It needs the android workload, so it is not in
-	     HyperCast.slnx, which every other leg builds; CI's test-android job builds it on Mono
+	     HyperCast.slnx, which every other leg builds; CI's test-android job builds it on CoreCLR
 	     and under Native AOT, for both RIDs, and runs the x64 builds in an emulator.
 
 	     Unlike the other smoke tests, this one takes HyperCast as a package, not a project

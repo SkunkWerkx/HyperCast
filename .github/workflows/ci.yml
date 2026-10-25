@@ -98,22 +98,11 @@ jobs:
       id-token: write
       attestations: write
     with:
-      static_libs_artifact: false
-      swift_static_tests: false
-      android_shared_artifact: false
-      php_extension_schedule: parallel
       # pr: every leg and suite, nothing only a release needs (see the forge's README).
       mode: ${{ github.event_name == 'pull_request' && 'pr' || 'release' }}
       project: HyperCast
       crate: hypercast
       pure_env: HYPERCAST_PURE
-      # Four more static libraries in the static-libs artifact: iOS, the iOS simulator and
-      # Mac Catalyst (test-apple-mobile, below, is what links and runs them).
-      apple_mobile: true
-      # Android: the shared library for android-arm64 and android-x64 (what a C# app on
-      # CoreCLR loads out of its APK), and in static-libs their archives for C#'s Native AOT,
-      # Go's go/staticlib and Swift's bundle. test-android, below, is what runs them.
-      android: true
       csharp_test_project: csharp/HyperCast.Tests/HyperCast.Tests.csproj
       # .NET 11 is HyperCast's floor for the native [Union] Verdict types; the forge
       # installs the SDK global.json names.
@@ -123,29 +112,24 @@ jobs:
       # aot-report-{rid}. The smoke test exercises a door from every family plus the union's
       # compile-checked consumption, so it covers the AOT-sensitive surface, not one call.
       csharp_aot_project: csharp/HyperCast.AotSmokeTest/HyperCast.AotSmokeTest.csproj
-      # Both explicit-placement inputs stay set. The original reason no longer holds — it
-      # was that the separate per-binding test jobs downloaded the native artifact but
-      # never ran cargo, so the csproj/Gradle dev-loop staging from rust/target/release
-      # had nothing to stage, and leaving these empty meant DllNotFoundException on every
-      # C# leg and an ExceptionInInitializerError on every Java leg (found by this repo's
-      # first real matrix run, not assumed). Since the forge collapsed those jobs into
-      # build-native (2026-09), cargo runs in the same job and rust/target/release is
-      # populated, so the dev-loop staging would now find it.
-      #
-      # Kept anyway, deliberately: explicit placement puts the library at
-      # runtimes/{rid}/native/ and src/main/resources/native/{rid}/ — the same layouts the
-      # shipped NuGet package and jar actually use — whereas the dev-loop staging only
-      # produces a flat copy beside the assembly. Testing the layout consumers get is the
+      # Both explicit-placement inputs stay set, deliberately: cargo runs in the same job, so
+      # the csproj/Gradle dev-loop staging from rust/target/release would find the library,
+      # but explicit placement puts it at runtimes/{rid}/native/ and
+      # src/main/resources/native/{rid}/ — the same layouts the shipped NuGet package and jar
+      # actually use — whereas the dev-loop staging only produces a flat copy beside the
+      # assembly. Testing the layout consumers get is the
       # point; falling back to the flat copy would still pass while proving less.
       csharp_runtimes_dir: csharp/HyperCast/runtimes
       java_resources_dir: java/src/main/resources/native
       # The forge's ruby_version default (4.0, the current release) is the primary ABI; this
       # adds a second Magnus build+suite against 3.4 so each platform gem can ship both. A
       # Magnus extension is bound to one Ruby minor — unlike PyO3's abi3 wheels, which is why
-      # Python needs no equivalent input. Keep this in step with ruby/Rakefile's ABIS and
-      # release.yml's own ABIS list; the rake task aborts naming the missing file if they
-      # drift. Ruby 3.4 goes EOL 2028-03-31 — clear this line then and 3.4 consumers fall
-      # back to the universal Fiddle gem, which is exactly what it's there for.
+      # Python needs no equivalent input. Keep this in step with ruby/Rakefile's ABIS and, in
+      # the Forge, hyper_config.py's ruby.abis default and hyper-build-wasm.yml's
+      # ruby_wasm_abis default (CLAUDE.md, "Lists that move together"); `rake native:gem`
+      # aborts naming the missing file if they drift.
+      # Ruby 3.4 goes EOL 2028-03-31 — clear this line then and 3.4 consumers fall back to the
+      # universal Fiddle gem, which is exactly what it's there for.
       ruby_compat_version: "3.4"
 
   # The C#/NuGet browser-wasm staticlib — built on every PR, not just at release time, so
@@ -217,8 +201,8 @@ jobs:
 
 
   # iOS and Mac Catalyst, for the three bindings that reach them. Neither platform loads a
-  # library: the core is linked into the app, from the static libraries build-native's
-  # build-static-libs job cross-compiles and attests (the forge's apple_mobile input), which
+  # library: the core is linked into the app, from the static libraries build-static
+  # cross-compiles and attests (the forge's apple_mobile input), which
   # are the bytes stage-native-binaries.yml commits for Swift and Go and release.yml packs for
   # C#. This job is the one place they are linked into something and run, and it needs what
   # no build-native leg carries: Xcode, a simulator, and the .NET ios and maccatalyst
@@ -255,8 +239,8 @@ jobs:
     if: github.event_name != 'pull_request'
     # The .NET 11 RC2 ios and maccatalyst workloads (27.0.x) are built against Xcode 27.0 and
     # refuse any other version; macos-latest (macOS 26) tops out at Xcode 26.6. The xcode-27
-    # image tracks the Xcode 27 major, not a point release: since 2026-10-22 it ships 27.1 as
-    # its default and no longer carries 27.0, so the three dotnet builds below pass
+    # image tracks the Xcode 27 major, not a point release: it ships 27.1 as its default and
+    # does not carry 27.0, so the three dotnet builds below pass
     # ValidateXcodeVersion=false (dotnet/macios, docs/building-apps/build-properties.md) and
     # the smoke tests themselves prove the 27.0 to 27.1 skip is harmless. Drop the property
     # once a .NET 11 workload accepts the image's Xcode.
@@ -437,7 +421,7 @@ jobs:
   # runtimes/{rid}/native/ into the APK's lib/{abi}/, and build/net11.0/HyperCast.targets
   # handing a Native AOT publish its archive), not a project reference's.
   #
-  # Four APKs: CoreCLR (.NET 11's Android runtime; Mono is no longer supported there) and
+  # Four APKs: CoreCLR (.NET 11's Android runtime; Mono is not supported there) and
   # Native AOT, each for android-x64 and android-arm64. The x64 pair runs in an x86_64
   # emulator whose image uses 16 KB pages, as Android 15 devices may, so a library aligned
   # for 4 KB would fail to load there; nothing hosted runs arm64 Android, so the arm64 pair is
@@ -492,22 +476,17 @@ jobs:
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
-          java-version: "21"
+          java-version: "25"
 
       - name: Install the .NET android workload
         run: dotnet workload install android
 
-      # The restore also reads the .NET 11 daily feed: the android workload this SDK resolves
-      # (37.0.0-rc.1) was built against runtime 11.0.0-rc.1.26428.117, a build newer than the
-      # RC1 on nuget.org, and a Native AOT publish restores that runtime's NativeAOT and
-      # ILCompiler packs by exact version. Drop it once the workload and the SDK agree again
-      # (by .NET 11 GA at the latest).
       - name: Pack HyperCast into a local feed
         run: |
           set -euo pipefail
           version="0.0.0-android.${{ github.run_id }}"
           echo "HYPERCAST_VERSION=$version" >> "$GITHUB_ENV"
-          echo "HYPERCAST_FEED=$RUNNER_TEMP/feed%3Bhttps://pkgs.dev.azure.com/dnceng/public/_packaging/dotnet11/nuget/v3/index.json" >> "$GITHUB_ENV"
+          echo "HYPERCAST_FEED=$RUNNER_TEMP/feed" >> "$GITHUB_ENV"
           dotnet pack csharp/HyperCast/HyperCast.csproj -c Release -o "$RUNNER_TEMP/feed" -p:Version="$version"
           unzip -l "$RUNNER_TEMP/feed/HyperCast.$version.nupkg" | tee "$RUNNER_TEMP/nupkg.txt"
           for path in runtimes/android-arm64/native/libhypercast.so runtimes/android-x64/native/libhypercast.so \

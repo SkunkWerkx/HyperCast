@@ -23,7 +23,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * fuller one, and every field defaults to declaring nothing, which reads exactly as the
  * invariant culture. {@link #from(Locale)} fills all of them from the locale's own symbols,
  * and the doors honor the currency symbol only while {@link #STYLE_CURRENCY} is set. A
- * separator is one or two characters — at most 8 UTF-8 bytes — which covers every separator
+ * separator is 1 to 8 UTF-8 bytes with no ASCII digit, which covers every separator
  * any real locale declares ({@code .}, {@code ,}, U+00A0, U+202F, an apostrophe and a space).
  *
  * <p>The boolean door's lexicon is not here, and stays English by decision: no platform

@@ -67,7 +67,7 @@ public struct NumStyles: OptionSet, Sendable {
 /// of them reads exactly what it did before they existed.
 public struct NumFormat: Equatable, Sendable {
     /// The text between the integer and fraction digits (`.` in ``invariant``, `,` in
-    /// eurozone text): one or two characters, 1 to 8 UTF-8 bytes, with no ASCII digit in it.
+    /// eurozone text): 1 to 8 UTF-8 bytes, with no ASCII digit in it.
     public var decimalSeparator: String { symbol(at: 12, capacity: Self.maxSymbolBytes) }
     /// The text permitted between digits while ``NumStyles/grouping`` is in ``styles``
     /// (`,` in ``invariant``; `.`, a narrow no-break space or `, ` elsewhere). Same rules
@@ -514,8 +514,8 @@ public struct DateFormat: Equatable, Sendable {
     /// Derives the format from a locale's own data: the field order of its short-date
     /// pattern, as ``DateOrder/from(locale:)`` reads it, and its day-period designators, a
     /// `DateFormatter`'s `amSymbol` and `pmSymbol`. The pair is declared together or not at
-    /// all: a locale whose designators the native field cannot carry (Persian's are longer
-    /// than 16 bytes) declares none, and its text is read with the English `AM`/`PM` only —
+    /// all: a locale whose designators the native field cannot carry (longer than 16 bytes)
+    /// declares none, and its text is read with the English `AM`/`PM` only —
     /// a locale is process/user state, and no cast should trap on it. Deriving builds a
     /// `DateFormatter`, which is tens of microseconds on Foundation; a hot loop derives once
     /// and passes the format.

@@ -11,9 +11,8 @@ name: "HyperCast CodeQL config"
 #
 # A path filter excludes whole files, so a test module inline in a file that also ships is still
 # analyzed. The crate's unit tests therefore live in `rust/src/tests.rs` rather than in `lib.rs`,
-# and that file is listed here. The smaller `mod tests` in decimal.rs, float.rs, integer.rs,
-# real.rs and uuid.rs stay inline: they reach their module's private items, and they raise
-# nothing today.
+# and that file is listed here. The smaller `mod tests` in float.rs, real.rs and uuid.rs stay
+# inline: they reach their module's private items, and they raise nothing today.
 paths-ignore:
   # rust/src/tests.rs: the crate's unit tests, split out of lib.rs so this filter can reach them
   - "rust/src/tests.rs"

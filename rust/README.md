@@ -29,7 +29,9 @@ let ts = cast_timestamp(b"2026-01-02T15:04:05.123456789+05:00");
 ```
 
 The crate is simultaneously the engine under every binding in this repo — built as a
-`cdylib` (`libhypercast`) with one `cast_*` C-ABI export per door plus `hypercast_version`, dlopen'd or linked by the
+`cdylib` (`libhypercast`) with 26 `cast_*` C-ABI exports (the text doors, plus
+`decimal_from_f64`, `excel_serial_from_f64`, `excel_time` and `excel_duration`) and
+`hypercast_version`, dlopen'd or linked by the
 C#/Java/Go/Swift/Ruby/PHP/Python bindings, all held to byte-identical verdicts by the
 shared `corpus/*.json` conformance vectors — and an ordinary `rlib` for plain Rust use.
 Zero runtime dependencies either way.
@@ -72,7 +74,7 @@ let trailing = NumFormat { flags: NumFormat::ALL | NumFormat::TRAILING_SIGN, ..N
 cast_i32("5 -", &trailing);                               // Ok(-5)
 ```
 
-Separators are `Symbol<8>`s — one or two characters, up to 8 UTF-8 bytes, so a culture
+Separators are `Symbol<8>`s — 1 to 8 UTF-8 bytes with no ASCII digit, so a culture
 whose group separator is a narrow no-break space or an LTR mark and a comma declares it
 whole. The civil date-time door takes the same declaration for the two halves of a 12-hour
 clock: `cast_datetime_with(text, order, &DayPeriods)` reads a culture's own designators
@@ -118,9 +120,13 @@ compiles perfectly cleanly.
 
 The `std` feature is on by default for the crates.io consumer, the tests and the native
 extensions. The artifacts this repository ships leave it out: the static libraries and the
-shared library every FFI binding loads (`cargo cdylib`, below) are all `#![no_std]`, each
+shared library the loading bindings open (`cargo cdylib`, below) are all `#![no_std]`, each
 bringing the abort-on-panic handler `std` would otherwise supply — which takes the linux-x64
-shared library from 437 KB to 104 KB with the same exports and the same code behind them.
+shared library from 425 KB to 160 KB with the same exports and the same code behind them
+(425,048 and 160,488 bytes, `cargo rustc --release --crate-type cdylib` against `cargo
+cdylib`, rustc 1.99.1 in `rust:latest`, at commit `0ee2caa` on 2026-10-25; the CI-built
+library committed for PHP is 160,512 bytes, the difference being the C compiler's version
+string).
 The shared library is not one of the manifest's crate types, so cargo never builds it for a
 consumer of the crate.
 
@@ -207,7 +213,7 @@ native extension — one crate, three extra entry points, instead of satellite c
 path-depending back here:
 
 ```sh
-cargo cdylib                    # the plain shared library every FFI binding uses (no_std)
+cargo cdylib                    # the plain shared library C#, Java, PHP and Ruby's Fiddle backend load (no_std)
 cargo rustc --release --crate-type cdylib --features python  # the CPython extension module (PyO3: abi3, or abi3t/cp314t for a free-threaded PYO3_PYTHON)
 cargo ruby-ext                  # the Ruby extension (Magnus), in target/ruby/release/ (ruby/'s `rake native:dev` runs this and stages the result)
 cargo php-ext                   # the Zend extension (ext-php-rs) — benchmark spike only, in target/php/release/
@@ -224,8 +230,9 @@ alias.
 The `php` one is not a shipped backend. PHP's ext-ffi crossing measured ~105 ns — already
 extension-class, which is why Python and Ruby got a native backend and PHP didn't — and
 this spike exists to keep that reasoning checkable against real numbers rather than
-asserted, exactly as in HyperUuid. CI builds and load-checks it on every darwin/linux leg
-so it cannot bit-rot; no phpunit runs against it, and the Composer package never loads it.
+asserted, exactly as in HyperUuid. CI builds and load-checks it on linux-x64, linux-arm64
+and osx-arm64 in every release-mode run (weekly and release, not pull requests) so it cannot
+bit-rot; no phpunit runs against it, and the Composer package never loads it.
 
 Only one feature is ever enabled per build invocation — each produces a different C entry
 point (`PyInit__native`, `Init_hypercast_native`, PHP's module struct) under the same
@@ -233,8 +240,8 @@ crate. On macOS the
 crate's own `.cargo/config.toml` supplies the `-undefined dynamic_lookup` link flag an
 extension module needs (the host runtime's symbols resolve at load time, not link time).
 
-**Local dev trap worth knowing:** all three builds write the *same* file —
-`target/release/libhypercast.so` — so a `--features python` build (or a `maturin build` in
+**Local dev trap worth knowing:** a plain `--features` build of any of the three writes the
+*same* file as `cargo cdylib`, `target/release/libhypercast.so`, so a `--features python` build (or a `maturin build` in
 `python/`, which is one) silently replaces the plain cdylib that every other binding's dev
 loop loads. The extension build still exports every `cast_*` symbol, but it also carries
 ~95 undefined `Py*` symbols that only resolve inside a CPython process, so the next
@@ -246,8 +253,7 @@ the `cargo ruby-ext` and `cargo php-ext` aliases in `.cargo/config.toml` avoid i
 exactly this ordering — the forge's single per-platform job builds the PyO3 extension
 before it tests C# and Java — which is why both bindings' dev-loop staging yields whenever
 CI has already placed the library explicitly (`runtimes/<rid>/native/`,
-`src/main/resources/native/<rid>/`); the first collapsed-job run failed every Linux leg on
-`undefined symbol: PyExc_SystemError` before that gate existed.
+`src/main/resources/native/<rid>/`).
 
 ## Interop: building on HyperCast's C ABI
 
@@ -347,8 +353,8 @@ temporal forms, durations) are pinned by the shared corpus instead.
 ## WebAssembly
 
 The full test suite — unit tests, the allocation proof, and every corpus replay —
-passes under `wasmtime` on `wasm32-wasip1`: no clock, no randomness, no dependencies to
-stub. CI also builds the `wasm32-unknown-emscripten` staticlib the C# binding's
+passes under `wasmtime` on `wasm32-wasip1`, in CI's `test-wasi` job on every pull request:
+no clock, no randomness, no dependencies to stub. CI also builds the `wasm32-unknown-emscripten` staticlib the C# binding's
 browser-wasm packaging consumes, on every PR — `cargo wasm-staticlib`, which leaves Rust's
 standard library out of it (the `staticlib` feature supplies the panic handler in its
 place), so it can be linked into one Blazor app beside HyperUuid's.
@@ -364,8 +370,8 @@ the version export inside a real browser; CI runs it in headless Chrome on every
 The `wasm32-wasip1` static archive that TinyGo and Swift's WebAssembly SDK link is the same
 `no_std` build as every other archive, and it imports nothing from WASI: no clock and no
 entropy, because the core is pure computation over the bytes it is handed. Its only
-undefined symbols are the 128-bit arithmetic helpers and the stack pointer, which the
-consumer's linker supplies.
+undefined symbols are `memcmp`, the 128-bit arithmetic helpers and the stack pointer, which
+the consumer's linker (wasi-libc, compiler-rt) supplies.
 
 ## Benchmarks
 
@@ -388,8 +394,8 @@ the doors' raw cost:
 
 Separator detection costs one extra scan and nothing more: `1.234.567,89` under
 `NumFormat::DETECT` is 29.0 ns against 19.2 ns for the same text under a declared eurozone
-format — ~10 ns, and invisible behind any FFI boundary (the Java and Swift bindings measure
-detection as free at their crossing).
+format — ~10 ns, small beside any FFI crossing (about 7 ns in C# and Java, more in Swift,
+whose carrier is thinner).
 
 A declared currency symbol costs text that does not carry one about 2 ns: `1,234,567` is
 13.3 ns under `NumFormat::INVARIANT` and 15.1 ns under a format declaring `$`. Rejection
@@ -397,8 +403,8 @@ costs more than acceptance. `cast_i32` faults `1,234x567` in 37.3 ns, against 3.
 `str::parse` failing on `1234x567`: the fast lanes read well-formed shapes only, so a fault
 falls through to the full engine, which rescans the text to report its reason and span.
 
-Grouping, a currency symbol and accounting parentheses each used to send a number through
-the full normalize-then-parse engine. A second fast lane (`src/lane.rs`) reads them in one
+Grouping, a currency symbol and accounting parentheses do not send a number through the
+full normalize-then-parse engine: a second fast lane (`src/lane.rs`) reads them in one
 pass, so a money-shaped value costs a few nanoseconds more than a plain one rather than
 several times as much — under a declared `$` and `,`:
 
@@ -411,11 +417,9 @@ several times as much — under a declared `$` and `,`:
 
 (The integer door reads the same four shapes of `1234567`.)
 
-**Correction, and the reason this file carries a table instead of a boast:** an earlier
-version of this README claimed `cast_uuid` beat the `uuid` crate (15.4 vs 17.4 ns). It
-doesn't anymore — `uuid` 1.26 got materially faster, and our SWAR decode (15.9 → 12.8 ns)
-narrowed the gap without closing it. `cast_timestamp` is the one door ahead of its Rust
-counterpart, and only since its field readers were inlined (26.6 → 14.5 ns). Against
+**Why this file carries a table instead of a boast:** `cast_uuid` is 12.8 ns against the
+`uuid` crate's 11.1 ns, and `cast_timestamp` is the one door ahead of its Rust counterpart
+(14.5 ns against the `time` crate's 17.1). Against
 in-process Rust parsers these doors trade raw speed for what they return (a verdict with a
 span, not a panic or a bare `Option`) and what they accept (five `Guid` text forms, declared
 grouping and separators, three duration grammars). The speed story belongs to the *bindings*,
@@ -458,11 +462,11 @@ cargo add hypercast
 ```
 
 Requires Rust 1.88 or later (`rust-version` in the manifest): the parsers use `let` chains,
-stable since 1.88, above edition 2024's own 1.85 floor. CI builds the library and the
+stable since 1.88, above edition 2024's own 1.85 floor. CI checks the library and the
 `no_std` shared library on exactly that toolchain on every PR.
 
 Zero runtime dependencies. `default-features = false` gives the `#![no_std]` rlib described
-above. The `cdylib` every other binding loads is built from this repository with
+above. The `cdylib` the loading bindings open is built from this repository with
 `cargo cdylib`, and is never part of a consumer's build.
 
 See [the repo root README](../README.md) for the full door table, the receipts, and the

@@ -39,19 +39,19 @@ let benchmarks: @Sendable () -> Void = {
 
     Benchmark("Cast.bool") { benchmark in
         for _ in benchmark.scaledIterations {
-            blackHole(try Cast.bool("true"))
+            blackHole(Cast.bool("true"))
         }
     }
 
     Benchmark("Cast.i32") { benchmark in
         for _ in benchmark.scaledIterations {
-            blackHole(try Cast.i32(intText, format: invariant))
+            blackHole(Cast.i32(intText, format: invariant))
         }
     }
 
     Benchmark("Cast.i32 grouped") { benchmark in
         for _ in benchmark.scaledIterations {
-            blackHole(try Cast.i32(intGrouped, format: invariant))
+            blackHole(Cast.i32(intGrouped, format: invariant))
         }
     }
 
@@ -60,7 +60,7 @@ let benchmarks: @Sendable () -> Void = {
     let enUs = NumFormat.from(locale: Locale(identifier: "en_US"))
     Benchmark("Cast.i32 grouped (en_US format)") { benchmark in
         for _ in benchmark.scaledIterations {
-            blackHole(try Cast.i32(intGrouped, format: enUs))
+            blackHole(Cast.i32(intGrouped, format: enUs))
         }
     }
 
@@ -71,13 +71,13 @@ let benchmarks: @Sendable () -> Void = {
     let enUsLocale = Locale(identifier: "en_US")
     Benchmark("Cast.i32 grouped (locale: en_US)") { benchmark in
         for _ in benchmark.scaledIterations {
-            blackHole(try Cast.i32(intGrouped, locale: enUsLocale))
+            blackHole(Cast.i32(intGrouped, locale: enUsLocale))
         }
     }
 
     Benchmark("Cast.i32 grouped (locale: .current)") { benchmark in
         for _ in benchmark.scaledIterations {
-            blackHole(try Cast.i32(intGrouped, locale: .current))
+            blackHole(Cast.i32(intGrouped, locale: .current))
         }
     }
 
@@ -90,7 +90,7 @@ let benchmarks: @Sendable () -> Void = {
     // The rejection path, against Foundation's own failure on the same mistake.
     Benchmark("Cast.i32 malformed") { benchmark in
         for _ in benchmark.scaledIterations {
-            blackHole(try Cast.i32("1,234x567", format: invariant))
+            blackHole(Cast.i32("1,234x567", format: invariant))
         }
     }
 
@@ -108,7 +108,7 @@ let benchmarks: @Sendable () -> Void = {
 
     Benchmark("Cast.f64") { benchmark in
         for _ in benchmark.scaledIterations {
-            blackHole(try Cast.f64(floatText, format: invariant))
+            blackHole(Cast.f64(floatText, format: invariant))
         }
     }
 
@@ -120,7 +120,7 @@ let benchmarks: @Sendable () -> Void = {
 
     Benchmark("Cast.decimal") { benchmark in
         for _ in benchmark.scaledIterations {
-            blackHole(try Cast.decimal(floatText, format: invariant))
+            blackHole(Cast.decimal(floatText, format: invariant))
         }
     }
 
@@ -132,7 +132,7 @@ let benchmarks: @Sendable () -> Void = {
 
     Benchmark("Cast.uuid") { benchmark in
         for _ in benchmark.scaledIterations {
-            blackHole(try Cast.uuid(uuidText))
+            blackHole(Cast.uuid(uuidText))
         }
     }
 
@@ -144,7 +144,7 @@ let benchmarks: @Sendable () -> Void = {
 
     Benchmark("Cast.timestamp") { benchmark in
         for _ in benchmark.scaledIterations {
-            blackHole(try Cast.timestamp(timestampText))
+            blackHole(Cast.timestamp(timestampText))
         }
     }
 
@@ -156,12 +156,12 @@ let benchmarks: @Sendable () -> Void = {
 
     Benchmark("Cast.duration (no Foundation parser to pair against)") { benchmark in
         for _ in benchmark.scaledIterations {
-            blackHole(try Cast.duration(isoSpan))
+            blackHole(Cast.duration(isoSpan))
         }
     }
     Benchmark("Cast.dateTime (messy civil shape)") { benchmark in
         for _ in benchmark.scaledIterations {
-            blackHole(try Cast.dateTime(messyDateTimeText, order: .monthDayYear))
+            blackHole(Cast.dateTime(messyDateTimeText, order: .monthDayYear))
         }
     }
 
@@ -178,31 +178,31 @@ let benchmarks: @Sendable () -> Void = {
     let koKr = Locale(identifier: "ko_KR")
     Benchmark("Cast.dateTime (declared day periods)") { benchmark in
         for _ in benchmark.scaledIterations {
-            blackHole(try Cast.dateTime(koreanDateTimeText, format: korean))
+            blackHole(Cast.dateTime(koreanDateTimeText, format: korean))
         }
     }
 
     Benchmark("Cast.dateTime (locale: ko_KR)") { benchmark in
         for _ in benchmark.scaledIterations {
-            blackHole(try Cast.dateTime(koreanDateTimeText, locale: koKr))
+            blackHole(Cast.dateTime(koreanDateTimeText, locale: koKr))
         }
     }
 
     Benchmark("Cast.date (declared order)") { benchmark in
         for _ in benchmark.scaledIterations {
-            blackHole(try Cast.date(messyDateText, order: .monthDayYear))
+            blackHole(Cast.date(messyDateText, order: .monthDayYear))
         }
     }
 
     Benchmark("Cast.f64 (separator detection)") { benchmark in
         for _ in benchmark.scaledIterations {
-            blackHole(try Cast.f64(euroNumberText, format: .detect))
+            blackHole(Cast.f64(euroNumberText, format: .detect))
         }
     }
 
     Benchmark("Cast.f64 (declared eurozone format)") { benchmark in
         for _ in benchmark.scaledIterations {
-            blackHole(try Cast.f64(euroNumberText, format: eurozone))
+            blackHole(Cast.f64(euroNumberText, format: eurozone))
         }
     }
 

@@ -419,7 +419,7 @@ struct Declared<'a> {
 
 /// The one place a format is built, so the constructor and the locale bridge refuse the
 /// same caller bugs — the C ABI's own contract rules, raised here at construction so a
-/// format that exists is one the core reads: a separator that is not one or two characters,
+/// format that exists is one the core reads: a separator that is not 1 to 8 UTF-8 bytes,
 /// equal separators (the number pair, or the pair a currency amount is read with), a sign or
 /// percent symbol with whitespace in it, a currency symbol the core cannot carry, a digit
 /// zero that starts no digit block.
@@ -458,17 +458,14 @@ fn declare(declared: Declared<'_>) -> PyResult<NumFormat> {
     Ok(NumFormat { resolved })
 }
 
-/// A number separator: one or two characters — 1 to 8 UTF-8 bytes — with no ASCII digit,
-/// or a caller bug raised at construction.
+/// A number separator: 1 to 8 UTF-8 bytes with no ASCII digit, the core's own rule, or a
+/// caller bug raised at construction.
 fn separator(what: &str, text: &str) -> PyResult<core::Symbol<8>> {
-    if text.chars().count() <= 2
-        && let Some(symbol) = core::Symbol::new(text)
-    {
-        return Ok(symbol);
-    }
-    Err(PyValueError::new_err(format!(
-        "{what} must be one or two characters with no ASCII digit; got \"{text}\""
-    )))
+    core::Symbol::new(text).ok_or_else(|| {
+        PyValueError::new_err(format!(
+            "{what} must be 1 to 8 UTF-8 bytes with no ASCII digit; got \"{text}\""
+        ))
+    })
 }
 
 /// A symbol a caller need not declare: `""` declares none; anything else is a `separator`,
@@ -480,7 +477,7 @@ fn optional(what: &str, text: &str, flush: bool) -> PyResult<core::Symbol<8>> {
     }
     if flush && text.bytes().any(|byte| byte.is_ascii_whitespace()) {
         return Err(PyValueError::new_err(format!(
-            "{what} must be one or two characters with no ASCII digit or whitespace; got \"{text}\""
+            "{what} must be 1 to 8 UTF-8 bytes with no ASCII digit or whitespace; got \"{text}\""
         )));
     }
     separator(what, text)

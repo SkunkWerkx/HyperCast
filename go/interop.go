@@ -19,7 +19,7 @@ import (
 // 1 byte, which is what a Go bool is.
 
 // SymbolMaxBytes is the inline capacity of the ABI's separators, signs and percent symbol,
-// in UTF-8 bytes: one or two characters.
+// in UTF-8 bytes: enough for every separator a real culture declares (one or two characters).
 const SymbolMaxBytes = 8
 
 // CurrencyMaxBytes is the inline capacity of the ABI's currency symbol, in UTF-8 bytes.

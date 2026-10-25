@@ -12,7 +12,7 @@ Allocation-lean scalar casts — booleans, characters, the full integer family, 
 decimals, UUIDs, temporals.
 The PyO3 extension (`hypercast._native`) is the backend every wheel ships — a door is an
 ordinary `METH_FASTCALL` extension call into a direct Rust call, and the wheel maturin
-builds is the whole package (the interim ctypes fallback is gone). Python 3.11 is the floor,
+builds is the whole package, with no ctypes fallback. Python 3.11 is the floor,
 the oldest version still in upstream support (`match`/`case` is the consumption idiom).
 
 ## Install
@@ -56,8 +56,9 @@ every door is safe to call from any number of threads at once: the verdict types
 and only read after, and a door reads its `str` or `bytes` argument in place, both immutable.
 The bindings are written once, for free-threading; a GIL build runs the same code. No door
 releases the GIL on a GIL build: each is tens to hundreds of nanoseconds of pure Rust, less
-than the handoff would cost. CI runs the whole suite on free-threaded 3.15 on every platform,
-and installs each wheel on its own interpreters before it is published.
+than the handoff would cost. CI runs the whole suite on free-threaded 3.15 on glibc Linux,
+Apple silicon macOS and Windows, x64 and arm64, and installs each wheel on its own
+interpreters, free-threaded ones included, on all eight platforms before it is published.
 
 The package is typed: it ships `py.typed` and a stub for the extension module, so mypy and
 pyright see each door's own `Success[...] | Fault` rather than `Any` — which is what makes
@@ -195,7 +196,7 @@ language binding.
 ## Declared formats: separators, lenience flags, currency, signs, digits
 
 Every numeric door — the integer family, `cast_f32`/`cast_f64`, and `cast_decimal` — takes
-a `NumFormat`: the decimal and group separators (one or two characters each: `,` and `.`, a
+a `NumFormat`: the decimal and group separators (1 to 8 UTF-8 bytes each: `,` and `.`, a
 no-break space, the `, ` some feeds carry), a bitwise OR of the lenience flags (`GROUPING`,
 `PARENTHESES`, `EXPONENT`, `RADIX_PREFIXES`, `PERCENT`, `CURRENCY`; `ALL` is all six —
 `TRAILING_SIGN` is opted into separately, from a culture's negative pattern, and
@@ -210,8 +211,8 @@ structure (`1.234.567,89` and `1,234,567.89` both read) and an undecidable one i
 `MALFORMED` fault, never a guess; `NumFormat.from_localeconv()` bridges
 `locale.localeconv()` ([below](#the-locale-bridge)). A format is immutable and reads back
 through `decimal_sep`, `group_sep`, `flags`, `currency` and the keyword fields by their
-own names, each `""` when it declares nothing. Unlike the C#, Java, Swift, PHP and Ruby
-doors, these take no platform format object: Python's `locale` is process-global, and
+own names, each `""` when it declares nothing. Unlike the C#, Java, Swift and PHP doors,
+these take no platform format object (Ruby's take Rails' words as keywords instead): Python's `locale` is process-global, and
 `from_localeconv()` already reads it.
 
 A currency symbol is declared, never guessed. With `CURRENCY` set and a symbol declared, the
@@ -275,11 +276,11 @@ hypercast.cast_decimal("٥٠٪", arabic)            # Success(value=Decimal('0.5
 ```
 
 What the core refuses to carry is refused at construction, as a `ValueError` — the C ABI's
-own contract rules, so a `NumFormat` that exists is one the core reads: a separator that is
-not one or two characters or contains an ASCII digit, equal separators (the number pair, or
-the pair in force for a currency amount, counting what each falls back to), a sign or percent
-symbol with ASCII whitespace in it, a symbol longer than its field (8 UTF-8 bytes; 16 for the
-currency symbol), a digit zero that is ASCII or starts no Unicode digit block.
+own contract rules, so a `NumFormat` that exists is one the core reads: a separator, sign
+or percent symbol that is not 1 to 8 UTF-8 bytes or contains an ASCII digit, equal
+separators (the number pair, or the pair in force for a currency amount, counting what each
+falls back to), a sign or percent symbol with ASCII whitespace in it, a currency symbol over
+16 UTF-8 bytes or carrying an ASCII digit or whitespace, a digit zero that is ASCII or starts no Unicode digit block.
 
 Not declared, by decision: `cast_bool`'s lexicon stays English-only. No platform carries
 culture data for a boolean vocabulary, so no bridge could fill such a field — a caller maps
@@ -319,7 +320,6 @@ hypercast.cast_f64("−1\xa0234,5", fmt)    # Success(value=-1234.5)
 
 `hypercast.native_version()` names the core actually loaded, `"major.minor.patch"`, decoded
 from the same packed `hypercast_version` export every other binding probes.
-`hypercast.BACKEND` is always `"native"`, the PyO3 extension.
 
 ## Interop: building on HyperCast's C ABI
 
@@ -366,9 +366,8 @@ hypercast.cast_i32("(1,234)", hypercast.NumFormat.INVARIANT)   # Success(value=-
 hypercast.cast_timestamp("2026-01-02T10:04:05Z")
 ```
 
-It is the native backend (`hypercast.BACKEND == "native"`), with the same API and no
-JavaScript bridge: every door is the same Rust call it is in CPython, and the verdicts are
-bit-for-bit the same. CI installs the wheel into Pyodide and runs this package's whole pytest
+It has the same API and no JavaScript bridge: every door is the same Rust call it is in
+CPython, and the verdicts are bit-for-bit the same. CI installs the wheel into Pyodide and runs this package's whole pytest
 suite in it twice, under Node and in headless Chrome, shared corpus replay included.
 
 The wheel is for **Pyodide 314.x** (Python 3.14, platform `pyemscripten_2026_0`). It is
@@ -389,7 +388,7 @@ and the next line is covered by the release that adds its build.
    held by the shared corpus (the whole suite green, in CPython and in Pyodide, the full
    corpus replayed).
 4. **Native-extension speed** — the escape from the interpreted tier is this binding's own
-   receipt: the old losses were never "Python calling native code," they were *ctypes*
+   receipt: the cost of calling native code from Python is *ctypes*, not the call
    (~1 µs of interpreted marshalling per call, measured). The numbers are under
    [Benchmarks](#benchmarks).
 
@@ -399,8 +398,7 @@ culture-machinery parsers, the closed error contract, and cross-language agreeme
 
 ## Benchmarks
 
-With the mechanism replaced, every door runs roughly an order of magnitude faster than it did
-over ctypes, where each cost about 3 µs. Measured with pyperf on linux-x64 (an Intel Core
+Measured with pyperf on linux-x64 (an Intel Core
 i9-11900H), CPython 3.14.7 as Fedora builds it, each door beside the closest thing the
 stdlib has:
 
@@ -434,8 +432,9 @@ CPython from 3.11 with the GIL, and one `abi3t` wheel every CPython from 3.15.
 Separator detection costs ~15 ns: `1.234.567,89` under `NumFormat.DETECT` is 157 ns
 against 142 ns for the same text under a declared eurozone format.
 
-A declared currency symbol costs nothing measurable here: `cast_i32("1,234,567")` is 104 ns
-under `NumFormat.INVARIANT` and under a format declaring `$`. Rejection is where the verdict
+A declared currency symbol costs nothing measurable here: in a separate run for 0.9.0,
+`cast_i32("1,234,567")` is 104 ns under `NumFormat.INVARIANT` and
+under a format declaring `$`. Rejection is where the verdict
 pays off. `cast_i32("1,234x567")` returns its `Fault` in 140 ns, while `int("1234x567")`
 takes 645 ns to raise its `ValueError` and have it caught: 4.6x.
 

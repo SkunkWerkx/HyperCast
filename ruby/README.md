@@ -146,8 +146,8 @@ HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",", flags: HyperCast::ALL
 
 The flags are `GROUPING`, `PARENTHESES`, `EXPONENT`, `RADIX_PREFIXES`, `PERCENT` and
 `CURRENCY` (`ALL_STYLES` is all six), plus `TRAILING_SIGN` — deliberately not in
-`ALL_STYLES`; see below — and the `SEPARATOR_DETECT` policy. A separator is one or two
-characters (`", "`, comma then space, is a separator), up to 8 UTF-8 bytes.
+`ALL_STYLES`; see below — and the `SEPARATOR_DETECT` policy. A separator is 1 to 8 UTF-8
+bytes (`", "`, comma then space, is a separator).
 
 Everything past the separators and the flags is what a culture table would fill in, and
 every such field is declared, never looked up — `from_i18n` fills what Rails' locale data
@@ -250,12 +250,13 @@ any `NumFormat`, and the flags and every other field are left alone, so a `unit:
 format without `CURRENCY` is declared but not honored, as it would be in the constructor.
 `from_i18n` reads Symbol or String keys and ignores every other key, so
 `number.currency.format` passed alone works as well. Missing keys keep the invariant's
-fields. An empty `delimiter` (a locale that writes no grouping) turns `GROUPING` off. A
+fields, except that a missing mark never repeats the one the Hash declares:
+`{separator: ","}` groups with `"."`, as Python's and PHP's locale bridges do. An empty `delimiter` (a locale that writes no grouping) turns `GROUPING` off. A
 `negative_format` that writes the sign after the number (`"%n-"`, `"%n %u-"`) turns
 `TRAILING_SIGN` on; `"-%n"`, the Rails default, leaves it off. `currency_format:` takes
 `number.currency.format` beside `number.format`: its `separator` and `delimiter` become
 `currency_decimal_sep` and `currency_group_sep` (a key it lacks declares nothing, so the
-number separator stands in), its `unit` the currency symbol, and its `negative_format`
+number separator stands in, unless that would repeat the currency mark it does declare), its `unit` the currency symbol, and its `negative_format`
 counts the same way. `flags:` defaults to `ALL_STYLES`.
 
 That is everything the Hash offers. Rails carries no minus or plus sign, no percent symbol
@@ -263,8 +264,7 @@ and no digits, so `from_i18n` leaves those undeclared — the core reads ASCII `
 and `0`–`9` — and a locale that writes them differently declares them on the result:
 `from_i18n(I18n.t("number.format")).with(minus_sign: "−")` for Estonian.
 
-A call without the keywords is exactly the call it was, with no extra allocation on either
-backend. A call with them builds a format each time (a few microseconds), so in a loop,
+A call without the keywords allocates nothing extra on either backend. A call with them builds a format each time (a few microseconds), so in a loop,
 build it once with `override` or `from_i18n` and pass that instead.
 
 ### `datetime`: a culture's AM/PM
@@ -274,8 +274,8 @@ the clock (`3:04 PM`) or ahead of it (`PM 3:04`). `am:` and `pm:` declare a cult
 words beside the English ones — German's `vorm.`/`nachm.`, Korean's `오전`/`오후`
 (written ahead of the clock), Spanish's `a. m.`/`p. m.` (a space inside is fine) — matched
 exactly, with or without a space between word and clock. English is still read whatever is
-declared; `nil`, the default, declares nothing, so a call without the keywords is exactly
-the call it was. Like a `NumFormat`'s symbols the words are declared, never looked up:
+declared; `nil`, the default, declares nothing, so a call without the keywords reads the
+English pair only. Like a `NumFormat`'s symbols the words are declared, never looked up:
 Ruby's stdlib has no day-period data, and `I18n.t("time.am")`/`("time.pm")` are where a
 Rails app finds them.
 
@@ -349,16 +349,14 @@ HyperCast::Interop.version(0x000700)                       # => "0.7.0"
    2.85 µs: a little behind `Time.iso8601`, sitting on Fiddle's per-call marshalling floor.
 
    Separator detection is nearly free here: `1.234.567,89` under `NumFormat::DETECT` runs
-   at 154 ns against 145 ns for the same text under a declared eurozone format. Both cost
-   nearly twice that in 0.1.0, for a reason that had nothing to do with parsing: every format other than `INVARIANT` paid three method dispatches and two
-   `String` allocations per call to read its separators back out of the `Data`. `DETECT`
-   is now identity-matched like `INVARIANT`, and any other format is resolved once per
-   thread and memoized by identity — anchored in a thread-variable so the memo's key can
-   never be a recycled address — which turned the per-call cost into one pointer compare.
+   at 154 ns against 145 ns for the same text under a declared eurozone format. Reading a
+   format costs one pointer compare: `DETECT` is identity-matched like `INVARIANT`, and any
+   other format is resolved once per thread and memoized by identity — anchored in a
+   thread-variable so the memo's key can never be a recycled address.
 
    A declared currency symbol costs text that does not carry one about 6 ns on the Magnus
-   backend: in one run, `1,234,567` took 151 ns under `INVARIANT` and 157 ns under a format
-   declaring `$`. A fault costs more than a success: the same run returned the `Fault` for
+   backend: in a run for 0.9.0, separate from the [Benchmarks](#benchmarks) table, `1,234,567`
+   took 151 ns under `INVARIANT` and 157 ns under a format declaring `$`. A fault costs more than a success: the same run returned the `Fault` for
    `12345x7` in 222 ns, against 101 ns for `Integer("12345x7", exception: false)` returning
    `nil`. The door builds a reason and a span where `Integer()` hands back nothing.
    The three reason Symbols and the option Symbols (`:seconds`, `:month_day_year`, …) are
@@ -366,8 +364,9 @@ HyperCast::Interop.version(0x000700)                       # => "0.7.0"
    `Symbol#name` materialization.
 
 **The honest trade-off:** the civil doors do not beat `strptime`. The date-time door is
-level with `DateTime.strptime` (904 ns against 901 ns) and the date door a little behind
-`Date.strptime` (620 ns against 513 ns). The parse isn't the cost; the carrier is. Building
+level with `DateTime.strptime` (877 ns against 851 ns, the session of the
+[table below](#benchmarks)) and the date door a little behind `Date.strptime` (620 ns against
+513 ns, measured for 0.4.0 and not re-timed since). The parse isn't the cost; the carrier is. Building
 a stdlib `DateTime` with an exact `Rational` second costs more than the whole native call,
 where the timestamp door's `Time` is built by a single cheap `rb_time_nano_new`. If you want
 Ruby's fastest civil parse and don't need the verdict or the declared order, `strptime` is
@@ -377,9 +376,8 @@ which is an artifact of the type, not a zone the parse assigned.
 On the Fiddle fallback the doors are parity-at-best — Fiddle's
 per-call floor is the mechanism's price, kept because it's the universal zero-compile
 path. Its doors build nothing per call that does not change between calls: each format
-owns one native pointer, memoized by identity and passed straight through. (Benchmark forensics worth knowing: the doors read 4.3 µs until
-per-call `Fiddle::Pointer.malloc` finalizers were hoisted to thread-local scratch —
-receipts include their own archaeology.)
+owns one native pointer, memoized by identity and passed straight through, and its scratch
+is thread-local rather than a `Fiddle::Pointer.malloc` per call.
 
 ## Benchmarks
 
@@ -433,7 +431,7 @@ buffers; the core itself keeps no state between calls. `spec/cast_spec.rb`'s
 concurrent-callers example runs under both.
 
 **Ractors.** Main Ractor only, on every backend: called from another Ractor the doors raise
-`Ractor::UnsafeError`.
+(`Ractor::UnsafeError` from the Magnus extension, `Ractor::IsolationError` on Fiddle).
 
 ## Verifying provenance
 
@@ -537,8 +535,7 @@ Ruby newer than the release, or a platform with no platform gem. `bundle install
 Bundler 2.6, not on 3.3's 2.5); otherwise install the compiler and headers. Pinning `fiddle`
 to your Ruby's version in the `Gemfile.lock` does not stop the build.
 
-Both Windows architectures get a Magnus gem, and the reasoning that once kept them on Fiddle
-was backwards: MinGW is the *only* Windows flavour `rb-sys` targets (`x64-mingw-ucrt` and
+Both Windows architectures get a Magnus gem: MinGW is the *only* Windows flavour `rb-sys` targets (`x64-mingw-ucrt` and
 `aarch64-mingw-ucrt`, both `supported: true` in its own `data/toolchains.json`); the one it
 has no support for is MSVC. Windows is also where the Fiddle fallback cost the most, so these
 are the most worthwhile gems in the set. Both extensions are built for the `gnullvm` Rust

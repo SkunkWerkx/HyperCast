@@ -80,11 +80,11 @@ final class NativePlatform
     }
 
     /**
-     * The library to load: the build staged for this platform under $sourceDir/native/{rid}/;
-     * or, for the development loop, the file the environment variable $override names (a
-     * core built from a checkout, loaded without replacing committed files); or, when nothing
-     * is staged, the in-repo cargo build beside $sourceDir — exactly what the other
-     * bindings' local staging does.
+     * The library to load: the file the environment variable $override names, when it is set
+     * (the development loop: a core built from a checkout, loaded without replacing committed
+     * files); else the build staged for this platform under $sourceDir/native/{rid}/; else,
+     * when nothing is staged, the in-repo cargo build beside $sourceDir — exactly what the
+     * other bindings' local staging does.
      *
      * @param string $baseName the library's base name
      * @param string $sourceDir the package's php/src directory

@@ -30,8 +30,8 @@ namespace HyperCast;
 /// <para>
 /// AOT/trimming friendly: <see cref="LibraryImportAttribute"/> is source-generated (no
 /// runtime reflection), so this type publishes cleanly under <c>PublishAot</c>. Needs the
-/// platform-specific native binary. No separate <c>browser-wasm</c> build anymore —
-/// HyperUuid's single-assembly pattern, ported home: every native entry point is declared
+/// platform-specific native binary. One assembly serves every platform, <c>browser-wasm</c>
+/// included, as HyperUuid's does: every native entry point is declared
 /// three times, once against <c>"hypercast"</c> (dlopen on every real native platform), once
 /// against <c>"*"</c> (resolves against the current module — the only thing that works for
 /// a statically-linked WASM native), and once against <c>"__Internal"</c> (the app's own

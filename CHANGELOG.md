@@ -7,15 +7,23 @@ entry marks which packages it actually affects.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.0] — 2026-10-25
 
-The next release is **1.0.0**, and with it every package's public API and the platforms in
-the README's [Platform support](README.md#platform-support) table become a commitment under
-Semantic Versioning: breaking or dropping either takes a new major version. Until then a
-minor release can still break both, as 0.9.0 did.
+The first stable release. Every package's public API and the platforms in the README's
+[Platform support](README.md#platform-support) table are now a commitment under Semantic
+Versioning: breaking or dropping either takes a new major version. To get there, no Swift
+door throws (bad data is the verdict's `Fault`, as in every binding), Python and Ruby build
+every number format the core accepts, the Rust scalar types hold at every boundary, what
+was deprecated or never used goes (Java's GraalWasm backend, Go's `ErrNativeUnavailable`,
+Swift's `NativeLibraryError`, Python's `BACKEND`), and every shipped file verifies from the
+release tag alone.
 
 ### Changed
 
+- **Swift — no door throws, and neither does `Cast.nativeVersion()`.** Every door and
+  `nativeVersion()` declared `throws` and never threw: bad data is the `Verdict`'s `Fault`,
+  and the core is linked in, so there is nothing to fail to load. Call sites need no `try`;
+  one left in place compiles with a warning. *(Swift)*
 - **C# — `HyperCast.targets` no longer lists an `EmccExportedFunction` per entry point.** The
   `NativeFileReference` is the whole Blazor WebAssembly wiring: the SDK's generated pinvoke
   table calls each native function by symbol, so the link resolves them against the archive
@@ -41,15 +49,42 @@ minor release can still break both, as 0.9.0 did.
   `.github/hyper.json` and `.github/scripts/abi_probe.c`. Dependabot bumps every ecosystem in
   one monthly pull request, every third-party action is pinned to a commit, and CodeQL runs
   weekly. *(repository only)*
+- **The Go, Swift and PHP suites check that the committed core is current.** Those three
+  link binaries committed under `go/staticlib`, `swift/HyperCastCore.artifactbundle` and
+  `php/src/native`, refreshed only at release, so a plain local run after a core change
+  tested the core as it was at the last staging. Outside CI, a run without the local core
+  (`hypercast_local`, `HYPERCAST_LOCAL_CORE`, `HYPERCAST_NATIVE_LIBRARY`) now stops with the
+  command to use when this checkout's `rust/` differs from the commit those binaries were
+  built from: Go and PHP before any test, Swift as a failing `CoreFreshnessTests`.
+  `.github/scripts/local-core.sh` also finds the Forge at `../HyperForge`. *(repository only)*
 
 ### Fixed
 
+- **Python — a separator, sign or percent symbol follows the core's rule: 1 to 8 UTF-8
+  bytes with no ASCII digit.** Python alone also refused anything over two characters, so
+  a format every other binding builds (four no-break spaces, say) raised `ValueError`
+  there. The docs in every binding now state the rule the core enforces, where they said
+  "one or two characters". *(Python)*
+- **Ruby — `NumFormat.from_i18n` fills a missing mark instead of raising.**
+  `from_i18n({separator: ","})` raised `ArgumentError`, because the missing delimiter fell
+  back to `","` as well. A missing mark is now whichever of `","` and `"."` the declared one
+  is not, for the currency pair too, as Python's `from_localeconv` and PHP's
+  `fromLocaleconv` already did. *(Ruby)*
 - **Rust — safe scalar representation boundaries.** `Symbol<N>` rejects strings longer
   than its one-byte length can carry, including when `N` exceeds 255, preserving
   UTF-8 boundaries. `Decimal` display handles every public scale byte without a
   panic, allocation, clamping or precision loss; its public fields and ABI remain
   unchanged. Typed integer documentation makes the existing shortest-decimal
   behavior above 2^53 explicit. *(crates.io)*
+- **C# — the Mac Catalyst registrar note names the SDK it was observed on.** The README
+  said .NET 11 RC1 while `global.json` pins 11.0.100-rc.2. The abort on the
+  `trimmable-static` registrar still reproduces on SDK 11.0.100-rc.2.26504.105, so the
+  smoke test keeps `managed-static` there and the README states it in the present
+  tense. *(C#)*
+
+- **PHP — no API or behaviour change.** The package reaches 1.0.0 as 0.9.0 left it, its
+  docs stating the core's separator rule; its committed libraries are restaged from this
+  release's core, and the release attestation names each one. *(Packagist)*
 
 ### Removed
 
@@ -61,6 +96,15 @@ minor release can still break both, as 0.9.0 did.
   replaying the suite through it in interpreter mode had become the longest step of every CI
   leg. `cargo wasm-module`, the `wasm32-wasip1` export flags in `rust/.cargo/config.toml` and
   the `-Pwasm` runs of the JMH suite and the Native Image smoke test leave with it. *(Java)*
+- **Go — `ErrNativeUnavailable`.** The core is linked into the binary, so nothing ever
+  returned the error or panicked with it; it was kept, deprecated, only so code testing for
+  it kept compiling. `Available`, `LoadError` and `NativeVersion` stay. *(Go)*
+- **Swift — `NativeLibraryError`.** The deprecated error type had no cases and was never
+  thrown, since the core is linked in on every platform. `Cast.isAvailable` stays, always
+  `true`, as the availability probe every binding carries. *(Swift)*
+- **Python — `hypercast.BACKEND`.** It was always `"native"`: the PyO3 extension is the only
+  backend, in CPython and in Pyodide alike. Ruby's `HyperCast::BACKEND` stays, since it
+  tells the Magnus extension from Fiddle. *(Python)*
 
 ## [0.9.0] — 2026-10-20
 
@@ -640,6 +684,8 @@ was ever published; everything since 0.6.1 is here.
   reported at its exact byte — the pair-by-pair reader runs again to find it, only on
   input that has one — and a new test holds the two readers to the same verdict for every
   byte value at every position. B and P formats are D inside brackets and gain the same.
+  The README had claimed the door beat the `uuid` crate (15.4 vs 17.4 ns); `uuid` 1.26 is
+  faster, this decode narrows the gap without closing it, and the claim is withdrawn.
   *(all packages)*
 - **The shared library is 10 KB larger** for the inlining above: 123,784 → 134,216 bytes
   on linux-x64. Each of the five readers is now copied into every door that uses it;
@@ -999,6 +1045,9 @@ instead of `Malformed`.
   the docs, the workflows and PHP's own tests out of the archive Packagist serves: 3.5 MB against
   5.0 as downloaded, 8.3 MB against 12.1 unpacked. `go/` stays in, because
   the Go module proxy builds its zip from the same kind of archive. *(Packagist)*
+- **The Rust source is formatted**, under `rust/rustfmt.toml`'s `use_small_heuristics =
+  "Max"`: the default settings would have rewritten 1,376 lines where this one rewrote 266.
+  *(dev only)*
 
 ### Fixed
 
@@ -1569,7 +1618,9 @@ eight packages, as it did at 0.1.0.
   `INVARIANT`; any other format is resolved once per thread and memoized by identity,
   anchored in a thread-variable so the key can never be a recycled address. The numeric
   doors under a declared eurozone format or `DETECT` drop from ~990 to **~580 ns**; the
-  rest are within noise. *(RubyGems)*
+  rest are within noise. In 0.1.0 every format other than `INVARIANT` paid three method
+  dispatches and two `String` allocations per call to read its separators back out of the
+  `Data`. *(RubyGems)*
 - **Ruby (Fiddle): ~20% off the numeric doors** (`i32` 3.37 → 2.62 µs, `f64` 3.31 →
   2.76 µs) by not building per call what never changes — the integer doors' interpolated
   `:cast_*` Symbol, the splat-and-resplat dispatcher, and the 12-byte format copy into
@@ -1610,6 +1661,9 @@ consumer's suite will show as 0 allocs where it showed 1–3.
   Swift `DateFormatter` control read 810 ns on 0.1.0's tape and 28 µs on Swift 6.3.3; the
   JDK's `ISO_OFFSET_DATE_TIME` control was unstable in the full-length run and is not
   quoted. The doors' own before/after numbers are the claim in both cases.
+- **Separator detection became visible.** `NumFormat.DETECT`'s ~10 ns in the core vanished
+  inside every binding's per-call overhead in 0.1.0 (Java 105.1 vs 106.0 ns declared, Swift
+  399 vs 406); with this release's carriers it shows.
 
 ## [0.1.0] — 2026-08-31
 
@@ -1655,7 +1709,8 @@ notes: [v0.1.0 release](https://github.com/SkunkWerkx/HyperCast/releases/tag/v0.
   panics on any byte sequence and that every fault span stays inside the caller's buffer. It found
   two real classes — truncation faults pointing one byte past the input, and `char_len` spans
   overrunning on text ending mid-UTF-8-character — both fixed structurally and pinned by
-  `rust/tests/fault_span_invariant.rs` so they fail plain `cargo test`. *(`hypercast` crate)*
+  `rust/tests/fault_span_invariant.rs` so they fail plain `cargo test`. It caught both within
+  a minute; the 550M-execution session that followed found nothing. *(`hypercast` crate)*
 - **AOT on both managed platforms.** The C# package publishes cleanly under `PublishAot` into a
   genuine native binary that runs every door, and the Java binding ships FFM downcall signatures
   *and* a resources glob in its `reachability-metadata.json`, so a GraalVM Native Image consumer
@@ -1694,9 +1749,23 @@ notes: [v0.1.0 release](https://github.com/SkunkWerkx/HyperCast/releases/tag/v0.
   way to prove a publish leg is to run it against the real registry. Those two versions exist to
   have burned a cheap version doing that. Three of the four bugs the project has shipped were
   found in that window, in the gap between "the publish succeeded" and "a consumer can use it",
-  and none of them could have failed a build in this repository.
+  and none of them could have failed a build in this repository. One was Java's: 0.0.1's
+  `reachability-metadata.json` lacked the resources glob, so a consumer's native image built
+  clean and died on its first call with "classpath resource not found", while this
+  repository's smoke test stayed green because it declared the glob itself. Building a real
+  native image against the published jar found it; the smoke test has declared nothing of its
+  own since.
+- **Benchmark forensics from before this release.** Python's pre-release ctypes backend timed
+  the RFC 3339 timestamp door at 3.1 µs (linux-x64, an Intel Core i9-11900H), atop ctypes'
+  ~1 µs per-call floor, about 3 µs a door; that measurement is why the package went PyO3-only,
+  and every door runs roughly an order of magnitude faster over the extension. The Ruby doors
+  read 4.3 µs until per-call `Fiddle::Pointer.malloc` finalizers were hoisted to thread-local
+  scratch. PHP read 20x slow until a loaded Xdebug was found inflating everything uniformly
+  ~14x, and its wrapper diet (flat doors, typed cdef structs, static scratch,
+  `createFromTimestamp`) took the timestamp door down six-fold. Swift's first tape was pure
+  measurement-floor quantization until `.kilo` scaling amortized it.
 
-[Unreleased]: https://github.com/SkunkWerkx/HyperCast/compare/v0.9.0...HEAD
+[1.0.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.9.0...v1.0.0
 [0.9.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/SkunkWerkx/HyperCast/compare/v0.6.1...v0.7.0

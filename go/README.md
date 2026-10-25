@@ -225,7 +225,7 @@ meaning.
 
 | Field | Declares | Read |
 | --- | --- | --- |
-| `DecimalSep`, `GroupSep` | the number separators — one or two characters each (`"."`, `","`, `" "`, `", "`), at most 8 UTF-8 bytes, different from each other; the only required fields | always |
+| `DecimalSep`, `GroupSep` | the number separators — 1 to 8 UTF-8 bytes each with no ASCII digit (`"."`, `","`, `" "`, `", "`), different from each other; the only required fields | always |
 | `Styles` | the `NumStyles` leniences | — |
 | `Currency` | the currency symbol (`"$"`, `"€"`, `"kr."`), at most 16 bytes | under `CurrencySymbol` |
 | `CurrencyDecimalSep`, `CurrencyGroupSep` | the separators of a currency amount, where a culture points and groups money differently from numbers; empty keeps the number separator | when `Currency` is declared and found in the text; ignored under `SeparatorDetect`, whose detection governs the whole token |
@@ -318,8 +318,6 @@ so code written against them works unchanged:
 log.Printf("hypercast core %s", hypercast.NativeVersion())
 ```
 
-`ErrNativeUnavailable` is deprecated: nothing returns it or panics with it any more, and it
-stays only so code that tests for it keeps compiling.
 [HyperUuid](https://github.com/SkunkWerkx/HyperUuid)'s Go binding has the same three entry
 points.
 
@@ -376,8 +374,7 @@ without touching the filesystem.
 
 **One archive serves glibc and musl.** cgo has no build constraint that tells the two C
 libraries apart, so the Linux archives are the core built for the musl target, which asks
-the C library for nothing glibc and musl do not both have (`memcpy`, `memset`, `bcmp`,
-`abort`).
+the C library for nothing glibc and musl do not both have (`memcpy`, `memset`, `bcmp`).
 
 **Windows links the MSVC archive**, the same bytes the C# package's Native AOT publish
 links. MinGW's linker reads MSVC's COFF objects, and what the archive asks of the C runtime
@@ -474,7 +471,10 @@ Xcode command-line tools' `clang`).
 The `hypercast_local` build tag is for working on the core in a checkout of this repository:
 `go test -tags hypercast_local ./...` links the archive `.github/scripts/local-core.sh` builds
 from the checkout, under `rust/target/local-core/`, in place of the committed one. A module
-fetched with `go get` has no such archive, so the tag fails at link time there.
+fetched with `go get` has no such archive, so the tag fails at link time there. Without the
+tag, outside CI, the suite refuses to run when the checkout's `rust/` differs from the commit
+the committed archives were built from (`-count=1` after a core change, since `go test`
+replays a cached pass).
 
 This repo's own CI runs `go test ./...` natively, never cross-compiled, on every leg —
 Linux and Windows on x64 and arm64, macOS on arm64 — and on Alpine. The iOS simulator run
@@ -511,8 +511,8 @@ is where the crossing amortizes to zero: it crosses once per chunk, not once per
 
 ## Benchmarks
 
-`go test -bench=. -benchmem ./...`. Measured on linux-x64 (an Intel Core i9-11900H, go1.27.2),
-one session, median of five runs:
+`go test -bench=. -benchmem ./...`. Measured for 0.9.0 on linux-x64 (an Intel Core i9-11900H,
+go1.27.2), one session, median of five runs:
 
 | Door | HyperCast | stdlib |
 | --- | ---: | ---: |
