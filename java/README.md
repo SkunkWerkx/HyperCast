@@ -240,7 +240,7 @@ the library cannot be loaded at all: `isAvailable()` is `false` and the doors th
    | `Cast.bool` vs `Boolean.parseBoolean` | 13.1 ± 2.0 ns | 0.50 ns | honest loss — see below |
 
    The `String` rows above include the UTF-8 encode. A caller already holding bytes skips
-   it, and the raw crossing is what round three's chunk layer will pay per cell:
+   it, and the raw crossing is what a caller casting out of its own buffers pays per value:
 
    | Door (UTF-8 in hand) | `byte[]` | `MemorySegment` slice | allocation |
    | --- | ---: | ---: | ---: |

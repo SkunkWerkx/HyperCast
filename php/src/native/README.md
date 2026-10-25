@@ -5,12 +5,12 @@ committed to git — unlike every other registry this repo publishes to (NuGet, 
 PyPI, crates.io), Packagist has no packing/build step of its own: whatever's literally in the
 git tree at a tagged commit *is* the published package, so the native binaries have to live
 here for real, not be staged in transiently by CI (a bug HyperUuid hit for real, three
-separate times, before banking the fix as `stage-native-binaries.yml`). Regenerate locally
-with `cargo cdylib` in `rust/` and copy the result in if you need to update one by
-hand; CI's own `build-native` job does the same per-leg during in-repo testing, overwriting
-whichever platform's file matches that leg — harmless, since it's the same build either way.
-When a platform's file is absent the binding falls back to `rust/target/release/`, so a
-development checkout can also just delete the stale one.
+separate times, before banking the fix as `stage-native-binaries.yml`), which is the only
+thing that commits them. CI's per-leg build job copies its fresh build over the matching
+platform's file before phpunit runs, so every leg tests the library it just built. A
+development checkout tests its own build without touching these files: set
+`HYPERCAST_NATIVE_LIBRARY` to a library built with `cargo cdylib` in `rust/`, or, with a
+platform's file absent, the binding falls back to `rust/target/release/`.
 
 ## Which library loads
 

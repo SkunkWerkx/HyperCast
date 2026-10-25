@@ -184,8 +184,8 @@ case .fault(let fault): print("\(fault.reason) at byte \(fault.offset)")
 }
 let enUs = NumFormat.from(locale: Locale(identifier: "en_US"))   // "$", from the locale's own data
 try Cast.i32("-$5", format: enUs)                                  // .success(-5)
-let estonian = NumFormat.from(locale: Locale(identifier: "et_EE"))   // minus sign U+2212, a space between groups
-try Cast.i32("−1 234", format: estonian)                             // .success(-1234); "-1234" reads too
+let estonian = NumFormat.from(locale: Locale(identifier: "et_EE"))   // minus sign U+2212, a no-break space between groups
+try Cast.i32("−1\u{00A0}234", format: estonian)                      // .success(-1234); "-1234" reads too
 let egyptian = NumFormat.from(locale: Locale(identifier: "ar_EG"))   // Arabic-Indic digits, ٫ and ٬, its own percent
 try Cast.decimal("١٢٫٥", format: egyptian)                            // .success(12.5)
 let trailing = NumFormat(decimalSeparator: ".", groupSeparator: ",", styles: [.all, .trailingSign])
@@ -308,8 +308,8 @@ for your target into your executable. There is no shared library to find at run 
 resource bundle, and nothing to deploy beside the binary: a multi-stage Dockerfile that
 copies only the executable works, so does a fully static build with
 `swift build --swift-sdk x86_64-swift-linux-musl`, and so does copying a macOS or Windows
-executable on its own. Each triple's archive is 130–180 KB, and the linker keeps only what
-your executable reaches.
+executable on its own. Each triple's archive is about 150–220 KB (the Windows `.lib`s are
+the largest), and the linker keeps only what your executable reaches.
 
 No door throws. Bad data was never thrown — it is a `Verdict`'s `Fault` — and the `throws`
 every door still carries is left from when macOS and Windows loaded a shared library that

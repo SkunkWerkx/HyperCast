@@ -4,10 +4,6 @@ One row per concept, one column per language, each cell the public spelling of t
 in that package, so drift between the Rust template and the seven bindings shows at a glance.
 A change that adds a door or a concept adds its row here in the same change.
 
-Rust's generic `Symbol<N>` accepts at most `min(N, 255)` UTF-8 bytes: its length
-crosses the ABI as one byte. The fixed 8- and 16-byte symbols in the bindings retain
-their limits below.
-
 ## Doors
 
 The 26 `cast_*` exports of `rust/src/ffi.rs`, in export order by group. Every binding door
@@ -126,7 +122,7 @@ truncate instants to microseconds. Each binding's README states its own fidelity
 | Declare a symbol | `.with_currency(symbol)`, `CurrencySymbol::new(&str)` → `Option<CurrencySymbol>` | constructor argument | constructor argument | `Currency:` field | `currencySymbol:` argument | `$currency` argument | `currency:` keyword | `currency` argument |
 | No symbol | `CurrencySymbol::NONE` | `""` | `""` | `""` | `""` | `''` | `""` | `""` |
 | Symbol limit (16 UTF-8 bytes) | `CurrencySymbol::MAX_BYTES` | `NumFormat.MaxCurrencyBytes` | — (private) | `CurrencyMaxBytes` | `Interop.currencyMaxBytes` | `NumFormat::CURRENCY_MAX_BYTES` | `NumFormat::CURRENCY_MAX_BYTES` | — |
-| Separator and sign limit (8 UTF-8 bytes) | `Symbol::<8>::MAX_BYTES` | `NumFormat.MaxSymbolBytes` | — (private) | `SymbolMaxBytes` | `Interop.symbolMaxBytes` | `NumFormat::SYMBOL_MAX_BYTES` | `NumFormat::SYMBOL_MAX_BYTES` | — |
+| Separator and sign limit (8 UTF-8 bytes) | `Symbol::<8>::MAX_BYTES` [^symbol-n] | `NumFormat.MaxSymbolBytes` | — (private) | `SymbolMaxBytes` | `Interop.symbolMaxBytes` | `NumFormat::SYMBOL_MAX_BYTES` | `NumFormat::SYMBOL_MAX_BYTES` | — |
 | Platform culture bridge (fills every field above) [^bridge-fields] | — [^no-bridge] | `NumFormat.From(CultureInfo)`, `From(IFormatProvider)`, `From(NumberFormatInfo)` | `NumFormat.from(Locale)`, `from(DecimalFormat)` | — [^no-bridge] | `NumFormat.from(locale:)`, `from(formatter:)` | `NumFormat::fromLocaleconv(?array $conv = null)`, `NumFormat::fromNumberFormatter(\NumberFormatter)` | `NumFormat.from_i18n(hash, currency_format:)` (I18n `number.format` and `number.currency.format` Hashes) [^no-bridge] | `NumFormat.from_localeconv(conv=None)` |
 | A numeric door taking the platform's own format [^platform-format] | — | an `IFormatProvider? provider` overload of every numeric door, `Numeric<T>` and `Scalar<T>`; `null` is the current culture | a `Locale` overload of every numeric door | — [^no-bridge] | a `locale:` overload of every numeric door, `numeric` and `scalar` | `NumFormat\|\NumberFormatter` as the format argument | `separator:`, `delimiter:`, `unit:` keywords on every numeric door (`NumFormat#override`) | — [^python-format] |
 
@@ -248,6 +244,10 @@ when the absence is deliberate.
 [^symbol]: One or two characters, up to 8 UTF-8 bytes, containing no ASCII digit; the two
     must differ. A format read across the ABI that breaks a rule is a contract violation,
     which each binding reports as its platform's argument error before the call.
+
+[^symbol-n]: Rust's generic `Symbol<N>` accepts at most `min(N, 255)` UTF-8 bytes, because
+    its length crosses the ABI as one byte. The 8- and 16-byte symbols every binding carries
+    are well inside that.
 
 [^bridge-fields]: Each bridge declares a symbol only where the platform's own differs from
     what the core reads anyway (ASCII `-`, `+`, `%`, `0`, and currency separators equal to

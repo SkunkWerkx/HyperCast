@@ -57,7 +57,7 @@ exact triple (`Decimal`) because PHP has no decimal type at all.
   Anything else (a 32-bit PHP, another architecture, another OS family) is a clear
   unsupported-platform error rather than a wrong-library load.
 
-- **About 2.3 MB on disk.** The Composer package is GitHub's archive of the release tag,
+- **About 3.9 MB on disk.** The Composer package is GitHub's archive of the release tag,
   trimmed to PHP by `.gitattributes`, except for `go/`, which is over half of it: mostly
   the Go module's static libraries, which PHP never loads. The Go module proxy builds its
   module from the same archive, so leaving `go/` out would break the Go module, and moving
@@ -355,13 +355,10 @@ drift:
 - `NativePlatform` — parameterized by the library's base name:
   `ridAndLibraryName('hypertabular')` is this process's `native/{rid}/` directory and file
   name, `resolve()` the same table as a pure function, and
-  `libraryPath($baseName, $sourceDir, $override)` the library to load — the staged build,
-  the file the `$override` environment variable names, or the in-repo cargo build — exactly
-  as `Cast` finds `libhypercast`.
-
-`HyperCast\Interop\NativePlatform` replaces the `@internal` `HyperCast\NativePlatform`, which
-is gone; code that used the old class moves to the new namespace and passes the base name
-(`'hypercast'`) explicitly.
+  `libraryPath($baseName, $sourceDir, $override)` the library to load — the file the
+  `$override` environment variable names, else the staged build, else the in-repo cargo
+  build — exactly as `Cast` finds `libhypercast` (its variable is
+  `HYPERCAST_NATIVE_LIBRARY`).
 
 ## Why not `filter_var` / `DateTimeImmutable::createFromFormat`?
 

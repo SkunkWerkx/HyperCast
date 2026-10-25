@@ -139,6 +139,7 @@ Cast.Double("1.234,5", CultureInfo.GetCultureInfo("de-DE"));   // 1234.5
 Cast.Int32("1.234", null);                                       // under the current culture
 Cast.Int32("−5", CultureInfo.GetCultureInfo("et-EE"));          // -5: Estonian's U+2212, and ASCII - too
 Cast.Decimal("€1,234.50", CultureInfo.GetCultureInfo("en-DE")); // 1234.50: the currency separators, as the BCL
+                                                                 // (where the runtime's ICU spells en-DE so; not every one does)
 Cast.Double("۵۰٪", CultureInfo.GetCultureInfo("fa-IR"));        // 0.5: Persian digits and ٪
 ```
 
@@ -146,9 +147,9 @@ The provider maps through `NumFormat.From(IFormatProvider)`: every field the cor
 from the culture's own data — its decimal and group separators, whole, however many
 characters each is; its currency symbol, and the separators it writes a currency amount
 with where they differ (`en-DE` and a dozen others write a decimal comma in numbers and a
-decimal point in currency, and the BCL switches when it sees the symbol, so now does the
-core); its `NegativeSign`, `PositiveSign` and `PercentSymbol` where they are not the ASCII
-ones (U+2212 in `et-EE` and `eu-ES`, the bidi-marked signs of the Arabic-script cultures,
+decimal point in currency, in the ICU data many runtimes carry, and the BCL switches when it
+sees the symbol, so now does the core); its `NegativeSign`, `PositiveSign` and
+`PercentSymbol` where they are not the ASCII ones (U+2212 in `et-EE` and `eu-ES`, the bidi-marked signs of the Arabic-script cultures,
 `٪`); the zero of its `NativeDigits` where it is not `0` (`ar-SA`, `fa-IR`, `bn-BD`); and
 `NumStyles.TrailingSign` when its negative pattern puts the sign after the digits
 (`NumberNegativePattern` 3 or 4, or a `CurrencyNegativePattern` of the same shape —
@@ -455,8 +456,8 @@ the copy-local list, so a consumer's output carries only the linked `dotnet.nati
 
 That link happens whether or not the app ends up calling HyperCast. The targets file is
 evaluated before the trimmer runs and cannot see what it removes, so a client bundle whose
-trimmer drops `HyperCast.Managed` entirely still links the archive and exports all 27 entry
-points into `dotnet.native.wasm`. One Blazor consumer measured the cost of that, for this
+trimmer drops `HyperCast.Managed` entirely still links the archive and all 27 entry points
+into `dotnet.native.wasm`. One Blazor consumer measured the cost of that, for this
 package and HyperUuid together, at 66 KB raw and 2 KB compressed.
 
 **Needs the `wasm-tools` workload.** Only the workload's toolchain relinks the runtime.
@@ -609,7 +610,7 @@ change the hash — so "rebuild it and compare hashes" is not a verification pat
 can rely on. The mechanism that does work is a cryptographic attestation binding each
 artifact to the workflow run and commit that produced it.
 
-**Signed provenance.** Because rebuild-and-compare doesn't work across machines, the mechanism that does is a cryptographic attestation binding each artifact to the workflow run and commit that produced it. Two kinds cover the package.
+**Signed provenance.** Two kinds of attestation cover the package.
 
 The *release attestation* is one statement, signed by this repository's `release.yml` at the release tag, whose subjects are every file the release ships — the `.nupkg` as packed and as nuget.org serves it, every other registry package, and every native library committed for Go, Swift and PHP — and whose predicate is the release inventory (`inventory.json`: every file's size, SHA-256 and the commit it was built from). One command verifies any of them from the tag alone:
 

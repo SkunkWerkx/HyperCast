@@ -86,7 +86,8 @@ contract crate and two provider cdylibs, HyperDelimited and HyperWorkbook — an
 into one when the linker ruled on that shape: two provider archives each carried Rust's
 standard library and this crate's `cast_*` symbols, so no binding that links the core
 rather than loading it (Go, Swift, C# Native AOT) could take both. HyperTabular's
-`docs/design.md` ("One repository, one library") has the record.
+`docs/design.md` ("One repository, one library") has the record. Apple Numbers documents
+have joined XLSX and ODS since, on the same scalar doors.
 
 Design constraints round one already locked in on purpose:
 
@@ -343,16 +344,11 @@ format; and Indian lakh grouping was never a gap (`12,34,567` is accepted). Pyth
 Go's standard libraries have no per-object locale to take, and Java's Native Image includes
 only the locales named at build time (`-H:IncludeLocales`), which is the consumer's choice.
 
-## Open follow-ups (as of 2026-10-21)
+## Open follow-ups (as of 2026-10-25)
 
 - Benchmark tables were measured on the WSL2 i9-11900H box. When the dev machine changes,
   re-measure every harness there before relabelling a table; never mix machines, and say
   which tables predate a core change. A benchmarking workflow is an idea, not started.
-- The `EmccExportedFunction` list in
-  `csharp/HyperCast/build/net11.0/HyperCast.targets` may be dead weight: on .NET 11 rc.1
-  the wasm smoke test passed with every item removed (P/Invoke through `"*"` uses the
-  runtime's static pinvoke table). Re-verify on the current SDK in all three repos, then
-  drop the lists and correct the docs that call them load-bearing, together.
 - Java does not reach Android: the binding uses FFM, which ART lacks, so it would need a
   JNI layer. Python, Ruby and PHP don't reach Android either.
 - A GraalVM Native Image static-link spike (the core linked into the image rather than

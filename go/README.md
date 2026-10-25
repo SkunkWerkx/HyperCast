@@ -493,20 +493,21 @@ exceptions; see [iOS and Mac Catalyst](#ios-and-mac-catalyst) and [Android](#and
    binding, held by the shared corpus (full corpus replay on every platform, and in the
    browser under TinyGo).
 
-**The honest trade-off, stated as plainly as the wins elsewhere: every Go door but one
-loses per-call to Go's stdlib.** Go's parsers are simply excellent (`time.Parse(RFC3339Nano)`
-at ~58 ns, `strconv.Atoi` at ~9 ns), and every HyperCast call pays a cgo crossing of about
-50 ns. The exception is the messy date-time door, which beats `time.Parse` with a layout by
-1.4x because that is the one stdlib path slow enough to absorb the crossing. The crossing
-is all a door pays: any Go pointer handed to cgo escapes to the heap, so the format and
+**The honest trade-off, stated as plainly as the wins elsewhere: every Go door but the two
+declared-order date doors loses per-call to Go's stdlib.** Go's parsers are simply excellent
+(`time.Parse(RFC3339Nano)` at ~58 ns, `strconv.Atoi` at ~9 ns), and every HyperCast call
+pays a cgo crossing of about 50 ns. The exceptions are the messy date-time door, which beats
+`time.Parse` with a layout by 1.4x, and the declared-order date door, which edges it:
+`time.Parse` with a layout is the one stdlib path slow enough to absorb the crossing. The
+crossing is all a door pays: any Go pointer handed to cgo escapes to the heap, so the format and
 the day periods cross by value, the C shims in `backend_static.go` declare them, the
 out-value and the fault span on their own stack and return the verdict by value as one
 struct, and no Go pointer crosses but the input bytes —
 **0 B, 0 allocs on every door** on the success path. (A failed cast allocates exactly its
 `*Fault`; `allocs_test.go` holds both counts as tests.) In Go specifically, this binding
 earns its keep on the vocabulary, the closed error contract, and cross-language agreement —
-not per-call speed. The batch/tabular layer (round three) is where the crossing amortizes
-to zero.
+not per-call speed. The tabular layer, [HyperTabular](https://github.com/SkunkWerkx/HyperTabular),
+is where the crossing amortizes to zero: it crosses once per chunk, not once per cell.
 
 ## Benchmarks
 
@@ -542,13 +543,12 @@ failing on `1234x567`.
 
 ## Verifying build provenance
 
-(Not to be confused with the UUID-provenance point above — this is about the binary, not the
-ID.) Go has no package registry to attest: `go get` resolves straight from the `go/v<version>`
+Go has no package registry to attest: `go get` resolves straight from the `go/v<version>`
 git tag against this repo, and what it fetches is the tree at that tag, the static libraries
 under `go/staticlib/` included. Each of them verifies from the release tag alone: the release
 attestation, signed by this repository's `release.yml` at the root tag, names every one of
 them, with the release inventory as its predicate. The same file sits in the module cache at
-`$(go env GOMODCACHE)/github.com/!skunk!werkx/!hyper!uuid/go@v<version>/staticlib/`.
+`$(go env GOMODCACHE)/github.com/!skunk!werkx/!hyper!cast/go@v<version>/staticlib/`.
 
 ```sh
 gh attestation verify go/staticlib/linux_amd64/libhypercast.a --repo SkunkWerkx/HyperCast \

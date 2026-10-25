@@ -24,7 +24,7 @@ project's world in two separate ways.
 
 So the division of labor is: **structure parsing from a JSON library, scalar semantics from
 the one engine that's byte-identical in eight languages.** The same split HyperTabular's
-workbook reader already ships for XLSX.
+workbook reader already ships for XLSX, ODS and Numbers.
 
 ## What we need from the structure parser
 

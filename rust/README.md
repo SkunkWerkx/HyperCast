@@ -257,13 +257,6 @@ HyperCast's verdicts — HyperTabular's native layer, for one. The value types
 out-values themselves; the rest is what turns the ABI's codes and format back into them,
 the same code the doors and `ffi.rs` use:
 
-`Decimal` keeps public fields for that raw representation. Cast results are canonical,
-with scale `0..=28`, no trailing fraction zeros and no negative zero. Directly constructed
-values can be noncanonical; `Display` preserves every declared scale byte and sign,
-without clamping or allocation. Rust's generic `Symbol<N>` accepts at most `min(N, 255)`
-UTF-8 bytes because its ABI length is one byte; the 8- and 16-byte culture symbols use
-their existing limits and layouts.
-
 - **The `exports` feature**, on by default, is the 26 `cast_*` symbols and
   `hypercast_version` as a symbol. A `#[no_mangle]` item is exported from whatever library
   the crate ends up in, so a crate building its own `cdylib` or `staticlib` takes
@@ -303,6 +296,13 @@ let raw = RawNumFormat::from(NumFormat::new(',', '.', NumFormat::ALL));
 assert_eq!(RawNumFormat::from_le_bytes(raw.to_le_bytes()).resolve(), raw.resolve());
 assert_eq!(Reason::from_code(3), Some(Reason::OutOfRange));
 ```
+
+`Decimal`'s fields are public, since it is an out-value itself. Cast results are canonical,
+with scale `0..=28`, no trailing fraction zeros and no negative zero. Directly constructed
+values can be noncanonical; `Display` preserves every declared scale byte and sign,
+without clamping or allocation. Rust's generic `Symbol<N>` accepts at most `min(N, 255)`
+UTF-8 bytes because its ABI length is one byte; the 8- and 16-byte culture symbols use
+their existing limits and layouts.
 
 ## Proven panic-free, and proven right
 
@@ -361,11 +361,11 @@ and runs the boolean, integer, real, decimal, UUID, timestamp, date and duration
 the version export inside a real browser; CI runs it in headless Chrome on every PR
 (`wasm-pack test --headless --chrome` there).
 
-A `wasm32-wasip1` build of the crate imports four `wasi_snapshot_preview1` functions — wasi-libc's
-`environ_get`, `environ_sizes_get`, `fd_write` and `proc_exit`, from its startup and panic
-paths — and nothing else: no clock and no entropy, because the core is pure computation
-over the bytes it is handed. `ffi.rs` itself is untouched by any of this; on every native
-target the C ABI is still exactly the same exports.
+The `wasm32-wasip1` static archive that TinyGo and Swift's WebAssembly SDK link is the same
+`no_std` build as every other archive, and it imports nothing from WASI: no clock and no
+entropy, because the core is pure computation over the bytes it is handed. Its only
+undefined symbols are the 128-bit arithmetic helpers and the stack pointer, which the
+consumer's linker supplies.
 
 ## Benchmarks
 
