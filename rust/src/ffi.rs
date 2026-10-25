@@ -191,9 +191,9 @@ macro_rules! numeric_exports {
     )+};
 }
 
-// Every numeric door is certified, the two real ones included. They used to be the
-// exception: they handed their text to `core`'s float parser, whose slice-index checks the
-// optimizer cannot discharge. The conversion is this crate's own now (float.rs).
+// Every numeric door is certified, the two real ones included: their conversion is this
+// crate's own (float.rs), because `core`'s float parser keeps slice-index checks the
+// optimizer cannot discharge.
 numeric_exports! {
     #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
     cast_i8 => (integer, i8),

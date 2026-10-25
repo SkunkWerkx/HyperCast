@@ -24,8 +24,8 @@ library for nothing both do not have. CI runs the suite against it on Debian and
 The two Windows archives are the MSVC builds (`x86_64-pc-windows-msvc`,
 `aarch64-pc-windows-msvc`), byte for byte the ones the C# package links under Native AOT,
 renamed to the `libhypercast.a` every cgo line here uses. MinGW's linker reads MSVC's COFF
-objects, and what the archive asks of the C runtime (`memcpy`, `memset`, `memcmp`, `abort`,
-`__CxxFrameHandler3`) resolves against `msvcrt.dll` through MinGW's own import library, so
+objects, and what the archive asks of the C runtime (`memcpy`, `memset`, `memcmp`,
+and on x64 `_fltused`) resolves against `msvcrt.dll` through MinGW's own import library, so
 nothing else goes on the link line.
 
 The `wasm` archive is the `wasm32-wasip1` build, byte for byte the one Swift's artifact

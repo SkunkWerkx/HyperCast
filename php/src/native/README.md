@@ -1,12 +1,11 @@
 # native/
 
 Populated per-RID with the platform's native `libhypercast` build (`native/{rid}/{lib}`),
-committed to git — unlike every other registry this repo publishes to (NuGet, Maven Central,
-PyPI, crates.io), Packagist has no packing/build step of its own: whatever's literally in the
-git tree at a tagged commit *is* the published package, so the native binaries have to live
-here for real, not be staged in transiently by CI (a bug HyperUuid hit for real, three
-separate times, before banking the fix as `stage-native-binaries.yml`), which is the only
-thing that commits them. CI's per-leg build job copies its fresh build over the matching
+committed to git. Like the Go module, and unlike the registries that take a built package
+(NuGet, Maven Central, PyPI, RubyGems, crates.io), Packagist has no packing/build step of its
+own: whatever's literally in the git tree at a tagged commit *is* the published package, so
+the native binaries have to live here for real, not be staged in transiently by CI.
+`stage-native-binaries.yml` is the only thing that commits them. CI's per-leg build job copies its fresh build over the matching
 platform's file before phpunit runs, so every leg tests the library it just built. A
 development checkout tests its own build without touching these files: set
 `HYPERCAST_NATIVE_LIBRARY` to a library built with `cargo cdylib` in `rust/`, or, with a

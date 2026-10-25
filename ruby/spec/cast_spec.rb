@@ -529,6 +529,20 @@ RSpec.describe HyperCast do
         expect(HyperCast::NumFormat.from_i18n({ separator: nil, delimiter: nil, unit: nil })).to eq(invariant)
       end
 
+      it "fills a missing mark with the one the declared mark is not, as the other locale bridges do" do
+        comma = HyperCast::NumFormat.from_i18n({ separator: "," })
+        expect(comma).to eq(HyperCast::NumFormat.new(decimal_sep: ",", group_sep: ".", flags: HyperCast::ALL_STYLES))
+        expect(described_class.f64("1.234,5", comma)).to eq(HyperCast::Success.new(value: 1234.5))
+        expect(HyperCast::NumFormat.from_i18n({ delimiter: "." }))
+          .to eq(HyperCast::NumFormat.new(decimal_sep: ",", group_sep: ".", flags: HyperCast::ALL_STYLES))
+        # The same for the currency pair: a currency mark that repeats the number mark the
+        # missing one would stand in for takes the other.
+        money = HyperCast::NumFormat.from_i18n({ separator: ",", delimiter: "." }, currency_format: { separator: "." })
+        expect([money.currency_decimal_sep, money.currency_group_sep]).to eq([".", ","])
+        money = HyperCast::NumFormat.from_i18n({ separator: ",", delimiter: "." }, currency_format: { delimiter: "," })
+        expect([money.currency_decimal_sep, money.currency_group_sep]).to eq([".", ","])
+      end
+
       it "turns grouping off for an empty delimiter, keeping a placeholder distinct from the decimal mark" do
         no_grouping = HyperCast::NumFormat.from_i18n({ separator: ",", delimiter: "" })
         expect(no_grouping).to eq(HyperCast::NumFormat.new(decimal_sep: ",", group_sep: ".",

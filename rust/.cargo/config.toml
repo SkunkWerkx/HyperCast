@@ -6,9 +6,7 @@
 # wrapper) does not, so it's declared here. Harmless for the default (no extension
 # feature) build too — a cdylib with no undefined symbols is unaffected by the flag either
 # way. Linux permits undefined symbols in shared libraries by default, which is why only
-# the Darwin targets need this. (Learned the hard way in this repo's own CI bring-up —
-# the fix originally lived in the satellite extension crates' .cargo/config.toml files;
-# it moved here when the extensions were consolidated into the core crate as features.)
+# the Darwin targets need this.
 [target.x86_64-apple-darwin]
 rustflags = ["-C", "link-arg=-Wl,-undefined,dynamic_lookup"]
 

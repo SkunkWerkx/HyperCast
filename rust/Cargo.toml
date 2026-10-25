@@ -68,12 +68,13 @@ staticlib = ["exports"]
 # The shared library every non-extension binding dlopens (`cargo cdylib`), built without
 # Rust's standard library: the `staticlib` panic handler plus what a no_std shared library
 # needs that a static library does not (lib.rs has what and why). The parse is the same
-# code either way; what std added was its runtime — the unwinder, the backtrace symbolizer
-# and the allocator, ~330 KB of the 437 KB linux-x64 library, none of it reachable from a
-# C ABI export. Leaving std out also leaves every import but the C library's `abort`,
-# `memcpy`, `memset` and `bcmp` out, so on musl the library no longer needs libgcc_s. A
-# panic was already a process abort at an `extern "C"` boundary under std; it is the same
-# abort here, only without the message printed first. Off by default, and never for an
+# code either way; what std adds is its runtime — the unwinder, the backtrace symbolizer
+# and the allocator, ~265 KB of the 425 KB linux-x64 library (rust/README.md has the
+# measurement), none of it reachable from a C ABI export. Leaving std out also leaves every
+# import but the C library's `memcpy`, `memset` and `bcmp` out (the panic handler's `abort`
+# goes too, since no export can reach it), so on musl the library does not need libgcc_s. A
+# panic is a process abort at an `extern "C"` boundary under std too; it is the same abort
+# here, only without the message printed first. Off by default, and never for an
 # rlib consumer.
 cdylib = ["staticlib"]
 # The core's values as Python objects (src/python.rs, `hypercast::python`), for any crate
@@ -123,13 +124,14 @@ harness = false
 #
 # Cargo only passes `-C lto` for a cdylib built as the invocation's one crate type, which is
 # what `cargo cdylib` is: the plain linux-x64 library was 457,008 bytes that way while it
-# still carried std (110,048 since), against 535,440 from a manifest that listed
+# still carried std, against 535,440 from a manifest that listed
 # `["cdylib", "rlib"]`, at the same speed (the timestamp, uuid and bool doors through the
 # C ABI, alternating runs, within noise).
 #
 # strip drops the symbol table and debug info from what is linked, never the exports, and
 # never the code: the stripped linux-x64 library's .text is byte-identical to the unstripped one.
-# Measured on local linux-x64 builds, stripped against unstripped: the shared library goes
+# Measured on local linux-x64 builds when strip was turned on, stripped against unstripped
+# (the library has grown since; rust/README.md has today's size): the shared library went
 # 110,048 → 104,496 bytes (the last one CI staged unstripped was 109,736) and the Linux Magnus extension 551,736 → 457,400 (a platform gem ships
 # two). Windows already got this for the Magnus build from the forge's RUSTFLAGS; this is
 # every other leg.

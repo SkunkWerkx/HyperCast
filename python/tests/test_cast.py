@@ -143,9 +143,9 @@ def test_localeconv_bridge_carries_the_signs_the_currency_separators_and_the_sig
 
 def test_localeconv_bridge_never_puts_one_character_in_both_roles():
     """An empty field takes its invariant default unless the other separator already holds that
-    character, in which case it takes the other of the pair. A comma-decimal locale with no
-    thousands separator used to fall back to "," for the group too — a format no door can read — and
-    the same rule now holds in the PHP binding's bridge.
+    character, in which case it takes the other of the pair, so a comma-decimal locale with no
+    thousands separator does not fall back to "," for the group too — a format no door can read.
+    The PHP binding's bridge holds the same rule.
     """
     comma = NumFormat.from_localeconv({"decimal_point": ",", "thousands_sep": ""})
     assert (comma.decimal_sep, comma.group_sep) == (",", ".")
@@ -373,8 +373,8 @@ def test_equal_separators_are_a_caller_bug():
         NumFormat(".", ".", NumFormat.ALL)
 
 
-def test_separators_are_one_or_two_characters():
-    """A separator is one or two characters (eight UTF-8 bytes at most) with no ASCII digit: the
+def test_separators_are_one_to_eight_utf8_bytes():
+    """A separator is 1 to 8 UTF-8 bytes with no ASCII digit, the core's own rule: the
     comma-space and apostrophe-space groupings some feeds carry, read as declared.
     """
     comma_space = NumFormat(".", ", ", NumFormat.ALL)
@@ -385,10 +385,11 @@ def test_separators_are_one_or_two_characters():
     assert hypercast.cast_f64(
         "1\u00a0\u00a0234,5", NumFormat(",", "\u00a0\u00a0", NumFormat.ALL)
     ) == (Success(1234.5))
-    for bad in ("", "abc", "1", ".0", "\u00a0\u00a0\u00a0"):
-        with pytest.raises(ValueError, match="one or two characters"):
+    assert NumFormat(".", "\u00a0\u00a0\u00a0\u00a0", NumFormat.ALL).group_sep == "\u00a0" * 4
+    for bad in ("", "1", ".0", "x" * 9, "\u00a0" * 5):
+        with pytest.raises(ValueError, match="1 to 8 UTF-8 bytes"):
             NumFormat(bad, ",", NumFormat.ALL)
-        with pytest.raises(ValueError, match="one or two characters"):
+        with pytest.raises(ValueError, match="1 to 8 UTF-8 bytes"):
             NumFormat(".", bad, NumFormat.ALL)
 
 
@@ -500,11 +501,11 @@ def test_symbol_rules_are_a_caller_bug():
     currency separators in force, a digit zero that is ASCII or starts no digit block.
     """
     for name in ("minus_sign", "plus_sign", "percent"):
-        for bad in ("- ", " -", "a b", "1", "abc", "\u2212" * 3):
+        for bad in ("- ", " -", "a b", "1", "x" * 9, "\u2212" * 3):
             with pytest.raises(ValueError):
                 NumFormat(".", ",", NumFormat.ALL, **{name: bad})
     for name in ("currency_decimal_sep", "currency_group_sep"):
-        for bad in ("abc", "1", "\u00a0" * 3):
+        for bad in ("x" * 9, "1", "\u00a0" * 5):
             with pytest.raises(ValueError):
                 NumFormat(".", ",", NumFormat.ALL, **{name: bad})
     # The pair in force for a currency amount must differ, counting what each falls back to.

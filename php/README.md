@@ -210,7 +210,7 @@ in a sign, a currency pair that collides, a digit zero that starts no digit bloc
 | `percent` | A further spelling of `%` (`٪`, `％`), read as a trailing `%` is under `PERCENT`: the real and decimal doors only, since an integer door never reads a percent. |
 | `digitZero` | The zero of a set of native digits — `٠` (U+0660) for the Arabic-Indic digits, `۰` (U+06F0) for the extended ones, `０` (U+FF10) for the fullwidth ones. The ten code points from it are read beside `0`–`9` everywhere digits are (integer part, fraction, exponent), and the two may mix; radix-prefixed (`0x`, `0b`) digits stay ASCII. |
 
-The two number separators may be one or two characters each — up to 8 bytes of UTF-8 —
+The two number separators may each be 1 to 8 bytes of UTF-8 with no ASCII digit —
 for a culture that groups with `, ` or `' `. And the flags gain `NumFormat::TRAILING_SIGN`,
 which permits a sign after the digits (`5-`, `5 -`, `5+`, `5 €-`, `5- €`, `2.5%-`), never
 beside a leading sign nor inside parentheses. It is deliberately not part of
@@ -242,7 +242,7 @@ are always read in both places, ASCII case-insensitively — so a declared pair 
 spellings and takes none away. Each designator is up to 16 bytes of UTF-8 with no ASCII
 digit and no ASCII whitespace at either end (an internal space is fine: Spanish's `a. m.`);
 anything else is an `InvalidArgumentException`. Only the datetime door reads them —
-`Cast::date` has no time part — and the two-argument call is exactly what it was.
+`Cast::date` has no time part — and a two-argument call reads the English pair only.
 
 ```php
 $german = new DayPeriods('vorm.', 'nachm.');
@@ -321,8 +321,8 @@ The conversion is remembered per formatter, so passing the same formatter call a
 converts it once; but its ten symbols and two negative-pattern attributes are still read on
 every call, because a formatter is mutable (`setSymbol()`, `setPattern()`) and a changed one
 is declared again, and those twelve intl calls are what the formatter path costs over a
-hoisted `NumFormat` — about four times the call (2.4 µs against 0.6 µs in the run that
-measured the grouped `Cast::i32` at 645 ns), so derive the `NumFormat` once with
+hoisted `NumFormat` — about four times the call (2.4 µs against 0.6 µs in a run for 0.9.0
+that measured the grouped `Cast::i32` at 645 ns, separate from the Benchmarks table), so derive the `NumFormat` once with
 `NumFormat::fromNumberFormatter()` on a hot path. Symbols the core cannot carry (a separator
 of more than 8 bytes, an over-long currency symbol) are an `InvalidArgumentException`, as
 through the constructor.
@@ -403,14 +403,15 @@ buys for its few hundred nanoseconds is what `intval` and `createFromFormat` do 
 — a verdict with a reason and a span instead of `0` or `false`, a format declared per call,
 and the same answer in six other languages.
 
-No new mechanism was needed to get here — the ext-ffi call floor is already extension-class,
-so the work was a wrapper diet: flat doors (one FFI call, no closure indirection), typed
+The doors need no new mechanism — the ext-ffi call floor is already extension-class, so
+their speed is a wrapper diet: flat doors (one FFI call, no closure indirection), typed
 cdef structs read as fields, static scratch `CData` with pre-taken addresses (PHP's request
 model makes static scratch safe), and `createFromTimestamp`/`setMicrosecond` on PHP 8.4+
 instead of a date-string parse. Separator detection costs ~54 ns (441 ns vs 387 ns
 declared).
 
-A declared currency symbol is lost in the call's own cost: in a later run where
+A declared currency symbol is lost in the call's own cost: in a run for 0.9.0, after the
+table's, where
 `Cast::i32` (grouped) took 449 ns, the same text under `NumFormat::fromNumberFormatter` for
 en_US, `$` included, took 472 ns, inside that run's ±3%. Rejecting `1,234x567` took 684 ns
 there. PHP's validating parse, `filter_var('1234x567', FILTER_VALIDATE_INT)`, fails in
@@ -419,12 +420,12 @@ there. PHP's validating parse, `filter_var('1234x567', FILTER_VALIDATE_INT)`, fa
 When bytes are the destination — a `BINARY(16)` column bind, a wire format —
 `Cast::uuidBytes` returns the sixteen RFC-ordered octets as a binary string and skips the
 hex encoding and hyphen assembly `Cast::uuid` does to render the canonical form. The eight
-integer doors are now written out flat like the real doors — one literal FFI call each, no
+integer doors are written out flat like the real doors — one literal FFI call each, no
 shared helper doing a dynamic symbol lookup and a string match to find the width's
 sign-extension shift.
 
-Benchmark forensics worth knowing: PHP read 20x slow until a loaded Xdebug was caught
-inflating everything uniformly ~14x — `XDEBUG_MODE=off` for every recorded number.
+Benchmark forensics worth knowing: a loaded Xdebug inflates everything uniformly ~14x, so
+every recorded number is taken with `XDEBUG_MODE=off`.
 
 ### The native extension spike
 
@@ -434,14 +435,15 @@ chosen because it needs zero compilation to install.
 The same Rust core also links straight into a real Zend extension via
 [`ext-php-rs`](https://ext-php.rs) (`rust/src/php_ext.rs`, gated behind the crate's `php`
 Cargo feature) — the same move Python (PyO3) and Ruby (Magnus) get a shipped native backend
-for, exposing every door at the raw layer this package's own FFI calls sit at. PHP's didn't
-ship, for two reasons. The mechanism was never the bottleneck here the way ctypes and Fiddle
-were: the `ext-ffi` crossing measured ~105 ns, so what a Zend extension removes is the
+for, exposing every door at the raw layer this package's own FFI calls sit at. PHP's does
+not ship, for two reasons. The mechanism is not the bottleneck here the way ctypes and Fiddle
+are: the `ext-ffi` crossing measured ~105 ns, so what a Zend extension removes is the
 PHP-level wrapper around the call, not the call. And a Zend extension is pinned to one PHP
 ABI per build — the API number plus NTS or ZTS — with no Windows build on stable Rust, so
 shipping it means a binary per PHP version where the `ext-ffi` package ships one library per
-platform. CI builds the extension on every Linux and macOS leg, load-checks it, and uploads
-and attests the result, so it cannot silently bit-rot; no `phpunit` runs against it and
+platform. CI builds the extension on linux-x64, linux-arm64 and osx-arm64 in every
+release-mode run (weekly and release, not pull requests), load-checks it, and uploads and
+attests the result, so it cannot silently bit-rot; no `phpunit` runs against it and
 nothing in the Composer package loads it. HyperUuid carries the same spike on the same terms
 and measured it: 1.4-2x on single calls, where that wrapper is a large share of the time, and
 nothing on batches ([its PHP README](https://github.com/SkunkWerkx/HyperUuid/tree/master/php#the-native-extension-spike)
@@ -635,12 +637,19 @@ repository configuration needed. See [Requirements](#requirements) for the PHP f
 There are two `composer.json` files in this repo: this directory's own (what CI actually
 `composer install`s/tests against) and a second one at [the repo root](../composer.json),
 which exists because Packagist requires `composer.json` at the top of the git repository it
-watches, with no subdirectory support. Its `autoload` PSR-4 mapping points into `php/src/`.
-Keep both in sync by hand when `require`/`autoload` change here.
+watches, with no subdirectory support. The two differ only in their `autoload` and
+`autoload-dev` paths, which at the root point into `php/`; keep everything else identical by
+hand.
 
 The native libraries under `src/native/{rid}/` are committed to git, not built by Packagist —
 Packagist has no packing step, so the git tree at the tag *is* the package. They are restaged
-for each release by `stage-native-binaries.yml`; see `src/native/README.md`.
+for each release by `stage-native-binaries.yml`; see `src/native/README.md`. A development
+checkout tests its own build without touching them: set `HYPERCAST_NATIVE_LIBRARY` to a
+library built with `cargo cdylib` in `rust/` (`.github/scripts/local-core.sh` builds one and
+prints the command), or, with a platform's file absent, the binding falls back to
+`rust/target/release/`. Without `HYPERCAST_NATIVE_LIBRARY`, outside CI, the suite refuses to
+run when the checkout's `rust/` differs from the commit the committed libraries were built
+from.
 
 See [the repo root README](../README.md) for the full door table, the receipts, and the
 state of every other language binding.

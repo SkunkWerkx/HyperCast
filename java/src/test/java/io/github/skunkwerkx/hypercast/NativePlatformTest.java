@@ -56,7 +56,7 @@ class NativePlatformTest {
 
     @Test
     void anArchitectureWithNoBuildResolvesToNothingRatherThanTheNearestRid() {
-        // Each of these used to come back as *-x64 or *-arm64, and then fail at load.
+        // Rounded to the nearest *-x64 or *-arm64, each of these would fail at load.
         for (String arch : new String[] {"riscv64", "ppc64le", "s390x", "loongarch64", "x86", "i386", "arm"}) {
             assertNull(NativePlatform.resolve("hypercast", "Linux", arch, false), arch);
         }

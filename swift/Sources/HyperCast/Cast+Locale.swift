@@ -20,229 +20,228 @@ extension Cast {
 
     /// Casts under the format `locale` declares: its separators, signs and symbols, every
     /// lenience on — exactly ``i8(_:format:)-swift.type.method`` with ``NumFormat/from(locale:)``.
-    public static func i8(_ text: String, locale: Locale) throws -> Verdict<Int8> {
-        try i8(text, format: localeFormat(locale))
+    public static func i8(_ text: String, locale: Locale) -> Verdict<Int8> {
+        i8(text, format: localeFormat(locale))
     }
 
     /// See ``i8(_:locale:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func i8(_ utf8: [UInt8], locale: Locale) throws -> Verdict<Int8> {
-        try i8(utf8, format: localeFormat(locale))
+    public static func i8(_ utf8: [UInt8], locale: Locale) -> Verdict<Int8> {
+        i8(utf8, format: localeFormat(locale))
     }
 
     /// See ``i8(_:locale:)-swift.type.method``; input as a raw view of UTF-8 bytes.
-    public static func i8(_ utf8: UnsafeRawBufferPointer, locale: Locale) throws -> Verdict<Int8> {
-        try i8(utf8, format: localeFormat(locale))
+    public static func i8(_ utf8: UnsafeRawBufferPointer, locale: Locale) -> Verdict<Int8> {
+        i8(utf8, format: localeFormat(locale))
     }
 
     /// Casts under the format `locale` declares: its separators, signs and symbols, every
     /// lenience on — exactly ``i16(_:format:)-swift.type.method`` with ``NumFormat/from(locale:)``.
-    public static func i16(_ text: String, locale: Locale) throws -> Verdict<Int16> {
-        try i16(text, format: localeFormat(locale))
+    public static func i16(_ text: String, locale: Locale) -> Verdict<Int16> {
+        i16(text, format: localeFormat(locale))
     }
 
     /// See ``i16(_:locale:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func i16(_ utf8: [UInt8], locale: Locale) throws -> Verdict<Int16> {
-        try i16(utf8, format: localeFormat(locale))
+    public static func i16(_ utf8: [UInt8], locale: Locale) -> Verdict<Int16> {
+        i16(utf8, format: localeFormat(locale))
     }
 
     /// See ``i16(_:locale:)-swift.type.method``; input as a raw view of UTF-8 bytes.
-    public static func i16(_ utf8: UnsafeRawBufferPointer, locale: Locale) throws -> Verdict<Int16> {
-        try i16(utf8, format: localeFormat(locale))
+    public static func i16(_ utf8: UnsafeRawBufferPointer, locale: Locale) -> Verdict<Int16> {
+        i16(utf8, format: localeFormat(locale))
     }
 
     /// Casts under the format `locale` declares: its separators, signs and symbols, every
     /// lenience on — exactly ``i32(_:format:)-swift.type.method`` with ``NumFormat/from(locale:)``.
-    public static func i32(_ text: String, locale: Locale) throws -> Verdict<Int32> {
-        try i32(text, format: localeFormat(locale))
+    public static func i32(_ text: String, locale: Locale) -> Verdict<Int32> {
+        i32(text, format: localeFormat(locale))
     }
 
     /// See ``i32(_:locale:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func i32(_ utf8: [UInt8], locale: Locale) throws -> Verdict<Int32> {
-        try i32(utf8, format: localeFormat(locale))
+    public static func i32(_ utf8: [UInt8], locale: Locale) -> Verdict<Int32> {
+        i32(utf8, format: localeFormat(locale))
     }
 
     /// See ``i32(_:locale:)-swift.type.method``; input as a raw view of UTF-8 bytes.
-    public static func i32(_ utf8: UnsafeRawBufferPointer, locale: Locale) throws -> Verdict<Int32> {
-        try i32(utf8, format: localeFormat(locale))
+    public static func i32(_ utf8: UnsafeRawBufferPointer, locale: Locale) -> Verdict<Int32> {
+        i32(utf8, format: localeFormat(locale))
     }
 
     /// Casts under the format `locale` declares: its separators, signs and symbols, every
     /// lenience on — exactly ``i64(_:format:)-swift.type.method`` with ``NumFormat/from(locale:)``.
-    public static func i64(_ text: String, locale: Locale) throws -> Verdict<Int64> {
-        try i64(text, format: localeFormat(locale))
+    public static func i64(_ text: String, locale: Locale) -> Verdict<Int64> {
+        i64(text, format: localeFormat(locale))
     }
 
     /// See ``i64(_:locale:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func i64(_ utf8: [UInt8], locale: Locale) throws -> Verdict<Int64> {
-        try i64(utf8, format: localeFormat(locale))
+    public static func i64(_ utf8: [UInt8], locale: Locale) -> Verdict<Int64> {
+        i64(utf8, format: localeFormat(locale))
     }
 
     /// See ``i64(_:locale:)-swift.type.method``; input as a raw view of UTF-8 bytes.
-    public static func i64(_ utf8: UnsafeRawBufferPointer, locale: Locale) throws -> Verdict<Int64> {
-        try i64(utf8, format: localeFormat(locale))
+    public static func i64(_ utf8: UnsafeRawBufferPointer, locale: Locale) -> Verdict<Int64> {
+        i64(utf8, format: localeFormat(locale))
     }
 
     /// Casts under the format `locale` declares: its separators, signs and symbols, every
     /// lenience on — exactly ``u8(_:format:)-swift.type.method`` with ``NumFormat/from(locale:)``.
-    public static func u8(_ text: String, locale: Locale) throws -> Verdict<UInt8> {
-        try u8(text, format: localeFormat(locale))
+    public static func u8(_ text: String, locale: Locale) -> Verdict<UInt8> {
+        u8(text, format: localeFormat(locale))
     }
 
     /// See ``u8(_:locale:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func u8(_ utf8: [UInt8], locale: Locale) throws -> Verdict<UInt8> {
-        try u8(utf8, format: localeFormat(locale))
+    public static func u8(_ utf8: [UInt8], locale: Locale) -> Verdict<UInt8> {
+        u8(utf8, format: localeFormat(locale))
     }
 
     /// See ``u8(_:locale:)-swift.type.method``; input as a raw view of UTF-8 bytes.
-    public static func u8(_ utf8: UnsafeRawBufferPointer, locale: Locale) throws -> Verdict<UInt8> {
-        try u8(utf8, format: localeFormat(locale))
+    public static func u8(_ utf8: UnsafeRawBufferPointer, locale: Locale) -> Verdict<UInt8> {
+        u8(utf8, format: localeFormat(locale))
     }
 
     /// Casts under the format `locale` declares: its separators, signs and symbols, every
     /// lenience on — exactly ``u16(_:format:)-swift.type.method`` with ``NumFormat/from(locale:)``.
-    public static func u16(_ text: String, locale: Locale) throws -> Verdict<UInt16> {
-        try u16(text, format: localeFormat(locale))
+    public static func u16(_ text: String, locale: Locale) -> Verdict<UInt16> {
+        u16(text, format: localeFormat(locale))
     }
 
     /// See ``u16(_:locale:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func u16(_ utf8: [UInt8], locale: Locale) throws -> Verdict<UInt16> {
-        try u16(utf8, format: localeFormat(locale))
+    public static func u16(_ utf8: [UInt8], locale: Locale) -> Verdict<UInt16> {
+        u16(utf8, format: localeFormat(locale))
     }
 
     /// See ``u16(_:locale:)-swift.type.method``; input as a raw view of UTF-8 bytes.
-    public static func u16(_ utf8: UnsafeRawBufferPointer, locale: Locale) throws -> Verdict<UInt16> {
-        try u16(utf8, format: localeFormat(locale))
+    public static func u16(_ utf8: UnsafeRawBufferPointer, locale: Locale) -> Verdict<UInt16> {
+        u16(utf8, format: localeFormat(locale))
     }
 
     /// Casts under the format `locale` declares: its separators, signs and symbols, every
     /// lenience on — exactly ``u32(_:format:)-swift.type.method`` with ``NumFormat/from(locale:)``.
-    public static func u32(_ text: String, locale: Locale) throws -> Verdict<UInt32> {
-        try u32(text, format: localeFormat(locale))
+    public static func u32(_ text: String, locale: Locale) -> Verdict<UInt32> {
+        u32(text, format: localeFormat(locale))
     }
 
     /// See ``u32(_:locale:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func u32(_ utf8: [UInt8], locale: Locale) throws -> Verdict<UInt32> {
-        try u32(utf8, format: localeFormat(locale))
+    public static func u32(_ utf8: [UInt8], locale: Locale) -> Verdict<UInt32> {
+        u32(utf8, format: localeFormat(locale))
     }
 
     /// See ``u32(_:locale:)-swift.type.method``; input as a raw view of UTF-8 bytes.
-    public static func u32(_ utf8: UnsafeRawBufferPointer, locale: Locale) throws -> Verdict<UInt32> {
-        try u32(utf8, format: localeFormat(locale))
+    public static func u32(_ utf8: UnsafeRawBufferPointer, locale: Locale) -> Verdict<UInt32> {
+        u32(utf8, format: localeFormat(locale))
     }
 
     /// Casts under the format `locale` declares: its separators, signs and symbols, every
     /// lenience on — exactly ``u64(_:format:)-swift.type.method`` with ``NumFormat/from(locale:)``.
-    public static func u64(_ text: String, locale: Locale) throws -> Verdict<UInt64> {
-        try u64(text, format: localeFormat(locale))
+    public static func u64(_ text: String, locale: Locale) -> Verdict<UInt64> {
+        u64(text, format: localeFormat(locale))
     }
 
     /// See ``u64(_:locale:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func u64(_ utf8: [UInt8], locale: Locale) throws -> Verdict<UInt64> {
-        try u64(utf8, format: localeFormat(locale))
+    public static func u64(_ utf8: [UInt8], locale: Locale) -> Verdict<UInt64> {
+        u64(utf8, format: localeFormat(locale))
     }
 
     /// See ``u64(_:locale:)-swift.type.method``; input as a raw view of UTF-8 bytes.
-    public static func u64(_ utf8: UnsafeRawBufferPointer, locale: Locale) throws -> Verdict<UInt64> {
-        try u64(utf8, format: localeFormat(locale))
+    public static func u64(_ utf8: UnsafeRawBufferPointer, locale: Locale) -> Verdict<UInt64> {
+        u64(utf8, format: localeFormat(locale))
     }
 
     /// Casts under the format `locale` declares: its separators, signs and symbols, every
     /// lenience on — exactly ``f32(_:format:)-swift.type.method`` with ``NumFormat/from(locale:)``.
-    public static func f32(_ text: String, locale: Locale) throws -> Verdict<Float> {
-        try f32(text, format: localeFormat(locale))
+    public static func f32(_ text: String, locale: Locale) -> Verdict<Float> {
+        f32(text, format: localeFormat(locale))
     }
 
     /// See ``f32(_:locale:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func f32(_ utf8: [UInt8], locale: Locale) throws -> Verdict<Float> {
-        try f32(utf8, format: localeFormat(locale))
+    public static func f32(_ utf8: [UInt8], locale: Locale) -> Verdict<Float> {
+        f32(utf8, format: localeFormat(locale))
     }
 
     /// See ``f32(_:locale:)-swift.type.method``; input as a raw view of UTF-8 bytes.
-    public static func f32(_ utf8: UnsafeRawBufferPointer, locale: Locale) throws -> Verdict<Float> {
-        try f32(utf8, format: localeFormat(locale))
+    public static func f32(_ utf8: UnsafeRawBufferPointer, locale: Locale) -> Verdict<Float> {
+        f32(utf8, format: localeFormat(locale))
     }
 
     /// Casts under the format `locale` declares: its separators, signs and symbols, every
     /// lenience on — exactly ``f64(_:format:)-swift.type.method`` with ``NumFormat/from(locale:)``.
-    public static func f64(_ text: String, locale: Locale) throws -> Verdict<Double> {
-        try f64(text, format: localeFormat(locale))
+    public static func f64(_ text: String, locale: Locale) -> Verdict<Double> {
+        f64(text, format: localeFormat(locale))
     }
 
     /// See ``f64(_:locale:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func f64(_ utf8: [UInt8], locale: Locale) throws -> Verdict<Double> {
-        try f64(utf8, format: localeFormat(locale))
+    public static func f64(_ utf8: [UInt8], locale: Locale) -> Verdict<Double> {
+        f64(utf8, format: localeFormat(locale))
     }
 
     /// See ``f64(_:locale:)-swift.type.method``; input as a raw view of UTF-8 bytes.
-    public static func f64(_ utf8: UnsafeRawBufferPointer, locale: Locale) throws -> Verdict<Double> {
-        try f64(utf8, format: localeFormat(locale))
+    public static func f64(_ utf8: UnsafeRawBufferPointer, locale: Locale) -> Verdict<Double> {
+        f64(utf8, format: localeFormat(locale))
     }
 
     /// Casts under the format `locale` declares: its separators, signs and symbols, every
     /// lenience on — exactly ``decimal(_:format:)-swift.type.method`` with ``NumFormat/from(locale:)``.
-    public static func decimal(_ text: String, locale: Locale) throws -> Verdict<Decimal> {
-        try decimal(text, format: localeFormat(locale))
+    public static func decimal(_ text: String, locale: Locale) -> Verdict<Decimal> {
+        decimal(text, format: localeFormat(locale))
     }
 
     /// See ``decimal(_:locale:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func decimal(_ utf8: [UInt8], locale: Locale) throws -> Verdict<Decimal> {
-        try decimal(utf8, format: localeFormat(locale))
+    public static func decimal(_ utf8: [UInt8], locale: Locale) -> Verdict<Decimal> {
+        decimal(utf8, format: localeFormat(locale))
     }
 
     /// See ``decimal(_:locale:)-swift.type.method``; input as a raw view of UTF-8 bytes.
-    public static func decimal(_ utf8: UnsafeRawBufferPointer, locale: Locale) throws -> Verdict<Decimal> {
-        try decimal(utf8, format: localeFormat(locale))
+    public static func decimal(_ utf8: UnsafeRawBufferPointer, locale: Locale) -> Verdict<Decimal> {
+        decimal(utf8, format: localeFormat(locale))
     }
 
     /// Casts under the format `locale` declares: its separators, signs and symbols, every
     /// lenience on — exactly ``numeric(_:format:)-swift.type.method`` with ``NumFormat/from(locale:)``.
-    public static func numeric<T: NumericCastTarget>(_ text: String, locale: Locale) throws -> Verdict<T> {
-        try numeric(text, format: localeFormat(locale))
+    public static func numeric<T: NumericCastTarget>(_ text: String, locale: Locale) -> Verdict<T> {
+        numeric(text, format: localeFormat(locale))
     }
 
     /// See ``numeric(_:locale:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func numeric<T: NumericCastTarget>(_ utf8: [UInt8], locale: Locale) throws -> Verdict<T> {
-        try numeric(utf8, format: localeFormat(locale))
+    public static func numeric<T: NumericCastTarget>(_ utf8: [UInt8], locale: Locale) -> Verdict<T> {
+        numeric(utf8, format: localeFormat(locale))
     }
 
     /// See ``numeric(_:locale:)-swift.type.method``; input as a raw view of UTF-8 bytes.
-    public static func numeric<T: NumericCastTarget>(_ utf8: UnsafeRawBufferPointer, locale: Locale) throws
+    public static func numeric<T: NumericCastTarget>(_ utf8: UnsafeRawBufferPointer, locale: Locale)
         -> Verdict<T>
     {
-        try numeric(utf8, format: localeFormat(locale))
+        numeric(utf8, format: localeFormat(locale))
     }
 
     /// Casts under the format `locale` declares: its separators, signs and symbols, every
     /// lenience on — exactly ``scalar(_:format:)-swift.type.method`` with ``NumFormat/from(locale:)``.
-    public static func scalar<T: ScalarCastTarget>(_ text: String, locale: Locale) throws -> Verdict<T> {
-        try scalar(text, format: localeFormat(locale))
+    public static func scalar<T: ScalarCastTarget>(_ text: String, locale: Locale) -> Verdict<T> {
+        scalar(text, format: localeFormat(locale))
     }
 
     /// See ``scalar(_:locale:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func scalar<T: ScalarCastTarget>(_ utf8: [UInt8], locale: Locale) throws -> Verdict<T> {
-        try scalar(utf8, format: localeFormat(locale))
+    public static func scalar<T: ScalarCastTarget>(_ utf8: [UInt8], locale: Locale) -> Verdict<T> {
+        scalar(utf8, format: localeFormat(locale))
     }
 
     /// See ``scalar(_:locale:)-swift.type.method``; input as a raw view of UTF-8 bytes.
-    public static func scalar<T: ScalarCastTarget>(_ utf8: UnsafeRawBufferPointer, locale: Locale) throws -> Verdict<T>
-    {
-        try scalar(utf8, format: localeFormat(locale))
+    public static func scalar<T: ScalarCastTarget>(_ utf8: UnsafeRawBufferPointer, locale: Locale) -> Verdict<T> {
+        scalar(utf8, format: localeFormat(locale))
     }
 
     /// Casts under the format `locale` declares: its short-date field order and its day-period
     /// designators — exactly ``dateTime(_:format:)-swift.type.method`` with ``DateFormat/from(locale:)``.
-    public static func dateTime(_ text: String, locale: Locale) throws -> Verdict<DateComponents> {
-        try dateTime(text, format: localeDateFormat(locale))
+    public static func dateTime(_ text: String, locale: Locale) -> Verdict<DateComponents> {
+        dateTime(text, format: localeDateFormat(locale))
     }
 
     /// See ``dateTime(_:locale:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func dateTime(_ utf8: [UInt8], locale: Locale) throws -> Verdict<DateComponents> {
-        try dateTime(utf8, format: localeDateFormat(locale))
+    public static func dateTime(_ utf8: [UInt8], locale: Locale) -> Verdict<DateComponents> {
+        dateTime(utf8, format: localeDateFormat(locale))
     }
 
     /// See ``dateTime(_:locale:)-swift.type.method``; input as a raw view of UTF-8 bytes.
-    public static func dateTime(_ utf8: UnsafeRawBufferPointer, locale: Locale) throws -> Verdict<DateComponents> {
-        try dateTime(utf8, format: localeDateFormat(locale))
+    public static func dateTime(_ utf8: UnsafeRawBufferPointer, locale: Locale) -> Verdict<DateComponents> {
+        dateTime(utf8, format: localeDateFormat(locale))
     }
 
     /// ``NumFormat/from(locale:)``, cached by locale identifier.

@@ -1,13 +1,5 @@
 package hypercast
 
-import "errors"
-
-// ErrNativeUnavailable is never returned and never panicked with: the core is linked into
-// the binary, so there is no load that can fail.
-//
-// Deprecated: kept only so code that tests for it keeps compiling.
-var ErrNativeUnavailable = errors.New("hypercast: native library unavailable")
-
 // Available reports whether the core can be called. The core is linked into the binary
 // (backend_static.go), so there is nothing to load and nothing that can fail: it is always
 // true. It stays for code written against the load probe every binding carries.

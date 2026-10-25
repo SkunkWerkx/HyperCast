@@ -40,7 +40,7 @@ language's verdict (see [Verdict](#verdict)).
 | `cast_excel_duration` | `excel_duration` [^typed-reason] | `Cast.ExcelDuration` | `Cast.excelDuration` | `ExcelDuration` | `Cast.excelDuration(_:)` | `Cast::excelDuration` | `HyperCast.excel_duration` | `cast_excel_duration` |
 
 The integer, real and decimal doors take a `NumFormat` second (`format`, or `fmt` in
-Python). Every Swift door is `throws` [^swift-throws].
+Python). No Swift door throws.
 
 ### Doors beyond the ABI
 
@@ -111,8 +111,8 @@ truncate instants to microseconds. Each binding's README states its own fidelity
 | Construct | `NumFormat::new(decimal_sep, group_sep, flags)`, `with_separators(..)` | `new NumFormat(decimalSeparator, groupSeparator, styles[, currencySymbol])` with init-only properties | `new NumFormat(decimalSeparator, groupSeparator, styles[, currencySymbol])`, `with*` | `NumFormat{DecimalSep, GroupSep, Styles, Currency, ...}` literal | `NumFormat(decimalSeparator:groupSeparator:styles:currencySymbol:...)` | `new NumFormat($decimalSep, $groupSep, $flags, $currency = '', ...)` (named arguments) | `NumFormat.new(decimal_sep:, group_sep:, flags:, currency: "", ...)`, `with` | `NumFormat(decimal_sep, group_sep, flags, currency="", *, ...)` |
 | Invariant | `NumFormat::INVARIANT` (also `Default`) | `NumFormat.Invariant` | `NumFormat.INVARIANT` | `Invariant` | `NumFormat.invariant` | `NumFormat::invariant()` | `NumFormat::INVARIANT` | `NumFormat.INVARIANT` |
 | Detect | `NumFormat::DETECT` | `NumFormat.Detect` | `NumFormat.DETECT` | `Detect` | `NumFormat.detect` | `NumFormat::detect()` | `NumFormat::DETECT` | `NumFormat.DETECT` |
-| Decimal separator (1–2 chars) [^symbol] | `decimal_sep` (`Symbol<8>`) | `DecimalSeparator` (`string`) | `decimalSeparator()` (`String`) | `DecimalSep` (`string`) | `decimalSeparator` (`String`) | `decimalSep` (`string`) | `decimal_sep` | `decimal_sep` |
-| Group separator (1–2 chars) [^symbol] | `group_sep` (`Symbol<8>`) | `GroupSeparator` (`string`) | `groupSeparator()` (`String`) | `GroupSep` (`string`) | `groupSeparator` (`String`) | `groupSep` (`string`) | `group_sep` | `group_sep` |
+| Decimal separator [^symbol] | `decimal_sep` (`Symbol<8>`) | `DecimalSeparator` (`string`) | `decimalSeparator()` (`String`) | `DecimalSep` (`string`) | `decimalSeparator` (`String`) | `decimalSep` (`string`) | `decimal_sep` | `decimal_sep` |
+| Group separator [^symbol] | `group_sep` (`Symbol<8>`) | `GroupSeparator` (`string`) | `groupSeparator()` (`String`) | `GroupSep` (`string`) | `groupSeparator` (`String`) | `groupSep` (`string`) | `group_sep` | `group_sep` |
 | Currency separators (read once the declared symbol is found; empty keeps the number pair) | `currency_decimal_sep`, `currency_group_sep` (`with_currency_separators`) | `CurrencyDecimalSeparator`, `CurrencyGroupSeparator` | `currencyDecimalSeparator()`, `currencyGroupSeparator()` | `CurrencyDecimalSep`, `CurrencyGroupSep` | `currencyDecimalSeparator`, `currencyGroupSeparator` | `currencyDecimalSep`, `currencyGroupSep` | `currency_decimal_sep`, `currency_group_sep` | `currency_decimal_sep`, `currency_group_sep` |
 | Declared minus and plus signs (read beside ASCII) | `minus_sign`, `plus_sign` (`with_signs`) | `MinusSign`, `PlusSign` | `minusSign()`, `plusSign()` | `MinusSign`, `PlusSign` | `minusSign`, `plusSign` | `minusSign`, `plusSign` | `minus_sign`, `plus_sign` | `minus_sign`, `plus_sign` |
 | Declared percent symbol (read beside `%`) | `percent` (`with_percent`) | `PercentSymbol` | `percentSymbol()` | `Percent` | `percentSymbol` | `percent` | `percent` | `percent` |
@@ -169,7 +169,7 @@ truncate instants to microseconds. Each binding's README states its own fidelity
 | Version probe (`hypercast_version`) | `hypercast_version()` → `u32`, packed `major << 16 \| minor << 8 \| patch` | `Cast.NativeVersion` → `Version?` | `Cast.nativeVersion()` → `String` | `NativeVersion()` → `string` | `Cast.nativeVersion()` → `String` | `Cast::nativeVersion()` → `string` | `HyperCast.native_version` → `String` | `native_version()` → `str` |
 | Availability, never throws | — [^rust-probe] | `Cast.IsAvailable` | `Cast.isAvailable()` | `Available()`, always `true` [^linked] | `Cast.isAvailable`, always `true` [^linked] | `Cast::isAvailable()` | `HyperCast.available?` | — |
 | Load failure | — | — | — | `LoadError()`, always `nil` [^linked] | — | — | — | — |
-| Backend in use | — | — | — | — | — | — | `HyperCast::BACKEND` → `:native` or `:fiddle` | `BACKEND`, always `"native"` |
+| Backend in use | — | — | — | — | — | — | `HyperCast::BACKEND` → `:native` or `:fiddle` | — |
 
 Rust is the crate's own API (the `rust/src/lib.rs` re-exports). The other names are
 relative to C# namespace `HyperCast`, Java package `io.github.skunkwerkx.hypercast`, Go
@@ -195,10 +195,6 @@ when the absence is deliberate.
 [^excel-serial-name]: The Rust twin of `cast_excel_serial` for a held `f64` is
     `excel_serial`; the export is `cast_excel_serial_from_f64` and the bindings follow the
     export's `FromDouble`/`FromFloat64`/`from_float` naming.
-
-[^swift-throws]: Swift's doors and `nativeVersion()` are `throws` only so call sites written
-    when macOS and Windows loaded a shared library keep compiling; the core is linked in and
-    they do not throw (`swift/Sources/HyperCast/Cast.swift`).
 
 [^generic]: Not in Java, which has no generics over primitives, nor in the dynamic
     bindings, where the per-width doors are the idiom (`docs/roadmap.md`, CHANGELOG). Rust
@@ -236,12 +232,12 @@ when the absence is deliberate.
     data in Go, Ruby or PHP's standard library names a culture's `AM`/`PM`, and Python's
     `localeconv()` carries none, so those four declare them by hand, as they do the order.
 
-[^layout]: Since 0.9.0 the format crosses the C ABI as a size-tagged, 92-byte layout, the
+[^layout]: The format crosses the C ABI as a size-tagged, 92-byte layout, the
     `#[repr(C)]` `NumFormat` itself behind a size word, read in place; day periods cross as a
     40-byte `RawDayPeriods` after the date order, null for English only. `rust/src/abi.rs`
     has the offset table every binding restates and pins in its interop tests.
 
-[^symbol]: One or two characters, up to 8 UTF-8 bytes, containing no ASCII digit; the two
+[^symbol]: 1 to 8 UTF-8 bytes, containing no ASCII digit; the two
     must differ. A format read across the ABI that breaks a rule is a contract violation,
     which each binding reports as its platform's argument error before the call.
 
@@ -279,7 +275,7 @@ when the absence is deliberate.
     and `.autoupdatingCurrent`, so a user's own number-format overrides on Apple platforms
     are honored; Java's Native Image carries only the locales named at build time
     (`-H:IncludeLocales`). In every binding, and through the bridges above too, everything
-    the culture declares carries over since 0.9.0 — its signs, a trailing-sign pattern, the
+    the culture declares carries over — its signs, a trailing-sign pattern, the
     separators of a currency amount, its percent symbol, its digits — each read beside the
     ASCII default, never instead of it; the
     [culture fidelity sweep](roadmap.md#culture-fidelity--the-sweep-built-090) has every row.
@@ -292,4 +288,4 @@ when the absence is deliberate.
     `hypercast_version()` is re-exported for a crate that fronts its own C ABI.
 
 [^linked]: Go and Swift link the core in statically, so it is always there; the probes are
-    kept for code written against the load probe every binding carries.
+    there for code written against the load probe every binding carries.

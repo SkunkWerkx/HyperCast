@@ -25,7 +25,7 @@ namespace HyperCast;
 /// <c>$</c> is matched as <c>$</c>, and U+2212 only where it is declared.
 /// </para>
 /// <para>
-/// A separator, a sign and the percent symbol are one or two characters — up to
+/// A separator, a sign and the percent symbol are 1 to
 /// <see cref="MaxSymbolBytes"/> bytes of UTF-8, which covers every real culture's (<c>.</c>,
 /// <c>,</c>, U+00A0, U+202F, de-CH's <c>’</c>, and a two-character <c>, </c>); the currency
 /// symbol up to <see cref="MaxCurrencyBytes"/>.

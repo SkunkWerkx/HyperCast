@@ -60,7 +60,7 @@ module HyperCast
   # invariant culture, and nothing that parsed before stops parsing. The currency symbol is
   # honored only while the CURRENCY flag is set — declared with the flag off, the symbol is
   # a :malformed Fault at the symbol, and the flag with no symbol matches nothing — and the
-  # percent symbol while PERCENT is. A separator may be one or two characters (", " —
+  # percent symbol while PERCENT is. A separator may be wider than one character (", " —
   # comma, space — is a separator), up to 8 UTF-8 bytes. A malformed format is a caller bug
   # (ArgumentError), never a verdict: an empty or over-long separator, equal separators (or
   # an equal pair in force for currency amounts), a symbol carrying an ASCII digit, a sign
@@ -125,7 +125,9 @@ module HyperCast
     # key (precision, format, significant, ...) ignored — so
     # `NumFormat.from_i18n(I18n.t("number.format"))` drops a Rails locale straight in, with
     # no I18n dependency here. A missing or nil key keeps the invariant's "." / "," / no
-    # symbol. An empty delimiter — the locale writes no grouping — turns GROUPING off rather
+    # symbol, except where that would repeat the mark the Hash does declare: a separator of
+    # "," with no delimiter groups with ".", and a delimiter of "." with no separator takes
+    # "," for the decimal mark. An empty delimiter — the locale writes no grouping — turns GROUPING off rather
     # than declaring a separator, since a NumFormat always carries one; the placeholder it
     # gets is whichever of "," and "." the decimal mark is not. A negative_format that writes
     # the sign after the number ("%n-", "%n %u-") turns TRAILING_SIGN on; "-%n", the Rails
@@ -136,7 +138,9 @@ module HyperCast
     # differ (the Swiss German franc, say — "1'234.50" beside "1.234,50"): its separator and
     # delimiter become the currency separators, read in place of the number ones when the
     # unit is found in the text, and its unit the currency symbol. A missing key there
-    # declares nothing, keeping the number separator it stands in for; an explicitly empty
+    # declares nothing, keeping the number separator it stands in for, unless that would
+    # repeat the currency mark it does declare, in which case the missing one is whichever
+    # of "," and "." that mark is not; an explicitly empty
     # delimiter gets the same placeholder rule as above; its negative_format turns
     # TRAILING_SIGN on the same way. Passed alone, number.currency.format reads as the one
     # number format, as before.
@@ -149,10 +153,10 @@ module HyperCast
     # narrow flags: for anything stricter.
     def self.from_i18n(number_format, currency_format: nil, flags: ALL_STYLES)
       entries = i18n_entries(number_format)
-      separator = entries[:separator] || "."
-      delimiter = entries[:delimiter] || ","
-      if delimiter == ""
-        flags &= ~GROUPING
+      separator = entries[:separator] || (entries[:delimiter] == "." ? "," : ".")
+      delimiter = entries[:delimiter]
+      if delimiter.nil? || delimiter == ""
+        flags &= ~GROUPING if delimiter == ""
         delimiter = separator == "," ? "." : ","
       end
       flags |= TRAILING_SIGN if trailing_sign?(entries[:negative_format])
@@ -164,6 +168,11 @@ module HyperCast
         currency_separator = money[:separator] || ""
         currency_delimiter = money[:delimiter] || ""
         currency_delimiter = (money[:separator] || separator) == "," ? "." : "," if money[:delimiter] == ""
+        if currency_separator.empty? && currency_delimiter == separator
+          currency_separator = currency_delimiter == "," ? "." : ","
+        elsif currency_delimiter.empty? && currency_separator == delimiter
+          currency_delimiter = currency_separator == "," ? "." : ","
+        end
         flags |= TRAILING_SIGN if trailing_sign?(money[:negative_format])
       end
       new(decimal_sep: separator, group_sep: delimiter, flags: flags, currency: currency,
@@ -253,7 +262,7 @@ module HyperCast
   NumFormat::CURRENCY_MAX_BYTES = 16
 
   # The widest separator, sign or percent symbol the native ABI carries inline, in UTF-8
-  # bytes: one or two characters of any script.
+  # bytes: enough for every separator a real culture declares (one or two characters).
   NumFormat::SYMBOL_MAX_BYTES = 8
 
   # The size of NumFormat#packed — the native ABI's size-tagged NumFormat layout — in bytes.

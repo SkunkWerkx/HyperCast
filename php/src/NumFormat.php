@@ -87,8 +87,8 @@ final readonly class NumFormat
      * stands in for — differ from each other; and the digit zero is one non-ASCII character
      * that starts a Unicode digit block.
      *
-     * @param string $decimalSep the decimal separator, one or two characters
-     * @param string $groupSep the group separator, one or two characters
+     * @param string $decimalSep the decimal separator, 1 to 8 bytes of UTF-8
+     * @param string $groupSep the group separator, 1 to 8 bytes of UTF-8
      * @param int $flags the lenience flags (GROUPING | PARENTHESES | ...)
      * @param string $currency the currency symbol; '' (the default) declares none
      * @param string $currencyDecimalSep the decimal separator of a currency amount; '' keeps $decimalSep

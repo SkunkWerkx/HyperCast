@@ -18,12 +18,11 @@
        sits on disk, and is never handed to the linker. With it, the SDK scans every assembly's
        P/Invokes and generates a pinvoke table that calls each door by symbol, so the link itself
        resolves them against the archive (with the archive missing, wasm-ld fails with an
-       undefined symbol per door: v0.0.1's failure) and LibraryImport("*") reaches each one
-       through that table. An @(EmccExportedFunction) entry per door used to be listed here too,
-       on the belief that "*" resolution needed the Emscripten export. It does not:
-       HyperCast.WasmSmokeTest calls all twenty-seven entry points with the list gone on .NET SDK
-       11.0.100-rc.2, and fails at the link with the archive unlinked, so the list was dead
-       weight and is not kept.
+       undefined symbol per door) and LibraryImport("*") reaches each one
+       through that table. No @(EmccExportedFunction) list is needed, because "*" resolution
+       does not need the Emscripten export: HyperCast.WasmSmokeTest calls all twenty-seven
+       entry points without one on .NET SDK 11.0.100-rc.2, and fails at the link with the
+       archive unlinked.
 
        nativeassets/net11.0/ is the forge's spelling for the staticlib directory, shared with
        HyperUuid's package, and matches the only framework that links it. It is only a folder
@@ -61,8 +60,8 @@
 
   <!-- .NET 11 and later link browser-wasm with the new (exnref) exception-handling encoding,
        while Rust's precompiled core and compiler_builtins inside the emscripten staticlib use
-       the legacy one (the staticlib is built without std, and that did not change this:
-       re-tested, and the browser still refuses the module without the pass). The link succeeds and the SDK's wasm-opt passes the
+       the legacy one (building the staticlib without std does not change that: the browser
+       refuses the module without the pass). The link succeeds and the SDK's wasm-opt passes the
        mix through, then the browser refuses to compile the module: "module uses a mix of
        legacy and new exception handling instructions". Binaryen's translate-to-exnref pass
        rewrites the legacy instructions into the new encoding so the module is uniform.
@@ -122,8 +121,8 @@
 
   <!-- Native AOT: link the core in.
 
-       A Native AOT publish used to produce an executable with libhypercast.so (or the .dylib,
-       or the .dll) sitting beside it, opened on first use like any other P/Invoke. Here it is
+       Without this, a Native AOT publish produces an executable with libhypercast.so (or the
+       .dylib, or the .dll) sitting beside it, opened on first use like any other P/Invoke. Here it is
        linked into the executable instead: DirectPInvoke tells the AOT compiler to bind every
        import from "hypercast" as a direct call to a symbol the linker must resolve, and
        NativeLibrary hands the linker the archive that defines them. The result is one file,

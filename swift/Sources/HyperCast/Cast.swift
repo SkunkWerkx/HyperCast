@@ -7,9 +7,8 @@ import HyperCastCore
 /// executable on every platform this package builds for (`HyperCastCore`, a SwiftPM binary
 /// target), so there is nothing to find, open or deploy at run time. Every door returns a
 /// ``Verdict``: the value, or a ``Fault`` with a closed reason and the offending byte span.
-/// No door throws — bad data is a ``Fault``, and the `throws` on each door is kept from
-/// when macOS and Windows loaded a shared library that could fail to load — and a
-/// precondition failure means a caller bug, never data.
+/// No door throws — bad data is a ``Fault`` — and a precondition failure means a caller
+/// bug, never data.
 ///
 /// Door names mirror the native ABI (`i32`, `f64`, `decimal`, `timestamp`, …) so the polyglot surface
 /// reads identically across bindings. Swift-flavored fidelity: `UInt8`–`UInt64` are native
@@ -134,15 +133,15 @@ public enum Cast {
         excelDuration: cast_excel_duration,
         version: hypercast_version)
 
-    // `throws` only so every door keeps one shape; the core is always there.
-    private static func loaded() throws -> LoadedLibrary {
+    // The core is linked in, so there is nothing to load and nothing that can fail.
+    private static func loaded() -> LoadedLibrary {
         library
     }
 
     /// Whether the native core is usable. Always `true`: the core is linked into the
     /// executable on every platform this package builds for, and a platform with no
-    /// prebuilt core fails to compile rather than at run time. Kept for callers that gated
-    /// on it when macOS and Windows loaded a shared library.
+    /// prebuilt core fails to compile rather than at run time. It keeps the probe every other
+    /// binding has under the same name, where the answer can be `false`.
     public static var isAvailable: Bool { true }
 
     private static func fault(_ code: Int32, _ raw: UnsafeRawBufferPointer) -> Fault {
@@ -155,9 +154,9 @@ public enum Cast {
 
     // The scratch every door needs, on the stack: 16 bytes for the widest out-value (a
     // timestamp or a civil date-time — two UInt64s so the core's i64/u64 stores land
-    // 8-aligned) and 8 for the fault span. These used to be three heap `[UInt8]` arrays
-    // per call (four with the format), which was most of what a door cost; a tuple of
-    // fixed-width integers has no heap existence at all. Internal, not private, so the test
+    // 8-aligned) and 8 for the fault span. A tuple of fixed-width integers has no heap
+    // existence at all, where three heap `[UInt8]` arrays per call (four with the format)
+    // would be most of what a door costs. Internal, not private, so the test
     // suite can pin both sizes to the ones rust/src/abi.rs and ffi.rs pin.
     typealias OutScratch = (UInt64, UInt64)
     typealias FaultScratch = (UInt32, UInt32)
@@ -281,9 +280,9 @@ public enum Cast {
     /// A native Swift `String` already stores contiguous UTF-8, so `withUTF8` hands the
     /// door a view of the string's own bytes — no `Array(text.utf8)` copy, which used to
     /// be one heap allocation and a memcpy on every `String` door.
-    private static func withUTF8<T>(_ text: String, _ body: (UnsafeRawBufferPointer) throws -> T) rethrows -> T {
+    private static func withUTF8<T>(_ text: String, _ body: (UnsafeRawBufferPointer) -> T) -> T {
         var text = text
-        return try text.withUTF8 { try body(UnsafeRawBufferPointer($0)) }
+        return text.withUTF8 { body(UnsafeRawBufferPointer($0)) }
     }
 
     // MARK: - boolean
@@ -291,20 +290,20 @@ public enum Cast {
     /// Casts boolean text: `true`/`false` plus the conventions untrusted sources actually
     /// send (`t/f`, `yes/no`, `y/n`, `1/0`, `on/off`, `enabled/disabled`,
     /// `active/inactive`, `checked/unchecked`, `in/out`), ASCII case-insensitive.
-    public static func bool(_ text: String) throws -> Verdict<Bool> {
-        try withUTF8(text) { try bool($0) }
+    public static func bool(_ text: String) -> Verdict<Bool> {
+        withUTF8(text) { bool($0) }
     }
 
     /// See ``bool(_:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func bool(_ utf8: [UInt8]) throws -> Verdict<Bool> {
-        try utf8.withUnsafeBytes { try bool($0) }
+    public static func bool(_ utf8: [UInt8]) -> Verdict<Bool> {
+        utf8.withUnsafeBytes { bool($0) }
     }
 
     /// See ``bool(_:)-swift.type.method``; input as a raw view of UTF-8 bytes —
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
-    public static func bool(_ utf8: UnsafeRawBufferPointer) throws -> Verdict<Bool> {
-        plainDoor(try loaded().bool, utf8) { $0.load(as: UInt8.self) != 0 }
+    public static func bool(_ utf8: UnsafeRawBufferPointer) -> Verdict<Bool> {
+        plainDoor(loaded().bool, utf8) { $0.load(as: UInt8.self) != 0 }
     }
 
     // MARK: - char
@@ -316,20 +315,20 @@ public enum Cast {
     /// prefix: decimal `65`, `U+0041`, `0x41`, `&H41`, or an HTML numeric entity `&#65;` /
     /// `&#x41;` (the `;` required). A spelling past `U+10FFFF` or naming a surrogate is
     /// `.outOfRange`. Every scalar fits `Unicode.Scalar`, so nothing narrows here.
-    public static func char(_ text: String) throws -> Verdict<Unicode.Scalar> {
-        try withUTF8(text) { try char($0) }
+    public static func char(_ text: String) -> Verdict<Unicode.Scalar> {
+        withUTF8(text) { char($0) }
     }
 
     /// See ``char(_:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func char(_ utf8: [UInt8]) throws -> Verdict<Unicode.Scalar> {
-        try utf8.withUnsafeBytes { try char($0) }
+    public static func char(_ utf8: [UInt8]) -> Verdict<Unicode.Scalar> {
+        utf8.withUnsafeBytes { char($0) }
     }
 
     /// See ``char(_:)-swift.type.method``; input as a raw view of UTF-8 bytes —
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
-    public static func char(_ utf8: UnsafeRawBufferPointer) throws -> Verdict<Unicode.Scalar> {
-        plainDoor(try loaded().char, utf8, read: Interop.scalar)
+    public static func char(_ utf8: UnsafeRawBufferPointer) -> Verdict<Unicode.Scalar> {
+        plainDoor(loaded().char, utf8, read: Interop.scalar)
     }
 
     // MARK: - integers (the type's own range; grouping, parens, exponent, radix prefixes, currency per format)
@@ -337,146 +336,146 @@ public enum Cast {
     /// Casts integer text to a signed 8-bit value under the declared format: the type's own
     /// range, declared grouping, accounting parentheses, non-negative exponent,
     /// `0x`/`&H`/`0b` two's-complement radix prefixes, and the declared currency symbol.
-    public static func i8(_ text: String, format: NumFormat) throws -> Verdict<Int8> {
-        try withUTF8(text) { try i8($0, format: format) }
+    public static func i8(_ text: String, format: NumFormat) -> Verdict<Int8> {
+        withUTF8(text) { i8($0, format: format) }
     }
 
     /// See ``i8(_:format:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func i8(_ utf8: [UInt8], format: NumFormat) throws -> Verdict<Int8> {
-        try utf8.withUnsafeBytes { try i8($0, format: format) }
+    public static func i8(_ utf8: [UInt8], format: NumFormat) -> Verdict<Int8> {
+        utf8.withUnsafeBytes { i8($0, format: format) }
     }
 
     /// See ``i8(_:format:)-swift.type.method``; input as a raw view of UTF-8 bytes —
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
-    public static func i8(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Int8> {
-        numericDoor(try loaded().i8, utf8, format) { $0.load(as: Int8.self) }
+    public static func i8(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<Int8> {
+        numericDoor(loaded().i8, utf8, format) { $0.load(as: Int8.self) }
     }
 
     /// Casts integer text to a signed 16-bit value. Notation rules as
     /// ``i8(_:format:)-swift.type.method``.
-    public static func i16(_ text: String, format: NumFormat) throws -> Verdict<Int16> {
-        try withUTF8(text) { try i16($0, format: format) }
+    public static func i16(_ text: String, format: NumFormat) -> Verdict<Int16> {
+        withUTF8(text) { i16($0, format: format) }
     }
 
     /// See ``i16(_:format:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func i16(_ utf8: [UInt8], format: NumFormat) throws -> Verdict<Int16> {
-        try utf8.withUnsafeBytes { try i16($0, format: format) }
+    public static func i16(_ utf8: [UInt8], format: NumFormat) -> Verdict<Int16> {
+        utf8.withUnsafeBytes { i16($0, format: format) }
     }
 
     /// See ``i16(_:format:)-swift.type.method``; input as a raw view of UTF-8 bytes —
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
-    public static func i16(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Int16> {
-        numericDoor(try loaded().i16, utf8, format) { $0.load(as: Int16.self) }
+    public static func i16(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<Int16> {
+        numericDoor(loaded().i16, utf8, format) { $0.load(as: Int16.self) }
     }
 
     /// Casts integer text to a signed 32-bit value. Notation rules as
     /// ``i8(_:format:)-swift.type.method``.
-    public static func i32(_ text: String, format: NumFormat) throws -> Verdict<Int32> {
-        try withUTF8(text) { try i32($0, format: format) }
+    public static func i32(_ text: String, format: NumFormat) -> Verdict<Int32> {
+        withUTF8(text) { i32($0, format: format) }
     }
 
     /// See ``i32(_:format:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func i32(_ utf8: [UInt8], format: NumFormat) throws -> Verdict<Int32> {
-        try utf8.withUnsafeBytes { try i32($0, format: format) }
+    public static func i32(_ utf8: [UInt8], format: NumFormat) -> Verdict<Int32> {
+        utf8.withUnsafeBytes { i32($0, format: format) }
     }
 
     /// See ``i32(_:format:)-swift.type.method``; input as a raw view of UTF-8 bytes —
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
-    public static func i32(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Int32> {
-        numericDoor(try loaded().i32, utf8, format) { $0.load(as: Int32.self) }
+    public static func i32(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<Int32> {
+        numericDoor(loaded().i32, utf8, format) { $0.load(as: Int32.self) }
     }
 
     /// Casts integer text to a signed 64-bit value. Notation rules as
     /// ``i8(_:format:)-swift.type.method``.
-    public static func i64(_ text: String, format: NumFormat) throws -> Verdict<Int64> {
-        try withUTF8(text) { try i64($0, format: format) }
+    public static func i64(_ text: String, format: NumFormat) -> Verdict<Int64> {
+        withUTF8(text) { i64($0, format: format) }
     }
 
     /// See ``i64(_:format:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func i64(_ utf8: [UInt8], format: NumFormat) throws -> Verdict<Int64> {
-        try utf8.withUnsafeBytes { try i64($0, format: format) }
+    public static func i64(_ utf8: [UInt8], format: NumFormat) -> Verdict<Int64> {
+        utf8.withUnsafeBytes { i64($0, format: format) }
     }
 
     /// See ``i64(_:format:)-swift.type.method``; input as a raw view of UTF-8 bytes —
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
-    public static func i64(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Int64> {
-        numericDoor(try loaded().i64, utf8, format) { $0.load(as: Int64.self) }
+    public static func i64(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<Int64> {
+        numericDoor(loaded().i64, utf8, format) { $0.load(as: Int64.self) }
     }
 
     /// Casts integer text to an unsigned 8-bit value. Notation rules as
     /// ``i8(_:format:)-swift.type.method``.
-    public static func u8(_ text: String, format: NumFormat) throws -> Verdict<UInt8> {
-        try withUTF8(text) { try u8($0, format: format) }
+    public static func u8(_ text: String, format: NumFormat) -> Verdict<UInt8> {
+        withUTF8(text) { u8($0, format: format) }
     }
 
     /// See ``u8(_:format:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func u8(_ utf8: [UInt8], format: NumFormat) throws -> Verdict<UInt8> {
-        try utf8.withUnsafeBytes { try u8($0, format: format) }
+    public static func u8(_ utf8: [UInt8], format: NumFormat) -> Verdict<UInt8> {
+        utf8.withUnsafeBytes { u8($0, format: format) }
     }
 
     /// See ``u8(_:format:)-swift.type.method``; input as a raw view of UTF-8 bytes —
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
-    public static func u8(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<UInt8> {
-        numericDoor(try loaded().u8, utf8, format) { $0.load(as: UInt8.self) }
+    public static func u8(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<UInt8> {
+        numericDoor(loaded().u8, utf8, format) { $0.load(as: UInt8.self) }
     }
 
     /// Casts integer text to an unsigned 16-bit value. Notation rules as
     /// ``i8(_:format:)-swift.type.method``.
-    public static func u16(_ text: String, format: NumFormat) throws -> Verdict<UInt16> {
-        try withUTF8(text) { try u16($0, format: format) }
+    public static func u16(_ text: String, format: NumFormat) -> Verdict<UInt16> {
+        withUTF8(text) { u16($0, format: format) }
     }
 
     /// See ``u16(_:format:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func u16(_ utf8: [UInt8], format: NumFormat) throws -> Verdict<UInt16> {
-        try utf8.withUnsafeBytes { try u16($0, format: format) }
+    public static func u16(_ utf8: [UInt8], format: NumFormat) -> Verdict<UInt16> {
+        utf8.withUnsafeBytes { u16($0, format: format) }
     }
 
     /// See ``u16(_:format:)-swift.type.method``; input as a raw view of UTF-8 bytes —
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
-    public static func u16(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<UInt16> {
-        numericDoor(try loaded().u16, utf8, format) { $0.load(as: UInt16.self) }
+    public static func u16(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<UInt16> {
+        numericDoor(loaded().u16, utf8, format) { $0.load(as: UInt16.self) }
     }
 
     /// Casts integer text to an unsigned 32-bit value. Notation rules as
     /// ``i8(_:format:)-swift.type.method``.
-    public static func u32(_ text: String, format: NumFormat) throws -> Verdict<UInt32> {
-        try withUTF8(text) { try u32($0, format: format) }
+    public static func u32(_ text: String, format: NumFormat) -> Verdict<UInt32> {
+        withUTF8(text) { u32($0, format: format) }
     }
 
     /// See ``u32(_:format:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func u32(_ utf8: [UInt8], format: NumFormat) throws -> Verdict<UInt32> {
-        try utf8.withUnsafeBytes { try u32($0, format: format) }
+    public static func u32(_ utf8: [UInt8], format: NumFormat) -> Verdict<UInt32> {
+        utf8.withUnsafeBytes { u32($0, format: format) }
     }
 
     /// See ``u32(_:format:)-swift.type.method``; input as a raw view of UTF-8 bytes —
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
-    public static func u32(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<UInt32> {
-        numericDoor(try loaded().u32, utf8, format) { $0.load(as: UInt32.self) }
+    public static func u32(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<UInt32> {
+        numericDoor(loaded().u32, utf8, format) { $0.load(as: UInt32.self) }
     }
 
     /// Casts integer text to an unsigned 64-bit value — natively unsigned, no widening games.
     /// Notation rules as ``i8(_:format:)-swift.type.method``.
-    public static func u64(_ text: String, format: NumFormat) throws -> Verdict<UInt64> {
-        try withUTF8(text) { try u64($0, format: format) }
+    public static func u64(_ text: String, format: NumFormat) -> Verdict<UInt64> {
+        withUTF8(text) { u64($0, format: format) }
     }
 
     /// See ``u64(_:format:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func u64(_ utf8: [UInt8], format: NumFormat) throws -> Verdict<UInt64> {
-        try utf8.withUnsafeBytes { try u64($0, format: format) }
+    public static func u64(_ utf8: [UInt8], format: NumFormat) -> Verdict<UInt64> {
+        utf8.withUnsafeBytes { u64($0, format: format) }
     }
 
     /// See ``u64(_:format:)-swift.type.method``; input as a raw view of UTF-8 bytes —
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
-    public static func u64(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<UInt64> {
-        numericDoor(try loaded().u64, utf8, format) { $0.load(as: UInt64.self) }
+    public static func u64(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<UInt64> {
+        numericDoor(loaded().u64, utf8, format) { $0.load(as: UInt64.self) }
     }
 
     // MARK: - reals (finite only; separators, parens, exponent, percent, currency per format)
@@ -484,37 +483,37 @@ public enum Cast {
     /// Casts real text to a `Float` under the declared format: finite values only, declared
     /// separators and grouping, parentheses, exponent, trailing percent (`50%` is 0.5), and
     /// the declared currency symbol.
-    public static func f32(_ text: String, format: NumFormat) throws -> Verdict<Float> {
-        try withUTF8(text) { try f32($0, format: format) }
+    public static func f32(_ text: String, format: NumFormat) -> Verdict<Float> {
+        withUTF8(text) { f32($0, format: format) }
     }
 
     /// See ``f32(_:format:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func f32(_ utf8: [UInt8], format: NumFormat) throws -> Verdict<Float> {
-        try utf8.withUnsafeBytes { try f32($0, format: format) }
+    public static func f32(_ utf8: [UInt8], format: NumFormat) -> Verdict<Float> {
+        utf8.withUnsafeBytes { f32($0, format: format) }
     }
 
     /// See ``f32(_:format:)-swift.type.method``; input as a raw view of UTF-8 bytes —
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
-    public static func f32(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Float> {
-        numericDoor(try loaded().f32, utf8, format) { $0.load(as: Float.self) }
+    public static func f32(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<Float> {
+        numericDoor(loaded().f32, utf8, format) { $0.load(as: Float.self) }
     }
 
     /// Casts real text to a `Double`. Notation rules as ``f32(_:format:)-swift.type.method``.
-    public static func f64(_ text: String, format: NumFormat) throws -> Verdict<Double> {
-        try withUTF8(text) { try f64($0, format: format) }
+    public static func f64(_ text: String, format: NumFormat) -> Verdict<Double> {
+        withUTF8(text) { f64($0, format: format) }
     }
 
     /// See ``f64(_:format:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func f64(_ utf8: [UInt8], format: NumFormat) throws -> Verdict<Double> {
-        try utf8.withUnsafeBytes { try f64($0, format: format) }
+    public static func f64(_ utf8: [UInt8], format: NumFormat) -> Verdict<Double> {
+        utf8.withUnsafeBytes { f64($0, format: format) }
     }
 
     /// See ``f64(_:format:)-swift.type.method``; input as a raw view of UTF-8 bytes —
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
-    public static func f64(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Double> {
-        numericDoor(try loaded().f64, utf8, format) { $0.load(as: Double.self) }
+    public static func f64(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<Double> {
+        numericDoor(loaded().f64, utf8, format) { $0.load(as: Double.self) }
     }
 
     // MARK: - decimal (exact; same grammar as the reals, never rounds)
@@ -529,20 +528,20 @@ public enum Cast {
     /// `1.1000` are all magnitude 11 at scale 1, and zero is scale 0 and never negative —
     /// exactly what Foundation's `Decimal` represents, and its 38-digit mantissa holds every
     /// such value exactly.
-    public static func decimal(_ text: String, format: NumFormat) throws -> Verdict<Decimal> {
-        try withUTF8(text) { try decimal($0, format: format) }
+    public static func decimal(_ text: String, format: NumFormat) -> Verdict<Decimal> {
+        withUTF8(text) { decimal($0, format: format) }
     }
 
     /// See ``decimal(_:format:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func decimal(_ utf8: [UInt8], format: NumFormat) throws -> Verdict<Decimal> {
-        try utf8.withUnsafeBytes { try decimal($0, format: format) }
+    public static func decimal(_ utf8: [UInt8], format: NumFormat) -> Verdict<Decimal> {
+        utf8.withUnsafeBytes { decimal($0, format: format) }
     }
 
     /// See ``decimal(_:format:)-swift.type.method``; input as a raw view of UTF-8 bytes —
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
-    public static func decimal(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Decimal> {
-        numericDoor(try loaded().decimal, utf8, format, read: Interop.decimal)
+    public static func decimal(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<Decimal> {
+        numericDoor(loaded().decimal, utf8, format, read: Interop.decimal)
     }
 
     // MARK: - generic numeric (for a caller that is itself generic over the target)
@@ -553,22 +552,22 @@ public enum Cast {
     /// `Double` and `Decimal`, each through its own concrete door under that door's rules.
     /// ``NumericCastTarget`` is closed to exactly those eleven, so any other `T` is refused
     /// by the compiler, not at run time.
-    public static func numeric<T: NumericCastTarget>(_ text: String, format: NumFormat) throws -> Verdict<T> {
-        try withUTF8(text) { try numeric($0, format: format) }
+    public static func numeric<T: NumericCastTarget>(_ text: String, format: NumFormat) -> Verdict<T> {
+        withUTF8(text) { numeric($0, format: format) }
     }
 
     /// See ``numeric(_:format:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func numeric<T: NumericCastTarget>(_ utf8: [UInt8], format: NumFormat) throws -> Verdict<T> {
-        try utf8.withUnsafeBytes { try numeric($0, format: format) }
+    public static func numeric<T: NumericCastTarget>(_ utf8: [UInt8], format: NumFormat) -> Verdict<T> {
+        utf8.withUnsafeBytes { numeric($0, format: format) }
     }
 
     /// See ``numeric(_:format:)-swift.type.method``; input as a raw view of UTF-8 bytes —
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
-    public static func numeric<T: NumericCastTarget>(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws
+    public static func numeric<T: NumericCastTarget>(_ utf8: UnsafeRawBufferPointer, format: NumFormat)
         -> Verdict<T>
     {
-        try T.castNumeric(utf8, format: format)
+        T.castNumeric(utf8, format: format)
     }
 
     // MARK: - generic scalar (every door a type alone can choose)
@@ -583,42 +582,42 @@ public enum Cast {
     /// `DateComponents` is not a target: the date, time and date-time doors all return it,
     /// so the type cannot say which was meant — call that door by name. Resolved
     /// statically, so any other `T` is refused by the compiler, not at run time.
-    public static func scalar<T: ScalarCastTarget>(_ text: String, format: NumFormat) throws -> Verdict<T> {
-        try withUTF8(text) { try scalar($0, format: format) }
+    public static func scalar<T: ScalarCastTarget>(_ text: String, format: NumFormat) -> Verdict<T> {
+        withUTF8(text) { scalar($0, format: format) }
     }
 
     /// See ``scalar(_:format:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func scalar<T: ScalarCastTarget>(_ utf8: [UInt8], format: NumFormat) throws -> Verdict<T> {
-        try utf8.withUnsafeBytes { try scalar($0, format: format) }
+    public static func scalar<T: ScalarCastTarget>(_ utf8: [UInt8], format: NumFormat) -> Verdict<T> {
+        utf8.withUnsafeBytes { scalar($0, format: format) }
     }
 
     /// See ``scalar(_:format:)-swift.type.method``; input as a raw view of UTF-8 bytes —
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
-    public static func scalar<T: ScalarCastTarget>(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws
+    public static func scalar<T: ScalarCastTarget>(_ utf8: UnsafeRawBufferPointer, format: NumFormat)
         -> Verdict<T>
     {
-        try T.castScalar(utf8, format: format)
+        T.castScalar(utf8, format: format)
     }
 
     // MARK: - uuid
 
     /// Casts UUID text — all five .NET `Guid` formats (D/N/B/P/X) plus
     /// `urn:uuid:`/`GUID:`/`UUID:` prefixes — to a Foundation `UUID`.
-    public static func uuid(_ text: String) throws -> Verdict<UUID> {
-        try withUTF8(text) { try uuid($0) }
+    public static func uuid(_ text: String) -> Verdict<UUID> {
+        withUTF8(text) { uuid($0) }
     }
 
     /// See ``uuid(_:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func uuid(_ utf8: [UInt8]) throws -> Verdict<UUID> {
-        try utf8.withUnsafeBytes { try uuid($0) }
+    public static func uuid(_ utf8: [UInt8]) -> Verdict<UUID> {
+        utf8.withUnsafeBytes { uuid($0) }
     }
 
     /// See ``uuid(_:)-swift.type.method``; input as a raw view of UTF-8 bytes —
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
-    public static func uuid(_ utf8: UnsafeRawBufferPointer) throws -> Verdict<UUID> {
-        plainDoor(try loaded().uuid, utf8, read: Interop.uuid)
+    public static func uuid(_ utf8: UnsafeRawBufferPointer) -> Verdict<UUID> {
+        plainDoor(loaded().uuid, utf8, read: Interop.uuid)
     }
 
     // MARK: - temporals
@@ -628,37 +627,37 @@ public enum Cast {
     /// 0001/9999 window edges; the digit-perfect `DateComponents` that
     /// ``time(_:)-swift.type.method`` returns has no counterpart for instants in Foundation,
     /// and that trade is stated rather than hidden.
-    public static func timestamp(_ text: String) throws -> Verdict<Date> {
-        try withUTF8(text) { try timestamp($0) }
+    public static func timestamp(_ text: String) -> Verdict<Date> {
+        withUTF8(text) { timestamp($0) }
     }
 
     /// See ``timestamp(_:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func timestamp(_ utf8: [UInt8]) throws -> Verdict<Date> {
-        try utf8.withUnsafeBytes { try timestamp($0) }
+    public static func timestamp(_ utf8: [UInt8]) -> Verdict<Date> {
+        utf8.withUnsafeBytes { timestamp($0) }
     }
 
     /// See ``timestamp(_:)-swift.type.method``; input as a raw view of UTF-8 bytes —
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
-    public static func timestamp(_ utf8: UnsafeRawBufferPointer) throws -> Verdict<Date> {
-        plainDoor(try loaded().timestamp, utf8, read: Interop.instant)
+    public static func timestamp(_ utf8: UnsafeRawBufferPointer) -> Verdict<Date> {
+        plainDoor(loaded().timestamp, utf8, read: Interop.instant)
     }
 
     /// Casts an integer Unix-epoch value under a caller-declared unit to a `Date`.
-    public static func unix(_ text: String, precision: UnixPrecision) throws -> Verdict<Date> {
-        try withUTF8(text) { try unix($0, precision: precision) }
+    public static func unix(_ text: String, precision: UnixPrecision) -> Verdict<Date> {
+        withUTF8(text) { unix($0, precision: precision) }
     }
 
     /// See ``unix(_:precision:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func unix(_ utf8: [UInt8], precision: UnixPrecision) throws -> Verdict<Date> {
-        try utf8.withUnsafeBytes { try unix($0, precision: precision) }
+    public static func unix(_ utf8: [UInt8], precision: UnixPrecision) -> Verdict<Date> {
+        utf8.withUnsafeBytes { unix($0, precision: precision) }
     }
 
     /// See ``unix(_:precision:)-swift.type.method``; input as a raw view of UTF-8 bytes —
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
-    public static func unix(_ utf8: UnsafeRawBufferPointer, precision: UnixPrecision) throws -> Verdict<Date> {
-        unixDoor(try loaded().unix, utf8, precision.rawValue, read: Interop.instant)
+    public static func unix(_ utf8: UnsafeRawBufferPointer, precision: UnixPrecision) -> Verdict<Date> {
+        unixDoor(loaded().unix, utf8, precision.rawValue, read: Interop.instant)
     }
 
     /// Casts an Excel date serial under a caller-declared ``ExcelEpoch`` to a `Date`. The
@@ -671,38 +670,38 @@ public enum Cast {
     /// copied the bug for file compatibility. It is `.outOfRange` here — the same verdict
     /// ``date(_:)-swift.type.method`` gives the text `1900-02-29` — so every serial above
     /// it is shifted one day against a naive count.
-    public static func excelSerial(_ text: String, epoch: ExcelEpoch) throws -> Verdict<Date> {
-        try withUTF8(text) { try excelSerial($0, epoch: epoch) }
+    public static func excelSerial(_ text: String, epoch: ExcelEpoch) -> Verdict<Date> {
+        withUTF8(text) { excelSerial($0, epoch: epoch) }
     }
 
     /// See ``excelSerial(_:epoch:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func excelSerial(_ utf8: [UInt8], epoch: ExcelEpoch) throws -> Verdict<Date> {
-        try utf8.withUnsafeBytes { try excelSerial($0, epoch: epoch) }
+    public static func excelSerial(_ utf8: [UInt8], epoch: ExcelEpoch) -> Verdict<Date> {
+        utf8.withUnsafeBytes { excelSerial($0, epoch: epoch) }
     }
 
     /// See ``excelSerial(_:epoch:)-swift.type.method``; input as a raw view of UTF-8 bytes —
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
-    public static func excelSerial(_ utf8: UnsafeRawBufferPointer, epoch: ExcelEpoch) throws -> Verdict<Date> {
-        unixDoor(try loaded().excelSerial, utf8, epoch.rawValue, read: Interop.instant)
+    public static func excelSerial(_ utf8: UnsafeRawBufferPointer, epoch: ExcelEpoch) -> Verdict<Date> {
+        unixDoor(loaded().excelSerial, utf8, epoch.rawValue, read: Interop.instant)
     }
 
     /// Casts a strict ISO 8601 `yyyy-MM-dd` calendar date to `DateComponents` (year, month,
     /// day) — digit-perfect, no calendar or zone attached, exactly what the core parsed.
-    public static func date(_ text: String) throws -> Verdict<DateComponents> {
-        try withUTF8(text) { try date($0) }
+    public static func date(_ text: String) -> Verdict<DateComponents> {
+        withUTF8(text) { date($0) }
     }
 
     /// See ``date(_:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func date(_ utf8: [UInt8]) throws -> Verdict<DateComponents> {
-        try utf8.withUnsafeBytes { try date($0) }
+    public static func date(_ utf8: [UInt8]) -> Verdict<DateComponents> {
+        utf8.withUnsafeBytes { date($0) }
     }
 
     /// See ``date(_:)-swift.type.method``; input as a raw view of UTF-8 bytes —
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
-    public static func date(_ utf8: UnsafeRawBufferPointer) throws -> Verdict<DateComponents> {
-        plainDoor(try loaded().date, utf8, read: Interop.date)
+    public static func date(_ utf8: UnsafeRawBufferPointer) -> Verdict<DateComponents> {
+        plainDoor(loaded().date, utf8, read: Interop.date)
     }
 
     /// Casts a separated calendar date — three digit fields joined by one consistent
@@ -711,20 +710,20 @@ public enum Cast {
     /// which. The year field is four digits wherever the order puts it (two-digit years
     /// mean century guessing, which never happens — malformed); the order-less
     /// ``date(_:)-swift.type.method`` overload stays strict ISO.
-    public static func date(_ text: String, order: DateOrder) throws -> Verdict<DateComponents> {
-        try withUTF8(text) { try date($0, order: order) }
+    public static func date(_ text: String, order: DateOrder) -> Verdict<DateComponents> {
+        withUTF8(text) { date($0, order: order) }
     }
 
     /// See ``date(_:order:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func date(_ utf8: [UInt8], order: DateOrder) throws -> Verdict<DateComponents> {
-        try utf8.withUnsafeBytes { try date($0, order: order) }
+    public static func date(_ utf8: [UInt8], order: DateOrder) -> Verdict<DateComponents> {
+        utf8.withUnsafeBytes { date($0, order: order) }
     }
 
     /// See ``date(_:order:)-swift.type.method``; input as a raw view of UTF-8 bytes —
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
-    public static func date(_ utf8: UnsafeRawBufferPointer, order: DateOrder) throws -> Verdict<DateComponents> {
-        unixDoor(try loaded().dateOrdered, utf8, order.rawValue, read: Interop.date)
+    public static func date(_ utf8: UnsafeRawBufferPointer, order: DateOrder) -> Verdict<DateComponents> {
+        unixDoor(loaded().dateOrdered, utf8, order.rawValue, read: Interop.date)
     }
 
     /// Casts a zone-less civil date-time — the shape untrusted feeds actually send
@@ -738,20 +737,20 @@ public enum Cast {
     /// No zone is read and none is invented — the text named no instant, so no `timeZone`
     /// component is set; fusing one is the caller's job
     /// (``timestamp(_:)-swift.type.method`` stays the strict RFC 3339 instant door).
-    public static func dateTime(_ text: String, order: DateOrder) throws -> Verdict<DateComponents> {
-        try withUTF8(text) { try dateTime($0, order: order) }
+    public static func dateTime(_ text: String, order: DateOrder) -> Verdict<DateComponents> {
+        withUTF8(text) { dateTime($0, order: order) }
     }
 
     /// See ``dateTime(_:order:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func dateTime(_ utf8: [UInt8], order: DateOrder) throws -> Verdict<DateComponents> {
-        try utf8.withUnsafeBytes { try dateTime($0, order: order) }
+    public static func dateTime(_ utf8: [UInt8], order: DateOrder) -> Verdict<DateComponents> {
+        utf8.withUnsafeBytes { dateTime($0, order: order) }
     }
 
     /// See ``dateTime(_:order:)-swift.type.method``; input as a raw view of UTF-8 bytes —
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
-    public static func dateTime(_ utf8: UnsafeRawBufferPointer, order: DateOrder) throws -> Verdict<DateComponents> {
-        dateTimeDoor(try loaded().dateTime, utf8, order, nil, read: Interop.civil)
+    public static func dateTime(_ utf8: UnsafeRawBufferPointer, order: DateOrder) -> Verdict<DateComponents> {
+        dateTimeDoor(loaded().dateTime, utf8, order, nil, read: Interop.civil)
     }
 
     /// Casts a zone-less civil date-time under a declared ``DateFormat``: the field order
@@ -760,57 +759,57 @@ public enum Cast {
     /// `2026-01-07 오후 3:04` — read after the clock (a space optional) or ahead of it,
     /// beside the English `AM`/`PM`, which are read whatever is declared. A format that
     /// declares no designator is exactly the order-only door.
-    public static func dateTime(_ text: String, format: DateFormat) throws -> Verdict<DateComponents> {
-        try withUTF8(text) { try dateTime($0, format: format) }
+    public static func dateTime(_ text: String, format: DateFormat) -> Verdict<DateComponents> {
+        withUTF8(text) { dateTime($0, format: format) }
     }
 
     /// See ``dateTime(_:format:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func dateTime(_ utf8: [UInt8], format: DateFormat) throws -> Verdict<DateComponents> {
-        try utf8.withUnsafeBytes { try dateTime($0, format: format) }
+    public static func dateTime(_ utf8: [UInt8], format: DateFormat) -> Verdict<DateComponents> {
+        utf8.withUnsafeBytes { dateTime($0, format: format) }
     }
 
     /// See ``dateTime(_:format:)-swift.type.method``; input as a raw view of UTF-8 bytes —
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
-    public static func dateTime(_ utf8: UnsafeRawBufferPointer, format: DateFormat) throws -> Verdict<DateComponents> {
-        dateTimeDoor(try loaded().dateTime, utf8, format.order, format, read: Interop.civil)
+    public static func dateTime(_ utf8: UnsafeRawBufferPointer, format: DateFormat) -> Verdict<DateComponents> {
+        dateTimeDoor(loaded().dateTime, utf8, format.order, format, read: Interop.civil)
     }
 
     /// Casts an ISO 24-hour time-of-day to `DateComponents` (hour, minute, second,
     /// nanosecond) — full nanosecond fidelity.
-    public static func time(_ text: String) throws -> Verdict<DateComponents> {
-        try withUTF8(text) { try time($0) }
+    public static func time(_ text: String) -> Verdict<DateComponents> {
+        withUTF8(text) { time($0) }
     }
 
     /// See ``time(_:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func time(_ utf8: [UInt8]) throws -> Verdict<DateComponents> {
-        try utf8.withUnsafeBytes { try time($0) }
+    public static func time(_ utf8: [UInt8]) -> Verdict<DateComponents> {
+        utf8.withUnsafeBytes { time($0) }
     }
 
     /// See ``time(_:)-swift.type.method``; input as a raw view of UTF-8 bytes —
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
-    public static func time(_ utf8: UnsafeRawBufferPointer) throws -> Verdict<DateComponents> {
-        plainDoor(try loaded().time, utf8, read: Interop.time)
+    public static func time(_ utf8: UnsafeRawBufferPointer) -> Verdict<DateComponents> {
+        plainDoor(loaded().time, utf8, read: Interop.time)
     }
 
     /// Casts a duration (ISO 8601 fixed components, invariant colon form, or protobuf JSON
     /// seconds) to Swift's `Duration` — attosecond-backed, so the core's nanoseconds carry
     /// exactly, both signs.
-    public static func duration(_ text: String) throws -> Verdict<Duration> {
-        try withUTF8(text) { try duration($0) }
+    public static func duration(_ text: String) -> Verdict<Duration> {
+        withUTF8(text) { duration($0) }
     }
 
     /// See ``duration(_:)-swift.type.method``; input as raw UTF-8 bytes.
-    public static func duration(_ utf8: [UInt8]) throws -> Verdict<Duration> {
-        try utf8.withUnsafeBytes { try duration($0) }
+    public static func duration(_ utf8: [UInt8]) -> Verdict<Duration> {
+        utf8.withUnsafeBytes { duration($0) }
     }
 
     /// See ``duration(_:)-swift.type.method``; input as a raw view of UTF-8 bytes —
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
-    public static func duration(_ utf8: UnsafeRawBufferPointer) throws -> Verdict<Duration> {
-        plainDoor(try loaded().duration, utf8, read: Interop.duration)
+    public static func duration(_ utf8: UnsafeRawBufferPointer) -> Verdict<Duration> {
+        plainDoor(loaded().duration, utf8, read: Interop.duration)
     }
 
     // MARK: - typed doors (a number the caller already holds, not text)
@@ -822,8 +821,8 @@ public enum Cast {
     /// canonical, as ``decimal(_:format:)-swift.type.method``'s is. NaN is `.malformed`; an
     /// infinity, a magnitude past 2⁹⁶ − 1 or more than 28 places is `.outOfRange` — the digits
     /// are never cut to fit. A typed door's ``Fault`` has no span: its offset and length are 0.
-    public static func decimalFromDouble(_ value: Double) throws -> Verdict<Decimal> {
-        let fn = try loaded().decimalFromF64
+    public static func decimalFromDouble(_ value: Double) -> Verdict<Decimal> {
+        let fn = loaded().decimalFromF64
         return typedDoor(value, { fn(value, $0, $1) }, read: Interop.decimal)
     }
 
@@ -836,8 +835,8 @@ public enum Cast {
     /// float noise the double carries. The 1900 system's phantom serial `60`, a
     /// serial below the system's first day and one past 9999-12-31 are `.outOfRange`; a
     /// negative, NaN or infinite serial is `.malformed`.
-    public static func excelSerialFromDouble(_ value: Double, epoch: ExcelEpoch) throws -> Verdict<DateComponents> {
-        let fn = try loaded().excelSerialFromF64
+    public static func excelSerialFromDouble(_ value: Double, epoch: ExcelEpoch) -> Verdict<DateComponents> {
+        let fn = loaded().excelSerialFromF64
         return typedDoor(value, { fn(value, epoch.rawValue, $0, $1) }, read: Interop.civil)
     }
 
@@ -846,8 +845,8 @@ public enum Cast {
     /// `45292.75` are both 18:00. Snapped as the serial door snaps, and a fraction that snaps
     /// to a whole day is midnight. A negative, NaN or infinite serial is `.malformed`;
     /// one past 9999-12-31 is `.outOfRange`.
-    public static func excelTime(_ value: Double) throws -> Verdict<DateComponents> {
-        let fn = try loaded().excelTime
+    public static func excelTime(_ value: Double) -> Verdict<DateComponents> {
+        let fn = loaded().excelTime
         return typedDoor(value, { fn(value, $0, $1) }, read: Interop.time)
     }
 
@@ -855,8 +854,8 @@ public enum Cast {
     /// format (`[h]:mm:ss`) stores — as a `Duration`: `1.5` is a day and twelve hours, and a
     /// negative span is negative, its size snapped as a serial's time. NaN or an infinity is
     /// `.malformed`; beyond ±10,000 years is `.outOfRange`.
-    public static func excelDuration(_ value: Double) throws -> Verdict<Duration> {
-        let fn = try loaded().excelDuration
+    public static func excelDuration(_ value: Double) -> Verdict<Duration> {
+        let fn = loaded().excelDuration
         return typedDoor(value, { fn(value, $0, $1) }, read: Interop.duration)
     }
 
@@ -874,10 +873,9 @@ public enum Cast {
     /// The version of the native `libhypercast` linked into this executable, as
     /// `major.minor.patch` — the library's own answer (`hypercast_version`), not this
     /// package's tag — so a caller can prove the two agree before the first cast and name
-    /// the mismatch when they don't. Never throws in practice; `throws` is kept from when
-    /// macOS and Windows loaded a shared library at run time.
-    public static func nativeVersion() throws -> String {
-        Interop.version(try loaded().version())
+    /// the mismatch when they don't.
+    public static func nativeVersion() -> String {
+        Interop.version(loaded().version())
     }
 }
 
@@ -888,83 +886,83 @@ public enum Cast {
 public protocol NumericCastTarget {
     /// Routes to this type's own door. ``Cast/numeric(_:format:)-swift.type.method`` is the
     /// entry point; this is the hook it dispatches through.
-    static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Self>
+    static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<Self>
 }
 
 extension Int8: NumericCastTarget {
     /// ``Cast/i8(_:format:)-swift.type.method``, reached generically.
-    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Int8> {
-        try Cast.i8(utf8, format: format)
+    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<Int8> {
+        Cast.i8(utf8, format: format)
     }
 }
 
 extension Int16: NumericCastTarget {
     /// ``Cast/i16(_:format:)-swift.type.method``, reached generically.
-    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Int16> {
-        try Cast.i16(utf8, format: format)
+    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<Int16> {
+        Cast.i16(utf8, format: format)
     }
 }
 
 extension Int32: NumericCastTarget {
     /// ``Cast/i32(_:format:)-swift.type.method``, reached generically.
-    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Int32> {
-        try Cast.i32(utf8, format: format)
+    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<Int32> {
+        Cast.i32(utf8, format: format)
     }
 }
 
 extension Int64: NumericCastTarget {
     /// ``Cast/i64(_:format:)-swift.type.method``, reached generically.
-    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Int64> {
-        try Cast.i64(utf8, format: format)
+    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<Int64> {
+        Cast.i64(utf8, format: format)
     }
 }
 
 extension UInt8: NumericCastTarget {
     /// ``Cast/u8(_:format:)-swift.type.method``, reached generically.
-    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<UInt8> {
-        try Cast.u8(utf8, format: format)
+    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<UInt8> {
+        Cast.u8(utf8, format: format)
     }
 }
 
 extension UInt16: NumericCastTarget {
     /// ``Cast/u16(_:format:)-swift.type.method``, reached generically.
-    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<UInt16> {
-        try Cast.u16(utf8, format: format)
+    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<UInt16> {
+        Cast.u16(utf8, format: format)
     }
 }
 
 extension UInt32: NumericCastTarget {
     /// ``Cast/u32(_:format:)-swift.type.method``, reached generically.
-    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<UInt32> {
-        try Cast.u32(utf8, format: format)
+    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<UInt32> {
+        Cast.u32(utf8, format: format)
     }
 }
 
 extension UInt64: NumericCastTarget {
     /// ``Cast/u64(_:format:)-swift.type.method``, reached generically.
-    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<UInt64> {
-        try Cast.u64(utf8, format: format)
+    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<UInt64> {
+        Cast.u64(utf8, format: format)
     }
 }
 
 extension Float: NumericCastTarget {
     /// ``Cast/f32(_:format:)-swift.type.method``, reached generically.
-    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Float> {
-        try Cast.f32(utf8, format: format)
+    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<Float> {
+        Cast.f32(utf8, format: format)
     }
 }
 
 extension Double: NumericCastTarget {
     /// ``Cast/f64(_:format:)-swift.type.method``, reached generically.
-    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Double> {
-        try Cast.f64(utf8, format: format)
+    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<Double> {
+        Cast.f64(utf8, format: format)
     }
 }
 
 extension Decimal: NumericCastTarget {
     /// ``Cast/decimal(_:format:)-swift.type.method``, reached generically.
-    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Decimal> {
-        try Cast.decimal(utf8, format: format)
+    public static func castNumeric(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<Decimal> {
+        Cast.decimal(utf8, format: format)
     }
 }
 
@@ -976,13 +974,13 @@ extension Decimal: NumericCastTarget {
 public protocol ScalarCastTarget {
     /// Routes to this type's own door. ``Cast/scalar(_:format:)-swift.type.method`` is the
     /// entry point; this is the hook it dispatches through.
-    static func castScalar(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Self>
+    static func castScalar(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<Self>
 }
 
 extension ScalarCastTarget where Self: NumericCastTarget {
     /// The numeric target's own door, as ``Cast/numeric(_:format:)-swift.type.method`` reaches it.
-    public static func castScalar(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Self> {
-        try castNumeric(utf8, format: format)
+    public static func castScalar(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<Self> {
+        castNumeric(utf8, format: format)
     }
 }
 
@@ -1000,38 +998,38 @@ extension Decimal: ScalarCastTarget {}
 
 extension Bool: ScalarCastTarget {
     /// ``Cast/bool(_:)-swift.type.method``, reached generically; `format` is not read.
-    public static func castScalar(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Bool> {
-        try Cast.bool(utf8)
+    public static func castScalar(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<Bool> {
+        Cast.bool(utf8)
     }
 }
 
 extension UUID: ScalarCastTarget {
     /// ``Cast/uuid(_:)-swift.type.method``, reached generically; `format` is not read.
-    public static func castScalar(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<UUID> {
-        try Cast.uuid(utf8)
+    public static func castScalar(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<UUID> {
+        Cast.uuid(utf8)
     }
 }
 
 extension Date: ScalarCastTarget {
     /// ``Cast/timestamp(_:)-swift.type.method`` — RFC 3339, zone mandatory — reached
     /// generically; `format` is not read.
-    public static func castScalar(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Date> {
-        try Cast.timestamp(utf8)
+    public static func castScalar(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<Date> {
+        Cast.timestamp(utf8)
     }
 }
 
 extension Duration: ScalarCastTarget {
     /// ``Cast/duration(_:)-swift.type.method``, reached generically; `format` is not read.
-    public static func castScalar(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws -> Verdict<Duration> {
-        try Cast.duration(utf8)
+    public static func castScalar(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<Duration> {
+        Cast.duration(utf8)
     }
 }
 
 extension Unicode.Scalar: ScalarCastTarget {
     /// ``Cast/char(_:)-swift.type.method``, reached generically; `format` is not read.
-    public static func castScalar(_ utf8: UnsafeRawBufferPointer, format: NumFormat) throws
+    public static func castScalar(_ utf8: UnsafeRawBufferPointer, format: NumFormat)
         -> Verdict<Unicode.Scalar>
     {
-        try Cast.char(utf8)
+        Cast.char(utf8)
     }
 }

@@ -60,7 +60,8 @@
     <None Include="../../LICENSE" Pack="true" PackagePath="\" />
     <!-- Standard NuGet RID-specific native asset layout — populated by CI before packing
          (hyper-pack-nuget.yml arranges runtimes/{rid}/native/ from the ci.yml artifacts): the
-         six desktop RIDs and the two musl ones, linux-musl-x64 and linux-musl-arm64. -->
+         six desktop RIDs, the two musl ones (linux-musl-x64, linux-musl-arm64) and the two
+         Android ones (android-arm64, android-x64). -->
     <None Include="runtimes/**" Pack="true" PackagePath="runtimes" CopyToOutputDirectory="PreserveNewest" />
     <!-- The same files flattened into the output root, where an in-repo ProjectReference
          probes (the runtimes/{rid}/native/ lookup only exists for a consumed package). Two

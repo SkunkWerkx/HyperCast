@@ -13,8 +13,9 @@ Allocation-free scalar casts — booleans, characters, the full integer family, 
 `decimal`, UUIDs, temporals — as source-generated `[LibraryImport]` P/Invoke straight into
 the native `libhypercast` Rust core. No runtime bridge, no reflection anywhere in the
 assembly. .NET 11 is the floor deliberately: `Verdict<T>` is a real `[Union]`, and CS8509
-(non-exhaustive switch) is elevated to an error, so a missing disposition fails the build —
-the entire point of returning a union instead of throwing.
+(non-exhaustive switch) elevated to an error — as this repository does, and a consumer does
+with `<WarningsAsErrors>CS8509</WarningsAsErrors>` — makes a missing disposition fail the
+build, the entire point of returning a union instead of throwing.
 
 ```csharp
 using System.Globalization;
@@ -138,7 +139,7 @@ static T ParseRequired<T>(ReadOnlySpan<char> text, IFormatProvider? provider) wh
 Cast.Double("1.234,5", CultureInfo.GetCultureInfo("de-DE"));   // 1234.5
 Cast.Int32("1.234", null);                                       // under the current culture
 Cast.Int32("−5", CultureInfo.GetCultureInfo("et-EE"));          // -5: Estonian's U+2212, and ASCII - too
-Cast.Decimal("€1,234.50", CultureInfo.GetCultureInfo("en-DE")); // 1234.50: the currency separators, as the BCL
+Cast.Decimal("€1,234.50", CultureInfo.GetCultureInfo("en-DE")); // 1234.5: the currency separators, as the BCL
                                                                  // (where the runtime's ICU spells en-DE so; not every one does)
 Cast.Double("۵۰٪", CultureInfo.GetCultureInfo("fa-IR"));        // 0.5: Persian digits and ٪
 ```
@@ -148,7 +149,7 @@ from the culture's own data — its decimal and group separators, whole, however
 characters each is; its currency symbol, and the separators it writes a currency amount
 with where they differ (`en-DE` and a dozen others write a decimal comma in numbers and a
 decimal point in currency, in the ICU data many runtimes carry, and the BCL switches when it
-sees the symbol, so now does the core); its `NegativeSign`, `PositiveSign` and
+sees the symbol, as the core does); its `NegativeSign`, `PositiveSign` and
 `PercentSymbol` where they are not the ASCII ones (U+2212 in `et-EE` and `eu-ES`, the bidi-marked signs of the Arabic-script cultures,
 `٪`); the zero of its `NativeDigits` where it is not `0` (`ar-SA`, `fa-IR`, `bn-BD`); and
 `NumStyles.TrailingSign` when its negative pattern puts the sign after the digits
@@ -179,11 +180,13 @@ Boolean words are the one culture-shaped thing no format carries, by decision:
 has culture data for one and so no bridge could fill it. A caller maps its own words before
 the door.
 
-Pass a `NumFormat` for anything stricter, or for a format that must not follow the machine. The mapping allocates nothing and costs nothing measurable beside the door
-itself (77 ns either way for a grouped `Int32` on the machine that measured it).
+Pass a `NumFormat` for anything stricter, or for a format that must not follow the machine.
+The mapping allocates nothing; mapped on every call it costs about 12 ns, and a `NumFormat`
+held in a field skips it (measured in
+[What an `IFormatProvider` costs](#why-not-the-bcls-own-tryparse-family)).
 
-`default` as the second argument still means `default(NumFormat)`, the no-separators
-caller bug it always was: the provider overloads carry `[OverloadResolutionPriority(-1)]`,
+`default` as the second argument means `default(NumFormat)`, a format with no
+separators, which is a caller bug: the provider overloads carry `[OverloadResolutionPriority(-1)]`,
 so they are chosen only for an argument a `NumFormat` cannot be — `null`, a `CultureInfo`, a
 `NumberFormatInfo`.
 
@@ -191,7 +194,7 @@ Every field is declarable without a culture, and a declared format is the one to
 when the text's dialect is a property of the text rather than of the process:
 
 ```csharp
-var swiss = new NumFormat(".", "’", NumStyles.All, "CHF");                 // separators are strings now: one or two characters
+var swiss = new NumFormat(".", "’", NumStyles.All, "CHF");                 // a separator is 1 to 8 bytes of UTF-8
 var spaced = new NumFormat(".", ", ", NumStyles.All);                       // Cast.Int32("1, 234, 567", spaced) is 1234567
 var declared = NumFormat.Invariant with
 {
@@ -205,8 +208,8 @@ var declared = NumFormat.Invariant with
     Styles = NumStyles.All | NumStyles.TrailingSign,   // 5-, 5 -, 5 €-; not in All, a culture declares it
 };
 Cast.Int32("−١٢٣", declared);              // -123
-Cast.Decimal("€1.234,50", declared);       // 1234.50
-Cast.Decimal("1,234.50", declared);        // 1234.50: no symbol, so the number separators
+Cast.Decimal("€1.234,50", declared);       // 1234.5
+Cast.Decimal("1,234.50", declared);        // 1234.5: no symbol, so the number separators
 Cast.Double("٥٠％", declared);             // 0.5
 Cast.Int32("5 −", declared);               // -5
 ```
@@ -215,7 +218,7 @@ The rules a format must keep are the core's own, checked before the crossing and
 as an `ArgumentException` against the `format` argument, never as a verdict: a separator is
 one to eight bytes of UTF-8 with no ASCII digit and the two differ (so does the currency
 pair in force); a sign, the percent and the currency symbol carry no ASCII digit or
-whitespace; `DigitZero` is never ASCII; and every symbol is whole code points.
+whitespace; `DigitZero` is never ASCII and is the zero of a digit block; and every symbol is whole code points.
 
 ## A culture's date order and day periods
 
@@ -228,18 +231,18 @@ unless told otherwise. `DateFormat` is that declaration for `Cast.DateTime` — 
 the two designators together, the temporal counterpart of `NumFormat`:
 
 ```csharp
-var korean = DateFormat.From(CultureInfo.GetCultureInfo("ko-KR"));   // YearMonthDay, 오전 / 오후
+var korean = DateFormat.From(CultureInfo.GetCultureInfo("ko-KR"));   // YearMonthDay, 오전 / 오후 (where the runtime's ICU spells ko-KR so)
 Cast.DateTime("2026-01-07 오후 3:04", korean);                       // 2026-01-07 15:04
 Cast.DateTime("2026-01-07 3:04 PM", korean);                         // the English pair is always read
 Cast.DateTime("1.7.2026 3:04 nachm.", new DateFormat(DateOrder.DayMonthYear, "vorm.", "nachm."));
-Cast.DateTime("1/7/2026 3:04 PM", DateOrder.MonthDayYear);           // the order alone, as before
+Cast.DateTime("1/7/2026 3:04 PM", DateOrder.MonthDayYear);           // the order alone
 Cast.DateTime("2026-01-07 오후 3:04", CultureInfo.GetCultureInfo("ko-KR"));   // the provider overload
 Cast.Date("2026. 1. 7.".Replace(" ", "").TrimEnd('.'), korean.Order);        // Date has no time part: the order alone
 ```
 
 A declared designator is matched exactly, after the clock (with or without a space before
 it) or ahead of it; the English pair is matched ASCII case-insensitively beside it, and it
-too is read ahead of the clock now (`PM 3:04`). `DateFormat.From` leaves the English pair
+too is read ahead of the clock (`PM 3:04`). `DateFormat.From` leaves the English pair
 undeclared, since the core reads it anyway, and leaves out a designator the core could not
 read — past the 16-byte layout (Thai's and Devanagari's words are), carrying an ASCII digit
 (Anii's `1ka`), or edged with ASCII whitespace — each judged on its own, so such a culture
@@ -351,7 +354,7 @@ fraction as a `TimeOnly`) and `Cast.ExcelDuration` (days as a `TimeSpan`). A typ
    allocation-free. The core's fast lanes read well-formed shapes only, so a fault falls
    through to the full engine, which rescans the text to report the fault's reason and span
    (37 ns of it in the core, against 3 ns for Rust's own `str::parse` failing). Next to the
-   39.9 ns the same door takes on well-formed text, it is not a hot path anywhere sensible,
+   39.9 ns the same door took on well-formed text in that run, it is not a hot path anywhere sensible,
    but it is measured, not assumed.
 
 **The honest trade-off:** the currency rows and `Guid` are losses, expected ones, and
@@ -399,7 +402,7 @@ executable and no native library beside it, `Cast.IsAvailable` is always `true`,
 this package and HyperUuid's can both be linked into the same executable. Nothing to configure;
 `<HyperCastStaticLink>false</HyperCastStaticLink>` in the project puts it back to loading the shared
 library, and so does publishing for a RID the package has no archive for. A JIT process is
-unaffected: it cannot link an archive, and loads the shared library as before.
+unaffected: it cannot link an archive, and loads the shared library.
 
 ## WebAssembly (Blazor)
 
@@ -417,11 +420,10 @@ the staticlib to the linker (restore never populates `@(NativeLibrary)` from a p
 `PackageReference`'s `nativeassets/` folder the way it does `runtimes/{rid}/native/`), and the
 SDK scans every assembly's P/Invokes and generates a pinvoke table that calls each door by
 symbol, so the link resolves them against the archive and `LibraryImport("*")` reaches each one
-through that table. v0.0.1 shipped without that file, and a real Blazor consumer's publish died
-at `wasm-ld` with `undefined symbol: cast_i32`, which is exactly the failure the smoke test
-below reproduces with the archive unlinked. The file used to list an `EmccExportedFunction` per
-door as well, on the belief that `"*"` resolution needed the Emscripten export. It does not: the
-smoke test passes with the list removed on .NET SDK 11.0.100-rc.2, so the list is gone.
+through that table. Without the file a Blazor publish dies at `wasm-ld` with
+`undefined symbol: cast_i32`, which is exactly the failure the smoke test below reproduces with
+the archive unlinked. The file lists no `EmccExportedFunction`: `"*"` resolution does not need
+the Emscripten export, and the smoke test passes without it on .NET SDK 11.0.100-rc.2.
 
 **Target frameworks.** One floor here, not two: the package targets net11.0 and nothing
 older, and the targets file sits under `build/net11.0/` (and `buildTransitive/net11.0/`) like
@@ -489,12 +491,12 @@ is every platform .NET MAUI targets:
 | Blazor WebAssembly (.NET 11+) | `browser-wasm` | `libhypercast.a` (static — see above) |
 | iOS | `ios-arm64`, `iossimulator-arm64` | `libhypercast.a` (static — see below) |
 | Mac Catalyst | `maccatalyst-arm64`, `maccatalyst-x64` | `libhypercast.a` (static — see below) |
-| Android (API 21+) | `android-arm64`, `android-x64` | `libhypercast.so`; `libhypercast.a` for Native AOT (see below) |
+| Android (API 24+, .NET 11's floor) | `android-arm64`, `android-x64` | `libhypercast.so`; `libhypercast.a` for Native AOT (see below) |
 
 **musl is its own build, not the glibc one relabeled.** A glibc `libhypercast.so` does not
 load under musl's dynamic loader, and NuGet's RID graph falls back from `linux-musl-x64` to
-`linux-x64` when nothing more specific is in the package — which is what 0.3.0 and earlier
-did on Alpine: the glibc library was selected, failed to load, and the first cast threw. The
+`linux-x64` when nothing more specific is in the package, so without a musl build Alpine
+would select the glibc library, fail to load it, and throw on the first cast. The
 musl libraries are built inside Alpine itself and depend on nothing but musl libc. Proven
 the way a consumer meets it, in an `mcr.microsoft.com/dotnet/sdk` Alpine container: this
 binding's whole test suite, corpus replay included, and the Native AOT smoke test
@@ -531,17 +533,18 @@ that run's archives: as a Mac Catalyst app, run as a process; for the iOS simula
 and launched; and for an iOS device with signing off, where the check is that the app's
 executable defines the core's symbols, since no runner has a device to run it on.
 
-Two .NET 11 RC1 SDK behaviors shape that project, and an app on RC1 may meet them too; neither
-is HyperCast's. A Release build links only the frameworks the trimmer sees the app use, while
+Two .NET 11 SDK behaviors shape that project, and an app may meet them too; neither is
+HyperCast's. A Release build links only the frameworks the trimmer sees the app use, while
 the SDK's own runtime library still needs UIKit, so an app that touches no UIKit type fails
 its native link; the smoke test, a console-style program, asks for UIKit by hand. And a
-Release Mac Catalyst build on RC1's new default registrar, `trimmable-static`, aborted in CI
-before `Main` (`xamarin_bridge_call_runtime_initialize: failed to create delegate`); the
-smoke test sets `Registrar` to `managed-static` there, the default before RC1.
+Release Mac Catalyst app on .NET 11's default registrar, `trimmable-static`, aborts before
+`Main` on SDK 11.0.100-rc.2.26504.105 (`xamarin_bridge_call_runtime_initialize: failed to
+create delegate`); the smoke test sets `Registrar` to `managed-static` there, the default
+before .NET 11.
 
 **Android: the shared library, out of the APK.** A .NET for Android or MAUI app
 (`net11.0-android`, API 24 and later, .NET 11's floor) references the package and writes
-nothing else. On CoreCLR, .NET 11's Android runtime (Mono is no longer supported there), the
+nothing else. On CoreCLR, .NET 11's Android runtime (Mono is not supported there), the
 SDK takes `runtimes/android-arm64/native/libhypercast.so` and its x64 twin out of the package
 and stores each in the APK under `lib/arm64-v8a/` and `lib/x86_64/`, and the ordinary
 `"hypercast"` import opens it, exactly as on Linux. The libraries are cross-built with the
@@ -563,13 +566,6 @@ for each RID. The x64 pair runs in an x86_64 emulator whose image uses 16 KB pag
 library aligned for 4 KB would fail to load there. Nothing hosted runs arm64 Android, so the
 arm64 pair is inspected instead: each CoreCLR APK must carry `libhypercast.so` for its ABI,
 each Native AOT APK must not carry it at all, and all four must pass `zipalign -P 16`.
-
-Two .NET 11 RC1 workload behaviors shape that job, and an app on RC1 may meet them too. The
-android workload's build tasks require JDK 21 (`XA0030` on newer). And the workload RC1
-resolves was built against a runtime newer than RC1 on nuget.org, so a Native AOT publish
-fails to restore `Microsoft.NETCore.App.Runtime.NativeAOT.android-*` by exact version until
-the .NET 11 daily feed (`https://pkgs.dev.azure.com/dnceng/public/_packaging/dotnet11/nuget/v3/index.json`)
-is added as a source; the job adds it.
 
 **Known gap: tvOS and the iOS simulator on Intel Macs are not supported.**
 `iossimulator-x64` and tvOS have no archive, so an app for them fails at its native link on
@@ -604,11 +600,15 @@ nothing needs dropping anywhere: when no library has been staged under `runtimes
 machine's RID, the project copies `rust/target/release/` straight to the output, so
 `dotnet test` after a `cargo cdylib` just runs.
 
-**Reproducibility, stated honestly.** A Rust build is deterministic *locally* but not
-bit-reproducible *across machines* — differing toolchain versions and embedded build paths
-change the hash — so "rebuild it and compare hashes" is not a verification path a consumer
-can rely on. The mechanism that does work is a cryptographic attestation binding each
-artifact to the workflow run and commit that produced it.
+**Reproducibility, stated honestly.** A rebuild is byte-identical only on the same toolchain
+*and* the same build image. Measured on 2026-10-25 for linux-x64 at `0ee2caa`, whose Rust
+sources are those of the library CI staged into `php/src/native/`: `cargo cdylib` in the
+`rust:latest` Docker image (rustc 1.99.1) gives 160,488 bytes against CI's 160,512, with the
+same exports and an identically sized `.text`. The difference is the C toolchain's version
+string in `.comment`, GCC on CI's Ubuntu runner against the image's Debian. So "rebuild it
+and compare hashes" verifies a binary only for someone who reproduces CI's runner image as
+well as its toolchain. The mechanism that does work is a cryptographic attestation binding
+each artifact to the workflow run and commit that produced it.
 
 **Signed provenance.** Two kinds of attestation cover the package.
 
@@ -619,11 +619,13 @@ gh attestation verify HyperCast.<version>.nupkg --repo SkunkWerkx/HyperCast \
   --source-ref refs/tags/v<version> --predicate-type https://github.com/SkunkWerkx/.github/predicates/release/v1
 ```
 
-*Build provenance* ([SLSA](https://github.com/actions/attest-build-provenance)) is the second layer, emitted where the bytes are made, which for this package is four places, because it is not the same bytes at every stage of its life:
+*Build provenance* ([SLSA](https://github.com/actions/attest-build-provenance)) is the second layer, emitted where the bytes are made, which for this package is six places, because it is not the same bytes at every stage of its life:
 
 | Attested artifact | Where | Signer |
 | --- | --- | --- |
 | Each native library, as built | `hyper-build-native.yml` | `SkunkWerkx/.github` |
+| Each Android shared library, as built | `hyper-build-android.yml` | `SkunkWerkx/.github` |
+| Each static library under `staticlibs/`, as built | `hyper-build-static.yml` | `SkunkWerkx/.github` |
 | The browser-wasm archive, as built | `hyper-build-wasm.yml` | `SkunkWerkx/.github` |
 | The `.nupkg` as packed, pre-push | `hyper-pack-nuget.yml` | `SkunkWerkx/.github` |
 | The `.nupkg` as published | `release.yml`, after the push | `SkunkWerkx/HyperCast` |
@@ -642,7 +644,7 @@ gh attestation verify HyperCast.<version>.nupkg \
 
 The release run downloads the package nuget.org serves, runs `dotnet nuget verify` on it, and requires every entry but `.signature.p7s` to match the packed package before attesting it. That claim is checked on every release rather than asserted here, so if nuget.org ever changes how it finalizes packages, the run says so instead of the README quietly going stale.
 
-Attestations are produced by every release-mode build — the release's own run and the weekly one. Pull requests build in `pr` mode, which ships nothing and so signs nothing. The release itself is two acts at one tag: the tag push packs, attests and preserves everything without uploading, and a dispatch of `release.yml` publishes from those preserved bytes, waiting up to 20 minutes for nuget.org to serve the package before attesting the served bytes; the Go tag and GitHub Release wait on it. A slower validation is recovered by dispatching again with `publication_run_id`, which pushes nothing twice (see [RELEASING.md](../.github/RELEASING.md)). The root README's [Provenance](../README.md#provenance) section has the whole picture across the eight bindings.
+Attestations are produced by every release-mode build — the release's own run and the weekly one. Pull requests build in `pr` mode, which ships nothing and so signs nothing. The release itself is two acts at one tag: the tag push packs, attests and preserves everything without uploading, and a dispatch of `release.yml` publishes from those preserved bytes, waiting up to 20 minutes for nuget.org to serve the package before attesting the served bytes; the Go tag and GitHub Release wait on it. A slower validation is recovered by dispatching again with `publication_run_id`, which pushes nothing twice (see [RELEASING.md](https://github.com/SkunkWerkx/HyperCast/blob/master/.github/RELEASING.md)). The root README's [Provenance](https://github.com/SkunkWerkx/HyperCast/blob/master/README.md#provenance) section has the whole picture across the eight bindings.
 
 **Not currently done: NuGet author signing.** The package carries nuget.org's repository
 signature but no author signature of our own, which would need an X.509 code-signing

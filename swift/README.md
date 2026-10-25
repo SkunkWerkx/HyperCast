@@ -16,7 +16,7 @@ as a static library, so there is nothing to load at run time and nothing to depl
 it.
 
 ```swift
-switch try Cast.i32("(1,234)", format: .invariant) {
+switch Cast.i32("(1,234)", format: .invariant) {
 case .success(let value): print("got \(value)")          // -1234, accounting negative
 case .fault(let fault): print("\(fault.reason) at byte \(fault.offset)")
 }   // no default: the compiler mandates both arms, and only both arms
@@ -43,8 +43,8 @@ exactly the eleven numeric targets (`Int8`…`Int64`, `UInt8`…`UInt64`, `Float
 one.
 
 ```swift
-func column<T: NumericCastTarget>(_ cells: [String], as _: T.Type, format: NumFormat) throws -> [Verdict<T>] {
-    try cells.map { try Cast.numeric($0, format: format) }
+func column<T: NumericCastTarget>(_ cells: [String], as _: T.Type, format: NumFormat) -> [Verdict<T>] {
+    cells.map { Cast.numeric($0, format: format) }
 }
 ```
 
@@ -108,16 +108,16 @@ typed door's `Fault` has no span: its offset and length are 0.
    integer door, as it should be — a stdlib integer parse with no grouping, no parens and
    no radix prefixes is the floor, and the door only wins once the text needs any of those.
    And the `DateFormatter` control really does measure tens of microseconds and 103
-   mallocs on this toolchain, where 0.1.0's tape on an older one recorded 810 ns; the
-   door's own numbers are the claim here, the Foundation figure is reported as measured,
-   not carried over.
+   mallocs on this toolchain; the door's own numbers are the claim here, the Foundation
+   figure is reported as measured.
 
    Separator detection shows its true cost, because the carrier is thin enough to see it:
    `1.234.567,89` under `.detect` is 54 ns against 31 ns for the same text under a declared
    eurozone format.
 
    A locale's format declares its currency symbol whether or not the text carries one, and
-   that costs about 3 ns: `1,234,567` is 28 ns under `.invariant` and 31 ns under
+   that costs about 3 ns: in the run that measured it for 0.9.0, `1,234,567` is 28 ns under
+   `.invariant` (the table's grouped row, timed again) and 31 ns under
    `NumFormat.from(locale:)` for en_US, `$` included. Rejecting `1,234x567` takes 52 ns with
    no allocation. `Int("1234x567")` fails in about 1 ns, at the first character it does not
    take, where the door reads on to report the fault's reason and span.
@@ -125,8 +125,6 @@ typed door's `Fault` has no span: its offset and length are 0.
 **The honest trade-off:** a native dependency — a prebuilt static library per platform,
 linked into your executable — and a call across the C ABI per cast. For plain invariant
 integers, `Int32("...")` is the reasonable choice.
-(Benchmark forensics worth knowing: the first Swift tape was pure measurement-floor
-quantization until `.kilo` scaling amortized it — receipts include their own archaeology.)
 
 Every door also takes an `UnsafeRawBufferPointer` — the primitive the `String` and
 `[UInt8]` forms wrap — so a caller already holding a buffer (a mapped file, one field of a
@@ -178,18 +176,18 @@ well-typed call here can reach.
 
 ```swift
 let danish = NumFormat(decimalSeparator: ",", groupSeparator: ".", styles: .all, currencySymbol: "kr.")
-switch try Cast.decimal("(1.234,50 kr.)", format: danish) {
+switch Cast.decimal("(1.234,50 kr.)", format: danish) {
 case .success(let amount): print(amount)                   // -1234.5, exact — no double was ever formed
 case .fault(let fault): print("\(fault.reason) at byte \(fault.offset)")
 }
 let enUs = NumFormat.from(locale: Locale(identifier: "en_US"))   // "$", from the locale's own data
-try Cast.i32("-$5", format: enUs)                                  // .success(-5)
+Cast.i32("-$5", format: enUs)                                      // .success(-5)
 let estonian = NumFormat.from(locale: Locale(identifier: "et_EE"))   // minus sign U+2212, a no-break space between groups
-try Cast.i32("−1\u{00A0}234", format: estonian)                      // .success(-1234); "-1234" reads too
+Cast.i32("−1\u{00A0}234", format: estonian)                          // .success(-1234); "-1234" reads too
 let egyptian = NumFormat.from(locale: Locale(identifier: "ar_EG"))   // Arabic-Indic digits, ٫ and ٬, its own percent
-try Cast.decimal("١٢٫٥", format: egyptian)                            // .success(12.5)
+Cast.decimal("١٢٫٥", format: egyptian)                                // .success(12.5)
 let trailing = NumFormat(decimalSeparator: ".", groupSeparator: ",", styles: [.all, .trailingSign])
-try Cast.i32("5-", format: trailing)                                 // .success(-5); malformed under .invariant
+Cast.i32("5-", format: trailing)                                     // .success(-5); malformed under .invariant
 ```
 
 `NumFormat.from(locale:)` reads what Foundation's own number parsing reads, through a
@@ -214,23 +212,23 @@ format's.
 ### Day periods
 
 `Cast.dateTime` also takes a `DateFormat` — the `DateOrder` plus the day-period designators
-a culture writes beside a 12-hour clock, `amSymbol` and `pmSymbol` — beside the existing
-`order:` overload, which is the same door with nothing declared. A declared designator is
+a culture writes beside a 12-hour clock, `amSymbol` and `pmSymbol` — beside the `order:`
+overload, which is the same door with nothing declared. A declared designator is
 read after the clock (`3:04 nachm.`, the space optional) or ahead of it (`오후 3:04`), by
 its exact bytes, beside the English `AM`/`PM`, which are read whatever is declared, ASCII
-case-insensitively, and now ahead of the clock as well as after it. A designator is 1 to 16
+case-insensitively, after the clock or ahead of it. A designator is 1 to 16
 UTF-8 bytes with no ASCII digit and no ASCII whitespace at either end (a space inside is
 fine: Spanish writes `a. m.`). `DateFormat.from(locale:)` reads the order off the locale's
 short-date pattern, as `DateOrder.from(locale:)` does, and the designators off a
-`DateFormatter`'s `amSymbol` and `pmSymbol`, both or neither — Persian's are longer than the
-field, so `fa_IR` declares none and reads English only.
+`DateFormatter`'s `amSymbol` and `pmSymbol`, both or neither: a locale whose designators
+exceed the 16-byte field declares none and reads English only.
 
 ```swift
 let korean = DateFormat.from(locale: Locale(identifier: "ko_KR"))   // 오전 / 오후, year-month-day
-try Cast.dateTime("2026-01-07 오후 3:04", format: korean)             // .success(2026-01-07 15:04)
+Cast.dateTime("2026-01-07 오후 3:04", format: korean)                 // .success(2026-01-07 15:04)
 let german = DateFormat(order: .dayMonthYear, amSymbol: "vorm.", pmSymbol: "nachm.")
-try Cast.dateTime("1/7/2026 3:04 nachm.", format: german)            // .success(2026-07-01 15:04)
-try Cast.dateTime("1/7/2026 3:04 PM", format: german)                // .success too: English is always read
+Cast.dateTime("1/7/2026 3:04 nachm.", format: german)                // .success(2026-07-01 15:04)
+Cast.dateTime("1/7/2026 3:04 PM", format: german)                    // .success too: English is always read
 ```
 
 ### Taking the `Locale` itself
@@ -252,8 +250,9 @@ two derive on every call — the user's settings are read when they are asked fo
 µs per call here, a thousand times the door. A hot loop over the user's locale derives once
 with `NumFormat.from(locale:)` and passes the format, which is also the fastest form in any
 loop. (The figures are the harness's `Cast.i32 grouped (locale: …)` and
-`NumFormat.from(locale:)` rows, p50, on the same machine as the table above but with other
-work running, so read them against that run's 41 ns for `Cast.i32 grouped`.)
+`NumFormat.from(locale:)` rows, p50, from a separate run on the same machine as the table
+above but with other work running. That run's own `Cast.i32 grouped` read 41 ns, against the
+table's 26 ns, so read these figures against 41 ns.)
 
 ## Interop: building on HyperCast's C ABI
 
@@ -285,9 +284,11 @@ let format = Interop.rawFormat(.invariant)   // 92 bytes, ready for the other li
 
 - **Swift 6.2 or later.** The manifests declare `swift-tools-version:6.2`: the first release
   whose package manager can link a static library as a binary target (SE-0482), which is how
-  the core reaches every platform. CI runs `swift test` on Swift 6.4 on every platform, and
-  runs Linux (glibc and musl) and WebAssembly again on 6.2 in Swift's own containers. macOS
-  and Windows are tested on 6.4 only.
+  the core reaches every platform. On Swift 6.4, CI runs the suite on Linux (glibc), macOS,
+  Windows and WebAssembly, on an iOS simulator and as a Mac Catalyst process, and in an
+  Android emulator, and on musl, whose static SDK has no XCTest, the smoke executable. On 6.2,
+  in Swift's own containers, it runs the suite on glibc and the smoke executable on musl and
+  WebAssembly. macOS and Windows are tested on 6.4 only.
 - **Platforms.** Linux on glibc and on musl (Swift's static Linux SDK), macOS and Windows,
   each on x86_64 and arm64, WebAssembly (`wasm32-unknown-wasip1`), in WASI hosts and in
   the browser, and iOS, the iOS simulator and Mac Catalyst on arm64. The declared
@@ -311,11 +312,9 @@ copies only the executable works, so does a fully static build with
 executable on its own. Each triple's archive is about 150–220 KB (the Windows `.lib`s are
 the largest), and the linker keeps only what your executable reaches.
 
-No door throws. Bad data was never thrown — it is a `Verdict`'s `Fault` — and the `throws`
-every door still carries is left from when macOS and Windows loaded a shared library that
-could fail to load, so existing `try` call sites keep compiling. `Cast.isAvailable` is
-always `true`, and the `NativeLibraryError` type is deprecated and has no cases, for the
-same reason: code that checks either still compiles.
+No door throws: bad data is a `Verdict`'s `Fault`, and the core is linked in, so there is
+nothing to fail to load. `Cast.isAvailable` is always `true`; it keeps the availability
+probe every binding carries.
 
 iOS, the iOS simulator and Mac Catalyst get the same archives from a second binary target,
 `HyperCastCoreApple.xcframework`: an app for those is built by Xcode, which links a static
@@ -340,6 +339,8 @@ the way the SDK's documentation describes; the core adds nothing to them.
 In a checkout of this repository, `HYPERCAST_LOCAL_CORE=1 swift test` run from `swift/` links
 the bundle `.github/scripts/local-core.sh` builds from the checkout's core in place of the
 committed one. The root `Package.swift`, the one a dependency resolves, has no such switch.
+Without it, outside CI, the suite's `CoreFreshnessTests` fails when the checkout's `rust/`
+differs from the commit the committed bundle was built from.
 
 On Swift 6.3 with `--build-system swiftbuild` (opt-in there), a package that depends on
 this one fails with `missing required module 'HyperCastCore'`: that release's Swift Build

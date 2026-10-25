@@ -24,7 +24,8 @@ project's world in two separate ways.
 
 So the division of labor is: **structure parsing from a JSON library, scalar semantics from
 the one engine that's byte-identical in eight languages.** The same split HyperTabular's
-workbook reader already ships for XLSX, ODS and Numbers.
+workbook reader already ships for XLSX and ODS, with Apple Numbers on its master for the
+next release.
 
 ## What we need from the structure parser
 
@@ -129,15 +130,17 @@ that's serde's job, not this project's.
 
 ## Bonus: a Rust-native on-ramp
 
-Nothing stops the crate from also shipping a serde `Deserialize` impl for `Verdict<T>`, so
-plain Rust users write `#[derive(Deserialize)] struct Row { price: Verdict<f64> }` and get
+Nothing stops the crate from also shipping a serde `Deserialize` impl for a verdict newtype
+over the doors' `Result<T, Fault>` (say `Cast<T>`), so plain Rust users write
+`#[derive(Deserialize)] struct Row { price: Cast<f64> }` and get
 verdict semantics inside ordinary serde_json. It loses the parse-once property for bare
 numbers (serde already parsed them), but as an ergonomic on-ramp it's nearly free.
 
 ## Sequencing
 
 1. Round-three tabular layer — done. HyperTabular 0.7.0 (2026-10-07) is the columnar verdict
-   contract, serving CSV, XLSX, ODS and Numbers today and JSON next.
+   contract, serving delimited text, XLSX and ODS (Apple Numbers on its master for the next
+   release); JSON would ride the same contract, though nothing schedules it yet.
 2. JSON provider on the boring structure tier, tier-1 hand-written glue, proving the schema
    descriptor end to end.
 3. Benchmark a SIMD structure parser against it, with receipts, before adopting one.
