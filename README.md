@@ -17,11 +17,16 @@ Every runtime already has `TryParse`. What it hands back is a `bool` and a shrug
 
 ```csharp
 // C# (.NET 11+) — the verdict is a native union; an unhandled case is a compile error
+using System.Globalization;
+using HyperCast;
+
+var culture = CultureInfo.GetCultureInfo("en-US");
 var message = Cast.Int32("(1,234)", NumFormat.From(culture)) switch
 {
-    Success<int> s => $"got {s.Value}",                     // -1234, accounting negative
-    Fault f => $"{f.Reason} at char {f.Offset}",            // no third case: the compiler checked
+    Success<int> s => $"got {s.Value}",                  // -1234, accounting negative
+    Fault f => $"{f.Reason} at char {f.Offset}",         // no third case: the compiler checked
 };
+Console.WriteLine(message);
 ```
 
 ```rust

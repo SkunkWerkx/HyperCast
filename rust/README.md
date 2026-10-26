@@ -19,13 +19,22 @@ hold on failures too (asserted by a counting `#[global_allocator]` in
 `tests/allocation_free.rs`, not a doc comment).
 
 ```rust
-use hypercast::{cast_i32, cast_timestamp, NumFormat};
+use hypercast::{NumFormat, cast_i32, cast_timestamp};
 
-let verdict = cast_i32("(1,234)", &NumFormat::INVARIANT);
-// Ok(-1234) — accounting parentheses, declared not guessed
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    match cast_i32("(1,234)", &NumFormat::INVARIANT) {
+        // -1234 — accounting parentheses, declared not guessed
+        Ok(value) => println!("got {value}"),
+        Err(fault) => println!("{} at byte {}", fault.reason, fault.offset),
+    }
 
-let ts = cast_timestamp(b"2026-01-02T15:04:05.123456789+05:00");
-// Ok(Timestamp { seconds, nanos }) — protobuf's dual-integer form, normalized to UTC
+    match cast_timestamp(b"2026-01-02T15:04:05.123456789+05:00") {
+        // Timestamp { seconds, nanos } — protobuf's dual-integer form, normalized to UTC
+        Ok(ts) => println!("timestamp {ts:?}"),
+        Err(fault) => println!("{} at byte {}", fault.reason, fault.offset),
+    }
+    Ok(())
+}
 ```
 
 The crate is simultaneously the engine under every binding in this repo — built as a
@@ -45,33 +54,34 @@ reads exactly as the invariant culture and a culture whose minus is U+2212 still
 hyphen its users type:
 
 ```rust
-use hypercast::{cast_f64, cast_i32, CurrencySymbol, NativeDigits, NumFormat, Symbol};
+use hypercast::{CurrencySymbol, NativeDigits, NumFormat, Symbol, cast_f64, cast_i32};
 
 let symbol = |text| Symbol::<8>::new(text).unwrap();
 
 // Estonian: a minus of U+2212, and a hyphen still read.
 let et = NumFormat::INVARIANT.with_signs(symbol("\u{2212}"), Symbol::NONE);
-cast_i32("\u{2212}5", &et);                               // Ok(-5)
+cast_i32("\u{2212}5", &et); // Ok(-5)
 
 // A culture whose numbers and currency amounts use different separators (en-DE):
 // the currency separators apply once the declared symbol is found in the text.
 let en_de = NumFormat::new(',', '.', NumFormat::ALL)
     .with_currency(CurrencySymbol::new("€").unwrap())
     .with_currency_separators(symbol("."), symbol(","));
-cast_f64("1.234,5", &en_de);                              // Ok(1234.5)
-cast_f64("€1,234.50", &en_de);                            // Ok(1234.5)
+cast_f64("1.234,5", &en_de); // Ok(1234.5)
+cast_f64("€1,234.50", &en_de); // Ok(1234.5)
 
 // Arabic-script separators, digits and percent symbol.
 let ar = NumFormat::with_separators(symbol("\u{66B}"), symbol("\u{66C}"), NumFormat::ALL)
     .with_digits(NativeDigits::new('\u{660}').unwrap())
     .with_percent(symbol("\u{66A}"));
 cast_f64("\u{661}\u{66C}\u{662}\u{663}\u{664}\u{66B}\u{665}", &ar); // Ok(1234.5)
-cast_f64("\u{665}\u{660}\u{66A}", &ar);                    // Ok(0.5)
+cast_f64("\u{665}\u{660}\u{66A}", &ar); // Ok(0.5)
 
 // A sign after the digits, the way a culture with an `n-` pattern writes it: a lenience
 // of its own, not in ALL, so a bridge sets it from the culture's negative pattern.
-let trailing = NumFormat { flags: NumFormat::ALL | NumFormat::TRAILING_SIGN, ..NumFormat::INVARIANT };
-cast_i32("5 -", &trailing);                               // Ok(-5)
+let trailing =
+    NumFormat { flags: NumFormat::ALL | NumFormat::TRAILING_SIGN, ..NumFormat::INVARIANT };
+cast_i32("5 -", &trailing); // Ok(-5)
 ```
 
 Separators are `Symbol<8>`s — 1 to 8 UTF-8 bytes with no ASCII digit, so a culture
@@ -81,7 +91,7 @@ clock: `cast_datetime_with(text, order, &DayPeriods)` reads a culture's own desi
 after the clock (`3:04 nachm.`) or ahead of it (`오후 3:04`), beside `AM`/`PM`:
 
 ```rust
-use hypercast::{cast_datetime_with, DateOrder, DayPeriods, Symbol};
+use hypercast::{DateOrder, DayPeriods, Symbol, cast_datetime_with};
 
 let de = DayPeriods::new(Symbol::new("vorm.").unwrap(), Symbol::new("nachm.").unwrap());
 cast_datetime_with("1.7.2026 3:04 nachm.", DateOrder::DayMonthYear, &de);
@@ -137,7 +147,7 @@ epoch, fraction as time of day — under a caller-declared `ExcelEpoch`, because
 a cell says which system it is:
 
 ```rust
-use hypercast::{cast_excel_serial, ExcelEpoch};
+use hypercast::{ExcelEpoch, cast_excel_serial};
 
 cast_excel_serial("45292.75", ExcelEpoch::Y1900);
 // Ok(Timestamp { .. }) — 2024-01-01T18:00:00Z
@@ -154,7 +164,7 @@ A workbook reader holds the number, not its text. `excel_serial` is the same rul
 `f64` a file stores, returning the zone-less wall clock the cell holds:
 
 ```rust
-use hypercast::{excel_serial, ExcelEpoch};
+use hypercast::{ExcelEpoch, excel_serial};
 
 let civil = excel_serial(45292.75, ExcelEpoch::Y1900);
 // Ok(CivilDateTime { .. }) — 2024-01-01 18:00:00, no zone
@@ -172,11 +182,11 @@ shortest decimal that rounds back to it, the digits a spreadsheet writes for it,
 invents precision the file never had:
 
 ```rust
-use hypercast::{decimal_from_f64, i32_from_f64, Reason};
+use hypercast::{decimal_from_f64, i32_from_f64};
 
-decimal_from_f64(2.5).map(|d| d.to_string());       // Ok("2.5")
+decimal_from_f64(2.5).map(|d| d.to_string()); // Ok("2.5")
 decimal_from_f64(0.1 + 0.2).map(|d| d.to_string()); // Ok("0.30000000000000004")
-i32_from_f64(2.5);                                  // Err(Reason::Malformed), never rounded
+i32_from_f64(2.5); // Err(Reason::Malformed), never rounded
 ```
 
 Above 2^53, a double's shortest decimal integer can differ from its exact binary
@@ -184,10 +194,7 @@ integer. Typed integer doors use those shortest decimal digits, just as their te
 would, rather than switching to binary-integer semantics:
 
 ```rust
-assert_eq!(
-    hypercast::u64_from_f64(9_223_372_036_854_775_808.0),
-    Ok(9_223_372_036_854_776_000),
-);
+assert_eq!(hypercast::u64_from_f64(9_223_372_036_854_775_808.0), Ok(9_223_372_036_854_776_000));
 ```
 
 ## One character
@@ -202,7 +209,7 @@ since nothing in the grammar is cultural:
 use hypercast::cast_char;
 
 cast_char("U+00E9"); // Ok('é')
-cast_char(" ");      // Ok(' '), verbatim rather than Empty
+cast_char(" "); // Ok(' '), verbatim rather than Empty
 cast_char("U+D800"); // Err: OutOfRange, a surrogate
 ```
 

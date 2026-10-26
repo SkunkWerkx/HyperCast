@@ -20,9 +20,16 @@ raw C-ABI calls, no runtime bridge. `HyperCast::BACKEND` reports which one is li
 `HYPERCAST_PURE=1` forces Fiddle for testing — see [Backends](#backends).
 
 ```ruby
+require "hypercast"
+
 case HyperCast.i32("(1,234)", HyperCast::NumFormat::INVARIANT)
-in HyperCast::Success(value:) then puts "got #{value}"          # -1234
-in HyperCast::Fault(reason:, offset:) then puts "#{reason} at #{offset}"
+in HyperCast::Success(value:) then puts "got #{value}" # -1234
+in HyperCast::Fault(reason:, offset:) then puts "#{reason} at char #{offset}"
+end
+
+case HyperCast.timestamp("2026-01-02T15:04:05.123456789+05:00")
+in HyperCast::Success(value:) then puts "timestamp #{value.inspect}" # a UTC Time, full nanoseconds
+in HyperCast::Fault(reason:, offset:) then puts "#{reason} at char #{offset}"
 end
 ```
 
@@ -89,7 +96,9 @@ binding was built against — probed once, cached, never raising — for a consu
 fallback of its own:
 
 ```ruby
-value = HyperCast.available? ? HyperCast.i32(text, format) : my_own_parse(text)
+def parse(text)
+  HyperCast.available? ? HyperCast.i32(text, HyperCast::NumFormat::INVARIANT) : my_own_parse(text)
+end
 ```
 
 `HyperCast.native_version` reads the version out of the loaded core itself (its
@@ -188,18 +197,19 @@ and nothing that parsed before stops parsing when a symbol is declared.
 dollars = HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",", flags: HyperCast::ALL_STYLES, currency: "$")
 HyperCast.i32("($1,234)", dollars)        # => Success(value: -1234)
 HyperCast.decimal("$1,234.50", dollars)   # => Success(value: Decimal(magnitude: 12345, scale: 1, negative: false))
-HyperCast.i32("$5", HyperCast::NumFormat::INVARIANT)   # => Fault(reason: :malformed, offset: 0, length: 1)
+HyperCast.i32("$5", HyperCast::NumFormat::INVARIANT) # => Fault(reason: :malformed, offset: 0, length: 1)
 
 estonian = HyperCast::NumFormat.new(decimal_sep: ",", group_sep: " ", flags: HyperCast::ALL_STYLES, minus_sign: "−")
 HyperCast.f64("−1 234,5", estonian)       # => Success(value: -1234.5)   (U+2212 minus; ASCII "-" still reads)
 
 francs = HyperCast::NumFormat.new(decimal_sep: ",", group_sep: ".", flags: HyperCast::ALL_STYLES | HyperCast::TRAILING_SIGN,
                                   currency: "CHF", currency_decimal_sep: ".", currency_group_sep: "'")
-HyperCast.f64("CHF 1'234.50", francs)     # => Success(value: 1234.5)    (the currency separators, the symbol being present)
+HyperCast.f64("CHF 1'234.50", francs)     # => Success(value: 1234.5)    (currency separators: the symbol is present)
 HyperCast.f64("1.234,50", francs)         # => Success(value: 1234.5)    (the number separators)
 HyperCast.i32("5 CHF-", francs)           # => Success(value: -5)        (TRAILING_SIGN)
 
-arabic = HyperCast::NumFormat.new(decimal_sep: "٫", group_sep: "٬", flags: HyperCast::ALL_STYLES, percent: "٪", digit_zero: "٠")
+arabic = HyperCast::NumFormat.new(decimal_sep: "٫", group_sep: "٬", flags: HyperCast::ALL_STYLES, percent: "٪",
+                                  digit_zero: "٠")
 HyperCast.f64("١٬٢٣٤٫٥", arabic)          # => Success(value: 1234.5)
 HyperCast.decimal("٥٠٪", arabic)          # => Success(value: Decimal(magnitude: 5, scale: 1, negative: false))
 ```
@@ -284,7 +294,7 @@ HyperCast.datetime("1/7/2026 3:04 nachm.", :day_month_year, am: "vorm.", pm: "na
 # => Success(value: #<DateTime: 2026-07-01T15:04:00+00:00 ...>)
 HyperCast.datetime("2026-01-07 오후 3:04", :year_month_day, am: "오전", pm: "오후")
 # => Success(value: #<DateTime: 2026-01-07T15:04:00+00:00 ...>)
-HyperCast.datetime("1/7/2026 3:04 nachm.", :day_month_year)   # => Fault(reason: :malformed, offset: 13, length: 1)
+HyperCast.datetime("1/7/2026 3:04 nachm.", :day_month_year) # => Fault(reason: :malformed, offset: 13, length: 1)
 ```
 
 A designator is 1 to 16 UTF-8 bytes with no ASCII digit and no ASCII whitespace at either

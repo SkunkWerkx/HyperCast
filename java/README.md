@@ -19,10 +19,29 @@ stable since 21. The jar bundles a native build for every supported platform
 right one at runtime, so a consumer adds one dependency and nothing else.
 
 ```java
-String message = switch (Cast.i32("(1,234)", NumFormat.INVARIANT)) {
-    case Success<Integer> s -> "got " + s.value();          // -1234, accounting negative
-    case Fault<Integer> f -> f.reason() + " at char " + f.offset();
-};  // no third case: javac checked
+package com.example;
+
+import io.github.skunkwerkx.hypercast.Cast;
+import io.github.skunkwerkx.hypercast.Fault;
+import io.github.skunkwerkx.hypercast.NumFormat;
+import io.github.skunkwerkx.hypercast.Success;
+import java.time.Instant;
+
+public class Main {
+    public static void main(String[] args) {
+        String message = switch (Cast.i32("(1,234)", NumFormat.INVARIANT)) {
+            case Success<Integer> s -> "got " + s.value(); // -1234, accounting negative
+            case Fault<Integer> f -> f.reason() + " at char " + f.offset();
+        }; // no third case: javac checked
+        System.out.println(message);
+
+        String timestamp = switch (Cast.timestamp("2026-01-02T15:04:05.123456789+05:00")) {
+            case Success<Instant> s -> "timestamp " + s.value(); // UTC, all nine fractional digits
+            case Fault<Instant> f -> f.reason() + " at char " + f.offset();
+        };
+        System.out.println(timestamp);
+    }
+}
 ```
 
 Door names mirror the native ABI (`i32`, `f64`, `timestamp`, …) so the polyglot surface
@@ -71,13 +90,15 @@ field from the locale's own `DecimalFormatSymbols`, so a US caller gets `$`, a G
 `€`, an Estonian one its U+2212 minus and an Egyptian one `٠`–`٩`, `٫`, `٬` and `٪`:
 
 ```java
+import java.util.Locale;
+
 NumFormat us = NumFormat.from(Locale.US);
-Cast.f64("$1,234.50", us);                                     // 1234.5
-Cast.i32("($5)", us);                                          // -5: parentheses wrap symbol and digits
-Cast.decimal("1.234,50 €", NumFormat.from(Locale.GERMANY));    // 1234.5 — scale 1, exact
-Cast.i32("−5", Locale.forLanguageTag("et-EE"));                 // -5: U+2212, and ASCII '-' still reads
-Cast.f64("١٬٢٣٤٫٥", Locale.forLanguageTag("ar-EG"));            // 1234.5: Arabic-Indic digits and separators
-Cast.f64("CHF 1\u202F234.50", Locale.forLanguageTag("fr-CH"));  // 1234.5: fr-CH currency takes a decimal point
+Cast.f64("$1,234.50", us); // 1234.5
+Cast.i32("($5)", us); // -5: parentheses wrap symbol and digits
+Cast.decimal("1.234,50 €", NumFormat.from(Locale.GERMANY)); // 1234.5 — scale 1, exact
+Cast.i32("−5", Locale.forLanguageTag("et-EE")); // -5: U+2212, and ASCII '-' still reads
+Cast.f64("١٬٢٣٤٫٥", Locale.forLanguageTag("ar-EG")); // 1234.5: Arabic-Indic digits and separators
+Cast.f64("CHF 1\u202F234.50", Locale.forLanguageTag("fr-CH")); // 1234.5: fr-CH currency takes a decimal point
 ```
 
 Or hand the door the `Locale` itself: every numeric door, in every input form, has a
@@ -85,9 +106,11 @@ Or hand the door the `Locale` itself: every numeric door, in every input form, h
 `NumberFormat.getInstance(Locale)` already gives Java code:
 
 ```java
-Cast.f64("1.234,5", Locale.GERMANY);                           // 1234.5
-Cast.i32("1\u202F234", Locale.FRANCE);                          // 1234 — fr-FR groups with U+202F
-Cast.f64(text, Locale.getDefault(Locale.Category.FORMAT));     // the default, said out loud
+import java.util.Locale;
+
+Cast.f64("1.234,5", Locale.GERMANY); // 1234.5
+Cast.i32("1\u202F234", Locale.FRANCE); // 1234 — fr-FR groups with U+202F
+Cast.f64("1234.5", Locale.getDefault(Locale.Category.FORMAT)); // the default, said out loud
 ```
 
 A `null` locale is a `NullPointerException`, never a silent default: pass
@@ -153,11 +176,16 @@ the locale's short-date pattern and `DateFormatSymbols.getAmPmStrings()`, the do
 the `Locale` itself, and the `DateOrder` overloads declare no designators.
 
 ```java
-Cast.dateTime("2026-01-07 오후 3:04", DateTimeFormat.from(Locale.KOREA));          // 15:04
-Cast.dateTime("2026-01-07 오후 3:04", Locale.KOREA);                                // the same, as a Locale
-Cast.dateTime("7.1.2026 3:04 nachm.",
-        new DateTimeFormat(DateOrder.DAY_MONTH_YEAR, "vorm.", "nachm."));           // 15:04, January 7th
-Cast.dateTime("2026-01-07 오후 3:04", DateOrder.YEAR_MONTH_DAY);                   // MALFORMED at 오: nothing declared
+import io.github.skunkwerkx.hypercast.DateOrder;
+import io.github.skunkwerkx.hypercast.DateTimeFormat;
+import java.util.Locale;
+
+Cast.dateTime("2026-01-07 오후 3:04", DateTimeFormat.from(Locale.KOREA)); // 15:04
+Cast.dateTime("2026-01-07 오후 3:04", Locale.KOREA); // the same, as a Locale
+Cast.dateTime(
+        "7.1.2026 3:04 nachm.",
+        new DateTimeFormat(DateOrder.DAY_MONTH_YEAR, "vorm.", "nachm.")); // 15:04, January 7th
+Cast.dateTime("2026-01-07 오후 3:04", DateOrder.YEAR_MONTH_DAY); // MALFORMED at 오: nothing declared
 ```
 
 A designator is 1 to 16 UTF-8 bytes with no ASCII digit and no ASCII whitespace at either

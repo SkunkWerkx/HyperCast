@@ -16,13 +16,23 @@ Bundles a native build for every supported platform (see [Requirements](#require
 and picks the right one at runtime.
 
 ```php
+<?php
+
+require __DIR__ . '/vendor/autoload.php';
+
 use HyperCast\{Cast, NumFormat, Success, Fault};
 
 $verdict = Cast::i32('(1,234)', NumFormat::invariant());
 echo match (true) {
     $verdict instanceof Success => "got {$verdict->value}",          // -1234
     $verdict instanceof Fault => "{$verdict->reason->name} at byte {$verdict->offset}",
-};
+}, "\n";
+
+$timestamp = Cast::timestamp('2026-01-02T15:04:05.123456789+05:00');
+echo match (true) {
+    $timestamp instanceof Success => 'timestamp ' . $timestamp->value->format('Y-m-d\TH:i:s.uP'), // UTC, microseconds
+    $timestamp instanceof Fault => "{$timestamp->reason->name} at byte {$timestamp->offset}",
+}, "\n";
 ```
 
 Door names mirror the native ABI (`i32`, `f64`, `timestamp`, …); PHP strings are raw
@@ -88,6 +98,8 @@ change it):
   ```
 
   ```php
+  <?php
+
   // preload.php
   $src = __DIR__ . '/vendor/skunkwerkx/hypercast/php/src';
   foreach ([...glob("$src/*.php"), ...glob("$src/Interop/*.php")] as $file) {
@@ -111,9 +123,11 @@ binding declares all answer `false`. It attempts the same load every door makes 
 the answer for the request, so it is what a consumer with a fallback gates on:
 
 ```php
+$text = '1,234.50';
+$format = NumFormat::invariant();
 $total = Cast::isAvailable()
     ? Cast::decimal($text, $format)
-    : $legacyParser->parse($text);
+    : $legacyParser->parse($text); // $legacyParser: the consumer's own fallback
 ```
 
 `Cast::nativeVersion()` returns the loaded library's own `"major.minor.patch"` — a
@@ -245,6 +259,8 @@ anything else is an `InvalidArgumentException`. Only the datetime door reads the
 `Cast::date` has no time part — and a two-argument call reads the English pair only.
 
 ```php
+use HyperCast\{DateOrder, DayPeriods};
+
 $german = new DayPeriods('vorm.', 'nachm.');
 Cast::datetime('1/7/2026 3:04 nachm.', DateOrder::Dmy, $german);   // 2026-07-01 15:04
 Cast::datetime('1/7/2026 3:04 PM', DateOrder::Dmy, $german);       // 15:04 as well: AM/PM are always read

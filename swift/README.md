@@ -16,10 +16,17 @@ as a static library, so there is nothing to load at run time and nothing to depl
 it.
 
 ```swift
+import HyperCast
+
 switch Cast.i32("(1,234)", format: .invariant) {
-case .success(let value): print("got \(value)")          // -1234, accounting negative
+case .success(let value): print("got \(value)")  // -1234, accounting negative
 case .fault(let fault): print("\(fault.reason) at byte \(fault.offset)")
-}   // no default: the compiler mandates both arms, and only both arms
+}  // no default: the compiler mandates both arms, and only both arms
+
+switch Cast.timestamp("2026-01-02T15:04:05.123456789+05:00") {
+case .success(let value): print("timestamp \(value)")  // a Foundation Date, normalized to UTC
+case .fault(let fault): print("\(fault.reason) at byte \(fault.offset)")
+}
 ```
 
 Door names mirror the native ABI (`i32`, `f64`, `decimal`, `timestamp`, …); every door also
@@ -175,19 +182,21 @@ The core checks the same rules and reports a violation as a contract error, whic
 well-typed call here can reach.
 
 ```swift
+import Foundation
+
 let danish = NumFormat(decimalSeparator: ",", groupSeparator: ".", styles: .all, currencySymbol: "kr.")
 switch Cast.decimal("(1.234,50 kr.)", format: danish) {
-case .success(let amount): print(amount)                   // -1234.5, exact — no double was ever formed
+case .success(let amount): print(amount)  // -1234.5, exact — no double was ever formed
 case .fault(let fault): print("\(fault.reason) at byte \(fault.offset)")
 }
-let enUs = NumFormat.from(locale: Locale(identifier: "en_US"))   // "$", from the locale's own data
-Cast.i32("-$5", format: enUs)                                      // .success(-5)
-let estonian = NumFormat.from(locale: Locale(identifier: "et_EE"))   // minus sign U+2212, a no-break space between groups
-Cast.i32("−1\u{00A0}234", format: estonian)                          // .success(-1234); "-1234" reads too
-let egyptian = NumFormat.from(locale: Locale(identifier: "ar_EG"))   // Arabic-Indic digits, ٫ and ٬, its own percent
-Cast.decimal("١٢٫٥", format: egyptian)                                // .success(12.5)
+let enUs = NumFormat.from(locale: Locale(identifier: "en_US"))  // "$", from the locale's own data
+Cast.i32("-$5", format: enUs)  // .success(-5)
+let estonian = NumFormat.from(locale: Locale(identifier: "et_EE"))  // a U+2212 minus, no-break-space groups
+Cast.i32("−1\u{00A0}234", format: estonian)  // .success(-1234); "-1234" reads too
+let egyptian = NumFormat.from(locale: Locale(identifier: "ar_EG"))  // Arabic-Indic digits, ٫ and ٬, its own percent
+Cast.decimal("١٢٫٥", format: egyptian)  // .success(12.5)
 let trailing = NumFormat(decimalSeparator: ".", groupSeparator: ",", styles: [.all, .trailingSign])
-Cast.i32("5-", format: trailing)                                     // .success(-5); malformed under .invariant
+Cast.i32("5-", format: trailing)  // .success(-5); malformed under .invariant
 ```
 
 `NumFormat.from(locale:)` reads what Foundation's own number parsing reads, through a
@@ -224,11 +233,13 @@ short-date pattern, as `DateOrder.from(locale:)` does, and the designators off a
 exceed the 16-byte field declares none and reads English only.
 
 ```swift
-let korean = DateFormat.from(locale: Locale(identifier: "ko_KR"))   // 오전 / 오후, year-month-day
-Cast.dateTime("2026-01-07 오후 3:04", format: korean)                 // .success(2026-01-07 15:04)
+import Foundation
+
+let korean = DateFormat.from(locale: Locale(identifier: "ko_KR"))  // 오전 / 오후, year-month-day
+Cast.dateTime("2026-01-07 오후 3:04", format: korean)  // .success(2026-01-07 15:04)
 let german = DateFormat(order: .dayMonthYear, amSymbol: "vorm.", pmSymbol: "nachm.")
-Cast.dateTime("1/7/2026 3:04 nachm.", format: german)                // .success(2026-07-01 15:04)
-Cast.dateTime("1/7/2026 3:04 PM", format: german)                    // .success too: English is always read
+Cast.dateTime("1/7/2026 3:04 nachm.", format: german)  // .success(2026-07-01 15:04)
+Cast.dateTime("1/7/2026 3:04 PM", format: german)  // .success too: English is always read
 ```
 
 ### Taking the `Locale` itself
@@ -276,8 +287,9 @@ takes an `UnsafeRawBufferPointer` starting at one value, aligned for its widest 
   word as `"major.minor.patch"`.
 
 ```swift
+// buffer: the [UInt8] another library's C ABI wrote values into; offset: where one decimal starts
 let amount = buffer.withUnsafeBytes { Interop.decimal(UnsafeRawBufferPointer(rebasing: $0[offset..<offset + 16])) }
-let format = Interop.rawFormat(.invariant)   // 92 bytes, ready for the other library's ABI
+let format = Interop.rawFormat(.invariant)  // 92 bytes, ready for the other library's ABI
 ```
 
 ## Requirements

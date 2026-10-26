@@ -71,8 +71,14 @@ import hypercast
 
 match hypercast.cast_i32("(1,234)", hypercast.NumFormat.INVARIANT):
     case hypercast.Success(value):
-        print("got", value)                       # -1234, accounting negative
-    case hypercast.Fault(reason, offset, length):
+        print("got", value)  # -1234, accounting negative
+    case hypercast.Fault(reason, offset):
+        print(reason.name, "at char", offset)
+
+match hypercast.cast_timestamp("2026-01-02T15:04:05.123456789+05:00"):
+    case hypercast.Success(value):
+        print("timestamp", value)  # an aware UTC datetime, to the microsecond
+    case hypercast.Fault(reason, offset):
         print(reason.name, "at char", offset)
 ```
 
@@ -96,10 +102,11 @@ above it goes missing (`assert_never` is in `typing` on every supported Python):
 ```python
 from typing import assert_never
 
+
 def describe(verdict: hypercast.Verdict[int]) -> str:
     match verdict:
         case hypercast.Success(value):
-            return f"got {value}"                 # value: int
+            return f"got {value}"  # value: int
         case hypercast.Fault(reason, offset, length):
             return f"{reason.name} at {offset}"
         case _:
@@ -178,8 +185,9 @@ fault as `None` and passes everything else through, for the column where blank m
 absent:
 
 ```python
-hypercast.optional(hypercast.cast_i32("   ", hypercast.NumFormat.INVARIANT))    # None
-hypercast.optional(hypercast.cast_i32("abc", hypercast.NumFormat.INVARIANT))    # Fault(reason=<CastFailure.MALFORMED: 2>, offset=0, length=1)
+hypercast.optional(hypercast.cast_i32("   ", hypercast.NumFormat.INVARIANT))  # None
+# Fault(reason=<CastFailure.MALFORMED: 2>, offset=0, length=1), passed through:
+hypercast.optional(hypercast.cast_i32("abc", hypercast.NumFormat.INVARIANT))
 ```
 
 Bad data is always a `Fault`. What raises is a caller's bug: `TypeError` for an argument of the wrong type (text that is neither `str` nor
@@ -225,11 +233,11 @@ anything else is a `ValueError` at construction, a caller bug like equal separat
 
 ```python
 dollars = hypercast.NumFormat(".", ",", hypercast.NumFormat.ALL, "$")
-hypercast.cast_i32("($1,234)", dollars)          # Success(value=-1234)
-hypercast.cast_decimal("$1,234.50", dollars)     # Success(value=Decimal('1234.5'))
+hypercast.cast_i32("($1,234)", dollars)  # Success(value=-1234)
+hypercast.cast_decimal("$1,234.50", dollars)  # Success(value=Decimal('1234.5'))
 
 krone = hypercast.NumFormat(",", ".", hypercast.NumFormat.ALL, currency="kr.")
-hypercast.cast_decimal("1.234,50 kr.", krone)    # Success(value=Decimal('1234.5'))
+hypercast.cast_decimal("1.234,50 kr.", krone)  # Success(value=Decimal('1234.5'))
 ```
 
 The one rule behind every declared symbol: **the ASCII spelling is always read, and a
@@ -259,20 +267,24 @@ declaration stops parsing after it. What each field adds:
 
 ```python
 estonian = hypercast.NumFormat(",", "\u00a0", hypercast.NumFormat.ALL, "€", minus_sign="−")
-hypercast.cast_f64("−1\u00a0234,5", estonian)    # Success(value=-1234.5)
-hypercast.cast_f64("-1\u00a0234,5", estonian)    # Success(value=-1234.5) — ASCII is always read
+hypercast.cast_f64("−1\u00a0234,5", estonian)  # Success(value=-1234.5)
+hypercast.cast_f64("-1\u00a0234,5", estonian)  # Success(value=-1234.5) — ASCII is always read
 
 swiss = hypercast.NumFormat(
-    ".", "'", hypercast.NumFormat.ALL | hypercast.NumFormat.TRAILING_SIGN, "CHF",
+    ".",
+    "'",
+    hypercast.NumFormat.ALL | hypercast.NumFormat.TRAILING_SIGN,
+    "CHF",
     currency_decimal_sep=",",
 )
-hypercast.cast_decimal("CHF 1'234,50", swiss)    # Success(value=Decimal('1234.5'))
-hypercast.cast_decimal("1'234.50", swiss)        # Success(value=Decimal('1234.5')) — no symbol, the number separators
-hypercast.cast_decimal("1'234,50 CHF-", swiss)   # Success(value=Decimal('-1234.5'))
+hypercast.cast_decimal("CHF 1'234,50", swiss)  # Success(value=Decimal('1234.5'))
+# No symbol, so the number separators: Success(value=Decimal('1234.5'))
+hypercast.cast_decimal("1'234.50", swiss)
+hypercast.cast_decimal("1'234,50 CHF-", swiss)  # Success(value=Decimal('-1234.5'))
 
 arabic = hypercast.NumFormat("٫", "٬", hypercast.NumFormat.ALL, percent="٪", digit_zero="٠")
-hypercast.cast_f64("١٬٢٣٤٫٥", arabic)            # Success(value=1234.5)
-hypercast.cast_decimal("٥٠٪", arabic)            # Success(value=Decimal('0.5'))
+hypercast.cast_f64("١٬٢٣٤٫٥", arabic)  # Success(value=1234.5)
+hypercast.cast_decimal("٥٠٪", arabic)  # Success(value=Decimal('0.5'))
 ```
 
 What the core refuses to carry is refused at construction, as a `ValueError` — the C ABI's
@@ -314,8 +326,8 @@ narrow the flags, or construct a `NumFormat` outright, for anything stricter.
 fmt = hypercast.NumFormat.from_localeconv(
     {"decimal_point": ",", "thousands_sep": "\xa0", "currency_symbol": "€", "negative_sign": "−"}
 )
-fmt                                       # NumFormat(',', '\xa0', 95, '€', minus_sign='−')
-hypercast.cast_f64("−1\xa0234,5", fmt)    # Success(value=-1234.5)
+fmt  # NumFormat(',', '\xa0', 95, '€', minus_sign='−')
+hypercast.cast_f64("−1\xa0234,5", fmt)  # Success(value=-1234.5)
 ```
 
 `hypercast.native_version()` names the core actually loaded, `"major.minor.patch"`, decoded
@@ -338,11 +350,12 @@ can be logged and restored:
 
 ```python
 fmt = hypercast.NumFormat(".", ",", hypercast.NumFormat.ALL, "$")
-fmt          # NumFormat('.', ',', 95, '$')
-fmt.packed   # b'\\\x00\x00\x00' + b'_\x00\x00\x00' + bytes(4)         size 92, flags 95, no native digits
-             #   + b'.' + bytes(7) + b'\x01' + b',' + bytes(7) + b'\x01'  the separators, each its UTF-8 then its length
-             #   + bytes(45)                                            five symbols declared empty
-             #   + b'$' + bytes(15) + b'\x01'                           the currency symbol
+fmt  # NumFormat('.', ',', 95, '$')
+fmt.packed  # the 92 bytes:
+# b'\\\x00\x00\x00' + b'_\x00\x00\x00' + bytes(4)         size 92, flags 95, no native digits
+#   + b'.' + bytes(7) + b'\x01' + b',' + bytes(7) + b'\x01'  the separators, each its UTF-8 then its length
+#   + bytes(45)                                            five symbols declared empty
+#   + b'$' + bytes(15) + b'\x01'                           the currency symbol
 ```
 
 The values themselves are built on the Rust side: an extension module of its own that
@@ -359,10 +372,12 @@ finds it the way pip finds the native wheels:
 
 ```python
 import micropip
+
 await micropip.install("hypercast")
 
 import hypercast
-hypercast.cast_i32("(1,234)", hypercast.NumFormat.INVARIANT)   # Success(value=-1234)
+
+hypercast.cast_i32("(1,234)", hypercast.NumFormat.INVARIANT)  # Success(value=-1234)
 hypercast.cast_timestamp("2026-01-02T10:04:05Z")
 ```
 

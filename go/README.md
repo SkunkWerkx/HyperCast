@@ -19,16 +19,29 @@ whole install; a C compiler at build time is the one requirement (see
 WebAssembly, browser included.
 
 ```go
-import hypercast "github.com/SkunkWerkx/HyperCast/go"
+package main
 
-value, fault := hypercast.I32("(1,234)", hypercast.Invariant)
-if fault != nil {
-    log.Printf("%s at byte %d", fault.Reason, fault.Offset)
+import (
+	"fmt"
+
+	hypercast "github.com/SkunkWerkx/HyperCast/go"
+)
+
+func main() {
+	value, fault := hypercast.I32("(1,234)", hypercast.Invariant)
+	if fault != nil {
+		fmt.Printf("%s at byte %d\n", fault.Reason, fault.Offset)
+	} else {
+		fmt.Println("got", value) // -1234, accounting negative
+	}
+
+	ts, fault := hypercast.Timestamp("2026-01-02T15:04:05.123456789+05:00")
+	if fault != nil {
+		fmt.Printf("%s at byte %d\n", fault.Reason, fault.Offset)
+	} else {
+		fmt.Println("timestamp", ts) // a UTC time.Time at full nanosecond fidelity
+	}
 }
-// value == -1234, accounting negative
-
-ts, fault := hypercast.Timestamp("2026-01-02T15:04:05.123456789+05:00")
-// a UTC time.Time at full nanosecond fidelity
 ```
 
 ## Install
@@ -166,15 +179,15 @@ else at the call site.
 
 ```go
 func column[V hypercast.Number](cells []string, format hypercast.NumFormat) ([]V, *hypercast.Fault) {
-    out := make([]V, 0, len(cells))
-    for _, cell := range cells {
-        v, fault := hypercast.Numeric[V](cell, format)
-        if fault != nil {
-            return nil, fault
-        }
-        out = append(out, v)
-    }
-    return out, nil
+	out := make([]V, 0, len(cells))
+	for _, cell := range cells {
+		v, fault := hypercast.Numeric[V](cell, format)
+		if fault != nil {
+			return nil, fault
+		}
+		out = append(out, v)
+	}
+	return out, nil
 }
 ```
 
@@ -190,7 +203,10 @@ integer door and a character is `Char`'s; `time.Duration` is what `TimeOfDay` re
 every Go reader takes it for a span; and `CivilDateTime` needs a declared `DateOrder`.
 
 ```go
+import "time"
+
 v, fault := hypercast.Scalar[time.Time]("2026-01-02T15:04:05+05:00", hypercast.Invariant)
+fmt.Println(v, fault) // 2026-01-02 10:04:05 +0000 UTC <nil>
 ```
 
 ### Exact decimals
@@ -207,8 +223,9 @@ always scale 0.
 
 ```go
 d, fault := hypercast.Exact("($1,234.50)", hypercast.NumFormat{
-    DecimalSep: ".", GroupSep: ",", Styles: hypercast.AllStyles, Currency: "$",
+	DecimalSep: ".", GroupSep: ",", Styles: hypercast.AllStyles, Currency: "$",
 })
+fmt.Println(d, fault) // -1234.5 <nil>
 // d == Decimal{Lo: 12345, Scale: 1, Negative: true}; d.String() == "-1234.5"
 ```
 
@@ -262,16 +279,16 @@ would rather not panic.
 
 ```go
 estonian := hypercast.NumFormat{
-    DecimalSep: ",", GroupSep: " ", Styles: hypercast.AllStyles | hypercast.TrailingSign,
-    Currency: "€", MinusSign: "−",
+	DecimalSep: ",", GroupSep: " ", Styles: hypercast.AllStyles | hypercast.TrailingSign,
+	Currency: "€", MinusSign: "−",
 }
-value, fault := hypercast.F64("−1 234,5 €", estonian) // -1234.5; so is "1 234,5 €−", and "-1234,5"
+fmt.Println(hypercast.F64("−1 234,5 €", estonian)) // -1234.5 <nil>; so is "1 234,5 €−", and "-1234,5"
 
 arabic := hypercast.NumFormat{DecimalSep: "٫", GroupSep: "٬", Styles: hypercast.AllStyles, DigitZero: '٠', Percent: "٪"}
-value, fault = hypercast.F64("١٢٫٥٪", arabic) // 0.125
+fmt.Println(hypercast.F64("١٢٫٥٪", arabic)) // 0.125 <nil>
 
 euros := hypercast.NumFormat{DecimalSep: ",", GroupSep: ".", Styles: hypercast.AllStyles, Currency: "€"}
-value, fault = hypercast.F64("€ 1.234,50", euros) // 1234.5
+fmt.Println(hypercast.F64("€ 1.234,50", euros)) // 1234.5 <nil>
 ```
 
 The boolean lexicon stays English (`true`/`yes`/`on`/`enabled`/… and their negatives): no
@@ -296,10 +313,10 @@ is a caller bug and panics, and `DateFormat.Raw()` reports it as an `error`.
 
 ```go
 german := hypercast.DateFormat{Order: hypercast.DayMonthYear, AM: "vorm.", PM: "nachm."}
-civil, fault := hypercast.DateTimeWith("1.7.2026 3:04 nachm.", german) // July 1st, 15:04
+fmt.Println(hypercast.DateTimeWith("1.7.2026 3:04 nachm.", german)) // July 1st, 15:04
 
 korean := hypercast.DateFormat{Order: hypercast.YearMonthDay, AM: "오전", PM: "오후"}
-civil, fault = hypercast.DateTimeWith("2026-07-01 오후 3:04", korean) // the same wall clock
+fmt.Println(hypercast.DateTimeWith("2026-07-01 오후 3:04", korean)) // the same wall clock
 ```
 
 ## The native library: `Available`, `LoadError`, `NativeVersion`
@@ -315,6 +332,8 @@ so code written against them works unchanged:
   the archive went into the binary. It cannot fail.
 
 ```go
+import "log"
+
 log.Printf("hypercast core %s", hypercast.NativeVersion())
 ```
 
@@ -351,9 +370,20 @@ same name would have returned.
   `"major.minor.patch"`.
 
 ```go
+import (
+	"log"
+	"unsafe"
+)
+
 raw, err := hypercast.NumFormat{DecimalSep: ",", GroupSep: ".", Styles: hypercast.AllStyles, Currency: "€"}.Raw()
-// raw crosses to the other library's C ABI; its verdicts come back as codes and spans:
-fault, ok := hypercast.FaultFromCode(code, offset, length)
+if err != nil {
+	log.Fatal(err)
+}
+fmt.Println(unsafe.Sizeof(raw)) // 92: the bytes that cross to the other library's C ABI
+// Its verdicts come back as codes and spans; code 2 at byte 3, length 1, is a malformed byte:
+if fault, ok := hypercast.FaultFromCode(2, 3, 1); ok {
+	fmt.Println(fault) // hypercast: malformed at byte 3..4
+}
 ```
 
 ## Platforms

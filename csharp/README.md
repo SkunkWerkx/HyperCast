@@ -17,6 +17,10 @@ assembly. .NET 11 is the floor deliberately: `Verdict<T>` is a real `[Union]`, a
 with `<WarningsAsErrors>CS8509</WarningsAsErrors>` — makes a missing disposition fail the
 build, the entire point of returning a union instead of throwing.
 
+```sh
+dotnet add package HyperCast
+```
+
 ```csharp
 using System.Globalization;
 using HyperCast;
@@ -27,6 +31,14 @@ var message = Cast.Int32("(1,234)", NumFormat.From(culture)) switch
     Success<int> s => $"got {s.Value}",                  // -1234, accounting negative
     Fault f => $"{f.Reason} at char {f.Offset}",         // no third case: the compiler checked
 };
+Console.WriteLine(message);
+
+var timestamp = Cast.Timestamp("2026-01-02T15:04:05.123456789+05:00") switch
+{
+    Success<DateTimeOffset> s => $"timestamp {s.Value:O}", // normalized to UTC, to the 100 ns tick
+    Fault f => $"{f.Reason} at char {f.Offset}",
+};
+Console.WriteLine(timestamp);
 ```
 
 The `switch` needs the target type spelled out. Inside a method generic over it, where the
@@ -35,9 +47,15 @@ union from one on its underlying value and rejects binding a variable there (CS8
 union for each case with `TryGetValue` instead:
 
 ```csharp
-var verdict = Cast.Scalar<T>(text, NumFormat.Invariant);
-if (verdict.TryGetValue(out Success<T> success)) return success.Value;
-verdict.TryGetValue(out Fault fault);                    // the only other case
+static string Describe<T>(string text) where T : struct
+{
+    var verdict = Cast.Scalar<T>(text, NumFormat.Invariant);
+    if (verdict.TryGetValue(out Success<T> success)) return $"got {success.Value}";
+    verdict.TryGetValue(out Fault fault);                    // the only other case
+    return $"{fault.Reason} at char {fault.Offset}";
+}
+
+Console.WriteLine(Describe<int>("(1,234)"));                // got -1234
 ```
 
 Door names mirror the native ABI (`Int32`, `Double`, `Decimal`, `Timestamp`, …) so the
@@ -65,7 +83,8 @@ offsets from the `ReadOnlySpan<byte>` doors, char offsets from the
 passed needs no mapping on either side.
 
 Before the first cast, `Cast.IsAvailable` says whether the native library resolved and
-`Cast.NativeVersion` names the core it loaded — the probe a consumer with a managed fallback
+`Cast.NativeVersion` names the core it loaded, as a `System.Version` (`null` when it did not
+load) — the probe a consumer with a managed fallback
 gates on, instead of catching `DllNotFoundException` around its first real call. It is
 probed once and never throws; every door lets a load failure propagate. A library that
 loaded but predates the probe reads as unavailable too: a stale binary beside a newer
@@ -140,7 +159,7 @@ Cast.Double("1.234,5", CultureInfo.GetCultureInfo("de-DE"));   // 1234.5
 Cast.Int32("1.234", null);                                       // under the current culture
 Cast.Int32("−5", CultureInfo.GetCultureInfo("et-EE"));          // -5: Estonian's U+2212, and ASCII - too
 Cast.Decimal("€1,234.50", CultureInfo.GetCultureInfo("en-DE")); // 1234.5: the currency separators, as the BCL
-                                                                 // (where the runtime's ICU spells en-DE so; not every one does)
+                                                                // (where the runtime's ICU spells en-DE so; not every one does)
 Cast.Double("۵۰٪", CultureInfo.GetCultureInfo("fa-IR"));        // 0.5: Persian digits and ٪
 ```
 
@@ -194,6 +213,8 @@ Every field is declarable without a culture, and a declared format is the one to
 when the text's dialect is a property of the text rather than of the process:
 
 ```csharp
+using System.Text;
+
 var swiss = new NumFormat(".", "’", NumStyles.All, "CHF");                 // a separator is 1 to 8 bytes of UTF-8
 var spaced = new NumFormat(".", ", ", NumStyles.All);                       // Cast.Int32("1, 234, 567", spaced) is 1234567
 var declared = NumFormat.Invariant with
@@ -686,9 +707,9 @@ doors themselves use, so a value read that way is the value the door would have 
   `UnixPrecisionFrom`, `DateOrderFrom`, `ExcelEpochFrom` and `ReasonFrom`, each `null` for a
   code it does not name; `ToFault(code, RawFault)`; `ToTimeOnly(nanosOfDay)` and
   `ToGuid(rfc9562)` for the time and UUID out-values; `ToVersion(packed)` for a
-  `*_version()` word; and `ProbeVersion(Func<uint>)`, the probe `Cast.IsAvailable` and
-  `Cast.NativeVersion` rest on — `null` when the library did not load — for any library's
-  version export.
+  `*_version()` word, as a `System.Version`; and `ProbeVersion(Func<uint>)`, the probe
+  `Cast.IsAvailable` and `Cast.NativeVersion` rest on — the same `System.Version`, or `null`
+  when the library did not load — for any library's version export.
 
 ## Install
 
