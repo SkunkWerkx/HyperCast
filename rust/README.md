@@ -221,7 +221,7 @@ path-depending back here:
 
 ```sh
 cargo cdylib                    # the plain shared library C#, Java, PHP and Ruby's Fiddle backend load (no_std)
-cargo rustc --release --crate-type cdylib --features python  # the CPython extension module (PyO3: abi3, or abi3t/cp314t for a free-threaded PYO3_PYTHON)
+cargo rustc --release --crate-type cdylib --features python  # the CPython extension module (PyO3: abi3, or abi3t for a free-threaded 3.15+ PYO3_PYTHON)
 cargo ruby-ext                  # the Ruby extension (Magnus), in target/ruby/release/ (ruby/'s `rake native:dev` runs this and stages the result)
 cargo php-ext                   # the Zend extension (ext-php-rs) — benchmark spike only, in target/php/release/
 ```
