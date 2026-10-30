@@ -12,10 +12,11 @@ nit.**
 Allocation-free scalar casts — booleans, characters, the full integer family, reals, an exact
 `decimal`, UUIDs, temporals — as source-generated `[LibraryImport]` P/Invoke straight into
 the native `libhypercast` Rust core. No runtime bridge, no reflection anywhere in the
-assembly. .NET 11 is the floor deliberately: `Verdict<T>` is a real `[Union]`, and CS8509
+assembly. It targets .NET 10 and 11. `Verdict<T>` is a real `[Union]`, and CS8509
 (non-exhaustive switch) elevated to an error — as this repository does, and a consumer does
 with `<WarningsAsErrors>CS8509</WarningsAsErrors>` — makes a missing disposition fail the
-build, the entire point of returning a union instead of throwing.
+build, the entire point of returning a union instead of throwing. The `switch` below is
+C# 15; on C# 14, `Match` and `Switch` do the same job ([below](#without-c-15)).
 
 ```sh
 dotnet add package HyperCast
@@ -57,6 +58,25 @@ static string Describe<T>(string text) where T : struct
 
 Console.WriteLine(Describe<int>("(1,234)"));                // got -1234
 ```
+
+### Without C# 15
+
+The union `switch` needs C# 15: a .NET 11 project's default, and
+`<LangVersion>preview</LangVersion>` in a .NET 10 one, on either SDK. The .NET 10 SDK's
+compiler calls the feature "Preview and *unsupported*" and stops at its default `LangVersion`
+with CS8652; the .NET 11 SDK at `LangVersion` 14 stops with CS9327. Without C# 15, `Match` and
+`Switch` take one delegate per case, both required, so a missing case is still a compile error:
+
+```csharp
+var verdict = Cast.Int32("(1,234)", NumFormat.From(CultureInfo.GetCultureInfo("en-US")));
+var message = verdict.Match(s => $"got {s.Value}", f => $"{f.Reason} at char {f.Offset}");
+Console.WriteLine(message);                                 // got -1234
+verdict.Switch(s => Console.WriteLine(s.Value), f => Console.WriteLine(f.Reason));
+```
+
+`TryGetValue`, above, works there too. All three are on both frameworks, so a .NET 10 library
+that calls them runs unchanged inside a .NET 11 app. Each throws `InvalidOperationException`
+on `default(Verdict<T>)`, as the union `switch` throws `SwitchExpressionException`.
 
 Door names mirror the native ABI (`Int32`, `Double`, `Decimal`, `Timestamp`, …) so the
 polyglot surface reads identically across bindings; `Cast.Numeric<T>` fronts all eleven
@@ -404,7 +424,7 @@ code on any mismatch:
 
 ```shell
 dotnet publish csharp/HyperCast.AotSmokeTest/HyperCast.AotSmokeTest.csproj \
-  -c Release -r linux-x64 -p:PublishAot=true
+  -c Release -f net11.0 -r linux-x64 -p:PublishAot=true
 ./csharp/HyperCast.AotSmokeTest/bin/Release/net11.0/linux-x64/publish/HyperCast.AotSmokeTest
 ```
 
@@ -433,7 +453,7 @@ times (`"hypercast"` for dlopen platforms, `"*"` for the statically-linked wasm 
 the same `EntryPoint`, with `OperatingSystem.IsBrowser()` and `OperatingSystem.IsIOS()`
 picked at the call site and constant-folded by the linker. CI builds the `wasm32-unknown-emscripten` staticlib on every
 PR; the release pack stages it under `runtimes/browser-wasm/nativeassets/`, and
-`build/net11.0/HyperCast.targets` ships inside the package to wire it up for a consumer with
+`build/net10.0/HyperCast.targets` ships inside the package to wire it up for a consumer with
 no configuration beyond the `wasm-tools` workload.
 
 That targets file is load-bearing, and its `NativeFileReference` is the whole wiring: it hands
@@ -446,34 +466,32 @@ through that table. Without the file a Blazor publish dies at `wasm-ld` with
 the archive unlinked. The file lists no `EmccExportedFunction`: `"*"` resolution does not need
 the Emscripten export, and the smoke test passes without it on .NET SDK 11.0.100-rc.2.
 
-**Target frameworks.** One floor here, not two: the package targets net11.0 and nothing
-older, and the targets file sits under `build/net11.0/` (and `buildTransitive/net11.0/`) like
-the assembly under `lib/net11.0/`. With every framework-specific asset in a net11.0 folder,
-NuGet refuses the package to an older project at restore, with NU1202, so the file needs no
-target-framework gate of its own. (HyperUuid's package is laid out the same way.)
+**Target frameworks.** The package builds `net10.0` and `net11.0` from one source, and package validation holds their public APIs identical. Its targets file sits under `build/net10.0/` (and `buildTransitive/net10.0/`); NuGet hands that one file to .NET 11 projects too. A project older than .NET 10 is refused at restore with NU1202. Blazor WebAssembly works on both frameworks (see [Platform support](#platform-support)). HyperUuid's package is laid out the same way.
 
 `HyperCast.WasmSmokeTest` proves the whole chain in a real browser: a Blazor WebAssembly app
-that imports that targets file, calls every native entry point — the twenty-six `cast_*`
+(`net10.0` and `net11.0`) that imports that targets file, calls every native entry point — the twenty-six `cast_*`
 functions and `hypercast_version` — through the public `Cast` surface, and renders `PASS` or
 `FAIL` into the page. Every one: the link proves each symbol is in the archive, and only a call proves it works
-through the pinvoke table and the exception-handling translation.
-`./check.sh` in that directory stages the wasm static library, publishes the app, loads it in
-headless Chromium and requires `PASS`. CI runs the same script on every PR, in headless Chrome
-with the `wasm-tools` workload, against the static library that run just built (`STATICLIB`
+through the pinvoke table.
+`./check.sh` in that directory stages the wasm static library, publishes the app four ways
+(each framework, in Release and in an unstripped Debug build, where the SDK runs no `wasm-opt`
+after the link), loads each in headless Chromium and requires `PASS`; name legs
+(`net11-release net11-debug net10-release net10-debug`) to run fewer. CI runs the same script
+on every PR, in headless Chrome with the `wasm-tools` and `wasm-tools-net10` workloads, against the static library that run just built (`STATICLIB`
 names it, so the script skips building its own); it is not part of the solution, so a plain
 `dotnet build` never needs the workload or a browser. By hand, the same steps are:
 
 ```shell
-cd rust && cargo wasm-staticlib
+cd rust && cargo +"$(python3 -c 'import json; print(json.load(open("../.github/hyper.json"))["wasm"]["toolchain"])')" wasm-staticlib
 mkdir -p ../csharp/HyperCast/runtimes/browser-wasm/nativeassets/net11.0
 cp target/wasm32-unknown-emscripten/release/libhypercast.a ../csharp/HyperCast/runtimes/browser-wasm/nativeassets/net11.0/
-cd ../csharp/HyperCast.WasmSmokeTest && dotnet publish -c Release -o /tmp/hypercast-wasm
+cd ../csharp/HyperCast.WasmSmokeTest && dotnet publish -c Release -f net11.0 -o /tmp/hypercast-wasm
 cd /tmp/hypercast-wasm/wwwroot && python3 -m http.server 5099   # then open http://localhost:5099/
 ```
 
 The archive reaches the linker by the path the targets file names, and nowhere else. Restore
 also resolves `runtimes/browser-wasm/nativeassets/` as a copy-local native asset, which on its
-own would copy the 3 MB `libhypercast.a` into `bin/` and the publish root of every Blazor
+own would copy `libhypercast.a` into `bin/` and the publish root of every Blazor
 WebAssembly consumer, never served and never read; the same targets file takes it back out of
 the copy-local list, so a consumer's output carries only the linked `dotnet.native.wasm`.
 
@@ -487,21 +505,35 @@ package and HyperUuid together, at 66 KB raw and 2 KB compressed.
 Without it the SDK skips the link with nothing louder than its own warning, and the publish
 succeeds with a `dotnet.native.wasm` that has no `cast_*` symbols in it; `NETSDK1147` does
 not fire for this. So the targets file stops the build with error `HYPERCAST002` instead
-(`dotnet workload install wasm-tools`). An app that gates on `Cast.IsAvailable` and keeps a
+(`dotnet workload install wasm-tools`; a `net10.0` app built with the .NET 11 SDK takes
+`wasm-tools-net10`). An app that gates on `Cast.IsAvailable` and keeps a
 managed fallback can set `<HyperCastRequireWasmWorkload>false</HyperCastRequireWasmWorkload>`.
 
-**WebAssembly is .NET 11 and later only.** .NET 11 links browser-wasm with the new (exnref)
-exception-handling encoding, while Rust's precompiled `core` inside the static library uses
-the legacy one, and the browser refuses a module that mixes them (`module uses a
-mix of legacy and new exception handling instructions`). The same `HyperCast.targets`
-therefore appends Binaryen's translate-to-exnref pass to the SDK's post-link `wasm-opt`, with
-no action needed from a consumer.
+**WebAssembly on .NET 10 and later, as linked.** The static library is built with `-Zbuild-std`
+on a pinned nightly, for plain wasm (MVP plus `sign-ext` and `mutable-globals`), instead of on
+Rust's prebuilt sysroot. So it holds no exception-handling instructions, and a browser never
+sees .NET 11's encoding mixed with the sysroot's legacy one (`module uses a mix of legacy and
+new exception handling instructions`), whether or not the SDK runs `wasm-opt` after the link.
+And it uses no feature but those two, Binaryen's defaults, which every `wasm-opt` run in a .NET
+10 publish accepts with no flag: Emscripten's does not know `bulk-memory-opt` or
+`call-indirect-overlong` (dotnet/runtime#132858), and the SDK's own, after the link, rejects a
+saturating float-to-int conversion. The archive is checked for both before it is packed.
+
+**`Unknown option '--enable-bulk-memory-opt'` on a native relink** is .NET 10's WebAssembly
+toolchain meeting a wasm object that declares `bulk-memory-opt` or `call-indirect-overlong`,
+as everything rustc 1.87 or later builds on its prebuilt sysroot does
+([dotnet/runtime#132858](https://github.com/dotnet/runtime/issues/132858), open as of
+2026-10-28, reproduced on .NET 10.0.14). This package's archive declares neither; another
+native library linked into the same app can still bring them in. .NET 11's toolchain relinks
+either.
 
 ## Platform support
 
 Native binaries ship inside the package for ten RIDs, plus static libraries for
-WebAssembly, iOS and Mac Catalyst. With Windows, macOS, iOS, Mac Catalyst and Android, that
-is every platform .NET MAUI targets:
+WebAssembly, iOS and Mac Catalyst. Every row below is .NET 11 and later; with Windows, macOS,
+iOS, Mac Catalyst and Android, that is every platform .NET MAUI targets. On .NET 10 the package
+supports the Linux, macOS and Windows rows, framework-dependent or Native AOT, and Blazor
+WebAssembly:
 
 | Platform | RIDs | Native asset |
 | --- | --- | --- |
@@ -509,10 +541,17 @@ is every platform .NET MAUI targets:
 | Linux (musl — Alpine) | `linux-musl-x64`, `linux-musl-arm64` | `libhypercast.so` |
 | macOS | `osx-x64`, `osx-arm64` | `libhypercast.dylib` |
 | Windows | `win-x64`, `win-arm64` | `hypercast.dll` |
-| Blazor WebAssembly (.NET 11+) | `browser-wasm` | `libhypercast.a` (static — see above) |
+| Blazor WebAssembly (.NET 10+) | `browser-wasm` | `libhypercast.a` (static — see above) |
 | iOS | `ios-arm64`, `iossimulator-arm64` | `libhypercast.a` (static — see below) |
 | Mac Catalyst | `maccatalyst-arm64`, `maccatalyst-x64` | `libhypercast.a` (static — see below) |
 | Android (API 24+, .NET 11's floor) | `android-arm64`, `android-x64` | `libhypercast.so`; `libhypercast.a` for Native AOT (see below) |
+
+**.NET 10 on iOS, Mac Catalyst or Android: `HYPERCAST003`.** These need .NET 11 or later. A
+`net10.0-android`, `net10.0-ios` or `net10.0-maccatalyst` project stops at build with
+`HYPERCAST003`, which names the platform and the framework to target. With the platform's
+workload installed, it fires ahead of the Xcode and JDK checks. Without the workload, the SDK's
+own missing-workload error (NETSDK1147) can come first; that case is not probed. A project
+that reaches the package through a class library gets the same error.
 
 **musl is its own build, not the glibc one relabeled.** A glibc `libhypercast.so` does not
 load under musl's dynamic loader, and NuGet's RID graph falls back from `linux-musl-x64` to
@@ -536,7 +575,7 @@ app (`net11.0-ios`, `net11.0-maccatalyst`) references the package like any other
 nothing else. Those platforms have no `runtimes/{rid}/native/` to load a library from: the
 .NET SDK for them links native code into the app's own executable, and a P/Invoke reaches it
 under the library name `__Internal`. So the package carries the core as a static library for
-each of the four RIDs above, `build/net11.0/HyperCast.targets` hands the one for the RID being
+each of the four RIDs above, `build/net10.0/HyperCast.targets` hands the one for the RID being
 built to the SDK as a
 [`NativeReference` with `Kind=Static`](https://learn.microsoft.com/dotnet/maui/migration/ios-binding-projects),
 and `Cast` declares every entry point a third time against `__Internal`, picked by
@@ -565,7 +604,8 @@ before .NET 11.
 
 **Android: the shared library, out of the APK.** A .NET for Android or MAUI app
 (`net11.0-android`, API 24 and later, .NET 11's floor) references the package and writes
-nothing else. On CoreCLR, .NET 11's Android runtime (Mono is not supported there), the
+nothing else. On CoreCLR, .NET 11's Android runtime (Mono is not supported there; a `net10.0-android` build,
+which would run on Mono, stops with `HYPERCAST003`), the
 SDK takes `runtimes/android-arm64/native/libhypercast.so` and its x64 twin out of the package
 and stores each in the APK under `lib/arm64-v8a/` and `lib/x86_64/`, and the ordinary
 `"hypercast"` import opens it, exactly as on Linux. The libraries are cross-built with the
@@ -724,8 +764,9 @@ Per-RID native libraries ship inside the package under `runtimes/`, so a consume
 reference and nothing else — no build step, no manual native staging. See
 [Platform support](#platform-support) for the list.
 
-Targets net11.0, on every platform including Blazor WebAssembly — see
-[WebAssembly (Blazor)](#webassembly-blazor).
+Targets net10.0 and net11.0. On .NET 10: Windows, Linux and macOS, framework-dependent or
+Native AOT, and Blazor WebAssembly. On .NET 11 and later: those, plus iOS, Mac Catalyst and
+Android — see [Platform support](#platform-support).
 
 See [the repo root README](https://github.com/SkunkWerkx/HyperCast/blob/master/README.md)
 for the full door table, the receipts, and the state of every other language binding.

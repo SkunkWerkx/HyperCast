@@ -105,14 +105,18 @@ jobs:
       crate: hypercast
       pure_env: HYPERCAST_PURE
       csharp_test_project: csharp/HyperCast.Tests/HyperCast.Tests.csproj
-      # .NET 11 is HyperCast's floor for the native [Union] Verdict types; the forge
-      # installs the SDK global.json names.
       # Turns the package's Native AOT claim into a per-platform receipt: the forge publishes
       # this project under PublishAot on all five legs, fails on any ILxxxx/AOTxxxx trim
       # diagnostic, then runs the produced binary and requires exit 0. The log uploads as
       # aot-report-{rid}. The smoke test exercises a door from every family plus the union's
       # compile-checked consumption, so it covers the AOT-sensitive surface, not one call.
       csharp_aot_project: csharp/HyperCast.AotSmokeTest/HyperCast.AotSmokeTest.csproj
+      # The suite and the AOT smoke test run on net10.0 and net11.0 on every desktop and musl
+      # leg: the forge installs the global.json SDK plus the 10.0 runtime and publishes once
+      # per framework. iOS, Mac Catalyst and Android stay .NET 11 (HYPERCAST003); Blazor
+      # WebAssembly takes both.
+      csharp_aot_frameworks: "net10.0 net11.0"
+      csharp_extra_runtime: "10.0"
       # Both explicit-placement inputs stay set, deliberately: cargo runs in the same job, so
       # the csproj/Gradle dev-loop staging from rust/target/release would find the library,
       # but explicit placement puts it at runtimes/{rid}/native/ and
@@ -217,7 +221,7 @@ jobs:
   #    first, which is the package a macOS consumer resolves from a tag and the one shape of
   #    it build-native's macOS leg, whose tree has no XCFramework yet, never sees.
   #  * C# takes them from csharp/HyperCast/staticlibs/{rid}/ through
-  #    build/net11.0/HyperCast.targets. HyperCast.AppleSmokeTest is the Native AOT smoke
+  #    build/net10.0/HyperCast.targets. HyperCast.AppleSmokeTest is the Native AOT smoke
   #    test's Program.cs as an app: run as a Mac Catalyst process, installed and launched in
   #    the simulator, and built for an iOS device with signing off. No runner has a device,
   #    so that last one is proved as far as a link goes: the app's executable must define
@@ -413,13 +417,38 @@ jobs:
           done
           echo "the iOS device app defines the core's exports"
 
+      # The net10.0 apps the targets file refuses; the net11.0 builds above are the control,
+      # since they import the same file and build. The probe builds an Exe because the Apple
+      # SDK's Xcode check (_ValidateXcodeVersion) runs only for one: a class library builds on
+      # any Xcode, so without OutputType=Exe the probe would pass with the gate gone, while
+      # with it the gate must win over the Xcode error.
+      - name: C# — net10.0-ios and net10.0-maccatalyst stop with HYPERCAST003
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          gate=csharp/HyperCast.PlatformGateTest/HyperCast.PlatformGateTest.csproj
+          gate_dir=csharp/HyperCast.PlatformGateTest
+          for probe in "net10.0-ios|iOS" "net10.0-maccatalyst|Mac Catalyst"; do
+            tfm="${probe%%|*}"
+            platform="${probe#*|}"
+            rm -rf "${gate_dir:?}/bin" "${gate_dir:?}/obj"
+            if dotnet build "$gate" -p:GateFramework="$tfm" -p:OutputType=Exe -tl:off > "gate-$tfm.log" 2>&1; then
+              echo "::error::$tfm built; the gate did not stop it"; cat "gate-$tfm.log"; exit 1
+            fi
+            grep -qF "error HYPERCAST003" "gate-$tfm.log" \
+              || { echo "::error::$tfm failed, but not with HYPERCAST003"; cat "gate-$tfm.log"; exit 1; }
+            grep -qF "$platform needs .NET 11 or later: target ${tfm/net10.0/net11.0}." "gate-$tfm.log" \
+              || { echo "::error::$tfm: the HYPERCAST003 text does not name $platform"; cat "gate-$tfm.log"; exit 1; }
+            echo "$tfm stops with HYPERCAST003"
+          done
+
   # Android, in an emulator, for the three bindings that reach it: C#, Go and Swift.
   #
   # C#: HyperCast.AndroidSmokeTest, which runs the Native
   # AOT smoke test's Program.cs from an Activity, against the package as a MAUI app would
   # take it — packed here from build-native's Android libraries and static-libs archives, and
   # restored from a local folder, so that what is proven is the .nupkg's own layout (NuGet's
-  # runtimes/{rid}/native/ into the APK's lib/{abi}/, and build/net11.0/HyperCast.targets
+  # runtimes/{rid}/native/ into the APK's lib/{abi}/, and build/net10.0/HyperCast.targets
   # handing a Native AOT publish its archive), not a project reference's.
   #
   # Four APKs: CoreCLR (.NET 11's Android runtime; Mono is not supported there) and
@@ -515,6 +544,22 @@ jobs:
           done
           ls -l apks
 
+      # The same file reaches the four APKs above from the package, and they build on net11.0
+      # (the control); on net10.0 it stops the build.
+      - name: C# — net10.0-android stops with HYPERCAST003
+        run: |
+          set -euo pipefail
+          gate_dir=csharp/HyperCast.PlatformGateTest
+          rm -rf "${gate_dir:?}/bin" "${gate_dir:?}/obj"
+          if dotnet build csharp/HyperCast.PlatformGateTest/HyperCast.PlatformGateTest.csproj -p:GateFramework=net10.0-android -tl:off > gate-android.log 2>&1; then
+            echo "::error::net10.0-android built; the gate did not stop it"; cat gate-android.log; exit 1
+          fi
+          grep -qF "error HYPERCAST003" gate-android.log \
+            || { echo "::error::net10.0-android failed, but not with HYPERCAST003"; cat gate-android.log; exit 1; }
+          grep -qF "Android needs .NET 11 or later: target net11.0-android." gate-android.log \
+            || { echo "::error::the HYPERCAST003 text does not name Android and net11.0-android"; cat gate-android.log; exit 1; }
+          echo "net10.0-android stops with HYPERCAST003"
+
       - name: Inspect the APKs
         run: |
           set -euo pipefail
@@ -574,6 +619,162 @@ jobs:
             .github/scripts/android_device_test.sh stage/go-x86_64 ./hypercast.test -test.v
             .github/scripts/android_device_test.sh stage/swift-x86_64 ./HyperCastPackageTests.xctest
 
+  # The .NET 10 half of the C# package, on Linux: packed from this run's libraries and taken
+  # back out of a local feed, so that what is proven is the .nupkg's own layout. Four things:
+  #  * the layout (lib/net10.0 and lib/net11.0, the targets file under build/net10.0 only);
+  #  * the Native AOT smoke test published and run from the package on net10.0 and net11.0,
+  #    with the core linked in (no libhypercast.so beside the executable, none NEEDED, and a
+  #    libc.so NEEDED line as the positive control that the readelf dump lists dependencies);
+  #  * its control: the same package with build/ and buildTransitive/ stripped publishes a
+  #    libhypercast.so beside the executable, so the check above can see a lost static link;
+  #  * the floor (net9.0 does not restore) and the gate, which admits Blazor WebAssembly on
+  #    net10.0 and net11.0: evaluated, and built only to show HYPERCAST002, because this job
+  #    installs no wasm workload.
+  # The runner image's SDK is not assumed to be the only one: the job logs which are there.
+  test-nuget-package:
+    needs: [build-static, build-native]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    env:
+      SMOKE_PROJECT: csharp/HyperCast.AotSmokeTest/HyperCast.AotSmokeTest.csproj
+      SMOKE_DIR: csharp/HyperCast.AotSmokeTest
+      GATE_PROJECT: csharp/HyperCast.PlatformGateTest/HyperCast.PlatformGateTest.csproj
+      GATE_DIR: csharp/HyperCast.PlatformGateTest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: native-linux-x64
+          path: artifacts
+
+      # Over the checkout, laid out by repository path: the archive lands in
+      # csharp/HyperCast/staticlibs/linux-x64/.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: static-libs
+          path: .
+
+      - name: Stage runtimes/linux-x64/native/
+        run: |
+          set -euo pipefail
+          mkdir -p csharp/HyperCast/runtimes/linux-x64/native
+          cp artifacts/libhypercast.so csharp/HyperCast/runtimes/linux-x64/native/
+          [ -f csharp/HyperCast/staticlibs/linux-x64/libhypercast.a ] \
+            || { echo "::error::static-libs has no csharp/HyperCast/staticlibs/linux-x64/libhypercast.a"; exit 1; }
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      - name: Which SDKs are here
+        run: |
+          set -euo pipefail
+          dotnet --version
+          dotnet --list-sdks
+
+      - name: Pack HyperCast into a local feed and check its layout
+        run: |
+          set -euo pipefail
+          version="0.0.0-pkg.${{ github.run_id }}"
+          echo "HYPERCAST_VERSION=$version" >> "$GITHUB_ENV"
+          echo "HYPERCAST_FEED=$RUNNER_TEMP/feed" >> "$GITHUB_ENV"
+          echo "NUGET_PACKAGES=$RUNNER_TEMP/nuget-packages" >> "$GITHUB_ENV"
+          dotnet pack csharp/HyperCast/HyperCast.csproj -c Release -o "$RUNNER_TEMP/feed" -p:Version="$version"
+          unzip -l "$RUNNER_TEMP/feed/HyperCast.$version.nupkg" | tee "$RUNNER_TEMP/nupkg.txt"
+          for path in lib/net10.0/HyperCast.Managed.dll lib/net11.0/HyperCast.Managed.dll \
+                      build/net10.0/HyperCast.targets buildTransitive/net10.0/HyperCast.targets \
+                      runtimes/linux-x64/native/libhypercast.so staticlibs/linux-x64/libhypercast.a; do
+            grep -q " $path\$" "$RUNNER_TEMP/nupkg.txt" || { echo "::error::the package has no $path"; exit 1; }
+          done
+          if grep -q " build/net11.0/\| buildTransitive/net11.0/" "$RUNNER_TEMP/nupkg.txt"; then
+            echo "::error::the package carries a build/net11.0 or buildTransitive/net11.0 folder; the targets file is under net10.0 only"
+            exit 1
+          fi
+
+      # Package mode: the smoke test takes the .nupkg from the feed, so NuGet makes the
+      # targets import. One TFM at a time (without -f a multi-targeted publish fails with
+      # NETSDK1129), from a clean tree, since the two share bin/ and obj/.
+      - name: Native AOT from the package, on net10.0 and net11.0
+        run: |
+          set -euo pipefail
+          for tfm in net10.0 net11.0; do
+            rm -rf "${SMOKE_DIR:?}/bin" "${SMOKE_DIR:?}/obj"
+            dotnet publish "$SMOKE_PROJECT" -c Release -f "$tfm" -r linux-x64 -p:PublishAot=true \
+              -p:HyperCastVersion="$HYPERCAST_VERSION" -p:RestoreAdditionalProjectSources="$HYPERCAST_FEED" \
+              -o "aot-out/$tfm"
+            if [ -e "aot-out/$tfm/libhypercast.so" ]; then
+              echo "::error::$tfm: aot-out/$tfm carries libhypercast.so; the core should be linked into the executable"
+              exit 1
+            fi
+            # readelf writes to a file, so a missing or unreadable executable fails the step
+            # (set -e) instead of reading as "nothing NEEDED"; the libc line is the positive
+            # control that the dump really lists dynamic dependencies.
+            readelf -d "aot-out/$tfm/HyperCast.AotSmokeTest" > "aot-needed-$tfm.txt"
+            grep -q 'NEEDED.*libc\.so' "aot-needed-$tfm.txt" \
+              || { echo "::error::$tfm: readelf lists no NEEDED libc.so; the dump cannot be trusted"; cat "aot-needed-$tfm.txt"; exit 1; }
+            if grep -q 'NEEDED.*libhypercast\.so' "aot-needed-$tfm.txt"; then
+              echo "::error::$tfm: the executable needs libhypercast.so at run time"
+              exit 1
+            fi
+            "aot-out/$tfm/HyperCast.AotSmokeTest" | tee "aot-run-$tfm.log"
+            grep -q "AOT smoke test passed." "aot-run-$tfm.log"
+            echo "$tfm: the core is linked in and the smoke test passes"
+          done
+
+      # The control for the step above: without build/ and buildTransitive/ nothing hands
+      # the publish its archive, and it quietly falls back to the shared library beside the
+      # executable. If it did not, the check above could not see a lost static link.
+      - name: Control — a package without its targets falls back to the shared library
+        run: |
+          set -euo pipefail
+          nobuild="$HYPERCAST_VERSION.nobuild"
+          dotnet pack csharp/HyperCast/HyperCast.csproj -c Release -o "$HYPERCAST_FEED" -p:Version="$nobuild"
+          zip -d "$HYPERCAST_FEED/HyperCast.$nobuild.nupkg" 'build/*' 'buildTransitive/*'
+          rm -rf "${SMOKE_DIR:?}/bin" "${SMOKE_DIR:?}/obj"
+          dotnet publish "$SMOKE_PROJECT" -c Release -f net10.0 -r linux-x64 -p:PublishAot=true \
+            -p:HyperCastVersion="$nobuild" -p:RestoreAdditionalProjectSources="$HYPERCAST_FEED" \
+            -o aot-out/nobuild
+          [ -e aot-out/nobuild/libhypercast.so ] \
+            || { echo "::error::the check in the previous step cannot see a lost static link"; exit 1; }
+          echo "without its targets the publish carries libhypercast.so beside the executable"
+
+      - name: The floor is .NET 10
+        run: |
+          set -euo pipefail
+          rm -rf "${SMOKE_DIR:?}/bin" "${SMOKE_DIR:?}/obj"
+          if dotnet restore "$SMOKE_PROJECT" -p:TargetFrameworks=net9.0 \
+               -p:HyperCastVersion="$HYPERCAST_VERSION" -p:RestoreAdditionalProjectSources="$HYPERCAST_FEED" > restore-net9.log 2>&1; then
+            echo "::error::net9.0 restored the package; the floor is net10.0"; cat restore-net9.log; exit 1
+          fi
+          grep -qF "NU1202: Package HyperCast " restore-net9.log \
+            || { echo "::error::the net9.0 restore failed, but not with NU1202"; cat restore-net9.log; exit 1; }
+          echo "net9.0 does not restore the package (NU1202)"
+
+      # The wasm archive is built with -Zbuild-std for a feature set both .NET 10's and .NET 11's
+      # wasm toolchains accept, so the gate stands aside for Blazor on both. Evaluation shows the
+      # gate's answer; the build is to show HYPERCAST002, since this job installs no wasm
+      # workload. The Android evaluation is the control: the property is read, and does flag.
+      - name: The gate admits Blazor WebAssembly on .NET 10 and 11
+        run: |
+          set -euo pipefail
+          control="$(dotnet msbuild "$GATE_PROJECT" -getProperty:_HyperCastNet10Unsupported -p:GateFramework=net10.0-android)"
+          [ "$control" = Android ] || { echo "::error::the gate does not flag net10.0-android (got '$control'); the reads below prove nothing"; exit 1; }
+          for f in net10.0 net11.0; do
+            rm -rf "${GATE_DIR:?}/bin" "${GATE_DIR:?}/obj"
+            flag="$(dotnet msbuild "$GATE_PROJECT" -getProperty:_HyperCastNet10Unsupported -p:GateFramework="$f" -p:RuntimeIdentifier=browser-wasm)"
+            [ -z "$flag" ] || { echo "::error::the gate flags $f + browser-wasm: $flag"; exit 1; }
+            if dotnet build "$GATE_PROJECT" -p:GateFramework="$f" -p:RuntimeIdentifier=browser-wasm -p:WasmNativeWorkloadAvailable=false -tl:off > "gate-wasm-$f.log" 2>&1; then
+              echo "::error::$f + browser-wasm built without the wasm workload"; cat "gate-wasm-$f.log"; exit 1
+            fi
+            grep -qF "error HYPERCAST002" "gate-wasm-$f.log" \
+              || { echo "::error::$f + browser-wasm failed, but not with HYPERCAST002"; cat "gate-wasm-$f.log"; exit 1; }
+            if grep -qF "HYPERCAST003" "gate-wasm-$f.log"; then
+              echo "::error::$f + browser-wasm raised HYPERCAST003"; cat "gate-wasm-$f.log"; exit 1
+            fi
+            echo "$f + browser-wasm passes the gate (and stops at HYPERCAST002 without the workload)"
+          done
+
   # A release's run is dispatched by prepare-release.yml with a GITHUB_TOKEN, and GitHub raises
   # no workflow_run for a run that token started, so stage-native-binaries.yml would never hear
   # that it finished. workflow_dispatch is one of the two events the token may raise: once every
@@ -583,7 +784,7 @@ jobs:
   # requests and the weekly schedule never stage, and only this job may start a workflow.
   request-staging:
     needs: [build-static, build-android, test-swift-static, build-native, build-wasm, build-wheels,
-            check-core, test-apple-mobile, test-android]
+            check-core, test-apple-mobile, test-android, test-nuget-package]
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-26.04
     permissions:

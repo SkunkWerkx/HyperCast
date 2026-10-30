@@ -42,7 +42,7 @@
 	     a NuGet package's build/ imports, and this is the project that proves the branch of
 	     that file a .NET iOS or Mac Catalyst consumer takes. The archive it links is
 	     csharp/HyperCast/staticlibs/{rid}/, staged from the static-libs artifact. -->
-	<Import Project="../HyperCast/build/net11.0/HyperCast.targets" />
+	<Import Project="../HyperCast/build/net10.0/HyperCast.targets" />
 
 	<!-- UIKit, by hand, because this app never touches it. From .NET 11 the SDK links only the
 	     frameworks the trimmer sees the app use, and the runtime's own libxamarin still

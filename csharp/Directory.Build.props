@@ -1,12 +1,15 @@
 <Project>
 
 	<PropertyGroup>
-		<!-- .NET 11 is the floor for HyperCast deliberately: native discriminated-union
-		     support ([Union]/IUnion + case-type pattern matching) is what makes a Verdict's
-		     disposition handling compiler-checked. CS8509 (non-exhaustive switch expression)
-		     is elevated to an error so an unhandled verdict case is a build failure, not a
-		     review nit — the entire point of returning a union instead of throwing. -->
-		<TargetFramework>net11.0</TargetFramework>
+		<!-- .NET 10 and 11, from one source. Verdict<T> is a native discriminated union
+		     ([Union]/IUnion + case-type pattern matching), which is what makes its disposition
+		     handling compiler-checked: C# 15 (LangVersion preview, on either SDK) builds the
+		     unions for net10.0 too, through HyperCast/Polyfill.cs's internal UnionAttribute and
+		     IUnion, which net10.0's BCL lacks. CS8509 (non-exhaustive switch expression) is
+		     elevated to an error so an unhandled verdict case is a build failure, not a review
+		     nit — the entire point of returning a union instead of throwing. The mobile smoke
+		     tests, the gate probe and the benchmarks set their own frameworks. -->
+		<TargetFrameworks>net10.0;net11.0</TargetFrameworks>
 		<LangVersion>preview</LangVersion>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>

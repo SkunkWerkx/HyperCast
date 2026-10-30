@@ -1,5 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+	<!-- Two modes. By default it references the library project and imports the package's
+	     targets file by hand, which is what the in-tree publish proves. With
+	     -p:HyperCastVersion=<v> -p:RestoreAdditionalProjectSources=<feed> (the Android smoke
+	     test's convention) it takes the packed package from that feed instead, so the targets
+	     file arrives by NuGet's own import, as a consumer gets it. Frameworks come from
+	     Directory.Build.props; publish one at a time: dotnet publish -f net10.0 (or net11.0)
+	     -r <rid> -p:PublishAot=true; without -f a multi-targeted publish fails with NETSDK1129. -->
+
 	<PropertyGroup>
 		<OutputType>Exe</OutputType>
 		<IsPackable>false</IsPackable>
@@ -8,7 +16,8 @@
 	</PropertyGroup>
 
 	<ItemGroup>
-		<ProjectReference Include="../HyperCast/HyperCast.csproj" />
+		<ProjectReference Include="../HyperCast/HyperCast.csproj" Condition="'$(HyperCastVersion)' == ''" />
+		<PackageReference Include="HyperCast" Version="$(HyperCastVersion)" Condition="'$(HyperCastVersion)' != ''" />
 	</ItemGroup>
 
 	<!-- A project reference gets none of a NuGet package's build/ imports, so the file a real
@@ -16,7 +25,8 @@
 	     the Native AOT wiring in it, and it has to take the same branch a consumer does. The
 	     archive it links is csharp/HyperCast/staticlibs/{rid}/, which is not committed —
 	     the forge's static-libs/build-static-libs.sh stages it, in CI and by hand. Where it
-	     is absent the publish loads the shared library, as it did before these existed. -->
-	<Import Project="../HyperCast/build/net11.0/HyperCast.targets" />
+	     is absent the publish loads the shared library, as it did before these existed. In
+	     package mode NuGet does the import. -->
+	<Import Project="../HyperCast/build/net10.0/HyperCast.targets" Condition="'$(HyperCastVersion)' == ''" />
 
 </Project>

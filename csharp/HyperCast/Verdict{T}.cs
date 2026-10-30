@@ -15,11 +15,19 @@ namespace HyperCast;
 /// Consumers are encouraged to elevate CS8509 the same way.
 /// </para>
 /// <para>
+/// <b>Which path a consumer has.</b> The <c>switch</c> over the case types needs C# 15: any
+/// .NET 11 project, or a .NET 10 one with <c>LangVersion</c> preview, on either SDK.
+/// On C# 14, the .NET 10 default, use <see cref="Match{TResult}"/>, <see cref="Switch"/> or
+/// <see cref="TryGetValue(out Success{T})"/> / <see cref="TryGetValue(out Fault)"/>; all of
+/// them are on both frameworks, so a library compiled against one runs against the other.
+/// </para>
+/// <para>
 /// <b>Do not use <c>default(Verdict&lt;T&gt;)</c>.</b> Like
 /// <c>default(ImmutableArray&lt;T&gt;)</c>, a defaulted value is malformed by construction:
 /// union well-formedness requires its <see cref="Value"/> to be null, so it matches neither
 /// case and an exhaustive switch throws <see cref="SwitchExpressionException"/> at first
-/// consumption.
+/// consumption; <see cref="Match{TResult}"/> and <see cref="Switch"/> throw
+/// <see cref="InvalidOperationException"/>.
 /// </para>
 /// <para>
 /// Hand-implements the union pattern (rather than a shorthand <c>union</c> declaration) so
@@ -103,6 +111,56 @@ public readonly record struct Verdict<T> : IUnion where T : struct
 		value = _fault;
 		return _state == State.Fault;
 	}
+
+	/// <summary>
+	/// Maps this verdict through the delegate for its case: the union switch, for a consumer
+	/// without C# 15. Both cases are required, so a missing one is a compile error.
+	/// </summary>
+	/// <typeparam name="TResult">What both delegates return.</typeparam>
+	/// <param name="success">Called with the success case.</param>
+	/// <param name="fault">Called with the failure case.</param>
+	/// <returns>The return value of the delegate that ran.</returns>
+	/// <exception cref="ArgumentNullException"><paramref name="success"/> or <paramref name="fault"/> is <see langword="null"/>.</exception>
+	/// <exception cref="InvalidOperationException">This is <c>default(Verdict&lt;T&gt;)</c>, which is neither case.</exception>
+	public TResult Match<TResult>(Func<Success<T>, TResult> success, Func<Fault, TResult> fault)
+	{
+		ArgumentNullException.ThrowIfNull(success);
+		ArgumentNullException.ThrowIfNull(fault);
+		return _state switch
+		{
+			State.Success => success(_success),
+			State.Fault => fault(_fault),
+			_ => throw Defaulted(),
+		};
+	}
+
+	/// <summary>
+	/// Runs the action for this verdict's case: the union switch statement, for a consumer
+	/// without C# 15. Both cases are required, so a missing one is a compile error.
+	/// </summary>
+	/// <param name="success">Run with the success case.</param>
+	/// <param name="fault">Run with the failure case.</param>
+	/// <exception cref="ArgumentNullException"><paramref name="success"/> or <paramref name="fault"/> is <see langword="null"/>.</exception>
+	/// <exception cref="InvalidOperationException">This is <c>default(Verdict&lt;T&gt;)</c>, which is neither case.</exception>
+	public void Switch(Action<Success<T>> success, Action<Fault> fault)
+	{
+		ArgumentNullException.ThrowIfNull(success);
+		ArgumentNullException.ThrowIfNull(fault);
+		switch (_state)
+		{
+			case State.Success:
+				success(_success);
+				break;
+			case State.Fault:
+				fault(_fault);
+				break;
+			default:
+				throw Defaulted();
+		}
+	}
+
+	static InvalidOperationException Defaulted() =>
+		new("default(Verdict<T>) is neither a success nor a fault; construct a verdict instead.");
 
 	/// <summary>Renders "Success(value)", "Fault(Reason @ offset+length)", or "Default(invalid)".</summary>
 	public override string ToString() =>

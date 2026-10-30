@@ -26,6 +26,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `gh attestation verify <wheel> --repo SkunkWerkx/HyperCast --source-ref refs/tags/v1.0.0
   --predicate-type https://github.com/SkunkWerkx/.github/predicates/release/v1`. *(Python)*
 
+### Added
+
+- **C# — .NET 10 is supported, on desktop, server and in the browser.** The package builds
+  `net10.0` and `net11.0` from one source, and package validation holds their public APIs
+  identical. On .NET 10 it covers Windows, Linux (glibc and musl) and macOS, framework-dependent
+  and Native AOT, and Blazor WebAssembly; iOS, Mac Catalyst and Android stay .NET 11 and later,
+  and a .NET 10 project for any of them stops at build with the new error `HYPERCAST003`, which
+  names the platform. `Verdict<T>` stays a union on both (the C# 15 compiler builds it for
+  net10.0 through internal polyfills of the two types .NET 10's BCL lacks), and gains `Match`
+  and `Switch`, which take one delegate per case, for consumers on C# 14, where the union
+  `switch` is CS8652 or CS9327. `HyperCast.targets` moves to `build/net10.0/` (and
+  `buildTransitive/net10.0/`), one copy NuGet selects for both frameworks. CI runs the suite and
+  the Native AOT smoke test on both frameworks on every desktop and musl leg, and a new
+  `test-nuget-package` job proves from the packed package that a .NET 10 Native AOT publish
+  links the core in. *(C#)*
+
 ### Changed
 
 - **Python — the `cp314-cp314t` wheel is gone.** Each platform ships two wheels where it
@@ -41,6 +57,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   run a `GITHUB_TOKEN` started), and a second request for a commit already staged is skipped
   with a notice; the Forge commit's step output is `revision`, which clears CodeQL's
   `actions/cache-poisoning/poisonable-step`; and `pypi-recovery.yml` is gone. *(repository only)*
+
+### Fixed
+
+- **C# — a Debug Blazor WebAssembly build loads** (the same failure as
+  [HyperUuid#50](https://github.com/SkunkWerkx/HyperUuid/issues/50)). Chromium refused an
+  unstripped Debug build's `dotnet.native.wasm` with "module uses a mix of legacy and new
+  exception handling instructions": the package translated the archive's legacy exception
+  handling with a `wasm-opt` pass that rides the SDK's post-link step, and the SDK skips that
+  step for an unstripped module. The archive no longer needs translating: it is built on a
+  pinned nightly with `-Zbuild-std`, for plain wasm, so it holds no exception-handling
+  instructions and none of the features .NET 10's toolchain rejects (dotnet/runtime#132858),
+  and the package's `--translate-to-exnref` item is gone. The same build is what lets .NET 10
+  link it, and the archive in the package shrinks from 3.4 MB to 499 KB. *(C#)*
 
 ## [1.0.0] — 2026-10-25
 

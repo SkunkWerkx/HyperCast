@@ -34,7 +34,8 @@ java/src/main/resources/native/
 # !file re-inclusion — and gitignore rules apply in file order, so this must come after the
 # rule it un-ignores. HyperUuid carries the same block for the same reason.
 !csharp/HyperCast/build/
-!csharp/HyperCast/build/HyperCast.targets
+!csharp/HyperCast/build/net10.0/
+!csharp/HyperCast/build/net10.0/HyperCast.targets
 
 # Python
 **/__pycache__/
