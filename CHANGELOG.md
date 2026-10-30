@@ -57,6 +57,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   run a `GITHUB_TOKEN` started), and a second request for a commit already staged is skipped
   with a notice; the Forge commit's step output is `revision`, which clears CodeQL's
   `actions/cache-poisoning/poisonable-step`; and `pypi-recovery.yml` is gone. *(repository only)*
+- **C# — the iOS and Mac Catalyst smoke test runs on the SDK's defaults.** Its Mac Catalyst
+  build set `Registrar` to `managed-static`, after a Release app on .NET 11's default,
+  `trimmable-static`, aborted before `Main`, a fault then put down to the SDK. It was the
+  test's own: its code touches no Apple API, so the trimmer dropped the platform assembly the
+  runtime calls into at startup, and the iOS device build, linked in CI but never run, dropped
+  it as well. One UIKit symbol used in a module initializer, as every real app uses UIKit,
+  keeps that assembly and puts UIKit back in the native link, so the hand-added UIKit
+  framework is gone too. The package is unchanged. *(repository only)*
+- **C# — the benchmarks float to BenchmarkDotNet's prereleases.** 0.15.x, the newest
+  stable, knows no runtime past .NET 10 and stops in its SDK validation on net11.0; the 0.16
+  previews know .NET 11, and the harness takes them (`*-*`) until 0.16.0 ships stable.
+  The in-process toolchain that sidestepped it is gone, so each benchmark runs in its own
+  process, BenchmarkDotNet's default; the C# table was measured in-process and stands
+  until the harness is run again. *(repository only)*
 
 ### Fixed
 

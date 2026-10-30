@@ -593,14 +593,14 @@ that run's archives: as a Mac Catalyst app, run as a process; for the iOS simula
 and launched; and for an iOS device with signing off, where the check is that the app's
 executable defines the core's symbols, since no runner has a device to run it on.
 
-Two .NET 11 SDK behaviors shape that project, and an app may meet them too; neither is
-HyperCast's. A Release build links only the frameworks the trimmer sees the app use, while
-the SDK's own runtime library still needs UIKit, so an app that touches no UIKit type fails
-its native link; the smoke test, a console-style program, asks for UIKit by hand. And a
-Release Mac Catalyst app on .NET 11's default registrar, `trimmable-static`, aborts before
-`Main` on SDK 11.0.100-rc.2.26504.105 (`xamarin_bridge_call_runtime_initialize: failed to
-create delegate`); the smoke test sets `Registrar` to `managed-static` there, the default
-before .NET 11.
+The smoke test is a console-style program whose code touches no Apple API, which no real app
+is, and a .NET 11 Release build keeps only what the app is seen to use. Left alone, the
+trimmer drops the platform assembly the runtime calls into at startup, so on .NET 11's
+default registrar, `trimmable-static`, the app aborts before `Main`
+(`xamarin_bridge_call_runtime_initialize: failed to create delegate`), and the SDK leaves
+UIKit, which the runtime's own library needs, out of the native link, so the link fails
+first. `UIKitUse.cs` uses one UIKit symbol in a module initializer, as every real app uses
+UIKit, and both go away: the test runs on the SDK's defaults.
 
 **Android: the shared library, out of the APK.** A .NET for Android or MAUI app
 (`net11.0-android`, API 24 and later, .NET 11's floor) references the package and writes
