@@ -362,9 +362,13 @@ temporal forms, durations) are pinned by the shared corpus instead.
 The full test suite — unit tests, the allocation proof, and every corpus replay —
 passes under `wasmtime` on `wasm32-wasip1`, in CI's `test-wasi` job on every pull request:
 no clock, no randomness, no dependencies to stub. CI also builds the `wasm32-unknown-emscripten` staticlib the C# binding's
-browser-wasm packaging consumes, on every PR — `cargo wasm-staticlib`, which leaves Rust's
-standard library out of it (the `staticlib` feature supplies the panic handler in its
-place), so it can be linked into one Blazor app beside HyperUuid's.
+browser-wasm packaging consumes, on every PR — `cargo +<pin> wasm-staticlib`, which leaves
+Rust's standard library out of it (the `staticlib` feature supplies the panic handler in its
+place), so it can be linked into one Blazor app beside HyperUuid's. It is the one build on a
+nightly, the dated one `.github/hyper.json` pins as `wasm.toolchain`, installed with
+`rust-src`: `-Zbuild-std` rebuilds core and compiler_builtins for the plain wasm feature set
+both .NET 10 and .NET 11 load, without the prebuilt sysroot's legacy exception handling
+(`.cargo/config.toml` has the detail).
 
 **In the browser, from Rust.** The crate needs nothing from a consumer on
 `wasm32-unknown-unknown`: the core reads no clock and no entropy, so there is no `getrandom`
