@@ -7,6 +7,7 @@ from __future__ import annotations
 import ast
 import inspect
 import os
+import platform
 import sysconfig
 from pathlib import Path
 
@@ -72,6 +73,8 @@ def test_the_stub_and_the_loaded_backend_agree_on_class_members():
 
 def test_a_consumers_match_type_checks_as_exhaustive(monkeypatch):
     """mypy accepts a consumer's match over the verdict as exhaustive."""
+    if platform.python_implementation() == "PyPy":
+        pytest.skip("mypy does not run on PyPy")
     api = pytest.importorskip("mypy.api")
     # The package as this checkout has it, the way conftest.py puts it on sys.path. --strict
     # follows the import, so hypercast's own annotations are checked against the stub too.
@@ -88,6 +91,8 @@ def test_the_checker_catches_a_missing_case(monkeypatch, tmp_path):
     """The other half of the promise: drop the Fault arm and the same assert_never is an error.
     Without this, "it type-checks" could just mean the checker saw Any.
     """
+    if platform.python_implementation() == "PyPy":
+        pytest.skip("mypy does not run on PyPy")
     api = pytest.importorskip("mypy.api")
     if str(PACKAGE.parent) not in {sysconfig.get_path("purelib"), sysconfig.get_path("platlib")}:
         monkeypatch.setenv("MYPYPATH", str(PACKAGE.parent))

@@ -84,9 +84,9 @@ int main() {
 
   CHECK(hc::cast_bool(" yes ").value_or(false));
   CHECK((hc::cast_bool("\tyess\n").fault() == hc::Fault{hc::CastFailure::malformed, 1, 4}));
-  CHECK(hc::cast_char("\xe2\x82\xac").value() == U'€');
+  CHECK(hc::cast_char("\xe2\x82\xac").value() == U'\u20AC');
 #ifdef __cpp_char8_t
-  CHECK(hc::cast_char(u8"€").value() == U'€');
+  CHECK(hc::cast_char(u8"\u20AC").value() == U'\u20AC');
 #endif
 
   CHECK(hc::cast_i8("0xFF", invariant).value() == -1);

@@ -201,7 +201,7 @@ mod python_ext;
 #[cfg(feature = "ruby")]
 mod ruby_ext;
 
-pub use abi::{RawDayPeriods, RawNumFormat, hypercast_version};
+pub use abi::{RawDayPeriods, RawNumFormat};
 pub use boolean::cast_bool;
 pub use character::cast_char;
 pub use decimal::cast_decimal;
@@ -223,6 +223,14 @@ pub use verdict::{
     CivilDateTime, CurrencySymbol, Date, Decimal, Duration, Fault, NativeDigits, NumFormat, Reason,
     Symbol, Timestamp,
 };
+
+// `hypercast_version` is the C symbol itself when `exports` is on, as in 1.0.0, so the Rust
+// function and the ABI name stay one item (cargo-semver-checks holds them together); with
+// `exports` off it is the same function with no symbol, for a library that links this crate.
+#[cfg(not(feature = "exports"))]
+pub use abi::hypercast_version;
+#[cfg(feature = "exports")]
+pub use ffi::hypercast_version;
 
 /// Presents a verdict optionally: an [`Reason::Empty`] fault becomes `Ok(None)` — Rust's
 /// absent — and everything else flows through untouched. The same presentation helper
