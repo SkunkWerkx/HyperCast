@@ -35,10 +35,13 @@ text_door <- function(x, door, format = NULL, periods = NULL, code = 0L) {
 # How this session holds an unmarked string, for the shim: 0 UTF-8; 1 ASCII (the C locale),
 # whose non-ASCII bytes R can neither translate nor count as characters, so they are read as
 # they are and counted in bytes, as substr() counts them; 2 any other locale, translated.
-session_native <- function() {
-  info <- l10n_info()
+# Windows names no codeset: its C locale is code page 0.
+session_native <- function(info = l10n_info()) {
   if (isTRUE(info[["UTF-8"]])) {
     return(0L)
+  }
+  if (identical(info[["codepage"]], 0L)) {
+    return(1L)
   }
   codeset <- toupper(if (is.null(info[["codeset"]])) "" else info[["codeset"]])
   if (codeset %in% c("US-ASCII", "ANSI_X3.4-1968", "ASCII")) 1L else 2L

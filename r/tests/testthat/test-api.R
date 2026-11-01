@@ -135,6 +135,20 @@ test_that("an unmarked string in a C session is read as its bytes, and counted i
   expect_identical(substr(x[[2]], v$offset[[2]] + 1L, v$offset[[2]] + v$length[[2]]), minus)
 })
 
+test_that("the C locale reads as its bytes on every platform", {
+  native <- getFromNamespace("session_native", "hypercast")
+  utf8 <- list(MBCS = TRUE, `UTF-8` = TRUE, `Latin-1` = FALSE)
+  expect_identical(native(c(utf8, codeset = "UTF-8")), 0L)
+  expect_identical(native(c(utf8, codepage = 65001L, system.codepage = 65001L)), 0L)
+  ascii <- list(MBCS = FALSE, `UTF-8` = FALSE, `Latin-1` = FALSE)
+  expect_identical(native(c(ascii, codeset = "ANSI_X3.4-1968")), 1L)
+  # Windows' l10n_info() names a code page, not a codeset, and its C locale is code page 0.
+  expect_identical(native(c(ascii, codepage = 0L, system.codepage = 65001L)), 1L)
+  latin1 <- list(MBCS = FALSE, `UTF-8` = FALSE, `Latin-1` = TRUE)
+  expect_identical(native(c(latin1, codeset = "ISO-8859-1")), 2L)
+  expect_identical(native(c(latin1, codepage = 1252L, system.codepage = 65001L)), 2L)
+})
+
 test_that("a typed door reads NaN as a number and NA as missing", {
   v <- cast_decimal_from_double(c(0.1, NaN, NA, 1L))
   expect_identical(v$value, c("0.1", NA, NA, "1"))
