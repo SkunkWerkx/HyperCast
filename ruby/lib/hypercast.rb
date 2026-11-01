@@ -391,7 +391,16 @@ module HyperCast
         false
       end
     end
+  end
 
+  # The doors, the Fiddle way. They live in a module HyperCast extends rather than on its
+  # singleton class, so the Magnus extension's define_singleton_method puts its definition on
+  # the singleton class in front of them: an override through the ancestor chain, not a
+  # redefinition, and `ruby -w` has nothing to say about it (1.0.0 defined them on the
+  # singleton class and printed "method redefined" twice per door on every require under -w).
+  # Lookup is unchanged either way: the singleton class first, then this module, so with the
+  # extension loaded no call ever reaches these. Their helpers stay private on HyperCast.
+  module FiddleBackend
     # Casts boolean text: true/false plus the conventions untrusted sources actually send
     # (t/f, yes/no, y/n, 1/0, on/off, enabled/disabled, active/inactive,
     # checked/unchecked, in/out), ASCII case-insensitive.
@@ -577,7 +586,11 @@ module HyperCast
     def native_version
       Interop.version(packed_version)
     end
+  end
 
+  extend FiddleBackend
+
+  class << self
     private
 
     # Presents the input as UTF-8 bytes: already-compatible text crosses as-is (Fiddle
@@ -762,8 +775,9 @@ module HyperCast
   end
 end
 
-# --- backend selection: the Magnus extension, when present, replaces the doors above in
-# place on this module (no delegation layer) — Fiddle's measured 1.6 µs per-call floor
+# --- backend selection: the Magnus extension, when present, defines the doors on this
+# module's singleton class, in front of the FiddleBackend definitions it extends (no
+# delegation layer, no redefinition) — Fiddle's measured 1.6 µs per-call floor
 # drops to an ordinary extension call. The pure-Fiddle definitions stay the universal
 # zero-compile fallback — the last resort, for a Ruby or a platform no platform gem covers;
 # precompiled platform gems are how the extension ships without ever making a consumer

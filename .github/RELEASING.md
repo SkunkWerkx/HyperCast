@@ -6,9 +6,9 @@ resolves that to one commit and records it in the package inventory, and the tag
 the Forge it uses to descend from it. Hold Forge merges while a preparation is in flight.
 
 1. Write the bullets under `## [Unreleased]` in `CHANGELOG.md` (or the version's heading) for
-   every package the diff touched, and fill every `⟨…⟩` placeholder. Nothing else about the release is prose:
-   `prepare-release.yml` dates the heading and sets `r/NEWS.md`'s, and refuses a section that
-   is missing or still holds a placeholder, before it pushes anything.
+   every package the diff touched, and fill every `⟨…⟩` placeholder. Nothing else about the
+   release is prose: `prepare-release.yml` dates the heading and sets `r/NEWS.md`'s, and
+   refuses a section that is missing or still holds a placeholder, before it pushes anything.
 2. Dispatch `prepare-release.yml` with the bare version. It bumps every manifest, regenerates
    the Go core at the version (`go/internal/core/core.go`, whose version is a literal), pushes
    A and runs `ci.yml` on it in release mode. After the board, that run's tail packs every
@@ -19,7 +19,8 @@ the Forge it uses to descend from it. Hold Forge merges while a preparation is i
    `Release-CI-Run-ID` and `Release-Forge-SHA` trailers. No binary is committed.
 3. Read the run's summary: B's trailers, the inventory, the digest listing, CodeQL clean.
    Nothing may be pushed to master between B and the tag; if anything was, prepare again.
-4. Push the root tag `vX.Y.Z` at B (lightweight, unsigned). The tag run holds the tag to B and
+4. Push the root tag `vX.Y.Z` at B, annotated and signed (`git tag -m "HyperCast vX.Y.Z"
+   vX.Y.Z <B>`, with `tag.gpgsign` on). The tag run holds the tag to B and
    B to its run, downloads the preserved packages, re-verifies every file and the inventory at
    A, holds B's `Package.swift` to the preserved zips, signs the release attestation from the
    tag, and publishes to the six registries, each publisher verifying its files just before

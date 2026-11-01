@@ -4,7 +4,8 @@
 //! doors drop to the cost of the parse plus building the Ruby values.
 //!
 //! On require (after `lib/hypercast.rb` has defined the pure-Fiddle module), this
-//! extension redefines the door singleton methods **in place on the HyperCast module** —
+//! extension defines the doors on the HyperCast module's singleton class, **in front of**
+//! the Fiddle ones `HyperCast::FiddleBackend` holds (an override, not a redefinition) —
 //! no delegation layer, no second surface. Verdicts stay the package's own `Success` /
 //! `Fault` Data classes with Symbol reasons; `NumFormat` stays the package's Data class,
 //! with `INVARIANT` recognized by identity so the overwhelmingly common format costs zero
@@ -674,7 +675,7 @@ fn duration_value(ruby: &Ruby, span: core::Duration) -> Result<Value, Error> {
 #[magnus::init(name = "hypercast_native")]
 fn init(ruby: &Ruby) -> Result<(), Error> {
     // rb_define_module returns the existing module — lib/hypercast.rb has already defined
-    // the pure-Fiddle surface; these redefinitions replace the doors in place.
+    // the pure-Fiddle surface; these definitions go in front of its FiddleBackend doors.
     let hypercast = ruby.define_module("HyperCast")?;
     let _ = CACHED.set(build_cache(ruby, hypercast)?);
     hypercast.define_singleton_method("bool", function!(bool_door, 1))?;

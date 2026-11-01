@@ -11,6 +11,7 @@
 [![npm](https://img.shields.io/npm/v/@skunkwerkx/hypercast.svg)](https://www.npmjs.com/package/@skunkwerkx/hypercast)
 [![CRAN](https://img.shields.io/cran/v/hypercast.svg)](https://cran.r-project.org/package=hypercast)
 [![Packagist](https://img.shields.io/packagist/v/skunkwerkx/hypercast.svg)](https://packagist.org/packages/skunkwerkx/hypercast)
+[![C/C++](https://img.shields.io/github/v/release/SkunkWerkx/HyperCast?label=c%2Fc%2B%2B&sort=semver)](https://github.com/SkunkWerkx/HyperCast/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 **Allocation-free parsers for scalars from untrusted text — booleans, characters, numerics, UUIDs, and temporals. Every parse returns a Verdict: the value, or a closed reason code with the offending span. Never throws, never allocates. Written once in Rust, called in-process from C#, Java, Go, Swift, Ruby, PHP, Python, TypeScript, R, C and C++, with a shared conformance corpus so every binding agrees byte for byte.**

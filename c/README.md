@@ -1,5 +1,9 @@
 # hypercast for C and C++
 
+[![CI](https://github.com/SkunkWerkx/HyperCast/actions/workflows/ci.yml/badge.svg)](https://github.com/SkunkWerkx/HyperCast/actions/workflows/ci.yml)
+[![C/C++](https://img.shields.io/github/v/release/SkunkWerkx/HyperCast?label=c%2Fc%2B%2B&sort=semver)](https://github.com/SkunkWerkx/HyperCast/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/SkunkWerkx/HyperCast/blob/master/LICENSE)
+
 Allocation-free casts from untrusted text to typed values: booleans, characters, integers,
 reals, exact decimals, UUIDs and temporals. Every cast returns the value or a fault, a closed
 reason (empty, malformed, out of range) with the byte span of the input that caused it. It is
