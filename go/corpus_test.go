@@ -58,8 +58,19 @@ type formatSpec struct {
 	DigitZero          string `json:"digit_zero"` // a one-character string
 }
 
+// corpus decodes corpus/<name>: from the directory HYPERCAST_CORPUS names when it is set (a
+// WASI runtime sees only what is mounted, and the wasm job mounts the checkout and points
+// here), else by walking up from the test directory to find it.
 func corpus(t *testing.T, name string) []vector {
 	t.Helper()
+	if dir := os.Getenv("HYPERCAST_CORPUS"); dir != "" {
+		path := filepath.Join(dir, name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("corpus/%s not found at %s: %v", name, path, err)
+		}
+		return decodeVectors(t, path, data)
+	}
 	dir, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -73,22 +84,30 @@ func corpus(t *testing.T, name string) []vector {
 			filepath.Join(dir, "testdata", "corpus", name),
 		} {
 			if data, err := os.ReadFile(candidate); err == nil {
-				var vectors []vector
-				if err := json.Unmarshal(data, &vectors); err != nil {
-					t.Fatalf("parsing %s: %v", candidate, err)
-				}
-				return vectors
+				return decodeVectors(t, candidate, data)
 			}
 		}
 		// The root is its own parent on every OS — "/" here, "C:\" on Windows, where a
 		// comparison against "/" never becomes true and the walk would never end.
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			t.Fatal("corpus directory not found above the test directory")
+			t.Fatalf("corpus/%s not found above the test directory", name)
 			return nil
 		}
 		dir = parent
 	}
+}
+
+func decodeVectors(t *testing.T, path string, data []byte) []vector {
+	t.Helper()
+	var vectors []vector
+	if err := json.Unmarshal(data, &vectors); err != nil {
+		t.Fatalf("parsing %s: %v", path, err)
+	}
+	if len(vectors) == 0 {
+		t.Fatalf("%s is empty", path)
+	}
+	return vectors
 }
 
 func (v *vector) format() NumFormat {
@@ -147,7 +166,7 @@ func assertVerdict[V comparable](t *testing.T, domain string, v *vector, value V
 	}
 }
 
-func TestBooleanCorpus(t *testing.T) {
+func TestCorpusBoolean(t *testing.T) {
 	for _, v := range corpus(t, "boolean.json") {
 		var expected bool
 		if v.Value != nil {
@@ -159,7 +178,7 @@ func TestBooleanCorpus(t *testing.T) {
 }
 
 // A char vector's value is the code point as an integer.
-func TestCharCorpus(t *testing.T) {
+func TestCorpusChar(t *testing.T) {
 	for _, v := range corpus(t, "char.json") {
 		var expected rune
 		if v.Value != nil {
@@ -176,7 +195,7 @@ func TestCharCorpus(t *testing.T) {
 	}
 }
 
-func TestIntegerCorpus(t *testing.T) {
+func TestCorpusInteger(t *testing.T) {
 	for _, v := range corpus(t, "integer.json") {
 		format := v.format()
 		switch v.Type {
@@ -234,7 +253,7 @@ func uintValue(t *testing.T, v *vector) uint64 {
 	return parsed
 }
 
-func TestRealCorpus(t *testing.T) {
+func TestCorpusReal(t *testing.T) {
 	for _, v := range corpus(t, "real.json") {
 		format := v.format()
 		var expected float64
@@ -258,7 +277,7 @@ func TestRealCorpus(t *testing.T) {
 	}
 }
 
-func TestDecimalCorpus(t *testing.T) {
+func TestCorpusDecimal(t *testing.T) {
 	for _, v := range corpus(t, "decimal.json") {
 		var expected Decimal
 		var text string
@@ -283,7 +302,7 @@ func TestDecimalCorpus(t *testing.T) {
 	}
 }
 
-func TestUuidCorpus(t *testing.T) {
+func TestCorpusUuid(t *testing.T) {
 	for _, v := range corpus(t, "uuid.json") {
 		var expected uuid.UUID
 		if v.Value != nil {
@@ -309,28 +328,28 @@ func expectedInstant(v *vector) time.Time {
 	return time.Unix(*v.Seconds, v.Nanos).UTC()
 }
 
-func TestTimestampCorpus(t *testing.T) {
+func TestCorpusTimestamp(t *testing.T) {
 	for _, v := range corpus(t, "timestamp.json") {
 		value, fault := Timestamp(v.Input)
 		assertVerdict(t, "timestamp", &v, value, fault, expectedInstant(&v))
 	}
 }
 
-func TestUnixCorpus(t *testing.T) {
+func TestCorpusUnix(t *testing.T) {
 	for _, v := range corpus(t, "unix.json") {
 		value, fault := Unix(v.Input, UnixPrecision(v.Precision))
 		assertVerdict(t, "unix", &v, value, fault, expectedInstant(&v))
 	}
 }
 
-func TestExcelSerialCorpus(t *testing.T) {
+func TestCorpusExcelSerial(t *testing.T) {
 	for _, v := range corpus(t, "excel_serial.json") {
 		value, fault := ExcelSerial(v.Input, ExcelEpoch(v.Epoch))
 		assertVerdict(t, "excel_serial", &v, value, fault, expectedInstant(&v))
 	}
 }
 
-func TestDateCorpus(t *testing.T) {
+func TestCorpusDate(t *testing.T) {
 	for _, v := range corpus(t, "date.json") {
 		var expected Date
 		if v.Year != nil {
@@ -343,7 +362,7 @@ func TestDateCorpus(t *testing.T) {
 
 // A vector declaring designators replays through DateTimeWith; one declaring none through
 // DateTime, and through DateTimeWith with nothing declared, which must agree with it.
-func TestDateTimeCorpus(t *testing.T) {
+func TestCorpusDateTime(t *testing.T) {
 	declared := 0
 	for _, v := range corpus(t, "datetime.json") {
 		var expected CivilDateTime
@@ -372,7 +391,7 @@ func TestDateTimeCorpus(t *testing.T) {
 	}
 }
 
-func TestDateOrderCorpus(t *testing.T) {
+func TestCorpusDateOrder(t *testing.T) {
 	for _, v := range corpus(t, "date_order.json") {
 		var expected Date
 		if v.Year != nil {
@@ -383,7 +402,7 @@ func TestDateOrderCorpus(t *testing.T) {
 	}
 }
 
-func TestTimeCorpus(t *testing.T) {
+func TestCorpusTime(t *testing.T) {
 	for _, v := range corpus(t, "time.json") {
 		var expected time.Duration
 		if v.Expect == "ok" {
@@ -394,7 +413,7 @@ func TestTimeCorpus(t *testing.T) {
 	}
 }
 
-func TestDurationCorpus(t *testing.T) {
+func TestCorpusDuration(t *testing.T) {
 	for _, v := range corpus(t, "duration.json") {
 		var expected Duration
 		if v.Seconds != nil {
@@ -410,7 +429,7 @@ func TestDurationCorpus(t *testing.T) {
 
 // The typed doors, by bits: each float64 is rebuilt exactly from its IEEE 754 pattern — NaN
 // and the infinities included, which JSON cannot spell. A typed door's Fault has no span.
-func TestTypedCorpus(t *testing.T) {
+func TestCorpusTyped(t *testing.T) {
 	doors := map[string]bool{}
 	for _, v := range corpus(t, "typed.json") {
 		bits, err := strconv.ParseUint(v.Bits, 16, 64)

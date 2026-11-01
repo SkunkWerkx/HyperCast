@@ -316,9 +316,11 @@ let format = Interop.rawFormat(.invariant)  // 92 bytes, ready for the other lib
 ## Linking and deployment
 
 There is nothing for you to do. The package declares the core as a SwiftPM binary target —
-one static library per triple, in `HyperCastCore.artifactbundle` — and SwiftPM links the one
-for your target into your executable. There is no shared library to find at run time, no
-resource bundle, and nothing to deploy beside the binary: a multi-stage Dockerfile that
+one static library per triple, in `HyperCastCore.artifactbundle.zip`, attached to the GitHub
+Release and named in the manifest by URL and checksum — and SwiftPM downloads it, checks it,
+and links the one for your target into your executable. There is no shared library to find
+at run time, no resource bundle, and nothing to deploy beside the binary: a multi-stage
+Dockerfile that
 copies only the executable works, so does a fully static build with
 `swift build --swift-sdk x86_64-swift-linux-musl`, and so does copying a macOS or Windows
 executable on its own. Each triple's archive is about 150–220 KB (the Windows `.lib`s are
@@ -331,10 +333,10 @@ probe every binding carries.
 iOS, the iOS simulator and Mac Catalyst get the same archives from a second binary target,
 `HyperCastCoreApple.xcframework`: an app for those is built by Xcode, which links a static
 library out of an XCFramework and does not read a static-library artifact bundle. The
-manifest declares it only on a Mac, where those platforms can be built at all, and only
-when the XCFramework is in the tree; both targets define the one `HyperCastCore` module the
-binding imports. CI's `test-apple-mobile` job runs the suite on an iOS simulator and as a
-Mac Catalyst process with `xcodebuild test`, and builds the package for an iOS device.
+manifest declares it only on a Mac, where those platforms can be built at all, and both
+targets define the one `HyperCastCore` module the binding imports. CI's `test-apple-mobile`
+job runs the suite on an iOS simulator and as a Mac Catalyst process with `xcodebuild test`,
+and builds the package for an iOS device.
 
 Android uses the same artifact bundle: it carries the core for `aarch64-unknown-linux-android`
 and `x86_64-unknown-linux-android`, and a package built with the
@@ -348,11 +350,14 @@ whose image uses 16 KB pages, through `.github/scripts/android_build_suite.sh` a
 build is linked. The Swift runtime on Android is shared libraries, which an app packages
 the way the SDK's documentation describes; the core adds nothing to them.
 
-In a checkout of this repository, `HYPERCAST_LOCAL_CORE=1 swift test` run from `swift/` links
-the bundle `.github/scripts/local-core.sh` builds from the checkout's core in place of the
-committed one. The root `Package.swift`, the one a dependency resolves, has no such switch.
-Without it, outside CI, the suite's `CoreFreshnessTests` fails when the checkout's `rust/`
-differs from the commit the committed bundle was built from.
+In a checkout of this repository the core is build output, never committed:
+`.github/scripts/local-core.sh` clears every binding's staged build artifact
+(`.github/scripts/local-clean.sh`), builds the host's archive from the checkout's `rust/` into
+`swift/HyperCastCore.artifactbundle/` (gitignored but for its `include/`), and then `swift test`
+from `swift/` links it. CI writes each leg's archives there the same way. Without one the
+package still resolves, and a build stops at `import HyperCastCore`. The root `Package.swift`
+links that local bundle when it is there too, so CI's smoke tests build through the consumer's
+manifest against the core the run built; a dependency's checkout never has one.
 
 On Swift 6.3 with `--build-system swiftbuild` (opt-in there), a package that depends on
 this one fails with `missing required module 'HyperCastCore'`: that release's Swift Build
@@ -407,25 +412,26 @@ supports has the core natively. The root README's
 
 ## Verifying provenance
 
-Like PHP, there is no separate package registry to attest here: SwiftPM resolves a git tag
-directly against this repo, and what it fetches is the tree at that tag, the static libraries
-under `swift/HyperCastCore.artifactbundle/` and `swift/HyperCastCoreApple.xcframework/`
-included. Each verifies from the release tag alone: the release attestation, signed by this
-repository's `release.yml` at the tag, names every one of them, with the release inventory as
-its predicate.
+There is no separate package registry to attest here: SwiftPM resolves a git tag directly
+against this repo, and downloads the two zips the tag's `Package.swift` names from that
+release's assets, refusing either if its SHA-256 differs from the checksum written there. Each
+zip verifies from the release tag alone: the release attestation, signed by this repository's
+`release.yml` at the tag, names both, with the release inventory as its predicate.
 
 ```sh
-gh attestation verify swift/HyperCastCore.artifactbundle/arm64-apple-macosx/libhypercast.a \
+gh release download v<version> --repo SkunkWerkx/HyperCast --pattern 'HyperCastCore*.zip'
+gh attestation verify HyperCastCore.artifactbundle.zip \
   --repo SkunkWerkx/HyperCast --source-ref refs/tags/v<version> --predicate-type https://github.com/SkunkWerkx/.github/predicates/release/v1
 ```
 
-Each archive also carries build provenance from `hyper-build-static.yml` in
-`SkunkWerkx/.github`, at the preparation commit the tagged commit was staged from
-(`stage-native-binaries.yml` verifies that before committing a byte), so that check needs
+Each zip also carries build provenance from `hyper-build-static.yml` in `SkunkWerkx/.github`,
+at the preparation commit the tagged commit was staged from (the preparation run's
+`stage-release` job verifies that before it writes a checksum into `Package.swift`, and the tag
+run again before it signs the release attestation), so that check needs
 `--signer-repo` beside `--repo`:
 
 ```sh
-gh attestation verify swift/HyperCastCore.artifactbundle/x86_64-unknown-linux-gnu/libhypercast.a \
+gh attestation verify HyperCastCoreApple.xcframework.zip \
   --repo SkunkWerkx/HyperCast --signer-repo SkunkWerkx/.github
 ```
 
@@ -465,12 +471,11 @@ SwiftPM has no separate registry to publish to — `.package(url:from:)` resolve
 a git tag, which *is* the complete publish story here rather than a placeholder for one. It
 requires `Package.swift` at the repository root with no monorepo-subdirectory support, which
 is why [the root's own `Package.swift`](../Package.swift) exists, with its targets pointed at
-the real sources under `swift/` via `path:`. The native binaries — the static libraries
-under `HyperCastCore.artifactbundle/{triple}/` (`hypercast.lib` for the two Windows triples,
-`libhypercast.a` for the rest) and the iOS and Mac Catalyst slices of
-`HyperCastCoreApple.xcframework/` — are committed straight to git for the same reason as the
-tag itself: SwiftPM has no packing step, so the tree at the resolved tag is what a
-consumer's build links.
+the real sources under `swift/` via `path:`. The native binaries are not in git: the manifest
+names two zips on the GitHub Release by URL and checksum, the static-library artifact bundle
+(`hypercast.lib` for the two Windows triples, `libhypercast.a` for the rest) and, on a Mac, the
+XCFramework with the iOS and Mac Catalyst slices, and SwiftPM downloads the ones the resolved
+tag names.
 
 See [the repo root README](../README.md) for the full door table, the receipts, and the
 state of every other language binding.

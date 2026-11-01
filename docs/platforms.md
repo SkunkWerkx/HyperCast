@@ -1,0 +1,143 @@
+# Platforms
+
+The platform table, the exceptions to it and the runtime floors are in the main README's
+[Platform support](../README.md#platform-support). This page has the rest.
+
+## Linking the core in
+
+Two bindings link the core into the consumer's executable where they can, instead of loading a
+shared library at run time, and a third carries it as source. Swift always does, on every
+platform in the table, so there is nothing to deploy beside the executable: its musl cells are
+Swift's static Linux SDK, which CI proves with a smoke executable built and run in Swift's own
+containers (that SDK ships no XCTest), and the same mechanism compiles the binding to
+WebAssembly; see [WebAssembly](#webassembly). A platform with no prebuilt core fails to compile.
+Go links nothing and loads nothing: its core is Go source, the crate's `wasm32-wasip1` build
+translated by [wasm2go](https://github.com/ncruces/wasm2go) and committed as
+`go/internal/core/core.go`, so a Go binary carries the core the way it carries any package, on
+every GOOS and GOARCH Go has, with `CGO_ENABLED=0` and no C compiler; the same source builds for
+the browser and WASI under stock Go and TinyGo, see [WebAssembly](#webassembly). C# does for a
+Native AOT publish, on every RID, so the result is one executable. Python, Ruby's Magnus backend,
+PHP, TypeScript and R carry the core inside their own native module (the PyO3, Magnus and
+ext-php-rs extensions, the `.node` addon and the R package's compiled library), so none of them
+loads a separate core library either. The rest — C# under the JIT, Java (its JNI library on
+JDK 21–24, `libhypercast` through FFM on 25+) and Ruby's Fiddle fallback — load a shared
+library. C and C++ take either from the archive: the shared library or the static one.
+
+## iOS, Mac Catalyst and Android
+
+**iOS and Mac Catalyst** load no libraries at all, so C# and Swift link the core into the app
+there, from static libraries cross-compiled in the same job as the rest: C# for `ios-arm64`,
+`iossimulator-arm64`, `maccatalyst-arm64` and `maccatalyst-x64`, where a .NET 11 iOS, MAUI or
+Mac Catalyst app (`net11.0-ios`, `net11.0-maccatalyst`) needs nothing but the package reference
+(a .NET 10 project for either stops at build with `HYPERCAST003`); Swift for the three arm64
+ones, as an XCFramework, from iOS 16 and Mac Catalyst 16 (the same `Duration` floor as
+macOS 13). The C archives carry the same four static libraries for a C or C++ app. Go needs
+none: its core is Go source, so `GOOS=ios` builds it as it builds any package, and what an iOS
+executable needs is Xcode's linker, because Go's `ios/arm64` port links externally, which is
+Go's rule and nothing of this binding's. CI's `test-apple-mobile` job, on the release-mode
+board, builds them on a Mac from that run's archives: C# and Swift run in an iOS simulator and
+as a Mac Catalyst process and each links an iOS device build; Go's suite runs in the simulator
+and builds for a device; the C smoke consumer is linked for a device, run in the simulator and
+run as Mac Catalyst on both architectures. See
+[`csharp/README.md`](../csharp/README.md#platform-support),
+[`swift/README.md`](../swift/README.md#linking-and-deployment),
+[`go/README.md`](../go/README.md#ios-and-mac-catalyst) and [`c/README.md`](../c/README.md#install).
+
+**Android**, arm64 and x86_64, is reached by the same three bindings, so that a .NET MAUI app
+has the core on every platform MAUI targets and a Go or Swift Android build has it as on any
+other platform. C# carries a shared library cross-built with the NDK at API level 21, its
+segments aligned to the 16 KB pages Android 15 devices may use and Google Play requires: an app
+on CoreCLR, .NET 11's Android runtime, loads it out of the APK like any Linux library, and a
+Native AOT publish links it in from a static archive like every other RID. Go builds for
+`GOOS=android` with no NDK: `android/arm64` links internally, and `android/amd64`, which Go
+itself links externally, takes a C linker for that reason alone and nothing of the core's. Swift
+links its archives from its artifact bundle with the
+[Swift SDK for Android](https://www.swift.org/documentation/articles/swift-sdk-for-android-getting-started.html)
+(Swift 6.3+, API 28+). The C archives for android-arm64 and android-x64 carry the same
+libraries. CI's `test-android` job builds the C# app both ways for both RIDs from a package packed
+in that run, cross-builds the Go and Swift suites, runs everything x86_64 in an emulator whose
+image uses 16 KB pages, and links or inspects the arm64 builds. Java, Python, Ruby and PHP do not
+reach Android. See [`csharp/README.md`](../csharp/README.md#platform-support),
+[`go/README.md`](../go/README.md#android) and
+[`swift/README.md`](../swift/README.md#linking-and-deployment).
+
+## Publishing
+
+**Published:** every binding. C#/Java/Ruby/PHP/Python/Rust/TypeScript all go through a real
+package registry (NuGet, Maven Central, RubyGems, Packagist for PIE, PyPI, crates.io, npm), and R
+goes to CRAN as a source package, its tarball attested and preserved by the release like every
+other package and submitted to CRAN by hand from those bytes; Go and Swift have no registry to
+publish to in the first place — both resolve dependencies straight from a git tag (`go get`,
+`.package(url:, from:)`), which *is* their real, complete publish story, not a placeholder for
+one; Swift's tag names its core as two zips on the GitHub Release, by URL and checksum. The JVM
+binding is plain Java, not Kotlin — `kotlin-stdlib` would otherwise be a real transitive
+dependency for every consumer, unlike every other binding here — and its AOT story is proven
+the same way C#'s is: a GraalVM Native Image smoke test (`java/aot-smoke-test/`) produces a
+genuine standalone native binary, no JVM required to run it. PHP's `composer.json` lives at
+[the repo root](../composer.json) rather than `php/` — Packagist requires the manifest at the top
+of the git repository it watches, with no monorepo subdirectory support; Swift's root
+[`Package.swift`](../Package.swift) exists for the identical reason. Ruby ships as real
+precompiled RubyGems "platform gems" (the Magnus native extension, auto-selected on seven RIDs —
+`x86_64-linux-gnu`, `aarch64-linux-gnu`, `x86_64-linux-musl`, `aarch64-linux-musl`,
+`arm64-darwin`, `x64-mingw-ucrt` and `aarch64-mingw-ucrt` — each gem fat across Ruby 3.4 and 4.0
+since a Magnus extension is tied to one Ruby minor, and carrying no Fiddle library) with an
+automatic fallback to a universal, zero-compile pure-Fiddle gem for everything outside that grid
+— Ruby 3.3, a Ruby newer than the release, Intel macOS, and any other platform. A third kind, the
+`hypercast-wasm` gem, carries the same extension prebuilt for ruby.wasm, where `rbwasm build`
+links it into the interpreter ([Ruby in the browser](../ruby/README.md#ruby-in-the-browser)).
+Python ships 17 wheels (`cp311-abi3` and `cp315-abi3.abi3t` on each of eight platforms, and one
+for Pyodide) and the sdist, which pip builds where no wheel fits. Go commits no binary: its core
+is a generated Go source file in the tree, regenerated and diffed in CI, which is what a plain
+`go get` consumer's tool reads. PHP's binaries are not in git: the binding is a Zend extension,
+and PIE reads the package from Packagist, then downloads the prebuilt zip for the platform and
+PHP minor from the GitHub Release, 18 a release, NTS only
+([`php/README.md`](../php/README.md#install)). Swift's are not either: SwiftPM downloads a
+binary target from a URL and checks it against the checksum in the manifest. TypeScript ships
+ten npm packages: eight platform packages, `@skunkwerkx/hypercast-<platform>`, one addon each,
+the WebAssembly fallback `@skunkwerkx/hypercast-wasm32-wasip1`, and the root
+`@skunkwerkx/hypercast`, which names the eight in `optionalDependencies` so npm installs the one
+that fits and nothing compiles, and depends on the fallback outright, so an install that got no
+addon still has a core. C and C++, and through them any language with a C FFI, get one archive
+per platform on the GitHub Release, fifteen in all: the generated C header, the C++17 header
+over it, the shared and static libraries, and the files CMake's `find_package` (or
+`FetchContent`) and pkg-config read ([C](../c/README.md)).
+
+## WebAssembly
+
+WebAssembly meets a binding in one of two directions, and they share nothing mechanically:
+
+- **The core runs as wasm inside the binding.** The process stays native, and a wasm engine
+  the ecosystem already has runs the core as a `wasm32-wasip1` module in-process. One binding
+  ships this today, TypeScript's fallback package; the column says, per binding, why or why not.
+- **The binding is compiled to wasm.** The whole consumer app becomes a wasm module
+  (Blazor, a `wasm32` Rust crate, Python under Pyodide) and the Rust core has to be linked
+  into that build by the ecosystem's own toolchain.
+
+Where each of the eleven stands, today:
+
+| Binding | Core as wasm inside the binding | Binding compiled to wasm |
+| --- | --- | --- |
+| Rust | Not applicable: the crate *is* the core. | **Yes.** The full suite passes under [wasmtime](https://wasmtime.dev/) on `wasm32-wasip1`, run by CI's `core-checks` job whenever the core changes; no clock, no entropy, nothing to stub. On `wasm32-unknown-unknown` the crate needs nothing from a consumer, and `rust/browser-test` runs it in headless Chrome. Its `wasm32-wasip1` static archive is what the Swift WebAssembly build links, and its module is what wasm2go translates into the Go binding's core. See [`rust/README.md`](../rust/README.md#webassembly). |
+| C# | Not built. | **Yes, on .NET 10+.** `dotnet add package HyperCast` into a Blazor WebAssembly project links the staticlib, which the SDK's generated pinvoke table resolves by symbol for all 26 doors, through the shipped `.targets`; it needs the `wasm-tools` workload (`wasm-tools-net10` for a `net10.0` app on the .NET 11 SDK), and the build stops with `HYPERCAST002` without it. The archive is built for plain wasm, with no exception-handling instructions and none of the features .NET 10's toolchain rejects, so both frameworks link it as it is, Release or Debug. Proven in headless Chromium by `csharp/HyperCast.WasmSmokeTest`, which calls all 27 native entry points; see [`csharp/README.md`](../csharp/README.md#webassembly-blazor). |
+| Java | Not built. The jar reaches the core through JNI on 21–24 and FFM downcalls on 25+, into the native libraries it bundles for the platform, and a JVM on a platform without one has no core. | Blocked. No Java-to-wasm compiler has FFM or loads a JNI library, the two mechanisms this binding is built on: GraalVM's Web Image (`--tool:svm-wasm`) is labeled experimental and lists neither, and neither TeaVM nor CheerpJ has it. Loading the core as a module of its own and calling it through Web Image's JavaScript interop would work, but that is a second binding with its own glue, not this one; revisit when Web Image is mature and can call or link native code. |
+| Ruby | Not built. The `wasmtime` gem ships precompiled only for platforms the universal gem already carries a native library for; anywhere else it compiles from source with a Rust toolchain, so a wasm backend would reach nothing the Fiddle backend does not. | **Yes, through `rbwasm build`.** ruby.wasm links extensions into the interpreter when it is built, so a browser app lists `hypercast-wasm` instead of `hypercast` in the Gemfile it hands `rbwasm build` (ruby_wasm 2.10+, Ruby 3.4 or 4.0). That gem carries the same Magnus extension prebuilt for `wasm32-wasip1`, one archive per Ruby minor, so the consumer needs no Rust toolchain, and it shares an interpreter with HyperUuid's `hyperuuid-wasm`. CI links it into both minors' interpreters and runs a smoke test under Node and in headless Chrome, in the weekly and release builds; see [`ruby/README.md`](../ruby/README.md#ruby-in-the-browser). |
+| Python | Not built. Platform wheels are published, each carrying the PyO3 extension, and a source distribution for platforms without one, so there is no install a wasm backend could fill in for. | **Yes, on [Pyodide](https://pyodide.org/) 314.x.** `await micropip.install("hypercast")` in the browser: the PyO3 extension built for Pyodide's Emscripten target ships to PyPI as a seventeenth wheel (`cp311-abi3-pyemscripten_2026_0_wasm32`, ~150 KB), the same native backend with no JavaScript bridge. CI runs the binding's whole pytest suite inside Pyodide, under Node and in headless Chrome. Each Pyodide ABI year needs its own wheel; see [`python/README.md`](../python/README.md#in-the-browser-pyodide). |
+| Go | The other way round: the binding *is* the core's `wasm32-wasip1` module, translated to Go source by wasm2go and compiled by the Go compiler on every platform, so there is no engine and nothing to load. | **Yes, under stock Go and [TinyGo](https://tinygo.org) alike.** The translated core is plain Go, so `GOOS=js` and `GOOS=wasip1` build under stock Go and `tinygo build -target=wasm` (or `wasip1`) under TinyGo, with no archive and no `cgo`; the core imports nothing, so the page loads one module. The binding, its dependencies and the core add about 191 KB to a TinyGo `-opt=z -no-debug` browser build and 953 KB to a stock Go `js/wasm` one (2026-11-01). CI runs the whole Go suite under TinyGo on wasip1 under wasmtime, under stock Go on `js/wasm` under Node and on `wasip1/wasm` under wasmtime, and a TinyGo smoke program covering every ABI shape in headless Chrome. No WebAssembly timings are published yet; see [`go/README.md`](../go/README.md#webassembly). |
+| Swift | Not built. No wasm engine ships as a Swift package with a stable API, so there is nothing to embed. | **Yes, on Swift 6.2+.** `swift build --swift-sdk` with swift.org's WebAssembly SDK links the core in as a static library (a SwiftPM binary target with a `wasm32-unknown-wasip1` archive), so there is nothing to load. The result is a plain `wasm32-wasip1` command module, so it also runs in the browser through a WASI shim such as [`@bjorn3/browser_wasi_shim`](https://github.com/bjorn3/browser_wasi_shim). CI runs the binding's suite under WasmKit on Swift 6.4, a smoke executable on 6.2, and the same smoke executable in headless Chrome; see [`swift/README.md`](../swift/README.md#webassembly). |
+| PHP | Not built. There is no maintained wasm engine PHP can embed. | Not shipped, and unproven for the extension's classes, which import PHP symbols a side module must resolve from the main module. A raw build of the same crate, flat functions in place of the classes, loads as a side module into WordPress Playground's prebuilt `@php-wasm` runtime (PHP 8.5, JSPI) and runs in node and headless Chromium (October 2026). Shipping it means a module per PHP minor and a ~4 GB build image in CI, so it waits on demand. [php/README.md](../php/README.md#webassembly-not-shipped-and-unproven-for-these-classes) has the full recipe and the two upstream issues it found ([ext-php-rs#800](https://github.com/extphprs/ext-php-rs/issues/800), [wordpress-playground#4377](https://github.com/WordPress/wordpress-playground/issues/4377)). |
+| TypeScript | **Yes.** The tenth npm package, `@skunkwerkx/hypercast-wasm32-wasip1`, is the core built for `wasm32-wasip1` by napi-rs and run in-process through Node's `node:wasi` by `@napi-rs/wasm-runtime`. The root package depends on it outright and loads it where no platform package fits (`--omit=optional`, or a platform outside the eight), so the same API and the same suite run there, and a panic aborts rather than being caught. CI runs the whole suite under the forced fallback (`NAPI_RS_FORCE_WASI=error`), and the consumer smoke runs from the packed tarballs on Alpine at the exact Node floor, 22.13.0. Big-endian hosts (s390x under QEMU) are a printed loss: the smoke's checks pass, but the runtime reads its reference counts host-endian over little-endian wasm memory, so the process never exits on its own. Bun 1.4.4 cannot initialise it (its `node:wasi` has no reactor `initialize`), so Bun stays on the native addon. See [typescript/README.md](../typescript/README.md#when-no-native-addon-fits). | **Yes, in Chromium.** The same package's `browser` entry fetches the module and exports the doors; `typescript/browser-smoke/` replays the whole corpus through it in headless Chrome, from a Vite build served without cross-origin isolation. Firefox and Safari are not tested. |
+| R | Not built. A source install compiles the core for its own platform, so there is no platform for a wasm backend to fill in for. | Not attempted. [webR](https://docs.r-wasm.org/webr/latest/) builds R packages with Emscripten, which could link the core's static library the way Pyodide links the Python extension. |
+| C, C++ | Not applicable: the archive is the core. | **Yes, for wasi-sdk.** The `wasi-wasm32` archive on the GitHub Release carries the core's `wasm32-wasip1` static library with the C and C++ headers, static only, the same library the Swift WebAssembly build links and tests. CI packs it and checks its layout but runs nothing against it; see [`c/README.md`](../c/README.md#install). |
+
+The two directions are blocked, where they are blocked, for different reasons. Compiling a
+binding to wasm needs the ecosystem's toolchain to link a Rust static library into its own
+wasm build. .NET has a supported mechanism for exactly that (`NativeFileReference`, which this
+package's `.targets` injects for you), so does Swift from 6.2 (a SwiftPM binary
+static-library target), and so does Pyodide,
+which loads a CPython extension module built as an Emscripten side module just as CPython
+loads a native one, and so does ruby.wasm, whose `rbwasm build` links each gem's extension
+into the interpreter it makes. WordPress Playground's PHP does too — it loads a Zend
+extension built as an Emscripten side module — which is proven for a raw build of the crate but
+not shipped (see its row). Go needs none: its core is Go source, which stock Go and TinyGo
+compile alike. Java's gap is different in kind: the loading mechanism is not the problem, the
+compilers that exist have no FFM and load no JNI library.

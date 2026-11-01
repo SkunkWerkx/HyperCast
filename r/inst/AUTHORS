@@ -1,0 +1,1 @@
+No third-party Rust crates are vendored: src/rust/vendor.tar.xz carries only the hypercast core, this project's own work (Skunk Werkx, MIT).

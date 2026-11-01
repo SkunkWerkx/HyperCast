@@ -17,7 +17,7 @@
 //! `cast_excel_time`, `cast_excel_duration`) take a `double` instead of text and keep the
 //! same contract; there is no text for a span to index, so a fault's span is always empty.
 
-use crate::abi::{RawDayPeriods, RawNumFormat};
+use crate::abi::{self, RawDayPeriods, RawNumFormat};
 use crate::temporal::DayPeriods;
 use crate::verdict::{CivilDateTime, Date, Decimal, Duration, Fault, NumFormat, Timestamp};
 use crate::{
@@ -32,7 +32,9 @@ const CONTRACT_VIOLATION: i32 = -1;
 /// The fault span as it crosses the ABI — the reason travels as the return code.
 #[repr(C)]
 pub struct RawFault {
+    /// Where the offending bytes start, as an offset into the caller's input.
     pub offset: u32,
+    /// How many bytes they run; 0 for a typed door, which has no text to index.
     pub len: u32,
 }
 
@@ -144,7 +146,17 @@ fn spanless<T>(verdict: Result<T, Reason>) -> Result<T, Fault> {
     verdict.map_err(|reason| Fault { reason, offset: 0, len: 0 })
 }
 
-/// Casts boolean text at `ptr`/`len` into `out` (0 or 1). See [`boolean::cast_bool`].
+/// This library's version, packed `major << 16 | minor << 8 | patch` from the crate's own
+/// manifest — so a host can prove the library it loaded is the one its binding was built
+/// against before making the first cast, and can name the mismatch when it isn't. Takes
+/// nothing, touches nothing: the cheapest possible "did the native library resolve" probe.
+#[unsafe(no_mangle)]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub extern "C" fn hypercast_version() -> u32 {
+    abi::hypercast_version()
+}
+
+/// Casts boolean text at `ptr`/`len` into `out`: 1 for true, 0 for false.
 #[unsafe(no_mangle)]
 #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 pub extern "C" fn cast_bool(ptr: *const u8, len: usize, out: *mut u8, fault: *mut RawFault) -> i32 {
@@ -153,7 +165,7 @@ pub extern "C" fn cast_bool(ptr: *const u8, len: usize, out: *mut u8, fault: *mu
 }
 
 /// Casts char text at `ptr`/`len` into `out` as a Unicode scalar value (never a surrogate,
-/// never past U+10FFFF). See [`character::cast_char`].
+/// never past U+10FFFF).
 #[unsafe(no_mangle)]
 #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 pub extern "C" fn cast_char(
@@ -166,61 +178,201 @@ pub extern "C" fn cast_char(
     unsafe { finish(character::cast_char(text(ptr, len)).map(u32::from), out, fault) }
 }
 
-macro_rules! numeric_exports {
-    ($($(#[$attr:meta])* $export:ident => ($module:ident, $ty:ty)),+ $(,)?) => {$(
-        /// Casts numeric text at `ptr`/`len` under the declared `format` (null ⇒ invariant)
-        /// into `out`. See the same-named door in the core module.
-        #[unsafe(no_mangle)]
-        $(#[$attr])*
-        pub extern "C" fn $export(
-            ptr: *const u8,
-            len: usize,
-            format: *const RawNumFormat,
-            out: *mut $ty,
-            fault: *mut RawFault,
-        ) -> i32 {
-            // SAFETY: caller guarantees the pointer contracts, per the module doc.
-            unsafe {
-                let mut scratch = MaybeUninit::uninit();
-                let Some(resolved) = resolve_format(format, &mut scratch) else {
-                    return CONTRACT_VIOLATION;
-                };
-                finish($module::$export(text(ptr, len), resolved), out, fault)
-            }
-        }
-    )+};
-}
-
 // Every numeric door is certified, the two real ones included: their conversion is this
 // crate's own (float.rs), because `core`'s float parser keeps slice-index checks the
 // optimizer cannot discharge.
-numeric_exports! {
-    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
-    cast_i8 => (integer, i8),
-    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
-    cast_i16 => (integer, i16),
-    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
-    cast_i32 => (integer, i32),
-    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
-    cast_i64 => (integer, i64),
-    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
-    cast_u8 => (integer, u8),
-    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
-    cast_u16 => (integer, u16),
-    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
-    cast_u32 => (integer, u32),
-    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
-    cast_u64 => (integer, u64),
-    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
-    cast_f32 => (real, f32),
-    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
-    cast_f64 => (real, f64),
-    #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
-    cast_decimal => (decimal, Decimal),
+
+/// The numeric doors' one body: resolves `format`, then hands the text and the resolved
+/// format to `door`.
+///
+/// # Safety
+/// The export's own contract, per the module doc.
+#[inline(always)]
+unsafe fn numeric<'caller, T>(
+    door: impl FnOnce(&'caller [u8], &NumFormat) -> Result<T, Fault>,
+    ptr: *const u8,
+    len: usize,
+    format: *const RawNumFormat,
+    out: *mut T,
+    fault: *mut RawFault,
+) -> i32 {
+    let mut scratch = MaybeUninit::uninit();
+    // SAFETY: per the function contract.
+    unsafe {
+        let Some(resolved) = resolve_format(format, &mut scratch) else {
+            return CONTRACT_VIOLATION;
+        };
+        finish(door(text(ptr, len), resolved), out, fault)
+    }
+}
+
+/// Casts integer text at `ptr`/`len` under the declared `format` into `out`; a value
+/// outside `int8_t` is out of range.
+#[unsafe(no_mangle)]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub extern "C" fn cast_i8(
+    ptr: *const u8,
+    len: usize,
+    format: *const RawNumFormat,
+    out: *mut i8,
+    fault: *mut RawFault,
+) -> i32 {
+    // SAFETY: caller guarantees the pointer contracts, per the module doc.
+    unsafe { numeric(integer::cast_i8, ptr, len, format, out, fault) }
+}
+
+/// Casts integer text at `ptr`/`len` under the declared `format` into `out`; a value
+/// outside `int16_t` is out of range.
+#[unsafe(no_mangle)]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub extern "C" fn cast_i16(
+    ptr: *const u8,
+    len: usize,
+    format: *const RawNumFormat,
+    out: *mut i16,
+    fault: *mut RawFault,
+) -> i32 {
+    // SAFETY: caller guarantees the pointer contracts, per the module doc.
+    unsafe { numeric(integer::cast_i16, ptr, len, format, out, fault) }
+}
+
+/// Casts integer text at `ptr`/`len` under the declared `format` into `out`; a value
+/// outside `int32_t` is out of range.
+#[unsafe(no_mangle)]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub extern "C" fn cast_i32(
+    ptr: *const u8,
+    len: usize,
+    format: *const RawNumFormat,
+    out: *mut i32,
+    fault: *mut RawFault,
+) -> i32 {
+    // SAFETY: caller guarantees the pointer contracts, per the module doc.
+    unsafe { numeric(integer::cast_i32, ptr, len, format, out, fault) }
+}
+
+/// Casts integer text at `ptr`/`len` under the declared `format` into `out`; a value
+/// outside `int64_t` is out of range.
+#[unsafe(no_mangle)]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub extern "C" fn cast_i64(
+    ptr: *const u8,
+    len: usize,
+    format: *const RawNumFormat,
+    out: *mut i64,
+    fault: *mut RawFault,
+) -> i32 {
+    // SAFETY: caller guarantees the pointer contracts, per the module doc.
+    unsafe { numeric(integer::cast_i64, ptr, len, format, out, fault) }
+}
+
+/// Casts integer text at `ptr`/`len` under the declared `format` into `out`; a value
+/// outside `uint8_t` is out of range.
+#[unsafe(no_mangle)]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub extern "C" fn cast_u8(
+    ptr: *const u8,
+    len: usize,
+    format: *const RawNumFormat,
+    out: *mut u8,
+    fault: *mut RawFault,
+) -> i32 {
+    // SAFETY: caller guarantees the pointer contracts, per the module doc.
+    unsafe { numeric(integer::cast_u8, ptr, len, format, out, fault) }
+}
+
+/// Casts integer text at `ptr`/`len` under the declared `format` into `out`; a value
+/// outside `uint16_t` is out of range.
+#[unsafe(no_mangle)]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub extern "C" fn cast_u16(
+    ptr: *const u8,
+    len: usize,
+    format: *const RawNumFormat,
+    out: *mut u16,
+    fault: *mut RawFault,
+) -> i32 {
+    // SAFETY: caller guarantees the pointer contracts, per the module doc.
+    unsafe { numeric(integer::cast_u16, ptr, len, format, out, fault) }
+}
+
+/// Casts integer text at `ptr`/`len` under the declared `format` into `out`; a value
+/// outside `uint32_t` is out of range.
+#[unsafe(no_mangle)]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub extern "C" fn cast_u32(
+    ptr: *const u8,
+    len: usize,
+    format: *const RawNumFormat,
+    out: *mut u32,
+    fault: *mut RawFault,
+) -> i32 {
+    // SAFETY: caller guarantees the pointer contracts, per the module doc.
+    unsafe { numeric(integer::cast_u32, ptr, len, format, out, fault) }
+}
+
+/// Casts integer text at `ptr`/`len` under the declared `format` into `out`; a value
+/// outside `uint64_t` is out of range.
+#[unsafe(no_mangle)]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub extern "C" fn cast_u64(
+    ptr: *const u8,
+    len: usize,
+    format: *const RawNumFormat,
+    out: *mut u64,
+    fault: *mut RawFault,
+) -> i32 {
+    // SAFETY: caller guarantees the pointer contracts, per the module doc.
+    unsafe { numeric(integer::cast_u64, ptr, len, format, out, fault) }
+}
+
+/// Casts real text at `ptr`/`len` under the declared `format` into `out`; a magnitude
+/// beyond `float`'s finite range is out of range.
+#[unsafe(no_mangle)]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub extern "C" fn cast_f32(
+    ptr: *const u8,
+    len: usize,
+    format: *const RawNumFormat,
+    out: *mut f32,
+    fault: *mut RawFault,
+) -> i32 {
+    // SAFETY: caller guarantees the pointer contracts, per the module doc.
+    unsafe { numeric(real::cast_f32, ptr, len, format, out, fault) }
+}
+
+/// Casts real text at `ptr`/`len` under the declared `format` into `out`; a magnitude
+/// beyond `double`'s finite range is out of range.
+#[unsafe(no_mangle)]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub extern "C" fn cast_f64(
+    ptr: *const u8,
+    len: usize,
+    format: *const RawNumFormat,
+    out: *mut f64,
+    fault: *mut RawFault,
+) -> i32 {
+    // SAFETY: caller guarantees the pointer contracts, per the module doc.
+    unsafe { numeric(real::cast_f64, ptr, len, format, out, fault) }
+}
+
+/// Casts decimal text at `ptr`/`len` under the declared `format` into `out`, exact and
+/// canonical; a magnitude past 96 bits, or more fractional precision than 28 places hold
+/// once exact trailing zeros are trimmed, is out of range. Never rounds.
+#[unsafe(no_mangle)]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub extern "C" fn cast_decimal(
+    ptr: *const u8,
+    len: usize,
+    format: *const RawNumFormat,
+    out: *mut Decimal,
+    fault: *mut RawFault,
+) -> i32 {
+    // SAFETY: caller guarantees the pointer contracts, per the module doc.
+    unsafe { numeric(decimal::cast_decimal, ptr, len, format, out, fault) }
 }
 
 /// Casts UUID text at `ptr`/`len` into the 16 bytes at `out`, RFC 9562 order.
-/// See [`uuid::cast_uuid`].
 #[unsafe(no_mangle)]
 #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 pub extern "C" fn cast_uuid(ptr: *const u8, len: usize, out: *mut u8, fault: *mut RawFault) -> i32 {
@@ -228,7 +380,7 @@ pub extern "C" fn cast_uuid(ptr: *const u8, len: usize, out: *mut u8, fault: *mu
     unsafe { finish(uuid::cast_uuid(text(ptr, len)), out.cast::<[u8; 16]>(), fault) }
 }
 
-/// Casts an RFC 3339 instant at `ptr`/`len` into `out`. See [`temporal::cast_timestamp`].
+/// Casts an RFC 3339 instant at `ptr`/`len` into `out`.
 #[unsafe(no_mangle)]
 #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 pub extern "C" fn cast_timestamp(
@@ -243,7 +395,7 @@ pub extern "C" fn cast_timestamp(
 
 /// Casts an integer Unix-epoch value at `ptr`/`len` under the declared `precision`
 /// (1 seconds, 2 milliseconds, 3 microseconds, 4 nanoseconds — anything else is a contract
-/// violation) into `out`. See [`temporal::cast_unix`].
+/// violation) into `out`.
 #[unsafe(no_mangle)]
 #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 pub extern "C" fn cast_unix(
@@ -261,8 +413,7 @@ pub extern "C" fn cast_unix(
 }
 
 /// Casts an Excel date serial at `ptr`/`len` under the declared `epoch` (1 the 1900 system,
-/// 2 the 1904 system — anything else is a contract violation) into `out`. See
-/// [`temporal::cast_excel_serial`].
+/// 2 the 1904 system — anything else is a contract violation) into `out`.
 #[unsafe(no_mangle)]
 #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 pub extern "C" fn cast_excel_serial(
@@ -281,7 +432,7 @@ pub extern "C" fn cast_excel_serial(
 
 /// Casts a separated calendar date at `ptr`/`len` under the caller-declared field `order`
 /// (1 year-month-day, 2 month-day-year, 3 day-month-year — anything else is a contract
-/// violation) into `out`. See [`temporal::cast_date_ordered`].
+/// violation) into `out`.
 #[unsafe(no_mangle)]
 #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 pub extern "C" fn cast_date_ordered(
@@ -301,8 +452,7 @@ pub extern "C" fn cast_date_ordered(
 /// Casts a zone-less civil date-time at `ptr`/`len` under the caller-declared field
 /// `order` (1 year-month-day, 2 month-day-year, 3 day-month-year — anything else is a
 /// contract violation) and the declared day-period designators at `periods` (null ⇒ the
-/// English `AM`/`PM` only; an invalid designator is a contract violation) into `out`. See
-/// [`temporal::cast_datetime_with`].
+/// English `AM`/`PM` only; an invalid designator is a contract violation) into `out`.
 #[unsafe(no_mangle)]
 #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 pub extern "C" fn cast_datetime(
@@ -326,7 +476,7 @@ pub extern "C" fn cast_datetime(
     }
 }
 
-/// Casts a strict `yyyy-MM-dd` date at `ptr`/`len` into `out`. See [`temporal::cast_date`].
+/// Casts a strict `yyyy-MM-dd` date at `ptr`/`len` into `out`.
 #[unsafe(no_mangle)]
 #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 pub extern "C" fn cast_date(
@@ -340,7 +490,7 @@ pub extern "C" fn cast_date(
 }
 
 /// Casts an ISO 24-hour time-of-day at `ptr`/`len` into `out` as nanoseconds since
-/// midnight. See [`temporal::cast_time`].
+/// midnight.
 #[unsafe(no_mangle)]
 #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 pub extern "C" fn cast_time(
@@ -354,7 +504,7 @@ pub extern "C" fn cast_time(
 }
 
 /// Casts a duration at `ptr`/`len` (ISO 8601, invariant colon form, or protobuf JSON
-/// seconds) into `out`. See [`temporal::cast_duration`].
+/// seconds) into `out`.
 #[unsafe(no_mangle)]
 #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 pub extern "C" fn cast_duration(
@@ -367,8 +517,9 @@ pub extern "C" fn cast_duration(
     unsafe { finish(temporal::cast_duration(text(ptr, len)), out, fault) }
 }
 
-/// Reads the number `value` as the shortest decimal that names it into `out`. See
-/// [`typed::decimal_from_f64`].
+/// Reads the number `value` into `out` as the shortest decimal that names it, canonical as
+/// `cast_decimal`'s. NaN is malformed; an infinity, a magnitude past 2^96 - 1 or more than
+/// 28 places is out of range.
 #[unsafe(no_mangle)]
 #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 pub extern "C" fn cast_decimal_from_f64(
@@ -382,7 +533,8 @@ pub extern "C" fn cast_decimal_from_f64(
 
 /// Reads the Excel serial `value` under the declared `epoch` (1 the 1900 system, 2 the 1904
 /// system — anything else is a contract violation) into `out` as the zone-less wall clock
-/// it names. See [`temporal::excel_serial`].
+/// it names, its fraction snapped to the fewest fractional-second digits that store as
+/// this same double.
 #[unsafe(no_mangle)]
 #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 pub extern "C" fn cast_excel_serial_from_f64(
@@ -399,7 +551,8 @@ pub extern "C" fn cast_excel_serial_from_f64(
 }
 
 /// Reads the time of day of the Excel serial `value` into `out` as nanoseconds since
-/// midnight. See [`temporal::excel_time`].
+/// midnight, snapped as `cast_excel_serial_from_f64` snaps. A negative, NaN or infinite
+/// value is malformed; a serial past either date system's last day is out of range.
 #[unsafe(no_mangle)]
 #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 pub extern "C" fn cast_excel_time(value: f64, out: *mut u64, fault: *mut RawFault) -> i32 {
@@ -407,7 +560,8 @@ pub extern "C" fn cast_excel_time(value: f64, out: *mut u64, fault: *mut RawFaul
     unsafe { finish(spanless(temporal::excel_time(value)), out, fault) }
 }
 
-/// Reads `value` days into `out` as a duration. See [`temporal::excel_duration`].
+/// Reads `value` days into `out` as a duration, snapped as `cast_excel_serial_from_f64`
+/// snaps a time. NaN or an infinity is malformed; past ±10,000 years is out of range.
 #[unsafe(no_mangle)]
 #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 pub extern "C" fn cast_excel_duration(value: f64, out: *mut Duration, fault: *mut RawFault) -> i32 {

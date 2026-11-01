@@ -1,0 +1,402 @@
+{
+    "en_US DECIMAL": {
+        "answers": {"symbols":{"0":".","1":",","3":"%","4":"0","6":"-","7":"+","8":"$","10":".","17":","},"attributes":{"2":"-","3":""},"sample":"-1,234.5"},
+        "sample": "-1,234.5",
+        "format": {"result":{"decimalSep":".","groupSep":",","flags":95,"currency":"$","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002e00000000000000012c00000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002400000000000000000000000000000001"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.5"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"12345","scale":1,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "en_US CURRENCY": {
+        "answers": {"symbols":{"0":".","1":",","3":"%","4":"0","6":"-","7":"+","8":"$","10":".","17":","},"attributes":{"2":"-$","3":""},"sample":"-$1,234.50"},
+        "sample": "-$1,234.50",
+        "format": {"result":{"decimalSep":".","groupSep":",","flags":95,"currency":"$","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002e00000000000000012c00000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002400000000000000000000000000000001"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.5"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"12345","scale":1,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "de_DE DECIMAL": {
+        "answers": {"symbols":{"0":",","1":".","3":"%","4":"0","6":"-","7":"+","8":"€","10":",","17":"."},"attributes":{"2":"-","3":""},"sample":"-1.234,5"},
+        "sample": "-1.234,5",
+        "format": {"result":{"decimalSep":",","groupSep":".","flags":95,"currency":"€","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002c00000000000000012e0000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e282ac0000000000000000000000000003"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.5"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"12345","scale":1,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "de_DE CURRENCY": {
+        "answers": {"symbols":{"0":",","1":".","3":"%","4":"0","6":"-","7":"+","8":"€","10":",","17":"."},"attributes":{"2":"-","3":" €"},"sample":"-1.234,50 €"},
+        "sample": "-1.234,50 €",
+        "format": {"result":{"decimalSep":",","groupSep":".","flags":95,"currency":"€","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002c00000000000000012e0000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e282ac0000000000000000000000000003"}},
+        "f64": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":9,"length":2}},
+        "decimal": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":9,"length":2}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "de_AT DECIMAL": {
+        "answers": {"symbols":{"0":",","1":" ","3":"%","4":"0","6":"-","7":"+","8":"€","10":",","17":"."},"attributes":{"2":"-","3":""},"sample":"-1 234,5"},
+        "sample": "-1 234,5",
+        "format": {"result":{"decimalSep":",","groupSep":" ","flags":95,"currency":"€","currencyDecimalSep":"","currencyGroupSep":".","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002c0000000000000001c2a0000000000000020000000000000000002e0000000000000001000000000000000000000000000000000000000000000000000000e282ac0000000000000000000000000003"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.5"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"12345","scale":1,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "de_AT CURRENCY": {
+        "answers": {"symbols":{"0":",","1":" ","3":"%","4":"0","6":"-","7":"+","8":"€","10":",","17":"."},"attributes":{"2":"-€ ","3":""},"sample":"-€ 1.234,50"},
+        "sample": "-€ 1.234,50",
+        "format": {"result":{"decimalSep":",","groupSep":" ","flags":95,"currency":"€","currencyDecimalSep":"","currencyGroupSep":".","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002c0000000000000001c2a0000000000000020000000000000000002e0000000000000001000000000000000000000000000000000000000000000000000000e282ac0000000000000000000000000003"}},
+        "f64": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":4,"length":2}},
+        "decimal": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":4,"length":2}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "fr_FR DECIMAL": {
+        "answers": {"symbols":{"0":",","1":" ","3":"%","4":"0","6":"-","7":"+","8":"€","10":",","17":" "},"attributes":{"2":"-","3":""},"sample":"-1 234,5"},
+        "sample": "-1 234,5",
+        "format": {"result":{"decimalSep":",","groupSep":" ","flags":95,"currency":"€","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002c0000000000000001e280af000000000003000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e282ac0000000000000000000000000003"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.5"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"12345","scale":1,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "fr_FR CURRENCY": {
+        "answers": {"symbols":{"0":",","1":" ","3":"%","4":"0","6":"-","7":"+","8":"€","10":",","17":" "},"attributes":{"2":"-","3":" €"},"sample":"-1 234,50 €"},
+        "sample": "-1 234,50 €",
+        "format": {"result":{"decimalSep":",","groupSep":" ","flags":95,"currency":"€","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002c0000000000000001e280af000000000003000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e282ac0000000000000000000000000003"}},
+        "f64": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":11,"length":2}},
+        "decimal": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":11,"length":2}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "fr_CH DECIMAL": {
+        "answers": {"symbols":{"0":",","1":"'","3":"%","4":"0","6":"-","7":"+","8":"CHF","10":".","17":"'"},"attributes":{"2":"-","3":""},"sample":"-1'234,5"},
+        "sample": "-1'234,5",
+        "format": {"result":{"decimalSep":",","groupSep":"'","flags":95,"currency":"CHF","currencyDecimalSep":".","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002c00000000000000012700000000000000012e00000000000000010000000000000000000000000000000000000000000000000000000000000000000000004348460000000000000000000000000003"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.5"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"12345","scale":1,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "fr_CH CURRENCY": {
+        "answers": {"symbols":{"0":",","1":"'","3":"%","4":"0","6":"-","7":"+","8":"CHF","10":".","17":"'"},"attributes":{"2":"-","3":" CHF"},"sample":"-1'234.50 CHF"},
+        "sample": "-1'234.50 CHF",
+        "format": {"result":{"decimalSep":",","groupSep":"'","flags":95,"currency":"CHF","currencyDecimalSep":".","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002c00000000000000012700000000000000012e00000000000000010000000000000000000000000000000000000000000000000000000000000000000000004348460000000000000000000000000003"}},
+        "f64": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":9,"length":2}},
+        "decimal": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":9,"length":2}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "sv_SE DECIMAL": {
+        "answers": {"symbols":{"0":",","1":" ","3":"%","4":"0","6":"−","7":"+","8":"kr","10":",","17":" "},"attributes":{"2":"−","3":""},"sample":"−1 234,5"},
+        "sample": "−1 234,5",
+        "format": {"result":{"decimalSep":",","groupSep":" ","flags":95,"currency":"kr","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"−","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002c0000000000000001c2a000000000000002000000000000000000000000000000000000e288920000000000030000000000000000000000000000000000006b72000000000000000000000000000002"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.5"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"12345","scale":1,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "sv_SE CURRENCY": {
+        "answers": {"symbols":{"0":",","1":" ","3":"%","4":"0","6":"−","7":"+","8":"kr","10":",","17":" "},"attributes":{"2":"−","3":" kr"},"sample":"−1 234,50 kr"},
+        "sample": "−1 234,50 kr",
+        "format": {"result":{"decimalSep":",","groupSep":" ","flags":95,"currency":"kr","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"−","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002c0000000000000001c2a000000000000002000000000000000000000000000000000000e288920000000000030000000000000000000000000000000000006b72000000000000000000000000000002"}},
+        "f64": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":12,"length":2}},
+        "decimal": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":12,"length":2}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "ar_EG DECIMAL": {
+        "answers": {"symbols":{"0":"٫","1":"٬","3":"٪؜","4":"٠","6":"؜-","7":"؜+","8":"ج.م.‏","10":"٫","17":"٬"},"attributes":{"2":"؜-","3":""},"sample":"؜-١٬٢٣٤٫٥"},
+        "sample": "؜-١٬٢٣٤٫٥",
+        "format": {"result":{"decimalSep":"٫","groupSep":"٬","flags":95,"currency":"ج.م.‏","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"؜-","plusSign":"؜+","percent":"٪؜","digitZero":"٠","packed":"5c0000005f00000060060000d9ab00000000000002d9ac00000000000002000000000000000000000000000000000000d89c2d000000000003d89c2b000000000003d9aad89c0000000004d8ac2ed9852ee2808f0000000000000009"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.5"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"12345","scale":1,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "ar_EG CURRENCY": {
+        "answers": {"symbols":{"0":"٫","1":"٬","3":"٪؜","4":"٠","6":"؜-","7":"؜+","8":"ج.م.‏","10":"٫","17":"٬"},"attributes":{"2":"؜-‏","3":" ج.م.‏"},"sample":"؜-‏١٬٢٣٤٫٥٠ ج.م.‏"},
+        "sample": "؜-‏١٬٢٣٤٫٥٠ ج.م.‏",
+        "format": {"result":{"decimalSep":"٫","groupSep":"٬","flags":95,"currency":"ج.م.‏","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"؜-","plusSign":"؜+","percent":"٪؜","digitZero":"٠","packed":"5c0000005f00000060060000d9ab00000000000002d9ac00000000000002000000000000000000000000000000000000d89c2d000000000003d89c2b000000000003d9aad89c0000000004d8ac2ed9852ee2808f0000000000000009"}},
+        "f64": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":3,"length":3}},
+        "decimal": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":3,"length":3}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "fa_IR DECIMAL": {
+        "answers": {"symbols":{"0":"٫","1":"٬","3":"٪","4":"۰","6":"‎−","7":"‎+","8":"ریال","10":"٫","17":"٬"},"attributes":{"2":"‎−","3":""},"sample":"‎−۱٬۲۳۴٫۵"},
+        "sample": "‎−۱٬۲۳۴٫۵",
+        "format": {"result":{"decimalSep":"٫","groupSep":"٬","flags":95,"currency":"ریال","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"‎−","plusSign":"‎+","percent":"٪","digitZero":"۰","packed":"5c0000005f000000f0060000d9ab00000000000002d9ac00000000000002000000000000000000000000000000000000e2808ee28892000006e2808e2b0000000004d9aa00000000000002d8b1db8cd8a7d984000000000000000008"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.5"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"12345","scale":1,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "fa_IR CURRENCY": {
+        "answers": {"symbols":{"0":"٫","1":"٬","3":"٪","4":"۰","6":"‎−","7":"‎+","8":"ریال","10":"٫","17":"٬"},"attributes":{"2":"‎−‎ریال","3":""},"sample":"‎−‎ریال ۱٬۲۳۴"},
+        "sample": "‎−‎ریال ۱٬۲۳۴",
+        "format": {"result":{"decimalSep":"٫","groupSep":"٬","flags":95,"currency":"ریال","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"‎−","plusSign":"‎+","percent":"٪","digitZero":"۰","packed":"5c0000005f000000f0060000d9ab00000000000002d9ac00000000000002000000000000000000000000000000000000e2808ee28892000006e2808e2b0000000004d9aa00000000000002d8b1db8cd8a7d984000000000000000008"}},
+        "f64": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":6,"length":3}},
+        "decimal": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":6,"length":3}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "he_IL DECIMAL": {
+        "answers": {"symbols":{"0":".","1":",","3":"%","4":"0","6":"‎-","7":"‎+","8":"₪","10":".","17":","},"attributes":{"2":"‎-","3":""},"sample":"‎-1,234.5"},
+        "sample": "‎-1,234.5",
+        "format": {"result":{"decimalSep":".","groupSep":",","flags":95,"currency":"₪","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"‎-","plusSign":"‎+","percent":"","digitZero":"","packed":"5c0000005f000000000000002e00000000000000012c0000000000000001000000000000000000000000000000000000e2808e2d0000000004e2808e2b0000000004000000000000000000e282aa0000000000000000000000000003"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.5"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"12345","scale":1,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "he_IL CURRENCY": {
+        "answers": {"symbols":{"0":".","1":",","3":"%","4":"0","6":"‎-","7":"‎+","8":"₪","10":".","17":","},"attributes":{"2":"‏‎-","3":" ‏₪"},"sample":"‏‎-1,234.50 ‏₪"},
+        "sample": "‏‎-1,234.50 ‏₪",
+        "format": {"result":{"decimalSep":".","groupSep":",","flags":95,"currency":"₪","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"‎-","plusSign":"‎+","percent":"","digitZero":"","packed":"5c0000005f000000000000002e00000000000000012c0000000000000001000000000000000000000000000000000000e2808e2d0000000004e2808e2b0000000004000000000000000000e282aa0000000000000000000000000003"}},
+        "f64": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":0,"length":3}},
+        "decimal": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":0,"length":3}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "hi_IN DECIMAL": {
+        "answers": {"symbols":{"0":".","1":",","3":"%","4":"0","6":"-","7":"+","8":"₹","10":".","17":","},"attributes":{"2":"-","3":""},"sample":"-1,234.5"},
+        "sample": "-1,234.5",
+        "format": {"result":{"decimalSep":".","groupSep":",","flags":95,"currency":"₹","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002e00000000000000012c0000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e282b90000000000000000000000000003"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.5"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"12345","scale":1,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "hi_IN CURRENCY": {
+        "answers": {"symbols":{"0":".","1":",","3":"%","4":"0","6":"-","7":"+","8":"₹","10":".","17":","},"attributes":{"2":"-₹","3":""},"sample":"-₹1,234.50"},
+        "sample": "-₹1,234.50",
+        "format": {"result":{"decimalSep":".","groupSep":",","flags":95,"currency":"₹","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002e00000000000000012c0000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e282b90000000000000000000000000003"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.5"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"12345","scale":1,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "nl_NL DECIMAL": {
+        "answers": {"symbols":{"0":",","1":".","3":"%","4":"0","6":"-","7":"+","8":"€","10":",","17":"."},"attributes":{"2":"-","3":""},"sample":"-1.234,5"},
+        "sample": "-1.234,5",
+        "format": {"result":{"decimalSep":",","groupSep":".","flags":95,"currency":"€","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002c00000000000000012e0000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e282ac0000000000000000000000000003"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.5"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"12345","scale":1,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "nl_NL CURRENCY": {
+        "answers": {"symbols":{"0":",","1":".","3":"%","4":"0","6":"-","7":"+","8":"€","10":",","17":"."},"attributes":{"2":"€ -","3":""},"sample":"€ -1.234,50"},
+        "sample": "€ -1.234,50",
+        "format": {"result":{"decimalSep":",","groupSep":".","flags":95,"currency":"€","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002c00000000000000012e0000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e282ac0000000000000000000000000003"}},
+        "f64": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":3,"length":2}},
+        "decimal": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":3,"length":2}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "ja_JP DECIMAL": {
+        "answers": {"symbols":{"0":".","1":",","3":"%","4":"0","6":"-","7":"+","8":"￥","10":".","17":","},"attributes":{"2":"-","3":""},"sample":"-1,234.5"},
+        "sample": "-1,234.5",
+        "format": {"result":{"decimalSep":".","groupSep":",","flags":95,"currency":"￥","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002e00000000000000012c0000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000efbfa50000000000000000000000000003"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.5"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"12345","scale":1,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "ja_JP CURRENCY": {
+        "answers": {"symbols":{"0":".","1":",","3":"%","4":"0","6":"-","7":"+","8":"￥","10":".","17":","},"attributes":{"2":"-￥","3":""},"sample":"-￥1,234"},
+        "sample": "-￥1,234",
+        "format": {"result":{"decimalSep":".","groupSep":",","flags":95,"currency":"￥","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002e00000000000000012c0000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000efbfa50000000000000000000000000003"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.0"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"1234","scale":0,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "es_ES DECIMAL": {
+        "answers": {"symbols":{"0":",","1":".","3":"%","4":"0","6":"-","7":"+","8":"€","10":",","17":"."},"attributes":{"2":"-","3":""},"sample":"-1.234,5"},
+        "sample": "-1.234,5",
+        "format": {"result":{"decimalSep":",","groupSep":".","flags":95,"currency":"€","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002c00000000000000012e0000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e282ac0000000000000000000000000003"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.5"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"12345","scale":1,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "es_ES CURRENCY": {
+        "answers": {"symbols":{"0":",","1":".","3":"%","4":"0","6":"-","7":"+","8":"€","10":",","17":"."},"attributes":{"2":"-","3":" €"},"sample":"-1.234,50 €"},
+        "sample": "-1.234,50 €",
+        "format": {"result":{"decimalSep":",","groupSep":".","flags":95,"currency":"€","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002c00000000000000012e0000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e282ac0000000000000000000000000003"}},
+        "f64": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":9,"length":2}},
+        "decimal": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":9,"length":2}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "pt_BR DECIMAL": {
+        "answers": {"symbols":{"0":",","1":".","3":"%","4":"0","6":"-","7":"+","8":"R$","10":",","17":"."},"attributes":{"2":"-","3":""},"sample":"-1.234,5"},
+        "sample": "-1.234,5",
+        "format": {"result":{"decimalSep":",","groupSep":".","flags":95,"currency":"R$","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002c00000000000000012e00000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000005224000000000000000000000000000002"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.5"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"12345","scale":1,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "pt_BR CURRENCY": {
+        "answers": {"symbols":{"0":",","1":".","3":"%","4":"0","6":"-","7":"+","8":"R$","10":",","17":"."},"attributes":{"2":"-R$ ","3":""},"sample":"-R$ 1.234,50"},
+        "sample": "-R$ 1.234,50",
+        "format": {"result":{"decimalSep":",","groupSep":".","flags":95,"currency":"R$","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002c00000000000000012e00000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000005224000000000000000000000000000002"}},
+        "f64": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":3,"length":2}},
+        "decimal": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":3,"length":2}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "ru_RU DECIMAL": {
+        "answers": {"symbols":{"0":",","1":" ","3":"%","4":"0","6":"-","7":"+","8":"₽","10":",","17":" "},"attributes":{"2":"-","3":""},"sample":"-1 234,5"},
+        "sample": "-1 234,5",
+        "format": {"result":{"decimalSep":",","groupSep":" ","flags":95,"currency":"₽","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002c0000000000000001c2a000000000000002000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e282bd0000000000000000000000000003"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.5"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"12345","scale":1,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "ru_RU CURRENCY": {
+        "answers": {"symbols":{"0":",","1":" ","3":"%","4":"0","6":"-","7":"+","8":"₽","10":",","17":" "},"attributes":{"2":"-","3":" ₽"},"sample":"-1 234,50 ₽"},
+        "sample": "-1 234,50 ₽",
+        "format": {"result":{"decimalSep":",","groupSep":" ","flags":95,"currency":"₽","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002c0000000000000001c2a000000000000002000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e282bd0000000000000000000000000003"}},
+        "f64": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":10,"length":2}},
+        "decimal": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":10,"length":2}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "et_EE DECIMAL": {
+        "answers": {"symbols":{"0":",","1":" ","3":"%","4":"0","6":"−","7":"+","8":"€","10":",","17":" "},"attributes":{"2":"−","3":""},"sample":"−1 234,5"},
+        "sample": "−1 234,5",
+        "format": {"result":{"decimalSep":",","groupSep":" ","flags":95,"currency":"€","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"−","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002c0000000000000001c2a000000000000002000000000000000000000000000000000000e28892000000000003000000000000000000000000000000000000e282ac0000000000000000000000000003"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.5"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"12345","scale":1,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "et_EE CURRENCY": {
+        "answers": {"symbols":{"0":",","1":" ","3":"%","4":"0","6":"−","7":"+","8":"€","10":",","17":" "},"attributes":{"2":"−","3":" €"},"sample":"−1 234,50 €"},
+        "sample": "−1 234,50 €",
+        "format": {"result":{"decimalSep":",","groupSep":" ","flags":95,"currency":"€","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"−","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002c0000000000000001c2a000000000000002000000000000000000000000000000000000e28892000000000003000000000000000000000000000000000000e282ac0000000000000000000000000003"}},
+        "f64": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":12,"length":2}},
+        "decimal": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":12,"length":2}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "de_CH DECIMAL": {
+        "answers": {"symbols":{"0":".","1":"'","3":"%","4":"0","6":"-","7":"+","8":"CHF","10":".","17":"'"},"attributes":{"2":"-","3":""},"sample":"-1'234.5"},
+        "sample": "-1'234.5",
+        "format": {"result":{"decimalSep":".","groupSep":"'","flags":95,"currency":"CHF","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002e00000000000000012700000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004348460000000000000000000000000003"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.5"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"12345","scale":1,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "de_CH CURRENCY": {
+        "answers": {"symbols":{"0":".","1":"'","3":"%","4":"0","6":"-","7":"+","8":"CHF","10":".","17":"'"},"attributes":{"2":"CHF-","3":""},"sample":"CHF-1'234.50"},
+        "sample": "CHF-1'234.50",
+        "format": {"result":{"decimalSep":".","groupSep":"'","flags":95,"currency":"CHF","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002e00000000000000012700000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004348460000000000000000000000000003"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.5"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"12345","scale":1,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "bn_BD DECIMAL": {
+        "answers": {"symbols":{"0":".","1":",","3":"%","4":"০","6":"-","7":"+","8":"৳","10":".","17":","},"attributes":{"2":"-","3":""},"sample":"-১,২৩৪.৫"},
+        "sample": "-১,২৩৪.৫",
+        "format": {"result":{"decimalSep":".","groupSep":",","flags":95,"currency":"৳","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"০","packed":"5c0000005f000000e60900002e00000000000000012c0000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e0a7b30000000000000000000000000003"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.5"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"12345","scale":1,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "bn_BD CURRENCY": {
+        "answers": {"symbols":{"0":".","1":",","3":"%","4":"০","6":"-","7":"+","8":"৳","10":".","17":","},"attributes":{"2":"-","3":"৳"},"sample":"-১,২৩৪.৫০৳"},
+        "sample": "-১,২৩৪.৫০৳",
+        "format": {"result":{"decimalSep":".","groupSep":",","flags":95,"currency":"৳","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"০","packed":"5c0000005f000000e60900002e00000000000000012c0000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e0a7b30000000000000000000000000003"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.5"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"12345","scale":1,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "a trailing negative pattern": {
+        "answers": {"symbols":[".",","],"attributes":{"2":"","3":"-"}},
+        "sample": "-1,234.5",
+        "format": {"result":{"decimalSep":".","groupSep":",","flags":223,"currency":"$","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c000000df000000000000002e00000000000000012c00000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002400000000000000000000000000000001"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.5"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"12345","scale":1,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "a negative prefix and suffix": {
+        "answers": {"symbols":[".",","],"attributes":{"2":"(","3":")"}},
+        "sample": "-1,234.5",
+        "format": {"result":{"decimalSep":".","groupSep":",","flags":95,"currency":"$","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002e00000000000000012c00000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002400000000000000000000000000000001"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.5"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"12345","scale":1,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "an over-long separator": {
+        "answers": {"symbols":[".........",","]},
+        "sample": "-1,234.5",
+        "format": {"exception":"InvalidArgumentException","message":"Decimal separator must be one to 8 bytes of UTF-8"},
+        "f64": {"exception":"InvalidArgumentException","message":"Decimal separator must be one to 8 bytes of UTF-8"},
+        "decimal": {"exception":"InvalidArgumentException","message":"Decimal separator must be one to 8 bytes of UTF-8"},
+        "i32 grouped": {"exception":"InvalidArgumentException","message":"Decimal separator must be one to 8 bytes of UTF-8"}
+    },
+    "an over-long currency symbol": {
+        "answers": {"symbols":{"0":".","1":",","8":"ABCDEFGHIJKLMNOPQ"}},
+        "sample": "-1,234.5",
+        "format": {"exception":"InvalidArgumentException","message":"Currency symbol must be one to 16 bytes of UTF-8"},
+        "f64": {"exception":"InvalidArgumentException","message":"Currency symbol must be one to 16 bytes of UTF-8"},
+        "decimal": {"exception":"InvalidArgumentException","message":"Currency symbol must be one to 16 bytes of UTF-8"},
+        "i32 grouped": {"exception":"InvalidArgumentException","message":"Currency symbol must be one to 16 bytes of UTF-8"}
+    },
+    "equal separators": {
+        "answers": {"symbols":[",",","]},
+        "sample": "-1,234.5",
+        "format": {"exception":"InvalidArgumentException","message":"Decimal and group separators must differ; both are ','"},
+        "f64": {"exception":"InvalidArgumentException","message":"Decimal and group separators must differ; both are ','"},
+        "decimal": {"exception":"InvalidArgumentException","message":"Decimal and group separators must differ; both are ','"},
+        "i32 grouped": {"exception":"InvalidArgumentException","message":"Decimal and group separators must differ; both are ','"}
+    },
+    "empty separators": {
+        "answers": {"symbols":["",""]},
+        "sample": "-1,234.5",
+        "format": {"result":{"decimalSep":".","groupSep":",","flags":95,"currency":"$","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002e00000000000000012c00000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002400000000000000000000000000000001"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.5"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"12345","scale":1,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "a whitespace sign": {
+        "answers": {"symbols":{"6":"- "}},
+        "sample": "-1,234.5",
+        "format": {"exception":"InvalidArgumentException","message":"Minus sign must not contain an ASCII digit or whitespace; got '- '"},
+        "f64": {"exception":"InvalidArgumentException","message":"Minus sign must not contain an ASCII digit or whitespace; got '- '"},
+        "decimal": {"exception":"InvalidArgumentException","message":"Minus sign must not contain an ASCII digit or whitespace; got '- '"},
+        "i32 grouped": {"exception":"InvalidArgumentException","message":"Minus sign must not contain an ASCII digit or whitespace; got '- '"}
+    },
+    "a digit in a symbol": {
+        "answers": {"symbols":{"3":"%1"}},
+        "sample": "-1,234.5",
+        "format": {"exception":"InvalidArgumentException","message":"Percent symbol must not contain an ASCII digit or whitespace; got '%1'"},
+        "f64": {"exception":"InvalidArgumentException","message":"Percent symbol must not contain an ASCII digit or whitespace; got '%1'"},
+        "decimal": {"exception":"InvalidArgumentException","message":"Percent symbol must not contain an ASCII digit or whitespace; got '%1'"},
+        "i32 grouped": {"exception":"InvalidArgumentException","message":"Percent symbol must not contain an ASCII digit or whitespace; got '%1'"}
+    },
+    "an ASCII zero digit": {
+        "answers": {"symbols":{"4":"0"}},
+        "sample": "-1,234.5",
+        "format": {"result":{"decimalSep":".","groupSep":",","flags":95,"currency":"$","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002e00000000000000012c00000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002400000000000000000000000000000001"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.5"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"12345","scale":1,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "a zero that starts no block": {
+        "answers": {"symbols":{"4":"é"}},
+        "sample": "-1,234.5",
+        "format": {"result":{"decimalSep":".","groupSep":",","flags":95,"currency":"$","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"é","packed":"5c0000005f000000e90000002e00000000000000012c00000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002400000000000000000000000000000001"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.5"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"12345","scale":1,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "monetary separators equal to the number ones": {
+        "answers": {"symbols":{"0":",","1":".","10":",","17":"."}},
+        "sample": "-1,234.5",
+        "format": {"result":{"decimalSep":",","groupSep":".","flags":95,"currency":"$","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002c00000000000000012e00000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002400000000000000000000000000000001"}},
+        "f64": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":6,"length":1}},
+        "decimal": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":6,"length":1}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "a monetary group equal to the decimal": {
+        "answers": {"symbols":{"0":",","1":" ","17":","}},
+        "sample": "-1,234.5",
+        "format": {"result":{"decimalSep":",","groupSep":" ","flags":95,"currency":"$","currencyDecimalSep":".","currencyGroupSep":",","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002c00000000000000012000000000000000012e00000000000000012c00000000000000010000000000000000000000000000000000000000000000000000002400000000000000000000000000000001"}},
+        "f64": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":6,"length":1}},
+        "decimal": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":6,"length":1}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "a monetary decimal equal to the group": {
+        "answers": {"symbols":{"0":".","1":",","10":","}},
+        "sample": "-1,234.5",
+        "format": {"result":{"decimalSep":".","groupSep":",","flags":95,"currency":"$","currencyDecimalSep":",","currencyGroupSep":".","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002e00000000000000012c00000000000000012c00000000000000012e00000000000000010000000000000000000000000000000000000000000000000000002400000000000000000000000000000001"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.5"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"12345","scale":1,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    },
+    "getSymbol failing": {
+        "answers": {"symbols":{"0":false,"1":false,"8":false},"attributes":{"2":false}},
+        "sample": "-1,234.5",
+        "format": {"result":{"decimalSep":".","groupSep":",","flags":95,"currency":"","currencyDecimalSep":"","currencyGroupSep":"","minusSign":"","plusSign":"","percent":"","digitZero":"","packed":"5c0000005f000000000000002e00000000000000012c00000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"}},
+        "f64": {"result":{"class":"HyperCast\\Success","value":"float -1234.5"}},
+        "decimal": {"result":{"class":"HyperCast\\Success","value":{"class":"HyperCast\\Decimal","magnitude":"12345","scale":1,"negative":true}}},
+        "i32 grouped": {"result":{"class":"HyperCast\\Success","value":1234}}
+    }
+}

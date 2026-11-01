@@ -106,7 +106,9 @@ fn clamp(value: usize) -> u32 {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct Symbol<const N: usize> {
+    /// The symbol's UTF-8 bytes; those past `len` are no part of it.
     bytes: [u8; N],
+    /// How many of `bytes` the symbol is.
     len: u8,
 }
 
@@ -309,7 +311,10 @@ impl<const N: usize> core::fmt::Display for Symbol<N> {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct CurrencySymbol {
-    bytes: [u8; Self::MAX_BYTES],
+    /// The symbol's UTF-8 bytes; those past `len` are no part of it. Sixteen, as
+    /// [`MAX_BYTES`](Self::MAX_BYTES) says, written as a literal so the C header can spell it.
+    bytes: [u8; 16],
+    /// How many of `bytes` the symbol is.
     len: u8,
 }
 

@@ -1,9 +1,12 @@
 package hypercast
 
 // The README's zero-allocation claim, held as tests rather than as a benchmark somebody
-// has to remember to read. The by-value shims in backend_static.go are what make these zero.
+// has to remember to read, under stock Go and TinyGo alike. What makes these zero is in
+// core.go: a door's text, format and day periods are copied into an instance the primary or
+// the pool already holds, and nothing takes the address of a local past that copy.
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -86,7 +89,7 @@ func TestCurrencyFormatIsAllocationFree(t *testing.T) {
 	assertAllocs(t, "Exact with every symbol declared", 0, func() { Exact("١٬٢٣٤٫٥٪−", everything) })
 }
 
-// []byte crosses the same way string does: a pointer into memory that already exists.
+// []byte crosses the same way string does: copied into the instance, never converted.
 func TestByteInputIsAllocationFree(t *testing.T) {
 	text := []byte("1,234,567")
 	_, fault := I32(text, Invariant)
@@ -124,4 +127,18 @@ func TestAFaultIsTheOnlyAllocationOnFailure(t *testing.T) {
 	}
 	assertAllocs(t, "I32 (malformed)", 1, func() { I32("12x4", Invariant) })
 	assertAllocs(t, "Timestamp (malformed)", 1, func() { Timestamp("not a timestamp") })
+}
+
+// The zero holds for a text the base scratch holds, 65,376 bytes; a longer one runs on a
+// one-off instance sized for it, and that instance is what it allocates.
+func TestOnlyATextPastTheBaseScratchAllocates(t *testing.T) {
+	fits := strings.Repeat(" ", baseText-1) + "7"
+	if v, fault := U8(fits, Invariant); fault != nil || v != 7 {
+		t.Fatalf("U8 of %d bytes = %d, %v", len(fits), v, fault)
+	}
+	assertAllocs(t, "U8, a text of baseText bytes", 0, func() { U8(fits, Invariant) })
+	longer := " " + fits
+	if got := testing.AllocsPerRun(10, func() { U8(longer, Invariant) }); got == 0 {
+		t.Fatalf("U8 of %d bytes: 0 allocs per call, want the one-off instance's", len(longer))
+	}
 }

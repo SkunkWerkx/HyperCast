@@ -1,23 +1,21 @@
 // Command tinygosmoke is the check CI runs in headless Chrome: this module compiled by TinyGo
-// for the browser (`tinygo build -target=wasm`), with the core linked in from
-// staticlib/wasm, loaded by index.html beside it through TinyGo's own wasm_exec.js. It
-// prints one PASS or FAIL line per check and DONE at the end; the forge's
-// hyper-build-wasm.yml fails the run on any FAIL or a missing DONE, which is also what a
-// trap part-way through looks like.
+// for the browser (`tinygo build -target=wasm`), loaded by index.html beside it through
+// TinyGo's own wasm_exec.js. Nothing is linked: the core is the Go translation in
+// internal/core, and it imports nothing from the host. It prints one PASS or FAIL line per
+// check and DONE at the end; the forge's hyper-build-wasm.yml fails the run on any FAIL or a
+// missing DONE, which is also what a trap part-way through looks like.
 //
 // Every ABI shape crosses at least once — a plain door (Bool, Uuid, Timestamp, DateOnly,
 // TimeOfDay, Span), a numeric one with a format (I32, F64, Exact with a currency symbol,
 // and a format declaring every symbol the 92-byte layout carries), a discriminated one
 // (Unix, ExcelSerial, DateTime), the day periods beside the order (DateTimeWith) — and so
-// does a fault with its span, since TinyGo hands the core pointers into Go memory for the
-// out-value, the fault, the format and the periods rather than the by-value shims the cgo
-// backend uses.
+// does a fault with its span, each copied into the translated core's memory and read back
+// out of it.
 //
 // The expected core version comes from rust/Cargo.toml at build time
-// (`-ldflags "-X main.wantVersion=..."`), so the page proves the archive that was linked is
-// the one this commit's core builds, not a stale one. Stock Go builds this too, natively
-// under cgo, so `go vet ./...` covers it like any other package; it is internal, so it is
-// nothing a consumer can import.
+// (`-ldflags "-X main.wantVersion=..."`), so the page proves the translated core is the one
+// this commit's rust/ builds, not a stale one. Stock Go builds this too, so `go vet ./...`
+// covers it like any other package; it is internal, so it is nothing a consumer can import.
 package main
 
 import (

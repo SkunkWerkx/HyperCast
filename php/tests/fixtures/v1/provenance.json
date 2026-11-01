@@ -1,0 +1,11 @@
+{
+    "tool": "php/tools/capture-v1-fixtures.php",
+    "classes": "php/src at source_sha (git archive), autoloaded",
+    "library": "php/src/native/osx-arm64/libhypercast.dylib",
+    "library_sha256": "06e360d57a6307d54d12803c562382b8ebc4cccf47c746830c1a359227b08fba",
+    "native_version": "1.0.0",
+    "source_sha": "a6cff3110f7172689a07bc7eb5c9192b75960b48",
+    "php_version": "8.5.12",
+    "os": "Darwin",
+    "intl": "79.1"
+}

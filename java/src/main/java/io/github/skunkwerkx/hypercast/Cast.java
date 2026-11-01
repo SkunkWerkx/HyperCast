@@ -1,14 +1,8 @@
 package io.github.skunkwerkx.hypercast;
 
 import io.github.skunkwerkx.hypercast.interop.NativePlatform;
-import io.github.skunkwerkx.hypercast.interop.NativeValues;
-import java.lang.foreign.Arena;
-import java.lang.foreign.FunctionDescriptor;
-import java.lang.foreign.Linker;
 import java.lang.foreign.MemorySegment;
-import java.lang.foreign.SymbolLookup;
 import java.lang.foreign.ValueLayout;
-import java.lang.invoke.MethodHandle;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -17,15 +11,18 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.UUID;
+import java.util.function.IntUnaryOperator;
 
 /**
  * Allocation-lean scalar casts — booleans, numerics, UUIDs, temporals — calling directly
- * into the native {@code libhypercast} shared library via the Java Foreign Function &amp;
- * Memory API (JEP 454; this binding's floor is JDK 25). Every door returns a {@link Verdict}: the
- * value, or a {@link Fault} with a closed reason and the offending byte span. Never throws
- * on bad input — the only exceptions here are caller bugs (a malformed {@link NumFormat} or
- * {@link DateTimeFormat}), never data.
+ * into the native core in-process: through JNI on JDK 21 to 24, and through
+ * {@code java.lang.foreign} (FFM) downcalls on JDK 25 and later, from one multi-release jar.
+ * Every door returns a {@link Verdict}: the value, or a {@link Fault} with a closed reason and
+ * the offending byte span. Never throws on bad input — the only exceptions here are caller
+ * bugs (a {@code null} argument, a malformed {@link NumFormat} or {@link DateTimeFormat}),
+ * never data.
  *
  * <p>Door names mirror the native ABI ({@code i32}, {@code f64}, {@code timestamp}, …) so
  * the polyglot surface reads identically across bindings. Each door takes a {@link String}
@@ -33,21 +30,25 @@ import java.util.UUID;
  * contract, and the form whose {@link Fault} offsets need no mapping — or a
  * {@link MemorySegment} view of UTF-8 bytes, heap or native, for a caller that already
  * holds one buffer of many values (a mapped file, a direct buffer, one line of a CSV) and
- * wants to cast a slice of it without copying it out first.
+ * wants to cast a slice of it without copying it out first. {@code java.lang.foreign} is a
+ * preview API on JDK 21, so the {@link MemorySegment} doors are there for code compiled with
+ * preview enabled; on the JNI path a segment's bytes are copied to the heap first.
  *
  * <p>Temporal doors come out at {@code java.time}'s full fidelity: {@link Instant},
  * {@link LocalTime}, and {@link Duration} all carry nanoseconds, so unlike the C# binding
  * (ticks) nothing truncates — the JVM is the one platform that keeps every digit the core
  * parses.
  *
- * <p>The native library rides inside the jar under {@code /native/{rid}/} and is picked by
- * platform at runtime (see {@link NativePlatform}). The input crosses without a copy: every
- * downcall is linked with {@link Linker.Option#critical(boolean) critical(true)}, so the
- * caller's own heap array or segment is handed to the native side directly — sound because
- * each door is a short, non-blocking parse over those bytes that never calls back into
- * Java, which is the exact profile that option exists for. What remains per call is the
- * verdict record, the boxed value it carries, and (for the {@link String} doors) the UTF-8
- * encode; the Rust core itself never allocates.
+ * <p>The native libraries ride inside the jar under {@code /native/{rid}/} and are picked by
+ * platform at runtime (see {@link NativePlatform}): the core, which JDK 25 and later call
+ * through FFM, and the JNI library built from it, which JDK 21 to 24 load. On JDK 25 the
+ * input crosses without a copy: every downcall is linked
+ * {@link java.lang.foreign.Linker.Option#critical(boolean) critical(true)}, so the caller's
+ * own heap array or segment is handed to the native side directly. On the JNI path a
+ * {@code byte[]} of up to 64 KiB is pinned for the core call alone, and a longer one is
+ * copied into native memory, so a parse never holds off the garbage collector for long.
+ * What remains per call is the verdict record, the boxed value it carries, and (for the
+ * {@link String} doors) the UTF-8 encode; the Rust core itself never allocates.
  *
  * <p>Nothing loads until the first door is called. A consumer with a managed fallback gates
  * on {@link #isAvailable()} first — the one probe that never throws — because the doors do
@@ -55,148 +56,6 @@ import java.util.UUID;
  */
 public final class Cast {
     private Cast() {}
-
-    /**
-     * The downcall handles: one per ABI shape the core exports, none of them bound to an
-     * address. Each takes the export's address as its leading argument, which {@link Core}
-     * looks up once the library is loaded.
-     *
-     * <p>They live apart from {@link Core} for GraalVM Native Image. An image can only compile
-     * a call through a {@code MethodHandle} that is already a constant when the image is
-     * built; a handle created at run time — which is what binding one to a symbol's address
-     * forces, since the address does not exist until the library is loaded — is invoked
-     * through the image's method-handle interpreter instead, at microseconds a call (measured:
-     * 8-9 µs a door, against 14-51 ns on the JVM). Nothing in this class needs the library, so
-     * {@code META-INF/native-image/.../native-image.properties} has it initialized at image
-     * build time, and the handles are constants in the image. On the JVM the split changes
-     * nothing: the class initializes on the first native-path door, and the JIT folds a
-     * {@code static final} handle either way.
-     */
-    private static final class Downcalls {
-        private Downcalls() {}
-
-        private static final Linker LINKER = Linker.nativeLinker();
-
-        // critical(true) is what lets a heap segment (MemorySegment.ofArray over the caller's
-        // byte[]) cross without being copied into native memory first: the array is pinned for
-        // the duration of the call instead. The contract in exchange — the callee must be short,
-        // must not block, and must never upcall into Java — is exactly what every door is: a
-        // bounded parse over the bytes it was handed, with no callbacks and no allocation.
-        private static final Linker.Option CRITICAL = Linker.Option.critical(true);
-
-        // (ptr, len, out, fault) -> code — the culture-insensitive doors.
-        private static final MethodHandle PLAIN = LINKER.downcallHandle(
-                FunctionDescriptor.of(
-                        ValueLayout.JAVA_INT,
-                        ValueLayout.ADDRESS,
-                        ValueLayout.JAVA_LONG,
-                        ValueLayout.ADDRESS,
-                        ValueLayout.ADDRESS),
-                CRITICAL);
-        // (ptr, len, format, out, fault) -> code — the numeric doors.
-        private static final MethodHandle NUMERIC = LINKER.downcallHandle(
-                FunctionDescriptor.of(
-                        ValueLayout.JAVA_INT,
-                        ValueLayout.ADDRESS,
-                        ValueLayout.JAVA_LONG,
-                        ValueLayout.ADDRESS,
-                        ValueLayout.ADDRESS,
-                        ValueLayout.ADDRESS),
-                CRITICAL);
-        // (ptr, len, discriminant, out, fault) -> code — the Unix door, and every other door
-        // that takes one declared u32: the Excel epoch, the date order.
-        private static final MethodHandle DECLARED = LINKER.downcallHandle(
-                FunctionDescriptor.of(
-                        ValueLayout.JAVA_INT,
-                        ValueLayout.ADDRESS,
-                        ValueLayout.JAVA_LONG,
-                        ValueLayout.JAVA_INT,
-                        ValueLayout.ADDRESS,
-                        ValueLayout.ADDRESS),
-                CRITICAL);
-        // (ptr, len, discriminant, periods, out, fault) -> code — the civil date-time door:
-        // the declared order, and the day-period designators or NULL for none.
-        private static final MethodHandle CIVIL = LINKER.downcallHandle(
-                FunctionDescriptor.of(
-                        ValueLayout.JAVA_INT,
-                        ValueLayout.ADDRESS,
-                        ValueLayout.JAVA_LONG,
-                        ValueLayout.JAVA_INT,
-                        ValueLayout.ADDRESS,
-                        ValueLayout.ADDRESS,
-                        ValueLayout.ADDRESS),
-                CRITICAL);
-        // (value, out, fault) -> code — the typed doors, which read a double the caller holds.
-        private static final MethodHandle TYPED = LINKER.downcallHandle(
-                FunctionDescriptor.of(
-                        ValueLayout.JAVA_INT, ValueLayout.JAVA_DOUBLE, ValueLayout.ADDRESS, ValueLayout.ADDRESS),
-                CRITICAL);
-        // (value, discriminant, out, fault) -> code — the typed Excel serial door and its epoch.
-        private static final MethodHandle TYPED_DECLARED = LINKER.downcallHandle(
-                FunctionDescriptor.of(
-                        ValueLayout.JAVA_INT,
-                        ValueLayout.JAVA_DOUBLE,
-                        ValueLayout.JAVA_INT,
-                        ValueLayout.ADDRESS,
-                        ValueLayout.ADDRESS),
-                CRITICAL);
-        // () -> packed version — the probe. Nothing crosses, so it is not linked critical.
-        private static final MethodHandle VERSION = LINKER.downcallHandle(FunctionDescriptor.of(ValueLayout.JAVA_INT));
-    }
-
-    /**
-     * The loaded core: the library it resolved to, and the address of every
-     * export in it — all {@code static final}, all resolved in this holder's own class init.
-     * A holder rather than fields on {@code Cast} itself so that nothing loads until the
-     * first door (or {@link Cast#nativeVersion()}) touches it, and so
-     * that {@link Cast#isAvailable()} can observe a load failure without {@code Cast} having failed
-     * to initialize: a door after a failed load throws the {@link NoClassDefFoundError} for
-     * this class, the error a failed load inside {@code Cast} itself would raise.
-     */
-    private static final class Core {
-        private Core() {}
-
-        /** The library's base name: {@code libhypercast.so}, {@code hypercast.dll}. */
-        private static final String LIBRARY = "hypercast";
-
-        private static final SymbolLookup LOOKUP =
-                NativePlatform.load(Cast.class, LIBRARY, NativePlatform.current(LIBRARY));
-
-        // Where each export lives in the loaded library — the leading argument of the
-        // Downcalls handle with its shape. Looked up here, once, so an export missing from an
-        // older core fails this class's init (and isAvailable() says so) rather than a door.
-        private static final MemorySegment CAST_BOOL = export("cast_bool");
-        private static final MemorySegment CAST_I8 = export("cast_i8");
-        private static final MemorySegment CAST_I16 = export("cast_i16");
-        private static final MemorySegment CAST_I32 = export("cast_i32");
-        private static final MemorySegment CAST_I64 = export("cast_i64");
-        private static final MemorySegment CAST_U8 = export("cast_u8");
-        private static final MemorySegment CAST_U16 = export("cast_u16");
-        private static final MemorySegment CAST_U32 = export("cast_u32");
-        private static final MemorySegment CAST_U64 = export("cast_u64");
-        private static final MemorySegment CAST_F32 = export("cast_f32");
-        private static final MemorySegment CAST_F64 = export("cast_f64");
-        private static final MemorySegment CAST_DECIMAL = export("cast_decimal");
-        private static final MemorySegment CAST_UUID = export("cast_uuid");
-        private static final MemorySegment CAST_TIMESTAMP = export("cast_timestamp");
-        private static final MemorySegment CAST_UNIX = export("cast_unix");
-        private static final MemorySegment CAST_EXCEL_SERIAL = export("cast_excel_serial");
-        private static final MemorySegment CAST_DATE = export("cast_date");
-        private static final MemorySegment CAST_DATE_ORDERED = export("cast_date_ordered");
-        private static final MemorySegment CAST_DATETIME = export("cast_datetime");
-        private static final MemorySegment CAST_TIME = export("cast_time");
-        private static final MemorySegment CAST_DURATION = export("cast_duration");
-        private static final MemorySegment CAST_DECIMAL_FROM_F64 = export("cast_decimal_from_f64");
-        private static final MemorySegment CAST_EXCEL_SERIAL_FROM_F64 = export("cast_excel_serial_from_f64");
-        private static final MemorySegment CAST_EXCEL_TIME = export("cast_excel_time");
-        private static final MemorySegment CAST_EXCEL_DURATION = export("cast_excel_duration");
-        private static final MemorySegment CAST_CHAR = export("cast_char");
-        private static final MemorySegment HYPERCAST_VERSION = export("hypercast_version");
-
-        private static MemorySegment export(String symbol) {
-            return LOOKUP.find(symbol).orElseThrow();
-        }
-    }
 
     /**
      * Whether the core resolved: the bundled platform library loaded, and every export this
@@ -216,7 +75,7 @@ public final class Cast {
 
     // Its own holder so the answer is computed once and cached without Cast's own init
     // depending on the load. The probe is the version export: the cheapest crossing there
-    // is, and reaching it proves Core initialized — every handle resolved.
+    // is, and reaching it proves the core initialized — every export resolved.
     private static final class Availability {
         static final boolean AVAILABLE = probe();
 
@@ -227,12 +86,12 @@ public final class Cast {
                 nativeVersion();
                 return true;
             } catch (RuntimeException | LinkageError unavailable) {
-                // Core failing to initialize surfaces as ExceptionInInitializerError (and
+                // The core failing to initialize surfaces as ExceptionInInitializerError (and
                 // NoClassDefFoundError on every later touch) — LinkageErrors, whatever was
                 // underneath: the loader's own IllegalStateException, an unopenable
-                // library's IllegalArgumentException, a missing export's
-                // NoSuchElementException. Nothing else is expected, and nothing else is
-                // swallowed.
+                // library's IllegalArgumentException or UnsatisfiedLinkError, a missing
+                // export's NoSuchElementException. Nothing else is expected, and nothing else
+                // is swallowed.
                 return false;
             }
         }
@@ -249,147 +108,90 @@ public final class Cast {
      * @return the loaded core's version as {@code "major.minor.patch"}
      */
     public static String nativeVersion() {
-        int packed;
-        try {
-            packed = (int) Downcalls.VERSION.invokeExact(Core.HYPERCAST_VERSION);
-        } catch (Throwable t) {
-            throw new AssertionError("hypercast: hypercast_version downcall failed unexpectedly", t);
-        }
-        return NativeValues.version(packed);
+        int packed = NativeCore.coreVersion();
+        return (packed >>> 16) + "." + ((packed >>> 8) & 0xFF) + "." + (packed & 0xFF);
     }
 
-    // The six ABI shapes, one downcall each. Each shape has one handle, a static final
-    // constant in Downcalls; what a door names is the address of its export, which is the
-    // handle's leading argument — a direct downcall.
-    private static int plain(MemorySegment export, MemorySegment in, long len, MemorySegment out, MemorySegment fault) {
-        try {
-            return (int) Downcalls.PLAIN.invokeExact(export, in, len, out, fault);
-        } catch (Throwable t) {
-            throw new AssertionError("hypercast: downcall failed unexpectedly", t);
-        }
+    /** Builds a door's value out of the scratch its successful call wrote. */
+    private interface Reader<T> {
+        T read(NativeCore.Scratch scratch);
     }
 
-    private static int numeric(MemorySegment export, MemorySegment in, long len, NumFormat format, Scratch scratch) {
-        try {
-            return (int)
-                    Downcalls.NUMERIC.invokeExact(export, in, len, scratch.format(format), scratch.out, scratch.fault);
-        } catch (Throwable t) {
-            throw new AssertionError("hypercast: downcall failed unexpectedly", t);
-        }
+    private static <T> Verdict<T> verdict(int code, NativeCore.Scratch scratch, Reader<T> reader) {
+        return code == 0 ? new Success<>(reader.read(scratch)) : failed(code, scratch);
     }
 
-    private static int declared(
-            MemorySegment export,
-            MemorySegment in,
-            long len,
-            int discriminant,
-            MemorySegment out,
-            MemorySegment fault) {
-        try {
-            return (int) Downcalls.DECLARED.invokeExact(export, in, len, discriminant, out, fault);
-        } catch (Throwable t) {
-            throw new AssertionError("hypercast: downcall failed unexpectedly", t);
-        }
-    }
-
-    private static int civil(
-            MemorySegment export, MemorySegment in, long len, int order, DateTimeFormat format, Scratch scratch) {
-        try {
-            return (int) Downcalls.CIVIL.invokeExact(
-                    export, in, len, order, scratch.periods(format), scratch.out, scratch.fault);
-        } catch (Throwable t) {
-            throw new AssertionError("hypercast: downcall failed unexpectedly", t);
-        }
-    }
-
-    private static int typed(MemorySegment export, double value, MemorySegment out, MemorySegment fault) {
-        try {
-            return (int) Downcalls.TYPED.invokeExact(export, value, out, fault);
-        } catch (Throwable t) {
-            throw new AssertionError("hypercast: downcall failed unexpectedly", t);
-        }
-    }
-
-    private static int typedDeclared(
-            MemorySegment export, double value, int discriminant, MemorySegment out, MemorySegment fault) {
-        try {
-            return (int) Downcalls.TYPED_DECLARED.invokeExact(export, value, discriminant, out, fault);
-        } catch (Throwable t) {
-            throw new AssertionError("hypercast: downcall failed unexpectedly", t);
-        }
-    }
-
-    /**
-     * Per-thread scratch for the downcall out-params, in place of an
-     * {@link Arena#ofConfined()} per door: that is a fresh native allocation plus a scope
-     * teardown on every single cast, measured at roughly 100 ns and the dominant cost of a
-     * lean door. A confined arena is thread-confined by design, so this scratch is too: one
-     * {@link ThreadLocal} holding segments that live as long as the thread does.
-     *
-     * <p>{@code out} is sized for the widest out-param (16 bytes — a protobuf timestamp, a
-     * civil date-time or a decimal) and each door reads only its own prefix, after the
-     * native side has written it; a failing call never reads it at all. Nothing is shared
-     * between threads, so no door needs locking, and doors never nest, so no call can
-     * observe another's scratch mid-flight. Under virtual threads that is one small off-heap
-     * footprint per <em>virtual</em> thread, not per carrier — a few dozen bytes each, but
-     * scaling with however many a server runs.
-     *
-     * <p>There is deliberately no input buffer here: the downcalls are linked
-     * {@code critical(true)}, so the caller's own array crosses as a pinned heap segment,
-     * with no copy into a native staging segment and no growable buffer behind one.
-     */
-    private static final class Scratch {
-        // Explicit alignment rather than allocate(size)'s implicit 1: the temporal doors
-        // read JAVA_LONG out of `out`, which a 1-byte-aligned segment rejects outright.
-        private final Arena fixed = Arena.ofAuto();
-        final MemorySegment out = fixed.allocate(16, 8);
-        final MemorySegment fault = fixed.allocate(NativeValues.FAULT_BYTES, 4);
-        private final MemorySegment formatSegment = fixed.allocate(NativeValues.FORMAT_BYTES, 4);
-        private NumFormat formatKey;
-        private final MemorySegment periodsSegment = fixed.allocate(NativeValues.DAY_PERIODS_BYTES, 4);
-        private DateTimeFormat periodsKey;
-
-        MemorySegment format(NumFormat declared) {
-            // Formats are reused constants in practice (INVARIANT, DETECT, a per-locale
-            // instance), so an identity check skips the stores — and each symbol's UTF-8
-            // encode — on the overwhelming majority of calls; the same memo the Python and
-            // Ruby bindings keep.
-            if (formatKey != declared) {
-                // The whole layout is written, zero past each symbol: the memo means a
-                // shorter symbol after a longer one must not leave the tail behind.
-                NativeValues.writeFormat(declared, formatSegment, 0);
-                formatKey = declared;
-            }
-            return formatSegment;
-        }
-
-        // NULL when nothing is declared — the DateOrder overloads, or a DateTimeFormat with
-        // no designators — which the core reads exactly as it always has; otherwise the
-        // designators, under the same identity memo the format keeps.
-        MemorySegment periods(DateTimeFormat declared) {
-            if (declared == null || declared.englishOnly()) {
-                return MemorySegment.NULL;
-            }
-            if (periodsKey != declared) {
-                NativeValues.writeDayPeriods(declared, periodsSegment, 0);
-                periodsKey = declared;
-            }
-            return periodsSegment;
-        }
-    }
-
-    private static final ThreadLocal<Scratch> SCRATCH = ThreadLocal.withInitial(Scratch::new);
-
-    private static <T> Verdict<T> failed(int code, MemorySegment fault) {
+    private static <T> Verdict<T> failed(int code, NativeCore.Scratch scratch) {
         if (code == -1) {
             throw new IllegalStateException(
                     "libhypercast reported a contract violation — a binding bug, please report it");
         }
-        return NativeValues.fault(code, fault.get(ValueLayout.JAVA_INT, 0), fault.get(ValueLayout.JAVA_INT, 4));
+        CastFailure reason = CastFailure.fromCode(code)
+                .orElseThrow(() -> new IllegalStateException(
+                        code + " is not a verdict reason code — a binding bug, please report it"));
+        return new Fault<>(reason, NativeCore.faultOffset(scratch), NativeCore.faultLength(scratch));
+    }
+
+    // The door shapes, each over both input forms. A null argument is refused here, named,
+    // before anything crosses, so both paths answer it alike.
+    private static <T> Verdict<T> plain(int door, byte[] utf8, Reader<T> reader) {
+        Objects.requireNonNull(utf8, "utf8");
+        NativeCore.Scratch scratch = NativeCore.scratch();
+        return verdict(NativeCore.plain(scratch, door, utf8), scratch, reader);
+    }
+
+    private static <T> Verdict<T> plain(int door, MemorySegment utf8, Reader<T> reader) {
+        Objects.requireNonNull(utf8, "utf8");
+        NativeCore.Scratch scratch = NativeCore.scratch();
+        return verdict(NativeCore.plain(scratch, door, utf8), scratch, reader);
+    }
+
+    private static <T> Verdict<T> numeric(int door, byte[] utf8, NumFormat format, Reader<T> reader) {
+        Objects.requireNonNull(utf8, "utf8");
+        Objects.requireNonNull(format, "format");
+        NativeCore.Scratch scratch = NativeCore.scratch();
+        return verdict(NativeCore.numeric(scratch, door, utf8, format), scratch, reader);
+    }
+
+    private static <T> Verdict<T> numeric(int door, MemorySegment utf8, NumFormat format, Reader<T> reader) {
+        Objects.requireNonNull(utf8, "utf8");
+        Objects.requireNonNull(format, "format");
+        NativeCore.Scratch scratch = NativeCore.scratch();
+        return verdict(NativeCore.numeric(scratch, door, utf8, format), scratch, reader);
+    }
+
+    private static <T> Verdict<T> declared(int door, byte[] utf8, int code, Reader<T> reader) {
+        Objects.requireNonNull(utf8, "utf8");
+        NativeCore.Scratch scratch = NativeCore.scratch();
+        return verdict(NativeCore.declared(scratch, door, utf8, code), scratch, reader);
+    }
+
+    private static <T> Verdict<T> declared(int door, MemorySegment utf8, int code, Reader<T> reader) {
+        Objects.requireNonNull(utf8, "utf8");
+        NativeCore.Scratch scratch = NativeCore.scratch();
+        return verdict(NativeCore.declared(scratch, door, utf8, code), scratch, reader);
+    }
+
+    // `format` is null for the DateOrder overloads: no designators, a null pointer to the core.
+    private static Verdict<LocalDateTime> civil(byte[] utf8, DateOrder order, DateTimeFormat format) {
+        Objects.requireNonNull(utf8, "utf8");
+        NativeCore.Scratch scratch = NativeCore.scratch();
+        return verdict(NativeCore.civil(scratch, utf8, order.code(), format), scratch, NativeCore::dateTime);
+    }
+
+    private static Verdict<LocalDateTime> civil(MemorySegment utf8, DateOrder order, DateTimeFormat format) {
+        Objects.requireNonNull(utf8, "utf8");
+        NativeCore.Scratch scratch = NativeCore.scratch();
+        return verdict(NativeCore.civil(scratch, utf8, order.code(), format), scratch, NativeCore::dateTime);
+    }
+
+    private static <T> Verdict<T> typed(int door, double value, Reader<T> reader) {
+        NativeCore.Scratch scratch = NativeCore.scratch();
+        return verdict(NativeCore.typed(scratch, door, value), scratch, reader);
     }
 
     private static byte[] utf8(String text) {
-        return text.getBytes(StandardCharsets.UTF_8);
+        return Objects.requireNonNull(text, "text").getBytes(StandardCharsets.UTF_8);
     }
 
     // A fault's span is byte offsets into the UTF-8 the core saw. For a String door that is
@@ -420,17 +222,6 @@ public final class Cast {
         return units;
     }
 
-    // A zero-copy view over the caller's array. len == 0 never dereferences the pointer,
-    // per the ABI contract, so an empty input crosses as NULL rather than a zero-length
-    // heap view.
-    private static MemorySegment input(byte[] utf8) {
-        return utf8.length == 0 ? MemorySegment.NULL : MemorySegment.ofArray(utf8);
-    }
-
-    private static MemorySegment input(MemorySegment utf8) {
-        return utf8.byteSize() == 0 ? MemorySegment.NULL : utf8;
-    }
-
     /**
      * Presents a verdict optionally: an {@link CastFailure#EMPTY} fault becomes absent
      * ({@link java.util.Optional#empty()}); every other outcome flows through untouched —
@@ -441,6 +232,7 @@ public final class Cast {
      * @return empty for an EMPTY fault; the untouched verdict otherwise
      */
     public static <T> java.util.Optional<Verdict<T>> optional(Verdict<T> verdict) {
+        Objects.requireNonNull(verdict, "verdict");
         return verdict instanceof Fault<T> fault && fault.reason() == CastFailure.EMPTY
                 ? java.util.Optional.empty()
                 : java.util.Optional.of(verdict);
@@ -471,7 +263,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Boolean> bool(byte[] utf8) {
-        return boolDoor(input(utf8), utf8.length);
+        return plain(Door.BOOL, utf8, NativeCore::bool);
     }
 
     /**
@@ -482,15 +274,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Boolean> bool(MemorySegment utf8) {
-        return boolDoor(input(utf8), utf8.byteSize());
-    }
-
-    private static Verdict<Boolean> boolDoor(MemorySegment in, long len) {
-        Scratch scratch = SCRATCH.get();
-        MemorySegment out = scratch.out;
-        MemorySegment fault = scratch.fault;
-        int code = plain(Core.CAST_BOOL, in, len, out, fault);
-        return code == 0 ? new Success<>(out.get(ValueLayout.JAVA_BYTE, 0) != 0) : failed(code, fault);
+        return plain(Door.BOOL, utf8, NativeCore::bool);
     }
 
     // --- char ---
@@ -513,7 +297,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Character> character(String text) {
-        if (text.length() == 1) {
+        if (Objects.requireNonNull(text, "text").length() == 1) {
             return new Success<>(text.charAt(0));
         }
         byte[] utf8 = utf8(text);
@@ -527,7 +311,9 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Character> character(byte[] utf8) {
-        return charDoor(input(utf8), utf8.length);
+        Objects.requireNonNull(utf8, "utf8");
+        NativeCore.Scratch scratch = NativeCore.scratch();
+        return character(NativeCore.plain(scratch, Door.CHAR, utf8), scratch, utf8.length, i -> utf8[i]);
     }
 
     /**
@@ -538,51 +324,44 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Character> character(MemorySegment utf8) {
-        return charDoor(input(utf8), utf8.byteSize());
+        Objects.requireNonNull(utf8, "utf8");
+        NativeCore.Scratch scratch = NativeCore.scratch();
+        return character(
+                NativeCore.plain(scratch, Door.CHAR, utf8),
+                scratch,
+                (int) utf8.byteSize(),
+                i -> utf8.get(ValueLayout.JAVA_BYTE, i));
     }
 
-    private static Verdict<Character> charDoor(MemorySegment in, long len) {
-        Scratch scratch = SCRATCH.get();
-        MemorySegment out = scratch.out;
-        MemorySegment fault = scratch.fault;
-        int code = plain(Core.CAST_CHAR, in, len, out, fault);
+    // `byteAt` reads the input the core saw, for the one verdict built here rather than there.
+    private static Verdict<Character> character(
+            int code, NativeCore.Scratch scratch, int len, IntUnaryOperator byteAt) {
         if (code != 0) {
-            return failed(code, fault);
+            return failed(code, scratch);
         }
-        int scalar = out.get(ValueLayout.JAVA_INT, 0);
+        int scalar = NativeCore.scalar(scratch);
         if (scalar <= Character.MAX_VALUE) {
             return new Success<>((char) scalar);
         }
         // A supplementary scalar the core accepted but one char cannot hold: out of range
         // over the token the core read, the input less its ASCII whitespace edges.
-        long start = 0;
-        long end = len;
-        while (start < end && asciiWhitespace(in.get(ValueLayout.JAVA_BYTE, start))) {
+        int start = 0;
+        int end = len;
+        while (start < end && asciiWhitespace(byteAt.applyAsInt(start))) {
             start++;
         }
-        while (end > start && asciiWhitespace(in.get(ValueLayout.JAVA_BYTE, end - 1))) {
+        while (end > start && asciiWhitespace(byteAt.applyAsInt(end - 1))) {
             end--;
         }
-        return new Fault<>(CastFailure.OUT_OF_RANGE, (int) start, (int) (end - start));
+        return new Fault<>(CastFailure.OUT_OF_RANGE, start, end - start);
     }
 
     // The core's trim set: Rust's u8::is_ascii_whitespace (no vertical tab).
-    private static boolean asciiWhitespace(byte b) {
+    private static boolean asciiWhitespace(int b) {
         return b == ' ' || b == '\t' || b == '\n' || b == '\f' || b == '\r';
     }
 
     // --- integers ---
-
-    private interface IntReader<T> {
-        T read(MemorySegment out);
-    }
-
-    private static <T> Verdict<T> numeric(
-            MemorySegment export, MemorySegment in, long len, NumFormat format, IntReader<T> reader) {
-        Scratch scratch = SCRATCH.get();
-        int code = numeric(export, in, len, format, scratch);
-        return code == 0 ? new Success<>(reader.read(scratch.out)) : failed(code, scratch.fault);
-    }
 
     /**
      * Casts integer text to a signed 8-bit value under the declared format: the type's own
@@ -622,7 +401,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Byte> i8(byte[] utf8, NumFormat format) {
-        return numeric(Core.CAST_I8, input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_BYTE, 0));
+        return numeric(Door.I8, utf8, format, NativeCore::i8);
     }
 
     /**
@@ -650,7 +429,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Byte> i8(MemorySegment utf8, NumFormat format) {
-        return numeric(Core.CAST_I8, input(utf8), utf8.byteSize(), format, out -> out.get(ValueLayout.JAVA_BYTE, 0));
+        return numeric(Door.I8, utf8, format, NativeCore::i8);
     }
 
     /**
@@ -703,7 +482,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Short> i16(byte[] utf8, NumFormat format) {
-        return numeric(Core.CAST_I16, input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_SHORT, 0));
+        return numeric(Door.I16, utf8, format, NativeCore::i16);
     }
 
     /**
@@ -731,7 +510,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Short> i16(MemorySegment utf8, NumFormat format) {
-        return numeric(Core.CAST_I16, input(utf8), utf8.byteSize(), format, out -> out.get(ValueLayout.JAVA_SHORT, 0));
+        return numeric(Door.I16, utf8, format, NativeCore::i16);
     }
 
     /**
@@ -784,7 +563,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Integer> i32(byte[] utf8, NumFormat format) {
-        return numeric(Core.CAST_I32, input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_INT, 0));
+        return numeric(Door.I32, utf8, format, NativeCore::i32);
     }
 
     /**
@@ -812,7 +591,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Integer> i32(MemorySegment utf8, NumFormat format) {
-        return numeric(Core.CAST_I32, input(utf8), utf8.byteSize(), format, out -> out.get(ValueLayout.JAVA_INT, 0));
+        return numeric(Door.I32, utf8, format, NativeCore::i32);
     }
 
     /**
@@ -865,7 +644,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Long> i64(byte[] utf8, NumFormat format) {
-        return numeric(Core.CAST_I64, input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_LONG, 0));
+        return numeric(Door.I64, utf8, format, NativeCore::i64);
     }
 
     /**
@@ -893,7 +672,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Long> i64(MemorySegment utf8, NumFormat format) {
-        return numeric(Core.CAST_I64, input(utf8), utf8.byteSize(), format, out -> out.get(ValueLayout.JAVA_LONG, 0));
+        return numeric(Door.I64, utf8, format, NativeCore::i64);
     }
 
     /**
@@ -947,12 +726,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Integer> u8(byte[] utf8, NumFormat format) {
-        return numeric(
-                Core.CAST_U8,
-                input(utf8),
-                utf8.length,
-                format,
-                out -> Byte.toUnsignedInt(out.get(ValueLayout.JAVA_BYTE, 0)));
+        return numeric(Door.U8, utf8, format, NativeCore::u8);
     }
 
     /**
@@ -980,12 +754,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Integer> u8(MemorySegment utf8, NumFormat format) {
-        return numeric(
-                Core.CAST_U8,
-                input(utf8),
-                utf8.byteSize(),
-                format,
-                out -> Byte.toUnsignedInt(out.get(ValueLayout.JAVA_BYTE, 0)));
+        return numeric(Door.U8, utf8, format, NativeCore::u8);
     }
 
     /**
@@ -1038,12 +807,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Integer> u16(byte[] utf8, NumFormat format) {
-        return numeric(
-                Core.CAST_U16,
-                input(utf8),
-                utf8.length,
-                format,
-                out -> Short.toUnsignedInt(out.get(ValueLayout.JAVA_SHORT, 0)));
+        return numeric(Door.U16, utf8, format, NativeCore::u16);
     }
 
     /**
@@ -1071,12 +835,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Integer> u16(MemorySegment utf8, NumFormat format) {
-        return numeric(
-                Core.CAST_U16,
-                input(utf8),
-                utf8.byteSize(),
-                format,
-                out -> Short.toUnsignedInt(out.get(ValueLayout.JAVA_SHORT, 0)));
+        return numeric(Door.U16, utf8, format, NativeCore::u16);
     }
 
     /**
@@ -1129,12 +888,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Long> u32(byte[] utf8, NumFormat format) {
-        return numeric(
-                Core.CAST_U32,
-                input(utf8),
-                utf8.length,
-                format,
-                out -> Integer.toUnsignedLong(out.get(ValueLayout.JAVA_INT, 0)));
+        return numeric(Door.U32, utf8, format, NativeCore::u32);
     }
 
     /**
@@ -1162,12 +916,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Long> u32(MemorySegment utf8, NumFormat format) {
-        return numeric(
-                Core.CAST_U32,
-                input(utf8),
-                utf8.byteSize(),
-                format,
-                out -> Integer.toUnsignedLong(out.get(ValueLayout.JAVA_INT, 0)));
+        return numeric(Door.U32, utf8, format, NativeCore::u32);
     }
 
     /**
@@ -1222,7 +971,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Long> u64(byte[] utf8, NumFormat format) {
-        return numeric(Core.CAST_U64, input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_LONG, 0));
+        return numeric(Door.U64, utf8, format, NativeCore::u64);
     }
 
     /**
@@ -1250,7 +999,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Long> u64(MemorySegment utf8, NumFormat format) {
-        return numeric(Core.CAST_U64, input(utf8), utf8.byteSize(), format, out -> out.get(ValueLayout.JAVA_LONG, 0));
+        return numeric(Door.U64, utf8, format, NativeCore::u64);
     }
 
     /**
@@ -1308,7 +1057,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Float> f32(byte[] utf8, NumFormat format) {
-        return numeric(Core.CAST_F32, input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_FLOAT, 0));
+        return numeric(Door.F32, utf8, format, NativeCore::f32);
     }
 
     /**
@@ -1336,7 +1085,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Float> f32(MemorySegment utf8, NumFormat format) {
-        return numeric(Core.CAST_F32, input(utf8), utf8.byteSize(), format, out -> out.get(ValueLayout.JAVA_FLOAT, 0));
+        return numeric(Door.F32, utf8, format, NativeCore::f32);
     }
 
     /**
@@ -1389,7 +1138,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Double> f64(byte[] utf8, NumFormat format) {
-        return numeric(Core.CAST_F64, input(utf8), utf8.length, format, out -> out.get(ValueLayout.JAVA_DOUBLE, 0));
+        return numeric(Door.F64, utf8, format, NativeCore::f64);
     }
 
     /**
@@ -1417,7 +1166,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Double> f64(MemorySegment utf8, NumFormat format) {
-        return numeric(Core.CAST_F64, input(utf8), utf8.byteSize(), format, out -> out.get(ValueLayout.JAVA_DOUBLE, 0));
+        return numeric(Door.F64, utf8, format, NativeCore::f64);
     }
 
     /**
@@ -1481,7 +1230,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<BigDecimal> decimal(byte[] utf8, NumFormat format) {
-        return numeric(Core.CAST_DECIMAL, input(utf8), utf8.length, format, Cast::readDecimal);
+        return numeric(Door.DECIMAL, utf8, format, NativeCore::decimal);
     }
 
     /**
@@ -1509,7 +1258,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<BigDecimal> decimal(MemorySegment utf8, NumFormat format) {
-        return numeric(Core.CAST_DECIMAL, input(utf8), utf8.byteSize(), format, Cast::readDecimal);
+        return numeric(Door.DECIMAL, utf8, format, NativeCore::decimal);
     }
 
     /**
@@ -1525,10 +1274,6 @@ public final class Cast {
      */
     public static Verdict<BigDecimal> decimal(MemorySegment utf8, Locale locale) {
         return decimal(utf8, NumFormat.from(locale));
-    }
-
-    private static BigDecimal readDecimal(MemorySegment out) {
-        return NativeValues.decimal(out, 0);
     }
 
     // --- uuid ---
@@ -1553,7 +1298,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<UUID> uuid(byte[] utf8) {
-        return uuidDoor(input(utf8), utf8.length);
+        return plain(Door.UUID, utf8, NativeCore::uuid);
     }
 
     /**
@@ -1564,32 +1309,10 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<UUID> uuid(MemorySegment utf8) {
-        return uuidDoor(input(utf8), utf8.byteSize());
-    }
-
-    private static Verdict<UUID> uuidDoor(MemorySegment in, long len) {
-        Scratch scratch = SCRATCH.get();
-        MemorySegment out = scratch.out;
-        MemorySegment fault = scratch.fault;
-        int code = plain(Core.CAST_UUID, in, len, out, fault);
-        if (code != 0) {
-            return failed(code, fault);
-        }
-        return new Success<>(NativeValues.uuid(out, 0));
+        return plain(Door.UUID, utf8, NativeCore::uuid);
     }
 
     // --- temporals ---
-
-    // A zero precision means the RFC 3339 door's plain shape; anything else is a declared
-    // unit or epoch on the unix shape.
-    private static Verdict<Instant> instantDoor(MemorySegment export, MemorySegment in, long len, int precision) {
-        Scratch scratch = SCRATCH.get();
-        MemorySegment out = scratch.out;
-        MemorySegment fault = scratch.fault;
-        int code =
-                precision == 0 ? plain(export, in, len, out, fault) : declared(export, in, len, precision, out, fault);
-        return code == 0 ? new Success<>(NativeValues.instant(out, 0)) : failed(code, fault);
-    }
 
     /**
      * Casts an RFC 3339 instant — {@code yyyy-MM-ddTHH:mm:ss[.f+](Z|±hh:mm)}, zone
@@ -1612,7 +1335,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Instant> timestamp(byte[] utf8) {
-        return instantDoor(Core.CAST_TIMESTAMP, input(utf8), utf8.length, 0);
+        return plain(Door.TIMESTAMP, utf8, NativeCore::instant);
     }
 
     /**
@@ -1623,7 +1346,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Instant> timestamp(MemorySegment utf8) {
-        return instantDoor(Core.CAST_TIMESTAMP, input(utf8), utf8.byteSize(), 0);
+        return plain(Door.TIMESTAMP, utf8, NativeCore::instant);
     }
 
     /**
@@ -1649,7 +1372,8 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Instant> unix(byte[] utf8, UnixPrecision precision) {
-        return instantDoor(Core.CAST_UNIX, input(utf8), utf8.length, precision.code());
+        return declared(
+                Door.UNIX, utf8, Objects.requireNonNull(precision, "precision").code(), NativeCore::instant);
     }
 
     /**
@@ -1661,7 +1385,8 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Instant> unix(MemorySegment utf8, UnixPrecision precision) {
-        return instantDoor(Core.CAST_UNIX, input(utf8), utf8.byteSize(), precision.code());
+        return declared(
+                Door.UNIX, utf8, Objects.requireNonNull(precision, "precision").code(), NativeCore::instant);
     }
 
     /**
@@ -1694,7 +1419,8 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Instant> excelSerial(byte[] utf8, ExcelEpoch epoch) {
-        return instantDoor(Core.CAST_EXCEL_SERIAL, input(utf8), utf8.length, epoch.code());
+        return declared(
+                Door.EXCEL_SERIAL, utf8, Objects.requireNonNull(epoch, "epoch").code(), NativeCore::instant);
     }
 
     /**
@@ -1706,7 +1432,8 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Instant> excelSerial(MemorySegment utf8, ExcelEpoch epoch) {
-        return instantDoor(Core.CAST_EXCEL_SERIAL, input(utf8), utf8.byteSize(), epoch.code());
+        return declared(
+                Door.EXCEL_SERIAL, utf8, Objects.requireNonNull(epoch, "epoch").code(), NativeCore::instant);
     }
 
     /**
@@ -1730,7 +1457,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<LocalDate> date(byte[] utf8) {
-        return dateDoor(input(utf8), utf8.length);
+        return plain(Door.DATE, utf8, NativeCore::date);
     }
 
     /**
@@ -1741,15 +1468,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<LocalDate> date(MemorySegment utf8) {
-        return dateDoor(input(utf8), utf8.byteSize());
-    }
-
-    private static Verdict<LocalDate> dateDoor(MemorySegment in, long len) {
-        Scratch scratch = SCRATCH.get();
-        MemorySegment out = scratch.out;
-        MemorySegment fault = scratch.fault;
-        int code = plain(Core.CAST_DATE, in, len, out, fault);
-        return code == 0 ? new Success<>(NativeValues.date(out, 0)) : failed(code, fault);
+        return plain(Door.DATE, utf8, NativeCore::date);
     }
 
     /**
@@ -1778,7 +1497,8 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<LocalDate> date(byte[] utf8, DateOrder order) {
-        return dateOrderedDoor(input(utf8), utf8.length, order);
+        return declared(
+                Door.DATE_ORDERED, utf8, Objects.requireNonNull(order, "order").code(), NativeCore::date);
     }
 
     /**
@@ -1790,15 +1510,8 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<LocalDate> date(MemorySegment utf8, DateOrder order) {
-        return dateOrderedDoor(input(utf8), utf8.byteSize(), order);
-    }
-
-    private static Verdict<LocalDate> dateOrderedDoor(MemorySegment in, long len, DateOrder order) {
-        Scratch scratch = SCRATCH.get();
-        MemorySegment out = scratch.out;
-        MemorySegment fault = scratch.fault;
-        int code = declared(Core.CAST_DATE_ORDERED, in, len, order.code(), out, fault);
-        return code == 0 ? new Success<>(NativeValues.date(out, 0)) : failed(code, fault);
+        return declared(
+                Door.DATE_ORDERED, utf8, Objects.requireNonNull(order, "order").code(), NativeCore::date);
     }
 
     /**
@@ -1862,7 +1575,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<LocalDateTime> dateTime(byte[] utf8, DateOrder order) {
-        return dateTimeDoor(input(utf8), utf8.length, order, null);
+        return civil(utf8, Objects.requireNonNull(order, "order"), null);
     }
 
     /**
@@ -1873,7 +1586,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<LocalDateTime> dateTime(byte[] utf8, DateTimeFormat format) {
-        return dateTimeDoor(input(utf8), utf8.length, format.order(), format);
+        return civil(utf8, Objects.requireNonNull(format, "format").order(), format);
     }
 
     /**
@@ -1900,7 +1613,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<LocalDateTime> dateTime(MemorySegment utf8, DateOrder order) {
-        return dateTimeDoor(input(utf8), utf8.byteSize(), order, null);
+        return civil(utf8, Objects.requireNonNull(order, "order"), null);
     }
 
     /**
@@ -1912,7 +1625,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<LocalDateTime> dateTime(MemorySegment utf8, DateTimeFormat format) {
-        return dateTimeDoor(input(utf8), utf8.byteSize(), format.order(), format);
+        return civil(utf8, Objects.requireNonNull(format, "format").order(), format);
     }
 
     /**
@@ -1928,14 +1641,6 @@ public final class Cast {
      */
     public static Verdict<LocalDateTime> dateTime(MemorySegment utf8, Locale locale) {
         return dateTime(utf8, DateTimeFormat.from(locale));
-    }
-
-    // `format` is null for the DateOrder overloads: no designators, a null pointer to the core.
-    private static Verdict<LocalDateTime> dateTimeDoor(
-            MemorySegment in, long len, DateOrder order, DateTimeFormat format) {
-        Scratch scratch = SCRATCH.get();
-        int code = civil(Core.CAST_DATETIME, in, len, order.code(), format, scratch);
-        return code == 0 ? new Success<>(NativeValues.civil(scratch.out, 0)) : failed(code, scratch.fault);
     }
 
     /**
@@ -1960,7 +1665,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<LocalTime> time(byte[] utf8) {
-        return timeDoor(input(utf8), utf8.length);
+        return plain(Door.TIME, utf8, NativeCore::time);
     }
 
     /**
@@ -1971,15 +1676,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<LocalTime> time(MemorySegment utf8) {
-        return timeDoor(input(utf8), utf8.byteSize());
-    }
-
-    private static Verdict<LocalTime> timeDoor(MemorySegment in, long len) {
-        Scratch scratch = SCRATCH.get();
-        MemorySegment out = scratch.out;
-        MemorySegment fault = scratch.fault;
-        int code = plain(Core.CAST_TIME, in, len, out, fault);
-        return code == 0 ? new Success<>(NativeValues.time(out, 0)) : failed(code, fault);
+        return plain(Door.TIME, utf8, NativeCore::time);
     }
 
     /**
@@ -2005,7 +1702,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Duration> duration(byte[] utf8) {
-        return durationDoor(input(utf8), utf8.length);
+        return plain(Door.DURATION, utf8, NativeCore::duration);
     }
 
     /**
@@ -2016,15 +1713,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Duration> duration(MemorySegment utf8) {
-        return durationDoor(input(utf8), utf8.byteSize());
-    }
-
-    private static Verdict<Duration> durationDoor(MemorySegment in, long len) {
-        Scratch scratch = SCRATCH.get();
-        MemorySegment out = scratch.out;
-        MemorySegment fault = scratch.fault;
-        int code = plain(Core.CAST_DURATION, in, len, out, fault);
-        return code == 0 ? new Success<>(NativeValues.duration(out, 0)) : failed(code, fault);
+        return plain(Door.DURATION, utf8, NativeCore::duration);
     }
 
     // --- typed doors: a number the caller already holds ---
@@ -2044,9 +1733,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<BigDecimal> decimalFromDouble(double value) {
-        Scratch scratch = SCRATCH.get();
-        int code = typed(Core.CAST_DECIMAL_FROM_F64, value, scratch.out, scratch.fault);
-        return code == 0 ? new Success<>(readDecimal(scratch.out)) : failed(code, scratch.fault);
+        return typed(Door.DECIMAL_FROM_F64, value, NativeCore::decimal);
     }
 
     /**
@@ -2066,10 +1753,12 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<LocalDateTime> excelSerialFromDouble(double value, ExcelEpoch epoch) {
-        Scratch scratch = SCRATCH.get();
-        MemorySegment out = scratch.out;
-        int code = typedDeclared(Core.CAST_EXCEL_SERIAL_FROM_F64, value, epoch.code(), out, scratch.fault);
-        return code == 0 ? new Success<>(NativeValues.civil(out, 0)) : failed(code, scratch.fault);
+        int code = Objects.requireNonNull(epoch, "epoch").code();
+        NativeCore.Scratch scratch = NativeCore.scratch();
+        return verdict(
+                NativeCore.typedDeclared(scratch, Door.EXCEL_SERIAL_FROM_F64, value, code),
+                scratch,
+                NativeCore::dateTime);
     }
 
     /**
@@ -2083,9 +1772,7 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<LocalTime> excelTime(double value) {
-        Scratch scratch = SCRATCH.get();
-        int code = typed(Core.CAST_EXCEL_TIME, value, scratch.out, scratch.fault);
-        return code == 0 ? new Success<>(NativeValues.time(scratch.out, 0)) : failed(code, scratch.fault);
+        return typed(Door.EXCEL_TIME, value, NativeCore::time);
     }
 
     /**
@@ -2099,9 +1786,6 @@ public final class Cast {
      * @return the verdict: a {@link Success} carrying the cast value, or a {@link Fault}
      */
     public static Verdict<Duration> excelDuration(double value) {
-        Scratch scratch = SCRATCH.get();
-        MemorySegment out = scratch.out;
-        int code = typed(Core.CAST_EXCEL_DURATION, value, out, scratch.fault);
-        return code == 0 ? new Success<>(NativeValues.duration(out, 0)) : failed(code, scratch.fault);
+        return typed(Door.EXCEL_DURATION, value, NativeCore::duration);
     }
 }

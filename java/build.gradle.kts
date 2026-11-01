@@ -1,3 +1,4 @@
+import java.util.jar.JarFile
 import org.gradle.external.javadoc.StandardJavadocDocletOptions
 
 plugins {
@@ -21,13 +22,18 @@ repositories {
     mavenCentral()
 }
 
-// The formatter, over every Java file in the build: the library, its tests, the AOT smoke
-// test and the JMH benchmarks. palantir-java-format is google-java-format's rules at a
+// The one source of the JDK floor: the base of the multi-release jar (Cast, the interop
+// package and the JNI NativeCore) compiles for jdkFloor, and src/main/java25 (the FFM
+// NativeCore) with --release 25. Gradle, Spotless, javadoc and publish all run on JDK 25.
+val jdkFloor by extra(21)
+
+// The formatter, over every Java file in the build: the library, its tests, the floor-API
+// check (gradle/FloorApiCheck.java), the AOT smoke test and the JMH benchmarks. palantir-java-format is google-java-format's rules at a
 // 4-space indent and 120 columns, the shape this code was already written in.
 // `./gradlew spotlessApply` formats; `./gradlew spotlessCheck` (CI) fails on any drift.
 spotless {
     java {
-        target("src/**/*.java", "aot-smoke-test/src/**/*.java", "benchmarks/src/**/*.java")
+        target("src/**/*.java", "gradle/*.java", "aot-smoke-test/src/**/*.java", "benchmarks/src/**/*.java")
         palantirJavaFormat("2.102.0")
     }
 }
@@ -80,18 +86,90 @@ val nativeRid = run {
 // explicitly on top of that, processResources fails on the duplicate entry (found by
 // staging, then placing, in one working tree). Sync removes what it did not stage.
 val nativePlaced = file("src/main/resources/native/$nativeRid").exists()
+val coreNames = listOf("libhypercast.so", "libhypercast.dylib", "hypercast.dll")
+val shimNames = listOf("libhypercast_jni.so", "libhypercast_jni.dylib", "hypercast_jni.dll")
 val stageNativeLibrary = tasks.register<Sync>("stageNativeLibrary") {
     from("../rust/target/release") {
-        include("libhypercast.so", "libhypercast.dylib", "hypercast.dll")
+        include(coreNames)
+        if (nativePlaced || nativeRid == "unsupported") {
+            exclude("**")
+        }
+    }
+    // The JNI library beside the core: `cargo build --release --locked --lib` in jni/ (after
+    // `cargo cdylib` in ../rust), under the same placed/unsupported exclusion.
+    from("jni/target/release") {
+        include(shimNames)
         if (nativePlaced || nativeRid == "unsupported") {
             exclude("**")
         }
     }
     into(layout.buildDirectory.dir("generated-resources/native/$nativeRid"))
+
+    // Always runs: the guards below read mtimes, which Gradle's up-to-date check (content
+    // hashes of the declared inputs) does not see, so a touched source must still fail here.
+    outputs.upToDateWhen { false }
+    doFirst {
+        if (nativePlaced || nativeRid == "unsupported") return@doFirst
+        val coreDir = file("../rust/target/release")
+        val shimDir = file("jni/target/release")
+        val cores = coreNames.map { File(coreDir, it) }.filter { it.isFile }
+        val shims = shimNames.map { File(shimDir, it) }.filter { it.isFile }
+        // The pair, or neither (CI placed them, or nothing is built): one without the other
+        // is a jar that would load on one JDK and fail on the other.
+        if (cores.isNotEmpty() && shims.isEmpty()) {
+            throw GradleException(
+                "${cores.first().name} is built but the JNI library is not: run `cargo build --release --locked --lib` " +
+                    "in java/jni (after `cargo cdylib` in rust/) so the jar carries the pair",
+            )
+        }
+        if (shims.isNotEmpty() && cores.isEmpty()) {
+            throw GradleException(
+                "${shims.first().name} is built but the core is not: run `cargo cdylib` in rust/ so the jar carries the pair",
+            )
+        }
+        // What cargo itself read: the dep-info file beside each library lists the sources rustc
+        // opened, which is exactly what makes cargo rebuild. Walking whole source trees would
+        // fail forever on a file the build never reads (python_ext.rs, say). The JNI library holds
+        // the core inside it, so its dep-info covers the core's sources too. Dep-info lists no
+        // manifests, so the core's Cargo.toml is an extra for both.
+        fun depInfo(dep: File): List<File>? {
+            if (!dep.isFile) return null
+            val line = dep.readLines().firstOrNull { it.contains(": ") } ?: return null
+            return line.substringAfter(": ").trim().split(Regex("(?<!\\\\) +"))
+                .filter { it.isNotBlank() }.map { File(it.replace("\\ ", " ")) }
+        }
+        fun stale(lib: File, dep: File, extra: List<File>, remedy: String) {
+            val sources = depInfo(dep) ?: throw GradleException("${lib.name}: no dep-info at ${dep.relativeTo(projectDir)}: $remedy")
+            val newer = (sources + extra).filter { it.exists() && it.lastModified() > lib.lastModified() }
+            if (newer.isNotEmpty()) {
+                throw GradleException("${lib.name} is older than ${newer.first().relativeTo(projectDir)}: $remedy")
+            }
+        }
+        val rebuildCore = "run `cargo cdylib` in rust/"
+        val rebuildShim = "run `cargo cdylib` in rust/, then `cargo build --release --locked --lib` in java/jni"
+        for (core in cores) {
+            stale(core, File(coreDir, core.nameWithoutExtension + ".d"), listOf(file("../rust/Cargo.toml")), rebuildCore)
+        }
+        for (shim in shims) {
+            stale(
+                shim,
+                File(shimDir, shim.nameWithoutExtension + ".d"),
+                listOf(file("../rust/Cargo.toml"), file("jni/Cargo.toml"), file("jni/Cargo.lock")),
+                rebuildShim,
+            )
+        }
+    }
 }
 
 sourceSets.main {
     resources.srcDir(layout.buildDirectory.dir("generated-resources"))
+}
+
+// The JDK 25 half of the multi-release jar: the FFM NativeCore, compiled --release 25 against
+// main's output (Cast, Door and the interop package) and packed under META-INF/versions/25.
+val java25 = sourceSets.create("java25") {
+    java.setSrcDirs(listOf("src/main/java25"))
+    compileClasspath += sourceSets.main.get().output
 }
 
 tasks.processResources {
@@ -124,39 +202,216 @@ tasks.jar {
     }
     // A stable module name for a consumer on the module path — without it the name is
     // derived from the jar's file name — and therefore something exact to hand
-    // --enable-native-access (README.md's "Native access" section).
+    // --enable-native-access (README.md's "Native access" section). Multi-Release: JDK 25
+    // and later read META-INF/versions/25 (the FFM NativeCore); the base is the JNI
+    // NativeCore, which 21 through 24 run.
     manifest {
-        attributes("Automatic-Module-Name" to "io.github.skunkwerkx.hypercast")
+        attributes(
+            "Automatic-Module-Name" to "io.github.skunkwerkx.hypercast",
+            "Multi-Release" to "true",
+        )
+    }
+    into("META-INF/versions/25") {
+        from(java25.output)
     }
 }
 
-tasks.test {
+// The same contents without the native libraries, for the test that runs with no core on the
+// classpath. Never published: nothing attaches it to a publication.
+val noNativeJar = tasks.register<Jar>("noNativeJar") {
+    archiveClassifier = "nonative"
+    from(sourceSets.main.get().output) {
+        exclude("native/**")
+    }
+    into("META-INF/versions/25") {
+        from(java25.output)
+    }
+    manifest {
+        attributes(
+            "Automatic-Module-Name" to "io.github.skunkwerkx.hypercast",
+            "Multi-Release" to "true",
+        )
+    }
+}
+
+// The sources jar mirrors the layout: the FFM tree under META-INF/versions/25.
+tasks.withType<Jar>().matching { it.name == "sourcesJar" }.configureEach {
+    into("META-INF/versions/25") {
+        from(java25.allJava)
+    }
+    manifest {
+        attributes(
+            "Automatic-Module-Name" to "io.github.skunkwerkx.hypercast",
+            "Multi-Release" to "true",
+        )
+    }
+}
+
+// What the multi-release layout must be, checked on the built jar: the JDK's own validator
+// (which also holds both NativeCore trees to one public API), the manifest attribute, the
+// class file major versions (65 for the 21 base, 69 under versions/25), a NativeCore in both
+// trees, and both libraries in every RID directory. A jar with only the local RID passes;
+// staging puts the pair in each one.
+val validateMultiReleaseJar = tasks.register("validateMultiReleaseJar") {
+    val jarFile = tasks.jar.flatMap { it.archiveFile }
+    dependsOn(tasks.jar)
+    inputs.file(jarFile)
+    doLast {
+        val jar = jarFile.get().asFile
+        val jarTool = File(System.getProperty("java.home"), "bin/jar" + if (System.getProperty("os.name").lowercase().startsWith("windows")) ".exe" else "")
+        val validate = ProcessBuilder(jarTool.path, "--validate", "--file", jar.path).redirectErrorStream(true).start()
+        val validateOutput = validate.inputStream.readBytes().decodeToString()
+        check(validate.waitFor() == 0) { "jar --validate failed on ${jar.name}:\n$validateOutput" }
+
+        JarFile(jar).use { zip ->
+            check(zip.manifest?.mainAttributes?.getValue("Multi-Release") == "true") {
+                "${jar.name}: the manifest lacks Multi-Release: true"
+            }
+            val names = zip.entries().asSequence().map { it.name }.toList()
+            for (name in names.filter { it.endsWith(".class") && !it.endsWith("module-info.class") }) {
+                val head = zip.getInputStream(zip.getEntry(name)).use { it.readNBytes(8) }
+                val major = ((head[6].toInt() and 0xFF) shl 8) or (head[7].toInt() and 0xFF)
+                val want = if (name.startsWith("META-INF/versions/25/")) 69 else jdkFloor + 44
+                check(major == want) { "${jar.name}: $name is class file major $major, expected $want" }
+            }
+            val nativeCore = "io/github/skunkwerkx/hypercast/NativeCore.class"
+            for (entry in listOf(nativeCore, "META-INF/versions/25/$nativeCore")) {
+                check(entry in names) { "${jar.name}: $entry is missing" }
+            }
+            val byRid = names.filter { it.startsWith("native/") && !it.endsWith("/") }
+                .groupBy({ it.removePrefix("native/").substringBefore('/') }, { it.substringAfterLast('/') })
+            for ((rid, files) in byRid) {
+                check(files.any { it in coreNames }) { "${jar.name}: native/$rid has no core library ($files)" }
+                check(files.any { it in shimNames }) { "${jar.name}: native/$rid has no JNI library ($files)" }
+            }
+        }
+    }
+}
+
+java {
+    // 21 is the floor: the oldest long-term-support JDK Temurin still ships for every platform
+    // this jar bundles a library for (no JDK 17 for Windows arm64 or Alpine arm64), and it
+    // runs the JNI NativeCore; 25 and later take the FFM one from META-INF/versions/25.
+    sourceCompatibility = JavaVersion.toVersion(jdkFloor)
+    targetCompatibility = JavaVersion.toVersion(jdkFloor)
+    withSourcesJar()
+}
+
+// The java25 tree compiles --release 25. The base and the tests compile -source/-target
+// jdkFloor against JDK 25's own API, not --release jdkFloor: the public API carries
+// MemorySegment overloads and the FFM-typed interop package on every JDK (jar --validate
+// requires one public API across both trees), and java.lang.foreign is a preview API in 21's
+// signatures, which javac refuses at --release 21. checkFloorApi below takes --release's other
+// job: nothing newer than 21 may be referenced.
+tasks.withType<JavaCompile>().configureEach {
+    if (name == "compileJava25Java") {
+        options.release = 25
+    } else {
+        // -source 21 without --release warns that the bootstrap class path is not set: on
+        // purpose, as above.
+        options.compilerArgs.add("-Xlint:-options")
+    }
+}
+
+// --release's other half, on the floor JDK itself: every class, method and field the base
+// and the tests reference in the JDK must exist in jdkFloor with the same descriptor. A 22+
+// API (MemorySegment.getString, Arena.allocateFrom) compiles above and fails here, not on a
+// consumer's JDK 21.
+val checkFloorApi = tasks.register<Exec>("checkFloorApi") {
+    val launcher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(jdkFloor) }
+    val classDirs = files(sourceSets.main.get().output.classesDirs, sourceSets.test.get().output.classesDirs)
+    val checker = file("gradle/FloorApiCheck.java")
+    dependsOn(tasks.compileJava, tasks.compileTestJava)
+    inputs.files(classDirs, checker)
+    val stamp = layout.buildDirectory.file("floor-api.ok")
+    outputs.file(stamp)
+    doFirst {
+        executable = launcher.get().executablePath.asFile.path
+        args(checker.path, *classDirs.files.filter { it.isDirectory }.map { it.path }.toTypedArray())
+    }
+    doLast { stamp.get().asFile.writeText("ok\n") }
+}
+
+// Both suites run the same classes against the jar, which is the unit under test: the
+// multi-release layout picks the FFM NativeCore on a 25 JVM and the JNI one on 21.
+// `test` runs on Gradle's own JDK (25), `testFloor` on the floor.
+fun Test.suite(backend: String, feature: Int) {
     useJUnitPlatform()
-    // Cast's FFM downcalls are a "restricted method" — silences the runtime warning today
-    // and avoids them being blocked outright in a future JDK.
-    jvmArgs("--enable-native-access=ALL-UNNAMED")
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = files(tasks.jar) + sourceSets.test.get().output + configurations.testRuntimeClasspath.get()
+    dependsOn(validateMultiReleaseJar, noNativeJar, checkFloorApi)
+    inputs.file(noNativeJar.flatMap { it.archiveFile })
+    // The no-core child JVM runs against this. Lazy: the task is resolved when the JVM starts,
+    // not when the build is configured.
+    jvmArgumentProviders.add(
+        CommandLineArgumentProvider {
+            listOf("-Dhypercast.noNativeJar=" + noNativeJar.get().archiveFile.get().asFile.absolutePath)
+        },
+    )
+    systemProperty("hypercast.expectBackend", backend)
+    systemProperty("hypercast.expectFeature", feature.toString())
+    // NativeCore's FFM downcalls are a "restricted method", and on JDK 24+ so is the JNI
+    // path's System.load: this silences the runtime warning today and avoids them being
+    // blocked outright in a future JDK. -Xcheck:jni makes the VM check every JNI call the
+    // library makes; its findings print natively, past Gradle's listeners, so CheckJniTest
+    // reads them from a child JVM of its own.
+    jvmArgs("--enable-native-access=ALL-UNNAMED", "-Xcheck:jni")
     // This binding's own version, so the suite can pin Cast.nativeVersion() to it: the core
     // and the jar move together (prepare-release.yml bumps both), and the probe exists to
     // prove exactly that.
     systemProperty("hypercast.version", version)
 }
 
-java {
-    // 25 is the floor: the first long-term-support JDK with the final java.lang.foreign API
-    // (JEP 454 finalized it in 22, and 22 through 24 are all past end of life), comfortably
-    // past the Verdict union's own requirement — sealed interface + record patterns +
-    // exhaustive switch, Java's native discriminated union, stable since 21. Only
-    // upstream-supported runtimes, the same rule that put .NET 11 under the C# binding.
-    sourceCompatibility = JavaVersion.VERSION_25
-    targetCompatibility = JavaVersion.VERSION_25
-    withSourcesJar()
+tasks.test {
+    suite("ffm", 25)
 }
 
-// --release, not just the -source/-target pair above: it also compiles against JDK 25's own
-// API signatures whatever JDK is running the build, so a newer JDK on a CI leg cannot let a
-// newer API slip into a jar that claims 25.
-tasks.withType<JavaCompile>().configureEach {
-    options.release = 25
+// The same suite on the floor JDK, through the toolchain: the JNI path end to end.
+val testFloor = tasks.register<Test>("testFloor") {
+    suite("jni", jdkFloor)
+    javaLauncher = javaToolchains.launcherFor {
+        languageVersion = JavaLanguageVersion.of(jdkFloor)
+    }
+}
+
+// Both suites must have run the same tests, none skipped: a test that quietly does not run on
+// one JDK is a path nobody checked.
+val checkSuiteParity = tasks.register("checkSuiteParity") {
+    dependsOn(tasks.test, testFloor)
+    val results = layout.buildDirectory.dir("test-results")
+    doLast {
+        fun read(suite: String): Pair<Set<String>, List<String>> {
+            val dir = results.get().dir(suite).asFile
+            val files = dir.listFiles { f -> f.name.endsWith(".xml") }.orEmpty()
+            check(files.isNotEmpty()) { "no test results in $dir" }
+            val ran = sortedSetOf<String>()
+            val skipped = mutableListOf<String>()
+            for (file in files) {
+                val doc = javax.xml.parsers.DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(file)
+                val cases = doc.getElementsByTagName("testcase")
+                for (i in 0 until cases.length) {
+                    val case = cases.item(i) as org.w3c.dom.Element
+                    val id = case.getAttribute("classname") + "#" + case.getAttribute("name")
+                    ran += id
+                    if (case.getElementsByTagName("skipped").length > 0) skipped += id
+                }
+            }
+            return ran to skipped
+        }
+        val (onTest, skippedTest) = read("test")
+        val (onFloor, skippedFloor) = read("testFloor")
+        check(skippedTest.isEmpty() && skippedFloor.isEmpty()) {
+            "skipped tests: test=$skippedTest testFloor=$skippedFloor"
+        }
+        check(onTest == onFloor) {
+            "the suites differ: only in test=${onTest - onFloor}, only in testFloor=${onFloor - onTest}"
+        }
+        logger.lifecycle("suite parity: ${onTest.size} tests on each JDK, none skipped")
+    }
+}
+
+tasks.check {
+    dependsOn(testFloor, checkSuiteParity, checkFloorApi)
 }
 
 // javadoc's own doclint already flags a missing comment/@param/@return as a WARNING by
@@ -166,6 +421,9 @@ tasks.withType<JavaCompile>().configureEach {
 // prerequisite, not just style.
 tasks.javadoc {
     (options as StandardJavadocDocletOptions).addBooleanOption("Xwerror", true)
+    // The documented source is the 21 base, run on the 25 tool, and documented against 25's
+    // API for the reason the compile is: --release 21 refuses java.lang.foreign as preview.
+    (options as StandardJavadocDocletOptions).addStringOption("source", jdkFloor.toString())
 }
 
 // mavenPublishing {} (com.vanniktech.maven.publish) owns the "maven" publication itself —
@@ -185,9 +443,9 @@ mavenPublishing {
         description.set(
             "Allocation-lean scalar parsing — booleans, numerics, UUIDs, temporals — " +
                 "as a sealed-interface Verdict union (value or reason + offending span, " +
-                "never an exception), FFM bindings straight into a native Rust core " +
-                "(libhypercast) that never allocates. JDK 25+. No runtime bridge, no extra " +
-                "dependency."
+                "never an exception), bindings straight into a native Rust core " +
+                "(libhypercast) that never allocates. JDK 21+: JNI on 21–24, FFM on 25+. " +
+                "No runtime bridge, no extra dependency."
         )
         url.set("https://github.com/SkunkWerkx/HyperCast")
         licenses {

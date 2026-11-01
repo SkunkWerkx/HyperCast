@@ -1,8 +1,8 @@
 package hypercast
 
-// Each pair pits a HyperCast door (cgo crossing included) against the closest stdlib /
-// lingua-franca parse — mirrors rust/benches, csharp/HyperCast.Benchmarks, and
-// java/benchmarks. Where grammars differ the label says so: strconv has no grouping knob
+// Each pair pits a HyperCast door (the copy into the translated core's memory included)
+// against the closest stdlib / lingua-franca parse — mirrors rust/benches,
+// csharp/HyperCast.Benchmarks, and java/benchmarks. Where grammars differ the label says so: strconv has no grouping knob
 // (the ungrouped Cast row is the like-for-like), and time.ParseDuration speaks Go's own
 // "1h30m" dialect, not ISO 8601 — printed for scale, not equivalence.
 // Run: go test -bench=. -benchmem
@@ -42,6 +42,16 @@ func BenchmarkCastI32(b *testing.B) {
 	for b.Loop() {
 		I32(benchInt, Invariant)
 	}
+}
+
+// GOMAXPROCS goroutines at once: what the primary and the pool cost under contention
+// (core.go), reported as ns per call in aggregate.
+func BenchmarkCastI32GroupedParallel(b *testing.B) {
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			I32(benchIntGroup, Invariant)
+		}
+	})
 }
 
 func BenchmarkCastI32Grouped(b *testing.B) {

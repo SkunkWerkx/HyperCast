@@ -237,6 +237,6 @@ func ExampleSpan() {
 }
 
 func ExampleNativeVersion() {
-	// The version the linked core reports about itself, "major.minor.patch".
+	// The version the core reports about itself, "major.minor.patch".
 	log.Printf("hypercast core %s", hypercast.NativeVersion())
 }

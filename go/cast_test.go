@@ -227,9 +227,9 @@ func TestNativeVersionMatchesTheCrate(t *testing.T) {
 }
 
 func TestAvailableAndLoadErrorAreConstant(t *testing.T) {
-	// The core is linked in, so both are constants; this pins that they stay that way.
+	// The core is compiled in, so both are constants; this pins that they stay that way.
 	if !Available() || LoadError() != nil {
-		t.Fatalf("Available() = %v, LoadError() = %v; a linked core is always available", Available(), LoadError())
+		t.Fatalf("Available() = %v, LoadError() = %v; a compiled-in core is always available", Available(), LoadError())
 	}
 }
 

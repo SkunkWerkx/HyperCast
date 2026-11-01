@@ -23,13 +23,16 @@ import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
+import org.openjdk.jmh.annotations.Level;
 import org.openjdk.jmh.annotations.Mode;
 import org.openjdk.jmh.annotations.OutputTimeUnit;
 import org.openjdk.jmh.annotations.Scope;
+import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
 
 /**
- * Each pair pits a HyperCast door (FFM crossing included) against the closest JDK parse
+ * Each pair pits a HyperCast door (the native crossing included: FFM on JDK 25 and later, JNI
+ * on the floor with {@code -PjmhJdk=21}) against the closest JDK parse
  * with equivalent settings declared — {@link NumberFormat} where grouping needs the JDK's
  * locale machinery, {@code java.time} parsers where that's simply how the JDK door works.
  * String-door numbers include the UTF-8 encode; the {@code byte[]} rows show the raw
@@ -61,6 +64,11 @@ public class CastBenchmarks {
             MemorySegment.ofArray((intText + "|" + timestampText).getBytes(StandardCharsets.UTF_8));
     private final MemorySegment intSlice = line.asSlice(0, intBytes.length);
     private final MemorySegment timestampSlice = line.asSlice(intBytes.length + 1, timestampBytes.length);
+
+    @Setup(Level.Trial)
+    public void requireExpectedBackend() {
+        BackendCheck.require();
+    }
 
     @Benchmark
     public Verdict<Boolean> castBool() {

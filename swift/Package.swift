@@ -1,45 +1,44 @@
 // swift-tools-version:6.2
 import PackageDescription
 
-#if canImport(Darwin)
-    import Foundation
-#endif
+import Foundation
 
-// The development loop: HYPERCAST_LOCAL_CORE=1 links the bundle .github/scripts/local-core.sh
-// builds from the checkout, under rust/target/ (which git ignores), in place of the committed
-// one, so the suite can run against the core as it stands without replacing a committed
-// archive. The repository root's Package.swift, which consumers resolve, has no such switch.
-let coreBundle =
-    Context.environment["HYPERCAST_LOCAL_CORE"] == nil
-    ? "HyperCastCore.artifactbundle" : "../rust/target/local-core/swift/HyperCastCore.artifactbundle"
-
+// The native core is a static-library artifact bundle, one archive per triple (SE-0482, which
+// is what sets the tools version above): glibc and musl Linux and macOS on x86_64 and arm64,
+// Windows (MSVC) on x86_64 and arm64, Android on x86_64 and arm64, and WASI. SwiftPM picks the
+// variant for the triple being built and links it into the consumer's executable, so nothing
+// ships beside it and nothing is opened at run time. A triple with no variant has no
+// `HyperCastCore` module, and the build stops there rather than at run time.
+//
+// The core is build output, never committed: CI writes each leg's archives (and info.json)
+// into HyperCastCore.artifactbundle/ before any Swift step, and .github/scripts/local-core.sh
+// writes the host's. The bundle is declared only once its info.json is there, so the package
+// still resolves without one (Dependabot resolves swift/Benchmarks through this file); a build
+// then stops at `import HyperCastCore`. Consumers never see this file: they resolve the root
+// Package.swift, which takes the core from the release's assets.
+//
 // iOS, the iOS simulator and Mac Catalyst take the core from an XCFramework instead: an app
 // for those is built by Xcode, which has linked a static library out of an XCFramework since
 // Xcode 12 and does not read a static-library artifact bundle. It carries the same no_std
 // archives, one slice each (arm64 only), with the header and module map under
-// Headers/HyperCastCore/, so `import HyperCastCore` finds the same module either way.
-//
-// Only a Mac can build for those platforms, so only a Mac's manifest declares the target; on
-// Linux and Windows this file is what it was. And only when the XCFramework is there: it is
-// committed by stage-native-binaries.yml, whole, so a checkout from before its first staging
-// has none, and a binary target whose path is missing fails the whole package, macOS
-// included.
-#if canImport(Darwin)
-    let appleCore = "HyperCastCoreApple.xcframework"
-    let linksAppleCore = FileManager.default.fileExists(
-        atPath: "\(Context.packageDirectory)/\(appleCore)/Info.plist")
-#else
-    let appleCore = ""
-    let linksAppleCore = false
-#endif
-let appleCoreTargets: [Target] =
-    linksAppleCore ? [.binaryTarget(name: "HyperCastCoreApple", path: appleCore)] : []
+// Headers/HyperCastCore/, so `import HyperCastCore` finds the same module either way. Only a
+// Mac builds one (the full static-libs build), so it is declared only when it is there.
+func built(_ path: String) -> Bool {
+    FileManager.default.fileExists(atPath: "\(Context.packageDirectory)/\(path)")
+}
+let core = "HyperCastCore.artifactbundle"
+let appleCore = "HyperCastCoreApple.xcframework"
+let linksCore = built("\(core)/info.json")
+let linksAppleCore = built("\(appleCore)/Info.plist")
+let coreTargets: [Target] =
+    (linksCore ? [.binaryTarget(name: "HyperCastCore", path: core)] : [])
+    + (linksAppleCore ? [.binaryTarget(name: "HyperCastCoreApple", path: appleCore)] : [])
 let coreDependencies: [Target.Dependency] =
-    linksAppleCore
-    ? [
-        .target(name: "HyperCastCore", condition: .when(platforms: [.macOS, .linux, .windows, .wasi, .android])),
-        .target(name: "HyperCastCoreApple", condition: .when(platforms: [.iOS, .macCatalyst])),
-    ] : ["HyperCastCore"]
+    (linksCore
+        ? [.target(name: "HyperCastCore", condition: .when(platforms: [.macOS, .linux, .windows, .wasi, .android]))]
+        : [])
+    + (linksAppleCore
+        ? [.target(name: "HyperCastCoreApple", condition: .when(platforms: [.iOS, .macCatalyst]))] : [])
 
 let package = Package(
     name: "HyperCast",
@@ -56,26 +55,13 @@ let package = Package(
         .library(name: "HyperCast", targets: ["HyperCast"])
     ],
     targets: [
-        // The native core as static libraries, one per triple (SE-0482, which is what sets
-        // the tools version above): glibc and musl Linux and macOS on x86_64 and arm64,
-        // Windows (MSVC) on x86_64 and arm64, Android on x86_64 and arm64, and WASI. SwiftPM
-        // picks the variant for the triple being built and links it into the consumer's
-        // executable, so nothing ships beside it and nothing is opened at run time. A triple with no variant has no
-        // `HyperCastCore` module, and the build stops there rather than at run time.
-        .binaryTarget(
-            name: "HyperCastCore",
-            path: coreBundle
-        ),
         .target(
             name: "HyperCast",
             dependencies: coreDependencies
         ),
-        // HYPERCAST_LOCAL_CORE turns off the suite's core freshness check, which holds the
-        // committed bundle to the checkout's rust/ (Tests/HyperCastTests/CoreFreshnessTests.swift).
         .testTarget(
             name: "HyperCastTests",
-            dependencies: ["HyperCast"],
-            swiftSettings: Context.environment["HYPERCAST_LOCAL_CORE"] == nil ? [] : [.define("HYPERCAST_LOCAL_CORE")]
+            dependencies: ["HyperCast"]
         ),
-    ] + appleCoreTargets
+    ] + coreTargets
 )

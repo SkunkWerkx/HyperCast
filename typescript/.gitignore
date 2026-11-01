@@ -1,0 +1,11 @@
+*.node
+npm/
+target/
+node_modules/
+hypercast.wasm32-wasip1.*
+hypercast.wasip1*
+browser-smoke/dist/
+browser-smoke/node_modules/
+consumer-tests/node_modules/
+consumer-tests/work/
+browser.js
