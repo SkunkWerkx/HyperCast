@@ -227,7 +227,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **Java — `Cast.isAvailable()` answers `false` without a core** instead of throwing
   `AssertionError`. *(Java)*
-
 - **The static library links without dead-stripping.** A plain `cc app.c libhypercast.a`
   failed with "undefined reference to `rust_eh_personality`": the core's 128-bit division
   helpers carry an unwind entry naming it, and only the shared library defined it. The
@@ -249,6 +248,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   rejects (dotnet/runtime#132858), and the package's `--translate-to-exnref` item is gone. The
   same build is what lets .NET 10 link it, and the archive in the package shrinks from 3.4 MB
   to 414 KB. *(C#)*
+- **Ruby — `require "hypercast"` is silent under `ruby -w`.** 1.0.0 printed "method
+  redefined; discarding old bool" and "previous definition of bool was here" for each of the
+  twenty-six doors whenever the Magnus extension loaded, 52 lines on every require with
+  warnings on: the Fiddle definitions sat on `HyperCast`'s singleton class, where the extension
+  then defined its own. They now live in `HyperCast::FiddleBackend`, a module `HyperCast`
+  extends, so the extension's definitions go in front of them through the ancestor chain and
+  nothing is redefined, as in HyperUuid. Method lookup and both backends' behaviour are
+  unchanged; `spec/native_backend_spec.rb` runs a `-w` require and requires an empty stderr.
+  *(ruby)*
 
 ## [1.0.0] — 2026-10-25
 

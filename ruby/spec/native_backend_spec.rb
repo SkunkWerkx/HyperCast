@@ -27,6 +27,17 @@ RSpec.describe "native backend" do
     expect(fiddle_eval("HyperCast::BACKEND")).to eq("fiddle")
   end
 
+  it "loads under -w without a method-redefinition warning" do
+    # 1.0.0 printed 52 lines under `ruby -w`, "method redefined; discarding old bool" and
+    # "previous definition of bool was here" for each of the twenty-six doors: the Fiddle
+    # definitions sat on HyperCast's singleton class, exactly where the extension then defined
+    # its own. Any consumer running with warnings on saw it on every require.
+    lib = File.expand_path("../lib", __dir__)
+    out, status = Open3.capture2e(RbConfig.ruby, "-w", "-I", lib, "-r", "hypercast",
+                                  "-e", "print HyperCast::BACKEND")
+    expect([status.success?, out]).to eq([true, "native"])
+  end
+
   # The extension builds Success and Fault without going through Data.new (the keyword Hash
   # it gathers was most of a lean door's cost), so what it hands back has to be the object
   # Data.new would have made in every way a caller can observe.

@@ -12,8 +12,8 @@ resort everywhere else — selected automatically, zero compiles either way.**
 Allocation-lean scalar casts — booleans, characters, the full integer family, reals, exact
 decimals, UUIDs, temporals — calling directly into the native `libhypercast` Rust core. Ruby 3.3 is the
 floor. The fast path links the core straight into a Ruby extension (Magnus): on require it
-redefines the doors in place on the `HyperCast` module — no delegation layer, no second
-surface, which is exactly what keeps the backends provably in agreement.
+defines the doors on the `HyperCast` module in front of the Fiddle ones — no delegation layer,
+no second surface, which is exactly what keeps the backends provably in agreement.
 The last-resort fallback, in the universal gem only, calls the native `libhypercast` shared
 library via [`Fiddle`](https://docs.ruby-lang.org/en/master/Fiddle.html) — dlopen/dlsym plus
 raw C-ABI calls, no runtime bridge. `HyperCast::BACKEND` reports which one is live;

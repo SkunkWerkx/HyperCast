@@ -1,5 +1,9 @@
 # hypercast (R)
 
+[![CI](https://github.com/SkunkWerkx/HyperCast/actions/workflows/ci.yml/badge.svg)](https://github.com/SkunkWerkx/HyperCast/actions/workflows/ci.yml)
+[![CRAN](https://img.shields.io/cran/v/hypercast.svg)](https://cran.r-project.org/package=hypercast)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/SkunkWerkx/HyperCast/blob/master/LICENSE)
+
 Scalar casts from untrusted text for R: booleans, characters, the integer family, reals,
 exact decimals, UUIDs, dates, times, date-times, durations, Unix and spreadsheet serial
 instants. A hand-written C shim calls the Rust core through `.Call`; the core is the same one
