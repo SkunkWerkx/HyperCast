@@ -10,8 +10,13 @@ import io.github.skunkwerkx.hypercast.NumFormat;
 import io.github.skunkwerkx.hypercast.Success;
 import io.github.skunkwerkx.hypercast.UnixPrecision;
 import io.github.skunkwerkx.hypercast.Verdict;
+import java.io.DataInputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
+import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -19,14 +24,16 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.util.Arrays;
 import java.util.Locale;
 import java.util.UUID;
 
 /**
  * Exercises every door — and the sealed union's exhaustive-switch consumption — as a
  * GraalVM Native Image binary ({@code ./gradlew :aot-smoke-test:nativeRun};
- * {@code :aot-smoke-test:run} is the same program on an ordinary JVM). Exit code 0 only if
- * every cast lands as expected.
+ * {@code :aot-smoke-test:run} is the same program on an ordinary JVM, where JDK 25 takes the
+ * jar's FFM path, and {@code :aot-smoke-test:runFloor} on the floor JDK, where its JNI base
+ * loads). Exit code 0 only if every cast lands as expected.
  */
 public final class Main {
     private Main() {}
@@ -60,6 +67,10 @@ public final class Main {
         System.out.println("available: " + Cast.isAvailable());
         if (!Cast.isAvailable()) {
             failures++;
+        }
+        requireExpectedBackend();
+        if (System.getProperty("org.graalvm.nativeimage.imagecode") != null) {
+            requireNoJniLibraryEmbedded();
         }
         // The version probe is the one export linked without the critical option, so it
         // needs its own downcall signature in reachability-metadata.json — this is what
@@ -146,8 +157,10 @@ public final class Main {
                 Instant.ofEpochSecond(1_700_000_000L));
         check("bool (heap slice)", Cast.bool(whole.asSlice(19, 4)), true);
         try (Arena arena = Arena.ofConfined()) {
-            // allocateFrom appends a NUL terminator; the door gets exactly the text's bytes.
-            MemorySegment offHeap = arena.allocateFrom("42.5");
+            // By hand rather than allocateFrom, which JDK 21 lacks: the floor runs this too.
+            byte[] text = "42.5|".getBytes(StandardCharsets.UTF_8);
+            MemorySegment offHeap = arena.allocate(text.length);
+            MemorySegment.copy(text, 0, offHeap, ValueLayout.JAVA_BYTE, 0, text.length);
             check("f64 (native segment)", Cast.f64(offHeap.asSlice(0, 4), NumFormat.INVARIANT), 42.5);
         }
 
@@ -163,5 +176,68 @@ public final class Main {
 
         System.out.println(failures == 0 ? "AOT smoke test passed." : "AOT smoke test FAILED (" + failures + ").");
         System.exit(failures == 0 ? 0 : 1);
+    }
+
+    // The path the JDK picked from the multi-release jar: FFM on 25 and later, the JNI base
+    // below that, told apart by NativeCore's natives and, on a JVM, its class file major.
+    private static void requireExpectedBackend() {
+        boolean ffm = Runtime.version().feature() >= 25;
+        String expected = ffm ? "ffm" : "jni";
+        Class<?> core;
+        try {
+            core = Class.forName("io.github.skunkwerkx.hypercast.NativeCore");
+        } catch (ClassNotFoundException e) {
+            throw new AssertionError("NativeCore is not loadable", e);
+        }
+        long natives = Arrays.stream(core.getDeclaredMethods())
+                .filter(m -> Modifier.isNative(m.getModifiers()))
+                .count();
+        require(natives == (ffm ? 0 : 28), expected + " expected, but NativeCore declares " + natives + " natives");
+        String major = "n/a (image)";
+        if (System.getProperty("org.graalvm.nativeimage.imagecode") == null) {
+            try (InputStream in = core.getResourceAsStream("NativeCore.class")) {
+                require(in != null, "NativeCore.class is not readable as a resource");
+                DataInputStream data = new DataInputStream(in);
+                data.readInt();
+                data.readUnsignedShort();
+                int found = data.readUnsignedShort();
+                require(found == (ffm ? 69 : 65), expected + " expected, but NativeCore is class file major " + found);
+                major = Integer.toString(found);
+            } catch (IOException e) {
+                throw new AssertionError("NativeCore.class is unreadable", e);
+            }
+        }
+        System.out.println("backend: " + expected + " (" + natives + " natives, class major " + major + ")");
+    }
+
+    // The image must not carry the JNI library: only the FFM path survives into it (the base
+    // NativeCore is unreachable), and the resource globs cover the core library alone. The
+    // JNI library names are the three the Java side resolves, for each of the eight RIDs.
+    private static void requireNoJniLibraryEmbedded() {
+        String[] rids = {
+            "win-x64",
+            "win-arm64",
+            "osx-x64",
+            "osx-arm64",
+            "linux-x64",
+            "linux-arm64",
+            "linux-musl-x64",
+            "linux-musl-arm64"
+        };
+        String[] names = {"libhypercast_jni.so", "libhypercast_jni.dylib", "hypercast_jni.dll"};
+        for (String rid : rids) {
+            for (String name : names) {
+                require(
+                        Main.class.getResource("/native/" + rid + "/" + name) == null,
+                        "the image embeds the JNI library /native/" + rid + "/" + name);
+            }
+        }
+        System.out.println("image: no JNI library embedded");
+    }
+
+    private static void require(boolean condition, String message) {
+        if (!condition) {
+            throw new AssertionError(message);
+        }
     }
 }

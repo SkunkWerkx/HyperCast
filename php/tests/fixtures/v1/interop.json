@@ -1,0 +1,72 @@
+{
+    "instant": {
+        "0,0": {"result":"date DateTimeImmutable 1970-01-01T00:00:00.000000+00:00 +00:00 type 1"},
+        "1767348245,123456789": {"result":"date DateTimeImmutable 2026-01-02T10:04:05.123456+00:00 +00:00 type 1"},
+        "-1,999999999": {"result":"date DateTimeImmutable 1969-12-31T23:59:59.999999+00:00 +00:00 type 1"},
+        "-62135596800,0": {"result":"date DateTimeImmutable 0001-01-01T00:00:00.000000+00:00 +00:00 type 1"},
+        "253402300799,999999999": {"result":"date DateTimeImmutable 9999-12-31T23:59:59.999999+00:00 +00:00 type 1"},
+        "-1,1": {"result":"date DateTimeImmutable 1969-12-31T23:59:59.000000+00:00 +00:00 type 1"},
+        "1,999": {"result":"date DateTimeImmutable 1970-01-01T00:00:01.000000+00:00 +00:00 type 1"}
+    },
+    "date": {
+        "2026,1,7": {"result":"date DateTimeImmutable 2026-01-07T00:00:00.000000+00:00 +00:00 type 1"},
+        "1,1,1": {"result":"date DateTimeImmutable 0001-01-01T00:00:00.000000+00:00 +00:00 type 1"},
+        "9999,12,31": {"result":"date DateTimeImmutable 9999-12-31T00:00:00.000000+00:00 +00:00 type 1"},
+        "1969,12,31": {"result":"date DateTimeImmutable 1969-12-31T00:00:00.000000+00:00 +00:00 type 1"},
+        "2024,2,29": {"result":"date DateTimeImmutable 2024-02-29T00:00:00.000000+00:00 +00:00 type 1"},
+        "0,3,1": {"result":"date DateTimeImmutable 0000-03-01T00:00:00.000000+00:00 +00:00 type 1"},
+        "-1,12,31": {"result":"date DateTimeImmutable -0001-12-31T00:00:00.000000+00:00 +00:00 type 1"}
+    },
+    "civil": {
+        "2026,1,7,54240000000000": {"result":"date DateTimeImmutable 2026-01-07T15:04:00.000000+00:00 +00:00 type 1"},
+        "1,1,1,1": {"result":"date DateTimeImmutable 0001-01-01T00:00:00.000000+00:00 +00:00 type 1"},
+        "9999,12,31,86399999999999": {"result":"date DateTimeImmutable 9999-12-31T23:59:59.999999+00:00 +00:00 type 1"},
+        "1969,12,31,999": {"result":"date DateTimeImmutable 1969-12-31T00:00:00.000000+00:00 +00:00 type 1"},
+        "2024,2,29,86400000000000": {"result":"date DateTimeImmutable 2024-03-01T00:00:00.000000+00:00 +00:00 type 1"}
+    },
+    "uuid": {
+        "0123456789abcdeffedcba9876543210": {"result":"01234567-89ab-cdef-fedc-ba9876543210"},
+        "00000000000000000000000000000000": {"result":"00000000-0000-0000-0000-000000000000"},
+        "ffff": {"result":"ffff----"},
+        "": {"result":"----"}
+    },
+    "fault": {
+        "1,0,0": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Empty","offset":0,"length":0}},
+        "2,3,4": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::Malformed","offset":3,"length":4}},
+        "3,7,1": {"result":{"class":"HyperCast\\Fault","reason":"enum HyperCast\\CastFailure::OutOfRange","offset":7,"length":1}},
+        "0,0,0": {"exception":"LogicException","message":"0 is not a verdict reason code — a binding bug, please report it"},
+        "4,1,1": {"exception":"LogicException","message":"4 is not a verdict reason code — a binding bug, please report it"},
+        "-1,0,0": {"exception":"LogicException","message":"-1 is not a verdict reason code — a binding bug, please report it"}
+    },
+    "version": {
+        "65536": {"result":"1.0.0"},
+        "2305": {"result":"0.9.1"},
+        "658188": {"result":"10.11.12"},
+        "0": {"result":"0.0.0"},
+        "-1": {"result":"-1.255.255"},
+        "33554431": {"result":"511.255.255"}
+    },
+    "resolve": {
+        "Linux x86_64 8": {"result":["linux-x64","libhypercast.so"]},
+        "Linux x86_64 4": {"exception":"RuntimeException","message":"hypercast: unsupported platform — a 64-bit PHP is required"},
+        "Linux aarch64 musl 8": {"result":["linux-musl-arm64","libhypercast.so"]},
+        "Linux aarch64 musl 4": {"exception":"RuntimeException","message":"hypercast: unsupported platform — a 64-bit PHP is required"},
+        "Linux AMD64 8": {"result":["linux-x64","libhypercast.so"]},
+        "Linux AMD64 4": {"exception":"RuntimeException","message":"hypercast: unsupported platform — a 64-bit PHP is required"},
+        "Darwin arm64 8": {"result":["osx-arm64","libhypercast.dylib"]},
+        "Darwin arm64 4": {"exception":"RuntimeException","message":"hypercast: unsupported platform — a 64-bit PHP is required"},
+        "Darwin x86_64 8": {"result":["osx-x64","libhypercast.dylib"]},
+        "Darwin x86_64 4": {"exception":"RuntimeException","message":"hypercast: unsupported platform — a 64-bit PHP is required"},
+        "Windows ARM64 8": {"result":["win-x64","hypercast.dll"]},
+        "Windows ARM64 4": {"exception":"RuntimeException","message":"hypercast: unsupported platform — a 64-bit PHP is required"},
+        "Windows x86 8": {"result":["win-x64","hypercast.dll"]},
+        "Windows x86 4": {"exception":"RuntimeException","message":"hypercast: unsupported platform — a 64-bit PHP is required"},
+        "Linux armv7l 8": {"exception":"RuntimeException","message":"hypercast: unsupported platform — no native library for architecture 'armv7l'"},
+        "Linux armv7l 4": {"exception":"RuntimeException","message":"hypercast: unsupported platform — a 64-bit PHP is required"},
+        "BSD amd64 8": {"exception":"RuntimeException","message":"hypercast: unsupported platform PHP_OS_FAMILY=BSD"},
+        "BSD amd64 4": {"exception":"RuntimeException","message":"hypercast: unsupported platform — a 64-bit PHP is required"},
+        "Linux ARM64 musl 8": {"result":["linux-musl-arm64","libhypercast.so"]},
+        "Linux ARM64 musl 4": {"exception":"RuntimeException","message":"hypercast: unsupported platform — a 64-bit PHP is required"},
+        "another base name": {"result":["linux-musl-x64","libhypertabular.so"]}
+    }
+}

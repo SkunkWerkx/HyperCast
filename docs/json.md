@@ -23,7 +23,7 @@ project's world in two separate ways.
    be `OutOfRange` with a span, which no JSON library gives you.
 
 So the division of labor is: **structure parsing from a JSON library, scalar semantics from
-the one engine that's byte-identical in eight languages.** The same split HyperTabular's
+the one engine that's byte-identical in every binding.** The same split HyperTabular's
 workbook reader already ships for XLSX and ODS, with Apple Numbers on its master for the
 next release.
 

@@ -1,6 +1,7 @@
 package hypercast
 
 import (
+	"encoding/binary"
 	"strings"
 	"testing"
 	"time"
@@ -88,11 +89,12 @@ func TestRawValuesPresentAsTheDoorsPresentThem(t *testing.T) {
 }
 
 func TestADecimalAndADurationAreTheCoresBytes(t *testing.T) {
-	// {u64 lo, u32 hi, u8 scale, u8 negative} and {i64 seconds, i32 nanos}, viewed in place.
+	// {u64 lo, u32 hi, u8 scale, u8 negative} and {i64 seconds, i32 nanos}, viewed in place,
+	// the words in the host's order, as a native library on this host writes them.
 	var buffer [2]uint64
 	raw := unsafe.Slice((*byte)(unsafe.Pointer(&buffer)), 16)
-	raw[0], raw[12], raw[13] = 0x39, 2, 1 // 0x3039 = 12345
-	raw[1] = 0x30
+	binary.NativeEndian.PutUint64(raw, 12345)
+	raw[12], raw[13] = 2, 1
 	if got := *(*Decimal)(unsafe.Pointer(&buffer)); got.String() != "-123.45" {
 		t.Errorf("decimal view = %v", got)
 	}
@@ -189,9 +191,7 @@ func TestTheRawLayoutsAreTheCoresBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	bytes := unsafe.Slice((*byte)(unsafe.Pointer(&raw)), unsafe.Sizeof(raw))
-	word := func(at int) uint32 {
-		return uint32(bytes[at]) | uint32(bytes[at+1])<<8 | uint32(bytes[at+2])<<16 | uint32(bytes[at+3])<<24
-	}
+	word := func(at int) uint32 { return binary.NativeEndian.Uint32(bytes[at:]) }
 	symbol := func(at, capacity int) string { return string(bytes[at : at+int(bytes[at+capacity])]) }
 	if len(bytes) != 92 || word(0) != 92 || word(4) != uint32(AllStyles|TrailingSign) || word(8) != 0xFF10 {
 		t.Errorf("head = %v", bytes[:12])

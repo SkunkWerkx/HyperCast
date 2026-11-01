@@ -1,0 +1,10 @@
+prefix=${pcfiledir}/../..
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: hypercast
+Description: Allocation-free casts from untrusted text to typed values, each a value or a fault with its byte span, from the HyperCast core
+URL: https://github.com/SkunkWerkx/HyperCast
+Version: @VERSION@
+Libs: -L${libdir} -lhypercast
+Cflags: -I${includedir}

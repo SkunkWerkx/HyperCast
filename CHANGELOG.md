@@ -1,8 +1,9 @@
 # Changelog
 
-All eight packages in this repository — the `hypercast` crate and the C#, Java, Go, Python, Ruby,
-PHP and Swift bindings — share one coordinated version, so one changelog covers all of them. Each
-entry marks which packages it actually affects.
+All the packages in this repository — the `hypercast` crate, the C#, Java, Go, Python, Ruby,
+PHP, Swift, TypeScript and R bindings, and the C and C++ archives — share one coordinated
+version, so one changelog covers all of them. Each entry marks which packages it actually
+affects.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -28,6 +29,65 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A TypeScript binding for Node and Bun, on npm as `@skunkwerkx/hypercast`.** A Node-API
+  addon built with napi-rs, the core linked into the `.node` file, published as eight platform
+  packages (`@skunkwerkx/hypercast-<platform>`, one per RID) that the root package picks
+  through `optionalDependencies`, so nothing compiles at install. Node 22.13 or newer and Bun,
+  CommonJS and ESM, text in as a string or a UTF-8 `Uint8Array`, and every door the other
+  bindings have. No door throws: each returns `Verdict<T>`, `{ ok: true, value }` or `{ ok:
+  false, fault: { reason, offset, length } }`, which narrows on `ok`; a fault's span is in
+  UTF-16 code units for a string and bytes for a `Uint8Array`, so `text.slice(offset, offset +
+  length)` is the faulted text either way, and an argument of the wrong type is a `malformed`
+  fault rather than a `TypeError`. `NumFormat.declare` and `DateFormat.declare` answer with a
+  `Declaration`, the format or a refusal with its message. Where no platform package fits
+  (`--omit=optional`, a platform outside the eight) the root falls back to
+  `@skunkwerkx/hypercast-wasm32-wasip1`, the core built for `wasm32-wasip1` and run through
+  `node:wasi`, a plain dependency of the root so it is always installed. Big-endian hosts
+  (s390x under QEMU) are a printed loss there: the smoke's checks pass and the process then
+  never exits, the runtime reading its reference counts host-endian over little-endian wasm
+  memory. Bun 1.4.4 cannot load the WebAssembly package and stays on the addon. The Node floor
+  is the runtime's, `^22.13.0 || >=23.5.0`. *(TypeScript)*
+- **An R binding, as the source package `hypercast`.** A C shim over the core's C ABI,
+  reached through `.Call`, with the core built as a static library from the Rust crates
+  vendored into the tarball, so an install needs Rust but no network. Every door is
+  vectorised and returns a `hypercast_verdict`, a data frame with one row per element: `ok`
+  is the discriminant, `value` (and any exact extras) hold the success, `reason`, `offset`
+  and `length` the fault, and the other case's columns are `NA`. `NA` in is a missing row,
+  never a fault. No door signals a condition for its data; `stop()` is kept for a caller's
+  impossible declaration or argument of the wrong type, as in Python, C# and Java. Spans
+  count in what `substr()` counts in: code points for a character vector, bytes for raw
+  vectors and bytes-marked strings. `is_ok()`, `faults()` and `optional()` read a verdict.
+  R 4.2 or newer. *(R)*
+- **Release plumbing for npm and CRAN.** The tag run packs, attests and preserves ten npm
+  tarballs (the root package, its `optionalDependencies` injected at pack time, the eight
+  platform packages and the WebAssembly package, whose runtime dependencies are pinned from
+  the lockfile) and the R source tarball; the publish dispatch uploads the npm packages
+  through Trusted Publishing, platform packages before the root. No job uploads the R
+  tarball: it is submitted to CRAN by hand from the preserved bytes. CI builds the addon on
+  every RID and runs its suite on Node there, and on Bun, runs the suite on the WebAssembly
+  fallback on Linux, macOS and Windows and the consumer scenarios against the packed tarballs
+  from a local registry (`typescript/consumer-tests/`), and runs `R CMD check --as-cran` on
+  linux-x64, linux-arm64, osx-arm64 and win-x64. *(repository only)*
+- **C: one archive per platform on the GitHub Release.** `hypercast-<version>-<rid>.tar.gz`
+  (`.zip` on Windows) for the eight desktop RIDs, android-arm64, android-x64, iOS, the iOS
+  simulator, Mac Catalyst on both architectures, and wasi-wasm32 (the Apple mobile and
+  WebAssembly ones static only): the generated header, the shared and static libraries
+  (Windows adds the DLL's import library), `hypercastConfig.cmake` for `find_package` and
+  `FetchContent`, and `hypercast.pc` for pkg-config, every path relative so an archive works
+  wherever it is unpacked. Every door returns its result code and writes either `out` or the
+  fault span; nothing a cast does aborts or longjmps. Packed and attested at the tag from the
+  CI run's attested libraries and named in the release attestation; CI builds a consumer
+  against each desktop archive through CMake and pkg-config, shared and static, as C99, C11
+  and C23, and against the Apple mobile ones on a Mac (an iOS device link, the simulator, Mac
+  Catalyst). *(C)*
+- **C++: `hypercast.hpp` in every C archive.** A header-only C++17 binding over the C header,
+  linked against the same targets, that never throws: every door is `noexcept`, the header
+  builds with `-fno-exceptions`, and every cast returns `hypercast::Verdict<T>`, the value or a
+  `Fault` (reason, byte offset, length), with `ok()`, `value_if()`/`fault_if()`, `match`,
+  `visit`, `std::variant` and, under C++23, `std::expected<T, Fault>`. Declared formats are
+  validated by the core itself, so a door never sees a contract violation from one. CI builds
+  it as C++17, 20 and 23 with exceptions on and off, and replays the whole corpus through it
+  on every desktop archive and the Apple mobile ones. *(C++)*
 - **C# — .NET 10 is supported, on desktop, server and in the browser.** The package builds
   `net10.0` and `net11.0` from one source, and package validation holds their public APIs
   identical. On .NET 10 it covers Windows, Linux (glibc and musl) and macOS, framework-dependent
@@ -41,6 +101,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the Native AOT smoke test on both frameworks on every desktop and musl leg, and a new
   `test-nuget-package` job proves from the packed package that a .NET 10 Native AOT publish
   links the core in. *(C#)*
+- **Python: a source distribution.** `hypercast-<version>.tar.gz` now ships with the wheels,
+  so where no wheel fits, pip falls back to building from source (Rust 1.89 or newer and a
+  C linker); CI proves that build on x86-64 glibc 2.17 and musl. Attested like the wheels.
+  *(PyPI)*
 
 ### Changed
 
@@ -48,15 +112,38 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   shipped three, `cp311-abi3` for CPython 3.11 and newer with the GIL and `cp315-abi3.abi3t`
   for 3.15 and newer with or without it: 17 wheels a release where 1.0.0 had 25. The
   free-threaded 3.14 wheel proved the GIL-free path, and it was bound to one interpreter
-  version, too narrow an ABI to carry. Free-threaded 3.13 and 3.14 now get `No matching
-  distribution found`, as PyPy does; free-threading starts at 3.15. *(Python)*
+  version, too narrow an ABI to carry. Free-threaded 3.14 now gets no wheel, and pip builds
+  the sdist (see Added), which a report-only CI job builds and tests there; free-threaded 3.13
+  cannot build it, since PyO3 0.30 refuses free-threaded CPython below 3.14. Free-threading
+  starts at 3.15. *(Python)*
+- **Rust — minimum Rust is now 1.89** (was 1.88), the floor the Hyper* crates share (HyperUuid's
+  is the floor of current `uuid` 1.x). Builds from this repository and the Python sdist need
+  `rustc` 1.89. *(Rust, Python)*
 - **The release flow, after its first run.** `release.yml` uploads the wheels as a step of
-  its own `pypi-publish` job again, so their PEP 740 publish attestations name it; staging
-  starts by itself once the release-mode CI on the preparation commit is green (that run's
-  last job, `request-staging`, dispatches it, since GitHub raises no `workflow_run` for a
-  run a `GITHUB_TOKEN` started), and a second request for a commit already staged is skipped
-  with a notice; the Forge commit's step output is `revision`, which clears CodeQL's
+  its own `pypi-publish` job again, so their PEP 740 publish attestations name it; the Forge
+  commit's step output is `revision`, which clears CodeQL's
   `actions/cache-poisoning/poisonable-step`; and `pypi-recovery.yml` is gone. *(repository only)*
+- **One dispatch prepares and attests, one tag publishes.** *(repository only)*
+  `prepare-release.yml` bumps, dates the CHANGELOG heading, runs the full board, packs every
+  registry input, attests each package and the inventory, preserves them for 90 days and
+  commits the staging commit; pushing `vX.Y.Z` at it verifies the preserved bytes, signs the
+  release attestation from the tag and publishes to the six registries (the R tarball goes to
+  CRAN by hand, from the preserved bytes). A retry is the same
+  workflow dispatched at the tag, so the PyPI publisher is `release.yml` from 1.1.0 on and
+  never changes again (1.0.0's wheels went up from a one-off workflow after the tag run's
+  upload failed, which PyPI shows as a change of provenance). `stage-native-binaries.yml` is
+  gone; CodeQL runs on the preparation commit inside that run and must leave no open alert
+  before the staging commit exists.
+- **The pull-request board runs only what the pull request could have broken.** The one
+  native matrix that built and tested every binding on every host on every push is now one job
+  per concern: the Rust core on all seven hosts first, with its export check, then one job per
+  host and binding, each binding's suite started only when its tree, the core or the workflows
+  changed, after its lint passed once on a Linux arm64 runner. A classifier reads the pull
+  request's files and fails closed (an unknown path, an empty list or an API failure runs
+  everything), and one aggregate job, `pr-board`, is the status to read, red when a job failed
+  or was skipped while its gate said run. The release-mode board, on dispatch and on the Monday
+  schedule, keeps its coverage, and CI also runs the core's suite, corpus included, on
+  big-endian s390x under QEMU. *(repository only)*
 - **C# — the iOS and Mac Catalyst smoke test runs on the SDK's defaults.** Its Mac Catalyst
   build set `Registrar` to `managed-static`, after a Release app on .NET 11's default,
   `trimmable-static`, aborted before `Main`, a fault then put down to the SDK. It was the
@@ -72,18 +159,96 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   process, BenchmarkDotNet's default; the C# table was measured in-process and stands
   until the harness is run again. *(repository only)*
 
+- **PHP — breaking: the package is a native extension, installed with PIE.** `pie install
+  skunkwerkx/hypercast` downloads a prebuilt Zend extension, `hypercast`, built from the core
+  with ext-php-rs, from the GitHub Release: 18 zips, PHP 8.3, 8.4 and 8.5 (NTS only) on six
+  platforms (Linux x64 and arm64 on glibc and on musl, macOS arm64, Windows x64), each
+  attested and named in the release attestation. `composer require` no longer installs it,
+  and no FFI package is kept. `ext-ffi`, `ffi.enable` and preloading,
+  `HYPERCAST_NATIVE_LIBRARY` and `Cast::isAvailable()` are gone; `extension_loaded('hypercast')`
+  is the check. PHP 8.2 is dropped, and Intel macOS has no zip. The classes, methods,
+  defaults, verdicts, exceptions and messages are 1.0's otherwise, `HyperCast\Interop`
+  included (its two writers still take an `FFI\CData`), and arguments are taken as 1.0's
+  userland methods took them: weak-mode callers get PHP's coercion, strict callers the same
+  `TypeError`s. What does differ: a call with too many arguments is an `ArgumentCountError`
+  (1.0 ignored the extras), one with too few is worded as for a built-in function, the classes
+  are internal, and errors name the caller's file and line; `php/README.md` lists them under
+  "Differences from 1.0". Stubs for IDEs and PHPStan are in `php/stubs/`. No PHP binary is
+  left in git: `php/src/` is gone. After every publish, `release.yml` has PIE install the
+  release on every platform and minor. *(PHP)*
+
+- **Go — one backend: the core translated to Go source, no cgo, no binary in git.** The Rust
+  core built for `wasm32-wasip1` (the module imports nothing) is translated to one Go file by
+  [wasm2go](https://github.com/ncruces/wasm2go) and committed as `go/internal/core/core.go`.
+  `go generate` in `go/` regenerates it with a pinned rustc (1.99.1, a reproducibility
+  constraint) and a 64 KiB guest stack (16x the smallest that passes the suite). CI
+  regenerates and diffs it on every push, and `prepare-release.yml` regenerates it at the
+  version. cgo, the thirteen committed archives under `go/staticlib/`, `backend_tinygo.go`, the
+  `iossimulator`/`maccatalyst` and `hypercast_local` tags, `check_go_archives.sh` and the core
+  freshness check are gone. `go get` is the whole install, `CGO_ENABLED=0` (formerly a compile
+  error) is fine, and the module builds for every GOOS and GOARCH Go has (a 23-pair
+  cross-compile sweep in CI; iOS and `android/amd64` need a C linker only because Go's own
+  ports link externally there). The whole suite now runs under TinyGo on wasip1 and under
+  stock Go on `js/wasm` and `wasip1/wasm`, beside the TinyGo browser page. A door's text is
+  copied into the core's memory instead of crossing zero-copy. A text past 65,376 bytes runs on
+  a one-off instance, its one allocation, and the new `MaxText` (2,147,483,647 on a 64-bit
+  host) bounds it: a longer text panics as a caller bug. Calls run on a primary instance when
+  its lock is free, else on a pooled one. Every door stays at 0 allocations on success, now
+  under TinyGo too. On an Apple M6 (2026-11-01, Go 1.27.3, six interleaved runs each), single
+  calls are mostly faster than the cgo binding (`Bool` 10.7 against 24.1 ns, `I32` 33.6
+  against 43.5); the losses: `I32` on 12 goroutines 19.7 against 6.9 ns aggregate (2.9x), a
+  rejected cast 1.5x, and the civil date-time doors 1.4–1.5x. *(Go)*
+
+- **Java runs on JDK 21.** The jar is multi-release: its base reaches the core through JNI,
+  from a library built from the core for every platform, and JDK 25+ keeps FFM. The API,
+  verdicts and messages are the same on both, with two exceptions: the load failure's message
+  names the path's own library, and on JNI an input above 64 KiB is copied into native memory,
+  which can throw `OutOfMemoryError` when native memory is exhausted. A `null` argument is a
+  `NullPointerException` naming the parameter on both. On JDK 21 the `MemorySegment` doors and
+  `interop` need `--enable-preview` in the caller's code. *(Java)*
+
+- **Swift — the core comes from the GitHub Release, not from git.** The root `Package.swift`
+  names two zips by URL and checksum, the static-library artifact bundle and the XCFramework,
+  and SwiftPM downloads them and refuses one whose SHA-256 differs; every binary
+  committed under `swift/` is gone. Nothing changes in a consumer's manifest. In a checkout,
+  the bundle is build output: `.github/scripts/local-core.sh` builds the host's into it, `swift
+  test` links it, and `HYPERCAST_LOCAL_CORE` and the Swift core freshness check are gone.
+  *(Swift)*
+
+- **The C header is generated.** `include/hypercast.h` comes from `rust/src/ffi.rs`'s doc
+  comments and the `#[repr(C)]` types its exports take, through cbindgen, and a test fails
+  when the committed copy differs; the Swift bundle carries the same file. The hand-written
+  header it replaces declared every `out`, `format`, `periods` and `fault` as `void *`; this
+  one types them (`HyperCastRawFault`, `HyperCastRawNumFormat`, `HyperCastDecimal`, …) and
+  carries the format flags and layout sizes (`HyperCastNumFormat_ALL`,
+  `HyperCastRawNumFormat_SIZE`). The ABI is unchanged. *(repository only)*
+
 ### Fixed
 
+- **Java — `Cast.isAvailable()` answers `false` without a core** instead of throwing
+  `AssertionError`. *(Java)*
+
+- **The static library links without dead-stripping.** A plain `cc app.c libhypercast.a`
+  failed with "undefined reference to `rust_eh_personality`": the core's 128-bit division
+  helpers carry an unwind entry naming it, and only the shared library defined it. The
+  static library now carries a weak hidden definition, so two Hyper* archives, or a Rust
+  program with std's own, link as one. C# Native AOT and Swift dead-strip and never met it.
+  *(core)*
+- **The shared library names itself.** On macOS its install name is
+  `@rpath/libhypercast.dylib`, not the build machine's path, and on Linux and Android its
+  soname is `libhypercast.so`, so a program linked against it finds it through its rpath or
+  the loader's search path. Bindings open it by path and see no difference. *(core)*
 - **C# — a Debug Blazor WebAssembly build loads** (the same failure as
   [HyperUuid#50](https://github.com/SkunkWerkx/HyperUuid/issues/50)). Chromium refused an
   unstripped Debug build's `dotnet.native.wasm` with "module uses a mix of legacy and new
   exception handling instructions": the package translated the archive's legacy exception
   handling with a `wasm-opt` pass that rides the SDK's post-link step, and the SDK skips that
-  step for an unstripped module. The archive no longer needs translating: it is built on a
-  pinned nightly with `-Zbuild-std`, for plain wasm, so it holds no exception-handling
-  instructions and none of the features .NET 10's toolchain rejects (dotnet/runtime#132858),
-  and the package's `--translate-to-exnref` item is gone. The same build is what lets .NET 10
-  link it, and the archive in the package shrinks from 3.4 MB to 499 KB. *(C#)*
+  step for an unstripped module. The archive no longer needs translating: it is built with
+  `-Zbuild-std`, on stable Rust with `RUSTC_BOOTSTRAP=1` for that one build, for plain wasm,
+  so it holds no exception-handling instructions and none of the features .NET 10's toolchain
+  rejects (dotnet/runtime#132858), and the package's `--translate-to-exnref` item is gone. The
+  same build is what lets .NET 10 link it, and the archive in the package shrinks from 3.4 MB
+  to 414 KB. *(C#)*
 
 ## [1.0.0] — 2026-10-25
 

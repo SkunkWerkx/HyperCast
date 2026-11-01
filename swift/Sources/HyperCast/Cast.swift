@@ -111,26 +111,39 @@ public enum Cast {
     }
 
     // Linked in: the C declarations are the table, and there is nothing to find or open.
+    // The header types each door's `out`, `format`, `periods` and `fault` (HyperCastDecimal,
+    // HyperCastRawFault, ...), while the doors here fill and read them as raw bytes through
+    // the shapes above, so each entry passes its raw pointers on as the typed ones, which
+    // are the same pointers in the C ABI. Each is a C function of its own that calls the door.
     private static let library = LoadedLibrary(
-        bool: cast_bool,
-        char: cast_char,
-        i8: cast_i8, i16: cast_i16, i32: cast_i32, i64: cast_i64,
-        u8: cast_u8, u16: cast_u16, u32: cast_u32, u64: cast_u64,
-        f32: cast_f32, f64: cast_f64,
-        decimal: cast_decimal,
-        uuid: cast_uuid,
-        timestamp: cast_timestamp,
-        unix: cast_unix,
-        excelSerial: cast_excel_serial,
-        date: cast_date,
-        dateOrdered: cast_date_ordered,
-        dateTime: cast_datetime,
-        time: cast_time,
-        duration: cast_duration,
-        decimalFromF64: cast_decimal_from_f64,
-        excelSerialFromF64: cast_excel_serial_from_f64,
-        excelTime: cast_excel_time,
-        excelDuration: cast_excel_duration,
+        bool: { cast_bool($0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3))) },
+        char: { cast_char($0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3))) },
+        i8: { cast_i8($0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3)), .init(OpaquePointer($4))) },
+        i16: { cast_i16($0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3)), .init(OpaquePointer($4))) },
+        i32: { cast_i32($0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3)), .init(OpaquePointer($4))) },
+        i64: { cast_i64($0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3)), .init(OpaquePointer($4))) },
+        u8: { cast_u8($0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3)), .init(OpaquePointer($4))) },
+        u16: { cast_u16($0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3)), .init(OpaquePointer($4))) },
+        u32: { cast_u32($0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3)), .init(OpaquePointer($4))) },
+        u64: { cast_u64($0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3)), .init(OpaquePointer($4))) },
+        f32: { cast_f32($0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3)), .init(OpaquePointer($4))) },
+        f64: { cast_f64($0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3)), .init(OpaquePointer($4))) },
+        decimal: { cast_decimal($0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3)), .init(OpaquePointer($4))) },
+        uuid: { cast_uuid($0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3))) },
+        timestamp: { cast_timestamp($0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3))) },
+        unix: { cast_unix($0, $1, $2, .init(OpaquePointer($3)), .init(OpaquePointer($4))) },
+        excelSerial: { cast_excel_serial($0, $1, $2, .init(OpaquePointer($3)), .init(OpaquePointer($4))) },
+        date: { cast_date($0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3))) },
+        dateOrdered: { cast_date_ordered($0, $1, $2, .init(OpaquePointer($3)), .init(OpaquePointer($4))) },
+        dateTime: {
+            cast_datetime($0, $1, $2, .init(OpaquePointer($3)), .init(OpaquePointer($4)), .init(OpaquePointer($5)))
+        },
+        time: { cast_time($0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3))) },
+        duration: { cast_duration($0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3))) },
+        decimalFromF64: { cast_decimal_from_f64($0, .init(OpaquePointer($1)), .init(OpaquePointer($2))) },
+        excelSerialFromF64: { cast_excel_serial_from_f64($0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3))) },
+        excelTime: { cast_excel_time($0, .init(OpaquePointer($1)), .init(OpaquePointer($2))) },
+        excelDuration: { cast_excel_duration($0, .init(OpaquePointer($1)), .init(OpaquePointer($2))) },
         version: hypercast_version)
 
     // The core is linked in, so there is nothing to load and nothing that can fail.

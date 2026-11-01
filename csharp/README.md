@@ -405,7 +405,7 @@ a `string` — against parsers that run in-process. Those two are also the rows 
 BCL has a parser built for exactly the one shape being timed, so the comparison is that
 parser at its best against a door doing more: a format declared per call instead of
 borrowed from a culture, separators it can detect, a fault with a byte span instead of
-`false`, and the same verdict in seven languages. A handful of nanoseconds is what that
+`false`, and the same verdict in every HyperCast binding. A handful of nanoseconds is what that
 costs. For plain invariant numbers the BCL is already excellent; these doors earn their
 keep on the culture-machinery parsers, the closed error contract, and cross-language
 agreement.
@@ -482,7 +482,7 @@ names it, so the script skips building its own); it is not part of the solution,
 `dotnet build` never needs the workload or a browser. By hand, the same steps are:
 
 ```shell
-cd rust && cargo +"$(python3 -c 'import json; print(json.load(open("../.github/hyper.json"))["wasm"]["toolchain"])')" wasm-staticlib
+cd rust && rm -rf target/.rustc_info.json target/wasm32-unknown-emscripten && RUSTC_BOOTSTRAP=1 cargo wasm-staticlib
 mkdir -p ../csharp/HyperCast/runtimes/browser-wasm/nativeassets/net11.0
 cp target/wasm32-unknown-emscripten/release/libhypercast.a ../csharp/HyperCast/runtimes/browser-wasm/nativeassets/net11.0/
 cd ../csharp/HyperCast.WasmSmokeTest && dotnet publish -c Release -f net11.0 -o /tmp/hypercast-wasm
@@ -510,7 +510,7 @@ not fire for this. So the targets file stops the build with error `HYPERCAST002`
 managed fallback can set `<HyperCastRequireWasmWorkload>false</HyperCastRequireWasmWorkload>`.
 
 **WebAssembly on .NET 10 and later, as linked.** The static library is built with `-Zbuild-std`
-on a pinned nightly, for plain wasm (MVP plus `sign-ext` and `mutable-globals`), instead of on
+(on stable Rust, with `RUSTC_BOOTSTRAP=1` for that one build), for plain wasm (MVP plus `sign-ext` and `mutable-globals`), instead of on
 Rust's prebuilt sysroot. So it holds no exception-handling instructions, and a browser never
 sees .NET 11's encoding mixed with the sysroot's legacy one (`module uses a mix of legacy and
 new exception handling instructions`), whether or not the SDK runs `wasm-opt` after the link.
@@ -640,10 +640,9 @@ before adopting it inside a trust boundary. What is and isn't currently guarante
 **Where the binaries come from.** Nothing under `csharp/HyperCast/runtimes/` is committed —
 it's `.gitignore`d. The native libraries are built from `rust/` by CI and staged into the
 package at pack time, so what ships is produced by the same workflow run that built and
-tested the source. (The Go, PHP, and Swift bindings are different: those *do* carry committed
-binaries, staged by `stage-native-binaries.yml`, whose commit message records the exact
-source SHA and CI run ID they came from — and which verifies each binary's attestation before
-committing it.)
+tested the source. No binding commits a binary: Go's core is Go source translated from the
+core's WebAssembly build, and the Swift zips, the C archives and the PHP extension zips are
+files on the GitHub Release, attested like every package.
 
 **Building it yourself.** The core is a normal Rust crate with no build-time codegen, so you
 never have to take the shipped binary at all:
@@ -673,7 +672,7 @@ each artifact to the workflow run and commit that produced it.
 
 **Signed provenance.** Two kinds of attestation cover the package.
 
-The *release attestation* is one statement, signed by this repository's `release.yml` at the release tag, whose subjects are every file the release ships — the `.nupkg` as packed and as nuget.org serves it, every other registry package, and every native library committed for Go, Swift and PHP — and whose predicate is the release inventory (`inventory.json`: every file's size, SHA-256 and the commit it was built from). One command verifies any of them from the tag alone:
+The *release attestation* is one statement, signed by this repository's `release.yml` at the release tag, whose subjects are every file the release ships — the `.nupkg` as packed and as nuget.org serves it, every other registry package, and every file attached to the GitHub Release (the Swift zips, the C archives and the PHP extension zips) — and whose predicate is the release inventory (`inventory.json`: every file's size, SHA-256 and the commit it was built from). One command verifies any of them from the tag alone:
 
 ```shell
 gh attestation verify HyperCast.<version>.nupkg --repo SkunkWerkx/HyperCast \
@@ -705,7 +704,7 @@ gh attestation verify HyperCast.<version>.nupkg \
 
 The release run downloads the package nuget.org serves, runs `dotnet nuget verify` on it, and requires every entry but `.signature.p7s` to match the packed package before attesting it. That claim is checked on every release rather than asserted here, so if nuget.org ever changes how it finalizes packages, the run says so instead of the README quietly going stale.
 
-Attestations are produced by every release-mode build — the release's own run and the weekly one. Pull requests build in `pr` mode, which ships nothing and so signs nothing. The release itself is two acts at one tag: the tag push packs, attests and preserves everything without uploading, and a dispatch of `release.yml` publishes from those preserved bytes, waiting up to 20 minutes for nuget.org to serve the package before attesting the served bytes; the Go tag and GitHub Release wait on it. A slower validation is recovered by dispatching again with `publication_run_id`, which pushes nothing twice (see [RELEASING.md](https://github.com/SkunkWerkx/HyperCast/blob/master/.github/RELEASING.md)). The root README's [Provenance](https://github.com/SkunkWerkx/HyperCast/blob/master/README.md#provenance) section has the whole picture across the eight bindings.
+Attestations are produced by every release-mode build — the release's own run and the weekly one. Pull requests build in `pr` mode, which ships nothing and so signs nothing. The release itself is two acts: the preparation run packs, attests and preserves everything, and the tag push verifies those preserved bytes and publishes, waiting up to 20 minutes for nuget.org to serve the package before attesting the served bytes; the Go tag and GitHub Release wait on it. A slower validation is recovered by dispatching `release.yml` again at the tag with `publication_run_id`, which pushes nothing twice (see [RELEASING.md](https://github.com/SkunkWerkx/HyperCast/blob/master/.github/RELEASING.md)). The root README's [Provenance](https://github.com/SkunkWerkx/HyperCast/blob/master/README.md#provenance) section has the whole picture across every binding.
 
 **Not currently done: NuGet author signing.** The package carries nuget.org's repository
 signature but no author signature of our own, which would need an X.509 code-signing

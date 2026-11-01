@@ -447,7 +447,10 @@ var (
 	_ [8]byte  = [unsafe.Offsetof(Decimal{}.Hi)]byte{}
 	_ [12]byte = [unsafe.Offsetof(Decimal{}.Scale)]byte{}
 	_ [13]byte = [unsafe.Offsetof(Decimal{}.Negative)]byte{}
-	_ [16]byte = [unsafe.Sizeof(Duration{})]byte{}
+	// 16 bytes wherever an int64 is 8-aligned, as the core lays a Duration out; on the 32-bit
+	// ports (386, arm, mips) an int64 is 4-aligned and a Duration is 12, so viewing the
+	// core's bytes as a []Duration in place holds on a 64-bit host only.
+	_ [16]byte = [unsafe.Sizeof(Duration{}) + 8 - unsafe.Alignof(Duration{}.Seconds)]byte{}
 	_ [0]byte  = [unsafe.Offsetof(Duration{}.Seconds)]byte{}
 	_ [8]byte  = [unsafe.Offsetof(Duration{}.Nanos)]byte{}
 )

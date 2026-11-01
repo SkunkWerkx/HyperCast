@@ -2,7 +2,7 @@
 name = "hypercast"
 version = "1.0.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.89"
 description = "Allocation-free parsers for scalars from untrusted text — booleans, characters, numerics, UUIDs, and temporals. Every parse returns a verdict (the value, or a closed reason code with the offending span), never throws, never allocates — wrapped as a native library (libhypercast) for direct FFI from every host language."
 license = "MIT"
 readme = "README.md"
@@ -35,8 +35,8 @@ no-panic = { version = "0.1", optional = true }
 # binding dlopens) changes — these are additive, off by default, and only one is ever enabled per
 # build invocation (each produces a different C entry point — PyInit__native,
 # Init_hypercast_native, PHP's module struct — under the same crate, not meant to coexist
-# in one binary). The php one is a benchmark spike, exactly as in HyperUuid: the shipped
-# PHP package is ext-ffi; see src/php_ext.rs.
+# in one binary). The php one is the PHP package itself, a Zend extension installed with
+# PIE; see src/php_ext/mod.rs.
 [features]
 # On by default for the crates.io consumer, the test suite and the benchmarks; no artifact
 # this repo ships is built with it except the extension modules. The parsing
@@ -57,7 +57,7 @@ std = []
 exports = []
 # The no_std static libraries, for the hosts that link the core in rather than load it: a
 # Blazor WebAssembly app (the NuGet package, wasm32-unknown-emscripten), a Swift executable
-# on Linux or WebAssembly, a Go binary built with cgo, and a C# Native AOT publish. A
+# on Linux or WebAssembly, a C program, and a C# Native AOT publish. A
 # static library is a final artifact as far as panics go, so with `std` off it needs the
 # `#[panic_handler]` std would have supplied; this feature is that handler and nothing else
 # (see lib.rs). It exists so those libraries carry no copy of Rust's standard library: two
@@ -96,6 +96,9 @@ php = ["dep:ext-php-rs", "std"]
 no-panic = ["dep:no-panic", "exports"]
 
 [dev-dependencies]
+# tests/header.rs: generates the C header and compares it with include/hypercast.h.
+# `unstable_ir` lets the test drop the struct-valued constants C cannot spell (it says why).
+cbindgen = { version = "0.29.4", default-features = false, features = ["unstable_ir"] }
 # default-features off drops rayon/plotters, which cannot build for wasm32-wasip1 —
 # dev-dependencies compile for every test target, wasm test runs included.
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }

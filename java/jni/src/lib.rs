@@ -1,0 +1,994 @@
+//! The JNI library the Java binding loads below JDK 25. It sits beside the core in one
+//! process: the core's C exports are linked in (so they remain exported), and `JNI_OnLoad`
+//! registers one table of natives on `NativeCore`, one per C export. No `alloc`, no `std`,
+//! and no panic path: every native returns the core's own verdict code, or `PENDING` when a
+//! Java exception is already on its way.
+//!
+//! A verdict crosses back through the caller's `long[4]`: on success the value as two
+//! `long`s in `out[0..2]` ([`Words`] has each type's encoding), on a fault its span's offset
+//! and length in `out[2..4]`, and on a contract violation (`-1`) nothing at all — the same
+//! writes the C ABI makes to its `out` and `fault` pointers.
+//!
+//! The natives are `pub unsafe extern "system" fn`: as `pub` fns taking raw pointers they
+//! would otherwise fail clippy's `not_unsafe_ptr_arg_deref`. Their safety contract is
+//! the JNI one (a live `JNIEnv`, and arrays of the declared type), hence the crate-wide allow.
+#![cfg_attr(not(test), no_std)]
+#![allow(clippy::missing_safety_doc)]
+
+extern crate hypercast;
+
+use core::ffi::{c_char, c_void};
+use core::mem::MaybeUninit;
+use core::ptr::{null, null_mut};
+use hypercast::{CivilDateTime, Date, Decimal, Duration, RawDayPeriods, RawNumFormat, Timestamp};
+use jni_sys::{
+    JNI_ABORT, JNI_ERR, JNI_OK, JNI_VERSION_1_8, JNIEnv, JNINativeMethod, JavaVM, jbyte,
+    jbyteArray, jclass, jdouble, jint, jlong, jlongArray, jsize,
+};
+
+/// A fault's span as the C ABI writes it: two `u32`s, the reason being the return code.
+#[repr(C)]
+pub struct RawFault {
+    offset: u32,
+    len: u32,
+}
+
+// The core's C exports, reached by symbol the way every binding reaches them, plus the two
+// C runtime calls the large-input path needs (there is no `libc` dependency).
+unsafe extern "C" {
+    fn cast_bool(ptr: *const u8, len: usize, out: *mut u8, fault: *mut RawFault) -> i32;
+    fn cast_char(ptr: *const u8, len: usize, out: *mut u32, fault: *mut RawFault) -> i32;
+    fn cast_i8(
+        ptr: *const u8,
+        len: usize,
+        format: *const RawNumFormat,
+        out: *mut i8,
+        fault: *mut RawFault,
+    ) -> i32;
+    fn cast_i16(
+        ptr: *const u8,
+        len: usize,
+        format: *const RawNumFormat,
+        out: *mut i16,
+        fault: *mut RawFault,
+    ) -> i32;
+    fn cast_i32(
+        ptr: *const u8,
+        len: usize,
+        format: *const RawNumFormat,
+        out: *mut i32,
+        fault: *mut RawFault,
+    ) -> i32;
+    fn cast_i64(
+        ptr: *const u8,
+        len: usize,
+        format: *const RawNumFormat,
+        out: *mut i64,
+        fault: *mut RawFault,
+    ) -> i32;
+    fn cast_u8(
+        ptr: *const u8,
+        len: usize,
+        format: *const RawNumFormat,
+        out: *mut u8,
+        fault: *mut RawFault,
+    ) -> i32;
+    fn cast_u16(
+        ptr: *const u8,
+        len: usize,
+        format: *const RawNumFormat,
+        out: *mut u16,
+        fault: *mut RawFault,
+    ) -> i32;
+    fn cast_u32(
+        ptr: *const u8,
+        len: usize,
+        format: *const RawNumFormat,
+        out: *mut u32,
+        fault: *mut RawFault,
+    ) -> i32;
+    fn cast_u64(
+        ptr: *const u8,
+        len: usize,
+        format: *const RawNumFormat,
+        out: *mut u64,
+        fault: *mut RawFault,
+    ) -> i32;
+    fn cast_f32(
+        ptr: *const u8,
+        len: usize,
+        format: *const RawNumFormat,
+        out: *mut f32,
+        fault: *mut RawFault,
+    ) -> i32;
+    fn cast_f64(
+        ptr: *const u8,
+        len: usize,
+        format: *const RawNumFormat,
+        out: *mut f64,
+        fault: *mut RawFault,
+    ) -> i32;
+    fn cast_decimal(
+        ptr: *const u8,
+        len: usize,
+        format: *const RawNumFormat,
+        out: *mut Decimal,
+        fault: *mut RawFault,
+    ) -> i32;
+    fn cast_uuid(ptr: *const u8, len: usize, out: *mut [u8; 16], fault: *mut RawFault) -> i32;
+    fn cast_timestamp(ptr: *const u8, len: usize, out: *mut Timestamp, fault: *mut RawFault)
+    -> i32;
+    fn cast_unix(
+        ptr: *const u8,
+        len: usize,
+        precision: u32,
+        out: *mut Timestamp,
+        fault: *mut RawFault,
+    ) -> i32;
+    fn cast_excel_serial(
+        ptr: *const u8,
+        len: usize,
+        epoch: u32,
+        out: *mut Timestamp,
+        fault: *mut RawFault,
+    ) -> i32;
+    fn cast_date_ordered(
+        ptr: *const u8,
+        len: usize,
+        order: u32,
+        out: *mut Date,
+        fault: *mut RawFault,
+    ) -> i32;
+    fn cast_datetime(
+        ptr: *const u8,
+        len: usize,
+        order: u32,
+        periods: *const RawDayPeriods,
+        out: *mut CivilDateTime,
+        fault: *mut RawFault,
+    ) -> i32;
+    fn cast_date(ptr: *const u8, len: usize, out: *mut Date, fault: *mut RawFault) -> i32;
+    fn cast_time(ptr: *const u8, len: usize, out: *mut u64, fault: *mut RawFault) -> i32;
+    fn cast_duration(ptr: *const u8, len: usize, out: *mut Duration, fault: *mut RawFault) -> i32;
+    fn cast_decimal_from_f64(value: f64, out: *mut Decimal, fault: *mut RawFault) -> i32;
+    fn cast_excel_serial_from_f64(
+        value: f64,
+        epoch: u32,
+        out: *mut CivilDateTime,
+        fault: *mut RawFault,
+    ) -> i32;
+    fn cast_excel_time(value: f64, out: *mut u64, fault: *mut RawFault) -> i32;
+    fn cast_excel_duration(value: f64, out: *mut Duration, fault: *mut RawFault) -> i32;
+    fn hypercast_version() -> u32;
+    fn malloc(size: usize) -> *mut c_void;
+    fn free(p: *mut c_void);
+}
+
+/// The largest input a critical array access may cover (bytes). Above it, the input is
+/// copied into `malloc`'d memory instead, so a parse over untrusted megabytes never holds
+/// off the garbage collector.
+pub const CRITICAL_MAX: usize = 64 * 1024;
+
+/// What a native returns when a Java exception is pending (a failed array access). Java
+/// never reads it: the pending exception is thrown as the native returns. Distinct from
+/// every core code, `-1` (a contract violation) included.
+pub const PENDING: jint = jint::MIN;
+
+const CLASS: &[u8] = b"io/github/skunkwerkx/hypercast/NativeCore\0";
+
+/// One registered native: NUL-terminated name and descriptor, and the function.
+pub struct Native {
+    name: &'static [u8],
+    descriptor: &'static [u8],
+    function: *const c_void,
+}
+
+macro_rules! native {
+    ($name:literal, $descriptor:literal, $function:path) => {
+        Native {
+            name: concat!($name, "\0").as_bytes(),
+            descriptor: concat!($descriptor, "\0").as_bytes(),
+            function: $function as *const c_void,
+        }
+    };
+}
+
+const NATIVES: [Native; 28] = [
+    native!("castBool", "([B[J)I", native_cast_bool),
+    native!("castChar", "([B[J)I", native_cast_char),
+    native!("castI8", "([B[B[J)I", native_cast_i8),
+    native!("castI16", "([B[B[J)I", native_cast_i16),
+    native!("castI32", "([B[B[J)I", native_cast_i32),
+    native!("castI64", "([B[B[J)I", native_cast_i64),
+    native!("castU8", "([B[B[J)I", native_cast_u8),
+    native!("castU16", "([B[B[J)I", native_cast_u16),
+    native!("castU32", "([B[B[J)I", native_cast_u32),
+    native!("castU64", "([B[B[J)I", native_cast_u64),
+    native!("castF32", "([B[B[J)I", native_cast_f32),
+    native!("castF64", "([B[B[J)I", native_cast_f64),
+    native!("castDecimal", "([B[B[J)I", native_cast_decimal),
+    native!("castUuid", "([B[J)I", native_cast_uuid),
+    native!("castTimestamp", "([B[J)I", native_cast_timestamp),
+    native!("castUnix", "([BI[J)I", native_cast_unix),
+    native!("castExcelSerial", "([BI[J)I", native_cast_excel_serial),
+    native!("castDateOrdered", "([BI[J)I", native_cast_date_ordered),
+    native!("castDatetime", "([BI[B[J)I", native_cast_datetime),
+    native!("castDate", "([B[J)I", native_cast_date),
+    native!("castTime", "([B[J)I", native_cast_time),
+    native!("castDuration", "([B[J)I", native_cast_duration),
+    native!("castDecimalFromF64", "(D[J)I", native_cast_decimal_from_f64),
+    native!(
+        "castExcelSerialFromF64",
+        "(DI[J)I",
+        native_cast_excel_serial_from_f64
+    ),
+    native!("castExcelTime", "(D[J)I", native_cast_excel_time),
+    native!("castExcelDuration", "(D[J)I", native_cast_excel_duration),
+    native!("hypercastVersion", "()I", native_hypercast_version),
+    native!("jniNatives", "()I", native_jni_natives),
+];
+
+/// True when no two entries share a name. A `const fn` so a repeat fails the build.
+const fn names_unique(natives: &[Native]) -> bool {
+    let mut i = 0;
+    while i < natives.len() {
+        let mut j = i + 1;
+        while j < natives.len() {
+            if bytes_eq(natives[i].name, natives[j].name) {
+                return false;
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    true
+}
+
+const fn bytes_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut k = 0;
+    while k < a.len() {
+        if a[k] != b[k] {
+            return false;
+        }
+        k += 1;
+    }
+    true
+}
+
+const _: () = assert!(names_unique(&NATIVES));
+
+/// The one allocation the library makes, for an input above [`CRITICAL_MAX`]. Production
+/// calls `malloc` directly; tests swap it. The core itself never allocates.
+#[cfg(not(test))]
+unsafe fn alloc(n: usize) -> *mut u8 {
+    // SAFETY: plain C `malloc`; the caller checks for null.
+    unsafe { malloc(n) }.cast()
+}
+#[cfg(test)]
+unsafe fn alloc(n: usize) -> *mut u8 {
+    tests::alloc(n)
+}
+
+#[cfg(not(test))]
+unsafe fn release(p: *mut u8) {
+    // SAFETY: `p` came from `alloc` and is freed once.
+    unsafe { free(p.cast()) }
+}
+#[cfg(test)]
+unsafe fn release(p: *mut u8) {
+    tests::release(p)
+}
+
+/// A null array access (a critical get or `malloc`) is never a core result. With an exception
+/// already pending, return at once; otherwise throw `OutOfMemoryError`. Either way Java
+/// throws, and never reads the [`PENDING`] returned.
+unsafe fn fail_null(env: *mut JNIEnv) -> jint {
+    // SAFETY: the caller passes a live env.
+    unsafe {
+        if ((**env).v1_2.ExceptionCheck)(env) {
+            return PENDING;
+        }
+        let class = ((**env).v1_2.FindClass)(env, c"java/lang/OutOfMemoryError".as_ptr());
+        if !class.is_null() {
+            ((**env).v1_2.ThrowNew)(env, class, c"native memory unavailable".as_ptr());
+        }
+    }
+    PENDING
+}
+
+/// A value as the two `long`s Java rebuilds it from (`NativeCore`'s readers in the base tree
+/// are the other half). Integers are sign- or zero-extended as their type is, floats travel
+/// as their bits, and the composite values field by field, so nothing depends on the
+/// target's byte order.
+pub trait Words: Copy {
+    /// `out[0]` and `out[1]`.
+    fn words(self) -> [jlong; 2];
+}
+
+macro_rules! extended {
+    ($($ty:ty),+) => {$(
+        impl Words for $ty {
+            #[inline(always)]
+            fn words(self) -> [jlong; 2] {
+                [self as jlong, 0]
+            }
+        }
+    )+};
+}
+
+extended!(u8, u16, u32, u64, i8, i16, i32, i64);
+
+impl Words for f32 {
+    #[inline(always)]
+    fn words(self) -> [jlong; 2] {
+        [self.to_bits() as jlong, 0]
+    }
+}
+
+impl Words for f64 {
+    #[inline(always)]
+    fn words(self) -> [jlong; 2] {
+        [self.to_bits() as jlong, 0]
+    }
+}
+
+/// RFC 9562 order, which is exactly `java.util.UUID`'s two big-endian halves.
+impl Words for [u8; 16] {
+    #[inline(always)]
+    fn words(self) -> [jlong; 2] {
+        let whole = u128::from_be_bytes(self);
+        [(whole >> 64) as jlong, whole as jlong]
+    }
+}
+
+/// The 64 low bits, then the 32 high bits with the scale at bit 32 and the sign at bit 40.
+impl Words for Decimal {
+    #[inline(always)]
+    fn words(self) -> [jlong; 2] {
+        let high =
+            u64::from(self.hi) | (u64::from(self.scale) << 32) | (u64::from(self.negative) << 40);
+        [self.lo as jlong, high as jlong]
+    }
+}
+
+impl Words for Timestamp {
+    #[inline(always)]
+    fn words(self) -> [jlong; 2] {
+        [self.seconds, jlong::from(self.nanos)]
+    }
+}
+
+impl Words for Duration {
+    #[inline(always)]
+    fn words(self) -> [jlong; 2] {
+        [self.seconds, jlong::from(self.nanos)]
+    }
+}
+
+/// `year << 16 | month << 8 | day`.
+impl Words for Date {
+    #[inline(always)]
+    fn words(self) -> [jlong; 2] {
+        let packed =
+            (u32::from(self.year) << 16) | (u32::from(self.month) << 8) | u32::from(self.day);
+        [jlong::from(packed), 0]
+    }
+}
+
+/// The date packed as [`Date`]'s, then the nanoseconds of the day.
+impl Words for CivilDateTime {
+    #[inline(always)]
+    fn words(self) -> [jlong; 2] {
+        [self.date.words()[0], self.nanos_of_day as jlong]
+    }
+}
+
+/// Runs `door` over the bytes of `input`, a `byte[]`. Up to [`CRITICAL_MAX`] bytes the array
+/// is pinned for the one core call and released before any other JNI call; above it the
+/// bytes are copied into `malloc`'d memory, freed on every path. A zero length passes null
+/// and pins nothing.
+#[inline(always)]
+unsafe fn with_text(
+    env: *mut JNIEnv,
+    input: jbyteArray,
+    door: impl FnOnce(*const u8, usize) -> i32,
+) -> jint {
+    // SAFETY: the caller passes a live env and a `byte[]`.
+    let len = unsafe { ((**env).v1_2.GetArrayLength)(env, input) };
+    if len <= 0 {
+        return door(null(), 0);
+    }
+    let n = len as usize;
+    if n <= CRITICAL_MAX {
+        // SAFETY: only the core call runs inside the critical region, which closes before
+        // any other JNI call. JNI_ABORT: the core only reads.
+        unsafe {
+            let p = ((**env).v1_2.GetPrimitiveArrayCritical)(env, input, null_mut());
+            if p.is_null() {
+                return fail_null(env);
+            }
+            let rc = door(p.cast_const().cast(), n);
+            ((**env).v1_2.ReleasePrimitiveArrayCritical)(env, input, p, JNI_ABORT);
+            rc
+        }
+    } else {
+        // SAFETY: `p` is `n` bytes, filled by `GetByteArrayRegion`, and freed on every path.
+        unsafe {
+            let p = alloc(n);
+            if p.is_null() {
+                return fail_null(env);
+            }
+            ((**env).v1_2.GetByteArrayRegion)(env, input, 0, len, p.cast::<jbyte>());
+            if ((**env).v1_2.ExceptionCheck)(env) {
+                release(p);
+                return PENDING;
+            }
+            let rc = door(p, n);
+            release(p);
+            rc
+        }
+    }
+}
+
+/// Writes a verdict where Java reads it: the value's words to `out[0..2]` on success, the
+/// span to `out[2..4]` on a fault, and nothing on a contract violation or [`PENDING`].
+#[inline(always)]
+unsafe fn finish<T: Words>(
+    env: *mut JNIEnv,
+    out: jlongArray,
+    rc: i32,
+    value: &MaybeUninit<T>,
+    fault: &RawFault,
+) -> jint {
+    if rc == 0 {
+        // SAFETY: the core wrote the value: it returns 0 only after it has.
+        let words = unsafe { value.assume_init_read() }.words();
+        // SAFETY: the caller passes a live env and a `long[]` of at least four elements.
+        unsafe { ((**env).v1_2.SetLongArrayRegion)(env, out, 0, 2, words.as_ptr()) };
+    } else if rc > 0 {
+        let span = [jlong::from(fault.offset), jlong::from(fault.len)];
+        // SAFETY: as above.
+        unsafe { ((**env).v1_2.SetLongArrayRegion)(env, out, 2, 2, span.as_ptr()) };
+    }
+    rc
+}
+
+/// A text door: `call` is the core export, handed the input, the value slot and the span.
+#[inline(always)]
+unsafe fn text_door<T: Words>(
+    env: *mut JNIEnv,
+    input: jbyteArray,
+    out: jlongArray,
+    call: impl FnOnce(*const u8, usize, *mut T, *mut RawFault) -> i32,
+) -> jint {
+    let mut value = MaybeUninit::<T>::uninit();
+    let mut fault = RawFault { offset: 0, len: 0 };
+    // SAFETY: the caller passes a live env and a `byte[]`.
+    let rc = unsafe {
+        with_text(env, input, |p, n| {
+            call(p, n, value.as_mut_ptr(), &mut fault)
+        })
+    };
+    // SAFETY: the caller passes a live env and a `long[4]`.
+    unsafe { finish(env, out, rc, &value, &fault) }
+}
+
+/// The two layouts a door reads besides its text, [`RawNumFormat`] and [`RawDayPeriods`]:
+/// `repr(C)` structs of `u32` and `u8` fields (and padding), so any bytes at all are a value
+/// of either, which the core's `resolve` then checks.
+trait Layout: Copy {
+    /// Nothing declared; the bytes Java sends overwrite all of it.
+    const ZERO: Self;
+}
+
+impl Layout for RawNumFormat {
+    const ZERO: Self = RawNumFormat::ZERO;
+}
+
+impl Layout for RawDayPeriods {
+    const ZERO: Self = RawDayPeriods::ZERO;
+}
+
+/// A layout as `NativeCore` packs it, in the platform's own byte order, copied onto the
+/// stack whole: `size_of::<T>()` bytes. `None` with an exception pending (an array shorter
+/// than the layout), and then no core call is made.
+#[inline(always)]
+unsafe fn read_layout<T: Layout>(env: *mut JNIEnv, array: jbyteArray) -> Option<T> {
+    let mut layout = T::ZERO;
+    // SAFETY: the caller passes a live env and a `byte[]`; `layout` is `size_of::<T>()`
+    // bytes, and any bytes are a `T` (the trait's contract).
+    unsafe {
+        ((**env).v1_2.GetByteArrayRegion)(
+            env,
+            array,
+            0,
+            size_of::<T>() as jsize,
+            (&raw mut layout).cast::<jbyte>(),
+        );
+        if ((**env).v1_2.ExceptionCheck)(env) {
+            return None;
+        }
+    }
+    Some(layout)
+}
+
+/// A numeric door: the format is read before the input is pinned, since no JNI call may
+/// run inside the critical region.
+#[inline(always)]
+unsafe fn numeric_door<T: Words>(
+    env: *mut JNIEnv,
+    input: jbyteArray,
+    format: jbyteArray,
+    out: jlongArray,
+    call: impl FnOnce(*const u8, usize, *const RawNumFormat, *mut T, *mut RawFault) -> i32,
+) -> jint {
+    // SAFETY: the caller passes a live env and `byte[]`s.
+    let Some(layout) = (unsafe { read_layout::<RawNumFormat>(env, format) }) else {
+        return PENDING;
+    };
+    // SAFETY: as above; `layout` outlives the call.
+    unsafe {
+        text_door(env, input, out, |p, n, value, fault| {
+            call(p, n, &layout, value, fault)
+        })
+    }
+}
+
+/// A typed door: a `double` in, no input to pin.
+#[inline(always)]
+unsafe fn typed_door<T: Words>(
+    env: *mut JNIEnv,
+    out: jlongArray,
+    call: impl FnOnce(*mut T, *mut RawFault) -> i32,
+) -> jint {
+    let mut value = MaybeUninit::<T>::uninit();
+    let mut fault = RawFault { offset: 0, len: 0 };
+    let rc = call(value.as_mut_ptr(), &mut fault);
+    // SAFETY: the caller passes a live env and a `long[4]`.
+    unsafe { finish(env, out, rc, &value, &fault) }
+}
+
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_bool(
+    env: *mut JNIEnv,
+    _class: jclass,
+    input: jbyteArray,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: the JNI contract; the core writes only through the pointers it is handed.
+    unsafe { text_door::<u8>(env, input, out, |p, n, v, f| cast_bool(p, n, v, f)) }
+}
+
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_char(
+    env: *mut JNIEnv,
+    _class: jclass,
+    input: jbyteArray,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: as `native_cast_bool`.
+    unsafe { text_door::<u32>(env, input, out, |p, n, v, f| cast_char(p, n, v, f)) }
+}
+
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_i8(
+    env: *mut JNIEnv,
+    _class: jclass,
+    input: jbyteArray,
+    format: jbyteArray,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: as `native_cast_bool`.
+    unsafe {
+        numeric_door::<i8>(env, input, format, out, |p, n, r, v, f| {
+            cast_i8(p, n, r, v, f)
+        })
+    }
+}
+
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_i16(
+    env: *mut JNIEnv,
+    _class: jclass,
+    input: jbyteArray,
+    format: jbyteArray,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: as `native_cast_bool`.
+    unsafe {
+        numeric_door::<i16>(env, input, format, out, |p, n, r, v, f| {
+            cast_i16(p, n, r, v, f)
+        })
+    }
+}
+
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_i32(
+    env: *mut JNIEnv,
+    _class: jclass,
+    input: jbyteArray,
+    format: jbyteArray,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: as `native_cast_bool`.
+    unsafe {
+        numeric_door::<i32>(env, input, format, out, |p, n, r, v, f| {
+            cast_i32(p, n, r, v, f)
+        })
+    }
+}
+
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_i64(
+    env: *mut JNIEnv,
+    _class: jclass,
+    input: jbyteArray,
+    format: jbyteArray,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: as `native_cast_bool`.
+    unsafe {
+        numeric_door::<i64>(env, input, format, out, |p, n, r, v, f| {
+            cast_i64(p, n, r, v, f)
+        })
+    }
+}
+
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_u8(
+    env: *mut JNIEnv,
+    _class: jclass,
+    input: jbyteArray,
+    format: jbyteArray,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: as `native_cast_bool`.
+    unsafe {
+        numeric_door::<u8>(env, input, format, out, |p, n, r, v, f| {
+            cast_u8(p, n, r, v, f)
+        })
+    }
+}
+
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_u16(
+    env: *mut JNIEnv,
+    _class: jclass,
+    input: jbyteArray,
+    format: jbyteArray,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: as `native_cast_bool`.
+    unsafe {
+        numeric_door::<u16>(env, input, format, out, |p, n, r, v, f| {
+            cast_u16(p, n, r, v, f)
+        })
+    }
+}
+
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_u32(
+    env: *mut JNIEnv,
+    _class: jclass,
+    input: jbyteArray,
+    format: jbyteArray,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: as `native_cast_bool`.
+    unsafe {
+        numeric_door::<u32>(env, input, format, out, |p, n, r, v, f| {
+            cast_u32(p, n, r, v, f)
+        })
+    }
+}
+
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_u64(
+    env: *mut JNIEnv,
+    _class: jclass,
+    input: jbyteArray,
+    format: jbyteArray,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: as `native_cast_bool`.
+    unsafe {
+        numeric_door::<u64>(env, input, format, out, |p, n, r, v, f| {
+            cast_u64(p, n, r, v, f)
+        })
+    }
+}
+
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_f32(
+    env: *mut JNIEnv,
+    _class: jclass,
+    input: jbyteArray,
+    format: jbyteArray,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: as `native_cast_bool`.
+    unsafe {
+        numeric_door::<f32>(env, input, format, out, |p, n, r, v, f| {
+            cast_f32(p, n, r, v, f)
+        })
+    }
+}
+
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_f64(
+    env: *mut JNIEnv,
+    _class: jclass,
+    input: jbyteArray,
+    format: jbyteArray,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: as `native_cast_bool`.
+    unsafe {
+        numeric_door::<f64>(env, input, format, out, |p, n, r, v, f| {
+            cast_f64(p, n, r, v, f)
+        })
+    }
+}
+
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_decimal(
+    env: *mut JNIEnv,
+    _class: jclass,
+    input: jbyteArray,
+    format: jbyteArray,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: as `native_cast_bool`.
+    unsafe {
+        numeric_door::<Decimal>(env, input, format, out, |p, n, r, v, f| {
+            cast_decimal(p, n, r, v, f)
+        })
+    }
+}
+
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_uuid(
+    env: *mut JNIEnv,
+    _class: jclass,
+    input: jbyteArray,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: as `native_cast_bool`.
+    unsafe { text_door::<[u8; 16]>(env, input, out, |p, n, v, f| cast_uuid(p, n, v, f)) }
+}
+
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_timestamp(
+    env: *mut JNIEnv,
+    _class: jclass,
+    input: jbyteArray,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: as `native_cast_bool`.
+    unsafe { text_door::<Timestamp>(env, input, out, |p, n, v, f| cast_timestamp(p, n, v, f)) }
+}
+
+/// `precision` is the declared unit's code; any other value is the core's contract violation.
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_unix(
+    env: *mut JNIEnv,
+    _class: jclass,
+    input: jbyteArray,
+    precision: jint,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: as `native_cast_bool`.
+    unsafe {
+        text_door::<Timestamp>(env, input, out, |p, n, v, f| {
+            cast_unix(p, n, precision as u32, v, f)
+        })
+    }
+}
+
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_excel_serial(
+    env: *mut JNIEnv,
+    _class: jclass,
+    input: jbyteArray,
+    epoch: jint,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: as `native_cast_bool`.
+    unsafe {
+        text_door::<Timestamp>(env, input, out, |p, n, v, f| {
+            cast_excel_serial(p, n, epoch as u32, v, f)
+        })
+    }
+}
+
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_date_ordered(
+    env: *mut JNIEnv,
+    _class: jclass,
+    input: jbyteArray,
+    order: jint,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: as `native_cast_bool`.
+    unsafe {
+        text_door::<Date>(env, input, out, |p, n, v, f| {
+            cast_date_ordered(p, n, order as u32, v, f)
+        })
+    }
+}
+
+/// `periods` is the 40-byte designator layout, or null when nothing is declared (the core's
+/// null). It is read before the input is pinned.
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_datetime(
+    env: *mut JNIEnv,
+    _class: jclass,
+    input: jbyteArray,
+    order: jint,
+    periods: jbyteArray,
+    out: jlongArray,
+) -> jint {
+    let layout = if periods.is_null() {
+        None
+    } else {
+        // SAFETY: the caller passes a live env and a `byte[]`.
+        match unsafe { read_layout::<RawDayPeriods>(env, periods) } {
+            Some(layout) => Some(layout),
+            None => return PENDING,
+        }
+    };
+    let declared: *const RawDayPeriods = match &layout {
+        Some(layout) => layout,
+        None => null(),
+    };
+    // SAFETY: as `native_cast_bool`; `layout` outlives the call.
+    unsafe {
+        text_door::<CivilDateTime>(env, input, out, |p, n, v, f| {
+            cast_datetime(p, n, order as u32, declared, v, f)
+        })
+    }
+}
+
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_date(
+    env: *mut JNIEnv,
+    _class: jclass,
+    input: jbyteArray,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: as `native_cast_bool`.
+    unsafe { text_door::<Date>(env, input, out, |p, n, v, f| cast_date(p, n, v, f)) }
+}
+
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_time(
+    env: *mut JNIEnv,
+    _class: jclass,
+    input: jbyteArray,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: as `native_cast_bool`.
+    unsafe { text_door::<u64>(env, input, out, |p, n, v, f| cast_time(p, n, v, f)) }
+}
+
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_duration(
+    env: *mut JNIEnv,
+    _class: jclass,
+    input: jbyteArray,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: as `native_cast_bool`.
+    unsafe { text_door::<Duration>(env, input, out, |p, n, v, f| cast_duration(p, n, v, f)) }
+}
+
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_decimal_from_f64(
+    env: *mut JNIEnv,
+    _class: jclass,
+    value: jdouble,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: as `native_cast_bool`.
+    unsafe { typed_door::<Decimal>(env, out, |v, f| cast_decimal_from_f64(value, v, f)) }
+}
+
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_excel_serial_from_f64(
+    env: *mut JNIEnv,
+    _class: jclass,
+    value: jdouble,
+    epoch: jint,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: as `native_cast_bool`.
+    unsafe {
+        typed_door::<CivilDateTime>(env, out, |v, f| {
+            cast_excel_serial_from_f64(value, epoch as u32, v, f)
+        })
+    }
+}
+
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_excel_time(
+    env: *mut JNIEnv,
+    _class: jclass,
+    value: jdouble,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: as `native_cast_bool`.
+    unsafe { typed_door::<u64>(env, out, |v, f| cast_excel_time(value, v, f)) }
+}
+
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_excel_duration(
+    env: *mut JNIEnv,
+    _class: jclass,
+    value: jdouble,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: as `native_cast_bool`.
+    unsafe { typed_door::<Duration>(env, out, |v, f| cast_excel_duration(value, v, f)) }
+}
+
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_hypercast_version(_env: *mut JNIEnv, _class: jclass) -> jint {
+    // SAFETY: takes no arguments.
+    unsafe { hypercast_version() as jint }
+}
+
+/// The length of the registration table, never a literal.
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_jni_natives(_env: *mut JNIEnv, _class: jclass) -> jint {
+    NATIVES.len() as jint
+}
+
+/// Registers every native on `NativeCore`, eagerly, so a table that does not match the Java
+/// declarations fails `System.load` (with the pending exception) instead of a later call.
+#[unsafe(no_mangle)]
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
+    let mut penv: *mut c_void = null_mut();
+    // SAFETY: the JVM passes a live `JavaVM`.
+    let got = unsafe { ((**vm).v1_2.GetEnv)(vm, &mut penv, JNI_VERSION_1_8) };
+    // The null check is on `env`, the pointer dereferenced below, not on `penv`: CodeQL's
+    // rust/access-invalid-pointer query takes `is_null()` as a barrier for its receiver only.
+    let env = penv.cast::<*const jni_sys::JNINativeInterface_>();
+    if got != JNI_OK || env.is_null() {
+        return JNI_ERR;
+    }
+    // SAFETY: `env` came from `GetEnv` above and is not null; the class name is NUL-terminated.
+    let class = unsafe { ((**env).v1_2.FindClass)(env, CLASS.as_ptr().cast::<c_char>()) };
+    if class.is_null() {
+        return JNI_ERR;
+    }
+    let empty = JNINativeMethod {
+        name: null_mut(),
+        signature: null_mut(),
+        fnPtr: null_mut(),
+    };
+    let mut methods = [empty; NATIVES.len()];
+    let mut i = 0;
+    while i < NATIVES.len() {
+        methods[i] = JNINativeMethod {
+            name: NATIVES[i].name.as_ptr().cast_mut().cast::<c_char>(),
+            signature: NATIVES[i].descriptor.as_ptr().cast_mut().cast::<c_char>(),
+            fnPtr: NATIVES[i].function.cast_mut(),
+        };
+        i += 1;
+    }
+    // SAFETY: `methods` holds `NATIVES.len()` entries of NUL-terminated strings.
+    let rc = unsafe {
+        ((**env).v1_2.RegisterNatives)(env, class, methods.as_ptr(), NATIVES.len() as jint)
+    };
+    if rc != JNI_OK {
+        return JNI_ERR;
+    }
+    JNI_VERSION_1_8
+}
+
+#[cfg(test)]
+mod tests;

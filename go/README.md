@@ -10,13 +10,14 @@ composition, but the doors never panic on input; a panic here means a caller bug
 data.**
 
 Allocation-lean scalar casts — booleans, characters, the full integer family, reals, exact
-decimals, UUIDs, temporals — calling directly into the native `hypercast` Rust core, **linked into
-your binary through cgo** (`backend_static.go`). The core is a static library on the link
-line: nothing is embedded, nothing is extracted, nothing is `dlopen`ed, nothing can fail to
-load, and the binary runs from a read-only filesystem or a `scratch` image. `go get` is the
-whole install; a C compiler at build time is the one requirement (see
-[Requirements](#requirements)). [TinyGo](#in-the-browser-tinygo) links the same core into
-WebAssembly, browser included.
+decimals, UUIDs, temporals — from the `hypercast` Rust core **compiled as Go source**: the
+core built for `wasm32-wasip1`, translated to one Go file by
+[wasm2go](https://github.com/ncruces/wasm2go) and committed as
+[`internal/core/core.go`](internal/core/core.go). The Go compiler builds it like any other
+package, so there is no cgo, no C compiler, no archive in git, nothing embedded, nothing
+extracted, nothing `dlopen`ed and nothing that can fail to load. `go get` is the whole
+install, `CGO_ENABLED=0` is fine, and the module builds for every GOOS and GOARCH Go has,
+the browser and WASI included, under stock Go and TinyGo alike.
 
 ```go
 package main
@@ -50,89 +51,86 @@ func main() {
 go get github.com/SkunkWerkx/HyperCast/go@latest
 ```
 
-Requires Go 1.26 or later (the `go` directive in `go.mod`). The import path ends in `/go`
+Requires Go 1.26 or later (the `go` directive in `go.mod`); no C compiler, and `CGO_ENABLED`
+makes no difference. The import path ends in `/go`
 while the package is named `hypercast`, so spell the name out in the import, as above —
 `goimports` adds it for you, but a hand-written `import "github.com/SkunkWerkx/HyperCast/go"`
 reads as if the package were called `go`.
 
 Go modules have no separate registry — `go get` resolves straight from a git tag, and because
-this module lives in a monorepo subdirectory its tags are prefixed (`go/v<version>`). The core's
-static libraries under `staticlib/` are committed to git and restaged for each
-release by `stage-native-binaries.yml`: a `go get` consumer has no packing step, so whatever is
-literally in the tree at the resolved tag is what gets linked (see `staticlib/README.md`).
-`github.com/google/uuid` is the module's only dependency.
+this module lives in a monorepo subdirectory its tags are prefixed (`go/v<version>`). What
+`go get` fetches is source, the translated core included, so nothing is staged for a release
+but the core regenerated at the new version. `github.com/google/uuid` is the module's only
+dependency.
 
-## Requirements
+## What this binding is
 
-cgo, and so a C compiler wherever the module is **built** — nothing at run time:
+The Rust core is one `wasm32-wasip1` module of about 150 KB that imports nothing at all:
+parsing needs no clock, no randomness and no I/O. wasm2go translates it into about 1 MB of
+Go source with no dependencies beyond the standard library, and that file is committed and
+compiled with the rest of the package. The binding keeps an *instance* of it: the
+translated module and a scratch region in the module's linear memory, where a door's text,
+its `NumFormat` and its day periods are copied in and its value and fault span copied out.
+Every door is an ordinary Go call into that code; nothing crosses a foreign boundary.
 
-| Building on / for | C compiler |
-| --- | --- |
-| Linux x64 / arm64, glibc or musl | gcc or clang (`build-essential`; on Alpine, `apk add build-base`) |
-| macOS x64 / arm64 | the Xcode command-line tools (`xcode-select --install`) |
-| Windows x64 | MinGW-w64 gcc |
-| Windows arm64 | [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) |
-| iOS, the iOS simulator, Mac Catalyst | Xcode's clang for that platform's SDK; see [iOS and Mac Catalyst](#ios-and-mac-catalyst) |
-| Android arm64 / x64 | the NDK's clang for that ABI as `CC`; see [Android](#android) |
+wasm2go's generated code bounds-checks every memory access and keeps the call stack in Go,
+so a core bug, a guest stack overflow included, is a Go panic and never a corrupted heap. The
+guest's stack is 64 KiB: regenerating the core at halving stack sizes and running the whole
+suite, the corpus replay included, at each, 4096 bytes is the smallest size that passes
+everything and 2048 the first that traps (a bounds panic from the generated code, never a
+wrong verdict), so the shipped size is a 16x margin over the tested paths, measured rather
+than proved. A call that panics inside the core abandons the instance it ran on, whose guest
+stack it left mid-call, rather than hand it to the next caller.
 
-Every other build fails at compile time, by name:
+wasm2go is pre-1.0 (v0.4.19 today) with one maintainer. It is pinned in a tool module of its
+own, [`internal/wasm2go/`](internal/wasm2go), so it never enters your module graph, and
+because its output is committed, a dead wasm2go would cost this repository its regeneration
+step and cost a consumer nothing: the binding keeps working from the committed file.
 
-```
-undefined: hypercast_needs_cgo_and_a_C_compiler_on_linux_darwin_or_windows_amd64_arm64__set_CGO_ENABLED_1__for_wasm_build_with_TinyGo
-```
+The guest is little-endian whatever the host is. Every word the binding writes into the
+scratch or reads out of it is in the guest's order, and an out-value is reinterpreted in
+place only on a little-endian host; a big-endian one (`s390x`, `ppc64`, `mips64`) decodes it
+field by field.
 
-That is `CGO_ENABLED=0` (which is also Go's default for a cross-compile — see
-[Building and cross-compiling](#building-and-cross-compiling)), any OS or architecture
-outside the ones above (the iOS simulator on an Intel Mac among them, which Go's own rules
-would otherwise count as macOS), and stock Go compiled to
-WebAssembly (`GOOS=wasip1`, `GOOS=js`): Go's wasm toolchain links Go code only, with no cgo, so a foreign library has nowhere to go.
-For WebAssembly, build with [TinyGo](#in-the-browser-tinygo), which links the core there,
-browser included.
+## One primary and a pool
 
-## In the browser (TinyGo)
+The core keeps no state between calls, so any instance serves any door. A call runs on one
+*primary* instance when its lock is free, and otherwise on an instance from a `sync.Pool`,
+created on demand. The primary owns nothing a pool could not hold; it is there because
+`sync.Pool` drops what it holds across two GCs, and a pool alone would make a quiet
+single-goroutine caller rebuild an instance after every other collection, an allocation on a
+path that otherwise has none. The pool bounds nothing (it is per-P, cleared across two GCs),
+so the number of live instances tracks the goroutines concurrently inside a door, about
+`GOMAXPROCS`. The primary is created on first use; importing the package costs nothing.
+Under TinyGo the scheduler is cooperative and a call never yields, so every call runs on the
+primary.
 
-[TinyGo](https://tinygo.org) 0.42 or later compiles this module to WebAssembly with the core
-linked in, the way the C# package does for Blazor: TinyGo links with `wasm-ld` and has cgo,
-so `backend_tinygo.go` names `staticlib/wasm/libhypercast.a` — the core built for
-`wasm32-wasip1` — on its link line. No code changes and no extra files to ship: the core is
-inside your `.wasm`.
+What that costs under contention is the binding's one large loss: `I32` on 12 goroutines at
+once is 19.7 ns a call in aggregate on the Apple M6, against 6.9 ns for the cgo binding this
+replaced, which took no lock at all — **2.9x slower** ([Benchmarks](#benchmarks)). A single
+goroutine's calls are faster than they were.
 
-```sh
-tinygo build -target=wasm -no-debug -opt=z -o main.wasm .
-cp "$(tinygo env TINYGOROOT)/targets/wasm_exec.js" .
-```
+A fresh instance is 3 WebAssembly pages of linear memory, 192 KiB: the 64 KiB stack and the
+core's data in 2 pages, plus one page of scratch.
 
-```html
-<script src="wasm_exec.js"></script>
-<script>
-  const go = new Go();
-  WebAssembly.instantiateStreaming(fetch("main.wasm"), go.importObject)
-    .then(result => go.run(result.instance));
-</script>
-```
+## `MaxText`
 
-Use TinyGo's own `wasm_exec.js`, not stock Go's. The core itself imports nothing — parsing
-needs no clock, no randomness and no I/O — so the page loads one module and that is all.
-`-target=wasip1` works the same way under a WASI runtime (wasmtime, for one). CI builds
-[`internal/tinygosmoke`](internal/tinygosmoke) this way on every pull request and runs it
-in headless Chrome: every ABI shape — plain, numeric with a format (a currency symbol, and
-every other symbol the layout carries), discriminated, the civil date-time door with
-declared day periods — a fault with its span, and the core's version against
-`rust/Cargo.toml`.
-
-TinyGo's cgo is narrower than Go's — no build constraints on `#cgo` lines, no `${SRCDIR}`,
-no C structs by value — which is why the browser build has a backend file of its own
-rather than more lines in `backend_static.go`; the file's header has the details. The one
-that changes how a call crosses is the last: `backend_static.go`'s shims hand the verdict
-back by value, so under TinyGo each door instead passes the core pointers to its result's
-out-value and fault span, the way the core's exports take them anyway.
+A door's text is copied into the instance's scratch. The base scratch holds 65,376 bytes; a
+longer text runs on a one-off instance sized for it and dropped after the call, so neither
+the primary nor the pool keeps the pages, and that instance is the call's one allocation. The
+core reads the text through a slice whose length may not exceed the guest's `isize::MAX`,
+2^31 − 1 on wasm32, whatever the host's word size, so a door takes a text of at most
+`MaxText` bytes: the smaller of that limit and what the guest and host can address beside the
+module's own pages. On a 64-bit host that is 2,147,483,647. A longer text panics, as a caller
+bug, before anything is allocated.
 
 See [the repo root README](../README.md) for the full door table, the receipts, and the
 state of every other language binding.
 
 ## Doors
 
-Doors are generic over `string | []byte` — both cross zero-copy (the core only reads).
+Doors are generic over `string | []byte` — either is copied once into the core's memory,
+and nothing else of it is touched.
 `Uuid` returns [`google/uuid`](https://pkg.go.dev/github.com/google/uuid)'s `uuid.UUID`
 (RFC 9562 order is exactly its own layout). Go-flavored fidelity, stated honestly both
 ways: `time.Time` carries full nanoseconds across the whole 0001–9999 window and
@@ -165,7 +163,7 @@ rather than silently wrapping.
 
 Plus three entry points that are not doors — `Available()`, `LoadError()` and
 `NativeVersion()` — covered under
-[The native library](#the-native-library-available-loaderror-nativeversion) below.
+[The core](#the-core-available-loaderror-nativeversion) below.
 
 ### Numeric — one door generic over the target
 
@@ -319,17 +317,17 @@ korean := hypercast.DateFormat{Order: hypercast.YearMonthDay, AM: "오전", PM: 
 fmt.Println(hypercast.DateTimeWith("2026-07-01 오후 3:04", korean)) // the same wall clock
 ```
 
-## The native library: `Available`, `LoadError`, `NativeVersion`
+## The core: `Available`, `LoadError`, `NativeVersion`
 
-The core is part of the binary, so there is nothing to load and nothing that can fail, and
-no door can panic for want of the library. The three probes every binding carries are here
+The core is compiled into the binary, so there is nothing to load and nothing that can fail,
+and no door can panic for want of a library. The three probes every binding carries are here
 so code written against them works unchanged:
 
 - `Available()` — always `true`.
 - `LoadError()` — always `nil`.
-- `NativeVersion()` — `"major.minor.patch"` as the linked core reports it about itself, read
-  through the ABI rather than from this module, so a deployment can confirm which build of
-  the archive went into the binary. It cannot fail.
+- `NativeVersion()` — `"major.minor.patch"` as the core reports it about itself, a literal
+  compiled into the translated file from the crate's version rather than read from this
+  module, so a deployment can confirm which core went into the binary. It cannot fail.
 
 ```go
 import "log"
@@ -351,7 +349,8 @@ same name would have returned.
 - `RawTimestamp` (16 bytes) → `.Time()`, `RawDate` (4) → `.Date()`, `RawCivil` (16) →
   `.CivilDateTime()`. `Decimal` and `Duration` need no raw twin: each is laid out exactly as
   the core writes one, checked at compile time, so a buffer of them can be viewed as a
-  `[]Decimal` or `[]Duration` in place.
+  `[]Decimal` or `[]Duration` in place — `Duration` on a 64-bit host only, since the 32-bit
+  ports (`386`, `arm`, `mips`) align an `int64` to 4 bytes and make it 12.
 - `RawNumFormat` — the 92 bytes a format crosses as, which the core reads in place: a
   size word, the flags, the digit zero's code point, then every symbol inline as its bytes
   followed by its length — `RawSymbol8` (9 bytes; `SymbolMaxBytes` is 8) for the
@@ -388,128 +387,120 @@ if fault, ok := hypercast.FaultFromCode(2, 3, 1); ok {
 
 ## Platforms
 
-| Platform | Archive linked | Also links |
-| --- | --- | --- |
-| Linux x64 / arm64, glibc and musl (Alpine) | `staticlib/linux_amd64`, `staticlib/linux_arm64` | the C library |
-| macOS x64 / arm64 | `staticlib/darwin_amd64`, `staticlib/darwin_arm64` | the C library |
-| Windows x64 / arm64 | `staticlib/windows_amd64`, `staticlib/windows_arm64` | nothing (the C runtime) |
-| iOS arm64 — device, simulator | `staticlib/ios_arm64`, `staticlib/iossimulator_arm64` | the C library |
-| Mac Catalyst arm64 / x64 | `staticlib/maccatalyst_arm64`, `staticlib/maccatalyst_amd64` | the C library |
-| [Android](#android) arm64 / x64 (API 21+) | `staticlib/android_arm64`, `staticlib/android_amd64` | Bionic, the C library |
-| WebAssembly under [TinyGo](#in-the-browser-tinygo) — browser, WASI | `staticlib/wasm` | nothing |
+Every GOOS and GOARCH Go has, with `CGO_ENABLED=0`, because the core is Go source. CI
+cross-compiles and vets the package for these 23 pairs on every pull request that touches
+the Go binding, the core or the workflows, and on every release-mode run:
 
-Each build names one archive on its link line and that is all it takes from this module:
-the binary carries the core for its own platform, writes nothing to disk, and starts
-without touching the filesystem.
+| GOOS | GOARCH |
+| --- | --- |
+| `linux` | `amd64`, `386`, `arm`, `arm64`, `riscv64`, `ppc64le`, `s390x`, `loong64`, `mips64le` |
+| `windows` | `amd64`, `arm64`, `386` |
+| `darwin` | `amd64`, `arm64` |
+| `freebsd`, `openbsd`, `netbsd`, `illumos`, `plan9` | `amd64` |
+| `aix` | `ppc64` |
+| `android` | `arm64` |
+| `js`, `wasip1` | `wasm` |
 
-**One archive serves glibc and musl.** cgo has no build constraint that tells the two C
-libraries apart, so the Linux archives are the core built for the musl target, which asks
-the C library for nothing glibc and musl do not both have (`memcpy`, `memset`, `bcmp`).
-
-**Windows links the MSVC archive**, the same bytes the C# package's Native AOT publish
-links. MinGW's linker reads MSVC's COFF objects, and what the archive asks of the C runtime
-resolves against `msvcrt.dll` through MinGW's own import library, so the link line names
-nothing else.
+and runs the whole suite natively on Linux and Windows on x64 and arm64, on macOS on arm64
+(Intel macOS is built by the sweep, not run), on Alpine (musl x64 and arm64), in an iOS
+simulator, in an Android emulator, and on the three WebAssembly hosts below. No big-endian
+host runs in CI; the suite, corpus replay included, passed on `linux/s390x` under emulation
+when the backend landed (2026-11-01), and failed there with the big-endian decoding turned
+off. A binary carries the core like any package, writes nothing to disk and starts without
+touching the filesystem; glibc or musl makes no difference, since a cgo-free Go binary takes
+nothing from the C library, and a `scratch` image runs it as it is.
 
 ### iOS and Mac Catalyst
 
-Go builds for all three as `GOOS=ios`, with cgo and the platform's own clang, which is what
-[`gomobile`](https://pkg.go.dev/golang.org/x/mobile/cmd/gomobile) arranges and what Go's own
-`misc/ios/clangwrap.sh` does for the simulator. A Mach-O object says which platform it was
-built for and the linker refuses a mismatch, so each has its own archive, and since the
-three are one `GOOS`/`GOARCH` pair to Go, build tags choose between them:
+`GOOS=ios GOARCH=arm64` builds the package as it builds any other. What an iOS executable
+needs is Xcode's linker, because Go's `ios/arm64` port links externally; that is Go's rule
+for the platform, nothing of this binding's, and it is what
+[`gomobile`](https://pkg.go.dev/golang.org/x/mobile/cmd/gomobile) arranges. For the
+simulator, Go's own `misc/ios/clangwrap.sh` is the `CC`:
 
-| Building for | Tags | Archive |
-| --- | --- | --- |
-| An iOS device | none | `staticlib/ios_arm64` |
-| The iOS simulator, Apple silicon | `iossimulator` | `staticlib/iossimulator_arm64` |
-| Mac Catalyst | `maccatalyst` | `staticlib/maccatalyst_arm64`, `staticlib/maccatalyst_amd64` |
+```sh
+CGO_ENABLED=1 CC="$(go env GOROOT)/misc/ios/clangwrap.sh" GOOS=ios GOARCH=arm64 go build ./...
+```
 
-`gomobile` sets `maccatalyst` itself for that target. Nothing sets `iossimulator`: gomobile
-builds a device and a simulator with the same tags, so a simulator build passes
-`-tags iossimulator` by hand, and a build that omits it links the device archive and fails
-at the simulator link. A `gomobile bind` covering both in one invocation gives them one set
-of tags, so they take two invocations. The simulator on an Intel Mac has no archive and is
-a compile error.
-
-CI checks that every platform and tag combination selects its own archive
-(`.github/scripts/check_go_archives.sh`), runs this suite in an iOS simulator through Go's
+The device, the simulator and Mac Catalyst (gomobile's `maccatalyst` tag) build the same
+package; nothing here selects on a tag. CI runs this suite in an iOS simulator through Go's
 `misc/ios/go_ios_exec.go`, with the corpus staged as `testdata/corpus` since that wrapper
-carries nothing above the module into the simulator, and links a device build. Mac Catalyst
-is not linked from Go there; its archives are the ones the Swift and C# bindings link and
-run in the same job.
+carries nothing above the module into the simulator, and builds it for a device with the
+iPhoneOS SDK's clang. Mac Catalyst is not run from Go there.
 
 ### Android
 
-`GOOS=android` with cgo, the NDK's clang as `CC`, as `gomobile` arranges and as any cgo
-package on Android needs:
+`GOOS=android GOARCH=arm64 go build ./...` needs no NDK: Go links it internally.
+`android/amd64` (the emulator) is a platform Go itself links externally, so it takes a C
+linker for that reason alone, the NDK's clang as `CC` with `CGO_ENABLED=1`, as any Go program
+for it does; nothing of the core's is linked either way, and page alignment is the linker's
+business (NDK r28 and later align to 16 KB pages by default). CI cross-builds this whole
+suite for `android/amd64` and runs it in an x86_64 emulator whose image uses 16 KB pages
+(`.github/scripts/android_build_suite.sh` and `android_device_test.sh`, which run the same
+way against a local emulator); `android/arm64` is built in the cross-compile sweep.
 
-```shell
-CC=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang \
-  GOOS=android GOARCH=arm64 CGO_ENABLED=1 go build ./...
-```
+### WebAssembly
 
-(`x86_64-linux-android21-clang` and `GOARCH=amd64` for the emulator.) `GOOS=android` also
-satisfies Go's `linux` constraint, so the Linux link lines exclude it and it takes its own
-archives, built for Android against Bionic. Page alignment is the final link's: NDK r28 and
-later align to the 16 KB pages Android 15 devices may use by default, and an older NDK
-needs `-extldflags=-Wl,-z,max-page-size=16384`.
-
-CI checks that both select their own archive (`.github/scripts/check_go_archives.sh`),
-cross-compiles this whole suite for `android/amd64`, and runs it in an x86_64 emulator whose
-image uses 16 KB pages (`.github/scripts/android_build_suite.sh` and
-`android_device_test.sh`, which run the same way against a local emulator); `android/arm64`
-is linked.
-
-### Deploying
-
-- **A fully static Linux binary** — `go build -ldflags '-linkmode external -extldflags
-  -static'` gives a binary with no dependencies at all, which runs in an empty, read-only
-  `scratch` container. It needs a static C library to link against; Alpine's musl has one.
-- **Shipping to Alpine** — build on Alpine (`apk add build-base`), or link fully statically
-  as above. An ordinary dynamically linked build from a glibc machine needs the builder's
-  glibc, which a bare Alpine image does not have.
-- **Anywhere else** — the binary needs only the C library it was linked against.
-
-## Building and cross-compiling
-
-`CGO_ENABLED` defaults to `1` on a native build and to `0` the moment `GOOS`/`GOARCH`
-differ from the host:
-
-```
-$ go env CGO_ENABLED                # native
-1
-$ GOARCH=arm64 go env CGO_ENABLED   # cross, same OS, different arch
-0
-$ GOOS=windows go env CGO_ENABLED   # cross, different OS
-0
-```
-
-So a plain cross-compile lands on the compile error above. Cross-compiling takes a cross
-C compiler and `CGO_ENABLED=1` set explicitly:
+The translated core is plain Go, so it builds for the browser and for WASI under stock Go
+and TinyGo alike, with no archive and no cgo:
 
 ```sh
-CC=x86_64-w64-mingw32-gcc GOOS=windows GOARCH=amd64 CGO_ENABLED=1 go build ./...
-CC=aarch64-linux-gnu-gcc  GOOS=linux   GOARCH=arm64 CGO_ENABLED=1 go build ./...
+GOOS=js GOARCH=wasm go build -o main.wasm .          # stock Go, the browser or Node
+cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" .
+
+tinygo build -target=wasm -no-debug -opt=z -o main.wasm .   # TinyGo, the browser
+cp "$(tinygo env TINYGOROOT)/targets/wasm_exec.js" .
 ```
 
-A native build with no C compiler installed fails in `runtime/cgo` with `C compiler "gcc"
-not found` — install the one for your platform from [Requirements](#requirements).
-GitHub's `ubuntu-latest` and `macos-latest` runner images ship one by default (`gcc` and the
-Xcode command-line tools' `clang`).
+```html
+<script src="wasm_exec.js"></script>
+<script>
+  const go = new Go();
+  WebAssembly.instantiateStreaming(fetch("main.wasm"), go.importObject)
+    .then(result => go.run(result.instance));
+</script>
+```
 
-The `hypercast_local` build tag is for working on the core in a checkout of this repository:
-`go test -tags hypercast_local ./...` links the archive `.github/scripts/local-core.sh` builds
-from the checkout, under `rust/target/local-core/`, in place of the committed one. A module
-fetched with `go get` has no such archive, so the tag fails at link time there. Without the
-tag, outside CI, the suite refuses to run when the checkout's `rust/` differs from the commit
-the committed archives were built from (`-count=1` after a core change, since `go test`
-replays a cached pass).
+Use the `wasm_exec.js` of the toolchain that built the module. `GOOS=wasip1 GOARCH=wasm` and
+`tinygo build -target=wasip1` do the same for a WASI runtime (wasmtime, for one). The core
+imports nothing, so the page loads one module and that is all. The binding, its dependencies (`time`,
+`math/big`, `google/uuid`) and the core add about 191 KB to a TinyGo `-opt=z -no-debug`
+browser build, 953 KB to a stock Go `js/wasm` one and 631 KB to a native darwin/arm64 one,
+each built with `-ldflags='-s -w'` where the toolchain takes it, on top of `fmt` and the
+runtime (2026-11-01, TinyGo 0.44, Go 1.27.3). No WebAssembly timings are published yet.
 
-This repo's own CI runs `go test ./...` natively, never cross-compiled, on every leg —
-Linux and Windows on x64 and arm64, macOS on arm64 — and on Alpine. The iOS simulator run
-in `test-apple-mobile` and the Android emulator run in `test-android` are the two
-exceptions; see [iOS and Mac Catalyst](#ios-and-mac-catalyst) and [Android](#android).
+CI runs the whole suite three ways on every pull request that touches the Go binding, the
+core or the workflows: under TinyGo on wasip1 under wasmtime (with the checkout mounted and
+the corpus found through `HYPERCAST_CORPUS`, and the same binary run without the mount as a
+negative control), under stock Go on `js/wasm` under Node and on `wasip1/wasm` under
+wasmtime. It also builds [`internal/tinygosmoke`](internal/tinygosmoke) with TinyGo for the
+browser and runs it in headless Chrome: every ABI shape — plain, numeric with a format (a
+currency symbol, and every other symbol the layout carries), discriminated, the civil
+date-time door with declared day periods — a fault with its span, and the core's version
+against `rust/Cargo.toml`.
+
+## Building and regenerating
+
+Nothing to build: `go test ./...` runs on the committed core. The core is regenerated only
+after a change to `rust/` or to the pins:
+
+```sh
+rustup toolchain install 1.99.1 --profile minimal --target wasm32-wasip1
+go generate     # in go/: builds rust/ for wasm32-wasip1 and rewrites internal/core/core.go
+```
+
+[`internal/wasm2go`](internal/wasm2go) is the generator: it builds the crate's `cargo cdylib`
+with the rustc named in its `rust-toolchain.toml` (1.99.1), a 64 KiB guest stack
+(`-C link-arg=-zstack-size=65536`) and wasi-libc for `memcmp`, `memcpy` and `memset` (`-l
+c`), then runs the wasm2go pinned in its own `go.mod`. The rustc is pinned as a
+reproducibility constraint, not a floor: the wasm's bytes follow rustc's codegen, so one named
+toolchain makes the committed file reproducible, and a bump is a deliberate
+regenerate-and-commit. `HYPERCAST_CHECK_CORE=1 go test -count=1 -run
+'TestCoreIsCurrent|TestRegenerationCarriesTheCrateVersion' .` regenerates into a temporary
+file and diffs it against the committed one (without the variable the test skips when the
+toolchain is missing); CI runs it on every pull request that touches the Go binding, the
+core or the workflows, and on every release-mode run, and release preparation regenerates
+the core at the new version, since the version is a literal in the file.
 
 ## Why not `strconv` / `time.Parse`?
 
@@ -521,85 +512,90 @@ exceptions; see [iOS and Mac Catalyst](#ios-and-mac-catalyst) and [Android](#and
    `urn:uuid:` prefixes, protobuf JSON durations.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other
    binding, held by the shared corpus (full corpus replay on every platform, and in the
-   browser under TinyGo).
+   browser and on WASI under TinyGo and stock Go).
 
-**The honest trade-off, stated as plainly as the wins elsewhere: every Go door but the two
-declared-order date doors loses per-call to Go's stdlib.** Go's parsers are simply excellent
-(`time.Parse(RFC3339Nano)` at ~58 ns, `strconv.Atoi` at ~9 ns), and every HyperCast call
-pays a cgo crossing of about 50 ns. The exceptions are the messy date-time door, which beats
-`time.Parse` with a layout by 1.4x, and the declared-order date door, which edges it:
-`time.Parse` with a layout is the one stdlib path slow enough to absorb the crossing. The
-crossing is all a door pays: any Go pointer handed to cgo escapes to the heap, so the format and
-the day periods cross by value, the C shims in `backend_static.go` declare them, the
-out-value and the fault span on their own stack and return the verdict by value as one
-struct, and no Go pointer crosses but the input bytes —
-**0 B, 0 allocs on every door** on the success path. (A failed cast allocates exactly its
-`*Fault`; `allocs_test.go` holds both counts as tests.) In Go specifically, this binding
-earns its keep on the vocabulary, the closed error contract, and cross-language agreement —
-not per-call speed. The tabular layer, [HyperTabular](https://github.com/SkunkWerkx/HyperTabular),
-is where the crossing amortizes to zero: it crosses once per chunk, not once per cell.
+**The honest trade-off, stated as plainly as the wins elsewhere: most Go doors still lose
+per-call to Go's stdlib.** Go's parsers are simply excellent (`time.Parse(RFC3339Nano)` at
+~21 ns, `strconv.Atoi` at ~4 ns on the machine below), and every HyperCast call copies its
+text into the core's memory and runs the core as translated, bounds-checked Go. Against the
+cgo binding it replaced, single calls are mostly faster, since no foreign call is paid any
+more: `Bool` 2.3x, `DateOnlyOrdered` 1.7x, `I32` 1.3x. The losses are the civil date-time
+doors (1.4–1.5x), a rejected cast (1.5x) and contention (2.9x), all in the table below. The
+declared-order date door beats `time.Parse` with a layout, and the messy date-time door is
+level with it. **0 B, 0 allocs on every door** on the success path, under stock Go and
+TinyGo, for any text of up to 65,376 bytes ([`MaxText`](#maxtext)); a failed cast allocates
+exactly its `*Fault`, and `allocs_test.go` holds both counts as tests. In Go specifically,
+this binding earns its keep on the vocabulary, the closed error contract, and cross-language
+agreement — not per-call speed. The tabular layer,
+[HyperTabular](https://github.com/SkunkWerkx/HyperTabular), is where a per-call cost amortizes:
+it calls once per chunk, not once per cell.
 
 ## Benchmarks
 
-`go test -bench=. -benchmem ./...`. Measured for 0.9.0 on linux-x64 (an Intel Core i9-11900H,
-go1.27.2), one session, median of five runs:
+`go test -bench=. -benchmem ./...`. Apple M6 (Mac18,5, 12 cores), macOS, Go 1.27.3,
+2026-11-01: six runs of each binding interleaved in one session, benchstat medians with
+benchstat's spread. The cgo column is the binding this one replaced, built from the same
+`rust/` (its archive built by the Forge's `build-static-libs.sh`), with this same benchmark
+file. Other work shared the machine during the session, so several rows are noisy, and the
+spread is printed with them; differences benchstat did not call significant are marked ~.
 
-| Door | HyperCast | stdlib |
+| Door | translated core | cgo binding | | stdlib |
+| --- | ---: | ---: | --- | ---: |
+| `Bool` | 10.7 ns ±40% | 24.1 ns | 2.3x faster | 1.4 ns `strconv.ParseBool` |
+| `I32` | 33.6 ns ±5% | 43.5 ns | 1.3x faster | 3.6 ns `strconv.Atoi` |
+| `I32` (grouped) | 37.6 ns ±4% | 45.0 ns | 1.2x faster | — |
+| `I32` (grouped), 12 goroutines, aggregate | 19.7 ns ±3% | 6.9 ns | **2.9x slower** | — |
+| `I32` (grouped), `$` declared | 43.3 ns ±4% | 46.9 ns | 1.1x faster | — |
+| `I32` (grouped), every symbol declared | 71.8 ns ±2% | 70.0 ns | ~ | — |
+| `I32("1,234x567")`, rejected | 96.0 ns ±3%, 1 alloc | 64.3 ns, 1 alloc | **1.5x slower** | 14.6 ns, 2 allocs `strconv.Atoi("1234x567")` |
+| `F64` | 42.8 ns ±38% | 50.2 ns | 1.2x faster | 14.9 ns `strconv.ParseFloat` |
+| `F64` (`1.234.567,89`), declared | 41.2 ns ±11% | 49.9 ns | 1.2x faster | — |
+| `F64` (`1.234.567,89`), `Detect` | 54.6 ns ±11% | 59.7 ns | 1.1x faster | — |
+| `Uuid` | 19.7 ns ±93% | 28.1 ns | ~ | 11.8 ns `google/uuid.Parse` |
+| `Timestamp` | 34.5 ns ±77% | 34.5 ns | ~ | 21.1 ns `time.Parse(RFC3339Nano)` |
+| `Span` (ISO) | 30.9 ns ±173% | 29.0 ns | ~ | 27.2 ns `ParseDuration` (Go dialect — different grammar) |
+| `TimeOfDay` | 20.4 ns ±166% | 28.2 ns | 1.4x faster | — |
+| `DateTime` (`1/7/2026 3:04 PM`) | 49.0 ns ±160% | 34.2 ns | **1.4x slower** | 46.9 ns `time.Parse` w/ layout |
+| `DateTimeWith`, `vorm.`/`nachm.` declared | 75.8 ns ±51% | 52.0 ns | **1.5x slower** | — |
+| `DateOnlyOrdered` (`1/7/2026`) | 15.5 ns ±19% | 26.0 ns | 1.7x faster | 28.0 ns `time.Parse` w/ layout |
+
+Every success row is 0 B and 0 allocations in both bindings. Separator detection costs
+~13 ns here (54.6 against 41.2 ns for the same text under a declared eurozone format). A
+declared symbol costs text that does not carry it: `I32("1,234,567")` is 37.6 ns under
+`Invariant`, 43.3 ns under a format declaring `$`, and 71.8 ns under one declaring every
+symbol there is; declare what the feed actually carries.
+
+The table that follows **predates the translated core**: it measured the cgo binding for
+0.9.0 on linux-x64 (an Intel Core i9-11900H, go1.27.2), one session, median of five runs,
+and has not been re-run since.
+
+| Door | HyperCast (cgo, 0.9.0) | stdlib |
 | --- | ---: | ---: |
-| `Timestamp` | **90 ns, 0 allocs** | 58 ns `time.Parse(RFC3339Nano)` |
-| `I32` | **103 ns, 0 allocs** | 9 ns `strconv.Atoi` |
-| `I32` (grouped) | **108 ns, 0 allocs** | — |
-| `F64` | **121 ns, 0 allocs** | 30 ns `strconv.ParseFloat` |
-| `Uuid` | **76 ns, 0 allocs** | 33 ns `google/uuid.Parse` |
-| `Span` (ISO) | **78 ns, 0 allocs** | 73 ns `ParseDuration` (Go dialect — different grammar) |
-| `Bool` | **60 ns, 0 allocs** | 3 ns `strconv.ParseBool` |
-| `TimeOfDay` | **69 ns, 0 allocs** | — |
-| `DateTime` (`1/7/2026 3:04 PM`) | **84 ns, 0 allocs** | 118 ns `time.Parse` w/ layout |
-| `DateOnlyOrdered` (`1/7/2026`) | **67 ns, 0 allocs** | 72 ns `time.Parse` w/ layout |
-
-Separator detection costs ~16 ns: `1.234.567,89` under `Detect` is 141 ns against 125 ns
-for the same text under a declared eurozone format.
-
-A format is checked and laid out on every call — the two separators in a few nanoseconds,
-every further symbol a little more — and the whole 92-byte layout crosses by value, so a
-declared symbol costs text that does not carry it: `I32("1,234,567")` is 108 ns under
-`Invariant`, 121 ns under a format declaring `$`, and 204 ns under one declaring every
-symbol there is (currency separators, both signs, percent, native digits). Declare what the
-feed actually carries. Day periods are the same story: `DateTime("1/7/2026 3:04 PM")` is
-84 ns, and `DateTimeWith` under a format declaring `vorm.`/`nachm.` reads the same text in
-135 ns. Rejection allocates where success does not: `I32("1,234x567")` takes 171 ns and one
-allocation, the `*Fault` it returns, against 49 ns and two allocations for `strconv.Atoi`
-failing on `1234x567`.
+| `Timestamp` | 90 ns, 0 allocs | 58 ns `time.Parse(RFC3339Nano)` |
+| `I32` | 103 ns, 0 allocs | 9 ns `strconv.Atoi` |
+| `I32` (grouped) | 108 ns, 0 allocs | — |
+| `F64` | 121 ns, 0 allocs | 30 ns `strconv.ParseFloat` |
+| `Uuid` | 76 ns, 0 allocs | 33 ns `google/uuid.Parse` |
+| `Span` (ISO) | 78 ns, 0 allocs | 73 ns `ParseDuration` (Go dialect — different grammar) |
+| `Bool` | 60 ns, 0 allocs | 3 ns `strconv.ParseBool` |
+| `TimeOfDay` | 69 ns, 0 allocs | — |
+| `DateTime` (`1/7/2026 3:04 PM`) | 84 ns, 0 allocs | 118 ns `time.Parse` w/ layout |
+| `DateOnlyOrdered` (`1/7/2026`) | 67 ns, 0 allocs | 72 ns `time.Parse` w/ layout |
 
 ## Verifying build provenance
 
-Go has no package registry to attest: `go get` resolves straight from the `go/v<version>`
-git tag against this repo, and what it fetches is the tree at that tag, the static libraries
-under `go/staticlib/` included. Each of them verifies from the release tag alone: the release
-attestation, signed by this repository's `release.yml` at the root tag, names every one of
-them, with the release inventory as its predicate. The same file sits in the module cache at
-`$(go env GOMODCACHE)/github.com/!skunk!werkx/!hyper!cast/go@v<version>/staticlib/`.
-
-```sh
-gh attestation verify go/staticlib/linux_amd64/libhypercast.a --repo SkunkWerkx/HyperCast \
-  --source-ref refs/tags/v<version> --predicate-type https://github.com/SkunkWerkx/.github/predicates/release/v1
-```
-
-Each archive also carries build provenance from `hyper-build-static.yml` in
-`SkunkWerkx/.github`, at the preparation commit the tagged commit was staged from
-(`stage-native-binaries.yml` verifies that before committing a byte, and the staging commit's
-`Release-Source-SHA` and `Release-CI-Run-ID` trailers name the commit and the run), so that
-check needs `--signer-repo` beside `--repo`:
-
-```sh
-gh attestation verify go/staticlib/linux_amd64/libhypercast.a \
-  --repo SkunkWerkx/HyperCast --signer-repo SkunkWerkx/.github
-```
-
-Get the signer wrong and `gh` reports a bare `verifying with issuer "sigstore.dev"`, which
-reads like a bad signature but is only an identity mismatch. The root README's
-[Provenance](../README.md#provenance) section has the whole picture: the inventory, which
-artifacts are signed from where, and the gates every byte passes before publication.
+Go has no package registry to attest, and this module ships no binary: `go get` resolves
+straight from the `go/v<version>` git tag against this repo, and what it fetches is source,
+the generated core included. That file's provenance is reproducible generation, claimed
+exactly: `internal/core/core.go` is the deterministic output of wasm2go over the crate at that
+tag built with the pinned rustc, CI regenerates it with those pins on every pull request that
+touches the Go binding, the core or the workflows, and on every release-mode run, and fails
+on any diff, and anyone can repeat it with `go generate` in a checkout
+([Building and regenerating](#building-and-regenerating)). No attestation is claimed for the
+intermediate wasm, which is not a release asset. The root README's
+[Provenance](../README.md#provenance) section has the picture for the artifacts the release
+does ship: the inventory, which are signed from where, and the gates every byte passes before
+publication.
 
 ## License
 

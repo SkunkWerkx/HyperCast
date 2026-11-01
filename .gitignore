@@ -11,12 +11,6 @@ csharp/HyperCast/runtimes/
 # The same for the static libraries a Native AOT publish links in: staged by the forge's
 # static-libs/build-static-libs.sh at test and pack time, never committed.
 csharp/HyperCast/staticlibs/
-# go/staticlib's archives ARE committed — a Go module is whatever is in the tree — but only
-# by stage-native-binaries.yml, which adds them with `git add -f` after verifying each one's
-# build provenance. Ignored here so that a developer's own build of them (the forge's
-# static-libs/build-static-libs.sh, which `go test` needs to link) can never
-# ride into a commit by accident.
-go/staticlib/*/*.a
 
 # Gradle / Java
 **/.gradle/
@@ -44,28 +38,26 @@ java/src/main/resources/native/
 **/dist/
 **/.pytest_cache/
 # The staged PyO3 extension for local dev/test — nested at hypercast._native (the maturin
-# module-name), built from the core crate's python feature. The abi3 and abi3t builds carry
-# one file per platform regardless of Python version (the plain, .abi3 and .abi3t
-# spellings); a free-threaded 3.14 build is tagged per version (`maturin develop` names it
-# _native.cpython-314t-<platform>.so), hence the glob; .pyd covers Windows.
-python/src/hypercast/_native.so
-python/src/hypercast/_native.abi3.so
-python/src/hypercast/_native.abi3t.so
-python/src/hypercast/_native.cpython-*t-*.so
-python/src/hypercast/_native.pyd
-python/src/hypercast/_native.*.pyd
+# module-name), built from the core crate's python feature. Its file name varies with the
+# Python version and platform (_native.abi3.so, _native.abi3t-darwin.so,
+# _native.cpython-314t-<platform>.so and more), so these match every compiled spelling and
+# nothing else: _native.pyi beside them is the tracked type stub.
+python/src/hypercast/_native*.so
+python/src/hypercast/_native*.pyd
 
 # Swift
-# The static libraries under swift/HyperCastCore.artifactbundle/{triple}/ are committed, not
-# ignored — SwiftPM has no packing step for a git-URL dependency, unlike every other registry
-# this repo publishes to — and only by stage-native-binaries.yml, after their provenance checks.
+# The core in the artifact bundle and the XCFramework is build output: CI and
+# .github/scripts/local-core.sh write it, and consumers get it from the release's assets (the
+# root Package.swift). Only the bundle's include/ (header and module map) is source.
 **/.build/
+swift/HyperCastCore.artifactbundle/*
+!swift/HyperCastCore.artifactbundle/include/
+swift/HyperCastCoreApple.xcframework/
 
 # Ruby
 # CI places each leg's native lib here for `bundle exec rspec` at build-native time, and
 # rubygems-publish stages all eight into the universal gem at gem-build time (the platform
-# gems carry none); regenerable locally via `cargo cdylib`. Unlike the Go and Swift archives
-# above, the gem build is a real packing step, so nothing here needs committing.
+# gems carry none); regenerable locally via `cargo cdylib`.
 ruby/lib/hypercast/native/*/
 ruby/Gemfile.lock
 ruby/pkg/
@@ -90,11 +82,13 @@ ruby/lib/hypercast/*/hypercast_native.so
 ruby/lib/hypercast/*/hypercast_native.bundle
 
 # PHP
-# Native libs under php/src/native/{rid}/ are committed, not ignored — see
-# php/src/native/README.md for why (Packagist has no packing step: the git tree at the tag
-# IS the package).
 php/vendor/
 php/composer.lock
+php/.phpunit.result.cache
+# The root composer.json is the PIE package's metadata, not a project anyone installs from
+# the repo root, but a stray local `composer install` there shouldn't get committed either.
+/vendor/
+/composer.lock
 php/.phpunit.result.cache
 # Root-level composer.json exists only for Packagist (see php/README.md's Install section) —
 # nothing actually runs `composer install` from the repo root except a consumer's own build,
@@ -102,8 +96,28 @@ php/.phpunit.result.cache
 /vendor/
 /composer.lock
 
-# Node
+# Node: the TypeScript binding and ruby/wasm-smoke's test harness.
 **/node_modules/
+# The napi-rs addon `npm run build` writes for this machine, and the per-platform package
+# directories `napi create-npm-dirs` writes (the Forge's pack-npm action runs it on a copy of
+# typescript/ at release time); never committed.
+typescript/*.node
+typescript/npm/
+
+# R. vendor.sh derives the wrapper crate's lock from rust/Cargo.lock, vendors the crates
+# (the core among them, from this checkout) and stages the header and the corpus into these
+# at release time, in CI and for the local loop; R CMD INSTALL leaves the objects and the
+# library. All generated, never committed. r/.gitignore and typescript/.gitignore repeat
+# their entries for their own trees.
+r/src/rust/vendor/
+r/src/rust/vendor.tar.xz
+r/src/rust/Cargo.lock
+r/src/.cargo/
+r/src/include/
+r/tests/testthat/corpus/
+r/src/*.o
+r/src/*.so
+r/src/*.dll
 
 # BenchmarkDotNet
 # Writes output relative to the process's working directory when invoked via `dotnet run`
@@ -129,13 +143,12 @@ go/testdata/corpus/
 
 # CI artifacts downloaded to the repository root (`gh run download` with no --dir lands one
 # folder per artifact here): native libraries, wheels, gems, packages and AOT reports from a
-# ci.yml run. Committed binaries come only from stage-native-binaries.yml, into their own
-# paths, after their provenance checks; these never belong in a commit. Anchored to the root
+# ci.yml run. No binary is committed; these never belong in a commit. Anchored to the root
 # so nothing tracked below it is touched.
 /aot-report-*/
 /native-*/
 /nuget-org-*/
-/php-native-*/
+/php-ext-*/
 /pypi-wheels-*/
 /ruby-native-*/
 /ruby-wasm-*/

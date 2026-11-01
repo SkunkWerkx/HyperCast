@@ -7,6 +7,7 @@ from __future__ import annotations
 import ast
 import inspect
 import os
+import sysconfig
 from pathlib import Path
 
 import pytest
@@ -74,7 +75,9 @@ def test_a_consumers_match_type_checks_as_exhaustive(monkeypatch):
     api = pytest.importorskip("mypy.api")
     # The package as this checkout has it, the way conftest.py puts it on sys.path. --strict
     # follows the import, so hypercast's own annotations are checked against the stub too.
-    monkeypatch.setenv("MYPYPATH", str(PACKAGE.parent))
+    # An installed package is found through site-packages, which mypy refuses on MYPYPATH.
+    if str(PACKAGE.parent) not in {sysconfig.get_path("purelib"), sysconfig.get_path("platlib")}:
+        monkeypatch.setenv("MYPYPATH", str(PACKAGE.parent))
     out, err, status = api.run(
         ["--strict", "--cache-dir", os.devnull, str(SAMPLES / "consumer.py")]
     )
@@ -86,7 +89,8 @@ def test_the_checker_catches_a_missing_case(monkeypatch, tmp_path):
     Without this, "it type-checks" could just mean the checker saw Any.
     """
     api = pytest.importorskip("mypy.api")
-    monkeypatch.setenv("MYPYPATH", str(PACKAGE.parent))
+    if str(PACKAGE.parent) not in {sysconfig.get_path("purelib"), sysconfig.get_path("platlib")}:
+        monkeypatch.setenv("MYPYPATH", str(PACKAGE.parent))
     sample = tmp_path / "missing_case.py"
     sample.write_text(
         "from typing import assert_never\n"

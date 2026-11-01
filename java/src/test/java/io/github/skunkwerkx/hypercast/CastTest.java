@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.text.DecimalFormat;
@@ -81,10 +82,8 @@ final class CastTest {
         // The trimmed edges stay outside the span.
         assertEquals(new Fault<Character>(CastFailure.OUT_OF_RANGE, 2, 7), Cast.character("  U+1F600 "));
         try (Arena arena = Arena.ofConfined()) {
-            MemorySegment text = arena.allocateFrom("\t&#x1F600;\n");
-            assertEquals(
-                    new Fault<Character>(CastFailure.OUT_OF_RANGE, 1, 9),
-                    Cast.character(text.asSlice(0, text.byteSize() - 1)));
+            MemorySegment text = offHeap(arena, "\t&#x1F600;\n");
+            assertEquals(new Fault<Character>(CastFailure.OUT_OF_RANGE, 1, 9), Cast.character(text));
         }
     }
 
@@ -568,11 +567,22 @@ final class CastTest {
     @Test
     void memorySegmentDoorsAcceptNativeMemoryAndEmptySlices() {
         try (Arena arena = Arena.ofConfined()) {
-            MemorySegment off = arena.allocateFrom("42.5");
-            // allocateFrom appends a NUL terminator; the door gets exactly the text's bytes.
+            MemorySegment off = offHeap(arena, "42.5|");
+            // A slice: the door gets exactly the text's bytes, not the separator after them.
             assertEquals(new Success<>(42.5), Cast.f64(off.asSlice(0, 4), NumFormat.INVARIANT));
             assertEquals(new Fault<>(CastFailure.EMPTY, 0, 0), Cast.f64(off.asSlice(0, 0), NumFormat.INVARIANT));
         }
+    }
+
+    /**
+     * The text's UTF-8 in native memory. By hand rather than {@code Arena.allocateFrom}, which
+     * JDK 21 does not have: the suite runs on the floor too.
+     */
+    private static MemorySegment offHeap(Arena arena, String text) {
+        byte[] utf8 = text.getBytes(StandardCharsets.UTF_8);
+        MemorySegment segment = arena.allocate(utf8.length);
+        MemorySegment.copy(utf8, 0, segment, ValueLayout.JAVA_BYTE, 0, utf8.length);
+        return segment;
     }
 
     @Test
@@ -600,8 +610,7 @@ final class CastTest {
             assertEquals(new Success<>(1234.5f), Cast.f32(text, locale), locale.toString());
             assertEquals(new Success<>(new BigDecimal("1234.5")), Cast.decimal(utf8, locale), locale.toString());
             try (Arena arena = Arena.ofConfined()) {
-                MemorySegment segment =
-                        arena.allocateFrom(text, StandardCharsets.UTF_8).asSlice(0, utf8.length);
+                MemorySegment segment = offHeap(arena, text);
                 assertEquals(new Success<>(1234.5), Cast.f64(segment, locale), locale.toString());
             }
             String integer = text.substring(0, text.length() - 2);

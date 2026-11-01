@@ -1,9 +1,7 @@
 // swift-tools-version:6.2
 import PackageDescription
 
-#if canImport(Darwin)
-    import Foundation
-#endif
+import Foundation
 
 // This file exists purely so `.package(url: "https://github.com/SkunkWerkx/HyperCast", ...)`
 // resolves at all — SwiftPM requires Package.swift at the repository root, with no monorepo
@@ -12,27 +10,50 @@ import PackageDescription
 // just points its targets' `path:` at the real sources instead of duplicating them, and has
 // to stay in step with it — see that file for what each target is.
 
-// iOS, the iOS simulator and Mac Catalyst take the core from an XCFramework instead: an app
-// for those is built by Xcode, which has linked a static library out of an XCFramework since
-// Xcode 12 and does not read a static-library artifact bundle. It carries the same no_std
-// archives, one slice each (arm64 only), with the header and module map under
-// Headers/HyperCastCore/, so `import HyperCastCore` finds the same module either way.
-//
-// Only a Mac can build for those platforms, so only a Mac's manifest declares the target; on
-// Linux and Windows this file is what it was. And only when the XCFramework is there: it is
-// committed by stage-native-binaries.yml, whole, so a checkout from before its first staging
-// has none, and a binary target whose path is missing fails the whole package, macOS
-// included.
+// The core comes from the GitHub Release: two zips per version, the static-library artifact
+// bundle (Linux glibc and musl, macOS, Windows, WebAssembly and Android, one archive per
+// triple) and, on a Mac, the XCFramework iOS, the iOS simulator and Mac Catalyst link (Xcode
+// does not read a static-library artifact bundle). SwiftPM checks each zip against its
+// checksum before using it. Release staging (the Forge's stage-release action) writes the
+// three lines below for every release, from the zips the release then attaches; none resolves
+// before the first release that carries them.
+let coreRelease = "1.0.0"
+let coreChecksum = ""
+let appleCoreChecksum = ""
+
+// In this repository, CI and .github/scripts/local-core.sh write the core into
+// swift/HyperCastCore.artifactbundle/ (gitignored), and then this file links that instead, the
+// way swift/Package.swift does: every CI check that builds through this manifest tests the core
+// the run built. A consumer's checkout never has one.
+func built(_ path: String) -> Bool {
+    FileManager.default.fileExists(atPath: "\(Context.packageDirectory)/\(path)")
+}
+let assets = "https://github.com/SkunkWerkx/HyperCast/releases/download/v\(coreRelease)"
+let localCore = "swift/HyperCastCore.artifactbundle"
+let localAppleCore = "swift/HyperCastCoreApple.xcframework"
+let isLocal = built("\(localCore)/info.json")
 #if canImport(Darwin)
-    let appleCore = "swift/HyperCastCoreApple.xcframework"
-    let linksAppleCore = FileManager.default.fileExists(
-        atPath: "\(Context.packageDirectory)/\(appleCore)/Info.plist")
+    let linksAppleCore = isLocal ? built("\(localAppleCore)/Info.plist") : true
 #else
-    let appleCore = ""
     let linksAppleCore = false
 #endif
-let appleCoreTargets: [Target] =
-    linksAppleCore ? [.binaryTarget(name: "HyperCastCoreApple", path: appleCore)] : []
+let coreTargets: [Target] =
+    [
+        isLocal
+            ? .binaryTarget(name: "HyperCastCore", path: localCore)
+            : .binaryTarget(
+                name: "HyperCastCore", url: "\(assets)/HyperCastCore.artifactbundle.zip",
+                checksum: coreChecksum)
+    ]
+    + (!linksAppleCore
+        ? []
+        : [
+            isLocal
+                ? .binaryTarget(name: "HyperCastCoreApple", path: localAppleCore)
+                : .binaryTarget(
+                    name: "HyperCastCoreApple", url: "\(assets)/HyperCastCoreApple.xcframework.zip",
+                    checksum: appleCoreChecksum)
+        ])
 let coreDependencies: [Target.Dependency] =
     linksAppleCore
     ? [
@@ -54,10 +75,6 @@ let package = Package(
         .library(name: "HyperCast", targets: ["HyperCast"])
     ],
     targets: [
-        .binaryTarget(
-            name: "HyperCastCore",
-            path: "swift/HyperCastCore.artifactbundle"
-        ),
         .target(
             name: "HyperCast",
             dependencies: coreDependencies,
@@ -68,5 +85,5 @@ let package = Package(
             dependencies: ["HyperCast"],
             path: "swift/Tests/HyperCastTests"
         ),
-    ] + appleCoreTargets
+    ] + coreTargets
 )

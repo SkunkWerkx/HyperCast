@@ -54,9 +54,15 @@ final class InteropTest extends TestCase
         $this->assertSame('1.2.3', NativeValues::version(0x01_02_03));
     }
 
-    /** The C declarations a host restates, exactly as Cast.php's cdef has them. */
+    /**
+     * The C declarations a host restates (include/hypercast.h's layouts), for the writers,
+     * which copy into an ext-ffi buffer. The extension needs no ext-ffi; these tests do.
+     */
     private static function layouts(): FFI
     {
+        if (!\extension_loaded('ffi')) {
+            self::markTestSkipped('ext-ffi is not loaded');
+        }
         return FFI::cdef(
             'typedef struct { uint8_t bytes[8]; uint8_t len; } symbol8;'
             . 'typedef struct { uint8_t bytes[16]; uint8_t len; } symbol16;'

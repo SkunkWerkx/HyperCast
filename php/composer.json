@@ -1,8 +1,8 @@
 {
-    "name": "skunkwerkx/hypercast",
-    "description": "Allocation-free scalar parsing as Success/Fault verdicts — direct native FFI into a Rust core, no runtime bridge.",
+    "name": "skunkwerkx/hypercast-dev",
+    "description": "Development harness for the hypercast PHP extension",
     "type": "library",
-    "keywords": ["parsing", "parser", "cast", "validation", "decimal", "datetime", "uuid", "ffi", "rust"],
+    "keywords": ["parsing", "parser", "cast", "validation", "decimal", "datetime", "uuid", "extension", "rust"],
     "license": "MIT",
     "authors": [
         {
@@ -15,26 +15,21 @@
         "source": "https://github.com/SkunkWerkx/HyperCast"
     },
     "require": {
-        "php": ">=8.2",
-        "ext-ffi": "*"
-    },
-    "suggest": {
-        "ext-intl": "Pass an intl NumberFormatter to the numeric doors as their format (NumFormat::fromNumberFormatter)"
+        "php": ">=8.3"
     },
     "require-dev": {
         "phpunit/phpunit": "^11.0",
         "phpbench/phpbench": "^1.7",
         "squizlabs/php_codesniffer": "^3.10 || ^4.0"
     },
-    "autoload": {
-        "psr-4": {
-            "HyperCast\\": "src/"
-        }
-    },
     "autoload-dev": {
         "psr-4": {
             "HyperCast\\Tests\\": "tests/",
             "HyperCast\\Bench\\": "bench/"
         }
+    },
+    "scripts": {
+        "test": "@php tools/run-tests.php",
+        "bench": "@php tools/run-bench.php"
     }
 }

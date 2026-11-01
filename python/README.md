@@ -21,8 +21,8 @@ the oldest version still in upstream support (`match`/`case` is the consumption 
 pip install hypercast
 ```
 
-Real platform-specific wheels, so it lands at native speed with nothing to compile — no
-compiler needed and no dependencies at all; the PyO3 extension *is* the package. Each
+Real platform-specific wheels, so on every platform in the table below it lands at native
+speed with nothing to compile — no compiler needed and no dependencies at all; the PyO3 extension *is* the package. Each
 platform gets two wheels, both stable-ABI, which between them cover every CPython from the
 3.11 floor up, with the GIL or without it:
 
@@ -41,9 +41,14 @@ on each of eight platforms, plus a seventeenth wheel for Pyodide in the browser
 | macOS | ✓ | ✓ |
 | Windows | ✓ | ✓ |
 
-**Only wheels are published — there is no sdist.** An interpreter none of the wheels matches
-(a glibc older than 2.28, PyPy, free-threaded 3.13 or 3.14) gets `No matching distribution
-found` from pip, not a source build. Free-threaded CPython older than 3.15 has no stable ABI,
+Platforms with a wheel (the table above) install with no compiler, nothing to compile and
+no dependencies. Elsewhere pip falls back to building the same extension from the source
+distribution, `hypercast-<version>.tar.gz`, which needs Rust 1.89 or newer and a C linker; CI
+proves that build on x86-64 glibc 2.17 and on musl, with CPython 3.11 at exactly Rust 1.89.
+pip's build isolation fetches `maturin`. s390x (big-endian): CI runs the core's test suite,
+byte-exact corpus included, on s390x under QEMU; the extension itself has not run there.
+
+Free-threaded CPython older than 3.15 has no stable ABI,
 so its wheel would serve one interpreter version, too narrow an ABI to ship; free-threading
 starts at 3.15, where `abi3t` covers it.
 
@@ -469,30 +474,36 @@ extension, then `pip install pyperf` and `python bench_cast.py --fast`.
 
 ## Verifying provenance
 
-Every wheel PyPI serves, the Pyodide one included, verifies from the release tag alone: the
+Every wheel PyPI serves, the Pyodide one included, and the sdist verify from the release tag alone: the
 release attestation, signed by this repository's `release.yml` at the tag, names every one of
 them, with the release inventory as its predicate.
 
 ```sh
 pip download hypercast==<version> --no-deps -d .
-gh attestation verify hypercast-<version>-*.whl --repo SkunkWerkx/HyperCast \
-  --source-ref refs/tags/v<version> --predicate-type https://github.com/SkunkWerkx/.github/predicates/release/v1
+curl -sLO "$(curl -s https://pypi.org/pypi/hypercast/<version>/json |
+  jq -r '.urls[] | select(.packagetype=="sdist") | .url')"
+for f in hypercast-<version>*; do
+  gh attestation verify "$f" --repo SkunkWerkx/HyperCast \
+    --source-ref refs/tags/v<version> --predicate-type https://github.com/SkunkWerkx/.github/predicates/release/v1
+done
 ```
 
-Each wheel also carries build provenance from where it was built, installed and attested:
+Each wheel and the sdist also carry build provenance where each was built, installed and attested:
 `hyper-build-wheels.yml` in `SkunkWerkx/.github`, at the preparation commit on master the
-release was prepared from (`release.yml` verifies each wheel against it before publishing it
+release was prepared from (`release.yml` verifies each wheel and the sdist against it before publishing it
 unchanged). That check names the signer, or uses `--owner` for both:
 
 ```sh
-gh attestation verify hypercast-<version>-*.whl \
-  --repo SkunkWerkx/HyperCast --signer-repo SkunkWerkx/.github
-# or: gh attestation verify hypercast-<version>-*.whl --owner SkunkWerkx
+for f in hypercast-<version>*; do
+  gh attestation verify "$f" \
+    --repo SkunkWerkx/HyperCast --signer-repo SkunkWerkx/.github
+  # or: gh attestation verify "$f" --owner SkunkWerkx
+done
 ```
 
 Both are the GitHub/Sigstore transparency-log route, checked with `gh attestation verify`, the
 same route every other artifact in this project uses. Separately, PyPI itself holds a
-[PEP 740](https://peps.python.org/pep-0740/) publish attestation for every wheel, filed by
+[PEP 740](https://peps.python.org/pep-0740/) publish attestation for every wheel and the sdist, filed by
 `gh-action-pypi-publish` at publication and shown on each file's PyPI page, which PyPI-side
 tooling checks on its own. The root README's [Provenance](../README.md#provenance) section has
 the whole picture.

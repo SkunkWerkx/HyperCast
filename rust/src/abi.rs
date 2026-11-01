@@ -1,9 +1,9 @@
 //! The parts of the C ABI that are Rust API too: the version word every binding probes, and
 //! [`NumFormat`] and the day-period designators as they cross the boundary. They live
-//! outside `ffi` because that module is the `exports` feature — the 26 `cast_*` symbols —
-//! and a crate that links this one as an rlib to export a C ABI of its own takes the core
-//! with `exports` off, so its library carries none of them, while still declaring a
-//! numeric column in exactly this layout.
+//! outside `ffi` because that module is the `exports` feature — the 27 symbols, the version
+//! probe and the 26 `cast_*` doors — and a crate that links this one as an rlib to export a
+//! C ABI of its own takes the core with `exports` off, so its library carries none of them,
+//! while still reading the version and declaring a numeric column in exactly this layout.
 
 use crate::temporal::DayPeriods;
 use crate::verdict::{CivilDateTime, Date, Decimal, Duration, NativeDigits, NumFormat, Timestamp};
@@ -37,6 +37,12 @@ pin_layout! {
     Duration => (16, 8),
 }
 
+// Every target, not only where a u64 is 8-aligned: neither layout holds a u64.
+const _: () = assert!(
+    RawNumFormat::SIZE as usize == size_of::<RawNumFormat>()
+        && RawDayPeriods::SIZE as usize == size_of::<RawDayPeriods>()
+);
+
 // The offsets the bindings restate, pinned the same way: each symbol's bytes come first
 // and its length byte last, with nothing between one field and the next.
 const _: () = {
@@ -59,8 +65,8 @@ const _: () = {
 /// manifest — so a host can prove the library it loaded is the one its binding was built
 /// against before making the first cast, and can name the mismatch when it isn't. Takes
 /// nothing, touches nothing: the cheapest possible "did the native library resolve" probe.
-#[cfg_attr(feature = "exports", unsafe(no_mangle))]
-#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+/// The `exports` feature exports it to C under this name (ffi.rs, which cbindgen can read).
+#[inline]
 pub extern "C" fn hypercast_version() -> u32 {
     const fn field(text: &str) -> u32 {
         let bytes = text.as_bytes();
@@ -116,8 +122,9 @@ pub struct RawNumFormat {
 }
 
 impl RawNumFormat {
-    /// The layout's size in bytes, which `size` carries.
-    pub const SIZE: u32 = size_of::<RawNumFormat>() as u32;
+    /// The layout's size in bytes, which `size` carries: a literal, so the C header carries
+    /// it too, held to `size_of` beside the layout pins.
+    pub const SIZE: u32 = 92;
 
     /// The smallest `size` the core reads: through the group separator's length byte, since
     /// a format with no number separators is no format.
@@ -235,8 +242,9 @@ pub struct RawDayPeriods {
 }
 
 impl RawDayPeriods {
-    /// The layout's size in bytes, which `size` carries.
-    pub const SIZE: u32 = size_of::<RawDayPeriods>() as u32;
+    /// The layout's size in bytes, which `size` carries: a literal, so the C header carries
+    /// it too, held to `size_of` beside the layout pins.
+    pub const SIZE: u32 = 40;
 
     /// The smallest `size` the core reads: the size word alone, which declares nothing.
     pub const MIN_SIZE: u32 = 4;

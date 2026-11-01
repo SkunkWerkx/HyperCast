@@ -240,13 +240,6 @@ final class CastTest extends TestCase
         $this->assertSame(self::crateVersion(), Cast::nativeVersion());
     }
 
-    public function testIsAvailableIsTheNonThrowingProbe(): void
-    {
-        $this->assertTrue(Cast::isAvailable());
-        // Cached and idempotent — the second answer is the first, no reload.
-        $this->assertTrue(Cast::isAvailable());
-    }
-
     public function testDeclaredSignsAreReadBesideTheAsciiOnes(): void
     {
         // Estonian's and Basque's minus is U+2212: declared, it is read; '-' still is too.
@@ -544,64 +537,6 @@ final class CastTest extends TestCase
         }
     }
 
-    public function testIsAvailableAnswersFalseWhenFfiIsDisabled(): void
-    {
-        // ffi.enable=0 refuses the FFI API even on the CLI, which is exactly what a
-        // restricted web SAPI looks like from inside the binding.
-        $this->assertSame('unavailable ffi', self::probe(\dirname(__DIR__) . '/src', '-d', 'ffi.enable=0'));
-    }
-
-    public function testIsAvailableAnswersFalseWhenTheExtensionIsMissing(): void
-    {
-        // -n drops every ini file, and with them a shared ext-ffi. A PHP with ext-ffi
-        // compiled in statically has nothing to drop, so there is nothing to prove there.
-        $answer = self::probe(\dirname(__DIR__) . '/src', '-n');
-        if (str_ends_with($answer, ' ffi')) {
-            $this->markTestSkipped('ext-ffi is compiled into this PHP and cannot be unloaded');
-        }
-        $this->assertSame('unavailable no-ffi', $answer);
-    }
-
-    public function testIsAvailableAnswersFalseWhenTheLibraryIsMissing(): void
-    {
-        // A copy of the binding with no native/ directory beside it, far from any cargo
-        // build the development fallback could find.
-        $root = sys_get_temp_dir() . '/hypercast-probe-' . bin2hex(random_bytes(6));
-        $src = $root . '/php/src';
-        mkdir($src, 0o777, true);
-        try {
-            foreach (glob(\dirname(__DIR__) . '/src/*.php') as $file) {
-                copy($file, $src . '/' . basename($file));
-            }
-            $this->assertSame('unavailable ffi', self::probe($src));
-        } finally {
-            array_map('unlink', glob($src . '/*.php'));
-            rmdir($src);
-            rmdir($root . '/php');
-            rmdir($root);
-        }
-    }
-
-    public function testDeclaredShapesAreTheSizesTheCorePins(): void
-    {
-        // The cdef restates rust/src/verdict.rs's and ffi.rs's #[repr(C)] shapes by hand;
-        // rust/src/abi.rs pins their sizes, and the declarations have to land on the same.
-        Cast::nativeVersion();
-        $ffi = (new \ReflectionProperty(Cast::class, 'ffi'))->getValue();
-        $pinned = [
-            'hc_fault' => 8,
-            'hc_pair' => 16,
-            'hc_date' => 4,
-            'hc_civil' => 16,
-            'hc_decimal' => 16,
-            'hc_format' => 92,
-            'hc_periods' => 40,
-        ];
-        foreach ($pinned as $type => $size) {
-            self::assertSame($size, \FFI::sizeof($ffi->type($type)), $type);
-        }
-    }
-
     public function testDateOrderDisambiguatesLikeTheCulturesDo(): void
     {
         // The canonical ambiguity: 1/7/2026 is January 7th under en-US's month-first short
@@ -630,28 +565,6 @@ final class CastTest extends TestCase
         $this->assertSame('2026-07-01 15:04:00', $enGb->value->format('Y-m-d H:i:s'));
         // A zone suffix is not this door's business — timestamp() is the instant door.
         $this->assertInstanceOf(Fault::class, Cast::datetime('1/7/2026 15:04:05Z', DateOrder::Mdy));
-    }
-
-    /**
-     * Runs tests/fixtures/probe.php in a child PHP — the only way to observe a process in
-     * which the binding cannot load — and returns what it printed.
-     */
-    private static function probe(string $src, string ...$phpFlags): string
-    {
-        // Without the dev-loop override, or the probe would load the library it names.
-        $env = array_diff_key(getenv(), ['HYPERCAST_NATIVE_LIBRARY' => true]);
-        $process = proc_open(
-            [PHP_BINARY, ...$phpFlags, __DIR__ . '/fixtures/probe.php', $src],
-            [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
-            $pipes,
-            null,
-            $env
-        );
-        self::assertIsResource($process);
-        $stdout = stream_get_contents($pipes[1]);
-        $stderr = stream_get_contents($pipes[2]);
-        self::assertSame(0, proc_close($process), "probe failed: {$stdout}{$stderr}");
-        return $stdout;
     }
 
     /** The crate's own manifest version — walked up from here the way CorpusTest finds corpus/. */

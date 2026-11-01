@@ -10,12 +10,15 @@ offended. A two-arm switch with no default is proven exhaustive by `javac`; an u
 disposition is a compile failure.**
 
 Allocation-lean scalar casts — booleans, characters, the full integer family, reals, exact
-decimals, UUIDs, temporals — via `java.lang.foreign` (FFM) downcalls straight into the native `libhypercast` Rust core.
-JDK 25 is the floor: the first long-term-support release with the final FFM API (JEP 454
-finalized it in JDK 22, and 22 through 24 are past end of life), comfortably past the
-Verdict union's own requirement — sealed interface + record patterns + exhaustive switch,
-stable since 21. The jar bundles a native build for every supported platform
-(Linux glibc, Linux musl, macOS, Windows × x64/arm64) under `/native/{rid}/` and picks the
+decimals, UUIDs, temporals — calling the native `libhypercast` Rust core in-process: through
+JNI on JDK 21 to 24, and through `java.lang.foreign` (FFM) downcalls on JDK 25 and later, from
+one multi-release jar. The API, the verdicts, the exceptions and their messages are the same
+on both. JDK 21 is the floor, the Verdict union's own requirement (sealed interface + record
+patterns + exhaustive switch), and not 17: Temurin builds no JDK 17 for Windows arm64 or
+Alpine (musl) arm64, so a 17 floor could not be tested on every platform this jar ships. JDK
+22 to 24 take the JNI path; they are past end of life and not tested. The jar bundles a
+native build for every supported platform (Linux glibc, Linux musl, macOS, Windows ×
+x64/arm64) under `/native/{rid}/`, the core and the JNI library built from it, and picks the
 right one at runtime, so a consumer adds one dependency and nothing else.
 
 ```java
@@ -211,6 +214,16 @@ original failure is in its cause chain.
 when `isAvailable()` is `true` — the pair that proves the library that resolved is the one
 this jar was built against.
 
+A `null` argument is a `NullPointerException` naming the parameter on both paths, before any
+native call. The two paths differ in two ways only: the load failure's message names the
+path's own library (`libhypercast_jni` on JNI), and on JNI an input above 64 KiB is copied
+into native memory, which can throw `OutOfMemoryError` when native memory is short (up to 64
+KiB the array is pinned for the core call alone, so a parse never holds off the garbage
+collector for long). Each JVM (and class loader) extracts its own temporary copy of the
+library; on Windows a loaded DLL cannot be deleted, so `hypercast*.dll` copies accumulate in
+`%TEMP%`. A read-only or `noexec` temporary directory makes `isAvailable()` `false`, with the
+loader's own exception in the cause chain.
+
 A `Fault`'s `offset`/`length` count in the input's own unit. Through a `byte[]` or
 `MemorySegment` door they are the core's byte span into the UTF-8, verbatim. Through a
 `String` door they are UTF-16 code units — the byte span rebased, so
@@ -220,11 +233,13 @@ bytes. ASCII input is identical either way and is never touched.
 
 ## Native access
 
-FFM downcalls are a *restricted* operation: the JDK wants the application, not a library on
-its classpath, to say that native code may run. Without that the first cast still works,
-and prints a four-line warning naming `java.lang.foreign.SymbolLookup::libraryLookup` and
-ending "Restricted methods will be blocked in a future release unless native access is
-enabled". Grant it where the JVM is launched:
+Loading native code is a *restricted* operation: the JDK wants the application, not a library
+on its classpath, to say that native code may run. Without that the first cast still works.
+On JDK 21 to 23 nothing is printed without the grant. From 24, a JVM without it prints a
+four-line warning naming the method that loads native code — `java.lang.System::load` on 24,
+where the JNI path loads the library, and `java.lang.foreign.SymbolLookup::libraryLookup` on
+25 and later — ending "Restricted methods will be blocked in a future release unless native
+access is enabled". Grant it where the JVM is launched:
 
 ```sh
 java --enable-native-access=ALL-UNNAMED -cp app.jar:hypercast.jar com.example.Main        # on the classpath
@@ -237,6 +252,21 @@ name. An executable jar can make the same grant in its own manifest
 (`Enable-Native-Access: ALL-UNNAMED`). Under `--illegal-native-access=deny` with no grant
 the library cannot be loaded at all: `isAvailable()` is `false` and the doors throw.
 
+### Shaded and fat jars
+
+Keep `Multi-Release: true` (maven-shade's `ManifestResourceTransformer`, Shadow's
+`manifest`). Without it JDK 25 reads only the base and runs the JNI path: correct, slower,
+and its warning names `System::load`.
+
+### The `MemorySegment` doors on JDK 21
+
+`java.lang.foreign` is a preview API in JDK 21, so `javac --release 21` refuses code that
+names `MemorySegment` unless it is compiled with `--enable-preview` (and run with it). The
+`String` and `byte[]` doors need nothing; code on 21 that never names a `MemorySegment`
+compiles and runs as on any other JDK. On the JNI path a segment's bytes are copied to the
+heap before they cross. The same holds for the `interop` package below, whose readers take
+segments.
+
 ## Why not `Integer.parseInt` / `Instant.parse` / the formatter zoo?
 
 1. **Verdicts, not exceptions** — `NumberFormatException`-driven control flow costs a
@@ -245,12 +275,14 @@ the library cannot be loaded at all: `isAvailable()` is `false` and the doors th
 2. **The vocabulary untrusted sources actually send** — twenty boolean lexemes, accounting
    parentheses, radix prefixes, all five .NET `Guid` text forms, protobuf JSON durations.
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
-   held by the shared corpus (the whole suite green, full corpus replay through
-   real FFM downcalls with byte-exact fault spans).
+   held by the shared corpus (the whole suite green on JDK 21 and 25, full corpus replay
+   through real JNI calls and real FFM downcalls, with byte-exact fault spans).
 4. **Faster where it matters, and the input is never copied.** JMH, `-prof gc` for the
    allocation column, the profile `./gradlew :benchmarks:jmh` runs: 1 fork, 3 warmup + 5
    measurement iterations of one second (linux-x64 on an Intel Core i9-11900H, Temurin 25.0.4).
-   The error bars are that short profile's; the verdicts are far outside them.
+   The error bars are that short profile's; the verdicts are far outside them. Every row is
+   the FFM path on JDK 25; the JNI path on 21 has no published figures
+   (`-PjmhJdk=21` measures it).
 
    | Door | HyperCast | JDK | Verdict |
    | --- | ---: | ---: | --- |
@@ -323,7 +355,11 @@ and the jar ships both in its `reachability-metadata.json` under
 `META-INF/native-image/io.github.skunkwerkx/hypercast/`, so a consumer inherits them with no
 configuration: the FFM downcall *signatures* (reachability is per-signature, not per-function
 — the doors share six shapes, and the version probe's `() -> int` is the seventh),
-and a `resources` glob covering `native/*/*`. A `native-image.properties` beside it has the
+and three `resources` globs, one per core library name (`native/*/libhypercast.so`,
+`native/*/libhypercast.dylib`, `native/*/hypercast.dll`). Native Image is built on GraalVM
+for JDK 25 and always takes the FFM path, so the JNI library is deliberately not embedded;
+the smoke test fails if it is. GraalVM Community for JDK 21 is past end of life, so the JNI
+path has no image row. A `native-image.properties` beside it has the
 class holding the downcall handles initialized at image build time, which is what keeps the
 doors compiled rather than interpreted in the image — 60-110 ns a door there (the table
 below).
@@ -345,7 +381,7 @@ declares formats from, e.g. `-H:IncludeLocales=de-DE,fr-FR` (or `-H:+IncludeAllL
 
 The resources half has a failure mode worth knowing, because nothing catches it at build
 time: Native Image doesn't embed classpath resources unless they are registered, so without
-the glob `Cast`'s `getResourceAsStream("/native/{rid}/{lib}")` returns null and a consumer's
+the globs `Cast`'s `getResourceAsStream("/native/{rid}/{lib}")` returns null and a consumer's
 binary compiles clean, then dies on its first call with "classpath resource not found". The
 smoke test declares no glob of its own, so it passes on the packaged metadata alone, which is
 what proves a consumer is fine.
@@ -405,8 +441,9 @@ artifacts are signed from where, and the gates every byte passes before publicat
 For a library that carries HyperCast's verdicts across a C ABI of its own — HyperTabular
 does — and so reads the core's out-values, numeric format, verdict codes and
 fault spans out of its own buffers. The `io.github.skunkwerkx.hypercast.interop` package is
-the code `Cast` itself uses, so a value read that way is the value the door would have
-returned.
+the code `Cast`'s FFM path itself uses, so a value read that way is the value the door would
+have returned. It is FFM-typed on every JDK, so on 21 it needs preview enabled in the
+caller's own code ([above](#the-memorysegment-doors-on-jdk-21)).
 
 - `NativeValues` — every out-value reader, each taking a `MemorySegment` and a byte offset:
   `instant`, `date`, `civil`, `time`, `duration`, `decimal`, `uuid`; `writeFormat`, the
@@ -427,6 +464,32 @@ returned.
   and a `fromCode(int)` returning an `Optional` — empty for a code the enum does not name,
   so `CastFailure.fromCode(0)`, success, is empty.
 
+## Building and testing
+
+The jar carries two native libraries per platform, so build both before Gradle runs: `cargo
+cdylib` in `rust/`, then `cargo build --release --locked --lib` in `java/jni/`. Gradle stages
+them into the jar and refuses a stale one: the build fails when either library is older than
+a source cargo read for it (its dep-info), or when one is built without the other, and the
+message gives the rebuild commands.
+
+Gradle, Spotless, javadoc and publishing run on JDK 25. `./gradlew test` runs the suite
+against the built jar on JDK 25 (the FFM path); `testFloor` runs the same suite on JDK 21
+(the JNI path end to end, under `-Xcheck:jni`), `checkSuiteParity` fails unless both ran the
+same tests with none skipped, and `checkFloorApi` fails if the base references any JDK class,
+method or field that JDK 21 lacks: the base compiles `-source/-target 21` against JDK 25's
+API rather than `--release 21`, because `--release 21` refuses `java.lang.foreign` as preview.
+`./gradlew check` and `./gradlew build` run all of them, and they need a local JDK 21:
+`gradle.properties` turns toolchain auto-download off, so pass it explicitly.
+
+```sh
+./gradlew check -Porg.gradle.java.installations.paths=<path to a JDK 21> \
+  -Porg.gradle.java.installations.auto-detect=false
+```
+
+Without a JDK 21 Gradle can see, `testFloor` fails with "Cannot find a Java installation …
+matching: {languageVersion=21 …}". `./gradlew :aot-smoke-test:runFloor` runs the smoke test
+on JDK 21, and `./gradlew :benchmarks:jmh -PjmhJdk=21` the benchmarks.
+
 ## Install
 
 Published to [Maven Central](https://central.sonatype.com/artifact/io.github.skunkwerkx/hypercast)
@@ -439,7 +502,7 @@ dependencies {
 }
 ```
 
-The current version is the one on the Maven Central badge above. Requires JDK 25 or later.
+The current version is the one on the Maven Central badge above. Requires JDK 21 or later.
 The jar bundles a native build for all eight platforms (linux-x64, linux-arm64,
 linux-musl-x64, linux-musl-arm64, osx-x64, osx-arm64, win-x64, win-arm64) and picks the
 right one at runtime; see [Native access](#native-access) for the one flag the JVM wants.

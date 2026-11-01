@@ -49,6 +49,36 @@ class NativePlatformTest {
     }
 
     @Test
+    void theJniLibraryIsNamedBesideTheCore() {
+        assertEquals(
+                "hypercast_jni.dll",
+                NativePlatform.resolve("hypercast_jni", "Windows 11", "amd64", false)
+                        .libraryFileName());
+        assertEquals(
+                "libhypercast_jni.dylib",
+                NativePlatform.resolve("hypercast_jni", "Mac OS X", "aarch64", false)
+                        .libraryFileName());
+        assertEquals(
+                "libhypercast_jni.so",
+                NativePlatform.resolve("hypercast_jni", "Linux", "amd64", false).libraryFileName());
+        assertEquals(
+                "/native/linux-musl-arm64/libhypercast_jni.so",
+                NativePlatform.resolve("hypercast_jni", "Linux", "aarch64", true)
+                        .resourcePath());
+    }
+
+    @Test
+    void aMissingLibraryIsExplainedByWhatIsMissing() {
+        assertTrue(NativePlatform.missing("hypercast", null)
+                .startsWith("hypercast: this jar carries no native library for os.name="));
+        var target = NativePlatform.resolve("hypercast_jni", "Linux", "amd64", false);
+        assertEquals(
+                "/native/linux-x64/libhypercast_jni.so classpath resource not found (this jar was built "
+                        + "without a native library for this platform)",
+                NativePlatform.missing("hypercast_jni", target));
+    }
+
+    @Test
     void muslOnlyMattersOnLinux() {
         assertEquals("osx-arm64", rid("Mac OS X", "aarch64", true));
         assertEquals("win-x64", rid("Windows 11", "amd64", true));

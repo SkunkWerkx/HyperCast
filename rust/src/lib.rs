@@ -51,6 +51,12 @@
 // own, the way such a consumer must anyway. Nothing in the parsing modules ever touches std
 // either way.
 #![cfg_attr(not(feature = "std"), no_std)]
+// The PHP extension's handlers are `extern "vectorcall"` on Windows (ext-php-rs's
+// `zend_fastcall!`, which every `#[php_impl]` method and every hand-registered value-class
+// method expand to), and that ABI is unstable (rust-lang/rust#124485); the Forge's Windows
+// extension build is the one step that sets RUSTC_BOOTSTRAP=1 for it. Every other build
+// leaves it out.
+#![cfg_attr(all(windows, feature = "php"), feature(abi_vectorcall))]
 
 // The panic handler for the no_std artifacts this crate links itself: the static libraries
 // behind the `staticlib` feature and the shared library behind `cdylib` (Cargo.toml has
@@ -112,6 +118,42 @@ core::arch::global_asm!(
     "ret",
 );
 
+// The static library's half: the same reference, left for the final link, fails it
+// ("undefined reference to `rust_eh_personality'") whenever the program pulls in an
+// intrinsic whose unwind entry names it (the 128-bit division helpers) and the linker keeps
+// unwind tables of unused code (no --gc-sections / -dead_strip, so a plain `cc app.c
+// libhypercast.a`). A weak hidden definition resolves it, and two Hyper* archives (or a Rust
+// program with std's own, strong, definition) linked into one program coalesce to one
+// instead of colliding.
+#[cfg(all(
+    feature = "staticlib",
+    not(feature = "cdylib"),
+    not(feature = "std"),
+    target_vendor = "apple"
+))]
+core::arch::global_asm!(
+    ".globl _rust_eh_personality",
+    ".weak_definition _rust_eh_personality",
+    ".private_extern _rust_eh_personality",
+    "_rust_eh_personality:",
+    "ret",
+);
+#[cfg(all(
+    feature = "staticlib",
+    not(feature = "cdylib"),
+    not(feature = "std"),
+    not(target_vendor = "apple"),
+    not(target_os = "windows"),
+    not(target_arch = "wasm32"),
+))]
+core::arch::global_asm!(
+    ".weak rust_eh_personality",
+    ".hidden rust_eh_personality",
+    ".type rust_eh_personality, %function",
+    "rust_eh_personality:",
+    "ret",
+);
+
 // The other half of the same gap: the C runtime. Under std it comes in through std's own
 // link directives; a no_std shared library has to name it, or nothing does. On Linux the
 // library then links with no NEEDED entry at all, its `abort`, `memcpy` and `memset`
@@ -145,6 +187,11 @@ mod typed;
 mod uuid;
 mod verdict;
 
+/// The PHP extension (`cargo php-ext`): the whole `HyperCast\\` API as a Zend extension.
+/// Not public, and nothing in it is `extern "C"` toward C callers, so cbindgen has nothing
+/// to emit from it.
+///
+/// cbindgen:ignore
 #[cfg(feature = "php")]
 mod php_ext;
 #[cfg(feature = "python-values")]

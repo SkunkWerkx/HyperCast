@@ -1,8 +1,8 @@
 // Package hypercast provides allocation-lean scalar casts — booleans, numerics, UUIDs,
-// temporals — by calling the Rust core, linked into the binary as a static library through
-// cgo (backend_static.go). It builds on Linux, macOS and Windows, on amd64 and arm64, with a
-// C compiler present, and under TinyGo for WebAssembly, browser included
-// (backend_tinygo.go); anything else is a compile error that says so (unsupported.go).
+// temporals — by calling the Rust core compiled as Go source: the core built for
+// wasm32-wasip1 and translated by wasm2go into internal/core (core.go has the backend). No
+// cgo and no C compiler: it builds for every GOOS and GOARCH Go has, under stock Go and
+// TinyGo alike, the browser and WASI included.
 //
 // Every door returns Go's own union idiom: (value, *Fault), where a nil fault is the success
 // case and a non-nil one carries the closed reason plus the offending byte span. Never an
@@ -14,8 +14,8 @@
 // polyglot surface reads the same across bindings, except where Go already owns the word:
 // Exact and Span return the Decimal and Duration types their ABI names would collide with,
 // and DateOnly, DateOnlyOrdered and TimeOfDay say what cast_date, cast_date_ordered and
-// cast_time return. Doors are generic over string | []byte — both cross zero-copy (the
-// core only reads).
+// cast_time return. Doors are generic over string | []byte — either is copied once into the
+// core's memory, and nothing else of it is touched.
 //
 // Go-flavored fidelity, stated honestly both ways: time.Time carries full nanoseconds
 // across the whole 0001–9999 window, and time-of-day comes back as a time.Duration since
@@ -29,7 +29,6 @@ import (
 	"fmt"
 	"math/big"
 	"math/bits"
-	"runtime"
 	"time"
 	"unsafe"
 
@@ -113,18 +112,22 @@ type rawFault struct {
 	Length uint32
 }
 
-// The verdict as the backends hand it back, by value: 16 bytes of out-value (8-aligned,
-// the widest door's size — every door reads its own prefix through a typed view), the
-// native code, and the fault span. Returning this rather than filling caller pointers is
-// what keeps the cgo backend's doors allocation-free — see backend_static.go.
+// The verdict as core.go hands it back, by value: 16 bytes of out-value (8-aligned, the
+// widest door's size — every door reads its own prefix through a typed view), the core's
+// code, and the fault span.
 type result struct {
 	out   [2]uint64
 	code  int32
 	fault rawFault
 }
 
-// A typed view of the out-value; V is one of the repr(C) shapes the core writes.
+// A typed view of the out-value; V is one of the repr(C) shapes the core writes. The bytes
+// are the guest's, little-endian, so they are reinterpreted in place only on a
+// little-endian host; a big-endian one decodes them field by field (core.go).
 func read[V any](r *result) V {
+	if bigEndian {
+		return decodeLE[V]((*[16]byte)(unsafe.Pointer(&r.out)))
+	}
 	return *(*V)(unsafe.Pointer(&r.out))
 }
 
@@ -440,11 +443,11 @@ func (d Duration) AsDuration() (time.Duration, bool) {
 
 func failed(code int32, fault *rawFault) *Fault {
 	if code == -1 {
-		panic("hypercast: libhypercast reported a contract violation — a binding bug, please report it")
+		panic("hypercast: the core reported a contract violation — a binding bug, please report it")
 	}
 	f, ok := FaultFromCode(uint32(code), fault.Offset, fault.Length)
 	if !ok {
-		panic(fmt.Sprintf("hypercast: libhypercast returned unknown verdict code %d", code))
+		panic(fmt.Sprintf("hypercast: the core returned unknown verdict code %d", code))
 	}
 	return f
 }
@@ -455,7 +458,6 @@ func failed(code int32, fault *rawFault) *Fault {
 func Bool[T Text](text T) (bool, *Fault) {
 	ptr, length := textPtr(text)
 	r := callPlain(symBool, ptr, length)
-	runtime.KeepAlive(text)
 	if r.code != 0 {
 		return false, failed(r.code, &r.fault)
 	}
@@ -471,7 +473,6 @@ func Bool[T Text](text T) (bool, *Fault) {
 func Char[T Text](text T) (rune, *Fault) {
 	ptr, length := textPtr(text)
 	r := callPlain(symChar, ptr, length)
-	runtime.KeepAlive(text)
 	if r.code != 0 {
 		return 0, failed(r.code, &r.fault)
 	}
@@ -483,7 +484,6 @@ func numericDoor[T Text, V any](sym numericSymbol, text T, format NumFormat) (V,
 	format.raw(&raw)
 	ptr, length := textPtr(text)
 	r := callNumeric(sym, ptr, length, &raw)
-	runtime.KeepAlive(text)
 	if r.code != 0 {
 		var zero V
 		return zero, failed(r.code, &r.fault)
@@ -616,7 +616,6 @@ func Numeric[V Number, T Text](text T, format NumFormat) (V, *Fault) {
 func Uuid[T Text](text T) (uuid.UUID, *Fault) {
 	ptr, length := textPtr(text)
 	r := callPlain(symUuid, ptr, length)
-	runtime.KeepAlive(text)
 	if r.code != 0 {
 		return uuid.UUID{}, failed(r.code, &r.fault)
 	}
@@ -633,7 +632,6 @@ func instantDoor[T Text](text T, precision UnixPrecision) (time.Time, *Fault) {
 	} else {
 		r = callUnix(ptr, length, uint32(precision))
 	}
-	runtime.KeepAlive(text)
 	if r.code != 0 {
 		return time.Time{}, failed(r.code, &r.fault)
 	}
@@ -673,7 +671,6 @@ func ExcelSerial[T Text](text T, epoch ExcelEpoch) (time.Time, *Fault) {
 	}
 	ptr, length := textPtr(text)
 	r := callExcelSerial(ptr, length, uint32(epoch))
-	runtime.KeepAlive(text)
 	if r.code != 0 {
 		return time.Time{}, failed(r.code, &r.fault)
 	}
@@ -684,7 +681,6 @@ func ExcelSerial[T Text](text T, epoch ExcelEpoch) (time.Time, *Fault) {
 func DateOnly[T Text](text T) (Date, *Fault) {
 	ptr, length := textPtr(text)
 	r := callPlain(symDate, ptr, length)
-	runtime.KeepAlive(text)
 	if r.code != 0 {
 		return Date{}, failed(r.code, &r.fault)
 	}
@@ -702,7 +698,6 @@ func DateOnlyOrdered[T Text](text T, order DateOrder) (Date, *Fault) {
 	}
 	ptr, length := textPtr(text)
 	r := callDateOrdered(ptr, length, uint32(order))
-	runtime.KeepAlive(text)
 	if r.code != 0 {
 		return Date{}, failed(r.code, &r.fault)
 	}
@@ -743,7 +738,6 @@ func DateTimeWith[T Text](text T, format DateFormat) (CivilDateTime, *Fault) {
 func civilDoor[T Text](text T, order DateOrder, periods *RawDayPeriods) (CivilDateTime, *Fault) {
 	ptr, length := textPtr(text)
 	r := callDateTime(ptr, length, uint32(order), periods)
-	runtime.KeepAlive(text)
 	if r.code != 0 {
 		return CivilDateTime{}, failed(r.code, &r.fault)
 	}
@@ -755,7 +749,6 @@ func civilDoor[T Text](text T, order DateOrder, periods *RawDayPeriods) (CivilDa
 func TimeOfDay[T Text](text T) (time.Duration, *Fault) {
 	ptr, length := textPtr(text)
 	r := callPlain(symTime, ptr, length)
-	runtime.KeepAlive(text)
 	if r.code != 0 {
 		return 0, failed(r.code, &r.fault)
 	}
@@ -767,7 +760,6 @@ func TimeOfDay[T Text](text T) (time.Duration, *Fault) {
 func Span[T Text](text T) (Duration, *Fault) {
 	ptr, length := textPtr(text)
 	r := callPlain(symDuration, ptr, length)
-	runtime.KeepAlive(text)
 	if r.code != 0 {
 		return Duration{}, failed(r.code, &r.fault)
 	}

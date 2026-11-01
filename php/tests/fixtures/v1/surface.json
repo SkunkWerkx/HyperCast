@@ -1,0 +1,1486 @@
+{
+    "Cast": {
+        "kind": "class",
+        "final": true,
+        "readonly": false,
+        "instantiable": false,
+        "interfaces": [],
+        "parent": null,
+        "constants": [],
+        "cases": [],
+        "methods": {
+            "bool": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "text",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\Success|HyperCast\\Fault"
+            },
+            "char": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "text",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\Success|HyperCast\\Fault"
+            },
+            "date": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "text",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "order",
+                        "type": "?HyperCast\\DateOrder",
+                        "optional": true,
+                        "default": "NULL",
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\Success|HyperCast\\Fault"
+            },
+            "datetime": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "text",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "order",
+                        "type": "HyperCast\\DateOrder",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "periods",
+                        "type": "?HyperCast\\DayPeriods",
+                        "optional": true,
+                        "default": "NULL",
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\Success|HyperCast\\Fault"
+            },
+            "decimal": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "text",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "format",
+                        "type": "HyperCast\\NumFormat|NumberFormatter",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\Success|HyperCast\\Fault"
+            },
+            "decimalFromFloat": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "value",
+                        "type": "float",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\Success|HyperCast\\Fault"
+            },
+            "duration": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "text",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\Success|HyperCast\\Fault"
+            },
+            "excelDuration": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "value",
+                        "type": "float",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\Success|HyperCast\\Fault"
+            },
+            "excelSerial": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "text",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "epoch",
+                        "type": "HyperCast\\ExcelEpoch",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\Success|HyperCast\\Fault"
+            },
+            "excelSerialFromFloat": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "value",
+                        "type": "float",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "epoch",
+                        "type": "HyperCast\\ExcelEpoch",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\Success|HyperCast\\Fault"
+            },
+            "excelTime": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "value",
+                        "type": "float",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\Success|HyperCast\\Fault"
+            },
+            "f32": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "text",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "format",
+                        "type": "HyperCast\\NumFormat|NumberFormatter",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\Success|HyperCast\\Fault"
+            },
+            "f64": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "text",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "format",
+                        "type": "HyperCast\\NumFormat|NumberFormatter",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\Success|HyperCast\\Fault"
+            },
+            "i16": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "text",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "format",
+                        "type": "HyperCast\\NumFormat|NumberFormatter",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\Success|HyperCast\\Fault"
+            },
+            "i32": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "text",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "format",
+                        "type": "HyperCast\\NumFormat|NumberFormatter",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\Success|HyperCast\\Fault"
+            },
+            "i64": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "text",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "format",
+                        "type": "HyperCast\\NumFormat|NumberFormatter",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\Success|HyperCast\\Fault"
+            },
+            "i8": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "text",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "format",
+                        "type": "HyperCast\\NumFormat|NumberFormatter",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\Success|HyperCast\\Fault"
+            },
+            "isAvailable": {
+                "static": true,
+                "params": [],
+                "return": "bool"
+            },
+            "nativeVersion": {
+                "static": true,
+                "params": [],
+                "return": "string"
+            },
+            "optional": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "verdict",
+                        "type": "HyperCast\\Success|HyperCast\\Fault",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\Success|HyperCast\\Fault|null"
+            },
+            "time": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "text",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\Success|HyperCast\\Fault"
+            },
+            "timestamp": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "text",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\Success|HyperCast\\Fault"
+            },
+            "u16": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "text",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "format",
+                        "type": "HyperCast\\NumFormat|NumberFormatter",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\Success|HyperCast\\Fault"
+            },
+            "u32": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "text",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "format",
+                        "type": "HyperCast\\NumFormat|NumberFormatter",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\Success|HyperCast\\Fault"
+            },
+            "u64": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "text",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "format",
+                        "type": "HyperCast\\NumFormat|NumberFormatter",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\Success|HyperCast\\Fault"
+            },
+            "u8": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "text",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "format",
+                        "type": "HyperCast\\NumFormat|NumberFormatter",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\Success|HyperCast\\Fault"
+            },
+            "unix": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "text",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "precision",
+                        "type": "HyperCast\\UnixPrecision",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\Success|HyperCast\\Fault"
+            },
+            "uuid": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "text",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\Success|HyperCast\\Fault"
+            },
+            "uuidBytes": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "text",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\Success|HyperCast\\Fault"
+            }
+        },
+        "properties": []
+    },
+    "Success": {
+        "kind": "class",
+        "final": true,
+        "readonly": true,
+        "instantiable": true,
+        "interfaces": [],
+        "parent": null,
+        "constants": [],
+        "cases": [],
+        "methods": {
+            "__construct": {
+                "static": false,
+                "params": [
+                    {
+                        "name": "value",
+                        "type": "mixed",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": null
+            }
+        },
+        "properties": {
+            "value": {
+                "type": "mixed",
+                "readonly": true,
+                "static": false,
+                "hasDefault": false
+            }
+        }
+    },
+    "Fault": {
+        "kind": "class",
+        "final": true,
+        "readonly": true,
+        "instantiable": true,
+        "interfaces": [],
+        "parent": null,
+        "constants": [],
+        "cases": [],
+        "methods": {
+            "__construct": {
+                "static": false,
+                "params": [
+                    {
+                        "name": "reason",
+                        "type": "HyperCast\\CastFailure",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "offset",
+                        "type": "int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "length",
+                        "type": "int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": null
+            }
+        },
+        "properties": {
+            "length": {
+                "type": "int",
+                "readonly": true,
+                "static": false,
+                "hasDefault": false
+            },
+            "offset": {
+                "type": "int",
+                "readonly": true,
+                "static": false,
+                "hasDefault": false
+            },
+            "reason": {
+                "type": "HyperCast\\CastFailure",
+                "readonly": true,
+                "static": false,
+                "hasDefault": false
+            }
+        }
+    },
+    "CastFailure": {
+        "kind": "enum",
+        "final": true,
+        "readonly": false,
+        "instantiable": false,
+        "interfaces": [
+            "BackedEnum",
+            "UnitEnum"
+        ],
+        "parent": null,
+        "constants": [],
+        "cases": {
+            "Empty": 1,
+            "Malformed": 2,
+            "OutOfRange": 3
+        },
+        "methods": {
+            "cases": {
+                "static": true,
+                "params": [],
+                "return": "array"
+            },
+            "from": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "value",
+                        "type": "string|int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "static"
+            },
+            "tryFrom": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "value",
+                        "type": "string|int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "?static"
+            }
+        },
+        "properties": []
+    },
+    "DateOrder": {
+        "kind": "enum",
+        "final": true,
+        "readonly": false,
+        "instantiable": false,
+        "interfaces": [
+            "BackedEnum",
+            "UnitEnum"
+        ],
+        "parent": null,
+        "constants": [],
+        "cases": {
+            "Ymd": 1,
+            "Mdy": 2,
+            "Dmy": 3
+        },
+        "methods": {
+            "cases": {
+                "static": true,
+                "params": [],
+                "return": "array"
+            },
+            "from": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "value",
+                        "type": "string|int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "static"
+            },
+            "tryFrom": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "value",
+                        "type": "string|int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "?static"
+            }
+        },
+        "properties": []
+    },
+    "ExcelEpoch": {
+        "kind": "enum",
+        "final": true,
+        "readonly": false,
+        "instantiable": false,
+        "interfaces": [
+            "BackedEnum",
+            "UnitEnum"
+        ],
+        "parent": null,
+        "constants": [],
+        "cases": {
+            "Y1900": 1,
+            "Y1904": 2
+        },
+        "methods": {
+            "cases": {
+                "static": true,
+                "params": [],
+                "return": "array"
+            },
+            "from": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "value",
+                        "type": "string|int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "static"
+            },
+            "tryFrom": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "value",
+                        "type": "string|int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "?static"
+            }
+        },
+        "properties": []
+    },
+    "UnixPrecision": {
+        "kind": "enum",
+        "final": true,
+        "readonly": false,
+        "instantiable": false,
+        "interfaces": [
+            "BackedEnum",
+            "UnitEnum"
+        ],
+        "parent": null,
+        "constants": [],
+        "cases": {
+            "Seconds": 1,
+            "Milliseconds": 2,
+            "Microseconds": 3,
+            "Nanoseconds": 4
+        },
+        "methods": {
+            "cases": {
+                "static": true,
+                "params": [],
+                "return": "array"
+            },
+            "from": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "value",
+                        "type": "string|int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "static"
+            },
+            "tryFrom": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "value",
+                        "type": "string|int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "?static"
+            }
+        },
+        "properties": []
+    },
+    "NumFormat": {
+        "kind": "class",
+        "final": true,
+        "readonly": true,
+        "instantiable": true,
+        "interfaces": [],
+        "parent": null,
+        "constants": {
+            "ALL": 95,
+            "CURRENCY": 64,
+            "CURRENCY_MAX_BYTES": 16,
+            "EXPONENT": 4,
+            "GROUPING": 1,
+            "PACKED_BYTES": 92,
+            "PARENTHESES": 2,
+            "PERCENT": 16,
+            "RADIX_PREFIXES": 8,
+            "SEPARATOR_DETECT": 32,
+            "SYMBOL_MAX_BYTES": 8,
+            "TRAILING_SIGN": 128
+        },
+        "cases": [],
+        "methods": {
+            "__construct": {
+                "static": false,
+                "params": [
+                    {
+                        "name": "decimalSep",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "groupSep",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "flags",
+                        "type": "int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "currency",
+                        "type": "string",
+                        "optional": true,
+                        "default": "''",
+                        "byRef": false
+                    },
+                    {
+                        "name": "currencyDecimalSep",
+                        "type": "string",
+                        "optional": true,
+                        "default": "''",
+                        "byRef": false
+                    },
+                    {
+                        "name": "currencyGroupSep",
+                        "type": "string",
+                        "optional": true,
+                        "default": "''",
+                        "byRef": false
+                    },
+                    {
+                        "name": "minusSign",
+                        "type": "string",
+                        "optional": true,
+                        "default": "''",
+                        "byRef": false
+                    },
+                    {
+                        "name": "plusSign",
+                        "type": "string",
+                        "optional": true,
+                        "default": "''",
+                        "byRef": false
+                    },
+                    {
+                        "name": "percent",
+                        "type": "string",
+                        "optional": true,
+                        "default": "''",
+                        "byRef": false
+                    },
+                    {
+                        "name": "digitZero",
+                        "type": "string",
+                        "optional": true,
+                        "default": "''",
+                        "byRef": false
+                    }
+                ],
+                "return": null
+            },
+            "detect": {
+                "static": true,
+                "params": [],
+                "return": "HyperCast\\NumFormat"
+            },
+            "fromLocaleconv": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "conv",
+                        "type": "?array",
+                        "optional": true,
+                        "default": "NULL",
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\NumFormat"
+            },
+            "fromNumberFormatter": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "formatter",
+                        "type": "NumberFormatter",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\NumFormat"
+            },
+            "invariant": {
+                "static": true,
+                "params": [],
+                "return": "HyperCast\\NumFormat"
+            },
+            "packed": {
+                "static": false,
+                "params": [],
+                "return": "string"
+            }
+        },
+        "properties": {
+            "currency": {
+                "type": "string",
+                "readonly": true,
+                "static": false,
+                "hasDefault": false
+            },
+            "currencyDecimalSep": {
+                "type": "string",
+                "readonly": true,
+                "static": false,
+                "hasDefault": false
+            },
+            "currencyGroupSep": {
+                "type": "string",
+                "readonly": true,
+                "static": false,
+                "hasDefault": false
+            },
+            "decimalSep": {
+                "type": "string",
+                "readonly": true,
+                "static": false,
+                "hasDefault": false
+            },
+            "digitZero": {
+                "type": "string",
+                "readonly": true,
+                "static": false,
+                "hasDefault": false
+            },
+            "flags": {
+                "type": "int",
+                "readonly": true,
+                "static": false,
+                "hasDefault": false
+            },
+            "groupSep": {
+                "type": "string",
+                "readonly": true,
+                "static": false,
+                "hasDefault": false
+            },
+            "minusSign": {
+                "type": "string",
+                "readonly": true,
+                "static": false,
+                "hasDefault": false
+            },
+            "percent": {
+                "type": "string",
+                "readonly": true,
+                "static": false,
+                "hasDefault": false
+            },
+            "plusSign": {
+                "type": "string",
+                "readonly": true,
+                "static": false,
+                "hasDefault": false
+            }
+        }
+    },
+    "DayPeriods": {
+        "kind": "class",
+        "final": true,
+        "readonly": true,
+        "instantiable": true,
+        "interfaces": [],
+        "parent": null,
+        "constants": {
+            "MAX_BYTES": 16,
+            "PACKED_BYTES": 40
+        },
+        "cases": [],
+        "methods": {
+            "__construct": {
+                "static": false,
+                "params": [
+                    {
+                        "name": "am",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "pm",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": null
+            },
+            "packed": {
+                "static": false,
+                "params": [],
+                "return": "string"
+            }
+        },
+        "properties": {
+            "am": {
+                "type": "string",
+                "readonly": true,
+                "static": false,
+                "hasDefault": false
+            },
+            "pm": {
+                "type": "string",
+                "readonly": true,
+                "static": false,
+                "hasDefault": false
+            }
+        }
+    },
+    "Decimal": {
+        "kind": "class",
+        "final": true,
+        "readonly": true,
+        "instantiable": true,
+        "interfaces": [
+            "Stringable"
+        ],
+        "parent": null,
+        "constants": [],
+        "cases": [],
+        "methods": {
+            "__construct": {
+                "static": false,
+                "params": [
+                    {
+                        "name": "magnitude",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "scale",
+                        "type": "int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "negative",
+                        "type": "bool",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": null
+            },
+            "__toString": {
+                "static": false,
+                "params": [],
+                "return": "string"
+            },
+            "fromLimbs": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "lo",
+                        "type": "int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "hi",
+                        "type": "int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "scale",
+                        "type": "int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "negative",
+                        "type": "bool",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\Decimal"
+            },
+            "toFloat": {
+                "static": false,
+                "params": [],
+                "return": "float"
+            }
+        },
+        "properties": {
+            "magnitude": {
+                "type": "string",
+                "readonly": true,
+                "static": false,
+                "hasDefault": false
+            },
+            "negative": {
+                "type": "bool",
+                "readonly": true,
+                "static": false,
+                "hasDefault": false
+            },
+            "scale": {
+                "type": "int",
+                "readonly": true,
+                "static": false,
+                "hasDefault": false
+            }
+        }
+    },
+    "Duration": {
+        "kind": "class",
+        "final": true,
+        "readonly": true,
+        "instantiable": true,
+        "interfaces": [],
+        "parent": null,
+        "constants": [],
+        "cases": [],
+        "methods": {
+            "__construct": {
+                "static": false,
+                "params": [
+                    {
+                        "name": "seconds",
+                        "type": "int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "nanos",
+                        "type": "int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": null
+            },
+            "toSeconds": {
+                "static": false,
+                "params": [],
+                "return": "float"
+            }
+        },
+        "properties": {
+            "nanos": {
+                "type": "int",
+                "readonly": true,
+                "static": false,
+                "hasDefault": false
+            },
+            "seconds": {
+                "type": "int",
+                "readonly": true,
+                "static": false,
+                "hasDefault": false
+            }
+        }
+    },
+    "Interop\\NativeValues": {
+        "kind": "class",
+        "final": true,
+        "readonly": false,
+        "instantiable": false,
+        "interfaces": [],
+        "parent": null,
+        "constants": [],
+        "cases": [],
+        "methods": {
+            "civil": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "year",
+                        "type": "int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "month",
+                        "type": "int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "day",
+                        "type": "int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "nanosOfDay",
+                        "type": "int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "DateTimeImmutable"
+            },
+            "date": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "year",
+                        "type": "int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "month",
+                        "type": "int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "day",
+                        "type": "int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "DateTimeImmutable"
+            },
+            "fault": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "code",
+                        "type": "int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "offset",
+                        "type": "int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "length",
+                        "type": "int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "HyperCast\\Fault"
+            },
+            "instant": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "seconds",
+                        "type": "int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "nanos",
+                        "type": "int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "DateTimeImmutable"
+            },
+            "uuid": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "bytes",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "string"
+            },
+            "version": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "packed",
+                        "type": "int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "string"
+            },
+            "writeDayPeriods": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "periods",
+                        "type": "HyperCast\\DayPeriods",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "target",
+                        "type": "FFI\\CData",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "void"
+            },
+            "writeFormat": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "format",
+                        "type": "HyperCast\\NumFormat",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "target",
+                        "type": "FFI\\CData",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "void"
+            }
+        },
+        "properties": []
+    },
+    "Interop\\NativePlatform": {
+        "kind": "class",
+        "final": true,
+        "readonly": false,
+        "instantiable": false,
+        "interfaces": [],
+        "parent": null,
+        "constants": [],
+        "cases": [],
+        "methods": {
+            "libraryPath": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "baseName",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "sourceDir",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "override",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "string"
+            },
+            "resolve": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "baseName",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "osFamily",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "machine",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "intSize",
+                        "type": "int",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    },
+                    {
+                        "name": "musl",
+                        "type": "bool",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "array"
+            },
+            "ridAndLibraryName": {
+                "static": true,
+                "params": [
+                    {
+                        "name": "baseName",
+                        "type": "string",
+                        "optional": false,
+                        "default": null,
+                        "byRef": false
+                    }
+                ],
+                "return": "array"
+            }
+        },
+        "properties": []
+    }
+}

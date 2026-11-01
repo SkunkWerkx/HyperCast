@@ -14,8 +14,10 @@ Requirements that hold across every round, stated up front so no layer designs t
   every layer, the tabular one included.
 - **The scalar core and its bindings must ride alongside HyperUuid's wasm train.** The
   same proven shapes: the Rust core under `wasm32-wasip1` and `wasm32-unknown-unknown`,
-  C# via Blazor's `NativeFileReference` static linking, Python as a Pyodide wheel, Go
-  through TinyGo and Swift through its WebAssembly SDK, each linking the core in. HyperCast's
+  C# via Blazor's `NativeFileReference` static linking, Python as a Pyodide wheel, Ruby through
+  ruby.wasm, Swift through its WebAssembly SDK and C from the wasi-wasm32 archive, each linking
+  the core in, Go under stock Go and TinyGo alike (its core is Go source), and TypeScript
+  through its WebAssembly fallback package. HyperCast's
   core is strictly easier freight than HyperUuid's here — pure computation over caller
   bytes, zero dependencies, no WASI clock or randomness imports at all — and every leg is
   proven, not projected: the full test suite (unit tests, the counting-allocator proof,
@@ -23,10 +25,12 @@ Requirements that hold across every round, stated up front so no layer designs t
   `wasm32-wasip1`
   (`CARGO_TARGET_WASM32_WASIP1_RUNNER="wasmtime --dir <repo>" cargo test --target
   wasm32-wasip1`; the preopen is only so the conformance test can read `corpus/`), and the
-  browser targets run in headless Chrome in CI, all but ruby.wasm on every pull request (see the root README's
-  WebAssembly section). No binding carries an in-process wasm backend: each links the core
-  or loads a native library on every platform it ships for, so a fallback would have
-  nothing to catch, and the jar is FFM downcalls into the library it bundles.
+  browser targets run in headless Chrome in CI, each on a pull request that can reach it and
+  ruby.wasm in the weekly and release builds ([docs/platforms.md](platforms.md#webassembly)).
+  One binding carries an in-process wasm backend: TypeScript's fallback package, loaded where
+  no native addon fits. Every other binding links the core, compiles it as Go source or loads
+  a native library on every platform it ships for, so a fallback would have nothing to catch,
+  and the jar is JNI or FFM downcalls into the libraries it bundles.
 - **The tabular layer rides the wasm train too.** It needs no contortions: HyperTabular's
   core is no_std, allocation-free and imports nothing, so zip, inflate and XML run over
   caller bytes in a sandbox exactly as natively, and it ships every leg HyperCast
@@ -51,7 +55,9 @@ Packagist, with Go and Swift resolving from the tag. The HyperUuid
 playbook, re-run: C# (`P/Invoke`), Java (FFM), Go, Swift, Ruby, PHP, Python,
 each folding the verdict code + fault span into its platform's discriminated-union idiom
 (a `Result`-shaped type, never an exception) and each replaying the shared corpus in its
-own test suite before it ships. C# first — shortest path to a headline benchmark against
+own test suite before it ships. TypeScript (a napi-rs addon on npm, with a WebAssembly
+fallback), R (a source package for CRAN) and one C and C++ archive per platform on the GitHub
+Release have joined them since (CHANGELOG, Unreleased), on the same contract. C# first — shortest path to a headline benchmark against
 `DateTime.TryParse`/`TimeSpan.Parse` culture machinery, and the deepest muscle memory from
 SequentialGuid/HyperUuid.
 
@@ -111,12 +117,12 @@ One piece of this round landed here, ahead of schedule and on purpose:
   exactly that, so it was built early rather than left to block the tabular layer. The door
   ships in every binding today (`cast_excel_serial`, a caller-declared `ExcelEpoch`, the
   phantom serial `OutOfRange` exactly as the text `1900-02-29` is), with
-  `corpus/excel_serial.json` holding it byte-identical across all eight languages. The door
+  `corpus/excel_serial.json` holding it byte-identical across every binding. The door
   reads serial *text* — a CSV column of serials. A workbook reader starts from the `f64`
   the file stores; `excel_serial` is the same rules for that number, from the same code,
   and the corpus is replayed through both. That typed door, with a decimal, a time-of-day
   and a duration read from the same `f64`, is now exported to every binding as well, and
-  `corpus/typed.json` holds the four byte-identical across all eight languages.
+  `corpus/typed.json` holds the four byte-identical across every binding.
 
 Two designs this file once parked are now built, and recorded in HyperTabular's docs:
 
@@ -344,13 +350,17 @@ format; and Indian lakh grouping was never a gap (`12,34,567` is accepted). Pyth
 Go's standard libraries have no per-object locale to take, and Java's Native Image includes
 only the locales named at build time (`-H:IncludeLocales`), which is the consumer's choice.
 
-## Open follow-ups (as of 2026-10-25)
+## Open follow-ups (as of 2026-11-01)
 
-- Benchmark tables were measured on the WSL2 i9-11900H box. When the dev machine changes,
-  re-measure every harness there before relabelling a table; never mix machines, and say
-  which tables predate a core change. A benchmarking workflow is an idea, not started.
-- Java does not reach Android: the binding uses FFM, which ART lacks, so it would need a
-  JNI layer. Python, Ruby and PHP don't reach Android either.
+- Benchmark tables were measured on the WSL2 i9-11900H box, except Go's current figures and
+  R's, taken on an Apple M6 (2026-11-01). Re-measure every harness on one machine before
+  relabelling a table; never mix machines, and say which tables predate a change
+  ([docs/benchmarks.md](benchmarks.md) labels them: the C# tables were measured in-process, PHP's
+  on the FFI package, Go's linux-x64 ones on the cgo binding). TypeScript has no figures yet.
+  A benchmarking workflow is an idea, not started.
+- Java does not reach Android: the jar bundles no Android library, though its JNI path (JDK
+  21–24) is the mechanism one would use, since ART has no FFM. Python, Ruby, PHP, TypeScript
+  and R don't reach Android either.
 - A GraalVM Native Image static-link spike (the core linked into the image rather than
   loaded) was proven on linux-x64 and parked, because the only way in is GraalVM's internal
   API; the Forge README's ledger has the recipe and the trigger to revisit.

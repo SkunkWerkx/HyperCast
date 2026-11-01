@@ -37,18 +37,18 @@ class HyperConfigTests(unittest.TestCase):
         self.assertTrue((ROOT / self.cfg.get('abi_probe', '.github/scripts/abi_probe.c')).is_file())
         self.assertTrue((BUNDLE_INCLUDE / 'hypercast.h').is_file())
 
+    def test_r_corpus_is_every_corpus_file(self):
+        # The Forge requires exactly these in the R source tarball; r/tools/vendor.sh stages
+        # every file in corpus/, so a corpus file added without this list fails the pack.
+        self.assertEqual(sorted(self.cfg['r_corpus']), sorted(p.name for p in (ROOT / 'corpus').glob('*.json')))
+
     def test_export_rule_reads_the_same_abi_as_check_exports(self):
         exports = self.cfg['exports']
         names = set()
         for source in exports['sources']:
             text = (ROOT / source).read_text()
             for pattern in exports['patterns']:
-                if isinstance(pattern, str):
-                    names |= set(re.findall(pattern, text))
-                else:
-                    # The numeric doors are generated from a table in ffi.rs.
-                    for block in re.findall(pattern['block'], text, re.S):
-                        names |= set(re.findall(pattern['name'], block))
+                names |= set(re.findall(pattern, text))
         names -= set(exports.get('exclude', ()))
         self.assertEqual(names, load('check_exports').core_exports())
         self.assertIn('hypercast_version', names)
@@ -82,15 +82,16 @@ class AbiProbeTests(unittest.TestCase):
             for version, fault_end, empty_code, accepted in [('0x000900', 5, 1, True), ('0x000800', 5, 1, False),
                                                              ('0x000900', 0, 1, False), ('0x000900', 5, 0, False)]:
                 c = tmp / 'fixture.c'
-                c.write_text(f'''#include <stdint.h>
+                c.write_text(f'''#include "hypercast.h"
 uint32_t hypercast_version(void) {{return {version};}}
-int32_t cast_bool(const uint8_t *p, uintptr_t n, uint8_t *out, uint32_t *fault) {{
-    if (n == 3) {{ *out = 1; return 0; }} fault[0] = 0; fault[1] = {fault_end}; return 2; }}
-int32_t cast_i32(const uint8_t *p, uintptr_t n, const void *format, int32_t *out, uint32_t *fault) {{
+int32_t cast_bool(const uint8_t *p, uintptr_t n, uint8_t *out, HyperCastRawFault *fault) {{
+    if (n == 3) {{ *out = 1; return 0; }} fault->offset = 0; fault->len = {fault_end}; return 2; }}
+int32_t cast_i32(const uint8_t *p, uintptr_t n, const HyperCastRawNumFormat *format, int32_t *out,
+                 HyperCastRawFault *fault) {{
     if (n == 0) return {empty_code}; *out = 123; return 0; }}
 ''')
                 obj, shared, archive = tmp / 'f.o', tmp / 'f.so', tmp / 'f.a'
-                subprocess.run(['cc', '-fPIC', '-c', str(c), '-o', str(obj)], check=True)
+                subprocess.run(['cc', '-fPIC', '-I', str(BUNDLE_INCLUDE), '-c', str(c), '-o', str(obj)], check=True)
                 subprocess.run(['cc', '-shared', str(obj), '-o', str(shared)], check=True)
                 archive.unlink(missing_ok=True)
                 subprocess.run(['ar', 'rcs', str(archive), str(obj)], check=True)

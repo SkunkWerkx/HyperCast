@@ -12,11 +12,11 @@
 #include <string.h>
 #include "hypercast.h"
 int main(void) {
-    uint32_t fault[2]={0,0}; uint8_t boolean=0; int32_t integer=0;
+    HyperCastRawFault fault={0,0}; uint8_t boolean=0; int32_t integer=0;
     if(hypercast_version()!=EXPECTED_VERSION) return 1;
-    if(cast_bool((const uint8_t*)"yes",3,&boolean,fault)!=0 || boolean!=1) return 2;
-    if(cast_bool((const uint8_t*)"maybe",5,&boolean,fault)!=2 || fault[0]!=0 || fault[1]!=5) return 3;
-    if(cast_i32((const uint8_t*)"123",3,0,&integer,fault)!=0 || integer!=123) return 4;
-    if(cast_i32((const uint8_t*)"",0,0,&integer,fault)!=1) return 5;
+    if(cast_bool((const uint8_t*)"yes",3,&boolean,&fault)!=0 || boolean!=1) return 2;
+    if(cast_bool((const uint8_t*)"maybe",5,&boolean,&fault)!=2 || fault.offset!=0 || fault.len!=5) return 3;
+    if(cast_i32((const uint8_t*)"123",3,0,&integer,&fault)!=0 || integer!=123) return 4;
+    if(cast_i32((const uint8_t*)"",0,0,&integer,&fault)!=1) return 5;
     return 0;
 }

@@ -1,6 +1,8 @@
 {
   "resources": [
-    { "glob": "native/*/*" }
+    { "glob": "native/*/libhypercast.so" },
+    { "glob": "native/*/libhypercast.dylib" },
+    { "glob": "native/*/hypercast.dll" }
   ],
   "foreign": {
     "downcalls": [

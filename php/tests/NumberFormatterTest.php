@@ -16,9 +16,9 @@ use PHPUnit\Framework\TestCase;
 /**
  * intl's NumberFormatter as the numeric doors' format: PHP's per-object locale formatting,
  * where NumFormat::fromLocaleconv() reads process state. ext-intl is optional for the
- * package, so every test that builds a formatter requires it, and the last test proves the
- * doors need nothing from it — it runs where intl is absent (CI's Alpine images, which add
- * ext-ffi and nothing else) and is skipped where it is loaded.
+ * extension, so every test that builds a formatter requires it, and the last test proves the
+ * doors need nothing from it — it runs where intl is absent (CI's musl legs, whose Alpine
+ * images carry no ext-intl) and is skipped where it is loaded.
  */
 final class NumberFormatterTest extends TestCase
 {
@@ -162,7 +162,7 @@ final class NumberFormatterTest extends TestCase
         $this->assertInstanceOf(Fault::class, Cast::i32('1,234-', $formatter));
         $formatter->setPattern('#,##0.###;#,##0.###-');
         $this->assertSame(NumFormat::ALL | NumFormat::TRAILING_SIGN, NumFormat::fromNumberFormatter($formatter)->flags);
-        // The changed pattern is seen by the doors' memo too, not only by a fresh factory call.
+        // The doors read the changed pattern too, not only a fresh factory call.
         $this->assertEquals(new Success(-1234), Cast::i32('1,234-', $formatter));
         $this->assertEquals(new Success(-1234), Cast::i32($formatter->format(-1234), $formatter));
         $this->assertEquals(new Success(-1234), Cast::i32('-1,234', $formatter));
@@ -174,15 +174,15 @@ final class NumberFormatterTest extends TestCase
     #[RequiresPhpExtension('intl')]
     public function testAFormattersChangedSymbolsAreReadAgain(): void
     {
-        // A formatter is mutable, and the doors remember the format each one declared: the
-        // remembered format must not outlive the symbols it was made from.
+        // A formatter is mutable, and the doors read its symbols at every call: a format
+        // declared through it never outlives the symbols it was made from.
         $formatter = new \NumberFormatter('en_US', \NumberFormatter::DECIMAL);
         $this->assertEquals(new Success(1234.5), Cast::f64('1,234.5', $formatter));
         $formatter->setSymbol(\NumberFormatter::DECIMAL_SEPARATOR_SYMBOL, ',');
         $formatter->setSymbol(\NumberFormatter::GROUPING_SEPARATOR_SYMBOL, '.');
         $this->assertEquals(new Success(1234.5), Cast::f64('1.234,5', $formatter));
         $this->assertInstanceOf(Fault::class, Cast::f64('1,234.5', $formatter));
-        // The new symbols are part of the memo too.
+        // Every symbol is read again, the minus sign included.
         $this->assertInstanceOf(Fault::class, Cast::f64("\u{2212}1.234,5", $formatter));
         $formatter->setSymbol(\NumberFormatter::MINUS_SIGN_SYMBOL, "\u{2212}");
         $this->assertEquals(new Success(-1234.5), Cast::f64("\u{2212}1.234,5", $formatter));
@@ -201,7 +201,7 @@ final class NumberFormatterTest extends TestCase
     public function testTheDoorsNeedNothingFromIntl(): void
     {
         if (\extension_loaded('intl')) {
-            $this->markTestSkipped('ext-intl is loaded here; this runs where it is absent (CI\'s Alpine images)');
+            $this->markTestSkipped('ext-intl is loaded here; this runs where it is absent (CI\'s musl legs)');
         }
         // NumberFormatter appears in the doors' signatures, and an unloaded class in a union
         // type costs nothing until something is passed as one.
