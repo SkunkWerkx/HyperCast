@@ -203,7 +203,9 @@ promise, so every stable bump is re-proven by the legs that use it.
 - `prepare-release.yml` and ci.yml's `core-checks` are one `uses:` each of a Forge reusable
   workflow; this repo keeps triggers, permissions and gates. `.github/hyper.json` is what the
   Forge knows about this project (crate and project names, the export rule, the cdylib smoke
-  script, the sdist, `swift_remote` and `c_assets` switches, `r_corpus`; the ABI probe is
+  script, the sdist, `swift_remote` and `c_assets` switches, `r_corpus`, and
+  `big_endian_control`, the corpus vector `core-checks` corrupts on s390x to prove the suite
+  reads the corpus there and the test that must then fail; the ABI probe is
   `.github/scripts/abi_probe.c`, the Forge's default path; every other name is derived in the
   Forge's `hyper_config.py`). `.github/scripts/tests` holds the workflow shape contracts and
   the probe, export, board and text-file tests; the generic release-guard tests live in the
@@ -341,13 +343,9 @@ Forge's `wasm_archive_guard.py` checks the result.
   placeholders and trusted-publisher registration on all ten names), the hand CRAN submission,
   the PIE install from Packagist, the Swift zips resolving by URL and checksum, and the first
   Maven Central publish of the multi-release jar.
-- Three Forge fixes this repo's release needs sit uncommitted in the Forge's working tree, to
-  land after HyperUuid's release: `pack-r` and `release_package_metadata.py` read `r_corpus`
-  from `.github/hyper.json` (master hard-codes HyperUuid's five corpus files);
-  `hyper-build-wheels.yml`'s two `build-sdist` smoke checks reduced to the shared
-  `native_version()` assertion (master calls HyperUuid's `new_v4`, `new_v7` and `new_v5`); and
-  `pie_acceptance.php` given HyperCast's own checks (master fails every extension but
-  HyperUuid's, so `release.yml`'s last job would go red).
+- `core-checks`' s390x negative control reads `big_endian_control` from `.github/hyper.json`
+  only once the Forge change that adds it lands; Forge master before it hard-codes
+  HyperUuid's `corpus/sql_order.json`, which fails this repo's leg.
 - TypeScript has no locale bridge yet (C#, Java and Swift do); `Intl.NumberFormat` is the
   natural source.
 - Feature follow-ups live in the roadmap, not here.

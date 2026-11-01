@@ -99,13 +99,15 @@ cmake_build() {
   check_version "CMake package ($name)" "$(cat "$build/package-version.txt")"
   local program path linkage
   linkage="$([ "$static" = ON ] && echo static || echo shared)"
+  # CMake writes its text files with CRLF on Windows: every read strips the CR.
   while read -r program; do
+    program=${program%$'\r'}
     [ -n "$program" ] || continue
-    path="$(cat "$build/$program-path-Release.txt")"
+    path="$(tr -d '\r' <"$build/$program-path-Release.txt")"
     [ -f "$path" ] || fail "no $program at $path"
     run_program "$program, $name" "$path" "$linkage"
   done <"$build/programs.txt"
-  grep -qx smoke_c99 "$build/programs.txt" || fail "smoke_c99 was not built ($name)"
+  tr -d '\r' <"$build/programs.txt" | grep -x smoke_c99 >/dev/null || fail "smoke_c99 was not built ($name)"
 }
 
 echo "smoke: $pkg"
