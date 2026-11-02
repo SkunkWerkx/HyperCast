@@ -20,7 +20,12 @@ module HyperCast
     # declared a caller-declared u32 (precision, epoch, field order) in the same place, and
     # civil the field order then the packed DayPeriods pointer (null for none). The typed
     # doors take a double instead of the text and its length: typed is (value, out, fault),
-    # typed_declared adds the u32 after the value.
+    # typed_declared adds the u32 after the value. The validation constraints come last: text
+    # is plain (its out-value the span of the input); checked is (door, param, format,
+    # constraints, enum, enum length, text, len, out, fault, check) and checked_from_f64 the
+    # same with a double for the format and the text; constraints_check is (door, param,
+    # constraints, enum, enum length), returning a refusal code rather than a verdict; and
+    # declared_decimal is (text, len, out).
     DOORS = {
       cast_bool: :plain, cast_char: :plain,
       cast_i8: :numeric, cast_i16: :numeric, cast_i32: :numeric, cast_i64: :numeric,
@@ -31,7 +36,9 @@ module HyperCast
       cast_date: :plain, cast_date_ordered: :declared, cast_datetime: :civil,
       cast_time: :plain, cast_duration: :plain,
       cast_decimal_from_f64: :typed, cast_excel_serial_from_f64: :typed_declared,
-      cast_excel_time: :typed, cast_excel_duration: :typed
+      cast_excel_time: :typed, cast_excel_duration: :typed,
+      cast_text: :plain, cast_checked: :checked, cast_checked_from_f64: :checked_from_f64,
+      cast_constraints_check: :constraints_check, cast_declared_decimal: :declared_decimal
     }.freeze
 
     # The one export that is not a door: the zero-argument version probe, returning the
@@ -117,7 +124,14 @@ module HyperCast
           declared: plain.dup.insert(2, Fiddle::TYPE_UINT32_T),
           civil: plain.dup.insert(2, Fiddle::TYPE_UINT32_T, Fiddle::TYPE_VOIDP),
           typed: [Fiddle::TYPE_DOUBLE, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP],
-          typed_declared: [Fiddle::TYPE_DOUBLE, Fiddle::TYPE_UINT32_T, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP]
+          typed_declared: [Fiddle::TYPE_DOUBLE, Fiddle::TYPE_UINT32_T, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP],
+          checked: [Fiddle::TYPE_UINT32_T, Fiddle::TYPE_UINT32_T, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP,
+                    Fiddle::TYPE_VOIDP, Fiddle::TYPE_SIZE_T, *plain, Fiddle::TYPE_VOIDP],
+          checked_from_f64: [Fiddle::TYPE_UINT32_T, Fiddle::TYPE_DOUBLE, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP,
+                             Fiddle::TYPE_SIZE_T, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP],
+          constraints_check: [Fiddle::TYPE_UINT32_T, Fiddle::TYPE_UINT32_T, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP,
+                              Fiddle::TYPE_SIZE_T],
+          declared_decimal: [Fiddle::TYPE_VOIDP, Fiddle::TYPE_SIZE_T, Fiddle::TYPE_VOIDP]
         }
         functions = DOORS.to_h do |name, shape|
           [name, Fiddle::Function.new(handle[name.to_s], signatures.fetch(shape), Fiddle::TYPE_INT32_T)]

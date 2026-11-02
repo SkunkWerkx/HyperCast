@@ -62,7 +62,8 @@ impl core::fmt::Display for Fault {
         match self.reason {
             Reason::Empty => f.write_str("empty input"),
             reason => {
-                write!(f, "{reason} input at bytes {}..{}", self.offset, self.offset + self.len)
+                let end = u64::from(self.offset) + u64::from(self.len);
+                write!(f, "{reason} input at bytes {}..{end}", self.offset)
             }
         }
     }
@@ -77,16 +78,26 @@ impl Fault {
     pub(crate) const EMPTY: Fault = Fault { reason: Reason::Empty, offset: 0, len: 0 };
 
     pub(crate) fn malformed(offset: usize, len: usize) -> Fault {
-        Fault { reason: Reason::Malformed, offset: clamp(offset), len: clamp(len) }
+        let (offset, len) = span_of(offset, len);
+        Fault { reason: Reason::Malformed, offset, len }
     }
 
     pub(crate) fn out_of_range(offset: usize, len: usize) -> Fault {
-        Fault { reason: Reason::OutOfRange, offset: clamp(offset), len: clamp(len) }
+        let (offset, len) = span_of(offset, len);
+        Fault { reason: Reason::OutOfRange, offset, len }
     }
 }
 
 fn clamp(value: usize) -> u32 {
-    value.try_into().unwrap_or(u32::MAX)
+    u32::try_from(value).unwrap_or(u32::MAX)
+}
+
+/// The span of `len` bytes at `start` as the ABI's `u32`s, clamped so that it still ends
+/// within the input (and within `u32::MAX`) when the input runs past what a `u32` indexes:
+/// what a fault or a violation reports.
+pub(crate) fn span_of(start: usize, len: usize) -> (u32, u32) {
+    let offset = clamp(start);
+    (offset, clamp(len).min(u32::MAX - offset))
 }
 
 /// A short declared symbol, held inline so a [`NumFormat`] stays `Copy` and crosses the

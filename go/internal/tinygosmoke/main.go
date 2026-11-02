@@ -8,8 +8,10 @@
 // Every ABI shape crosses at least once — a plain door (Bool, Uuid, Timestamp, DateOnly,
 // TimeOfDay, Span), a numeric one with a format (I32, F64, Exact with a currency symbol,
 // and a format declaring every symbol the 92-byte layout carries), a discriminated one
-// (Unix, ExcelSerial, DateTime), the day periods beside the order (DateTimeWith) — and so
-// does a fault with its span, each copied into the translated core's memory and read back
+// (Unix, ExcelSerial, DateTime), the day periods beside the order (DateTimeWith), the text
+// door (String), and the 72-byte constraints layout with an integer and a text enum list
+// beside it (Check, CheckFromFloat64, CheckString, NewConstraints's own judgement) — and so
+// do a fault and a violation with their spans, each copied into the translated core's memory and read back
 // out of it.
 //
 // The expected core version comes from rust/Cargo.toml at build time
@@ -126,6 +128,35 @@ func main() {
 
 	elapsed, fault := hypercast.ExcelDuration(1.5)
 	check(fault == nil && elapsed.Seconds == 129600 && elapsed.Nanos == 0, "ExcelDuration")
+
+	text, fault := hypercast.String("  Male ")
+	check(fault == nil && text == "  Male ", "String")
+
+	latitude := hypercast.MustConstraints[float64](
+		hypercast.Minimum(-90), hypercast.Maximum(90),
+		hypercast.MultipleOf("0.000001"), hypercast.WithRounding(hypercast.Midpoint))
+	lat, rejection := hypercast.Check("45.1234567", hypercast.Invariant, latitude)
+	check(rejection == nil && lat.Value == 45.123457 && lat.Adjusted, "Check rounds to multipleOf")
+	_, rejection = hypercast.Check("-90.5", hypercast.Invariant, latitude)
+	violation, ok := rejection.(*hypercast.Violation)
+	check(ok && violation.Keyword == hypercast.KeywordMinimum && violation.Offset == 0 && violation.Length == 5,
+		"Check violation keyword and span")
+	lat, rejection = hypercast.CheckFromFloat64(tenth+fifth, hypercast.MustConstraints[float64](
+		hypercast.MultipleOf("0.1"), hypercast.WithRounding(hypercast.Midpoint)))
+	check(rejection == nil && lat.Value == 0.3 && lat.Adjusted, "CheckFromFloat64")
+
+	codes := hypercast.MustConstraints[int32](hypercast.Enum(10, 20))
+	_, rejection = hypercast.Check("30", hypercast.Invariant, codes)
+	violation, ok = rejection.(*hypercast.Violation)
+	check(ok && violation.Keyword == hypercast.KeywordEnum, "Check integer enum")
+
+	sex := hypercast.MustConstraints[string](hypercast.Trim(), hypercast.Enum("Female", "Male", "Other"))
+	code, rejection := hypercast.CheckString(" MALE ", sex)
+	check(rejection == nil && code.Value == "Male" && code.EnumIndex == 1, "CheckString text enum")
+
+	_, err := hypercast.NewConstraints[uint8](hypercast.Minimum(-1))
+	check(err != nil && err.Error() == "hypercast: Constraints refused (code 8): a bound, step or enum entry the door cannot hold.",
+		"NewConstraints refusal")
 
 	fmt.Println("DONE")
 }

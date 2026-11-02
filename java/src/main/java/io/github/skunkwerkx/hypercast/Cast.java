@@ -20,9 +20,11 @@ import java.util.function.IntUnaryOperator;
  * into the native core in-process: through JNI on JDK 21 to 24, and through
  * {@code java.lang.foreign} (FFM) downcalls on JDK 25 and later, from one multi-release jar.
  * Every door returns a {@link Verdict}: the value, or a {@link Fault} with a closed reason and
- * the offending byte span. Never throws on bad input — the only exceptions here are caller
- * bugs (a {@code null} argument, a malformed {@link NumFormat} or {@link DateTimeFormat}),
- * never data.
+ * the offending byte span. A checked door, one handed {@link Constraints}, returns a
+ * {@link CheckedVerdict}: the value, the same {@link Fault}, or the {@link Violation} of a
+ * declared rule. Never throws on bad input — the only exceptions here are caller bugs (a
+ * {@code null} argument, a malformed {@link NumFormat} or {@link DateTimeFormat}, constraints
+ * built for another door), never data.
  *
  * <p>Door names mirror the native ABI ({@code i32}, {@code f64}, {@code timestamp}, …) so
  * the polyglot surface reads identically across bindings. Each door takes a {@link String}
@@ -122,6 +124,12 @@ public final class Cast {
     }
 
     private static <T> Verdict<T> failed(int code, NativeCore.Scratch scratch) {
+        return fault(code, scratch);
+    }
+
+    // The fault a nonzero code names, at the span the call wrote. -1 is a contract violation,
+    // which every door's own checks keep from happening: a binding bug, never data.
+    private static <T> Fault<T> fault(int code, NativeCore.Scratch scratch) {
         if (code == -1) {
             throw new IllegalStateException(
                     "libhypercast reported a contract violation — a binding bug, please report it");
@@ -1787,5 +1795,871 @@ public final class Cast {
      */
     public static Verdict<Duration> excelDuration(double value) {
         return typed(Door.EXCEL_DURATION, value, NativeCore::duration);
+    }
+
+    // --- the checked doors: a door judged by declared validation constraints ---
+
+    /** The core's verdict on a checked door: the value and its check, a violation, or a fault. */
+    private static <T> CheckedVerdict<T> judged(int code, NativeCore.Scratch scratch, Reader<T> reader) {
+        return switch (code) {
+            case 0 -> new Checked<>(reader.read(scratch), NativeCore.checkAdjusted(scratch), index(scratch));
+            case 4 ->
+                new Violation<>(
+                        new Keyword(NativeCore.checkKeyword(scratch)),
+                        NativeCore.faultOffset(scratch),
+                        NativeCore.faultLength(scratch));
+            default -> fault(code, scratch);
+        };
+    }
+
+    // The text entry matched, or empty: the core's UINT32_MAX, an integer enum's included.
+    private static java.util.OptionalInt index(NativeCore.Scratch scratch) {
+        int index = NativeCore.checkEnumIndex(scratch);
+        return index == -1 ? java.util.OptionalInt.empty() : java.util.OptionalInt.of(index);
+    }
+
+    private static <T> CheckedVerdict<T> checked(
+            int door, String name, byte[] utf8, NumFormat format, Constraints<T> constraints, Reader<T> reader) {
+        Objects.requireNonNull(utf8, "utf8");
+        Objects.requireNonNull(format, "format");
+        Objects.requireNonNull(constraints, "constraints").require(door, name);
+        NativeCore.Scratch scratch = NativeCore.scratch();
+        return judged(NativeCore.checked(scratch, door, utf8, format, constraints), scratch, reader);
+    }
+
+    private static <T> CheckedVerdict<T> checked(
+            int door, String name, MemorySegment utf8, NumFormat format, Constraints<T> constraints, Reader<T> reader) {
+        Objects.requireNonNull(utf8, "utf8");
+        Objects.requireNonNull(format, "format");
+        Objects.requireNonNull(constraints, "constraints").require(door, name);
+        NativeCore.Scratch scratch = NativeCore.scratch();
+        return judged(NativeCore.checked(scratch, door, utf8, format, constraints), scratch, reader);
+    }
+
+    // Over a String: encoded WTF-8, so a lone surrogate reaches the core as the invalid
+    // sequence it is, and every span re-expressed in chars.
+    private static <T> CheckedVerdict<T> checked(
+            int door, String name, String text, NumFormat format, Constraints<T> constraints, Reader<T> reader) {
+        byte[] utf8 = wtf8(text);
+        return checkedChars(checked(door, name, utf8, format, constraints, reader), text, utf8);
+    }
+
+    private static <T> CheckedVerdict<T> checkedFromDouble(
+            int door, String name, double value, Constraints<T> constraints, Reader<T> reader) {
+        Objects.requireNonNull(constraints, "constraints").require(door, name);
+        NativeCore.Scratch scratch = NativeCore.scratch();
+        return judged(NativeCore.checkedFromF64(scratch, door, value, constraints), scratch, reader);
+    }
+
+    // A checked verdict's span rebased to chars, as chars(Verdict, ...) rebases a fault's.
+    private static <T> CheckedVerdict<T> checkedChars(CheckedVerdict<T> verdict, String text, byte[] utf8) {
+        if (utf8.length == text.length()) {
+            return verdict;
+        }
+        return switch (verdict) {
+            case Checked<T> ok -> ok;
+            case Fault<T> fault -> {
+                int start = charIndex(utf8, fault.offset());
+                int end = charIndex(utf8, fault.offset() + fault.length());
+                yield new Fault<>(fault.reason(), start, end - start);
+            }
+            case Violation<T> violation -> {
+                int start = charIndex(utf8, violation.offset());
+                int end = charIndex(utf8, violation.offset() + violation.length());
+                yield new Violation<>(violation.keyword(), start, end - start);
+            }
+        };
+    }
+
+    /**
+     * Encodes UTF-16 as UTF-8, a lone surrogate as the three-byte sequence of its own code point
+     * (WTF-8) rather than a replacement, so the core sees text that is not valid UTF-8 as
+     * exactly that: a {@link Fault} with its span at a door, a refused {@code enum} entry in a
+     * declaration.
+     */
+    static byte[] wtf8(String text) {
+        Objects.requireNonNull(text, "text");
+        int length = text.length();
+        int size = 0;
+        boolean ascii = true;
+        for (int i = 0; i < length; i++) {
+            char c = text.charAt(i);
+            if (c < 0x80) {
+                size += 1;
+            } else if (c < 0x800) {
+                size += 2;
+                ascii = false;
+            } else if (Character.isHighSurrogate(c) && i + 1 < length && Character.isLowSurrogate(text.charAt(i + 1))) {
+                size += 4;
+                i++;
+                ascii = false;
+            } else {
+                size += 3;
+                ascii = false;
+            }
+        }
+        if (ascii) {
+            return text.getBytes(StandardCharsets.ISO_8859_1);
+        }
+        byte[] out = new byte[size];
+        int at = 0;
+        for (int i = 0; i < length; i++) {
+            char c = text.charAt(i);
+            if (c < 0x80) {
+                out[at++] = (byte) c;
+            } else if (c < 0x800) {
+                out[at++] = (byte) (0xC0 | c >> 6);
+                out[at++] = (byte) (0x80 | (c & 0x3F));
+            } else if (Character.isHighSurrogate(c) && i + 1 < length && Character.isLowSurrogate(text.charAt(i + 1))) {
+                int point = Character.toCodePoint(c, text.charAt(++i));
+                out[at++] = (byte) (0xF0 | point >> 18);
+                out[at++] = (byte) (0x80 | ((point >> 12) & 0x3F));
+                out[at++] = (byte) (0x80 | ((point >> 6) & 0x3F));
+                out[at++] = (byte) (0x80 | (point & 0x3F));
+            } else {
+                out[at++] = (byte) (0xE0 | c >> 12);
+                out[at++] = (byte) (0x80 | ((c >> 6) & 0x3F));
+                out[at++] = (byte) (0x80 | (c & 0x3F));
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Casts integer text to a signed 8-bit value under the declared {@code format}, as
+     * {@link #i8(String, NumFormat)} does, then judges the value by {@code constraints}: a
+     * {@link Checked}, or a {@link Rejection}, the plain door's own {@link Fault} or the
+     * {@link Violation} of a declared rule, spanning the value in chars. Every checked door
+     * has this shape, over a {@link String}, raw UTF-8 {@code byte[]} (spans in bytes) or a
+     * {@link MemorySegment}, and a {@code ...FromDouble} twin for a number a source already
+     * decoded. A lone surrogate in the text is {@link CastFailure#MALFORMED}, never replaced.
+     *
+     * @param text the text to cast
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#i8()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Byte> i8(String text, NumFormat format, Constraints<Byte> constraints) {
+        return checked(Constraints.I8, "i8", text, format, constraints, NativeCore::i8);
+    }
+
+    /**
+     * See {@link #i8(String, NumFormat, Constraints)}; input as raw UTF-8 bytes, spans in bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#i8()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Byte> i8(byte[] utf8, NumFormat format, Constraints<Byte> constraints) {
+        return checked(Constraints.I8, "i8", utf8, format, constraints, NativeCore::i8);
+    }
+
+    /**
+     * See {@link #i8(String, NumFormat, Constraints)}; input as a {@link MemorySegment} view of
+     * UTF-8 bytes, spans in bytes.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#i8()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Byte> i8(MemorySegment utf8, NumFormat format, Constraints<Byte> constraints) {
+        return checked(Constraints.I8, "i8", utf8, format, constraints, NativeCore::i8);
+    }
+
+    /**
+     * Judges a number a source already decoded (a JSON parser's {@code double}, a spreadsheet's
+     * numeric cell) at the {@code i8} door by {@code constraints}, on its sign and the shortest
+     * decimal that names it, the text {@link #decimalFromDouble(double)} reads: so
+     * {@code 0.1 + 0.2} breaks {@code multipleOf: 0.1} under {@link Rounding#STRICT} and rounds to
+     * {@code 0.3} under {@link Rounding#MIDPOINT}. A value with a fraction is
+     * {@link CastFailure#MALFORMED} at an integer door, NaN is malformed and an infinity
+     * {@link CastFailure#OUT_OF_RANGE}; every fault and violation has an empty span. Every
+     * numeric door has this twin.
+     *
+     * @param value the number to judge
+     * @param constraints the declaration, built by {@link Constraints#i8()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Byte> i8FromDouble(double value, Constraints<Byte> constraints) {
+        return checkedFromDouble(Constraints.I8, "i8", value, constraints, NativeCore::i8);
+    }
+
+    /**
+     * Casts text to a signed 16-bit value, as {@link #i16(String, NumFormat)} does, then judges it by
+     * {@code constraints}, as {@link #i8(String, NumFormat, Constraints)} describes.
+     *
+     * @param text the text to cast
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#i16()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Short> i16(String text, NumFormat format, Constraints<Short> constraints) {
+        return checked(Constraints.I16, "i16", text, format, constraints, NativeCore::i16);
+    }
+
+    /**
+     * See {@link #i16(String, NumFormat, Constraints)}; input as raw UTF-8 bytes, spans in bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#i16()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Short> i16(byte[] utf8, NumFormat format, Constraints<Short> constraints) {
+        return checked(Constraints.I16, "i16", utf8, format, constraints, NativeCore::i16);
+    }
+
+    /**
+     * See {@link #i16(String, NumFormat, Constraints)}; input as a {@link MemorySegment} view of
+     * UTF-8 bytes, spans in bytes.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#i16()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Short> i16(MemorySegment utf8, NumFormat format, Constraints<Short> constraints) {
+        return checked(Constraints.I16, "i16", utf8, format, constraints, NativeCore::i16);
+    }
+
+    /**
+     * Judges a number a source already decoded at the {@code i16} door by {@code constraints},
+     * as {@link #i8FromDouble(double, Constraints)} describes.
+     *
+     * @param value the number to judge
+     * @param constraints the declaration, built by {@link Constraints#i16()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Short> i16FromDouble(double value, Constraints<Short> constraints) {
+        return checkedFromDouble(Constraints.I16, "i16", value, constraints, NativeCore::i16);
+    }
+
+    /**
+     * Casts text to a signed 32-bit value, as {@link #i32(String, NumFormat)} does, then judges it by
+     * {@code constraints}, as {@link #i8(String, NumFormat, Constraints)} describes.
+     *
+     * @param text the text to cast
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#i32()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Integer> i32(String text, NumFormat format, Constraints<Integer> constraints) {
+        return checked(Constraints.I32, "i32", text, format, constraints, NativeCore::i32);
+    }
+
+    /**
+     * See {@link #i32(String, NumFormat, Constraints)}; input as raw UTF-8 bytes, spans in bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#i32()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Integer> i32(byte[] utf8, NumFormat format, Constraints<Integer> constraints) {
+        return checked(Constraints.I32, "i32", utf8, format, constraints, NativeCore::i32);
+    }
+
+    /**
+     * See {@link #i32(String, NumFormat, Constraints)}; input as a {@link MemorySegment} view of
+     * UTF-8 bytes, spans in bytes.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#i32()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Integer> i32(MemorySegment utf8, NumFormat format, Constraints<Integer> constraints) {
+        return checked(Constraints.I32, "i32", utf8, format, constraints, NativeCore::i32);
+    }
+
+    /**
+     * Judges a number a source already decoded at the {@code i32} door by {@code constraints},
+     * as {@link #i8FromDouble(double, Constraints)} describes.
+     *
+     * @param value the number to judge
+     * @param constraints the declaration, built by {@link Constraints#i32()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Integer> i32FromDouble(double value, Constraints<Integer> constraints) {
+        return checkedFromDouble(Constraints.I32, "i32", value, constraints, NativeCore::i32);
+    }
+
+    /**
+     * Casts text to a signed 64-bit value, as {@link #i64(String, NumFormat)} does, then judges it by
+     * {@code constraints}, as {@link #i8(String, NumFormat, Constraints)} describes.
+     *
+     * @param text the text to cast
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#i64()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Long> i64(String text, NumFormat format, Constraints<Long> constraints) {
+        return checked(Constraints.I64, "i64", text, format, constraints, NativeCore::i64);
+    }
+
+    /**
+     * See {@link #i64(String, NumFormat, Constraints)}; input as raw UTF-8 bytes, spans in bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#i64()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Long> i64(byte[] utf8, NumFormat format, Constraints<Long> constraints) {
+        return checked(Constraints.I64, "i64", utf8, format, constraints, NativeCore::i64);
+    }
+
+    /**
+     * See {@link #i64(String, NumFormat, Constraints)}; input as a {@link MemorySegment} view of
+     * UTF-8 bytes, spans in bytes.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#i64()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Long> i64(MemorySegment utf8, NumFormat format, Constraints<Long> constraints) {
+        return checked(Constraints.I64, "i64", utf8, format, constraints, NativeCore::i64);
+    }
+
+    /**
+     * Judges a number a source already decoded at the {@code i64} door by {@code constraints},
+     * as {@link #i8FromDouble(double, Constraints)} describes.
+     *
+     * @param value the number to judge
+     * @param constraints the declaration, built by {@link Constraints#i64()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Long> i64FromDouble(double value, Constraints<Long> constraints) {
+        return checkedFromDouble(Constraints.I64, "i64", value, constraints, NativeCore::i64);
+    }
+
+    /**
+     * Casts text to an unsigned 8-bit value, as {@link #u8(String, NumFormat)} does, then judges it by
+     * {@code constraints}, as {@link #i8(String, NumFormat, Constraints)} describes.
+     *
+     * @param text the text to cast
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#u8()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Integer> u8(String text, NumFormat format, Constraints<Integer> constraints) {
+        return checked(Constraints.U8, "u8", text, format, constraints, NativeCore::u8);
+    }
+
+    /**
+     * See {@link #u8(String, NumFormat, Constraints)}; input as raw UTF-8 bytes, spans in bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#u8()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Integer> u8(byte[] utf8, NumFormat format, Constraints<Integer> constraints) {
+        return checked(Constraints.U8, "u8", utf8, format, constraints, NativeCore::u8);
+    }
+
+    /**
+     * See {@link #u8(String, NumFormat, Constraints)}; input as a {@link MemorySegment} view of
+     * UTF-8 bytes, spans in bytes.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#u8()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Integer> u8(MemorySegment utf8, NumFormat format, Constraints<Integer> constraints) {
+        return checked(Constraints.U8, "u8", utf8, format, constraints, NativeCore::u8);
+    }
+
+    /**
+     * Judges a number a source already decoded at the {@code u8} door by {@code constraints},
+     * as {@link #i8FromDouble(double, Constraints)} describes.
+     *
+     * @param value the number to judge
+     * @param constraints the declaration, built by {@link Constraints#u8()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Integer> u8FromDouble(double value, Constraints<Integer> constraints) {
+        return checkedFromDouble(Constraints.U8, "u8", value, constraints, NativeCore::u8);
+    }
+
+    /**
+     * Casts text to an unsigned 16-bit value, as {@link #u16(String, NumFormat)} does, then judges it by
+     * {@code constraints}, as {@link #i8(String, NumFormat, Constraints)} describes.
+     *
+     * @param text the text to cast
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#u16()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Integer> u16(String text, NumFormat format, Constraints<Integer> constraints) {
+        return checked(Constraints.U16, "u16", text, format, constraints, NativeCore::u16);
+    }
+
+    /**
+     * See {@link #u16(String, NumFormat, Constraints)}; input as raw UTF-8 bytes, spans in bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#u16()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Integer> u16(byte[] utf8, NumFormat format, Constraints<Integer> constraints) {
+        return checked(Constraints.U16, "u16", utf8, format, constraints, NativeCore::u16);
+    }
+
+    /**
+     * See {@link #u16(String, NumFormat, Constraints)}; input as a {@link MemorySegment} view of
+     * UTF-8 bytes, spans in bytes.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#u16()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Integer> u16(MemorySegment utf8, NumFormat format, Constraints<Integer> constraints) {
+        return checked(Constraints.U16, "u16", utf8, format, constraints, NativeCore::u16);
+    }
+
+    /**
+     * Judges a number a source already decoded at the {@code u16} door by {@code constraints},
+     * as {@link #i8FromDouble(double, Constraints)} describes.
+     *
+     * @param value the number to judge
+     * @param constraints the declaration, built by {@link Constraints#u16()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Integer> u16FromDouble(double value, Constraints<Integer> constraints) {
+        return checkedFromDouble(Constraints.U16, "u16", value, constraints, NativeCore::u16);
+    }
+
+    /**
+     * Casts text to an unsigned 32-bit value, as {@link #u32(String, NumFormat)} does, then judges it by
+     * {@code constraints}, as {@link #i8(String, NumFormat, Constraints)} describes.
+     *
+     * @param text the text to cast
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#u32()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Long> u32(String text, NumFormat format, Constraints<Long> constraints) {
+        return checked(Constraints.U32, "u32", text, format, constraints, NativeCore::u32);
+    }
+
+    /**
+     * See {@link #u32(String, NumFormat, Constraints)}; input as raw UTF-8 bytes, spans in bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#u32()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Long> u32(byte[] utf8, NumFormat format, Constraints<Long> constraints) {
+        return checked(Constraints.U32, "u32", utf8, format, constraints, NativeCore::u32);
+    }
+
+    /**
+     * See {@link #u32(String, NumFormat, Constraints)}; input as a {@link MemorySegment} view of
+     * UTF-8 bytes, spans in bytes.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#u32()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Long> u32(MemorySegment utf8, NumFormat format, Constraints<Long> constraints) {
+        return checked(Constraints.U32, "u32", utf8, format, constraints, NativeCore::u32);
+    }
+
+    /**
+     * Judges a number a source already decoded at the {@code u32} door by {@code constraints},
+     * as {@link #i8FromDouble(double, Constraints)} describes.
+     *
+     * @param value the number to judge
+     * @param constraints the declaration, built by {@link Constraints#u32()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Long> u32FromDouble(double value, Constraints<Long> constraints) {
+        return checkedFromDouble(Constraints.U32, "u32", value, constraints, NativeCore::u32);
+    }
+
+    /**
+     * Casts text to an unsigned 64-bit value, as its two's-complement bit pattern, as {@link #u64(String, NumFormat)} does, then judges it by
+     * {@code constraints}, as {@link #i8(String, NumFormat, Constraints)} describes.
+     *
+     * @param text the text to cast
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#u64()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Long> u64(String text, NumFormat format, Constraints<Long> constraints) {
+        return checked(Constraints.U64, "u64", text, format, constraints, NativeCore::u64);
+    }
+
+    /**
+     * See {@link #u64(String, NumFormat, Constraints)}; input as raw UTF-8 bytes, spans in bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#u64()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Long> u64(byte[] utf8, NumFormat format, Constraints<Long> constraints) {
+        return checked(Constraints.U64, "u64", utf8, format, constraints, NativeCore::u64);
+    }
+
+    /**
+     * See {@link #u64(String, NumFormat, Constraints)}; input as a {@link MemorySegment} view of
+     * UTF-8 bytes, spans in bytes.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#u64()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Long> u64(MemorySegment utf8, NumFormat format, Constraints<Long> constraints) {
+        return checked(Constraints.U64, "u64", utf8, format, constraints, NativeCore::u64);
+    }
+
+    /**
+     * Judges a number a source already decoded at the {@code u64} door by {@code constraints},
+     * as {@link #i8FromDouble(double, Constraints)} describes.
+     *
+     * @param value the number to judge
+     * @param constraints the declaration, built by {@link Constraints#u64()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Long> u64FromDouble(double value, Constraints<Long> constraints) {
+        return checkedFromDouble(Constraints.U64, "u64", value, constraints, NativeCore::u64);
+    }
+
+    /**
+     * Casts text to a 32-bit real, as {@link #f32(String, NumFormat)} does, then judges it by
+     * {@code constraints}, as {@link #i8(String, NumFormat, Constraints)} describes.
+     *
+     * @param text the text to cast
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#f32()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Float> f32(String text, NumFormat format, Constraints<Float> constraints) {
+        return checked(Constraints.F32, "f32", text, format, constraints, NativeCore::f32);
+    }
+
+    /**
+     * See {@link #f32(String, NumFormat, Constraints)}; input as raw UTF-8 bytes, spans in bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#f32()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Float> f32(byte[] utf8, NumFormat format, Constraints<Float> constraints) {
+        return checked(Constraints.F32, "f32", utf8, format, constraints, NativeCore::f32);
+    }
+
+    /**
+     * See {@link #f32(String, NumFormat, Constraints)}; input as a {@link MemorySegment} view of
+     * UTF-8 bytes, spans in bytes.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#f32()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Float> f32(MemorySegment utf8, NumFormat format, Constraints<Float> constraints) {
+        return checked(Constraints.F32, "f32", utf8, format, constraints, NativeCore::f32);
+    }
+
+    /**
+     * Judges a number a source already decoded at the {@code f32} door by {@code constraints},
+     * as {@link #i8FromDouble(double, Constraints)} describes.
+     *
+     * @param value the number to judge
+     * @param constraints the declaration, built by {@link Constraints#f32()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Float> f32FromDouble(double value, Constraints<Float> constraints) {
+        return checkedFromDouble(Constraints.F32, "f32", value, constraints, NativeCore::f32);
+    }
+
+    /**
+     * Casts text to a 64-bit real, as {@link #f64(String, NumFormat)} does, then judges it by
+     * {@code constraints}, as {@link #i8(String, NumFormat, Constraints)} describes.
+     *
+     * @param text the text to cast
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#f64()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Double> f64(String text, NumFormat format, Constraints<Double> constraints) {
+        return checked(Constraints.F64, "f64", text, format, constraints, NativeCore::f64);
+    }
+
+    /**
+     * See {@link #f64(String, NumFormat, Constraints)}; input as raw UTF-8 bytes, spans in bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#f64()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Double> f64(byte[] utf8, NumFormat format, Constraints<Double> constraints) {
+        return checked(Constraints.F64, "f64", utf8, format, constraints, NativeCore::f64);
+    }
+
+    /**
+     * See {@link #f64(String, NumFormat, Constraints)}; input as a {@link MemorySegment} view of
+     * UTF-8 bytes, spans in bytes.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#f64()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Double> f64(MemorySegment utf8, NumFormat format, Constraints<Double> constraints) {
+        return checked(Constraints.F64, "f64", utf8, format, constraints, NativeCore::f64);
+    }
+
+    /**
+     * Judges a number a source already decoded at the {@code f64} door by {@code constraints},
+     * as {@link #i8FromDouble(double, Constraints)} describes.
+     *
+     * @param value the number to judge
+     * @param constraints the declaration, built by {@link Constraints#f64()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<Double> f64FromDouble(double value, Constraints<Double> constraints) {
+        return checkedFromDouble(Constraints.F64, "f64", value, constraints, NativeCore::f64);
+    }
+
+    /**
+     * Casts text to an exact decimal, as {@link #decimal(String, NumFormat)} does, then judges it by
+     * {@code constraints}, as {@link #i8(String, NumFormat, Constraints)} describes.
+     *
+     * @param text the text to cast
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#decimal()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<BigDecimal> decimal(
+            String text, NumFormat format, Constraints<BigDecimal> constraints) {
+        return checked(Constraints.DECIMAL, "decimal", text, format, constraints, NativeCore::decimal);
+    }
+
+    /**
+     * See {@link #decimal(String, NumFormat, Constraints)}; input as raw UTF-8 bytes, spans in bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#decimal()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<BigDecimal> decimal(
+            byte[] utf8, NumFormat format, Constraints<BigDecimal> constraints) {
+        return checked(Constraints.DECIMAL, "decimal", utf8, format, constraints, NativeCore::decimal);
+    }
+
+    /**
+     * See {@link #decimal(String, NumFormat, Constraints)}; input as a {@link MemorySegment} view of
+     * UTF-8 bytes, spans in bytes.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param format the caller-declared numeric notation
+     * @param constraints the declaration, built by {@link Constraints#decimal()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<BigDecimal> decimal(
+            MemorySegment utf8, NumFormat format, Constraints<BigDecimal> constraints) {
+        return checked(Constraints.DECIMAL, "decimal", utf8, format, constraints, NativeCore::decimal);
+    }
+
+    /**
+     * Judges a number a source already decoded at the {@code decimal} door by {@code constraints},
+     * as {@link #i8FromDouble(double, Constraints)} describes.
+     *
+     * @param value the number to judge
+     * @param constraints the declaration, built by {@link Constraints#decimal()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<BigDecimal> decimalFromDouble(double value, Constraints<BigDecimal> constraints) {
+        return checkedFromDouble(Constraints.DECIMAL, "decimal", value, constraints, NativeCore::decimal);
+    }
+
+    // --- the text door ---
+
+    // The text door's value from bytes the core accepted: the span, decoded.
+    private static String spanned(byte[] utf8, NativeCore.Scratch scratch) {
+        return new String(utf8, NativeCore.spanOffset(scratch), NativeCore.spanLength(scratch), StandardCharsets.UTF_8);
+    }
+
+    private static String spanned(MemorySegment utf8, NativeCore.Scratch scratch) {
+        byte[] span = utf8.asSlice(NativeCore.spanOffset(scratch), NativeCore.spanLength(scratch))
+                .toArray(ValueLayout.JAVA_BYTE);
+        return new String(span, StandardCharsets.UTF_8);
+    }
+
+    // The span of the caller's own string: the string itself when it is all of it.
+    private static String spanned(String text, byte[] utf8, NativeCore.Scratch scratch) {
+        int offset = NativeCore.spanOffset(scratch);
+        int start = charIndex(utf8, offset);
+        int end = charIndex(utf8, offset + NativeCore.spanLength(scratch));
+        return text.substring(start, end);
+    }
+
+    /**
+     * Casts text through the text door: valid UTF-8 that is not empty, untrimmed. The value is
+     * the text itself, the same instance. A lone surrogate is not text: it is
+     * {@link CastFailure#MALFORMED}, spanning it in chars, never replaced; empty input is
+     * {@link CastFailure#EMPTY}.
+     *
+     * @param text the text to cast
+     * @return the verdict: a {@link Success} carrying the text, or a {@link Fault}
+     */
+    public static Verdict<String> text(String text) {
+        byte[] utf8 = wtf8(text);
+        NativeCore.Scratch scratch = NativeCore.scratch();
+        int code = NativeCore.text(scratch, utf8);
+        return code == 0
+                ? new Success<>(spanned(text, utf8, scratch))
+                : chars(Cast.<String>failed(code, scratch), text, utf8);
+    }
+
+    /**
+     * See {@link #text(String)}; input as raw UTF-8 bytes, decoded into the value. Invalid UTF-8
+     * is {@link CastFailure#MALFORMED}, spanning the first invalid sequence in bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @return the verdict: a {@link Success} carrying the text, or a {@link Fault}
+     */
+    public static Verdict<String> text(byte[] utf8) {
+        Objects.requireNonNull(utf8, "utf8");
+        NativeCore.Scratch scratch = NativeCore.scratch();
+        int code = NativeCore.text(scratch, utf8);
+        return code == 0 ? new Success<>(spanned(utf8, scratch)) : fault(code, scratch);
+    }
+
+    /**
+     * See {@link #text(byte[])}; input as a {@link MemorySegment} view of UTF-8 bytes.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @return the verdict: a {@link Success} carrying the text, or a {@link Fault}
+     */
+    public static Verdict<String> text(MemorySegment utf8) {
+        Objects.requireNonNull(utf8, "utf8");
+        NativeCore.Scratch scratch = NativeCore.scratch();
+        int code = NativeCore.text(scratch, utf8);
+        return code == 0 ? new Success<>(spanned(utf8, scratch)) : fault(code, scratch);
+    }
+
+    /**
+     * Casts text through the text door, then judges it by {@code constraints}: trimmed of
+     * Unicode {@code White_Space} when declared (trimmed to nothing is
+     * {@link CastFailure#EMPTY}), its length counted in code points, and with an {@code enum}
+     * matched under Unicode simple case folding. A match delivers the caller's own declared
+     * string and its index, so {@code "MALE"} against {@code ["Female", "Male", "Other"]} is
+     * {@code "Male"} and 1; otherwise the value is the (trimmed) text, the input itself when
+     * nothing was trimmed. A violation spans the (trimmed) text, in chars. A lone surrogate is
+     * {@link CastFailure#MALFORMED}, never replaced.
+     *
+     * @param text the text to cast
+     * @param constraints the declaration, built by {@link Constraints#text()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<String> text(String text, Constraints<String> constraints) {
+        byte[] utf8 = wtf8(text);
+        Objects.requireNonNull(constraints, "constraints").require(Constraints.TEXT, "text");
+        NativeCore.Scratch scratch = NativeCore.scratch();
+        int code = NativeCore.checked(scratch, Constraints.TEXT, utf8, null, constraints);
+        return checkedChars(
+                judged(code, scratch, s -> entryOr(constraints, s, () -> spanned(text, utf8, s))), text, utf8);
+    }
+
+    /**
+     * See {@link #text(String, Constraints)}; input as raw UTF-8 bytes, spans in bytes.
+     *
+     * @param utf8 the raw UTF-8 input bytes
+     * @param constraints the declaration, built by {@link Constraints#text()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<String> text(byte[] utf8, Constraints<String> constraints) {
+        Objects.requireNonNull(utf8, "utf8");
+        Objects.requireNonNull(constraints, "constraints").require(Constraints.TEXT, "text");
+        NativeCore.Scratch scratch = NativeCore.scratch();
+        int code = NativeCore.checked(scratch, Constraints.TEXT, utf8, null, constraints);
+        return judged(code, scratch, s -> entryOr(constraints, s, () -> spanned(utf8, s)));
+    }
+
+    /**
+     * See {@link #text(byte[], Constraints)}; input as a {@link MemorySegment} view of UTF-8
+     * bytes.
+     *
+     * @param utf8 the UTF-8 input bytes
+     * @param constraints the declaration, built by {@link Constraints#text()}
+     * @return the verdict: a {@link Checked}, a {@link Fault} or a {@link Violation}
+     * @throws IllegalArgumentException {@code constraints} were built for another door
+     */
+    public static CheckedVerdict<String> text(MemorySegment utf8, Constraints<String> constraints) {
+        Objects.requireNonNull(utf8, "utf8");
+        Objects.requireNonNull(constraints, "constraints").require(Constraints.TEXT, "text");
+        NativeCore.Scratch scratch = NativeCore.scratch();
+        int code = NativeCore.checked(scratch, Constraints.TEXT, utf8, null, constraints);
+        return judged(code, scratch, s -> entryOr(constraints, s, () -> spanned(utf8, s)));
+    }
+
+    // The declared entry an enum matched, the caller's own instance; otherwise the span.
+    private static String entryOr(
+            Constraints<String> constraints, NativeCore.Scratch scratch, java.util.function.Supplier<String> span) {
+        int index = NativeCore.checkEnumIndex(scratch);
+        return index == -1 ? span.get() : constraints.entry(index);
     }
 }

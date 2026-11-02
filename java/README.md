@@ -68,6 +68,90 @@ digits the file holds — `0.1` is one tenth, not what `new BigDecimal(0.1)` spe
 `Cast.excelTime` (a serial's fraction as a `LocalTime`) and `Cast.excelDuration` (days as a
 `Duration`). A typed door's `Fault` has no span: its offset and length are 0.
 
+## Validation constraints
+
+A value that parsed can still break a business rule. `Constraints` declares the rule with the
+OpenAPI Schema Object's keywords, built for one door (`Constraints.f64()`,
+`Constraints.decimal()`, `Constraints.text()`, …), and the checked overload of that door judges
+the value by it, in the core and in exact decimal arithmetic:
+
+```java
+import io.github.skunkwerkx.hypercast.*;
+import java.math.BigDecimal;
+
+// Latitude: a multiple of 0.000001 between -90 and 90, finer input rounded half to even.
+Constraints<Double> latitude = Constraints.f64()
+        .minimum("-90").maximum("90")
+        .multipleOf("0.000001").rounding(Rounding.MIDPOINT)
+        .build();
+// Euro cash: a multiple of 0.05, and anything else is wrong.
+Constraints<BigDecimal> euroCash = Constraints.decimal().multipleOf(new BigDecimal("0.05")).build();
+// A sex code: one of three, whatever case and padding it arrived in.
+Constraints<String> sex = Constraints.text().trim(true).enumOf("Female", "Male", "Other").build();
+
+NumFormat euro = new NumFormat(',', '.', NumFormat.STYLE_ALL, "€");
+System.out.println(Cast.f64("45.1234567", NumFormat.INVARIANT, latitude)); // Checked[value=45.123457, adjusted=true, …]
+System.out.println(Cast.f64("-90.5", NumFormat.INVARIANT, latitude));      // Violation[keyword=minimum, offset=0, length=5]
+System.out.println(Cast.f64FromDouble(45.1234567, latitude));              // Checked[value=45.123457, adjusted=true, …]
+System.out.println(Cast.decimal("€1.234,55", euro, euroCash));             // Checked[value=1234.55, adjusted=false, …]
+System.out.println(Cast.decimal("€12,37", euro, euroCash));                // Violation[keyword=multipleOf, offset=0, length=6]
+System.out.println(Cast.decimal("12,3x", euro, euroCash));                 // Fault[reason=MALFORMED, offset=4, length=1]
+
+String message = switch (Cast.text(" MALE ", sex)) {
+    case Checked<String> ok -> ok.value() + ", entry " + ok.enumIndex().getAsInt(); // Male, entry 1
+    case Fault<String> f -> f.reason() + " at char " + f.offset();                  // EMPTY at char 0, for "   "
+    case Violation<String> v -> switch (v.keyword().name()) {
+        case "enum" -> "not a sex code: chars " + v.offset() + "+" + v.length();     // for "Femal": chars 0+5
+        default -> "breaks " + v.keyword(); // keywords are open
+    };
+};
+System.out.println(message);
+```
+
+A checked door answers in a `CheckedVerdict<T>`, a sealed interface beside `Verdict<T>` (which
+every plain door keeps returning, unchanged): `Checked<T>`, the `value`, `adjusted` (true only
+when rounding changed it) and, at the text door with an `enum`, the matched `enumIndex`; or a
+`Rejection<T>`, itself sealed over the plain doors' own `Fault<T>` (it did not parse: the very
+record, so a parse failure reads the same at either door) and a `Violation<T>` (it parsed and
+broke a rule: its `keyword` and the value's span, in the same units as a fault's). A switch over
+the three records is exhaustive with no `default`. `Keyword` is a record with constants
+(`Keyword.MINIMUM` … `Keyword.ENUM`), not an enum: `format` and `pattern` may join in a minor
+release, so a branch over keywords needs its default arm (a `switch` on `name()`, the OpenAPI
+spelling such as `exclusiveMinimum`, demands one).
+
+The integer doors take `minimum`, `exclusiveMinimum`, `maximum`, `exclusiveMaximum`,
+`multipleOf` with a `Rounding` (`STRICT`, the default, then `MIDPOINT`, half to even, `FLOOR`
+and `CEILING`) and `enumOf`; `f32`, `f64` and `decimal` the same without `enumOf`; the text door
+takes `minLength`, `maxLength` (in code points), `trim` (Unicode `White_Space`, U+00A0 included)
+and `enumOf`, matched under Unicode simple case folding and delivering the caller's own declared
+string and its index. Every builder offers every keyword, and the core alone refuses one its
+door does not take. The first failure wins: the door parses, the text is trimmed, `multipleOf`
+rounds or refuses, then the bounds, the lengths and `enum` judge the result. A float door also
+judges the float it delivers against each bound read as the door reads it: `"1e-400"` at
+`Constraints.f64()` reads as `0`, so it breaks `.exclusiveMinimum("0")`. Bounds and steps are a
+`BigDecimal` or its text in invariant notation, both converted exactly by the core (`"1e-6"` is
+`0.000001`, and `new BigDecimal("1E-29")`, past the 28 places a core decimal holds, is refused
+rather than rounded), never a `double`, so `0.1` cannot be declared inexactly. Every numeric door
+has its checked overloads over a `String`, UTF-8 `byte[]` and `MemorySegment` with a `NumFormat`,
+and `i32FromDouble`, `f64FromDouble`, `decimalFromDouble` and the rest for a number a source
+already decoded, judged on the shortest decimal that names it (`0.1 + 0.2` breaks
+`multipleOf("0.1")` under `STRICT`, and rounds to `0.3` under `MIDPOINT`), with an empty span.
+
+A declaration is judged once, by the core, when it is built, and a declaration that cannot mean
+anything at its door is the caller's bug: `build()` throws `IllegalArgumentException`, its
+message the rule (`Constraints.u8().minimum("-1").build()` throws "Constraints refused (code 8):
+a bound, step or enum entry the door cannot hold."). So does handing a declaration to another
+door: `u8`, `u16` and `i32` all deliver an `Integer`, so the compiler cannot tell their
+`Constraints<Integer>` apart, and the door does. Leaving `enumOf` out declares no `enum`, while
+`enumOf(new String[0])` declares one with no entries, which no value could match: refused (code
+12), as is a text entry no input can match (code 13: an empty one, or under `trim` one with
+leading or trailing white space). After that a checked cast judges only data and throws nothing
+for it. `Cast.text` without constraints is the plain text door, a
+`Verdict<String>`: the input itself when it is valid text. Through a `String`, a lone surrogate
+is `MALFORMED` at its char, never replaced (Java's own encoder would make it `?`), and in an
+`enum` entry it is refused as an entry that is not UTF-8. On the JNI path the `enum` list lives
+in a direct buffer the declaration holds, so a checked call neither copies nor pins it.
+
 ## One character
 
 `Cast.character` (`char` being a keyword) reads one character: the input verbatim when it
@@ -451,7 +535,12 @@ caller's own code ([above](#the-memorysegment-doors-on-jdk-21)).
   the 40-byte designator layout the date-time door reads; `fault(code, offset, length)`;
   `version(packed)` for a `*_version()` word; and the `*_BYTES` constants, each layout's
   size and so the stride of an array of them (`FORMAT_BYTES` is 92, `DAY_PERIODS_BYTES` 40,
-  `FAULT_BYTES` 8).
+  `FAULT_BYTES` 8, and for the validation constraints `CONSTRAINTS_BYTES` 72, `CHECK_BYTES` 12
+  and `SPAN_BYTES` 8).
+- `Constraints.toRaw()` and `packedEnum()` — a declaration in the core's 72-byte layout and its
+  `enum` list as the core reads it beside that layout (integer entries in this platform's byte
+  order, text entries behind little-endian length prefixes), so a
+  library judging values through `cast_checked` hands the core exactly what `Cast` does.
 - `NativePlatform` — the platform table and the jar loader, parameterized by library base
   name: `current("hypertabular")` resolves this JVM's `Target` (RID and file name, or `null`
   when no build exists for the platform), `load(anchor, baseName, target)` copies
@@ -467,7 +556,8 @@ caller's own code ([above](#the-memorysegment-doors-on-jdk-21)).
 ## Building and testing
 
 The jar carries two native libraries per platform, so build both before Gradle runs: `cargo
-cdylib` in `rust/`, then `cargo build --release --locked --lib` in `java/jni/`. Gradle stages
+cdylib` in `rust/`, then `cargo build --release --locked --lib` in `java/jni/`. The JNI library
+registers one native per C export, all 32, plus the count it reports to the loader. Gradle stages
 them into the jar and refuses a stale one: the build fails when either library is older than
 a source cargo read for it (its dep-info), or when one is built without the other, and the
 message gives the rebuild commands.

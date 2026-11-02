@@ -211,4 +211,33 @@ class NativeValuesTest {
                 NativePlatform.resolve("hypercast", "Windows 11", "aarch64", false)
                         .resourcePath());
     }
+
+    /**
+     * Every layout this binding restates is the size the core's header carries: the header is
+     * generated from the core's own types, so a layout that grows there fails here.
+     */
+    @Test
+    void layoutSizesAreTheHeaders() throws java.io.IOException {
+        java.nio.file.Path header = null;
+        for (java.nio.file.Path dir = java.nio.file.Path.of("").toAbsolutePath(); dir != null; dir = dir.getParent()) {
+            java.nio.file.Path candidate = dir.resolve("include/hypercast.h");
+            if (java.nio.file.Files.isRegularFile(candidate)) {
+                header = candidate;
+                break;
+            }
+        }
+        assertTrue(header != null, "include/hypercast.h not found");
+        String text = java.nio.file.Files.readString(header);
+        java.util.function.ToLongFunction<String> size = name -> {
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("#define " + name + "_SIZE (\\d+)")
+                    .matcher(text);
+            assertTrue(m.find(), name + "_SIZE is not in the header");
+            return Long.parseLong(m.group(1));
+        };
+        assertEquals(size.applyAsLong("HyperCastRawNumFormat"), NativeValues.FORMAT_BYTES);
+        assertEquals(size.applyAsLong("HyperCastRawDayPeriods"), NativeValues.DAY_PERIODS_BYTES);
+        assertEquals(size.applyAsLong("HyperCastRawConstraints"), NativeValues.CONSTRAINTS_BYTES);
+        assertEquals(size.applyAsLong("HyperCastRawCheck"), NativeValues.CHECK_BYTES);
+        assertEquals(size.applyAsLong("HyperCastRawSpan"), NativeValues.SPAN_BYTES);
+    }
 }

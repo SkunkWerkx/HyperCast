@@ -1,7 +1,8 @@
-//! The parts of the C ABI that are Rust API too: the version word every binding probes, and
-//! [`NumFormat`] and the day-period designators as they cross the boundary. They live
-//! outside `ffi` because that module is the `exports` feature — the 27 symbols, the version
-//! probe and the 26 `cast_*` doors — and a crate that links this one as an rlib to export a
+//! The parts of the C ABI that are Rust API too: the version word every binding probes,
+//! [`NumFormat`] and the day-period designators as they cross the boundary, and the
+//! validation constraints' layouts ([`RawConstraints`], [`RawCheck`], [`RawSpan`]). They live
+//! outside `ffi` because that module is the `exports` feature — the 32 symbols, the version
+//! probe and the 31 `cast_*` exports — and a crate that links this one as an rlib to export a
 //! C ABI of its own takes the core with `exports` off, so its library carries none of them,
 //! while still reading the version and declaring a numeric column in exactly this layout.
 
@@ -35,13 +36,20 @@ pin_layout! {
     Date => (4, 2),
     CivilDateTime => (16, 8),
     Duration => (16, 8),
+    RawConstraints => (72, 8),
 }
 
-// Every target, not only where a u64 is 8-aligned: neither layout holds a u64.
+// Every target, not only where a u64 is 8-aligned: none of these layouts holds a u64.
 const _: () = assert!(
     RawNumFormat::SIZE as usize == size_of::<RawNumFormat>()
         && RawDayPeriods::SIZE as usize == size_of::<RawDayPeriods>()
+        && RawCheck::SIZE as usize == size_of::<RawCheck>()
+        && align_of::<RawCheck>() == 4
+        && RawSpan::SIZE as usize == size_of::<RawSpan>()
+        && align_of::<RawSpan>() == 4
 );
+const _: () =
+    assert!(align_of::<u64>() != 8 || RawConstraints::SIZE as usize == size_of::<RawConstraints>());
 
 // The offsets the bindings restate, pinned the same way: each symbol's bytes come first
 // and its length byte last, with nothing between one field and the next.
@@ -59,7 +67,24 @@ const _: () = {
     assert!(core::mem::offset_of!(NumFormat, currency) == 71);
     assert!(core::mem::offset_of!(RawDayPeriods, periods) == 4);
     assert!(core::mem::offset_of!(DayPeriods, pm) == 17);
+    assert!(core::mem::offset_of!(RawCheck, adjusted) == 4);
+    assert!(core::mem::offset_of!(RawCheck, enum_index) == 8);
+    assert!(core::mem::offset_of!(RawSpan, len) == 4);
 };
+
+// The constraint layout's words come first, then its three decimals, each 8-aligned with
+// nothing between: where a u64 is 8-aligned, as the size pin above.
+const _: () = assert!(
+    align_of::<u64>() != 8
+        || (core::mem::offset_of!(RawConstraints, flags) == 4
+            && core::mem::offset_of!(RawConstraints, rounding) == 8
+            && core::mem::offset_of!(RawConstraints, min_length) == 12
+            && core::mem::offset_of!(RawConstraints, max_length) == 16
+            && core::mem::offset_of!(RawConstraints, _reserved) == 20
+            && core::mem::offset_of!(RawConstraints, lower) == 24
+            && core::mem::offset_of!(RawConstraints, upper) == 40
+            && core::mem::offset_of!(RawConstraints, multiple_of) == 56)
+);
 
 /// This library's version, packed `major << 16 | minor << 8 | patch` from the crate's own
 /// manifest — so a host can prove the library it loaded is the one its binding was built
@@ -272,4 +297,127 @@ impl From<DayPeriods> for RawDayPeriods {
     fn from(periods: DayPeriods) -> RawDayPeriods {
         RawDayPeriods { size: Self::SIZE, periods }
     }
+}
+
+/// A declaration of validation constraints as it crosses the ABI, bound to a door by the
+/// call that takes it: a size word, the flags that say which fields are read, then the
+/// three decimals, 72 bytes with 8-byte alignment. Pointer-free, so the layout is the same
+/// on 32-bit and 64-bit targets; an `enum` list travels beside it. Built from a
+/// [`Constraints`](crate::Constraints) by [`raw`](crate::Constraints::raw), and judged by
+/// [`check_constraints`](crate::check_constraints).
+///
+/// | Offset | Field | Bytes |
+/// | --- | --- | --- |
+/// | 0 | `size`, a `u32` | 4 |
+/// | 4 | `flags`, a `u32` | 4 |
+/// | 8 | `rounding`: `0` strict, `1` midpoint, `2` floor, `3` ceiling | 4 |
+/// | 12 | `min_length`, read under [`HAS_MIN_LENGTH`](Self::HAS_MIN_LENGTH) | 4 |
+/// | 16 | `max_length`, read under [`HAS_MAX_LENGTH`](Self::HAS_MAX_LENGTH) | 4 |
+/// | 20 | `_reserved`, always `0` | 4 |
+/// | 24 | `lower`: the minimum or exclusive minimum, per the flags | 16 |
+/// | 40 | `upper`: the maximum or exclusive maximum, per the flags | 16 |
+/// | 56 | `multiple_of`, read under [`HAS_MULTIPLE_OF`](Self::HAS_MULTIPLE_OF) | 16 |
+///
+/// A `size` other than [`SIZE`](Self::SIZE), an unknown flag bit, an unknown rounding code,
+/// a nonzero `_reserved`, or (read from a caller's memory across the C ABI) a decimal's sign
+/// byte other than `0` or `1` is a malformed layout. The `enum` list is read only under
+/// [`HAS_ENUM`](Self::HAS_ENUM).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RawConstraints {
+    /// `size_of::<RawConstraints>()` as the caller built it: [`RawConstraints::SIZE`].
+    pub size: u32,
+    /// Which constraints are declared: the `HAS_*` bits and [`TRIM`](Self::TRIM).
+    pub flags: u32,
+    /// How a value that is not a multiple of `multiple_of` is treated: `0` strict, `1`
+    /// midpoint (ties to even), `2` floor, `3` ceiling.
+    pub rounding: u32,
+    /// The fewest code points the text may hold.
+    pub min_length: u32,
+    /// The most code points the text may hold.
+    pub max_length: u32,
+    /// Always `0`.
+    pub _reserved: u32,
+    /// The minimum, or the exclusive minimum.
+    pub lower: Decimal,
+    /// The maximum, or the exclusive maximum.
+    pub upper: Decimal,
+    /// The step every value must be a multiple of.
+    pub multiple_of: Decimal,
+}
+
+impl RawConstraints {
+    /// The layout's size in bytes, which `size` carries.
+    pub const SIZE: u32 = 72;
+
+    /// `lower` is the inclusive `minimum`.
+    pub const HAS_MINIMUM: u32 = 1;
+    /// `lower` is the `exclusiveMinimum`.
+    pub const HAS_EXCLUSIVE_MINIMUM: u32 = 2;
+    /// `upper` is the inclusive `maximum`.
+    pub const HAS_MAXIMUM: u32 = 4;
+    /// `upper` is the `exclusiveMaximum`.
+    pub const HAS_EXCLUSIVE_MAXIMUM: u32 = 8;
+    /// `multiple_of` and `rounding` are read.
+    pub const HAS_MULTIPLE_OF: u32 = 16;
+    /// `min_length` is read.
+    pub const HAS_MIN_LENGTH: u32 = 32;
+    /// `max_length` is read.
+    pub const HAS_MAX_LENGTH: u32 = 64;
+    /// Text is trimmed of Unicode `White_Space` before it is judged.
+    pub const TRIM: u32 = 128;
+    /// An `enum` list is declared and read: the list beside the layout, which may be empty
+    /// (a declaration [`check_constraints`](crate::check_constraints) refuses). Clear, no
+    /// list is read, and one passed anyway is a malformed layout.
+    pub const HAS_ENUM: u32 = 256;
+
+    /// Nothing declared: the size, and every other byte zero.
+    pub const ZERO: RawConstraints = {
+        const ZERO: Decimal = Decimal { lo: 0, hi: 0, scale: 0, negative: false };
+        RawConstraints {
+            size: Self::SIZE,
+            flags: 0,
+            rounding: 0,
+            min_length: 0,
+            max_length: 0,
+            _reserved: 0,
+            lower: ZERO,
+            upper: ZERO,
+            multiple_of: ZERO,
+        }
+    };
+}
+
+/// What a checked door reports beside its value, 12 bytes with 4-byte alignment.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RawCheck {
+    /// On a violation, the keyword broken (`1` minimum … `8` enum); `0` otherwise.
+    pub keyword: u32,
+    /// On success, `1` when rounding changed the value, else `0`.
+    pub adjusted: u32,
+    /// On a success at the text door that matched an `enum` entry, that entry's index;
+    /// `u32::MAX` otherwise.
+    pub enum_index: u32,
+}
+
+impl RawCheck {
+    /// The layout's size in bytes.
+    pub const SIZE: u32 = 12;
+}
+
+/// A span of the caller's own input, 8 bytes with 4-byte alignment: what the text door
+/// writes in place of a copy.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RawSpan {
+    /// The byte offset where the span starts.
+    pub offset: u32,
+    /// The span's length in bytes.
+    pub len: u32,
+}
+
+impl RawSpan {
+    /// The layout's size in bytes.
+    pub const SIZE: u32 = 8;
 }

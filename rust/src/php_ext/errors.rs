@@ -24,7 +24,7 @@ pub(crate) fn runtime_exception() -> &'static ClassEntry {
 }
 
 /// `\InvalidArgumentException`'s class entry.
-fn invalid_argument_exception() -> &'static ClassEntry {
+pub(crate) fn invalid_argument_exception() -> &'static ClassEntry {
     // SAFETY: as for `runtime_exception`.
     unsafe { spl_ce_InvalidArgumentException.as_ref() }
         .expect("SPL's InvalidArgumentException is registered")

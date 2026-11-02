@@ -20,7 +20,14 @@ TYPED = [
     "cast_excel_time",
     "cast_excel_duration",
 ]
-TEXT_DOORS = [name for name in DOORS if name not in TYPED]
+#: The checked doors and the declaration conversions, pinned in test_constraints.py.
+CHECKED = [
+    "cast_checked",
+    "cast_checked_from_float",
+    "cast_constraints_check",
+    "cast_declared_decimal",
+]
+TEXT_DOORS = [name for name in DOORS if name not in TYPED + CHECKED]
 
 
 def test_fast_constructed_uuids_are_indistinguishable():
@@ -88,6 +95,7 @@ def test_text_that_is_neither_str_nor_bytes_is_a_type_error(door, text):
         "cast_date": (),
         "cast_time": (),
         "cast_duration": (),
+        "cast_text": (),
     }.get(door, (NumFormat.INVARIANT,))
     with pytest.raises(TypeError):
         cast(text, *declared)

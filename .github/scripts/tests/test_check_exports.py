@@ -59,6 +59,23 @@ class TypeScriptSiteTests(unittest.TestCase):
             '#[napi]\npub const MAX: u32 = 1;\n#[napi(object)]\npub struct Fault { a: u32 }\n'
             '#[napi(string_enum)]\npub enum Kind { A }\n#[napi(catch_unwind)]\npub fn cast_bool() {}\n'))
 
+    def test_napi_catch_unwind_takes_a_module_exports_hook_that_catches_its_own(self):
+        hook = ('#[napi(module_exports)]\npub fn init(mut exports: Object, env: Env) -> Result<()> {\n'
+                '    std::panic::catch_unwind(AssertUnwindSafe(|| install(&mut exports, env)))\n'
+                '        .unwrap_or_else(|_| Err(bug()))\n}\n')
+        self.mod.napi_catch_unwind(self.source(hook))
+        bare = '#[napi(module_exports)]\npub fn init(mut exports: Object, env: Env) -> Result<()> {\n    install(&mut exports, env)\n}\n'
+        with self.assertRaises(SystemExit) as caught:
+            self.mod.napi_catch_unwind(self.source(bare))
+        self.assertIn('init', str(caught.exception))
+        # Named only in a comment or a string, it catches nothing.
+        for fake in ('    // catch_unwind(...) would go here\n', '    let _ = "catch_unwind(";\n'):
+            with self.assertRaises(SystemExit):
+                self.mod.napi_catch_unwind(self.source(bare.replace('{\n', '{\n' + fake, 1)))
+        # The carve-out is the hook alone: an ordinary napi function still needs the option.
+        with self.assertRaises(SystemExit):
+            self.mod.napi_catch_unwind(self.source(hook.replace('(module_exports)', '(js_name = "init")')))
+
     def test_napi_catch_unwind_holds_on_the_addon(self):
         self.mod.napi_catch_unwind('typescript/src/lib.rs')
 

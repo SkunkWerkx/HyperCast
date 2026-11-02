@@ -66,7 +66,9 @@ def napi_catch_unwind(path):
     """Every napi function, getter and factory must carry `catch_unwind`: without it a panic
     unwinds into Node-API and aborts the process instead of throwing. The attribute may span
     lines and may sit in a macro_rules! template; attributes above consts, structs, enums and
-    impls are not functions and are skipped."""
+    impls are not functions and are skipped. The one exception is a `#[napi(module_exports)]`
+    hook, which takes no `catch_unwind` option (napi runs it once, at load, outside any call):
+    its body must call `catch_unwind(` itself."""
     path = Path(path)
     if not path.is_absolute():
         path = ROOT / path
@@ -78,7 +80,12 @@ def napi_catch_unwind(path):
         if not item:
             continue
         functions += 1
-        if "catch_unwind" not in (match.group(1) or ""):
+        options = match.group(1) or ""
+        if re.fullmatch(r"\(\s*module_exports\s*\)", options):
+            body = _fn_body(_mask_rust(text), match.end() + item.end())
+            if body is not None and "catch_unwind(" in body:
+                continue
+        if "catch_unwind" not in options:
             line = text.count("\n", 0, match.start()) + 1
             shown = path.relative_to(ROOT) if path.is_relative_to(ROOT) else path
             bad.append(f"{shown}:{line} {item.group(1)}")

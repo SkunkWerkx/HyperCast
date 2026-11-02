@@ -18,6 +18,11 @@
  * are caller bugs R validated before the call (and the core's contract-violation code,
  * which that validation makes unreachable), and an interrupt.
  *
+ * The checked doors (cast_checked, cast_checked_from_f64, and cast_text with constraints) add
+ * three columns, adjusted, enum_index and keyword, and one more outcome: a violation (code 4),
+ * a value that parsed and broke a declared rule, whose keyword and span fill their columns
+ * while reason stays NA.
+ *
  * Every loop lets the user interrupt once per 2^20 elements. R_CheckUserInterrupt can
  * longjmp out: that is safe because the only allocations are PROTECTed R vectors, which R
  * unwinds, and translateCharUTF8's R_alloc scratch, released per element with vmaxset.
@@ -54,6 +59,7 @@ enum door {
   DATETIME_DOOR,
   TIME_DOOR,
   DURATION_DOOR,
+  TEXT_DOOR,
   DECIMAL_FROM_DOUBLE_DOOR,
   EXCEL_SERIAL_FROM_DOUBLE_DOOR,
   EXCEL_TIME_DOOR,
@@ -100,6 +106,7 @@ static const struct {
     [DATETIME_DOOR] = {"datetime", CIVIL_KIND},
     [TIME_DOOR] = {"time", TIME_KIND},
     [DURATION_DOOR] = {"duration", DURATION_KIND},
+    [TEXT_DOOR] = {"text", STRING_KIND},
     [DECIMAL_FROM_DOUBLE_DOOR] = {"decimal_from_double", STRING_KIND},
     [EXCEL_SERIAL_FROM_DOUBLE_DOOR] = {"excel_serial_from_double", CIVIL_KIND},
     [EXCEL_TIME_DOOR] = {"excel_time", TIME_KIND},
@@ -127,6 +134,7 @@ union value {
   HyperCastCivilDateTime civil;
   uint64_t nanos;
   HyperCastDuration duration;
+  HyperCastRawSpan span;
 };
 
 /* The declarations a door reads beside its input, decoded once per call. */
@@ -185,6 +193,8 @@ static int32_t text_door(enum door door, const uint8_t *p, uintptr_t n, const st
     return cast_time(p, n, &out->nanos, fault);
   case DURATION_DOOR:
     return cast_duration(p, n, &out->duration, fault);
+  case TEXT_DOOR:
+    return cast_text(p, n, &out->span, fault);
   default:
     return -1;
   }
@@ -290,6 +300,10 @@ struct columns {
   int *reason;
   int *offset;
   int *length;
+  /* The checked doors' columns; NULL in a plain verdict. */
+  int *adjusted;
+  int *enum_index;
+  int *keyword;
 };
 
 static SEXP column(struct columns *c, const char *name, SEXPTYPE type, R_xlen_t n) {
@@ -300,11 +314,14 @@ static SEXP column(struct columns *c, const char *name, SEXPTYPE type, R_xlen_t 
   return v;
 }
 
-/* Allocates every column; the result is PROTECTed once, as c->list. */
-static void columns_alloc(struct columns *c, enum kind kind, R_xlen_t n) {
+/*
+ * Allocates every column; the result is PROTECTed once, as c->list. A checked verdict adds
+ * adjusted and enum_index after the value's columns and keyword after reason.
+ */
+static void columns_alloc(struct columns *c, enum kind kind, R_xlen_t n, int checked) {
   memset(c, 0, sizeof *c);
   c->kind = kind;
-  int total = 5;
+  int total = checked ? 8 : 5;
   switch (kind) {
   case INSTANT_KIND:
   case CIVIL_KIND:
@@ -350,8 +367,14 @@ static void columns_alloc(struct columns *c, enum kind kind, R_xlen_t n) {
     c->real = REAL(column(c, "value", REALSXP, n));
     break;
   }
+  if (checked) {
+    c->adjusted = LOGICAL(column(c, "adjusted", LGLSXP, n));
+    c->enum_index = INTEGER(column(c, "enum_index", INTSXP, n));
+  }
   c->ok = LOGICAL(column(c, "ok", LGLSXP, n));
   c->reason = INTEGER(column(c, "reason", INTSXP, n));
+  if (checked)
+    c->keyword = INTEGER(column(c, "keyword", INTSXP, n));
   c->offset = INTEGER(column(c, "offset", INTSXP, n));
   c->length = INTEGER(column(c, "length", INTSXP, n));
 }
@@ -372,6 +395,10 @@ static void value_na(struct columns *c, R_xlen_t i) {
   }
   if (c->extra_int)
     c->extra_int[i] = NA_INTEGER;
+  if (c->adjusted) {
+    c->adjusted[i] = NA_LOGICAL;
+    c->enum_index[i] = NA_INTEGER;
+  }
 }
 
 /* Row i is an NA element: nothing was cast, every column is NA. */
@@ -379,6 +406,8 @@ static void row_missing(struct columns *c, R_xlen_t i) {
   value_na(c, i);
   c->ok[i] = NA_LOGICAL;
   c->reason[i] = NA_INTEGER;
+  if (c->keyword)
+    c->keyword[i] = NA_INTEGER;
   c->offset[i] = NA_INTEGER;
   c->length[i] = NA_INTEGER;
 }
@@ -390,6 +419,19 @@ static void row_fault(struct columns *c, R_xlen_t i, int reason, uint32_t offset
   value_na(c, i);
   c->ok[i] = FALSE;
   c->reason[i] = reason;
+  if (c->keyword)
+    c->keyword[i] = NA_INTEGER;
+  c->offset[i] = span_int(offset);
+  c->length[i] = span_int(length);
+}
+
+/* Row i parsed and broke the declared rule `keyword` over offset/length, in caller units. */
+static void row_violation(struct columns *c, R_xlen_t i, uint32_t keyword, uint32_t offset,
+                          uint32_t length) {
+  value_na(c, i);
+  c->ok[i] = FALSE;
+  c->reason[i] = NA_INTEGER;
+  c->keyword[i] = span_int(keyword);
   c->offset[i] = span_int(offset);
   c->length[i] = span_int(length);
 }
@@ -554,6 +596,8 @@ static SEXP civil_string(const HyperCastCivilDateTime *c) {
 static void row_ok(struct columns *c, R_xlen_t i, enum door door, const union value *v) {
   c->ok[i] = TRUE;
   c->reason[i] = NA_INTEGER;
+  if (c->keyword)
+    c->keyword[i] = NA_INTEGER;
   c->offset[i] = NA_INTEGER;
   c->length[i] = NA_INTEGER;
   switch (door) {
@@ -711,6 +755,63 @@ static void nul_scalar(struct columns *c, R_xlen_t i, const uint8_t *p, uintptr_
   row_fault(c, i, 3, f.offset, f.len);
 }
 
+/*
+ * Element i of x, a character vector or (is_list) a list of raw vectors: the bytes the core
+ * reads, whether its spans count characters, and the string itself (R_NilValue for a raw
+ * vector). 0 for a missing element, an NA string or a NULL.
+ */
+static int element(SEXP x, int is_list, R_xlen_t i, int native, const uint8_t **p, uintptr_t *len,
+                   int *chars, SEXP *s) {
+  if (is_list) {
+    SEXP el = VECTOR_ELT(x, i);
+    *s = R_NilValue;
+    if (el == R_NilValue)
+      return 0;
+    if (TYPEOF(el) != RAWSXP)
+      Rf_error("hypercast: x must be a list of raw vectors");
+    *p = RAW(el);
+    *len = (uintptr_t)XLENGTH(el);
+    *chars = 0;
+    return 1;
+  }
+  *s = STRING_ELT(x, i);
+  if (*s == NA_STRING)
+    return 0;
+  *p = string_bytes(*s, native, len, chars);
+  return 1;
+}
+
+/*
+ * The text door's value, the span `span` of the input: the caller's own string when the span
+ * is all of it, otherwise the span's bytes in the encoding they were read in ("bytes" for a
+ * string marked so, native for an unmarked one in an ASCII session, UTF-8 otherwise and for a
+ * raw vector). U+0000 is valid UTF-8 a raw vector can carry and an R string cannot hold, so a
+ * value holding it is out of range over the value, as cast_char()'s U+0000 is.
+ */
+static void text_row(struct columns *c, R_xlen_t i, SEXP s, const uint8_t *p, uintptr_t n,
+                     int chars, const HyperCastRawSpan *span) {
+  if (span->offset > n || span->len > n - span->offset)
+    Rf_error("hypercast: the core wrote a span outside the input (please report it)");
+  const uint8_t *start = p + span->offset;
+  if (span->len > (uint32_t)INT_MAX || memchr(start, 0, span->len)) {
+    HyperCastRawFault f = {span->offset, span->len};
+    present(p, n, chars, &f);
+    row_fault(c, i, 3, f.offset, f.len);
+    return;
+  }
+  row_ok(c, i, TEXT_DOOR, NULL);
+  if (s != R_NilValue && span->offset == 0 && span->len == n) {
+    SET_STRING_ELT(c->strings, i, s);
+    return;
+  }
+  cetype_t ce = CE_UTF8;
+  if (s != R_NilValue && getCharCE(s) == CE_BYTES)
+    ce = CE_BYTES;
+  else if (s != R_NilValue && getCharCE(s) == CE_NATIVE && !chars)
+    ce = CE_NATIVE;
+  SET_STRING_ELT(c->strings, i, mkCharLenCE((const char *)start, (int)span->len, ce));
+}
+
 static void contract_violation(void) {
   Rf_error("hypercast: the core refused a declared format, order, precision, epoch or day "
            "period (a contract violation this package checks for first; please report it)");
@@ -732,37 +833,25 @@ SEXP C_cast_text(SEXP x, SEXP door_name, SEXP format, SEXP periods, SEXP code, S
   int native = asInteger(native_mode);
   R_xlen_t n = XLENGTH(x);
   struct columns c;
-  columns_alloc(&c, DOORS[door].kind, n);
+  columns_alloc(&c, DOORS[door].kind, n, 0);
   for (R_xlen_t i = 0; i < n; i++) {
     interrupt_point(i);
     const void *vmax = vmaxget();
     const uint8_t *p;
     uintptr_t len;
     int chars;
-    if (is_list) {
-      SEXP el = VECTOR_ELT(x, i);
-      if (el == R_NilValue) {
-        row_missing(&c, i);
-        continue;
-      }
-      if (TYPEOF(el) != RAWSXP)
-        Rf_error("hypercast: x must be a list of raw vectors");
-      p = RAW(el);
-      len = (uintptr_t)XLENGTH(el);
-      chars = 0;
-    } else {
-      SEXP s = STRING_ELT(x, i);
-      if (s == NA_STRING) {
-        row_missing(&c, i);
-        continue;
-      }
-      p = string_bytes(s, native, &len, &chars);
+    SEXP s;
+    if (!element(x, is_list, i, native, &p, &len, &chars, &s)) {
+      row_missing(&c, i);
+      continue;
     }
     union value v;
     HyperCastRawFault f = {0, 0};
     int32_t rc = text_door(door, p, len, &d, &v, &f);
     if (rc == 0 && door == CHAR_DOOR && v.scalar == 0) {
       nul_scalar(&c, i, p, len, chars);
+    } else if (rc == 0 && door == TEXT_DOOR) {
+      text_row(&c, i, s, p, len, chars, &v.span);
     } else if (rc == 0) {
       row_ok(&c, i, door, &v);
     } else if (rc >= 1 && rc <= 3) {
@@ -788,7 +877,7 @@ SEXP C_cast_double(SEXP x, SEXP door_name, SEXP code) {
     Rf_error("hypercast: x must be a double vector");
   R_xlen_t n = XLENGTH(x);
   struct columns c;
-  columns_alloc(&c, DOORS[door].kind, n);
+  columns_alloc(&c, DOORS[door].kind, n, 0);
   const double *xs = REAL(x);
   for (R_xlen_t i = 0; i < n; i++) {
     interrupt_point(i);
@@ -809,6 +898,402 @@ SEXP C_cast_double(SEXP x, SEXP door_name, SEXP code) {
   }
   UNPROTECT(1);
   return c.list;
+}
+
+/* ---- validation constraints ---- */
+
+/*
+ * The declaration a hypercast_constraints() value lays out as, built here from the fields R
+ * checked: the bounds, step and integer enum entries through cast_declared_decimal (the one
+ * conversion every binding calls), the rest copied into the core's own struct. It is built
+ * again for every call, which costs a few conversions per vector, never per element, and
+ * judged by cast_checked's own layout checks each time; cast_constraints_check judged it,
+ * duplicates included, when it was declared.
+ */
+_Static_assert(sizeof(HyperCastRawConstraints) == HyperCastRawConstraints_SIZE, "RawConstraints");
+_Static_assert(offsetof(HyperCastRawConstraints, rounding) == 8, "rounding");
+_Static_assert(offsetof(HyperCastRawConstraints, lower) == 24, "lower");
+_Static_assert(offsetof(HyperCastRawConstraints, upper) == 40, "upper");
+_Static_assert(offsetof(HyperCastRawConstraints, multiple_of) == 56, "multiple_of");
+_Static_assert(sizeof(HyperCastRawCheck) == HyperCastRawCheck_SIZE, "RawCheck");
+_Static_assert(sizeof(HyperCastRawSpan) == HyperCastRawSpan_SIZE, "RawSpan");
+_Static_assert(sizeof(HyperCastDecimal) == 16, "Decimal");
+
+/* The core's door codes (rust/src/door.rs) for the doors a declaration binds to; 0 otherwise. */
+static uint32_t core_door(enum door door) {
+  switch (door) {
+  case I8_DOOR:
+    return 2;
+  case I16_DOOR:
+    return 3;
+  case I32_DOOR:
+    return 4;
+  case I64_DOOR:
+    return 5;
+  case U8_DOOR:
+    return 6;
+  case U16_DOOR:
+    return 7;
+  case U32_DOOR:
+    return 8;
+  case U64_DOOR:
+    return 9;
+  case F32_DOOR:
+    return 10;
+  case F64_DOOR:
+    return 11;
+  case TEXT_DOOR:
+    return 18;
+  case DECIMAL_DOOR:
+    return 19;
+  default:
+    return 0;
+  }
+}
+
+/* constraints_layout()'s list, by position. */
+enum layout {
+  L_DOOR,
+  L_MINIMUM,
+  L_EXCLUSIVE_MINIMUM,
+  L_MAXIMUM,
+  L_EXCLUSIVE_MAXIMUM,
+  L_MULTIPLE_OF,
+  L_ROUNDING,
+  L_MIN_LENGTH,
+  L_MAX_LENGTH,
+  L_TRIM,
+  L_ENUM,
+  L_COUNT
+};
+
+struct declaration {
+  enum door door;
+  HyperCastRawConstraints raw;
+  const uint8_t *enum_ptr;
+  uintptr_t enum_len;
+  SEXP entries; /* the text door's entries as the caller declared them, or R_NilValue */
+};
+
+/*
+ * Element k of a bound, step or integer enum list through cast_declared_decimal: a string's
+ * bytes as the doors read a string, or an R integer as its decimal digits. Returns its code,
+ * 0 or 8.
+ */
+static int32_t declared_value(SEXP v, R_xlen_t k, int native, HyperCastDecimal *out) {
+  if (TYPEOF(v) == INTSXP && INTEGER(v)[k] != NA_INTEGER) {
+    int x = INTEGER(v)[k];
+    char buf[16];
+    char *end = buf + sizeof buf;
+    uint64_t magnitude = x < 0 ? (uint64_t)0 - (uint64_t)(int64_t)x : (uint64_t)x;
+    char *start = u64_digits(magnitude, end);
+    if (x < 0)
+      *--start = '-';
+    return cast_declared_decimal((const uint8_t *)start, (uintptr_t)(end - start), out);
+  }
+  if (TYPEOF(v) == STRSXP && STRING_ELT(v, k) != NA_STRING) {
+    uintptr_t n;
+    int chars;
+    const uint8_t *p = string_bytes(STRING_ELT(v, k), native, &n, &chars);
+    return cast_declared_decimal(p, n, out);
+  }
+  Rf_error("hypercast: a bound, step or enum entry must be a string or an integer");
+}
+
+static uint32_t length_value(SEXP v) {
+  double x = TYPEOF(v) == INTSXP || TYPEOF(v) == REALSXP ? asReal(v) : -1;
+  if (!(x >= 0 && x <= 4294967295.0) || (double)(uint32_t)x != x)
+    Rf_error("hypercast: a length must be one whole number from 0 to 4294967295");
+  return (uint32_t)x;
+}
+
+/* The text door's enum: each entry a little-endian u32 byte length, then its bytes. */
+static void pack_text_enum(SEXP e, int native, struct declaration *d) {
+  if (TYPEOF(e) != STRSXP)
+    Rf_error("hypercast: the text door's enum must be a character vector");
+  R_xlen_t n = XLENGTH(e);
+  const uint8_t **ptrs = (const uint8_t **)R_alloc((size_t)n, sizeof *ptrs);
+  uintptr_t *lens = (uintptr_t *)R_alloc((size_t)n, sizeof *lens);
+  uintptr_t total = 0;
+  for (R_xlen_t k = 0; k < n; k++) {
+    SEXP s = STRING_ELT(e, k);
+    int chars;
+    if (s == NA_STRING)
+      Rf_error("hypercast: an enum entry must not be NA");
+    ptrs[k] = string_bytes(s, native, &lens[k], &chars);
+    if (total > UINTPTR_MAX - 4 - lens[k])
+      Rf_error("hypercast: the enum is too large to lay out");
+    total += 4 + lens[k];
+  }
+  uint8_t *buf = (uint8_t *)R_alloc(total, 1);
+  uint8_t *o = buf;
+  for (R_xlen_t k = 0; k < n; k++) {
+    uint32_t len = (uint32_t)lens[k];
+    o[0] = (uint8_t)len;
+    o[1] = (uint8_t)(len >> 8);
+    o[2] = (uint8_t)(len >> 16);
+    o[3] = (uint8_t)(len >> 24);
+    memcpy(o + 4, ptrs[k], lens[k]);
+    o += 4 + lens[k];
+  }
+  d->enum_ptr = buf;
+  d->enum_len = total;
+  d->entries = e;
+}
+
+/*
+ * Lays out the declaration R checked into d. Returns 0, or 8 when cast_declared_decimal
+ * refuses a bound, step or entry (cast_constraints_check's code for the same refusal, which
+ * comes first, as in every binding).
+ */
+static int32_t declaration_arg(SEXP layout, int native, struct declaration *d) {
+  if (TYPEOF(layout) != VECSXP || XLENGTH(layout) != L_COUNT)
+    Rf_error("hypercast: constraints must be a hypercast_constraints");
+  memset(d, 0, sizeof *d);
+  d->entries = R_NilValue;
+  d->door = door_arg(VECTOR_ELT(layout, L_DOOR));
+  if (!core_door(d->door))
+    Rf_error("hypercast: the %s door takes no constraints", DOORS[d->door].name);
+  HyperCastRawConstraints *r = &d->raw;
+  r->size = HyperCastRawConstraints_SIZE;
+  static const struct {
+    int at;
+    uint32_t flag;
+    size_t field;
+  } VALUES[] = {
+      {L_MINIMUM, HyperCastRawConstraints_HAS_MINIMUM, offsetof(HyperCastRawConstraints, lower)},
+      {L_EXCLUSIVE_MINIMUM, HyperCastRawConstraints_HAS_EXCLUSIVE_MINIMUM,
+       offsetof(HyperCastRawConstraints, lower)},
+      {L_MAXIMUM, HyperCastRawConstraints_HAS_MAXIMUM, offsetof(HyperCastRawConstraints, upper)},
+      {L_EXCLUSIVE_MAXIMUM, HyperCastRawConstraints_HAS_EXCLUSIVE_MAXIMUM,
+       offsetof(HyperCastRawConstraints, upper)},
+      {L_MULTIPLE_OF, HyperCastRawConstraints_HAS_MULTIPLE_OF,
+       offsetof(HyperCastRawConstraints, multiple_of)},
+  };
+  for (size_t k = 0; k < sizeof VALUES / sizeof VALUES[0]; k++) {
+    SEXP v = VECTOR_ELT(layout, VALUES[k].at);
+    if (v == R_NilValue)
+      continue;
+    if (XLENGTH(v) != 1)
+      Rf_error("hypercast: a bound or step must be one value");
+    HyperCastDecimal value;
+    int32_t rc = declared_value(v, 0, native, &value);
+    if (rc != 0)
+      return rc;
+    memcpy((uint8_t *)r + VALUES[k].field, &value, sizeof value);
+    r->flags |= VALUES[k].flag;
+  }
+  SEXP rounding = VECTOR_ELT(layout, L_ROUNDING);
+  if (TYPEOF(rounding) != INTSXP || XLENGTH(rounding) != 1 || INTEGER(rounding)[0] < 0)
+    Rf_error("hypercast: rounding must be one non-negative integer code");
+  r->rounding = (uint32_t)INTEGER(rounding)[0];
+  if (VECTOR_ELT(layout, L_MIN_LENGTH) != R_NilValue) {
+    r->min_length = length_value(VECTOR_ELT(layout, L_MIN_LENGTH));
+    r->flags |= HyperCastRawConstraints_HAS_MIN_LENGTH;
+  }
+  if (VECTOR_ELT(layout, L_MAX_LENGTH) != R_NilValue) {
+    r->max_length = length_value(VECTOR_ELT(layout, L_MAX_LENGTH));
+    r->flags |= HyperCastRawConstraints_HAS_MAX_LENGTH;
+  }
+  if (asLogical(VECTOR_ELT(layout, L_TRIM)) == TRUE)
+    r->flags |= HyperCastRawConstraints_TRIM;
+  SEXP e = VECTOR_ELT(layout, L_ENUM);
+  if (e == R_NilValue)
+    return 0;
+  /* Declared, even with no entries: the core refuses an empty enum (12), never reads it as
+   * none. */
+  r->flags |= HyperCastRawConstraints_HAS_ENUM;
+  if (XLENGTH(e) == 0)
+    return 0;
+  if (d->door == TEXT_DOOR) {
+    pack_text_enum(e, native, d);
+    return 0;
+  }
+  R_xlen_t n = XLENGTH(e);
+  HyperCastDecimal *entries = (HyperCastDecimal *)R_alloc((size_t)n, sizeof *entries);
+  for (R_xlen_t k = 0; k < n; k++) {
+    int32_t rc = declared_value(e, k, native, &entries[k]);
+    if (rc != 0)
+      return rc;
+  }
+  d->enum_ptr = (const uint8_t *)entries;
+  d->enum_len = (uintptr_t)n * sizeof *entries;
+  return 0;
+}
+
+/* The declaration as the core judges it: 0, or the code of the first rule it breaks. */
+SEXP C_constraints_check(SEXP layout, SEXP native_mode) {
+  struct declaration d;
+  int32_t rc = declaration_arg(layout, asInteger(native_mode), &d);
+  if (rc == 0)
+    rc = cast_constraints_check(core_door(d.door), 0, &d.raw, d.enum_ptr, d.enum_len);
+  return ScalarInteger(rc);
+}
+
+/* A declaration hypercast_constraints() judged no longer lays out: it was edited since. */
+static void declaration_at_cast(SEXP layout, int native, struct declaration *d) {
+  if (declaration_arg(layout, native, d) != 0)
+    Rf_error("hypercast: these constraints no longer lay out as hypercast_constraints() "
+             "judged them (were they edited?); declare them again");
+}
+
+static void checked_contract_violation(void) {
+  Rf_error("hypercast: the core refused these constraints or the format at the cast (a "
+           "contract violation this package checks for first; please report it)");
+}
+
+/* Row i passed: the value, with the text door's own rules for it, adjusted and enum_index. */
+static void checked_ok(struct columns *c, R_xlen_t i, const struct declaration *d, SEXP s,
+                       const uint8_t *p, uintptr_t n, int chars, const union value *v,
+                       const HyperCastRawCheck *check) {
+  if (d->door == TEXT_DOOR && check->enum_index != UINT32_MAX) {
+    /* The caller's own declared entry, not a copy decoded from the input. */
+    if (d->entries == R_NilValue || check->enum_index >= (uint64_t)XLENGTH(d->entries))
+      Rf_error("hypercast: the core matched an enum entry that was not declared (please "
+               "report it)");
+    row_ok(c, i, TEXT_DOOR, NULL);
+    SET_STRING_ELT(c->strings, i, STRING_ELT(d->entries, check->enum_index));
+  } else if (d->door == TEXT_DOOR) {
+    text_row(c, i, s, p, n, chars, &v->span);
+    if (c->ok[i] != TRUE)
+      return;
+  } else {
+    row_ok(c, i, d->door, v);
+  }
+  c->adjusted[i] = check->adjusted != 0;
+  c->enum_index[i] = check->enum_index == UINT32_MAX || check->enum_index >= (uint32_t)INT_MAX
+                         ? NA_INTEGER
+                         : (int)check->enum_index + 1;
+}
+
+/*
+ * x: a character vector, or a list whose elements are raw vectors or NULL. layout:
+ * constraints_layout()'s list. format: a packed num_format for a numeric door, NULL for text.
+ */
+SEXP C_cast_checked(SEXP x, SEXP layout, SEXP format, SEXP native_mode) {
+  int native = asInteger(native_mode);
+  struct declaration d;
+  declaration_at_cast(layout, native, &d);
+  HyperCastRawNumFormat fmt;
+  if (d.door == TEXT_DOOR) {
+    if (format != R_NilValue)
+      Rf_error("hypercast: the text door takes no format");
+  } else if (TYPEOF(format) == RAWSXP && XLENGTH(format) == HyperCastRawNumFormat_SIZE) {
+    read_format(format, &fmt);
+  } else {
+    Rf_error("hypercast: format must be a packed num_format");
+  }
+  int is_list = TYPEOF(x) == VECSXP;
+  if (!is_list && TYPEOF(x) != STRSXP)
+    Rf_error("hypercast: x must be a character vector or a list of raw vectors");
+  uint32_t door = core_door(d.door);
+  R_xlen_t n = XLENGTH(x);
+  struct columns c;
+  columns_alloc(&c, DOORS[d.door].kind, n, 1);
+  for (R_xlen_t i = 0; i < n; i++) {
+    interrupt_point(i);
+    const void *vmax = vmaxget();
+    const uint8_t *p;
+    uintptr_t len;
+    int chars;
+    SEXP s;
+    if (!element(x, is_list, i, native, &p, &len, &chars, &s)) {
+      row_missing(&c, i);
+      continue;
+    }
+    union value v;
+    HyperCastRawFault f = {0, 0};
+    HyperCastRawCheck check = {0, 0, UINT32_MAX};
+    int32_t rc = cast_checked(door, 0, d.door == TEXT_DOOR ? NULL : &fmt, &d.raw, d.enum_ptr,
+                              d.enum_len, p, len, &v, &f, &check);
+    if (rc == 0) {
+      checked_ok(&c, i, &d, s, p, len, chars, &v, &check);
+    } else if (rc >= 1 && rc <= 3) {
+      present(p, len, chars, &f);
+      row_fault(&c, i, rc, f.offset, f.len);
+    } else if (rc == 4) {
+      present(p, len, chars, &f);
+      row_violation(&c, i, check.keyword, f.offset, f.len);
+    } else {
+      checked_contract_violation();
+    }
+    vmaxset(vmax);
+  }
+  UNPROTECT(1);
+  return c.list;
+}
+
+/* x: a double vector; NA_real_ is missing, while NaN is a number the core reads. */
+SEXP C_cast_checked_double(SEXP x, SEXP layout, SEXP native_mode) {
+  struct declaration d;
+  declaration_at_cast(layout, asInteger(native_mode), &d);
+  if (d.door == TEXT_DOOR)
+    Rf_error("hypercast: the text door takes text");
+  if (TYPEOF(x) != REALSXP)
+    Rf_error("hypercast: x must be a double vector");
+  uint32_t door = core_door(d.door);
+  R_xlen_t n = XLENGTH(x);
+  struct columns c;
+  columns_alloc(&c, DOORS[d.door].kind, n, 1);
+  const double *xs = REAL(x);
+  for (R_xlen_t i = 0; i < n; i++) {
+    interrupt_point(i);
+    if (R_IsNA(xs[i])) {
+      row_missing(&c, i);
+      continue;
+    }
+    union value v;
+    HyperCastRawFault f = {0, 0};
+    HyperCastRawCheck check = {0, 0, UINT32_MAX};
+    int32_t rc = cast_checked_from_f64(door, xs[i], &d.raw, d.enum_ptr, d.enum_len, &v, &f, &check);
+    if (rc == 0) {
+      checked_ok(&c, i, &d, R_NilValue, NULL, 0, 0, &v, &check);
+    } else if (rc >= 1 && rc <= 3) {
+      row_fault(&c, i, rc, f.offset, f.len);
+    } else if (rc == 4) {
+      row_violation(&c, i, check.keyword, f.offset, f.len);
+    } else {
+      checked_contract_violation();
+    }
+  }
+  UNPROTECT(1);
+  return c.list;
+}
+
+/*
+ * One string through cast_declared_decimal, for the declarations.json replay: its code and,
+ * on 0, the raw triple (the 96-bit magnitude as decimal digits, the scale, the sign) and the
+ * canonical text.
+ */
+SEXP C_declared_decimal(SEXP x, SEXP native_mode) {
+  if (TYPEOF(x) != STRSXP || XLENGTH(x) != 1 || STRING_ELT(x, 0) == NA_STRING)
+    Rf_error("hypercast: x must be a single string");
+  HyperCastDecimal d;
+  memset(&d, 0, sizeof d);
+  int32_t rc = declared_value(x, 0, asInteger(native_mode), &d);
+  const char *names[] = {"code", "magnitude", "scale", "negative", "value"};
+  SEXP out = PROTECT(allocVector(VECSXP, 5));
+  SEXP nm = PROTECT(allocVector(STRSXP, 5));
+  for (int k = 0; k < 5; k++)
+    SET_STRING_ELT(nm, k, mkChar(names[k]));
+  setAttrib(out, R_NamesSymbol, nm);
+  SET_VECTOR_ELT(out, 0, ScalarInteger(rc));
+  if (rc == 0) {
+    HyperCastDecimal magnitude = d;
+    magnitude.scale = 0;
+    magnitude.negative = 0;
+    SET_VECTOR_ELT(out, 1, ScalarString(decimal_string(&magnitude)));
+    SET_VECTOR_ELT(out, 2, ScalarInteger(d.scale));
+    SET_VECTOR_ELT(out, 3, ScalarLogical(d.negative != 0));
+    SET_VECTOR_ELT(out, 4, ScalarString(decimal_string(&d)));
+  } else {
+    SET_VECTOR_ELT(out, 1, ScalarString(NA_STRING));
+    SET_VECTOR_ELT(out, 2, ScalarInteger(NA_INTEGER));
+    SET_VECTOR_ELT(out, 3, ScalarLogical(NA_LOGICAL));
+    SET_VECTOR_ELT(out, 4, ScalarString(NA_STRING));
+  }
+  UNPROTECT(2);
+  return out;
 }
 
 /*

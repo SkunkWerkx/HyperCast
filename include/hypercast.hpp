@@ -17,9 +17,13 @@
 //
 // A format a caller declares is checked once, by the core, when it is declared
 // (NumFormat::declare and DateFormat::declare return std::nullopt for one the core refuses),
-// so a door never meets a layout it refuses. The one contract violation left is an enum
-// value outside its enumerators (static_cast<DateOrder>(9)): a caller bug, not data, which
-// ends the program with std::abort(), as Swift's precondition and C#'s exception do.
+// so a door never meets a layout it refuses. Validation constraints are declared the same way
+// (Constraints<T>::declare returns the core's Refusal for one it refuses), and a checked door
+// returns a Checked<T>: the value, or a Rejection, the plain door's Fault or a Violation of a
+// declared rule. The contract violations left are an enum value outside its enumerators
+// (static_cast<DateOrder>(9)) and a refused declaration's unbuilt Constraints handed to a
+// door: caller bugs, not data, which end the program with std::abort(), as Swift's
+// precondition and C#'s exception do.
 
 #ifndef HYPERCAST_HPP
 #define HYPERCAST_HPP
@@ -35,6 +39,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
+#include <initializer_list>
 #include <optional>
 #include <string_view>
 #include <system_error>
@@ -864,6 +870,1034 @@ inline Verdict<Duration> cast_excel_duration(double value) noexcept {
   HyperCastRawFault fault{};
   return detail::converted<Duration>(::cast_excel_duration(value, &out, &fault), out, fault,
                                      detail::duration);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Validation constraints: the OpenAPI Schema Object's keywords, judged by the core after a door
+// parses. A Constraints is declared once for its door and judged then, by the core; a checked
+// door returns a Checked<T>, the value (and whether rounding changed it) or a Rejection, which
+// is the plain door's own Fault or a Violation of a declared rule.
+
+// The keyword a Violation broke: the core's code, open to additions (9 format and 10 pattern
+// are reserved for a minor release), so a switch over keywords needs a default arm. Any
+// std::uint32_t is a value; name() spells an unknown one "keyword N".
+enum class Keyword : std::uint32_t {
+  minimum = 1,
+  exclusive_minimum = 2,
+  maximum = 3,
+  exclusive_maximum = 4,
+  multiple_of = 5,
+  min_length = 6,
+  max_length = 7,
+  enum_ = 8 // `enum`, which C++ reserves
+};
+
+// A keyword's name, held by value: the OpenAPI spelling (exclusiveMinimum, multipleOf, enum),
+// or "keyword N" for a code this header does not name. Compare it with a string, print
+// c_str(), or take view() from a named KeywordName (not a temporary, which would dangle).
+class KeywordName {
+public:
+  constexpr std::string_view view() const & noexcept { return std::string_view(text_, size_); }
+  std::string_view view() const && = delete;
+  constexpr const char *c_str() const noexcept { return text_; }
+  constexpr std::size_t size() const noexcept { return size_; }
+
+  friend constexpr bool operator==(const KeywordName &a, std::string_view b) noexcept {
+    return a.view() == b;
+  }
+  friend constexpr bool operator==(std::string_view a, const KeywordName &b) noexcept {
+    return a == b.view();
+  }
+  friend constexpr bool operator!=(const KeywordName &a, std::string_view b) noexcept {
+    return !(a == b);
+  }
+  friend constexpr bool operator!=(std::string_view a, const KeywordName &b) noexcept {
+    return !(a == b);
+  }
+
+private:
+  friend constexpr KeywordName name(Keyword keyword) noexcept;
+  constexpr KeywordName() noexcept = default;
+  constexpr void append(std::string_view text) noexcept {
+    for (char c : text) {
+      text_[size_++] = c;
+    }
+    text_[size_] = '\0';
+  }
+
+  char text_[24] = {}; // "keyword 4294967295" and its NUL
+  std::size_t size_ = 0;
+};
+
+constexpr KeywordName name(Keyword keyword) noexcept {
+  KeywordName out;
+  switch (keyword) {
+  case Keyword::minimum:
+    out.append("minimum");
+    break;
+  case Keyword::exclusive_minimum:
+    out.append("exclusiveMinimum");
+    break;
+  case Keyword::maximum:
+    out.append("maximum");
+    break;
+  case Keyword::exclusive_maximum:
+    out.append("exclusiveMaximum");
+    break;
+  case Keyword::multiple_of:
+    out.append("multipleOf");
+    break;
+  case Keyword::min_length:
+    out.append("minLength");
+    break;
+  case Keyword::max_length:
+    out.append("maxLength");
+    break;
+  case Keyword::enum_:
+    out.append("enum");
+    break;
+  default: {
+    out.append("keyword ");
+    char digits[10] = {};
+    std::size_t count = 0;
+    std::uint32_t code = static_cast<std::uint32_t>(keyword);
+    do {
+      digits[count++] = static_cast<char>('0' + code % 10);
+      code /= 10;
+    } while (code != 0);
+    while (count > 0) {
+      const char digit[1] = {digits[--count]};
+      out.append(std::string_view(digit, 1));
+    }
+  }
+  }
+  return out;
+}
+
+// What a value that is not a multiple of multipleOf becomes. Anything but strict needs
+// multipleOf; the core refuses the declaration otherwise.
+enum class Rounding : std::uint32_t {
+  strict = 0,   // it is a Violation of multipleOf
+  midpoint = 1, // the nearest multiple, a tie to the even one
+  floor = 2,    // the multiple below
+  ceiling = 3   // the multiple above
+};
+
+// A broken rule: the keyword, and the span of the caller's input the judged value came from,
+// in bytes of its UTF-8, as a Fault's span is (after trim, the trimmed text). A typed door's
+// span is empty, at 0.
+struct Violation {
+  Keyword keyword;
+  std::size_t offset;
+  std::size_t length;
+
+  friend constexpr bool operator==(const Violation &a, const Violation &b) noexcept {
+    return a.keyword == b.keyword && a.offset == b.offset && a.length == b.length;
+  }
+  friend constexpr bool operator!=(const Violation &a, const Violation &b) noexcept {
+    return !(a == b);
+  }
+};
+
+// The failure case of a Checked: the door's own Fault (it did not parse), or a Violation (it
+// parsed and broke a declared rule). Exactly one; no default constructor.
+//
+//   is_fault()                         whether it is the Fault
+//   fault_if(), violation_if()         a pointer to the case, or nullptr
+//   fault(), violation()               the case, unchecked: the wrong one is value-initialized
+//   match(on_fault, on_violation)      calls the one for its case
+//   visit(visitor)                     visitor(fault) or visitor(violation)
+//   to_variant()                       std::variant<Fault, Violation>
+class Rejection {
+public:
+  constexpr Rejection(Fault fault) noexcept : fault_(fault), violation_{}, is_fault_(true) {}
+  constexpr Rejection(Violation violation) noexcept
+      : fault_{}, violation_(violation), is_fault_(false) {}
+
+  constexpr bool is_fault() const noexcept { return is_fault_; }
+
+  constexpr const Fault *fault_if() const noexcept { return is_fault_ ? &fault_ : nullptr; }
+  constexpr const Violation *violation_if() const noexcept {
+    return is_fault_ ? nullptr : &violation_;
+  }
+
+  // Precondition: is_fault(). Otherwise a value-initialized Fault.
+  constexpr const Fault &fault() const noexcept { return fault_; }
+  // Precondition: !is_fault(). Otherwise a value-initialized Violation.
+  constexpr const Violation &violation() const noexcept { return violation_; }
+
+  template <class OnFault, class OnViolation>
+  constexpr std::invoke_result_t<OnFault &&, const Fault &> match(OnFault &&on_fault,
+                                                                  OnViolation &&on_violation) const
+      noexcept(std::is_nothrow_invocable_v<OnFault &&, const Fault &> &&
+               std::is_nothrow_invocable_v<OnViolation &&, const Violation &>) {
+    static_assert(std::is_same_v<std::invoke_result_t<OnFault &&, const Fault &>,
+                                 std::invoke_result_t<OnViolation &&, const Violation &>>,
+                  "match's two cases must return the same type");
+    if (is_fault_) {
+      return std::forward<OnFault>(on_fault)(fault_);
+    }
+    return std::forward<OnViolation>(on_violation)(violation_);
+  }
+
+  template <class Visitor>
+  constexpr std::invoke_result_t<Visitor &&, const Fault &> visit(Visitor &&visitor) const
+      noexcept(std::is_nothrow_invocable_v<Visitor &&, const Fault &> &&
+               std::is_nothrow_invocable_v<Visitor &&, const Violation &>) {
+    static_assert(std::is_same_v<std::invoke_result_t<Visitor &&, const Fault &>,
+                                 std::invoke_result_t<Visitor &&, const Violation &>>,
+                  "visit's two cases must return the same type");
+    if (is_fault_) {
+      return std::forward<Visitor>(visitor)(fault_);
+    }
+    return std::forward<Visitor>(visitor)(violation_);
+  }
+
+  constexpr std::variant<Fault, Violation> to_variant() const noexcept {
+    if (is_fault_) {
+      return std::variant<Fault, Violation>(std::in_place_index<0>, fault_);
+    }
+    return std::variant<Fault, Violation>(std::in_place_index<1>, violation_);
+  }
+
+  friend constexpr bool operator==(const Rejection &a, const Rejection &b) noexcept {
+    return a.is_fault_ == b.is_fault_ &&
+           (a.is_fault_ ? a.fault_ == b.fault_ : a.violation_ == b.violation_);
+  }
+  friend constexpr bool operator!=(const Rejection &a, const Rejection &b) noexcept {
+    return !(a == b);
+  }
+
+private:
+  Fault fault_;
+  Violation violation_;
+  bool is_fault_;
+};
+
+// The success case of a Checked: the value, whether rounding to multipleOf changed it, and at
+// the text door, when an enum entry matched, that entry's index (the value is then the entry
+// as declared). An integer enum has no index: the value is the answer.
+template <class T> struct CheckedValue {
+  T value;
+  bool adjusted;
+  std::optional<std::uint32_t> enum_index;
+
+  friend constexpr bool operator==(const CheckedValue &a, const CheckedValue &b) noexcept {
+    return a.value == b.value && a.adjusted == b.adjusted && a.enum_index == b.enum_index;
+  }
+  friend constexpr bool operator!=(const CheckedValue &a, const CheckedValue &b) noexcept {
+    return !(a == b);
+  }
+};
+
+// The outcome of a checked cast: a CheckedValue or a Rejection, two cases and nothing else.
+// The same accessors as Verdict, over those cases; under C++23 with <expected> it converts to
+// std::expected<CheckedValue<T>, Rejection>. Deliberately no operator bool, as Verdict has
+// none.
+template <class T> class [[nodiscard]] Checked {
+  static_assert(std::is_trivially_copyable_v<T> && std::is_default_constructible_v<T>,
+                "a checked verdict holds a plain value");
+
+public:
+  using value_type = T;
+
+  constexpr Checked(CheckedValue<T> success) noexcept
+      : value_(success), rejection_(Fault{}), ok_(true) {}
+  constexpr Checked(Rejection failure) noexcept : value_{}, rejection_(failure), ok_(false) {}
+
+  constexpr bool ok() const noexcept { return ok_; }
+
+  constexpr const CheckedValue<T> *value_if() const noexcept { return ok_ ? &value_ : nullptr; }
+  constexpr const Rejection *rejection_if() const noexcept { return ok_ ? nullptr : &rejection_; }
+
+  // Precondition: ok(). Otherwise a value-initialized CheckedValue.
+  constexpr const CheckedValue<T> &value() const noexcept { return value_; }
+  // Precondition: !ok(). Otherwise a Rejection holding a value-initialized Fault.
+  constexpr const Rejection &rejection() const noexcept { return rejection_; }
+
+  // The value alone, or the fallback.
+  constexpr T value_or(T fallback) const noexcept { return ok_ ? value_.value : fallback; }
+
+  template <class OnValue, class OnRejection>
+  constexpr std::invoke_result_t<OnValue &&, const CheckedValue<T> &>
+  match(OnValue &&on_value, OnRejection &&on_rejection) const
+      noexcept(std::is_nothrow_invocable_v<OnValue &&, const CheckedValue<T> &> &&
+               std::is_nothrow_invocable_v<OnRejection &&, const Rejection &>) {
+    static_assert(std::is_same_v<std::invoke_result_t<OnValue &&, const CheckedValue<T> &>,
+                                 std::invoke_result_t<OnRejection &&, const Rejection &>>,
+                  "match's two cases must return the same type");
+    if (ok_) {
+      return std::forward<OnValue>(on_value)(value_);
+    }
+    return std::forward<OnRejection>(on_rejection)(rejection_);
+  }
+
+  template <class Visitor>
+  constexpr std::invoke_result_t<Visitor &&, const CheckedValue<T> &> visit(Visitor &&visitor) const
+      noexcept(std::is_nothrow_invocable_v<Visitor &&, const CheckedValue<T> &> &&
+               std::is_nothrow_invocable_v<Visitor &&, const Rejection &>) {
+    static_assert(std::is_same_v<std::invoke_result_t<Visitor &&, const CheckedValue<T> &>,
+                                 std::invoke_result_t<Visitor &&, const Rejection &>>,
+                  "visit's two cases must return the same type");
+    if (ok_) {
+      return std::forward<Visitor>(visitor)(value_);
+    }
+    return std::forward<Visitor>(visitor)(rejection_);
+  }
+
+  constexpr std::variant<CheckedValue<T>, Rejection> to_variant() const noexcept {
+    if (ok_) {
+      return std::variant<CheckedValue<T>, Rejection>(std::in_place_index<0>, value_);
+    }
+    return std::variant<CheckedValue<T>, Rejection>(std::in_place_index<1>, rejection_);
+  }
+
+#ifdef HYPERCAST_HAS_EXPECTED
+  constexpr std::expected<CheckedValue<T>, Rejection> to_expected() const noexcept {
+    if (ok_) {
+      return std::expected<CheckedValue<T>, Rejection>(std::in_place, value_);
+    }
+    return std::expected<CheckedValue<T>, Rejection>(std::unexpect, rejection_);
+  }
+  constexpr operator std::expected<CheckedValue<T>, Rejection>() const noexcept {
+    return to_expected();
+  }
+#endif
+
+  friend constexpr bool operator==(const Checked &a, const Checked &b) noexcept {
+    return a.ok_ == b.ok_ && (a.ok_ ? a.value_ == b.value_ : a.rejection_ == b.rejection_);
+  }
+  friend constexpr bool operator!=(const Checked &a, const Checked &b) noexcept {
+    return !(a == b);
+  }
+
+private:
+  CheckedValue<T> value_;
+  Rejection rejection_;
+  bool ok_;
+};
+
+// A checked verdict presented optionally: an Empty fault becomes std::nullopt; a Violation,
+// every other fault and every value come through as they are.
+template <class T>
+constexpr std::optional<Checked<T>> optional(const Checked<T> &checked) noexcept {
+  if (const Rejection *rejection = checked.rejection_if()) {
+    if (const Fault *fault = rejection->fault_if();
+        fault != nullptr && fault->reason == CastFailure::empty) {
+      return std::nullopt;
+    }
+  }
+  return checked;
+}
+
+// Why a declaration was refused: the core's refusal code, 1 to 13, with one fixed message per
+// code worded as every binding words it, or 0, this header's own refusal of an enum list that
+// does not fit (EnumStorage smaller than storage_size(entries), or a text entry past
+// 4,294,967,295 bytes), which the core never sees. A code this header does not name (one a
+// later core adds) keeps its number in its message. A refused declaration is a caller bug, not
+// data.
+struct Refusal {
+  std::int32_t code;
+
+  // Explicit, so a bare integer is never taken for a Refusal (refusal == 14 does not compile).
+  constexpr explicit Refusal(std::int32_t refused) noexcept : code(refused) {
+    if (refused >= 0 && refused <= 13) {
+      return; // a fixed message: nothing to render
+    }
+    // The message of a code this header does not name, spelled once, here, with its number.
+    constexpr std::string_view head = "Constraints refused (code ";
+    constexpr std::string_view tail = "): a rule this binding does not name.";
+    std::size_t at = 0;
+    for (const char c : head) {
+      unnamed_[at++] = c;
+    }
+    std::uint32_t magnitude = static_cast<std::uint32_t>(refused);
+    if (refused < 0) {
+      unnamed_[at++] = '-';
+      magnitude = 0u - magnitude;
+    }
+    char digits[10] = {};
+    std::size_t count = 0;
+    do {
+      digits[count++] = static_cast<char>('0' + magnitude % 10);
+      magnitude /= 10;
+    } while (magnitude != 0);
+    while (count > 0) {
+      unnamed_[at++] = digits[--count];
+    }
+    for (const char c : tail) {
+      unnamed_[at++] = c;
+    }
+    unnamed_size_ = at;
+  }
+
+  // The fixed message for codes 0 to 13; for any other code (a core newer than this header),
+  // a view into this Refusal, valid only while it lives: for such a code
+  // `auto m = C::declare(f).refusal().message();` dangles once the Declared temporary is
+  // gone, so keep the Declared (or a copy of the Refusal) while the message is read.
+  constexpr std::string_view message() const noexcept {
+    switch (code) {
+    case 0:
+      return "The enum list does not fit: the EnumStorage is smaller than storage_size(entries), "
+             "or a text entry is longer than 4294967295 UTF-8 bytes.";
+    case 1:
+      return "Constraints refused (code 1): a constraint the door does not take.";
+    case 2:
+      return "Constraints refused (code 2): minimum together with exclusiveMinimum.";
+    case 3:
+      return "Constraints refused (code 3): maximum together with exclusiveMaximum.";
+    case 4:
+      return "Constraints refused (code 4): the lower bound is not below the upper bound.";
+    case 5:
+      return "Constraints refused (code 5): multipleOf is not positive.";
+    case 6:
+      return "Constraints refused (code 6): a rounding without multipleOf.";
+    case 7:
+      return "Constraints refused (code 7): minLength is above maxLength.";
+    case 8:
+      return "Constraints refused (code 8): a bound, step or enum entry the door cannot hold.";
+    case 9:
+      return "Constraints refused (code 9): an enum entry that is not UTF-8.";
+    case 10:
+      return "Constraints refused (code 10): a duplicate enum entry.";
+    case 11:
+      return "Constraints refused (code 11): a malformed constraints layout.";
+    case 12:
+      return "Constraints refused (code 12): an enum with no entries.";
+    case 13:
+      return "Constraints refused (code 13): a text enum entry no input can match.";
+    default:
+      return std::string_view(unnamed_, unnamed_size_);
+    }
+  }
+
+  friend constexpr bool operator==(const Refusal &a, const Refusal &b) noexcept {
+    return a.code == b.code;
+  }
+  friend constexpr bool operator!=(const Refusal &a, const Refusal &b) noexcept {
+    return !(a == b);
+  }
+
+private:
+  char unnamed_[80] = {};
+  std::size_t unnamed_size_ = 0;
+};
+
+// The outcome of declaring constraints: the Constraints, or the Refusal. value() on a refused
+// one is an unbuilt Constraints, which no door accepts as "no rules": a door handed it ends
+// the program, as any contract violation does.
+template <class C> class [[nodiscard]] Declared {
+public:
+  constexpr Declared(const C &declared) noexcept : value_(declared), refusal_{-1}, ok_(true) {}
+  constexpr Declared(Refusal refusal) noexcept : value_(), refusal_(refusal), ok_(false) {}
+
+  constexpr bool ok() const noexcept { return ok_; }
+  constexpr const C *value_if() const noexcept { return ok_ ? &value_ : nullptr; }
+  constexpr const Refusal *refusal_if() const noexcept { return ok_ ? nullptr : &refusal_; }
+  // Precondition: ok(). Otherwise the unbuilt Constraints.
+  constexpr const C &value() const noexcept { return value_; }
+  // Precondition: !ok(). Otherwise Refusal{-1}, which names no refusal.
+  constexpr const Refusal &refusal() const noexcept { return refusal_; }
+
+  template <class OnValue, class OnRefusal>
+  constexpr std::invoke_result_t<OnValue &&, const C &> match(OnValue &&on_value,
+                                                              OnRefusal &&on_refusal) const
+      noexcept(std::is_nothrow_invocable_v<OnValue &&, const C &> &&
+               std::is_nothrow_invocable_v<OnRefusal &&, const Refusal &>) {
+    static_assert(std::is_same_v<std::invoke_result_t<OnValue &&, const C &>,
+                                 std::invoke_result_t<OnRefusal &&, const Refusal &>>,
+                  "match's two cases must return the same type");
+    if (ok_) {
+      return std::forward<OnValue>(on_value)(value_);
+    }
+    return std::forward<OnRefusal>(on_refusal)(refusal_);
+  }
+
+private:
+  C value_;
+  Refusal refusal_;
+  bool ok_;
+};
+
+namespace detail {
+// An integer type that is a number: not bool, and not a character type.
+template <class I>
+constexpr bool is_whole_number_v =
+    std::is_integral_v<I> && !std::is_same_v<I, bool> && !std::is_same_v<I, char> &&
+    !std::is_same_v<I, wchar_t> && !std::is_same_v<I, char16_t> && !std::is_same_v<I, char32_t>
+#ifdef __cpp_char8_t
+    && !std::is_same_v<I, char8_t>
+#endif
+    ;
+
+// The core's conversion of a declaration's decimal text, the one conversion every binding
+// calls: 0 with `out` written, or 8 for text no door can hold.
+inline std::int32_t declared_decimal(std::string_view text, HyperCastDecimal &out) noexcept {
+  const std::int32_t code = ::cast_declared_decimal(
+      reinterpret_cast<const std::uint8_t *>(text.data()), text.size(), &out);
+  if (code != 0 && code != 8) {
+    contract_violation();
+  }
+  return code;
+}
+} // namespace detail
+
+// A bound, multipleOf or numeric enum entry as the caller wrote it: an exact Decimal, an
+// integer, or decimal text in invariant notation ("0.000001", "-90", "1e-6"), borrowed until
+// the declaration is made. Never a binary float: there is no constructor from one, so 0.1
+// cannot be declared inexactly by accident; write "0.1". Every form reaches the core as text
+// through its own conversion (cast_declared_decimal), which refuses rather than rounds a value
+// past 96 bits or 28 places.
+class ConstraintValue {
+public:
+  constexpr ConstraintValue(const Decimal &number) noexcept : number_(number), is_text_(false) {}
+  template <class I, std::enable_if_t<detail::is_whole_number_v<I>, int> = 0>
+  constexpr ConstraintValue(I number) noexcept
+      : number_{magnitude(number), 0, 0, number < 0}, is_text_(false) {}
+  template <class F, std::enable_if_t<std::is_floating_point_v<F>, int> = 0>
+  ConstraintValue(F) = delete;
+  constexpr ConstraintValue(std::string_view text) noexcept
+      : number_{}, text_(text), is_text_(true) {}
+  constexpr ConstraintValue(const char *text) noexcept : ConstraintValue(std::string_view(text)) {}
+
+  // Whether it was written as text.
+  constexpr bool is_text() const noexcept { return is_text_; }
+  // The text as written; empty for a number.
+  constexpr std::string_view text() const noexcept { return text_; }
+
+  // The exact decimal the core reads this value as, or std::nullopt for one no door can hold
+  // (the core's refusal 8): canonical, trailing zeros dropped, zero never negative.
+  std::optional<Decimal> decimal() const noexcept {
+    HyperCastDecimal out{};
+    if (convert(out) != 0) {
+      return std::nullopt;
+    }
+    return Decimal{out.lo, out.hi, out.scale, out.negative};
+  }
+
+  // The same in the core's layout: 0, or the refusal code 8.
+  std::int32_t convert(HyperCastDecimal &out) const noexcept {
+    if (is_text_) {
+      return detail::declared_decimal(text_, out);
+    }
+    char buffer[Decimal::max_chars];
+    const std::to_chars_result written = number_.to_chars(buffer, buffer + sizeof buffer);
+    return detail::declared_decimal(
+        std::string_view(buffer, static_cast<std::size_t>(written.ptr - buffer)), out);
+  }
+
+private:
+  template <class I> static constexpr std::uint64_t magnitude(I number) noexcept {
+    if constexpr (std::is_signed_v<I>) {
+      return number < 0 ? 0 - static_cast<std::uint64_t>(number)
+                        : static_cast<std::uint64_t>(number);
+    } else {
+      return static_cast<std::uint64_t>(number);
+    }
+  }
+
+  Decimal number_;
+  std::string_view text_;
+  bool is_text_;
+};
+
+namespace detail {
+// A borrowed run of enum entries.
+template <class E> struct List {
+  const E *data;
+  std::size_t size;
+
+  constexpr const E *begin() const noexcept { return data; }
+  constexpr const E *end() const noexcept { return data + size; }
+};
+} // namespace detail
+
+// The caller's bytes a declaration packs its enum list into, as the core reads it: 16 bytes a
+// numeric entry, 4 plus its UTF-8 a text entry (Constraints<T>::storage_size says how many).
+// Nothing is allocated, so the storage is the caller's: it must outlive the Constraints and
+// every value read through it (a text enum match is a view into it), and must not change
+// after the declaration. A copy of a Constraints refers to the same storage.
+class EnumStorage {
+public:
+  template <std::size_t N>
+  constexpr EnumStorage(std::uint8_t (&bytes)[N]) noexcept : data_(bytes), size_(N) {}
+  template <std::size_t N>
+  constexpr EnumStorage(std::array<std::uint8_t, N> &bytes) noexcept
+      : data_(bytes.data()), size_(N) {}
+  constexpr EnumStorage(std::uint8_t *data, std::size_t size) noexcept : data_(data), size_(size) {}
+
+  constexpr std::uint8_t *data() const noexcept { return data_; }
+  constexpr std::size_t size() const noexcept { return size_; }
+
+private:
+  std::uint8_t *data_;
+  std::size_t size_;
+};
+
+namespace detail {
+// The core's door code for a checked door's type.
+template <class T> constexpr std::uint32_t door_of() noexcept {
+  if constexpr (std::is_same_v<T, std::int8_t>) {
+    return 2;
+  } else if constexpr (std::is_same_v<T, std::int16_t>) {
+    return 3;
+  } else if constexpr (std::is_same_v<T, std::int32_t>) {
+    return 4;
+  } else if constexpr (std::is_same_v<T, std::int64_t>) {
+    return 5;
+  } else if constexpr (std::is_same_v<T, std::uint8_t>) {
+    return 6;
+  } else if constexpr (std::is_same_v<T, std::uint16_t>) {
+    return 7;
+  } else if constexpr (std::is_same_v<T, std::uint32_t>) {
+    return 8;
+  } else if constexpr (std::is_same_v<T, std::uint64_t>) {
+    return 9;
+  } else if constexpr (std::is_same_v<T, float>) {
+    return 10;
+  } else if constexpr (std::is_same_v<T, double>) {
+    return 11;
+  } else if constexpr (std::is_same_v<T, std::string_view>) {
+    return 18;
+  } else {
+    static_assert(std::is_same_v<T, Decimal>,
+                  "a Constraints is bound to a checked door: std::int8_t to std::uint64_t, "
+                  "float, double, hypercast::Decimal, or std::string_view for the text door");
+    return 19;
+  }
+}
+} // namespace detail
+
+// A declaration of validation constraints bound to the door T names: the integers std::int8_t
+// to std::uint64_t, float, double, hypercast::Decimal, and std::string_view for the text door.
+// Immutable, and judged once, by the core, when it is declared: declare() returns a
+// Declared<Constraints<T>>, which holds the Refusal of a declaration that cannot mean anything
+// at its door (a keyword the door does not take, minimum with exclusiveMinimum, a bound the
+// door cannot hold, a duplicate entry, ...). There is no other way to build one, so every
+// checked cast after that only judges data.
+//
+// The integer doors take minimum, exclusiveMinimum, maximum, exclusiveMaximum, multipleOf with
+// a Rounding, and enum (whole numbers); float, double and Decimal the same but enum; the text
+// door minLength, maxLength (in code points), trim (Unicode White_Space) and enum (strings,
+// matched under simple case folding, a match delivering the entry as declared). Every field
+// is in every door's Fields, so the core alone refuses one the door does not take.
+//
+//   auto latitude = hypercast::Constraints<double>::declare(
+//       {.minimum = -90, .maximum = 90, .multiple_of = "0.000001",
+//        .rounding = hypercast::Rounding::midpoint});                // C++20; Fields in C++17
+template <class T> class Constraints {
+public:
+  // The door this declaration is bound to, the core's code.
+  static constexpr std::uint32_t door = detail::door_of<T>();
+  static constexpr bool is_text = std::is_same_v<T, std::string_view>;
+
+  // An enum entry: a ConstraintValue at a numeric door, the text itself at the text door.
+  using Entry = std::conditional_t<is_text, std::string_view, ConstraintValue>;
+
+  // What declare reads; under C++20 a designated initializer names just the keywords wanted.
+  struct Fields {
+    std::optional<ConstraintValue> minimum;
+    std::optional<ConstraintValue> exclusive_minimum;
+    std::optional<ConstraintValue> maximum;
+    std::optional<ConstraintValue> exclusive_maximum;
+    std::optional<ConstraintValue> multiple_of;
+    Rounding rounding = Rounding::strict;
+    std::optional<std::uint32_t> min_length;
+    std::optional<std::uint32_t> max_length;
+    bool trim = false;
+  };
+
+  // The declaration without an enum: no enum is declared.
+  static Declared<Constraints> declare(const Fields &fields) noexcept {
+    return build(fields, nullptr, EnumStorage(nullptr, 0));
+  }
+
+  // The declaration with an enum list (a braced list, {"Female", "Male"} or {10, 20}; an
+  // array; or a pointer and a count), packed into the caller's storage (see EnumStorage for
+  // its lifetime). Storage smaller than storage_size(entries), or a text entry past
+  // 4,294,967,295 bytes, is Refusal{0}. Every one of these declares an enum, so an empty list
+  // ({}, or a count of 0) is one no value could match, which the core refuses (12); the
+  // overload without entries is the way to declare none.
+  static Declared<Constraints> declare(const Fields &fields, std::initializer_list<Entry> entries,
+                                       EnumStorage storage) noexcept {
+    const List list{entries.begin(), entries.size()};
+    return build(fields, &list, storage);
+  }
+  template <std::size_t N>
+  static Declared<Constraints> declare(const Fields &fields, const Entry (&entries)[N],
+                                       EnumStorage storage) noexcept {
+    const List list{entries, N};
+    return build(fields, &list, storage);
+  }
+  template <std::size_t N>
+  static Declared<Constraints> declare(const Fields &fields, const std::array<Entry, N> &entries,
+                                       EnumStorage storage) noexcept {
+    const List list{entries.data(), N};
+    return build(fields, &list, storage);
+  }
+  static Declared<Constraints> declare(const Fields &fields, const Entry *entries,
+                                       std::size_t count, EnumStorage storage) noexcept {
+    const List list{entries, count};
+    return build(fields, &list, storage);
+  }
+
+  // The bytes an enum list packs into: 16 a numeric entry, 4 plus its UTF-8 a text entry.
+  static constexpr std::size_t storage_size(std::initializer_list<Entry> entries) noexcept {
+    return packed_size(List{entries.begin(), entries.size()});
+  }
+  template <std::size_t N>
+  static constexpr std::size_t storage_size(const Entry (&entries)[N]) noexcept {
+    return packed_size(List{entries, N});
+  }
+  template <std::size_t N>
+  static constexpr std::size_t storage_size(const std::array<Entry, N> &entries) noexcept {
+    return packed_size(List{entries.data(), N});
+  }
+  static constexpr std::size_t storage_size(const Entry *entries, std::size_t count) noexcept {
+    return packed_size(List{entries, count});
+  }
+
+  // The layout and the packed enum list the core reads, for a library that hands them to a C
+  // ABI of its own.
+  constexpr const HyperCastRawConstraints &raw() const noexcept { return raw_; }
+  constexpr const std::uint8_t *enum_data() const noexcept { return enum_; }
+  constexpr std::size_t enum_size() const noexcept { return enum_size_; }
+
+  // At the text door, the declared entry at `index`, a view into the storage holding it.
+  std::string_view entry(std::uint32_t index) const noexcept {
+    static_assert(is_text, "only the text door's entries are strings");
+    std::size_t at = 0;
+    for (std::uint32_t i = 0;; ++i) {
+      if (at + 4 > enum_size_) {
+        detail::contract_violation(); // the core matched an entry never declared: a header bug
+      }
+      const std::size_t length = static_cast<std::size_t>(enum_[at]) |
+                                 static_cast<std::size_t>(enum_[at + 1]) << 8 |
+                                 static_cast<std::size_t>(enum_[at + 2]) << 16 |
+                                 static_cast<std::size_t>(enum_[at + 3]) << 24;
+      at += 4;
+      if (at + length > enum_size_) {
+        detail::contract_violation(); // a packed entry past the list: a header bug
+      }
+      if (i == index) {
+        return std::string_view(reinterpret_cast<const char *>(enum_ + at), length);
+      }
+      at += length;
+    }
+  }
+
+private:
+  template <class> friend class Declared;
+
+  // Unbuilt: a size of 0, which the core refuses at every door, so it never reads as "no
+  // rules".
+  constexpr Constraints() noexcept : raw_{} {}
+
+  using List = detail::List<Entry>;
+
+  static constexpr std::size_t packed_size(List entries) noexcept {
+    if constexpr (is_text) {
+      std::size_t size = 0;
+      for (const std::string_view &entry : entries) {
+        size += 4 + entry.size();
+      }
+      return size;
+    } else {
+      return 16 * entries.size;
+    }
+  }
+
+  // `listed` is the enum list, or null for none declared.
+  static Declared<Constraints> build(const Fields &fields, const List *listed,
+                                     EnumStorage storage) noexcept {
+    const List entries = listed != nullptr ? *listed : List{nullptr, 0};
+    Constraints declared;
+    HyperCastRawConstraints &raw = declared.raw_;
+    raw.size = HyperCastRawConstraints_SIZE;
+    struct Slot {
+      const std::optional<ConstraintValue> &value;
+      std::uint32_t flag;
+      HyperCastDecimal &out;
+    };
+    const Slot slots[] = {
+        {fields.minimum, HyperCastRawConstraints_HAS_MINIMUM, raw.lower},
+        {fields.exclusive_minimum, HyperCastRawConstraints_HAS_EXCLUSIVE_MINIMUM, raw.lower},
+        {fields.maximum, HyperCastRawConstraints_HAS_MAXIMUM, raw.upper},
+        {fields.exclusive_maximum, HyperCastRawConstraints_HAS_EXCLUSIVE_MAXIMUM, raw.upper},
+        {fields.multiple_of, HyperCastRawConstraints_HAS_MULTIPLE_OF, raw.multiple_of},
+    };
+    for (const Slot &slot : slots) {
+      if (slot.value.has_value()) {
+        if (const std::int32_t code = slot.value->convert(slot.out); code != 0) {
+          return Refusal{code};
+        }
+        raw.flags |= slot.flag;
+      }
+    }
+    raw.rounding = static_cast<std::uint32_t>(fields.rounding);
+    if (fields.min_length.has_value()) {
+      raw.flags |= HyperCastRawConstraints_HAS_MIN_LENGTH;
+      raw.min_length = *fields.min_length;
+    }
+    if (fields.max_length.has_value()) {
+      raw.flags |= HyperCastRawConstraints_HAS_MAX_LENGTH;
+      raw.max_length = *fields.max_length;
+    }
+    if (fields.trim) {
+      raw.flags |= HyperCastRawConstraints_TRIM;
+    }
+    if (listed != nullptr) {
+      raw.flags |= HyperCastRawConstraints_HAS_ENUM;
+    }
+
+    const std::size_t needed = packed_size(entries);
+    if (needed > storage.size()) {
+      return Refusal{0};
+    }
+    std::size_t at = 0;
+    for (const Entry &entry : entries) {
+      if constexpr (is_text) {
+        if constexpr (sizeof(std::size_t) > sizeof(std::uint32_t)) {
+          if (entry.size() > UINT32_MAX) {
+            return Refusal{0};
+          }
+        }
+        const std::uint32_t length = static_cast<std::uint32_t>(entry.size());
+        for (int shift = 0; shift < 32; shift += 8) {
+          storage.data()[at++] = static_cast<std::uint8_t>(length >> shift); // little-endian
+        }
+        for (char c : entry) {
+          storage.data()[at++] = static_cast<std::uint8_t>(c);
+        }
+      } else {
+        HyperCastDecimal decimal{};
+        if (const std::int32_t code = entry.convert(decimal); code != 0) {
+          return Refusal{code};
+        }
+        static_assert(sizeof decimal == 16, "an enum entry is the core's 16-byte Decimal");
+        std::memcpy(storage.data() + at, &decimal, sizeof decimal); // native-endian
+        at += sizeof decimal;
+      }
+    }
+    if (needed > 0) {
+      declared.enum_ = storage.data();
+      declared.enum_size_ = needed;
+    }
+    if (const std::int32_t code =
+            ::cast_constraints_check(door, 0, &raw, declared.enum_, declared.enum_size_);
+        code != 0) {
+      return Refusal{code};
+    }
+    return declared;
+  }
+
+  HyperCastRawConstraints raw_;
+  const std::uint8_t *enum_ = nullptr;
+  std::size_t enum_size_ = 0;
+};
+
+namespace detail {
+// The checked verdict a return code names: 0 the value, 1 to 3 a fault, 4 a violation, -1 a
+// contract violation (a Constraints the door does not take: unbuilt, or another door's).
+template <class T, class Raw, class Convert>
+inline Checked<T> judged(std::int32_t code, const Raw &out, const HyperCastRawFault &fault,
+                         const HyperCastRawCheck &check, Convert convert) noexcept {
+  switch (code) {
+  case 0: {
+    std::optional<std::uint32_t> index;
+    if (check.enum_index != UINT32_MAX) {
+      index = check.enum_index;
+    }
+    return Checked<T>(CheckedValue<T>{convert(out, index), check.adjusted != 0, index});
+  }
+  case 1:
+  case 2:
+  case 3:
+    return Checked<T>(Rejection(Fault{static_cast<CastFailure>(code), fault.offset, fault.len}));
+  case 4:
+    return Checked<T>(
+        Rejection(Violation{static_cast<Keyword>(check.keyword), fault.offset, fault.len}));
+  default:
+    contract_violation();
+  }
+}
+
+template <class T, class Raw = T, class Convert>
+inline Checked<T> checked(const Constraints<T> &constraints, const NumFormat *format, Text text,
+                          Convert convert) noexcept {
+  Raw out{};
+  HyperCastRawFault fault{};
+  HyperCastRawCheck check{};
+  const std::int32_t code =
+      ::cast_checked(Constraints<T>::door, 0, format != nullptr ? &format->raw() : nullptr,
+                     &constraints.raw(), constraints.enum_data(), constraints.enum_size(),
+                     text.data(), text.size(), &out, &fault, &check);
+  return judged<T>(code, out, fault, check, convert);
+}
+
+template <class T, class Raw = T, class Convert>
+inline Checked<T> checked_from_double(const Constraints<T> &constraints, double value,
+                                      Convert convert) noexcept {
+  Raw out{};
+  HyperCastRawFault fault{};
+  HyperCastRawCheck check{};
+  const std::int32_t code = ::cast_checked_from_f64(Constraints<T>::door, value, &constraints.raw(),
+                                                    constraints.enum_data(),
+                                                    constraints.enum_size(), &out, &fault, &check);
+  return judged<T>(code, out, fault, check, convert);
+}
+
+struct Same {
+  template <class V> constexpr V operator()(V value, std::optional<std::uint32_t>) const noexcept {
+    return value;
+  }
+};
+struct AsDecimal {
+  Decimal operator()(const HyperCastDecimal &raw, std::optional<std::uint32_t>) const noexcept {
+    return decimal(raw);
+  }
+};
+
+template <class T>
+inline Checked<T> numeric_checked(Text text, const NumFormat &format,
+                                  const Constraints<T> &constraints) noexcept {
+  return checked<T>(constraints, &format, text, Same{});
+}
+} // namespace detail
+
+// The checked doors: the plain door's parse under the declared format, then the value judged
+// by the constraints. A Violation's span is the value's, in bytes of the input, as a Fault's.
+inline Checked<std::int8_t> cast_i8(Text text, const NumFormat &format,
+                                    const Constraints<std::int8_t> &constraints) noexcept {
+  return detail::numeric_checked(text, format, constraints);
+}
+inline Checked<std::int16_t> cast_i16(Text text, const NumFormat &format,
+                                      const Constraints<std::int16_t> &constraints) noexcept {
+  return detail::numeric_checked(text, format, constraints);
+}
+inline Checked<std::int32_t> cast_i32(Text text, const NumFormat &format,
+                                      const Constraints<std::int32_t> &constraints) noexcept {
+  return detail::numeric_checked(text, format, constraints);
+}
+inline Checked<std::int64_t> cast_i64(Text text, const NumFormat &format,
+                                      const Constraints<std::int64_t> &constraints) noexcept {
+  return detail::numeric_checked(text, format, constraints);
+}
+inline Checked<std::uint8_t> cast_u8(Text text, const NumFormat &format,
+                                     const Constraints<std::uint8_t> &constraints) noexcept {
+  return detail::numeric_checked(text, format, constraints);
+}
+inline Checked<std::uint16_t> cast_u16(Text text, const NumFormat &format,
+                                       const Constraints<std::uint16_t> &constraints) noexcept {
+  return detail::numeric_checked(text, format, constraints);
+}
+inline Checked<std::uint32_t> cast_u32(Text text, const NumFormat &format,
+                                       const Constraints<std::uint32_t> &constraints) noexcept {
+  return detail::numeric_checked(text, format, constraints);
+}
+inline Checked<std::uint64_t> cast_u64(Text text, const NumFormat &format,
+                                       const Constraints<std::uint64_t> &constraints) noexcept {
+  return detail::numeric_checked(text, format, constraints);
+}
+inline Checked<float> cast_f32(Text text, const NumFormat &format,
+                               const Constraints<float> &constraints) noexcept {
+  return detail::numeric_checked(text, format, constraints);
+}
+inline Checked<double> cast_f64(Text text, const NumFormat &format,
+                                const Constraints<double> &constraints) noexcept {
+  return detail::numeric_checked(text, format, constraints);
+}
+inline Checked<Decimal> cast_decimal(Text text, const NumFormat &format,
+                                     const Constraints<Decimal> &constraints) noexcept {
+  return detail::checked<Decimal, HyperCastDecimal>(constraints, &format, text,
+                                                    detail::AsDecimal{});
+}
+
+// The checked typed doors judge a double a source already decoded (a JSON parser's number, a
+// spreadsheet's cell) on its sign and shortest round-trip decimal: the judgement the text
+// door makes of that text. -0.0 is zero; NaN is Malformed and an infinity OutOfRange. With no
+// text to index, every Fault and Violation has an empty span at 0.
+namespace detail {
+template <class T>
+inline Checked<T> from_double(double value, const Constraints<T> &constraints) noexcept {
+  return checked_from_double<T>(constraints, value, Same{});
+}
+} // namespace detail
+
+inline Checked<std::int8_t>
+cast_i8_from_double(double value, const Constraints<std::int8_t> &constraints) noexcept {
+  return detail::from_double(value, constraints);
+}
+inline Checked<std::int16_t>
+cast_i16_from_double(double value, const Constraints<std::int16_t> &constraints) noexcept {
+  return detail::from_double(value, constraints);
+}
+inline Checked<std::int32_t>
+cast_i32_from_double(double value, const Constraints<std::int32_t> &constraints) noexcept {
+  return detail::from_double(value, constraints);
+}
+inline Checked<std::int64_t>
+cast_i64_from_double(double value, const Constraints<std::int64_t> &constraints) noexcept {
+  return detail::from_double(value, constraints);
+}
+inline Checked<std::uint8_t>
+cast_u8_from_double(double value, const Constraints<std::uint8_t> &constraints) noexcept {
+  return detail::from_double(value, constraints);
+}
+inline Checked<std::uint16_t>
+cast_u16_from_double(double value, const Constraints<std::uint16_t> &constraints) noexcept {
+  return detail::from_double(value, constraints);
+}
+inline Checked<std::uint32_t>
+cast_u32_from_double(double value, const Constraints<std::uint32_t> &constraints) noexcept {
+  return detail::from_double(value, constraints);
+}
+inline Checked<std::uint64_t>
+cast_u64_from_double(double value, const Constraints<std::uint64_t> &constraints) noexcept {
+  return detail::from_double(value, constraints);
+}
+inline Checked<float> cast_f32_from_double(double value,
+                                           const Constraints<float> &constraints) noexcept {
+  return detail::from_double(value, constraints);
+}
+inline Checked<double> cast_f64_from_double(double value,
+                                            const Constraints<double> &constraints) noexcept {
+  return detail::from_double(value, constraints);
+}
+inline Checked<Decimal> cast_decimal_from_double(double value,
+                                                 const Constraints<Decimal> &constraints) noexcept {
+  return detail::checked_from_double<Decimal, HyperCastDecimal>(constraints, value,
+                                                                detail::AsDecimal{});
+}
+
+// The text door: the caller's input, once it is valid UTF-8, as a view of it. Invalid UTF-8
+// is Malformed, spanning the first invalid sequence; empty input is Empty. Untrimmed.
+inline Verdict<std::string_view> cast_text(Text text) noexcept {
+  HyperCastRawSpan out{};
+  HyperCastRawFault fault{};
+  const std::int32_t code = ::cast_text(text.data(), text.size(), &out, &fault);
+  return detail::finish(
+      code,
+      code == 0
+          ? std::string_view(reinterpret_cast<const char *>(text.data()) + out.offset, out.len)
+          : std::string_view(),
+      fault);
+}
+
+// The checked text door: the input, trimmed when the constraints say so, judged by its
+// lengths in code points and its enum. The value is a view of the caller's input, or on an
+// enum match the entry as declared, a view into the declaration's EnumStorage, with its index.
+inline Checked<std::string_view>
+cast_text(Text text, const Constraints<std::string_view> &constraints) noexcept {
+  return detail::checked<std::string_view, HyperCastRawSpan>(
+      constraints, nullptr, text,
+      [&](const HyperCastRawSpan &span, std::optional<std::uint32_t> index) {
+        if (index.has_value()) {
+          return constraints.entry(*index);
+        }
+        return std::string_view(reinterpret_cast<const char *>(text.data()) + span.offset,
+                                span.len);
+      });
 }
 
 // Always true: the core is linked into the program, so there is nothing to fail to load. Kept

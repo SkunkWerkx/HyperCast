@@ -68,6 +68,15 @@ public static class Abi
 			? new Fault(reason, (int)span.Offset, (int)span.Length)
 			: throw new InvalidOperationException($"{code} is not a verdict reason code — a binding bug, please report it.");
 
+	/// <summary>The violation a checked door's code 4, its keyword and its span name.</summary>
+	/// <param name="keyword">The keyword code the door wrote: 1 <c>minimum</c> … 8 <c>enum</c>.</param>
+	/// <param name="span">The span of the value, in bytes of the input.</param>
+	/// <exception cref="InvalidOperationException"><paramref name="keyword"/> is 0, which names no rule — a binding bug, not data.</exception>
+	public static Violation ToViolation(uint keyword, RawFault span) =>
+		Keyword.FromCode(keyword) is { } named
+			? new Violation(named, (int)span.Offset, (int)span.Length)
+			: throw new InvalidOperationException("A violation named no keyword — a binding bug, please report it.");
+
 	/// <summary>A time of day, as the core writes it (nanoseconds since midnight), sub-tick nanoseconds truncated.</summary>
 	/// <param name="nanosOfDay">Nanoseconds since midnight.</param>
 	public static TimeOnly ToTimeOnly(ulong nanosOfDay) => new((long)(nanosOfDay / 100));

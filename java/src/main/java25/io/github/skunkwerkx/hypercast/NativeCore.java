@@ -10,6 +10,7 @@ import java.lang.foreign.SymbolLookup;
 import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
 import java.math.BigDecimal;
+import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -116,6 +117,52 @@ final class NativeCore {
                         ValueLayout.ADDRESS,
                         ValueLayout.ADDRESS),
                 CRITICAL);
+        // (door, param, format, constraints, enum_ptr, enum_len, ptr, len, out, fault, check)
+        // -> code — the checked door: a numeric door or Text, judged by a declaration.
+        private static final MethodHandle CHECKED = LINKER.downcallHandle(
+                FunctionDescriptor.of(
+                        ValueLayout.JAVA_INT,
+                        ValueLayout.JAVA_INT,
+                        ValueLayout.JAVA_INT,
+                        ValueLayout.ADDRESS,
+                        ValueLayout.ADDRESS,
+                        ValueLayout.ADDRESS,
+                        ValueLayout.JAVA_LONG,
+                        ValueLayout.ADDRESS,
+                        ValueLayout.JAVA_LONG,
+                        ValueLayout.ADDRESS,
+                        ValueLayout.ADDRESS,
+                        ValueLayout.ADDRESS),
+                CRITICAL);
+        // (door, value, constraints, enum_ptr, enum_len, out, fault, check) -> code — the
+        // checked door over a double a source already decoded.
+        private static final MethodHandle CHECKED_FROM_F64 = LINKER.downcallHandle(
+                FunctionDescriptor.of(
+                        ValueLayout.JAVA_INT,
+                        ValueLayout.JAVA_INT,
+                        ValueLayout.JAVA_DOUBLE,
+                        ValueLayout.ADDRESS,
+                        ValueLayout.ADDRESS,
+                        ValueLayout.JAVA_LONG,
+                        ValueLayout.ADDRESS,
+                        ValueLayout.ADDRESS,
+                        ValueLayout.ADDRESS),
+                CRITICAL);
+        // (door, param, constraints, enum_ptr, enum_len) -> code — a declaration judged once.
+        private static final MethodHandle CONSTRAINTS_CHECK = LINKER.downcallHandle(
+                FunctionDescriptor.of(
+                        ValueLayout.JAVA_INT,
+                        ValueLayout.JAVA_INT,
+                        ValueLayout.JAVA_INT,
+                        ValueLayout.ADDRESS,
+                        ValueLayout.ADDRESS,
+                        ValueLayout.JAVA_LONG),
+                CRITICAL);
+        // (ptr, len, out) -> code — a declared decimal through the core's conversion.
+        private static final MethodHandle DECLARED_DECIMAL = LINKER.downcallHandle(
+                FunctionDescriptor.of(
+                        ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS),
+                CRITICAL);
         // () -> packed version — the probe. Nothing crosses, so it is not linked critical.
         private static final MethodHandle VERSION = LINKER.downcallHandle(FunctionDescriptor.of(ValueLayout.JAVA_INT));
     }
@@ -167,6 +214,11 @@ final class NativeCore {
         private static final MemorySegment CAST_EXCEL_DURATION = export("cast_excel_duration");
         private static final MemorySegment CAST_CHAR = export("cast_char");
         private static final MemorySegment HYPERCAST_VERSION = export("hypercast_version");
+        private static final MemorySegment CAST_CHECKED = export("cast_checked");
+        private static final MemorySegment CAST_CHECKED_FROM_F64 = export("cast_checked_from_f64");
+        private static final MemorySegment CAST_CONSTRAINTS_CHECK = export("cast_constraints_check");
+        private static final MemorySegment CAST_TEXT = export("cast_text");
+        private static final MemorySegment CAST_DECLARED_DECIMAL = export("cast_declared_decimal");
 
         private static MemorySegment export(String symbol) {
             return LOOKUP.find(symbol).orElseThrow();
@@ -207,6 +259,13 @@ final class NativeCore {
         private NumFormat formatKey;
         private final MemorySegment periodsSegment = fixed.allocate(NativeValues.DAY_PERIODS_BYTES, 4);
         private DateTimeFormat periodsKey;
+        // A checked door's report, and the declaration it was judged by: the 72-byte layout
+        // copied into aligned memory and the enum list's segment, under the same identity memo
+        // the format keeps.
+        private final MemorySegment check = fixed.allocate(NativeValues.CHECK_BYTES, 4);
+        private final MemorySegment constraintsSegment = fixed.allocate(NativeValues.CONSTRAINTS_BYTES, 8);
+        private Constraints<?> constraintsKey;
+        private MemorySegment entriesSegment = MemorySegment.NULL;
 
         private Scratch() {}
 
@@ -222,6 +281,18 @@ final class NativeCore {
                 formatKey = declared;
             }
             return formatSegment;
+        }
+
+        // The declaration's layout, and its enum list (NULL for none) left in entriesSegment.
+        MemorySegment constraints(Constraints<?> declared) {
+            if (constraintsKey != declared) {
+                byte[] raw = declared.raw();
+                MemorySegment.copy(raw, 0, constraintsSegment, ValueLayout.JAVA_BYTE, 0, raw.length);
+                ByteBuffer entries = declared.entries();
+                entriesSegment = entries == null ? MemorySegment.NULL : MemorySegment.ofBuffer(entries);
+                constraintsKey = declared;
+            }
+            return constraintsSegment;
         }
 
         // NULL when nothing is declared — the DateOrder overloads, or a DateTimeFormat with
@@ -400,6 +471,88 @@ final class NativeCore {
         }
     }
 
+    /**
+     * A checked door: {@code door} is the core's door code ({@link Constraints#I32},
+     * {@link Constraints#TEXT}, ...), {@code format} the declared notation or {@code null} (the
+     * text door reads none), {@code constraints} the declaration already bound to the door.
+     */
+    static int checked(Scratch s, int door, byte[] in, NumFormat format, Constraints<?> constraints) {
+        return checked(s, door, input(in), in.length, format, constraints);
+    }
+
+    static int checked(Scratch s, int door, MemorySegment in, NumFormat format, Constraints<?> constraints) {
+        return checked(s, door, input(in), in.byteSize(), format, constraints);
+    }
+
+    private static int checked(
+            Scratch s, int door, MemorySegment in, long len, NumFormat format, Constraints<?> constraints) {
+        MemorySegment export = Core.CAST_CHECKED;
+        MemorySegment notation = format == null ? MemorySegment.NULL : s.format(format);
+        MemorySegment declared = s.constraints(constraints);
+        MemorySegment entries = s.entriesSegment;
+        try {
+            return (int) Downcalls.CHECKED.invokeExact(
+                    export, door, 0, notation, declared, entries, entries.byteSize(), in, len, s.out, s.fault, s.check);
+        } catch (Throwable t) {
+            throw new AssertionError("hypercast: downcall failed unexpectedly", t);
+        }
+    }
+
+    /** A checked door over a {@code double} a source already decoded. */
+    static int checkedFromF64(Scratch s, int door, double value, Constraints<?> constraints) {
+        MemorySegment export = Core.CAST_CHECKED_FROM_F64;
+        MemorySegment declared = s.constraints(constraints);
+        MemorySegment entries = s.entriesSegment;
+        try {
+            return (int) Downcalls.CHECKED_FROM_F64.invokeExact(
+                    export, door, value, declared, entries, entries.byteSize(), s.out, s.fault, s.check);
+        } catch (Throwable t) {
+            throw new AssertionError("hypercast: downcall failed unexpectedly", t);
+        }
+    }
+
+    /** The core's judgement of a declaration: 0, or the refusal code. */
+    static int constraintsCheck(int door, byte[] raw, ByteBuffer entries) {
+        MemorySegment export = Core.CAST_CONSTRAINTS_CHECK;
+        // Once per declaration, so a confined arena of its own rather than the scratch.
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment declared = arena.allocate(NativeValues.CONSTRAINTS_BYTES, 8);
+            MemorySegment.copy(raw, 0, declared, ValueLayout.JAVA_BYTE, 0, raw.length);
+            MemorySegment list = entries == null ? MemorySegment.NULL : MemorySegment.ofBuffer(entries);
+            return (int) Downcalls.CONSTRAINTS_CHECK.invokeExact(export, door, 0, declared, list, list.byteSize());
+        } catch (Throwable t) {
+            throw new AssertionError("hypercast: downcall failed unexpectedly", t);
+        }
+    }
+
+    /** The text door: the span of valid UTF-8 input. */
+    static int text(Scratch s, byte[] in) {
+        return text(s, input(in), in.length);
+    }
+
+    static int text(Scratch s, MemorySegment in) {
+        return text(s, input(in), in.byteSize());
+    }
+
+    private static int text(Scratch s, MemorySegment in, long len) {
+        MemorySegment export = Core.CAST_TEXT;
+        try {
+            return (int) Downcalls.PLAIN.invokeExact(export, in, len, s.out, s.fault);
+        } catch (Throwable t) {
+            throw new AssertionError("hypercast: downcall failed unexpectedly", t);
+        }
+    }
+
+    /** The core's conversion of a declared decimal: 0 with the value, or 8. */
+    static int declaredDecimal(Scratch s, byte[] utf8) {
+        MemorySegment export = Core.CAST_DECLARED_DECIMAL;
+        try {
+            return (int) Downcalls.DECLARED_DECIMAL.invokeExact(export, input(utf8), (long) utf8.length, s.out);
+        } catch (Throwable t) {
+            throw new AssertionError("hypercast: downcall failed unexpectedly", t);
+        }
+    }
+
     // --- readers: the value the last successful call on `s` produced, or its fault ---
 
     static boolean bool(Scratch s) {
@@ -478,6 +631,31 @@ final class NativeCore {
 
     static Duration duration(Scratch s) {
         return NativeValues.duration(s.out, 0);
+    }
+
+    /** The text door's span: the byte offset of the (trimmed) text. */
+    static int spanOffset(Scratch s) {
+        return s.out.get(ValueLayout.JAVA_INT, 0);
+    }
+
+    /** The text door's span: the byte length of the (trimmed) text. */
+    static int spanLength(Scratch s) {
+        return s.out.get(ValueLayout.JAVA_INT, 4);
+    }
+
+    /** A checked door's keyword code on a violation; 0 otherwise. */
+    static int checkKeyword(Scratch s) {
+        return s.check.get(ValueLayout.JAVA_INT, 0);
+    }
+
+    /** Whether a checked door's rounding changed the value. */
+    static boolean checkAdjusted(Scratch s) {
+        return s.check.get(ValueLayout.JAVA_INT, 4) != 0;
+    }
+
+    /** The text {@code enum} entry a checked door matched, or -1 for none. */
+    static int checkEnumIndex(Scratch s) {
+        return s.check.get(ValueLayout.JAVA_INT, 8);
     }
 
     static int faultOffset(Scratch s) {

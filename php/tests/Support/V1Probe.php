@@ -27,17 +27,21 @@ final class V1Probe
         'Interop\\NativeValues', 'Interop\\NativePlatform',
     ];
 
+    /** The classes the validation constraints added after 1.0, by short name under `HyperCast\`. */
+    public const CONSTRAINT_CLASSES = ['Constraints', 'Checked', 'Violation', 'Door', 'Rounding', 'Keyword'];
+
     /**
-     * The public surface of each class, from reflection: kind, modifiers, parent and
-     * interfaces, constants and enum cases, public methods with their parameters, and public
-     * properties with their types.
+     * The public surface of each class (1.0's unless `$classes` names others), from
+     * reflection: kind, modifiers, parent and interfaces, constants and enum cases, public
+     * methods with their parameters, and public properties with their types.
      *
+     * @param list<string> $classes short names under `HyperCast\`
      * @return array<string, mixed>
      */
-    public static function surface(): array
+    public static function surface(array $classes = self::CLASSES): array
     {
         $surface = [];
-        foreach (self::CLASSES as $short) {
+        foreach ($classes as $short) {
             $rc = new \ReflectionClass('HyperCast\\' . $short);
             $entry = [
                 'kind' => $rc->isEnum() ? 'enum' : ($rc->isInterface() ? 'interface' : 'class'),

@@ -1,4 +1,4 @@
-// The C ABI of the hypercast core (https://github.com/SkunkWerkx/HyperCast): the 27 functions
+// The C ABI of the hypercast core (https://github.com/SkunkWerkx/HyperCast): the 32 functions
 // the shared and static libraries export, which every binding calls through, and the
 // #[repr(C)] types they read and write. hypercast_version() is the library's version.
 //
@@ -29,6 +29,25 @@
 // end (cast_decimal_from_f64, cast_excel_serial_from_f64, cast_excel_time and
 // cast_excel_duration) read a double instead of text and keep the same contract; with no
 // text for a span to index, their fault span is always empty.
+//
+// The validation constraints come last. cast_text is the text door: it writes the span of
+// valid UTF-8 input. cast_checked and cast_checked_from_f64 judge a door's value by a
+// declaration, a HyperCastRawConstraints (8-byte aligned, `size` exactly
+// HyperCastRawConstraints_SIZE; any other size, or a null pointer, is -1) and an `enum`
+// list of `enum_len` bytes beside it, read only under HyperCastRawConstraints_HAS_ENUM
+// (set, an empty list is an enum with no entries, refused; clear, a list passed anyway is a
+// malformed layout): at an integer door, Decimals holding whole numbers (at any scale: 7.0
+// is 7) in their native-endian 16-byte layout; at the text door, entries each a
+// little-endian uint32_t byte length followed by that many UTF-8 bytes, unpadded. They add
+// return code 4, a violation of a declared rule, whose span covers the value and whose
+// keyword is written to the nullable `check`; at a float door the float written is judged
+// too, against each bound read as the door reads it. cast_constraints_check judges a
+// declaration once and returns 0 or the code of the rule it breaks, 1 to 13, never -1; its
+// duplicate search compares every pair of entries, so its time grows with the square of the
+// list's length (slow for a long list, never a fault). cast_declared_decimal converts a
+// bound, multipleOf or integer `enum` entry written in invariant notation into a
+// HyperCastDecimal, the one conversion every binding calls, and returns 0 or 8,
+// cast_constraints_check's code for a value no door can hold.
 
 #ifndef HYPERCAST_H
 #define HYPERCAST_H
@@ -368,6 +387,97 @@ typedef struct HyperCastDuration {
   int32_t nanos;
 } HyperCastDuration;
 
+// A declaration of validation constraints as it crosses the ABI, bound to a door by the
+// call that takes it: a size word, the flags that say which fields are read, then the
+// three decimals, 72 bytes with 8-byte alignment. Pointer-free, so the layout is the same
+// on 32-bit and 64-bit targets; an `enum` list travels beside it. Built from a
+// [`Constraints`](crate::Constraints) by [`raw`](crate::Constraints::raw), and judged by
+// [`check_constraints`](crate::check_constraints).
+//
+// | Offset | Field | Bytes |
+// | --- | --- | --- |
+// | 0 | `size`, a `u32` | 4 |
+// | 4 | `flags`, a `u32` | 4 |
+// | 8 | `rounding`: `0` strict, `1` midpoint, `2` floor, `3` ceiling | 4 |
+// | 12 | `min_length`, read under [`HAS_MIN_LENGTH`](Self::HAS_MIN_LENGTH) | 4 |
+// | 16 | `max_length`, read under [`HAS_MAX_LENGTH`](Self::HAS_MAX_LENGTH) | 4 |
+// | 20 | `_reserved`, always `0` | 4 |
+// | 24 | `lower`: the minimum or exclusive minimum, per the flags | 16 |
+// | 40 | `upper`: the maximum or exclusive maximum, per the flags | 16 |
+// | 56 | `multiple_of`, read under [`HAS_MULTIPLE_OF`](Self::HAS_MULTIPLE_OF) | 16 |
+//
+// A `size` other than [`SIZE`](Self::SIZE), an unknown flag bit, an unknown rounding code,
+// a nonzero `_reserved`, or (read from a caller's memory across the C ABI) a decimal's sign
+// byte other than `0` or `1` is a malformed layout. The `enum` list is read only under
+// [`HAS_ENUM`](Self::HAS_ENUM).
+typedef struct HyperCastRawConstraints {
+  // `size_of::<RawConstraints>()` as the caller built it: [`RawConstraints::SIZE`].
+  uint32_t size;
+  // Which constraints are declared: the `HAS_*` bits and [`TRIM`](Self::TRIM).
+  uint32_t flags;
+  // How a value that is not a multiple of `multiple_of` is treated: `0` strict, `1`
+  // midpoint (ties to even), `2` floor, `3` ceiling.
+  uint32_t rounding;
+  // The fewest code points the text may hold.
+  uint32_t min_length;
+  // The most code points the text may hold.
+  uint32_t max_length;
+  // Always `0`.
+  uint32_t _reserved;
+  // The minimum, or the exclusive minimum.
+  struct HyperCastDecimal lower;
+  // The maximum, or the exclusive maximum.
+  struct HyperCastDecimal upper;
+  // The step every value must be a multiple of.
+  struct HyperCastDecimal multiple_of;
+} HyperCastRawConstraints;
+// The layout's size in bytes, which `size` carries.
+#define HyperCastRawConstraints_SIZE 72
+// `lower` is the inclusive `minimum`.
+#define HyperCastRawConstraints_HAS_MINIMUM 1
+// `lower` is the `exclusiveMinimum`.
+#define HyperCastRawConstraints_HAS_EXCLUSIVE_MINIMUM 2
+// `upper` is the inclusive `maximum`.
+#define HyperCastRawConstraints_HAS_MAXIMUM 4
+// `upper` is the `exclusiveMaximum`.
+#define HyperCastRawConstraints_HAS_EXCLUSIVE_MAXIMUM 8
+// `multiple_of` and `rounding` are read.
+#define HyperCastRawConstraints_HAS_MULTIPLE_OF 16
+// `min_length` is read.
+#define HyperCastRawConstraints_HAS_MIN_LENGTH 32
+// `max_length` is read.
+#define HyperCastRawConstraints_HAS_MAX_LENGTH 64
+// Text is trimmed of Unicode `White_Space` before it is judged.
+#define HyperCastRawConstraints_TRIM 128
+// An `enum` list is declared and read: the list beside the layout, which may be empty
+// (a declaration [`check_constraints`](crate::check_constraints) refuses). Clear, no
+// list is read, and one passed anyway is a malformed layout.
+#define HyperCastRawConstraints_HAS_ENUM 256
+
+// What a checked door reports beside its value, 12 bytes with 4-byte alignment.
+typedef struct HyperCastRawCheck {
+  // On a violation, the keyword broken (`1` minimum … `8` enum); `0` otherwise.
+  uint32_t keyword;
+  // On success, `1` when rounding changed the value, else `0`.
+  uint32_t adjusted;
+  // On a success at the text door that matched an `enum` entry, that entry's index;
+  // `u32::MAX` otherwise.
+  uint32_t enum_index;
+} HyperCastRawCheck;
+// The layout's size in bytes.
+#define HyperCastRawCheck_SIZE 12
+
+// A span of the caller's own input, 8 bytes with 4-byte alignment: what the text door
+// writes in place of a copy.
+typedef struct HyperCastRawSpan {
+  // The byte offset where the span starts.
+  uint32_t offset;
+  // The span's length in bytes.
+  uint32_t len;
+} HyperCastRawSpan;
+// The layout's size in bytes.
+#define HyperCastRawSpan_SIZE 8
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -419,10 +529,12 @@ int32_t cast_u64(const uint8_t *ptr, uintptr_t len, const struct HyperCastRawNum
 
 // Casts real text at `ptr`/`len` under the declared `format` into `out`; a magnitude
 // beyond `float`'s finite range is out of range.
+// Never writes a negative zero: `-0`, `(0)` and an underflow like `-1e-400` are `0.0`.
 int32_t cast_f32(const uint8_t *ptr, uintptr_t len, const struct HyperCastRawNumFormat *format, float *out, struct HyperCastRawFault *fault);
 
 // Casts real text at `ptr`/`len` under the declared `format` into `out`; a magnitude
 // beyond `double`'s finite range is out of range.
+// Never writes a negative zero: `-0`, `(0)` and an underflow like `-1e-400` are `0.0`.
 int32_t cast_f64(const uint8_t *ptr, uintptr_t len, const struct HyperCastRawNumFormat *format, double *out, struct HyperCastRawFault *fault);
 
 // Casts decimal text at `ptr`/`len` under the declared `format` into `out`, exact and
@@ -486,6 +598,76 @@ int32_t cast_excel_time(double value, uint64_t *out, struct HyperCastRawFault *f
 // Reads `value` days into `out` as a duration, snapped as `cast_excel_serial_from_f64`
 // snaps a time. NaN or an infinity is malformed; past ±10,000 years is out of range.
 int32_t cast_excel_duration(double value, struct HyperCastDuration *out, struct HyperCastRawFault *fault);
+
+// Casts the text at `ptr`/`len` through door `door` (with `param`, the precision, order or
+// date system a door declares; the door numbering is `Door`'s, 4 I32, 11 F64, 18 Text, 19
+// Decimal) under the declared `format` (null for the invariant one; ignored by Text), then
+// judges the value by `constraints` and the `enum` list at `enum_ptr`/`enum_len` (integer
+// entries native-endian `Decimal`s, 16 bytes each; text entries a little-endian `u32` length
+// followed by UTF-8 bytes). Returns 0 with the value written to `out`, the type the door
+// writes (a `RawSpan` of the input for Text, which with an `enum` is the matched input, or 3
+// when that span would end past `UINT32_MAX` bytes); 1, 2 or 3, the door's own fault; or 4,
+// a violation of a declared rule, spanning the value. At a float door the float written is
+// judged too, against each bound read as the door reads it (to the nearest float, ties to
+// even), so a value inside a bound whose float lands on or past it is a violation of that
+// bound.
+// Codes 1 to 4 write `fault`; 0 and 4 write `check` when it is not null (`keyword` on 4,
+// `adjusted` and `enum_index` on 0). -1 is a contract violation: a null `constraints`, a
+// `size` other than `HyperCastRawConstraints_SIZE`, a door that is not numeric or Text, a
+// format the core refuses, or a declaration `cast_constraints_check` refuses (every rule
+// but duplicates, which this door does not look for: the first matching entry wins). `out`
+// need not be aligned.
+int32_t cast_checked(uint32_t door, uint32_t param, const struct HyperCastRawNumFormat *format, const struct HyperCastRawConstraints *constraints, const uint8_t *enum_ptr, uintptr_t enum_len, const uint8_t *ptr, uintptr_t len, void *out, struct HyperCastRawFault *fault, struct HyperCastRawCheck *check);
+
+// Judges the number `value`, which a source already decoded (a JSON parser's double, a
+// spreadsheet's numeric cell), at the numeric door `door` by `constraints` and the integer
+// `enum` list at `enum_ptr`/`enum_len`, on its sign and shortest round-trip decimal: the
+// same judgement `cast_checked` makes of that text. `-0.0` is zero, written at a float door
+// as `0.0`. NaN is malformed and an infinity out of range; with no text to index, every
+// fault and violation has an empty span. The codes and what each writes are
+// `cast_checked`'s, the delivered float's judgement included (at the `F32` door, the
+// double's digits are judged, then the narrowed float), and a door that is not numeric is
+// a contract violation.
+int32_t cast_checked_from_f64(uint32_t door, double value, const struct HyperCastRawConstraints *constraints, const uint8_t *enum_ptr, uintptr_t enum_len, void *out, struct HyperCastRawFault *fault, struct HyperCastRawCheck *check);
+
+// Judges a declaration, `constraints` and the `enum` list at `enum_ptr`/`enum_len` (read
+// only under `HAS_ENUM`; integer entries native-endian `Decimal`s, 16 bytes each; text
+// entries a little-endian `u32` length followed by UTF-8 bytes), against door `door` with
+// `param`, once, when a binding builds it. Returns 0 when every rule holds, otherwise the
+// first rule it breaks, in code order: 1 a keyword the door does not take (an `enum` at a
+// float door included, or a door code that names no door), 2 minimum with
+// exclusiveMinimum, 3 maximum with exclusiveMaximum, 4 a lower bound not below the upper,
+// 5 multipleOf not positive, 6 a rounding without multipleOf, 7 minLength above
+// maxLength, 8 a bound, step or entry the door cannot hold, 9 an enum entry that is not
+// UTF-8, 10 a duplicate enum entry (text under simple case folding), 11 a malformed
+// layout, 12 an enum with no entries (`HAS_ENUM` with `enum_len` 0), 13 a text enum entry
+// no input can match (an empty entry, or under `TRIM` one with leading or trailing Unicode
+// White_Space). A malformed layout is any of: a null `constraints`; a `size` other than
+// `HyperCastRawConstraints_SIZE` or a sign byte other than 0 or 1 in `lower`, `upper` or
+// `multiple_of` (these two judged before everything else, since the layout cannot be read
+// past them); an unknown flag bit, rounding code or nonzero `_reserved`; a sign byte other
+// than 0 or 1 in an integer entry; a packed list cut short (a text entry's length
+// word or bytes, or a 16-byte integer entry); or a non-empty list without `HAS_ENUM`. Never
+// -1. Duplicates are found by comparing every pair, so the time grows with the square of
+// the entry count: keep `enum` lists short. A long one is slow, never a fault.
+int32_t cast_constraints_check(uint32_t door, uint32_t param, const struct HyperCastRawConstraints *constraints, const uint8_t *enum_ptr, uintptr_t enum_len);
+
+// Casts the text at `ptr`/`len` into `out` as the span of the whole input, once it is
+// valid UTF-8: the text door, untrimmed. Invalid UTF-8 is malformed, spanning the first
+// invalid sequence; empty input is empty; input past `UINT32_MAX` bytes, which a span
+// cannot carry, is out of range.
+int32_t cast_text(const uint8_t *ptr, uintptr_t len, struct HyperCastRawSpan *out, struct HyperCastRawFault *fault);
+
+// Converts a bound, `multipleOf` or integer `enum` entry written in invariant notation (an
+// optional sign, digits, an optional `.` and digits, an optional exponent; ASCII only, no
+// whitespace) at `ptr`/`len` into a `Decimal` at `out`, exactly: trailing zeros dropped,
+// zero unsigned. Returns 0 with `out` written, or 8 (a value no door can hold: a magnitude
+// past 96 bits or a scale past 28, or text not in invariant notation, invalid UTF-8
+// included), leaving `out` untouched; 8 is `cast_constraints_check`'s code for the same
+// refusal. -1 is a contract violation: a null `out`, or a null `ptr` with a non-zero `len`.
+// Every binding converts a declaration's strings through this one export, so none restates
+// the conversion.
+int32_t cast_declared_decimal(const uint8_t *ptr, uintptr_t len, struct HyperCastDecimal *out);
 
 #ifdef __cplusplus
 }  // extern "C"

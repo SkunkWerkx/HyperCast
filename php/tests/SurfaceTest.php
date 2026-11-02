@@ -10,8 +10,9 @@ use PHPUnit\Framework\TestCase;
 /**
  * The extension's public surface against 1.0's, recorded by tools/capture-v1-fixtures.php
  * into fixtures/v1/surface.json with the same code (V1Probe::surface()): every class, enum,
- * constant, case, method, parameter, default and property, after the one edit `expected()`
- * declares (php/README.md, "Differences from 1.0").
+ * constant, case, method, parameter, default and property, after the edits `expected()`
+ * declares: the one removal php/README.md lists under "Differences from 1.0", and the checked
+ * doors the validation constraints add to `Cast` (every 1.0 member is unchanged).
  */
 final class SurfaceTest extends TestCase
 {
@@ -45,14 +46,14 @@ final class SurfaceTest extends TestCase
 
     public function testEveryClassIsTheExtensions(): void
     {
-        foreach (V1Probe::CLASSES as $short) {
+        foreach ([...V1Probe::CLASSES, ...V1Probe::CONSTRAINT_CLASSES] as $short) {
             $class = new \ReflectionClass('HyperCast\\' . $short);
             self::assertTrue($class->isInternal(), $short);
             self::assertSame('hypercast', $class->getExtensionName(), $short);
         }
     }
 
-    /** surface.json with the declared edit applied: this and nothing else. */
+    /** surface.json with the declared edits applied: these and nothing else. */
     private static function expected(): array
     {
         $path = __DIR__ . '/fixtures/v1/surface.json';
@@ -61,6 +62,38 @@ final class SurfaceTest extends TestCase
         // exist, so there is nothing left for it to report.
         self::assertArrayHasKey('isAvailable', $surface['Cast']['methods']);
         unset($surface['Cast']['methods']['isAvailable']);
+        // The validation constraints' doors: plain text, and the three checked doors.
+        $param = static fn (string $name, string $type): array =>
+            ['name' => $name, 'type' => $type, 'optional' => false, 'default' => null, 'byRef' => false];
+        $checked = 'HyperCast\\Checked|HyperCast\\Fault|HyperCast\\Violation';
+        $constraints = $param('constraints', 'HyperCast\\Constraints');
+        $surface['Cast']['methods'] += [
+            'text' => [
+                'static' => true,
+                'params' => [$param('text', 'string')],
+                'return' => 'HyperCast\\Success|HyperCast\\Fault',
+            ],
+            'checked' => [
+                'static' => true,
+                'params' => [
+                    $param('text', 'string'),
+                    $param('format', 'HyperCast\\NumFormat|NumberFormatter'),
+                    $constraints,
+                ],
+                'return' => $checked,
+            ],
+            'checkedFromFloat' => [
+                'static' => true,
+                'params' => [$param('value', 'float'), $constraints],
+                'return' => $checked,
+            ],
+            'checkedText' => [
+                'static' => true,
+                'params' => [$param('text', 'string'), $constraints],
+                'return' => $checked,
+            ],
+        ];
+        ksort($surface['Cast']['methods']);
         return self::normalise($surface);
     }
 

@@ -376,6 +376,8 @@ public static partial class Cast
 	/// </summary>
 	static Verdict<T> Remap<T>(Verdict<T> verdict, ReadOnlySpan<byte> utf8, int charCount) where T : struct
 	{
+		// Not the checked doors' remap (Cast.Checked.cs, Units): that one counts WTF-8, which
+		// the text door feeds the core, and must not be folded into this one.
 		if (utf8.Length == charCount || !verdict.TryGetValue(out Fault fault) || fault.Length == 0 && fault.Offset == 0)
 			return verdict;
 		var offset = Encoding.UTF8.GetCharCount(utf8[..fault.Offset]);

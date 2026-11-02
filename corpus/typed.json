@@ -65,5 +65,9 @@
   { "door": "excel_duration", "input": "-3652500.0", "bits": "C14BDDCA00000000", "expect": "ok", "seconds": -315576000000, "nanos": 0 },
   { "door": "excel_duration", "input": "3652503.6525", "bits": "414BDDCBD3851EB8", "expect": "out_of_range" },
   { "door": "excel_duration", "input": "NaN", "bits": "7FF8000000000000", "expect": "malformed" },
-  { "door": "excel_duration", "input": "-inf", "bits": "FFF0000000000000", "expect": "malformed" }
+  { "door": "excel_duration", "input": "-inf", "bits": "FFF0000000000000", "expect": "malformed" },
+  {"door": "excel_serial", "input": "-0.0", "bits": "8000000000000000", "epoch": 1, "expect": "out_of_range"},
+  {"door": "excel_serial", "input": "-0.0", "bits": "8000000000000000", "epoch": 2, "expect": "ok", "year": 1904, "month": 1, "day": 1, "nanos_of_day": 0},
+  {"door": "excel_time", "input": "-0.0", "bits": "8000000000000000", "expect": "ok", "nanos": 0},
+  {"door": "excel_duration", "input": "-0.0", "bits": "8000000000000000", "expect": "ok", "seconds": 0, "nanos": 0}
 ]

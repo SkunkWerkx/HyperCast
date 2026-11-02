@@ -10,6 +10,62 @@
 export declare const __napiBindingTarget: 'native' | 'wasm32-wasi' | 'wasm32-wasip1'
 
 /**
+ * Validation constraints, the OpenAPI Schema Object's keywords, bound to one door and judged
+ * once, by the core, when declared: a declaration that cannot mean anything at its door is a
+ * refusal naming the rule it breaks, and every checked cast after that judges only data.
+ * Immutable. Made by `Constraints.declare`, never by `new`.
+ */
+export declare class Constraints {
+  /**
+   * Declares constraints for a door, or says which rule the declaration breaks; never
+   * throws. A refusal from the core reads `Constraints refused (code N): <the rule>.`, `N`
+   * the code `castConstraintsCheck` answers; anything else is a declaration this binding
+   * cannot read (a `number` bound, a `door` that is no `Door`), worded as such.
+   */
+  static declare(spec: ConstraintsSpec): Declaration<Constraints>
+  /** The door this declaration is bound to. */
+  get door(): Door
+  /** The declared `minimum`, as canonical decimal text, or `null`. */
+  get minimum(): string | null
+  /** The declared `exclusiveMinimum`, as canonical decimal text, or `null`. */
+  get exclusiveMinimum(): string | null
+  /** The declared `maximum`, as canonical decimal text, or `null`. */
+  get maximum(): string | null
+  /** The declared `exclusiveMaximum`, as canonical decimal text, or `null`. */
+  get exclusiveMaximum(): string | null
+  /** The declared `multipleOf`, as canonical decimal text, or `null`. */
+  get multipleOf(): string | null
+  /** What a value that is not a multiple of `multipleOf` becomes. */
+  get rounding(): Rounding
+  /** The declared `minLength`, in code points, or `null`. */
+  get minLength(): number | null
+  /** The declared `maxLength`, in code points, or `null`. */
+  get maxLength(): number | null
+  /** Whether text is trimmed of Unicode `White_Space` before it is judged. */
+  get trim(): boolean
+  /**
+   * The declared `enum` entries as the caller gave them (strings, or `bigint`s at an
+   * integer door), or `null`.
+   */
+  get enum(): Array<string | bigint> | null
+  /**
+   * The 72 bytes this declaration crosses a C ABI as, in the native byte order the core
+   * reads in place: the size (`72`), the flags, the rounding code, `minLength`, `maxLength`
+   * and a reserved zero as `u32`s, then the lower bound, the upper bound and `multipleOf` as
+   * 16-byte decimals (the low 64 and high 32 bits of the magnitude, the scale, the sign, two
+   * zero bytes): for a library that judges values across a C ABI of its own, with
+   * `packedEnum` beside it.
+   */
+  get packed(): Uint8Array
+  /**
+   * The `enum` list as the core reads it beside `packed`, empty for none: at an integer door
+   * 16-byte decimals in native byte order, at `Door.Text` each entry a little-endian `u32`
+   * byte length followed by its UTF-8.
+   */
+  get packedEnum(): Uint8Array
+}
+
+/**
  * A declared field order and, beside the English `AM`/`PM`, a culture's own day-period
  * designators. Made by `DateFormat.declare`, never by `new`.
  */
@@ -96,6 +152,43 @@ export declare function castBool(text: Text): Verdict<boolean>
 export declare function castChar(text: Text): Verdict<string>
 
 /**
+ * Casts numeric text through the door its `Constraints` are bound to, under the declared
+ * format (absent is the invariant one), then judges the value by them: `Checked<T>`, the
+ * door's own `Failure`, or `Violated` naming the first rule it breaks. The value is judged
+ * exactly, on the decimal the door read, never on a float. The value's type follows the
+ * door: `number` for `I8` to `U32`, `F32` and `F64`; `bigint` for `I64` and `U64`; canonical
+ * decimal text for `Decimal`. Spans are in the caller's units, as a fault's are.
+ * `Constraints` for `Door.Text`, or anything that is no `Constraints` (`undefined` and `null`
+ * included: a failed declaration's missing `.value`), is a contract violation: `malformed`
+ * with an empty span at 0.
+ */
+export declare function castChecked(text: Text, constraints: Constraints, format?: NumFormat | undefined | null): CheckedVerdict<number | bigint | string>
+
+/**
+ * Reads a number a source already decoded (a JSON parser's, a spreadsheet's numeric cell)
+ * through the door its `Constraints` are bound to, then judges it by them on the shortest
+ * decimal that names it: `0.1 + 0.2` is `0.30000000000000004`, which breaks
+ * `multipleOf: "0.1"` unrounded and rounds to `0.3` under `Rounding.Midpoint`. NaN is
+ * `malformed` and an infinity `outOfRange`; every fault and violation has an empty span.
+ * `-0` is zero, delivered at a float door as `0`.
+ */
+export declare function castCheckedFromNumber(value: number, constraints: Constraints): CheckedVerdict<number | bigint | string>
+
+/**
+ * Judges a declaration without building it, the way `Constraints.declare` does: `0` when every
+ * rule holds, otherwise the code of the first rule it breaks (`1` a keyword the door does not
+ * take, `2` minimum with exclusiveMinimum, `3` maximum with exclusiveMaximum, `4` a lower
+ * bound not below the upper, `5` multipleOf not positive, `6` a rounding without multipleOf,
+ * `7` minLength above maxLength, `8` a bound, step or entry the door cannot hold, `9` an entry
+ * that is not UTF-8 (a lone surrogate), `10` a duplicate entry, `11` a rounding code the core
+ * does not know, `12` an `enum` with no entries (`enum: []`; leaving `enum` out declares
+ * none), `13` a text entry no input can match: an empty one, or under `trim` one with leading
+ * or trailing white space). `-1` is a declaration this binding cannot read, whose wording
+ * `Constraints.declare` gives.
+ */
+export declare function castConstraintsCheck(spec: ConstraintsSpec): number
+
+/**
  * Casts a calendar date: strict ISO `yyyy-MM-dd` with no order, the separated forms
  * (`1/7/2026`, `1.7.2026`) under a declared one.
  */
@@ -116,6 +209,16 @@ export declare function castDecimal(text: Text, format?: NumFormat | undefined |
  * past 96 bits or more than 28 places is `outOfRange`.
  */
 export declare function castDecimalFromNumber(value: number): Verdict<string>
+
+/**
+ * Converts a bound, step or integer `enum` entry written in invariant notation (an optional
+ * sign, digits with an optional `.` and fraction, an optional exponent: `"0.000001"`, `"-90"`,
+ * `"1e-6"`) to the exact decimal the core declares it as, as canonical text with its trailing
+ * zeros dropped (`"1.50"` is `"1.5"`): the conversion every bound a `Constraints` is given
+ * crosses. A value past 96 bits or 28 places, or text in any other notation, is refused as a
+ * declaration is (code 8).
+ */
+export declare function castDeclaredDecimal(text: Text): Declaration<string>
 
 /** Casts a duration (ISO 8601, the invariant colon form, or protobuf JSON seconds). */
 export declare function castDuration(text: Text): Verdict<Duration>
@@ -153,6 +256,21 @@ export declare function castI64(text: Text, format?: NumFormat | undefined | nul
 /** Casts integer text to a signed 8-bit number under the declared format. */
 export declare function castI8(text: Text, format?: NumFormat | undefined | null): Verdict<number>
 
+/**
+ * Casts text as text: the input itself, once it is valid text (a `Uint8Array` must be UTF-8,
+ * and a string holding a lone surrogate is `malformed` at it), as a `Verdict<string>`. Empty
+ * input is `empty`; nothing is trimmed. With `Constraints` for `Door.Text` it is judged by
+ * them, a `CheckedVerdict<string>`: trimmed of Unicode `White_Space` when they say so
+ * (trimmed to nothing is `empty`), lengths counted in code points, and an `enum` matched under
+ * simple case folding, a match delivering the caller's own declared entry and its index.
+ * `Constraints` for another door, or anything that is no `Constraints`, is a contract
+ * violation: `malformed` with an empty span at 0. Plain or constrained is chosen by the number
+ * of arguments, not by the second one's value, so an explicit `undefined` or `null`
+ * declaration (a failed `Constraints.declare`'s missing `.value`) is that contract violation
+ * too, never "no rules".
+ */
+export declare function castText(text: Text, constraints?: Constraints): Verdict<string> | CheckedVerdict<string>
+
 /** Casts an ISO 24-hour time of day. */
 export declare function castTime(text: Text): Verdict<TimeOfDay>
 
@@ -180,6 +298,26 @@ export declare function castUnix(text: Text, precision: UnixPrecision): Verdict<
  */
 export declare function castUuid(text: Text): Verdict<string>
 
+/**
+ * The success case of a checked door: `ok` is `true`; `value` is the value (rounded to
+ * `multipleOf` when the declaration rounds; at `Door.Text` with an `enum`, the caller's own
+ * declared entry); `adjusted` is true only when rounding changed it; `enumIndex` is the index
+ * of the entry a text matched, `null` otherwise (an integer `enum` included: the value is the
+ * answer).
+ */
+export interface Checked<T> {
+  ok: true
+  value: T
+  adjusted: boolean
+  enumIndex: number | null
+}
+
+/**
+ * The outcome of a checked door: exactly one of `Checked<T>`, `Failure` or `Violated`, told
+ * apart by `ok` and then by `'fault' in verdict`.
+ */
+export type CheckedVerdict<T> = Checked<T> | Failure | Violated
+
 /** A civil date and time with no zone, as zone-less text names one. */
 export interface CivilDateTime {
   year: number
@@ -189,6 +327,43 @@ export interface CivilDateTime {
   minute: number
   second: number
   nanos: number
+}
+
+/**
+ * The declared form of a `Constraints`: `Constraints.declare` reads it. The integer doors
+ * take the bounds, `multipleOf` with a `rounding`, and `enum`; `Door.F32`, `Door.F64` and
+ * `Door.Decimal` the same but `enum`; `Door.Text` `minLength`, `maxLength` (in code points),
+ * `trim` and `enum`. A bound, step or integer entry is a decimal string in invariant
+ * notation (`"0.000001"`, `"-90"`, `"1e-6"`) or a `bigint`, never a `number`: a number is a
+ * binary float, which holds most decimals only approximately.
+ */
+export interface ConstraintsSpec {
+  /** The door the declaration is bound to. */
+  door: Door
+  /** The least value allowed. */
+  minimum?: string | bigint
+  /** The bound every value must lie above. */
+  exclusiveMinimum?: string | bigint
+  /** The greatest value allowed. */
+  maximum?: string | bigint
+  /** The bound every value must lie below. */
+  exclusiveMaximum?: string | bigint
+  /** The step every value must be a multiple of. */
+  multipleOf?: string | bigint
+  /** What a value that is not a multiple becomes; `Rounding.Strict` when absent. */
+  rounding?: Rounding
+  /** The fewest code points the text may hold. */
+  minLength?: number
+  /** The most code points the text may hold. */
+  maxLength?: number
+  /** Trim Unicode `White_Space` from both ends before judging. */
+  trim?: boolean
+  /**
+   * The values allowed: strings at `Door.Text` (matched under simple case folding), decimal
+   * strings or `bigint`s at an integer door. Left out declares none; an empty array declares
+   * one no value could match, which the core refuses (code 12).
+   */
+  enum?: ReadonlyArray<string | bigint>
 }
 
 /** The declared form of a `DateFormat`: `DateFormat.declare` reads it. */
@@ -213,6 +388,26 @@ export declare enum DateOrder {
 
 /** The outcome of declaring a format: the format, or the reason it cannot be one. */
 export type Declaration<T> = Success<T> | Refusal
+
+/**
+ * The door a `Constraints` is bound to, numbered as the core numbers it: the integer family,
+ * the two reals and the exact decimal (judged by `castChecked` and `castCheckedFromNumber`),
+ * and text (judged by `castText`).
+ */
+export declare enum Door {
+  I8 = 2,
+  I16 = 3,
+  I32 = 4,
+  I64 = 5,
+  U8 = 6,
+  U16 = 7,
+  U32 = 8,
+  U64 = 9,
+  F32 = 10,
+  F64 = 11,
+  Text = 18,
+  Decimal = 19,
+}
 
 /** A signed span: whole seconds, and nanoseconds with the same sign (protobuf's `Duration`). */
 export interface Duration {
@@ -313,6 +508,28 @@ export interface Refusal {
   message: string
 }
 
+/**
+ * Why a checked door refused a value: it did not parse (`Failure`, today's fault), or it
+ * parsed and broke a rule (`Violated`).
+ */
+export type Rejection = Failure | Violated
+
+/**
+ * What a value that is not a multiple of the declared `multipleOf` becomes, the core's codes
+ * verbatim. Every mode but `Strict` needs a `multipleOf`, and rounding happens on the exact
+ * decimal, before the bounds judge the result.
+ */
+export declare enum Rounding {
+  /** Not a multiple is a `multipleOf` violation. The default. */
+  Strict = 0,
+  /** To the nearest multiple, a tie to the even one. */
+  Midpoint = 1,
+  /** To the multiple toward negative infinity. */
+  Floor = 2,
+  /** To the multiple toward positive infinity. */
+  Ceiling = 3,
+}
+
 /** The success case of a verdict: `ok` is `true` and `value` is the cast value. */
 export interface Success<T> {
   ok: true
@@ -352,3 +569,26 @@ export declare enum UnixPrecision {
 
 /** The outcome of a cast: exactly one of `Success<T>` or `Failure`, told apart by `ok`. */
 export type Verdict<T> = Success<T> | Failure
+
+/**
+ * The failure case of a checked door for a value that parsed and broke a declared rule:
+ * `ok` is `false` and `violation` says which rule, and where.
+ */
+export interface Violated {
+  ok: false
+  violation: Violation
+}
+
+/**
+ * A rule a value broke, in the OpenAPI spelling. Open to additions: `format` and `pattern`
+ * may join in a minor release, so a `switch` over keywords needs a `default` arm, and a code
+ * this binding does not name yet arrives as `"keyword N"`.
+ */
+export interface Violation {
+  /** The keyword broken. */
+  keyword: 'minimum' | 'exclusiveMinimum' | 'maximum' | 'exclusiveMaximum' | 'multipleOf' | 'minLength' | 'maxLength' | 'enum' | (string & {})
+  /** Where the value starts, in the caller's own units, as a fault's span is. */
+  offset: number
+  /** How long it runs; 0 for a number already decoded, which has no text. */
+  length: number
+}

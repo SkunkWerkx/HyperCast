@@ -27,6 +27,7 @@ const SUCCESS: Declaration = Declaration {
     name: "HyperCast\\Success",
     properties: &[("value", Type::Mixed)],
     constants: &[],
+    promoted: true,
 };
 
 const FAULT: Declaration = Declaration {
@@ -37,18 +38,21 @@ const FAULT: Declaration = Declaration {
         ("length", Type::Int),
     ],
     constants: &[],
+    promoted: true,
 };
 
 const DECIMAL: Declaration = Declaration {
     name: "HyperCast\\Decimal",
     properties: &[("magnitude", Type::String), ("scale", Type::Int), ("negative", Type::Bool)],
     constants: &[],
+    promoted: true,
 };
 
 const DURATION: Declaration = Declaration {
     name: "HyperCast\\Duration",
     properties: &[("seconds", Type::Int), ("nanos", Type::Int)],
     constants: &[],
+    promoted: true,
 };
 
 /// `DayPeriods::MAX_BYTES`.
@@ -61,6 +65,7 @@ const DAY_PERIODS: Declaration = Declaration {
     name: "HyperCast\\DayPeriods",
     properties: &[("am", Type::String), ("pm", Type::String)],
     constants: &[("MAX_BYTES", 16), ("PACKED_BYTES", 40)],
+    promoted: true,
 };
 
 fn keep_success(ce: &'static mut ClassEntry, tables: ArgInfoTables) {
@@ -328,7 +333,7 @@ fn from_limbs_call(ex: &mut ExecuteData) -> PhpResult<Zval> {
 }
 
 /// 1.0's `Decimal::__toString`.
-fn decimal_text(object: *mut ext_php_rs::ffi::zend_object) -> PhpResult<Vec<u8>> {
+pub(crate) fn decimal_text(object: *mut ext_php_rs::ffi::zend_object) -> PhpResult<Vec<u8>> {
     let mut digits = read_bytes(Value::Decimal, object, "magnitude")?;
     let scale = read_int(Value::Decimal, object, "scale")?;
     let sign = |text: Vec<u8>, negative: bool| {

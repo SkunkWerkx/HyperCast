@@ -108,6 +108,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The float doors return `0.0` for a negative zero, as `Decimal` and the integers already
+  did.** `-0`, `(0)`, `-$0.00`, `-0,00` under declared separators, and an underflow like
+  `-1e-400` all read to positive zero at `cast_f32` and `cast_f64`, and so does every float
+  the checked doors deliver: `checked_from_f64(-0.0)` at a float door is `0.0`, not
+  `adjusted`, since nothing was rounded, and Rust's `f32_from_f64` narrows `-0.0` and
+  `-1e-300` to `0.0`. The bits change; equality doesn't, and judgement already read both
+  zeros as zero. `corpus/real.json` pins every spelling of zero the doors accept by bits, at
+  both widths, and `integer.json`, `decimal.json`, `typed.json` and `constraints.json` pin
+  the same spellings at their doors. *(core, every binding)*
 - **Python — the `cp314-cp314t` wheel is gone.** Each platform ships two wheels where it
   shipped three, `cp311-abi3` for CPython 3.11 and newer with the GIL and `cp315-abi3.abi3t`
   for 3.15 and newer with or without it: 17 wheels a release where 1.0.0 had 25. The
@@ -225,6 +234,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The float doors read a percent correctly rounded.** `cast_f32` and `cast_f64` parsed the
+  number and then divided by 100, rounding twice: `1.1%` was `0.011000000000000001`, and about
+  a quarter of the percents with one to three decimals came back one ulp off at either width.
+  The point now moves two places left in the text before the one conversion, so `1.1%` is
+  `0.011` and every percent is the float nearest its exact hundredth, through currency,
+  parentheses and exponents alike. Affected inputs change by one ulp, and a percent past the
+  float's range by a factor under 100 (`1e310%`) now reads instead of overflowing. The
+  `Decimal` door was already exact. `corpus/real.json` and `corpus/constraints.json` pin
+  inputs the division got wrong at both widths. *(core, every binding)*
 - **Java — `Cast.isAvailable()` answers `false` without a core** instead of throwing
   `AssertionError`. *(Java)*
 - **The static library links without dead-stripping.** A plain `cc app.c libhypercast.a`

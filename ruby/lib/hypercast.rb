@@ -9,9 +9,11 @@ require_relative "hypercast/runtime"
 # platform gems), or the native libhypercast shared library called through Fiddle (the
 # universal gem bundles one per supported platform). HyperCast::BACKEND names the one that
 # loaded; the selection logic is at the bottom of this file. Every door returns a verdict: Success or
-# Fault (a closed reason plus the offending span), never an exception for bad data — the
-# only exceptions here are caller bugs (a malformed NumFormat, an undeclared option, text
-# that is not a String), never data, and the same exception on every backend.
+# Fault (a closed reason plus the offending span), and every checked door — the doors that
+# also judge a value by declared Constraints — a Checked, a Fault or a Violation; never an
+# exception for bad data. The only exceptions here are caller bugs (a malformed NumFormat, a
+# refused Constraints, an undeclared option, text that is not a String), never data, and the
+# same exception on every backend.
 #
 # Consume with Ruby's own pattern matching over the two Data case types:
 #
@@ -366,6 +368,329 @@ module HyperCast
     end
   end
 
+  # The doors a Constraints can be bound to, mapped to the native core's door codes: the
+  # integer, real and decimal doors, and :text.
+  CHECKED_DOORS = {
+    i8: 2, i16: 3, i32: 4, i64: 5, u8: 6, u16: 7, u32: 8, u64: 9, f32: 10, f64: 11, text: 18, decimal: 19
+  }.freeze
+
+  # What a value that is not a multiple of a declared multiple_of becomes, mapped to the
+  # native core's rounding codes: :strict (a :multiple_of Violation, the default), :midpoint
+  # (the nearest multiple, ties to even), :floor (toward negative infinity) and :ceiling
+  # (toward positive infinity). An unknown rounding is a caller bug (KeyError).
+  ROUNDINGS = { strict: 0, midpoint: 1, floor: 2, ceiling: 3 }.freeze
+
+  # The success case of a checked door: the value (rounded to multiple_of when the declaration
+  # rounds; at the :text door with an enum, the very String the declaration was given),
+  # adjusted (true only when rounding changed the value) and, at the :text door with an enum,
+  # the index of the entry matched — nil otherwise, an integer enum included, where the value
+  # is the answer.
+  Checked = Data.define(:value, :adjusted, :enum_index)
+
+  # A value that parsed and broke a declared rule: the Keyword broken and the value's span, in
+  # the units a Fault's span is in (characters for text, bytes for a binary String). A number
+  # the caller already held has no text, and an empty span.
+  Violation = Data.define(:keyword, :offset, :length)
+
+  # The rule a Violation broke: the native core's code, named the OpenAPI way by #name
+  # ("exclusiveMinimum"). Open to additions — format and pattern may join in a minor release —
+  # so a case over keywords needs an else branch; a code this gem does not name yet is kept,
+  # its name "keyword N". The constants (Keyword::MINIMUM ... Keyword::ENUM) compare equal to
+  # every keyword of their code, so `in Violation(keyword: Keyword::MINIMUM)` matches.
+  Keyword = Data.define(:code) do
+    # The OpenAPI spelling: "minimum", "exclusiveMinimum", ... "enum"; "keyword N" for a code
+    # this gem does not name.
+    def name
+      self.class::NAMES.fetch(code) { "keyword #{code}" }
+    end
+
+    alias_method :to_s, :name
+
+    # The constant that names this keyword (HyperCast::Keyword::MINIMUM), or the Data form
+    # for a code this gem does not name.
+    def inspect
+      constant = self.class::CONSTANTS[code]
+      constant ? "HyperCast::Keyword::#{constant}" : super
+    end
+  end
+
+  # The OpenAPI spelling of each keyword the core names, by code.
+  Keyword::NAMES = {
+    1 => "minimum", 2 => "exclusiveMinimum", 3 => "maximum", 4 => "exclusiveMaximum", 5 => "multipleOf",
+    6 => "minLength", 7 => "maxLength", 8 => "enum"
+  }.freeze
+
+  # The constant each named keyword is published as, by code.
+  Keyword::CONSTANTS = {
+    1 => "MINIMUM", 2 => "EXCLUSIVE_MINIMUM", 3 => "MAXIMUM", 4 => "EXCLUSIVE_MAXIMUM", 5 => "MULTIPLE_OF",
+    6 => "MIN_LENGTH", 7 => "MAX_LENGTH", 8 => "ENUM"
+  }.freeze
+
+  # `minimum`, broken by a value below it.
+  Keyword::MINIMUM = Keyword.new(code: 1)
+  # `exclusiveMinimum`, broken by a value at or below it.
+  Keyword::EXCLUSIVE_MINIMUM = Keyword.new(code: 2)
+  # `maximum`, broken by a value above it.
+  Keyword::MAXIMUM = Keyword.new(code: 3)
+  # `exclusiveMaximum`, broken by a value at or above it.
+  Keyword::EXCLUSIVE_MAXIMUM = Keyword.new(code: 4)
+  # `multipleOf`, broken by a value that is not a multiple of it under :strict rounding.
+  Keyword::MULTIPLE_OF = Keyword.new(code: 5)
+  # `minLength`, broken by text of fewer code points.
+  Keyword::MIN_LENGTH = Keyword.new(code: 6)
+  # `maxLength`, broken by text of more code points.
+  Keyword::MAX_LENGTH = Keyword.new(code: 7)
+  # `enum`, broken by a value that is none of the entries.
+  Keyword::ENUM = Keyword.new(code: 8)
+
+  # Validation constraints — the OpenAPI Schema Object's keywords — bound to one door and
+  # judged once, by the native core, when built: a declaration that cannot mean anything at
+  # its door is an ArgumentError here, its message the rule it breaks ("Constraints refused
+  # (code 4): the lower bound is not below the upper bound."), and every checked cast after
+  # that judges only data. The door is required: no declaration ever silently means "no
+  # rules", and `Constraints.new(door: :f64)` is an explicit, empty one.
+  #
+  # The integer doors take minimum, exclusive_minimum, maximum, exclusive_maximum,
+  # multiple_of with a rounding (a ROUNDINGS Symbol), and enum; :f32, :f64 and :decimal the
+  # same but enum; :text min_length, max_length (in code points), trim (of Unicode
+  # White_Space) and enum (matched under simple case folding). Every keyword is accepted at
+  # every door, and the core alone refuses one its door does not take.
+  #
+  # A bound, step or integer enum entry is an Integer, a BigDecimal, a String in invariant
+  # notation ("0.000001", "-90", "1e-6") or this gem's own Decimal, and crosses the core's own
+  # conversion (HyperCast.declared_decimal): never a Float, since 0.1 has no exact binary form
+  # and a Float could only declare a neighbour of the value meant. Bounds are kept as the exact
+  # Decimal declared. A text enum entry is a String, kept as the very object given when it is
+  # frozen and as a frozen copy when it is not, so a match delivers what the core judged. An
+  # enum left nil declares none, while `enum: []` declares one no value could match and is
+  # refused (code 12), as is a text entry no input can match (code 13: an empty one, or under
+  # trim one with leading or trailing white space).
+  #
+  #   latitude = HyperCast::Constraints.new(door: :f64, minimum: "-90", maximum: "90")
+  #   HyperCast.checked("91", HyperCast::NumFormat::INVARIANT, latitude)
+  #   # => #<data HyperCast::Violation keyword=HyperCast::Keyword::MAXIMUM, offset=0, length=2>
+  Constraints = Data.define(:door, :minimum, :exclusive_minimum, :maximum, :exclusive_maximum, :multiple_of,
+                            :rounding, :min_length, :max_length, :trim, :enum) do
+    # Validates every keyword's type, converts the bounds, steps and integer entries through
+    # the core, and has the core judge the declaration; a refusal is an ArgumentError worded
+    # from its code. A wrong type is an ArgumentError, an unknown door or rounding a KeyError.
+    def initialize(door:, minimum: nil, exclusive_minimum: nil, maximum: nil, exclusive_maximum: nil,
+                   multiple_of: nil, rounding: :strict, min_length: nil, max_length: nil, trim: false, enum: nil)
+      keywords = { door: door, minimum: minimum, exclusive_minimum: exclusive_minimum, maximum: maximum,
+                   exclusive_maximum: exclusive_maximum, multiple_of: multiple_of, rounding: rounding,
+                   min_length: min_length, max_length: max_length, trim: trim, enum: enum }
+      code = HyperCast.constraints_check(**keywords)
+      raise ArgumentError, self.class.send(:refusal, code) unless code.zero?
+
+      super(**self.class.send(:members_of, **keywords))
+    end
+
+    # The 72 bytes this declaration crosses a C ABI as, in the native byte order the core
+    # reads in place: the size (72), the flags, the rounding code, min_length, max_length and
+    # a reserved zero as u32s, then the lower bound, the upper bound and multiple_of as 16-byte
+    # decimals (the low 64 and high 32 bits of the magnitude, the scale, the sign, two zero
+    # bytes) — for a gem that judges values across a C ABI of its own, with #packed_enum
+    # beside it.
+    def packed
+      self.class.send(:pack_raw, to_h)
+    end
+
+    # The enum list as the core reads it beside #packed, "" for none (read only when the
+    # flags in #packed carry HAS_ENUM, 256, set whenever an enum is declared): at an integer
+    # door 16-byte decimals in native byte order, at :text each entry a little-endian u32 byte
+    # length followed by its UTF-8.
+    def packed_enum
+      self.class.send(:pack_enum, to_h)
+    end
+
+    # The message a refused declaration raises with, one per refusal code; a code this gem
+    # does not name is worded as every binding words it.
+    def self.refusal(code)
+      "Constraints refused (code #{code}): #{self::REFUSALS.fetch(code, 'a rule this binding does not name')}."
+    end
+
+    # The declaration as both backends hand it to the core: the door code, #packed and
+    # #packed_enum. Judged again here, once per object (each backend remembers the answer),
+    # because a Constraints can exist without Constraints.new having judged it: one never
+    # built (Data's allocate) has no door, and one restored by Marshal from a payload in the
+    # Struct form sets its members directly. Either is the caller's bug, raised as
+    # Constraints.new raises it, never a declaration of no rules.
+    def declaration
+      raise ArgumentError, "this HyperCast::Constraints was never built: declare it with Constraints.new(door: ...)" if
+        door.nil?
+
+      code = HyperCast.constraints_check(**to_h)
+      raise ArgumentError, self.class.send(:refusal, code) unless code.zero?
+
+      [CHECKED_DOORS.fetch(door), packed, packed_enum]
+    end
+    private :declaration
+
+    # Marshal's form of a declaration: its members, so loading one builds it through
+    # #initialize, judged as Constraints.new judges it.
+    def marshal_dump
+      to_h
+    end
+
+    # Restores a declaration from #marshal_dump's members through #initialize, so a payload
+    # that declares something the core refuses raises its refusal.
+    def marshal_load(members)
+      initialize(**members)
+    end
+
+    # The declaration HyperCast.constraints_check judges: its door code, packed layout and
+    # packed enum, or the code 8 the conversion of a bound, step or entry was refused with.
+    def self.layout(**keywords)
+      members = members_of(**keywords)
+      return members if members.is_a?(Integer)
+
+      [CHECKED_DOORS.fetch(members[:door]), pack_raw(members), pack_enum(members)]
+    end
+
+    # Every keyword validated and converted — a declaration's members — or the code 8 a
+    # conversion was refused with.
+    def self.members_of(door:, minimum: nil, exclusive_minimum: nil, maximum: nil, exclusive_maximum: nil,
+                        multiple_of: nil, rounding: :strict, min_length: nil, max_length: nil, trim: false, enum: nil)
+      CHECKED_DOORS.fetch(door)
+      ROUNDINGS.fetch(rounding)
+      raise ArgumentError, "trim must be true or false; got #{trim.inspect}" unless [true, false].include?(trim)
+
+      bounds = { minimum: minimum, exclusive_minimum: exclusive_minimum, maximum: maximum,
+                 exclusive_maximum: exclusive_maximum, multiple_of: multiple_of }
+      bounds.each do |name, value|
+        next if value.nil?
+
+        bounds[name] = exact(name, value)
+        return bounds[name] if bounds[name].is_a?(Integer)
+      end
+      entries = entries_of(door, enum)
+      return entries if entries.is_a?(Integer)
+
+      { door: door, **bounds, rounding: rounding, min_length: length("min_length", min_length),
+        max_length: length("max_length", max_length), trim: trim, enum: entries }
+    end
+
+    # A bound, step or integer enum entry as the core converts it: an Integer, a BigDecimal,
+    # a String or a Decimal, each through its text and HyperCast.declared_decimal — the exact
+    # Decimal, or the code 8 it was refused with. Never a Float, nor true or false.
+    def self.exact(name, value)
+      text =
+        case value
+        when Integer, String, Decimal then value.to_s
+        else
+          raise ArgumentError, "#{name} must be an Integer, a BigDecimal, a String or a HyperCast::Decimal; got " \
+                               "#{value.inspect}#{hint(value)}" unless defined?(BigDecimal) && value.is_a?(BigDecimal)
+
+          value.to_s("F")
+        end
+      begin
+        HyperCast.declared_decimal(text)
+      rescue ArgumentError
+        8
+      end
+    end
+
+    # Why a Float is refused, beside the refusal.
+    def self.hint(value)
+      return "" unless value.is_a?(Float)
+
+      " (a Float holds most decimals only approximately: write it as a String or a BigDecimal)"
+    end
+
+    # A declared length: nil, or an Integer in the 32 unsigned bits the core counts code
+    # points in (never true or false, nor a Float).
+    def self.length(name, value)
+      return nil if value.nil?
+      raise ArgumentError, "#{name} must be an Integer from 0 to #{0xFFFF_FFFF}; got #{value.inspect}" unless
+        value.is_a?(Integer) && value.between?(0, 0xFFFF_FFFF)
+
+      value
+    end
+
+    # The enum entries, frozen, as a declaration keeps them: at :text the caller's own
+    # Strings, elsewhere each entry's exact Decimal (or the code 8 one was refused with); nil
+    # for none. An empty list is declared, for the core to refuse (code 12).
+    def self.entries_of(door, enum)
+      return nil if enum.nil?
+      raise ArgumentError, "enum must be an Array of entries; got #{enum.inspect}" unless
+        enum.respond_to?(:to_a) && !enum.is_a?(String)
+
+      entries = enum.to_a
+      if door == :text
+        entries = entries.each_with_index.map do |entry, index|
+          raise ArgumentError, "enum entries at :text must be Strings; entry #{index} is #{entry.inspect}" unless
+            entry.is_a?(String)
+
+          # A Hash key's rule: a frozen String is kept as itself, a mutable one as a frozen
+          # copy, so what a match delivers is always what the core judged.
+          entry.frozen? ? entry : entry.dup.freeze
+        end
+      else
+        entries = entries.map do |entry|
+          decimal = exact("enum entry", entry)
+          return decimal if decimal.is_a?(Integer)
+
+          decimal
+        end
+      end
+      entries.freeze
+    end
+
+    # A declaration's members as the 72-byte native layout #packed describes.
+    def self.pack_raw(members)
+      flags = self::FLAGS.sum { |member, flag| members[member].nil? ? 0 : flag }
+      flags |= 128 if members[:trim]
+      decimals = [members[:minimum] || members[:exclusive_minimum], members[:maximum] || members[:exclusive_maximum],
+                  members[:multiple_of]]
+      [72, flags, ROUNDINGS.fetch(members[:rounding]), members[:min_length] || 0, members[:max_length] || 0, 0]
+        .pack("L6") + decimals.map { |decimal| pack_decimal(decimal) }.join
+    end
+
+    # One Decimal in the core's native 16-byte layout; zero for nil.
+    def self.pack_decimal(decimal)
+      return [0, 0, 0, 0].pack("QLCCx2") if decimal.nil?
+
+      magnitude = decimal.magnitude
+      [magnitude & 0xFFFF_FFFF_FFFF_FFFF, magnitude >> 64, decimal.scale, decimal.negative ? 1 : 0].pack("QLCCx2")
+    end
+
+    # A declaration's enum as #packed_enum describes it, a binary String.
+    def self.pack_enum(members)
+      entries = members[:enum] or return "".b
+      return entries.map { |entry| pack_decimal(entry) }.join.b unless members[:door] == :text
+
+      entries.map do |entry|
+        text = Interop::BYTE_COMPATIBLE.include?(entry.encoding) ? entry : entry.encode(Encoding::UTF_8)
+        [text.bytesize].pack("L<") + text.b
+      end.join.b
+    end
+
+    private_class_method :refusal, :layout, :members_of, :exact, :hint, :length, :entries_of, :pack_raw, :pack_decimal,
+                         :pack_enum
+  end
+
+  # The flag each declared member sets in the packed layout, HAS_ENUM (256) by an enum even
+  # with no entries; TRIM (128) is set by trim.
+  Constraints::FLAGS = { minimum: 1, exclusive_minimum: 2, maximum: 4, exclusive_maximum: 8, multiple_of: 16,
+                         min_length: 32, max_length: 64, enum: 256 }.freeze
+
+  # The words a refused declaration's message gives, one per code: the native core's own.
+  Constraints::REFUSALS = {
+    1 => "a constraint the door does not take",
+    2 => "minimum together with exclusiveMinimum",
+    3 => "maximum together with exclusiveMaximum",
+    4 => "the lower bound is not below the upper bound",
+    5 => "multipleOf is not positive",
+    6 => "a rounding without multipleOf",
+    7 => "minLength is above maxLength",
+    8 => "a bound, step or enum entry the door cannot hold",
+    9 => "an enum entry that is not UTF-8",
+    10 => "a duplicate enum entry",
+    11 => "a malformed constraints layout",
+    12 => "an enum with no entries",
+    13 => "a text enum entry no input can match"
+  }.freeze
+
   class << self
     # Presents a verdict optionally: an :empty fault becomes nil (Ruby's absent),
     # everything else flows through untouched.
@@ -578,6 +903,92 @@ module HyperCast
       typed(:cast_excel_duration, float(value), 16) { |out| Interop.decode(:duration, out) }
     end
 
+    # Casts text as text: the input itself, as a String, once it is valid UTF-8 — a binary
+    # String's bytes must be, and a UTF-8 String carrying invalid bytes is :malformed at the
+    # first. Empty input is :empty; nothing is trimmed. The value is the String passed when it
+    # is UTF-8 or US-ASCII, else a UTF-8 copy.
+    #
+    # With Constraints for :text it is judged by them, a Checked, a Fault or a Violation:
+    # trimmed of Unicode White_Space when they say so (trimmed to nothing is :empty), lengths
+    # counted in code points, and an enum matched under simple case folding, a match
+    # delivering the very String declared and its index. Constraints for another door are an
+    # ArgumentError (they go to checked).
+    def text(text, constraints = nil)
+      bytes = utf8(text)
+      if constraints.nil?
+        out, fault = scratch
+        rc = Runtime.function(:cast_text).call(input_ptr(bytes), bytes.bytesize, out, fault)
+        return verdict(rc, fault, bytes) { text_value(bytes, *out[0, 8].unpack("LL")) }
+      end
+      _door, raw, entries = constrained(constraints, :text)
+      rc = checked_call(:cast_checked, CHECKED_DOORS.fetch(:text), 0, nil, raw, input_ptr(entries), entries.bytesize,
+                        input_ptr(bytes), bytes.bytesize)
+      checked_verdict(rc, bytes) do |out, check|
+        offset, length = out[0, 8].unpack("LL")
+        index = check[8, 4].unpack1("L")
+        index == 0xFFFF_FFFF ? text_value(bytes, offset, length) : constraints.enum.fetch(index)
+      end
+    end
+
+    # Casts numeric text through the door its Constraints are bound to, under the declared
+    # format, then judges the value by them: a Checked, or the door's own Fault, or a
+    # Violation of the first rule it breaks. The value is judged exactly, on the decimal the
+    # door read, never on a float. Spans are in the units a Fault's are. separator:,
+    # delimiter: and unit: override those fields of format for this call
+    # (NumFormat#override). Constraints for :text are an ArgumentError (they go to text).
+    def checked(text, format, constraints, separator: nil, delimiter: nil, unit: nil)
+      format = format.override(separator: separator, delimiter: delimiter, unit: unit) if
+        separator || delimiter || unit
+      bytes = utf8(text)
+      symbol, raw, entries = constrained(constraints, :checked)
+      rc = checked_call(:cast_checked, CHECKED_DOORS.fetch(symbol), 0, packed_cache[format], raw,
+                        input_ptr(entries), entries.bytesize, input_ptr(bytes), bytes.bytesize)
+      checked_verdict(rc, bytes) { |out| Interop.decode(symbol, out[0, Interop::VALUE_BYTES.fetch(symbol)]) }
+    end
+
+    # Reads a number the caller already holds — an Integer, Float or Rational, taken as
+    # decimal_from_float takes it — through the door its Constraints are bound to, then judges
+    # it by them on the shortest decimal that names it: 0.1 + 0.2 is 0.30000000000000004,
+    # which breaks multiple_of: "0.1" under :strict and rounds to 0.3 under :midpoint. NaN is
+    # :malformed and an infinity :out_of_range; every fault and violation has an empty span.
+    def checked_from_float(value, constraints)
+      number = float(value)
+      symbol, raw, entries = constrained(constraints, :checked_from_float)
+      rc = checked_call(:cast_checked_from_f64, CHECKED_DOORS.fetch(symbol), number, raw,
+                        input_ptr(entries), entries.bytesize)
+      checked_verdict(rc, nil) { |out| Interop.decode(symbol, out[0, Interop::VALUE_BYTES.fetch(symbol)]) }
+    end
+
+    # Judges a declaration without building it, the way Constraints.new does when it is
+    # built, taking the same keywords: 0 when every rule holds, otherwise the code of the first
+    # rule it breaks (Constraints::REFUSALS words each). A wrong argument is still raised, as
+    # Constraints.new raises it.
+    def constraints_check(**keywords)
+      layout = Constraints.send(:layout, **keywords)
+      return layout if layout.is_a?(Integer)
+
+      door, raw, entries = layout
+      pointer, = checked_scratch
+      pointer[0, raw.bytesize] = raw
+      Runtime.function(:cast_constraints_check).call(door, 0, pointer, input_ptr(entries), entries.bytesize)
+    end
+
+    # Converts a bound, step or integer enum entry written in invariant notation — an
+    # optional sign, digits with an optional "." and fraction, an optional exponent:
+    # "0.000001", "-90", "1e-6" — to the exact Decimal the core declares it as, trailing zeros
+    # dropped: the conversion every bound a Constraints is given crosses. A value past 96 bits
+    # or 28 places, or text in any other notation, is the ArgumentError a refused declaration
+    # raises (code 8).
+    def declared_decimal(text)
+      bytes = utf8(text)
+      out, = scratch
+      rc = Runtime.function(:cast_declared_decimal).call(input_ptr(bytes), bytes.bytesize, out)
+      raise ArgumentError, Constraints.send(:refusal, rc) if rc == 8
+      raise "hypercast: libhypercast reported a contract violation — a binding bug, please report it" unless rc.zero?
+
+      Interop.decode(:decimal, out[0, 16])
+    end
+
     # The version of the native core actually loaded, as "major.minor.patch" — read from
     # the library itself, not from this gem, so a consumer can prove the core behind the
     # doors is the one this binding was built against (and name the mismatch when it is
@@ -739,6 +1150,89 @@ module HyperCast
       else
         Interop.fault(rc, 0, 0)
       end
+    end
+
+    # The text door's value at the byte span the core judged valid: the String passed when
+    # the span is all of it and it is UTF-8 or US-ASCII, else that span as a new UTF-8 String
+    # (a trimmed span, or a binary String's bytes).
+    def text_value(bytes, offset, length)
+      return bytes if offset.zero? && length == bytes.bytesize && bytes.encoding != Encoding::ASCII_8BIT
+
+      bytes.byteslice(offset, length).force_encoding(Encoding::UTF_8)
+    end
+
+    # A Constraints as a checked door hands it to the core — its door Symbol, its packed
+    # layout in 8-aligned native memory and its packed enum — checked against the door it was
+    # passed to: a non-Constraints is a TypeError, and one bound to another door an
+    # ArgumentError naming the door that judges it.
+    def constrained(constraints, door)
+      raise TypeError, "constraints must be a HyperCast::Constraints; got #{constraints.inspect}" unless
+        constraints.is_a?(Constraints)
+
+      declared = constraints_cache[constraints]
+      text = declared[0] == :text
+      if text != (door == :text)
+        raise ArgumentError,
+              "Constraints for #{declared[0].inspect} are judged by HyperCast.#{text ? 'text' : 'checked'}"
+      end
+
+      declared
+    end
+
+    # How many declarations constraints_cache remembers before it starts forgetting the
+    # oldest: packed_cache's bound, for the same reason.
+    CONSTRAINTS_CACHE_LIMIT = 64
+
+    # Identity-keyed memo of each Constraints as the core reads it: its door, its 72-byte
+    # layout copied once into native memory (which a String's bytes are not guaranteed to be
+    # aligned for) and its packed enum, frozen. Bounded and evicted as packed_cache is.
+    def constraints_cache
+      @constraints_cache ||= Hash.new do |cache, constraints|
+        cache.shift while cache.size >= CONSTRAINTS_CACHE_LIMIT
+        _code, raw, entries = constraints.send(:declaration)
+        pointer = Runtime.buffer(raw.bytesize)
+        pointer[0, raw.bytesize] = raw
+        cache[constraints] = [constraints.door, pointer, entries.freeze].freeze
+      end.compare_by_identity
+    end
+
+    # One 96-byte scratch allocation per thread for the checked doors, beside #scratch: a
+    # packed layout constraints_check judges at 0 (72 bytes, 8-aligned by malloc), and the
+    # check a checked door writes at 72 (12 bytes).
+    def checked_scratch
+      Thread.current[:hypercast_checked_scratch] ||= begin
+        base = Runtime.buffer(96)
+        [base, base + 72]
+      end
+    end
+
+    # The shared body of the checked doors: the door's own arguments, then the scratch
+    # out-value, fault and check.
+    def checked_call(symbol, *arguments)
+      out, fault = scratch
+      Runtime.function(symbol).call(*arguments, out, fault, checked_scratch[1])
+    end
+
+    # Presents a checked door's return code as its verdict: 0 a Checked of the value the
+    # block reads from the out-value and check, 1 to 3 the door's Fault, 4 a Violation — each
+    # span over `bytes` (the UTF-8 the core read) as a Fault's is, or as written when there
+    # is no text — and -1 a binding bug that raises.
+    def checked_verdict(rc, bytes)
+      out, fault = scratch
+      check = checked_scratch[1]
+      if rc.zero?
+        adjusted, index = check[4, 8].unpack("LL")
+        return Checked.new(value: yield(out, check), adjusted: adjusted != 0,
+                           enum_index: index == 0xFFFF_FFFF ? nil : index)
+      end
+      raise "hypercast: libhypercast reported a contract violation — a binding bug, please report it" unless
+        rc.between?(1, 4)
+
+      offset, length = fault[0, 8].unpack("LL")
+      offset, length = Interop.characters(bytes, offset, length) if bytes
+      return Interop.fault(rc, offset, length) unless rc == 4
+
+      Violation.new(keyword: Keyword.new(code: check[0, 4].unpack1("L")), offset: offset, length: length)
     end
 
     # The loaded core's version word, major << 16 | minor << 8 | patch, straight from the

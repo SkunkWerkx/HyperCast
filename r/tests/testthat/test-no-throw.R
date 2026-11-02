@@ -11,11 +11,12 @@ corpus_inputs <- function() {
   dir <- testthat::test_path("corpus")
   if (!dir.exists(dir)) dir <- file.path(testthat::test_path(), "..", "..", "..", "corpus")
   files <- list.files(dir, pattern = "\\.json$", full.names = TRUE)
-  stopifnot(length(files) == 15L)
+  stopifnot(length(files) == 17L)
   inputs <- unlist(lapply(files, function(path) {
     json <- paste(readLines(path, encoding = "UTF-8", warn = FALSE), collapse = "\n")
     json <- gsub("\\u0000", "\\uE000", json, fixed = TRUE)
-    vapply(jsonlite::fromJSON(json, simplifyVector = FALSE), function(row) row$input, "")
+    # A refused declaration, a decoded number or raw bytes has no text input.
+    lapply(jsonlite::fromJSON(json, simplifyVector = FALSE), function(row) row$input)
   }))
   unique(inputs)
 }
@@ -73,12 +74,37 @@ text_doors <- function() {
     datetime_dmy = function(x) cast_datetime(x, "day_month_year"),
     datetime_periods = function(x) {
       cast_datetime(x, "year_month_day", am = "\uc624\uc804", pm = "a. m.")
+    },
+    text = cast_text,
+    checked_text = function(x) {
+      cast_text(x, hypercast_constraints("text", min_length = 1, max_length = 4, trim = TRUE,
+                                         enum = c("Male", "\u00e9t\u00e9", "\u0131")))
+    },
+    checked_i64 = function(x) {
+      cast_checked(x, f, hypercast_constraints("i64", minimum = "-100", multiple_of = "5",
+                                               rounding = "ceiling", enum = c("0", "5")))
+    },
+    checked_f64 = function(x) {
+      cast_checked(x, f, hypercast_constraints("f64", exclusive_maximum = "1e10",
+                                               multiple_of = "0.01", rounding = "midpoint"))
+    },
+    checked_decimal = function(x) {
+      cast_checked(x, num_format_detect(),
+                   hypercast_constraints("decimal", minimum = "0", multiple_of = "0.05"))
     }
   )
 }
 
 typed_doors <- list(
   decimal = cast_decimal_from_double,
+  checked_u16 = function(x) {
+    cast_checked_from_double(x, hypercast_constraints("u16", maximum = 1000L, multiple_of = 7L,
+                                                      rounding = "floor"))
+  },
+  checked_f32 = function(x) {
+    cast_checked_from_double(x, hypercast_constraints("f32", minimum = "-1", multiple_of = "0.5",
+                                                      rounding = "midpoint"))
+  },
   excel_1900 = function(x) cast_excel_serial_from_double(x, "y1900"),
   excel_1904 = function(x) cast_excel_serial_from_double(x, "y1904"),
   time = cast_excel_time, duration = cast_excel_duration
@@ -105,12 +131,19 @@ expect_quiet_verdict <- function(door, x, label) {
   if (is.null(v)) {
     return(NULL)
   }
-  testthat::expect_s3_class(v, "hypercast_verdict")
+  checked <- inherits(v, "hypercast_checked_verdict")
+  if (!checked) testthat::expect_s3_class(v, "hypercast_verdict")
   testthat::expect_identical(nrow(v), length(x), label = label)
   ok <- v$ok
-  # The union's discriminant agrees with its fields in every row.
+  # The union's discriminant agrees with its fields in every row: a rejection is a fault
+  # (a reason) or a violation (a keyword), never both and never neither.
   testthat::expect_true(all(is.na(v$reason[ok %in% TRUE])), label = label)
-  testthat::expect_true(all(!is.na(v$reason[ok %in% FALSE])), label = label)
+  rejected <- if (checked) xor(!is.na(v$reason), !is.na(v$keyword)) else !is.na(v$reason)
+  testthat::expect_true(all(rejected[ok %in% FALSE]), label = label)
+  if (checked) {
+    testthat::expect_true(all(is.na(v$keyword[!ok %in% FALSE])), label = label)
+    testthat::expect_true(all(!is.na(v$adjusted[ok %in% TRUE])), label = label)
+  }
   testthat::expect_true(all(is.na(v$value[!ok %in% TRUE])), label = label)
   testthat::expect_true(all(is.na(v$offset[!ok %in% FALSE])), label = label)
   v

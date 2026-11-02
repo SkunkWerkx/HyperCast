@@ -26,6 +26,8 @@ struct State {
     found_class: String,
     release_mode: Option<jint>,
     long_writes: Vec<(jsize, jsize)>,
+    buffer_capacity: jlong,
+    buffer_address_null: bool,
 }
 
 thread_local! {
@@ -144,6 +146,23 @@ unsafe extern "system" fn set_long_region(
     }
 }
 
+unsafe extern "system" fn get_direct_capacity(_env: *mut JNIEnv, _buf: jobject) -> jlong {
+    with(|s| {
+        s.order.push("GetDirectBufferCapacity");
+        s.buffer_capacity
+    })
+}
+unsafe extern "system" fn get_direct_address(_env: *mut JNIEnv, buf: jobject) -> *mut c_void {
+    with(|s| {
+        s.order.push("GetDirectBufferAddress");
+        if s.buffer_address_null {
+            null_mut()
+        } else {
+            buf.cast()
+        }
+    })
+}
+
 /// A `JNIEnv` stub: only the entries a path calls are written, through their addresses,
 /// and the interface is never read as a whole.
 struct StubEnv {
@@ -166,6 +185,8 @@ impl StubEnv {
             addr_of_mut!((*p).v1_2.ReleasePrimitiveArrayCritical).write(release_critical);
             addr_of_mut!((*p).v1_2.GetByteArrayRegion).write(get_byte_region);
             addr_of_mut!((*p).v1_2.SetLongArrayRegion).write(set_long_region);
+            addr_of_mut!((*p).v1_4.GetDirectBufferCapacity).write(get_direct_capacity);
+            addr_of_mut!((*p).v1_4.GetDirectBufferAddress).write(get_direct_address);
         }
         let table = Box::new(p.cast_const());
         StubEnv {
@@ -201,7 +222,7 @@ fn desc_of(n: &Native) -> &str {
     core::str::from_utf8(&n.descriptor[..n.descriptor.len() - 1]).unwrap()
 }
 
-const EXPORTS: [&str; 27] = [
+const EXPORTS: [&str; 32] = [
     "cast_bool",
     "cast_char",
     "cast_i8",
@@ -229,6 +250,11 @@ const EXPORTS: [&str; 27] = [
     "cast_excel_time",
     "cast_excel_duration",
     "hypercast_version",
+    "cast_checked",
+    "cast_checked_from_f64",
+    "cast_constraints_check",
+    "cast_text",
+    "cast_declared_decimal",
 ];
 
 /// The input as Java hands it: the stub reads `array_len` for its length.
@@ -272,7 +298,7 @@ fn arr(out: &mut [jlong; 4]) -> jlongArray {
 #[test]
 fn the_table_has_an_entry_per_export_and_jni_natives_reports_it() {
     assert_eq!(NATIVES.len(), EXPORTS.len() + 1);
-    assert_eq!(unsafe { native_jni_natives(null_mut(), null_mut()) }, 28);
+    assert_eq!(unsafe { native_jni_natives(null_mut(), null_mut()) }, 33);
 }
 
 #[test]
@@ -319,6 +345,11 @@ fn table_descriptors_are_pinned() {
         ("castExcelTime", typed),
         ("castExcelDuration", typed),
         ("hypercastVersion", "()I"),
+        ("castChecked", "(I[B[BLjava/nio/ByteBuffer;[B[J)I"),
+        ("castCheckedFromF64", "(ID[BLjava/nio/ByteBuffer;[J)I"),
+        ("castConstraintsCheck", "(I[BLjava/nio/ByteBuffer;)I"),
+        ("castText", text),
+        ("castDeclaredDecimal", text),
         ("jniNatives", "()I"),
     ];
     assert_eq!(want.len(), NATIVES.len());
@@ -736,4 +767,419 @@ fn a_core_fault_on_a_pinned_input_still_releases() {
     let (rc, _) = call_text(native_cast_bool, b"maybe");
     assert_eq!(rc, 2);
     with(|s| assert_eq!((s.crit_gets, s.crit_releases), (1, 1)));
+}
+
+// --- the validation constraints ---
+
+/// The 72-byte constraints layout as `NativeCore` packs it, in the platform's order: the
+/// five words, the reserved word, then the three decimals, each `{lo, hi, scale, sign}` and
+/// two bytes of padding.
+fn wire(raw: &RawConstraints) -> [u8; 72] {
+    let mut bytes = [0u8; 72];
+    let words = [
+        raw.size,
+        raw.flags,
+        raw.rounding,
+        raw.min_length,
+        raw.max_length,
+        raw._reserved,
+    ];
+    for (i, word) in words.iter().enumerate() {
+        bytes[i * 4..i * 4 + 4].copy_from_slice(&word.to_ne_bytes());
+    }
+    for (at, d) in [(24, raw.lower), (40, raw.upper), (56, raw.multiple_of)] {
+        bytes[at..at + 16].copy_from_slice(&packed_decimal(d));
+    }
+    bytes
+}
+
+fn packed_decimal(d: Decimal) -> [u8; 16] {
+    let mut bytes = [0u8; 16];
+    bytes[..8].copy_from_slice(&d.lo.to_ne_bytes());
+    bytes[8..12].copy_from_slice(&d.hi.to_ne_bytes());
+    bytes[12] = d.scale;
+    bytes[13] = u8::from(d.negative);
+    bytes
+}
+
+fn whole(value: u64, negative: bool) -> Decimal {
+    Decimal {
+        lo: value,
+        hi: 0,
+        scale: 0,
+        negative,
+    }
+}
+
+fn declared(flags: u32) -> RawConstraints {
+    RawConstraints {
+        size: RawConstraints::SIZE,
+        flags,
+        rounding: 0,
+        min_length: 0,
+        max_length: 0,
+        _reserved: 0,
+        lower: whole(0, false),
+        upper: whole(0, false),
+        multiple_of: whole(0, false),
+    }
+}
+
+/// `minimum: 10, multipleOf: 5` under `rounding`.
+fn ten_by_five(rounding: u32) -> [u8; 72] {
+    let mut raw = declared(RawConstraints::HAS_MINIMUM | RawConstraints::HAS_MULTIPLE_OF);
+    raw.lower = whole(10, false);
+    raw.multiple_of = whole(5, false);
+    raw.rounding = rounding;
+    wire(&raw)
+}
+
+/// The text `enum` packed as `NativeCore` packs it: a little-endian length, then the bytes.
+fn text_entries(entries: &[&str]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for entry in entries {
+        bytes.extend_from_slice(&(entry.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(entry.as_bytes());
+    }
+    bytes
+}
+
+/// The `enum` list as the direct `ByteBuffer` Java hands over: its capacity set on the stub,
+/// its address the token the stub hands back.
+fn buffer(bytes: &[u8]) -> jobject {
+    with(|s| s.buffer_capacity = bytes.len() as jlong);
+    bytes.as_ptr().cast_mut().cast()
+}
+
+const NO_ENTRY: jlong = u32::MAX as jlong;
+
+fn checked_out() -> [jlong; 8] {
+    [UNTOUCHED; 8]
+}
+
+fn call_checked(
+    door: u32,
+    format: Option<&[u8; 92]>,
+    constraints: &[u8; 72],
+    entries: Option<&[u8]>,
+    input: &[u8],
+) -> (jint, [jlong; 8]) {
+    let mut stub = StubEnv::new();
+    let env = stub.env();
+    let mut o = checked_out();
+    let entries = entries.map_or(null_mut(), buffer);
+    let rc = unsafe {
+        native_cast_checked(
+            env,
+            null_mut(),
+            door as jint,
+            format.map_or(null_mut(), |f| f.as_ptr().cast_mut().cast()),
+            constraints.as_ptr().cast_mut().cast(),
+            entries,
+            text(input),
+            o.as_mut_ptr().cast(),
+        )
+    };
+    (rc, o)
+}
+
+#[test]
+fn a_checked_success_writes_its_value_and_its_check() {
+    let i32_door = Door::I32.code();
+    let f = invariant();
+    let (rc, o) = call_checked(i32_door, Some(&f), &ten_by_five(1), None, b"12");
+    assert_eq!(rc, 0);
+    assert_eq!(o[..2], [10, 0]);
+    assert_eq!(o[2..4], [UNTOUCHED, UNTOUCHED]);
+    assert_eq!(o[4..7], [0, 1, NO_ENTRY]);
+    assert_eq!(o[7], UNTOUCHED);
+    let (rc, o) = call_checked(i32_door, Some(&f), &ten_by_five(0), None, b"15");
+    assert_eq!(
+        (rc, &o[..2], &o[4..7]),
+        (0, &[15, 0][..], &[0, 0, NO_ENTRY][..])
+    );
+}
+
+#[test]
+fn a_checked_door_writes_the_words_of_its_plain_door() {
+    let f = invariant();
+    let none = wire(&declared(0));
+    let words = |door: Door, input: &[u8]| {
+        let (rc, o) = call_checked(door.code(), Some(&f), &none, None, input);
+        assert_eq!(rc, 0, "{door:?}");
+        [o[0], o[1]]
+    };
+    assert_eq!(words(Door::I8, b"-128"), [-128, 0]);
+    assert_eq!(words(Door::I16, b"-32768"), [-32768, 0]);
+    assert_eq!(words(Door::I64, b"-9223372036854775808"), [i64::MIN, 0]);
+    assert_eq!(words(Door::U8, b"255"), [255, 0]);
+    assert_eq!(words(Door::U16, b"65535"), [65535, 0]);
+    assert_eq!(words(Door::U32, b"4294967295"), [4_294_967_295, 0]);
+    assert_eq!(words(Door::U64, b"18446744073709551615"), [-1, 0]);
+    assert_eq!(words(Door::F32, b"1.5"), [jlong::from(1.5f32.to_bits()), 0]);
+    assert_eq!(words(Door::F64, b"0.25"), [0.25f64.to_bits() as jlong, 0]);
+    assert_eq!(
+        words(Door::Decimal, b"-1234.5"),
+        [12345, (1 << 32) | (1 << 40)]
+    );
+    // Text ignores the format, and its value is the span of the input.
+    assert_eq!(words(Door::Text, b"Male"), [0, 4]);
+}
+
+#[test]
+fn a_violation_writes_its_span_and_its_keyword() {
+    let (rc, o) = call_checked(Door::I32.code(), None, &ten_by_five(0), None, b"12");
+    assert_eq!(rc, 4);
+    assert_eq!(o[..4], [UNTOUCHED, UNTOUCHED, 0, 2]);
+    assert_eq!(o[4..7], [5, 0, NO_ENTRY]);
+    let (rc, o) = call_checked(Door::I32.code(), None, &ten_by_five(0), None, b"5");
+    assert_eq!((rc, &o[2..7]), (4, &[0, 1, 1, 0, NO_ENTRY][..]));
+}
+
+#[test]
+fn a_checked_fault_writes_its_span_and_no_keyword() {
+    let (rc, o) = call_checked(Door::I32.code(), None, &ten_by_five(0), None, b"1x");
+    assert_eq!(rc, 2);
+    assert_eq!(o[..7], [UNTOUCHED, UNTOUCHED, 1, 1, 0, 0, NO_ENTRY]);
+}
+
+#[test]
+fn a_text_enum_crosses_as_a_direct_buffer_and_reports_its_index() {
+    let mut raw = declared(RawConstraints::TRIM | RawConstraints::HAS_ENUM);
+    raw.rounding = 0;
+    let constraints = wire(&raw);
+    let entries = text_entries(&["Female", "Male", "Other"]);
+    let (rc, o) = call_checked(
+        Door::Text.code(),
+        None,
+        &constraints,
+        Some(&entries),
+        b" MALE ",
+    );
+    assert_eq!(rc, 0);
+    assert_eq!(o[..2], [1, 4]);
+    assert_eq!(o[4..7], [0, 0, 1]);
+    // Every layout and the list's address are read before the input is pinned.
+    with(|s| {
+        assert_eq!(
+            s.order,
+            [
+                "GetByteArrayRegion",
+                "ExceptionCheck",
+                "GetDirectBufferCapacity",
+                "GetDirectBufferAddress",
+                "GetArrayLength",
+                "GetPrimitiveArrayCritical",
+                "ReleasePrimitiveArrayCritical",
+                "SetLongArrayRegion",
+                "SetLongArrayRegion",
+            ]
+        );
+        assert_eq!((s.crit_gets, s.crit_releases), (1, 1));
+    });
+    let (rc, o) = call_checked(
+        Door::Text.code(),
+        None,
+        &constraints,
+        Some(&entries),
+        b"Femal",
+    );
+    assert_eq!((rc, &o[2..7]), (4, &[0, 5, 8, 0, NO_ENTRY][..]));
+}
+
+#[test]
+fn an_integer_enum_crosses_in_native_order() {
+    let mut entries = Vec::new();
+    entries.extend_from_slice(&packed_decimal(whole(10, false)));
+    entries.extend_from_slice(&packed_decimal(whole(20, true)));
+    let listed = wire(&declared(RawConstraints::HAS_ENUM));
+    let (rc, o) = call_checked(Door::I32.code(), None, &listed, Some(&entries), b"-20");
+    assert_eq!((rc, o[0], &o[4..7]), (0, -20, &[0, 0, NO_ENTRY][..]));
+    let (rc, o) = call_checked(Door::I32.code(), None, &listed, Some(&entries), b"20");
+    assert_eq!((rc, o[4]), (4, 8));
+}
+
+#[test]
+fn an_enum_buffer_with_no_address_is_a_contract_violation_and_writes_nothing() {
+    let mut stub = StubEnv::new();
+    let env = stub.env();
+    with(|s| s.buffer_address_null = true);
+    let entries = text_entries(&["a"]);
+    let constraints = wire(&declared(RawConstraints::HAS_ENUM));
+    let mut o = checked_out();
+    let rc = unsafe {
+        native_cast_checked(
+            env,
+            null_mut(),
+            Door::Text.code() as jint,
+            null_mut(),
+            constraints.as_ptr().cast_mut().cast(),
+            buffer(&entries),
+            text(b"a"),
+            o.as_mut_ptr().cast(),
+        )
+    };
+    assert_eq!((rc, o), (-1, checked_out()));
+    with(|s| assert_eq!((s.crit_gets, s.long_writes.len()), (0, 0)));
+    let rc = unsafe {
+        native_cast_constraints_check(
+            env,
+            null_mut(),
+            Door::Text.code() as jint,
+            constraints.as_ptr().cast_mut().cast(),
+            buffer(&entries),
+        )
+    };
+    assert_eq!(rc, -1);
+}
+
+#[test]
+fn a_declaration_the_core_refuses_is_a_contract_violation_at_the_checked_door() {
+    let mut raw = declared(RawConstraints::HAS_MIN_LENGTH);
+    raw.min_length = 1;
+    let (rc, o) = call_checked(Door::I32.code(), None, &wire(&raw), None, b"1");
+    assert_eq!((rc, o), (-1, checked_out()));
+}
+
+#[test]
+fn an_exception_reading_the_constraints_pins_nothing_and_returns_pending() {
+    let mut stub = StubEnv::new();
+    let env = stub.env();
+    with(|s| s.pending_after_region = true);
+    let constraints = ten_by_five(0);
+    let mut o = checked_out();
+    let rc = unsafe {
+        native_cast_checked(
+            env,
+            null_mut(),
+            Door::I32.code() as jint,
+            null_mut(),
+            constraints.as_ptr().cast_mut().cast(),
+            null_mut(),
+            text(b"1"),
+            o.as_mut_ptr().cast(),
+        )
+    };
+    assert_eq!((rc, o), (PENDING, checked_out()));
+    with(|s| assert_eq!((s.crit_gets, s.mallocs), (0, 0)));
+}
+
+#[test]
+fn a_large_input_is_copied_while_the_list_stays_in_place() {
+    let mut input = vec![b' '; CRITICAL_MAX + 1];
+    input[..4].copy_from_slice(b"Male");
+    let entries = text_entries(&["Female", "Male"]);
+    let (rc, o) = call_checked(
+        Door::Text.code(),
+        None,
+        &wire(&declared(RawConstraints::TRIM | RawConstraints::HAS_ENUM)),
+        Some(&entries),
+        &input,
+    );
+    assert_eq!((rc, &o[..2], o[6]), (0, &[0, 4][..], 1));
+    with(|s| assert_eq!((s.crit_gets, s.mallocs, s.frees), (0, 1, 1)));
+}
+
+#[test]
+fn the_checked_door_over_a_double_writes_its_value_and_its_check() {
+    let mut stub = StubEnv::new();
+    let env = stub.env();
+    let mut raw = declared(RawConstraints::HAS_MULTIPLE_OF);
+    raw.multiple_of = Decimal {
+        lo: 1,
+        hi: 0,
+        scale: 1,
+        negative: false,
+    };
+    raw.rounding = 1;
+    let constraints = wire(&raw);
+    let mut o = checked_out();
+    let rc = unsafe {
+        native_cast_checked_from_f64(
+            env,
+            null_mut(),
+            Door::F64.code() as jint,
+            0.1 + 0.2,
+            constraints.as_ptr().cast_mut().cast(),
+            null_mut(),
+            o.as_mut_ptr().cast(),
+        )
+    };
+    assert_eq!(rc, 0);
+    assert_eq!(o[0], 0.3f64.to_bits() as jlong);
+    assert_eq!(o[4..7], [0, 1, NO_ENTRY]);
+    raw.rounding = 0;
+    let constraints = wire(&raw);
+    let mut o = checked_out();
+    let rc = unsafe {
+        native_cast_checked_from_f64(
+            env,
+            null_mut(),
+            Door::F64.code() as jint,
+            0.1 + 0.2,
+            constraints.as_ptr().cast_mut().cast(),
+            null_mut(),
+            o.as_mut_ptr().cast(),
+        )
+    };
+    assert_eq!((rc, &o[2..7]), (4, &[0, 0, 5, 0, NO_ENTRY][..]));
+}
+
+#[test]
+fn a_declaration_is_judged_by_the_core() {
+    let mut stub = StubEnv::new();
+    let env = stub.env();
+    let check = |door: Door, raw: &RawConstraints, entries: Option<&[u8]>| unsafe {
+        native_cast_constraints_check(
+            env,
+            null_mut(),
+            door.code() as jint,
+            wire(raw).as_ptr().cast_mut().cast(),
+            entries.map_or(null_mut(), buffer),
+        )
+    };
+    assert_eq!(check(Door::I32, &declared(0), None), 0);
+    let mut raw = declared(RawConstraints::HAS_MINIMUM);
+    raw.lower = whole(1, true);
+    assert_eq!(check(Door::U8, &raw, None), 8);
+    assert_eq!(check(Door::I8, &raw, None), 0);
+    let duplicates = text_entries(&["I", "i"]);
+    let listed = declared(RawConstraints::HAS_ENUM);
+    assert_eq!(check(Door::Text, &listed, Some(&duplicates)), 10);
+    // A list is read only under HAS_ENUM: without it, malformed; with it and no entries, 12.
+    assert_eq!(check(Door::Text, &declared(0), Some(&duplicates)), 11);
+    assert_eq!(check(Door::Text, &listed, None), 12);
+    assert_eq!(check(Door::I32, &listed, Some(&[][..])), 12);
+    assert_eq!(check(Door::Text, &listed, Some(&text_entries(&[""]))), 13);
+    let mut malformed = declared(0);
+    malformed.size = 71;
+    assert_eq!(check(Door::I32, &malformed, None), 11);
+}
+
+#[test]
+fn the_text_door_writes_the_span_of_valid_utf8() {
+    assert_eq!(
+        call_text(native_cast_text, "héllo".as_bytes()),
+        (0, [0, 6, UNTOUCHED, UNTOUCHED])
+    );
+    assert_eq!(
+        call_text(native_cast_text, b"ab\xFFc"),
+        (2, [UNTOUCHED, UNTOUCHED, 2, 1])
+    );
+    assert_eq!(
+        call_text(native_cast_text, b""),
+        (1, [UNTOUCHED, UNTOUCHED, 0, 0])
+    );
+}
+
+#[test]
+fn a_declared_decimal_is_the_cores_conversion() {
+    let (rc, o) = call_text(native_cast_declared_decimal, b"-1.50");
+    assert_eq!((rc, o[0], o[1]), (0, 15, (1 << 32) | (1 << 40)));
+    let (rc, o) = call_text(native_cast_declared_decimal, b"1e-6");
+    assert_eq!((rc, o[0], o[1]), (0, 1, 6 << 32));
+    let (rc, o) = call_text(native_cast_declared_decimal, b"1e-29");
+    assert_eq!((rc, &o[..2]), (8, &[UNTOUCHED, UNTOUCHED][..]));
+    let (rc, _) = call_text(native_cast_declared_decimal, b"0.1x");
+    assert_eq!(rc, 8);
 }

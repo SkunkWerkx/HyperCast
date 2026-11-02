@@ -21,7 +21,8 @@
 //! The first two are the algorithms `core` runs. The third is not `core`'s, which shifts a
 //! decimal digit string instead; this one is slower and has nothing in it to get wrong,
 //! which is the right trade for a path ordinary data never reaches. `tests` holds all
-//! three to `core`'s answer, bit for bit.
+//! three to `core`'s answer, bit for bit, but for the sign of a zero, which [`parse`]
+//! drops (the core delivers no negative zero) and `core` keeps.
 //!
 //! Nothing here indexes a slice or divides by a variable. The big integers are fixed
 //! arrays on the stack, so the doors still allocate nothing.
@@ -30,7 +31,7 @@ use crate::float_table::{POWER_OF_FIVE_128, SMALLEST_POWER_OF_FIVE};
 use core::cmp::Ordering;
 
 /// What the conversion needs to know about a float type.
-pub(crate) trait Real: Copy + core::ops::Neg<Output = Self> {
+pub(crate) trait Real: Copy + PartialEq + core::ops::Neg<Output = Self> {
     /// Explicit mantissa bits: 52 for `f64`, 23 for `f32`.
     const SIG_BITS: u32;
     /// The exponent bias: 1023 for `f64`, 127 for `f32`.
@@ -110,6 +111,18 @@ impl Real for f32 {
     fn zero() -> f32 {
         0.0
     }
+}
+
+/// `value` with a zero's sign dropped, so that a zero the core delivers is always the
+/// unsigned one, as a [`Decimal`](crate::Decimal) and the integers are. Called where a sign
+/// is applied ([`parse`], the real doors' lenient lane) and where a double is handed back
+/// as it came (the typed `f32` door, the checked `f64` door), on the negative branch where
+/// there is one, so a positive value pays nothing. Either zero compares equal to `0.0`, so
+/// the select sees both and returns the positive one; every other value, NaN included,
+/// comes back as it went in.
+#[inline(always)]
+pub(crate) fn unsigned<T: Real>(value: T) -> T {
+    if value == T::zero() { T::zero() } else { value }
 }
 
 /// A float as its mantissa field and biased exponent field, not yet packed.
@@ -217,9 +230,10 @@ fn first_nineteen(integer: &[u8], fraction: &[u8], explicit: i64) -> (u64, i64, 
 
 /// Reads `[+|-]digits[.digits][e[+|-]digits]` — at least one mantissa digit on either side
 /// of the point, at least one exponent digit when there is an `e` — to the nearest `T`,
-/// ties to even. A magnitude past the type's range is infinite and one below it is zero,
-/// signed either way, exactly as `core`'s parser returns them. `None` is text outside that
-/// shape, which the doors' own scanners never produce.
+/// ties to even. A magnitude past the type's range is infinite, signed, and one below it is
+/// zero, as `core`'s parser returns them, except that a zero is never negative: `-0` and
+/// `-1e-400` are `0.0` here and `-0.0` in `core`. `None` is text outside that shape, which
+/// the doors' own scanners never produce.
 pub(crate) fn parse<T: Real>(text: &[u8]) -> Option<T> {
     let (negative, body) = match text.split_first() {
         Some((b'-', rest)) => (true, rest),
@@ -282,7 +296,7 @@ pub(crate) fn parse<T: Real>(text: &[u8]) -> Option<T> {
             None => exact_division::<T>(integer, fraction, explicit)?.pack::<T>(),
         }
     };
-    Some(if negative { -magnitude } else { magnitude })
+    Some(if negative { unsigned(-magnitude) } else { magnitude })
 }
 
 /// `w * 10^q` to the nearest `T`, for a significand of nineteen digits or fewer that some
@@ -690,13 +704,17 @@ mod tests {
 
     /// Every path against `core`, as bits: the door's own route and the exact step alone.
     #[track_caller]
+    /// `parse` reads `text` to `core`'s bits, but for the sign of a zero, which `parse`
+    /// drops and `core` keeps; the exact division alone keeps it too.
     fn agree(text: &str) {
-        let expected = text.parse::<f64>().unwrap().to_bits();
-        assert_eq!(parse::<f64>(text.as_bytes()).map(f64::to_bits), Some(expected), "f64 {text}");
-        assert_eq!(exact_only::<f64>(text).to_bits(), expected, "f64 exact {text}");
-        let expected = text.parse::<f32>().unwrap().to_bits();
-        assert_eq!(parse::<f32>(text.as_bytes()).map(f32::to_bits), Some(expected), "f32 {text}");
-        assert_eq!(exact_only::<f32>(text).to_bits(), expected, "f32 exact {text}");
+        let expected = text.parse::<f64>().unwrap();
+        let delivered = unsigned(expected).to_bits();
+        assert_eq!(parse::<f64>(text.as_bytes()).map(f64::to_bits), Some(delivered), "f64 {text}");
+        assert_eq!(exact_only::<f64>(text).to_bits(), expected.to_bits(), "f64 exact {text}");
+        let expected = text.parse::<f32>().unwrap();
+        let delivered = unsigned(expected).to_bits();
+        assert_eq!(parse::<f32>(text.as_bytes()).map(f32::to_bits), Some(delivered), "f32 {text}");
+        assert_eq!(exact_only::<f32>(text).to_bits(), expected.to_bits(), "f32 exact {text}");
     }
 
     #[test]

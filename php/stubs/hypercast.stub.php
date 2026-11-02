@@ -41,6 +41,41 @@ namespace HyperCast {
         public static function char(string $text): \HyperCast\Success|\HyperCast\Fault {}
 
         /**
+         * Numeric text through the door its `Constraints` are bound to, under the declared format,
+         * then judged by them: `Checked`, or the door's own `Fault`, or a `Violation` of the first
+         * rule it breaks, judged exactly on the decimal the door read. Constraints for
+         * `Door::Text` go to `checkedText()`.
+         *
+         * @param string $text
+         * @param \HyperCast\NumFormat|\NumberFormatter $format
+         * @param \HyperCast\Constraints $constraints
+         * @return \HyperCast\Checked|\HyperCast\Fault|\HyperCast\Violation
+         */
+        public static function checked(string $text, \HyperCast\NumFormat|\NumberFormatter $format, \HyperCast\Constraints $constraints): \HyperCast\Checked|\HyperCast\Fault|\HyperCast\Violation {}
+
+        /**
+         * A number already decoded (a JSON float, a spreadsheet's numeric cell) through the door
+         * its `Constraints` are bound to, judged on the shortest decimal that names it. NaN is
+         * `Malformed` and an infinity `OutOfRange`; every span is empty.
+         *
+         * @param float $value
+         * @param \HyperCast\Constraints $constraints
+         * @return \HyperCast\Checked|\HyperCast\Fault|\HyperCast\Violation
+         */
+        public static function checkedFromFloat(float $value, \HyperCast\Constraints $constraints): \HyperCast\Checked|\HyperCast\Fault|\HyperCast\Violation {}
+
+        /**
+         * Text judged by `Constraints` for `Door::Text`: trimmed of Unicode `White_Space` when
+         * they say so (trimmed to nothing is `Empty`), lengths counted in code points, an `enum`
+         * matched under simple case folding, a match delivering the caller's own declared entry.
+         *
+         * @param string $text
+         * @param \HyperCast\Constraints $constraints
+         * @return \HyperCast\Checked|\HyperCast\Fault|\HyperCast\Violation
+         */
+        public static function checkedText(string $text, \HyperCast\Constraints $constraints): \HyperCast\Checked|\HyperCast\Fault|\HyperCast\Violation {}
+
+        /**
          * @param string $text
          * @param \HyperCast\DateOrder|null $order
          * @return \HyperCast\Success|\HyperCast\Fault
@@ -160,6 +195,15 @@ namespace HyperCast {
         public static function optional(\HyperCast\Success|\HyperCast\Fault $verdict): \HyperCast\Success|\HyperCast\Fault|null {}
 
         /**
+         * Text as text: the input itself once it is valid UTF-8. Empty input is `Empty`, invalid
+         * UTF-8 `Malformed` at its bytes; nothing is trimmed.
+         *
+         * @param string $text
+         * @return \HyperCast\Success|\HyperCast\Fault
+         */
+        public static function text(string $text): \HyperCast\Success|\HyperCast\Fault {}
+
+        /**
          * Nanoseconds since midnight.
          *
          * @param string $text
@@ -246,11 +290,58 @@ namespace HyperCast {
     }
 
     /**
+     * The door a `Constraints` declaration is bound to: a numeric door or the text door, with
+     * the core's ABI codes.
+     */
+    enum Door: int {
+      case I8 = 2;
+      case I16 = 3;
+      case I32 = 4;
+      case I64 = 5;
+      case U8 = 6;
+      case U16 = 7;
+      case U32 = 8;
+      case U64 = 9;
+      case F32 = 10;
+      case F64 = 11;
+      case Decimal = 19;
+      case Text = 18;
+    }
+
+    /**
      * Excel's two date systems.
      */
     enum ExcelEpoch: int {
       case Y1900 = 1;
       case Y1904 = 2;
+    }
+
+    /**
+     * The rule a `Violation` broke: a case per keyword this binding names, its value the
+     * core's code. A `Violation` keeps a code this binding does not name yet as the bare
+     * `int`, so a `match` over keywords needs a `default` arm.
+     */
+    enum Keyword: int {
+      case Minimum = 1;
+      case ExclusiveMinimum = 2;
+      case Maximum = 3;
+      case ExclusiveMaximum = 4;
+      case MultipleOf = 5;
+      case MinLength = 6;
+      case MaxLength = 7;
+      case Enum = 8;
+    }
+
+    /**
+     * What a value that is not a multiple of `multipleOf` becomes: refused (`Strict`), or
+     * rounded to the nearest multiple (`Midpoint`, ties to even), down (`Floor`) or up
+     * (`Ceiling`). The core's ABI codes.
+     */
+    enum Rounding: int {
+      case Strict = 0;
+      case Midpoint = 1;
+      case Floor = 2;
+      case Ceiling = 3;
     }
 
     /**
@@ -522,5 +613,82 @@ namespace HyperCast {
          * The C ABI's `hc_format` layout.
          */
         public function packed(): string {}
+    }
+
+    /**
+     * Validation constraints, the OpenAPI Schema Object's keywords, bound to one door and
+     * judged by the core when built: a declaration that cannot mean anything at its door is
+     * an `\InvalidArgumentException` whose code is the core's refusal code. Bounds and
+     * `multipleOf` are an int, a string in invariant notation or a `Decimal`, never a float
+     * (in weak mode too), and are kept as the exact `Decimal` the core read.
+     */
+    final readonly class Constraints {
+        public const PACKED_BYTES = 72;
+
+        public \HyperCast\Door $door;
+        public ?\HyperCast\Decimal $minimum;
+        public ?\HyperCast\Decimal $exclusiveMinimum;
+        public ?\HyperCast\Decimal $maximum;
+        public ?\HyperCast\Decimal $exclusiveMaximum;
+        public ?\HyperCast\Decimal $multipleOf;
+        public \HyperCast\Rounding $rounding;
+        public ?int $minLength;
+        public ?int $maxLength;
+        public bool $trim;
+        public ?array $enum;
+
+        public function __construct(
+            \HyperCast\Door $door,
+            int|string|\HyperCast\Decimal|null $minimum = null,
+            int|string|\HyperCast\Decimal|null $exclusiveMinimum = null,
+            int|string|\HyperCast\Decimal|null $maximum = null,
+            int|string|\HyperCast\Decimal|null $exclusiveMaximum = null,
+            int|string|\HyperCast\Decimal|null $multipleOf = null,
+            \HyperCast\Rounding $rounding = \HyperCast\Rounding::Strict,
+            ?int $minLength = null,
+            ?int $maxLength = null,
+            bool $trim = false,
+            ?array $enum = null,
+        ) {}
+
+        /**
+         * The C ABI's `RawConstraints` layout, native-endian.
+         */
+        public function packed(): string {}
+
+        /**
+         * The `enum` list as the C ABI packs it beside `packed()`, empty for none.
+         */
+        public function packedEnum(): string {}
+    }
+
+    /**
+     * A checked door's success: the value (rounded to `multipleOf` when the declaration
+     * rounds; with a text `enum`, the caller's own declared entry), whether rounding changed
+     * it, and the index of the text `enum` entry it matched.
+     */
+    final readonly class Checked {
+        public function __construct(
+            public mixed $value,
+            public bool $adjusted = false,
+            public ?int $enumIndex = null,
+        ) {}
+    }
+
+    /**
+     * A value that parsed and broke a declared rule: the keyword (the bare code for one this
+     * binding does not name yet) and the byte span of the input.
+     */
+    final readonly class Violation {
+        public function __construct(
+            public \HyperCast\Keyword|int $keyword,
+            public int $offset,
+            public int $length,
+        ) {}
+
+        /**
+         * The keyword's OpenAPI spelling (`exclusiveMinimum`), or `keyword N`.
+         */
+        public function keywordName(): string {}
     }
 }

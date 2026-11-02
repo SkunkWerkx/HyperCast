@@ -1,4 +1,11 @@
-import type { CastFailure as Reason, Verdict } from './binding'
+import type {
+  CastFailure as Reason,
+  CheckedVerdict,
+  Constraints,
+  Text,
+  Verdict,
+  Violation,
+} from './binding'
 export {
   nativeVersion,
   castBool,
@@ -26,12 +33,19 @@ export {
   castExcelSerialFromNumber,
   castExcelTime,
   castExcelDuration,
+  castChecked,
+  castCheckedFromNumber,
+  castConstraintsCheck,
+  castDeclaredDecimal,
   NumFormat,
   DateFormat,
+  Constraints,
   NumStyles,
   UnixPrecision,
   DateOrder,
   ExcelEpoch,
+  Door,
+  Rounding,
 } from './binding'
 export type {
   Verdict,
@@ -48,6 +62,12 @@ export type {
   TimeOfDay,
   CivilDateTime,
   Duration,
+  ConstraintsSpec,
+  Checked,
+  CheckedVerdict,
+  Violated,
+  Violation,
+  Rejection,
 } from './binding'
 /** The closed set of reasons a cast can fail. */
 export type CastFailure = Reason
@@ -57,10 +77,33 @@ export declare const CastFailure: {
   readonly Malformed: 'malformed'
   readonly OutOfRange: 'outOfRange'
 }
+/** A rule a violation names, in the OpenAPI spelling; open, so a switch needs a default arm. */
+export type Keyword = Violation['keyword']
+/** The eight keywords by name. A code this binding does not name yet arrives as "keyword N". */
+export declare const Keyword: {
+  readonly Minimum: 'minimum'
+  readonly ExclusiveMinimum: 'exclusiveMinimum'
+  readonly Maximum: 'maximum'
+  readonly ExclusiveMaximum: 'exclusiveMaximum'
+  readonly MultipleOf: 'multipleOf'
+  readonly MinLength: 'minLength'
+  readonly MaxLength: 'maxLength'
+  readonly Enum: 'enum'
+}
+/** Text as text: the input itself once it is valid text, `empty` for empty input. */
+export function castText(text: Text): Verdict<string>
+/**
+ * Text judged by `Constraints` for `Door.Text`: trimmed, lengths and a folded `enum`. Passing
+ * the second argument at all makes the cast constrained: `undefined` or `null` there (a failed
+ * declaration's missing `.value`) is a contract violation, never "no rules".
+ */
+export function castText(text: Text, constraints: Constraints): CheckedVerdict<string>
 /** Whether the native addon or its WebAssembly fallback loaded. */
 export function isAvailable(): boolean
 /** An `empty` fault as `null`, the absent value; every other verdict as it is. */
 export function optional<T>(verdict: Verdict<T>): Verdict<T> | null
+/** The same for a checked verdict: a violation is not absent, and comes back as it is. */
+export function optional<T>(verdict: CheckedVerdict<T>): CheckedVerdict<T> | null
 export type HyperCastErrorCode = 'ERR_HYPERCAST_UNAVAILABLE'
 /** The one error this package throws: no addon loaded, so no door can answer. */
 export interface HyperCastError extends Error {

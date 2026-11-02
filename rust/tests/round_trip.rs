@@ -522,9 +522,20 @@ fn every_canonical_decimal_formats_and_casts_back_to_itself() {
 // Reals
 // ---------------------------------------------------------------------------------------
 
+/// What the real doors deliver for `value`'s shortest text: `value`, with a zero unsigned.
+fn unsigned_f64(value: f64) -> f64 {
+    if value == 0.0 { 0.0 } else { value }
+}
+
+/// See [`unsigned_f64`].
+fn unsigned_f32(value: f32) -> f32 {
+    if value == 0.0 { 0.0 } else { value }
+}
+
 /// Rust's `{:e}` is the shortest text that reads back to the same bits, so every finite
-/// float must survive it exactly — sign of zero, subnormals and both extremes included —
-/// and so must the plain `{}` form wherever that stays short.
+/// float must survive it exactly — subnormals and both extremes included — and so must the
+/// plain `{}` form wherever that stays short. The one exception is the sign of zero: the
+/// core delivers no negative zero, so `-0e0` reads back as `0.0`'s bits.
 #[test]
 fn every_finite_float_formats_and_casts_back_to_the_same_bits() {
     let mut rng = XorShift(0x2545_F491_4F6C_DD1D);
@@ -558,7 +569,7 @@ fn every_finite_float_formats_and_casts_back_to_the_same_bits() {
         let exp = format!("{value:e}");
         assert_eq!(
             cast_f64(&exp, &NumFormat::INVARIANT).map(f64::to_bits),
-            Ok(value.to_bits()),
+            Ok(unsigned_f64(value).to_bits()),
             "{exp}"
         );
         let plain = format!("{value}");
@@ -566,7 +577,7 @@ fn every_finite_float_formats_and_casts_back_to_the_same_bits() {
             for format in [STRICT, NumFormat::INVARIANT] {
                 assert_eq!(
                     cast_f64(&plain, &format).map(f64::to_bits),
-                    Ok(value.to_bits()),
+                    Ok(unsigned_f64(value).to_bits()),
                     "{plain}"
                 );
             }
@@ -576,7 +587,7 @@ fn every_finite_float_formats_and_casts_back_to_the_same_bits() {
         let exp = format!("{value:e}");
         assert_eq!(
             cast_f32(&exp, &NumFormat::INVARIANT).map(f32::to_bits),
-            Ok(value.to_bits()),
+            Ok(unsigned_f32(value).to_bits()),
             "{exp}"
         );
         let plain = format!("{value}");
@@ -584,7 +595,7 @@ fn every_finite_float_formats_and_casts_back_to_the_same_bits() {
             for format in [STRICT, NumFormat::INVARIANT] {
                 assert_eq!(
                     cast_f32(&plain, &format).map(f32::to_bits),
-                    Ok(value.to_bits()),
+                    Ok(unsigned_f32(value).to_bits()),
                     "{plain}"
                 );
             }

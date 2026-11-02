@@ -21,7 +21,7 @@ macOS, R 4.6.2, with the PDF manual (TinyTeX), `checkbashisms`, `qpdf` and `pand
     New submission
 
 The NOTE is the new-submission notice. The testthat expectations pass, including the replay
-of the fifteen bundled corpus files every binding of the project replays. `NEWS.md`'s heading
+of the seventeen bundled corpus files every binding of the project replays. `NEWS.md`'s heading
 carries the version number, which R's NEWS parser requires.
 
 ## Compiled code

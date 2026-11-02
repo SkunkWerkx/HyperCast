@@ -14,7 +14,8 @@ faults(x)
 \method{print}{hypercast_verdict}(x, ...)
 }
 \arguments{
-\item{x}{A \code{hypercast_verdict}, as a door returns.}
+\item{x}{A \code{hypercast_verdict}, as a door returns (\code{is_ok()} and \code{faults()} take a
+\link{hypercast_checked_verdict} too).}
 
 \item{...}{Passed on to the data frame's print method.}
 }
@@ -71,6 +72,7 @@ with(faults(cast_i32(x, num_format())), substr(x[row], offset + 1, offset + leng
 }
 \seealso{
 Other verdicts:
+\code{\link{hypercast_checked_verdict}},
 \code{\link[=optional]{optional()}}
 }
 \concept{verdicts}

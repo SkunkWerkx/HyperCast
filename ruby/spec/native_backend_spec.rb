@@ -128,6 +128,51 @@ RSpec.describe "native backend" do
       .to eq(HyperCast.i32("1€x".encode(Encoding::UTF_16LE), HyperCast::NumFormat::INVARIANT).inspect)
   end
 
+  # Every checked door and its caller bugs, run as the same source on both backends: the
+  # verdicts (non-ASCII spans included), a text match, the refusals' messages, the wrong-door
+  # and wrong-type errors, and a Constraints that was never built.
+  it "agrees with the Fiddle backend on the checked doors and their caller bugs" do
+    rescued = 'begin; (%s).inspect; rescue StandardError => e; "#{e.class}: #{e.message}"; end'
+    inv = "HyperCast::NumFormat::INVARIANT"
+    c = "HyperCast::Constraints"
+    [
+      "HyperCast.checked('€5', HyperCast::NumFormat.new(decimal_sep: '.', group_sep: ',', " \
+      "flags: HyperCast::ALL_STYLES, currency: '€'), #{c}.new(door: :i32, maximum: 4))",
+      "HyperCast.checked('1,5', #{inv}, #{c}.new(door: :decimal, multiple_of: '0.5'), separator: ',', delimiter: '.')",
+      "HyperCast.checked('12.37', #{inv}, #{c}.new(door: :f32, multiple_of: '0.05', rounding: :ceiling))",
+      "HyperCast.checked('x9', #{inv}, #{c}.new(door: :u64))",
+      "HyperCast.checked_from_float(0.1 + 0.2, #{c}.new(door: :f64, multiple_of: '0.1', rounding: :midpoint))",
+      "HyperCast.checked_from_float(-0.0, #{c}.new(door: :decimal, maximum: 1))",
+      "HyperCast.checked_from_float(Float::INFINITY, #{c}.new(door: :i8))",
+      "HyperCast.text(' éé ', #{c}.new(door: :text, trim: true, max_length: 1))",
+      "HyperCast.text(' FEMALE ', #{c}.new(door: :text, trim: true, enum: %w[Male Female]))",
+      "HyperCast.text('ab\\xFFc'.b, #{c}.new(door: :text))",
+      "HyperCast.text('héllo'.encode(Encoding::UTF_16LE))",
+      "HyperCast.text('')",
+      "HyperCast.declared_decimal('-1.50')",
+      "HyperCast.declared_decimal('1,5')",
+      "HyperCast.constraints_check(door: :text, enum: %w[Male MALE])",
+      "#{c}.new(door: :i32, minimum: 0, exclusive_minimum: 0)",
+      "#{c}.new(door: :text, enum: ['\\xFF'.b])",
+      "#{c}.new(door: :text, enum: [])",
+      "#{c}.new(door: :text, trim: true, enum: [' Male '])",
+      "#{c}.new(door: :text, enum: [' Male '])",
+      "#{c}.new(door: :f64, minimum: 0.5)",
+      "HyperCast.checked('1', #{inv}, #{c}.new(door: :text))",
+      "HyperCast.text('1', #{c}.new(door: :i8))",
+      "HyperCast.checked('1', #{inv}, :i8)",
+      "HyperCast.checked_from_float('1', #{c}.new(door: :i8))",
+      "HyperCast.checked('1', #{inv}, #{c}.allocate)"
+    ].each do |source|
+      native = begin
+        eval(source).inspect # rubocop:disable Security/Eval -- the same source, run on both backends
+      rescue StandardError => e
+        "#{e.class}: #{e.message}"
+      end
+      expect(fiddle_eval(format(rescued, source))).to eq(native), source
+    end
+  end
+
   it "agrees with the Fiddle backend on format overrides, their verdicts and their caller bugs" do
     rescued = 'begin; (%s).inspect; rescue StandardError => e; "#{e.class}: #{e.message}"; end'
     inv = "HyperCast::NumFormat::INVARIANT"

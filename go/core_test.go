@@ -6,6 +6,7 @@ package hypercast
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -88,6 +89,27 @@ func TestATextPastMaxTextPanicsBeforeAnythingIsMade(t *testing.T) {
 		}
 	}()
 	acquireFor(uintptr(MaxText) + 1)
+	t.Fatal("no panic")
+}
+
+// A checked door's text and declaration together are bounded by MaxText, and the panic says
+// so, naming the text's own length and the declaration's apart from their sum.
+func TestACheckedTextPastMaxTextNamesItsDeclaration(t *testing.T) {
+	base := withFreshInstances(t)
+	n := uintptr(MaxText) - 10
+	extra := declarationAt(n) - textOffset - n + rawConstraintsBytes + rawCheckBytes
+	defer func() {
+		message, _ := recover().(string)
+		want := fmt.Sprintf("hypercast: a text of %d bytes with a %d-byte declaration past it (%d bytes in all) exceeds MaxText (%d)",
+			n, extra, n+extra, MaxText)
+		if message != want {
+			t.Fatalf("panic %q, want %q", message, want)
+		}
+		if d := instancesCreated.Load() - base; d != 0 {
+			t.Fatalf("a refused text created %d instances", d)
+		}
+	}()
+	acquireChecked(n, &declaration{raw: RawConstraints{Size: RawConstraintsSize}})
 	t.Fatal("no panic")
 }
 
@@ -187,6 +209,7 @@ func TestDecodeLEMatchesTheInPlaceView(t *testing.T) {
 	check("RawTimestamp", decodeLE[RawTimestamp](&b) == *(*RawTimestamp)(unsafe.Pointer(&r.out)))
 	check("RawDate", decodeLE[RawDate](&b) == *(*RawDate)(unsafe.Pointer(&r.out)))
 	check("RawCivil", decodeLE[RawCivil](&b) == *(*RawCivil)(unsafe.Pointer(&r.out)))
+	check("RawSpan", decodeLE[RawSpan](&b) == *(*RawSpan)(unsafe.Pointer(&r.out)))
 	check("uuid.UUID", decodeLE[uuid.UUID](&b) == *(*uuid.UUID)(unsafe.Pointer(&r.out)))
 	// Control: a shape decodeLE does not know is refused, not silently zeroed.
 	func() {
@@ -254,4 +277,71 @@ func TestDoorsFromManyGoroutines(t *testing.T) {
 		}(g)
 	}
 	wg.Wait()
+}
+
+// The checked doors from many goroutines at once, each with declarations and enum lists of
+// its own, while the primary is held, so every call runs on a pooled instance (or a one-off
+// for the long texts): each verdict is its own goroutine's, the declaration laid out past
+// each instance's text included.
+func TestCheckedDoorsFromManyGoroutines(t *testing.T) {
+	type declared struct {
+		codes Constraints[int32]
+		step  Constraints[float64]
+		words Constraints[string]
+	}
+	var all [8]declared
+	for g := range all {
+		all[g] = declared{
+			codes: MustConstraints[int32](Enum(g, g+100, g+200), Maximum(g+200)),
+			step:  MustConstraints[float64](MultipleOf(fmt.Sprintf("0.%0*d", g+1, 5)), WithRounding(Floor)),
+			words: MustConstraints[string](Trim(), Enum(fmt.Sprintf("g%d-alpha", g), fmt.Sprintf("g%d-beta", g))),
+		}
+	}
+	base := withFreshInstances(t)
+	thePrimary.mu.Lock()
+	defer thePrimary.mu.Unlock()
+	long := strings.Repeat(" ", baseText)
+	var wg sync.WaitGroup
+	for g := range all {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			codes, step, words := all[g].codes, all[g].step, all[g].words
+			for i := range 200 {
+				pad := ""
+				if i%50 == 0 {
+					pad = long
+				}
+				want := int32(g + 100*(i%3))
+				got, rejection := Check(pad+strconv.Itoa(int(want)), Invariant, codes)
+				if rejection != nil || got.Value != want {
+					t.Errorf("goroutine %d: Check(%d) = %v, %v", g, want, got, rejection)
+					return
+				}
+				if _, rejection := Check(strconv.Itoa(g+1), Invariant, codes); rejection == nil {
+					t.Errorf("goroutine %d: %d matched its enum", g, g+1)
+					return
+				}
+				f, rejection := Check("1", Invariant, step)
+				if rejection != nil || f.Value != 1 || f.Adjusted {
+					t.Errorf("goroutine %d: Check(1) by step 0.%0*d = %v, %v", g, g+1, 5, f, rejection)
+					return
+				}
+				entry := fmt.Sprintf("g%d-beta", g)
+				w, rejection := CheckString(pad+strings.ToUpper(entry)+" ", words)
+				if rejection != nil || w.Value != entry || w.EnumIndex != 1 {
+					t.Errorf("goroutine %d: CheckString(%s) = %+v, %v", g, entry, w, rejection)
+					return
+				}
+				if _, rejection := CheckString(fmt.Sprintf("g%d-beta", (g+1)%8), words); rejection == nil {
+					t.Errorf("goroutine %d: another goroutine's entry matched", g)
+					return
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	if d := instancesCreated.Load() - base; d < 1 {
+		t.Errorf("the checked doors created %d instances with the primary held: the pool went unused", d)
+	}
 }

@@ -8,11 +8,18 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-# The core as an rlib, without the `exports` feature: the addon calls the doors as Rust
-# functions, so the 26 `cast_*` C ABI symbols have no reason to be exported from the .node
-# (rust/Cargo.toml's `exports` comment). `std` is named again, as that comment asks of a
-# consumer that turns the defaults off.
-hypercast = { path = "../rust", default-features = false, features = ["std"] }
+# The core as an rlib. The plain doors are called as Rust functions; the validation
+# constraints are judged through the core's own C ABI (`cast_checked`, `cast_checked_from_f64`,
+# `cast_constraints_check`, `cast_text`, `cast_declared_decimal`), declared in src/lib.rs as
+# java/jni declares them, because their raw judges (a `RawConstraints` with its packed `enum`
+# beside it) are reachable from outside the crate only there. That needs `exports`, so the .node
+# exports the 32 C symbols too, and the WASI module exports the `cast_*` functions beside its
+# napi entry points. Harmless as Node and Bun load an addon (dlopen with RTLD_LOCAL), and
+# nothing links against the .node. The caveat: an embedder that loads it RTLD_GLOBAL, beside
+# another library exporting the same names (a libhypercast of a different version), could see
+# one interpose the other's `cast_*` symbols. `std` is named again, as rust/Cargo.toml's
+# `exports` comment asks of a consumer that turns the defaults off.
+hypercast = { path = "../rust", default-features = false, features = ["std", "exports"] }
 # napi6 for BigInt: cast_i64 and cast_u64 answer a `bigint`, so the whole 64-bit range is exact.
 napi = { version = "3", default-features = false, features = ["napi6"] }
 napi-derive = "3"

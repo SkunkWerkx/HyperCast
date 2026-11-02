@@ -19,10 +19,10 @@ use ext_php_rs::args::ArgInfoTables;
 use ext_php_rs::builders::{ClassBuilder, FunctionBuilder};
 use ext_php_rs::exception::{PhpException, PhpResult};
 use ext_php_rs::ffi::{
-    _ZEND_TYPE_NAME_BIT, _call_user_function_impl, IS_FALSE, IS_LONG, IS_OBJECT_EX, IS_STRING,
-    IS_TRUE, IS_UNDEF, MAY_BE_ANY, ZEND_ACC_PROMOTED, ZEND_ACC_PUBLIC, object_properties_init,
-    zend_class_entry, zend_object, zend_objects_new, zend_read_property, zend_string, zend_type,
-    zval,
+    _ZEND_TYPE_NAME_BIT, _call_user_function_impl, IS_ARRAY, IS_FALSE, IS_LONG, IS_NULL,
+    IS_OBJECT_EX, IS_STRING, IS_TRUE, IS_UNDEF, MAY_BE_ANY, ZEND_ACC_PROMOTED, ZEND_ACC_PUBLIC,
+    object_properties_init, zend_class_entry, zend_function, zend_object, zend_objects_new,
+    zend_read_property, zend_string, zend_type, zval,
 };
 use ext_php_rs::flags::{ClassFlags, ConstantFlags, MethodFlags};
 use ext_php_rs::types::{ZendObject, ZendStr, Zval};
@@ -62,10 +62,16 @@ pub(crate) enum Value {
     Duration = 3,
     NumFormat = 4,
     DayPeriods = 5,
+    Constraints = 6,
+    Checked = 7,
+    Violation = 8,
 }
 
 /// The value classes' entries, written once each, in MINIT.
-static ENTRIES: [AtomicPtr<ClassEntry>; 6] = [
+static ENTRIES: [AtomicPtr<ClassEntry>; 9] = [
+    AtomicPtr::new(ptr::null_mut()),
+    AtomicPtr::new(ptr::null_mut()),
+    AtomicPtr::new(ptr::null_mut()),
     AtomicPtr::new(ptr::null_mut()),
     AtomicPtr::new(ptr::null_mut()),
     AtomicPtr::new(ptr::null_mut()),
@@ -82,6 +88,14 @@ pub(crate) enum Type {
     String,
     Bool,
     Class(&'static str),
+    /// `?int`.
+    NullableInt,
+    /// `?array`.
+    NullableArray,
+    /// `?Class`.
+    NullableClass(&'static str),
+    /// `Class|int`.
+    ClassOrInt(&'static str),
 }
 
 /// A value class's declaration: its name, its promoted properties in declaration order, and
@@ -90,6 +104,10 @@ pub(crate) struct Declaration {
     pub(crate) name: &'static str,
     pub(crate) properties: &'static [(&'static str, Type)],
     pub(crate) constants: &'static [(&'static str, i64)],
+    /// Whether the properties are the constructor's promoted parameters (1.0's classes, and
+    /// every class whose properties hold what the constructor was given), or assigned by a
+    /// constructor that takes them in another form (`Constraints`).
+    pub(crate) promoted: bool,
 }
 
 /// The class entry of `value`; registered in MINIT, so present whenever PHP calls in.
@@ -104,7 +122,7 @@ pub(crate) fn finish_registration(
     ce: &'static mut ClassEntry,
 ) {
     for (name, ty) in declaration.properties {
-        declare(ce, name, *ty);
+        declare(ce, name, *ty, declaration.promoted);
     }
     ENTRIES[value as usize].store(ce, Ordering::Release);
 }
@@ -127,19 +145,26 @@ pub(crate) fn register(
     builder.registration(registration).register()
 }
 
-/// Declares the public readonly promoted property `name` of type `ty` on `ce`, with no default,
-/// as the compiler declares a promoted constructor parameter.
-fn declare(ce: &mut ClassEntry, name: &str, ty: Type) {
+/// Declares the public readonly property `name` of type `ty` on `ce`, with no default, as the
+/// compiler declares a promoted constructor parameter (or, not `promoted`, a property the
+/// constructor assigns).
+fn declare(ce: &mut ClassEntry, name: &str, ty: Type, promoted: bool) {
     let mask = match ty {
         Type::Mixed => MAY_BE_ANY,
         Type::Int => 1 << IS_LONG,
         Type::String => 1 << IS_STRING,
         Type::Bool => (1 << IS_FALSE) | (1 << IS_TRUE),
         Type::Class(_) => _ZEND_TYPE_NAME_BIT,
+        Type::NullableInt => (1 << IS_LONG) | (1 << IS_NULL),
+        Type::NullableArray => (1 << IS_ARRAY) | (1 << IS_NULL),
+        Type::NullableClass(_) => _ZEND_TYPE_NAME_BIT | (1 << IS_NULL),
+        Type::ClassOrInt(_) => _ZEND_TYPE_NAME_BIT | (1 << IS_LONG),
     };
     let type_ptr = match ty {
         // An internal class's type names a persistent interned string, as a stub's does.
-        Type::Class(class) => ZendStr::new_interned(class, true).into_raw().cast(),
+        Type::Class(class) | Type::NullableClass(class) | Type::ClassOrInt(class) => {
+            ZendStr::new_interned(class, true).into_raw().cast()
+        }
         _ => ptr::null_mut(),
     };
     let name = ZendStr::new_interned(name, true).into_raw();
@@ -152,11 +177,40 @@ fn declare(ce: &mut ClassEntry, name: &str, ty: Type) {
             ce,
             name,
             &raw mut default,
-            (ZEND_ACC_PUBLIC | ACC_READONLY | ZEND_ACC_PROMOTED) as i32,
+            (ZEND_ACC_PUBLIC | ACC_READONLY | if promoted { ZEND_ACC_PROMOTED } else { 0 }) as i32,
             ptr::null_mut(),
             zend_type { ptr: type_ptr, type_mask: mask },
         );
     }
+}
+
+/// Adds the type bits `bits` to the parameter at `position` of the registered method `method`
+/// (lowercase) of `ce`: the engine's own copy of its argument info, which the engine made
+/// when it registered the method and reflection, the argument checks and the error messages
+/// read. For the types ext-php-rs's builders can't declare: a class beside scalars
+/// (`Keyword|int`, `int|string|Decimal|null`). MINIT, before any request. `false` when the
+/// method or the parameter is missing, which the caller turns into a failed registration (so
+/// MINIT fails and the extension never loads declaring a narrower type than it takes).
+#[must_use]
+pub(crate) fn widen(ce: &ClassEntry, method: &str, position: usize, bits: u32) -> bool {
+    // SAFETY: a class's function table holds `IS_PTR` zvals of its methods.
+    let found = ce.function_table.get(method).and_then(|zv| unsafe { zv.ptr::<zend_function>() });
+    let Some(function) = found else {
+        debug_assert!(false, "widen: {method} is not registered");
+        return false;
+    };
+    // SAFETY: a method `zend_register_functions` just registered: an internal function whose
+    // argument info, `num_args` entries of it, the engine copied into memory of its own when
+    // it resolved the class names, and which nothing else reads or writes during MINIT.
+    unsafe {
+        let internal = &mut (*function).internal_function;
+        if position >= internal.num_args as usize || internal.arg_info.is_null() {
+            debug_assert!(false, "widen: {method} has no parameter {position}");
+            return false;
+        }
+        (*internal.arg_info.add(position)).type_.type_mask |= bits;
+    }
+    true
 }
 
 /// A new object of `value`'s class with its properties uninitialized, as `new` makes one before
@@ -348,5 +402,6 @@ pub(crate) fn throw(e: PhpException) {
 /// Registers every value class. MINIT.
 pub(crate) fn register_all() -> ext_php_rs::error::Result<()> {
     super::values::register()?;
-    super::num_format::register()
+    super::num_format::register()?;
+    super::constraints::register()
 }

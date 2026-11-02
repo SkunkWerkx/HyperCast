@@ -4,7 +4,13 @@
 is an ordinary ``METH_FASTCALL`` extension call into a direct Rust call. Every door
 returns a verdict: :class:`Success` or :class:`Fault` (a closed reason plus the offending
 byte span), never an exception for bad data — the only exceptions here are caller bugs (a
-:class:`NumFormat` or a day-period designator that cannot be), never data.
+:class:`NumFormat`, a :class:`Constraints` or a day-period designator that cannot be), never
+data.
+
+The checked doors (:func:`cast_checked`, :func:`cast_checked_from_float`, and
+:func:`cast_text` with constraints) judge a value that parsed by a :class:`Constraints`
+declared for its door, and answer :class:`Checked` or a :data:`Rejection` —
+:class:`Fault` or :class:`Violation`.
 
 Consume with ``match``/``case`` over the two case types — Python's answer to C#'s native
 union and Java's sealed interface. Exhaustiveness is the type checker's job here, not the
@@ -41,7 +47,7 @@ door's own ``Success[...] | Fault`` rather than ``Any``.
 from __future__ import annotations
 
 from enum import IntEnum
-from typing import TypeVar, Union
+from typing import TypeVar, Union, overload
 
 from . import _native
 
@@ -54,6 +60,14 @@ __all__ = [
     "UnixPrecision",
     "DateOrder",
     "ExcelEpoch",
+    "Door",
+    "Rounding",
+    "Constraints",
+    "Checked",
+    "Violation",
+    "Keyword",
+    "Rejection",
+    "CheckedVerdict",
     "optional",
     "cast_bool",
     "cast_char",
@@ -80,6 +94,11 @@ __all__ = [
     "cast_excel_serial_from_float",
     "cast_excel_time",
     "cast_excel_duration",
+    "cast_text",
+    "cast_checked",
+    "cast_checked_from_float",
+    "cast_constraints_check",
+    "cast_declared_decimal",
     "native_version",
 ]
 
@@ -133,15 +152,55 @@ class DateOrder(IntEnum):
     DAY_MONTH_YEAR = 3
 
 
+class Door(IntEnum):
+    """The door a :class:`Constraints` is bound to, numbered as the native core numbers it:
+    the integer family, the two reals and the exact decimal (judged by :func:`cast_checked` and
+    :func:`cast_checked_from_float`), and text (judged by :func:`cast_text`).
+    """
+
+    I8 = 2
+    I16 = 3
+    I32 = 4
+    I64 = 5
+    U8 = 6
+    U16 = 7
+    U32 = 8
+    U64 = 9
+    F32 = 10
+    F64 = 11
+    TEXT = 18
+    DECIMAL = 19
+
+
+class Rounding(IntEnum):
+    """What a value that is not a multiple of the declared ``multiple_of`` becomes — the native
+    core's codes, verbatim. Every mode but :data:`STRICT` needs a ``multiple_of``, and rounding
+    happens on the exact decimal, before the bounds judge the result.
+    """
+
+    STRICT = 0
+    """Not a multiple is a ``multipleOf`` violation. The default."""
+    MIDPOINT = 1
+    """To the nearest multiple, a tie to the even one."""
+    FLOOR = 2
+    """Down, toward negative infinity."""
+    CEILING = 3
+    """Up, toward positive infinity."""
+
+
 # The extension's own types and doors ARE the package surface — no delegation defs, no
 # per-call Python frame on top (their docstrings live on the PyO3 functions/classes
 # themselves). _bind hands over the CastFailure members so faults carry the exact enum
 # members callers compare with `is`, plus uuid.UUID for cast_uuid's construction.
-_native._bind(CastFailure)
+_native._bind(CastFailure, Door, Rounding)
 
 Success = _native.Success
 Fault = _native.Fault
 NumFormat = _native.NumFormat
+Constraints = _native.Constraints
+Checked = _native.Checked
+Violation = _native.Violation
+Keyword = _native.Keyword
 
 cast_bool = _native.cast_bool
 cast_char = _native.cast_char
@@ -168,6 +227,11 @@ cast_decimal_from_float = _native.cast_decimal_from_float
 cast_excel_serial_from_float = _native.cast_excel_serial_from_float
 cast_excel_time = _native.cast_excel_time
 cast_excel_duration = _native.cast_excel_duration
+cast_text = _native.cast_text
+cast_checked = _native.cast_checked
+cast_checked_from_float = _native.cast_checked_from_float
+cast_constraints_check = _native.cast_constraints_check
+cast_declared_decimal = _native.cast_declared_decimal
 native_version = _native.native_version
 
 _T = TypeVar("_T")
@@ -177,9 +241,27 @@ Verdict = Union[Success[_T], Fault]
 value a success carries — ``Verdict[int]`` is what :func:`cast_i32` returns."""
 
 
-def optional(verdict: Verdict[_T]) -> Verdict[_T] | None:
-    """Presents a verdict optionally: a :data:`CastFailure.EMPTY` fault becomes ``None``
-    (Python's absent), everything else flows through untouched.
+Rejection = Union[Fault, Violation]
+"""Why a checked door gave no value: exactly one of :class:`Fault` (it did not parse — the very
+type every plain door returns) or :class:`Violation` (it parsed and broke a declared rule)."""
+
+CheckedVerdict = Union[Checked[_T], Fault, Violation]
+"""The outcome of a checked door: :class:`Checked`, or a :data:`Rejection`. Generic in the
+value a success carries — ``CheckedVerdict[float]`` is what :func:`cast_checked` returns for
+``Constraints`` bound to ``Door.F64``."""
+
+
+@overload
+def optional(verdict: Success[_T] | Fault) -> Success[_T] | Fault | None: ...
+@overload
+def optional(
+    verdict: Checked[_T] | Fault | Violation,
+) -> Checked[_T] | Fault | Violation | None: ...
+def optional(
+    verdict: Success[_T] | Checked[_T] | Fault | Violation,
+) -> Success[_T] | Checked[_T] | Fault | Violation | None:
+    """Presents a verdict, plain or checked, optionally: a :data:`CastFailure.EMPTY` fault
+    becomes ``None`` (Python's absent), everything else flows through untouched.
     """
     if isinstance(verdict, Fault) and verdict.reason is CastFailure.EMPTY:
         return None

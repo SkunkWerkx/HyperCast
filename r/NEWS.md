@@ -18,3 +18,8 @@
 * Number formats: `num_format()`, `num_format_detect()`, `num_format_from_localeconv()`
   and `num_styles`.
 * `hypercast_native_version()`: the version of the loaded Rust core.
+* Validation constraints: `hypercast_constraints()` declares a door's rules (bounds,
+  `multiple_of` with a rounding, lengths, trimming and enumerations), judged once when
+  declared; `cast_checked()`, `cast_checked_from_double()` and `cast_text()` with
+  constraints judge each value by them and return a `hypercast_checked_verdict`, read with
+  `faults()`, `violations()` and `optional()`. `cast_text()` alone is the text door.

@@ -1,12 +1,13 @@
 // The binding's promise: no door throws, whatever it is handed. Every door is called with
 // every argument below in every position (and with none), and each call must return a
 // well-formed verdict: `ok` true with a value, or `ok` false with a fault whose reason is one
-// of the three and whose span is two whole numbers inside the input, in its own units.
+// of the three (or, from a checked door, a violation) whose span is two whole numbers inside
+// the input, in its own units.
 const assert: typeof import('node:assert/strict') = require('node:assert/strict')
 const { test }: typeof import('node:test') = require('node:test')
 const { types }: typeof import('node:util') = require('node:util')
 const api = require('../index.js') as typeof import('../index.js')
-const { DateFormat, DateOrder, NumFormat } = api
+const { Constraints, DateFormat, DateOrder, Door, NumFormat } = api
 
 type Door = (...args: unknown[]) => unknown
 
@@ -36,10 +37,22 @@ const doors: Record<string, Door> = {
   castExcelSerialFromNumber: api.castExcelSerialFromNumber,
   castExcelTime: api.castExcelTime,
   castExcelDuration: api.castExcelDuration,
+  castChecked: api.castChecked,
+  castCheckedFromNumber: api.castCheckedFromNumber,
+  castText: api.castText,
 } as unknown as Record<string, Door>
 
 const dateFormat = DateFormat.declare({ order: DateOrder.DayMonthYear, am: 'vorm.', pm: 'nachm.' })
 assert.ok(dateFormat.ok)
+const numeric = Constraints.declare({ door: Door.I32, maximum: '40', multipleOf: '2' })
+assert.ok(numeric.ok)
+const textual = Constraints.declare({
+  door: Door.Text,
+  trim: true,
+  maxLength: 3,
+  enum: ['a', '42'],
+})
+assert.ok(textual.ok)
 
 function detached(): Uint8Array {
   const view = new Uint8Array(8)
@@ -103,6 +116,11 @@ const hostile: [string, unknown][] = [
   ['NumFormat.prototype', NumFormat.prototype],
   ['Object.create(NumFormat.prototype)', Object.create(NumFormat.prototype)],
   ['DateOrder member', DateOrder.MonthDayYear],
+  ['Constraints at I32', numeric.value],
+  ['Constraints at Text', textual.value],
+  ['Constraints.prototype', Constraints.prototype],
+  ['a ConstraintsSpec', { door: Door.Text, enum: ['\ud800', 1n] }],
+  ['an array holding a Proxy', [new Proxy({}, {})]],
 ]
 
 // A Proxy whose [[GetPrototypeOf]] throws: a trap that throws, or a revoked Proxy. Natively
@@ -140,16 +158,26 @@ const units = (input: unknown): number | undefined => {
 function wellFormed(name: string, args: unknown[], verdict: unknown): void {
   const ctx = `${name}(${args.map((a) => typeof a).join(', ')})`
   assert.equal(typeof verdict, 'object', ctx)
-  const v = verdict as { ok: unknown; value?: unknown; fault?: Record<string, unknown> }
+  const v = verdict as {
+    ok: unknown
+    value?: unknown
+    fault?: Record<string, unknown>
+    violation?: Record<string, unknown>
+  }
   assert.equal(typeof v.ok, 'boolean', ctx)
   if (v.ok) {
     assert.ok('value' in v, ctx)
-    assert.ok(!('fault' in v), ctx)
+    assert.ok(!('fault' in v) && !('violation' in v), ctx)
     return
   }
   assert.ok(!('value' in v), ctx)
-  const fault = v.fault as { reason: unknown; offset: unknown; length: unknown }
-  assert.ok(['empty', 'malformed', 'outOfRange'].includes(fault.reason as string), ctx)
+  assert.notEqual('fault' in v, 'violation' in v, ctx)
+  const fault = (v.fault ?? v.violation) as { reason?: unknown; offset: unknown; length: unknown }
+  if (v.fault) {
+    assert.ok(['empty', 'malformed', 'outOfRange'].includes(fault.reason as string), ctx)
+  } else {
+    assert.equal(typeof (v.violation as { keyword: unknown }).keyword, 'string', ctx)
+  }
   assert.ok(Number.isInteger(fault.offset) && (fault.offset as number) >= 0, ctx)
   assert.ok(Number.isInteger(fault.length) && (fault.length as number) >= 0, ctx)
   const n = units(args[0])
@@ -178,13 +206,31 @@ test('no door throws, for any argument in any position', () => {
       for (const [, second] of hostile) call([first, second])
     }
   }
-  assert.ok(calls > 25 * hostile.length * hostile.length)
+  assert.ok(calls > 28 * hostile.length * hostile.length)
 })
 
 test('the declarations never throw either', () => {
   // A getter or Proxy trap of the caller's that throws is cleared and answered as a refusal.
-  for (const [name, spec] of hostile) {
-    for (const declare of [NumFormat.declare, DateFormat.declare]) {
+  const declarations = [NumFormat.declare, DateFormat.declare, Constraints.declare]
+  const throwing = new Proxy(
+    {},
+    {
+      get() {
+        throw new Error('trap')
+      },
+    },
+  )
+  // Each declaration field also takes every hostile value, and a Proxy that throws.
+  const specs: [string, unknown][] = [...hostile]
+  for (const field of ['door', 'minimum', 'multipleOf', 'rounding', 'maxLength', 'trim', 'enum']) {
+    for (const [name, value] of [...hostile, ['throwing Proxy', throwing] as const]) {
+      specs.push([`${field}: ${name}`, { door: Door.I32, [field]: value }])
+      specs.push([`${field}: ${name} at Text`, { door: Door.Text, [field]: value }])
+    }
+  }
+  specs.push(['enum with a throwing entry', { door: Door.Text, enum: [throwing] }])
+  for (const [name, spec] of specs) {
+    for (const declare of declarations) {
       let declared: unknown
       assert.doesNotThrow(() => {
         declared = (declare as (spec: unknown) => unknown)(spec)
@@ -193,6 +239,16 @@ test('the declarations never throw either', () => {
       assert.equal(typeof d.ok, 'boolean')
       if (!d.ok) assert.equal(typeof d.message, 'string')
     }
+    let code: unknown
+    assert.doesNotThrow(() => {
+      code = (api.castConstraintsCheck as (spec: unknown) => unknown)(spec)
+    }, `${name}: castConstraintsCheck threw`)
+    assert.ok(Number.isInteger(code) && (code as number) >= -1 && (code as number) <= 11, name)
+    let converted: unknown
+    assert.doesNotThrow(() => {
+      converted = (api.castDeclaredDecimal as (text: unknown) => unknown)(spec)
+    }, `${name}: castDeclaredDecimal threw`)
+    assert.equal(typeof (converted as { ok: unknown }).ok, 'boolean', name)
   }
 })
 

@@ -9,7 +9,8 @@ figure includes the binding's crossing and any transcode.
 
 Two machines. Every table is linux-x64 on an Intel Core i9-11900H unless it says otherwise; Go's
 current figures and R's were measured on an Apple M6 (Mac18,5) under macOS on 2026-11-01
-([below](#go-and-r-on-an-apple-m6)), and the two groups are not comparable with each other. Two
+([below](#go-and-r-on-an-apple-m6)), as were the checked doors
+([below](#the-checked-doors-on-an-apple-m6)), and the two groups are not comparable with each other. Two
 labels mark figures whose implementation has since been replaced, kept until they are run again:
 
 - **C# †**: measured on .NET 11 RC 1 with BenchmarkDotNet's in-process toolchain, before the
@@ -204,6 +205,54 @@ the call an R user reaches for today.
 
 Every door allocates more than its base R counterpart: the verdict's five columns (and a
 timestamp's two exact ones) are R vectors of the input's length.
+
+## The checked doors, on an Apple M6
+
+Measured on an Apple M6 (12 cores, 32 GiB) under macOS 27.2 on 2026-11-01, with rustc 1.99.1: the
+same machine as the Go and R figures above, so not comparable to the linux-x64 tables.
+`cargo bench --bench cast_benchmarks -- checked` from `rust/`, Criterion point estimates, two runs
+back to back with the machine lightly loaded. Each checked door is timed beside the plain door it
+wraps, on the same text, with its `Constraints` built once outside the timed loop.
+
+A checked door runs the plain door and then judges the value, so it is slower by construction.
+These figures are the price of the verdict, not a win.
+
+| Case | plain | checked | cost of the verdict | run 2 (plain / checked) |
+| --- | ---: | ---: | ---: | ---: |
+| `f64`, latitude: `45.1234567` in (−90, 90], midpoint to 0.000001 | 6.69 ns | 85.1 ns | +78 ns | 6.64 / 85.0 ns |
+| `checked_from_f64`, the same rule and value, against `cast_f64` on the text | 6.69 ns | 259 ns | **+253 ns** | 6.64 / 262 ns |
+| `Decimal`, euro cash: `12.37`, strict to 0.05 (a violation) | 3.83 ns | 22.9 ns | +19 ns | 4.04 / 24.4 ns |
+| `Text`, `"  published "`, trimmed, against a three-entry `enum` | 3.90 ns | 59.8 ns | +56 ns | 3.94 / 61.1 ns |
+
+Every row is 0 allocations. The two runs agree within 2% except `Decimal`, which moved about 6%
+with wide intervals in run 2; read its cost as 19 to 20 ns. The loss is `checked_from_f64`:
+rounding is judged on the float's shortest decimal digits, so it formats the float and reads it
+back, about three times the checked text door. HyperTabular's spreadsheet path takes that route.
+
+### 2026-11-02: after the delivered-float judgement, and slower
+
+Measured on the same Apple M6 (12 cores, 32 GiB) under macOS 27.2 on 2026-11-02, with rustc
+1.99.1, by the same command, two runs back to back. The checked float doors now also judge the
+float they deliver against each bound as the door reads it, and the declaration gained
+`HAS_ENUM`. The machine was not lightly loaded this time (load average 4.6 to 7.3), so a
+control run of the 2026-11-01 code was taken in the same session; an earlier pair of runs was
+discarded because its second run doubled even the plain doors.
+
+| Case | plain | checked | cost of the verdict | run 2 (plain / checked) | 2026-11-01 code, same session |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `f64`, latitude | 7.24 ns | 88.7 ns | +81 ns | 8.51 / 93.0 ns | 7.20 / 85.5 ns |
+| `checked_from_f64`, latitude | 7.24 ns | 273 ns | **+266 ns** | 8.51 / 269 ns | 7.20 / 264 ns |
+| `Decimal`, euro cash (a violation) | 4.53 ns | 27.3 ns | +23 ns | 4.07 / 31.0 ns | 4.05 / 23.0 ns |
+| `Text`, trimmed `enum` | 4.02 ns | 65.8 ns | +62 ns | 4.41 / 66.7 ns | 3.95 / 61.9 ns |
+
+Every row is still 0 allocations. All four are slower than the 2026-11-01 receipt above, and
+the losses stand. Against the same-session control, `f64` is about 4% slower and
+`checked_from_f64` about 3%: the second judgement of the delivered float, whose bounds convert
+straight from their 64-bit significands. `Decimal` is about 18% slower although its case
+returns at `multipleOf` before any of the new code runs: `judge` is inlined either way, and
+forcing it in or out of line did not move it, so it is code layout, not work, and it was not
+recovered. `Text`, whose path did not change, moved about 6%, which is within this session's
+noise.
 
 ## TypeScript
 

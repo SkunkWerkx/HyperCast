@@ -52,6 +52,10 @@ class NullArgumentTest {
         if (type == double.class) {
             return 1.0;
         }
+        if (type == Constraints.class) {
+            // Any door's: every null is refused before the door binding is checked.
+            return Constraints.text().build();
+        }
         throw new AssertionError("no valid value for " + type);
     }
 
@@ -79,6 +83,9 @@ class NullArgumentTest {
         }
         if (type == Verdict.class) {
             return "verdict";
+        }
+        if (type == Constraints.class) {
+            return "constraints";
         }
         throw new AssertionError("no expected name for " + type);
     }
@@ -119,6 +126,6 @@ class NullArgumentTest {
             }
         }
         // A new public door with a reference parameter changes this count on purpose.
-        assertEquals(191, checked);
+        assertEquals(310, checked);
     }
 }

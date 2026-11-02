@@ -6,11 +6,14 @@ package hypercast
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"math"
 	"math/big"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,10 +61,17 @@ type formatSpec struct {
 	DigitZero          string `json:"digit_zero"` // a one-character string
 }
 
-// corpus decodes corpus/<name>: from the directory HYPERCAST_CORPUS names when it is set (a
+// corpus decodes corpus/<name> as the shape most files share.
+func corpus(t *testing.T, name string) []vector {
+	t.Helper()
+	path, data := corpusFile(t, name)
+	return decodeVectors(t, path, data)
+}
+
+// corpusFile reads corpus/<name>: from the directory HYPERCAST_CORPUS names when it is set (a
 // WASI runtime sees only what is mounted, and the wasm job mounts the checkout and points
 // here), else by walking up from the test directory to find it.
-func corpus(t *testing.T, name string) []vector {
+func corpusFile(t *testing.T, name string) (string, []byte) {
 	t.Helper()
 	if dir := os.Getenv("HYPERCAST_CORPUS"); dir != "" {
 		path := filepath.Join(dir, name)
@@ -69,7 +79,7 @@ func corpus(t *testing.T, name string) []vector {
 		if err != nil {
 			t.Fatalf("corpus/%s not found at %s: %v", name, path, err)
 		}
-		return decodeVectors(t, path, data)
+		return path, data
 	}
 	dir, err := os.Getwd()
 	if err != nil {
@@ -84,7 +94,7 @@ func corpus(t *testing.T, name string) []vector {
 			filepath.Join(dir, "testdata", "corpus", name),
 		} {
 			if data, err := os.ReadFile(candidate); err == nil {
-				return decodeVectors(t, candidate, data)
+				return candidate, data
 			}
 		}
 		// The root is its own parent on every OS — "/" here, "C:\" on Windows, where a
@@ -92,7 +102,7 @@ func corpus(t *testing.T, name string) []vector {
 		parent := filepath.Dir(dir)
 		if parent == dir {
 			t.Fatalf("corpus/%s not found above the test directory", name)
-			return nil
+			return "", nil
 		}
 		dir = parent
 	}
@@ -253,6 +263,7 @@ func uintValue(t *testing.T, v *vector) uint64 {
 	return parsed
 }
 
+// A real vector's value is compared by its IEEE 754 bits.
 func TestCorpusReal(t *testing.T) {
 	for _, v := range corpus(t, "real.json") {
 		format := v.format()
@@ -264,13 +275,14 @@ func TestCorpusReal(t *testing.T) {
 			}
 			expected = parsed
 		}
+		// By bits: zero has one form, and -0.0 == 0.0 would let a signed zero through.
 		switch v.Type {
 		case "f32":
 			value, fault := F32(v.Input, format)
-			assertVerdict(t, "real", &v, value, fault, float32(expected))
+			assertVerdict(t, "real", &v, math.Float32bits(value), fault, math.Float32bits(float32(expected)))
 		case "f64":
 			value, fault := F64(v.Input, format)
-			assertVerdict(t, "real", &v, value, fault, expected)
+			assertVerdict(t, "real", &v, math.Float64bits(value), fault, math.Float64bits(expected))
 		default:
 			t.Fatalf("real: unknown type %q", v.Type)
 		}
@@ -490,5 +502,434 @@ func TestCorpusTyped(t *testing.T) {
 	}
 	if len(doors) != 4 {
 		t.Errorf("typed: replayed %d doors, want 4", len(doors))
+	}
+}
+
+// A constraints.json vector: a declaration at a door, then the outcome of judging one input
+// (text, raw bytes or an already-decoded float64) by it, or the core's refusal of the
+// declaration itself.
+type constraintsVector struct {
+	Door        string          `json:"door"`
+	Input       *string         `json:"input"`
+	InputBytes  []int           `json:"input_bytes"`
+	FromF64     json.RawMessage `json:"from_f64"`
+	Format      *formatSpec     `json:"format"`
+	Constraints struct {
+		Minimum          *string  `json:"minimum,omitempty"`
+		ExclusiveMinimum *string  `json:"exclusiveMinimum,omitempty"`
+		Maximum          *string  `json:"maximum,omitempty"`
+		ExclusiveMaximum *string  `json:"exclusiveMaximum,omitempty"`
+		MultipleOf       *string  `json:"multipleOf,omitempty"`
+		Rounding         string   `json:"rounding,omitempty"`
+		MinLength        *int     `json:"minLength,omitempty"`
+		MaxLength        *int     `json:"maxLength,omitempty"`
+		Trim             bool     `json:"trim,omitempty"`
+		Enum             []string `json:"enum,omitempty"`
+	} `json:"constraints"`
+	Expect    string          `json:"expect"`
+	Value     json.RawMessage `json:"value"`
+	Adjusted  bool            `json:"adjusted"`
+	EnumIndex *int            `json:"enum_index"`
+	Fault     []int           `json:"fault"`
+	Keyword   string          `json:"keyword"`
+	Refusal   int32           `json:"refusal"`
+}
+
+// The corpus spells each rounding mode by name; this is the binding's own constant for it.
+var corpusRounding = map[string]Rounding{"strict": Strict, "midpoint": Midpoint, "floor": Floor, "ceiling": Ceiling}
+
+// rules is the vector's declaration as the public Rule constructors build it, so the corpus
+// exercises the binding's own conversion path.
+func (v *constraintsVector) rules(t *testing.T) []Rule {
+	t.Helper()
+	c := &v.Constraints
+	var rules []Rule
+	for _, b := range []struct {
+		text *string
+		rule func(string) Rule
+	}{
+		{c.Minimum, Minimum[string]}, {c.ExclusiveMinimum, ExclusiveMinimum[string]},
+		{c.Maximum, Maximum[string]}, {c.ExclusiveMaximum, ExclusiveMaximum[string]},
+		{c.MultipleOf, MultipleOf[string]},
+	} {
+		if b.text != nil {
+			rules = append(rules, b.rule(*b.text))
+		}
+	}
+	if c.Rounding != "" {
+		mode, ok := corpusRounding[c.Rounding]
+		if !ok {
+			t.Fatalf("constraints: unknown rounding %q", c.Rounding)
+		}
+		rules = append(rules, WithRounding(mode))
+	}
+	if c.MinLength != nil {
+		rules = append(rules, MinLength(*c.MinLength))
+	}
+	if c.MaxLength != nil {
+		rules = append(rules, MaxLength(*c.MaxLength))
+	}
+	if c.Trim {
+		rules = append(rules, Trim())
+	}
+	if c.Enum != nil {
+		rules = append(rules, Enum(c.Enum...))
+	}
+	return rules
+}
+
+func (v *constraintsVector) String() string {
+	declared, _ := json.Marshal(v.Constraints)
+	switch {
+	case v.Input != nil:
+		return fmt.Sprintf("%s %q %s", v.Door, *v.Input, declared)
+	case v.InputBytes != nil:
+		return fmt.Sprintf("%s bytes %v %s", v.Door, v.InputBytes, declared)
+	case v.FromF64 != nil:
+		return fmt.Sprintf("%s from_f64 %s %s", v.Door, v.FromF64, declared)
+	default:
+		return fmt.Sprintf("%s declaration %s", v.Door, declared)
+	}
+}
+
+// fromF64 is the vector's already-decoded number: a JSON number, or the strings JSON cannot
+// spell as one ("NaN", "Infinity", "-Infinity", "-0").
+func (v *constraintsVector) fromF64(t *testing.T) float64 {
+	t.Helper()
+	var text string
+	if json.Unmarshal(v.FromF64, &text) == nil {
+		switch text {
+		case "NaN":
+			return math.NaN()
+		case "Infinity":
+			return math.Inf(1)
+		case "-Infinity":
+			return math.Inf(-1)
+		case "-0":
+			return math.Copysign(0, -1)
+		}
+		t.Fatalf("constraints: %v unknown from_f64 %q", v, text)
+	}
+	f, err := strconv.ParseFloat(string(v.FromF64), 64)
+	if err != nil {
+		t.Fatalf("constraints: %v bad from_f64: %v", v, err)
+	}
+	return f
+}
+
+// assertRefused checks a refused declaration: the error carries the core's code and the
+// shared message, and MustConstraints panics with the same text.
+func assertRefused[V CheckedTarget](t *testing.T, v *constraintsVector) {
+	t.Helper()
+	rules := v.rules(t)
+	_, err := NewConstraints[V](rules...)
+	var r *refusal
+	if !errors.As(err, &r) {
+		t.Errorf("constraints: %v declared, want refusal %d", v, v.Refusal)
+		return
+	}
+	if r.code != v.Refusal {
+		t.Errorf("constraints: %v refused with code %d, want %d", v, r.code, v.Refusal)
+	}
+	want := fmt.Sprintf("hypercast: Constraints refused (code %d): ", v.Refusal)
+	if !strings.HasPrefix(err.Error(), want) || err.Error() != refused(v.Refusal).Error() {
+		t.Errorf("constraints: %v refused as %q, want the code %d message", v, err, v.Refusal)
+	}
+	func() {
+		defer func() {
+			if p := recover(); p != err.Error() {
+				t.Errorf("constraints: %v MustConstraints panicked with %v, want %q", v, p, err)
+			}
+		}()
+		MustConstraints[V](rules...)
+	}()
+}
+
+// assertChecked checks one checked verdict against the vector; same reports how a delivered
+// value differs from the expected one ("" when it does not).
+func assertChecked[V any](t *testing.T, v *constraintsVector, how string, got Checked[V], rejection Rejection, same func(V) string) {
+	t.Helper()
+	switch v.Expect {
+	case "ok":
+		if rejection != nil {
+			t.Errorf("constraints: %v (%s) rejected: %v", v, how, rejection)
+			return
+		}
+		if diff := same(got.Value); diff != "" {
+			t.Errorf("constraints: %v (%s) %s", v, how, diff)
+		}
+		if got.Adjusted != v.Adjusted {
+			t.Errorf("constraints: %v (%s) adjusted %v, want %v", v, how, got.Adjusted, v.Adjusted)
+		}
+		want := -1
+		if v.EnumIndex != nil {
+			want = *v.EnumIndex
+		}
+		if got.EnumIndex != want {
+			t.Errorf("constraints: %v (%s) enum index %d, want %d", v, how, got.EnumIndex, want)
+		}
+		return
+	case "violation":
+		violation, ok := rejection.(*Violation)
+		if !ok {
+			t.Errorf("constraints: %v (%s) -> %v %v, want a %s violation", v, how, got, rejection, v.Keyword)
+			return
+		}
+		if violation.Keyword.String() != v.Keyword {
+			t.Errorf("constraints: %v (%s) broke %s, want %s", v, how, violation.Keyword, v.Keyword)
+		}
+		if violation.Offset != v.Fault[0] || violation.Length != v.Fault[1] {
+			t.Errorf("constraints: %v (%s) violation span (%d,%d), want (%d,%d)",
+				v, how, violation.Offset, violation.Length, v.Fault[0], v.Fault[1])
+		}
+	default:
+		reason, known := expectedReason[v.Expect]
+		if !known {
+			t.Fatalf("constraints: %v unknown expect %q", v, v.Expect)
+		}
+		fault, ok := rejection.(*Fault)
+		if !ok {
+			t.Errorf("constraints: %v (%s) -> %v %v, want %s", v, how, got, rejection, reason)
+			return
+		}
+		if fault.Reason != reason || fault.Offset != v.Fault[0] || fault.Length != v.Fault[1] {
+			t.Errorf("constraints: %v (%s) -> %v, want %s at (%d,%d)", v, how, fault, reason, v.Fault[0], v.Fault[1])
+		}
+	}
+	if got.EnumIndex != -1 {
+		t.Errorf("constraints: %v (%s) a rejection's Checked carries enum index %d, want -1", v, how, got.EnumIndex)
+	}
+}
+
+// replayNumber replays a numeric vector at V's door: declared through NewConstraints, then
+// judged through Check (over the text as a string and as bytes) or CheckFromFloat64.
+func replayNumber[V Number](t *testing.T, v *constraintsVector, same func(V) string) {
+	t.Helper()
+	if v.Expect == "refused" {
+		assertRefused[V](t, v)
+		return
+	}
+	constraints, err := NewConstraints[V](v.rules(t)...)
+	if err != nil {
+		t.Errorf("constraints: %v refused: %v", v, err)
+		return
+	}
+	format := (&vector{Format: v.Format}).format()
+	switch {
+	case v.FromF64 != nil:
+		got, rejection := CheckFromFloat64(v.fromF64(t), constraints)
+		assertChecked(t, v, "from float64", got, rejection, same)
+	case v.Input != nil:
+		got, rejection := Check(*v.Input, format, constraints)
+		assertChecked(t, v, "string", got, rejection, same)
+		got, rejection = Check([]byte(*v.Input), format, constraints)
+		assertChecked(t, v, "bytes", got, rejection, same)
+	case v.InputBytes != nil:
+		got, rejection := Check(v.bytes(), format, constraints)
+		assertChecked(t, v, "bytes", got, rejection, same)
+	default:
+		t.Fatalf("constraints: %v has no input", v)
+	}
+}
+
+func (v *constraintsVector) bytes() []byte {
+	b := make([]byte, len(v.InputBytes))
+	for i, x := range v.InputBytes {
+		b[i] = byte(x)
+	}
+	return b
+}
+
+// replayText replays a text vector through CheckString: a Go string can hold any bytes, so
+// an input_bytes vector replays as a string as well as as bytes.
+func replayText(t *testing.T, v *constraintsVector) {
+	t.Helper()
+	if v.Expect == "refused" {
+		assertRefused[string](t, v)
+		return
+	}
+	constraints, err := NewConstraints[string](v.rules(t)...)
+	if err != nil {
+		t.Errorf("constraints: %v refused: %v", v, err)
+		return
+	}
+	var want string
+	if v.Expect == "ok" {
+		if err := json.Unmarshal(v.Value, &want); err != nil {
+			t.Fatalf("constraints: %v bad value: %v", v, err)
+		}
+	}
+	same := func(got string) string {
+		if got != want {
+			return fmt.Sprintf("-> %q, want %q", got, want)
+		}
+		return ""
+	}
+	text := v.bytes()
+	if v.Input != nil {
+		text = []byte(*v.Input)
+	}
+	got, rejection := CheckString(string(text), constraints)
+	assertChecked(t, v, "string", got, rejection, same)
+	got, rejection = CheckString(text, constraints)
+	assertChecked(t, v, "bytes", got, rejection, same)
+}
+
+// exactly compares an integer door's value with the vector's.
+func exactly[V int8 | int16 | int32 | int64 | uint8 | uint16 | uint32 | uint64](t *testing.T, v *constraintsVector) func(V) string {
+	return func(got V) string {
+		if want := string(v.Value); fmt.Sprint(got) != want {
+			return fmt.Sprintf("-> %v, want %s", got, want)
+		}
+		return ""
+	}
+}
+
+// The checked doors over corpus/constraints.json: every row, refusals and from_f64 rows
+// included, through the public NewConstraints and the checked doors. Floats are compared by
+// bits, so a -0.0 delivered for zero fails. A lone surrogate does not exist in Go's string
+// model (a string is bytes, and the surrogate's encoding is just invalid UTF-8, which the
+// input_bytes rows already replay), so there is nothing further to skip.
+func TestCorpusConstraints(t *testing.T) {
+	path, data := corpusFile(t, "constraints.json")
+	var vectors []constraintsVector
+	if err := json.Unmarshal(data, &vectors); err != nil {
+		t.Fatalf("parsing %s: %v", path, err)
+	}
+	replayed := map[string]int{}
+	for i := range vectors {
+		v := &vectors[i]
+		replayed[v.Expect]++
+		switch v.Door {
+		case "i8":
+			replayNumber(t, v, exactly[int8](t, v))
+		case "i16":
+			replayNumber(t, v, exactly[int16](t, v))
+		case "i32":
+			replayNumber(t, v, exactly[int32](t, v))
+		case "i64":
+			replayNumber(t, v, exactly[int64](t, v))
+		case "u8":
+			replayNumber(t, v, exactly[uint8](t, v))
+		case "u16":
+			replayNumber(t, v, exactly[uint16](t, v))
+		case "u32":
+			replayNumber(t, v, exactly[uint32](t, v))
+		case "u64":
+			replayNumber(t, v, exactly[uint64](t, v))
+		case "f32":
+			replayNumber(t, v, func(got float32) string {
+				want, err := strconv.ParseFloat(string(v.Value), 32)
+				if err != nil {
+					t.Fatalf("constraints: %v bad value: %v", v, err)
+				}
+				if math.Float32bits(got) != math.Float32bits(float32(want)) {
+					return fmt.Sprintf("-> %v (bits %08x), want %v (bits %08x)", got, math.Float32bits(got), float32(want), math.Float32bits(float32(want)))
+				}
+				return ""
+			})
+		case "f64":
+			replayNumber(t, v, func(got float64) string {
+				want, err := strconv.ParseFloat(string(v.Value), 64)
+				if err != nil {
+					t.Fatalf("constraints: %v bad value: %v", v, err)
+				}
+				if math.Float64bits(got) != math.Float64bits(want) {
+					return fmt.Sprintf("-> %v (bits %016x), want %v (bits %016x)", got, math.Float64bits(got), want, math.Float64bits(want))
+				}
+				return ""
+			})
+		case "decimal":
+			replayNumber(t, v, func(got Decimal) string {
+				var want string
+				if err := json.Unmarshal(v.Value, &want); err != nil {
+					t.Fatalf("constraints: %v bad value: %v", v, err)
+				}
+				if got.String() != want {
+					return fmt.Sprintf("-> %s, want %s", got, want)
+				}
+				return ""
+			})
+		case "text":
+			replayText(t, v)
+		default:
+			t.Fatalf("constraints: unknown door %q", v.Door)
+		}
+	}
+	for _, expect := range []string{"ok", "violation", "refused", "empty", "malformed", "out_of_range"} {
+		if replayed[expect] == 0 {
+			t.Errorf("constraints: no %q vector replayed", expect)
+		}
+	}
+}
+
+// A declarations.json vector: a bound's text (or raw bytes) and the exact Decimal the core's
+// conversion makes of it, or its refusal.
+type declarationVector struct {
+	Input      *string `json:"input"`
+	InputBytes []int   `json:"input_bytes"`
+	Expect     string  `json:"expect"`
+	Magnitude  string  `json:"magnitude"`
+	Scale      uint8   `json:"scale"`
+	Negative   bool    `json:"negative"`
+	Value      string  `json:"value"`
+	Refusal    int32   `json:"refusal"`
+}
+
+// The conversion every declaration's text goes through (cast_declared_decimal), over
+// corpus/declarations.json: the raw triple, scale included, through the binding's wrapper,
+// and again through the public path (a Minimum read back from its Constraints). A Go string
+// holds any bytes, so the input_bytes rows replay too.
+func TestCorpusDeclarations(t *testing.T) {
+	path, data := corpusFile(t, "declarations.json")
+	var vectors []declarationVector
+	if err := json.Unmarshal(data, &vectors); err != nil {
+		t.Fatalf("parsing %s: %v", path, err)
+	}
+	if len(vectors) == 0 {
+		t.Fatalf("%s is empty", path)
+	}
+	for _, v := range vectors {
+		var text string
+		if v.Input != nil {
+			text = *v.Input
+		} else {
+			b := make([]byte, len(v.InputBytes))
+			for i, x := range v.InputBytes {
+				b[i] = byte(x)
+			}
+			text = string(b)
+		}
+		got, ok := declaredDecimal(text)
+		constraints, err := NewConstraints[Decimal](Minimum(text))
+		switch v.Expect {
+		case "ok":
+			magnitude, parsed := new(big.Int).SetString(v.Magnitude, 10)
+			if !parsed || magnitude.BitLen() > 96 {
+				t.Fatalf("declarations: %q bad magnitude %q", text, v.Magnitude)
+			}
+			lo := new(big.Int).And(magnitude, new(big.Int).SetUint64(math.MaxUint64))
+			hi := new(big.Int).Rsh(magnitude, 64)
+			want := Decimal{Lo: lo.Uint64(), Hi: uint32(hi.Uint64()), Scale: v.Scale, Negative: v.Negative}
+			if !ok || got != want {
+				t.Errorf("declarations: %q -> %+v %v, want %+v", text, got, ok, want)
+			}
+			if ok && got.String() != v.Value {
+				t.Errorf("declarations: %q String() = %q, want %q", text, got.String(), v.Value)
+			}
+			if minimum, declared := constraints.Minimum(); err != nil || !declared || minimum != want {
+				t.Errorf("declarations: %q as a Minimum -> %+v %v %v, want %+v", text, minimum, declared, err, want)
+			}
+		case "refused":
+			if ok {
+				t.Errorf("declarations: %q -> %+v, want refusal %d", text, got, v.Refusal)
+			}
+			var r *refusal
+			if !errors.As(err, &r) || r.code != v.Refusal {
+				t.Errorf("declarations: %q as a Minimum -> %v, want refusal %d", text, err, v.Refusal)
+			}
+		default:
+			t.Fatalf("declarations: %q unknown expect %q", text, v.Expect)
+		}
 	}
 }

@@ -79,6 +79,7 @@ const NUM_FORMAT: Declaration = Declaration {
         ("CURRENCY_MAX_BYTES", CURRENCY_MAX_BYTES as i64),
         ("PACKED_BYTES", PACKED_BYTES as i64),
     ],
+    promoted: true,
 };
 
 // `\NumberFormatter`'s symbol and text attribute numbers (ext-intl's, from ICU's enums).

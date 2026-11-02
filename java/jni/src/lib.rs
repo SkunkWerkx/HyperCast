@@ -4,10 +4,12 @@
 //! and no panic path: every native returns the core's own verdict code, or `PENDING` when a
 //! Java exception is already on its way.
 //!
-//! A verdict crosses back through the caller's `long[4]`: on success the value as two
+//! A verdict crosses back through the caller's `long[]`: on success the value as two
 //! `long`s in `out[0..2]` ([`Words`] has each type's encoding), on a fault its span's offset
 //! and length in `out[2..4]`, and on a contract violation (`-1`) nothing at all — the same
-//! writes the C ABI makes to its `out` and `fault` pointers.
+//! writes the C ABI makes to its `out` and `fault` pointers. The checked doors also write
+//! the C ABI's `check` to `out[4..7]` on every verdict (see [`check_words`]), so Java hands
+//! them a `long[7]` or longer; every other native reads and writes `out[0..4]` alone.
 //!
 //! The natives are `pub unsafe extern "system" fn`: as `pub` fns taking raw pointers they
 //! would otherwise fail clippy's `not_unsafe_ptr_arg_deref`. Their safety contract is
@@ -20,10 +22,13 @@ extern crate hypercast;
 use core::ffi::{c_char, c_void};
 use core::mem::MaybeUninit;
 use core::ptr::{null, null_mut};
-use hypercast::{CivilDateTime, Date, Decimal, Duration, RawDayPeriods, RawNumFormat, Timestamp};
+use hypercast::{
+    CivilDateTime, Date, Decimal, Door, Duration, RawCheck, RawConstraints, RawDayPeriods,
+    RawNumFormat, RawSpan, Timestamp,
+};
 use jni_sys::{
     JNI_ABORT, JNI_ERR, JNI_OK, JNI_VERSION_1_8, JNIEnv, JNINativeMethod, JavaVM, jbyte,
-    jbyteArray, jclass, jdouble, jint, jlong, jlongArray, jsize,
+    jbyteArray, jclass, jdouble, jint, jlong, jlongArray, jobject, jsize,
 };
 
 /// A fault's span as the C ABI writes it: two `u32`s, the reason being the return code.
@@ -160,6 +165,38 @@ unsafe extern "C" {
     fn cast_excel_time(value: f64, out: *mut u64, fault: *mut RawFault) -> i32;
     fn cast_excel_duration(value: f64, out: *mut Duration, fault: *mut RawFault) -> i32;
     fn hypercast_version() -> u32;
+    fn cast_checked(
+        door: u32,
+        param: u32,
+        format: *const RawNumFormat,
+        constraints: *const RawConstraints,
+        enum_ptr: *const u8,
+        enum_len: usize,
+        ptr: *const u8,
+        len: usize,
+        out: *mut c_void,
+        fault: *mut RawFault,
+        check: *mut RawCheck,
+    ) -> i32;
+    fn cast_checked_from_f64(
+        door: u32,
+        value: f64,
+        constraints: *const RawConstraints,
+        enum_ptr: *const u8,
+        enum_len: usize,
+        out: *mut c_void,
+        fault: *mut RawFault,
+        check: *mut RawCheck,
+    ) -> i32;
+    fn cast_constraints_check(
+        door: u32,
+        param: u32,
+        constraints: *const RawConstraints,
+        enum_ptr: *const u8,
+        enum_len: usize,
+    ) -> i32;
+    fn cast_text(ptr: *const u8, len: usize, out: *mut RawSpan, fault: *mut RawFault) -> i32;
+    fn cast_declared_decimal(ptr: *const u8, len: usize, out: *mut Decimal) -> i32;
     fn malloc(size: usize) -> *mut c_void;
     fn free(p: *mut c_void);
 }
@@ -193,7 +230,7 @@ macro_rules! native {
     };
 }
 
-const NATIVES: [Native; 28] = [
+const NATIVES: [Native; 33] = [
     native!("castBool", "([B[J)I", native_cast_bool),
     native!("castChar", "([B[J)I", native_cast_char),
     native!("castI8", "([B[B[J)I", native_cast_i8),
@@ -225,6 +262,27 @@ const NATIVES: [Native; 28] = [
     native!("castExcelTime", "(D[J)I", native_cast_excel_time),
     native!("castExcelDuration", "(D[J)I", native_cast_excel_duration),
     native!("hypercastVersion", "()I", native_hypercast_version),
+    native!(
+        "castChecked",
+        "(I[B[BLjava/nio/ByteBuffer;[B[J)I",
+        native_cast_checked
+    ),
+    native!(
+        "castCheckedFromF64",
+        "(ID[BLjava/nio/ByteBuffer;[J)I",
+        native_cast_checked_from_f64
+    ),
+    native!(
+        "castConstraintsCheck",
+        "(I[BLjava/nio/ByteBuffer;)I",
+        native_cast_constraints_check
+    ),
+    native!("castText", "([B[J)I", native_cast_text),
+    native!(
+        "castDeclaredDecimal",
+        "([B[J)I",
+        native_cast_declared_decimal
+    ),
     native!("jniNatives", "()I", native_jni_natives),
 ];
 
@@ -383,6 +441,14 @@ impl Words for CivilDateTime {
     #[inline(always)]
     fn words(self) -> [jlong; 2] {
         [self.date.words()[0], self.nanos_of_day as jlong]
+    }
+}
+
+/// The text door's span of the input: its byte offset, then its byte length.
+impl Words for RawSpan {
+    #[inline(always)]
+    fn words(self) -> [jlong; 2] {
+        [jlong::from(self.offset), jlong::from(self.len)]
     }
 }
 
@@ -938,6 +1004,364 @@ pub unsafe extern "system" fn native_cast_excel_duration(
 pub unsafe extern "system" fn native_hypercast_version(_env: *mut JNIEnv, _class: jclass) -> jint {
     // SAFETY: takes no arguments.
     unsafe { hypercast_version() as jint }
+}
+
+/// [`RawConstraints`] as `NativeCore` packs it, in the platform's byte order: the same
+/// fields at the same offsets, but each `Decimal`'s sign a plain byte, so that any bytes at
+/// all are a value of it (a `bool` is not) and it can be read as a [`Layout`]. Rebuilt as
+/// the core's own type by [`WireConstraints::raw`].
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct WireConstraints {
+    size: u32,
+    flags: u32,
+    rounding: u32,
+    min_length: u32,
+    max_length: u32,
+    reserved: u32,
+    lower: WireDecimal,
+    upper: WireDecimal,
+    multiple_of: WireDecimal,
+}
+
+/// [`Decimal`]'s 16 bytes, its sign a byte.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct WireDecimal {
+    lo: u64,
+    hi: u32,
+    scale: u8,
+    negative: u8,
+    padding: [u8; 2],
+}
+
+const _: () = {
+    use core::mem::offset_of;
+    assert!(size_of::<WireConstraints>() == RawConstraints::SIZE as usize);
+    assert!(size_of::<WireConstraints>() == size_of::<RawConstraints>());
+    assert!(offset_of!(WireConstraints, lower) == offset_of!(RawConstraints, lower));
+    assert!(offset_of!(WireConstraints, upper) == offset_of!(RawConstraints, upper));
+    assert!(offset_of!(WireConstraints, multiple_of) == offset_of!(RawConstraints, multiple_of));
+    assert!(size_of::<WireDecimal>() == size_of::<Decimal>());
+    assert!(offset_of!(WireDecimal, scale) == offset_of!(Decimal, scale));
+    assert!(offset_of!(WireDecimal, negative) == offset_of!(Decimal, negative));
+};
+
+const WIRE_DECIMAL_ZERO: WireDecimal = WireDecimal {
+    lo: 0,
+    hi: 0,
+    scale: 0,
+    negative: 0,
+    padding: [0; 2],
+};
+
+impl Layout for WireConstraints {
+    const ZERO: Self = WireConstraints {
+        size: 0,
+        flags: 0,
+        rounding: 0,
+        min_length: 0,
+        max_length: 0,
+        reserved: 0,
+        lower: WIRE_DECIMAL_ZERO,
+        upper: WIRE_DECIMAL_ZERO,
+        multiple_of: WIRE_DECIMAL_ZERO,
+    };
+}
+
+impl WireDecimal {
+    #[inline(always)]
+    fn decimal(self) -> Decimal {
+        Decimal {
+            lo: self.lo,
+            hi: self.hi,
+            scale: self.scale,
+            negative: self.negative != 0,
+        }
+    }
+}
+
+impl WireConstraints {
+    /// The core's own layout, field for field. `NativeCore` writes a sign as 0 or 1.
+    #[inline(always)]
+    fn raw(self) -> RawConstraints {
+        RawConstraints {
+            size: self.size,
+            flags: self.flags,
+            rounding: self.rounding,
+            min_length: self.min_length,
+            max_length: self.max_length,
+            _reserved: self.reserved,
+            lower: self.lower.decimal(),
+            upper: self.upper.decimal(),
+            multiple_of: self.multiple_of.decimal(),
+        }
+    }
+}
+
+/// The `enum` list, which `NativeCore` keeps in a direct `ByteBuffer` built once with its
+/// `Constraints`: its address and length, read before any input is pinned, so the list is
+/// neither pinned nor copied on a call. A null buffer, or an empty one, is a list with no
+/// entries (the layout's `HAS_ENUM` says whether an `enum` is declared at all); a buffer with
+/// no address (not direct) is `None`, which the natives answer as a contract violation.
+#[inline(always)]
+unsafe fn read_entries(env: *mut JNIEnv, entries: jobject) -> Option<(*const u8, usize)> {
+    if entries.is_null() {
+        return Some((null(), 0));
+    }
+    // SAFETY: the caller passes a live env and a `ByteBuffer`.
+    let capacity = unsafe { ((**env).v1_4.GetDirectBufferCapacity)(env, entries) };
+    let len = usize::try_from(capacity).ok()?;
+    if len == 0 {
+        return Some((null(), 0));
+    }
+    // SAFETY: as above.
+    let p = unsafe { ((**env).v1_4.GetDirectBufferAddress)(env, entries) };
+    if p.is_null() {
+        return None;
+    }
+    Some((p.cast_const().cast(), len))
+}
+
+/// What a checked door reports beside its value, as `out[4..7]`: the keyword broken (0 for
+/// none), whether rounding adjusted the value (1 or 0), and the matched text entry's index
+/// (`u32::MAX`, zero-extended, for none), the C ABI's `RawCheck` field for field.
+#[inline(always)]
+pub fn check_words(check: &RawCheck) -> [jlong; 3] {
+    [
+        jlong::from(check.keyword),
+        jlong::from(check.adjusted),
+        jlong::from(check.enum_index),
+    ]
+}
+
+const I8: u32 = Door::I8.code();
+const I16: u32 = Door::I16.code();
+const I32: u32 = Door::I32.code();
+const I64: u32 = Door::I64.code();
+const U8: u32 = Door::U8.code();
+const U16: u32 = Door::U16.code();
+const U32: u32 = Door::U32.code();
+const U64: u32 = Door::U64.code();
+const F32: u32 = Door::F32.code();
+const F64: u32 = Door::F64.code();
+const TEXT: u32 = Door::Text.code();
+const DECIMAL: u32 = Door::Decimal.code();
+
+/// The value a checked door wrote into `slot`, as the words its plain door's native hands
+/// back: one door, one type, so `NativeCore`'s readers serve both. Read only after a 0, which
+/// the core returns only for a door it knows.
+#[inline(always)]
+unsafe fn checked_words(door: u32, slot: &[u64; 2]) -> [jlong; 2] {
+    let p = slot.as_ptr();
+    // SAFETY: `slot` is 16 bytes, 8-aligned and zeroed, so it holds any door's value; the core
+    // wrote the door's own type there, so a `Decimal`'s sign is a valid `bool`.
+    unsafe {
+        match door {
+            I8 => p.cast::<i8>().read().words(),
+            I16 => p.cast::<i16>().read().words(),
+            I32 => p.cast::<i32>().read().words(),
+            I64 => p.cast::<i64>().read().words(),
+            U8 => p.cast::<u8>().read().words(),
+            U16 => p.cast::<u16>().read().words(),
+            U32 => p.cast::<u32>().read().words(),
+            U64 => p.cast::<u64>().read().words(),
+            F32 => p.cast::<f32>().read().words(),
+            F64 => p.cast::<f64>().read().words(),
+            TEXT => p.cast::<RawSpan>().read().words(),
+            DECIMAL => p.cast::<Decimal>().read().words(),
+            _ => [0, 0],
+        }
+    }
+}
+
+/// A checked verdict where Java reads it: [`finish`]'s writes, then the check to `out[4..7]`
+/// on every code the core returned but `-1`.
+#[inline(always)]
+unsafe fn finish_checked(
+    env: *mut JNIEnv,
+    out: jlongArray,
+    rc: i32,
+    door: u32,
+    slot: &[u64; 2],
+    fault: &RawFault,
+    check: &RawCheck,
+) -> jint {
+    if rc == 0 {
+        // SAFETY: the core wrote the value: it returns 0 only after it has.
+        let words = unsafe { checked_words(door, slot) };
+        // SAFETY: the caller passes a live env and a `long[]` of at least seven elements.
+        unsafe { ((**env).v1_2.SetLongArrayRegion)(env, out, 0, 2, words.as_ptr()) };
+    } else if rc > 0 {
+        let span = [jlong::from(fault.offset), jlong::from(fault.len)];
+        // SAFETY: as above.
+        unsafe { ((**env).v1_2.SetLongArrayRegion)(env, out, 2, 2, span.as_ptr()) };
+    }
+    if rc >= 0 {
+        let words = check_words(check);
+        // SAFETY: as above.
+        unsafe { ((**env).v1_2.SetLongArrayRegion)(env, out, 4, 3, words.as_ptr()) };
+    }
+    rc
+}
+
+/// The check a checked door starts from, which the core overwrites on 0 and 4.
+const NO_CHECK: RawCheck = RawCheck {
+    keyword: 0,
+    adjusted: 0,
+    enum_index: u32::MAX,
+};
+
+/// A checked door: `door` is the core's door code (an integer or float door, 18 Text, 19
+/// Decimal), `format` the 92-byte layout or null (the invariant one; Text ignores it),
+/// `constraints` the 72-byte layout and `entries` the `enum` list or null. Every layout is
+/// read before the input is pinned.
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "system" fn native_cast_checked(
+    env: *mut JNIEnv,
+    _class: jclass,
+    door: jint,
+    format: jbyteArray,
+    constraints: jbyteArray,
+    entries: jobject,
+    input: jbyteArray,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: the caller passes a live env and `byte[]`s.
+    let Some(declared) = (unsafe { read_layout::<WireConstraints>(env, constraints) }) else {
+        return PENDING;
+    };
+    let declared = declared.raw();
+    let layout = if format.is_null() {
+        None
+    } else {
+        // SAFETY: as above.
+        match unsafe { read_layout::<RawNumFormat>(env, format) } {
+            Some(layout) => Some(layout),
+            None => return PENDING,
+        }
+    };
+    let notation: *const RawNumFormat = match &layout {
+        Some(layout) => layout,
+        None => null(),
+    };
+    // SAFETY: as above.
+    let Some((enum_ptr, enum_len)) = (unsafe { read_entries(env, entries) }) else {
+        return -1;
+    };
+    let door = door as u32;
+    let mut slot = [0u64; 2];
+    let mut fault = RawFault { offset: 0, len: 0 };
+    let mut check = NO_CHECK;
+    // SAFETY: as `native_cast_bool`; the layouts and the list outlive the call.
+    let rc = unsafe {
+        with_text(env, input, |p, n| {
+            cast_checked(
+                door,
+                0,
+                notation,
+                &declared,
+                enum_ptr,
+                enum_len,
+                p,
+                n,
+                slot.as_mut_ptr().cast(),
+                &mut fault,
+                &mut check,
+            )
+        })
+    };
+    // SAFETY: the caller passes a live env and a `long[7]`.
+    unsafe { finish_checked(env, out, rc, door, &slot, &fault, &check) }
+}
+
+/// The checked door over a `double` a source already decoded: `door` is a numeric door.
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_checked_from_f64(
+    env: *mut JNIEnv,
+    _class: jclass,
+    door: jint,
+    value: jdouble,
+    constraints: jbyteArray,
+    entries: jobject,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: the caller passes a live env and a `byte[]`.
+    let Some(declared) = (unsafe { read_layout::<WireConstraints>(env, constraints) }) else {
+        return PENDING;
+    };
+    let declared = declared.raw();
+    // SAFETY: as above.
+    let Some((enum_ptr, enum_len)) = (unsafe { read_entries(env, entries) }) else {
+        return -1;
+    };
+    let door = door as u32;
+    let mut slot = [0u64; 2];
+    let mut fault = RawFault { offset: 0, len: 0 };
+    let mut check = NO_CHECK;
+    // SAFETY: the core writes only through the pointers it is handed.
+    let rc = unsafe {
+        cast_checked_from_f64(
+            door,
+            value,
+            &declared,
+            enum_ptr,
+            enum_len,
+            slot.as_mut_ptr().cast(),
+            &mut fault,
+            &mut check,
+        )
+    };
+    // SAFETY: the caller passes a live env and a `long[7]`.
+    unsafe { finish_checked(env, out, rc, door, &slot, &fault, &check) }
+}
+
+/// Judges a declaration once, as `Constraints` is built: the core's 0 or refusal code, or
+/// `-1` for an `enum` buffer that is not direct (a binding bug).
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_constraints_check(
+    env: *mut JNIEnv,
+    _class: jclass,
+    door: jint,
+    constraints: jbyteArray,
+    entries: jobject,
+) -> jint {
+    // SAFETY: the caller passes a live env and a `byte[]`.
+    let Some(declared) = (unsafe { read_layout::<WireConstraints>(env, constraints) }) else {
+        return PENDING;
+    };
+    let declared = declared.raw();
+    // SAFETY: as above.
+    let Some((enum_ptr, enum_len)) = (unsafe { read_entries(env, entries) }) else {
+        return -1;
+    };
+    // SAFETY: the core only reads the layout and the list.
+    unsafe { cast_constraints_check(door as u32, 0, &declared, enum_ptr, enum_len) }
+}
+
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_text(
+    env: *mut JNIEnv,
+    _class: jclass,
+    input: jbyteArray,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: as `native_cast_bool`.
+    unsafe { text_door::<RawSpan>(env, input, out, |p, n, v, f| cast_text(p, n, v, f)) }
+}
+
+/// A declared bound, step or integer `enum` entry in invariant notation, converted by the
+/// core: 0 with the `Decimal`'s words, or 8 for text no door can hold.
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_declared_decimal(
+    env: *mut JNIEnv,
+    _class: jclass,
+    input: jbyteArray,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: as `native_cast_bool`.
+    unsafe { text_door::<Decimal>(env, input, out, |p, n, v, _| cast_declared_decimal(p, n, v)) }
 }
 
 /// The length of the registration table, never a literal.

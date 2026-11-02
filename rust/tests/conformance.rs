@@ -14,6 +14,35 @@ use hypercast::{
 use serde_json::Value;
 use std::path::PathBuf;
 
+// The declaration conversion as every binding calls it, linked from the rlib as a C caller
+// links it.
+unsafe extern "C" {
+    fn cast_declared_decimal(ptr: *const u8, len: usize, out: *mut hypercast::Decimal) -> i32;
+}
+
+/// A declaration's decimal string converted twice, by `decimal_for_declaration` and by the C
+/// export `cast_declared_decimal`, which must agree: the same `Decimal`, or the export's code
+/// 8 for the refusal. The Rust answer is returned.
+fn declared(bytes: &[u8]) -> Result<hypercast::Decimal, hypercast::Refusal> {
+    let untouched = hypercast::Decimal { lo: 0xA5A5, hi: 0x5A5A, scale: 99, negative: true };
+    let mut out = untouched;
+    // SAFETY: `bytes` and `out` are live for the call.
+    let code = unsafe { cast_declared_decimal(bytes.as_ptr(), bytes.len(), &mut out) };
+    let rust = match std::str::from_utf8(bytes) {
+        Ok(text) => hypercast::decimal_for_declaration(text),
+        Err(_) => Err(hypercast::Refusal::NotHeldByDoor),
+    };
+    match rust {
+        Ok(value) => assert_eq!((code, out), (0, value), "cast_declared_decimal {bytes:?}"),
+        Err(refusal) => assert_eq!(
+            (code, out),
+            (refusal.code() as i32, untouched),
+            "cast_declared_decimal {bytes:?}: refused, `out` untouched"
+        ),
+    }
+    rust
+}
+
 fn corpus(name: &str) -> Vec<Value> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../corpus").join(name);
     let text = std::fs::read_to_string(&path)
@@ -195,18 +224,23 @@ fn real_corpus() {
     for vector in corpus("real.json") {
         let text = input(&vector).as_bytes();
         let format = format_of(&vector);
-        // Compared as exact f64 bits: the corpus values are chosen to be exactly
-        // representable outcomes, so equality is the contract, not approximation.
-        let verdict: Result<f64, Fault> = match vector["type"].as_str().expect("type") {
-            "f32" => hypercast::cast_f32(text, &format).map(f64::from),
-            "f64" => hypercast::cast_f64(text, &format),
-            other => panic!("real: unknown type {other}"),
-        };
+        // Compared by bits, each at its own width: the corpus values are chosen to be
+        // exactly representable outcomes, so equality is the contract, not approximation,
+        // and a zero must be the unsigned one (the core delivers no negative zero).
         match vector["type"].as_str().expect("type") {
-            "f32" => assert_verdict("real", &vector, verdict, |v| {
-                v["value"].as_f64().expect("value") as f32 as f64
-            }),
-            _ => assert_verdict("real", &vector, verdict, |v| v["value"].as_f64().expect("value")),
+            "f32" => assert_verdict(
+                "real",
+                &vector,
+                hypercast::cast_f32(text, &format).map(f32::to_bits),
+                |v| (v["value"].as_f64().expect("value") as f32).to_bits(),
+            ),
+            "f64" => assert_verdict(
+                "real",
+                &vector,
+                hypercast::cast_f64(text, &format).map(f64::to_bits),
+                |v| v["value"].as_f64().expect("value").to_bits(),
+            ),
+            other => panic!("real: unknown type {other}"),
         }
     }
 }
@@ -483,4 +517,384 @@ fn typed_corpus() {
         doors.insert(door.to_owned());
     }
     assert_eq!(doors.len(), 4, "every typed door has vectors");
+}
+
+/// The declaration conversion (`corpus/declarations.json`): each `input` (or `input_bytes`,
+/// bytes that are not UTF-8) converted by `decimal_for_declaration` and the C export
+/// `cast_declared_decimal`, which must agree. An `ok` row pins the `Decimal` field by field
+/// (`magnitude`, `scale`, `negative`) and its canonical `value` text; a `refused` row pins
+/// the export's code, the `Refusal`'s. Every truncation of every input is converted both
+/// ways as well, and must agree.
+#[test]
+fn declarations() {
+    let mut refused = 0;
+    for vector in corpus("declarations.json") {
+        let bytes: Vec<u8> = match vector.get("input_bytes") {
+            Some(bytes) => bytes
+                .as_array()
+                .expect("input_bytes")
+                .iter()
+                .map(|b| b.as_u64().expect("a byte") as u8)
+                .collect(),
+            None => input(&vector).as_bytes().to_vec(),
+        };
+        let label = format!("declarations {:?}", String::from_utf8_lossy(&bytes));
+        // Every prefix and suffix too, cut mid-character included: `declared` asserts that
+        // the two conversions agree there, whatever the answer.
+        for cut in 0..bytes.len() {
+            let _ = (declared(&bytes[..cut]), declared(&bytes[cut..]));
+        }
+        match (expect(&vector), declared(&bytes)) {
+            ("ok", Ok(value)) => {
+                let magnitude: u128 =
+                    vector["magnitude"].as_str().expect("magnitude").parse().expect("u128");
+                let expected = hypercast::Decimal {
+                    lo: magnitude as u64,
+                    hi: (magnitude >> 64) as u32,
+                    scale: vector["scale"].as_u64().expect("scale") as u8,
+                    negative: vector["negative"].as_bool().expect("negative"),
+                };
+                assert_eq!(value, expected, "{label}");
+                assert_eq!(value.to_string(), vector["value"].as_str().expect("value"), "{label}");
+            }
+            ("refused", Err(refusal)) => {
+                assert_eq!(u64::from(refusal.code()), vector["refusal"].as_u64().expect("refusal"));
+                refused += 1;
+            }
+            (label_expect, verdict) => panic!("{label}: expected {label_expect}, got {verdict:?}"),
+        }
+    }
+    assert!(refused > 0, "declarations: no refused vectors");
+}
+
+/// The checked doors (`corpus/constraints.json`). Each vector names its door, its
+/// `constraints` (bounds, steps and integer `enum` entries as decimal strings, converted by
+/// `decimal_for_declaration` and by the C export `cast_declared_decimal`, which must agree,
+/// and whose refusal is a refused row's answer), and one of `input`,
+/// `input_bytes` (text that is not UTF-8) or `from_f64`. Every row's declaration is first
+/// judged by `check_constraints` in its packed ABI form, which must refuse exactly the
+/// `refused` rows with their code; every other row is then built through the typed
+/// `Constraints` builder and replayed through `cast_checked`, `checked_from_f64` or
+/// `cast_text_checked`, asserting the value, `adjusted`, `enum_index`, and on every failure
+/// the reason or keyword and the span.
+#[test]
+fn constraints() {
+    use hypercast::{Door, RawConstraints};
+
+    let mut seen = std::collections::BTreeSet::new();
+    for vector in corpus("constraints.json") {
+        let door = vector["door"].as_str().expect("door");
+        let c = &vector["constraints"];
+        let label = format!("constraints {door} {c} {:?}", vector.get("input"));
+        let door_of = match door {
+            "i8" => Door::I8,
+            "i16" => Door::I16,
+            "i32" => Door::I32,
+            "i64" => Door::I64,
+            "u8" => Door::U8,
+            "u16" => Door::U16,
+            "u32" => Door::U32,
+            "u64" => Door::U64,
+            "f32" => Door::F32,
+            "f64" => Door::F64,
+            "decimal" => Door::Decimal,
+            "text" => Door::Text,
+            other => panic!("{label}: unknown door {other}"),
+        };
+        let packed = declaration(door_of, c);
+        let verdict = packed.and_then(|(raw, entries)| {
+            hypercast::check_constraints(door_of, &raw, &entries).map(|()| raw)
+        });
+        if expect(&vector) == "refused" {
+            let code = vector["refusal"].as_u64().expect("refusal") as u32;
+            assert_eq!(verdict.map_err(|r| r.code()), Err(code), "{label}");
+            for field in ["input", "input_bytes", "from_f64"] {
+                assert!(vector.get(field).is_none(), "{label}: a refused row has no {field}");
+            }
+            seen.insert("refused".to_owned());
+            continue;
+        }
+        let raw: RawConstraints =
+            verdict.unwrap_or_else(|refusal| panic!("{label}: refused ({refusal})"));
+        seen.insert(door.to_owned());
+        let checked = match door {
+            "i8" => numeric_row::<i8>(&vector, c, raw),
+            "i16" => numeric_row::<i16>(&vector, c, raw),
+            "i32" => numeric_row::<i32>(&vector, c, raw),
+            "i64" => numeric_row::<i64>(&vector, c, raw),
+            "u8" => numeric_row::<u8>(&vector, c, raw),
+            "u16" => numeric_row::<u16>(&vector, c, raw),
+            "u32" => numeric_row::<u32>(&vector, c, raw),
+            "u64" => numeric_row::<u64>(&vector, c, raw),
+            "f32" => numeric_row::<f32>(&vector, c, raw),
+            "f64" => numeric_row::<f64>(&vector, c, raw),
+            "decimal" => numeric_row::<hypercast::Decimal>(&vector, c, raw),
+            _ => text_row(&vector, c, raw),
+        };
+        assert_checked(&label, &vector, checked);
+    }
+    for door in ["i32", "i64", "u64", "f32", "f64", "decimal", "text", "refused"] {
+        assert!(seen.contains(door), "constraints: no {door} vectors");
+    }
+}
+
+/// What a checked door returned, with the value made comparable with the corpus.
+type CheckedRow = Result<(CorpusValue, bool, Option<u32>), hypercast::Rejection>;
+
+/// A delivered value: integers widened, floats by their bits (so the sign of a zero counts),
+/// decimals and text by their text.
+#[derive(Debug, PartialEq)]
+enum CorpusValue {
+    Integer(i128),
+    F32(u32),
+    F64(u64),
+    Text(String),
+}
+
+trait CheckedDoor: hypercast::Numeric + Copy {
+    fn corpus_value(self) -> CorpusValue;
+    fn expected(value: &Value) -> CorpusValue;
+}
+
+macro_rules! integer_rows {
+    ($($ty:ty),+) => {$(
+        impl CheckedDoor for $ty {
+            fn corpus_value(self) -> CorpusValue {
+                CorpusValue::Integer(self.into())
+            }
+            fn expected(value: &Value) -> CorpusValue {
+                CorpusValue::Integer(
+                    value
+                        .as_i64()
+                        .map(i128::from)
+                        .or_else(|| value.as_u64().map(i128::from))
+                        .expect("an integer value"),
+                )
+            }
+        }
+    )+};
+}
+
+integer_rows!(i8, i16, i32, i64, u8, u16, u32, u64);
+
+impl CheckedDoor for f32 {
+    fn corpus_value(self) -> CorpusValue {
+        CorpusValue::F32(self.to_bits())
+    }
+    fn expected(value: &Value) -> CorpusValue {
+        CorpusValue::F32((value.as_f64().expect("a number value") as f32).to_bits())
+    }
+}
+
+impl CheckedDoor for f64 {
+    fn corpus_value(self) -> CorpusValue {
+        CorpusValue::F64(self.to_bits())
+    }
+    fn expected(value: &Value) -> CorpusValue {
+        CorpusValue::F64(value.as_f64().expect("a number value").to_bits())
+    }
+}
+
+impl CheckedDoor for hypercast::Decimal {
+    fn corpus_value(self) -> CorpusValue {
+        CorpusValue::Text(self.to_string())
+    }
+    fn expected(value: &Value) -> CorpusValue {
+        CorpusValue::Text(value.as_str().expect("a decimal string").to_owned())
+    }
+}
+
+fn decimal_field(c: &Value, field: &str) -> Option<Result<hypercast::Decimal, hypercast::Refusal>> {
+    c.get(field).map(|text| declared(text.as_str().expect("decimal").as_bytes()))
+}
+
+fn rounding_of(c: &Value) -> hypercast::Rounding {
+    match c.get("rounding").map(|r| r.as_str().expect("rounding")) {
+        None | Some("strict") => hypercast::Rounding::Strict,
+        Some("midpoint") => hypercast::Rounding::Midpoint,
+        Some("floor") => hypercast::Rounding::Floor,
+        Some("ceiling") => hypercast::Rounding::Ceiling,
+        Some(other) => panic!("unknown rounding {other}"),
+    }
+}
+
+/// The `enum` entries, or `None` when the vector declares no `enum` (`[]` is an `enum` with
+/// no entries, which is refused).
+fn enum_texts(c: &Value) -> Option<Vec<&str>> {
+    c.get("enum").map(|entries| {
+        entries.as_array().expect("enum").iter().map(|e| e.as_str().expect("entry")).collect()
+    })
+}
+
+/// A vector's declaration in its ABI form, every keyword it names whether or not the door
+/// takes it: the layout, and the `enum` list packed for the door (text entries length-prefixed,
+/// integer entries as 16-byte `Decimal`s). A decimal string the conversion refuses is the
+/// answer.
+fn declaration(
+    door: hypercast::Door,
+    c: &Value,
+) -> Result<(hypercast::RawConstraints, Vec<u8>), hypercast::Refusal> {
+    use hypercast::RawConstraints as Raw;
+    let mut raw = Raw::ZERO;
+    for (field, flag) in
+        [("minimum", Raw::HAS_MINIMUM), ("exclusiveMinimum", Raw::HAS_EXCLUSIVE_MINIMUM)]
+    {
+        if let Some(value) = decimal_field(c, field) {
+            raw.flags |= flag;
+            raw.lower = value?;
+        }
+    }
+    for (field, flag) in
+        [("maximum", Raw::HAS_MAXIMUM), ("exclusiveMaximum", Raw::HAS_EXCLUSIVE_MAXIMUM)]
+    {
+        if let Some(value) = decimal_field(c, field) {
+            raw.flags |= flag;
+            raw.upper = value?;
+        }
+    }
+    if let Some(value) = decimal_field(c, "multipleOf") {
+        raw.flags |= Raw::HAS_MULTIPLE_OF;
+        raw.multiple_of = value?;
+    }
+    raw.rounding = rounding_of(c) as u32;
+    if let Some(length) = c.get("minLength") {
+        raw.flags |= Raw::HAS_MIN_LENGTH;
+        raw.min_length = length.as_u64().expect("minLength") as u32;
+    }
+    if let Some(length) = c.get("maxLength") {
+        raw.flags |= Raw::HAS_MAX_LENGTH;
+        raw.max_length = length.as_u64().expect("maxLength") as u32;
+    }
+    if c.get("trim").and_then(Value::as_bool) == Some(true) {
+        raw.flags |= Raw::TRIM;
+    }
+    let mut entries = Vec::new();
+    let listed = enum_texts(c);
+    if listed.is_some() {
+        raw.flags |= Raw::HAS_ENUM;
+    }
+    for entry in listed.into_iter().flatten() {
+        if door == hypercast::Door::Text {
+            entries.extend_from_slice(&(entry.len() as u32).to_le_bytes());
+            entries.extend_from_slice(entry.as_bytes());
+        } else {
+            let decimal = declared(entry.as_bytes())?;
+            entries.extend_from_slice(&decimal.lo.to_ne_bytes());
+            entries.extend_from_slice(&decimal.hi.to_ne_bytes());
+            entries.extend_from_slice(&[decimal.scale, decimal.negative.into(), 0, 0]);
+        }
+    }
+    Ok((raw, entries))
+}
+
+/// Replays a numeric vector through the typed builder and `cast_checked` or
+/// `checked_from_f64`. The builder's layout must be the one `declaration` packed.
+fn numeric_row<T: CheckedDoor>(
+    vector: &Value,
+    c: &Value,
+    raw: hypercast::RawConstraints,
+) -> CheckedRow {
+    use hypercast::NumericRules;
+    let decimal = |field: &str| decimal_field(c, field).map(|d| d.expect("converted"));
+    let rules = NumericRules::new()
+        .maybe_minimum(decimal("minimum"))
+        .maybe_exclusive_minimum(decimal("exclusiveMinimum"))
+        .maybe_maximum(decimal("maximum"))
+        .maybe_exclusive_maximum(decimal("exclusiveMaximum"))
+        .maybe_multiple_of(decimal("multipleOf").map(|step| (step, rounding_of(c))));
+    let entries: Option<Vec<i128>> = enum_texts(c)
+        .map(|entries| entries.iter().map(|e| e.parse().expect("an integer enum entry")).collect());
+    let constraints =
+        hypercast::Constraints::<T>::numeric(rules, entries.as_deref()).expect("declared");
+    assert_eq!(constraints.raw(), raw, "the builder's layout");
+    let checked = if let Some(value) = vector.get("from_f64") {
+        let value = match value.as_str() {
+            Some("-0") => -0.0,
+            Some("NaN") => f64::NAN,
+            Some("Infinity") => f64::INFINITY,
+            Some("-Infinity") => f64::NEG_INFINITY,
+            Some(other) => panic!("unknown from_f64 {other}"),
+            None => value.as_f64().expect("from_f64"),
+        };
+        hypercast::checked_from_f64(value, &constraints)
+    } else {
+        let format = format_of(vector);
+        hypercast::cast_checked(input(vector), &format, &constraints)
+    };
+    checked.map(|c| (c.value.corpus_value(), c.adjusted, c.enum_index))
+}
+
+fn text_row(vector: &Value, c: &Value, raw: hypercast::RawConstraints) -> CheckedRow {
+    let length = |field: &str| c.get(field).map(|n| n.as_u64().expect(field) as u32);
+    let rules = hypercast::TextRules::new()
+        .trim(c.get("trim").and_then(Value::as_bool) == Some(true))
+        .maybe_min_length(length("minLength"))
+        .maybe_max_length(length("maxLength"));
+    let entries = enum_texts(c);
+    let constraints = hypercast::Constraints::text(rules, entries.as_deref()).expect("declared");
+    assert_eq!(constraints.raw(), raw, "the builder's layout");
+    let bytes: Vec<u8> = match vector.get("input_bytes") {
+        Some(bytes) => bytes
+            .as_array()
+            .expect("input_bytes")
+            .iter()
+            .map(|b| b.as_u64().expect("a byte") as u8)
+            .collect(),
+        None => input(vector).as_bytes().to_vec(),
+    };
+    hypercast::cast_text_checked(&bytes, &constraints)
+        .map(|c| (CorpusValue::Text(c.value.to_owned()), c.adjusted, c.enum_index))
+}
+
+fn assert_checked(label: &str, vector: &Value, checked: CheckedRow) {
+    use hypercast::{Keyword, Rejection};
+    let span = |vector: &Value| {
+        let span = vector["fault"].as_array().expect("every failure pins its span");
+        (span[0].as_u64().expect("offset") as u32, span[1].as_u64().expect("len") as u32)
+    };
+    match (expect(vector), checked) {
+        ("ok", Ok((value, adjusted, enum_index))) => {
+            let expected = match &value {
+                CorpusValue::Integer(_) => i64::expected(&vector["value"]),
+                CorpusValue::F32(_) => f32::expected(&vector["value"]),
+                CorpusValue::F64(_) => f64::expected(&vector["value"]),
+                CorpusValue::Text(_) => {
+                    CorpusValue::Text(vector["value"].as_str().expect("value").to_owned())
+                }
+            };
+            assert_eq!(value, expected, "{label}: value");
+            assert_eq!(
+                adjusted,
+                vector["adjusted"].as_bool().expect("adjusted"),
+                "{label}: adjusted"
+            );
+            let index = vector.get("enum_index").map(|i| i.as_u64().expect("enum_index") as u32);
+            assert_eq!(enum_index, index, "{label}: enum_index");
+        }
+        ("violation", Err(Rejection::Violation(violation))) => {
+            let keyword = match vector["keyword"].as_str().expect("keyword") {
+                "minimum" => Keyword::Minimum,
+                "exclusiveMinimum" => Keyword::ExclusiveMinimum,
+                "maximum" => Keyword::Maximum,
+                "exclusiveMaximum" => Keyword::ExclusiveMaximum,
+                "multipleOf" => Keyword::MultipleOf,
+                "minLength" => Keyword::MinLength,
+                "maxLength" => Keyword::MaxLength,
+                "enum" => Keyword::Enum,
+                other => panic!("{label}: unknown keyword {other}"),
+            };
+            assert_eq!(violation.keyword, keyword, "{label}: keyword");
+            assert_eq!((violation.offset, violation.len), span(vector), "{label}: span");
+        }
+        (label_expect @ ("empty" | "malformed" | "out_of_range"), Err(Rejection::Fault(fault))) => {
+            let reason = match label_expect {
+                "empty" => Reason::Empty,
+                "malformed" => Reason::Malformed,
+                _ => Reason::OutOfRange,
+            };
+            assert_eq!(fault.reason, reason, "{label}: reason");
+            assert_eq!((fault.offset, fault.len), span(vector), "{label}: span");
+        }
+        (expected, got) => panic!("{label}: expected {expected}, got {got:?}"),
+    }
 }

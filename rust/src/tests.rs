@@ -209,7 +209,7 @@ fn separator_detection_resolves_structure_and_refuses_ambiguity() {
     // One separator, 3 digits right, zero-led integer part: decimal ("0785" would be
     // no number at all).
     assert_eq!(cast_f64(b"0,785", &DETECT), Ok(0.785));
-    assert_eq!(cast_f64(b"0,785%", &DETECT), Ok(0.785 / 100.0));
+    assert_eq!(cast_f64(b"0,785%", &DETECT), Ok(0.00785));
     assert_eq!(cast_f64(b"(0.785)", &DETECT), Ok(-0.785));
     // Genuinely ambiguous: one separator, 3 digits right, non-zero integer part —
     // Malformed at the undecidable separator, never guessed.
@@ -1181,6 +1181,13 @@ fn bool_and_f32_from_a_double() {
     assert_eq!(f32_from_f64(f64::NEG_INFINITY), Err(Reason::OutOfRange));
     assert_eq!(f32_from_f64(f64::NAN), Err(Reason::Malformed));
     assert_eq!(f32_from_f64(1e-50), Ok(0.0));
+    // No negative zero comes out, whether the double is one or narrows to one; by bits,
+    // since `-0.0 == 0.0`.
+    let bits = |value| f32_from_f64(value).map(f32::to_bits);
+    assert_eq!(bits(-0.0), Ok(0));
+    assert_eq!(bits(-1e-300), Ok(0));
+    assert_eq!(bits(-1e-50), Ok(0));
+    assert_eq!(bits(-1.5), Ok((-1.5f32).to_bits()));
 }
 
 #[test]
@@ -1826,5 +1833,518 @@ fn decimal_display_handles_every_public_scale_without_losing_value() {
                 assert_eq!(value.to_string(), expected, "{value:?}");
             }
         }
+    }
+}
+
+/// The validation constraints' C exports, called as a C caller calls them.
+#[cfg(feature = "exports")]
+mod constraint_exports {
+    use super::*;
+    use crate::ffi::{
+        RawFault, cast_checked, cast_checked_from_f64, cast_constraints_check,
+        cast_declared_decimal, cast_text,
+    };
+    use core::ffi::c_void;
+    use core::mem::offset_of;
+    use core::ptr::{null, null_mut};
+
+    const UNTOUCHED: RawCheck = RawCheck { keyword: 7, adjusted: 7, enum_index: 7 };
+    /// An `enum` declared, and nothing else.
+    const LISTED: RawConstraints =
+        RawConstraints { flags: RawConstraints::HAS_ENUM, ..RawConstraints::ZERO };
+    const UNTOUCHED_FAULT: (u32, u32) = (0xFFFF, 0xFFFF);
+
+    fn dec(text: &str) -> Decimal {
+        decimal_for_declaration(text).unwrap()
+    }
+
+    fn latitude() -> RawConstraints {
+        let mut raw = RawConstraints::ZERO;
+        raw.flags = RawConstraints::HAS_MINIMUM
+            | RawConstraints::HAS_MAXIMUM
+            | RawConstraints::HAS_MULTIPLE_OF;
+        raw.lower = dec("-90");
+        raw.upper = dec("90");
+        raw.multiple_of = dec("0.000001");
+        raw.rounding = 1;
+        raw
+    }
+
+    /// Text `enum` entries packed as the ABI takes them.
+    fn packed_text(entries: &[&str]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for entry in entries {
+            bytes.extend_from_slice(&(entry.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(entry.as_bytes());
+        }
+        bytes
+    }
+
+    /// Integer `enum` entries packed as the ABI takes them: native-endian `Decimal`s.
+    fn packed_integers(entries: &[&str]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for entry in entries {
+            let d = dec(entry);
+            bytes.extend_from_slice(&d.lo.to_ne_bytes());
+            bytes.extend_from_slice(&d.hi.to_ne_bytes());
+            bytes.extend_from_slice(&[d.scale, d.negative.into(), 0, 0]);
+        }
+        bytes
+    }
+
+    /// `cast_checked` over `input`, with what it wrote to each out-param.
+    fn checked<T: Copy>(
+        door: u32,
+        raw: *const RawConstraints,
+        entries: &[u8],
+        input: &[u8],
+        out: T,
+    ) -> (i32, T, (u32, u32), RawCheck) {
+        let mut out = out;
+        let mut fault = RawFault { offset: UNTOUCHED_FAULT.0, len: UNTOUCHED_FAULT.1 };
+        let mut check = UNTOUCHED;
+        let code = cast_checked(
+            door,
+            0,
+            null(),
+            raw,
+            entries.as_ptr(),
+            entries.len(),
+            input.as_ptr(),
+            input.len(),
+            (&raw mut out).cast::<c_void>(),
+            &mut fault,
+            &mut check,
+        );
+        (code, out, (fault.offset, fault.len), check)
+    }
+
+    fn from_f64<T: Copy>(
+        door: u32,
+        raw: *const RawConstraints,
+        value: f64,
+        out: T,
+    ) -> (i32, T, (u32, u32), RawCheck) {
+        let mut out = out;
+        let mut fault = RawFault { offset: UNTOUCHED_FAULT.0, len: UNTOUCHED_FAULT.1 };
+        let mut check = UNTOUCHED;
+        let code = cast_checked_from_f64(
+            door,
+            value,
+            raw,
+            null(),
+            0,
+            (&raw mut out).cast::<c_void>(),
+            &mut fault,
+            &mut check,
+        );
+        (code, out, (fault.offset, fault.len), check)
+    }
+
+    #[test]
+    fn checked_reports_through_raw_check() {
+        let raw = latitude();
+        let (code, value, fault, check) = checked(11, &raw, &[], b"45.1234567", 0f64);
+        assert_eq!((code, value, fault), (0, 45.123457, UNTOUCHED_FAULT));
+        assert_eq!(check, RawCheck { keyword: 0, adjusted: 1, enum_index: u32::MAX });
+        // Unrounded: not adjusted. A null `check` is fine.
+        let mut value = 0f64;
+        let input = b"-12.5";
+        let code = cast_checked(
+            11,
+            0,
+            null(),
+            &raw,
+            null(),
+            0,
+            input.as_ptr(),
+            input.len(),
+            (&raw mut value).cast::<c_void>(),
+            null_mut(),
+            null_mut(),
+        );
+        assert_eq!((code, value), (0, -12.5));
+        let (code, value, _, check) = checked(11, &raw, &[], b"10", 0f64);
+        assert_eq!((code, value, check.adjusted), (0, 10.0, 0));
+        // The same judgement of a decoded number, which writes the same report.
+        let (code, value, fault, check) = from_f64(11, &raw, 45.1234567, 0f64);
+        assert_eq!((code, value, fault), (0, 45.123457, UNTOUCHED_FAULT));
+        assert_eq!(check, RawCheck { keyword: 0, adjusted: 1, enum_index: u32::MAX });
+        // An integer `enum` has no index: the value is the answer.
+        let codes = packed_integers(&["10", "20"]);
+        let (code, value, _, check) = checked(4, &LISTED, &codes, b"20", 0i32);
+        assert_eq!((code, value, check), (0, 20, RawCheck { keyword: 0, ..check }));
+        assert_eq!(check.enum_index, u32::MAX);
+        // The decimal door writes a Decimal.
+        let (code, value, _, _) = checked(19, &raw, &[], b"-0.0000004", dec("1"));
+        assert_eq!((code, value), (0, dec("0")));
+        assert!(!value.negative);
+    }
+
+    #[test]
+    fn violation_is_code_4() {
+        let raw = latitude();
+        let (code, value, fault, check) = checked(11, &raw, &[], b" 91 ", 0f64);
+        assert_eq!((code, value, fault), (4, 0.0, (1, 2)));
+        assert_eq!(check, RawCheck { keyword: 3, adjusted: 0, enum_index: u32::MAX });
+        let (code, _, fault, check) = checked(11, &raw, &[], b"-90.5", 0f64);
+        assert_eq!((code, fault, check.keyword), (4, (0, 5), 1));
+        let (code, _, fault, check) = from_f64(11, &raw, 91.0, 0f64);
+        assert_eq!((code, fault, check.keyword), (4, (0, 0), 3));
+        let codes = packed_integers(&["10", "20"]);
+        let (code, _, fault, check) = checked(4, &LISTED, &codes, b"15", 0i32);
+        assert_eq!((code, fault, check.keyword), (4, (0, 2), 8));
+        // A parse failure is the door's own code: `fault` is written, `check` and `out` not.
+        let (code, value, fault, check) = checked(11, &raw, &[], b"9x", 0f64);
+        assert_eq!((code, value, fault, check), (2, 0.0, (1, 1), UNTOUCHED));
+        let (code, value, fault, check) = checked(11, &raw, &[], b"", 0f64);
+        assert_eq!((code, value, fault, check), (1, 0.0, (0, 0), UNTOUCHED));
+        let (code, _, fault, check) = checked(2, &RawConstraints::ZERO, &[], b"300", 0i8);
+        assert_eq!((code, fault, check), (3, (0, 3), UNTOUCHED));
+        let (code, _, fault, check) = from_f64(11, &raw, f64::NAN, 0f64);
+        assert_eq!((code, fault, check), (2, (0, 0), UNTOUCHED));
+        let (code, _, _, check) = from_f64(11, &raw, f64::INFINITY, 0f64);
+        assert_eq!((code, check), (3, UNTOUCHED));
+    }
+
+    #[test]
+    fn the_text_door_writes_a_span() {
+        let mut raw = RawConstraints::ZERO;
+        raw.flags = RawConstraints::TRIM | RawConstraints::HAS_MAX_LENGTH;
+        raw.max_length = 6;
+        let listed = RawConstraints { flags: raw.flags | RawConstraints::HAS_ENUM, ..raw };
+        let sexes = packed_text(&["Female", "Male", "Other"]);
+        let blank = RawSpan { offset: 99, len: 99 };
+        // The span is the matched input, after the trim; the index names the entry.
+        let input = "\u{00A0}MALE ".as_bytes();
+        let (code, span, _, check) = checked(18, &listed, &sexes, input, blank);
+        assert_eq!((code, span), (0, RawSpan { offset: 2, len: 4 }));
+        assert_eq!(check, RawCheck { keyword: 0, adjusted: 0, enum_index: 1 });
+        // The span is written unaligned: `out` need not be 4-aligned.
+        let mut buffer = [0xAAu8; 9];
+        let code = cast_checked(
+            18,
+            0,
+            null(),
+            &listed,
+            sexes.as_ptr(),
+            sexes.len(),
+            input.as_ptr(),
+            input.len(),
+            buffer[1..].as_mut_ptr().cast::<c_void>(),
+            null_mut(),
+            null_mut(),
+        );
+        let mut written = [0u8; 8];
+        written.copy_from_slice(&buffer[1..]);
+        let unaligned = (
+            u32::from_ne_bytes(written[..4].try_into().unwrap()),
+            u32::from_ne_bytes(written[4..].try_into().unwrap()),
+        );
+        assert_eq!((code, buffer[0], unaligned), (0, 0xAA, (2, 4)));
+        let (code, span, fault, check) = checked(18, &listed, &sexes, b" Mail ", blank);
+        assert_eq!((code, span, fault, check.keyword), (4, blank, (1, 4), 8));
+        let (code, span, fault, check) = checked(18, &raw, &[], b"Females", blank);
+        assert_eq!((code, span, fault, check.keyword), (4, blank, (0, 7), 7));
+        // No `enum`: the span, and no index.
+        let (code, span, _, check) = checked(18, &raw, &[], b" abc ", blank);
+        assert_eq!((code, span, check.enum_index), (0, RawSpan { offset: 1, len: 3 }, u32::MAX));
+        // Trimmed to nothing is empty; invalid UTF-8 malformed, spanning the bad sequence.
+        let (code, _, fault, check) = checked(18, &raw, &[], b"   ", blank);
+        assert_eq!((code, fault, check), (1, (0, 0), UNTOUCHED));
+        let (code, _, fault, _) = checked(18, &raw, &[], b"ab\xFFc", blank);
+        assert_eq!((code, fault), (2, (2, 1)));
+        // The text door ignores `format`, even one it would refuse.
+        let refused = RawNumFormat { size: 0, ..RawNumFormat::ZERO };
+        let mut span = blank;
+        let input = b"abc";
+        let code = cast_checked(
+            18,
+            0,
+            &refused,
+            &RawConstraints::ZERO,
+            null(),
+            0,
+            input.as_ptr(),
+            input.len(),
+            (&raw mut span).cast::<c_void>(),
+            null_mut(),
+            null_mut(),
+        );
+        assert_eq!((code, span), (0, RawSpan { offset: 0, len: 3 }));
+    }
+
+    #[test]
+    fn cast_text_validates_utf8() {
+        let door = |input: &[u8]| {
+            let mut span = RawSpan { offset: 99, len: 99 };
+            let mut fault = RawFault { offset: UNTOUCHED_FAULT.0, len: UNTOUCHED_FAULT.1 };
+            let code = cast_text(input.as_ptr(), input.len(), &mut span, &mut fault);
+            (code, span, (fault.offset, fault.len))
+        };
+        assert_eq!(door(b" a "), (0, RawSpan { offset: 0, len: 3 }, UNTOUCHED_FAULT));
+        assert_eq!(door("\u{1F44D}\u{1F3FD}".as_bytes()).1, RawSpan { offset: 0, len: 8 });
+        assert_eq!(door(b""), (1, RawSpan { offset: 99, len: 99 }, (0, 0)));
+        assert_eq!(door(b"ab\xFFc").0, 2);
+        assert_eq!(door(b"ab\xFFc").2, (2, 1));
+        // Cut short: the span runs to the end of the input.
+        assert_eq!(door(b"ab\xE2\x82").2, (2, 2));
+        let mut span = RawSpan { offset: 99, len: 99 };
+        assert_eq!(cast_text(null(), 0, &mut span, null_mut()), 1);
+    }
+
+    #[test]
+    fn constraints_check_codes() {
+        let check = |door: u32, raw: &RawConstraints, entries: &[u8]| {
+            cast_constraints_check(door, 0, raw, entries.as_ptr(), entries.len())
+        };
+        let with = |edit: &dyn Fn(&mut RawConstraints)| {
+            let mut raw = RawConstraints::ZERO;
+            edit(&mut raw);
+            raw
+        };
+        let (i32_door, u8_door, text_door) = (4, 6, 18);
+        assert_eq!(check(11, &latitude(), &[]), 0);
+        assert_eq!(check(text_door, &LISTED, &packed_text(&["a", "b"])), 0);
+        assert_eq!(check(i32_door, &LISTED, &packed_integers(&["1", "2"])), 0);
+        let trimmed = RawConstraints {
+            flags: RawConstraints::HAS_ENUM | RawConstraints::TRIM,
+            ..RawConstraints::ZERO
+        };
+        let cases: [(u32, RawConstraints, Vec<u8>, i32); 18] = [
+            (
+                i32_door,
+                with(&|r| {
+                    r.flags = RawConstraints::HAS_MIN_LENGTH;
+                    r.min_length = 1;
+                }),
+                Vec::new(),
+                1,
+            ),
+            (
+                i32_door,
+                with(&|r| {
+                    r.flags = RawConstraints::HAS_MINIMUM | RawConstraints::HAS_EXCLUSIVE_MINIMUM
+                }),
+                Vec::new(),
+                2,
+            ),
+            (
+                i32_door,
+                with(&|r| {
+                    r.flags = RawConstraints::HAS_MAXIMUM | RawConstraints::HAS_EXCLUSIVE_MAXIMUM
+                }),
+                Vec::new(),
+                3,
+            ),
+            (
+                i32_door,
+                with(&|r| {
+                    r.flags = RawConstraints::HAS_MINIMUM | RawConstraints::HAS_MAXIMUM;
+                    r.lower = dec("5");
+                    r.upper = dec("5");
+                }),
+                Vec::new(),
+                4,
+            ),
+            (i32_door, with(&|r| r.flags = RawConstraints::HAS_MULTIPLE_OF), Vec::new(), 5),
+            (i32_door, with(&|r| r.rounding = 1), Vec::new(), 6),
+            (
+                text_door,
+                with(&|r| {
+                    r.flags = RawConstraints::HAS_MIN_LENGTH | RawConstraints::HAS_MAX_LENGTH;
+                    r.min_length = 5;
+                    r.max_length = 4;
+                }),
+                Vec::new(),
+                7,
+            ),
+            (
+                u8_door,
+                with(&|r| {
+                    r.flags = RawConstraints::HAS_MINIMUM;
+                    r.lower = dec("-1");
+                }),
+                Vec::new(),
+                8,
+            ),
+            // ABI-only: a binding's strings are always UTF-8.
+            (text_door, LISTED, vec![1, 0, 0, 0, 0xFF], 9),
+            (text_door, LISTED, packed_text(&["Male", "MALE"]), 10),
+            (i32_door, with(&|r| r.size = 71), Vec::new(), 11),
+            // A list passed without `HAS_ENUM` is never read.
+            (i32_door, RawConstraints::ZERO, packed_integers(&["1"]), 11),
+            (text_door, RawConstraints::ZERO, packed_text(&["a"]), 11),
+            (i32_door, LISTED, Vec::new(), 12),
+            (text_door, LISTED, Vec::new(), 12),
+            (text_door, LISTED, packed_text(&["Male", ""]), 13),
+            (text_door, trimmed, packed_text(&[" Male "]), 13),
+            (text_door, trimmed, packed_text(&["   "]), 13),
+        ];
+        // Without `trim`, an entry with White_Space at its edges is matched as given.
+        assert_eq!(check(text_door, &LISTED, &packed_text(&[" Male "])), 0);
+        for (door, raw, entries, code) in &cases {
+            assert_eq!(check(*door, raw, entries), *code, "{raw:?} {entries:?}");
+        }
+        // Every malformed layout, the size judged before anything else.
+        for raw in [
+            with(&|r| r.size = 0),
+            with(&|r| r.size = 73),
+            with(&|r| r.flags = 512),
+            with(&|r| r._reserved = 1),
+            with(&|r| {
+                r.flags = RawConstraints::HAS_MULTIPLE_OF;
+                r.multiple_of = dec("1");
+                r.rounding = 4;
+            }),
+            with(&|r| {
+                r.size = 71;
+                r.flags = RawConstraints::HAS_MIN_LENGTH;
+            }),
+        ] {
+            assert_eq!(check(i32_door, &raw, &[]), 11);
+            // The checked doors refuse the same layouts as contract violations.
+            assert_eq!(checked(i32_door, &raw, &[], b"1", 0i32).0, -1);
+            assert_eq!(from_f64(i32_door, &raw, 1.0, 0i32).0, -1);
+        }
+        assert_eq!(cast_constraints_check(i32_door, 0, null(), null(), 0), 11);
+        // A sign byte that is no `bool`, in each decimal, whether or not it is declared, read
+        // as a byte (the layout as caller memory, never as a Rust value), is malformed; the
+        // checked doors refuse it as a contract violation.
+        for (field, flags, byte) in [
+            (offset_of!(RawConstraints, lower), 0, 2u8),
+            (offset_of!(RawConstraints, upper), RawConstraints::HAS_MAXIMUM, 255),
+            (offset_of!(RawConstraints, multiple_of), 0, 2),
+            (offset_of!(RawConstraints, lower), RawConstraints::HAS_MINIMUM, 1),
+        ] {
+            let mut memory = [0u64; 9];
+            let bytes = memory.as_mut_ptr().cast::<u8>();
+            let raw = RawConstraints { flags, ..RawConstraints::ZERO };
+            unsafe {
+                bytes.copy_from_nonoverlapping((&raw const raw).cast::<u8>(), 72);
+                bytes.add(field + offset_of!(Decimal, negative)).write(byte);
+            }
+            let layout = memory.as_ptr().cast::<RawConstraints>();
+            let want = if byte <= 1 { (0, 0) } else { (11, -1) };
+            let code = cast_constraints_check(i32_door, 0, layout, null(), 0);
+            let input = if flags == RawConstraints::HAS_MINIMUM { &b"0"[..] } else { b"-1" };
+            assert_eq!(
+                (code, checked(i32_door, layout, &[], input, 0i32).0),
+                want,
+                "{field} {byte}"
+            );
+            assert_eq!(from_f64(i32_door, layout, 0.0, 0i32).0, want.1, "{field} {byte}");
+        }
+        // A door code that names no door: never -1.
+        for (door, param) in [(0, 0), (23, 0), (14, 9), (20, 0)] {
+            assert_eq!(cast_constraints_check(door, param, &RawConstraints::ZERO, null(), 0), 1);
+            // The size is judged first, before the door.
+            let short = RawConstraints { size: 71, ..RawConstraints::ZERO };
+            assert_eq!(cast_constraints_check(door, param, &short, null(), 0), 11);
+        }
+        // Duplicate detection belongs to this export alone: the checked door takes the
+        // first match.
+        let twice = packed_text(&["Male", "MALE"]);
+        let (code, _, _, report) =
+            checked(text_door, &LISTED, &twice, b"male", RawSpan { offset: 0, len: 0 });
+        assert_eq!((code, report.enum_index), (0, 0));
+    }
+
+    #[test]
+    fn null_and_zero_size_are_contract_violations() {
+        let mut wrong_sizes = Vec::new();
+        for size in [0u32, 1, 4, 64, 71, 73, 80, 92, u32::MAX] {
+            wrong_sizes.push(RawConstraints { size, ..RawConstraints::ZERO });
+        }
+        for raw in &wrong_sizes {
+            let (code, value, fault, check) = checked(4, raw, &[], b"1", 0i32);
+            assert_eq!((code, value, fault, check), (-1, 0, UNTOUCHED_FAULT, UNTOUCHED), "{raw:?}");
+            let (code, value, fault, check) = from_f64(4, raw, 1.0, 0i32);
+            assert_eq!((code, value, fault, check), (-1, 0, UNTOUCHED_FAULT, UNTOUCHED), "{raw:?}");
+            let (code, ..) = checked(18, raw, &[], b"a", RawSpan { offset: 0, len: 0 });
+            assert_eq!(code, -1, "{raw:?}");
+        }
+        assert_eq!(checked(4, null(), &[], b"1", 0i32).0, -1);
+        assert_eq!(from_f64(4, null(), 1.0, 0i32).0, -1);
+        // A code that names no door, a door that is neither numeric nor Text (and Text for a
+        // decoded number), a refused format, and a refused declaration.
+        let zero = RawConstraints::ZERO;
+        for door in [0, 1, 12, 13, 15, 23] {
+            assert_eq!(checked(door, &zero, &[], b"1", 0u64).0, -1, "door {door}");
+            assert_eq!(from_f64(door, &zero, 1.0, 0u64).0, -1, "door {door}");
+        }
+        assert_eq!(from_f64(18, &zero, 1.0, 0u64).0, -1);
+        let refused_format = RawNumFormat { size: 0, ..RawNumFormat::ZERO };
+        let mut out = 0i32;
+        let input = b"1";
+        let code = cast_checked(
+            4,
+            0,
+            &refused_format,
+            &zero,
+            null(),
+            0,
+            input.as_ptr(),
+            input.len(),
+            (&raw mut out).cast::<c_void>(),
+            null_mut(),
+            null_mut(),
+        );
+        assert_eq!(code, -1);
+        let refused = RawConstraints { flags: RawConstraints::HAS_MULTIPLE_OF, ..zero };
+        assert_eq!(checked(4, &refused, &[], b"1", 0i32).0, -1);
+        assert_eq!(from_f64(4, &refused, 1.0, 0i32).0, -1);
+    }
+
+    /// The export runs `decimal_for_declaration`: success writes the same `Decimal`; a
+    /// refusal is code 8 and leaves `out` alone; bytes that are not UTF-8 are 8, never -1.
+    #[test]
+    fn declared_decimal_converts_as_the_rust_api_does() {
+        let untouched = Decimal { lo: 0xA5A5, hi: 0x5A5A, scale: 99, negative: true };
+        let convert = |bytes: &[u8]| {
+            let mut out = untouched;
+            let code = cast_declared_decimal(bytes.as_ptr(), bytes.len(), &mut out);
+            (code, out)
+        };
+        let ok = |text: &str, lo: u64, scale: u8, negative: bool| {
+            assert_eq!(convert(text.as_bytes()), (0, Decimal { lo, hi: 0, scale, negative }));
+            assert_eq!(convert(text.as_bytes()).1, dec(text), "{text}");
+        };
+        ok("1.50", 15, 1, false);
+        ok("-0", 0, 0, false);
+        ok("7.0", 7, 0, false);
+        ok("+1e3", 1000, 0, false);
+        ok(".5", 5, 1, false);
+        ok("-1e-28", 1, 28, true);
+        assert_eq!(
+            convert(b"79228162514264337593543950335"),
+            (0, Decimal { lo: u64::MAX, hi: u32::MAX, scale: 0, negative: false })
+        );
+        for refused in [
+            &b"1e-29"[..],
+            b"79228162514264337593543950336",
+            b"3.5e38",
+            b" 1",
+            b"--1",
+            b"1e",
+            b"",
+            "\u{0661}".as_bytes(),
+            b"\xFF",
+            b"1\xFF",
+            b"1.\xC3",
+        ] {
+            assert_eq!(convert(refused), (8, untouched), "{refused:?}");
+        }
+    }
+
+    #[test]
+    fn declared_decimal_contract_violations() {
+        let mut out = Decimal { lo: 1, hi: 0, scale: 0, negative: false };
+        assert_eq!(cast_declared_decimal(b"1".as_ptr(), 1, null_mut()), -1);
+        assert_eq!(cast_declared_decimal(null(), 1, &mut out), -1);
+        assert_eq!(out, Decimal { lo: 1, hi: 0, scale: 0, negative: false });
+        // A null `ptr` with a zero `len` is empty text, which no notation spells: 8.
+        assert_eq!(cast_declared_decimal(null(), 0, &mut out), 8);
+        assert_eq!(cast_declared_decimal(null(), 0, null_mut()), -1);
     }
 }

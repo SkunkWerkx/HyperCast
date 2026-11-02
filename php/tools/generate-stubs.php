@@ -51,8 +51,13 @@ const REWRITES = [
     // prefixes with one backslash, and spells a nullable union with `?`, which PHP refuses.
     ['?\\HyperCast\\Success|HyperCast\\Fault {', '\\HyperCast\\Success|\\HyperCast\\Fault|null {', 1],
     ['@return \\HyperCast\\Success|HyperCast\\Fault|null', '@return \\HyperCast\\Success|\\HyperCast\\Fault|null', 1],
-    ['\\HyperCast\\Success|HyperCast\\Fault', '\\HyperCast\\Success|\\HyperCast\\Fault', 54],
-    ['\\HyperCast\\NumFormat|NumberFormatter', '\\HyperCast\\NumFormat|\\NumberFormatter', 22],
+    ['\\HyperCast\\Success|HyperCast\\Fault', '\\HyperCast\\Success|\\HyperCast\\Fault', 56],
+    [
+        '\\HyperCast\\Checked|HyperCast\\Fault|HyperCast\\Violation',
+        '\\HyperCast\\Checked|\\HyperCast\\Fault|\\HyperCast\\Violation',
+        6,
+    ],
+    ['\\HyperCast\\NumFormat|NumberFormatter', '\\HyperCast\\NumFormat|\\NumberFormatter', 24],
     // The classes are registered final; cargo-php's stubs leave the modifier out.
     ["    class Cast {\n", "    final class Cast {\n", 1],
     ["    class NativePlatform {\n", "    final class NativePlatform {\n", 1],
@@ -188,6 +193,83 @@ const VALUE_CLASSES = <<<'PHP'
              * The C ABI's `hc_format` layout.
              */
             public function packed(): string {}
+        }
+
+        /**
+         * Validation constraints, the OpenAPI Schema Object's keywords, bound to one door and
+         * judged by the core when built: a declaration that cannot mean anything at its door is
+         * an `\InvalidArgumentException` whose code is the core's refusal code. Bounds and
+         * `multipleOf` are an int, a string in invariant notation or a `Decimal`, never a float
+         * (in weak mode too), and are kept as the exact `Decimal` the core read.
+         */
+        final readonly class Constraints {
+            public const PACKED_BYTES = 72;
+
+            public \HyperCast\Door $door;
+            public ?\HyperCast\Decimal $minimum;
+            public ?\HyperCast\Decimal $exclusiveMinimum;
+            public ?\HyperCast\Decimal $maximum;
+            public ?\HyperCast\Decimal $exclusiveMaximum;
+            public ?\HyperCast\Decimal $multipleOf;
+            public \HyperCast\Rounding $rounding;
+            public ?int $minLength;
+            public ?int $maxLength;
+            public bool $trim;
+            public ?array $enum;
+
+            public function __construct(
+                \HyperCast\Door $door,
+                int|string|\HyperCast\Decimal|null $minimum = null,
+                int|string|\HyperCast\Decimal|null $exclusiveMinimum = null,
+                int|string|\HyperCast\Decimal|null $maximum = null,
+                int|string|\HyperCast\Decimal|null $exclusiveMaximum = null,
+                int|string|\HyperCast\Decimal|null $multipleOf = null,
+                \HyperCast\Rounding $rounding = \HyperCast\Rounding::Strict,
+                ?int $minLength = null,
+                ?int $maxLength = null,
+                bool $trim = false,
+                ?array $enum = null,
+            ) {}
+
+            /**
+             * The C ABI's `RawConstraints` layout, native-endian.
+             */
+            public function packed(): string {}
+
+            /**
+             * The `enum` list as the C ABI packs it beside `packed()`, empty for none.
+             */
+            public function packedEnum(): string {}
+        }
+
+        /**
+         * A checked door's success: the value (rounded to `multipleOf` when the declaration
+         * rounds; with a text `enum`, the caller's own declared entry), whether rounding changed
+         * it, and the index of the text `enum` entry it matched.
+         */
+        final readonly class Checked {
+            public function __construct(
+                public mixed $value,
+                public bool $adjusted = false,
+                public ?int $enumIndex = null,
+            ) {}
+        }
+
+        /**
+         * A value that parsed and broke a declared rule: the keyword (the bare code for one this
+         * binding does not name yet) and the byte span of the input.
+         */
+        final readonly class Violation {
+            public function __construct(
+                public \HyperCast\Keyword|int $keyword,
+                public int $offset,
+                public int $length,
+            ) {}
+
+            /**
+             * The keyword's OpenAPI spelling (`exclusiveMinimum`), or `keyword N`.
+             */
+            public function keywordName(): string {}
         }
     }
 

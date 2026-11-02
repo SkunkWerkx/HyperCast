@@ -145,6 +145,7 @@ Every door takes the text first — `str` or `bytes` — and returns `Success(va
 | `cast_excel_serial_from_float(value, epoch)` | an Excel serial `float` in a declared `ExcelEpoch` | `datetime`, naive |
 | `cast_excel_time(value)` | the fraction of an Excel serial `float` | `time` |
 | `cast_excel_duration(value)` | a `float` count of days | `timedelta` |
+| `cast_text(text)` | the text itself, once it is valid text (`bytes` UTF-8, a `str` with no lone surrogate), untrimmed | `str` |
 
 Nothing about the text is guessed; what a door cannot know from the text, the caller
 declares, as an `IntEnum`:
@@ -197,12 +198,14 @@ hypercast.optional(hypercast.cast_i32("abc", hypercast.NumFormat.INVARIANT))
 ```
 
 Bad data is always a `Fault`. What raises is a caller's bug: `TypeError` for an argument of the wrong type (text that is neither `str` nor
-`bytes`, a format that is not a `NumFormat`), `ValueError` for a declaration that names no
-member of its enum, a `NumFormat` that cannot be (below) or a day-period designator that
-cannot be, `OverflowError` for an integer
+`bytes`, a format that is not a `NumFormat`, a `float` bound), `ValueError` for a declaration
+that names no member of its enum, a `NumFormat` or a `Constraints` that cannot be (below) or a
+day-period designator that cannot be, `OverflowError` for an integer
 too wide for the 32 unsigned bits a flag set or a declaration is. The one exception that is
-about data: a `str` holding a lone surrogate has no UTF-8 form, so it is a
-`UnicodeEncodeError` before any door runs.
+about data: a `str` holding a lone surrogate has no UTF-8 form, so at the doors in the table
+above, `cast_text` aside, it is a `UnicodeEncodeError` before the door runs. `cast_text` and
+the checked doors ([below](#validation-constraints)) read it with the surrogate kept, never
+replaced, as `MALFORMED` text at its own code point.
 
 See [the repo root README](../README.md) for the receipts and the state of every other
 language binding.
@@ -339,6 +342,107 @@ hypercast.cast_f64("−1\xa0234,5", fmt)  # Success(value=-1234.5)
 `hypercast.native_version()` names the core actually loaded, `"major.minor.patch"`, decoded
 from the same packed `hypercast_version` export every other binding probes.
 
+## Validation constraints
+
+A value that parsed can still break a business rule. `Constraints` declares the rule with the
+OpenAPI Schema Object's keywords, bound to one `Door` (`Door.F64`, `Door.DECIMAL`, `Door.TEXT`,
+…), and a checked door judges the value by it, in the core and in exact decimal arithmetic:
+
+```python
+from decimal import Decimal
+
+import hypercast
+from hypercast import Checked, Constraints, Door, Fault, Keyword, NumFormat, Rounding, Violation
+
+# Latitude: a multiple of 0.000001 between -90 and 90, finer input rounded half to even.
+latitude = Constraints(
+    Door.F64, minimum="-90", maximum="90", multiple_of="0.000001", rounding=Rounding.MIDPOINT
+)
+# Euro cash: a multiple of 0.05, and anything else is wrong.
+euro_cash = Constraints(Door.DECIMAL, multiple_of=Decimal("0.05"))
+# A sex code: one of three, whatever case and padding it arrived in.
+sex = Constraints(Door.TEXT, trim=True, enum=["Female", "Male", "Other"])
+
+euro = NumFormat(",", ".", NumFormat.ALL, "€")
+hypercast.cast_checked("45.1234567", NumFormat.INVARIANT, latitude)
+# Checked(value=45.123457, adjusted=True, enum_index=None)
+hypercast.cast_checked("-90.5", NumFormat.INVARIANT, latitude)
+# Violation(keyword=Keyword.MINIMUM, offset=0, length=5)
+hypercast.cast_checked_from_float(45.1234567, latitude)
+# Checked(value=45.123457, adjusted=True, enum_index=None)
+hypercast.cast_checked("€1.234,55", euro, euro_cash)
+# Checked(value=Decimal('1234.55'), adjusted=False, enum_index=None)
+hypercast.cast_checked("€12,37", euro, euro_cash)
+# Violation(keyword=Keyword.MULTIPLE_OF, offset=0, length=6)
+hypercast.cast_checked("12,3x", euro, euro_cash)
+# Fault(reason=<CastFailure.MALFORMED: 2>, offset=4, length=1)
+
+
+def describe(verdict: hypercast.CheckedVerdict[str]) -> str:
+    match verdict:
+        case Checked(value, _, enum_index):
+            return f"{value}, entry {enum_index}"  # " MALE " -> Male, entry 1
+        case Fault(reason, offset):
+            return f"{reason.name} at char {offset}"  # "   " -> EMPTY at char 0
+        case Violation(Keyword.ENUM, offset, length):
+            return f"not a sex code: chars {offset}+{length}"  # "Femal" -> chars 0+5
+        case Violation(keyword):
+            return f"breaks {keyword.name}"  # keywords are open
+
+
+describe(hypercast.cast_text(" MALE ", sex))  # 'Male, entry 1'
+```
+
+A checked door answers `Checked(value, adjusted, enum_index)` — the value, `adjusted` (true only
+when rounding changed it) and, at `Door.TEXT` with an `enum`, the index of the entry it matched
+(`None` otherwise, an integer `enum` included, where the value is the answer) — or a
+`Rejection`, which is `Fault | Violation`: the plain doors' own `Fault` (it did not parse: the
+very type, so a parse failure reads the same at either door) or a `Violation(keyword, offset,
+length)` (it parsed and broke a rule: the keyword and the value's span, in the same units as a
+fault's, code points for `str` and bytes for `bytes`). `CheckedVerdict[T]` is
+`Checked[T] | Fault | Violation`, and a `match` over the three type-checks as exhaustive with
+`assert_never`. `Keyword` is a class with constants (`Keyword.MINIMUM` … `Keyword.ENUM`), not
+an enum: its `name` is the OpenAPI spelling (`exclusiveMinimum`), and `format` and `pattern` may
+join in a minor release, a code this binding does not name yet arriving as `Keyword(9)`, named
+`"keyword 9"`. So a `match` over keywords needs its default arm (the `Violation(keyword)` case
+above). The plain doors and their `Success | Fault` are unchanged.
+
+The integer doors take `minimum`, `exclusive_minimum`, `maximum`, `exclusive_maximum`,
+`multiple_of` with a `rounding` (`Rounding.STRICT`, the default, then `MIDPOINT`, half to even,
+`FLOOR` and `CEILING`) and `enum`; `Door.F32`, `Door.F64` and `Door.DECIMAL` the same without
+`enum`; `Door.TEXT` takes `min_length`, `max_length` (in code points), `trim` (Unicode
+`White_Space`, U+00A0 included) and `enum`, matched under Unicode simple case folding and
+delivering the caller's own declared `str` and its index. The constructor takes every keyword
+at every door, and the core alone refuses one its door does not take. The first failure wins:
+the door parses, the text is trimmed, `multiple_of` rounds or refuses, then the bounds, the
+lengths and `enum` judge the result. A float door also judges the float it delivers against
+each bound read as the door reads it: `"1e-400"` at `Door.F64` reads as `0`, so it breaks
+`exclusive_minimum="0"`. Bounds, steps and integer entries are a `decimal.Decimal`, an `int` or
+a `str` in invariant notation, all converted exactly by the core (`"1e-6"` is `0.000001`, and
+`Decimal("1E-29")`, past the 28 places a core decimal holds, is refused rather than rounded),
+never a `float`, so `0.1` cannot be declared inexactly: a `float` bound is a `TypeError`.
+`cast_checked(text, fmt, constraints)` is every numeric door's checked form over `str` or
+`bytes`, and `cast_checked_from_float(value, constraints)` judges a number a source already
+decoded on the shortest decimal that names it (`0.1 + 0.2` breaks `multiple_of="0.1"` under
+`STRICT`, and rounds to `0.3` under `MIDPOINT`), with an empty span. `cast_text(text,
+constraints)` is the text door's.
+
+A declaration is judged once, by the core, when it is built, and one that cannot mean anything
+at its door is the caller's bug: the constructor raises `ValueError`, its message the rule
+(`Constraints(Door.U8, minimum="-1")` raises "Constraints refused (code 8): a bound, step or
+enum entry the door cannot hold."). An `enum` left `None` is none, while `enum=[]` declares
+one no value could match and is refused (code 12), as is a text entry no input can match
+(code 13: an empty one, or under `trim` one with leading or trailing white space). There is no
+declaration without a door, so no `Constraints`
+means "no rules" by accident; `Constraints(Door.F64)` declares none on purpose. Handing a
+declaration to the other kind of door (text constraints to `cast_checked`, numeric ones to
+`cast_text`) is a `ValueError` too, and after that a checked cast judges only data and raises
+nothing for it. `cast_constraints_check(door, **keywords)` answers the same refusal as its code,
+`0` to `13`, without raising, and `cast_declared_decimal(text)` is the conversion every bound
+crosses. A lone surrogate in a `str` is `MALFORMED` at its own code point, never replaced, and in
+an `enum` entry it is refused as an entry that is not UTF-8 (code 9). A `Constraints` is
+immutable and hashable, and its `repr` is the call that builds it again.
+
 ## Interop: building on HyperCast's C ABI
 
 For a library that carries HyperCast's verdicts across a C ABI of its own — HyperTabular's,
@@ -363,6 +467,15 @@ fmt.packed  # the 92 bytes:
 #   + bytes(45)                                            five symbols declared empty
 #   + b'$' + bytes(15) + b'\x01'                           the currency symbol
 ```
+
+A `Constraints` crosses the same way: `packed` is the 72-byte `RawConstraints` layout and
+`packed_enum` the `enum` list beside it, in the native byte order the core reads in place (the
+size, flags, rounding code, lengths and a reserved zero as `u32`s, then the lower bound, upper
+bound and `multiple_of` as 16-byte decimals; integer entries as such decimals, text entries a
+little-endian `u32` byte length followed by the UTF-8), which the core reads only when the
+flags carry `HAS_ENUM` (256), set whenever an `enum` is declared. The extension calls the
+core's Rust API directly rather than its C ABI, with a door for each of the core's 32 exports
+(`hypercast_version` as `native_version`, `cast_date_ordered` as `cast_date`'s order).
 
 The values themselves are built on the Rust side: an extension module of its own that
 presents them enables the crate's `python-values` feature and uses
