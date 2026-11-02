@@ -213,20 +213,24 @@ class ConstraintsTest {
         assertEquals("Constraints refused (code 14): a rule this binding does not name.", Constraints.refusal(14));
     }
 
-    /** The flag bits this binding restates are the header's. */
+    /**
+     * The flag bits this binding restates, as literals on every leg, and the header's own
+     * wherever the tree holds include/hypercast.h. The musl suite stages only rust/Cargo.toml,
+     * corpus/ and java/, so there the literals are asserted alone.
+     */
     @Test
     void theFlagsAreTheHeaders() throws java.io.IOException {
-        java.nio.file.Path header = null;
-        for (java.nio.file.Path dir = java.nio.file.Path.of("").toAbsolutePath(); dir != null; dir = dir.getParent()) {
-            java.nio.file.Path candidate = dir.resolve("include/hypercast.h");
-            if (java.nio.file.Files.isRegularFile(candidate)) {
-                header = candidate;
-                break;
-            }
-        }
-        assertTrue(header != null, "include/hypercast.h not found");
-        String text = java.nio.file.Files.readString(header);
         java.util.Map<String, Integer> flags = java.util.Map.of(
+                "HAS_MINIMUM", 1,
+                "HAS_EXCLUSIVE_MINIMUM", 2,
+                "HAS_MAXIMUM", 4,
+                "HAS_EXCLUSIVE_MAXIMUM", 8,
+                "HAS_MULTIPLE_OF", 16,
+                "HAS_MIN_LENGTH", 32,
+                "HAS_MAX_LENGTH", 64,
+                "TRIM", 128,
+                "HAS_ENUM", 256);
+        java.util.Map<String, Integer> restated = java.util.Map.of(
                 "HAS_MINIMUM", Constraints.HAS_MINIMUM,
                 "HAS_EXCLUSIVE_MINIMUM", Constraints.HAS_EXCLUSIVE_MINIMUM,
                 "HAS_MAXIMUM", Constraints.HAS_MAXIMUM,
@@ -236,6 +240,19 @@ class ConstraintsTest {
                 "HAS_MAX_LENGTH", Constraints.HAS_MAX_LENGTH,
                 "TRIM", Constraints.TRIM,
                 "HAS_ENUM", Constraints.HAS_ENUM);
+        assertEquals(flags, restated);
+        java.nio.file.Path header = null;
+        for (java.nio.file.Path dir = java.nio.file.Path.of("").toAbsolutePath(); dir != null; dir = dir.getParent()) {
+            java.nio.file.Path candidate = dir.resolve("include/hypercast.h");
+            if (java.nio.file.Files.isRegularFile(candidate)) {
+                header = candidate;
+                break;
+            }
+        }
+        if (header == null) {
+            return; // no header in this tree (the musl suite's): the literals above stand alone
+        }
+        String text = java.nio.file.Files.readString(header);
         flags.forEach((name, value) -> assertTrue(
                 text.contains("#define HyperCastRawConstraints_" + name + " " + value + "\n"),
                 "the header does not carry " + name + " " + value));

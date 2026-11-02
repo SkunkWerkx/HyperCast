@@ -210,9 +210,12 @@ def test_the_checked_types_hold_their_shape():
         Keyword.MINIMUM, 0, 3
     )
     assert checked != Success(42) and violation != Fault(CastFailure.MALFORMED, 0, 3)
+    # Each declared field refuses assignment. An undeclared name proves nothing: PyPy's cpyext
+    # lets one be set on a native class.
     for verdict in (checked, violation):
-        with pytest.raises(AttributeError):
-            verdict.offset = 1  # type: ignore[union-attr]
+        for field in type(verdict).__match_args__:
+            with pytest.raises(AttributeError):
+                setattr(verdict, field, 1)
         with pytest.raises(TypeError):
             hash(verdict)
     assert Checked[int].__origin__ is Checked

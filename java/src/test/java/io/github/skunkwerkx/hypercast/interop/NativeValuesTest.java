@@ -214,10 +214,24 @@ class NativeValuesTest {
 
     /**
      * Every layout this binding restates is the size the core's header carries: the header is
-     * generated from the core's own types, so a layout that grows there fails here.
+     * generated from the core's own types, so a layout that grows there fails here. The sizes
+     * are asserted as literals on every leg, and against the header wherever the tree holds
+     * include/hypercast.h; the musl suite stages only rust/Cargo.toml, corpus/ and java/, so
+     * there the literals stand alone.
      */
     @Test
     void layoutSizesAreTheHeaders() throws java.io.IOException {
+        java.util.Map<String, Long> sizes = java.util.Map.of(
+                "HyperCastRawNumFormat", 92L,
+                "HyperCastRawDayPeriods", 40L,
+                "HyperCastRawConstraints", 72L,
+                "HyperCastRawCheck", 12L,
+                "HyperCastRawSpan", 8L);
+        assertEquals(sizes.get("HyperCastRawNumFormat"), NativeValues.FORMAT_BYTES);
+        assertEquals(sizes.get("HyperCastRawDayPeriods"), NativeValues.DAY_PERIODS_BYTES);
+        assertEquals(sizes.get("HyperCastRawConstraints"), NativeValues.CONSTRAINTS_BYTES);
+        assertEquals(sizes.get("HyperCastRawCheck"), NativeValues.CHECK_BYTES);
+        assertEquals(sizes.get("HyperCastRawSpan"), NativeValues.SPAN_BYTES);
         java.nio.file.Path header = null;
         for (java.nio.file.Path dir = java.nio.file.Path.of("").toAbsolutePath(); dir != null; dir = dir.getParent()) {
             java.nio.file.Path candidate = dir.resolve("include/hypercast.h");
@@ -226,18 +240,15 @@ class NativeValuesTest {
                 break;
             }
         }
-        assertTrue(header != null, "include/hypercast.h not found");
+        if (header == null) {
+            return; // no header in this tree (the musl suite's): the literals above stand alone
+        }
         String text = java.nio.file.Files.readString(header);
-        java.util.function.ToLongFunction<String> size = name -> {
+        sizes.forEach((name, size) -> {
             java.util.regex.Matcher m = java.util.regex.Pattern.compile("#define " + name + "_SIZE (\\d+)")
                     .matcher(text);
             assertTrue(m.find(), name + "_SIZE is not in the header");
-            return Long.parseLong(m.group(1));
-        };
-        assertEquals(size.applyAsLong("HyperCastRawNumFormat"), NativeValues.FORMAT_BYTES);
-        assertEquals(size.applyAsLong("HyperCastRawDayPeriods"), NativeValues.DAY_PERIODS_BYTES);
-        assertEquals(size.applyAsLong("HyperCastRawConstraints"), NativeValues.CONSTRAINTS_BYTES);
-        assertEquals(size.applyAsLong("HyperCastRawCheck"), NativeValues.CHECK_BYTES);
-        assertEquals(size.applyAsLong("HyperCastRawSpan"), NativeValues.SPAN_BYTES);
+            assertEquals(size, Long.parseLong(m.group(1)), name + "_SIZE");
+        });
     }
 }

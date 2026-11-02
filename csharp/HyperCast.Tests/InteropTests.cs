@@ -182,9 +182,12 @@ public sealed class InteropTests
 		new DateFormat(DateOrder.YearMonthDay, "a. m.", "p. m.").ToRaw().Pm.Length.ShouldBe((byte)5);
 	}
 
-	static readonly string _header = File.ReadAllText(FindHeader());
+	// include/hypercast.h, or null where the tree holds none: the musl suite stages only
+	// rust/Cargo.toml, corpus/ and csharp/, so its run asserts the literals below alone, and
+	// every leg that has the header proves each literal is the header's.
+	static readonly string? _header = FindHeader() is { } path ? File.ReadAllText(path) : null;
 
-	static string FindHeader()
+	static string? FindHeader()
 	{
 		for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
 		{
@@ -192,38 +195,42 @@ public sealed class InteropTests
 			if (File.Exists(header))
 				return header;
 		}
-		throw new FileNotFoundException($"include/hypercast.h not found above {AppContext.BaseDirectory}");
+		return null;
 	}
 
-	// A `#define NAME value` of the generated header.
-	static uint Define(string name)
+	// The value this binding restates for a `#define NAME value` of the generated header,
+	// held to that define wherever the header is there to read.
+	static uint Define(string name, uint restated)
 	{
+		if (_header is null)
+			return restated;
 		var match = System.Text.RegularExpressions.Regex.Match(_header, $@"^#define {name} (\d+)$",
 			System.Text.RegularExpressions.RegexOptions.Multiline);
 		match.Success.ShouldBeTrue($"{name} is not in include/hypercast.h");
-		return uint.Parse(match.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+		uint.Parse(match.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture).ShouldBe(restated, name);
+		return restated;
 	}
 
 	[Fact]
 	void The_constraint_layouts_are_the_headers()
 	{
 		// Each restated layout, against the size cbindgen carries from the core's offset_of! asserts.
-		((uint)Unsafe.SizeOf<RawConstraints>()).ShouldBe(Define("HyperCastRawConstraints_SIZE"));
-		((uint)Unsafe.SizeOf<RawCheck>()).ShouldBe(Define("HyperCastRawCheck_SIZE"));
-		((uint)Unsafe.SizeOf<RawSpan>()).ShouldBe(Define("HyperCastRawSpan_SIZE"));
-		((uint)Unsafe.SizeOf<RawNumFormat>()).ShouldBe(Define("HyperCastRawNumFormat_SIZE"));
-		((uint)Unsafe.SizeOf<RawDayPeriods>()).ShouldBe(Define("HyperCastRawDayPeriods_SIZE"));
+		((uint)Unsafe.SizeOf<RawConstraints>()).ShouldBe(Define("HyperCastRawConstraints_SIZE", 72));
+		((uint)Unsafe.SizeOf<RawCheck>()).ShouldBe(Define("HyperCastRawCheck_SIZE", 12));
+		((uint)Unsafe.SizeOf<RawSpan>()).ShouldBe(Define("HyperCastRawSpan_SIZE", 8));
+		((uint)Unsafe.SizeOf<RawNumFormat>()).ShouldBe(Define("HyperCastRawNumFormat_SIZE", 92));
+		((uint)Unsafe.SizeOf<RawDayPeriods>()).ShouldBe(Define("HyperCastRawDayPeriods_SIZE", 40));
 		string[] fields = ["Size", "Flags", "Rounding", "MinLength", "MaxLength", "Reserved", "Lower", "Upper", "MultipleOf"];
 		fields.Select(static f => (int)Marshal.OffsetOf<RawConstraints>(f)).ShouldBe([0, 4, 8, 12, 16, 20, 24, 40, 56]);
 		new[] { "Keyword", "Adjusted", "EnumIndex" }.Select(static f => (int)Marshal.OffsetOf<RawCheck>(f)).ShouldBe([0, 4, 8]);
 		new[] { "Offset", "Length" }.Select(static f => (int)Marshal.OffsetOf<RawSpan>(f)).ShouldBe([0, 4]);
 		(RawConstraints.HasMinimum, RawConstraints.HasExclusiveMinimum, RawConstraints.HasMaximum, RawConstraints.HasExclusiveMaximum)
-			.ShouldBe((Define("HyperCastRawConstraints_HAS_MINIMUM"), Define("HyperCastRawConstraints_HAS_EXCLUSIVE_MINIMUM"),
-				Define("HyperCastRawConstraints_HAS_MAXIMUM"), Define("HyperCastRawConstraints_HAS_EXCLUSIVE_MAXIMUM")));
+			.ShouldBe((Define("HyperCastRawConstraints_HAS_MINIMUM", 1), Define("HyperCastRawConstraints_HAS_EXCLUSIVE_MINIMUM", 2),
+				Define("HyperCastRawConstraints_HAS_MAXIMUM", 4), Define("HyperCastRawConstraints_HAS_EXCLUSIVE_MAXIMUM", 8)));
 		(RawConstraints.HasMultipleOf, RawConstraints.HasMinLength, RawConstraints.HasMaxLength, RawConstraints.Trim)
-			.ShouldBe((Define("HyperCastRawConstraints_HAS_MULTIPLE_OF"), Define("HyperCastRawConstraints_HAS_MIN_LENGTH"),
-				Define("HyperCastRawConstraints_HAS_MAX_LENGTH"), Define("HyperCastRawConstraints_TRIM")));
-		RawConstraints.HasEnum.ShouldBe(Define("HyperCastRawConstraints_HAS_ENUM"));
+			.ShouldBe((Define("HyperCastRawConstraints_HAS_MULTIPLE_OF", 16), Define("HyperCastRawConstraints_HAS_MIN_LENGTH", 32),
+				Define("HyperCastRawConstraints_HAS_MAX_LENGTH", 64), Define("HyperCastRawConstraints_TRIM", 128)));
+		RawConstraints.HasEnum.ShouldBe(Define("HyperCastRawConstraints_HAS_ENUM", 256));
 	}
 
 	[Fact]

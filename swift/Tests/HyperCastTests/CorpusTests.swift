@@ -31,12 +31,64 @@ final class CorpusTests: XCTestCase {
         #endif
     }()
 
-    private func corpus(_ name: String) throws -> [[String: Any]] {
+    /// A corpus file's rows. The number after each key in `spelled` arrives as its literal
+    /// text, a `String`, for `Double(_:)` or an integer initializer to read: JSONSerialization
+    /// reads a number into an `NSNumber`, and swift-corelibs-foundation (Linux, Windows)
+    /// rounds some 16- and 17-digit literals to a neighbour of the nearest double
+    /// (`0.0999999999999999` became `0.09999999999999991`), where Darwin's is exact. The
+    /// standard library's parse is correctly rounded on every platform.
+    private func corpus(_ name: String, spelled: Set<String> = []) throws -> [[String: Any]] {
         guard let directory = Self.corpusDirectory else {
             throw XCTSkip("the conformance corpus is not reachable from a WASI sandbox")
         }
         let data = try Data(contentsOf: directory.appendingPathComponent(name))
-        return try JSONSerialization.jsonObject(with: data) as! [[String: Any]]
+        return try JSONSerialization.jsonObject(with: Self.quotingNumbers(after: spelled, in: data))
+            as! [[String: Any]]
+    }
+
+    /// The JSON text with every number that is the value of a key in `keys` put in quotes,
+    /// the rest byte for byte. Strings are copied whole, escapes included, so a key spelled
+    /// inside a string is never mistaken for one.
+    private static func quotingNumbers(after keys: Set<String>, in data: Data) -> Data {
+        guard !keys.isEmpty else { return data }
+        let quote = UInt8(ascii: "\""), backslash = UInt8(ascii: "\\"), colon = UInt8(ascii: ":")
+        let numeric = Set("-+.eE0123456789".utf8), space = Set(" \t\r\n".utf8)
+        let json = [UInt8](data)
+        var out: [UInt8] = []
+        out.reserveCapacity(json.count + json.count / 8)
+        var lastString: String?  // the string just read, while only whitespace follows it
+        var spelling = false  // a key in `keys` and its colon were just read
+        var i = 0
+        while i < json.count {
+            let byte = json[i]
+            if byte == quote {
+                var end = i + 1
+                while json[end] != quote { end += json[end] == backslash ? 2 : 1 }
+                lastString = String(decoding: json[(i + 1)..<end], as: UTF8.self)
+                spelling = false
+                out += json[i...end]
+                i = end + 1
+            } else if spelling && numeric.contains(byte) {
+                var end = i
+                while end < json.count && numeric.contains(json[end]) { end += 1 }
+                out.append(quote)
+                out += json[i..<end]
+                out.append(quote)
+                spelling = false
+                i = end
+            } else {
+                if byte == colon {
+                    spelling = lastString.map(keys.contains) ?? false
+                    lastString = nil
+                } else if !space.contains(byte) {
+                    lastString = nil
+                    spelling = false
+                }
+                out.append(byte)
+                i += 1
+            }
+        }
+        return Data(out)
     }
 
     private func inputBytes(_ vector: [String: Any]) -> [UInt8] {
@@ -148,18 +200,18 @@ final class CorpusTests: XCTestCase {
     }
 
     func testRealCorpus() throws {
-        for vector in try corpus("real.json") {
+        for vector in try corpus("real.json", spelled: ["value"]) {
             let input = inputBytes(vector)
             let format = format(of: vector)
-            let number = vector["value"] as? NSNumber
+            // The f32 expectation is the nearest double narrowed, as the Rust suite reads it.
+            let number = (vector["value"] as? String).map { Double($0)! }
             switch vector["type"] as! String {
             case "f32":
                 assertVerdict(
-                    "real", vector, bits(Cast.f32(input, format: format)),
-                    number.map { Float($0.doubleValue).bitPattern })
+                    "real", vector, bits(Cast.f32(input, format: format)), number.map { Float($0).bitPattern })
             case "f64":
                 assertVerdict(
-                    "real", vector, bits(Cast.f64(input, format: format)), number?.doubleValue.bitPattern)
+                    "real", vector, bits(Cast.f64(input, format: format)), number?.bitPattern)
             case let other:
                 XCTFail("real: unknown type \(other)")
             }
@@ -438,11 +490,7 @@ final class CorpusTests: XCTestCase {
                 guard let fromDouble else {
                     return XCTFail("\(label): no from-double door", file: file, line: line)
                 }
-                let number: Double =
-                    if let spelled = vector["from_f64"] as? String { Double(spelled)! } else {
-                        (vector["from_f64"] as! NSNumber).doubleValue
-                    }
-                verdicts.append(fromDouble(number, constraints))
+                verdicts.append(fromDouble(Double(vector["from_f64"] as! String)!, constraints))
             }
             for verdict in verdicts {
                 assertChecked(label, vector, verdict, expected: expected, same: same, file: file, line: line)
@@ -485,8 +533,7 @@ final class CorpusTests: XCTestCase {
     }
 
     private func integer<T: FixedWidthInteger>(_ value: Any) -> T {
-        let number = value as! NSNumber
-        return T.isSigned ? T(number.int64Value) : T(number.uint64Value)
+        T(value as! String)!
     }
 
     /// Every row of `corpus/constraints.json`, refusals and `from_f64` rows included, through
@@ -497,7 +544,7 @@ final class CorpusTests: XCTestCase {
     func testConstraintsCorpus() throws {
         var replayed = 0
         var doors = Set<String>()
-        for vector in try corpus("constraints.json") {
+        for vector in try corpus("constraints.json", spelled: ["value", "from_f64"]) {
             let door = vector["door"] as! String
             doors.insert(door)
             replayed += 1
@@ -546,12 +593,12 @@ final class CorpusTests: XCTestCase {
                 replay(
                     vector, as: Float.self, text: { Cast.f32($0, format: $1, constraints: $2) },
                     bytes: { Cast.f32($0, format: $1, constraints: $2) }, fromDouble: Cast.f32FromDouble,
-                    expected: { Float(($0 as! NSNumber).doubleValue) }, same: { $0.bitPattern == $1.bitPattern })
+                    expected: { Float(Double($0 as! String)!) }, same: { $0.bitPattern == $1.bitPattern })
             case "f64":
                 replay(
                     vector, as: Double.self, text: { Cast.f64($0, format: $1, constraints: $2) },
                     bytes: { Cast.f64($0, format: $1, constraints: $2) }, fromDouble: Cast.f64FromDouble,
-                    expected: { ($0 as! NSNumber).doubleValue }, same: { $0.bitPattern == $1.bitPattern })
+                    expected: { Double($0 as! String)! }, same: { $0.bitPattern == $1.bitPattern })
             case "decimal":
                 replay(
                     vector, as: Decimal.self, text: { Cast.decimal($0, format: $1, constraints: $2) },
