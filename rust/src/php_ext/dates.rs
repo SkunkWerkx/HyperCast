@@ -11,7 +11,8 @@ use super::classes::{bytes_zval, call, has_method, int_zval};
 use super::errors::{pending, type_error};
 
 // `object_init_ex` (`zend_API.h`): `new`'s allocation, the class's own `create_object` included.
-#[cfg_attr(windows, link(name = "php8"))]
+#[cfg_attr(all(windows, not(php_zts)), link(name = "php8"))]
+#[cfg_attr(all(windows, php_zts), link(name = "php8ts"))]
 unsafe extern "C" {
     fn object_init_ex(arg: *mut zval, class_type: *mut zend_class_entry) -> i32;
 }

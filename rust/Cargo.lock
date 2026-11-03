@@ -744,6 +744,7 @@ dependencies = [
  "cbindgen",
  "criterion",
  "ext-php-rs",
+ "ext-php-rs-build",
  "magnus",
  "no-panic",
  "pyo3",

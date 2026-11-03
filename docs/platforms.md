@@ -90,7 +90,7 @@ for Pyodide) and the sdist, which pip builds where no wheel fits. Go commits no 
 is a generated Go source file in the tree, regenerated and diffed in CI, which is what a plain
 `go get` consumer's tool reads. PHP's binaries are not in git: the binding is a Zend extension,
 and PIE reads the package from Packagist, then downloads the prebuilt zip for the platform and
-PHP minor from the GitHub Release, 18 a release, NTS only
+PHP minor from the GitHub Release, NTS or ZTS to match that PHP, 36 a release
 ([`php/README.md`](../php/README.md#install)). Swift's are not either: SwiftPM downloads a
 binary target from a URL and checks it against the checksum in the manifest. TypeScript ships
 ten npm packages: eight platform packages, `@skunkwerkx/hypercast-<platform>`, one addon each,

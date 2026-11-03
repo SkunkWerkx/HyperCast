@@ -29,6 +29,11 @@ ext-php-rs = { version = "0.16", optional = true }
 # Build-time check only, never shipped: see the `no-panic` feature.
 no-panic = { version = "0.1", optional = true }
 
+[build-dependencies]
+# The `php` feature's build script asks the PHP that ext-php-rs builds against whether it is
+# thread-safe, with ext-php-rs's own lookup (`PHP`, else `php` on PATH): build.rs has why.
+ext-php-rs-build = { version = "0.1.1", optional = true }
+
 # One crate, three optional native-extension entry points instead of three satellite crates
 # each path-depending back on this one (HyperUuid's consolidation, ported home). Nothing
 # in a plain `cargo cdylib` (the Fiddle/ext-ffi-consumed shared library every non-extension
@@ -85,7 +90,7 @@ cdylib = ["staticlib"]
 python-values = ["dep:pyo3", "std"]
 python = ["python-values"]
 ruby = ["dep:magnus", "dep:rb-sys", "std"]
-php = ["dep:ext-php-rs", "std"]
+php = ["dep:ext-php-rs", "dep:ext-php-rs-build", "std"]
 # Proves at link time that no C ABI export can panic: `cargo no-panic` (.cargo/config.toml)
 # fails with an undefined-symbol error naming any export the optimizer could not clear of
 # every panic path (dtolnay's no-panic). A check, not a build of anything shipped. The

@@ -203,9 +203,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **PHP — breaking: the package is a native extension, installed with PIE.** `pie install
   skunkwerkx/hypercast` downloads a prebuilt Zend extension, `hypercast`, built from the core
-  with ext-php-rs, from the GitHub Release: 18 zips, PHP 8.3, 8.4 and 8.5 (NTS only) on six
-  platforms (Linux x64 and arm64 on glibc and on musl, macOS arm64, Windows x64), each
-  attested and named in the release attestation. `composer require` no longer installs it,
+  with ext-php-rs, from the GitHub Release: 36 zips, PHP 8.3, 8.4 and 8.5, NTS and ZTS (for
+  FrankenPHP, Apache's threaded MPMs and thread-safe Windows PHP), on six platforms (Linux x64
+  and arm64 on glibc and on musl, macOS arm64, Windows x64), each attested and named in the
+  release attestation. On a ZTS PHP it loads from php.ini only: a `dl()` stops the script
+  with a warning naming the `extension=` line. `composer require` no longer installs it,
   and no FFI package is kept. `ext-ffi`, `ffi.enable` and preloading,
   `HYPERCAST_NATIVE_LIBRARY` and `Cast::isAvailable()` are gone; `extension_loaded('hypercast')`
   is the check. PHP 8.2 is dropped, and Intel macOS has no zip. The classes, methods,
@@ -217,7 +219,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   are internal, and errors name the caller's file and line; `php/README.md` lists them under
   "Differences from 1.0". Stubs for IDEs and PHPStan are in `php/stubs/`. No PHP binary is
   left in git: `php/src/` is gone. After every publish, `release.yml` has PIE install the
-  release on every platform and minor. *(PHP)*
+  release on every platform, minor and thread safety. *(PHP)*
 
 - **Go — one backend: the core translated to Go source, no cgo, no binary in git.** The Rust
   core built for `wasm32-wasip1` (the module imports nothing) is translated to one Go file by
