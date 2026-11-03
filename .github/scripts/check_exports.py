@@ -10,7 +10,7 @@ The Python and Ruby extensions are not C ABI consumers: they link the core as a 
 and register the doors under their language's spelling, so their sites map each export to
 that spelling (a None folds the export into another entry point). The PHP extension
 (rust/src/php_ext/) is not a C ABI consumer either, and calls the core's Rust API, so it has no
-site; php_guard holds every PHP-callable function in it to `guard(`.
+site; php_guard holds every PHP-callable function in it to `guard(`, and php_link its extern blocks to the php8/php8ts pair.
 
 No dependencies and no build: CI runs it in the lint jobs, and so can a dev loop.
 
@@ -237,6 +237,50 @@ def php_guard(directory):
         )
 
 
+PHP_LINK_NTS = '#[cfg_attr(all(windows, not(php_zts)), link(name = "php8"))]'
+PHP_LINK_TS = '#[cfg_attr(all(windows, php_zts), link(name = "php8ts"))]'
+
+
+def php_link(directory):
+    """Every extern block in the extension that names the engine's Windows import library names
+    it through the pair PHP_LINK_NTS, PHP_LINK_TS, on adjacent lines and opening the block (other
+    attributes may follow). A thread-safe Windows PHP is php8ts.dll, with php8ts.lib and no
+    php8.lib: a bare `link(name = "php8")` fails to link there, or links a DLL PHP cannot load.
+    build.rs sets `php_zts` from the PHP ext-php-rs builds against."""
+    directory = Path(directory)
+    if not directory.is_absolute():
+        directory = ROOT / directory
+    files = sorted(directory.glob("*.rs"))
+    if not files:
+        sys.exit(f"check_exports: {directory} matches no file")
+    bad = []
+    for path in files:
+        raw = path.read_text(encoding="utf-8").split("\n")
+        masked = _mask_rust("\n".join(raw)).split("\n")
+        paired = set()
+        for index, line in enumerate(raw):
+            if not masked[index].lstrip().startswith("#[") or not re.search(r'\blink\(\s*name\s*=\s*"php8', line):
+                continue
+            if index in paired:
+                continue
+            rest = masked[index + 2 :]
+            opens = next((code.strip() for code in rest if not code.strip().startswith("#[")), "")
+            if (
+                line.strip() == PHP_LINK_NTS
+                and index + 1 < len(raw)
+                and raw[index + 1].strip() == PHP_LINK_TS
+                and re.match(r"(unsafe\s+)?extern\b", opens)
+            ):
+                paired.add(index + 1)
+                continue
+            bad.append(f"{path.name}:{index + 1}")
+    if bad:
+        sys.exit(
+            "check_exports: php_ext names the engine's library without the php8/php8ts pair "
+            "(build.rs's php_zts): " + ", ".join(bad)
+        )
+
+
 def ruby_spelling(export):
     """ruby_ext.rs's name: Python's, without the cast_ prefix (the module is the namespace)."""
     spelled = python_spelling(export)
@@ -434,6 +478,7 @@ def main():
     print(f"core: {len(exports)} exports")
     jni_no_panic("java/jni/src/lib.rs")
     php_guard("rust/src/php_ext")
+    php_link("rust/src/php_ext")
     napi_catch_unwind("typescript/src/lib.rs")
     failed = False
     for binding, sources, wants, extra in SITES:
