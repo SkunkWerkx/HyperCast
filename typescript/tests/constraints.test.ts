@@ -266,18 +266,26 @@ test('a declaration reports what it declares, and its packed layout', () => {
 })
 
 test('the layouts are the sizes the C header carries', (t) => {
+  // The binding's own sizes, asserted on every leg: the packed declaration this package lays
+  // out, and the RawCheck and RawSpan src/lib.rs pins at these sizes at compile time.
+  const sizes = { HyperCastRawConstraints: 72, HyperCastRawCheck: 12, HyperCastRawSpan: 8 }
+  assert.equal(declare({ door: Door.I32 }).packed.length, sizes.HyperCastRawConstraints)
+  // The header is compared only where it is reachable: an installed copy, or a suite run from
+  // the package directory alone (the Forge's musl legs stage no include/), has none.
   const header = path.resolve(__dirname, '..', '..', 'include', 'hypercast.h')
   if (!existsSync(header)) {
-    t.skip('no include/hypercast.h beside this package (an installed copy)')
+    t.diagnostic('no include/hypercast.h beside this package: only the literal sizes were checked')
     return
   }
   const text = readFileSync(header, 'utf8')
   const size = (name: string) => Number(new RegExp(`#define ${name}_SIZE (\\d+)`).exec(text)?.[1])
-  assert.equal(size('HyperCastRawConstraints'), 72)
-  assert.equal(declare({ door: Door.I32 }).packed.length, size('HyperCastRawConstraints'))
-  // src/lib.rs pins its RawCheck and RawSpan at these sizes at compile time.
-  assert.equal(size('HyperCastRawCheck'), 12)
-  assert.equal(size('HyperCastRawSpan'), 8)
+  for (const [name, bytes] of Object.entries(sizes)) {
+    assert.equal(
+      bytes,
+      size(name),
+      `${name}: this binding's size is ${bytes}, the header's ${size(name)}`,
+    )
+  }
 })
 
 test('a failed declaration never means "no rules": a missing value is a contract violation', () => {
@@ -403,6 +411,37 @@ test('a lone surrogate never becomes U+FFFD: refused as an entry, malformed as i
   })
   // And as a bound's text, the core refuses it as any other non-notation (code 8).
   assert.match(refusal({ door: Door.I32, maximum: '1\ud800' }), /code 8/)
+})
+
+test("a lone surrogate is malformed at every plain door too, the checked door's fault", () => {
+  // Declared as the currency symbol, U+FFFD would have read a replaced surrogate as data.
+  const replacement = NumFormat.declare({
+    decimalSep: '.',
+    groupSep: ',',
+    flags: NumStyles.All,
+    currency: '\ufffd',
+  })
+  assert.ok(replacement.ok)
+  const format = replacement.value
+  assert.deepEqual(api.castI32('\ud8005', format), {
+    ok: false,
+    fault: { reason: 'malformed', offset: 0, length: 1 },
+  })
+  assert.deepEqual(api.castI32('\ufffd5', format), { ok: true, value: 5 })
+  const i32 = declare({ door: Door.I32 })
+  for (const text of ['\ud8005', '5\udfff', '12\ud8003', '\ufffd1\udc00', 'é€\udc00x']) {
+    const plain = api.castI32(text, format)
+    assert.ok(!plain.ok && plain.fault.reason === 'malformed', text)
+    assert.deepEqual(plain, castChecked(text, i32, format), text)
+  }
+  assert.deepEqual(api.castDecimal('12\ud8003'), {
+    ok: false,
+    fault: { reason: 'malformed', offset: 2, length: 1 },
+  })
+  for (const door of [api.castBool, api.castUuid, api.castTimestamp, api.castDuration]) {
+    const verdict = door('\ud800')
+    assert.ok(!verdict.ok && verdict.fault.reason === 'malformed', door.name)
+  }
 })
 
 test('a number already decoded keeps its sign, and zero has one form', () => {

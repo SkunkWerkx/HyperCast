@@ -169,7 +169,8 @@ export declare function castChecked(text: Text, constraints: Constraints, format
  * through the door its `Constraints` are bound to, then judges it by them on the shortest
  * decimal that names it: `0.1 + 0.2` is `0.30000000000000004`, which breaks
  * `multipleOf: "0.1"` unrounded and rounds to `0.3` under `Rounding.Midpoint`. NaN is
- * `malformed` and an infinity `outOfRange`; every fault and violation has an empty span.
+ * `malformed`; an infinity is `outOfRange` at a float or decimal door and `malformed` at an
+ * integer door. Every fault and violation has an empty span.
  * `-0` is zero, delivered at a float door as `0`.
  */
 export declare function castCheckedFromNumber(value: number, constraints: Constraints): CheckedVerdict<number | bigint | string>
@@ -537,8 +538,9 @@ export interface Success<T> {
 }
 
 /**
- * What a door reads: a string (as UTF-8), the bytes of a `Uint8Array` (a `Buffer` is one)
- * as they are, or `null` or `undefined` for absent input.
+ * What a door reads: a string (as UTF-8, a lone surrogate kept as malformed text, never
+ * U+FFFD), the bytes of a `Uint8Array` (a `Buffer` is one) as they are, or `null` or
+ * `undefined` for absent input.
  */
 export type Text = string | Uint8Array | undefined | null
 

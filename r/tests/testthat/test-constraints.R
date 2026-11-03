@@ -169,6 +169,33 @@ test_that("the text door's value is the caller's string, or the trimmed span of 
   expect_identical(c(as.character(bad$reason), bad$offset, bad$length), c("malformed", "1", "1"))
 })
 
+test_that("text that is not UTF-8 is the same fault at the plain doors as at the checked", {
+  # An R string marked UTF-8 can hold bytes that are not (a lone surrogate's three, a stray
+  # byte); every door reads them as they are, so the plain fault is the checked one, span and
+  # all, and never a replacement standing for them.
+  marked <- function(b) {
+    s <- rawToChar(as.raw(b))
+    Encoding(s) <- "UTF-8"
+    s
+  }
+  texts <- c(marked(c(0xed, 0xa0, 0x80, 0x35)), marked(c(0x35, 0xed, 0xbf, 0xbf)),
+             marked(c(0x31, 0x32, 0xff, 0x33)), marked(c(0xef, 0xbf, 0xbd, 0x35, 0xc0)))
+  f <- num_format(currency = "\ufffd")
+  plain <- cast_i32(texts, f)
+  checked <- cast_checked(texts, f, hypercast_constraints("i32"))
+  expect_identical(as.character(plain$reason), rep("malformed", 4L))
+  expect_identical(as.character(plain$reason), as.character(checked$reason))
+  expect_identical(plain$offset, checked$offset)
+  expect_identical(plain$length, checked$length)
+  # The same bytes from a raw vector, counted in bytes.
+  raw_plain <- cast_i32(list(as.raw(c(0xed, 0xa0, 0x80, 0x35))), f)
+  expect_identical(c(raw_plain$offset, raw_plain$length), c(0L, 3L))
+  text <- cast_text(marked(c(0x61, 0xff, 0x62)))
+  expect_identical(c(as.character(text$reason), text$offset, text$length), c("malformed", "1", "1"))
+  expect_identical(text$offset,
+                   cast_text(marked(c(0x61, 0xff, 0x62)), hypercast_constraints("text"))$offset)
+})
+
 test_that("each checked door's value comes back in the plain door's R type", {
   f <- num_format()
   expect_identical(cast_checked("7", f, hypercast_constraints("i8", maximum = 9L))$value, 7L)

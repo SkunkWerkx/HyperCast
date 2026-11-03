@@ -21,11 +21,12 @@
 //! (`Text::bytes`), which is sound without the GIL because both `str` and `bytes` are
 //! immutable and the borrow lives no longer than the owned reference the door holds.
 
+use std::cell::OnceCell;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::mem::MaybeUninit;
 use std::sync::OnceLock;
 
-use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyUnicodeEncodeError, PyValueError};
 use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyString, PyTuple};
@@ -191,16 +192,16 @@ impl NumFormat {
     ))]
     #[allow(clippy::too_many_arguments)] // The constructor's signature is the API.
     fn new(
-        decimal_sep: &str,
-        group_sep: &str,
+        #[pyo3(from_py_with = symbol_decimal_sep)] decimal_sep: &str,
+        #[pyo3(from_py_with = symbol_group_sep)] group_sep: &str,
         flags: u32,
-        currency: &str,
-        currency_decimal_sep: &str,
-        currency_group_sep: &str,
-        minus_sign: &str,
-        plus_sign: &str,
-        percent: &str,
-        digit_zero: &str,
+        #[pyo3(from_py_with = symbol_currency)] currency: &str,
+        #[pyo3(from_py_with = symbol_currency_decimal_sep)] currency_decimal_sep: &str,
+        #[pyo3(from_py_with = symbol_currency_group_sep)] currency_group_sep: &str,
+        #[pyo3(from_py_with = symbol_minus_sign)] minus_sign: &str,
+        #[pyo3(from_py_with = symbol_plus_sign)] plus_sign: &str,
+        #[pyo3(from_py_with = symbol_percent)] percent: &str,
+        #[pyo3(from_py_with = symbol_digit_zero)] digit_zero: &str,
     ) -> PyResult<Self> {
         declare(Declared {
             decimal_sep,
@@ -349,7 +350,9 @@ impl NumFormat {
         // Empty when the key is absent or its text is empty: the locale declares nothing.
         let field = |name: &str| -> PyResult<String> {
             match conv.get_item(name)? {
-                Some(value) => value.extract::<String>(),
+                Some(value) => {
+                    value.extract::<String>().map_err(|err| naming(value.py(), name, err))
+                }
                 None => Ok(String::new()),
             }
         };
@@ -544,9 +547,13 @@ fn designator(what: &str, text: &str) -> PyResult<core::Symbol<16>> {
     )))
 }
 
-/// Door input: str or bytes, each a zero-copy view into the caller's own object.
+/// Door input: str or bytes, each a zero-copy view into the caller's own object. A `str`
+/// holding a lone surrogate has no UTF-8 form; its `surrogatepass` encoding, each surrogate
+/// the three bytes no UTF-8 decoder accepts, is made once, when a door first reads it, and
+/// kept beside it. Every door, plain or checked, then reads the surrogate as malformed text at
+/// its own code point, never as a replacement character and never as an exception.
 enum Text<'py> {
-    Str(Bound<'py, PyString>),
+    Str(Bound<'py, PyString>, OnceCell<Bound<'py, PyBytes>>),
     Bytes(Bound<'py, PyBytes>),
 }
 
@@ -561,7 +568,7 @@ impl<'py> FromPyObject<'_, 'py> for Text<'py> {
 
     fn extract(obj: Borrowed<'_, 'py, PyAny>) -> PyResult<Self> {
         if let Ok(text) = obj.cast::<PyString>() {
-            Ok(Text::Str(text.to_owned()))
+            Ok(Text::Str(text.to_owned(), OnceCell::new()))
         } else if let Ok(bytes) = obj.cast::<PyBytes>() {
             Ok(Text::Bytes(bytes.to_owned()))
         } else {
@@ -578,9 +585,21 @@ impl Text<'_> {
     // the text. No GIL is needed to hold either slice: a str and a bytes never change once
     // built (a free-threaded CPython fills a str's UTF-8 cache once, thread-safely,
     // and never frees it before the str), and `self` holds a strong reference throughout.
+    //
+    // Only a `str` with a lone surrogate (whose `to_str()` fails) takes the second path, and
+    // it pays one `encode` call, the first time a door reads it.
     fn bytes(&self) -> PyResult<&[u8]> {
         match self {
-            Text::Str(text) => Ok(text.to_str()?.as_bytes()),
+            Text::Str(text, kept) => match text.to_str() {
+                Ok(utf8) => Ok(utf8.as_bytes()),
+                Err(_) => {
+                    if kept.get().is_none() {
+                        let _ = kept.set(surrogates_kept(text)?);
+                    }
+                    let kept = kept.get().ok_or_else(|| binding_bug("lost a str's encoding"))?;
+                    Ok(kept.as_bytes())
+                }
+            },
             Text::Bytes(bytes) => Ok(bytes.as_bytes()),
         }
     }
@@ -590,7 +609,7 @@ impl Text<'_> {
     /// pays one length comparison (code points equal bytes); only a non-ASCII `str`, and
     /// only on the fault path, counts code points.
     fn present(&self, failed: core::Fault) -> PyResult<core::Fault> {
-        let Text::Str(text) = self else {
+        let Text::Str(text, _) = self else {
             return Ok(failed);
         };
         let bytes = self.bytes()?;
@@ -626,7 +645,7 @@ fn fault(py: Python<'_>, failed: core::Fault) -> PyResult<Py<PyAny>> {
 
 fn verdict<'py, T>(
     py: Python<'py>,
-    text: &Text<'py>,
+    text: &Text<'_>,
     outcome: Result<T, core::Fault>,
     into: impl FnOnce(Python<'py>, T) -> PyResult<Py<PyAny>>,
 ) -> PyResult<Py<PyAny>> {
@@ -831,8 +850,8 @@ fn cast_datetime(
     py: Python<'_>,
     text: Text<'_>,
     order: u32,
-    am: &str,
-    pm: &str,
+    #[pyo3(from_py_with = symbol_am)] am: &str,
+    #[pyo3(from_py_with = symbol_pm)] pm: &str,
 ) -> PyResult<Py<PyAny>> {
     let Some(order) = core::DateOrder::from_code(order) else {
         return Err(PyValueError::new_err("order must be a DateOrder"));
@@ -880,35 +899,25 @@ fn duration_value(py: Python<'_>, span: core::Duration) -> PyResult<Py<PyAny>> {
 // by `declared_decimal`, the conversion `cast_declared_decimal` runs. No rule is restated
 // here: every refusal and every violation is the core's.
 
-/// Checked-door input: the caller's text and, for a `str` holding a lone surrogate (which has
-/// no UTF-8 form), its `surrogatepass` encoding, each surrogate the three bytes no UTF-8
-/// decoder accepts. The core then reads the surrogate as malformed text at its own code point,
-/// never as a replacement character standing for it.
+/// Checked-door input: the caller's text, read as every door reads it (a lone surrogate kept
+/// as malformed bytes; see [`Text`]).
 struct Input<'py> {
     text: Text<'py>,
-    kept: Option<Bound<'py, PyBytes>>,
 }
 
 impl<'py> Input<'py> {
     fn new(text: Text<'py>) -> PyResult<Self> {
-        let kept = match &text {
-            Text::Str(str) if str.to_str().is_err() => Some(surrogates_kept(str)?),
-            _ => None,
-        };
-        Ok(Input { text, kept })
+        Ok(Input { text })
     }
 
     fn bytes(&self) -> PyResult<&[u8]> {
-        match &self.kept {
-            Some(bytes) => Ok(bytes.as_bytes()),
-            None => self.text.bytes(),
-        }
+        self.text.bytes()
     }
 
     /// A byte span in the caller's own units, as a fault's is: as-is for `bytes`, in code
     /// points for `str` (an ASCII `str` pays one length comparison).
     fn span(&self, offset: u32, len: u32) -> PyResult<(u32, u32)> {
-        let Text::Str(text) = &self.text else {
+        let Text::Str(text, _) = &self.text else {
             return Ok((offset, len));
         };
         let bytes = self.bytes()?;
@@ -920,9 +929,9 @@ impl<'py> Input<'py> {
 
     /// The judged text at a byte span the core reported as valid UTF-8: the caller's own `str`
     /// when the span is all of it, a new `str` otherwise (a trimmed span, or `bytes` input).
-    fn text_at(&self, py: Python<'py>, (offset, len): (u32, u32)) -> PyResult<Py<PyAny>> {
+    fn text_at(&self, py: Python<'_>, (offset, len): (u32, u32)) -> PyResult<Py<PyAny>> {
         let bytes = self.bytes()?;
-        if let Text::Str(text) = &self.text
+        if let Text::Str(text, _) = &self.text
             && offset == 0
             && len as usize == bytes.len()
         {
@@ -935,6 +944,47 @@ impl<'py> Input<'py> {
             .ok_or_else(|| binding_bug("reported a text span that is not UTF-8"))?;
         Ok(PyString::new(py, text).into_any().unbind())
     }
+}
+
+/// A declared symbol's text, read as `&str` is: a `str` holding a lone surrogate has no UTF-8
+/// form, and the `UnicodeEncodeError` Python raises for it keeps its encoding, object, position
+/// and PyO3's "while processing" note, its reason naming the field, as every binding words it.
+fn named<'py>(name: &'static str, obj: &'py Bound<'py, PyAny>) -> PyResult<&'py str> {
+    obj.cast::<PyString>()?.to_str().map_err(|err| naming(obj.py(), name, err))
+}
+
+/// Names `name` in a `UnicodeEncodeError`'s reason; any other error passes through untouched.
+fn naming(py: Python<'_>, name: &str, err: PyErr) -> PyErr {
+    if err.is_instance_of::<PyUnicodeEncodeError>(py) {
+        let reason = format!("{name} must be whole code points, not surrogate halves");
+        if let Err(failed) = err.value(py).setattr("reason", reason) {
+            return failed;
+        }
+    }
+    err
+}
+
+/// One extractor per symbol parameter: `from_py_with` takes a path, not a closure.
+macro_rules! symbols {
+    ($($fn:ident => $name:literal),+ $(,)?) => {$(
+        fn $fn<'py>(obj: &'py Bound<'py, PyAny>) -> PyResult<&'py str> {
+            named($name, obj)
+        }
+    )+};
+}
+
+symbols! {
+    symbol_decimal_sep => "decimal_sep",
+    symbol_group_sep => "group_sep",
+    symbol_currency => "currency",
+    symbol_currency_decimal_sep => "currency_decimal_sep",
+    symbol_currency_group_sep => "currency_group_sep",
+    symbol_minus_sign => "minus_sign",
+    symbol_plus_sign => "plus_sign",
+    symbol_percent => "percent",
+    symbol_digit_zero => "digit_zero",
+    symbol_am => "am",
+    symbol_pm => "pm",
 }
 
 /// A `str` encoded with its lone surrogates kept (`surrogatepass`).
@@ -1694,7 +1744,8 @@ fn cast_checked(
 /// numeric cell) through the door its ``Constraints`` are bound to, then judges it by them on
 /// the shortest decimal that names it: ``0.1 + 0.2`` is ``0.30000000000000004``, which breaks
 /// ``multiple_of="0.1"`` unrounded and rounds to ``0.3`` under ``Rounding.MIDPOINT``. NaN is
-/// ``MALFORMED`` and an infinity ``OUT_OF_RANGE``; every fault and violation has an empty span.
+/// ``MALFORMED``; an infinity is ``OUT_OF_RANGE`` at a float or decimal door and ``MALFORMED``
+/// at an integer door. Every fault and violation has an empty span.
 #[pyfunction]
 fn cast_checked_from_float(
     py: Python<'_>,

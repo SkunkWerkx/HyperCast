@@ -51,11 +51,13 @@ impl IntoZval for CheckedVerdict {
     }
 }
 
-/// `Cast::optional`'s answer: the verdict, or `null` for an empty input.
+/// `Cast::optional`'s answer: the verdict, plain or checked, or `null` for an empty input.
 pub struct MaybeVerdict(Option<Zval>);
 
 impl IntoZval for MaybeVerdict {
-    const TYPE: DataType = DataType::object("HyperCast\\Success|HyperCast\\Fault");
+    const TYPE: DataType = DataType::object(
+        "HyperCast\\Success|HyperCast\\Checked|HyperCast\\Fault|HyperCast\\Violation",
+    );
     const NULLABLE: bool = true;
 
     fn set_zval(self, zv: &mut Zval, _: bool) -> ZvalResult<()> {
@@ -155,7 +157,8 @@ impl Cast {
         guard(|| Ok(Self))
     }
 
-    /// The verdict, or `null` for an `Empty` fault.
+    /// The verdict, plain or checked, or `null` for an `Empty` fault: every other verdict, a
+    /// `Violation` included, comes back as it was.
     pub fn optional(verdict: VerdictArg<'_>) -> PhpResult<MaybeVerdict> {
         guard(|| {
             let is_fault = verdict
@@ -349,7 +352,8 @@ impl Cast {
 
     /// A number already decoded (a JSON float, a spreadsheet's numeric cell) through the door
     /// its `Constraints` are bound to, judged on the shortest decimal that names it. NaN is
-    /// `Malformed` and an infinity `OutOfRange`; every span is empty.
+    /// `Malformed`; an infinity is `OutOfRange` at a float or decimal door and `Malformed` at an
+    /// integer door. Every span is empty.
     pub fn checked_from_float(
         value: Float,
         constraints: ConstraintsArg<'_>,

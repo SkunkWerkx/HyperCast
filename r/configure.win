@@ -16,15 +16,37 @@ fi
 cargo --version
 rustc --version
 
-# rustc 1.89 is the core crate's rust-version.
-RUSTC_VERSION=$(rustc --version | cut -d' ' -f2)
-RUSTC_MAJOR=$(echo "$RUSTC_VERSION" | cut -d. -f1)
-RUSTC_MINOR=$(echo "$RUSTC_VERSION" | cut -d. -f2)
-if [ "$RUSTC_MAJOR" -lt 1 ] || { [ "$RUSTC_MAJOR" -eq 1 ] && [ "$RUSTC_MINOR" -lt 89 ]; }; then
+# The oldest rustc the build accepts is the vendored core crate's own rust-version, read from
+# its manifest in src/rust/vendor.tar.xz (tools/vendor.sh writes it), so there is no second
+# copy to drift. Checked here, before cargo runs, so an older rustc stops with a message
+# naming both versions rather than with a compile error.
+if [ ! -f src/rust/vendor.tar.xz ]; then
+  echo "hypercast: src/rust/vendor.tar.xz is missing; run tools/vendor.sh from r/ (README, Local loop)." >&2
+  exit 1
+fi
+REQUIRED=$(tar xOf src/rust/vendor.tar.xz vendor/hypercast/Cargo.toml |
+  sed -n 's/^rust-version *= *"\([0-9.]*\)".*$/\1/p')
+if [ -z "$REQUIRED" ]; then
+  echo "hypercast: no rust-version in the vendored hypercast crate's Cargo.toml" >&2
+  exit 1
+fi
+FOUND=$(rustc --version | cut -d' ' -f2)
+# Each version as major, minor and patch (missing parts are 0; a -nightly or -beta suffix
+# is dropped), compared field by field.
+older=$(echo "$FOUND $REQUIRED" | awk '{
+  n = split($1, f, /[.-]/); m = split($2, r, ".")
+  for (i = 1; i <= 3; i++) {
+    a = (i <= n) ? f[i] + 0 : 0; b = (i <= m) ? r[i] + 0 : 0
+    if (a != b) { print (a < b) ? 1 : 0; exit }
+  }
+  print 0
+}')
+if [ "$older" != 0 ]; then
   cat << MSG
 ------------------------------------------------------------------------
-hypercast needs rustc 1.89 or newer; found $RUSTC_VERSION.
-Update the Rust toolchain (rustup update, see https://rustup.rs).
+hypercast needs rustc $REQUIRED or newer (the hypercast crate's rust-version);
+found rustc $FOUND.
+Update the Rust toolchain (rustup update, see https://rustup.rs) and try again.
 ------------------------------------------------------------------------
 MSG
   exit 1

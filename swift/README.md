@@ -157,8 +157,10 @@ leading or trailing white space). After that a checked cast judges only data and
 nothing for it. `Cast.text` without constraints is the plain text
 door, a `Verdict<String>`: the input itself when it is valid text (`Cast.text("  Male ")` is
 `.success("  Male ")`, untrimmed); through `[UInt8]`, invalid UTF-8 is `.malformed` at its first
-invalid sequence. A Swift `String` cannot hold a lone surrogate, so none can reach the core from
-one. `Interop.rawConstraints(_:)` and `Interop.packedEnum(_:)` hand a declaration over in the
+invalid sequence, as at every plain door, which hands its bytes to the core unchanged. A Swift
+`String` cannot hold a lone surrogate, so none can reach the core from one. `Cast.optional` takes
+a checked verdict as it takes a plain one: an `.empty` fault is `nil`, and every other rejection,
+a violation included, flows through. `Interop.rawConstraints(_:)` and `Interop.packedEnum(_:)` hand a declaration over in the
 core's own 72-byte layout and `enum` list, for a library judging values across a C ABI of its
 own.
 

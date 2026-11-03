@@ -515,7 +515,9 @@ test_that("constraints.json", {
 test_that("declarations.json", {
   declared <- getFromNamespace("declared_decimal", "hypercast")
   rows <- read_vectors("declarations.json")
+  replayed <- 0L
   for (row in rows) {
+    replayed <- replayed + 1L
     inputs <- if (is.null(row$input_bytes)) {
       row$input
     } else {
@@ -538,4 +540,6 @@ test_that("declarations.json", {
       expect_identical(d$value, row$value, info = info)
     }
   }
+  # Every row was replayed: the count is the file's, never a literal.
+  expect_identical(replayed, length(rows))
 })

@@ -49,6 +49,12 @@ class NullArgumentTest {
         if (type == Verdict.class) {
             return new Success<>(1);
         }
+        if (type == CheckedVerdict.class) {
+            return new Checked<>(1, false, java.util.OptionalInt.empty());
+        }
+        if (type == Fault.class) {
+            return new Fault<>(CastFailure.MALFORMED, 0, 1);
+        }
         if (type == double.class) {
             return 1.0;
         }
@@ -81,7 +87,7 @@ class NullArgumentTest {
         if (type == DateOrder.class) {
             return "order";
         }
-        if (type == Verdict.class) {
+        if (type == Verdict.class || type == CheckedVerdict.class || type == Fault.class) {
             return "verdict";
         }
         if (type == Constraints.class) {
@@ -126,6 +132,6 @@ class NullArgumentTest {
             }
         }
         // A new public door with a reference parameter changes this count on purpose.
-        assertEquals(310, checked);
+        assertEquals(312, checked);
     }
 }

@@ -56,7 +56,8 @@ namespace HyperCast {
         /**
          * A number already decoded (a JSON float, a spreadsheet's numeric cell) through the door
          * its `Constraints` are bound to, judged on the shortest decimal that names it. NaN is
-         * `Malformed` and an infinity `OutOfRange`; every span is empty.
+         * `Malformed`; an infinity is `OutOfRange` at a float or decimal door and `Malformed` at an
+         * integer door. Every span is empty.
          *
          * @param float $value
          * @param \HyperCast\Constraints $constraints
@@ -187,12 +188,13 @@ namespace HyperCast {
         public static function nativeVersion(): string {}
 
         /**
-         * The verdict, or `null` for an `Empty` fault.
+         * The verdict, plain or checked, or `null` for an `Empty` fault: every other verdict, a
+         * `Violation` included, comes back as it was.
          *
-         * @param \HyperCast\Success|\HyperCast\Fault $verdict
-         * @return \HyperCast\Success|\HyperCast\Fault|null
+         * @param \HyperCast\Success|\HyperCast\Checked|\HyperCast\Fault|\HyperCast\Violation $verdict
+         * @return \HyperCast\Success|\HyperCast\Checked|\HyperCast\Fault|\HyperCast\Violation|null
          */
-        public static function optional(\HyperCast\Success|\HyperCast\Fault $verdict): \HyperCast\Success|\HyperCast\Fault|null {}
+        public static function optional(\HyperCast\Success|\HyperCast\Checked|\HyperCast\Fault|\HyperCast\Violation $verdict): \HyperCast\Success|\HyperCast\Checked|\HyperCast\Fault|\HyperCast\Violation|null {}
 
         /**
          * Text as text: the input itself once it is valid UTF-8. Empty input is `Empty`, invalid

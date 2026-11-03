@@ -338,7 +338,8 @@ RSpec.describe "conformance corpus" do
   # spans); input_bytes rows as a binary String and as the same bytes tagged UTF-8 (where
   # they are invalid, counted as a fault's are); from_f64 rows through checked_from_float.
   it "replays constraints.json" do
-    seen = corpus("constraints.json").map do |vector|
+    vectors = corpus("constraints.json")
+    seen = vectors.map do |vector|
       keywords = declared(vector)
       what = vector.fetch("input") { vector.fetch("from_f64") { vector["input_bytes"] } }
       label = "constraints #{vector['door']} #{vector['constraints']} #{what.inspect}"
@@ -380,6 +381,8 @@ RSpec.describe "conformance corpus" do
       end
       vector["door"]
     end
+    # Every row was replayed (each names what it went through): the count is the file's.
+    expect(seen.compact.size).to eq(vectors.size)
     doors = HyperCast::CHECKED_DOORS.keys.map(&:to_s)
     expect(seen.uniq.sort).to eq((doors + %w[refused from_f64 input_bytes]).sort)
   end
@@ -389,7 +392,8 @@ RSpec.describe "conformance corpus" do
   # included, which a value comparison would ignore) at bytes 40 to 56. A refusal is code 8.
   it "replays declarations.json" do
     counts = Hash.new(0)
-    corpus("declarations.json").each do |vector|
+    vectors = corpus("declarations.json")
+    vectors.each do |vector|
       if vector.key?("input_bytes")
         counts["bytes"] += 1
         expect([vector["expect"], vector["refusal"]]).to eq(["refused", 8])
@@ -414,7 +418,9 @@ RSpec.describe "conformance corpus" do
       expect([decimal.magnitude, decimal.scale, decimal.negative]).to eq(triple), text
       expect(decimal.to_s).to eq(vector["value"]), text
     end
-    expect(counts).to eq("ok" => 33, "refused" => 30, "bytes" => 3)
+    # Every row was replayed, and every kind is present: counts from the file, never literals.
+    expect(counts.values.sum).to eq(vectors.size)
+    expect(counts.keys.sort).to eq(%w[bytes ok refused])
   end
 
   # The plain doors' verdict is exactly what it was, the checked doors being additive:

@@ -694,8 +694,9 @@ func Check[V Number, T Text](text T, format NumFormat, constraints Constraints[V
 // spreadsheet's numeric cell — at V's door by constraints, on its sign and the shortest
 // decimal that names it: the judgement Check makes of that text (strconv.FormatFloat(value,
 // 'g', -1, 64)'s digits). So 0.1 + 0.2 breaks MultipleOf("0.1") under Strict and rounds to
-// 0.3 under Midpoint. -0.0 is zero, delivered unsigned. NaN is Malformed and an infinity
-// OutOfRange; with no text to point into, every fault and violation has an empty span.
+// 0.3 under Midpoint. -0.0 is zero, delivered unsigned. NaN is Malformed; an infinity is
+// OutOfRange at a float or Decimal door and Malformed at an integer door. With no text to
+// point into, every fault and violation has an empty span.
 func CheckFromFloat64[V Number](value float64, constraints Constraints[V]) (Checked[V], Rejection) {
 	r, c := callCheckedFromF64(doorOf[V](), value, constraints.declaration())
 	return checkedNumber[V](&r, c)
@@ -712,6 +713,21 @@ func slice[T Text](text T, span RawSpan) string {
 	default:
 		panic("unreachable")
 	}
+}
+
+// OptionalChecked presents a checked door's verdict optionally, as Optional does a plain
+// one's: an Empty *Fault is absent, (nil, nil); a success is a pointer to the Checked, (&checked,
+// nil); every other rejection, a *Violation included, flows through untouched, (nil, rejection).
+//
+//	checked, rejection := hypercast.OptionalChecked(hypercast.Check(text, hypercast.Invariant, percent))
+func OptionalChecked[V any](checked Checked[V], rejection Rejection) (*Checked[V], Rejection) {
+	if rejection != nil {
+		if fault, ok := rejection.(*Fault); ok && fault.Reason == Empty {
+			return nil, nil
+		}
+		return nil, rejection
+	}
+	return &checked, nil
 }
 
 // String casts text as text: the input itself, once it is valid UTF-8, untrimmed. Empty

@@ -83,8 +83,31 @@ final class CoercionTest extends TestCase
             if (self::debugEngineWarnsTwice($mode, $case, $input)) {
                 $outcome['errors'] = [...$outcome['errors'], ...$outcome['errors']];
             }
+            $outcome = self::widened($case, $outcome);
             $this->assertSame($outcome, self::$actual[$mode][$case][$input], "{$mode}, {$case}, input {$input}");
         }
+    }
+
+    /**
+     * The one declared edit: `Cast::optional()` takes a checked verdict too, so the type its
+     * `TypeError` names widens, additively; every input it refused, it still refuses.
+     *
+     * @param array<string, mixed> $outcome
+     * @return array<string, mixed>
+     */
+    private static function widened(string $case, array $outcome): array
+    {
+        if ($case !== 'Cast::optional $verdict' || !isset($outcome['message'])) {
+            return $outcome;
+        }
+        $outcome['message'] = str_replace(
+            'must be of type HyperCast\\Success|HyperCast\\Fault,',
+            'must be of type HyperCast\\Success|HyperCast\\Checked|HyperCast\\Fault|HyperCast\\Violation,',
+            $outcome['message'],
+            $count
+        );
+        self::assertSame(1, $count, $case);
+        return $outcome;
     }
 
     /**

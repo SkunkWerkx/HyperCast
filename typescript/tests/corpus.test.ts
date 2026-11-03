@@ -458,7 +458,9 @@ test('constraints.json', () => {
   // conversion of each bound, step and entry. A text row runs as bytes and as the string.
   let refusals = 0
   let typed = 0
-  for (const v of load('constraints.json')) {
+  let replayed = 0
+  const vectors = load('constraints.json')
+  for (const v of vectors) {
     const ctx = `constraints.json ${JSON.stringify(v)}`
     const spec = specOf(v)
     const declared = Constraints.declare(spec)
@@ -467,6 +469,7 @@ test('constraints.json', () => {
       assert.equal(declared.message.split(':')[0], `Constraints refused (code ${v.refusal})`, ctx)
       assert.equal(api.castConstraintsCheck(spec), v.refusal, ctx)
       refusals++
+      replayed++
       continue
     }
     assert.ok(declared.ok, `${ctx}: ${declared.ok ? '' : declared.message}`)
@@ -476,6 +479,7 @@ test('constraints.json', () => {
       const value = typeof v.from_f64 === 'string' ? Number(v.from_f64) : v.from_f64
       judge(ctx, v, api.castCheckedFromNumber(value, constraints), v.fault, 0)
       typed++
+      replayed++
       continue
     }
     const format = formatOf(v)
@@ -487,26 +491,33 @@ test('constraints.json', () => {
       // Bytes no string can spell (invalid UTF-8): the byte form alone.
       const bytes = new Uint8Array(v.input_bytes)
       judge(`${ctx} as bytes`, v, door(bytes), v.fault, bytes.length)
+      replayed++
       continue
     }
     const bytes = encoder.encode(v.input)
     judge(`${ctx} as bytes`, v, door(bytes), v.fault, bytes.length)
     const span = v.fault === undefined ? undefined : utf16Span(v.input, v.fault)
     judge(`${ctx} as string`, v, door(v.input), span, v.input.length)
+    replayed++
   }
   assert.ok(refusals > 0 && typed > 0)
+  // Every row was replayed: the count is the file's, never a literal.
+  assert.equal(replayed, vectors.length)
 })
 
 test('declarations.json', () => {
   // The conversion every bound crosses, held to the raw triple: the canonical text spells the
   // sign, the digits and the scale, so each is read back from it and compared on its own.
-  for (const v of load('declarations.json')) {
+  let replayed = 0
+  const vectors = load('declarations.json')
+  for (const v of vectors) {
     const ctx = `declarations.json ${JSON.stringify(v)}`
     const text: Text = v.input_bytes === undefined ? v.input : new Uint8Array(v.input_bytes)
     const declared = api.castDeclaredDecimal(text)
     if (v.expect === 'refused') {
       assert.ok(!declared.ok, `${ctx}: converted`)
       assert.equal(declared.message.split(':')[0], `Constraints refused (code ${v.refusal})`, ctx)
+      replayed++
       continue
     }
     assert.ok(declared.ok, `${ctx}: ${declared.ok ? '' : declared.message}`)
@@ -520,5 +531,8 @@ test('declarations.json', () => {
     assert.equal(negative, v.negative, `${ctx}: negative`)
     assert.equal(scale, v.scale, `${ctx}: scale`)
     assert.equal(magnitude, BigInt(v.magnitude as string), `${ctx}: magnitude`)
+    replayed++
   }
+  // Every row was replayed: the count is the file's, never a literal.
+  assert.equal(replayed, vectors.length)
 })

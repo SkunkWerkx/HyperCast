@@ -106,6 +106,39 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   C linker); CI proves that build on x86-64 glibc 2.17 and musl. Attested like the wheels.
   *(PyPI)*
 
+- **Validation: the checked doors.** A value that parses can still be wrong for the field it
+  fills, so every integer, real, decimal and text door now has a checked twin that judges the
+  value against constraints in the same call, in the OpenAPI Schema Object's vocabulary:
+  `minimum`, `exclusiveMinimum`, `maximum`, `exclusiveMaximum` and `multipleOf` for numbers,
+  `minLength`, `maxLength` and `enum` for text, and an integer `enum` for the integer doors.
+  The rules are declared in code, never parsed from a schema, built once for one door and
+  checked by the core as they are built: `minimum` beside `exclusiveMinimum`, a lower bound not
+  below the upper, an empty `enum` or a text entry no input can match is refused with one of 13
+  codes, and a refused declaration is the caller's contract violation, never "no rules".
+  Bounds and steps are exact decimals and a value is judged on its exact text, never on a
+  float; a real door also judges the float it delivers against each bound as it reads that
+  bound. `multipleOf` takes a rounding, `strict` (the default, euro cash at `0.05`),
+  `midpoint` (ties to even), `floor` or `ceiling` (a latitude at `0.000001`), and a rounded
+  value comes back flagged `adjusted`. Text can be trimmed of Unicode white space first,
+  lengths count code points, and a text `enum` matches under Unicode 17's simple case folding,
+  answering the declared spelling and its index. The checked verdict has two arms: the value,
+  or a rejection, which is the door's own fault or a `Violation` naming the keyword and the
+  span; zero is delivered without a sign. `checked_from_f64` judges a number a parser already
+  holds as a double on its shortest round-trip digits, and a plain text door (`cast_text`)
+  joins the others. Five C exports (`cast_checked`, `cast_checked_from_f64`,
+  `cast_constraints_check`, `cast_text`, `cast_declared_decimal`), 32 in all, and every
+  binding spells the API in its own idiom (`docs/bindings.md`, "Constraints") and replays the
+  same constraint and declaration corpora. *(Rust, C#, Java, Swift, Go, Python, Ruby, PHP,
+  TypeScript, R, C, C++)*
+- **`optional` reads a checked verdict too.** An `Empty` fault is absent and every other
+  rejection, a violation included, passes through: `optional_checked` in Rust, beside
+  `optional`, `Cast.Optional(CheckedVerdict<T>)` in C#,
+  `Cast.optional(CheckedVerdict<T>)` in Java (with `Cast.optional(Fault<T>)`, so a call on a
+  `Fault` still compiles), `Cast.optional(_: CheckedVerdict<T>)` in Swift, and PHP's
+  `Cast::optional()` now taking `Checked|Fault|Violation` as well. Go gains the helper it
+  lacked: `Optional(value, fault)` for a plain door's pair and `OptionalChecked(checked,
+  rejection)` for a checked one, each `(nil, nil)` when absent. *(Rust, C#, Java, Swift, Go, PHP)*
+
 ### Changed
 
 - **The float doors return `0.0` for a negative zero, as `Decimal` and the integers already
@@ -203,10 +236,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a one-off instance, its one allocation, and the new `MaxText` (2,147,483,647 on a 64-bit
   host) bounds it: a longer text panics as a caller bug. Calls run on a primary instance when
   its lock is free, else on a pooled one. Every door stays at 0 allocations on success, now
-  under TinyGo too. On an Apple M6 (2026-11-01, Go 1.27.3, six interleaved runs each), single
-  calls are mostly faster than the cgo binding (`Bool` 10.7 against 24.1 ns, `I32` 33.6
-  against 43.5); the losses: `I32` on 12 goroutines 19.7 against 6.9 ns aggregate (2.9x), a
-  rejected cast 1.5x, and the civil date-time doors 1.4–1.5x. *(Go)*
+  under TinyGo too. On an Apple M6 (2026-11-02, Go 1.27.3, six interleaved runs each), single
+  calls are mostly faster than the cgo binding (`Bool` 10.2 against 24.2 ns, `I32` 34.6
+  against 45.1); the losses: `I32` on 12 goroutines 18.4 against 7.2 ns aggregate (2.6x), a
+  rejected cast 1.4x, the civil date-time doors 1.5x, and the ISO span door 2%. *(Go)*
 
 - **Java runs on JDK 21.** The jar is multi-release: its base reaches the core through JNI,
   from a library built from the core for every platform, and JDK 25+ keeps FFM. The API,
@@ -275,6 +308,65 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   nothing is redefined, as in HyperUuid. Method lookup and both backends' behaviour are
   unchanged; `spec/native_backend_spec.rb` runs a `-w` require and requires an empty stderr.
   *(ruby)*
+- **C# — a lone surrogate is `Malformed` at every `string` door.** The plain doors transcoded
+  with `Encoding.UTF8`, which turns one into U+FFFD, so a door could read it as data (with
+  U+FFFD declared as the currency symbol, `"\uD800" + "5"` cast to `5`); they now send the core
+  the WTF-8 the checked doors send, so a plain door gives the checked door's verdict and span.
+  *(C#)*
+- **Java — a lone surrogate is `MALFORMED` at every `String` door.** The plain doors encoded
+  with `getBytes(UTF_8)`, which turns one into `?`, so a door could read it as data (with `?`
+  declared as the currency symbol, `"\uD800" + "5"` cast to `5`); they now send the core the
+  WTF-8 the checked doors send, so a plain door gives the checked door's verdict and span.
+  `getBytes`'s bytes are still used when they hold no `?`; the look for one costs the longest
+  texts a few nanoseconds (Apple M6: `Cast.uuid` 16.5 ns, was 12.3). *(Java)*
+- **Python — a lone surrogate is `MALFORMED` at every `str` door.** The plain doors raised
+  `UnicodeEncodeError` for a `str` with no UTF-8 form; they now send the core its
+  `surrogatepass` encoding, as the checked doors do, so a plain door gives the checked door's
+  verdict and span. *(Python)*
+- **Ruby — text that cannot be transcoded to UTF-8 is `:malformed` at every door.** A
+  `String` in another encoding with a lone UTF-16 surrogate, an invalid sequence or a
+  character with no Unicode counterpart raised `String#encode`'s `Encoding::` error, at the
+  checked doors too; each such character now crosses as a byte no UTF-8 decoder accepts, so
+  every door judges it malformed at that character, on both backends, and an `enum` entry
+  like it is refused (code 9). So does a character past ASCII in an encoding Ruby has no
+  converter to UTF-8 for (EUC-TW). Text in a dummy encoding (UTF-16 or UTF-32 with a
+  byte-order mark, ISO-2022-JP, UTF-7) is transcoded whole, each conversion error malformed
+  as one character, and its span counts the characters of its UTF-8 form. *(Ruby)*
+- **Ruby — the Magnus backend's format memo survives a compacting collection.** It was keyed
+  by the format's address: after `GC.compact`, a `NumFormat` built at a moved one's old
+  address was read as that one (a eurozone format cast `"1,234"` as `1234`). It is keyed by
+  `object_id` now, about 5 ns more per call (Apple M6, Ruby 4.0.9: 82 ns against 77 ns for
+  `1,234,567` under a declared `$`). *(Ruby)*
+- **Ruby — the Fiddle backend reads the core's values on a big-endian host.** Fault spans,
+  the `Interop` directives (`SCALARS`, `RECORDS`) and the day periods and format words handed
+  to the core were little-endian where the core reads and writes native order; on s390x
+  every fault, every record and every declared format was wrong. `NumFormat#packed` stays
+  little-endian, as Python's is. *(Ruby)*
+- **TypeScript — a lone surrogate is `malformed` at every string door.** The plain doors read
+  a string through napi's UTF-8, which on Node and Bun replaces one with U+FFFD (with U+FFFD
+  declared as the currency symbol, `'\ud800' + '5'` cast to `5`) and under the WebAssembly
+  fallback fuses it with the next code unit into another character; they now read such a
+  string as the WTF-8 the checked doors read, so a plain door gives the checked door's
+  verdict and span. A non-ASCII string that parses costs about 15 ns more (Apple M6, Node
+  26.13, mitata: 340 against 325 ns for `castF64('1.234,5 €', euro)`); an ASCII one and a
+  fault measured level. *(TypeScript)*
+- **Python — a symbol with no UTF-8 form names its field.** A lone surrogate in a `NumFormat`
+  symbol or a day-period designator still raises Python's own `UnicodeEncodeError`, at the same
+  position, but its reason now names the field as the other bindings do (`currency must be
+  whole code points, not surrogate halves`; `from_localeconv` names the `localeconv()` key)
+  instead of `surrogates not allowed`. *(Python)*
+- **TypeScript and Ruby — a symbol with no UTF-8 form is refused, never declared.** A lone
+  surrogate in a `NumFormat` or `DateFormat` symbol was read through napi's UTF-8 and
+  declared as U+FFFD (Node, Bun) or as the character it fused with (the WebAssembly fallback);
+  it is now a refusal naming the field. Ruby's `NumFormat` symbols and day-period designators
+  raised `String#encode`'s `Encoding::` error for text in another encoding with no UTF-8 form
+  (on Magnus a designator's was already an `ArgumentError`), and a regexp's "invalid byte
+  sequence" for invalid UTF-8; both backends now raise one `ArgumentError` naming the field.
+  *(TypeScript, Ruby)*
+- **The shared and static libraries build on s390x, PowerPC and 32-bit Arm.** The no_std
+  build's `rust_eh_personality` stub ended in `ret`, which those assemblers do not have, so
+  `cargo cdylib` and `cargo staticlib` stopped there; each architecture now gets its own
+  return instruction. *(Rust)*
 
 ## [1.0.0] — 2026-10-25
 

@@ -1557,6 +1557,36 @@ fn optional_presents_empty_as_absent_and_nothing_else() {
     assert_eq!(optional(cast_bool("maybe")).unwrap_err().reason, Reason::Malformed);
 }
 
+#[test]
+fn optional_checked_presents_empty_as_absent_and_nothing_else() {
+    let bound = |text| decimal_for_declaration(text).unwrap();
+    let rules = NumericRules::new().minimum(bound("-90")).maximum(bound("90"));
+    let latitude = Constraints::<f64>::numeric(rules, None).unwrap();
+    let check = |text: &str| cast_checked(text, &NumFormat::INVARIANT, &latitude);
+    // A blank cell is absent: Empty, and only Empty.
+    assert_eq!(optional_checked(check("")), Ok(None));
+    assert_eq!(optional_checked(check("   ")), Ok(None));
+    // A good value is present, with what the checked door said about it.
+    assert_eq!(optional_checked(check("45.5")), Ok(Some(Checked::new(45.5, false, None))));
+    // Bad data stays the door's fault.
+    match optional_checked(check("north")) {
+        Err(Rejection::Fault(fault)) => assert_eq!(fault.reason, Reason::Malformed),
+        other => panic!("expected a Malformed fault, got {other:?}"),
+    }
+    // A broken rule stays a violation: never mistaken for a missing value.
+    match optional_checked(check("91")) {
+        Err(Rejection::Violation(violation)) => assert_eq!(violation.keyword, Keyword::Maximum),
+        other => panic!("expected a maximum violation, got {other:?}"),
+    }
+    // The text door's empty is absent too; a match keeps its enum index.
+    let sexes = Constraints::text(TextRules::new().trim(true), Some(&["Female", "Male"])).unwrap();
+    assert_eq!(optional_checked(cast_text_checked(b"  ", &sexes)), Ok(None));
+    assert_eq!(
+        optional_checked(cast_text_checked(b"male", &sexes)),
+        Ok(Some(Checked::new("Male", false, Some(1))))
+    );
+}
+
 // ---- The lenient lane changes no verdict ----
 //
 // lane.rs is a second fast path in front of the numeric engines. Its whole contract is

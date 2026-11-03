@@ -36,7 +36,8 @@ The tarball is what `R CMD build r` makes from a checkout after `tools/vendor.sh
 [Local loop](#local-loop)). It carries the `hypercast` core crate in
 `src/rust/vendor.tar.xz` and builds offline. `configure` prints the `cargo` and `rustc`
 versions it found, and stops with a pointer to rustup when either is missing or `rustc` is
-older than 1.89.
+older than the core crate's `rust-version` (1.89), which it reads from the vendored crate's
+manifest; the message names the version required and the one found.
 
 ## Usage
 

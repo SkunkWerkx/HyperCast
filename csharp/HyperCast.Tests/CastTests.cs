@@ -181,6 +181,44 @@ public sealed class CastTests
 	}
 
 	[Fact]
+	void Optional_takes_a_checked_verdict_and_lets_a_violation_through()
+	{
+		var percent = new Constraints<int>(minimum: 0, maximum: 100);
+		Cast.Optional(Cast.Int32("  ", NumFormat.Invariant, percent)).ShouldBeNull();
+		Cast.Optional(Cast.Int32("42", NumFormat.Invariant, percent))
+			.ShouldBe(new CheckedVerdict<int>(new Checked<int>(42, false, null)));
+		Cast.Optional(Cast.Int32("abc", NumFormat.Invariant, percent))!.Value.ToString()
+			.ShouldBe("Fault(Malformed @ 0+1)");
+		Cast.Optional(Cast.Int32("101", NumFormat.Invariant, percent))!.Value.ToString()
+			.ShouldBe("Violation(maximum @ 0+3)");
+		Cast.Optional(Cast.Text(" \t", new Constraints<string>(trim: true))).ShouldBeNull();
+		Cast.Optional(Cast.Text("x")).ShouldBe(Cast.Text("x"));
+	}
+
+	[Fact]
+	void A_lone_surrogate_is_malformed_at_every_plain_door_never_U_FFFD()
+	{
+		// The plain doors send the core the bytes the checked doors send (WTF-8): a lone
+		// surrogate is never replaced by U+FFFD, which a door could then accept as data.
+		var replacement = new NumFormat(".", ",", NumStyles.All, "\uFFFD");
+		Cast.Int32("\uFFFD5", replacement).ShouldBe(new Verdict<int>(new Success<int>(5)));
+		Cast.Int32("\uD8005", replacement).ShouldBe(new Verdict<int>(new Fault(CastFailure.Malformed, 0, 1)));
+		Cast.Char("\uD800 ").ShouldBe(new Verdict<char>(new Fault(CastFailure.Malformed, 0, 1)));
+		// The same verdict, span included, as the checked and text doors give for the same string.
+		var any = new Constraints<int>(minimum: int.MinValue);
+		foreach (var input in new[] { "1\uD800", "\uDC00", "12\uDBFF3", "é\uD800", "  \uD800  " })
+		{
+			var plain = Cast.Int32(input, NumFormat.Invariant);
+			plain.TryGetValue(out Fault fault).ShouldBeTrue(input);
+			fault.Reason.ShouldBe(CastFailure.Malformed, input);
+			Cast.Int32(input, NumFormat.Invariant, any).ToString().ShouldBe($"Fault(Malformed @ {fault.Offset}+{fault.Length})", input);
+		}
+		Cast.Int32("12\uDBFF3", NumFormat.Invariant).ShouldBe(new Verdict<int>(new Fault(CastFailure.Malformed, 2, 1)));
+		Cast.Text("12\uDBFF3").ToString().ShouldBe("Fault(Malformed @ 2+1)");
+		Cast.Double("1\uD800\uD800", NumFormat.Invariant).ShouldBe(new Verdict<double>(new Fault(CastFailure.Malformed, 1, 1)));
+	}
+
+	[Fact]
 	void NumFormat_bridges_from_any_format_provider()
 	{
 		// The shape every BCL TryParse takes — no CultureInfo cast at the call site.

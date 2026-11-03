@@ -153,8 +153,9 @@ extension Cast {
     /// Judges a number the caller already holds — a JSON parser's `Double`, a spreadsheet's
     /// numeric cell — at the i8 door by `constraints`, on its sign and the shortest decimal
     /// that names it: the judgement ``i8(_:format:constraints:)-swift.type.method`` makes of
-    /// that text. NaN is ``CastFailure/malformed`` and an infinity ``CastFailure/outOfRange``;
-    /// with no text to point into, every fault and violation has an empty span.
+    /// that text. NaN is ``CastFailure/malformed``; an infinity is ``CastFailure/outOfRange`` at
+    /// a float or decimal door and ``CastFailure/malformed`` at an integer door. With no text to
+    /// point into, every fault and violation has an empty span.
     public static func i8FromDouble(_ value: Double, constraints: Constraints<Int8>) -> CheckedVerdict<Int8> {
         checkedFromDouble(value, constraints) { $0.load(as: Int8.self) }
     }
@@ -187,8 +188,9 @@ extension Cast {
     /// Judges a number the caller already holds — a JSON parser's `Double`, a spreadsheet's
     /// numeric cell — at the i16 door by `constraints`, on its sign and the shortest decimal
     /// that names it: the judgement ``i16(_:format:constraints:)-swift.type.method`` makes of
-    /// that text. NaN is ``CastFailure/malformed`` and an infinity ``CastFailure/outOfRange``;
-    /// with no text to point into, every fault and violation has an empty span.
+    /// that text. NaN is ``CastFailure/malformed``; an infinity is ``CastFailure/outOfRange`` at
+    /// a float or decimal door and ``CastFailure/malformed`` at an integer door. With no text to
+    /// point into, every fault and violation has an empty span.
     public static func i16FromDouble(_ value: Double, constraints: Constraints<Int16>) -> CheckedVerdict<Int16> {
         checkedFromDouble(value, constraints) { $0.load(as: Int16.self) }
     }
@@ -221,8 +223,9 @@ extension Cast {
     /// Judges a number the caller already holds — a JSON parser's `Double`, a spreadsheet's
     /// numeric cell — at the i32 door by `constraints`, on its sign and the shortest decimal
     /// that names it: the judgement ``i32(_:format:constraints:)-swift.type.method`` makes of
-    /// that text. NaN is ``CastFailure/malformed`` and an infinity ``CastFailure/outOfRange``;
-    /// with no text to point into, every fault and violation has an empty span.
+    /// that text. NaN is ``CastFailure/malformed``; an infinity is ``CastFailure/outOfRange`` at
+    /// a float or decimal door and ``CastFailure/malformed`` at an integer door. With no text to
+    /// point into, every fault and violation has an empty span.
     public static func i32FromDouble(_ value: Double, constraints: Constraints<Int32>) -> CheckedVerdict<Int32> {
         checkedFromDouble(value, constraints) { $0.load(as: Int32.self) }
     }
@@ -255,8 +258,9 @@ extension Cast {
     /// Judges a number the caller already holds — a JSON parser's `Double`, a spreadsheet's
     /// numeric cell — at the i64 door by `constraints`, on its sign and the shortest decimal
     /// that names it: the judgement ``i64(_:format:constraints:)-swift.type.method`` makes of
-    /// that text. NaN is ``CastFailure/malformed`` and an infinity ``CastFailure/outOfRange``;
-    /// with no text to point into, every fault and violation has an empty span.
+    /// that text. NaN is ``CastFailure/malformed``; an infinity is ``CastFailure/outOfRange`` at
+    /// a float or decimal door and ``CastFailure/malformed`` at an integer door. With no text to
+    /// point into, every fault and violation has an empty span.
     public static func i64FromDouble(_ value: Double, constraints: Constraints<Int64>) -> CheckedVerdict<Int64> {
         checkedFromDouble(value, constraints) { $0.load(as: Int64.self) }
     }
@@ -289,8 +293,9 @@ extension Cast {
     /// Judges a number the caller already holds — a JSON parser's `Double`, a spreadsheet's
     /// numeric cell — at the u8 door by `constraints`, on its sign and the shortest decimal
     /// that names it: the judgement ``u8(_:format:constraints:)-swift.type.method`` makes of
-    /// that text. NaN is ``CastFailure/malformed`` and an infinity ``CastFailure/outOfRange``;
-    /// with no text to point into, every fault and violation has an empty span.
+    /// that text. NaN is ``CastFailure/malformed``; an infinity is ``CastFailure/outOfRange`` at
+    /// a float or decimal door and ``CastFailure/malformed`` at an integer door. With no text to
+    /// point into, every fault and violation has an empty span.
     public static func u8FromDouble(_ value: Double, constraints: Constraints<UInt8>) -> CheckedVerdict<UInt8> {
         checkedFromDouble(value, constraints) { $0.load(as: UInt8.self) }
     }
@@ -323,8 +328,9 @@ extension Cast {
     /// Judges a number the caller already holds — a JSON parser's `Double`, a spreadsheet's
     /// numeric cell — at the u16 door by `constraints`, on its sign and the shortest decimal
     /// that names it: the judgement ``u16(_:format:constraints:)-swift.type.method`` makes of
-    /// that text. NaN is ``CastFailure/malformed`` and an infinity ``CastFailure/outOfRange``;
-    /// with no text to point into, every fault and violation has an empty span.
+    /// that text. NaN is ``CastFailure/malformed``; an infinity is ``CastFailure/outOfRange`` at
+    /// a float or decimal door and ``CastFailure/malformed`` at an integer door. With no text to
+    /// point into, every fault and violation has an empty span.
     public static func u16FromDouble(_ value: Double, constraints: Constraints<UInt16>) -> CheckedVerdict<UInt16> {
         checkedFromDouble(value, constraints) { $0.load(as: UInt16.self) }
     }
@@ -357,8 +363,9 @@ extension Cast {
     /// Judges a number the caller already holds — a JSON parser's `Double`, a spreadsheet's
     /// numeric cell — at the u32 door by `constraints`, on its sign and the shortest decimal
     /// that names it: the judgement ``u32(_:format:constraints:)-swift.type.method`` makes of
-    /// that text. NaN is ``CastFailure/malformed`` and an infinity ``CastFailure/outOfRange``;
-    /// with no text to point into, every fault and violation has an empty span.
+    /// that text. NaN is ``CastFailure/malformed``; an infinity is ``CastFailure/outOfRange`` at
+    /// a float or decimal door and ``CastFailure/malformed`` at an integer door. With no text to
+    /// point into, every fault and violation has an empty span.
     public static func u32FromDouble(_ value: Double, constraints: Constraints<UInt32>) -> CheckedVerdict<UInt32> {
         checkedFromDouble(value, constraints) { $0.load(as: UInt32.self) }
     }
@@ -391,8 +398,9 @@ extension Cast {
     /// Judges a number the caller already holds — a JSON parser's `Double`, a spreadsheet's
     /// numeric cell — at the u64 door by `constraints`, on its sign and the shortest decimal
     /// that names it: the judgement ``u64(_:format:constraints:)-swift.type.method`` makes of
-    /// that text. NaN is ``CastFailure/malformed`` and an infinity ``CastFailure/outOfRange``;
-    /// with no text to point into, every fault and violation has an empty span.
+    /// that text. NaN is ``CastFailure/malformed``; an infinity is ``CastFailure/outOfRange`` at
+    /// a float or decimal door and ``CastFailure/malformed`` at an integer door. With no text to
+    /// point into, every fault and violation has an empty span.
     public static func u64FromDouble(_ value: Double, constraints: Constraints<UInt64>) -> CheckedVerdict<UInt64> {
         checkedFromDouble(value, constraints) { $0.load(as: UInt64.self) }
     }
@@ -425,8 +433,9 @@ extension Cast {
     /// Judges a number the caller already holds — a JSON parser's `Double`, a spreadsheet's
     /// numeric cell — at the f32 door by `constraints`, on its sign and the shortest decimal
     /// that names it: the judgement ``f32(_:format:constraints:)-swift.type.method`` makes of
-    /// that text. NaN is ``CastFailure/malformed`` and an infinity ``CastFailure/outOfRange``;
-    /// with no text to point into, every fault and violation has an empty span.
+    /// that text. NaN is ``CastFailure/malformed``; an infinity is ``CastFailure/outOfRange`` at
+    /// a float or decimal door and ``CastFailure/malformed`` at an integer door. With no text to
+    /// point into, every fault and violation has an empty span.
     public static func f32FromDouble(_ value: Double, constraints: Constraints<Float>) -> CheckedVerdict<Float> {
         checkedFromDouble(value, constraints) { $0.load(as: Float.self) }
     }
@@ -459,8 +468,9 @@ extension Cast {
     /// Judges a number the caller already holds — a JSON parser's `Double`, a spreadsheet's
     /// numeric cell — at the f64 door by `constraints`, on its sign and the shortest decimal
     /// that names it: the judgement ``f64(_:format:constraints:)-swift.type.method`` makes of
-    /// that text. NaN is ``CastFailure/malformed`` and an infinity ``CastFailure/outOfRange``;
-    /// with no text to point into, every fault and violation has an empty span.
+    /// that text. NaN is ``CastFailure/malformed``; an infinity is ``CastFailure/outOfRange`` at
+    /// a float or decimal door and ``CastFailure/malformed`` at an integer door. With no text to
+    /// point into, every fault and violation has an empty span.
     public static func f64FromDouble(_ value: Double, constraints: Constraints<Double>) -> CheckedVerdict<Double> {
         checkedFromDouble(value, constraints) { $0.load(as: Double.self) }
     }
@@ -493,8 +503,9 @@ extension Cast {
     /// Judges a number the caller already holds — a JSON parser's `Double`, a spreadsheet's
     /// numeric cell — at the decimal door by `constraints`, on its sign and the shortest decimal
     /// that names it: the judgement ``decimal(_:format:constraints:)-swift.type.method`` makes of
-    /// that text. NaN is ``CastFailure/malformed`` and an infinity ``CastFailure/outOfRange``;
-    /// with no text to point into, every fault and violation has an empty span.
+    /// that text. NaN is ``CastFailure/malformed``; an infinity is ``CastFailure/outOfRange`` at
+    /// a float or decimal door and ``CastFailure/malformed`` at an integer door. With no text to
+    /// point into, every fault and violation has an empty span.
     public static func decimalFromDouble(_ value: Double, constraints: Constraints<Decimal>) -> CheckedVerdict<Decimal>
     {
         checkedFromDouble(value, constraints, read: Interop.decimal)

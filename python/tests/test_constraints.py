@@ -345,6 +345,41 @@ def test_a_lone_surrogate_is_never_replaced():
         hypercast.cast_declared_decimal("\udc001")
 
 
+def test_a_lone_surrogate_is_malformed_at_every_plain_door_too():
+    """The plain doors read a str exactly as the checked doors do: a lone surrogate is MALFORMED
+    at its own code point, the very fault the checked door gives, never a UnicodeEncodeError."""
+    i32 = Constraints(Door.I32)
+    for text in ("\ud8005", "5\udfff", "12\ud800", "€1\ud8003", "é€\udc00x"):
+        plain = hypercast.cast_i32(text, EURO)
+        assert isinstance(plain, Fault) and plain.reason is CastFailure.MALFORMED, (text, plain)
+        assert plain == hypercast.cast_checked(text, EURO, i32), text
+    assert hypercast.cast_i32("\ud8005", EURO) == Fault(CastFailure.MALFORMED, 0, 1)
+    assert hypercast.cast_decimal("€1\ud8003", EURO) == Fault(CastFailure.MALFORMED, 2, 1)
+    assert hypercast.cast_f64("12\ud800", NumFormat.INVARIANT) == Fault(CastFailure.MALFORMED, 2, 1)
+    every_plain_door = [
+        hypercast.cast_bool("\ud800"),
+        hypercast.cast_char("\ud800"),
+        hypercast.cast_uuid("\ud800"),
+        hypercast.cast_timestamp("\ud800"),
+        hypercast.cast_time("\ud800"),
+        hypercast.cast_duration("\ud800"),
+        hypercast.cast_date("\ud800"),
+    ]
+    for verdict in every_plain_door:
+        assert isinstance(verdict, Fault) and verdict.reason is CastFailure.MALFORMED, verdict
+
+
+def test_optional_lets_a_violation_through():
+    """optional folds only an EMPTY fault to None; a violation and any other fault pass."""
+    sex = Constraints(Door.TEXT, trim=True, enum=["Female", "Male"])
+    assert hypercast.optional(hypercast.cast_text("   ", sex)) is None
+    assert hypercast.optional(hypercast.cast_text("x", sex)) == Violation(Keyword.ENUM, 0, 1)
+    assert hypercast.optional(hypercast.cast_text("\ud800", sex)) == Fault(
+        CastFailure.MALFORMED, 0, 1
+    )
+    assert hypercast.optional(hypercast.cast_text("male", sex)) == Checked("Male", False, 1)
+
+
 def test_zero_has_one_form():
     """No zero a checked door delivers carries a sign, whatever the input spelled."""
     nonnegative = Constraints(Door.F64, minimum=0)

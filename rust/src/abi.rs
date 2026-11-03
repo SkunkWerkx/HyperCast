@@ -173,8 +173,11 @@ impl RawNumFormat {
         Some(&self.format)
     }
 
-    /// The 92 bytes in the layout's own order, little-endian — what a binding hands a C ABI
-    /// that takes a format, and what Ruby's and Python's `NumFormat.packed` are.
+    /// The 92 bytes in the layout's own order, little-endian on every host: the portable
+    /// form Ruby's and Python's `NumFormat.packed` are, and what a native extension reads
+    /// back with [`from_le_bytes`](Self::from_le_bytes) (PHP's does). Not what a C export
+    /// takes: the exports read a `RawNumFormat` in place, in the host's own order, so on a
+    /// big-endian host its three words must be swapped first.
     pub fn to_le_bytes(&self) -> [u8; 92] {
         let mut bytes = [0u8; 92];
         let mut at = 0;

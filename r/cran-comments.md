@@ -5,13 +5,15 @@ This is a new submission.
 ## Test environments
 
 * macOS 27.2 on Apple M6 (aarch64-apple-darwin27.0.0), R 4.6.2 (Homebrew build), rustc and
-  cargo 1.99.1.
+  cargo 1.99.1, pdfTeX 1.40.29 (TinyTeX, TeX Live 2026), `checkbashisms` 2.26.13, `qpdf`
+  12.4.2, `pandoc` 3.13; checked 2026-11-02.
 
 ## R CMD check results
 
 `R CMD check --as-cran hypercast_<version>.tar.gz`, with `_R_CHECK_CRAN_INCOMING_REMOTE_=TRUE`.
 
-macOS, R 4.6.2, with the PDF manual (TinyTeX), `checkbashisms`, `qpdf` and `pandoc` installed:
+macOS, R 4.6.2, with the PDF manual (TinyTeX), `checkbashisms`, `qpdf` and `pandoc` installed,
+on the tarball `R CMD build` made (351,073 bytes):
 
     Status: 1 NOTE
 
@@ -20,17 +22,34 @@ macOS, R 4.6.2, with the PDF manual (TinyTeX), `checkbashisms`, `qpdf` and `pand
 
     New submission
 
-The NOTE is the new-submission notice. The testthat expectations pass, including the replay
-of the seventeen bundled corpus files every binding of the project replays. `NEWS.md`'s heading
-carries the version number, which R's NEWS parser requires.
+The NOTE is the new-submission notice. The testthat expectations pass (`[ FAIL 0 | WARN 0 |
+SKIP 0 | PASS 11159 ]`), including the replay of the seventeen bundled corpus files every
+binding of the project replays. `NEWS.md`'s heading carries the version number, which R's NEWS
+parser requires.
 
 ## Compiled code
 
 The package builds a Rust static library from the vendored crate in
 `src/rust/vendor.tar.xz` (one crate, the `hypercast` core), offline, with `cargo build -j 2`,
 `CARGO_HOME` under `src/`, and removes the Rust build directory after linking. `configure`
-prints the `cargo` and `rustc` versions and stops with a pointer to https://rustup.rs when
-either is missing or `rustc` is older than 1.89.
+prints the `cargo` and `rustc` versions before anything is compiled, and stops with a pointer
+to https://rustup.rs when either is missing or when `rustc` is older than the core crate's
+`rust-version`, which it reads from the vendored crate's manifest (1.89 today). The message
+names both versions:
+
+    hypercast needs rustc 1.89 or newer (the hypercast crate's rust-version);
+    found rustc 1.84.1.
+
+## r-oldrel macOS
+
+The installation logs of CRAN's r-oldrel-macos-arm64 and r-oldrel-macos-x86_64 flavors report
+rustc 1.84.1 (for example
+https://www.r-project.org/nosvn/R.check/r-oldrel-macos-arm64/gifski-00install.html, read
+2026-11-02), older than the 1.89 the core crate requires. On those two flavors `configure`
+stops with the message above, before cargo runs, as CRAN's "Using Rust" policy asks. Every
+other flavor's log reports 1.92.0 or newer (r-release macOS 1.93.0, Windows 1.92.0, Debian
+1.97.1, Fedora 1.99.0). The 1.89 floor is the crate's `rust-version`, which CI checks the
+library on exactly, shared with its sibling crates; it is not lowered for the R package.
 
 The wrapper crate in `src/rust/` depends on the `hypercast` crate from crates.io at exactly
 this package's version, as any Rust consumer of it would, and on nothing else; the core has

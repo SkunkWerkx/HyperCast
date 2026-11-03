@@ -590,7 +590,9 @@ pub fn cast_checked<T: Numeric>(
 /// through `T`'s typed door, then judges it by `constraints` on its sign and the shortest
 /// round-trip decimal of its magnitude: `0.1 + 0.2` is `0.30000000000000004`, and `-0.0` is
 /// zero, delivered at a float door as `0.0` and not `adjusted` (nothing was rounded). NaN is
-/// `Malformed` and an infinity `OutOfRange`; every failure has an empty span.
+/// `Malformed`; an infinity is `OutOfRange` at a float or decimal door and `Malformed` at an
+/// integer door, which reads it as not a whole number, as the typed doors do. Every failure
+/// has an empty span.
 pub fn checked_from_f64<T: Numeric>(
     value: f64,
     constraints: &Constraints<'_, T>,
@@ -615,6 +617,22 @@ pub fn cast_text_checked<'a>(
         Some((index, entry)) => Checked { value: entry, adjusted: false, enum_index: Some(index) },
         None => Checked { value: text, adjusted: false, enum_index: None },
     })
+}
+
+/// Presents a checked verdict optionally, as [`optional`](crate::optional) presents a plain
+/// one: the door's [`Reason::Empty`](crate::Reason::Empty) fault becomes `Ok(None)`, Rust's
+/// absent, and everything else flows through untouched, every other fault and every
+/// [`Violation`] included. A blank cell in an optional column is then no value, while a
+/// value that breaks a rule is never mistaken for one that is missing. The same helper every
+/// binding's `optional` is for a checked verdict.
+pub fn optional_checked<T>(
+    verdict: Result<Checked<T>, Rejection>,
+) -> Result<Option<Checked<T>>, Rejection> {
+    match verdict {
+        Ok(checked) => Ok(Some(checked)),
+        Err(Rejection::Fault(Fault { reason: Reason::Empty, .. })) => Ok(None),
+        Err(rejection) => Err(rejection),
+    }
 }
 
 /// Writes `value` to `out`.
@@ -1096,6 +1114,38 @@ mod tests {
         // Display widens: a span built by hand to end past `u32::MAX` still prints.
         let wide = Fault { reason: Reason::Malformed, offset: u32::MAX, len: 2 };
         assert_eq!(wide.to_string(), "malformed input at bytes 4294967295..4294967297");
+    }
+
+    /// An infinity is not a whole number: `Malformed` at every integer door, as `2.5` is and as
+    /// the text `Infinity` is, whatever the rules; `OutOfRange` at the float and decimal doors.
+    #[test]
+    fn infinity_is_malformed_at_integer_doors() {
+        let ten = decimal_for_declaration("10").unwrap();
+        let rules =
+            || crate::NumericRules::new().maximum(ten).multiple_of(ten, crate::Rounding::Midpoint);
+        let fault = |reason| Some(Rejection::Fault(Fault { reason, offset: 0, len: 0 }));
+        macro_rules! integer_doors {
+            ($($ty:ty),+) => {$(
+                let constraints = Constraints::<$ty>::numeric(rules(), None).unwrap();
+                for value in [f64::INFINITY, f64::NEG_INFINITY] {
+                    assert_eq!(
+                        checked_from_f64(value, &constraints).err(),
+                        fault(Reason::Malformed),
+                        "{} {value}",
+                        stringify!($ty)
+                    );
+                }
+            )+};
+        }
+        integer_doors!(i8, i16, i32, i64, u8, u16, u32, u64);
+        let f32s = Constraints::<f32>::numeric(rules(), None).unwrap();
+        let f64s = Constraints::<f64>::numeric(rules(), None).unwrap();
+        let decimals = Constraints::<Decimal>::numeric(rules(), None).unwrap();
+        for value in [f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(checked_from_f64(value, &f32s).err(), fault(Reason::OutOfRange));
+            assert_eq!(checked_from_f64(value, &f64s).err(), fault(Reason::OutOfRange));
+            assert_eq!(checked_from_f64(value, &decimals).err(), fault(Reason::OutOfRange));
+        }
     }
 
     #[test]

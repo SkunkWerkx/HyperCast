@@ -414,9 +414,9 @@ object_arg!(
     "HyperCast\\NumFormat|NumberFormatter"
 );
 object_arg!(
-    /// `Success|Fault $verdict`.
+    /// `Success|Checked|Fault|Violation $verdict`: a plain door's verdict or a checked one's.
     VerdictArg,
-    "HyperCast\\Success|HyperCast\\Fault"
+    "HyperCast\\Success|HyperCast\\Checked|HyperCast\\Fault|HyperCast\\Violation"
 );
 object_arg!(
     /// `NumFormat $format`.

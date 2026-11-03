@@ -201,11 +201,13 @@ Bad data is always a `Fault`. What raises is a caller's bug: `TypeError` for an 
 `bytes`, a format that is not a `NumFormat`, a `float` bound), `ValueError` for a declaration
 that names no member of its enum, a `NumFormat` or a `Constraints` that cannot be (below) or a
 day-period designator that cannot be, `OverflowError` for an integer
-too wide for the 32 unsigned bits a flag set or a declaration is. The one exception that is
-about data: a `str` holding a lone surrogate has no UTF-8 form, so at the doors in the table
-above, `cast_text` aside, it is a `UnicodeEncodeError` before the door runs. `cast_text` and
-the checked doors ([below](#validation-constraints)) read it with the surrogate kept, never
-replaced, as `MALFORMED` text at its own code point.
+too wide for the 32 unsigned bits a flag set or a declaration is. A `str` holding a lone
+surrogate has no UTF-8 form; every door, plain or checked, reads it with the surrogate kept,
+never replaced, as `MALFORMED` text at its own code point. In a `NumFormat` symbol or a
+day-period designator it is a `UnicodeEncodeError` (a `ValueError`) that keeps Python's
+position and names the field, `currency must be whole code points, not surrogate halves`, as
+every binding words it (`from_localeconv` names the `localeconv()` key the caller's dict
+spelled), never a symbol standing in for it.
 
 See [the repo root README](../README.md) for the receipts and the state of every other
 language binding.
@@ -439,8 +441,10 @@ declaration to the other kind of door (text constraints to `cast_checked`, numer
 `cast_text`) is a `ValueError` too, and after that a checked cast judges only data and raises
 nothing for it. `cast_constraints_check(door, **keywords)` answers the same refusal as its code,
 `0` to `13`, without raising, and `cast_declared_decimal(text)` is the conversion every bound
-crosses. A lone surrogate in a `str` is `MALFORMED` at its own code point, never replaced, and in
-an `enum` entry it is refused as an entry that is not UTF-8 (code 9). A `Constraints` is
+crosses. A lone surrogate in a `str` is `MALFORMED` at its own code point at every door, plain or
+checked, never replaced, and in an `enum` entry it is refused as an entry that is not UTF-8 (code
+9). `optional` takes a checked verdict as it takes a plain one: an `EMPTY` fault is `None`, and
+every other rejection, a `Violation` included, flows through. A `Constraints` is
 immutable and hashable, and its `repr` is the call that builds it again.
 
 ## Interop: building on HyperCast's C ABI

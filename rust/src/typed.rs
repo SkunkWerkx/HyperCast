@@ -14,7 +14,9 @@
 //!   `2.5` is `Malformed` for an `i32`, as the text `2.5` is. Below 2^53 that is the
 //!   double's own value; above it, where a double no longer holds every integer, it is the
 //!   shortest digits padded with zeros (`2^63` is `9223372036854776000`, as Excel shows it).
-//! - NaN is `Malformed` everywhere (no text door spells one); an infinity is `OutOfRange`.
+//! - NaN is `Malformed` everywhere (no text door spells one). An infinity is `OutOfRange` at
+//!   the float and decimal doors, and `Malformed` at an integer door, where it is not a whole
+//!   number, as `2.5` is not and as the text `Infinity` is `Malformed`.
 //!
 //! The verdict is a bare [`Reason`]: there is no text for a [`crate::Fault`]'s span to index.
 //!

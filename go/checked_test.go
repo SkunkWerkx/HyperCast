@@ -79,10 +79,10 @@ func TestThePlainShapesAreUnchanged(t *testing.T) {
 }
 
 // header finds include/hypercast.h the way corpus finds corpus/: beside the mounted corpus
-// on WASI, else up from the test directory. The iOS simulator carries only testdata, where
-// the header is not to be had.
-func header(t *testing.T) string {
-	t.Helper()
+// on WASI, else up from the test directory. It reports false where the header is not to be
+// had: the iOS simulator carries only testdata, and the Forge's musl suite stages only
+// rust/Cargo.toml, corpus/ and this directory.
+func header() (string, bool) {
 	candidates := []string{}
 	if dir := os.Getenv("HYPERCAST_CORPUS"); dir != "" {
 		candidates = append(candidates, filepath.Join(dir, "..", "include", "hypercast.h"))
@@ -99,40 +99,56 @@ func header(t *testing.T) string {
 	}
 	for _, path := range candidates {
 		if data, err := os.ReadFile(path); err == nil {
-			return string(data)
+			return string(data), true
 		}
 	}
-	t.Skip("include/hypercast.h is not reachable from here")
-	return ""
+	return "", false
 }
 
-// Each layout this binding restates is the size the generated header carries.
+// Each layout this binding restates is the size rust/src/abi.rs pins, asserted as a literal
+// on every leg, and the size the generated header carries wherever the header is reachable.
 func TestTheLayoutsAreTheHeadersSizes(t *testing.T) {
-	text := header(t)
-	for name, size := range map[string]uint32{
-		"HyperCastRawNumFormat_SIZE":   RawNumFormatSize,
-		"HyperCastRawDayPeriods_SIZE":  RawDayPeriodsSize,
-		"HyperCastRawConstraints_SIZE": RawConstraintsSize,
-		"HyperCastRawCheck_SIZE":       RawCheckSize,
-		"HyperCastRawSpan_SIZE":        RawSpanSize,
-	} {
+	sizes := map[string][2]uint32{
+		"HyperCastRawNumFormat_SIZE":   {RawNumFormatSize, 92},
+		"HyperCastRawDayPeriods_SIZE":  {RawDayPeriodsSize, 40},
+		"HyperCastRawConstraints_SIZE": {RawConstraintsSize, 72},
+		"HyperCastRawCheck_SIZE":       {RawCheckSize, 12},
+		"HyperCastRawSpan_SIZE":        {RawSpanSize, 8},
+	}
+	flags := map[string][2]uint32{
+		"HAS_MINIMUM": {RawConstraintsHasMinimum, 1}, "HAS_EXCLUSIVE_MINIMUM": {RawConstraintsHasExclusiveMinimum, 2},
+		"HAS_MAXIMUM": {RawConstraintsHasMaximum, 4}, "HAS_EXCLUSIVE_MAXIMUM": {RawConstraintsHasExclusiveMaximum, 8},
+		"HAS_MULTIPLE_OF": {RawConstraintsHasMultipleOf, 16}, "HAS_MIN_LENGTH": {RawConstraintsHasMinLength, 32},
+		"HAS_MAX_LENGTH": {RawConstraintsHasMaxLength, 64}, "TRIM": {RawConstraintsTrim, 128},
+		"HAS_ENUM": {RawConstraintsHasEnum, 256},
+	}
+	for name, size := range sizes {
+		if size[0] != size[1] {
+			t.Errorf("%s: this binding's layout is %d, the core's is %d", name, size[0], size[1])
+		}
+	}
+	for flag, value := range flags {
+		if value[0] != value[1] {
+			t.Errorf("RawConstraints %s: this binding's flag is %d, the core's is %d", flag, value[0], value[1])
+		}
+	}
+	text, ok := header()
+	if !ok {
+		t.Log("include/hypercast.h is not reachable from here: the literal sizes alone are checked")
+		return
+	}
+	for name, size := range sizes {
 		m := regexp.MustCompile(`#define ` + name + ` (\d+)`).FindStringSubmatch(text)
 		if m == nil {
 			t.Errorf("the header defines no %s", name)
 			continue
 		}
-		if want, _ := strconv.ParseUint(m[1], 10, 32); uint32(want) != size {
-			t.Errorf("%s is %s, this binding's layout is %d", name, m[1], size)
+		if want, _ := strconv.ParseUint(m[1], 10, 32); uint32(want) != size[0] {
+			t.Errorf("%s is %s, this binding's layout is %d", name, m[1], size[0])
 		}
 	}
-	for flag, value := range map[string]uint32{
-		"HAS_MINIMUM": RawConstraintsHasMinimum, "HAS_EXCLUSIVE_MINIMUM": RawConstraintsHasExclusiveMinimum,
-		"HAS_MAXIMUM": RawConstraintsHasMaximum, "HAS_EXCLUSIVE_MAXIMUM": RawConstraintsHasExclusiveMaximum,
-		"HAS_MULTIPLE_OF": RawConstraintsHasMultipleOf, "HAS_MIN_LENGTH": RawConstraintsHasMinLength,
-		"HAS_MAX_LENGTH": RawConstraintsHasMaxLength, "TRIM": RawConstraintsTrim,
-		"HAS_ENUM": RawConstraintsHasEnum,
-	} {
-		want := fmt.Sprintf("#define HyperCastRawConstraints_%s %d\n", flag, value)
+	for flag, value := range flags {
+		want := fmt.Sprintf("#define HyperCastRawConstraints_%s %d\n", flag, value[0])
 		if !strings.Contains(text, want) {
 			t.Errorf("the header does not carry %q", strings.TrimSpace(want))
 		}
@@ -193,6 +209,68 @@ func TestInvalidUTF8ReachesTheCore(t *testing.T) {
 	}
 	if _, fault := String("ab\xffc"); fault == nil || *fault != (Fault{Reason: Malformed, Offset: 2, Length: 1}) {
 		t.Errorf(`String("ab\xffc") -> %v, want malformed at 2+1`, fault)
+	}
+}
+
+// A Go string is bytes, so a plain door hands invalid UTF-8 (a lone surrogate's WTF-8 form
+// included) to the core unchanged: the verdict and its span are the checked door's.
+func TestInvalidUTF8IsTheCoresVerdictAtPlainDoorsToo(t *testing.T) {
+	any32 := MustConstraints[int32](Minimum(math.MinInt32))
+	for _, input := range []string{"1\xed\xa0\x80", "\xed\xb0\x80", "12\xff3", "\xc3", "  \xed\xa0\x80  "} {
+		_, fault := I32(input, Invariant)
+		if fault == nil || fault.Reason != Malformed {
+			t.Errorf("I32(%q) -> %v, want malformed", input, fault)
+			continue
+		}
+		_, rejection := Check(input, Invariant, any32)
+		if checked, ok := rejection.(*Fault); !ok || *checked != *fault {
+			t.Errorf("I32(%q) -> %v, but Check -> %v", input, fault, rejection)
+		}
+		if _, bytes := I32([]byte(input), Invariant); bytes == nil || *bytes != *fault {
+			t.Errorf("I32([]byte(%q)) -> %v, want %v", input, bytes, fault)
+		}
+	}
+	if _, fault := I32("12\xed\xaf\xbf3", Invariant); fault == nil || *fault != (Fault{Reason: Malformed, Offset: 2, Length: 3}) {
+		t.Errorf("I32 over a lone surrogate's bytes -> %v, want malformed at 2+3", fault)
+	}
+	if _, fault := F64("1\xff", Invariant); fault == nil || *fault != (Fault{Reason: Malformed, Offset: 1, Length: 1}) {
+		t.Errorf("F64 over invalid UTF-8 -> %v, want malformed at 1+1", fault)
+	}
+}
+
+// Optional and OptionalChecked: an Empty fault is absent, every other outcome passes through,
+// a violation included.
+func TestOptionalPresentsEmptyAsAbsent(t *testing.T) {
+	if v, fault := Optional(I32("   ", Invariant)); v != nil || fault != nil {
+		t.Errorf("Optional(empty) -> %v, %v, want nil, nil", v, fault)
+	}
+	if v, fault := Optional(I32("42", Invariant)); v == nil || *v != 42 || fault != nil {
+		t.Errorf("Optional(42) -> %v, %v", v, fault)
+	}
+	if v, fault := Optional(I32("abc", Invariant)); v != nil || fault == nil || fault.Reason != Malformed {
+		t.Errorf("Optional(abc) -> %v, %v, want a malformed fault", v, fault)
+	}
+	percent := MustConstraints[int32](Minimum(0), Maximum(100))
+	if c, rejection := OptionalChecked(Check("  ", Invariant, percent)); c != nil || rejection != nil {
+		t.Errorf("OptionalChecked(empty) -> %v, %v, want nil, nil", c, rejection)
+	}
+	if c, rejection := OptionalChecked(Check("42", Invariant, percent)); c == nil ||
+		*c != (Checked[int32]{Value: 42, EnumIndex: -1}) || rejection != nil {
+		t.Errorf("OptionalChecked(42) -> %v, %v", c, rejection)
+	}
+	if c, rejection := OptionalChecked(Check("abc", Invariant, percent)); c != nil {
+		t.Errorf("OptionalChecked(abc) -> %v, want no value", c)
+	} else if fault, ok := rejection.(*Fault); !ok || fault.Reason != Malformed {
+		t.Errorf("OptionalChecked(abc) -> %v, want a malformed fault", rejection)
+	}
+	if c, rejection := OptionalChecked(Check("101", Invariant, percent)); c != nil {
+		t.Errorf("OptionalChecked(101) -> %v, want no value", c)
+	} else if v, ok := rejection.(*Violation); !ok || *v != (Violation{Keyword: KeywordMaximum, Offset: 0, Length: 3}) {
+		t.Errorf("OptionalChecked(101) -> %v, want a maximum violation", rejection)
+	}
+	trimmed := MustConstraints[string](Trim())
+	if c, rejection := OptionalChecked(CheckString(" \t", trimmed)); c != nil || rejection != nil {
+		t.Errorf("OptionalChecked(white space, trim) -> %v, %v, want nil, nil", c, rejection)
 	}
 }
 

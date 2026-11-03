@@ -502,18 +502,28 @@ public:
   }
 
   NumStyles styles() const noexcept { return static_cast<NumStyles>(raw_.format.flags); }
-  std::string_view decimal_sep() const noexcept { return detail::view(raw_.format.decimal_sep); }
-  std::string_view group_sep() const noexcept { return detail::view(raw_.format.group_sep); }
-  std::string_view currency() const noexcept { return detail::view(raw_.format.currency); }
-  std::string_view currency_decimal_sep() const noexcept {
+  // Each symbol is a view into this NumFormat, so it is taken from a named one: on a temporary
+  // it would dangle, and does not compile.
+  std::string_view decimal_sep() const & noexcept { return detail::view(raw_.format.decimal_sep); }
+  std::string_view decimal_sep() const && = delete;
+  std::string_view group_sep() const & noexcept { return detail::view(raw_.format.group_sep); }
+  std::string_view group_sep() const && = delete;
+  std::string_view currency() const & noexcept { return detail::view(raw_.format.currency); }
+  std::string_view currency() const && = delete;
+  std::string_view currency_decimal_sep() const & noexcept {
     return detail::view(raw_.format.currency_decimal_sep);
   }
-  std::string_view currency_group_sep() const noexcept {
+  std::string_view currency_decimal_sep() const && = delete;
+  std::string_view currency_group_sep() const & noexcept {
     return detail::view(raw_.format.currency_group_sep);
   }
-  std::string_view minus_sign() const noexcept { return detail::view(raw_.format.minus_sign); }
-  std::string_view plus_sign() const noexcept { return detail::view(raw_.format.plus_sign); }
-  std::string_view percent() const noexcept { return detail::view(raw_.format.percent); }
+  std::string_view currency_group_sep() const && = delete;
+  std::string_view minus_sign() const & noexcept { return detail::view(raw_.format.minus_sign); }
+  std::string_view minus_sign() const && = delete;
+  std::string_view plus_sign() const & noexcept { return detail::view(raw_.format.plus_sign); }
+  std::string_view plus_sign() const && = delete;
+  std::string_view percent() const & noexcept { return detail::view(raw_.format.percent); }
+  std::string_view percent() const && = delete;
   char32_t digit_zero() const noexcept { return static_cast<char32_t>(raw_.format.digits); }
 
   // The layout the core reads, for a library that hands it to a C ABI of its own.
@@ -568,8 +578,11 @@ public:
   }
 
   constexpr DateOrder order() const noexcept { return order_; }
-  std::string_view am() const noexcept { return detail::view(raw_.periods.am); }
-  std::string_view pm() const noexcept { return detail::view(raw_.periods.pm); }
+  // Views into this DateFormat, taken from a named one, as NumFormat's symbols are.
+  std::string_view am() const & noexcept { return detail::view(raw_.periods.am); }
+  std::string_view am() const && = delete;
+  std::string_view pm() const & noexcept { return detail::view(raw_.periods.pm); }
+  std::string_view pm() const && = delete;
 
   // The layout the core reads, for a library that hands it to a C ABI of its own.
   constexpr const HyperCastRawDayPeriods &raw() const noexcept { return raw_; }
@@ -1190,6 +1203,44 @@ constexpr std::optional<Checked<T>> optional(const Checked<T> &checked) noexcept
   return checked;
 }
 
+// A refusal's message, held by value, as a KeywordName is: one fixed sentence per code, worded as
+// every binding words it. Compare it with a string, print c_str(), or take view() from a named
+// RefusalMessage (not a temporary, which would dangle; view() on one does not compile).
+class RefusalMessage {
+public:
+  constexpr std::string_view view() const & noexcept { return std::string_view(text_, size_); }
+  std::string_view view() const && = delete;
+  constexpr const char *c_str() const noexcept { return text_; }
+  constexpr std::size_t size() const noexcept { return size_; }
+
+  friend constexpr bool operator==(const RefusalMessage &a, std::string_view b) noexcept {
+    return a.view() == b;
+  }
+  friend constexpr bool operator==(std::string_view a, const RefusalMessage &b) noexcept {
+    return a == b.view();
+  }
+  friend constexpr bool operator!=(const RefusalMessage &a, std::string_view b) noexcept {
+    return !(a == b);
+  }
+  friend constexpr bool operator!=(std::string_view a, const RefusalMessage &b) noexcept {
+    return !(a == b);
+  }
+
+private:
+  friend struct Refusal;
+  constexpr RefusalMessage() noexcept = default;
+  constexpr void append(std::string_view text) noexcept {
+    for (char c : text) {
+      text_[size_++] = c;
+    }
+    text_[size_] = '\0';
+  }
+  // The longest message, code 0's, is 137 bytes; the C++ smoke test pins every code's, where
+  // one that did not fit would not compile.
+  char text_[160] = {};
+  std::size_t size_ = 0;
+};
+
 // Why a declaration was refused: the core's refusal code, 1 to 13, with one fixed message per
 // code worded as every binding words it, or 0, this header's own refusal of an enum list that
 // does not fit (EnumStorage smaller than storage_size(entries), or a text entry past
@@ -1200,20 +1251,65 @@ struct Refusal {
   std::int32_t code;
 
   // Explicit, so a bare integer is never taken for a Refusal (refusal == 14 does not compile).
-  constexpr explicit Refusal(std::int32_t refused) noexcept : code(refused) {
-    if (refused >= 0 && refused <= 13) {
-      return; // a fixed message: nothing to render
+  constexpr explicit Refusal(std::int32_t refused) noexcept : code(refused) {}
+
+  // The message, by value, so it outlives this Refusal and the Declared that held it:
+  // `auto m = C::declare(f).refusal().message();` is safe to keep.
+  constexpr RefusalMessage message() const noexcept {
+    RefusalMessage out;
+    switch (code) {
+    case 0:
+      out.append(
+          "The enum list does not fit: the EnumStorage is smaller than storage_size(entries), "
+          "or a text entry is longer than 4294967295 UTF-8 bytes.");
+      return out;
+    case 1:
+      out.append("Constraints refused (code 1): a constraint the door does not take.");
+      return out;
+    case 2:
+      out.append("Constraints refused (code 2): minimum together with exclusiveMinimum.");
+      return out;
+    case 3:
+      out.append("Constraints refused (code 3): maximum together with exclusiveMaximum.");
+      return out;
+    case 4:
+      out.append("Constraints refused (code 4): the lower bound is not below the upper bound.");
+      return out;
+    case 5:
+      out.append("Constraints refused (code 5): multipleOf is not positive.");
+      return out;
+    case 6:
+      out.append("Constraints refused (code 6): a rounding without multipleOf.");
+      return out;
+    case 7:
+      out.append("Constraints refused (code 7): minLength is above maxLength.");
+      return out;
+    case 8:
+      out.append("Constraints refused (code 8): a bound, step or enum entry the door cannot hold.");
+      return out;
+    case 9:
+      out.append("Constraints refused (code 9): an enum entry that is not UTF-8.");
+      return out;
+    case 10:
+      out.append("Constraints refused (code 10): a duplicate enum entry.");
+      return out;
+    case 11:
+      out.append("Constraints refused (code 11): a malformed constraints layout.");
+      return out;
+    case 12:
+      out.append("Constraints refused (code 12): an enum with no entries.");
+      return out;
+    case 13:
+      out.append("Constraints refused (code 13): a text enum entry no input can match.");
+      return out;
+    default:
+      break;
     }
-    // The message of a code this header does not name, spelled once, here, with its number.
-    constexpr std::string_view head = "Constraints refused (code ";
-    constexpr std::string_view tail = "): a rule this binding does not name.";
-    std::size_t at = 0;
-    for (const char c : head) {
-      unnamed_[at++] = c;
-    }
-    std::uint32_t magnitude = static_cast<std::uint32_t>(refused);
-    if (refused < 0) {
-      unnamed_[at++] = '-';
+    // A code this header does not name (a core newer than this header), with its number.
+    out.append("Constraints refused (code ");
+    std::uint32_t magnitude = static_cast<std::uint32_t>(code);
+    if (code < 0) {
+      out.append("-");
       magnitude = 0u - magnitude;
     }
     char digits[10] = {};
@@ -1223,52 +1319,11 @@ struct Refusal {
       magnitude /= 10;
     } while (magnitude != 0);
     while (count > 0) {
-      unnamed_[at++] = digits[--count];
+      const char digit[1] = {digits[--count]};
+      out.append(std::string_view(digit, 1));
     }
-    for (const char c : tail) {
-      unnamed_[at++] = c;
-    }
-    unnamed_size_ = at;
-  }
-
-  // The fixed message for codes 0 to 13; for any other code (a core newer than this header),
-  // a view into this Refusal, valid only while it lives: for such a code
-  // `auto m = C::declare(f).refusal().message();` dangles once the Declared temporary is
-  // gone, so keep the Declared (or a copy of the Refusal) while the message is read.
-  constexpr std::string_view message() const noexcept {
-    switch (code) {
-    case 0:
-      return "The enum list does not fit: the EnumStorage is smaller than storage_size(entries), "
-             "or a text entry is longer than 4294967295 UTF-8 bytes.";
-    case 1:
-      return "Constraints refused (code 1): a constraint the door does not take.";
-    case 2:
-      return "Constraints refused (code 2): minimum together with exclusiveMinimum.";
-    case 3:
-      return "Constraints refused (code 3): maximum together with exclusiveMaximum.";
-    case 4:
-      return "Constraints refused (code 4): the lower bound is not below the upper bound.";
-    case 5:
-      return "Constraints refused (code 5): multipleOf is not positive.";
-    case 6:
-      return "Constraints refused (code 6): a rounding without multipleOf.";
-    case 7:
-      return "Constraints refused (code 7): minLength is above maxLength.";
-    case 8:
-      return "Constraints refused (code 8): a bound, step or enum entry the door cannot hold.";
-    case 9:
-      return "Constraints refused (code 9): an enum entry that is not UTF-8.";
-    case 10:
-      return "Constraints refused (code 10): a duplicate enum entry.";
-    case 11:
-      return "Constraints refused (code 11): a malformed constraints layout.";
-    case 12:
-      return "Constraints refused (code 12): an enum with no entries.";
-    case 13:
-      return "Constraints refused (code 13): a text enum entry no input can match.";
-    default:
-      return std::string_view(unnamed_, unnamed_size_);
-    }
+    out.append("): a rule this binding does not name.");
+    return out;
   }
 
   friend constexpr bool operator==(const Refusal &a, const Refusal &b) noexcept {
@@ -1277,10 +1332,6 @@ struct Refusal {
   friend constexpr bool operator!=(const Refusal &a, const Refusal &b) noexcept {
     return !(a == b);
   }
-
-private:
-  char unnamed_[80] = {};
-  std::size_t unnamed_size_ = 0;
 };
 
 // The outcome of declaring constraints: the Constraints, or the Refusal. value() on a refused
@@ -1815,8 +1866,9 @@ inline Checked<Decimal> cast_decimal(Text text, const NumFormat &format,
 
 // The checked typed doors judge a double a source already decoded (a JSON parser's number, a
 // spreadsheet's cell) on its sign and shortest round-trip decimal: the judgement the text
-// door makes of that text. -0.0 is zero; NaN is Malformed and an infinity OutOfRange. With no
-// text to index, every Fault and Violation has an empty span at 0.
+// door makes of that text. -0.0 is zero. NaN is Malformed; an infinity is OutOfRange at a float
+// or decimal door and Malformed at an integer door. With no text to index, every Fault and
+// Violation has an empty span at 0.
 namespace detail {
 template <class T>
 inline Checked<T> from_double(double value, const Constraints<T> &constraints) noexcept {

@@ -699,6 +699,8 @@ public sealed class CorpusTests
 				continue;
 			if (method.Name == "Text")
 				returns.ShouldBe(typeof(CheckedVerdict<>), method.ToString());
+			else if (method.Name == nameof(Cast.Optional))
+				returns.ShouldBe(method.GetParameters()[0].ParameterType.GetGenericTypeDefinition(), method.ToString());
 			else
 				returns.ShouldBe(plain ? typeof(Verdict<>) : typeof(CheckedVerdict<>), method.ToString());
 		}

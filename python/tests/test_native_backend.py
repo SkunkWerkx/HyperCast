@@ -175,10 +175,10 @@ def test_num_format_arguments_are_checked_for_type_before_value():
         hypercast.cast_i32("42", (".", ",", 0))
 
 
-def test_a_str_that_is_not_encodable_is_the_one_exception_a_door_raises_for_data():
-    """A lone surrogate has no UTF-8 form, so there are no bytes to hand the core and no span to
-    report: the str itself is rejected before any door runs. Every other piece of bad data is a
-    Fault.
+def test_a_str_that_is_not_encodable_is_a_fault_like_any_other_bad_data():
+    """A lone surrogate has no UTF-8 form. It crosses with the surrogate kept (its
+    ``surrogatepass`` encoding), so every door judges it as MALFORMED at its own code point: no
+    door raises for data, a str like this included.
     """
     for door in (
         hypercast.cast_bool,
@@ -186,10 +186,8 @@ def test_a_str_that_is_not_encodable_is_the_one_exception_a_door_raises_for_data
         hypercast.cast_uuid,
         hypercast.cast_timestamp,
     ):
-        with pytest.raises(UnicodeEncodeError):
-            door("\ud800")
-    with pytest.raises(UnicodeEncodeError):
-        hypercast.cast_i32("4\udfff2", NumFormat.INVARIANT)
+        assert door("\ud800") == Fault(CastFailure.MALFORMED, 0, 1), door
+    assert hypercast.cast_i32("4\udfff2", NumFormat.INVARIANT) == Fault(CastFailure.MALFORMED, 1, 1)
 
 
 # --- help() ----------------------------------------------------------------------------------

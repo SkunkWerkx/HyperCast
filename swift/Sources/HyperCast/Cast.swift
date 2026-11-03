@@ -882,6 +882,15 @@ public enum Cast {
         return verdict
     }
 
+    /// Presents a checked verdict optionally: an ``CastFailure/empty`` fault becomes `nil`,
+    /// everything else, a ``Violation`` included, flows through untouched.
+    public static func optional<T>(_ verdict: CheckedVerdict<T>) -> CheckedVerdict<T>? {
+        if case .rejection(.fault(let fault)) = verdict, fault.reason == .empty {
+            return nil
+        }
+        return verdict
+    }
+
     // MARK: - the native library itself
 
     /// The version of the native `libhypercast` linked into this executable, as

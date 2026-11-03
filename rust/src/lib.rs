@@ -92,6 +92,67 @@ fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
     }
 }
 
+// The return instruction that ends the `rust_eh_personality` stubs below, spelled the way
+// each architecture's assembler takes it: `ret` is no instruction on s390x, PowerPC or 32-bit
+// Arm. Nothing ever calls a stub, so the instruction only has to assemble. Every other
+// architecture whose inline assembly is stable (x86, Arm64, RISC-V, LoongArch) takes `ret`;
+// on one whose assembly is not (SPARC, MIPS) stable rustc refuses the stub, so the no_std
+// libraries do not build there at all rather than build without it. Defined only where a
+// stub is compiled.
+#[cfg(all(
+    any(feature = "cdylib", feature = "staticlib"),
+    not(feature = "std"),
+    not(target_os = "windows"),
+    not(target_arch = "wasm32"),
+    target_arch = "s390x",
+))]
+macro_rules! personality_return {
+    () => {
+        "br %r14"
+    };
+}
+#[cfg(all(
+    any(feature = "cdylib", feature = "staticlib"),
+    not(feature = "std"),
+    not(target_os = "windows"),
+    not(target_arch = "wasm32"),
+    any(target_arch = "powerpc", target_arch = "powerpc64"),
+))]
+macro_rules! personality_return {
+    () => {
+        "blr"
+    };
+}
+#[cfg(all(
+    any(feature = "cdylib", feature = "staticlib"),
+    not(feature = "std"),
+    not(target_os = "windows"),
+    not(target_arch = "wasm32"),
+    target_arch = "arm",
+))]
+macro_rules! personality_return {
+    () => {
+        "bx lr"
+    };
+}
+#[cfg(all(
+    any(feature = "cdylib", feature = "staticlib"),
+    not(feature = "std"),
+    not(target_os = "windows"),
+    not(target_arch = "wasm32"),
+    not(any(
+        target_arch = "s390x",
+        target_arch = "powerpc",
+        target_arch = "powerpc64",
+        target_arch = "arm"
+    )),
+))]
+macro_rules! personality_return {
+    () => {
+        "ret"
+    };
+}
+
 // The one symbol a no_std shared library needs that a static library does not. `core` and
 // `compiler_builtins` ship precompiled with unwind tables, and an entry that names
 // `rust_eh_personality` survives into the library (on linux-x64, that of the 128-bit
@@ -108,12 +169,14 @@ fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
 // defined it could not be linked into one program, the duplicate-symbol failure that kept
 // std out of them in the first place. Windows needs no definition (its unwind tables name
 // the C runtime's handler), and wasm32 has no unwind tables to name one.
+//
+// The body is the architecture's own return instruction (`personality_return!`, above).
 #[cfg(all(feature = "cdylib", not(feature = "std"), target_vendor = "apple"))]
 core::arch::global_asm!(
     ".globl _rust_eh_personality",
     ".private_extern _rust_eh_personality",
     "_rust_eh_personality:",
-    "ret",
+    personality_return!(),
 );
 #[cfg(all(
     feature = "cdylib",
@@ -127,7 +190,7 @@ core::arch::global_asm!(
     ".hidden rust_eh_personality",
     ".type rust_eh_personality, %function",
     "rust_eh_personality:",
-    "ret",
+    personality_return!(),
 );
 
 // The static library's half: the same reference, left for the final link, fails it
@@ -148,7 +211,7 @@ core::arch::global_asm!(
     ".weak_definition _rust_eh_personality",
     ".private_extern _rust_eh_personality",
     "_rust_eh_personality:",
-    "ret",
+    personality_return!(),
 );
 #[cfg(all(
     feature = "staticlib",
@@ -163,7 +226,7 @@ core::arch::global_asm!(
     ".hidden rust_eh_personality",
     ".type rust_eh_personality, %function",
     "rust_eh_personality:",
-    "ret",
+    personality_return!(),
 );
 
 // The other half of the same gap: the C runtime. Under std it comes in through std's own
@@ -224,6 +287,7 @@ pub use boolean::cast_bool;
 pub use character::cast_char;
 pub use checked::{
     Checked, Rejection, Violation, cast_checked, cast_text_checked, checked_from_f64,
+    optional_checked,
 };
 pub use constraints::{
     Bound, Constraints, Keyword, Numeric, NumericRules, Refusal, Rounding, Text, TextRules,

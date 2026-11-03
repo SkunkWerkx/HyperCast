@@ -505,7 +505,9 @@ final class CorpusTest extends TestCase
     public function testConstraintsCorpus(): void
     {
         $seen = [];
-        foreach (self::corpus('constraints.json') as $vector) {
+        $vectors = self::corpus('constraints.json');
+        $replayed = 0;
+        foreach ($vectors as $vector) {
             $door = self::DOORS[$vector['door']];
             $label = "constraints {$vector['door']} " . json_encode($vector['constraints']) . ' '
                 . json_encode($vector['input'] ?? $vector['from_f64'] ?? $vector['input_bytes'] ?? null);
@@ -519,6 +521,7 @@ final class CorpusTest extends TestCase
                     self::assertSame($vector['refusal'], $e->getCode(), $label);
                     self::assertSame(self::refusalMessage($vector['refusal']), $e->getMessage(), $label);
                 }
+                $replayed++;
                 continue;
             }
             $seen[$vector['door']] = true;
@@ -535,7 +538,10 @@ final class CorpusTest extends TestCase
                 $verdict = Cast::checked($vector['input'], self::formatOf($vector), $constraints);
             }
             $this->assertChecked($label, $vector, $constraints, $verdict);
+            $replayed++;
         }
+        // Every row was replayed: the count is the file's, never a literal.
+        self::assertSame(\count($vectors), $replayed);
         ksort($seen);
         $expected = [...array_keys(self::DOORS), 'from_f64', 'input_bytes', 'refused'];
         sort($expected);
@@ -606,7 +612,8 @@ final class CorpusTest extends TestCase
     public function testDeclarationsCorpus(): void
     {
         $counts = ['ok' => 0, 'refused' => 0, 'bytes' => 0];
-        foreach (self::corpus('declarations.json') as $vector) {
+        $vectors = self::corpus('declarations.json');
+        foreach ($vectors as $vector) {
             if (isset($vector['input_bytes'])) {
                 $counts['bytes']++;
                 $text = pack('C*', ...$vector['input_bytes']);
@@ -639,7 +646,9 @@ final class CorpusTest extends TestCase
                 "declarations: '{$text}' packed"
             );
         }
-        self::assertSame(['ok' => 33, 'refused' => 30, 'bytes' => 3], $counts);
+        // Every row was replayed, and every kind is present: counts from the file, never literals.
+        self::assertSame(\count($vectors), array_sum($counts));
+        self::assertNotContains(0, $counts);
     }
 
     /**

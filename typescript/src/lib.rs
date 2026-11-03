@@ -16,9 +16,11 @@
 //! A fault's span is in the caller's own units: UTF-16 code units for a string, which is what
 //! `String.prototype.slice` takes, and bytes for a `Uint8Array`, the core's own.
 //!
+//! Every door, plain or checked, reads a string as WTF-8, so a lone surrogate reaches the core
+//! as itself, malformed text at its own code unit, never as U+FFFD.
+//!
 //! The validation constraints (`Constraints`, `castChecked`, `castCheckedFromNumber`,
-//! `castText`, `castConstraintsCheck`, `castDeclaredDecimal`) follow the same rules, and read a
-//! string as WTF-8, so a lone surrogate reaches the core as itself, never as U+FFFD. Their
+//! `castText`, `castConstraintsCheck`, `castDeclaredDecimal`) follow the same rules. Their
 //! declarations answer `{ ok: false, message }` as the formats' do, and a checked door adds a
 //! third verdict case, `{ ok: false, violation }`.
 
@@ -95,8 +97,9 @@ pub struct Refusal {
 #[napi(js_name = "Declaration<T>")]
 pub type DeclarationType = Either<SuccessCase, Refusal>;
 
-/// What a door reads: a string (as UTF-8), the bytes of a `Uint8Array` (a `Buffer` is one)
-/// as they are, or `null` or `undefined` for absent input.
+/// What a door reads: a string (as UTF-8, a lone surrogate kept as malformed text, never
+/// U+FFFD), the bytes of a `Uint8Array` (a `Buffer` is one) as they are, or `null` or
+/// `undefined` for absent input.
 #[napi(js_name = "Text")]
 pub type TextType = Option<Either<String, Uint8Array>>;
 
@@ -240,9 +243,9 @@ pub struct DateFormatSpec {
 
 /// A door's text, as the caller passed it.
 enum Input {
-    /// A string, held as the UTF-8 napi converted it to (a lone surrogate became U+FFFD,
-    /// three bytes for its one code unit, so spans still map back exactly).
-    Str(String),
+    /// A string, as WTF-8: its UTF-8, with a lone surrogate the three bytes no UTF-8 decoder
+    /// accepts (three bytes for its one code unit, so spans still map back exactly).
+    Str(Vec<u8>),
     /// The bytes of a `Uint8Array`, read as they are.
     Bytes(Uint8Array),
     /// `null` or `undefined`.
@@ -252,10 +255,14 @@ enum Input {
 }
 
 impl Input {
-    fn read(value: &Unknown<'_>) -> Input {
+    /// napi's UTF-8 read is the fast path; a string it may not have read exactly (see
+    /// [`exact_utf8`]) is read again, from its UTF-16, as [`string_wtf8`], so a door never
+    /// judges a replacement for a lone surrogate.
+    fn read(env: &Env, value: &Unknown<'_>) -> Input {
         match value.get_type() {
             Ok(ValueType::String) => match unsafe { value.cast::<String>() } {
-                Ok(text) => Input::Str(text),
+                Ok(text) if exact_utf8(&text) => Input::Str(text.into_bytes()),
+                Ok(_) => string_wtf8(env, value).map_or(Input::Invalid, Input::Str),
                 Err(_) => Input::Invalid,
             },
             Ok(ValueType::Undefined | ValueType::Null) => Input::Absent,
@@ -271,10 +278,9 @@ impl Input {
     /// The fault in the caller's units: bytes as they are for a `Uint8Array`, UTF-16 code
     /// units for a string (an ASCII string needs no mapping, and only a fault pays for it).
     fn present(&self, fault: hc::Fault) -> hc::Fault {
-        let Input::Str(text) = self else {
+        let Input::Str(bytes) = self else {
             return fault;
         };
-        let bytes = text.as_bytes();
         if bytes.is_ascii() {
             return fault;
         }
@@ -288,7 +294,26 @@ impl Input {
     }
 }
 
-/// UTF-16 code units in well-formed UTF-8: one per lead byte, two for a four-byte sequence.
+/// Whether napi's UTF-8 read of a string is the string exactly: whether it held no lone
+/// surrogate. A native addon's runtime (Node, Bun) writes U+FFFD for one, so UTF-8 with no
+/// U+FFFD in it is exact, and only a string with a U+FFFD (a real one, or a replacement) is
+/// read again. The WebAssembly fallback's runtime encodes with Emscripten's `stringToUTF8`,
+/// which fuses a lone surrogate with the code unit after it into another character, so there
+/// only an ASCII string is known to be exact. `tests/constraints.test.ts` pins both: a lone
+/// surrogate at a plain door is malformed at its own code unit.
+#[cfg(not(target_family = "wasm"))]
+fn exact_utf8(text: &str) -> bool {
+    text.is_ascii() || !text.contains('\u{FFFD}')
+}
+
+/// See the native definition: under the WebAssembly fallback only ASCII is known to be exact.
+#[cfg(target_family = "wasm")]
+fn exact_utf8(text: &str) -> bool {
+    text.is_ascii()
+}
+
+/// UTF-16 code units in well-formed UTF-8 or WTF-8: one per lead byte (a lone surrogate's
+/// three bytes are its one unit), two for a four-byte sequence.
 fn utf16_units(bytes: &[u8]) -> u32 {
     bytes
         .iter()
@@ -388,9 +413,9 @@ fn door<'env, D, T, V: ToNapiValue>(
     let Some(declared) = declared else {
         return contract(env);
     };
-    let input = Input::read(text);
+    let input = Input::read(env, text);
     let outcome = match &input {
-        Input::Str(text) => cast(text.as_bytes(), declared),
+        Input::Str(text) => cast(text, declared),
         Input::Bytes(bytes) => cast(bytes, declared),
         Input::Absent => return failure(env, ABSENT),
         Input::Invalid => return contract(env),
@@ -526,7 +551,10 @@ fn clear_pending_exception(env: &Env) {
     }
 }
 
-/// A declaration's text field: absent (`undefined`) declares nothing.
+/// A declaration's text field: absent (`undefined`) declares nothing. A string napi's UTF-8
+/// read may not have read exactly (see [`exact_utf8`]) is read again from its UTF-16, so a
+/// lone surrogate is refused, never declared as the replacement character napi wrote (or, under
+/// the WebAssembly fallback, the character it fused).
 fn spec_text(
     env: &Env,
     spec: &Object<'_>,
@@ -538,9 +566,17 @@ fn spec_text(
     };
     match value.get_type() {
         Ok(ValueType::Undefined) => Ok(None),
-        Ok(ValueType::String) => unsafe { value.cast::<String>() }
-            .map(Some)
-            .map_err(|_| format!("{name} could not be read")),
+        Ok(ValueType::String) => match unsafe { value.cast::<String>() } {
+            Ok(text) if exact_utf8(&text) => Ok(Some(text)),
+            Ok(_) => {
+                let bytes =
+                    string_wtf8(env, &value).ok_or_else(|| format!("{name} could not be read"))?;
+                String::from_utf8(bytes)
+                    .map(Some)
+                    .map_err(|_| format!("{name} must be whole code points, not surrogate halves"))
+            }
+            Err(_) => Err(format!("{name} could not be read")),
+        },
         _ => Err(format!("{name} must be a string")),
     }
 }
@@ -2190,7 +2226,8 @@ pub fn cast_checked<'env>(
 /// through the door its `Constraints` are bound to, then judges it by them on the shortest
 /// decimal that names it: `0.1 + 0.2` is `0.30000000000000004`, which breaks
 /// `multipleOf: "0.1"` unrounded and rounds to `0.3` under `Rounding.Midpoint`. NaN is
-/// `malformed` and an infinity `outOfRange`; every fault and violation has an empty span.
+/// `malformed`; an infinity is `outOfRange` at a float or decimal door and `malformed` at an
+/// integer door. Every fault and violation has an empty span.
 /// `-0` is zero, delivered at a float door as `0`.
 #[napi(
     catch_unwind,

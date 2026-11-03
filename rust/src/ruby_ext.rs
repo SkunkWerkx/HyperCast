@@ -36,6 +36,7 @@ use crate::constraints::{Entries, declared_decimal};
 /// symbols — interned once, immortal — so their raw VALUEs are stable too: every `:seconds`
 /// a caller writes is the same VALUE, and a pointer compare resolves it.
 struct Cached {
+    hypercast: Opaque<RModule>,
     success: Opaque<Value>,
     fault: Opaque<Value>,
     date_class: Opaque<Value>,
@@ -75,6 +76,7 @@ fn build_cache(ruby: &Ruby, hypercast: RModule) -> Result<Cached, Error> {
     let violation_class: Value = hypercast.const_get("Violation")?;
     let keyword_class: Value = hypercast.const_get("Keyword")?;
     for pinned in [
+        hypercast.as_value(),
         invariant,
         detect,
         success,
@@ -91,6 +93,7 @@ fn build_cache(ruby: &Ruby, hypercast: RModule) -> Result<Cached, Error> {
     }
     let sym = |name: &str| ruby.to_symbol(name).as_raw();
     Ok(Cached {
+        hypercast: Opaque::from(hypercast),
         success: Opaque::from(success),
         fault: Opaque::from(fault),
         date_class: Opaque::from(date_class),
@@ -221,12 +224,15 @@ fn character_span(text: RString, offset: u32, len: u32) -> (i64, i64) {
 /// Presents the input as the UTF-8 the core reads — hypercast.rb's `utf8` rule: UTF-8,
 /// US-ASCII and binary cross as-is (one encoding-index read); any other encoding pays a
 /// transcode. Character offsets survive the transcode, so a fault span mapped on the
-/// UTF-8 form still indexes the caller's own String.
+/// UTF-8 form still indexes the caller's own String; a dummy encoding's String counts bytes,
+/// and its span counts the characters of the UTF-8 form (hypercast.rb's `kept`).
 ///
-/// The transcode is `String#encode` itself, the very call hypercast.rb makes, rather than
-/// `rb_str_conv_enc`: text that cannot be transcoded (a lone UTF-16 surrogate, say) must
-/// raise the same `Encoding::` error on every backend, and `rb_str_conv_enc` does not raise
-/// — it hands the original bytes back, which this door would then have parsed as UTF-8.
+/// The transcode is hypercast.rb's own `utf8`, called here, rather than `rb_str_conv_enc`,
+/// so both backends hand the core the same bytes: text that cannot be transcoded (a lone
+/// UTF-16 surrogate, say) crosses with each character that has no UTF-8 form as one byte
+/// no UTF-8 decoder accepts, which the core reads as malformed at that character, never as
+/// a guess; `rb_str_conv_enc` hands the original bytes back instead, which this door would
+/// then have parsed as UTF-8.
 fn utf8(ruby: &Ruby, text: RString) -> Result<RString, Error> {
     let index = text.enc_get();
     if index == ruby.utf8_encindex()
@@ -235,7 +241,7 @@ fn utf8(ruby: &Ruby, text: RString) -> Result<RString, Error> {
     {
         Ok(text)
     } else {
-        text.funcall("encode", (ruby.utf8_encoding(),))
+        ruby.get_inner(cached().hypercast).funcall("utf8", (text,))
     }
 }
 
@@ -251,32 +257,31 @@ fn verdict<T: magnus::IntoValue>(
 }
 
 thread_local! {
-    /// The last non-constant format this thread resolved, keyed by the object's raw VALUE.
+    /// The last non-constant format this thread resolved, keyed by the object's `object_id`.
     /// Formats are reused constants in practice — a per-locale instance built once — so
-    /// this turns three method dispatches per numeric call into one pointer compare, the
-    /// same memo the Java, PHP and Python bindings keep. `NumFormat` is an immutable,
-    /// frozen `Data`, which is what makes an identity memo sound at all — provided the key
-    /// can never be a recycled address: the memoized object is anchored in a Ruby
-    /// thread-variable (below) for exactly as long as this entry names it. Only plain data
-    /// lives here, deliberately — a GC-registered handle in a thread-local would try to
-    /// unregister itself from a VM that has already shut down when the thread exits.
-    static LAST_FORMAT: RefCell<Option<(VALUE, core::NumFormat)>> = const { RefCell::new(None) };
+    /// this turns ten attribute reads per numeric call into one id lookup, the same memo the
+    /// Java, PHP and Python bindings keep. `NumFormat` is an immutable, frozen `Data`, which
+    /// is what makes an identity memo sound at all. The key is not the raw VALUE: a
+    /// compacting GC moves the object and hands its old address to another, which a VALUE
+    /// key would then mistake for it (a `NumFormat` built after `GC.compact` was read as the
+    /// one before). An `object_id` belongs to one object for the life of the process and is
+    /// never reused, so a stale entry can only miss, and nothing has to keep the keyed object
+    /// alive. Only plain data lives here, deliberately — a GC-registered handle in a
+    /// thread-local would try to unregister itself from a VM that has already shut down
+    /// when the thread exits.
+    static LAST_FORMAT: RefCell<Option<(u64, core::NumFormat)>> = const { RefCell::new(None) };
 }
 
-/// Keeps `format` alive for as long as `LAST_FORMAT` keys on it: one Ruby thread-variable
-/// per thread, replaced on every miss, so the previous format becomes collectable and the
-/// current one cannot be. `thread_variable_set` is thread-local (not fiber-local, unlike
-/// `Thread#[]=`), matching the Rust thread-local it guards.
-fn anchor_format(ruby: &Ruby, format: Value) -> Result<(), Error> {
-    let _: Value = ruby
-        .thread_current()
-        .funcall("thread_variable_set", (ruby.to_symbol("__hypercast_last_format"), format))?;
-    Ok(())
+/// The `object_id` an identity memo keys on: stable across compaction, never reused.
+fn object_id(object: Value) -> Result<u64, Error> {
+    // SAFETY: `object` is a live object; rb_obj_id returns its Integer id.
+    let id = unsafe { Value::from_raw(rb_sys::rb_obj_id(object.as_raw())) };
+    u64::try_convert(id)
 }
 
-/// Resolves the declared format: INVARIANT and DETECT are identity-matched constants and
-/// cost a pointer compare; any other format costs ten attribute reads the first time
-/// this thread sees it and a pointer compare after that.
+/// Resolves the declared format: INVARIANT and DETECT are identity-matched constants (pinned,
+/// so their addresses never move) and cost a pointer compare; any other format costs ten
+/// attribute reads the first time this thread sees it and an id lookup after that.
 fn resolve_format(ruby: &Ruby, format: Value) -> Result<core::NumFormat, Error> {
     let raw = format.as_raw();
     let cache = cached();
@@ -286,8 +291,9 @@ fn resolve_format(ruby: &Ruby, format: Value) -> Result<core::NumFormat, Error> 
     if raw == cache.detect_raw {
         return Ok(core::NumFormat::DETECT);
     }
+    let id = object_id(format)?;
     let memo = LAST_FORMAT.with(|last| {
-        last.borrow().as_ref().filter(|(key, _)| *key == raw).map(|(_, resolved)| *resolved)
+        last.borrow().as_ref().filter(|(key, _)| *key == id).map(|(_, resolved)| *resolved)
     });
     if let Some(resolved) = memo {
         return Ok(resolved);
@@ -339,8 +345,7 @@ fn resolve_format(ruby: &Ruby, format: Value) -> Result<core::NumFormat, Error> 
             "malformed NumFormat: equal separators, or a symbol the core cannot read",
         ));
     }
-    anchor_format(ruby, format)?;
-    LAST_FORMAT.with(|last| *last.borrow_mut() = Some((raw, resolved)));
+    LAST_FORMAT.with(|last| *last.borrow_mut() = Some((id, resolved)));
     Ok(resolved)
 }
 
@@ -568,8 +573,9 @@ fn resolve_order(ruby: &Ruby, order: Value) -> Result<core::DateOrder, Error> {
 }
 
 /// A declared day-period designator — hypercast.rb's `designator` rule, raising its
-/// ArgumentError worded the same: a String of 1 to 16 UTF-8 bytes with no ASCII digit and
-/// no ASCII whitespace at either end; nil declares nothing beside the English word.
+/// ArgumentError worded the same: a String with a UTF-8 form, of 1 to 16 UTF-8 bytes with no
+/// ASCII digit and no ASCII whitespace at either end; nil declares nothing beside the English
+/// word.
 fn designator(ruby: &Ruby, name: &str, text: Option<Value>) -> Result<core::Symbol<16>, Error> {
     let Some(text) = text.filter(|given| !given.is_nil()) else {
         return Ok(core::Symbol::NONE);
@@ -580,7 +586,10 @@ fn designator(ruby: &Ruby, name: &str, text: Option<Value>) -> Result<core::Symb
             format!("{name} designator must be a String; got {}", text.inspect()),
         ));
     };
-    let string = utf8(ruby, string)?;
+    // hypercast.rb's own transcoding, so text with no UTF-8 form is its ArgumentError here too.
+    let string: RString = ruby
+        .get_inner(cached().hypercast)
+        .funcall("declared_utf8", (format!("{name} designator"), string))?;
     let declared = with_bytes(string, |bytes| {
         let flush = |edge: Option<&u8>| edge.is_some_and(u8::is_ascii_whitespace);
         if flush(bytes.first()) || flush(bytes.last()) {
@@ -719,11 +728,8 @@ struct Declaration {
 thread_local! {
     /// The last declaration this thread resolved, keyed by the `Constraints` object's
     /// `object_id` — a `Constraints` is a frozen `Data`, reused in practice, so the common call
-    /// costs one id lookup instead of packing its layout again. Not by raw VALUE, as
-    /// `LAST_FORMAT` is: a compacting GC can move the object and hand its old address to
-    /// another, which a VALUE key would then mistake for it. An `object_id` belongs to one
-    /// object for the life of the process and is never reused, so a stale entry can only miss,
-    /// and nothing has to keep the keyed object alive.
+    /// costs one id lookup instead of packing its layout again. Keyed as `LAST_FORMAT` is, and
+    /// for its reason: an `object_id` survives compaction and is never reused.
     static LAST_CONSTRAINTS: RefCell<Option<(u64, Rc<Declaration>)>> = const { RefCell::new(None) };
 }
 
@@ -786,9 +792,7 @@ fn declaration(ruby: &Ruby, constraints: Value, text: bool) -> Result<Rc<Declara
             format!("constraints must be a HyperCast::Constraints; got {}", constraints.inspect()),
         ));
     }
-    // SAFETY: `constraints` is a live object; rb_obj_id returns its Integer id.
-    let id = unsafe { Value::from_raw(rb_sys::rb_obj_id(constraints.as_raw())) };
-    let id = u64::try_convert(id)?;
+    let id = object_id(constraints)?;
     let memo = LAST_CONSTRAINTS.with(|last| {
         last.borrow().as_ref().filter(|(key, _)| *key == id).map(|(_, declared)| declared.clone())
     });

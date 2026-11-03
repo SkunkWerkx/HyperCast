@@ -48,6 +48,25 @@ module HyperCast
   # The native core's failure codes, mapped to the closed reason Symbols a Fault carries.
   REASONS = { 1 => :empty, 2 => :malformed, 3 => :out_of_range }.freeze
 
+  class << self
+    private
+
+    # A declared symbol's text as the UTF-8 the core reads, transcoded from its own encoding.
+    # Text with no UTF-8 form (a lone UTF-16 surrogate, bytes its encoding does not allow, a
+    # character with no Unicode counterpart) is data at a door, MALFORMED at that character
+    # (#kept); in a declaration it is the caller's bug, refused with the same ArgumentError on
+    # every backend, never declared as a stand-in for the character it could not spell.
+    def declared_utf8(field, text)
+      symbol = text.encode(Encoding::UTF_8)
+      return symbol if symbol.valid_encoding?
+
+      raise ArgumentError, "#{field} #{text.inspect} must be whole characters with a UTF-8 form"
+    rescue Encoding::InvalidByteSequenceError, Encoding::UndefinedConversionError,
+           Encoding::ConverterNotFoundError
+      raise ArgumentError, "#{field} #{text.inspect} must be whole characters with a UTF-8 form"
+    end
+  end
+
   # Caller-declared numeric notation for the integer, real and decimal doors — declared out
   # loud (INVARIANT, or a literal), never defaulted, the same stance every binding takes.
   # Past the separators and the flags, every field is one a culture table would fill in,
@@ -65,7 +84,8 @@ module HyperCast
   # percent symbol while PERCENT is. A separator may be wider than one character (", " —
   # comma, space — is a separator), up to 8 UTF-8 bytes. A malformed format is a caller bug
   # (ArgumentError), never a verdict: an empty or over-long separator, equal separators (or
-  # an equal pair in force for currency amounts), a symbol carrying an ASCII digit, a sign
+  # an equal pair in force for currency amounts), a symbol with no UTF-8 form (a lone UTF-16
+  # surrogate, bytes its encoding does not allow), a symbol carrying an ASCII digit, a sign
   # or percent symbol carrying ASCII whitespace, a currency symbol longer than 16 bytes or
   # carrying a digit or whitespace, or a digit zero that is ASCII or starts no digit block.
   NumFormat = Data.define(:decimal_sep, :group_sep, :flags, :currency,
@@ -201,9 +221,10 @@ module HyperCast
     end
     private_class_method :trailing_sign?
 
-    # The 92-byte little-endian form of the native ABI's size-tagged NumFormat struct, the
-    # layout the core reads in place: the size word (92), the flags, the digit zero's code
-    # point (0 for none), then each symbol as its UTF-8 bytes zero-padded to its field
+    # The 92-byte little-endian form of the ABI's size-tagged NumFormat struct (what the
+    # core's RawNumFormat::from_le_bytes reads, and Python's NumFormat.packed is): the size
+    # word (92), the flags, the digit zero's code point (0 for none), each a little-endian
+    # u32 on every host, then each symbol as its UTF-8 bytes zero-padded to its field
     # followed by its byte length — eight bytes and a length for each of the two number
     # separators, the two currency separators, the two signs and the percent symbol, in
     # that order; sixteen and a length for the currency symbol. A length of 0 declares
@@ -224,7 +245,7 @@ module HyperCast
     def declared(field, text, limit, flush: false, required: false)
       raise ArgumentError, "#{field} must be a String; got #{text.inspect}" unless text.is_a?(String)
 
-      symbol = text.encode(Encoding::UTF_8)
+      symbol = HyperCast.send(:declared_utf8, field, text)
       if symbol.empty?
         raise ArgumentError, "#{field} must not be empty" if required
 
@@ -248,7 +269,7 @@ module HyperCast
     def digit_zero_of(text)
       raise ArgumentError, "digit zero must be a String; got #{text.inspect}" unless text.is_a?(String)
 
-      zero = text.encode(Encoding::UTF_8)
+      zero = HyperCast.send(:declared_utf8, "digit zero", text)
       return zero if zero.empty?
 
       raise ArgumentError, "digit zero #{text.inspect} must be one non-ASCII character that starts a digit block" unless
@@ -659,8 +680,10 @@ module HyperCast
       entries = members[:enum] or return "".b
       return entries.map { |entry| pack_decimal(entry) }.join.b unless members[:door] == :text
 
+      # Each entry as input text crosses (HyperCast.utf8): one with no UTF-8 form is then
+      # refused as an entry that is not UTF-8 (9), never transcoded with a guess.
       entries.map do |entry|
-        text = Interop::BYTE_COMPATIBLE.include?(entry.encoding) ? entry : entry.encode(Encoding::UTF_8)
+        text = HyperCast.send(:utf8, entry)
         [text.bytesize].pack("L<") + text.b
       end.join.b
     end
@@ -950,7 +973,8 @@ module HyperCast
     # decimal_from_float takes it — through the door its Constraints are bound to, then judges
     # it by them on the shortest decimal that names it: 0.1 + 0.2 is 0.30000000000000004,
     # which breaks multiple_of: "0.1" under :strict and rounds to 0.3 under :midpoint. NaN is
-    # :malformed and an infinity :out_of_range; every fault and violation has an empty span.
+    # :malformed; an infinity is :out_of_range at a float or decimal door and :malformed at an
+    # integer door. Every fault and violation has an empty span.
     def checked_from_float(value, constraints)
       number = float(value)
       symbol, raw, entries = constrained(constraints, :checked_from_float)
@@ -1001,13 +1025,19 @@ module HyperCast
 
   extend FiddleBackend
 
+  # The byte #kept stands a character with no UTF-8 form in for.
+  NO_UTF8 = "\x80".b.freeze
+  private_constant :NO_UTF8
+
   class << self
     private
 
     # Presents the input as UTF-8 bytes: already-compatible text crosses as-is (Fiddle
     # passes a String's own bytes for void* — no copy of them); only foreign encodings pay
-    # a transcode, and text that cannot be transcoded raises String#encode's own
-    # Encoding:: error, the same one the Magnus extension raises through the same call.
+    # a transcode. The Magnus extension calls this same method for a foreign encoding, so
+    # both backends hand the core the same bytes. Text that cannot be transcoded (a lone
+    # UTF-16 surrogate, bytes its encoding does not allow, a character with no Unicode
+    # counterpart) is data, not a caller bug: see #kept.
     #
     # Text that is not a String is a caller bug, and the same TypeError on every backend:
     # the extension takes its argument through Ruby's implicit String conversion (to_str,
@@ -1018,7 +1048,65 @@ module HyperCast
           raise TypeError, "no implicit conversion of #{text.class} into String"
         text = converted
       end
-      Interop::BYTE_COMPATIBLE.include?(text.encoding) ? text : text.encode(Encoding::UTF_8)
+      return text if Interop::BYTE_COMPATIBLE.include?(text.encoding)
+
+      begin
+        text.encode(Encoding::UTF_8)
+      rescue Encoding::InvalidByteSequenceError, Encoding::UndefinedConversionError,
+             Encoding::ConverterNotFoundError
+        kept(text)
+      end
+    end
+
+    # Text that has no UTF-8 form, as the core reads it: each character transcoded, and each
+    # one that cannot be (a lone surrogate, an invalid sequence, a character with no Unicode
+    # counterpart) as the lone continuation byte 0x80, which no UTF-8 decoder accepts and the
+    # core always judges as one malformed byte. The text is then MALFORMED at that character,
+    # never a replacement standing for it, as at every binding's doors; and since 0x80 is one
+    # character of the UTF-8 form, as the character it stands for is one of the caller's
+    # String, a span still indexes the caller's own String.
+    #
+    # An encoding Ruby has no converter to UTF-8 for (EUC-TW, Windows-1258) gives no character
+    # past ASCII a UTF-8 form, so each such character is one 0x80 too.
+    #
+    # A dummy encoding (UTF-16 and UTF-32 with their byte-order mark, ISO-2022-JP, UTF-7) has
+    # no characters Ruby can split: each_char yields single bytes, and a String in one counts
+    # bytes. Such text is transcoded whole (#transcoded), each conversion error standing as
+    # one 0x80, so a span counts the characters of its UTF-8 form, the String
+    # text.encode(Encoding::UTF_8, invalid: :replace, undef: :replace) spells, one for one.
+    def kept(text)
+      return transcoded(text) if text.encoding.dummy?
+
+      text.each_char.map do |char|
+        char.valid_encoding? ? char.encode(Encoding::UTF_8).b : NO_UTF8
+      rescue Encoding::InvalidByteSequenceError, Encoding::UndefinedConversionError,
+             Encoding::ConverterNotFoundError
+        NO_UTF8
+      end.join.force_encoding(Encoding::UTF_8)
+    end
+
+    # Text in a dummy encoding as UTF-8, through one converter: each invalid sequence, each
+    # character with no Unicode counterpart, and an input cut short as one 0x80. A dummy
+    # encoding with no converter at all (UTF-7, ISO-2022-JP-2) is one 0x80 for each byte, the
+    # unit its String counts.
+    def transcoded(text)
+      converter = begin
+        Encoding::Converter.new(text.encoding, Encoding::UTF_8)
+      rescue Encoding::ConverterNotFoundError
+        return (NO_UTF8 * text.bytesize).force_encoding(Encoding::UTF_8)
+      end
+      source = text.b
+      piece = String.new
+      bytes = String.new(encoding: Encoding::BINARY)
+      loop do
+        status = converter.primitive_convert(source, piece)
+        bytes << piece.b
+        piece.clear
+        break if status == :finished
+
+        bytes << NO_UTF8
+      end
+      bytes.force_encoding(Encoding::UTF_8)
     end
 
     # Fiddle spells a null pointer as nil — the core's contract for empty input.
@@ -1051,7 +1139,7 @@ module HyperCast
       elsif rc == -1
         raise "hypercast: libhypercast reported a contract violation — a binding bug, please report it"
       else
-        Interop.fault(rc, *Interop.characters(bytes, *fault[0, 8].unpack("L<L<")))
+        Interop.fault(rc, *Interop.characters(bytes, *fault[0, 8].unpack("LL")))
       end
     end
 
@@ -1088,14 +1176,14 @@ module HyperCast
       verdict(rc, fault, bytes) { yield(out[0, out_size]) }
     end
 
-    # The 40-byte little-endian form of the native ABI's size-tagged DayPeriods struct: the
-    # size word (40), then each designator as its UTF-8 bytes zero-padded to 16 followed by
-    # its byte length — am, then pm — and two bytes of padding. A nil designator is a
-    # length of 0: nothing declared beside AM or PM.
+    # The 40-byte native form of the ABI's size-tagged DayPeriods struct, which the core
+    # reads in place: the size word (40, in native byte order), then each designator as its
+    # UTF-8 bytes zero-padded to 16 followed by its byte length — am, then pm — and two bytes
+    # of padding. A nil designator is a length of 0: nothing declared beside AM or PM.
     def packed_day_periods(am, pm)
       am = designator("am", am)
       pm = designator("pm", pm)
-      [40].pack("L<") + [am, am.bytesize, pm, pm.bytesize].pack("a16Ca16C") + "\0\0"
+      [40].pack("L") + [am, am.bytesize, pm, pm.bytesize].pack("a16Ca16C") + "\0\0"
     end
 
     # A declared day-period designator as the UTF-8 the core reads — 1 to 16 bytes, no
@@ -1106,7 +1194,7 @@ module HyperCast
       return "" if text.nil?
       raise ArgumentError, "#{name} designator must be a String; got #{text.inspect}" unless text.is_a?(String)
 
-      designator = text.encode(Encoding::UTF_8)
+      designator = declared_utf8("#{name} designator", text)
       unless designator.bytesize.between?(1, 16) && !designator.match?(/[0-9]|\A[\t\n\f\r ]|[\t\n\f\r ]\z/)
         raise ArgumentError, "#{name} designator #{text.inspect} must be 1 to 16 UTF-8 bytes with no ASCII digit " \
                              "and no ASCII whitespace at either end"
@@ -1241,6 +1329,13 @@ module HyperCast
       Runtime.function(:hypercast_version).call
     end
 
+    # NumFormat#packed as the C ABI reads it in place: its three leading words in the host's
+    # native byte order (on a little-endian host, the very bytes), the symbols as they are.
+    def native_packed(format)
+      packed = format.packed
+      packed[0, 12].unpack("L<3").pack("L3") + packed.byteslice(12, packed.bytesize - 12)
+    end
+
     # How many formats packed_cache remembers before it starts forgetting the oldest. Far
     # more than a process that reuses its formats ever holds; what it bounds is the one
     # that builds a NumFormat per request.
@@ -1262,7 +1357,7 @@ module HyperCast
         cache.shift while cache.size >= PACKED_CACHE_LIMIT
         size = NumFormat::PACKED_BYTES
         pointer = Runtime.buffer(size)
-        pointer[0, size] = format.packed
+        pointer[0, size] = native_packed(format)
         cache[format] = pointer
       end.compare_by_identity
     end

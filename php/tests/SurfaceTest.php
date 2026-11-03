@@ -93,6 +93,13 @@ final class SurfaceTest extends TestCase
                 'return' => $checked,
             ],
         ];
+        // optional() takes a checked verdict too: its parameter and answer widen, additively.
+        $any = 'HyperCast\\Success|HyperCast\\Checked|HyperCast\\Fault|HyperCast\\Violation';
+        $optional = &$surface['Cast']['methods']['optional'];
+        self::assertSame('HyperCast\\Success|HyperCast\\Fault', $optional['params'][0]['type']);
+        $optional['params'][0]['type'] = $any;
+        $optional['return'] = "{$any}|null";
+        unset($optional);
         ksort($surface['Cast']['methods']);
         return self::normalise($surface);
     }

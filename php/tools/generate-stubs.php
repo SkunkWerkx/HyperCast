@@ -49,9 +49,18 @@ const SYMBOLS_C = <<<'C'
 const REWRITES = [
     // ext-php-rs's argument info names a union of classes in one string, which cargo-php
     // prefixes with one backslash, and spells a nullable union with `?`, which PHP refuses.
-    ['?\\HyperCast\\Success|HyperCast\\Fault {', '\\HyperCast\\Success|\\HyperCast\\Fault|null {', 1],
-    ['@return \\HyperCast\\Success|HyperCast\\Fault|null', '@return \\HyperCast\\Success|\\HyperCast\\Fault|null', 1],
-    ['\\HyperCast\\Success|HyperCast\\Fault', '\\HyperCast\\Success|\\HyperCast\\Fault', 56],
+    // `optional()`, the one nullable answer, takes and gives a plain or a checked verdict.
+    [
+        '?\\HyperCast\\Success|HyperCast\\Checked|HyperCast\\Fault|HyperCast\\Violation {',
+        '\\HyperCast\\Success|\\HyperCast\\Checked|\\HyperCast\\Fault|\\HyperCast\\Violation|null {',
+        1,
+    ],
+    [
+        '\\HyperCast\\Success|HyperCast\\Checked|HyperCast\\Fault|HyperCast\\Violation',
+        '\\HyperCast\\Success|\\HyperCast\\Checked|\\HyperCast\\Fault|\\HyperCast\\Violation',
+        3,
+    ],
+    ['\\HyperCast\\Success|HyperCast\\Fault', '\\HyperCast\\Success|\\HyperCast\\Fault', 54],
     [
         '\\HyperCast\\Checked|HyperCast\\Fault|HyperCast\\Violation',
         '\\HyperCast\\Checked|\\HyperCast\\Fault|\\HyperCast\\Violation',

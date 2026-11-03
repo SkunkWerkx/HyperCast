@@ -148,9 +148,12 @@ door: `u8`, `u16` and `i32` all deliver an `Integer`, so the compiler cannot tel
 leading or trailing white space). After that a checked cast judges only data and throws nothing
 for it. `Cast.text` without constraints is the plain text door, a
 `Verdict<String>`: the input itself when it is valid text. Through a `String`, a lone surrogate
-is `MALFORMED` at its char, never replaced (Java's own encoder would make it `?`), and in an
-`enum` entry it is refused as an entry that is not UTF-8. On the JNI path the `enum` list lives
-in a direct buffer the declaration holds, so a checked call neither copies nor pins it.
+is `MALFORMED` at its char at every door, plain or checked, never replaced (Java's own encoder
+would make it `?`), and in an `enum` entry it is refused as an entry that is not UTF-8. On the
+JNI path the `enum` list lives in a direct buffer the declaration holds, so a checked call
+neither copies nor pins it. `Cast.optional` takes a checked verdict as it takes a plain one: an
+`EMPTY` fault is `Optional.empty()`, and every other rejection, a `Violation` included, comes
+back inside the `Optional`.
 
 ## One character
 
@@ -405,6 +408,34 @@ segments.
    `DateTimeFormatter.ISO_OFFSET_DATE_TIME` control measures 715.5 ± 43.6 ns for the text
    the timestamp door reads in 52.5.
 
+   **The lone-surrogate fix, measured (2026-11-02, Apple M6, macOS 27.2, Temurin 25.0.5, the
+   same profile).** The `String` doors used to encode with `getBytes(UTF_8)`, which turns a
+   lone surrogate into `?`, a guess a door could read as data. They now send the WTF-8 the
+   checked doors send, keeping `getBytes`'s intrinsic encode whenever its bytes hold no `?`
+   (so nothing was replaced) and encoding by hand otherwise. A first cut that always encoded
+   by hand cost up to 13 ns a call; the kept fast path recovers most of it, not all. One
+   machine, interleaved runs; the linux-x64 table above predates the change and was not
+   re-measured there:
+
+   | Door (`String`) | before (`getBytes`) | WTF-8 always | now | now vs before |
+   | --- | ---: | ---: | ---: | ---: |
+   | `Cast.uuid` | 12.3 ± 0.1 ns | 25.7 ± 0.2 ns | 16.5 ± 0.0 ns | **+4.2 ns, a loss** |
+   | `Cast.timestamp` | 21.2 ± 1.3 ns | 30.7 ± 0.2 ns | 26.2 ± 0.7 ns | **+5.0 ns, a loss** |
+   | `Cast.dateTime` (ISO) | 22.0 ± 0.2 ns | 33.4 ± 6.7 ns | 22.3 ± 0.3 ns | level |
+   | `Cast.dateTime` (`1/7/2026 3:04 PM`) | 21.0 ± 0.2 ns | 27.9 ± 0.8 ns | 21.5 ± 1.8 ns | level |
+   | `Cast.time` | 13.1 ± 0.1 ns | 20.5 ± 0.8 ns | 13.3 ± 0.1 ns | level |
+   | `Cast.duration` | 18.0 ± 0.9 ns | 24.0 ± 2.7 ns | 17.3 ± 1.1 ns | level |
+   | `Cast.date` (declared order) | 10.2 ± 0.4 ns | 14.0 ± 0.2 ns | 10.9 ± 0.1 ns | +0.6 ns |
+   | `Cast.i32` (grouped) | 18.4 ± 3.3 ns | 22.4 ± 4.4 ns | 19.2 ± 4.8 ns | level |
+   | `Cast.f64` | 15.2 ± 0.1 ns | 19.8 ± 0.3 ns | 15.2 ± 0.1 ns | level |
+   | `Cast.decimal` | 20.3 ± 0.1 ns | 23.8 ± 0.3 ns | 20.7 ± 1.1 ns | level |
+   | `Cast.bool` | 6.1 ± 0.4 ns | 8.0 ± 0.1 ns | 6.4 ± 0.3 ns | +0.3 ns |
+
+   What is left is the look for `?`, about a cycle a byte, so it shows on the longest texts
+   (the 36-character UUID, the 30-character timestamp); an eight-bytes-a-step look measured no
+   better and was not kept. The `byte[]` and `MemorySegment` doors encode nothing and are
+   unchanged.
+
 **What keeps the crossing thin.** No door opens an arena per call: one `ThreadLocal` holds
 the out/fault/format segments for the life of the thread. Every downcall is linked
 `Linker.Option.critical(true)`, so the caller's own `byte[]` crosses as a pinned heap
@@ -559,8 +590,9 @@ The jar carries two native libraries per platform, so build both before Gradle r
 cdylib` in `rust/`, then `cargo build --release --locked --lib` in `java/jni/`. The JNI library
 registers one native per C export, all 32, plus the count it reports to the loader. Gradle stages
 them into the jar and refuses a stale one: the build fails when either library is older than
-a source cargo read for it (its dep-info), or when one is built without the other, and the
-message gives the rebuild commands.
+a source cargo read for it (its dep-info), or than a `Cargo.toml` cargo has not run since (an
+edit that changes nothing cargo builds is current once cargo has looked), or when one is built
+without the other, and the message gives the rebuild commands.
 
 Gradle, Spotless, javadoc and publishing run on JDK 25. `./gradlew test` runs the suite
 against the built jar on JDK 25 (the FFM path); `testFloor` runs the same suite on JDK 21

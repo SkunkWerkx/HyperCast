@@ -136,9 +136,10 @@ public static partial class Cast
 	/// numeric cell) at the <see cref="sbyte"/> door by <paramref name="constraints"/>, on its
 	/// sign and the shortest decimal that rounds back to it: the text
 	/// <see cref="DecimalFromDouble(double)"/> says a double is. <c>-0.0</c> is zero. NaN is
-	/// <see cref="CastFailure.Malformed"/> and an infinity <see cref="CastFailure.OutOfRange"/>;
-	/// a fraction at an integer door is <see cref="CastFailure.Malformed"/> unless a rounding
-	/// takes it to a multiple. With no text to index, every fault and violation has an empty span.
+	/// <see cref="CastFailure.Malformed"/>; an infinity is <see cref="CastFailure.OutOfRange"/> at a
+	/// float or decimal door, and an infinity or a fraction is <see cref="CastFailure.Malformed"/>
+	/// at an integer door, whatever the rounding. With no text to index, every fault and violation
+	/// has an empty span.
 	/// </summary>
 	/// <param name="value">The number.</param>
 	/// <param name="constraints">The declaration, bound to this door.</param>
@@ -166,9 +167,10 @@ public static partial class Cast
 	/// numeric cell) at the <see cref="short"/> door by <paramref name="constraints"/>, on its
 	/// sign and the shortest decimal that rounds back to it: the text
 	/// <see cref="DecimalFromDouble(double)"/> says a double is. <c>-0.0</c> is zero. NaN is
-	/// <see cref="CastFailure.Malformed"/> and an infinity <see cref="CastFailure.OutOfRange"/>;
-	/// a fraction at an integer door is <see cref="CastFailure.Malformed"/> unless a rounding
-	/// takes it to a multiple. With no text to index, every fault and violation has an empty span.
+	/// <see cref="CastFailure.Malformed"/>; an infinity is <see cref="CastFailure.OutOfRange"/> at a
+	/// float or decimal door, and an infinity or a fraction is <see cref="CastFailure.Malformed"/>
+	/// at an integer door, whatever the rounding. With no text to index, every fault and violation
+	/// has an empty span.
 	/// </summary>
 	/// <param name="value">The number.</param>
 	/// <param name="constraints">The declaration, bound to this door.</param>
@@ -196,9 +198,10 @@ public static partial class Cast
 	/// numeric cell) at the <see cref="int"/> door by <paramref name="constraints"/>, on its
 	/// sign and the shortest decimal that rounds back to it: the text
 	/// <see cref="DecimalFromDouble(double)"/> says a double is. <c>-0.0</c> is zero. NaN is
-	/// <see cref="CastFailure.Malformed"/> and an infinity <see cref="CastFailure.OutOfRange"/>;
-	/// a fraction at an integer door is <see cref="CastFailure.Malformed"/> unless a rounding
-	/// takes it to a multiple. With no text to index, every fault and violation has an empty span.
+	/// <see cref="CastFailure.Malformed"/>; an infinity is <see cref="CastFailure.OutOfRange"/> at a
+	/// float or decimal door, and an infinity or a fraction is <see cref="CastFailure.Malformed"/>
+	/// at an integer door, whatever the rounding. With no text to index, every fault and violation
+	/// has an empty span.
 	/// </summary>
 	/// <param name="value">The number.</param>
 	/// <param name="constraints">The declaration, bound to this door.</param>
@@ -226,9 +229,10 @@ public static partial class Cast
 	/// numeric cell) at the <see cref="long"/> door by <paramref name="constraints"/>, on its
 	/// sign and the shortest decimal that rounds back to it: the text
 	/// <see cref="DecimalFromDouble(double)"/> says a double is. <c>-0.0</c> is zero. NaN is
-	/// <see cref="CastFailure.Malformed"/> and an infinity <see cref="CastFailure.OutOfRange"/>;
-	/// a fraction at an integer door is <see cref="CastFailure.Malformed"/> unless a rounding
-	/// takes it to a multiple. With no text to index, every fault and violation has an empty span.
+	/// <see cref="CastFailure.Malformed"/>; an infinity is <see cref="CastFailure.OutOfRange"/> at a
+	/// float or decimal door, and an infinity or a fraction is <see cref="CastFailure.Malformed"/>
+	/// at an integer door, whatever the rounding. With no text to index, every fault and violation
+	/// has an empty span.
 	/// </summary>
 	/// <param name="value">The number.</param>
 	/// <param name="constraints">The declaration, bound to this door.</param>
@@ -256,9 +260,10 @@ public static partial class Cast
 	/// numeric cell) at the <see cref="byte"/> door by <paramref name="constraints"/>, on its
 	/// sign and the shortest decimal that rounds back to it: the text
 	/// <see cref="DecimalFromDouble(double)"/> says a double is. <c>-0.0</c> is zero. NaN is
-	/// <see cref="CastFailure.Malformed"/> and an infinity <see cref="CastFailure.OutOfRange"/>;
-	/// a fraction at an integer door is <see cref="CastFailure.Malformed"/> unless a rounding
-	/// takes it to a multiple. With no text to index, every fault and violation has an empty span.
+	/// <see cref="CastFailure.Malformed"/>; an infinity is <see cref="CastFailure.OutOfRange"/> at a
+	/// float or decimal door, and an infinity or a fraction is <see cref="CastFailure.Malformed"/>
+	/// at an integer door, whatever the rounding. With no text to index, every fault and violation
+	/// has an empty span.
 	/// </summary>
 	/// <param name="value">The number.</param>
 	/// <param name="constraints">The declaration, bound to this door.</param>
@@ -286,9 +291,10 @@ public static partial class Cast
 	/// numeric cell) at the <see cref="ushort"/> door by <paramref name="constraints"/>, on its
 	/// sign and the shortest decimal that rounds back to it: the text
 	/// <see cref="DecimalFromDouble(double)"/> says a double is. <c>-0.0</c> is zero. NaN is
-	/// <see cref="CastFailure.Malformed"/> and an infinity <see cref="CastFailure.OutOfRange"/>;
-	/// a fraction at an integer door is <see cref="CastFailure.Malformed"/> unless a rounding
-	/// takes it to a multiple. With no text to index, every fault and violation has an empty span.
+	/// <see cref="CastFailure.Malformed"/>; an infinity is <see cref="CastFailure.OutOfRange"/> at a
+	/// float or decimal door, and an infinity or a fraction is <see cref="CastFailure.Malformed"/>
+	/// at an integer door, whatever the rounding. With no text to index, every fault and violation
+	/// has an empty span.
 	/// </summary>
 	/// <param name="value">The number.</param>
 	/// <param name="constraints">The declaration, bound to this door.</param>
@@ -316,9 +322,10 @@ public static partial class Cast
 	/// numeric cell) at the <see cref="uint"/> door by <paramref name="constraints"/>, on its
 	/// sign and the shortest decimal that rounds back to it: the text
 	/// <see cref="DecimalFromDouble(double)"/> says a double is. <c>-0.0</c> is zero. NaN is
-	/// <see cref="CastFailure.Malformed"/> and an infinity <see cref="CastFailure.OutOfRange"/>;
-	/// a fraction at an integer door is <see cref="CastFailure.Malformed"/> unless a rounding
-	/// takes it to a multiple. With no text to index, every fault and violation has an empty span.
+	/// <see cref="CastFailure.Malformed"/>; an infinity is <see cref="CastFailure.OutOfRange"/> at a
+	/// float or decimal door, and an infinity or a fraction is <see cref="CastFailure.Malformed"/>
+	/// at an integer door, whatever the rounding. With no text to index, every fault and violation
+	/// has an empty span.
 	/// </summary>
 	/// <param name="value">The number.</param>
 	/// <param name="constraints">The declaration, bound to this door.</param>
@@ -346,9 +353,10 @@ public static partial class Cast
 	/// numeric cell) at the <see cref="ulong"/> door by <paramref name="constraints"/>, on its
 	/// sign and the shortest decimal that rounds back to it: the text
 	/// <see cref="DecimalFromDouble(double)"/> says a double is. <c>-0.0</c> is zero. NaN is
-	/// <see cref="CastFailure.Malformed"/> and an infinity <see cref="CastFailure.OutOfRange"/>;
-	/// a fraction at an integer door is <see cref="CastFailure.Malformed"/> unless a rounding
-	/// takes it to a multiple. With no text to index, every fault and violation has an empty span.
+	/// <see cref="CastFailure.Malformed"/>; an infinity is <see cref="CastFailure.OutOfRange"/> at a
+	/// float or decimal door, and an infinity or a fraction is <see cref="CastFailure.Malformed"/>
+	/// at an integer door, whatever the rounding. With no text to index, every fault and violation
+	/// has an empty span.
 	/// </summary>
 	/// <param name="value">The number.</param>
 	/// <param name="constraints">The declaration, bound to this door.</param>
@@ -376,9 +384,10 @@ public static partial class Cast
 	/// numeric cell) at the <see cref="float"/> door by <paramref name="constraints"/>, on its
 	/// sign and the shortest decimal that rounds back to it: the text
 	/// <see cref="DecimalFromDouble(double)"/> says a double is. <c>-0.0</c> is zero. NaN is
-	/// <see cref="CastFailure.Malformed"/> and an infinity <see cref="CastFailure.OutOfRange"/>;
-	/// a fraction at an integer door is <see cref="CastFailure.Malformed"/> unless a rounding
-	/// takes it to a multiple. With no text to index, every fault and violation has an empty span.
+	/// <see cref="CastFailure.Malformed"/>; an infinity is <see cref="CastFailure.OutOfRange"/> at a
+	/// float or decimal door, and an infinity or a fraction is <see cref="CastFailure.Malformed"/>
+	/// at an integer door, whatever the rounding. With no text to index, every fault and violation
+	/// has an empty span.
 	/// </summary>
 	/// <param name="value">The number.</param>
 	/// <param name="constraints">The declaration, bound to this door.</param>
@@ -406,9 +415,10 @@ public static partial class Cast
 	/// numeric cell) at the <see cref="double"/> door by <paramref name="constraints"/>, on its
 	/// sign and the shortest decimal that rounds back to it: the text
 	/// <see cref="DecimalFromDouble(double)"/> says a double is. <c>-0.0</c> is zero. NaN is
-	/// <see cref="CastFailure.Malformed"/> and an infinity <see cref="CastFailure.OutOfRange"/>;
-	/// a fraction at an integer door is <see cref="CastFailure.Malformed"/> unless a rounding
-	/// takes it to a multiple. With no text to index, every fault and violation has an empty span.
+	/// <see cref="CastFailure.Malformed"/>; an infinity is <see cref="CastFailure.OutOfRange"/> at a
+	/// float or decimal door, and an infinity or a fraction is <see cref="CastFailure.Malformed"/>
+	/// at an integer door, whatever the rounding. With no text to index, every fault and violation
+	/// has an empty span.
 	/// </summary>
 	/// <param name="value">The number.</param>
 	/// <param name="constraints">The declaration, bound to this door.</param>
@@ -436,9 +446,10 @@ public static partial class Cast
 	/// numeric cell) at the <see cref="decimal"/> door by <paramref name="constraints"/>, on its
 	/// sign and the shortest decimal that rounds back to it: the text
 	/// <see cref="DecimalFromDouble(double)"/> says a double is. <c>-0.0</c> is zero. NaN is
-	/// <see cref="CastFailure.Malformed"/> and an infinity <see cref="CastFailure.OutOfRange"/>;
-	/// a fraction at an integer door is <see cref="CastFailure.Malformed"/> unless a rounding
-	/// takes it to a multiple. With no text to index, every fault and violation has an empty span.
+	/// <see cref="CastFailure.Malformed"/>; an infinity is <see cref="CastFailure.OutOfRange"/> at a
+	/// float or decimal door, and an infinity or a fraction is <see cref="CastFailure.Malformed"/>
+	/// at an integer door, whatever the rounding. With no text to index, every fault and violation
+	/// has an empty span.
 	/// </summary>
 	/// <param name="value">The number.</param>
 	/// <param name="constraints">The declaration, bound to this door.</param>

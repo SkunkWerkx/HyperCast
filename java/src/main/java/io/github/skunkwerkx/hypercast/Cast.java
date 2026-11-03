@@ -198,8 +198,20 @@ public final class Cast {
         return verdict(NativeCore.typed(scratch, door, value), scratch, reader);
     }
 
-    private static byte[] utf8(String text) {
-        return Objects.requireNonNull(text, "text").getBytes(StandardCharsets.UTF_8);
+    // Every String door sends the core the WTF-8 the checked doors send, so a lone surrogate is
+    // the invalid sequence it is and the verdict is the checked door's. getBytes(UTF_8) turns a
+    // lone surrogate into '?', a guess a door could then read as data, so its bytes are kept
+    // only when they hold no '?' at all: then nothing was replaced, and they are the WTF-8
+    // (which is UTF-8 for text with no lone surrogate). That keeps the JDK's intrinsic encode
+    // for the text a door almost always sees; text with a '?' of its own takes the slow path.
+    static byte[] utf8(String text) {
+        byte[] bytes = Objects.requireNonNull(text, "text").getBytes(StandardCharsets.UTF_8);
+        for (byte b : bytes) {
+            if (b == '?') {
+                return wtf8(text);
+            }
+        }
+        return bytes;
     }
 
     // A fault's span is byte offsets into the UTF-8 the core saw. For a String door that is
@@ -244,6 +256,35 @@ public final class Cast {
         return verdict instanceof Fault<T> fault && fault.reason() == CastFailure.EMPTY
                 ? java.util.Optional.empty()
                 : java.util.Optional.of(verdict);
+    }
+
+    /**
+     * Presents a checked verdict optionally: an {@link CastFailure#EMPTY} fault becomes absent
+     * ({@link java.util.Optional#empty()}); every other outcome, a {@link Violation} included,
+     * flows through untouched.
+     *
+     * @param <T> the verdict's value type
+     * @param verdict the checked verdict to present
+     * @return empty for an EMPTY fault; the untouched verdict otherwise
+     */
+    public static <T> java.util.Optional<CheckedVerdict<T>> optional(CheckedVerdict<T> verdict) {
+        Objects.requireNonNull(verdict, "verdict");
+        return verdict instanceof Fault<T> fault && fault.reason() == CastFailure.EMPTY
+                ? java.util.Optional.empty()
+                : java.util.Optional.of(verdict);
+    }
+
+    /**
+     * Presents a fault optionally, as {@link #optional(Verdict)} does. A {@link Fault} is both a
+     * {@link Verdict} and a {@link CheckedVerdict}; this overload keeps a call on an expression
+     * typed {@code Fault} unambiguous, answering as it always has.
+     *
+     * @param <T> the verdict's value type
+     * @param fault the fault to present
+     * @return empty for an EMPTY fault; the untouched fault otherwise
+     */
+    public static <T> java.util.Optional<Verdict<T>> optional(Fault<T> fault) {
+        return optional((Verdict<T>) fault);
     }
 
     // --- boolean ---
@@ -1976,10 +2017,10 @@ public final class Cast {
      * numeric cell) at the {@code i8} door by {@code constraints}, on its sign and the shortest
      * decimal that names it, the text {@link #decimalFromDouble(double)} reads: so
      * {@code 0.1 + 0.2} breaks {@code multipleOf: 0.1} under {@link Rounding#STRICT} and rounds to
-     * {@code 0.3} under {@link Rounding#MIDPOINT}. A value with a fraction is
-     * {@link CastFailure#MALFORMED} at an integer door, NaN is malformed and an infinity
-     * {@link CastFailure#OUT_OF_RANGE}; every fault and violation has an empty span. Every
-     * numeric door has this twin.
+     * {@code 0.3} under {@link Rounding#MIDPOINT}. A value with a fraction, and an infinity, is
+     * {@link CastFailure#MALFORMED} at an integer door; NaN is malformed, and an infinity is
+     * {@link CastFailure#OUT_OF_RANGE} at a float or decimal door. Every fault and violation
+     * has an empty span. Every numeric door has this twin.
      *
      * @param value the number to judge
      * @param constraints the declaration, built by {@link Constraints#i8()}

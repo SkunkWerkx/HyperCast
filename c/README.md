@@ -222,8 +222,8 @@ int main() {
   degrees.rounding = hc::Rounding::midpoint;
   const auto latitude = hc::Constraints<double>::declare(degrees);
   if (const hc::Refusal *refusal = latitude.refusal_if()) {
-    const std::string_view message = refusal->message(); // a caller bug: the rule it broke
-    std::printf("%.*s\n", static_cast<int>(message.size()), message.data());
+    const hc::RefusalMessage message = refusal->message(); // a caller bug: the rule it broke
+    std::printf("%s\n", message.c_str());
     return 2;
   }
   auto north = hc::cast_f64("45.1234567", invariant, latitude.value());
@@ -274,7 +274,10 @@ once, by the core, when it is declared. `declare` is the only way to build one: 
 `Declared<Constraints<T>>`, the declaration or a `Refusal` with the core's code (1 to 13, as in
 the C section) and one fixed message per code (`Constraints refused (code 2): minimum together
 with exclusiveMinimum.`; a code this header does not name reads `Constraints refused (code 14):
-a rule this binding does not name.`). A refused declaration is a caller bug, not data, and its
+a rule this binding does not name.`). The message is a `RefusalMessage` held by value, as a
+`KeywordName` is, so it outlives the `Declared` it came from: compare it with a string, print
+`c_str()`, or take `view()` from a named one (on a temporary, `view()` does not compile, nor
+does a `NumFormat`'s or `DateFormat`'s symbol accessor, each a view into its object). A refused declaration is a caller bug, not data, and its
 `value()` is an unbuilt declaration that no door reads as "no rules": a door handed it ends the
 program, as any contract violation does. Under C++20 a designated initializer names just the
 keywords wanted (`declare({.minimum = -90, .maximum = 90})`).

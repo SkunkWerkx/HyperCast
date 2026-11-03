@@ -410,8 +410,8 @@ fn packed_call(ex: &mut ExecuteData) -> PhpResult<Zval> {
 }
 
 /// The core's format for a `NumFormat` object: its packed bytes, the first 92 as 1.0's
-/// `FFI::memcpy` copied them, read as the C ABI reads them. A layout the core refuses is 1.0's
-/// contract violation.
+/// `FFI::memcpy` copied them, decoded little-endian, as [`packed`] lays them out on every
+/// host. A layout the core refuses is 1.0's contract violation.
 pub(crate) fn core_format(zv: &Zval) -> PhpResult<CoreFormat> {
     let object = object_of(zv).ok_or_else(|| pending("format"))?;
     let bytes = packed(object)?;

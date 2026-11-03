@@ -182,6 +182,13 @@ test_that("num_format() declares a format, and refuses one that cannot be", {
   expect_error(num_format(flags = "lenient"), "no style")
   expect_error(num_format(flags = -1), "flags")
   expect_error(num_format(NA, ","), "single string")
+  # Text that is not UTF-8 (a lone surrogate's bytes, marked UTF-8) declares nothing.
+  surrogate <- "\xed\xa0\x80"
+  Encoding(surrogate) <- "UTF-8"
+  expect_error(num_format(currency = surrogate), "^Currency symbol must be valid UTF-8$")
+  expect_error(num_format(surrogate, ","), "^Decimal separator must be valid UTF-8$")
+  expect_error(cast_datetime("1/7/2026", "day_month_year", am = surrogate),
+               "^Day period am must be valid UTF-8$")
 })
 
 test_that("num_format_from_localeconv() bridges a locale's conventions", {

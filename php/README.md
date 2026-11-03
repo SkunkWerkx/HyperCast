@@ -424,10 +424,14 @@ echo describe(Cast::checkedText(' MALE ', $sex));               // Male, entry 1
 A checked door answers a `Checked` — `$value`, `$adjusted` (true only when rounding changed it)
 and, at `Door::Text` with an `enum`, `$enumIndex`, the index of the entry it matched (`null`
 otherwise, an integer `enum` included, where the value is the answer) — or one of two
-rejections: the plain doors' own `Fault` (it did not parse: the very class, so `Cast::optional()`
-reads an `Empty` one as ever) or a `Violation` (it parsed and broke a rule: `$keyword` and the
-byte span, `$offset` and `$length`, as a fault's). All three are `final readonly`, and every
-checked door declares `Checked|Fault|Violation`. `Keyword` is an int-backed enum of the eight
+rejections: the plain doors' own `Fault` (it did not parse: the very class) or a `Violation` (it
+parsed and broke a rule: `$keyword` and the byte span, `$offset` and `$length`, as a fault's).
+All three are `final readonly`, and every checked door declares `Checked|Fault|Violation`.
+`Cast::optional()` takes a checked verdict as it takes a plain one: an `Empty` fault is `null`,
+and a `Checked` or any other rejection, a `Violation` included, comes back as it was. A PHP
+string is bytes, so text that is not UTF-8 (a lone surrogate's three bytes, a stray byte) reaches
+every door as it is: `Malformed` at its bytes, the same fault at a plain door as at a checked
+one. `Keyword` is an int-backed enum of the eight
 keywords, its values the core's codes; PHP enums are closed, so it is open the other way:
 `format` and `pattern` may join in a minor release, and a `Violation` carries a code this
 binding does not name yet as the bare `int` (`Violation::$keyword` is `Keyword|int`). So a

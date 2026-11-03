@@ -117,10 +117,11 @@ offending text with no mapping:
 Every span satisfies `offset + length <= text.length` in those units. Text is read as given,
 and surrounding whitespace is trimmed before it is judged, so the span still indexes what
 was passed (`castI32('  12x  ')` is malformed at offset 4). A string with a lone surrogate
-has no UTF-8 form, so it is `malformed`, never thrown: the plain doors read it with the
-surrogate replaced by U+FFFD (three bytes for its one code unit, so the span still maps back),
-and `castText` and the checked doors read it as it is (WTF-8), so the fault is at the
-surrogate's own code unit and a lone surrogate never matches a declared `'\ufffd'`.
+has no UTF-8 form, so it is `malformed`, never thrown: every door, plain or checked, reads it
+as it is (WTF-8), so the fault is at the surrogate's own code unit and a lone surrogate never
+matches a declared `'\ufffd'`, as a currency symbol or as an `enum` entry. Nor can one be
+declared: in a `NumFormat` or `DateFormat` symbol it is a refusal naming the field (`currency
+must be whole code points, not surrogate halves`), and as an `enum` entry refusal `9`.
 
 ### The doors
 

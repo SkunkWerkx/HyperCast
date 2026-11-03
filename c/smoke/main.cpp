@@ -223,6 +223,21 @@ int main() {
         none.refusal().message() == "Constraints refused (code 12): an enum with no entries.");
   CHECK(hc::Constraints<std::int32_t>::declare({}, nullptr, 0, small_storage).refusal().code == 12);
   CHECK(hc::Constraints<std::string_view>::declare(code, {" Male "}, storage).refusal().code == 13);
+  // Invalid UTF-8 (here a lone surrogate's bytes) reaches the core unchanged at a plain door, as
+  // at a checked one: the same fault, span included.
+  const auto loose = hc::Constraints<std::int32_t>::declare({});
+  const auto plain_bad = hc::cast_i32("12\xed\xa0\x80"
+                                      "3",
+                                      invariant);
+  const auto checked_bad = hc::cast_i32("12\xed\xa0\x80"
+                                        "3",
+                                        invariant, loose.value());
+  CHECK(!plain_bad.ok() && plain_bad.fault().reason == hc::CastFailure::malformed &&
+        plain_bad.fault().offset == 2 && plain_bad.fault().length == 3 && !checked_bad.ok() &&
+        checked_bad.rejection().is_fault() && checked_bad.rejection().fault() == plain_bad.fault());
+  // The message is a value: kept past the Declared temporary it came from, it is still whole.
+  const auto kept = hc::Constraints<double>::declare(degrees).refusal().message();
+  CHECK(kept == "Constraints refused (code 2): minimum together with exclusiveMinimum.");
   CHECK(hc::Refusal{14}.message() ==
         "Constraints refused (code 14): a rule this binding does not name.");
   CHECK(hc::Refusal{-7}.message() ==

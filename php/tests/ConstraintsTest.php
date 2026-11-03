@@ -227,6 +227,49 @@ final class ConstraintsTest extends TestCase
     }
 
     /**
+     * `Cast::optional()` takes a checked verdict as it takes a plain one: only an `Empty` fault
+     * becomes `null`; a `Checked`, a `Violation` and any other fault come back as they were.
+     */
+    public function testOptionalTakesACheckedVerdictAndLetsAViolationThrough(): void
+    {
+        $sex = new Constraints(Door::Text, trim: true, enum: ['Female', 'Male']);
+        self::assertNull(Cast::optional(Cast::checkedText('   ', $sex)));
+        $violation = Cast::checkedText('x', $sex);
+        self::assertSame($violation, Cast::optional($violation));
+        self::assertEquals(new Violation(Keyword::Enum, 0, 1), Cast::optional($violation));
+        $checked = Cast::checkedText('male', $sex);
+        self::assertSame($checked, Cast::optional($checked));
+        self::assertEquals(new Checked('Male', false, 1), Cast::optional($checked));
+        $malformed = Cast::checkedText("\xFF", $sex);
+        self::assertEquals(new Fault(CastFailure::Malformed, 0, 1), Cast::optional($malformed));
+    }
+
+    /**
+     * A PHP string is bytes, so text that is not UTF-8 (a lone surrogate's three bytes, a stray
+     * byte) reaches every door as it is, and the plain door's verdict is the checked door's, span
+     * included: `Malformed` at its bytes, never a replacement standing for them.
+     */
+    public function testInvalidUtf8IsTheSameFaultAtPlainAndCheckedDoors(): void
+    {
+        $i32 = new Constraints(Door::I32);
+        $format = new NumFormat('.', ',', NumFormat::ALL, "\u{FFFD}");
+        foreach (["\xED\xA0\x805", "5\xED\xBF\xBF", "12\xFF3", "\xEF\xBF\xBD5\xC0", "\x80"] as $text) {
+            $plain = Cast::i32($text, $format);
+            self::assertInstanceOf(Fault::class, $plain, bin2hex($text));
+            self::assertSame(CastFailure::Malformed, $plain->reason, bin2hex($text));
+            self::assertEquals(Cast::checked($text, $format, $i32), $plain, bin2hex($text));
+        }
+        self::assertEquals(new Fault(CastFailure::Malformed, 0, 3), Cast::i32("\xED\xA0\x805", $format));
+        $text = new Constraints(Door::Text);
+        foreach (["\xED\xA0\x80", "a\xFFb", "\xC3"] as $bytes) {
+            $plain = Cast::text($bytes);
+            self::assertInstanceOf(Fault::class, $plain, bin2hex($bytes));
+            self::assertEquals(Cast::checkedText($bytes, $text), $plain, bin2hex($bytes));
+        }
+        self::assertEquals(new Fault(CastFailure::Malformed, 1, 1), Cast::text("a\xFFb"));
+    }
+
+    /**
      * `Keyword` is open: a code this binding does not name yet is kept as the bare int, named
      * `keyword N`, and every named case's OpenAPI spelling is its name, first letter lowered.
      */

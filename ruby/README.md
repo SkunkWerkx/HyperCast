@@ -69,7 +69,7 @@ midnight, durations come back as exact `Rational` seconds across the core's whol
 
 Every plain door returns a `Success` or a `Fault`, and every checked door a `Checked`, a
 `Fault` or a `Violation`; `HyperCast.optional(verdict)` folds `:empty` to `nil` for
-either. Beside the doors, `native_version` returns the loaded core's
+either, and passes every other rejection, a `Violation` included, through. Beside the doors, `native_version` returns the loaded core's
 `"major.minor.patch"` and `available?` answers `true`/`false` without ever raising — see
 [Is the native core there?](#is-the-native-core-there).
 
@@ -100,8 +100,23 @@ the same exception on every backend:
   rounding that names nothing.
 - `TypeError` for text that is not a `String` (anything with `to_str` is taken as one), and
   for constraints that are not a `Constraints`.
-- `String#encode`'s own `Encoding::` error for text in another encoding that cannot be
-  transcoded to UTF-8.
+
+Text in another encoding that cannot be transcoded to UTF-8 (a lone UTF-16 surrogate, bytes
+its encoding does not allow, a character with no Unicode counterpart, any character past ASCII
+in an encoding Ruby has no converter to UTF-8 for, such as EUC-TW) is data, not an
+exception: every door, plain or checked, judges it `:malformed` at that character, on both
+backends, never with a replacement standing for it; as an `enum` entry it is refused as an
+entry that is not UTF-8 (code 9); and as a `NumFormat` symbol or a day-period designator it is
+the caller's bug, an `ArgumentError` naming the field ("currency symbol ... must be whole
+characters with a UTF-8 form"), on both backends.
+
+A dummy encoding (`UTF-16` and `UTF-32` with their byte-order mark, `ISO-2022-JP`, `UTF-7`)
+is held to the same rule. Ruby cannot split its text into characters (its `String` counts
+bytes), so the text is transcoded whole, each conversion error judged `:malformed` as one
+character, and a span counts the characters of its UTF-8 form:
+`text.encode(Encoding::UTF_8, invalid: :replace, undef: :replace)[offset, length]` is the
+offending text. A dummy encoding with no converter to UTF-8 at all (`UTF-7`,
+`ISO-2022-JP-2`) is `:malformed` at its first byte.
 
 ### Is the native core there?
 
@@ -128,8 +143,8 @@ gem, which carries no Fiddle library, that `LoadError` names the universal gem i
 ### Fault spans index the String you passed
 
 A `Fault`'s `offset`/`length` are in the units `String#[]` slices by on your own input:
-character offsets for text — in any encoding; the core reads UTF-8, and the span is mapped
-back, an identity for ASCII — and byte offsets for a binary (`ASCII-8BIT`) String, whose
+character offsets for text — in any encoding but a dummy one (above); the core reads UTF-8,
+and the span is mapped back, an identity for ASCII — and byte offsets for a binary (`ASCII-8BIT`) String, whose
 characters are its bytes. Either way `text[offset, length]` is the offending text with no
 arithmetic on your side:
 
@@ -236,10 +251,13 @@ symbol over 16 bytes, a digit zero that is ASCII or does not start a digit block
 limits are `NumFormat::SYMBOL_MAX_BYTES` (8) and `NumFormat::CURRENCY_MAX_BYTES` (16).
 
 Across the ABI a `NumFormat` is a 92-byte, size-tagged struct that the core reads in
-place — `NumFormat#packed` is exactly those bytes: the size word, the flags, the digit
-zero's code point, then each symbol's UTF-8 bytes and length held inline. It is packed
-once per format object and memoized by identity on every backend, so declaring a currency
-or a culture's digits costs a cast nothing.
+place — `NumFormat#packed` is those bytes in little-endian order, as Python's
+`NumFormat.packed` is: the size word, the flags, the digit zero's code point, then each
+symbol's UTF-8 bytes and length held inline. On a little-endian host they are exactly the
+struct; on a big-endian one the three words are swapped to native order before they cross,
+which the Fiddle backend does itself. It is packed once per format object and memoized by
+identity on every backend, so declaring a currency or a culture's digits costs a cast
+nothing.
 
 **What stays English: the boolean lexicon.** `bool` reads its twenty lexemes
 (`true`/`false`, `yes`/`no`, `on`/`off`, …) in English only. No platform carries culture
@@ -428,8 +446,9 @@ it reads the core's out-values out of its own buffers and needs the values the d
 have returned. `HyperCast::Interop` is the code the Fiddle backend's doors decode with, so
 the two cannot drift. It is loaded on every backend.
 
-- `SCALARS` — the `String#unpack` directive for one value of each scalar door (`:i32` is
-  `"l<"`; a bool is the byte 0 or 1).
+- `SCALARS` — the `String#unpack` directive for one value of each scalar door, in the host's
+  native byte order, the order the core writes in (`:i32` is `"l"`; a bool is the byte 0 or
+  1).
 - `RECORDS` — for each record door (`:decimal`, `:uuid`, `:timestamp`, `:date`, …), the
   directive that unpacks one value, how many fields that yields, and a lambda
   `(fields, at)` that builds the Ruby value from them. To decode a column, append `"*"` and
@@ -458,7 +477,7 @@ entry a little-endian `u32` byte length followed by its UTF-8, read only when th
 and file name for any SkunkWerkx core; `library:` defaults to `"hypercast"`.
 
 ```ruby
-HyperCast::Interop.decode(:i32, [-7].pack("l<"))           # => -7
+HyperCast::Interop.decode(:i32, [-7].pack("l"))            # => -7
 HyperCast::Interop.fault(2, 3, 1)                          # => Fault, reason :malformed
 HyperCast::Interop.version(0x000700)                       # => "0.7.0"
 ```
@@ -481,10 +500,13 @@ HyperCast::Interop.version(0x000700)                       # => "0.7.0"
    2.85 µs: a little behind `Time.iso8601`, sitting on Fiddle's per-call marshalling floor.
 
    Separator detection is nearly free here: `1.234.567,89` under `NumFormat::DETECT` runs
-   at 154 ns against 145 ns for the same text under a declared eurozone format. Reading a
-   format costs one pointer compare: `DETECT` is identity-matched like `INVARIANT`, and any
-   other format is resolved once per thread and memoized by identity — anchored in a
-   thread-variable so the memo's key can never be a recycled address.
+   at 154 ns against 145 ns for the same text under a declared eurozone format. Reading
+   `INVARIANT` or `DETECT` costs one pointer compare; any other format is resolved once per
+   thread and memoized by its `object_id`, which survives a compacting collection and is never
+   reused, so the memo cannot mistake a format built later for the one it remembers. That
+   lookup costs about 5 ns more than the address compare it replaced (Apple M6, Ruby 4.0.9,
+   2026-11-02: `1,234,567` under a declared `$` at 82 ns against 77 ns), and a thread
+   alternating between two formats now pays 970 ns per pair against 1.13 µs.
 
    A declared currency symbol costs text that does not carry one about 6 ns on the Magnus
    backend: in a run for 0.9.0, separate from the [Benchmarks](#benchmarks) table, `1,234,567`

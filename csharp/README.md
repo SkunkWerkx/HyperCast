@@ -121,8 +121,8 @@ scalar above `U+FFFF` (`U+1F600`, or a verbatim emoji): the core accepts it, but
 `System.Char` can't hold it, so this binding faults `OutOfRange` over the trimmed input. The
 `string`/`ReadOnlySpan<char>` overload returns a single UTF-16 code unit as it is without
 crossing into the core, a lone surrogate included, because "exactly one character" is
-what it was handed; inside longer text a lone surrogate transcodes to U+FFFD like any other
-door's input.
+what it was handed; inside longer text a lone surrogate is `Malformed`, as at every other
+door: no `string` door replaces one with U+FFFD.
 
 ## One door for a generic `T`
 
@@ -380,9 +380,11 @@ can match (code 13: an empty one, or under `trim` one with leading or trailing w
 After that a checked cast judges only data and throws nothing for it. The text door's value is a `string`, and `Verdict<T>` holds only value types,
 so `Cast.Text` — with or without constraints — answers in a `CheckedVerdict<string>`: the
 declared entry on an `enum` match, the input string itself when nothing was trimmed, and a new
-string otherwise. A lone surrogate in its UTF-16 input is `Malformed`, never replaced by
-U+FFFD, and in an `enum` entry it is refused as an entry that is not UTF-8. The numeric
-checked doors allocate nothing per call.
+string otherwise. A lone surrogate in UTF-16 input is `Malformed` at every door, plain or
+checked, never replaced by U+FFFD, and in an `enum` entry it is refused as an entry that is not
+UTF-8. `Cast.Optional` takes a checked verdict too: an `Empty` fault becomes `null`, and every
+other rejection, a `Violation` included, flows through. The numeric checked doors allocate
+nothing per call.
 
 ## Why not the BCL's own `TryParse` family?
 
@@ -432,6 +434,16 @@ checked doors allocate nothing per call.
    encoder says the text did not fit, rather than sizing by the 3-bytes-per-char worst
    case — which would send any text past ~170 chars to the pool even when it is plain
    ASCII that fits with room to spare.
+
+   **The lone-surrogate fix, measured (2026-11-02, Apple M6, macOS 27.2, .NET 11 RC 3,
+   BenchmarkDotNet 0.16.0-preview.2).** The `string` doors now transcode with
+   `Utf8.FromUtf16(..., replaceInvalidSequences: false)`, falling back to WTF-8 for a lone
+   surrogate, where `Encoding.UTF8` wrote U+FFFD. Both are the BCL's vectorized transcoder, and
+   the A/B on one machine is level within a nanosecond: `Cast.Uuid` 13.2 ns against 13.0 before,
+   `Cast.Timestamp` 30.2 against 30.2, `Cast.Int32` (grouped) 22.0 against 22.2, `Cast.Double`
+   23.5 against 23.6, `Cast.DateTime` 18.9 against 18.8; the widest gap, `Cast.Decimal`, is
+   27.9 ± 0.6 ns against 26.9 ± 0.3, a loss of a nanosecond. The linux-x64 tables above predate
+   the change and were not re-measured there.
 
    The two doors the first consumer asked for, same run, string doors with the transcode
    included, invariant unless stated — printed as measured, because two of the three rows

@@ -477,8 +477,36 @@ static_assert(hc::Refusal{0}.message() ==
                   "The enum list does not fit: the EnumStorage is smaller than "
                   "storage_size(entries), or a text entry is longer than 4294967295 UTF-8 bytes.",
               "the header's own refusal");
-static_assert(hc::Refusal{0}.message().find("Constraints refused") == std::string_view::npos,
+static_assert(std::string_view(hc::Refusal{0}.message().c_str()).find("Constraints refused") ==
+                  std::string_view::npos,
               "code 0 is not worded as a core refusal");
+// No view into a temporary: a Refusal's message is its own value, and every accessor that
+// views into its object (a RefusalMessage's, a KeywordName's, a NumFormat's or DateFormat's
+// symbols) takes a named one; on a temporary the call does not compile.
+template <class T, class = void> struct views_into : std::false_type {};
+template <class T>
+struct views_into<T, std::void_t<decltype(std::declval<T>().view())>> : std::true_type {};
+template <class T, class = void> struct symbol_of : std::false_type {};
+template <class T>
+struct symbol_of<T, std::void_t<decltype(std::declval<T>().currency())>> : std::true_type {};
+template <class T, class = void> struct period_of : std::false_type {};
+template <class T>
+struct period_of<T, std::void_t<decltype(std::declval<T>().am())>> : std::true_type {};
+static_assert(
+    std::is_same_v<decltype(std::declval<const hc::Refusal &>().message()), hc::RefusalMessage> &&
+        !std::is_convertible_v<hc::RefusalMessage, std::string_view>,
+    "a refusal's message is held by value, never a view into the Refusal");
+static_assert(views_into<const hc::RefusalMessage &>::value &&
+                  !views_into<hc::RefusalMessage>::value &&
+                  !views_into<const hc::RefusalMessage>::value,
+              "RefusalMessage::view() only from a named message");
+static_assert(views_into<const hc::KeywordName &>::value && !views_into<hc::KeywordName>::value,
+              "KeywordName::view() only from a named name");
+static_assert(symbol_of<const hc::NumFormat &>::value && !symbol_of<hc::NumFormat>::value,
+              "a NumFormat's symbols only from a named format");
+static_assert(period_of<const hc::DateFormat &>::value && !period_of<hc::DateFormat>::value,
+              "a DateFormat's day periods only from a named format");
+static_assert(sizeof(hc::Refusal) == sizeof(std::int32_t), "a Refusal is its code");
 // The constraints layout as the header carries it.
 static_assert(sizeof(HyperCastRawConstraints) == HyperCastRawConstraints_SIZE &&
                   alignof(HyperCastRawConstraints) == 8 &&
@@ -636,8 +664,9 @@ template <class T> void constrained(const char *file, const Json &vector) {
       fail(file, vector, "declared, expected a refusal");
     } else if (refusal->code != code) {
       fail(file, vector, "wrong refusal code");
-    } else if (refusal->message().find("Constraints refused (code " + std::to_string(code) +
-                                       "): ") != 0) {
+    } else if (const hc::RefusalMessage message = refusal->message();
+               message.view().find("Constraints refused (code " + std::to_string(code) + "): ") !=
+               0) {
       fail(file, vector, "wrong refusal message");
     }
     return;

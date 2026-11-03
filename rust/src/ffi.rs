@@ -739,7 +739,8 @@ pub extern "C" fn cast_checked(
 /// spreadsheet's numeric cell), at the numeric door `door` by `constraints` and the integer
 /// `enum` list at `enum_ptr`/`enum_len`, on its sign and shortest round-trip decimal: the
 /// same judgement `cast_checked` makes of that text. `-0.0` is zero, written at a float door
-/// as `0.0`. NaN is malformed and an infinity out of range; with no text to index, every
+/// as `0.0`. NaN is malformed; an infinity is out of range at a float or decimal door and
+/// malformed at an integer door, as the typed doors judge it. With no text to index, every
 /// fault and violation has an empty span. The codes and what each writes are
 /// `cast_checked`'s, the delivered float's judgement included (at the `F32` door, the
 /// double's digits are judged, then the narrowed float), and a door that is not numeric is

@@ -462,7 +462,9 @@ def test_constraints_corpus():
     spans) and as str (code-point spans); from_f64 rows through cast_checked_from_float.
     """
     seen = set()
-    for vector in _corpus("constraints.json"):
+    vectors = _corpus("constraints.json")
+    replayed = 0
+    for vector in vectors:
         label = _label(vector)
         door = _DOORS[vector["door"]]
         keywords = _keywords(vector["constraints"])
@@ -472,6 +474,7 @@ def test_constraints_corpus():
             with pytest.raises(ValueError, match=re.escape(refusal_message(code))):
                 Constraints(door, **keywords)
             assert hypercast.cast_constraints_check(door, **keywords) == code, label
+            replayed += 1
             continue
         seen.add(vector["door"])
         assert hypercast.cast_constraints_check(door, **keywords) == 0, label
@@ -484,11 +487,13 @@ def test_constraints_corpus():
             seen.add("from_f64")
             verdict = hypercast.cast_checked_from_float(_from_f64(vector["from_f64"]), constraints)
             _assert_checked(label, vector, verdict, same)
+            replayed += 1
             continue
         if "input_bytes" in vector:
             seen.add("input_bytes")
             verdict = hypercast.cast_text(bytes(vector["input_bytes"]), constraints)
             _assert_checked(label, vector, verdict, same)
+            replayed += 1
             continue
         text = vector["input"]
 
@@ -505,7 +510,10 @@ def test_constraints_corpus():
             _assert_checked(label, vector, verdict, same)
             verdict = hypercast.cast_checked(text, fmt, constraints)
             _assert_checked(f"{label} (str)", vector, verdict, chars)
+        replayed += 1
     assert seen == set(_DOORS) | {"refused", "from_f64", "input_bytes"}, seen
+    # Every row was replayed: the count is the file's, never a literal.
+    assert replayed == len(vectors), (replayed, len(vectors))
 
 
 def test_declarations_corpus():
@@ -514,7 +522,8 @@ def test_declarations_corpus():
     whose packed layout carries the raw triple (scale included, which Decimal equality would
     ignore) at bytes 40 to 56. A refused row raises ValueError with code 8."""
     counts = {"ok": 0, "refused": 0, "bytes": 0}
-    for vector in _corpus("declarations.json"):
+    vectors = _corpus("declarations.json")
+    for vector in vectors:
         if "input_bytes" in vector:
             counts["bytes"] += 1
             assert vector["expect"] == "refused" and vector["refusal"] == 8
@@ -539,7 +548,9 @@ def test_declarations_corpus():
         assert int("".join(map(str, digits))) == magnitude, text
         assert (-exponent, bool(sign)) == (scale, negative), text
         assert format(hypercast.cast_declared_decimal(text), "f") == vector["value"], text
-    assert counts == {"ok": 33, "refused": 30, "bytes": 3}, counts
+    # Every row was replayed, and every kind is present: counts from the file, never literals.
+    assert sum(counts.values()) == len(vectors), (counts, len(vectors))
+    assert all(counts.values()), counts
 
 
 #: Every plain door and its parameters, as they were before the checked doors joined: the

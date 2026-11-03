@@ -347,6 +347,40 @@ final class CastTests: XCTestCase {
             .fault(Fault(reason: .malformed, offset: 0, length: 1)))
     }
 
+    func testOptionalTakesACheckedVerdictAndLetsAViolationThrough() throws {
+        let percent = Constraints<Int32>(minimum: 0, maximum: 100)
+        XCTAssertNil(Cast.optional(Cast.i32("  ", format: .invariant, constraints: percent)))
+        XCTAssertEqual(
+            Cast.optional(Cast.i32("42", format: .invariant, constraints: percent)),
+            .success(Checked(value: 42, adjusted: false, enumIndex: nil)))
+        XCTAssertEqual(
+            Cast.optional(Cast.i32("abc", format: .invariant, constraints: percent)),
+            .rejection(.fault(Fault(reason: .malformed, offset: 0, length: 1))))
+        XCTAssertEqual(
+            Cast.optional(Cast.i32("101", format: .invariant, constraints: percent)),
+            .rejection(.violation(Violation(keyword: .maximum, offset: 0, length: 3))))
+        XCTAssertNil(Cast.optional(Cast.text(" \t", constraints: Constraints<String>(trim: true))))
+    }
+
+    func testInvalidUTF8IsTheCoresVerdictAtPlainAndCheckedDoorsAlike() throws {
+        // A Swift String holds no lone surrogate; bytes can still carry its WTF-8 form, or any
+        // other invalid sequence, and every door hands them to the core unchanged.
+        let any = Constraints<Int32>(minimum: "-2147483648")
+        for input: [UInt8] in [[0x31, 0xED, 0xA0, 0x80], [0xED, 0xB0, 0x80], [0x31, 0x32, 0xFF, 0x33], [0xC3]] {
+            guard case .fault(let fault) = Cast.i32(input, format: .invariant) else {
+                return XCTFail("\(input): not a fault")
+            }
+            XCTAssertEqual(fault.reason, .malformed, "\(input)")
+            XCTAssertEqual(Cast.i32(input, format: .invariant, constraints: any), .rejection(.fault(fault)), "\(input)")
+        }
+        XCTAssertEqual(
+            Cast.i32([0x31, 0x32, 0xED, 0xAF, 0xBF, 0x33], format: .invariant),
+            .fault(Fault(reason: .malformed, offset: 2, length: 3)))
+        XCTAssertEqual(
+            Cast.text([0x31, 0x32, 0xED, 0xAF, 0xBF, 0x33] as [UInt8]),
+            .fault(Fault(reason: .malformed, offset: 2, length: 1)))
+    }
+
     func testBytesAndStringDoorsAgree() throws {
         XCTAssertEqual(Cast.bool("yes"), Cast.bool(Array("yes".utf8)))
         XCTAssertEqual(Cast.bool("yes"), .success(true))

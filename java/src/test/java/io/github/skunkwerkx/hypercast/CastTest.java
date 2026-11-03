@@ -1,5 +1,6 @@
 package io.github.skunkwerkx.hypercast;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -246,6 +247,77 @@ final class CastTest {
                 Cast.optional(Cast.i32("42", NumFormat.INVARIANT)).orElseThrow());
         assertInstanceOf(
                 Fault.class, Cast.optional(Cast.i32("abc", NumFormat.INVARIANT)).orElseThrow());
+    }
+
+    @Test
+    void optionalTakesACheckedVerdictAndLetsAViolationThrough() {
+        Constraints<Integer> percent =
+                Constraints.i32().minimum("0").maximum("100").build();
+        assertTrue(Cast.optional(Cast.i32("  ", NumFormat.INVARIANT, percent)).isEmpty());
+        assertEquals(
+                new Checked<>(42, false, java.util.OptionalInt.empty()),
+                Cast.optional(Cast.i32("42", NumFormat.INVARIANT, percent)).orElseThrow());
+        assertEquals(
+                new Fault<Integer>(CastFailure.MALFORMED, 0, 1),
+                Cast.optional(Cast.i32("abc", NumFormat.INVARIANT, percent)).orElseThrow());
+        assertEquals(
+                new Violation<Integer>(Keyword.MAXIMUM, 0, 3),
+                Cast.optional(Cast.i32("101", NumFormat.INVARIANT, percent)).orElseThrow());
+        assertTrue(Cast.optional(Cast.text(" \t", Constraints.text().trim(true).build()))
+                .isEmpty());
+        // A Fault is both kinds of verdict; a call on one stays the plain overload.
+        Fault<Integer> empty = new Fault<>(CastFailure.EMPTY, 0, 0);
+        java.util.Optional<Verdict<Integer>> absent = Cast.optional(empty);
+        assertTrue(absent.isEmpty());
+    }
+
+    @Test
+    void aLoneSurrogateIsMalformedAtEveryPlainDoorNeverReplaced() {
+        // getBytes(UTF_8) made one '?', which a door could read as data: here a declared '?'
+        // currency symbol. The plain doors send the core the checked doors' WTF-8 instead.
+        NumFormat question = new NumFormat(".", ",", NumFormat.STYLE_ALL, "?");
+        assertEquals(new Success<>(5), Cast.i32("?5", question));
+        assertEquals(new Fault<Integer>(CastFailure.MALFORMED, 0, 1), Cast.i32("\uD8005", question));
+        // The encode keeps getBytes's bytes only when they hold no '?' (nothing was replaced), so
+        // a '?' of the text's own, beside a surrogate or not, takes the WTF-8 path.
+        assertEquals(new Fault<Integer>(CastFailure.MALFORMED, 1, 1), Cast.i32("?\uD8005", question));
+        assertEquals(new Success<>("\u00E9\uD83D\uDE00?"), Cast.text("\u00E9\uD83D\uDE00?"));
+        assertEquals(new Success<>("\u00E9\uD83D\uDE00"), Cast.text("\u00E9\uD83D\uDE00"));
+        assertEquals(new Fault<Character>(CastFailure.MALFORMED, 0, 1), Cast.character("\uD800 "));
+        // The same verdict, span included, as the checked and text doors give.
+        Constraints<Integer> any = Constraints.i32().build();
+        for (String input : List.of("1\uD800", "\uDC00", "12\uDBFF3", "é\uD800", "  \uD800  ")) {
+            Verdict<Integer> plain = Cast.i32(input, NumFormat.INVARIANT);
+            if (!(plain instanceof Fault<Integer> fault)) {
+                throw new AssertionError(input + ": " + plain);
+            }
+            assertEquals(CastFailure.MALFORMED, fault.reason(), input);
+            assertEquals(fault, Cast.i32(input, NumFormat.INVARIANT, any), input);
+        }
+        assertEquals(new Fault<Integer>(CastFailure.MALFORMED, 2, 1), Cast.i32("12\uDBFF3", NumFormat.INVARIANT));
+        assertEquals(new Fault<String>(CastFailure.MALFORMED, 2, 1), Cast.text("12\uDBFF3"));
+        assertEquals(new Fault<Double>(CastFailure.MALFORMED, 1, 1), Cast.f64("1\uD800\uD800", NumFormat.INVARIANT));
+    }
+
+    @Test
+    void thePlainDoorsEncodeIsTheWtf8WhereverALoneSurrogateSits() {
+        // The plain doors keep getBytes(UTF_8) unless its bytes hold a '?': a lone surrogate
+        // (and a '?' of the text's own) at every position of texts of every length to 25,
+        // beside ASCII and beside two-byte characters, is still sent as the WTF-8 the checked
+        // doors send.
+        for (int length = 1; length <= 25; length++) {
+            for (int at = 0; at < length; at++) {
+                for (char filler : new char[] {'>', '@', '\u00E9'}) {
+                    char[] chars = new char[length];
+                    java.util.Arrays.fill(chars, filler);
+                    for (char odd : new char[] {'\uDC00', '\uD800', '?'}) {
+                        chars[at] = odd;
+                        String text = new String(chars);
+                        assertArrayEquals(Cast.wtf8(text), Cast.utf8(text), text);
+                    }
+                }
+            }
+        }
     }
 
     @Test

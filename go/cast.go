@@ -458,6 +458,21 @@ func failed(code int32, fault *rawFault) *Fault {
 	return f
 }
 
+// Optional presents a plain door's verdict optionally, Go's absent being a nil pointer: an
+// Empty fault is absent, (nil, nil); a value is a pointer to it, (&value, nil); every other
+// fault flows through untouched, (nil, fault). A door's two results pass straight in:
+//
+//	age, fault := hypercast.Optional(hypercast.I32(text, hypercast.Invariant))
+func Optional[V any](value V, fault *Fault) (*V, *Fault) {
+	if fault != nil {
+		if fault.Reason == Empty {
+			return nil, nil
+		}
+		return nil, fault
+	}
+	return &value, nil
+}
+
 // Bool casts boolean text: true/false plus the conventions untrusted sources actually send
 // (t/f, yes/no, y/n, 1/0, on/off, enabled/disabled, active/inactive, checked/unchecked,
 // in/out), ASCII case-insensitive.
