@@ -370,6 +370,21 @@ RSpec.describe HyperCast do
         .to raise_error(ArgumentError, /group separator .* exceeds 8 UTF-8 bytes/)
     end
 
+    it "refuses a declared symbol with no UTF-8 form, never declaring a stand-in for it" do
+      lone = "\xD8\x00".dup.force_encoding(Encoding::UTF_16BE) # a lone surrogate
+      broken = "\xED\xA0\x80".dup.force_encoding(Encoding::UTF_8) # its WTF-8, not UTF-8
+      undefined = "\xA1".dup.force_encoding(Encoding::EUC_JP)
+      whole = /must be whole characters with a UTF-8 form\z/
+      expect { declare(currency: lone) }.to raise_error(ArgumentError, /\Acurrency symbol .*#{whole}/o)
+      expect { declare(minus_sign: broken) }.to raise_error(ArgumentError, /\Aminus sign .*#{whole}/o)
+      expect { declare(percent: undefined) }.to raise_error(ArgumentError, /\Apercent symbol .*#{whole}/o)
+      expect { declare(digit_zero: lone) }.to raise_error(ArgumentError, /\Adigit zero .*#{whole}/o)
+      expect { HyperCast::NumFormat.new(decimal_sep: broken, group_sep: ",", flags: HyperCast::ALL_STYLES) }
+        .to raise_error(ArgumentError, /\Adecimal separator .*#{whole}/o)
+      # A real U+FFFD is a character with a UTF-8 form like any other.
+      expect(declare(currency: "\uFFFD").currency).to eq("\uFFFD")
+    end
+
     it "keeps the symbol limits on NumFormat, where they are documented" do
       expect(HyperCast::NumFormat::SYMBOL_MAX_BYTES).to eq(8)
       expect(HyperCast::NumFormat::PACKED_BYTES).to eq(92)
@@ -450,6 +465,11 @@ RSpec.describe HyperCast do
       .to raise_error(ArgumentError, /pm designator/) # 18 bytes
     expect { described_class.datetime("1/7/2026", :day_month_year, am: :vorm) }
       .to raise_error(ArgumentError, "am designator must be a String; got :vorm")
+    # A designator with no UTF-8 form: a lone surrogate, and its WTF-8 bytes.
+    expect { described_class.datetime("1/7/2026", :day_month_year, am: "\xD8\x00".dup.force_encoding(Encoding::UTF_16BE)) }
+      .to raise_error(ArgumentError, /\Aam designator .* must be whole characters with a UTF-8 form\z/)
+    expect { described_class.datetime("1/7/2026", :day_month_year, pm: "\xED\xA0\x80".dup.force_encoding(Encoding::UTF_8)) }
+      .to raise_error(ArgumentError, /\Apm designator .* must be whole characters with a UTF-8 form\z/)
     expect { described_class.datetime("1/7/2026", :day_month_year, noon: "x") }
       .to raise_error(ArgumentError, "unknown keyword: :noon")
   end
@@ -646,12 +666,89 @@ RSpec.describe HyperCast do
       expect(described_class.i32(textual, invariant)).to eq(HyperCast::Success.new(value: 42))
     end
 
-    it "raises String#encode's own error for text that cannot be transcoded to UTF-8" do
-      # A lone high surrogate: valid UTF-16 code units that name no character.
-      lone_surrogate = [0x0031, 0xD800].pack("v*").force_encoding(Encoding::UTF_16LE)
-      expect { described_class.bool(lone_surrogate) }.to raise_error(Encoding::InvalidByteSequenceError)
-      expect { described_class.i32(lone_surrogate, invariant) }.to raise_error(Encoding::InvalidByteSequenceError)
-      expect { described_class.unix(lone_surrogate, :seconds) }.to raise_error(Encoding::InvalidByteSequenceError)
+    it "reads text that cannot be transcoded to UTF-8 as malformed at that character, at every door" do
+      utf16 = ->(*units) { units.pack("v*").force_encoding(Encoding::UTF_16LE) }
+      malformed = ->(offset) { HyperCast::Fault.new(reason: :malformed, offset: offset, length: 1) }
+      # A lone high surrogate: valid UTF-16 code units that name no character. Never an
+      # exception, never a replacement standing for it, whatever the door.
+      lone_surrogate = utf16.call(0x0031, 0xD800)
+      # (The boolean door spans the whole token it could not read: both characters.)
+      whole_token = HyperCast::Fault.new(reason: :malformed, offset: 0, length: 2)
+      expect(described_class.bool(lone_surrogate)).to eq(whole_token)
+      expect(described_class.i32(lone_surrogate, invariant)).to eq(malformed.call(1))
+      expect(described_class.unix(lone_surrogate, :seconds)).to eq(malformed.call(1))
+      expect(described_class.text(lone_surrogate)).to eq(malformed.call(1))
+      # Declared as the currency symbol, U+FFFD still cannot stand in for a surrogate.
+      replacement = HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",", flags: HyperCast::ALL_STYLES,
+                                             currency: "\uFFFD")
+      expect(described_class.i32(utf16.call(0xD800, 0x0035), replacement)).to eq(malformed.call(0))
+      # The plain door's fault is the checked door's, span included, for each of these.
+      i32 = HyperCast::Constraints.new(door: :i32)
+      [utf16.call(0xD800, 0x35), utf16.call(0x35, 0xDFFF), utf16.call(0x31, 0x32, 0xD800, 0x33),
+       utf16.call(0x20AC, 0x31, 0xDC00, 0x78), "a\xA4".dup.force_encoding(Encoding::EUC_JP)].each do |text|
+        plain = described_class.i32(text, replacement)
+        expect(plain).to have_attributes(reason: :malformed), text.inspect
+        expect(plain).to eq(described_class.checked(text, replacement, i32)), text.inspect
+      end
+      expect(described_class.i32(utf16.call(0x31, 0x32, 0xD800, 0x33), invariant)).to eq(malformed.call(2))
+      # An enum entry with no UTF-8 form is refused as an entry that is not UTF-8 (9).
+      expect(HyperCast.constraints_check(door: :text, enum: [utf16.call(0xD800)])).to eq(9)
+    end
+
+    # A dummy encoding (UTF-16 or UTF-32 with a byte-order mark, ISO-2022-JP, UTF-7) has no
+    # characters Ruby can split: its String counts bytes. Such text is transcoded whole, each
+    # conversion error standing as one character no UTF-8 decoder accepts, so a span counts
+    # the characters of its UTF-8 form: what encode(UTF_8, invalid: :replace, undef: :replace)
+    # spells. Never an encoding exception, whatever the door.
+    it "reads text in a dummy encoding as its UTF-8 form, malformed at each conversion error" do
+      malformed = ->(offset, length = 1) { HyperCast::Fault.new(reason: :malformed, offset: offset, length: length) }
+      bom_utf16 = "\xFE\xFF\x00\x35\xD8\x00".dup.force_encoding(Encoding::UTF_16) # "5", lone surrogate
+      jis = "\e$B\x24\x22\e(B5\xFF".dup.force_encoding(Encoding::ISO_2022_JP) # "あ5", a bad byte
+      expect(bom_utf16.length).to eq(6) # bytes: the unit a dummy encoding's String counts
+      expect(described_class.i32(bom_utf16, invariant)).to eq(malformed.call(1))
+      expect(described_class.i32(jis, invariant)).to eq(malformed.call(0))
+      expect(described_class.text(bom_utf16)).to eq(malformed.call(1))
+      expect(described_class.text(jis)).to eq(malformed.call(2))
+      expect(described_class.bool(bom_utf16)).to eq(malformed.call(0, 2))
+      expect(described_class.unix(jis, :seconds)).to eq(malformed.call(0))
+      expect(described_class.checked(bom_utf16, invariant, HyperCast::Constraints.new(door: :i32)))
+        .to eq(malformed.call(1))
+      # The span indexes the replacing transcode, character for character.
+      expect(jis.encode(Encoding::UTF_8, invalid: :replace, undef: :replace)[2]).to eq("\uFFFD")
+      # Well-formed text in a dummy encoding reads as any other.
+      expect(described_class.i32("\xFE\xFF\x00\x34\x00\x32".dup.force_encoding(Encoding::UTF_16), invariant))
+        .to eq(HyperCast::Success.new(value: 42))
+      expect(described_class.i32("\xFF\xFE\x00\x00\x37\x00\x00\x00".dup.force_encoding(Encoding::UTF_32), invariant))
+        .to eq(HyperCast::Success.new(value: 7))
+      expect(described_class.text("\e$B\x24\x22\e(B".dup.force_encoding(Encoding::ISO_2022_JP)))
+        .to eq(HyperCast::Success.new(value: "\u3042"))
+      # A dummy encoding with no converter to UTF-8 at all: each byte stands as one.
+      expect(described_class.i32("+AGE-".dup.force_encoding(Encoding::UTF_7), invariant)).to eq(malformed.call(0))
+      expect(described_class.text("".dup.force_encoding(Encoding::UTF_7)))
+        .to eq(HyperCast::Fault.new(reason: :empty, offset: 0, length: 0))
+      # An ASCII-compatible encoding with no converter: ASCII reads, the rest is malformed.
+      expect(described_class.i32("42".dup.force_encoding(Encoding::EUC_TW), invariant))
+        .to eq(HyperCast::Success.new(value: 42))
+      expect(described_class.i32("4\xA1\xA1".dup.force_encoding(Encoding::EUC_TW), invariant)).to eq(malformed.call(1))
+      # An enum entry is text too, refused as an entry that is not UTF-8 (9); a declared symbol
+      # in such text is the caller's bug.
+      expect(HyperCast.constraints_check(door: :text, enum: [bom_utf16])).to eq(9)
+      expect { HyperCast::NumFormat.new(decimal_sep: jis, group_sep: ",", flags: HyperCast::ALL_STYLES) }
+        .to raise_error(ArgumentError, /\Adecimal separator .* must be whole characters with a UTF-8 form\z/)
+      utf7 = "\xFF".dup.force_encoding(Encoding::UTF_7)
+      expect { HyperCast::NumFormat.new(decimal_sep: utf7, group_sep: ",", flags: HyperCast::ALL_STYLES) }
+        .to raise_error(ArgumentError, /\Adecimal separator .* must be whole characters with a UTF-8 form\z/)
+      expect { described_class.datetime("1/7/2026", :day_month_year, am: bom_utf16) }
+        .to raise_error(ArgumentError, /\Aam designator .* must be whole characters with a UTF-8 form\z/)
+    end
+
+    it "presents a checked verdict through optional too: only an empty fault is nil" do
+      sex = HyperCast::Constraints.new(door: :text, trim: true, enum: %w[Female Male])
+      expect(described_class.optional(described_class.text("   ", sex))).to be_nil
+      expect(described_class.optional(described_class.text("x", sex)))
+        .to eq(HyperCast::Violation.new(keyword: HyperCast::Keyword::ENUM, offset: 0, length: 1))
+      expect(described_class.optional(described_class.text("male", sex)))
+        .to eq(HyperCast::Checked.new(value: "Male", adjusted: false, enum_index: 1))
     end
   end
 

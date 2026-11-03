@@ -9,15 +9,27 @@ const { existsSync, readdirSync, readFileSync } = require('node:fs') as typeof i
 const path: typeof import('node:path') = require('node:path')
 const { test }: typeof import('node:test') = require('node:test')
 const api = require('../index.js') as typeof import('../index.js')
-const { DateFormat, NumFormat } = api
+const { Constraints, DateFormat, Door, NumFormat, Rounding } = api
 type Verdict<T> = import('../index.js').Verdict<T>
+type CheckedVerdict<T> = import('../index.js').CheckedVerdict<T>
+type ConstraintsSpec = import('../index.js').ConstraintsSpec
 type Text = import('../index.js').Text
 
 // One corpus record. Each file uses a subset of these fields; JSON.parse does not check them.
 interface Vector {
   input: string
-  expect: 'ok' | 'empty' | 'malformed' | 'out_of_range'
+  expect: 'ok' | 'empty' | 'malformed' | 'out_of_range' | 'violation' | 'refused'
   fault?: [number, number]
+  constraints?: Record<string, unknown>
+  input_bytes?: number[]
+  from_f64?: number | string
+  adjusted?: boolean
+  enum_index?: number
+  keyword?: string
+  refusal?: number
+  magnitude?: string
+  scale?: number
+  negative?: boolean
   type?: string
   door?: string
   bits?: string
@@ -133,6 +145,16 @@ function formatOf(v: Vector): InstanceType<typeof NumFormat> | undefined {
   return declared.value
 }
 
+// A double's bits, so 0 and -0 differ: the core never delivers a negative zero, and a binding
+// that made one of its own would pass a === comparison.
+function bits(value: number): bigint {
+  const view = new DataView(new ArrayBuffer(8))
+  view.setFloat64(0, value)
+  return view.getBigUint64(0)
+}
+const sameBits = (a: unknown, e: unknown): boolean =>
+  typeof a === 'number' && typeof e === 'number' && bits(a) === bits(e)
+
 const deep = (a: unknown, e: unknown): boolean => {
   try {
     assert.deepEqual(a, e)
@@ -173,6 +195,8 @@ const files = [
   'time.json',
   'duration.json',
   'typed.json',
+  'constraints.json',
+  'declarations.json',
 ]
 
 test('every corpus file is replayed', () => {
@@ -224,7 +248,7 @@ test('real.json', () => {
     const format = formatOf(v)
     const expected =
       typeof v.value === 'number' && v.type === 'f32' ? Math.fround(v.value) : v.value
-    replay('real.json', v, (text) => door(text, format), expected)
+    replay('real.json', v, (text) => door(text, format), expected, sameBits)
   }
 })
 
@@ -340,4 +364,175 @@ test('typed.json', () => {
     }
   }
   assert.deepEqual([...seen].sort(), ['decimal', 'excel_duration', 'excel_serial', 'excel_time'])
+})
+
+// The corpus's door names, as the binding's Door members.
+const doorOf: Record<string, number> = {
+  i8: Door.I8,
+  i16: Door.I16,
+  i32: Door.I32,
+  i64: Door.I64,
+  u8: Door.U8,
+  u16: Door.U16,
+  u32: Door.U32,
+  u64: Door.U64,
+  f32: Door.F32,
+  f64: Door.F64,
+  decimal: Door.Decimal,
+  text: Door.Text,
+}
+const roundingOf: Record<string, number> = {
+  strict: Rounding.Strict,
+  midpoint: Rounding.Midpoint,
+  floor: Rounding.Floor,
+  ceiling: Rounding.Ceiling,
+}
+
+// The vector's declaration as a caller writes it, for the public constructor: every bound,
+// step and entry the decimal string the corpus spells it as.
+function specOf(v: Vector): ConstraintsSpec {
+  const c = v.constraints ?? {}
+  const spec: Record<string, unknown> = { door: doorOf[v.door as string] }
+  for (const key of [
+    'minimum',
+    'exclusiveMinimum',
+    'maximum',
+    'exclusiveMaximum',
+    'multipleOf',
+    'minLength',
+    'maxLength',
+    'trim',
+    'enum',
+  ]) {
+    if (key in c) spec[key] = c[key]
+  }
+  if (c.rounding !== undefined) spec.rounding = roundingOf[c.rounding as string]
+  return spec as unknown as ConstraintsSpec
+}
+
+// What a checked success at the vector's door is: a bigint at the 64-bit doors, the single
+// widened at f32, the canonical text at decimal, the caller's entry (or text) at text.
+function expectedValue(v: Vector): unknown {
+  if (v.door === 'i64' || v.door === 'u64') return BigInt(v.value as string | number)
+  if (v.door === 'f32') return Math.fround(v.value as number)
+  return v.value
+}
+const sameChecked = (door: string) => (a: unknown, e: unknown) =>
+  door === 'f32' || door === 'f64' ? sameBits(a, e) : a === e
+
+// Holds one checked verdict to the vector, its span already in the form's units.
+function judge(
+  ctx: string,
+  v: Vector,
+  verdict: CheckedVerdict<unknown>,
+  span: [number, number] | undefined,
+  units: number,
+): void {
+  if (verdict.ok) {
+    assert.equal(v.expect, 'ok', `${ctx}: unexpectedly ${String(verdict.value)}`)
+    const expected = expectedValue(v)
+    assert.ok(
+      sameChecked(v.door as string)(verdict.value, expected),
+      `${ctx}: ${String(verdict.value)} != ${String(expected)}`,
+    )
+    assert.equal(verdict.adjusted, v.adjusted, `${ctx}: adjusted`)
+    assert.equal(verdict.enumIndex, v.enum_index ?? null, `${ctx}: enumIndex`)
+    return
+  }
+  if ('violation' in verdict) {
+    assert.equal(v.expect, 'violation', `${ctx}: violated ${verdict.violation.keyword}`)
+    const { keyword, offset, length } = verdict.violation
+    assert.equal(keyword, v.keyword, ctx)
+    assert.ok(offset + length <= units, `${ctx}: span ${offset}+${length} past ${units}`)
+    if (span !== undefined) assert.deepEqual([offset, length], span, `${ctx}: span`)
+    return
+  }
+  const { reason, offset, length } = verdict.fault
+  assert.equal(reason, reasons[v.expect as keyof typeof reasons], `${ctx}: ${reason}`)
+  assert.ok(offset + length <= units, `${ctx}: span ${offset}+${length} past ${units}`)
+  if (span !== undefined) assert.deepEqual([offset, length], span, `${ctx}: span`)
+}
+
+test('constraints.json', () => {
+  // Every row is declared through the public constructor, so the corpus runs the binding's own
+  // conversion of each bound, step and entry. A text row runs as bytes and as the string.
+  let refusals = 0
+  let typed = 0
+  let replayed = 0
+  const vectors = load('constraints.json')
+  for (const v of vectors) {
+    const ctx = `constraints.json ${JSON.stringify(v)}`
+    const spec = specOf(v)
+    const declared = Constraints.declare(spec)
+    if (v.expect === 'refused') {
+      assert.ok(!declared.ok, `${ctx}: declared`)
+      assert.equal(declared.message.split(':')[0], `Constraints refused (code ${v.refusal})`, ctx)
+      assert.equal(api.castConstraintsCheck(spec), v.refusal, ctx)
+      refusals++
+      replayed++
+      continue
+    }
+    assert.ok(declared.ok, `${ctx}: ${declared.ok ? '' : declared.message}`)
+    assert.equal(api.castConstraintsCheck(spec), 0, ctx)
+    const constraints = declared.value
+    if (v.from_f64 !== undefined) {
+      const value = typeof v.from_f64 === 'string' ? Number(v.from_f64) : v.from_f64
+      judge(ctx, v, api.castCheckedFromNumber(value, constraints), v.fault, 0)
+      typed++
+      replayed++
+      continue
+    }
+    const format = formatOf(v)
+    const door = (text: Text) =>
+      v.door === 'text'
+        ? api.castText(text, constraints)
+        : api.castChecked(text, constraints, format)
+    if (v.input_bytes !== undefined) {
+      // Bytes no string can spell (invalid UTF-8): the byte form alone.
+      const bytes = new Uint8Array(v.input_bytes)
+      judge(`${ctx} as bytes`, v, door(bytes), v.fault, bytes.length)
+      replayed++
+      continue
+    }
+    const bytes = encoder.encode(v.input)
+    judge(`${ctx} as bytes`, v, door(bytes), v.fault, bytes.length)
+    const span = v.fault === undefined ? undefined : utf16Span(v.input, v.fault)
+    judge(`${ctx} as string`, v, door(v.input), span, v.input.length)
+    replayed++
+  }
+  assert.ok(refusals > 0 && typed > 0)
+  // Every row was replayed: the count is the file's, never a literal.
+  assert.equal(replayed, vectors.length)
+})
+
+test('declarations.json', () => {
+  // The conversion every bound crosses, held to the raw triple: the canonical text spells the
+  // sign, the digits and the scale, so each is read back from it and compared on its own.
+  let replayed = 0
+  const vectors = load('declarations.json')
+  for (const v of vectors) {
+    const ctx = `declarations.json ${JSON.stringify(v)}`
+    const text: Text = v.input_bytes === undefined ? v.input : new Uint8Array(v.input_bytes)
+    const declared = api.castDeclaredDecimal(text)
+    if (v.expect === 'refused') {
+      assert.ok(!declared.ok, `${ctx}: converted`)
+      assert.equal(declared.message.split(':')[0], `Constraints refused (code ${v.refusal})`, ctx)
+      replayed++
+      continue
+    }
+    assert.ok(declared.ok, `${ctx}: ${declared.ok ? '' : declared.message}`)
+    const canonical = declared.value
+    assert.equal(canonical, v.value, ctx)
+    const negative = canonical.startsWith('-')
+    const unsigned = negative ? canonical.slice(1) : canonical
+    const point = unsigned.indexOf('.')
+    const scale = point < 0 ? 0 : unsigned.length - point - 1
+    const magnitude = BigInt(unsigned.replace('.', ''))
+    assert.equal(negative, v.negative, `${ctx}: negative`)
+    assert.equal(scale, v.scale, `${ctx}: scale`)
+    assert.equal(magnitude, BigInt(v.magnitude as string), `${ctx}: magnitude`)
+    replayed++
+  }
+  // Every row was replayed: the count is the file's, never a literal.
+  assert.equal(replayed, vectors.length)
 })

@@ -8,7 +8,8 @@
 //! - [`cast_char`] — one Unicode scalar, verbatim or as a declared code point (`U+00E9`,
 //!   `&#233;`)
 //! - [`cast_i8`]…[`cast_u64`] — the integer family under a caller-declared [`NumFormat`]
-//! - [`cast_f32`] / [`cast_f64`] — finite reals only, percent notation included
+//! - [`cast_f32`] / [`cast_f64`] — finite reals only, percent notation included, and never a
+//!   negative zero
 //! - [`cast_decimal`] — the same grammar to an exact [`Decimal`] (sign, 96-bit magnitude,
 //!   base-10 scale), never rounded
 //! - [`cast_uuid`] — every .NET `Guid` text format plus `urn:uuid:`-style prefixes,
@@ -30,6 +31,17 @@
 //! - [`cast_datetime`] — zone-less civil date-times under a declared [`DateOrder`]
 //!   (`1/7/2026 3:04 PM`, `2026-01-07 15:04:05`) to a [`CivilDateTime`]; no zone is read
 //!   and none is invented
+//! - [`Door`] — the numbering of every door above (plus `Text`, the bytes themselves), so
+//!   a layer that binds something to a door can name one
+//! - [`Constraints`] — JSON Schema's validation keywords (`minimum`, `multipleOf` with a
+//!   [`Rounding`], `maxLength`, `enum`, …) declared for a door, refused at declaration with a
+//!   [`Refusal`] when they cannot mean anything there ([`check_constraints`] is that judge)
+//! - [`cast_checked`] / [`checked_from_f64`] / [`cast_text_checked`] — a door, then the
+//!   [`Constraints`] declared for it, judged exactly (decimal arithmetic, never a float, and
+//!   a float door's delivered value held to the bounds too, each read as the door reads it):
+//!   [`Checked`] (the value, whether rounding `adjusted` it, a text `enum`'s index) or a
+//!   [`Rejection`], the door's own [`Fault`] or a [`Violation`] of one [`Keyword`]
+//! - [`cast_text`] — text as a door: valid UTF-8, untrimmed, empty as [`Reason::Empty`]
 //!
 //! Text comes in as anything byte-viewable — `&str`, `String`, `&[u8]`, `Vec<u8>` — read
 //! as UTF-8 bytes; each door trims ASCII whitespace and treats trimmed-empty input as
@@ -80,6 +92,67 @@ fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
     }
 }
 
+// The return instruction that ends the `rust_eh_personality` stubs below, spelled the way
+// each architecture's assembler takes it: `ret` is no instruction on s390x, PowerPC or 32-bit
+// Arm. Nothing ever calls a stub, so the instruction only has to assemble. Every other
+// architecture whose inline assembly is stable (x86, Arm64, RISC-V, LoongArch) takes `ret`;
+// on one whose assembly is not (SPARC, MIPS) stable rustc refuses the stub, so the no_std
+// libraries do not build there at all rather than build without it. Defined only where a
+// stub is compiled.
+#[cfg(all(
+    any(feature = "cdylib", feature = "staticlib"),
+    not(feature = "std"),
+    not(target_os = "windows"),
+    not(target_arch = "wasm32"),
+    target_arch = "s390x",
+))]
+macro_rules! personality_return {
+    () => {
+        "br %r14"
+    };
+}
+#[cfg(all(
+    any(feature = "cdylib", feature = "staticlib"),
+    not(feature = "std"),
+    not(target_os = "windows"),
+    not(target_arch = "wasm32"),
+    any(target_arch = "powerpc", target_arch = "powerpc64"),
+))]
+macro_rules! personality_return {
+    () => {
+        "blr"
+    };
+}
+#[cfg(all(
+    any(feature = "cdylib", feature = "staticlib"),
+    not(feature = "std"),
+    not(target_os = "windows"),
+    not(target_arch = "wasm32"),
+    target_arch = "arm",
+))]
+macro_rules! personality_return {
+    () => {
+        "bx lr"
+    };
+}
+#[cfg(all(
+    any(feature = "cdylib", feature = "staticlib"),
+    not(feature = "std"),
+    not(target_os = "windows"),
+    not(target_arch = "wasm32"),
+    not(any(
+        target_arch = "s390x",
+        target_arch = "powerpc",
+        target_arch = "powerpc64",
+        target_arch = "arm"
+    )),
+))]
+macro_rules! personality_return {
+    () => {
+        "ret"
+    };
+}
+
 // The one symbol a no_std shared library needs that a static library does not. `core` and
 // `compiler_builtins` ship precompiled with unwind tables, and an entry that names
 // `rust_eh_personality` survives into the library (on linux-x64, that of the 128-bit
@@ -89,19 +162,21 @@ fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
 // unwinds, so nothing ever calls it — the definition only has to exist.
 //
 // Assembly rather than a `#[no_mangle]` function, for the visibility: a `#[no_mangle]`
-// item is exported from a cdylib whatever its Rust visibility, which would put a 23rd
-// symbol beside the 26 C ABI exports, one any other library in the process could bind to.
+// item is exported from a cdylib whatever its Rust visibility, which would put a 33rd
+// symbol beside the 32 C ABI exports, one any other library in the process could bind to.
 // Defined hidden instead, it satisfies the library's own reference and is seen by nothing
 // outside it. Never compiled for the static libraries: two Hyper* archives that each
 // defined it could not be linked into one program, the duplicate-symbol failure that kept
 // std out of them in the first place. Windows needs no definition (its unwind tables name
 // the C runtime's handler), and wasm32 has no unwind tables to name one.
+//
+// The body is the architecture's own return instruction (`personality_return!`, above).
 #[cfg(all(feature = "cdylib", not(feature = "std"), target_vendor = "apple"))]
 core::arch::global_asm!(
     ".globl _rust_eh_personality",
     ".private_extern _rust_eh_personality",
     "_rust_eh_personality:",
-    "ret",
+    personality_return!(),
 );
 #[cfg(all(
     feature = "cdylib",
@@ -115,7 +190,7 @@ core::arch::global_asm!(
     ".hidden rust_eh_personality",
     ".type rust_eh_personality, %function",
     "rust_eh_personality:",
-    "ret",
+    personality_return!(),
 );
 
 // The static library's half: the same reference, left for the final link, fails it
@@ -136,7 +211,7 @@ core::arch::global_asm!(
     ".weak_definition _rust_eh_personality",
     ".private_extern _rust_eh_personality",
     "_rust_eh_personality:",
-    "ret",
+    personality_return!(),
 );
 #[cfg(all(
     feature = "staticlib",
@@ -151,7 +226,7 @@ core::arch::global_asm!(
     ".hidden rust_eh_personality",
     ".type rust_eh_personality, %function",
     "rust_eh_personality:",
-    "ret",
+    personality_return!(),
 );
 
 // The other half of the same gap: the C runtime. Under std it comes in through std's own
@@ -174,15 +249,21 @@ unsafe extern "C" {}
 mod abi;
 mod boolean;
 mod character;
+mod checked;
+mod constraints;
 mod decimal;
+mod door;
+mod exact;
 #[cfg(feature = "exports")]
 mod ffi;
 mod float;
 mod float_table;
+mod fold_table;
 mod integer;
 mod lane;
 mod real;
 mod temporal;
+mod text;
 mod typed;
 mod uuid;
 mod verdict;
@@ -201,10 +282,19 @@ mod python_ext;
 #[cfg(feature = "ruby")]
 mod ruby_ext;
 
-pub use abi::{RawDayPeriods, RawNumFormat};
+pub use abi::{RawCheck, RawConstraints, RawDayPeriods, RawNumFormat, RawSpan};
 pub use boolean::cast_bool;
 pub use character::cast_char;
+pub use checked::{
+    Checked, Rejection, Violation, cast_checked, cast_text_checked, checked_from_f64,
+    optional_checked,
+};
+pub use constraints::{
+    Bound, Constraints, Keyword, Numeric, NumericRules, Refusal, Rounding, Text, TextRules,
+    check_constraints, decimal_for_declaration,
+};
 pub use decimal::cast_decimal;
+pub use door::Door;
 pub use integer::{cast_i8, cast_i16, cast_i32, cast_i64, cast_u8, cast_u16, cast_u32, cast_u64};
 pub use real::{cast_f32, cast_f64};
 pub use temporal::{
@@ -213,6 +303,7 @@ pub use temporal::{
     cast_datetime_with, cast_duration, cast_excel_serial, cast_time, cast_timestamp, cast_unix,
     excel_duration, excel_serial, excel_time, unix_from_f64,
 };
+pub use text::cast_text;
 pub use typed::{
     ShortestDigits, bool_from_f64, decimal_from_f64, f32_from_f64, i8_from_f64, i16_from_f64,
     i32_from_f64, i64_from_f64, shortest_digits, u8_from_f64, u16_from_f64, u32_from_f64,

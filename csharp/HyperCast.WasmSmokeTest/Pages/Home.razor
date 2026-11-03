@@ -26,7 +26,7 @@
         // in the statically linked wasm module via LibraryImport("*"). The link already proves
         // every P/Invoked symbol is in the archive (wasm-ld refuses an undefined one); only a
         // call proves it works through the SDK's pinvoke table. That only holds for a door this
-        // page actually calls, so it calls all twenty-seven entry points: the twenty-six cast_*
+        // page actually calls, so it calls all thirty-two entry points: the thirty-one cast_*
         // functions and hypercast_version.
         void Check<T>(string name, Verdict<T> verdict, T expected) where T : struct
         {
@@ -94,6 +94,31 @@
                 new DateTime(2024, 1, 1, 18, 0, 0));
             Check("excel time", Cast.ExcelTime(0.75), new TimeOnly(18, 0));
             Check("excel duration", Cast.ExcelDuration(1.5), new TimeSpan(1, 12, 0, 0));
+
+            // The checked doors: cast_constraints_check and cast_declared_decimal when a declaration is built, then
+            // cast_checked, cast_checked_from_f64 and cast_text.
+            void Judged<T>(string name, CheckedVerdict<T> verdict, string expected) where T : notnull
+            {
+                var rendered = verdict switch
+                {
+                    Checked<T> ok => $"{ok.Value}{(ok.Adjusted ? " adjusted" : "")}{(ok.EnumIndex is { } i ? $" #{i}" : "")}",
+                    Rejection rejection => rejection switch
+                    {
+                        Fault f => $"fault {f.Reason} @ {f.Offset}+{f.Length}",
+                        Violation v => $"violation {v.Keyword} @ {v.Offset}+{v.Length}",
+                    },
+                };
+                if (rendered == expected)
+                    lines.Add($"ok   {name} = {rendered}");
+                else
+                    Fail($"{name}: {rendered} (expected {expected})");
+            }
+            var latitude = new Constraints<double>(minimum: -90, maximum: 90, multipleOf: 0.000001m, rounding: Rounding.Midpoint);
+            Judged("checked f64", Cast.Double("45.1234567", NumFormat.Invariant, latitude), "45.123457 adjusted");
+            Judged("checked from double", Cast.DoubleFromDouble(0.1 + 0.2, new Constraints<double>(multipleOf: "0.1")),
+                "violation multipleOf @ 0+0");
+            Judged("checked text", Cast.Text(" MALE ", new Constraints<string>(trim: true, @enum: ["Female", "Male", "Other"])), "Male #1");
+            Judged("text", Cast.Text("a\uD800"), "fault Malformed @ 1+1");
 
             // A fault, not an exception: the verdict names the reason and the offending span.
             var disposition = Cast.Int32("not-a-number", NumFormat.Invariant) switch

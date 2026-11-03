@@ -111,3 +111,35 @@ def test_the_checker_catches_a_missing_case(monkeypatch, tmp_path):
     out, err, status = api.run(["--strict", "--cache-dir", os.devnull, str(sample)])
     assert status != 0, "a match with no Fault arm type-checked as exhaustive"
     assert "Fault" in out and "assert_never" in out, out + err
+
+
+def test_the_checker_catches_a_missing_violation_arm(monkeypatch, tmp_path):
+    """A checked verdict has three cases: drop the Violation arm and assert_never is an error,
+    and so is handing a text door's Constraints to cast_checked or a float bound to one."""
+    if platform.python_implementation() == "PyPy":
+        pytest.skip("mypy does not run on PyPy")
+    api = pytest.importorskip("mypy.api")
+    if str(PACKAGE.parent) not in {sysconfig.get_path("purelib"), sysconfig.get_path("platlib")}:
+        monkeypatch.setenv("MYPYPATH", str(PACKAGE.parent))
+    sample = tmp_path / "missing_violation.py"
+    sample.write_text(
+        "from typing import assert_never\n"
+        "import hypercast\n"
+        "from hypercast import Checked, CheckedVerdict, Constraints, Door, Fault, NumFormat\n"
+        "def describe(verdict: CheckedVerdict[int]) -> str:\n"
+        "    match verdict:\n"
+        "        case Checked(value):\n"
+        "            return str(value)\n"
+        "        case Fault():\n"
+        "            return 'fault'\n"
+        "        case _:\n"
+        "            assert_never(verdict)\n"
+        "hypercast.cast_checked('1', NumFormat.INVARIANT, Constraints(Door.TEXT))\n"
+        "Constraints(Door.F64, maximum=0.1)\n",
+        encoding="utf-8",
+    )
+    out, err, status = api.run(["--strict", "--cache-dir", os.devnull, str(sample)])
+    assert status != 0
+    assert '"Violation"; expected "Never"' in out, out + err
+    assert "missing_violation.py:12: error" in out, out + err
+    assert "missing_violation.py:13: error" in out, out + err

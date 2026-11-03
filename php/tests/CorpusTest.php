@@ -6,16 +6,22 @@ namespace HyperCast\Tests;
 
 use DateTimeImmutable;
 use HyperCast\Cast;
+use HyperCast\Checked;
+use HyperCast\Constraints;
 use HyperCast\DateOrder;
 use HyperCast\CastFailure;
 use HyperCast\DayPeriods;
 use HyperCast\Decimal;
+use HyperCast\Door;
 use HyperCast\ExcelEpoch;
 use HyperCast\Duration;
 use HyperCast\Fault;
+use HyperCast\Keyword;
 use HyperCast\NumFormat;
+use HyperCast\Rounding;
 use HyperCast\Success;
 use HyperCast\UnixPrecision;
+use HyperCast\Violation;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -172,6 +178,10 @@ final class CorpusTest extends TestCase
         }
     }
 
+    /**
+     * The real doors, each value compared by its bits: zero has one form, and the core never
+     * returns a negative zero, which `==` would let through.
+     */
     public function testRealCorpus(): void
     {
         foreach (self::corpus('real.json') as $vector) {
@@ -183,7 +193,15 @@ final class CorpusTest extends TestCase
                     $expected = unpack('g', pack('g', $expected))[1];
                 }
             }
-            $this->assertVerdict('real', $vector, Cast::$door($vector['input'], self::formatOf($vector)), $expected);
+            $verdict = Cast::$door($vector['input'], self::formatOf($vector));
+            if ($verdict instanceof Success && $expected !== null) {
+                self::assertSame(
+                    bin2hex(pack('e', $expected)),
+                    bin2hex(pack('e', $verdict->value)),
+                    "real: '{$vector['input']}' bits"
+                );
+            }
+            $this->assertVerdict('real', $vector, $verdict, $expected);
         }
     }
 
@@ -405,5 +423,275 @@ final class CorpusTest extends TestCase
             ['decimal', 'excel_serial', 'excel_time', 'excel_duration'],
             array_keys($doors)
         );
+    }
+
+    private const DOORS = [
+        'i8' => Door::I8, 'i16' => Door::I16, 'i32' => Door::I32, 'i64' => Door::I64,
+        'u8' => Door::U8, 'u16' => Door::U16, 'u32' => Door::U32, 'u64' => Door::U64,
+        'f32' => Door::F32, 'f64' => Door::F64, 'decimal' => Door::Decimal, 'text' => Door::Text,
+    ];
+
+    private const ROUNDINGS = [
+        'strict' => Rounding::Strict,
+        'midpoint' => Rounding::Midpoint,
+        'floor' => Rounding::Floor,
+        'ceiling' => Rounding::Ceiling,
+    ];
+
+    /** The core's `Refusal` Display, by code: the words every binding's refusal carries. */
+    private const REFUSALS = [
+        1 => 'a constraint the door does not take',
+        2 => 'minimum together with exclusiveMinimum',
+        3 => 'maximum together with exclusiveMaximum',
+        4 => 'the lower bound is not below the upper bound',
+        5 => 'multipleOf is not positive',
+        6 => 'a rounding without multipleOf',
+        7 => 'minLength is above maxLength',
+        8 => 'a bound, step or enum entry the door cannot hold',
+        9 => 'an enum entry that is not UTF-8',
+        10 => 'a duplicate enum entry',
+        11 => 'a malformed constraints layout',
+        12 => 'an enum with no entries',
+        13 => 'a text enum entry no input can match',
+    ];
+
+    /** The message a refused declaration throws with, one per code. */
+    public static function refusalMessage(int $code): string
+    {
+        return "Constraints refused (code {$code}): " . self::REFUSALS[$code] . '.';
+    }
+
+    /**
+     * A vector's declaration through the public constructor, every keyword it names whether
+     * or not its door takes it, as the corpus spells them (bounds and entries as strings).
+     */
+    public static function constraintsOf(Door $door, array $c): Constraints
+    {
+        return new Constraints(
+            $door,
+            minimum: $c['minimum'] ?? null,
+            exclusiveMinimum: $c['exclusiveMinimum'] ?? null,
+            maximum: $c['maximum'] ?? null,
+            exclusiveMaximum: $c['exclusiveMaximum'] ?? null,
+            multipleOf: $c['multipleOf'] ?? null,
+            rounding: self::ROUNDINGS[$c['rounding'] ?? 'strict'],
+            minLength: $c['minLength'] ?? null,
+            maxLength: $c['maxLength'] ?? null,
+            trim: $c['trim'] ?? false,
+            enum: $c['enum'] ?? null,
+        );
+    }
+
+    /** A `from_f64` the corpus spells as text, because JSON cannot: NaN, the infinities, -0. */
+    private static function spelledFloat(int|float|string $value): float
+    {
+        return match ($value) {
+            'NaN' => NAN,
+            'Infinity' => INF,
+            '-Infinity' => -INF,
+            '-0' => -0.0,
+            default => (float) $value,
+        };
+    }
+
+    /**
+     * Replays corpus/constraints.json, every row, through the public `Constraints` constructor
+     * (so bounds, steps and entries cross this binding's own conversion): a refused row throws
+     * `\InvalidArgumentException` with the refusal code as its code and its own message; text
+     * rows go through `checkedText()` (`input_bytes` as the raw bytes PHP strings are),
+     * numeric rows through `checked()`, `from_f64` rows through `checkedFromFloat()`. Spans
+     * are bytes, as every fault's.
+     */
+    public function testConstraintsCorpus(): void
+    {
+        $seen = [];
+        $vectors = self::corpus('constraints.json');
+        $replayed = 0;
+        foreach ($vectors as $vector) {
+            $door = self::DOORS[$vector['door']];
+            $label = "constraints {$vector['door']} " . json_encode($vector['constraints']) . ' '
+                . json_encode($vector['input'] ?? $vector['from_f64'] ?? $vector['input_bytes'] ?? null);
+            if ($vector['expect'] === 'refused') {
+                $seen['refused'] = true;
+                try {
+                    self::constraintsOf($door, $vector['constraints']);
+                    self::fail("{$label}: not refused");
+                } catch (\InvalidArgumentException $e) {
+                    self::assertSame(\InvalidArgumentException::class, $e::class, $label);
+                    self::assertSame($vector['refusal'], $e->getCode(), $label);
+                    self::assertSame(self::refusalMessage($vector['refusal']), $e->getMessage(), $label);
+                }
+                $replayed++;
+                continue;
+            }
+            $seen[$vector['door']] = true;
+            $constraints = self::constraintsOf($door, $vector['constraints']);
+            if (\array_key_exists('from_f64', $vector)) {
+                $seen['from_f64'] = true;
+                $verdict = Cast::checkedFromFloat(self::spelledFloat($vector['from_f64']), $constraints);
+            } elseif (isset($vector['input_bytes'])) {
+                $seen['input_bytes'] = true;
+                $verdict = Cast::checkedText(pack('C*', ...$vector['input_bytes']), $constraints);
+            } elseif ($door === Door::Text) {
+                $verdict = Cast::checkedText($vector['input'], $constraints);
+            } else {
+                $verdict = Cast::checked($vector['input'], self::formatOf($vector), $constraints);
+            }
+            $this->assertChecked($label, $vector, $constraints, $verdict);
+            $replayed++;
+        }
+        // Every row was replayed: the count is the file's, never a literal.
+        self::assertSame(\count($vectors), $replayed);
+        ksort($seen);
+        $expected = [...array_keys(self::DOORS), 'from_f64', 'input_bytes', 'refused'];
+        sort($expected);
+        self::assertSame($expected, array_keys($seen));
+    }
+
+    private function assertChecked(
+        string $label,
+        array $vector,
+        Constraints $constraints,
+        Checked|Fault|Violation $verdict
+    ): void {
+        $expect = $vector['expect'];
+        if ($expect === 'ok') {
+            self::assertInstanceOf(Checked::class, $verdict, $label);
+            self::assertSame($vector['adjusted'], $verdict->adjusted, "{$label}: adjusted");
+            self::assertSame($vector['enum_index'] ?? null, $verdict->enumIndex, "{$label}: enum index");
+            $want = $vector['value'];
+            $value = $verdict->value;
+            switch ($vector['door']) {
+                case 'f32':
+                case 'f64':
+                    $want = (float) $want;
+                    if ($vector['door'] === 'f32') {
+                        $want = unpack('g', pack('g', $want))[1];
+                    }
+                    self::assertIsFloat($value, $label);
+                    self::assertSame(bin2hex(pack('e', $want)), bin2hex(pack('e', $value)), "{$label}: bits");
+                    break;
+                case 'decimal':
+                    self::assertInstanceOf(Decimal::class, $value, $label);
+                    self::assertSame($want, (string) $value, $label);
+                    break;
+                case 'text':
+                    self::assertSame($want, $value, $label);
+                    if ($verdict->enumIndex !== null) {
+                        // The caller's own declared entry, by index.
+                        self::assertSame($constraints->enum[$verdict->enumIndex], $value, "{$label}: declared entry");
+                    }
+                    break;
+                case 'u64':
+                    self::assertSame((string) $want, sprintf('%u', $value), $label);
+                    break;
+                default:
+                    self::assertSame($want, $value, $label);
+            }
+            return;
+        }
+        if ($expect === 'violation') {
+            self::assertInstanceOf(Violation::class, $verdict, $label);
+            self::assertSame($vector['keyword'], $verdict->keywordName(), $label);
+            self::assertInstanceOf(Keyword::class, $verdict->keyword, $label);
+            self::assertSame($vector['keyword'], lcfirst($verdict->keyword->name), $label);
+            self::assertSame($vector['fault'], [$verdict->offset, $verdict->length], "{$label}: span");
+            return;
+        }
+        self::assertInstanceOf(Fault::class, $verdict, $label);
+        self::assertSame(self::EXPECTED_REASON[$expect], $verdict->reason, $label);
+        self::assertSame($vector['fault'], [$verdict->offset, $verdict->length], "{$label}: span");
+    }
+
+    /**
+     * Replays corpus/declarations.json through the conversion every bound, step and integer
+     * `enum` entry crosses: a `Constraints` maximum at the decimal door, read back as the
+     * `Decimal` the constructor keeps and from `packed()`, whose bytes 40 to 56 are the raw
+     * triple the core reads (scale included). A refused row is code 8.
+     */
+    public function testDeclarationsCorpus(): void
+    {
+        $counts = ['ok' => 0, 'refused' => 0, 'bytes' => 0];
+        $vectors = self::corpus('declarations.json');
+        foreach ($vectors as $vector) {
+            if (isset($vector['input_bytes'])) {
+                $counts['bytes']++;
+                $text = pack('C*', ...$vector['input_bytes']);
+            } else {
+                $text = $vector['input'];
+            }
+            if ($vector['expect'] === 'refused') {
+                $counts['refused'] += isset($vector['input_bytes']) ? 0 : 1;
+                self::assertSame(8, $vector['refusal']);
+                try {
+                    new Constraints(Door::Decimal, maximum: $text);
+                    self::fail("declarations: '{$text}' not refused");
+                } catch (\InvalidArgumentException $e) {
+                    self::assertSame(8, $e->getCode(), $text);
+                    self::assertSame(self::refusalMessage(8), $e->getMessage(), $text);
+                }
+                continue;
+            }
+            $counts['ok']++;
+            $want = [(string) $vector['magnitude'], $vector['scale'], $vector['negative']];
+            $constraints = new Constraints(Door::Decimal, maximum: $text);
+            $kept = $constraints->maximum;
+            self::assertSame($want, [$kept->magnitude, $kept->scale, $kept->negative], "declarations: '{$text}'");
+            self::assertSame($vector['value'], (string) $kept, "declarations: '{$text}'");
+            $raw = unpack('Qlo/Lhi/Cscale/Cnegative', substr($constraints->packed(), 40, 16));
+            $limbs = Decimal::fromLimbs($raw['lo'], $raw['hi'], $raw['scale'], $raw['negative'] === 1);
+            self::assertSame(
+                $want,
+                [$limbs->magnitude, $limbs->scale, $limbs->negative],
+                "declarations: '{$text}' packed"
+            );
+        }
+        // Every row was replayed, and every kind is present: counts from the file, never literals.
+        self::assertSame(\count($vectors), array_sum($counts));
+        self::assertNotContains(0, $counts);
+    }
+
+    /**
+     * The plain doors keep their verdict exactly: `Success(value)` or `Fault(reason, offset,
+     * length)` over the three `CastFailure` cases, and every plain door still declares that
+     * pair. The checked doors are additive.
+     */
+    public function testThePlainVerdictKeepsItsShape(): void
+    {
+        $params = static fn (string $class): array => array_map(
+            static fn (\ReflectionParameter $p): string => $p->getType() . ' $' . $p->getName(),
+            (new \ReflectionMethod($class, '__construct'))->getParameters(),
+        );
+        self::assertSame(['mixed $value'], $params(Success::class));
+        self::assertSame(['HyperCast\\CastFailure $reason', 'int $offset', 'int $length'], $params(Fault::class));
+        self::assertSame(
+            ['Empty' => 1, 'Malformed' => 2, 'OutOfRange' => 3],
+            array_column(
+                array_map(static fn (CastFailure $c): array => [$c->name, $c->value], CastFailure::cases()),
+                1,
+                0
+            )
+        );
+        $plain = ['bool', 'char', 'i8', 'i16', 'i32', 'i64', 'u8', 'u16', 'u32', 'u64', 'f32', 'f64', 'decimal',
+            'uuid', 'uuidBytes', 'timestamp', 'unix', 'excelSerial', 'date', 'datetime', 'time', 'duration',
+            'decimalFromFloat', 'excelSerialFromFloat', 'excelTime', 'excelDuration', 'text'];
+        foreach ($plain as $door) {
+            self::assertSame(
+                'HyperCast\\Success|HyperCast\\Fault',
+                (string) (new \ReflectionMethod(Cast::class, $door))->getReturnType(),
+                $door
+            );
+        }
+        foreach (['checked', 'checkedFromFloat', 'checkedText'] as $door) {
+            self::assertSame(
+                'HyperCast\\Checked|HyperCast\\Fault|HyperCast\\Violation',
+                (string) (new \ReflectionMethod(Cast::class, $door))->getReturnType(),
+                $door
+            );
+        }
+        self::assertSame(Success::class, Cast::i32('1', NumFormat::invariant())::class);
+        self::assertSame(Fault::class, Cast::i32('x', NumFormat::invariant())::class);
+        self::assertSame(Success::class, Cast::text('x')::class);
+        self::assertSame(Fault::class, Cast::text("\xff")::class);
     }
 }

@@ -9,14 +9,30 @@ test.
 from __future__ import annotations
 
 import datetime as dt
+import inspect
 import json
+import re
 import struct
 import uuid as uuidlib
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 import hypercast
-from hypercast import CastFailure, ExcelEpoch, Fault, NumFormat, Success, UnixPrecision
+from hypercast import (
+    CastFailure,
+    Checked,
+    Constraints,
+    Door,
+    ExcelEpoch,
+    Fault,
+    NumFormat,
+    Rounding,
+    Success,
+    UnixPrecision,
+    Violation,
+)
 
 
 def _corpus_dir() -> Path:
@@ -121,16 +137,27 @@ def test_integer_corpus():
         )
 
 
+def _bits(value: float) -> bytes:
+    """A float by its bits, so zero has one form: ``-0.0 == 0.0``, but their bits differ."""
+    return struct.pack(">d", value)
+
+
+def _real(kind: str, value: float) -> float:
+    """The corpus's value as the door delivers it: an f32 widened, losslessly, to a float."""
+    return struct.unpack("f", struct.pack("f", value))[0] if kind == "f32" else value
+
+
 def test_real_corpus():
-    """Replays corpus/real.json through both real doors."""
+    """Replays corpus/real.json through both real doors, comparing values by their bits."""
     for vector in _corpus("real.json"):
         door = hypercast.cast_f32 if vector["type"] == "f32" else hypercast.cast_f64
         expected = vector.get("value")
-        if expected is not None and vector["type"] == "f32":
-            import struct
-
-            expected = struct.unpack("f", struct.pack("f", expected))[0]
-        _assert_verdict("real", vector, door(_input(vector), _format_of(vector)), expected)
+        if expected is not None:
+            expected = _real(vector["type"], expected)
+        verdict = door(_input(vector), _format_of(vector))
+        _assert_verdict("real", vector, verdict, expected)
+        if isinstance(verdict, Success):
+            assert _bits(verdict.value) == _bits(expected), f"real: {vector['input']!r} bits"
 
 
 def test_decimal_corpus():
@@ -312,3 +339,258 @@ def test_typed_corpus():
             assert (sign, exponent) == (int(vector["negative"]), -vector["scale"]), vector["input"]
             assert digits == tuple(int(d) for d in vector["magnitude"]), vector["input"]
     assert doors == {"decimal", "excel_serial", "excel_time", "excel_duration"}
+
+
+# --- validation constraints --------------------------------------------------------------
+
+_DOORS = {
+    "i8": Door.I8,
+    "i16": Door.I16,
+    "i32": Door.I32,
+    "i64": Door.I64,
+    "u8": Door.U8,
+    "u16": Door.U16,
+    "u32": Door.U32,
+    "u64": Door.U64,
+    "f32": Door.F32,
+    "f64": Door.F64,
+    "decimal": Door.DECIMAL,
+    "text": Door.TEXT,
+}
+
+_ROUNDINGS = {
+    "strict": Rounding.STRICT,
+    "midpoint": Rounding.MIDPOINT,
+    "floor": Rounding.FLOOR,
+    "ceiling": Rounding.CEILING,
+}
+
+#: The core's Refusal as Rust displays it: the wording every binding's message carries.
+_REFUSALS = [
+    "",
+    "a constraint the door does not take",
+    "minimum together with exclusiveMinimum",
+    "maximum together with exclusiveMaximum",
+    "the lower bound is not below the upper bound",
+    "multipleOf is not positive",
+    "a rounding without multipleOf",
+    "minLength is above maxLength",
+    "a bound, step or enum entry the door cannot hold",
+    "an enum entry that is not UTF-8",
+    "a duplicate enum entry",
+    "a malformed constraints layout",
+    "an enum with no entries",
+    "a text enum entry no input can match",
+]
+
+
+def refusal_message(code: int) -> str:
+    """The message a refused declaration raises with, one per code."""
+    return f"Constraints refused (code {code}): {_REFUSALS[code]}."
+
+
+def _keywords(c: dict) -> dict:
+    """Every keyword a vector names, whether or not its door takes it, as the public
+    constructor's keyword arguments: bounds, steps and entries as the corpus spells them."""
+    return {
+        "minimum": c.get("minimum"),
+        "exclusive_minimum": c.get("exclusiveMinimum"),
+        "maximum": c.get("maximum"),
+        "exclusive_maximum": c.get("exclusiveMaximum"),
+        "multiple_of": c.get("multipleOf"),
+        "rounding": _ROUNDINGS[c.get("rounding", "strict")],
+        "min_length": c.get("minLength"),
+        "max_length": c.get("maxLength"),
+        "trim": c.get("trim", False),
+        "enum": c.get("enum"),
+    }
+
+
+#: The doubles JSON cannot spell, as the corpus names them.
+_SPELLED = {"-0": -0.0, "NaN": float("nan"), "Infinity": float("inf"), "-Infinity": float("-inf")}
+
+
+def _from_f64(value) -> float:
+    return _SPELLED[value] if isinstance(value, str) else float(value)
+
+
+def _label(vector: dict) -> str:
+    what = vector.get("input", vector.get("from_f64", vector.get("input_bytes")))
+    return f"constraints {vector['door']} {vector['constraints']} {what!r}"
+
+
+def _code_points(text: str, byte_offset: int) -> int:
+    return len(text.encode("utf-8")[:byte_offset].decode("utf-8", errors="ignore"))
+
+
+def _assert_checked(label: str, vector: dict, verdict, span) -> None:
+    """One checked verdict against its row: the value by bits (a float), by its exact
+    (sign, digits, exponent) (a decimal), or as it is; ``adjusted`` and ``enum_index``; or the
+    reason or keyword and the span, which ``span`` re-expresses in the input's own units."""
+    expect = vector["expect"]
+    match verdict:
+        case Checked(value, adjusted, enum_index):
+            assert expect == "ok", f"{label}: unexpectedly passed as {verdict!r}"
+            want = vector["value"]
+            door = vector["door"]
+            if door in ("f32", "f64"):
+                assert type(value) is float, label
+                assert _bits(value) == _bits(_real(door, want)), f"{label}: {value!r} bits"
+            elif door == "decimal":
+                assert value.as_tuple() == Decimal(want).as_tuple(), f"{label}: {value!r}"
+            else:
+                assert type(value) is type(want) and value == want, f"{label}: {value!r}"
+            assert adjusted is vector["adjusted"], f"{label}: adjusted"
+            assert enum_index == vector.get("enum_index"), f"{label}: enum_index"
+        case Violation(keyword, offset, length):
+            assert expect == "violation", f"{label}: {verdict!r}"
+            assert keyword.name == vector["keyword"], f"{label}: keyword"
+            assert (offset, length) == span(*vector["fault"]), f"{label}: violation span"
+        case Fault(reason, offset, length):
+            assert expect in _EXPECTED_REASON, f"{label}: expected {expect} but {verdict!r}"
+            assert reason is _EXPECTED_REASON[expect], f"{label}: {reason}"
+            assert (offset, length) == span(*vector["fault"]), f"{label}: fault span"
+        case other:  # pragma: no cover - the union is closed
+            raise AssertionError(f"{label}: produced no case: {other!r}")
+
+
+def test_constraints_corpus():
+    """Replays corpus/constraints.json, every row, through the public Constraints constructor
+    (so bounds, steps and entries cross this binding's own conversion): a refused row raises
+    ValueError with its code's message, and cast_constraints_check answers that code. Text
+    rows go through cast_text and numeric rows through cast_checked, each as bytes (byte
+    spans) and as str (code-point spans); from_f64 rows through cast_checked_from_float.
+    """
+    seen = set()
+    vectors = _corpus("constraints.json")
+    replayed = 0
+    for vector in vectors:
+        label = _label(vector)
+        door = _DOORS[vector["door"]]
+        keywords = _keywords(vector["constraints"])
+        if vector["expect"] == "refused":
+            seen.add("refused")
+            code = vector["refusal"]
+            with pytest.raises(ValueError, match=re.escape(refusal_message(code))):
+                Constraints(door, **keywords)
+            assert hypercast.cast_constraints_check(door, **keywords) == code, label
+            replayed += 1
+            continue
+        seen.add(vector["door"])
+        assert hypercast.cast_constraints_check(door, **keywords) == 0, label
+        constraints = Constraints(door, **keywords)
+
+        def same(offset, length):
+            return (offset, length)
+
+        if "from_f64" in vector:
+            seen.add("from_f64")
+            verdict = hypercast.cast_checked_from_float(_from_f64(vector["from_f64"]), constraints)
+            _assert_checked(label, vector, verdict, same)
+            replayed += 1
+            continue
+        if "input_bytes" in vector:
+            seen.add("input_bytes")
+            verdict = hypercast.cast_text(bytes(vector["input_bytes"]), constraints)
+            _assert_checked(label, vector, verdict, same)
+            replayed += 1
+            continue
+        text = vector["input"]
+
+        def chars(offset, length, text=text):
+            start = _code_points(text, offset)
+            return (start, _code_points(text, offset + length) - start)
+
+        if door is Door.TEXT:
+            _assert_checked(label, vector, hypercast.cast_text(text.encode(), constraints), same)
+            _assert_checked(f"{label} (str)", vector, hypercast.cast_text(text, constraints), chars)
+        else:
+            fmt = _format_of(vector)
+            verdict = hypercast.cast_checked(text.encode(), fmt, constraints)
+            _assert_checked(label, vector, verdict, same)
+            verdict = hypercast.cast_checked(text, fmt, constraints)
+            _assert_checked(f"{label} (str)", vector, verdict, chars)
+        replayed += 1
+    assert seen == set(_DOORS) | {"refused", "from_f64", "input_bytes"}, seen
+    # Every row was replayed: the count is the file's, never a literal.
+    assert replayed == len(vectors), (replayed, len(vectors))
+
+
+def test_declarations_corpus():
+    """Replays corpus/declarations.json through the conversion every bound, step and integer
+    enum entry crosses: cast_declared_decimal, and a Constraints maximum at the decimal door,
+    whose packed layout carries the raw triple (scale included, which Decimal equality would
+    ignore) at bytes 40 to 56. A refused row raises ValueError with code 8."""
+    counts = {"ok": 0, "refused": 0, "bytes": 0}
+    vectors = _corpus("declarations.json")
+    for vector in vectors:
+        if "input_bytes" in vector:
+            counts["bytes"] += 1
+            assert vector["expect"] == "refused" and vector["refusal"] == 8
+            with pytest.raises(ValueError, match=re.escape(refusal_message(8))):
+                hypercast.cast_declared_decimal(bytes(vector["input_bytes"]))
+            continue
+        text = vector["input"]
+        if vector["expect"] == "refused":
+            counts["refused"] += 1
+            assert vector["refusal"] == 8
+            with pytest.raises(ValueError, match=re.escape(refusal_message(8))):
+                hypercast.cast_declared_decimal(text)
+            with pytest.raises(ValueError, match=re.escape(refusal_message(8))):
+                Constraints(Door.DECIMAL, maximum=text)
+            continue
+        counts["ok"] += 1
+        magnitude, scale, negative = int(vector["magnitude"]), vector["scale"], vector["negative"]
+        raw = Constraints(Door.DECIMAL, maximum=text).packed[40:56]
+        lo, hi, raw_scale, raw_negative = struct.unpack("=QIBB2x", raw)
+        assert (lo | hi << 64, raw_scale, bool(raw_negative)) == (magnitude, scale, negative), text
+        sign, digits, exponent = hypercast.cast_declared_decimal(text).as_tuple()
+        assert int("".join(map(str, digits))) == magnitude, text
+        assert (-exponent, bool(sign)) == (scale, negative), text
+        assert format(hypercast.cast_declared_decimal(text), "f") == vector["value"], text
+    # Every row was replayed, and every kind is present: counts from the file, never literals.
+    assert sum(counts.values()) == len(vectors), (counts, len(vectors))
+    assert all(counts.values()), counts
+
+
+#: Every plain door and its parameters, as they were before the checked doors joined: the
+#: constraints are additive, so none of these may change.
+_PLAIN_DOORS = {
+    "cast_bool": ["text"],
+    "cast_char": ["text"],
+    **{f"cast_{kind}": ["text", "fmt"] for kind in ["i8", "i16", "i32", "i64", "u8", "u16"]},
+    **{f"cast_{kind}": ["text", "fmt"] for kind in ["u32", "u64", "f32", "f64", "decimal"]},
+    "cast_uuid": ["text"],
+    "cast_timestamp": ["text"],
+    "cast_unix": ["text", "precision"],
+    "cast_excel_serial": ["text", "epoch"],
+    "cast_date": ["text", "order"],
+    "cast_datetime": ["text", "order", "am", "pm"],
+    "cast_time": ["text"],
+    "cast_duration": ["text"],
+    "cast_decimal_from_float": ["value"],
+    "cast_excel_serial_from_float": ["value", "epoch"],
+    "cast_excel_time": ["value"],
+    "cast_excel_duration": ["value"],
+}
+
+
+def test_the_plain_verdict_keeps_its_shape():
+    """The plain doors' verdict is exactly what it was: Success(value) or Fault(reason, offset,
+    length) over the three CastFailure codes, every plain door keeps its parameters, and none
+    answers with a checked case."""
+    assert Success.__match_args__ == ("value",)
+    assert Fault.__match_args__ == ("reason", "offset", "length")
+    assert [(m.name, m.value) for m in CastFailure] == [
+        ("EMPTY", 1),
+        ("MALFORMED", 2),
+        ("OUT_OF_RANGE", 3),
+    ]
+    assert hypercast.Verdict[int].__args__ == (Success[int], Fault)
+    for name, parameters in _PLAIN_DOORS.items():
+        door = getattr(hypercast, name)
+        assert list(inspect.signature(door).parameters) == parameters, name
+    assert type(hypercast.cast_i32("1", NumFormat.INVARIANT)) is Success
+    assert type(hypercast.cast_i32("x", NumFormat.INVARIANT)) is Fault
+    assert type(hypercast.cast_text("x")) is Success
+    assert type(hypercast.cast_text(b"\xff")) is Fault

@@ -108,3 +108,25 @@ test('a DateFormat declaration refuses an undeclared order and a bad designator'
     value: { year: 2026, month: 1, day: 7, hour: 15, minute: 4, second: 0, nanos: 0 },
   })
 })
+
+test('a lone surrogate in a declared symbol is refused, never declared as a replacement', () => {
+  const whole = /must be whole code points, not surrogate halves$/
+  assert.match(refused({ ...base, currency: '\ud800' }), /^currency must be whole code points/)
+  assert.match(refused({ ...base, decimalSep: 'x\udc00' }), whole)
+  assert.match(refused({ ...base, minusSign: '\udbff-' }), /^minusSign /)
+  assert.match(refused({ ...base, digitZero: '\ud800' }), /^digitZero /)
+  const refuse = (spec: unknown) => {
+    const declared = DateFormat.declare(spec as { order: number })
+    assert.ok(!declared.ok, JSON.stringify(spec))
+    return declared.message
+  }
+  assert.match(refuse({ order: DateOrder.DayMonthYear, am: 'vorm\ud800' }), /^am /)
+  assert.match(refuse({ order: DateOrder.DayMonthYear, pm: '\udc00' }), /^pm /)
+  // A real U+FFFD and a real pair are whole code points, and declare as they are.
+  const replacement = NumFormat.declare({ ...base, currency: '�' })
+  assert.ok(replacement.ok)
+  assert.equal(replacement.value.currency, '�')
+  const pair = NumFormat.declare({ ...base, currency: '💶' })
+  assert.ok(pair.ok)
+  assert.equal(pair.value.currency, '💶')
+})

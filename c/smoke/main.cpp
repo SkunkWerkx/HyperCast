@@ -29,6 +29,17 @@ static_assert(noexcept(hc::cast_i32("1", hc::NumFormat::invariant()).value_if())
 static_assert(!std::is_default_constructible_v<hc::Verdict<int>>, "a verdict is one of its cases");
 static_assert(!std::is_constructible_v<bool, hc::Verdict<bool>>, "a verdict is not a bool");
 static_assert(hc::is_available(), "the core is linked in");
+static_assert(noexcept(hc::Constraints<double>::declare({})), "declaring constraints is noexcept");
+static_assert(noexcept(hc::cast_text("a")), "the text door is noexcept");
+static_assert(!std::is_default_constructible_v<hc::Checked<double>>,
+              "a checked verdict is one case");
+static_assert(!std::is_constructible_v<bool, hc::Checked<bool>>, "a checked verdict is not a bool");
+static_assert(!std::is_default_constructible_v<hc::Constraints<double>>,
+              "constraints come from declare alone");
+static_assert(!std::is_constructible_v<hc::ConstraintValue, double>, "never a binary float");
+static_assert(hc::name(hc::Keyword::multiple_of) == "multipleOf" &&
+                  hc::name(static_cast<hc::Keyword>(10)) == "keyword 10",
+              "keywords are named the OpenAPI way, and stay open");
 
 // What a decimal displays as, through to_chars.
 static std::string text(const hc::Decimal &decimal) {
@@ -155,6 +166,87 @@ int main() {
          hc::CivilDateTime{{2024, 1, 1}, 64800000000000ULL}));
   CHECK(hc::cast_excel_time(0.75).value() == std::chrono::hours(18));
   CHECK((hc::cast_excel_duration(1.5).value() == hc::Duration{129600, 0}));
+
+  // Validation constraints, declared once and judged by the core.
+  hc::Constraints<double>::Fields degrees;
+  degrees.minimum = -90;
+  degrees.maximum = 90;
+  degrees.multiple_of = "0.000001";
+  degrees.rounding = hc::Rounding::midpoint;
+  const auto latitude = hc::Constraints<double>::declare(degrees);
+  CHECK(latitude.ok());
+  const auto north = hc::cast_f64("45.1234567", invariant, latitude.value());
+  CHECK(north.ok() && north.value().value == 45.123457 && north.value().adjusted &&
+        !north.value().enum_index.has_value());
+  const auto beyond = hc::cast_f64("91", invariant, latitude.value());
+  CHECK((beyond.rejection().violation() == hc::Violation{hc::Keyword::maximum, 0, 2}));
+  CHECK(beyond.rejection().visit(overloaded{[](const hc::Fault &) { return 0; },
+                                            [](const hc::Violation &) { return 1; }}) == 1);
+  CHECK(hc::cast_f64_from_double(-90.5, latitude.value()).rejection().violation().keyword ==
+        hc::Keyword::minimum);
+  CHECK(hc::cast_f64("x", invariant, latitude.value()).rejection().fault().reason ==
+        hc::CastFailure::malformed);
+
+  hc::Constraints<hc::Decimal>::Fields cash;
+  cash.multiple_of = "0.05";
+  const auto euros = hc::Constraints<hc::Decimal>::declare(cash);
+  CHECK(text(hc::cast_decimal("12.35", invariant, euros.value()).value().value) == "12.35");
+  CHECK(hc::cast_decimal("12.37", invariant, euros.value()).rejection().violation().keyword ==
+        hc::Keyword::multiple_of);
+
+  std::uint8_t storage[32];
+  hc::Constraints<std::string_view>::Fields code;
+  code.trim = true;
+  const auto sex =
+      hc::Constraints<std::string_view>::declare(code, {"Female", "Male", "Other"}, storage);
+  const auto male = hc::cast_text(" MALE ", sex.value());
+  CHECK(male.ok() && male.value().value == "Male" && male.value().enum_index == 1u);
+  CHECK(hc::cast_text("Mail", sex.value()).rejection().violation().keyword == hc::Keyword::enum_);
+  CHECK(hc::cast_text("ab").value() == "ab");
+  CHECK(!hc::optional(hc::cast_text("  ", sex.value())).has_value());
+
+  // A refusal, worded from the core's code.
+  degrees.exclusive_minimum = -91;
+  const auto both = hc::Constraints<double>::declare(degrees);
+  CHECK(!both.ok() && both.refusal().code == 2 &&
+        both.refusal().message() ==
+            "Constraints refused (code 2): minimum together with exclusiveMinimum.");
+  std::uint8_t small_storage[4];
+  CHECK(hc::Constraints<std::string_view>::declare({}, {"Male"}, small_storage).refusal().code ==
+        0);
+  // An enum is declared by passing entries, an empty list included, which the core refuses;
+  // declare(fields) declares none.
+  CHECK((sex.value().raw().flags & HyperCastRawConstraints_HAS_ENUM) != 0);
+  CHECK((euros.value().raw().flags & HyperCastRawConstraints_HAS_ENUM) == 0);
+  const auto none = hc::Constraints<std::string_view>::declare(code, {}, small_storage);
+  CHECK(!none.ok() && none.refusal().code == 12 &&
+        none.refusal().message() == "Constraints refused (code 12): an enum with no entries.");
+  CHECK(hc::Constraints<std::int32_t>::declare({}, nullptr, 0, small_storage).refusal().code == 12);
+  CHECK(hc::Constraints<std::string_view>::declare(code, {" Male "}, storage).refusal().code == 13);
+  // Invalid UTF-8 (here a lone surrogate's bytes) reaches the core unchanged at a plain door, as
+  // at a checked one: the same fault, span included.
+  const auto loose = hc::Constraints<std::int32_t>::declare({});
+  const auto plain_bad = hc::cast_i32("12\xed\xa0\x80"
+                                      "3",
+                                      invariant);
+  const auto checked_bad = hc::cast_i32("12\xed\xa0\x80"
+                                        "3",
+                                        invariant, loose.value());
+  CHECK(!plain_bad.ok() && plain_bad.fault().reason == hc::CastFailure::malformed &&
+        plain_bad.fault().offset == 2 && plain_bad.fault().length == 3 && !checked_bad.ok() &&
+        checked_bad.rejection().is_fault() && checked_bad.rejection().fault() == plain_bad.fault());
+  // The message is a value: kept past the Declared temporary it came from, it is still whole.
+  const auto kept = hc::Constraints<double>::declare(degrees).refusal().message();
+  CHECK(kept == "Constraints refused (code 2): minimum together with exclusiveMinimum.");
+  CHECK(hc::Refusal{14}.message() ==
+        "Constraints refused (code 14): a rule this binding does not name.");
+  CHECK(hc::Refusal{-7}.message() ==
+        "Constraints refused (code -7): a rule this binding does not name.");
+
+#ifdef HYPERCAST_HAS_EXPECTED
+  std::expected<hc::CheckedValue<double>, hc::Rejection> checked = north;
+  CHECK(checked.has_value() && checked->adjusted);
+#endif
 
   // to_chars refuses a buffer too small, and writes the longest a decimal can be.
   char small[3];

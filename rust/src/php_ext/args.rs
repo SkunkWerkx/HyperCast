@@ -269,6 +269,19 @@ fn instance_of(arg: &Zval, name: &[u8]) -> bool {
 /// (or whatever the coercion threw, a deprecation promoted by an error handler, say) is pending,
 /// and `false` is returned.
 pub(crate) fn coerce(arg: &mut Zval) -> bool {
+    check(arg, true)
+}
+
+/// Checks `arg` against its parameter's declared type exactly, in either mode: a value of a
+/// declared type passes, and anything else is the engine's `TypeError`, pending, with `false`
+/// returned. For the parameters weak mode must not convert: a `Constraints` bound, where a
+/// `float` would become a string (or an `int`) naming a neighbour of the value meant, and a
+/// length, where `true` would become `1`.
+pub(crate) fn exact(arg: &mut Zval) -> bool {
+    check(arg, false)
+}
+
+fn check(arg: &mut Zval, weak: bool) -> bool {
     let Some(at) = locate(arg) else {
         // Not an argument of the running call: nothing to check it against.
         PhpException::new(
@@ -296,7 +309,7 @@ pub(crate) fn coerce(arg: &mut Zval) -> bool {
     }
     // SAFETY: `arg` is a live argument zval in the frame, which the engine may replace with its
     // coerced value, as it does for a userland parameter.
-    if unsafe { zend_verify_scalar_type_hint(mask, arg, caller_is_strict(&at), false) } {
+    if weak && unsafe { zend_verify_scalar_type_hint(mask, arg, caller_is_strict(&at), false) } {
         return true;
     }
     PhpException::new(
@@ -401,9 +414,9 @@ object_arg!(
     "HyperCast\\NumFormat|NumberFormatter"
 );
 object_arg!(
-    /// `Success|Fault $verdict`.
+    /// `Success|Checked|Fault|Violation $verdict`: a plain door's verdict or a checked one's.
     VerdictArg,
-    "HyperCast\\Success|HyperCast\\Fault"
+    "HyperCast\\Success|HyperCast\\Checked|HyperCast\\Fault|HyperCast\\Violation"
 );
 object_arg!(
     /// `NumFormat $format`.
@@ -414,6 +427,11 @@ object_arg!(
     /// `DayPeriods $periods`.
     DayPeriodsArg,
     "HyperCast\\DayPeriods"
+);
+object_arg!(
+    /// `Constraints $constraints`.
+    ConstraintsArg,
+    "HyperCast\\Constraints"
 );
 object_arg!(
     /// `FFI\CData $target`.

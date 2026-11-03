@@ -182,6 +182,13 @@ test_that("num_format() declares a format, and refuses one that cannot be", {
   expect_error(num_format(flags = "lenient"), "no style")
   expect_error(num_format(flags = -1), "flags")
   expect_error(num_format(NA, ","), "single string")
+  # Text that is not UTF-8 (a lone surrogate's bytes, marked UTF-8) declares nothing.
+  surrogate <- "\xed\xa0\x80"
+  Encoding(surrogate) <- "UTF-8"
+  expect_error(num_format(currency = surrogate), "^Currency symbol must be valid UTF-8$")
+  expect_error(num_format(surrogate, ","), "^Decimal separator must be valid UTF-8$")
+  expect_error(cast_datetime("1/7/2026", "day_month_year", am = surrogate),
+               "^Day period am must be valid UTF-8$")
 })
 
 test_that("num_format_from_localeconv() bridges a locale's conventions", {
@@ -217,4 +224,52 @@ test_that("the declarations and the input's type are arguments, checked before a
 test_that("the native version is the package version", {
   expect_s3_class(hypercast_native_version(), "package_version")
   expect_equal(hypercast_native_version(), packageVersion("hypercast"))
+})
+
+# The plain verdict's shape is public: positional readers and rbind() with earlier results
+# depend on it, so the checked doors' verdict is a class of its own and this one never moves.
+test_that("the plain verdict keeps exactly its columns, in order, for every kind of door", {
+  f <- num_format()
+  verdict <- c("ok", "reason", "offset", "length")
+  shapes <- list(
+    list(cast_bool("t"), "value"), list(cast_char("A"), "value"),
+    list(cast_i8("1", f), "value"), list(cast_i32("1", f), "value"),
+    list(cast_i64("1", f), "value"), list(cast_f64("1", f), "value"),
+    list(cast_decimal("1", f), "value"), list(cast_uuid("x"), "value"),
+    list(cast_text("x"), "value"),
+    list(cast_timestamp("x"), c("value", "seconds", "nanos")),
+    list(cast_unix("1", "seconds"), c("value", "seconds", "nanos")),
+    list(cast_excel_serial("1", "y1900"), c("value", "seconds", "nanos")),
+    list(cast_date("x"), "value"), list(cast_date("x", "day_month_year"), "value"),
+    list(cast_datetime("x", "day_month_year"), c("value", "date", "nanos_of_day")),
+    list(cast_time("x"), c("value", "nanos")),
+    list(cast_duration("x"), c("value", "seconds", "nanos")),
+    list(cast_decimal_from_double(1), "value"),
+    list(cast_excel_serial_from_double(1, "y1900"), c("value", "date", "nanos_of_day")),
+    list(cast_excel_time(0.5), c("value", "nanos")),
+    list(cast_excel_duration(1), c("value", "seconds", "nanos"))
+  )
+  for (shape in shapes) {
+    v <- shape[[1]]
+    expect_s3_class(v, c("hypercast_verdict", "data.frame"), exact = TRUE)
+    expect_identical(names(v), c(shape[[2]], verdict), info = attr(v, "door"))
+    expect_identical(levels(v$reason), c("empty", "malformed", "out_of_range"))
+    expect_type(v$ok, "logical")
+    expect_type(v$offset, "integer")
+    expect_type(v$length, "integer")
+  }
+  expect_identical(names(faults(cast_bool("x"))), c("row", "reason", "offset", "length"))
+})
+
+test_that("the checked verdict is its own class, with its own columns, in order", {
+  v <- cast_checked("5", num_format(), hypercast_constraints("i32", minimum = "1"))
+  expect_s3_class(v, c("hypercast_checked_verdict", "data.frame"), exact = TRUE)
+  expect_identical(names(v), c("value", "adjusted", "enum_index", "ok", "reason", "keyword",
+                               "offset", "length"))
+  expect_type(v$adjusted, "logical")
+  expect_type(v$enum_index, "integer")
+  expect_type(v$keyword, "character")
+  expect_identical(levels(v$reason), c("empty", "malformed", "out_of_range"))
+  expect_identical(names(faults(v)), c("row", "reason", "offset", "length"))
+  expect_identical(names(violations(v)), c("row", "keyword", "offset", "length"))
 })

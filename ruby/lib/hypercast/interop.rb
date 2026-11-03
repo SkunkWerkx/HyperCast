@@ -5,26 +5,27 @@ module HyperCast
   # word, and where a gem's native library is. The Fiddle backend's doors decode with exactly
   # these, so a value read out of another library's buffer is the value the door would have.
   #
-  # Every directive below unpacks one value. A gem decoding a whole column appends "*" and
-  # steps +fields+ at a time.
+  # Every directive below unpacks one value in the host's native byte order, the order the
+  # core writes its out-values in (on a big-endian host such as s390x too). A gem decoding a
+  # whole column appends "*" and steps +fields+ at a time.
   module Interop
     # The doors whose value is one String#unpack directive away: the directive for one value.
     # A bool is the byte 0 or 1, unpacked as "C" and compared with zero.
     SCALARS = {
-      bool: "C", i8: "c", i16: "s<", i32: "l<", i64: "q<", u8: "C", u16: "S<", u32: "L<",
-      u64: "Q<", f32: "e", f64: "E", time: "Q<"
+      bool: "C", i8: "c", i16: "s", i32: "l", i64: "q", u8: "C", u16: "S", u32: "L",
+      u64: "Q", f32: "f", f64: "d", time: "Q"
     }.freeze
 
     # The doors whose value is a record: the directive that unpacks one, how many fields that
     # yields, and what builds the door's Ruby value from them, starting at field +at+.
     RECORDS = {
-      char: ["L<", 1, ->(fields, at) { fields[at].chr(Encoding::UTF_8) }],
-      decimal: ["Q<L<CCx2", 4, ->(fields, at) { decimal(fields[at], fields[at + 1], fields[at + 2], fields[at + 3]) }],
+      char: ["L", 1, ->(fields, at) { fields[at].chr(Encoding::UTF_8) }],
+      decimal: ["QLCCx2", 4, ->(fields, at) { decimal(fields[at], fields[at + 1], fields[at + 2], fields[at + 3]) }],
       uuid: ["H8H4H4H4H12", 5, ->(fields, at) { fields[at, 5].join("-") }],
-      timestamp: ["q<l<x4", 2, ->(fields, at) { instant(fields[at], fields[at + 1]) }],
-      date: ["S<CC", 3, ->(fields, at) { Date.new(fields[at], fields[at + 1], fields[at + 2]) }],
-      datetime: ["S<CCx4Q<", 4, ->(fields, at) { civil(fields[at], fields[at + 1], fields[at + 2], fields[at + 3]) }],
-      duration: ["q<l<x4", 2, ->(fields, at) { duration(fields[at], fields[at + 1]) }]
+      timestamp: ["qlx4", 2, ->(fields, at) { instant(fields[at], fields[at + 1]) }],
+      date: ["SCC", 3, ->(fields, at) { Date.new(fields[at], fields[at + 1], fields[at + 2]) }],
+      datetime: ["SCCx4Q", 4, ->(fields, at) { civil(fields[at], fields[at + 1], fields[at + 2], fields[at + 3]) }],
+      duration: ["qlx4", 2, ->(fields, at) { duration(fields[at], fields[at + 1]) }]
     }.tap do |records|
       records[:unix] = records[:excel_serial] = records[:timestamp]
       records[:date_ordered] = records[:date]

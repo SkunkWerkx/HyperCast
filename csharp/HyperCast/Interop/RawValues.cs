@@ -273,3 +273,123 @@ public readonly struct RawDuration(long seconds, int nanos)
 	/// <summary>The span, sub-tick nanoseconds truncated toward zero: the duration doors' presentation.</summary>
 	public TimeSpan ToTimeSpan() => new(Seconds * TimeSpan.TicksPerSecond + Nanos / 100);
 }
+
+/// <summary>
+/// The native core's validation-constraints layout — the Rust crate's <c>RawConstraints</c>,
+/// 72 bytes with 8-byte alignment: a size word, the flags saying which fields are read, the
+/// rounding code, the two lengths, a reserved word, then the three decimals. Pointer-free,
+/// so it is the same on 32-bit and 64-bit targets; an <c>enum</c> list travels beside it.
+/// Built by <see cref="Constraints{T}.ToRaw"/>, from a declaration the core has already
+/// judged.
+/// </summary>
+/// <remarks>
+/// <list type="table">
+/// <listheader><term>Offset</term><description>Field</description></listheader>
+/// <item><term>0</term><description><see cref="Size"/></description></item>
+/// <item><term>4</term><description><see cref="Flags"/></description></item>
+/// <item><term>8</term><description><see cref="Rounding"/></description></item>
+/// <item><term>12</term><description><see cref="MinLength"/></description></item>
+/// <item><term>16</term><description><see cref="MaxLength"/></description></item>
+/// <item><term>20</term><description><see cref="Reserved"/></description></item>
+/// <item><term>24</term><description><see cref="Lower"/></description></item>
+/// <item><term>40</term><description><see cref="Upper"/></description></item>
+/// <item><term>56</term><description><see cref="MultipleOf"/></description></item>
+/// </list>
+/// A <see cref="Size"/> other than 72, an unknown flag bit, an unknown rounding code, a
+/// nonzero <see cref="Reserved"/>, a decimal sign byte other than 0 or 1, or a non-empty
+/// <c>enum</c> list without <see cref="HasEnum"/> is a malformed layout.
+/// </remarks>
+[StructLayout(LayoutKind.Sequential)]
+public struct RawConstraints
+{
+	/// <summary><see cref="Lower"/> is the inclusive <c>minimum</c>.</summary>
+	public const uint HasMinimum = 1;
+
+	/// <summary><see cref="Lower"/> is the <c>exclusiveMinimum</c>.</summary>
+	public const uint HasExclusiveMinimum = 2;
+
+	/// <summary><see cref="Upper"/> is the inclusive <c>maximum</c>.</summary>
+	public const uint HasMaximum = 4;
+
+	/// <summary><see cref="Upper"/> is the <c>exclusiveMaximum</c>.</summary>
+	public const uint HasExclusiveMaximum = 8;
+
+	/// <summary><see cref="MultipleOf"/> and <see cref="Rounding"/> are read.</summary>
+	public const uint HasMultipleOf = 16;
+
+	/// <summary><see cref="MinLength"/> is read.</summary>
+	public const uint HasMinLength = 32;
+
+	/// <summary><see cref="MaxLength"/> is read.</summary>
+	public const uint HasMaxLength = 64;
+
+	/// <summary>Text is trimmed of Unicode <c>White_Space</c> before it is judged.</summary>
+	public const uint Trim = 128;
+
+	/// <summary>An <c>enum</c> is declared: the list beside the layout is read, and an empty one is refused.</summary>
+	public const uint HasEnum = 256;
+
+	/// <summary>The layout's size as the caller built it: 72.</summary>
+	public uint Size;
+
+	/// <summary>Which constraints are declared: the <c>Has*</c> bits, <see cref="HasEnum"/> among them, and <see cref="Trim"/>.</summary>
+	public uint Flags;
+
+	/// <summary>The <see cref="HyperCast.Rounding"/> code: 0 strict, 1 midpoint, 2 floor, 3 ceiling.</summary>
+	public uint Rounding;
+
+	/// <summary>The fewest code points the text may hold.</summary>
+	public uint MinLength;
+
+	/// <summary>The most code points the text may hold.</summary>
+	public uint MaxLength;
+
+	/// <summary>Always 0.</summary>
+	public uint Reserved;
+
+	/// <summary>The minimum, or the exclusive minimum.</summary>
+	public RawDecimal Lower;
+
+	/// <summary>The maximum, or the exclusive maximum.</summary>
+	public RawDecimal Upper;
+
+	/// <summary>The step every value must be a multiple of.</summary>
+	public RawDecimal MultipleOf;
+}
+
+/// <summary>
+/// What a checked door reports beside its value, as the core writes it — the Rust crate's
+/// <c>RawCheck</c>, 12 bytes with 4-byte alignment.
+/// </summary>
+/// <param name="keyword">On a violation, the <see cref="HyperCast.Keyword"/> code broken; 0 otherwise.</param>
+/// <param name="adjusted">On success, 1 when rounding changed the value, else 0.</param>
+/// <param name="enumIndex">On a success at the text door that matched an <c>enum</c> entry, its index; <see cref="uint.MaxValue"/> otherwise.</param>
+[StructLayout(LayoutKind.Sequential)]
+public readonly struct RawCheck(uint keyword, uint adjusted, uint enumIndex)
+{
+	/// <summary>On a violation, the <see cref="HyperCast.Keyword"/> code broken; 0 otherwise.</summary>
+	public readonly uint Keyword = keyword;
+
+	/// <summary>On success, 1 when rounding changed the value, else 0.</summary>
+	public readonly uint Adjusted = adjusted;
+
+	/// <summary>On a success at the text door that matched an <c>enum</c> entry, its index; <see cref="uint.MaxValue"/> otherwise.</summary>
+	public readonly uint EnumIndex = enumIndex;
+}
+
+/// <summary>
+/// A span of the caller's own input as the core writes it — the Rust crate's
+/// <c>RawSpan</c>, 8 bytes with 4-byte alignment: what the text door writes in place of a
+/// copy.
+/// </summary>
+/// <param name="offset">The byte offset where the span starts.</param>
+/// <param name="length">The span's length in bytes.</param>
+[StructLayout(LayoutKind.Sequential)]
+public readonly struct RawSpan(uint offset, uint length)
+{
+	/// <summary>The byte offset where the span starts.</summary>
+	public readonly uint Offset = offset;
+
+	/// <summary>The span's length in bytes.</summary>
+	public readonly uint Length = length;
+}

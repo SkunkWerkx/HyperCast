@@ -20,8 +20,9 @@ import java.util.UUID;
 
 /**
  * The native core's C ABI values, read and written: every out-value layout a door fills, the
- * 92-byte numeric format and the 40-byte day-period designators it reads, the verdict code
- * and span of a fault, and the packed version word. Public for a library that carries HyperCast's verdicts across a C ABI of its
+ * 92-byte numeric format and the 40-byte day-period designators it reads, the sizes of the
+ * validation constraints' layouts, the verdict code and span of a fault, and the packed
+ * version word. Public for a library that carries HyperCast's verdicts across a C ABI of its
  * own (HyperTabular does) — it reads these out of its own buffers through exactly the
  * conversions every {@link io.github.skunkwerkx.hypercast.Cast} door uses, so a value it hands
  * out is the value the door would have.
@@ -71,6 +72,25 @@ public final class NativeValues {
 
     /** A fault's span: {@code {u32 offset, u32 length}}, in bytes of the input. */
     public static final long FAULT_BYTES = 8;
+
+    /**
+     * A declaration of validation constraints, size-tagged: {@code u32 size} (72),
+     * {@code u32 flags}, {@code u32 rounding}, {@code u32 min_length}, {@code u32 max_length}, a
+     * reserved {@code u32} (0), then three decimals ({@link #DECIMAL_BYTES} each): the lower
+     * bound, the upper bound and {@code multipleOf} (at 24, 40 and 56). 8-byte aligned.
+     * {@link io.github.skunkwerkx.hypercast.Constraints#toRaw()} hands one out.
+     */
+    public static final long CONSTRAINTS_BYTES = 72;
+
+    /**
+     * What a checked door reports beside its value: {@code {u32 keyword, u32 adjusted, u32
+     * enum_index}}, the keyword broken on a violation (0 otherwise), 1 when rounding changed the
+     * value, and the matched text entry ({@code 0xFFFFFFFF} for none).
+     */
+    public static final long CHECK_BYTES = 12;
+
+    /** The text door's value: {@code {u32 offset, u32 length}}, a span of the input in bytes. */
+    public static final long SPAN_BYTES = 8;
 
     // A layout is read through a VarHandle, and one that is not a constant in a native image
     // costs ~70 ns a load there instead of one instruction: this class is initialized at

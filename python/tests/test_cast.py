@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import datetime as dt
 import importlib.metadata
+import inspect
+import platform
 import re
 import uuid as uuidlib
 from decimal import Decimal
@@ -391,6 +393,51 @@ def test_separators_are_one_to_eight_utf8_bytes():
             NumFormat(bad, ",", NumFormat.ALL)
         with pytest.raises(ValueError, match="1 to 8 UTF-8 bytes"):
             NumFormat(".", bad, NumFormat.ALL)
+
+
+def test_a_lone_surrogate_in_a_declaration_is_a_value_error_never_a_replacement():
+    """A str holding a lone surrogate has no UTF-8 form, so no symbol can be declared from it:
+    it is a UnicodeEncodeError (a ValueError) whose reason names the field, as every binding
+    words it, keeping Python's position, never a symbol standing in for it. A real U+FFFD is an
+    ordinary symbol."""
+
+    def refused(field, position, call):
+        with pytest.raises(UnicodeEncodeError) as raised:
+            call()
+        assert raised.value.reason == f"{field} must be whole code points, not surrogate halves"
+        assert raised.value.start == position
+        assert f"position {position}: {field} must be whole code points" in str(raised.value)
+        return raised.value
+
+    for field, value, position in (
+        ("currency", "\ud800", 0),
+        ("minus_sign", "-\udc00", 1),
+        ("percent", "\udbff", 0),
+        ("digit_zero", "\ud800", 0),
+        ("currency_group_sep", "\udc00", 0),
+        ("plus_sign", "+\ud800", 1),
+        ("currency_decimal_sep", "\udc00", 0),
+    ):
+        error = refused(
+            field, position, lambda: NumFormat(".", ",", NumFormat.ALL, **{field: value})
+        )
+        assert f"while processing '{field}'" in getattr(error, "__notes__", [])
+    refused("decimal_sep", 0, lambda: NumFormat("\ud800", ",", NumFormat.ALL))
+    refused("group_sep", 0, lambda: NumFormat(".", "\ud800", NumFormat.ALL))
+    # localeconv's own key is named: it is what the caller's dict spelled.
+    refused(
+        "thousands_sep",
+        0,
+        lambda: NumFormat.from_localeconv({"decimal_point": ".", "thousands_sep": "\ud800"}),
+    )
+    order = hypercast.DateOrder.DAY_MONTH_YEAR
+    refused("am", 0, lambda: hypercast.cast_datetime("1/7/2026 3:04 PM", order, am="\ud800"))
+    refused("pm", 1, lambda: hypercast.cast_datetime("1/7/2026 3:04 PM", order, pm="p\udc00"))
+    # The declared signature is what it was: the extractors change no default. (PyPy's cpyext
+    # gives inspect no signature for a builtin class.)
+    if platform.python_implementation() != "PyPy":
+        assert "currency=''" in str(inspect.signature(NumFormat))
+    assert NumFormat(".", ",", NumFormat.ALL, "\ufffd").currency == "\ufffd"
 
 
 def test_declared_signs_are_read_beside_ascii():

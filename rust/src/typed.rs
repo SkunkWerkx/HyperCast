@@ -14,7 +14,9 @@
 //!   `2.5` is `Malformed` for an `i32`, as the text `2.5` is. Below 2^53 that is the
 //!   double's own value; above it, where a double no longer holds every integer, it is the
 //!   shortest digits padded with zeros (`2^63` is `9223372036854776000`, as Excel shows it).
-//! - NaN is `Malformed` everywhere (no text door spells one); an infinity is `OutOfRange`.
+//! - NaN is `Malformed` everywhere (no text door spells one). An infinity is `OutOfRange` at
+//!   the float and decimal doors, and `Malformed` at an integer door, where it is not a whole
+//!   number, as `2.5` is not and as the text `Infinity` is `Malformed`.
 //!
 //! The verdict is a bare [`Reason`]: there is no text for a [`crate::Fault`]'s span to index.
 //!
@@ -86,13 +88,18 @@ integer_door!(u64_from_f64, u64, cast_u64);
 /// Narrows a number already held as an `f64` to an `f32` — the typed twin of
 /// [`cast_f32`](crate::cast_f32): the `f32` nearest the double, ties to even. NaN is
 /// `Malformed`; a value whose nearest `f32` is infinite (an infinity among them) is
-/// `OutOfRange`.
+/// `OutOfRange`. Never a negative zero: `-0.0`, and a negative double too small for an
+/// `f32` (`-1e-300`), are `0.0`.
 pub fn f32_from_f64(value: f64) -> Result<f32, Reason> {
     if value.is_nan() {
         return Err(Reason::Malformed);
     }
     let narrowed = value as f32;
-    if narrowed.is_infinite() { Err(Reason::OutOfRange) } else { Ok(narrowed) }
+    if narrowed.is_infinite() {
+        Err(Reason::OutOfRange)
+    } else {
+        Ok(crate::float::unsigned(narrowed))
+    }
 }
 
 /// Reads a number already held as an `f64` as a boolean — the typed twin of

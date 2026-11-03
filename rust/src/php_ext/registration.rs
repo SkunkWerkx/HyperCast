@@ -1,9 +1,9 @@
 //! The parts of the 1.0 surface that ext-php-rs's builders can't declare, written into the
 //! registered class entries once every module's startup has run:
 //!
-//! - `CastFailure`, `DateOrder`, `ExcelEpoch` and `UnixPrecision` are `final`, as every PHP
-//!   enum is: ext-php-rs registers an enum through `zend_register_internal_enum` without the
-//!   flag the compiler gives a declared one;
+//! - `CastFailure`, `DateOrder`, `ExcelEpoch`, `UnixPrecision`, `Door`, `Rounding` and
+//!   `Keyword` are `final`, as every PHP enum is: ext-php-rs registers an enum through
+//!   `zend_register_internal_enum` without the flag the compiler gives a declared one;
 //! - `Cast`, `Interop\NativeValues` and `Interop\NativePlatform` accept `serialize` and
 //!   `unserialize`, as 1.0's userland classes did: ext-php-rs marks a class backed by a Rust
 //!   object `NotSerializable`, and these hold nothing to lose.
@@ -26,7 +26,7 @@ use ext_php_rs::ffi::{ZEND_ACC_FINAL, zend_class_entry};
 use ext_php_rs::flags::ClassFlags;
 
 use super::cast::Cast;
-use super::enums::{CastFailure, DateOrder, ExcelEpoch, UnixPrecision};
+use super::enums::{CastFailure, DateOrder, Door, ExcelEpoch, Keyword, Rounding, UnixPrecision};
 use super::interop::{NativePlatform, NativeValues};
 
 // The engine's hook for work after every MINIT and before any request (`zend.h`), which
@@ -86,6 +86,9 @@ fn finish() {
         own_entry::<DateOrder>(),
         own_entry::<ExcelEpoch>(),
         own_entry::<UnixPrecision>(),
+        own_entry::<Door>(),
+        own_entry::<Rounding>(),
+        own_entry::<Keyword>(),
     ]
     .into_iter()
     .flatten()

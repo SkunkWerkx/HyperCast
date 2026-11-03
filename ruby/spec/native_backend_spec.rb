@@ -128,6 +128,62 @@ RSpec.describe "native backend" do
       .to eq(HyperCast.i32("1€x".encode(Encoding::UTF_16LE), HyperCast::NumFormat::INVARIANT).inspect)
   end
 
+  # Every checked door and its caller bugs, run as the same source on both backends: the
+  # verdicts (non-ASCII spans included), a text match, the refusals' messages, the wrong-door
+  # and wrong-type errors, and a Constraints that was never built.
+  it "agrees with the Fiddle backend on the checked doors and their caller bugs" do
+    rescued = 'begin; (%s).inspect; rescue StandardError => e; "#{e.class}: #{e.message}"; end'
+    inv = "HyperCast::NumFormat::INVARIANT"
+    c = "HyperCast::Constraints"
+    [
+      "HyperCast.checked('€5', HyperCast::NumFormat.new(decimal_sep: '.', group_sep: ',', " \
+      "flags: HyperCast::ALL_STYLES, currency: '€'), #{c}.new(door: :i32, maximum: 4))",
+      "HyperCast.checked('1,5', #{inv}, #{c}.new(door: :decimal, multiple_of: '0.5'), separator: ',', delimiter: '.')",
+      "HyperCast.checked('12.37', #{inv}, #{c}.new(door: :f32, multiple_of: '0.05', rounding: :ceiling))",
+      "HyperCast.checked('x9', #{inv}, #{c}.new(door: :u64))",
+      "HyperCast.checked_from_float(0.1 + 0.2, #{c}.new(door: :f64, multiple_of: '0.1', rounding: :midpoint))",
+      "HyperCast.checked_from_float(-0.0, #{c}.new(door: :decimal, maximum: 1))",
+      "HyperCast.checked_from_float(Float::INFINITY, #{c}.new(door: :i8))",
+      "HyperCast.text(' éé ', #{c}.new(door: :text, trim: true, max_length: 1))",
+      "HyperCast.text(' FEMALE ', #{c}.new(door: :text, trim: true, enum: %w[Male Female]))",
+      "HyperCast.text('ab\\xFFc'.b, #{c}.new(door: :text))",
+      "HyperCast.text('héllo'.encode(Encoding::UTF_16LE))",
+      # Text with no UTF-8 form: a lone surrogate, malformed at its character on both backends.
+      "HyperCast.text([0x31, 0xD800, 0x32].pack('v*').force_encoding(Encoding::UTF_16LE))",
+      "HyperCast.bool([0x31, 0xD800].pack('v*').force_encoding(Encoding::UTF_16LE))",
+      "HyperCast.i32([0x31, 0xD800].pack('v*').force_encoding(Encoding::UTF_16LE), #{inv})",
+      "HyperCast.checked([0x31, 0xD800].pack('v*').force_encoding(Encoding::UTF_16LE), #{inv}, #{c}.new(door: :i32))",
+      "#{c}.new(door: :text, enum: [[0xD800].pack('v*').force_encoding(Encoding::UTF_16LE)])",
+      # Text in a dummy encoding: transcoded whole, malformed at each conversion error.
+      "HyperCast.i32(\"\\xFE\\xFF\\x00\\x35\\xD8\\x00\".b.force_encoding(Encoding::UTF_16), #{inv})",
+      "HyperCast.text(\"\\e$B\\x24\\x22\\e(B5\\xFF\".b.force_encoding(Encoding::ISO_2022_JP))",
+      "HyperCast.i32('+AGE-'.b.force_encoding(Encoding::UTF_7), #{inv})",
+      "HyperCast.i32(\"4\\xA1\\xA1\".b.force_encoding(Encoding::EUC_TW), #{inv})",
+      "HyperCast.text('')",
+      "HyperCast.declared_decimal('-1.50')",
+      "HyperCast.declared_decimal('1,5')",
+      "HyperCast.constraints_check(door: :text, enum: %w[Male MALE])",
+      "#{c}.new(door: :i32, minimum: 0, exclusive_minimum: 0)",
+      "#{c}.new(door: :text, enum: ['\\xFF'.b])",
+      "#{c}.new(door: :text, enum: [])",
+      "#{c}.new(door: :text, trim: true, enum: [' Male '])",
+      "#{c}.new(door: :text, enum: [' Male '])",
+      "#{c}.new(door: :f64, minimum: 0.5)",
+      "HyperCast.checked('1', #{inv}, #{c}.new(door: :text))",
+      "HyperCast.text('1', #{c}.new(door: :i8))",
+      "HyperCast.checked('1', #{inv}, :i8)",
+      "HyperCast.checked_from_float('1', #{c}.new(door: :i8))",
+      "HyperCast.checked('1', #{inv}, #{c}.allocate)"
+    ].each do |source|
+      native = begin
+        eval(source).inspect # rubocop:disable Security/Eval -- the same source, run on both backends
+      rescue StandardError => e
+        "#{e.class}: #{e.message}"
+      end
+      expect(fiddle_eval(format(rescued, source))).to eq(native), source
+    end
+  end
+
   it "agrees with the Fiddle backend on format overrides, their verdicts and their caller bugs" do
     rescued = 'begin; (%s).inspect; rescue StandardError => e; "#{e.class}: #{e.message}"; end'
     inv = "HyperCast::NumFormat::INVARIANT"
@@ -177,6 +233,10 @@ RSpec.describe "native backend" do
       "HyperCast::NumFormat.new(decimal_sep: '.', group_sep: ',', flags: 95, minus_sign: '- ')",
       "HyperCast::NumFormat.new(decimal_sep: ',', group_sep: '.', flags: 95, currency_decimal_sep: '.')",
       "HyperCast::NumFormat.new(decimal_sep: '.', group_sep: ',,,,,,,,,', flags: 95)",
+      "HyperCast::NumFormat.new(decimal_sep: '.', group_sep: ',', flags: 95, " \
+      "currency: \"\\xD8\\x00\".dup.force_encoding(Encoding::UTF_16BE))",
+      "HyperCast::NumFormat.new(decimal_sep: \"\\xED\\xA0\\x80\".dup.force_encoding(Encoding::UTF_8), " \
+      "group_sep: ',', flags: 95)",
       "HyperCast::NumFormat.from_i18n({ separator: ',', delimiter: '.', negative_format: '%n-' }, " \
       "currency_format: { separator: '.', delimiter: \"'\", unit: 'CHF' })",
       "HyperCast.datetime('1/7/2026 3:04 nachm.', :day_month_year, am: 'vorm.', pm: 'nachm.')",
@@ -191,6 +251,10 @@ RSpec.describe "native backend" do
       "HyperCast.datetime('1/7/2026', :day_month_year, am: 'vorm.', pm: '')",
       "HyperCast.datetime('1/7/2026', :day_month_year, am: 'vorm.', pm: :nachm)",
       "HyperCast.datetime('1/7/2026', :day_month_year, am: 'a1', pm: 'p1')",
+      "HyperCast.datetime('1/7/2026', :day_month_year, " \
+      "am: \"\\xD8\\x00\".dup.force_encoding(Encoding::UTF_16BE), pm: 'nachm.')",
+      "HyperCast.datetime('1/7/2026', :day_month_year, " \
+      "am: 'vorm.', pm: \"\\xED\\xA0\\x80\".dup.force_encoding(Encoding::UTF_8))",
       "HyperCast.datetime('1/7/2026', :day_month_year, noon: 'x')",
       "HyperCast.datetime('1/7/2026', :little_endian, am: 'vorm.', pm: 'nachm.')",
       "HyperCast.datetime('1/7/2026', :day_month_year, :extra, am: 'vorm.')"
@@ -213,15 +277,12 @@ RSpec.describe "native backend" do
     # The extension replaces the doors themselves, so a caller bug is raised by Rust here and
     # by Ruby there. Class and message are compared across the subprocess boundary.
     rescued = 'begin; %s; rescue StandardError => e; "#{e.class}: #{e.message}"; end'
-    lone_surrogate = '[0x0031, 0xD800].pack("v*").force_encoding(Encoding::UTF_16LE)'
     [
       ['HyperCast.unix("1", :fortnights)', -> { HyperCast.unix("1", :fortnights) }],
       ['HyperCast.unix("1", "seconds")', -> { HyperCast.unix("1", "seconds") }],
       ['HyperCast.excel_serial("1", nil)', -> { HyperCast.excel_serial("1", nil) }],
       ['HyperCast.date("1/7/2026", "month_day_year")', -> { HyperCast.date("1/7/2026", "month_day_year") }],
       ['HyperCast.datetime("1/7/2026 3:04 PM", 2)', -> { HyperCast.datetime("1/7/2026 3:04 PM", 2) }],
-      ["HyperCast.bool(#{lone_surrogate})",
-       -> { HyperCast.bool([0x0031, 0xD800].pack("v*").force_encoding(Encoding::UTF_16LE)) }],
       ["HyperCast.i32(42, HyperCast::NumFormat::INVARIANT)", -> { HyperCast.i32(42, HyperCast::NumFormat::INVARIANT) }],
       ['HyperCast.decimal_from_float("0.5")', -> { HyperCast.decimal_from_float("0.5") }],
       ["HyperCast.excel_time(nil)", -> { HyperCast.excel_time(nil) }],
@@ -236,7 +297,7 @@ RSpec.describe "native backend" do
       rescue StandardError => e
         "#{e.class}: #{e.message}"
       end
-      expect(native).to match(/\A(KeyError|TypeError|RangeError|Encoding::InvalidByteSequenceError): /), source
+      expect(native).to match(/\A(KeyError|TypeError|RangeError): /), source
       expect(fiddle_eval(format(rescued, source))).to eq(native), source
     end
   end
@@ -259,6 +320,39 @@ RSpec.describe "native backend" do
     out, status = Open3.capture2e(RbConfig.ruby, "-I", lib, "-r", "hypercast", "-e", script)
     want = "native #<data HyperCast::Success value=-1234> " \
            "#<data HyperCast::Fault reason=:malformed, offset=1, length=1>"
+    expect([status.success?, out]).to eq([true, want])
+  end
+
+  # The extension remembers the last format each thread resolved. Keyed by the object's address,
+  # a compacting collection moved the remembered format and a new one built at its old address
+  # was read as it: a Eurozone format cast "1,234" as 1234. The key is the object_id, which
+  # moves with the object and is never reused. Fiddle.dlwrap is the object's address.
+  it "never mistakes a format built after a compacting collection for the one before it" do
+    skip "this Ruby's GC does not compact" unless GC.respond_to?(:verify_compaction_references)
+
+    lib = File.expand_path("../lib", __dir__)
+    script = <<~RUBY
+      require "fiddle"
+      flags = HyperCast::ALL_STYLES
+      dollars = HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",", flags: flags)
+      HyperCast.i32("1,234", dollars)
+      was = Fiddle.dlwrap(dollars)
+      GC.verify_compaction_references(expand_heap: true, toward: :empty)
+      kept = []
+      verdict = nil
+      200_000.times do
+        euros = HyperCast::NumFormat.new(decimal_sep: ",", group_sep: ".", flags: flags)
+        kept << euros
+        next unless Fiddle.dlwrap(euros) == was
+
+        verdict = HyperCast.i32("1,234", euros)
+        break
+      end
+      print Fiddle.dlwrap(dollars) != was, " ", verdict.inspect
+    RUBY
+    out, status = Open3.capture2e(RbConfig.ruby, "-I", lib, "-r", "hypercast", "-e", script)
+    skip "no format was built at the moved one's old address (#{out})" if out.end_with?(" nil")
+    want = "true #<data HyperCast::Fault reason=:malformed, offset=1, length=1>"
     expect([status.success?, out]).to eq([true, want])
   end
 end

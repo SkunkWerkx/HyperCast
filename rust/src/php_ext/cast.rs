@@ -12,7 +12,8 @@ use ext_php_rs::prelude::*;
 use ext_php_rs::types::Zval;
 
 use super::args::{
-    EpochArg, Float, FormatArg, OptOrderArg, OptPeriodsArg, OrderArg, PrecisionArg, Str, VerdictArg,
+    ConstraintsArg, EpochArg, Float, FormatArg, OptOrderArg, OptPeriodsArg, OrderArg, PrecisionArg,
+    Str, VerdictArg,
 };
 use super::classes::{Value, bool_zval, bytes_zval, float_zval, int_zval, object_of, read};
 use super::dates::{civil, date, instant};
@@ -36,11 +37,27 @@ impl IntoZval for Verdict {
     }
 }
 
-/// `Cast::optional`'s answer: the verdict, or `null` for an empty input.
+/// A checked door's verdict, a `Checked`, a `Fault` or a `Violation`.
+pub struct CheckedVerdict(Zval);
+
+impl IntoZval for CheckedVerdict {
+    const TYPE: DataType =
+        DataType::object("HyperCast\\Checked|HyperCast\\Fault|HyperCast\\Violation");
+    const NULLABLE: bool = false;
+
+    fn set_zval(self, zv: &mut Zval, _: bool) -> ZvalResult<()> {
+        *zv = self.0;
+        Ok(())
+    }
+}
+
+/// `Cast::optional`'s answer: the verdict, plain or checked, or `null` for an empty input.
 pub struct MaybeVerdict(Option<Zval>);
 
 impl IntoZval for MaybeVerdict {
-    const TYPE: DataType = DataType::object("HyperCast\\Success|HyperCast\\Fault");
+    const TYPE: DataType = DataType::object(
+        "HyperCast\\Success|HyperCast\\Checked|HyperCast\\Fault|HyperCast\\Violation",
+    );
     const NULLABLE: bool = true;
 
     fn set_zval(self, zv: &mut Zval, _: bool) -> ZvalResult<()> {
@@ -140,7 +157,8 @@ impl Cast {
         guard(|| Ok(Self))
     }
 
-    /// The verdict, or `null` for an `Empty` fault.
+    /// The verdict, plain or checked, or `null` for an `Empty` fault: every other verdict, a
+    /// `Violation` included, comes back as it was.
     pub fn optional(verdict: VerdictArg<'_>) -> PhpResult<MaybeVerdict> {
         guard(|| {
             let is_fault = verdict
@@ -309,6 +327,48 @@ impl Cast {
 
     pub fn excel_duration(value: Float) -> PhpResult<Verdict> {
         guard(|| spanless(crate::excel_duration(value.0), duration_value))
+    }
+
+    /// Text as text: the input itself once it is valid UTF-8. Empty input is `Empty`, invalid
+    /// UTF-8 `Malformed` at its bytes; nothing is trimmed.
+    pub fn text(text: Str<'_>) -> PhpResult<Verdict> {
+        guard(|| super::constraints::text(text.0).map(Verdict))
+    }
+
+    /// Numeric text through the door its `Constraints` are bound to, under the declared format,
+    /// then judged by them: `Checked`, or the door's own `Fault`, or a `Violation` of the first
+    /// rule it breaks, judged exactly on the decimal the door read. Constraints for
+    /// `Door::Text` go to `checkedText()`.
+    pub fn checked(
+        text: Str<'_>,
+        format: FormatArg<'_>,
+        constraints: ConstraintsArg<'_>,
+    ) -> PhpResult<CheckedVerdict> {
+        guard(|| {
+            let format = declared(format.0)?;
+            super::constraints::checked(text.0, &format, constraints.0).map(CheckedVerdict)
+        })
+    }
+
+    /// A number already decoded (a JSON float, a spreadsheet's numeric cell) through the door
+    /// its `Constraints` are bound to, judged on the shortest decimal that names it. NaN is
+    /// `Malformed`; an infinity is `OutOfRange` at a float or decimal door and `Malformed` at an
+    /// integer door. Every span is empty.
+    pub fn checked_from_float(
+        value: Float,
+        constraints: ConstraintsArg<'_>,
+    ) -> PhpResult<CheckedVerdict> {
+        guard(|| super::constraints::checked_from_float(value.0, constraints.0).map(CheckedVerdict))
+    }
+
+    /// Text judged by `Constraints` for `Door::Text`: trimmed of Unicode `White_Space` when
+    /// they say so (trimmed to nothing is `Empty`), lengths counted in code points, an `enum`
+    /// matched under simple case folding, a match delivering the caller's own declared entry.
+    pub fn checked_text(
+        text: Str<'_>,
+        constraints: ConstraintsArg<'_>,
+    ) -> PhpResult<CheckedVerdict> {
+        guard(|| super::constraints::checked_text(text.0, constraints.0).map(CheckedVerdict))
     }
 
     /// The core's version, `major.minor.patch`.

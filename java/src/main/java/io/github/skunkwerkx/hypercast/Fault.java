@@ -13,15 +13,18 @@ package io.github.skunkwerkx.hypercast;
  * {@code text.substring(offset, offset + length)} is the offending text whatever the input
  * contained; for ASCII the two units coincide and nothing is rebased.
  *
- * <p>Generic only so it can inhabit {@code Verdict<T>} — the type parameter is phantom;
- * a fault carries no value.
+ * <p>The same record is a checked door's parse failure: it is also a {@link Rejection}, so a
+ * door with declared {@link Constraints} hands back exactly the fault its plain door would.
+ *
+ * <p>Generic only so it can inhabit {@code Verdict<T>} and {@code Rejection<T>} — the type
+ * parameter is phantom; a fault carries no value.
  *
  * @param <T> the verdict's value type (phantom)
  * @param reason the closed-set conversion reason, never {@code null}
  * @param offset offset of the offending span in the input: bytes for byte input, chars for a {@link String}
  * @param length length of the offending span in the same unit; zero for {@link CastFailure#EMPTY}
  */
-public record Fault<T>(CastFailure reason, int offset, int length) implements Verdict<T> {
+public record Fault<T>(CastFailure reason, int offset, int length) implements Verdict<T>, Rejection<T> {
     /** Rejects a {@code null} reason up front — a fault with no reason is a caller bug. */
     public Fault {
         if (reason == null) {

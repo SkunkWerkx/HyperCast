@@ -57,10 +57,40 @@ let verdict = hypercast::cast_timestamp(b"2026-01-02T15:04:05.123456789+05:00");
 
 Culture never lives in the core: numeric doors take a caller-declared format — separators, lenience flags, and everything a culture table has to fill in: its currency symbol and the separators a currency amount uses, its minus and plus signs, whether the sign trails, its percent symbol, its digits — so `NumFormat.From(CultureInfo)` copies the culture's own, and a format that declares nothing reads exactly as the invariant culture (each declared symbol is read *beside* the ASCII default, never instead of it). Separated dates take a caller-declared field order (`DateOrder` — the en-US/en-GB `1/7/2026` ambiguity is resolved by declaration, never sniffed) and, for a 12-hour clock, the culture's own `AM`/`PM` words beside the English ones; each binding bridges its platform's culture machinery to both (`NumFormat.From(CultureInfo)` / `DateFormat.From(CultureInfo)` in C#, `NumFormat.from(Locale)` / `DateTimeFormat.from(Locale)` in Java, `NumFormat.from(locale:)` / `DateFormat.from(locale:)` in Swift). The numeric doors also take the platform's own format object directly, mapped to the core's format at the door: an `IFormatProvider` in C# (so `Cast.Scalar<T>(span, provider)` slots into a `TryParse`-shaped gateway), a `Locale` in Java and Swift, an intl `NumberFormatter` in PHP, and Rails' `separator:`/`delimiter:`/`unit:` keywords in Ruby. Optionality is presentation: `Empty` is a verdict, and the optional doors map it to absent. And before the first cast, every binding can say which version of the core it has, and where a core can be missing, whether it loaded (`Cast.IsAvailable`/`NativeVersion` in C#, and the same pair in each language's idiom), so a consumer with a fallback gates on a probe rather than catching a load failure. Python has only `native_version()`, since a successful import means the extension is there, and R only `hypercast_native_version()`, since the package does not load without its compiled code; PHP's probe is PHP's own `extension_loaded('hypercast')` beside `Cast::nativeVersion()`, since without the extension its classes do not exist. Every binding's spelling of every concept is in [docs/bindings.md](docs/bindings.md).
 
+## Validation: the checked doors
+
+A value that parses can still be wrong for the field it fills. The checked doors judge it
+against declared constraints in the same call, using the OpenAPI Schema Object's vocabulary:
+`minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum` and `multipleOf` for the integer,
+real and decimal doors, `minLength`, `maxLength` and `enum` for text, and an integer `enum`
+for the integer doors. The rules are declared in code (no schema is parsed), checked once by
+the core when they are built, and bound to one door: a declaration the core refuses, such as
+`minimum` beside `exclusiveMinimum`, a lower bound not below the upper, or an empty `enum`, is
+the caller's contract violation, and never means "no rules".
+
+- **Exact judgement.** Bounds and steps are exact decimals, never floats, and a value is
+  judged by its exact text, so `0.1` is one tenth against a `multipleOf` of `0.05`. A real door
+  also judges the float it delivers against each bound read as the door reads it, so it never
+  hands back a float that breaks a bound: `1e-400` at `f64` reads as `0`, which breaks
+  `exclusiveMinimum: 0`, and is a violation.
+- **Rounding is declared.** `multipleOf` takes a rounding: `strict` (the default) rejects a
+  value off the step, as euro cash at `0.05` should; `midpoint` (ties to even), `floor` and
+  `ceiling` snap to it, as a latitude at `0.000001` may, and the verdict says the value was
+  adjusted.
+- **Text is forgiving where the world is messy.** `trim` strips Unicode white space before
+  judging, lengths count code points, and an `enum` matches under simple case folding,
+  returning the declared spelling and its index: `"male"` against `["Female", "Male"]` gives
+  `"Male"`, index 1.
+- **Two arms, never three.** The checked verdict is the value (with the adjusted flag and, for
+  a text enum, the index), or a rejection: the door's own fault, or a violation naming the
+  keyword and the span. Every binding spells it in its own idiom
+  ([docs/bindings.md](docs/bindings.md#constraints)), and every binding replays the same
+  constraint corpus.
+
 ## Receipts — proven on this repo's own tests
 
 - **Allocation-free is asserted by a counting allocator, not a doc comment** — `rust/tests/allocation_free.rs` wraps `#[global_allocator]` around 1000 calls to every door, success *and* failure paths, and demands zero. A fault is a byte span into the caller's input; nothing is ever captured or formatted on the error path.
-- **The corpus is the contract** — `corpus/*.json` (seeded from the [Svartalfheim](https://github.com/NorseArchitecture/Svartalfheim) `Norse.Primitives` test suites this project descends from) replays through the Rust core's suite *and* every binding's: all fifteen files, through C#'s real P/Invoke, Java's JNI on JDK 21 and FFM downcalls on 25, Go's translated core, Swift, Ruby's Magnus *and* Fiddle backends, PHP's extension, Python's, TypeScript's addon and its WebAssembly fallback, R's `.Call` shim, and the C++ header over the C ABI.
+- **The corpus is the contract** — `corpus/*.json` (seeded from the [Svartalfheim](https://github.com/NorseArchitecture/Svartalfheim) `Norse.Primitives` test suites this project descends from) replays through the Rust core's suite *and* every binding's: all seventeen files, through C#'s real P/Invoke, Java's JNI on JDK 21 and FFM downcalls on 25, Go's translated core, Swift, Ruby's Magnus *and* Fiddle backends, PHP's extension, Python's, TypeScript's addon and its WebAssembly fallback, R's `.Call` shim, and the C++ header over the C ABI.
 - **Fast paths pay for the lenience** — plain-shaped input takes allocation-free fast lanes; only text that actually uses the forgiveness pays for it. Measured with criterion against Rust's own best-in-class (linux-x64, an Intel Core i9-11900H): `cast_timestamp` 14.5 vs 17.1 ns `time`, `cast_uuid` 12.8 ns against the `uuid` crate's 11.1 ns, `cast_i64` 8.7 vs 7.1 ns `str::parse`. The timestamp door is the one ahead of its Rust counterpart; elsewhere, in-process against Rust's own parsers, these doors trade a few nanoseconds for what they *return* (a verdict with a span) and what they *accept*, and the speed story belongs to the bindings, where the competition is culture machinery ([the scoreboard](#the-scoreboard)).
 - **Fuzzed, with what it finds pinned as tests** — a `cargo-fuzz` target (`rust/fuzz/`) drives every door under every format profile and every declared order/precision/epoch, asserting two invariants every binding silently relies on: a door never panics on any byte sequence, and every fault span stays inside the caller's buffer (`offset + len <= input.len()`, which bindings slice with). The two classes of bug it has caught — truncation faults pointing one byte past the input, and `char_len` spans overrunning on text ending mid-UTF-8-character — are fixed structurally and pinned by `rust/tests/fault_span_invariant.rs` (every corpus input truncated at every byte boundary, through every door) so they fail plain `cargo test`.
 - **Published to every registry, and consumed from each** — crates.io, nuget.org, PyPI (17 wheels — `abi3` and free-threaded `abi3t` on each of eight platforms, two of them `musllinux`, and one for Pyodide in the browser — and the sdist), RubyGems (9 gems — one universal Fiddle, seven precompiled Magnus, each fat across Ruby 3.4 and 4.0 since a Magnus extension is tied to one Ruby minor, and `hypercast-wasm` for ruby.wasm in the browser), Maven Central and npm (ten packages: the root, eight platform addons and the WebAssembly fallback); R goes to CRAN as a source package, by hand, from the release's attested bytes; Go and Swift resolve from the tag itself (Go's prefixed `go/v<version>`), PHP through PIE from Packagist, and the C and C++ archives, PHP's extension zips and Swift's core zips are on the GitHub Release. Trusted Publishing/OIDC wherever the registry offers it — no long-lived tokens for crates.io, NuGet, RubyGems, PyPI or npm; Maven Central, which has no Trusted Publishing, takes a token. Each package 1.0.0 published was then installed from its real registry into a clean project and run, because "the publish succeeded" and "a consumer can use it" are different claims: identical verdicts across all of them, and Java AOT plus C# AOT and Blazor wasm verified against the published artifacts rather than the working tree. How each one is packaged: [docs/platforms.md](docs/platforms.md#publishing).
@@ -166,7 +196,7 @@ Stated the way this project states things: each of these becomes a measured tabl
 
 ```
 corpus/     the shared conformance vectors — the cross-language contract
-rust/       the core: 26 cast_* exports plus hypercast_version, zero runtime dependencies; a cdylib (and two for Android),
+rust/       the core: 31 cast_* exports plus hypercast_version, zero runtime dependencies; a cdylib (and two for Android),
             fifteen static archives (four for iOS and Mac Catalyst, two for Android) and the Blazor archive;
             the Python, Ruby and PHP extensions are its features
 csharp/     the .NET 10 and 11 binding: Verdict<T> union, LibraryImport, corpus replay, AOT smoke test, Blazor wasm

@@ -12,6 +12,7 @@
 //! attribute reads per call. `HYPERCAST_PURE=1` (checked Ruby-side) keeps Fiddle.
 
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::OnceLock;
 
 use magnus::encoding::EncodingCapable;
@@ -19,12 +20,14 @@ use magnus::rb_sys::{AsRawValue, FromRawValue};
 use magnus::scan_args::{get_kwargs, scan_args};
 use magnus::value::{Opaque, ReprValue};
 use magnus::{
-    Error, IntoValue, KwArgs, RHash, RModule, RString, RStruct, Ruby, Symbol, Value, function,
-    prelude::*,
+    Error, IntoValue, KwArgs, RArray, RClass, RHash, RModule, RString, RStruct, Ruby, Symbol,
+    Value, function, prelude::*,
 };
 use rb_sys::VALUE;
 
 use crate as core;
+use crate::checked::{CheckOutcome, judge_numeric, judge_numeric_from_f64, judge_text};
+use crate::constraints::{Entries, declared_decimal};
 
 /// Constant-referenced objects (classes, INVARIANT, DETECT) are anchored by Ruby constants,
 /// so they are never collected — but a compacting GC can still move them, rewriting every
@@ -33,11 +36,16 @@ use crate as core;
 /// symbols — interned once, immortal — so their raw VALUEs are stable too: every `:seconds`
 /// a caller writes is the same VALUE, and a pointer compare resolves it.
 struct Cached {
+    hypercast: Opaque<RModule>,
     success: Opaque<Value>,
     fault: Opaque<Value>,
     date_class: Opaque<Value>,
     datetime_class: Opaque<Value>,
     decimal_class: Opaque<Value>,
+    constraints_class: Opaque<RClass>,
+    checked_class: Opaque<Value>,
+    violation_class: Opaque<Value>,
+    keyword_class: Opaque<Value>,
     invariant_raw: VALUE,
     detect_raw: VALUE,
     empty: Opaque<Symbol>,
@@ -63,16 +71,38 @@ fn build_cache(ruby: &Ruby, hypercast: RModule) -> Result<Cached, Error> {
     let date_class: Value = ruby.class_object().funcall("const_get", ("Date",))?;
     let datetime_class: Value = ruby.class_object().funcall("const_get", ("DateTime",))?;
     let decimal_class: Value = hypercast.const_get("Decimal")?;
-    for pinned in [invariant, detect, success, fault, date_class, datetime_class, decimal_class] {
+    let constraints_class: RClass = hypercast.const_get("Constraints")?;
+    let checked_class: Value = hypercast.const_get("Checked")?;
+    let violation_class: Value = hypercast.const_get("Violation")?;
+    let keyword_class: Value = hypercast.const_get("Keyword")?;
+    for pinned in [
+        hypercast.as_value(),
+        invariant,
+        detect,
+        success,
+        fault,
+        date_class,
+        datetime_class,
+        decimal_class,
+        constraints_class.as_value(),
+        checked_class,
+        violation_class,
+        keyword_class,
+    ] {
         ruby.gc_register_mark_object(pinned);
     }
     let sym = |name: &str| ruby.to_symbol(name).as_raw();
     Ok(Cached {
+        hypercast: Opaque::from(hypercast),
         success: Opaque::from(success),
         fault: Opaque::from(fault),
         date_class: Opaque::from(date_class),
         datetime_class: Opaque::from(datetime_class),
         decimal_class: Opaque::from(decimal_class),
+        constraints_class: Opaque::from(constraints_class),
+        checked_class: Opaque::from(checked_class),
+        violation_class: Opaque::from(violation_class),
+        keyword_class: Opaque::from(keyword_class),
         invariant_raw: invariant.as_raw(),
         detect_raw: detect.as_raw(),
         empty: Opaque::from(ruby.to_symbol("empty")),
@@ -194,12 +224,15 @@ fn character_span(text: RString, offset: u32, len: u32) -> (i64, i64) {
 /// Presents the input as the UTF-8 the core reads — hypercast.rb's `utf8` rule: UTF-8,
 /// US-ASCII and binary cross as-is (one encoding-index read); any other encoding pays a
 /// transcode. Character offsets survive the transcode, so a fault span mapped on the
-/// UTF-8 form still indexes the caller's own String.
+/// UTF-8 form still indexes the caller's own String; a dummy encoding's String counts bytes,
+/// and its span counts the characters of the UTF-8 form (hypercast.rb's `kept`).
 ///
-/// The transcode is `String#encode` itself, the very call hypercast.rb makes, rather than
-/// `rb_str_conv_enc`: text that cannot be transcoded (a lone UTF-16 surrogate, say) must
-/// raise the same `Encoding::` error on every backend, and `rb_str_conv_enc` does not raise
-/// — it hands the original bytes back, which this door would then have parsed as UTF-8.
+/// The transcode is hypercast.rb's own `utf8`, called here, rather than `rb_str_conv_enc`,
+/// so both backends hand the core the same bytes: text that cannot be transcoded (a lone
+/// UTF-16 surrogate, say) crosses with each character that has no UTF-8 form as one byte
+/// no UTF-8 decoder accepts, which the core reads as malformed at that character, never as
+/// a guess; `rb_str_conv_enc` hands the original bytes back instead, which this door would
+/// then have parsed as UTF-8.
 fn utf8(ruby: &Ruby, text: RString) -> Result<RString, Error> {
     let index = text.enc_get();
     if index == ruby.utf8_encindex()
@@ -208,7 +241,7 @@ fn utf8(ruby: &Ruby, text: RString) -> Result<RString, Error> {
     {
         Ok(text)
     } else {
-        text.funcall("encode", (ruby.utf8_encoding(),))
+        ruby.get_inner(cached().hypercast).funcall("utf8", (text,))
     }
 }
 
@@ -224,32 +257,31 @@ fn verdict<T: magnus::IntoValue>(
 }
 
 thread_local! {
-    /// The last non-constant format this thread resolved, keyed by the object's raw VALUE.
+    /// The last non-constant format this thread resolved, keyed by the object's `object_id`.
     /// Formats are reused constants in practice — a per-locale instance built once — so
-    /// this turns three method dispatches per numeric call into one pointer compare, the
-    /// same memo the Java, PHP and Python bindings keep. `NumFormat` is an immutable,
-    /// frozen `Data`, which is what makes an identity memo sound at all — provided the key
-    /// can never be a recycled address: the memoized object is anchored in a Ruby
-    /// thread-variable (below) for exactly as long as this entry names it. Only plain data
-    /// lives here, deliberately — a GC-registered handle in a thread-local would try to
-    /// unregister itself from a VM that has already shut down when the thread exits.
-    static LAST_FORMAT: RefCell<Option<(VALUE, core::NumFormat)>> = const { RefCell::new(None) };
+    /// this turns ten attribute reads per numeric call into one id lookup, the same memo the
+    /// Java, PHP and Python bindings keep. `NumFormat` is an immutable, frozen `Data`, which
+    /// is what makes an identity memo sound at all. The key is not the raw VALUE: a
+    /// compacting GC moves the object and hands its old address to another, which a VALUE
+    /// key would then mistake for it (a `NumFormat` built after `GC.compact` was read as the
+    /// one before). An `object_id` belongs to one object for the life of the process and is
+    /// never reused, so a stale entry can only miss, and nothing has to keep the keyed object
+    /// alive. Only plain data lives here, deliberately — a GC-registered handle in a
+    /// thread-local would try to unregister itself from a VM that has already shut down
+    /// when the thread exits.
+    static LAST_FORMAT: RefCell<Option<(u64, core::NumFormat)>> = const { RefCell::new(None) };
 }
 
-/// Keeps `format` alive for as long as `LAST_FORMAT` keys on it: one Ruby thread-variable
-/// per thread, replaced on every miss, so the previous format becomes collectable and the
-/// current one cannot be. `thread_variable_set` is thread-local (not fiber-local, unlike
-/// `Thread#[]=`), matching the Rust thread-local it guards.
-fn anchor_format(ruby: &Ruby, format: Value) -> Result<(), Error> {
-    let _: Value = ruby
-        .thread_current()
-        .funcall("thread_variable_set", (ruby.to_symbol("__hypercast_last_format"), format))?;
-    Ok(())
+/// The `object_id` an identity memo keys on: stable across compaction, never reused.
+fn object_id(object: Value) -> Result<u64, Error> {
+    // SAFETY: `object` is a live object; rb_obj_id returns its Integer id.
+    let id = unsafe { Value::from_raw(rb_sys::rb_obj_id(object.as_raw())) };
+    u64::try_convert(id)
 }
 
-/// Resolves the declared format: INVARIANT and DETECT are identity-matched constants and
-/// cost a pointer compare; any other format costs ten attribute reads the first time
-/// this thread sees it and a pointer compare after that.
+/// Resolves the declared format: INVARIANT and DETECT are identity-matched constants (pinned,
+/// so their addresses never move) and cost a pointer compare; any other format costs ten
+/// attribute reads the first time this thread sees it and an id lookup after that.
 fn resolve_format(ruby: &Ruby, format: Value) -> Result<core::NumFormat, Error> {
     let raw = format.as_raw();
     let cache = cached();
@@ -259,8 +291,9 @@ fn resolve_format(ruby: &Ruby, format: Value) -> Result<core::NumFormat, Error> 
     if raw == cache.detect_raw {
         return Ok(core::NumFormat::DETECT);
     }
+    let id = object_id(format)?;
     let memo = LAST_FORMAT.with(|last| {
-        last.borrow().as_ref().filter(|(key, _)| *key == raw).map(|(_, resolved)| *resolved)
+        last.borrow().as_ref().filter(|(key, _)| *key == id).map(|(_, resolved)| *resolved)
     });
     if let Some(resolved) = memo {
         return Ok(resolved);
@@ -312,8 +345,7 @@ fn resolve_format(ruby: &Ruby, format: Value) -> Result<core::NumFormat, Error> 
             "malformed NumFormat: equal separators, or a symbol the core cannot read",
         ));
     }
-    anchor_format(ruby, format)?;
-    LAST_FORMAT.with(|last| *last.borrow_mut() = Some((raw, resolved)));
+    LAST_FORMAT.with(|last| *last.borrow_mut() = Some((id, resolved)));
     Ok(resolved)
 }
 
@@ -392,15 +424,14 @@ fn decimal_door(ruby: &Ruby, args: &[Value]) -> Result<Value, Error> {
 }
 
 fn decimal_value(ruby: &Ruby, decimal: core::Decimal) -> Result<Value, Error> {
+    success(ruby, decimal_object(ruby, decimal)?)
+}
+
+/// The package's own `Decimal` Data for a core `Decimal`.
+fn decimal_object(ruby: &Ruby, decimal: core::Decimal) -> Result<Value, Error> {
     let class = ruby.get_inner(cached().decimal_class);
     let magnitude = ruby.integer_from_u128(decimal.magnitude());
-    success(
-        ruby,
-        class.funcall::<_, _, Value>(
-            "new",
-            (magnitude, u32::from(decimal.scale), decimal.negative),
-        )?,
-    )
+    class.funcall("new", (magnitude, u32::from(decimal.scale), decimal.negative))
 }
 
 /// Reads a number as the exact Decimal it names — the shortest decimal that rounds back to
@@ -542,8 +573,9 @@ fn resolve_order(ruby: &Ruby, order: Value) -> Result<core::DateOrder, Error> {
 }
 
 /// A declared day-period designator — hypercast.rb's `designator` rule, raising its
-/// ArgumentError worded the same: a String of 1 to 16 UTF-8 bytes with no ASCII digit and
-/// no ASCII whitespace at either end; nil declares nothing beside the English word.
+/// ArgumentError worded the same: a String with a UTF-8 form, of 1 to 16 UTF-8 bytes with no
+/// ASCII digit and no ASCII whitespace at either end; nil declares nothing beside the English
+/// word.
 fn designator(ruby: &Ruby, name: &str, text: Option<Value>) -> Result<core::Symbol<16>, Error> {
     let Some(text) = text.filter(|given| !given.is_nil()) else {
         return Ok(core::Symbol::NONE);
@@ -554,7 +586,10 @@ fn designator(ruby: &Ruby, name: &str, text: Option<Value>) -> Result<core::Symb
             format!("{name} designator must be a String; got {}", text.inspect()),
         ));
     };
-    let string = utf8(ruby, string)?;
+    // hypercast.rb's own transcoding, so text with no UTF-8 form is its ArgumentError here too.
+    let string: RString = ruby
+        .get_inner(cached().hypercast)
+        .funcall("declared_utf8", (format!("{name} designator"), string))?;
     let declared = with_bytes(string, |bytes| {
         let flush = |edge: Option<&u8>| edge.is_some_and(u8::is_ascii_whitespace);
         if flush(bytes.first()) || flush(bytes.last()) {
@@ -672,6 +707,317 @@ fn duration_value(ruby: &Ruby, span: core::Duration) -> Result<Value, Error> {
     success(ruby, rational)
 }
 
+// --- Validation constraints ----------------------------------------------------------------
+//
+// A declaration is the package's own `Constraints` Data: hypercast.rb validates its keywords,
+// converts its bounds, steps and integer entries through `declared_decimal` below (the
+// conversion `cast_declared_decimal` runs), and lays it out exactly as the C ABI carries it, a
+// `RawConstraints` with the packed `enum` list beside it — the same code on both backends. This
+// side judges that layout with the core's own functions: `check_constraints` for
+// `constraints_check` (which `Constraints.new` calls), and the `judge_*` functions the checked
+// C exports call, on every cast. No rule is restated here: every refusal and every violation
+// is the core's.
+
+/// A declaration as the core reads it: its door, its layout and its packed `enum` list.
+struct Declaration {
+    door: core::Door,
+    raw: core::RawConstraints,
+    packed: Vec<u8>,
+}
+
+thread_local! {
+    /// The last declaration this thread resolved, keyed by the `Constraints` object's
+    /// `object_id` — a `Constraints` is a frozen `Data`, reused in practice, so the common call
+    /// costs one id lookup instead of packing its layout again. Keyed as `LAST_FORMAT` is, and
+    /// for its reason: an `object_id` survives compaction and is never reused.
+    static LAST_CONSTRAINTS: RefCell<Option<(u64, Rc<Declaration>)>> = const { RefCell::new(None) };
+}
+
+/// The binding bug a refused judgement of an accepted declaration is, worded as the Fiddle
+/// backend words the C ABI's -1.
+fn binding_bug(ruby: &Ruby) -> Error {
+    Error::new(
+        ruby.exception_runtime_error(),
+        "hypercast: libhypercast reported a contract violation — a binding bug, please report it",
+    )
+}
+
+/// A `RawConstraints` from the 72 native-endian bytes `Constraints#packed` lays out, or `None`
+/// for any other length.
+fn raw_constraints(bytes: &[u8]) -> Option<core::RawConstraints> {
+    let bytes: &[u8; core::RawConstraints::SIZE as usize] = bytes.try_into().ok()?;
+    let word =
+        |at: usize| u32::from_ne_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    let decimal = |at: usize| {
+        let mut lo = [0; 8];
+        lo.copy_from_slice(&bytes[at..at + 8]);
+        core::Decimal {
+            lo: u64::from_ne_bytes(lo),
+            hi: word(at + 8),
+            scale: bytes[at + 12],
+            negative: bytes[at + 13] != 0,
+        }
+    };
+    Some(core::RawConstraints {
+        size: word(0),
+        flags: word(4),
+        rounding: word(8),
+        min_length: word(12),
+        max_length: word(16),
+        _reserved: word(20),
+        lower: decimal(24),
+        upper: decimal(40),
+        multiple_of: decimal(56),
+    })
+}
+
+/// A declaration from `[door code, packed, packed enum]`, as `Constraints#declaration` and
+/// `Constraints.layout` hand it over.
+fn declaration_of(ruby: &Ruby, declared: RArray) -> Result<Declaration, Error> {
+    let code: u32 = declared.entry(0)?;
+    let raw: RString = declared.entry(1)?;
+    let packed: RString = declared.entry(2)?;
+    let door = core::Door::from_code(code, 0).ok_or_else(|| binding_bug(ruby))?;
+    let raw = with_bytes(raw, raw_constraints).ok_or_else(|| binding_bug(ruby))?;
+    Ok(Declaration { door, raw, packed: with_bytes(packed, <[u8]>::to_vec) })
+}
+
+/// The declaration a checked door judges by, checked against that door — hypercast.rb's
+/// `constrained`, with its messages: a non-`Constraints` is a TypeError, and one bound to the
+/// other kind of door an ArgumentError naming the door that judges it.
+fn declaration(ruby: &Ruby, constraints: Value, text: bool) -> Result<Rc<Declaration>, Error> {
+    if !constraints.is_kind_of(ruby.get_inner(cached().constraints_class)) {
+        return Err(Error::new(
+            ruby.exception_type_error(),
+            format!("constraints must be a HyperCast::Constraints; got {}", constraints.inspect()),
+        ));
+    }
+    let id = object_id(constraints)?;
+    let memo = LAST_CONSTRAINTS.with(|last| {
+        last.borrow().as_ref().filter(|(key, _)| *key == id).map(|(_, declared)| declared.clone())
+    });
+    let declared = match memo {
+        Some(declared) => declared,
+        None => {
+            let declared = Rc::new(declaration_of(ruby, constraints.funcall("declaration", ())?)?);
+            LAST_CONSTRAINTS.with(|last| *last.borrow_mut() = Some((id, declared.clone())));
+            declared
+        }
+    };
+    if (declared.door == core::Door::Text) != text {
+        let door: Value = constraints.funcall("door", ())?;
+        let judge = if text { "checked" } else { "text" };
+        return Err(Error::new(
+            ruby.exception_arg_error(),
+            format!("Constraints for {} are judged by HyperCast.{judge}", door.inspect()),
+        ));
+    }
+    Ok(declared)
+}
+
+/// What a judge answers: `None` for a declaration the core refused.
+type Judgement = Option<Result<CheckOutcome, core::Rejection>>;
+
+/// The success case: the package's own `Checked` Data.
+fn checked_value(ruby: &Ruby, value: Value, outcome: CheckOutcome) -> Result<Value, Error> {
+    data(
+        ruby.get_inner(cached().checked_class),
+        [value, outcome.adjusted.into_value_with(ruby), outcome.enum_index.into_value_with(ruby)],
+    )
+}
+
+/// A rejection: the door's `Fault`, or a `Violation` of the keyword broken, each spanned over
+/// `text` (the UTF-8 the core read) as a fault is — or, with no text, as the core wrote it.
+fn rejected(
+    ruby: &Ruby,
+    text: Option<RString>,
+    rejection: core::Rejection,
+) -> Result<Value, Error> {
+    match rejection {
+        core::Rejection::Fault(failed) => match text {
+            Some(text) => fault(ruby, text, failed),
+            None => typed_fault(ruby, failed.reason),
+        },
+        core::Rejection::Violation(broken) => {
+            let (offset, length) = match text {
+                Some(text) => character_span(text, broken.offset, broken.len),
+                None => (i64::from(broken.offset), i64::from(broken.len)),
+            };
+            let cache = cached();
+            let keyword = data(
+                ruby.get_inner(cache.keyword_class),
+                [broken.keyword.code().into_value_with(ruby)],
+            )?;
+            data(
+                ruby.get_inner(cache.violation_class),
+                [keyword, offset.into_value_with(ruby), length.into_value_with(ruby)],
+            )
+        }
+    }
+}
+
+/// Judges at a numeric door through `judge`, which writes that door's own type into the
+/// buffer it is handed, and presents the value as hypercast.rb's `Interop.decode` does: an
+/// Integer, a Float (an f32 widened losslessly) or the package's `Decimal`.
+fn numeric_verdict(
+    ruby: &Ruby,
+    door: core::Door,
+    text: Option<RString>,
+    judge: impl FnOnce(*mut u8) -> Judgement,
+) -> Result<Value, Error> {
+    // 16 bytes, 8-aligned: room for every numeric door's value, the decimal's included.
+    let mut out = [0u64; 2];
+    let outcome = match judge(out.as_mut_ptr().cast()) {
+        None => return Err(binding_bug(ruby)),
+        Some(Err(rejection)) => return rejected(ruby, text, rejection),
+        Some(Ok(outcome)) => outcome,
+    };
+    let at = out.as_ptr().cast::<u8>();
+    macro_rules! read {
+        ($ty:ty) => {
+            // SAFETY: the judge wrote this door's type at `at` on success; `out` holds 16
+            // bytes, enough for any of them, and the read is unaligned-safe.
+            unsafe { std::ptr::read_unaligned(at.cast::<$ty>()) }.into_value_with(ruby)
+        };
+    }
+    let value = match door {
+        core::Door::I8 => read!(i8),
+        core::Door::I16 => read!(i16),
+        core::Door::I32 => read!(i32),
+        core::Door::I64 => read!(i64),
+        core::Door::U8 => read!(u8),
+        core::Door::U16 => read!(u16),
+        core::Door::U32 => read!(u32),
+        core::Door::U64 => read!(u64),
+        // SAFETY: as `read!`; the f32 is widened exactly.
+        core::Door::F32 => {
+            f64::from(unsafe { std::ptr::read_unaligned(at.cast::<f32>()) }).into_value_with(ruby)
+        }
+        core::Door::F64 => read!(f64),
+        // SAFETY: as `read!`; the decimal door writes a `Decimal`.
+        core::Door::Decimal => {
+            decimal_object(ruby, unsafe { std::ptr::read_unaligned(at.cast::<core::Decimal>()) })?
+        }
+        _ => return Err(binding_bug(ruby)),
+    };
+    checked_value(ruby, value, outcome)
+}
+
+/// The text door's value at the byte span the core judged valid — hypercast.rb's
+/// `text_value`: the String passed when the span is all of it and it is not binary, else
+/// that span as a new UTF-8 String.
+fn text_value(ruby: &Ruby, text: RString, (offset, len): (u32, u32)) -> Result<Value, Error> {
+    let whole = with_bytes(text, |bytes| offset == 0 && len as usize == bytes.len());
+    if whole && text.enc_get() != ruby.ascii8bit_encindex() {
+        return Ok(text.as_value());
+    }
+    let start = offset as usize;
+    // Copied out before Ruby allocates: a compacting GC may move an embedded String's bytes.
+    let span = with_bytes(text, |bytes| bytes.get(start..start + len as usize).map(<[u8]>::to_vec));
+    let span = span.ok_or_else(|| binding_bug(ruby))?;
+    Ok(ruby.enc_str_new(span, ruby.utf8_encoding()).as_value())
+}
+
+/// `text(text, constraints = nil)`: the plain text door, or with `Constraints` for `:text`
+/// the checked one, a text `enum` match delivering the very String declared.
+fn text_door(ruby: &Ruby, args: &[Value]) -> Result<Value, Error> {
+    let args = scan_args::<(RString,), (Option<Value>,), (), (), (), ()>(args)?;
+    let (text,) = args.required;
+    let (constraints,) = args.optional;
+    let text = utf8(ruby, text)?;
+    let Some(constraints) = constraints.filter(|given| !given.is_nil()) else {
+        return match with_bytes(text, |bytes| {
+            core::cast_text(bytes).map(|valid| valid.len() as u32)
+        }) {
+            Ok(len) => success(ruby, text_value(ruby, text, (0, len))?),
+            Err(failed) => fault(ruby, text, failed),
+        };
+    };
+    let declared = declaration(ruby, constraints, true)?;
+    let entries = Entries::packed(core::Door::Text, &declared.packed);
+    let outcome = match with_bytes(text, |bytes| judge_text(bytes, &declared.raw, &entries)) {
+        None => return Err(binding_bug(ruby)),
+        Some(Err(rejection)) => return rejected(ruby, Some(text), rejection),
+        Some(Ok(outcome)) => outcome,
+    };
+    let value = match outcome.enum_index {
+        None => text_value(ruby, text, outcome.span)?,
+        Some(index) => {
+            let entries: RArray = constraints.funcall("enum", ())?;
+            entries.entry(index as isize)?
+        }
+    };
+    checked_value(ruby, value, outcome)
+}
+
+/// `checked(text, format, constraints, separator: nil, delimiter: nil, unit: nil)`: numeric
+/// text through the door the `Constraints` are bound to, then judged by them.
+fn checked_door(ruby: &Ruby, args: &[Value]) -> Result<Value, Error> {
+    // SAFETY: called on the Ruby thread, inside the method call whose arguments these are.
+    let keywords = unsafe { rb_sys::rb_keyword_given_p() } != 0;
+    let (text, format, constraints) = if let ([text, format, constraints], false) = (args, keywords)
+    {
+        (RString::try_convert(*text)?, *format, *constraints)
+    } else {
+        let scanned = scan_args::<(RString, Value, Value), (), (), (), RHash, ()>(args)?;
+        let (text, format, constraints) = scanned.required;
+        let format: Value = format.funcall("override", (KwArgs(scanned.keywords),))?;
+        (text, format, constraints)
+    };
+    let text = utf8(ruby, text)?;
+    let declared = declaration(ruby, constraints, false)?;
+    let format = resolve_format(ruby, format)?;
+    let door = declared.door;
+    let entries = Entries::packed(door, &declared.packed);
+    numeric_verdict(ruby, door, Some(text), |out| {
+        with_bytes(text, |bytes| {
+            // SAFETY: `numeric_verdict` hands 16 bytes, room for the type `door` writes.
+            unsafe { judge_numeric(door, bytes, &format, &declared.raw, &entries, out) }
+        })
+    })
+}
+
+/// `checked_from_float(value, constraints)`: a number already decoded, judged on the
+/// shortest decimal that names it. Every fault and violation has an empty span.
+fn checked_from_float_door(ruby: &Ruby, value: f64, constraints: Value) -> Result<Value, Error> {
+    let declared = declaration(ruby, constraints, false)?;
+    let door = declared.door;
+    let entries = Entries::packed(door, &declared.packed);
+    numeric_verdict(ruby, door, None, |out| {
+        // SAFETY: `numeric_verdict` hands 16 bytes, room for the type `door` writes.
+        unsafe { judge_numeric_from_f64(door, value, &declared.raw, &entries, out) }
+    })
+}
+
+/// `constraints_check(**keywords)`: the declaration `Constraints.new` would build, judged
+/// without building it — laid out by hypercast.rb's `Constraints.layout` (a refused
+/// conversion is its code 8), then by the core's `check_constraints`.
+fn constraints_check_door(ruby: &Ruby, args: &[Value]) -> Result<u32, Error> {
+    let scanned = scan_args::<(), (), (), (), RHash, ()>(args)?;
+    let class = ruby.get_inner(cached().constraints_class);
+    let layout: Value = class.funcall("layout", (KwArgs(scanned.keywords),))?;
+    let Some(declared) = RArray::from_value(layout) else {
+        return u32::try_convert(layout);
+    };
+    let declared = declaration_of(ruby, declared)?;
+    let judged = core::check_constraints(declared.door, &declared.raw, &declared.packed);
+    Ok(judged.map_or_else(|refusal| refusal.code(), |()| 0))
+}
+
+/// `declared_decimal(text)`: the conversion every bound, step and integer entry crosses, the
+/// package's `Decimal`, or the ArgumentError a refused declaration raises (code 8), worded by
+/// the core's own `Refusal`.
+fn declared_decimal_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
+    let text = utf8(ruby, text)?;
+    match with_bytes(text, declared_decimal) {
+        Ok(decimal) => decimal_object(ruby, decimal),
+        Err(refusal) => Err(Error::new(
+            ruby.exception_arg_error(),
+            format!("Constraints refused (code {}): {refusal}.", refusal.code()),
+        )),
+    }
+}
+
 #[magnus::init(name = "hypercast_native")]
 fn init(ruby: &Ruby) -> Result<(), Error> {
     // rb_define_module returns the existing module — lib/hypercast.rb has already defined
@@ -707,6 +1053,13 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     )?;
     hypercast.define_singleton_method("excel_time", function!(excel_time_door, 1))?;
     hypercast.define_singleton_method("excel_duration", function!(excel_duration_door, 1))?;
+    hypercast.define_singleton_method("text", function!(text_door, -1))?;
+    hypercast.define_singleton_method("checked", function!(checked_door, -1))?;
+    hypercast
+        .define_singleton_method("checked_from_float", function!(checked_from_float_door, 2))?;
+    hypercast
+        .define_singleton_method("constraints_check", function!(constraints_check_door, -1))?;
+    hypercast.define_singleton_method("declared_decimal", function!(declared_decimal_door, 1))?;
     hypercast.define_singleton_method("native_version", function!(native_version, 0))?;
     Ok(())
 }

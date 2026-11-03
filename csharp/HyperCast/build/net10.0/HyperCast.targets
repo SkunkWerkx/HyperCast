@@ -20,7 +20,7 @@
        resolves them against the archive (with the archive missing, wasm-ld fails with an
        undefined symbol per door) and LibraryImport("*") reaches each one
        through that table. No @(EmccExportedFunction) list is needed, because "*" resolution
-       does not need the Emscripten export: HyperCast.WasmSmokeTest calls all twenty-seven
+       does not need the Emscripten export: HyperCast.WasmSmokeTest calls all thirty-two
        entry points without one on .NET SDK 11.0.100-rc.2, and fails at the link with the
        archive unlinked.
 

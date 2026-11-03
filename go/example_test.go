@@ -240,3 +240,66 @@ func ExampleNativeVersion() {
 	// The version the core reports about itself, "major.minor.patch".
 	log.Printf("hypercast core %s", hypercast.NativeVersion())
 }
+
+func ExampleCheck() {
+	// Latitude: a multiple of 0.000001 between -90 and 90, finer input rounded half to even.
+	latitude := hypercast.MustConstraints[float64](
+		hypercast.Minimum(-90), hypercast.Maximum(90),
+		hypercast.MultipleOf("0.000001"), hypercast.WithRounding(hypercast.Midpoint))
+	// Euro cash: a multiple of 0.05, and anything else is wrong.
+	euroCash := hypercast.MustConstraints[hypercast.Decimal](hypercast.MultipleOf("0.05"))
+	euro := hypercast.NumFormat{DecimalSep: ",", GroupSep: ".", Styles: hypercast.AllStyles, Currency: "€"}
+
+	fmt.Println(hypercast.Check("45.1234567", hypercast.Invariant, latitude))
+	fmt.Println(hypercast.Check("-90.5", hypercast.Invariant, latitude))
+	fmt.Println(hypercast.CheckFromFloat64(45.1234567, latitude))
+	fmt.Println(hypercast.Check("€1.234,55", euro, euroCash))
+	fmt.Println(hypercast.Check("€12,37", euro, euroCash))
+	fmt.Println(hypercast.Check("12,3x", euro, euroCash))
+	// Output:
+	// {45.123457 true -1} <nil>
+	// {0 false -1} hypercast: breaks minimum at byte 0..5
+	// {45.123457 true -1} <nil>
+	// {1234.55 false -1} <nil>
+	// {0 false -1} hypercast: breaks multipleOf at byte 0..8
+	// {0 false -1} hypercast: malformed at byte 4..5
+}
+
+func ExampleCheckString() {
+	// A sex code: one of three, whatever case and padding it arrived in.
+	sex := hypercast.MustConstraints[string](hypercast.Trim(), hypercast.Enum("Female", "Male", "Other"))
+	for _, text := range []string{" MALE ", "   ", "Femal"} {
+		checked, rejection := hypercast.CheckString(text, sex)
+		switch r := rejection.(type) {
+		case nil:
+			fmt.Printf("%s, entry %d\n", checked.Value, checked.EnumIndex)
+		case *hypercast.Fault:
+			fmt.Printf("%s at byte %d\n", r.Reason, r.Offset)
+		case *hypercast.Violation:
+			switch r.Keyword {
+			case hypercast.KeywordEnum:
+				fmt.Printf("not a sex code: bytes %d+%d\n", r.Offset, r.Length)
+			default: // keywords are open
+				fmt.Println("breaks", r.Keyword)
+			}
+		}
+	}
+	// Output:
+	// Male, entry 1
+	// empty at byte 0
+	// not a sex code: bytes 0+5
+}
+
+func ExampleNewConstraints() {
+	// A declaration read at run time: a refusal is an error, worded from the rule it broke.
+	_, err := hypercast.NewConstraints[uint8](hypercast.Minimum(-1))
+	fmt.Println(err)
+	// Output: hypercast: Constraints refused (code 8): a bound, step or enum entry the door cannot hold.
+}
+
+func ExampleString() {
+	whole, _ := hypercast.String("  Male ")
+	_, fault := hypercast.String([]byte("ab\xffc"))
+	fmt.Printf("%q %v\n", whole, fault)
+	// Output: "  Male " hypercast: malformed at byte 2..3
+}

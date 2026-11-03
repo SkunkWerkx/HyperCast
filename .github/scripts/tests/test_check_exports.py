@@ -1,6 +1,6 @@
-"""The TypeScript, R, Java, PHP and Go sites of check_exports.py: the spelling map, the
-catch_unwind rule, the R shim, the JNI sites, the JNI no-panic attribute rule and the PHP
-guard rule.
+"""The TypeScript, R, Java, PHP, Go and Swift sites of check_exports.py: the spelling map, the
+catch_unwind rule, the R shim, the JNI sites, the JNI no-panic attribute rule, the PHP guard
+rule and the Swift calls.
 
 Every napi function must carry `catch_unwind`, or a panic in the core aborts the Node
 process instead of surfacing as a JavaScript error. The R site is pinned too: its shim is the
@@ -58,6 +58,23 @@ class TypeScriptSiteTests(unittest.TestCase):
         self.mod.napi_catch_unwind(self.source(
             '#[napi]\npub const MAX: u32 = 1;\n#[napi(object)]\npub struct Fault { a: u32 }\n'
             '#[napi(string_enum)]\npub enum Kind { A }\n#[napi(catch_unwind)]\npub fn cast_bool() {}\n'))
+
+    def test_napi_catch_unwind_takes_a_module_exports_hook_that_catches_its_own(self):
+        hook = ('#[napi(module_exports)]\npub fn init(mut exports: Object, env: Env) -> Result<()> {\n'
+                '    std::panic::catch_unwind(AssertUnwindSafe(|| install(&mut exports, env)))\n'
+                '        .unwrap_or_else(|_| Err(bug()))\n}\n')
+        self.mod.napi_catch_unwind(self.source(hook))
+        bare = '#[napi(module_exports)]\npub fn init(mut exports: Object, env: Env) -> Result<()> {\n    install(&mut exports, env)\n}\n'
+        with self.assertRaises(SystemExit) as caught:
+            self.mod.napi_catch_unwind(self.source(bare))
+        self.assertIn('init', str(caught.exception))
+        # Named only in a comment or a string, it catches nothing.
+        for fake in ('    // catch_unwind(...) would go here\n', '    let _ = "catch_unwind(";\n'):
+            with self.assertRaises(SystemExit):
+                self.mod.napi_catch_unwind(self.source(bare.replace('{\n', '{\n' + fake, 1)))
+        # The carve-out is the hook alone: an ordinary napi function still needs the option.
+        with self.assertRaises(SystemExit):
+            self.mod.napi_catch_unwind(self.source(hook.replace('(module_exports)', '(js_name = "init")')))
 
     def test_napi_catch_unwind_holds_on_the_addon(self):
         self.mod.napi_catch_unwind('typescript/src/lib.rs')
@@ -304,6 +321,85 @@ class GoSiteTests(unittest.TestCase):
         names = [s[0] for s in self.mod.SITES]
         self.assertNotIn('Go (cgo)', names)
         self.assertNotIn('Go (TinyGo)', names)
+
+
+class SwiftSiteTests(unittest.TestCase):
+    """Swift reaches the C exports through the HyperCastCore module, so its site is the calls
+    in swift/Sources/HyperCast: every export called, or passed as a function, in code. A
+    comment naming an export, whole-line or trailing, is not a call."""
+
+    def setUp(self):
+        import re
+        self.re = re
+        self.mod = load('check_exports')
+        self.site = next(s for s in self.mod.SITES if s[0] == 'Swift (HyperCastCore calls)')
+
+    def calls(self, text):
+        return self.mod.swift_calls(text)
+
+    def test_the_site_is_the_swift_sources_and_reads_every_export(self):
+        self.assertEqual(self.site[1:], ([('swift/Sources/HyperCast/*.swift', self.mod.swift_calls)], 'all', ()))
+        self.assertEqual(self.mod.declared(self.site[1]), self.mod.core_exports())
+
+    def test_a_call_or_a_function_passed_counts(self):
+        self.assertEqual(self.calls('        uuid: { cast_uuid($0, $1, .init(OpaquePointer($2))) },'), ['cast_uuid'])
+        self.assertEqual(self.calls('                cast_text('), ['cast_text'])
+        self.assertEqual(self.calls('        version: hypercast_version)'), ['hypercast_version'])
+
+    def test_a_comment_is_not_a_call(self):
+        self.assertEqual(self.calls('    /// the library\'s own answer (`hypercast_version()`), not this'), [])
+        self.assertEqual(self.calls('// through cast_checked(…) and cast_text(…)'), [])
+        self.assertEqual(self.calls('        uuid: { _, _, _, _ in 0 },  // cast_uuid($0, $1) once called here'), [])
+        self.assertEqual(self.calls('// cast_datetime: the unix shape'), [])
+
+    def test_every_call_on_a_line_counts(self):
+        self.assertEqual(self.calls('        let a = cast_bool(x), b = cast_i32(y)'), ['cast_bool', 'cast_i32'])
+        self.assertEqual(self.calls('    f(cast_text(s), hypercast_version)'), ['cast_text', 'hypercast_version'])
+
+    def test_a_string_is_not_code(self):
+        # `//` inside a string literal is not a comment, so the call after it counts.
+        self.assertEqual(self.calls('        let url = "https://example.org"; cast_uuid(a, b)'), ['cast_uuid'])
+        self.assertEqual(self.calls('        let esc = "a \\" // b"; cast_bool(x)'), ['cast_bool'])
+        self.assertEqual(self.calls('        let raw = #"say "//" twice"#; cast_i64(x)'), ['cast_i64'])
+        # An export named inside a string is not a call.
+        self.assertEqual(self.calls('        fatalError("cast_uuid(a) failed")'), [])
+        self.assertEqual(self.calls('        let raw = #"cast_bool(x)"#'), [])
+        self.assertEqual(self.calls('        let doc = """\n    cast_text(x)\n    """\n    cast_i8(y)'), ['cast_i8'])
+
+    def test_a_block_comment_is_not_a_call(self):
+        self.assertEqual(self.calls('/* cast_bool(x) */ cast_i16(y)'), ['cast_i16'])
+        self.assertEqual(self.calls('/*\n cast_bool(x)\n*/'), [])
+
+    def test_a_dropped_call_fails_the_check(self):
+        import contextlib
+        import io
+        import shutil
+        mod = self.mod
+        exports = mod.core_exports()
+        with tempfile.TemporaryDirectory() as tmp:
+            sources = Path(tmp) / 'swift/Sources/HyperCast'
+            shutil.copytree(ROOT / 'swift/Sources/HyperCast', sources)
+            cast = sources / 'Cast.swift'
+            text = cast.read_text(encoding='utf-8')
+            line = '        uuid: { cast_uuid($0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3))) },\n'
+            self.assertIn(line, text)
+            cast.write_text(text.replace(line, '        uuid: { _, _, _, _ in 0 },  // cast_uuid($0, $1)\n'),
+                            encoding='utf-8')
+            saved = (mod.ROOT, mod.SITES, mod.core_exports, mod.napi_catch_unwind, mod.php_guard,
+                     mod.jni_no_panic)
+            self.addCleanup(lambda: (setattr(mod, 'ROOT', saved[0]), setattr(mod, 'SITES', saved[1]),
+                                     setattr(mod, 'core_exports', saved[2]),
+                                     setattr(mod, 'napi_catch_unwind', saved[3]),
+                                     setattr(mod, 'php_guard', saved[4]),
+                                     setattr(mod, 'jni_no_panic', saved[5])))
+            mod.ROOT, mod.SITES = Path(tmp), [self.site]
+            mod.core_exports = lambda: exports
+            mod.napi_catch_unwind = mod.php_guard = mod.jni_no_panic = lambda path: None
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as caught:
+                mod.main()
+        self.assertEqual(caught.exception.code, 1)
+        self.assertIn('missing cast_uuid', out.getvalue())
 
 
 if __name__ == '__main__':

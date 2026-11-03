@@ -11,7 +11,7 @@ import threading
 import pytest
 
 import hypercast
-from hypercast import DateOrder, ExcelEpoch, NumFormat, UnixPrecision
+from hypercast import Constraints, DateOrder, Door, ExcelEpoch, NumFormat, Rounding, UnixPrecision
 
 pytestmark = pytest.mark.skipif(sys.platform == "emscripten", reason="Pyodide has no threads")
 
@@ -28,6 +28,13 @@ ARABIC = NumFormat(
     percent="\u066a",
     digit_zero="\u0660",
 )
+
+#: Shared declarations, read by every thread at once.
+LATITUDE = Constraints(
+    Door.F64, minimum="-90", maximum="90", multiple_of="0.000001", rounding=Rounding.MIDPOINT
+)
+EURO_CASH = Constraints(Door.DECIMAL, multiple_of="0.05")
+SEX = Constraints(Door.TEXT, trim=True, enum=["Female", "Male", "Other"])
 
 #: One call per door shape: text and bytes, success and every fault reason, a non-ASCII str
 #: whose fault span is remapped to code points, and each value type the package builds.
@@ -61,6 +68,12 @@ CALLS = [
     lambda: hypercast.cast_time("23:59:59.999999"),
     lambda: hypercast.cast_duration("P1DT2H3M4.5S"),
     lambda: hypercast.cast_duration("-3.25s"),
+    lambda: hypercast.cast_checked("45.1234567", NumFormat.INVARIANT, LATITUDE),
+    lambda: hypercast.cast_checked("€12,37", GROUPED, EURO_CASH),
+    lambda: hypercast.cast_checked_from_float(-90.5, LATITUDE),
+    lambda: hypercast.cast_text(" MALE ", SEX),
+    lambda: hypercast.cast_text("Fém\ud800", SEX),
+    lambda: hypercast.cast_text(b"plain"),
 ]
 
 

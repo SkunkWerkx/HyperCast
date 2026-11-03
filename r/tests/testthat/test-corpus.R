@@ -13,10 +13,10 @@
 # flavour runs the tests without it. With jsonlite present, a missing corpus still errors.
 testthat::skip_if_not_installed("jsonlite")
 
-corpus_files <- c("boolean.json", "char.json", "date.json", "date_order.json", "datetime.json",
-                  "decimal.json", "duration.json", "excel_serial.json", "integer.json",
-                  "real.json", "time.json", "timestamp.json", "typed.json", "unix.json",
-                  "uuid.json")
+corpus_files <- c("boolean.json", "char.json", "constraints.json", "date.json",
+                  "date_order.json", "datetime.json", "decimal.json", "declarations.json",
+                  "duration.json", "excel_serial.json", "integer.json", "real.json", "time.json",
+                  "timestamp.json", "typed.json", "unix.json", "uuid.json")
 
 corpus_dir <- function() {
   staged <- testthat::test_path("corpus")
@@ -37,7 +37,7 @@ corpus_dir <- function() {
 # U+0000 cannot reach an R string, so the JSON escape is swapped for U+E000 (a private-use
 # code point the corpus never holds, checked here) before parsing, and swapped back to the
 # byte 0x00 in the raw replay. Integer values are read as their exact text: a u64 past 2^53
-# has no exact double.
+# has no exact double (constraints.json's whole values too, read back per door).
 nul_standin <- "\uE000"
 read_vectors <- function(name) {
   path <- file.path(corpus_dir(), name)
@@ -50,6 +50,9 @@ read_vectors <- function(name) {
   json <- gsub("\\u0000", "\\uE000", json, fixed = TRUE)
   if (name == "integer.json") {
     json <- gsub("\"value\": (-?[0-9]+)", "\"value\": \"\\1\"", json)
+  }
+  if (name == "constraints.json") {
+    json <- gsub("\"value\": (-?[0-9]+)([,}])", "\"value\": \"\\1\"\\2", json)
   }
   rows <- jsonlite::fromJSON(json, simplifyVector = FALSE)
   if (!length(rows)) stop("corpus file has no vectors: ", path)
@@ -138,8 +141,16 @@ expect_value <- function(v, i, want, info) {
   testthat::expect_identical(v$value[[i]], want, info = info)
 }
 
+# A double compared by its IEEE 754 bits: identical() holds 0 and -0 equal, and zero has one
+# form (the core never returns -0), so a negative zero must fail here.
+expect_bits <- function(got, want, info) {
+  testthat::expect_identical(writeBin(as.double(got), raw()), writeBin(as.double(want), raw()),
+                             info = paste(info, "bits of", format(got, digits = 17), "vs",
+                                          format(want, digits = 17)))
+}
+
 expect_instant <- function(v, i, row, info) {
-  testthat::expect_identical(v$seconds[[i]], as.numeric(row$seconds), info = info)
+  expect_bits(v$seconds[[i]], as.numeric(row$seconds), info)
   testthat::expect_identical(v$nanos[[i]], as.integer(row$nanos), info = info)
   testthat::expect_equal(as.numeric(v$value[[i]]), row$seconds + row$nanos / 1e9,
                          tolerance = 1e-12, info = info)
@@ -162,7 +173,7 @@ civil_text <- function(row) {
 
 expect_civil <- function(v, i, row, info) {
   expect_date(v$date[[i]], row, info)
-  testthat::expect_identical(v$nanos_of_day[[i]], as.numeric(row$nanos_of_day), info = info)
+  expect_bits(v$nanos_of_day[[i]], as.numeric(row$nanos_of_day), info)
   testthat::expect_identical(v$value[[i]], civil_text(row), info = info)
 }
 
@@ -227,7 +238,7 @@ test_that("real.json", {
     replay_text(group, function(x) door(x, format), function(v, i, row, info) {
       want <- as.numeric(row$value)
       if (type == "f32") want <- readBin(writeBin(want, raw(), size = 4L), "double", size = 4L)
-      expect_identical(v$value[[i]], want, info = info)
+      expect_bits(v$value[[i]], want, info)
     }, type)
   }
 })
@@ -296,7 +307,7 @@ test_that("datetime.json", {
 
 test_that("time.json", {
   replay_text(read_vectors("time.json"), cast_time, function(v, i, row, info) {
-    expect_identical(v$nanos[[i]], as.numeric(row$nanos), info = info)
+    expect_bits(v$nanos[[i]], as.numeric(row$nanos), info)
     expect_equal(as.numeric(v$value[[i]]), row$nanos / 1e9, tolerance = 1e-15, info = info)
   }, "time")
 })
@@ -325,9 +336,7 @@ test_that("typed.json", {
     check <- switch(first$door,
       decimal = function(v, i, row, info) expect_value(v, i, row$value, info),
       excel_serial = expect_civil,
-      excel_time = function(v, i, row, info) {
-        expect_identical(v$nanos[[i]], as.numeric(row$nanos), info = info)
-      },
+      excel_time = function(v, i, row, info) expect_bits(v$nanos[[i]], as.numeric(row$nanos), info),
       excel_duration = expect_instant
     )
     v <- door(vapply(group, function(row) bits(row$bits), 0))
@@ -338,4 +347,199 @@ test_that("typed.json", {
       expect_row(v, i, row, "bytes", check, paste("typed", first$door))
     }
   }
+})
+
+# ---- validation constraints ----
+
+# The core's Refusal Display text, one per code, restated here so a change to the wording
+# the binding raises is a test failure.
+refusal_rules <- c(
+  "a constraint the door does not take", "minimum together with exclusiveMinimum",
+  "maximum together with exclusiveMaximum", "the lower bound is not below the upper bound",
+  "multipleOf is not positive", "a rounding without multipleOf", "minLength is above maxLength",
+  "a bound, step or enum entry the door cannot hold", "an enum entry that is not UTF-8",
+  "a duplicate enum entry", "a malformed constraints layout", "an enum with no entries",
+  "a text enum entry no input can match"
+)
+
+constraint_args <- c(minimum = "minimum", exclusiveMinimum = "exclusive_minimum",
+                     maximum = "maximum", exclusiveMaximum = "exclusive_maximum",
+                     multipleOf = "multiple_of", rounding = "rounding", minLength = "min_length",
+                     maxLength = "max_length", trim = "trim", enum = "enum")
+
+# A corpus row's declaration through the public constructor, its keywords as R arguments.
+constraints_of <- function(door, spec) {
+  unknown <- setdiff(names(spec), names(constraint_args))
+  if (length(unknown)) stop("unknown keyword in the corpus: ", unknown)
+  args <- list(door)
+  for (key in names(spec)) {
+    value <- spec[[key]]
+    if (key == "enum") value <- vapply(value, identity, "")
+    args[[constraint_args[[key]]]] <- value
+  }
+  do.call(hypercast_constraints, args)
+}
+
+# A from_f64 row's double: JSON has no NaN, infinities or negative zero, so those are text.
+f64_of <- function(value) {
+  if (!is.character(value)) {
+    return(as.numeric(value))
+  }
+  switch(value, "NaN" = NaN, Infinity = Inf, "-Infinity" = -Inf, "-0" = -0,
+         stop("unknown from_f64 spelling ", value))
+}
+
+f32_of <- function(x) readBin(writeBin(x, raw(), size = 4L), "double", size = 4L)
+
+expect_checked_value <- function(door, got, want, info) {
+  switch(door,
+    i8 = , i16 = , u8 = , u16 = testthat::expect_identical(got, as.integer(want), info = info),
+    i32 = , u32 = testthat::expect_identical(got, as.numeric(want), info = info),
+    f32 = expect_bits(got, f32_of(as.numeric(want)), info),
+    f64 = expect_bits(got, as.numeric(want), info),
+    testthat::expect_identical(got, want, info = info)
+  )
+}
+
+# Checks checked-verdict row i against corpus row `row`: the value, adjusted and enum index
+# on a success; the reason or the keyword, and the pinned span (re-expressed in characters
+# for "chars"), on a rejection.
+expect_checked_row <- function(v, i, row, units, label) {
+  input <- if (is.null(row$input)) "" else row$input
+  info <- sprintf("%s [%s] %s %s", label, units, encodeString(input, quote = "\""),
+                  jsonlite::toJSON(row$constraints, auto_unbox = TRUE))
+  testthat::expect_false(is.na(v$ok[[i]]), info = info)
+  if (row$expect == "ok") {
+    testthat::expect_true(v$ok[[i]],
+                          info = paste(info, "should pass; got", v$reason[[i]], v$keyword[[i]]))
+    if (!isTRUE(v$ok[[i]])) return(invisible())
+    expect_checked_value(row$door, v$value[[i]], row$value, info)
+    testthat::expect_identical(v$adjusted[[i]], row$adjusted, info = info)
+    want_index <- if (is.null(row$enum_index)) NA_integer_ else as.integer(row$enum_index) + 1L
+    testthat::expect_identical(v$enum_index[[i]], want_index, info = info)
+    testthat::expect_true(is.na(v$reason[[i]]) && is.na(v$keyword[[i]]), info = info)
+    return(invisible())
+  }
+  testthat::expect_false(v$ok[[i]], info = paste(info, "unexpectedly passed"))
+  testthat::expect_true(is.na(v$value[[i]]) && is.na(v$adjusted[[i]]) &&
+                          is.na(v$enum_index[[i]]), info = info)
+  if (row$expect == "violation") {
+    testthat::expect_true(is.na(v$reason[[i]]), info = info)
+    testthat::expect_identical(v$keyword[[i]], row$keyword, info = info)
+  } else {
+    testthat::expect_identical(as.character(v$reason[[i]]), row$expect, info = info)
+    testthat::expect_true(is.na(v$keyword[[i]]), info = info)
+  }
+  span <- c(row$fault[[1]], row$fault[[2]])
+  if (units == "chars") {
+    bytes <- utf8_bytes(row$input)
+    span <- c(chars_in(bytes, span[[1]]),
+              chars_in(bytes, span[[1]] + span[[2]]) - chars_in(bytes, span[[1]]))
+  }
+  testthat::expect_identical(c(v$offset[[i]], v$length[[i]]), as.integer(span), info = info)
+}
+
+expect_checked_rows <- function(v, rows, units, label) {
+  testthat::expect_s3_class(v, "hypercast_checked_verdict")
+  testthat::expect_identical(nrow(v), length(rows))
+  for (i in seq_along(rows)) expect_checked_row(v, i, rows[[i]], units, label)
+}
+
+test_that("constraints.json", {
+  rows <- read_vectors("constraints.json")
+  kinds <- c(refused = 0L, from_f64 = 0L, input_bytes = 0L, input = 0L)
+  key <- function(row) {
+    kind <- if (row$expect == "refused") "refused" else if (!is.null(row$from_f64)) "from_f64"
+    else if (!is.null(row$input_bytes)) "input_bytes" else "input"
+    paste(kind, row$door, jsonlite::toJSON(row$constraints, auto_unbox = TRUE),
+          jsonlite::toJSON(row$format, auto_unbox = TRUE))
+  }
+  for (group in groups(rows, key)) {
+    first <- group[[1]]
+    label <- paste("constraints", first$door)
+    if (first$expect == "refused") {
+      for (row in group) {
+        kinds[["refused"]] <- kinds[["refused"]] + 1L
+        message <- tryCatch({
+          constraints_of(row$door, row$constraints)
+          "no error"
+        }, error = conditionMessage)
+        want <- sprintf("Constraints refused (code %d): %s.", row$refusal,
+                        refusal_rules[[row$refusal]])
+        expect_identical(message, want, info = paste(label, jsonlite::toJSON(row$constraints)))
+      }
+      next
+    }
+    constraints <- constraints_of(first$door, first$constraints)
+    expect_s3_class(constraints, "hypercast_constraints")
+    if (!is.null(first$from_f64)) {
+      kinds[["from_f64"]] <- kinds[["from_f64"]] + length(group)
+      v <- cast_checked_from_double(vapply(group, function(row) f64_of(row$from_f64), 0),
+                                    constraints)
+      expect_checked_rows(v, group, "bytes", paste(label, "from_f64"))
+      next
+    }
+    door <- if (first$door == "text") {
+      function(x) cast_text(x, constraints)
+    } else {
+      format <- format_of(first$format)
+      function(x) cast_checked(x, format, constraints)
+    }
+    if (!is.null(first$input_bytes)) {
+      # Invalid UTF-8 reaches the core as given from a raw vector and from a string marked
+      # "bytes", both counted in bytes as substr() counts them.
+      kinds[["input_bytes"]] <- kinds[["input_bytes"]] + length(group)
+      bytes <- lapply(group, function(row) as.raw(unlist(row$input_bytes)))
+      expect_checked_rows(door(bytes), group, "bytes", paste(label, "input_bytes"))
+      marked <- vapply(bytes, function(b) {
+        s <- rawToChar(b)
+        Encoding(s) <- "bytes"
+        s
+      }, "")
+      expect_checked_rows(door(marked), group, "bytes", paste(label, "input_bytes marked"))
+      next
+    }
+    kinds[["input"]] <- kinds[["input"]] + length(group)
+    expect_checked_rows(door(lapply(group, function(row) utf8_bytes(row$input))), group,
+                        "bytes", label)
+    expect_checked_rows(door(vapply(group, function(row) row$input, "")), group, "chars",
+                        label)
+  }
+  # Every row was replayed, of every kind.
+  expect_identical(sum(kinds), length(rows))
+  expect_true(all(kinds > 0L))
+})
+
+# Every bound, step and integer enum entry crosses through cast_declared_decimal, the one
+# conversion; the internal accessor hands back the raw triple, scale included.
+test_that("declarations.json", {
+  declared <- getFromNamespace("declared_decimal", "hypercast")
+  rows <- read_vectors("declarations.json")
+  replayed <- 0L
+  for (row in rows) {
+    replayed <- replayed + 1L
+    inputs <- if (is.null(row$input_bytes)) {
+      row$input
+    } else {
+      s <- rawToChar(as.raw(unlist(row$input_bytes)))
+      marked <- s
+      Encoding(marked) <- "bytes"
+      c(s, marked)
+    }
+    for (input in inputs) {
+      info <- paste("declarations", encodeString(input, quote = "\""))
+      d <- declared(input)
+      if (row$expect == "refused") {
+        expect_identical(d$code, as.integer(row$refusal), info = info)
+        next
+      }
+      expect_identical(d$code, 0L, info = info)
+      expect_identical(d$magnitude, row$magnitude, info = info)
+      expect_identical(d$scale, as.integer(row$scale), info = info)
+      expect_identical(d$negative, row$negative, info = info)
+      expect_identical(d$value, row$value, info = info)
+    }
+  }
+  # Every row was replayed: the count is the file's, never a literal.
+  expect_identical(replayed, length(rows))
 })

@@ -2,6 +2,9 @@
 // binding's suite replays, through hypercast.hpp: each vector's verdict, value and fault span,
 // byte for byte, since a span here indexes the same UTF-8 the vector holds. A vector that
 // fails is a break in the polyglot contract. Also holds every fault span inside its input.
+// constraints.json goes through Constraints<T>::declare and the checked doors (refusals and
+// the from_double doors included, floats compared by their bits), and declarations.json
+// through ConstraintValue::decimal, the core's conversion of a declaration's text.
 //
 // usage: smoke_corpus <corpus directory>; prints the library's version when every vector
 // passes, as the other smoke programs do. run.sh runs it against each build of the archive.
@@ -15,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -364,6 +368,9 @@ hc::NumFormat format_of(const char *file, const Json &vector) {
   return hc::NumFormat::invariant();
 }
 
+// A plain door as a callable: the name is an overload set, its checked door beside it.
+#define PLAIN(door) [](hc::Text text, const hc::NumFormat &format) { return door(text, format); }
+
 template <class T, class Door> void integer(const char *file, const Json &vector, Door door) {
   const std::string &input = vector.find("input")->text;
   check(file, vector, door(input, format_of(file, vector)), input.size(), [&](T value) {
@@ -374,6 +381,436 @@ template <class T, class Door> void integer(const char *file, const Json &vector
       return expected.text[0] != '-' && static_cast<std::uint64_t>(value) == expected.u64();
     }
   });
+}
+
+// The plain shapes the constraints work must leave alone: Fault's fields and Verdict's layout
+// and accessors. A change to either fails to compile here.
+static_assert(std::is_same_v<decltype(hc::Fault::reason), hc::CastFailure> &&
+                  std::is_same_v<decltype(hc::Fault::offset), std::size_t> &&
+                  std::is_same_v<decltype(hc::Fault::length), std::size_t>,
+              "Fault is a reason and a byte span");
+struct FaultShape {
+  hc::CastFailure reason;
+  std::size_t offset;
+  std::size_t length;
+};
+static_assert(sizeof(hc::Fault) == sizeof(FaultShape), "Fault holds nothing else");
+static_assert(std::is_same_v<std::underlying_type_t<hc::CastFailure>, std::int32_t> &&
+                  static_cast<int>(hc::CastFailure::empty) == 1 &&
+                  static_cast<int>(hc::CastFailure::malformed) == 2 &&
+                  static_cast<int>(hc::CastFailure::out_of_range) == 3,
+              "the reasons are the core's codes");
+struct VerdictShape {
+  std::int32_t value;
+  hc::Fault fault;
+  bool ok;
+};
+static_assert(sizeof(hc::Verdict<std::int32_t>) == sizeof(VerdictShape),
+              "a Verdict is the value, a Fault and which");
+static_assert(!std::is_default_constructible_v<hc::Verdict<std::int32_t>> &&
+                  std::is_trivially_copyable_v<hc::Verdict<std::int32_t>>,
+              "a Verdict is always one case, and plain");
+static_assert(
+    std::is_same_v<decltype(&hc::Verdict<std::int32_t>::ok),
+                   bool (hc::Verdict<std::int32_t>::*)() const noexcept> &&
+        std::is_same_v<decltype(&hc::Verdict<std::int32_t>::value_if),
+                       const std::int32_t *(hc::Verdict<std::int32_t>::*)() const noexcept> &&
+        std::is_same_v<decltype(&hc::Verdict<std::int32_t>::fault_if),
+                       const hc::Fault *(hc::Verdict<std::int32_t>::*)() const noexcept> &&
+        std::is_same_v<decltype(&hc::Verdict<std::int32_t>::value),
+                       const std::int32_t &(hc::Verdict<std::int32_t>::*)() const noexcept> &&
+        std::is_same_v<decltype(&hc::Verdict<std::int32_t>::fault),
+                       const hc::Fault &(hc::Verdict<std::int32_t>::*)() const noexcept>,
+    "Verdict's accessors keep their signatures");
+static_assert(std::is_same_v<decltype(hc::cast_i32("1", hc::NumFormat::invariant())),
+                             hc::Verdict<std::int32_t>> &&
+                  std::is_same_v<decltype(hc::cast_text("a")), hc::Verdict<std::string_view>>,
+              "the plain doors return the plain Verdict");
+// Every refusal message: the core's codes worded from the Rust Refusal Display text (as every
+// binding words them), and the header's own code 0, which is no core refusal.
+static_assert(hc::Refusal{1}.message() ==
+                  "Constraints refused (code 1): a constraint the door does not take.",
+              "refusal 1's message");
+static_assert(hc::Refusal{2}.message() ==
+                  "Constraints refused (code 2): minimum together with exclusiveMinimum.",
+              "refusal 2's message");
+static_assert(hc::Refusal{3}.message() ==
+                  "Constraints refused (code 3): maximum together with exclusiveMaximum.",
+              "refusal 3's message");
+static_assert(hc::Refusal{4}.message() ==
+                  "Constraints refused (code 4): the lower bound is not below the upper bound.",
+              "refusal 4's message");
+static_assert(hc::Refusal{5}.message() ==
+                  "Constraints refused (code 5): multipleOf is not positive.",
+              "refusal 5's message");
+static_assert(hc::Refusal{6}.message() ==
+                  "Constraints refused (code 6): a rounding without multipleOf.",
+              "refusal 6's message");
+static_assert(hc::Refusal{7}.message() ==
+                  "Constraints refused (code 7): minLength is above maxLength.",
+              "refusal 7's message");
+static_assert(hc::Refusal{8}.message() ==
+                  "Constraints refused (code 8): a bound, step or enum entry the door cannot hold.",
+              "refusal 8's message");
+static_assert(hc::Refusal{9}.message() ==
+                  "Constraints refused (code 9): an enum entry that is not UTF-8.",
+              "refusal 9's message");
+static_assert(hc::Refusal{10}.message() == "Constraints refused (code 10): a duplicate enum entry.",
+              "refusal 10's message");
+static_assert(hc::Refusal{11}.message() ==
+                  "Constraints refused (code 11): a malformed constraints layout.",
+              "refusal 11's message");
+static_assert(hc::Refusal{12}.message() ==
+                  "Constraints refused (code 12): an enum with no entries.",
+              "refusal 12's message");
+static_assert(hc::Refusal{13}.message() ==
+                  "Constraints refused (code 13): a text enum entry no input can match.",
+              "refusal 13's message");
+static_assert(!std::is_convertible_v<std::int32_t, hc::Refusal>,
+              "a Refusal is never made from a bare integer");
+static_assert(!std::is_constructible_v<hc::Declared<hc::Constraints<double>>, int>,
+              "nor is a Declared");
+static_assert(hc::Refusal{14}.message() ==
+                  "Constraints refused (code 14): a rule this binding does not name.",
+              "a code this header does not name keeps its number");
+static_assert(hc::Refusal{0}.message() ==
+                  "The enum list does not fit: the EnumStorage is smaller than "
+                  "storage_size(entries), or a text entry is longer than 4294967295 UTF-8 bytes.",
+              "the header's own refusal");
+static_assert(std::string_view(hc::Refusal{0}.message().c_str()).find("Constraints refused") ==
+                  std::string_view::npos,
+              "code 0 is not worded as a core refusal");
+// No view into a temporary: a Refusal's message is its own value, and every accessor that
+// views into its object (a RefusalMessage's, a KeywordName's, a NumFormat's or DateFormat's
+// symbols) takes a named one; on a temporary the call does not compile.
+template <class T, class = void> struct views_into : std::false_type {};
+template <class T>
+struct views_into<T, std::void_t<decltype(std::declval<T>().view())>> : std::true_type {};
+template <class T, class = void> struct symbol_of : std::false_type {};
+template <class T>
+struct symbol_of<T, std::void_t<decltype(std::declval<T>().currency())>> : std::true_type {};
+template <class T, class = void> struct period_of : std::false_type {};
+template <class T>
+struct period_of<T, std::void_t<decltype(std::declval<T>().am())>> : std::true_type {};
+static_assert(
+    std::is_same_v<decltype(std::declval<const hc::Refusal &>().message()), hc::RefusalMessage> &&
+        !std::is_convertible_v<hc::RefusalMessage, std::string_view>,
+    "a refusal's message is held by value, never a view into the Refusal");
+static_assert(views_into<const hc::RefusalMessage &>::value &&
+                  !views_into<hc::RefusalMessage>::value &&
+                  !views_into<const hc::RefusalMessage>::value,
+              "RefusalMessage::view() only from a named message");
+static_assert(views_into<const hc::KeywordName &>::value && !views_into<hc::KeywordName>::value,
+              "KeywordName::view() only from a named name");
+static_assert(symbol_of<const hc::NumFormat &>::value && !symbol_of<hc::NumFormat>::value,
+              "a NumFormat's symbols only from a named format");
+static_assert(period_of<const hc::DateFormat &>::value && !period_of<hc::DateFormat>::value,
+              "a DateFormat's day periods only from a named format");
+static_assert(sizeof(hc::Refusal) == sizeof(std::int32_t), "a Refusal is its code");
+// The constraints layout as the header carries it.
+static_assert(sizeof(HyperCastRawConstraints) == HyperCastRawConstraints_SIZE &&
+                  alignof(HyperCastRawConstraints) == 8 &&
+                  sizeof(HyperCastRawCheck) == HyperCastRawCheck_SIZE &&
+                  sizeof(HyperCastRawSpan) == HyperCastRawSpan_SIZE,
+              "RawConstraints 72, RawCheck 12, RawSpan 8");
+
+// The double a constraints vector names: a number, or NaN, Infinity, -Infinity and -0, which
+// JSON cannot spell, as strings; strtod reads both.
+double number_of(const Json &json) { return json.f64(); }
+
+template <class F> auto bits(F value) {
+  std::conditional_t<sizeof(F) == 8, std::uint64_t, std::uint32_t> out = 0;
+  std::memcpy(&out, &value, sizeof value);
+  return out;
+}
+
+hc::Rounding rounding_of(const Json *json) {
+  if (json == nullptr || json->text == "strict") {
+    return hc::Rounding::strict;
+  }
+  if (json->text == "midpoint") {
+    return hc::Rounding::midpoint;
+  }
+  if (json->text == "floor") {
+    return hc::Rounding::floor;
+  }
+  return hc::Rounding::ceiling;
+}
+
+template <class T>
+hc::Checked<T> checked_door(hc::Text text, const hc::NumFormat &format,
+                            const hc::Constraints<T> &constraints) {
+  if constexpr (std::is_same_v<T, std::int8_t>) {
+    return hc::cast_i8(text, format, constraints);
+  } else if constexpr (std::is_same_v<T, std::int16_t>) {
+    return hc::cast_i16(text, format, constraints);
+  } else if constexpr (std::is_same_v<T, std::int32_t>) {
+    return hc::cast_i32(text, format, constraints);
+  } else if constexpr (std::is_same_v<T, std::int64_t>) {
+    return hc::cast_i64(text, format, constraints);
+  } else if constexpr (std::is_same_v<T, std::uint8_t>) {
+    return hc::cast_u8(text, format, constraints);
+  } else if constexpr (std::is_same_v<T, std::uint16_t>) {
+    return hc::cast_u16(text, format, constraints);
+  } else if constexpr (std::is_same_v<T, std::uint32_t>) {
+    return hc::cast_u32(text, format, constraints);
+  } else if constexpr (std::is_same_v<T, std::uint64_t>) {
+    return hc::cast_u64(text, format, constraints);
+  } else if constexpr (std::is_same_v<T, float>) {
+    return hc::cast_f32(text, format, constraints);
+  } else if constexpr (std::is_same_v<T, double>) {
+    return hc::cast_f64(text, format, constraints);
+  } else if constexpr (std::is_same_v<T, hc::Decimal>) {
+    return hc::cast_decimal(text, format, constraints);
+  } else {
+    return hc::cast_text(text, constraints);
+  }
+}
+
+template <class T>
+hc::Checked<T> checked_from_double(double value, const hc::Constraints<T> &constraints) {
+  if constexpr (std::is_same_v<T, std::int8_t>) {
+    return hc::cast_i8_from_double(value, constraints);
+  } else if constexpr (std::is_same_v<T, std::int16_t>) {
+    return hc::cast_i16_from_double(value, constraints);
+  } else if constexpr (std::is_same_v<T, std::int32_t>) {
+    return hc::cast_i32_from_double(value, constraints);
+  } else if constexpr (std::is_same_v<T, std::int64_t>) {
+    return hc::cast_i64_from_double(value, constraints);
+  } else if constexpr (std::is_same_v<T, std::uint8_t>) {
+    return hc::cast_u8_from_double(value, constraints);
+  } else if constexpr (std::is_same_v<T, std::uint16_t>) {
+    return hc::cast_u16_from_double(value, constraints);
+  } else if constexpr (std::is_same_v<T, std::uint32_t>) {
+    return hc::cast_u32_from_double(value, constraints);
+  } else if constexpr (std::is_same_v<T, std::uint64_t>) {
+    return hc::cast_u64_from_double(value, constraints);
+  } else if constexpr (std::is_same_v<T, float>) {
+    return hc::cast_f32_from_double(value, constraints);
+  } else if constexpr (std::is_same_v<T, double>) {
+    return hc::cast_f64_from_double(value, constraints);
+  } else {
+    return hc::cast_decimal_from_double(value, constraints);
+  }
+}
+
+// The checked value against the vector's "value": integers exactly, floats by their bits (so
+// a -0.0 fails), a decimal by its sign, magnitude and scale (its canonical text), and text by
+// its bytes.
+template <class T> bool same_checked_value(const Json &expected, const T &value) {
+  if constexpr (std::is_same_v<T, double>) {
+    return bits(value) == bits(std::strtod(expected.text.c_str(), nullptr));
+  } else if constexpr (std::is_same_v<T, float>) {
+    return bits(value) == bits(std::strtof(expected.text.c_str(), nullptr));
+  } else if constexpr (std::is_same_v<T, hc::Decimal>) {
+    const std::string &text = expected.text;
+    const std::size_t point = text.find('.');
+    const std::size_t scale = point == std::string::npos ? 0 : text.size() - point - 1;
+    return decimal_text(value) == text && value.scale == scale &&
+           value.negative == (text[0] == '-');
+  } else if constexpr (std::is_same_v<T, std::string_view>) {
+    return value == expected.text;
+  } else if constexpr (std::is_signed_v<T>) {
+    return static_cast<std::int64_t>(value) == expected.i64();
+  } else {
+    return expected.text[0] != '-' && static_cast<std::uint64_t>(value) == expected.u64();
+  }
+}
+
+// One constraints vector: the declaration through Constraints<T>::declare, the public
+// factory (refused, with the vector's code), then the cast through the checked door.
+template <class T> void constrained(const char *file, const Json &vector) {
+  using C = hc::Constraints<T>;
+  const Json &declared = *vector.find("constraints");
+  typename C::Fields fields;
+  const auto value = [&](const char *key, std::optional<hc::ConstraintValue> &slot) {
+    if (const Json *json = declared.find(key)) {
+      slot = hc::ConstraintValue(std::string_view(json->text));
+    }
+  };
+  value("minimum", fields.minimum);
+  value("exclusiveMinimum", fields.exclusive_minimum);
+  value("maximum", fields.maximum);
+  value("exclusiveMaximum", fields.exclusive_maximum);
+  value("multipleOf", fields.multiple_of);
+  fields.rounding = rounding_of(declared.find("rounding"));
+  if (const Json *json = declared.find("minLength")) {
+    fields.min_length = static_cast<std::uint32_t>(json->u64());
+  }
+  if (const Json *json = declared.find("maxLength")) {
+    fields.max_length = static_cast<std::uint32_t>(json->u64());
+  }
+  if (const Json *json = declared.find("trim")) {
+    fields.trim = json->boolean;
+  }
+  std::vector<typename C::Entry> entries;
+  std::uint8_t storage[1024];
+  const Json *list = declared.find("enum");
+  if (list != nullptr) {
+    for (const Json &entry : list->items) {
+      entries.emplace_back(std::string_view(entry.text));
+    }
+  }
+  const hc::Declared<C> declaration =
+      list != nullptr ? C::declare(fields, entries.data(), entries.size(), storage)
+                      : C::declare(fields);
+
+  ++vectors;
+  const std::string &expect = vector.find("expect")->text;
+  if (expect == "refused") {
+    const hc::Refusal *refusal = declaration.refusal_if();
+    const std::int64_t code = vector.find("refusal")->i64();
+    if (refusal == nullptr) {
+      fail(file, vector, "declared, expected a refusal");
+    } else if (refusal->code != code) {
+      fail(file, vector, "wrong refusal code");
+    } else if (const hc::RefusalMessage message = refusal->message();
+               message.view().find("Constraints refused (code " + std::to_string(code) + "): ") !=
+               0) {
+      fail(file, vector, "wrong refusal message");
+    }
+    return;
+  }
+  const C *constraints = declaration.value_if();
+  if (constraints == nullptr) {
+    fail(file, vector, "refused, expected a declaration");
+    return;
+  }
+
+  std::string bytes;
+  std::size_t input_size = 0;
+  std::optional<hc::Checked<T>> checked;
+  if (const Json *number = vector.find("from_f64")) {
+    if constexpr (C::is_text) {
+      fail(file, vector, "a double at the text door");
+      return;
+    } else {
+      checked = checked_from_double(number_of(*number), *constraints);
+    }
+  } else {
+    if (const Json *raw = vector.find("input_bytes")) {
+      for (const Json &byte : raw->items) {
+        bytes += static_cast<char>(byte.u64());
+      }
+    } else {
+      bytes = vector.find("input")->text;
+    }
+    input_size = bytes.size();
+    const hc::Text text(reinterpret_cast<const std::uint8_t *>(bytes.data()), bytes.size());
+    checked = checked_door(text, format_of(file, vector), *constraints);
+  }
+
+  if (const hc::CheckedValue<T> *ok = checked->value_if()) {
+    if (expect != "ok") {
+      fail(file, vector, "passed, expected a rejection");
+      return;
+    }
+    if (!same_checked_value(*vector.find("value"), ok->value)) {
+      fail(file, vector, "wrong value");
+    }
+    if (ok->adjusted != vector.find("adjusted")->boolean) {
+      fail(file, vector, "wrong adjusted");
+    }
+    const Json *index = vector.find("enum_index");
+    if (index == nullptr ? ok->enum_index.has_value()
+                         : ok->enum_index != static_cast<std::uint32_t>(index->u64())) {
+      fail(file, vector, "wrong enum_index");
+    }
+    if constexpr (C::is_text) {
+      // The caller's own bytes: the declared entry in its storage, or the input.
+      const auto *at = reinterpret_cast<const std::uint8_t *>(ok->value.data());
+      const bool in_storage = at >= storage && at + ok->value.size() <= storage + sizeof storage;
+      const bool in_input = ok->value.data() >= bytes.data() &&
+                            ok->value.data() + ok->value.size() <= bytes.data() + bytes.size();
+      if (ok->enum_index.has_value() ? !in_storage : !in_input) {
+        fail(file, vector, "the text is not a view of the caller's own bytes");
+      }
+    }
+    return;
+  }
+  const hc::Rejection &rejection = checked->rejection();
+  std::size_t offset = 0;
+  std::size_t length = 0;
+  if (const hc::Violation *violation = rejection.violation_if()) {
+    if (expect != "violation") {
+      fail(file, vector, "a violation, expected otherwise");
+    } else if (hc::name(violation->keyword) != vector.find("keyword")->text) {
+      fail(file, vector, "wrong keyword");
+    }
+    offset = violation->offset;
+    length = violation->length;
+  } else {
+    const hc::Fault &fault = rejection.fault();
+    if (expect != reason_name(fault.reason)) {
+      fail(file, vector, "wrong verdict");
+    }
+    offset = fault.offset;
+    length = fault.length;
+  }
+  if (offset + length > input_size) {
+    fail(file, vector, "span outside the input");
+  }
+  if (const Json *span = vector.find("fault")) {
+    if (span->items.size() != 2 || span->items[0].u64() != offset ||
+        span->items[1].u64() != length) {
+      fail(file, vector, "wrong span");
+    }
+  }
+}
+
+void constraints(const char *file, const Json &vector) {
+  const std::string &door = vector.find("door")->text;
+  if (door == "i8") {
+    constrained<std::int8_t>(file, vector);
+  } else if (door == "i16") {
+    constrained<std::int16_t>(file, vector);
+  } else if (door == "i32") {
+    constrained<std::int32_t>(file, vector);
+  } else if (door == "i64") {
+    constrained<std::int64_t>(file, vector);
+  } else if (door == "u8") {
+    constrained<std::uint8_t>(file, vector);
+  } else if (door == "u16") {
+    constrained<std::uint16_t>(file, vector);
+  } else if (door == "u32") {
+    constrained<std::uint32_t>(file, vector);
+  } else if (door == "u64") {
+    constrained<std::uint64_t>(file, vector);
+  } else if (door == "f32") {
+    constrained<float>(file, vector);
+  } else if (door == "f64") {
+    constrained<double>(file, vector);
+  } else if (door == "decimal") {
+    constrained<hc::Decimal>(file, vector);
+  } else if (door == "text") {
+    constrained<std::string_view>(file, vector);
+  } else {
+    fail(file, vector, "unknown constraints door");
+  }
+}
+
+// A declaration's decimal text through ConstraintValue::decimal, the core's conversion: the
+// sign, magnitude and scale, or the refusal 8. "input_bytes" holds text that is not UTF-8.
+void declaration(const char *file, const Json &vector) {
+  ++vectors;
+  std::string bytes;
+  if (const Json *raw = vector.find("input_bytes")) {
+    for (const Json &byte : raw->items) {
+      bytes += static_cast<char>(byte.u64());
+    }
+  } else {
+    bytes = vector.find("input")->text;
+  }
+  const std::optional<hc::Decimal> decimal = hc::ConstraintValue(std::string_view(bytes)).decimal();
+  if (vector.find("expect")->text == "refused") {
+    if (decimal.has_value() || vector.find("refusal")->i64() != 8) {
+      fail(file, vector, "converted, expected the refusal 8");
+    }
+  } else if (!decimal.has_value()) {
+    fail(file, vector, "refused, expected a decimal");
+  } else if (!same_decimal(vector, *decimal)) {
+    fail(file, vector, "wrong decimal");
+  }
 }
 
 void replay(const char *name, const Json &vector) {
@@ -389,31 +826,31 @@ void replay(const char *name, const Json &vector) {
   } else if (file == "integer.json") {
     const std::string &type = vector.find("type")->text;
     if (type == "i8") {
-      integer<std::int8_t>(name, vector, hc::cast_i8);
+      integer<std::int8_t>(name, vector, PLAIN(hc::cast_i8));
     } else if (type == "i16") {
-      integer<std::int16_t>(name, vector, hc::cast_i16);
+      integer<std::int16_t>(name, vector, PLAIN(hc::cast_i16));
     } else if (type == "i32") {
-      integer<std::int32_t>(name, vector, hc::cast_i32);
+      integer<std::int32_t>(name, vector, PLAIN(hc::cast_i32));
     } else if (type == "i64") {
-      integer<std::int64_t>(name, vector, hc::cast_i64);
+      integer<std::int64_t>(name, vector, PLAIN(hc::cast_i64));
     } else if (type == "u8") {
-      integer<std::uint8_t>(name, vector, hc::cast_u8);
+      integer<std::uint8_t>(name, vector, PLAIN(hc::cast_u8));
     } else if (type == "u16") {
-      integer<std::uint16_t>(name, vector, hc::cast_u16);
+      integer<std::uint16_t>(name, vector, PLAIN(hc::cast_u16));
     } else if (type == "u32") {
-      integer<std::uint32_t>(name, vector, hc::cast_u32);
+      integer<std::uint32_t>(name, vector, PLAIN(hc::cast_u32));
     } else if (type == "u64") {
-      integer<std::uint64_t>(name, vector, hc::cast_u64);
+      integer<std::uint64_t>(name, vector, PLAIN(hc::cast_u64));
     } else {
       fail(name, vector, "unknown integer type");
     }
   } else if (file == "real.json") {
     if (vector.find("type")->text == "f32") {
       check(name, vector, hc::cast_f32(input, format_of(name, vector)), input.size(),
-            [&](float value) { return value == static_cast<float>(vector.find("value")->f64()); });
+            [&](float value) { return same_checked_value(*vector.find("value"), value); });
     } else {
       check(name, vector, hc::cast_f64(input, format_of(name, vector)), input.size(),
-            [&](double value) { return value == vector.find("value")->f64(); });
+            [&](double value) { return same_checked_value(*vector.find("value"), value); });
     }
   } else if (file == "decimal.json") {
     check(name, vector, hc::cast_decimal(input, format_of(name, vector)), input.size(),
@@ -489,6 +926,10 @@ void replay(const char *name, const Json &vector) {
     } else {
       fail(name, vector, "unknown typed door");
     }
+  } else if (file == "constraints.json") {
+    constraints(name, vector);
+  } else if (file == "declarations.json") {
+    declaration(name, vector);
   } else {
     fail(name, vector, "no replay for this file");
   }
@@ -518,8 +959,8 @@ int main(int argc, char **argv) {
     }
   }
   std::sort(names.begin(), names.end());
-  if (error || names.size() < 15) {
-    std::fprintf(stderr, "corpus: %s holds %zu corpus files, expected 15 or more\n", argv[1],
+  if (error || names.size() < 17) {
+    std::fprintf(stderr, "corpus: %s holds %zu corpus files, expected 17 or more\n", argv[1],
                  names.size());
     return 1;
   }

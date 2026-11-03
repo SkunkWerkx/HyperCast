@@ -56,6 +56,8 @@ fn decimal(input: &[u8], format: &NumFormat, lenient_lane: bool) -> Result<Decim
     // digits or fewer — in one pass over the caller's bytes. The plain path below reads the
     // same tokens to the same value; it scans once to recognise the shape and again to read
     // it, and does the second scan in checked 128-bit arithmetic.
+    // The door does not call `real::route`; it makes the same decision in this order, held to
+    // it by exact.rs's `exact_agrees_with_the_door` and `route_precedence`.
     if lenient_lane && let Some(value) = plain_exact(text, format) {
         return Ok(value);
     }

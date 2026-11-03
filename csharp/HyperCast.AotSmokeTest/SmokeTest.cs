@@ -1,5 +1,5 @@
 // Proves the binding under Native AOT for real: this program publishes with PublishAot and
-// crosses every native entry point the binding declares — the twenty-six cast_* functions and
+// crosses every native entry point the binding declares — the thirty-one cast_* functions and
 // hypercast_version — against the real native library, including the generic door and the
 // union's compile-checked consumption. Exit code 0 only if every cast lands as expected.
 //
@@ -100,6 +100,50 @@ internal static class SmokeTest
 		Check("excel duration", Cast.ExcelDuration(1.5), new TimeSpan(1, 12, 0, 0));
 		// The UTF-8 doors are the native contract itself — no transcode in front of the crossing.
 		Check("utf8", Cast.Int32("(1,234)"u8, NumFormat.Invariant), -1234);
+
+		// The checked doors: a declaration judged once (cast_constraints_check, its decimal text
+		// converted by cast_declared_decimal), then a value by it, from text (cast_checked) and from a double (cast_checked_from_f64), and the text door
+		// itself (cast_text). Each answer is pinned through the union's consumption, rendered.
+		void Judged<T>(string name, CheckedVerdict<T> verdict, string expected) where T : notnull
+		{
+			var rendered = verdict switch
+			{
+				Checked<T> ok => $"{ok.Value}{(ok.Adjusted ? " adjusted" : "")}{(ok.EnumIndex is { } i ? $" #{i}" : "")}",
+				Rejection rejection => rejection switch
+				{
+					Fault f => $"fault {f.Reason} @ {f.Offset}+{f.Length}",
+					Violation v => $"violation {v.Keyword} @ {v.Offset}+{v.Length}",
+				},
+			};
+			if (rendered == expected)
+			{
+				Console.WriteLine($"ok   {name} = {rendered}");
+				return;
+			}
+			Console.WriteLine($"FAIL {name}: {rendered} (expected {expected})");
+			failures++;
+		}
+
+		var latitude = new Constraints<double>(minimum: -90, maximum: 90, multipleOf: 0.000001m, rounding: Rounding.Midpoint);
+		Judged("checked f64", Cast.Double("45.1234567", NumFormat.Invariant, latitude), "45.123457 adjusted");
+		Judged("checked violation", Cast.Double("-90.5", NumFormat.Invariant, latitude), "violation minimum @ 0+5");
+		Judged("checked from double", Cast.DoubleFromDouble(0.1 + 0.2, new Constraints<double>(multipleOf: "0.1")),
+			"violation multipleOf @ 0+0");
+		Judged("checked decimal", Cast.Decimal("12.35", NumFormat.Invariant, new Constraints<decimal>(multipleOf: 0.05m)), "12.35");
+		Judged("checked generic", Cast.Numeric<short>("19", NumFormat.Invariant, new Constraints<short>(multipleOf: 10, rounding: Rounding.Midpoint)),
+			"20 adjusted");
+		Judged("checked text", Cast.Text(" MALE ", new Constraints<string>(trim: true, @enum: ["Female", "Male", "Other"])), "Male #1");
+		Judged("text", Cast.Text("a\uD800"), "fault Malformed @ 1+1");
+		try
+		{
+			_ = new Constraints<int>(minimum: 5, maximum: 5);
+			Console.WriteLine("FAIL refused declaration: not refused");
+			failures++;
+		}
+		catch (ArgumentException e)
+		{
+			Console.WriteLine($"ok   refused declaration: {e.Message}");
+		}
 
 		// The exhaustive two-arm switch (concrete case types) must survive AOT too.
 		var disposition = Cast.Int32("not-a-number", NumFormat.Invariant) switch

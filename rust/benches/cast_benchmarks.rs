@@ -4,7 +4,10 @@
 //! the load-bearing claims (allocation-free, corpus conformance) live in the tests.
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use hypercast::{DateOrder, NumFormat};
+use hypercast::{
+    Constraints, DateOrder, Decimal, NumFormat, NumericRules, Rounding, Text, TextRules,
+    decimal_for_declaration,
+};
 use std::hint::black_box;
 use time::format_description::well_known::Rfc3339;
 
@@ -166,6 +169,66 @@ fn benchmarks(c: &mut Criterion) {
     });
     group.bench_function("hypercast-colon", |b| {
         b.iter(|| hypercast::cast_duration(black_box(b"1.06:30:15.5")).unwrap())
+    });
+    group.finish();
+    checked_benchmarks(c);
+}
+
+/// What a verdict costs: each checked door beside the plain door it wraps, on the same text.
+/// The `Constraints` are built once, outside the timed loop, as a caller holding a column's
+/// rule would. The checked door does strictly more work, so it is slower by construction;
+/// the figures are the price of the verdict.
+fn checked_benchmarks(c: &mut Criterion) {
+    let format = NumFormat::INVARIANT;
+    let dec = |text| decimal_for_declaration(text).unwrap();
+
+    // Latitude: (-90, 90], rounded to the nearest 0.000001.
+    let latitude = Constraints::<f64>::numeric(
+        NumericRules::new()
+            .exclusive_minimum(dec("-90"))
+            .maximum(dec("90"))
+            .multiple_of(dec("0.000001"), Rounding::Midpoint),
+        None,
+    )
+    .unwrap();
+    let mut group = c.benchmark_group("checked-f64");
+    group.bench_function("plain", |b| {
+        b.iter(|| hypercast::cast_f64(black_box(b"45.1234567"), &format).unwrap())
+    });
+    group.bench_function("checked", |b| {
+        b.iter(|| hypercast::cast_checked::<f64>(black_box(b"45.1234567"), &format, &latitude))
+    });
+    // The spreadsheet route: a value already decoded to a float, rounded by the same rule.
+    group.bench_function("checked from_f64", |b| {
+        b.iter(|| hypercast::checked_from_f64::<f64>(black_box(45.1234567), &latitude))
+    });
+    group.finish();
+
+    // A price, strict: 12.37 against a step of 0.05 is a violation by design, so the checked
+    // door's verdict is the rejection; the plain door's is the value.
+    let price = Constraints::<Decimal>::numeric(
+        NumericRules::new().multiple_of(dec("0.05"), Rounding::Strict),
+        None,
+    )
+    .unwrap();
+    let mut group = c.benchmark_group("checked-decimal");
+    group.bench_function("plain", |b| {
+        b.iter(|| hypercast::cast_decimal(black_box(b"12.37"), &format).unwrap())
+    });
+    group.bench_function("checked", |b| {
+        b.iter(|| hypercast::cast_checked::<Decimal>(black_box(b"12.37"), &format, &price))
+    });
+    group.finish();
+
+    // Text: a three-entry enum, trimmed. The plain door is `cast_text`.
+    let entries = ["draft", "published", "archived"];
+    let status = Constraints::<Text>::text(TextRules::new().trim(true), Some(&entries)).unwrap();
+    let mut group = c.benchmark_group("checked-text");
+    group.bench_function("plain", |b| {
+        b.iter(|| hypercast::cast_text(black_box(b"  published ")).unwrap())
+    });
+    group.bench_function("checked", |b| {
+        b.iter(|| hypercast::cast_text_checked(black_box(b"  published "), &status))
     });
     group.finish();
 }

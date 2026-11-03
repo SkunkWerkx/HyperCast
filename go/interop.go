@@ -130,6 +130,90 @@ func (r RawCivil) CivilDateTime() CivilDateTime {
 	}
 }
 
+// RawConstraints is a declaration of validation constraints as it crosses the ABI, which the
+// checked doors read in place: 72 bytes, 8-aligned, pointer-free, so the layout is the same
+// on 32-bit and 64-bit targets. Byte offsets: Size 0, Flags 4, Rounding 8, MinLength 12,
+// MaxLength 16, Reserved 20, Lower 24, Upper 40, MultipleOf 56, each decimal in Decimal's
+// own layout. An enum list travels beside it (Constraints.PackedEnum). A Size other than
+// RawConstraintsSize, an unknown flag bit, an unknown rounding code, a nonzero Reserved, a
+// decimal sign byte other than 0 or 1, or a non-empty enum list without RawConstraintsHasEnum
+// is a malformed layout. Constraints.Raw hands one over, from a declaration the core has
+// already judged.
+type RawConstraints struct {
+	// Size is the layout's size as the caller built it: RawConstraintsSize.
+	Size uint32
+	// Flags says which constraints are declared: the RawConstraintsHas* bits,
+	// RawConstraintsHasEnum among them, and RawConstraintsTrim.
+	Flags uint32
+	// Rounding is the Rounding code: 0 strict, 1 midpoint, 2 floor, 3 ceiling.
+	Rounding uint32
+	// MinLength is the fewest code points the text may hold.
+	MinLength uint32
+	// MaxLength is the most code points the text may hold.
+	MaxLength uint32
+	// Reserved is always 0.
+	Reserved uint32
+	// Lower is the minimum, or the exclusive minimum.
+	Lower Decimal
+	// Upper is the maximum, or the exclusive maximum.
+	Upper Decimal
+	// MultipleOf is the step every value must be a multiple of.
+	MultipleOf Decimal
+}
+
+// RawConstraintsSize is the size word a RawConstraints carries: its own 72 bytes.
+const RawConstraintsSize = uint32(unsafe.Sizeof(RawConstraints{}))
+
+// The flags of RawConstraints: which of its fields are read.
+const (
+	// RawConstraintsHasMinimum means Lower is the inclusive minimum.
+	RawConstraintsHasMinimum uint32 = 1 << iota
+	// RawConstraintsHasExclusiveMinimum means Lower is the exclusiveMinimum.
+	RawConstraintsHasExclusiveMinimum
+	// RawConstraintsHasMaximum means Upper is the inclusive maximum.
+	RawConstraintsHasMaximum
+	// RawConstraintsHasExclusiveMaximum means Upper is the exclusiveMaximum.
+	RawConstraintsHasExclusiveMaximum
+	// RawConstraintsHasMultipleOf means MultipleOf and Rounding are read.
+	RawConstraintsHasMultipleOf
+	// RawConstraintsHasMinLength means MinLength is read.
+	RawConstraintsHasMinLength
+	// RawConstraintsHasMaxLength means MaxLength is read.
+	RawConstraintsHasMaxLength
+	// RawConstraintsTrim means text is trimmed of Unicode White_Space before it is judged.
+	RawConstraintsTrim
+	// RawConstraintsHasEnum means an enum is declared: the list beside the layout is read,
+	// and an empty one is refused.
+	RawConstraintsHasEnum
+)
+
+// RawCheck is what a checked door reports beside its value, as the core writes it: 12 bytes,
+// 4-aligned.
+type RawCheck struct {
+	// Keyword is, on a violation, the Keyword code broken; 0 otherwise.
+	Keyword uint32
+	// Adjusted is, on success, 1 when rounding changed the value, else 0.
+	Adjusted uint32
+	// EnumIndex is, on a success at the text door that matched an enum entry, its index;
+	// math.MaxUint32 otherwise.
+	EnumIndex uint32
+}
+
+// RawCheckSize is a RawCheck's size: 12 bytes.
+const RawCheckSize = uint32(unsafe.Sizeof(RawCheck{}))
+
+// RawSpan is a span of the caller's own input as the core writes it, 8 bytes, 4-aligned:
+// what the text door writes in place of a copy.
+type RawSpan struct {
+	// Offset is the byte offset where the span starts.
+	Offset uint32
+	// Len is the span's length in bytes.
+	Len uint32
+}
+
+// RawSpanSize is a RawSpan's size: 8 bytes.
+const RawSpanSize = uint32(unsafe.Sizeof(RawSpan{}))
+
 // asciiSpace reports an ASCII whitespace byte — the core's rule verbatim: space, \t, \n,
 // \f, \r (not \v), which would collide with the trimming around a symbol.
 func asciiSpace(b byte) bool {
@@ -441,6 +525,17 @@ var (
 	_ [4]byte  = [unsafe.Sizeof(RawDate{})]byte{}
 	_ [16]byte = [unsafe.Sizeof(RawCivil{})]byte{}
 	_ [8]byte  = [unsafe.Offsetof(RawCivil{}.Nanos)]byte{}
+	_ [72]byte = [unsafe.Sizeof(RawConstraints{})]byte{}
+	_ [4]byte  = [unsafe.Offsetof(RawConstraints{}.Flags)]byte{}
+	_ [8]byte  = [unsafe.Offsetof(RawConstraints{}.Rounding)]byte{}
+	_ [12]byte = [unsafe.Offsetof(RawConstraints{}.MinLength)]byte{}
+	_ [16]byte = [unsafe.Offsetof(RawConstraints{}.MaxLength)]byte{}
+	_ [20]byte = [unsafe.Offsetof(RawConstraints{}.Reserved)]byte{}
+	_ [24]byte = [unsafe.Offsetof(RawConstraints{}.Lower)]byte{}
+	_ [40]byte = [unsafe.Offsetof(RawConstraints{}.Upper)]byte{}
+	_ [56]byte = [unsafe.Offsetof(RawConstraints{}.MultipleOf)]byte{}
+	_ [12]byte = [unsafe.Sizeof(RawCheck{})]byte{}
+	_ [8]byte  = [unsafe.Sizeof(RawSpan{})]byte{}
 
 	_ [16]byte = [unsafe.Sizeof(Decimal{})]byte{}
 	_ [0]byte  = [unsafe.Offsetof(Decimal{}.Lo)]byte{}

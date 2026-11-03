@@ -152,6 +152,8 @@ and messages are the same in this extension, except:
   overrides `getSymbol()` or `getTextAttribute()` can tell.
 - `NativePlatform::ridAndLibraryName()` reads `/proc/self/maps` itself to tell musl from
   glibc, so `open_basedir` no longer applies to that read.
+- `Cast::f32('-0', ...)` and `Cast::f64('-0', ...)` are `0.0`; 1.0 returned `-0.0`. Zero has
+  one form: the core never returns a negative zero.
 
 Arguments are taken as 1.0 took them. A caller without `declare(strict_types=1)` gets PHP's
 weak-mode coercion of each declared type, with its deprecations, and a strict caller gets the
@@ -159,7 +161,10 @@ same `TypeError`s, worded the same; the suite compares both modes, on every supp
 with 1.0's recordings (`tests/CoercionTest.php`). One trace of the extension shows on a debug
 (`ZEND_DEBUG`) build of PHP 8.5, which checks a built-in method's arguments before the call: a
 `NAN` given to a `bool` parameter in weak mode raises PHP 8.5's "unexpected NAN value was
-coerced to bool" warning twice.
+coerced to bool" warning twice. The same check means a debug build's engine coerces a weak-mode
+scalar before the extension sees it, so there `new Constraints(...)` gets a `float` bound
+already made a string and a `bool` length already made an `int`, which a release build refuses
+as a `TypeError` ([Validation constraints](#validation-constraints)).
 
 ## Doors
 
@@ -176,6 +181,8 @@ coerced to bool" warning twice.
 | `Cast::time` | `int` nanoseconds since midnight |
 | `Cast::duration` | `Duration` (the protobuf pair) |
 | `Cast::decimalFromFloat`, `Cast::excelSerialFromFloat`, `Cast::excelTime`, `Cast::excelDuration` | as `decimal`, `datetime`, `time` and `duration` — read from a `float` a workbook already holds; the decimal is the shortest that names it |
+| `Cast::text` | `string` — the input itself, once it is valid UTF-8; nothing trimmed |
+| `Cast::checked`, `Cast::checkedFromFloat`, `Cast::checkedText` | a `Checked`, `Fault` or `Violation`: the value judged by declared `Constraints` ([below](#validation-constraints)) |
 
 Every numeric door takes a `NumFormat` — `NumFormat::invariant()`, `NumFormat::detect()`
 (the `.`/`,` roles resolved per input from structure, ambiguous input a `Malformed` fault),
@@ -374,6 +381,102 @@ those bytes, and the core reads a door's format from that layout. A `DayPeriods`
 the same way — 40 bytes, `DayPeriods::packed()`. Construct a format once and hoist it: the
 constructor validates every symbol.
 
+## Validation constraints
+
+A value that parsed can still break a business rule. `Constraints` declares the rule with the
+OpenAPI Schema Object's keywords, bound to one `Door` (`Door::F64`, `Door::Decimal`,
+`Door::Text`, …), and a checked door judges the value by it, in the core and in exact decimal
+arithmetic:
+
+```php
+use HyperCast\{Cast, Checked, Constraints, Decimal, Door, Fault, Keyword, NumFormat, Rounding, Violation};
+
+// Latitude: a multiple of 0.000001 between -90 and 90, finer input rounded half to even.
+$latitude = new Constraints(Door::F64, minimum: '-90', maximum: '90', multipleOf: '0.000001', rounding: Rounding::Midpoint);
+// Euro cash: a multiple of 0.05, and anything else is wrong.
+$euroCash = new Constraints(Door::Decimal, multipleOf: new Decimal('5', 2, false));
+// A sex code: one of three, whatever case and padding it arrived in.
+$sex = new Constraints(Door::Text, trim: true, enum: ['Female', 'Male', 'Other']);
+
+$euro = new NumFormat(',', '.', NumFormat::ALL, '€');
+Cast::checked('45.1234567', NumFormat::invariant(), $latitude);  // Checked(45.123457, adjusted: true)
+Cast::checked('-90.5', NumFormat::invariant(), $latitude);       // Violation(Keyword::Minimum, 0, 5)
+Cast::checkedFromFloat(45.1234567, $latitude);                   // Checked(45.123457, adjusted: true)
+Cast::checked('€1.234,55', $euro, $euroCash);                    // Checked(Decimal 1234.55)
+Cast::checked('€12,37', $euro, $euroCash);                       // Violation(Keyword::MultipleOf, 0, 8)
+Cast::checked('12,3x', $euro, $euroCash);                        // Fault Malformed at byte 4
+
+function describe(Checked|Fault|Violation $verdict): string
+{
+    return match (true) {
+        $verdict instanceof Checked => "{$verdict->value}, entry {$verdict->enumIndex}",  // ' MALE ': Male, entry 1
+        $verdict instanceof Fault => "{$verdict->reason->name} at byte {$verdict->offset}", // '   ': Empty at byte 0
+        $verdict instanceof Violation => match ($verdict->keyword) {
+            Keyword::Enum => "not a sex code: bytes {$verdict->offset}+{$verdict->length}", // 'Femal': bytes 0+5
+            default => "breaks {$verdict->keywordName()}",                                 // keywords are open
+        },
+    };
+}
+
+echo describe(Cast::checkedText(' MALE ', $sex));               // Male, entry 1
+```
+
+A checked door answers a `Checked` — `$value`, `$adjusted` (true only when rounding changed it)
+and, at `Door::Text` with an `enum`, `$enumIndex`, the index of the entry it matched (`null`
+otherwise, an integer `enum` included, where the value is the answer) — or one of two
+rejections: the plain doors' own `Fault` (it did not parse: the very class) or a `Violation` (it
+parsed and broke a rule: `$keyword` and the byte span, `$offset` and `$length`, as a fault's).
+All three are `final readonly`, and every checked door declares `Checked|Fault|Violation`.
+`Cast::optional()` takes a checked verdict as it takes a plain one: an `Empty` fault is `null`,
+and a `Checked` or any other rejection, a `Violation` included, comes back as it was. A PHP
+string is bytes, so text that is not UTF-8 (a lone surrogate's three bytes, a stray byte) reaches
+every door as it is: `Malformed` at its bytes, the same fault at a plain door as at a checked
+one. `Keyword` is an int-backed enum of the eight
+keywords, its values the core's codes; PHP enums are closed, so it is open the other way:
+`format` and `pattern` may join in a minor release, and a `Violation` carries a code this
+binding does not name yet as the bare `int` (`Violation::$keyword` is `Keyword|int`). So a
+`match` over keywords needs its `default` arm. `$violation->keywordName()` is the OpenAPI
+spelling (`exclusiveMinimum`, the case's name with its first letter lowered), or `keyword 9`.
+The plain doors and their `Success|Fault` are unchanged.
+
+The integer doors take `minimum`, `exclusiveMinimum`, `maximum`, `exclusiveMaximum`,
+`multipleOf` with a `rounding` (`Rounding::Strict`, the default, then `Midpoint`, half to even,
+`Floor` and `Ceiling`) and `enum`; `Door::F32`, `Door::F64` and `Door::Decimal` the same without
+`enum`; `Door::Text` takes `minLength`, `maxLength` (in code points), `trim` (Unicode
+`White_Space`, U+00A0 included) and `enum`, matched under Unicode simple case folding and
+delivering the caller's own declared string and its index. The constructor takes every keyword at
+every door, by name, and the core alone refuses one its door does not take. The first failure
+wins: the door parses, the text is trimmed, `multipleOf` rounds or refuses, then the bounds, the
+lengths and `enum` judge the result. A float door also judges the float it delivers against each
+bound read as the door reads it: `'1e-400'` at `Door::F64` reads as `0`, so it breaks
+`exclusiveMinimum: '0'`. Bounds, `multipleOf` and integer entries are an `int`, a `string` in
+invariant notation (`'1e-6'` is `0.000001`) or a `Decimal`, each converted exactly by the core
+and kept as the `Decimal` it read; never a `float`, so `0.1` cannot be declared inexactly. The
+constructor checks its arguments exactly, in weak mode too: a `float` bound is a `TypeError`
+rather than a string PHP made of it, as is a `bool` length (on a release build of PHP; a debug
+build coerces first, [above](#differences-from-10)). `Cast::checked($text, $format,
+$constraints)` is every numeric door's checked form, and `Cast::checkedFromFloat($value,
+$constraints)` judges a number a source already decoded on the shortest decimal that names it
+(`0.1 + 0.2` breaks `multipleOf: '0.1'` under `Strict`, and rounds to `0.3` under `Midpoint`),
+with an empty span. `Cast::checkedText($text, $constraints)` is the text door's, and
+`Cast::text($text)` the plain one.
+
+A declaration is judged once, by the core, when it is built, and one that cannot mean anything
+at its door is the caller's bug: the constructor throws an `\InvalidArgumentException` whose code
+is the core's refusal code and whose message is the rule (`new Constraints(Door::U8, minimum:
+'-1')` throws code 8, "Constraints refused (code 8): a bound, step or enum entry the door cannot
+hold."). An `enum` left `null` is none, while `enum: []` declares one no value could match and
+is refused (code 12), as is a text entry no input can match (code 13: an empty one, or under
+`trim` one with leading or trailing white space). The door is the constructor's one required
+argument, so no `Constraints` means "no rules" by accident; `new Constraints(Door::F64)`
+declares none on purpose, and one whose properties were never written (`ReflectionClass::newInstanceWithoutConstructor()`) is the
+engine's `Error` at the first door that reads it. Handing a declaration to the other kind of
+door (text constraints to `checked()`, numeric ones to `checkedText()`) is an
+`\InvalidArgumentException` too, and after that a checked cast judges only data and throws
+nothing for it. A `Constraints` is an ordinary readonly object: it compares, clones and
+serializes as PHP's own, and a door lays out its properties again on every call, as it packs a
+`NumFormat`, so even one `unserialize()` built is judged by the core.
+
 ## Interop: building on HyperCast's C ABI
 
 For a package that carries HyperCast's verdicts across a C ABI of its own, as HyperTabular
@@ -396,6 +499,15 @@ drift. Its two writers take an `FFI\CData`, so they need ext-ffi; nothing else d
   `libraryPath($baseName, $sourceDir, $override)` the library to load — the file the
   `$override` environment variable names, else the staged build, else the in-repo cargo
   build.
+
+A `Constraints` crosses the same way: `packed()` is the 72-byte `RawConstraints` layout
+(`Constraints::PACKED_BYTES`) and `packedEnum()` the `enum` list beside it, in the native byte
+order the core reads in place — the size, flags, rounding code, lengths and a reserved zero as
+`u32`s, then the lower bound, upper bound and `multipleOf` as 16-byte decimals; integer entries
+as such decimals, text entries a little-endian `u32` byte length followed by the bytes — what
+the core's checked C exports read, the list only when the flags carry `HAS_ENUM` (256), which
+any declared `enum` sets. The extension itself calls the core's Rust API, not the C
+ABI's 32 exports.
 
 ## Why not `filter_var` / `DateTimeImmutable::createFromFormat`?
 

@@ -2,6 +2,9 @@ package io.github.skunkwerkx.hypercast.aotsmoketest;
 
 import io.github.skunkwerkx.hypercast.Cast;
 import io.github.skunkwerkx.hypercast.CastFailure;
+import io.github.skunkwerkx.hypercast.Checked;
+import io.github.skunkwerkx.hypercast.CheckedVerdict;
+import io.github.skunkwerkx.hypercast.Constraints;
 import io.github.skunkwerkx.hypercast.DateOrder;
 import io.github.skunkwerkx.hypercast.DateTimeFormat;
 import io.github.skunkwerkx.hypercast.ExcelEpoch;
@@ -10,6 +13,7 @@ import io.github.skunkwerkx.hypercast.NumFormat;
 import io.github.skunkwerkx.hypercast.Success;
 import io.github.skunkwerkx.hypercast.UnixPrecision;
 import io.github.skunkwerkx.hypercast.Verdict;
+import io.github.skunkwerkx.hypercast.Violation;
 import java.io.DataInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -52,6 +56,20 @@ public final class Main {
                 System.out.println("FAIL " + name + ": " + fault + " (expected " + expected + ")");
                 failures++;
             }
+        }
+    }
+
+    private static <T> void checked(String name, CheckedVerdict<T> verdict, String expected) {
+        String actual = switch (verdict) {
+            case Checked<T> c -> "checked " + c.value();
+            case Violation<T> v -> "violation " + v.keyword() + " @ " + v.offset() + "+" + v.length();
+            case Fault<T> f -> "fault " + f.reason() + " @ " + f.offset() + "+" + f.length();
+        };
+        if (actual.equals(expected)) {
+            System.out.println("ok   " + name + " = " + actual);
+        } else {
+            System.out.println("FAIL " + name + ": " + actual + " (expected " + expected + ")");
+            failures++;
         }
     }
 
@@ -174,6 +192,18 @@ public final class Main {
             failures++;
         }
 
+        // The constraint doors: build() judges the declaration once and converts each bound
+        // through the core's declared decimal, then the checked door and its double form run
+        // under it, and the three-arm switch over the checked verdict must survive AOT.
+        Constraints<Double> latitude =
+                Constraints.f64().minimum("-90").maximum("90").build();
+        checked("f64 checked", Cast.f64("45.5", NumFormat.INVARIANT, latitude), "checked 45.5");
+        checked("f64 checked (violation)", Cast.f64("91", NumFormat.INVARIANT, latitude), "violation maximum @ 0+2");
+        checked("f64FromDouble checked", Cast.f64FromDouble(-91.0, latitude), "violation minimum @ 0+0");
+        Constraints<String> sex =
+                Constraints.text().trim(true).enumOf("M", "F", "X").build();
+        checked("text checked", Cast.text(" F ", sex), "checked F");
+
         System.out.println(failures == 0 ? "AOT smoke test passed." : "AOT smoke test FAILED (" + failures + ").");
         System.exit(failures == 0 ? 0 : 1);
     }
@@ -192,7 +222,7 @@ public final class Main {
         long natives = Arrays.stream(core.getDeclaredMethods())
                 .filter(m -> Modifier.isNative(m.getModifiers()))
                 .count();
-        require(natives == (ffm ? 0 : 28), expected + " expected, but NativeCore declares " + natives + " natives");
+        require(natives == (ffm ? 0 : 33), expected + " expected, but NativeCore declares " + natives + " natives");
         String major = "n/a (image)";
         if (System.getProperty("org.graalvm.nativeimage.imagecode") == null) {
             try (InputStream in = core.getResourceAsStream("NativeCore.class")) {

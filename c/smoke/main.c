@@ -1,6 +1,6 @@
 // A C program built against an unpacked release archive, the way a consumer would: through
 // CMake's find_package or pkg-config, linked to the shared or the static library. It calls
-// all 27 functions hypercast.h declares, checks each verdict (the value, or the reason and
+// all 32 functions hypercast.h declares, checks each verdict (the value, or the reason and
 // its byte span), and prints the library's version, which run.sh holds to the package's.
 // CMakeLists.txt builds it as C99, C11 and, where the compiler has it, C23, warnings as
 // errors.
@@ -136,6 +136,80 @@ int main(void) {
   CHECK(civil.nanos_of_day == 64800000000000ULL);
   CHECK(cast_excel_time(0.75, &nanos, &fault) == 0 && nanos == 64800000000000ULL);
   CHECK(cast_excel_duration(1.5, &span, &fault) == 0 && span.seconds == 129600 && span.nanos == 0);
+
+  // The validation constraints. A declaration is a 72-byte layout, every field zero but the
+  // size declaring nothing; a checked door adds code 4, a violation, and reports through the
+  // nullable `check`.
+  HyperCastRawConstraints latitude;
+  memset(&latitude, 0, sizeof latitude);
+  latitude.size = HyperCastRawConstraints_SIZE;
+  latitude.flags = HyperCastRawConstraints_HAS_MINIMUM | HyperCastRawConstraints_HAS_MAXIMUM |
+                   HyperCastRawConstraints_HAS_MULTIPLE_OF;
+  latitude.rounding = 1; // midpoint
+  latitude.lower.lo = 90;
+  latitude.lower.negative = true;
+  latitude.upper.lo = 90;
+  latitude.multiple_of.lo = 1;
+  latitude.multiple_of.scale = 6;
+  CHECK(cast_constraints_check(11, 0, &latitude, NULL, 0) == 0);
+
+  HyperCastRawCheck report = {7, 7, 7};
+  CHECK(cast_checked(11, 0, NULL, &latitude, NULL, 0, UTF8("45.1234567"), &f64, &fault, &report) ==
+        0);
+  CHECK(f64 == 45.123457 && report.adjusted == 1 && report.enum_index == UINT32_MAX);
+  CHECK(cast_checked(11, 0, NULL, &latitude, NULL, 0, UTF8("91"), &f64, &fault, &report) == 4);
+  CHECK(report.keyword == 3 && fault.offset == 0 && fault.len == 2);
+  CHECK(cast_checked_from_f64(11, -90.5, &latitude, NULL, 0, &f64, &fault, &report) == 4);
+  CHECK(report.keyword == 1 && fault.offset == 0 && fault.len == 0);
+  // A float door judges the float it delivers too: 0.99999999999 is 1.0 at f32, past
+  // exclusiveMaximum 1.
+  HyperCastRawConstraints below_one;
+  memset(&below_one, 0, sizeof below_one);
+  below_one.size = HyperCastRawConstraints_SIZE;
+  below_one.flags = HyperCastRawConstraints_HAS_EXCLUSIVE_MAXIMUM;
+  below_one.upper.lo = 1;
+  CHECK(cast_checked(10, 0, NULL, &below_one, NULL, 0, UTF8("0.99999999999"), &f32, &fault,
+                     &report) == 4);
+  CHECK(report.keyword == 4 && fault.offset == 0 && fault.len == 13);
+
+  // A text `enum`, read under HAS_ENUM: each entry a little-endian uint32_t length, then its
+  // UTF-8. The span is the matched input, and `enum_index` names the entry.
+  static const uint8_t sexes[] = {6,   0, 0, 0, 'F', 'e', 'm', 'a', 'l',
+                                  'e', 4, 0, 0, 0,   'M', 'a', 'l', 'e'};
+  HyperCastRawConstraints trimmed;
+  memset(&trimmed, 0, sizeof trimmed);
+  trimmed.size = HyperCastRawConstraints_SIZE;
+  trimmed.flags = HyperCastRawConstraints_TRIM | HyperCastRawConstraints_HAS_ENUM;
+  HyperCastRawSpan matched = {0, 0};
+  CHECK(cast_checked(18, 0, NULL, &trimmed, sexes, sizeof sexes, UTF8(" MALE "), &matched, &fault,
+                     &report) == 0);
+  CHECK(matched.offset == 1 && matched.len == 4 && report.enum_index == 1);
+  // A duplicate under case folding is refused, by code; a size the core does not know is a
+  // malformed layout here and a contract violation at a checked door.
+  static const uint8_t twice[] = {4, 0, 0, 0, 'M', 'a', 'l', 'e', 4, 0, 0, 0, 'M', 'A', 'L', 'E'};
+  CHECK(cast_constraints_check(18, 0, &trimmed, twice, sizeof twice) == 10);
+  // An `enum` with no entries, and under trim an entry with White_Space at an edge, which no
+  // input can match; a list passed without HAS_ENUM is a malformed layout.
+  CHECK(cast_constraints_check(18, 0, &trimmed, NULL, 0) == 12);
+  static const uint8_t padded[] = {5, 0, 0, 0, ' ', 'M', 'a', 'l', 'e'};
+  CHECK(cast_constraints_check(18, 0, &trimmed, padded, sizeof padded) == 13);
+  trimmed.flags = HyperCastRawConstraints_TRIM;
+  CHECK(cast_constraints_check(18, 0, &trimmed, sexes, sizeof sexes) == 11);
+  trimmed.size = 0;
+  CHECK(cast_constraints_check(18, 0, &trimmed, NULL, 0) == 11);
+  CHECK(cast_checked(18, 0, NULL, &trimmed, NULL, 0, UTF8("a"), &matched, &fault, NULL) == -1);
+
+  HyperCastRawSpan whole = {0, 0};
+  CHECK(cast_text(UTF8("\xf0\x9f\x91\x8d"), &whole, &fault) == 0 && whole.offset == 0 &&
+        whole.len == 4);
+  CHECK(cast_text(UTF8("ab\xff"), &whole, &fault) == 2 && fault.offset == 2 && fault.len == 1);
+
+  HyperCastDecimal declared = {0, 0, 0, false};
+  CHECK(cast_declared_decimal(UTF8("1.50"), &declared) == 0 && declared.lo == 15 &&
+        declared.hi == 0 && declared.scale == 1 && !declared.negative);
+  CHECK(cast_declared_decimal(UTF8("1e-29"), &declared) == 8 && declared.lo == 15 &&
+        declared.scale == 1);
+  CHECK(cast_declared_decimal(UTF8("1"), NULL) == -1);
 
   uint32_t version = hypercast_version();
   printf("%u.%u.%u\n", version >> 16, (version >> 8) & 0xff, version & 0xff);

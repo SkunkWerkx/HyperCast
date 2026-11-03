@@ -117,8 +117,11 @@ offending text with no mapping:
 Every span satisfies `offset + length <= text.length` in those units. Text is read as given,
 and surrounding whitespace is trimmed before it is judged, so the span still indexes what
 was passed (`castI32('  12x  ')` is malformed at offset 4). A string with a lone surrogate
-has no UTF-8 form; it is read with the surrogate replaced by U+FFFD, so it is `malformed`,
-never thrown.
+has no UTF-8 form, so it is `malformed`, never thrown: every door, plain or checked, reads it
+as it is (WTF-8), so the fault is at the surrogate's own code unit and a lone surrogate never
+matches a declared `'\ufffd'`, as a currency symbol or as an `enum` entry. Nor can one be
+declared: in a `NumFormat` or `DateFormat` symbol it is a refusal naming the field (`currency
+must be whole code points, not surrogate halves`), and as an `enum` entry refusal `9`.
 
 ### The doors
 
@@ -254,6 +257,101 @@ pattern. Neither class has a public constructor: `new NumFormat()` throws napi's
 contains no `constructor`" error, the one way to call this package wrongly that the types do
 not stop; use `declare`, `invariant()` or `detect()`.
 
+## Validation constraints
+
+The OpenAPI Schema Object's keywords judge a value once its door has read it: `minimum`,
+`exclusiveMinimum`, `maximum`, `exclusiveMaximum`, `multipleOf` with a rounding, `minLength`,
+`maxLength`, `enum` and `trim`. A `Constraints` is declared for one door and judged once, by
+the core, when declared; every checked cast after that judges only data.
+
+```js
+const { castChecked, castText, Constraints, Door, NumFormat, NumStyles, Rounding } =
+  require('@skunkwerkx/hypercast')
+
+const latitude = Constraints.declare({
+  door: Door.F64,
+  minimum: '-90',
+  maximum: '90',
+  multipleOf: '0.000001',
+  rounding: Rounding.Midpoint,
+})
+if (latitude.ok) {
+  castChecked('45.12345678', latitude.value)
+  // { ok: true, value: 45.123457, adjusted: true, enumIndex: null }
+  castChecked('91', latitude.value)
+  // { ok: false, violation: { keyword: 'maximum', offset: 0, length: 2 } }
+}
+
+const euro = NumFormat.declare({ decimalSep: ',', groupSep: '.', flags: NumStyles.All })
+const cash = Constraints.declare({ door: Door.Decimal, minimum: '0', multipleOf: '0.05' })
+if (euro.ok && cash.ok) {
+  castChecked('12,35', cash.value, euro.value)
+  // { ok: true, value: '12.35', adjusted: false, enumIndex: null }
+  castChecked('12,37', cash.value, euro.value)
+  // { ok: false, violation: { keyword: 'multipleOf', offset: 0, length: 5 } }
+}
+
+const sex = Constraints.declare({ door: Door.Text, trim: true, enum: ['Female', 'Male', 'Other'] })
+if (sex.ok) {
+  castText(' MALE ', sex.value)
+  // { ok: true, value: 'Male', adjusted: false, enumIndex: 1 }
+}
+
+Constraints.declare({ door: Door.I32, minLength: 1 })
+// { ok: false, message: 'Constraints refused (code 1): a constraint the door does not take.' }
+```
+
+- **The declaration.** A `ConstraintsSpec` has the `door` (a `Door`: `I8` to `U64`, `F32`,
+  `F64`, `Decimal`, `Text`) and the keywords that door takes: the bounds, `multipleOf` and
+  `rounding` (a `Rounding`: `Strict`, the default, `Midpoint`, half to even, `Floor`,
+  `Ceiling`) at the numeric doors, `enum` at the integer ones; `minLength`, `maxLength` (in
+  code points), `trim` (Unicode `White_Space`) and `enum` (matched under simple case folding)
+  at `Door.Text`. A bound, step or integer entry is a decimal string in invariant notation
+  (`'0.000001'`, `'-90'`, `'1e-6'`) or a `bigint`, never a `number`: a `number` is a binary
+  float, which holds most decimals only approximately, so `maximum: 0.1` is refused as a
+  binding contract (and is a type error). A length is a whole `number`, never a `boolean`.
+- **Refusals.** `Constraints.declare` answers a `Declaration<Constraints>`, never throws. A
+  declaration the core refuses reads `Constraints refused (code N): <the rule>.`, `N` the code
+  `castConstraintsCheck(spec)` answers (`1` a keyword the door does not take, through `13`; `9`
+  is a text entry with no UTF-8 form, a lone surrogate, `11` a rounding code the core does not
+  know, `12` an `enum` with no entries and `13` a text entry no input can match: an empty one,
+  or under `trim` one with leading or trailing white space). Leaving `enum` out declares none,
+  while `enum: []` is declared and refused (12). A spec the binding cannot read (a `number` bound, a `door` that is no `Door`, an
+  `enum` that is no array) is refused with its own wording, and `castConstraintsCheck` answers
+  `-1` for it. `castDeclaredDecimal(text)` is the conversion every bound crosses, as a
+  `Declaration<string>` of its canonical text (`'1.50'` is `'1.5'`).
+- **The checked doors.** `castChecked(text, constraints, format?)` reads numeric text through
+  the door the declaration is bound to; `castCheckedFromNumber(value, constraints)` judges a
+  `number` already decoded on the shortest decimal that names it (`0.1 + 0.2` breaks
+  `multipleOf: '0.1'` unrounded, and rounds to `0.3` under `Midpoint`), every span empty;
+  `castText(text, constraints)` judges text. Each answers a `CheckedVerdict<T>`: `{ ok: true,
+  value, adjusted, enumIndex }`, or `{ ok: false, fault }` (the door's own `Failure`), or `{
+  ok: false, violation: { keyword, offset, length } }`. `value` follows the door (`number`,
+  `bigint` at `I64`/`U64`, canonical text at `Decimal`, a `string` at `Text`), `adjusted` is
+  true only when rounding changed it, and `enumIndex` is the index of the entry a text matched
+  and `null` otherwise: an integer `enum` is answered by the value. A text match delivers your
+  own declared entry, so `' MALE '` is `'Male'`. Spans are in your units, as a fault's are.
+  Numbers are judged exactly, on the decimal the door read. A float door also judges the float
+  it delivers against each bound read as the door reads it: `'1e-400'` at `Door.F64` reads as
+  `0`, so it breaks `exclusiveMinimum: '0'`. Zero has one form: the core never delivers `-0`. Handing a declaration to another door's cast (a `Door.Text` one to
+  `castChecked`, a numeric one to `castText`) is a contract violation, `malformed` with an
+  empty span, as any wrong argument is.
+- **Plain text.** `castText(text)` with no constraints is a plain door: the text itself once it
+  is valid text, a `Verdict<string>`, `empty` for empty input, nothing trimmed. Plain or
+  constrained is chosen by the number of arguments, not by the second one's value: a failed
+  declaration's missing `.value` (`castText(text, undefined)`, or `null`) is the contract
+  violation, never "no rules". The addon itself counts, so every entry, the WebAssembly
+  fallback's browser entry included, behaves the same.
+- **Keywords are open.** `violation.keyword` is the OpenAPI spelling (`Keyword.MultipleOf` is
+  `'multipleOf'`), and `format` and `pattern` may join in a minor release, so a `switch` over
+  keywords needs a `default` arm; a code this binding does not name yet arrives as
+  `'keyword N'`.
+- `optional(verdict)` reads a checked verdict too: an `empty` fault is `null`, a violation is
+  not absent and comes back as it is. A `Constraints` reads back through getters of its keyword
+  names, and `packed` and `packedEnum` are the 72-byte `RawConstraints` and the `enum` list in
+  the native byte order the core reads in place, the list read only when the flags carry
+  `HAS_ENUM` (256), which any declared `enum` sets.
+
 ## What never throws, and the one thing that does
 
 No door and no declaration throws for any argument, of any type, in any position. A call the
@@ -268,9 +366,10 @@ types would have refused still returns a verdict:
   declaration is `malformed` too;
 - `undefined` or `null` text is `empty`, offset 0, length 0, as blank text is.
 
-`tests/never_throws.test.ts` calls every door with some forty hostile values (symbols,
-`bigint`s, detached buffers, Proxies whose traps throw, the classes' own prototypes) in every
-position and every pair, and every declaration with each as its spec.
+`tests/never_throws.test.ts` calls every door, the checked ones included, with some fifty
+hostile values (symbols, `bigint`s, detached buffers, Proxies whose traps throw, the classes'
+own prototypes) in every position and every pair, and every declaration with each as its spec
+and as each `Constraints` keyword.
 
 The one error the package throws is `ERR_HYPERCAST_UNAVAILABLE`, from any door when no addon
 and no fallback loaded: an installation problem, not an input ([below](#when-no-native-addon-fits)).
@@ -330,8 +429,8 @@ with no `node_modules`. The form that works, for both, is the package external (
 `externals: { '@skunkwerkx/hypercast': 'commonjs @skunkwerkx/hypercast' }`) with it installed
 beside the bundle.
 
-**Browsers.** The fallback package's `browser` entry exports the same doors over a fetched
-module (`import('@skunkwerkx/hypercast-wasm32-wasip1')` under a bundler that honours the
+**Browsers.** The fallback package's `browser` entry exports the same doors, behaving
+identically, over a fetched module (`import('@skunkwerkx/hypercast-wasm32-wasip1')` under a bundler that honours the
 `browser` condition). `browser-smoke/` replays the whole corpus through it in headless Chrome,
 from a Vite build served without cross-origin isolation. Firefox and Safari are not tested.
 
@@ -378,7 +477,7 @@ From `typescript/`, with a Rust toolchain installed:
 ```sh
 npm ci
 npm run build       # the release addon for this machine, plus binding.js and binding.d.ts
-npm test            # node --test: the corpus, never-throws, the verdict's types, the declarations
+npm test            # node --test: the corpus, never-throws, the verdict's types, the declarations, the constraints
 npm run test:bun    # bun test
 npm run typecheck
 npm run lint

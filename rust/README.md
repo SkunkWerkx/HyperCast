@@ -38,8 +38,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 The crate is simultaneously the engine under every binding in this repo — built as a
-`cdylib` (`libhypercast`) with 26 `cast_*` C-ABI exports (the text doors, plus
-`decimal_from_f64`, `excel_serial_from_f64`, `excel_time` and `excel_duration`) and
+`cdylib` (`libhypercast`) with 31 `cast_*` C-ABI exports (the text doors, plus
+`decimal_from_f64`, `excel_serial_from_f64`, `excel_time` and `excel_duration`, and the
+checked doors with their constraints check and declared-decimal conversion) and
 `hypercast_version`, loaded or linked by the
 C#, Java, Swift, Ruby, Python and C/C++ bindings, linked into the PHP extension, the
 TypeScript addon and the R package, and translated into Go source, all held to byte-identical verdicts by the
@@ -277,11 +278,11 @@ HyperCast's verdicts — HyperTabular's native layer, for one. The value types
 out-values themselves; the rest is what turns the ABI's codes and format back into them,
 the same code the doors and `ffi.rs` use:
 
-- **The `exports` feature**, on by default, is the 26 `cast_*` symbols and
+- **The `exports` feature**, on by default, is the 31 `cast_*` symbols and
   `hypercast_version` as a symbol. A `#[no_mangle]` item is exported from whatever library
   the crate ends up in, so a crate building its own `cdylib` or `staticlib` takes
   `default-features = false`, naming `std` again if it wants it — otherwise its library
-  carries all 26, and its static archive cannot be linked into one program with
+  carries all 31, and its static archive cannot be linked into one program with
   `libhypercast.a` (`multiple definition of cast_bool`). `hypercast_version()` stays a Rust
   function either way.
 - **`RawNumFormat`** is `NumFormat` as it crosses the ABI: a size word, then the format
@@ -360,8 +361,9 @@ UTF-8 included) casts exactly when a deliberately naive reference parser says it
 to the same value — about 34,000 strings across the UUID, boolean, integer (each through
 all eight widths) and strict date doors — and 10,000 sampled floats, extremes and
 subnormals included, survive Rust's own shortest round-trip formatting through
-`cast_f32`/`cast_f64` to the same bits. The doors
-whose grammar *is* the lenience (grouping, currency, separator detection, the separated
+`cast_f32`/`cast_f64` to the same bits (a negative zero reads back as `0.0`: no door
+delivers a negative zero, whether it reads `-0`, `(0)` or an underflow like `-1e-400`).
+The doors whose grammar *is* the lenience (grouping, currency, separator detection, the separated
 temporal forms, durations) are pinned by the shared corpus instead.
 
 ## WebAssembly

@@ -15,12 +15,21 @@
 //!
 //! A fault's span is in the caller's own units: UTF-16 code units for a string, which is what
 //! `String.prototype.slice` takes, and bytes for a `Uint8Array`, the core's own.
+//!
+//! Every door, plain or checked, reads a string as WTF-8, so a lone surrogate reaches the core
+//! as itself, malformed text at its own code unit, never as U+FFFD.
+//!
+//! The validation constraints (`Constraints`, `castChecked`, `castCheckedFromNumber`,
+//! `castText`, `castConstraintsCheck`, `castDeclaredDecimal`) follow the same rules. Their
+//! declarations answer `{ ok: false, message }` as the formats' do, and a checked door adds a
+//! third verdict case, `{ ok: false, violation }`.
 
 use hypercast as hc;
 use napi::bindgen_prelude::{
-    BigInt, ClassInstance, Either, JavaScriptClassExt, Object, ToNapiValue, Uint8Array, Unknown,
+    BigInt, ClassInstance, Either, Either3, JavaScriptClassExt, JsObjectValue, Object, ToNapiValue,
+    Uint8Array, Unknown,
 };
-use napi::{Env, Result, ValueType};
+use napi::{Env, JsString, JsValue, Result, ValueType};
 use napi_derive::napi;
 
 /// The closed set of reasons a cast can fail.
@@ -88,8 +97,9 @@ pub struct Refusal {
 #[napi(js_name = "Declaration<T>")]
 pub type DeclarationType = Either<SuccessCase, Refusal>;
 
-/// What a door reads: a string (as UTF-8), the bytes of a `Uint8Array` (a `Buffer` is one)
-/// as they are, or `null` or `undefined` for absent input.
+/// What a door reads: a string (as UTF-8, a lone surrogate kept as malformed text, never
+/// U+FFFD), the bytes of a `Uint8Array` (a `Buffer` is one) as they are, or `null` or
+/// `undefined` for absent input.
 #[napi(js_name = "Text")]
 pub type TextType = Option<Either<String, Uint8Array>>;
 
@@ -233,9 +243,9 @@ pub struct DateFormatSpec {
 
 /// A door's text, as the caller passed it.
 enum Input {
-    /// A string, held as the UTF-8 napi converted it to (a lone surrogate became U+FFFD,
-    /// three bytes for its one code unit, so spans still map back exactly).
-    Str(String),
+    /// A string, as WTF-8: its UTF-8, with a lone surrogate the three bytes no UTF-8 decoder
+    /// accepts (three bytes for its one code unit, so spans still map back exactly).
+    Str(Vec<u8>),
     /// The bytes of a `Uint8Array`, read as they are.
     Bytes(Uint8Array),
     /// `null` or `undefined`.
@@ -245,10 +255,14 @@ enum Input {
 }
 
 impl Input {
-    fn read(value: &Unknown<'_>) -> Input {
+    /// napi's UTF-8 read is the fast path; a string it may not have read exactly (see
+    /// [`exact_utf8`]) is read again, from its UTF-16, as [`string_wtf8`], so a door never
+    /// judges a replacement for a lone surrogate.
+    fn read(env: &Env, value: &Unknown<'_>) -> Input {
         match value.get_type() {
             Ok(ValueType::String) => match unsafe { value.cast::<String>() } {
-                Ok(text) => Input::Str(text),
+                Ok(text) if exact_utf8(&text) => Input::Str(text.into_bytes()),
+                Ok(_) => string_wtf8(env, value).map_or(Input::Invalid, Input::Str),
                 Err(_) => Input::Invalid,
             },
             Ok(ValueType::Undefined | ValueType::Null) => Input::Absent,
@@ -264,10 +278,9 @@ impl Input {
     /// The fault in the caller's units: bytes as they are for a `Uint8Array`, UTF-16 code
     /// units for a string (an ASCII string needs no mapping, and only a fault pays for it).
     fn present(&self, fault: hc::Fault) -> hc::Fault {
-        let Input::Str(text) = self else {
+        let Input::Str(bytes) = self else {
             return fault;
         };
-        let bytes = text.as_bytes();
         if bytes.is_ascii() {
             return fault;
         }
@@ -281,7 +294,26 @@ impl Input {
     }
 }
 
-/// UTF-16 code units in well-formed UTF-8: one per lead byte, two for a four-byte sequence.
+/// Whether napi's UTF-8 read of a string is the string exactly: whether it held no lone
+/// surrogate. A native addon's runtime (Node, Bun) writes U+FFFD for one, so UTF-8 with no
+/// U+FFFD in it is exact, and only a string with a U+FFFD (a real one, or a replacement) is
+/// read again. The WebAssembly fallback's runtime encodes with Emscripten's `stringToUTF8`,
+/// which fuses a lone surrogate with the code unit after it into another character, so there
+/// only an ASCII string is known to be exact. `tests/constraints.test.ts` pins both: a lone
+/// surrogate at a plain door is malformed at its own code unit.
+#[cfg(not(target_family = "wasm"))]
+fn exact_utf8(text: &str) -> bool {
+    text.is_ascii() || !text.contains('\u{FFFD}')
+}
+
+/// See the native definition: under the WebAssembly fallback only ASCII is known to be exact.
+#[cfg(target_family = "wasm")]
+fn exact_utf8(text: &str) -> bool {
+    text.is_ascii()
+}
+
+/// UTF-16 code units in well-formed UTF-8 or WTF-8: one per lead byte (a lone surrogate's
+/// three bytes are its one unit), two for a four-byte sequence.
 fn utf16_units(bytes: &[u8]) -> u32 {
     bytes
         .iter()
@@ -381,9 +413,9 @@ fn door<'env, D, T, V: ToNapiValue>(
     let Some(declared) = declared else {
         return contract(env);
     };
-    let input = Input::read(text);
+    let input = Input::read(env, text);
     let outcome = match &input {
-        Input::Str(text) => cast(text.as_bytes(), declared),
+        Input::Str(text) => cast(text, declared),
         Input::Bytes(bytes) => cast(bytes, declared),
         Input::Absent => return failure(env, ABSENT),
         Input::Invalid => return contract(env),
@@ -519,7 +551,10 @@ fn clear_pending_exception(env: &Env) {
     }
 }
 
-/// A declaration's text field: absent (`undefined`) declares nothing.
+/// A declaration's text field: absent (`undefined`) declares nothing. A string napi's UTF-8
+/// read may not have read exactly (see [`exact_utf8`]) is read again from its UTF-16, so a
+/// lone surrogate is refused, never declared as the replacement character napi wrote (or, under
+/// the WebAssembly fallback, the character it fused).
 fn spec_text(
     env: &Env,
     spec: &Object<'_>,
@@ -531,9 +566,17 @@ fn spec_text(
     };
     match value.get_type() {
         Ok(ValueType::Undefined) => Ok(None),
-        Ok(ValueType::String) => unsafe { value.cast::<String>() }
-            .map(Some)
-            .map_err(|_| format!("{name} could not be read")),
+        Ok(ValueType::String) => match unsafe { value.cast::<String>() } {
+            Ok(text) if exact_utf8(&text) => Ok(Some(text)),
+            Ok(_) => {
+                let bytes =
+                    string_wtf8(env, &value).ok_or_else(|| format!("{name} could not be read"))?;
+                String::from_utf8(bytes)
+                    .map(Some)
+                    .map_err(|_| format!("{name} must be whole code points, not surrogate halves"))
+            }
+            Err(_) => Err(format!("{name} could not be read")),
+        },
         _ => Err(format!("{name} must be a string")),
     }
 }
@@ -1202,4 +1245,1189 @@ pub fn cast_excel_duration<'env>(env: &'env Env, value: Unknown<'env>) -> Result
         |number, ()| hc::excel_duration(number),
         duration,
     )
+}
+
+// ---------------------------------------------------------------------------------------
+// Validation constraints.
+//
+// A declaration is laid out exactly as the C ABI carries it, a `RawConstraints` with the
+// packed `enum` list beside it, and judged by the core's own exports: `cast_constraints_check`
+// once, when a `Constraints` is declared, and `cast_checked`, `cast_checked_from_f64` and
+// `cast_text` on every cast. Bounds, steps and integer entries are converted by
+// `cast_declared_decimal`. No rule is restated here: every refusal and every violation is the
+// core's.
+// ---------------------------------------------------------------------------------------
+
+/// The fault span as it crosses the C ABI (ffi.rs's `RawFault`, restated as two `u32`s).
+#[repr(C)]
+#[derive(Default)]
+struct RawFault {
+    offset: u32,
+    len: u32,
+}
+
+// The layouts this file passes to the core, pinned at the sizes the header carries
+// (`HyperCastRawConstraints_SIZE` 72, `HyperCastRawCheck_SIZE` 12, `HyperCastRawSpan_SIZE` 8,
+// and the fault's two words); tests/constraints.test.ts holds the header to the same numbers.
+const _: () = {
+    assert!(size_of::<hc::RawConstraints>() == 72 && hc::RawConstraints::SIZE == 72);
+    assert!(align_of::<hc::RawConstraints>() == 8);
+    assert!(size_of::<hc::RawCheck>() == 12 && align_of::<hc::RawCheck>() == 4);
+    assert!(size_of::<hc::RawSpan>() == 8 && align_of::<hc::RawSpan>() == 4);
+    assert!(size_of::<RawFault>() == 8 && align_of::<RawFault>() == 4);
+    assert!(size_of::<hc::Decimal>() == 16 && align_of::<hc::Decimal>() == 8);
+};
+
+/// The core's checked exports, as include/hypercast.h declares them.
+mod abi {
+    use super::{RawFault, hc};
+
+    unsafe extern "C" {
+        pub(super) fn cast_checked(
+            door: u32,
+            param: u32,
+            format: *const hc::RawNumFormat,
+            constraints: *const hc::RawConstraints,
+            enum_ptr: *const u8,
+            enum_len: usize,
+            ptr: *const u8,
+            len: usize,
+            out: *mut std::ffi::c_void,
+            fault: *mut RawFault,
+            check: *mut hc::RawCheck,
+        ) -> i32;
+        pub(super) fn cast_checked_from_f64(
+            door: u32,
+            value: f64,
+            constraints: *const hc::RawConstraints,
+            enum_ptr: *const u8,
+            enum_len: usize,
+            out: *mut std::ffi::c_void,
+            fault: *mut RawFault,
+            check: *mut hc::RawCheck,
+        ) -> i32;
+        pub(super) fn cast_constraints_check(
+            door: u32,
+            param: u32,
+            constraints: *const hc::RawConstraints,
+            enum_ptr: *const u8,
+            enum_len: usize,
+        ) -> i32;
+        pub(super) fn cast_text(
+            ptr: *const u8,
+            len: usize,
+            out: *mut hc::RawSpan,
+            fault: *mut RawFault,
+        ) -> i32;
+        pub(super) fn cast_declared_decimal(
+            ptr: *const u8,
+            len: usize,
+            out: *mut hc::Decimal,
+        ) -> i32;
+    }
+}
+
+/// The door a `Constraints` is bound to, numbered as the core numbers it: the integer family,
+/// the two reals and the exact decimal (judged by `castChecked` and `castCheckedFromNumber`),
+/// and text (judged by `castText`).
+#[napi]
+pub enum Door {
+    I8 = 2,
+    I16 = 3,
+    I32 = 4,
+    I64 = 5,
+    U8 = 6,
+    U16 = 7,
+    U32 = 8,
+    U64 = 9,
+    F32 = 10,
+    F64 = 11,
+    Text = 18,
+    Decimal = 19,
+}
+
+/// What a value that is not a multiple of the declared `multipleOf` becomes, the core's codes
+/// verbatim. Every mode but `Strict` needs a `multipleOf`, and rounding happens on the exact
+/// decimal, before the bounds judge the result.
+#[napi]
+pub enum Rounding {
+    /// Not a multiple is a `multipleOf` violation. The default.
+    Strict = 0,
+    /// To the nearest multiple, a tie to the even one.
+    Midpoint = 1,
+    /// To the multiple toward negative infinity.
+    Floor = 2,
+    /// To the multiple toward positive infinity.
+    Ceiling = 3,
+}
+
+/// The declared form of a `Constraints`: `Constraints.declare` reads it. The integer doors
+/// take the bounds, `multipleOf` with a `rounding`, and `enum`; `Door.F32`, `Door.F64` and
+/// `Door.Decimal` the same but `enum`; `Door.Text` `minLength`, `maxLength` (in code points),
+/// `trim` and `enum`. A bound, step or integer entry is a decimal string in invariant
+/// notation (`"0.000001"`, `"-90"`, `"1e-6"`) or a `bigint`, never a `number`: a number is a
+/// binary float, which holds most decimals only approximately.
+#[napi(object, object_to_js = false, object_from_js = false)]
+pub struct ConstraintsSpec {
+    /// The door the declaration is bound to.
+    #[napi(ts_type = "Door")]
+    pub door: u32,
+    /// The least value allowed.
+    #[napi(ts_type = "string | bigint")]
+    pub minimum: Option<String>,
+    /// The bound every value must lie above.
+    #[napi(ts_type = "string | bigint")]
+    pub exclusive_minimum: Option<String>,
+    /// The greatest value allowed.
+    #[napi(ts_type = "string | bigint")]
+    pub maximum: Option<String>,
+    /// The bound every value must lie below.
+    #[napi(ts_type = "string | bigint")]
+    pub exclusive_maximum: Option<String>,
+    /// The step every value must be a multiple of.
+    #[napi(ts_type = "string | bigint")]
+    pub multiple_of: Option<String>,
+    /// What a value that is not a multiple becomes; `Rounding.Strict` when absent.
+    #[napi(ts_type = "Rounding")]
+    pub rounding: Option<u32>,
+    /// The fewest code points the text may hold.
+    pub min_length: Option<u32>,
+    /// The most code points the text may hold.
+    pub max_length: Option<u32>,
+    /// Trim Unicode `White_Space` from both ends before judging.
+    pub trim: Option<bool>,
+    /// The values allowed: strings at `Door.Text` (matched under simple case folding), decimal
+    /// strings or `bigint`s at an integer door. Left out declares none; an empty array declares
+    /// one no value could match, which the core refuses (code 12).
+    #[napi(js_name = "enum", ts_type = "ReadonlyArray<string | bigint>")]
+    pub entries: Option<Vec<String>>,
+}
+
+/// A rule a value broke, in the OpenAPI spelling. Open to additions: `format` and `pattern`
+/// may join in a minor release, so a `switch` over keywords needs a `default` arm, and a code
+/// this binding does not name yet arrives as `"keyword N"`.
+#[napi(object, object_from_js = false)]
+pub struct Violation {
+    /// The keyword broken.
+    #[napi(
+        ts_type = "'minimum' | 'exclusiveMinimum' | 'maximum' | 'exclusiveMaximum' | 'multipleOf' | 'minLength' | 'maxLength' | 'enum' | (string & {})"
+    )]
+    pub keyword: String,
+    /// Where the value starts, in the caller's own units, as a fault's span is.
+    pub offset: u32,
+    /// How long it runs; 0 for a number already decoded, which has no text.
+    pub length: u32,
+}
+
+/// The success case of a checked door: `ok` is `true`; `value` is the value (rounded to
+/// `multipleOf` when the declaration rounds; at `Door.Text` with an `enum`, the caller's own
+/// declared entry); `adjusted` is true only when rounding changed it; `enumIndex` is the index
+/// of the entry a text matched, `null` otherwise (an integer `enum` included: the value is the
+/// answer).
+#[napi(
+    object,
+    object_to_js = false,
+    object_from_js = false,
+    js_name = "Checked<T>"
+)]
+pub struct CheckedCase {
+    #[napi(ts_type = "true")]
+    pub ok: bool,
+    #[napi(ts_type = "T")]
+    pub value: bool,
+    pub adjusted: bool,
+    #[napi(ts_type = "number | null")]
+    pub enum_index: u32,
+}
+
+/// The failure case of a checked door for a value that parsed and broke a declared rule:
+/// `ok` is `false` and `violation` says which rule, and where.
+#[napi(object, object_to_js = false, object_from_js = false)]
+pub struct Violated {
+    #[napi(ts_type = "false")]
+    pub ok: bool,
+    pub violation: Violation,
+}
+
+/// Why a checked door refused a value: it did not parse (`Failure`, today's fault), or it
+/// parsed and broke a rule (`Violated`).
+#[napi(js_name = "Rejection")]
+pub type RejectionType = Either<Failure, Violated>;
+
+/// The outcome of a checked door: exactly one of `Checked<T>`, `Failure` or `Violated`, told
+/// apart by `ok` and then by `'fault' in verdict`.
+#[napi(js_name = "CheckedVerdict<T>")]
+pub type CheckedVerdictType = Either3<CheckedCase, Failure, Violated>;
+
+/// The refusals, in code order, for their wording.
+const REFUSALS: [hc::Refusal; 13] = [
+    hc::Refusal::KeywordNotForDoor,
+    hc::Refusal::MinimumWithExclusive,
+    hc::Refusal::MaximumWithExclusive,
+    hc::Refusal::LowerNotBelowUpper,
+    hc::Refusal::MultipleOfNotPositive,
+    hc::Refusal::RoundingWithoutMultipleOf,
+    hc::Refusal::MinLengthAboveMax,
+    hc::Refusal::NotHeldByDoor,
+    hc::Refusal::EnumNotUtf8,
+    hc::Refusal::DuplicateEnum,
+    hc::Refusal::MalformedLayout,
+    hc::Refusal::EmptyEnum,
+    hc::Refusal::UnmatchableEnumEntry,
+];
+
+/// The keywords this binding names.
+const KEYWORDS: [hc::Keyword; 8] = [
+    hc::Keyword::Minimum,
+    hc::Keyword::ExclusiveMinimum,
+    hc::Keyword::Maximum,
+    hc::Keyword::ExclusiveMaximum,
+    hc::Keyword::MultipleOf,
+    hc::Keyword::MinLength,
+    hc::Keyword::MaxLength,
+    hc::Keyword::Enum,
+];
+
+fn keyword_name(code: u32) -> String {
+    match KEYWORDS.iter().find(|keyword| keyword.code() == code) {
+        Some(keyword) => keyword.name().to_string(),
+        None => format!("keyword {code}"),
+    }
+}
+
+/// A refused declaration, worded from the code the core returned: one message per code.
+fn refused_message(code: i32) -> String {
+    match REFUSALS
+        .iter()
+        .find(|refusal| i64::from(refusal.code()) == i64::from(code))
+    {
+        Some(refusal) => format!("Constraints refused (code {code}): {refusal}."),
+        None => format!("Constraints refused (code {code}): a rule this binding does not name."),
+    }
+}
+
+/// What the core cannot be asked to judge, which is a broken contract and never data.
+fn binding_bug(what: &str) -> napi::Error {
+    napi::Error::from_reason(format!("hypercast {what}: a binding bug, please report it"))
+}
+
+/// A string as WTF-8: its UTF-8, with each lone surrogate the three bytes no UTF-8 decoder
+/// accepts. The core then reads a lone surrogate as malformed text at its own code unit, never
+/// as the U+FFFD napi's UTF-8 conversion would put in its place.
+fn wtf8(units: &[u16]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(units.len());
+    for decoded in char::decode_utf16(units.iter().copied()) {
+        match decoded {
+            Ok(c) => out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes()),
+            Err(lone) => {
+                let unit = u32::from(lone.unpaired_surrogate());
+                out.extend_from_slice(&[
+                    0xE0 | (unit >> 12) as u8,
+                    0x80 | ((unit >> 6) & 0x3F) as u8,
+                    0x80 | (unit & 0x3F) as u8,
+                ]);
+            }
+        }
+    }
+    out
+}
+
+/// A string argument's WTF-8, or `None` when it is no string. Its UTF-16 is read as it is:
+/// napi's own UTF-8 read would have replaced a lone surrogate already.
+fn string_wtf8(env: &Env, value: &Unknown<'_>) -> Option<Vec<u8>> {
+    let ok = napi::sys::Status::napi_ok;
+    let mut len = 0usize;
+    // SAFETY: `env` and `value` are the live call's; a null buffer asks for the length.
+    let status = unsafe {
+        napi::sys::napi_get_value_string_utf16(
+            env.raw(),
+            value.raw(),
+            std::ptr::null_mut(),
+            0,
+            &mut len,
+        )
+    };
+    if status != ok {
+        return None;
+    }
+    // One more unit for the terminator napi writes, dropped below.
+    let mut units = vec![0u16; len + 1];
+    let mut written = 0usize;
+    // SAFETY: `units` holds `len + 1` units.
+    let status = unsafe {
+        napi::sys::napi_get_value_string_utf16(
+            env.raw(),
+            value.raw(),
+            units.as_mut_ptr(),
+            units.len(),
+            &mut written,
+        )
+    };
+    (status == ok).then(|| wtf8(&units[..written.min(len)]))
+}
+
+/// A checked door's text: a string as WTF-8 (with the string itself, which a success that is
+/// all of it hands back), the bytes of a `Uint8Array` as they are, or `null`/`undefined`.
+enum CheckedInput<'env> {
+    Str(Vec<u8>, JsString<'env>),
+    Bytes(Uint8Array),
+    Absent,
+    Invalid,
+}
+
+impl<'env> CheckedInput<'env> {
+    fn read(env: &Env, value: &Unknown<'env>) -> CheckedInput<'env> {
+        match value.get_type() {
+            Ok(ValueType::String) => {
+                match (string_wtf8(env, value), unsafe { value.cast::<JsString>() }) {
+                    (Some(bytes), Ok(string)) => CheckedInput::Str(bytes, string),
+                    _ => CheckedInput::Invalid,
+                }
+            }
+            Ok(ValueType::Undefined | ValueType::Null) => CheckedInput::Absent,
+            Ok(ValueType::Object) => match unsafe { value.cast::<Uint8Array>() } {
+                Ok(bytes) => CheckedInput::Bytes(bytes),
+                Err(_) => CheckedInput::Invalid,
+            },
+            _ => CheckedInput::Invalid,
+        }
+    }
+
+    fn bytes(&self) -> &[u8] {
+        match self {
+            CheckedInput::Str(bytes, _) => bytes,
+            CheckedInput::Bytes(bytes) => bytes,
+            CheckedInput::Absent | CheckedInput::Invalid => &[],
+        }
+    }
+
+    /// A byte span in the caller's own units, as a fault's is: bytes for a `Uint8Array`,
+    /// UTF-16 code units for a string (a lone surrogate's three WTF-8 bytes are its one unit).
+    fn span(&self, offset: u32, len: u32) -> (u32, u32) {
+        let CheckedInput::Str(bytes, _) = self else {
+            return (offset, len);
+        };
+        if bytes.is_ascii() {
+            return (offset, len);
+        }
+        let start = (offset as usize).min(bytes.len());
+        let end = start.saturating_add(len as usize).min(bytes.len());
+        (
+            utf16_units(&bytes[..start]),
+            utf16_units(&bytes[start..end]),
+        )
+    }
+
+    /// The text at a byte span the core reported valid: the caller's own string when the span
+    /// is all of it, a new string otherwise (a trimmed span, or `Uint8Array` input).
+    fn text_at(&self, env: &'env Env, offset: u32, len: u32) -> Result<Unknown<'env>> {
+        if let CheckedInput::Str(bytes, string) = self
+            && offset == 0
+            && len as usize == bytes.len()
+        {
+            return Ok(string.to_unknown());
+        }
+        let start = offset as usize;
+        let text = self
+            .bytes()
+            .get(start..start.saturating_add(len as usize))
+            .and_then(|span| std::str::from_utf8(span).ok())
+            .ok_or_else(|| binding_bug("reported a text span that is not UTF-8"))?;
+        Ok(env.create_string(text)?.to_unknown())
+    }
+}
+
+/// A declared `enum` entry, as the caller gave it.
+enum Entry {
+    Text(String),
+    Integer(String),
+    Big(i128),
+}
+
+/// A declaration the binding could not lay out (the binding's own contract, worded), or one
+/// the core refused (its code).
+enum Problem {
+    Contract(String),
+    Refused(i32),
+}
+
+/// A declaration as the C ABI carries it, and the caller's own `enum` entries.
+struct Declared {
+    door: hc::Door,
+    raw: hc::RawConstraints,
+    packed: Vec<u8>,
+    entries: Vec<Entry>,
+}
+
+/// A bound, step or integer entry's text, through the core's conversion. A `bigint` crosses
+/// as its decimal digits, which napi's `ToString` writes (no caller code runs for a primitive).
+fn declared_text(
+    env: &Env,
+    what: &str,
+    value: &Unknown<'_>,
+) -> std::result::Result<Vec<u8>, Problem> {
+    let unreadable = || Problem::Contract(format!("{what} could not be read"));
+    match value.get_type() {
+        Ok(ValueType::String) => string_wtf8(env, value).ok_or_else(unreadable),
+        Ok(ValueType::BigInt) => {
+            let mut text = std::ptr::null_mut();
+            // SAFETY: `env` and `value` are the live call's.
+            let status =
+                unsafe { napi::sys::napi_coerce_to_string(env.raw(), value.raw(), &mut text) };
+            if status != napi::sys::Status::napi_ok {
+                clear_pending_exception(env);
+                return Err(unreadable());
+            }
+            // SAFETY: `text` is the string napi just made.
+            unsafe { Unknown::from_raw_unchecked(env.raw(), text).cast::<String>() }
+                .map(String::into_bytes)
+                .map_err(|_| unreadable())
+        }
+        Ok(ValueType::Number) => Err(Problem::Contract(format!(
+            "{what} must be a string or a bigint, not a number: a number is a binary float, which holds most decimals only approximately, so write it as a string (\"0.1\") or a bigint"
+        ))),
+        _ => Err(Problem::Contract(format!(
+            "{what} must be a string or a bigint"
+        ))),
+    }
+}
+
+/// The core's conversion of a declared decimal's text: the decimal, or the core's refusal.
+fn convert(bytes: &[u8]) -> std::result::Result<hc::Decimal, i32> {
+    let mut out = hc::Decimal {
+        lo: 0,
+        hi: 0,
+        scale: 0,
+        negative: false,
+    };
+    // SAFETY: `bytes` is live for the call and `out` is a live, aligned Decimal.
+    match unsafe { abi::cast_declared_decimal(bytes.as_ptr(), bytes.len(), &mut out) } {
+        0 => Ok(out),
+        code => Err(code),
+    }
+}
+
+fn declared_decimal(
+    env: &Env,
+    what: &str,
+    value: &Unknown<'_>,
+) -> std::result::Result<hc::Decimal, Problem> {
+    convert(&declared_text(env, what, value)?).map_err(Problem::Refused)
+}
+
+/// A whole `u32` field (a length, a rounding code): absent is `None`; anything else is the
+/// binding's contract (a `boolean` included, which is no length).
+fn declared_code(
+    env: &Env,
+    spec: &Object<'_>,
+    name: &str,
+    wants: &str,
+) -> std::result::Result<Option<u32>, Problem> {
+    let value = spec_field(env, spec, name).map_err(Problem::Contract)?;
+    match value {
+        None => Ok(None),
+        Some(value) if matches!(value.get_type(), Ok(ValueType::Undefined)) => Ok(None),
+        Some(value) => code(&value)
+            .map(Some)
+            .ok_or_else(|| Problem::Contract(format!("{name} must be {wants}"))),
+    }
+}
+
+/// Lays a declaration out and asks the core to judge it: the one path `Constraints.declare`
+/// and `castConstraintsCheck` share, so they refuse exactly the same declarations.
+fn declaration(env: &Env, spec: &Unknown<'_>) -> std::result::Result<Declared, Problem> {
+    let spec = spec_object(spec, "The Constraints declaration").map_err(Problem::Contract)?;
+    let door = declared_code(env, &spec, "door", "a Door")?
+        .and_then(|code| hc::Door::from_code(code, 0))
+        .filter(|door| door.is_numeric() || *door == hc::Door::Text)
+        .ok_or_else(|| Problem::Contract("door must be a Door".to_string()))?;
+    let mut raw = hc::RawConstraints::ZERO;
+    let bound = |name: &str| -> std::result::Result<Option<hc::Decimal>, Problem> {
+        match spec_field(env, &spec, name).map_err(Problem::Contract)? {
+            Some(value) if !matches!(value.get_type(), Ok(ValueType::Undefined)) => {
+                declared_decimal(env, name, &value).map(Some)
+            }
+            _ => Ok(None),
+        }
+    };
+    for (name, flag, upper) in [
+        ("minimum", hc::RawConstraints::HAS_MINIMUM, false),
+        (
+            "exclusiveMinimum",
+            hc::RawConstraints::HAS_EXCLUSIVE_MINIMUM,
+            false,
+        ),
+        ("maximum", hc::RawConstraints::HAS_MAXIMUM, true),
+        (
+            "exclusiveMaximum",
+            hc::RawConstraints::HAS_EXCLUSIVE_MAXIMUM,
+            true,
+        ),
+    ] {
+        if let Some(value) = bound(name)? {
+            raw.flags |= flag;
+            *(if upper {
+                &mut raw.upper
+            } else {
+                &mut raw.lower
+            }) = value;
+        }
+    }
+    if let Some(value) = bound("multipleOf")? {
+        raw.flags |= hc::RawConstraints::HAS_MULTIPLE_OF;
+        raw.multiple_of = value;
+    }
+    // Any whole code goes to the core as it is, which refuses one it does not know.
+    raw.rounding = declared_code(env, &spec, "rounding", "a Rounding")?.unwrap_or(0);
+    let length = "a whole number from 0 to 4294967295";
+    if let Some(value) = declared_code(env, &spec, "minLength", length)? {
+        raw.flags |= hc::RawConstraints::HAS_MIN_LENGTH;
+        raw.min_length = value;
+    }
+    if let Some(value) = declared_code(env, &spec, "maxLength", length)? {
+        raw.flags |= hc::RawConstraints::HAS_MAX_LENGTH;
+        raw.max_length = value;
+    }
+    match spec_field(env, &spec, "trim").map_err(Problem::Contract)? {
+        None => {}
+        Some(value) => match value.get_type() {
+            Ok(ValueType::Undefined) => {}
+            Ok(ValueType::Boolean) => {
+                if unsafe { value.cast::<bool>() }
+                    .map_err(|_| Problem::Contract("trim could not be read".to_string()))?
+                {
+                    raw.flags |= hc::RawConstraints::TRIM;
+                }
+            }
+            _ => return Err(Problem::Contract("trim must be a boolean".to_string())),
+        },
+    }
+    let mut packed = Vec::new();
+    let mut entries = Vec::new();
+    if let Some(list) = spec_field(env, &spec, "enum").map_err(Problem::Contract)?
+        && !matches!(list.get_type(), Ok(ValueType::Undefined))
+    {
+        let is_array = {
+            let mut is_array = false;
+            // SAFETY: `env` and `list` are the live call's.
+            let status = unsafe { napi::sys::napi_is_array(env.raw(), list.raw(), &mut is_array) };
+            status == napi::sys::Status::napi_ok && is_array
+        };
+        if !is_array {
+            return Err(Problem::Contract(
+                "enum must be an array of entries".to_string(),
+            ));
+        }
+        let list = unsafe { list.cast::<Vec<Unknown>>() }.map_err(|_| {
+            clear_pending_exception(env);
+            Problem::Contract("enum could not be read".to_string())
+        })?;
+        // Declared, even with no entries: the core refuses an empty `enum` (12), never reads
+        // it as none.
+        raw.flags |= hc::RawConstraints::HAS_ENUM;
+        for (i, entry) in list.iter().enumerate() {
+            if door == hc::Door::Text {
+                // At the text door an entry is the text itself, packed as the ABI reads it: a
+                // little-endian u32 byte length, then the bytes, a lone surrogate's kept.
+                if !matches!(entry.get_type(), Ok(ValueType::String)) {
+                    return Err(Problem::Contract(format!(
+                        "enum entries at Door.Text must be strings; entry {i} is not"
+                    )));
+                }
+                let bytes = string_wtf8(env, entry).ok_or_else(|| {
+                    Problem::Contract(format!("enum entry {i} could not be read"))
+                })?;
+                let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+                packed.extend_from_slice(&len.to_le_bytes());
+                packed.extend_from_slice(&bytes);
+                entries.push(Entry::Text(String::from_utf8_lossy(&bytes).into_owned()));
+            } else {
+                // Elsewhere a Decimal in its native 16-byte layout: lo, hi, scale, sign, two
+                // bytes of padding.
+                let what = format!("enum entry {i}");
+                let text = declared_text(env, &what, entry)?;
+                let decimal = convert(&text).map_err(Problem::Refused)?;
+                packed.extend_from_slice(&decimal.lo.to_ne_bytes());
+                packed.extend_from_slice(&decimal.hi.to_ne_bytes());
+                packed.extend_from_slice(&[decimal.scale, u8::from(decimal.negative), 0, 0]);
+                entries.push(match entry.get_type() {
+                    Ok(ValueType::BigInt) => Entry::Big(
+                        unsafe { entry.cast::<BigInt>() }
+                            .map(|big| big.get_i128().0)
+                            .map_err(|_| Problem::Contract(format!("{what} could not be read")))?,
+                    ),
+                    _ => Entry::Integer(String::from_utf8_lossy(&text).into_owned()),
+                });
+            }
+        }
+    }
+    // SAFETY: `raw` and `packed` are live for the call.
+    match unsafe {
+        abi::cast_constraints_check(door.code(), 0, &raw, packed.as_ptr(), packed.len())
+    } {
+        0 => Ok(Declared {
+            door,
+            raw,
+            packed,
+            entries,
+        }),
+        code => Err(Problem::Refused(code)),
+    }
+}
+
+/// Validation constraints, the OpenAPI Schema Object's keywords, bound to one door and judged
+/// once, by the core, when declared: a declaration that cannot mean anything at its door is a
+/// refusal naming the rule it breaks, and every checked cast after that judges only data.
+/// Immutable. Made by `Constraints.declare`, never by `new`.
+#[napi]
+pub struct Constraints {
+    door: hc::Door,
+    raw: hc::RawConstraints,
+    packed: Vec<u8>,
+    entries: Vec<Entry>,
+}
+
+impl Constraints {
+    fn bound(&self, flag: u32, value: hc::Decimal) -> Option<String> {
+        (self.raw.flags & flag != 0).then(|| value.to_string())
+    }
+}
+
+#[napi]
+impl Constraints {
+    /// Declares constraints for a door, or says which rule the declaration breaks; never
+    /// throws. A refusal from the core reads `Constraints refused (code N): <the rule>.`, `N`
+    /// the code `castConstraintsCheck` answers; anything else is a declaration this binding
+    /// cannot read (a `number` bound, a `door` that is no `Door`), worded as such.
+    #[napi(
+        catch_unwind,
+        ts_args_type = "spec: ConstraintsSpec",
+        ts_return_type = "Declaration<Constraints>"
+    )]
+    pub fn declare<'env>(env: &'env Env, spec: Unknown<'env>) -> Result<Object<'env>> {
+        match declaration(env, &spec) {
+            Ok(Declared {
+                door,
+                raw,
+                packed,
+                entries,
+            }) => declared(
+                env,
+                Ok(Constraints {
+                    door,
+                    raw,
+                    packed,
+                    entries,
+                }
+                .into_instance(env)?),
+            ),
+            Err(Problem::Contract(message)) => declared::<bool>(env, Err(message)),
+            Err(Problem::Refused(code)) => declared::<bool>(env, Err(refused_message(code))),
+        }
+    }
+
+    /// The door this declaration is bound to.
+    #[napi(getter, catch_unwind, ts_return_type = "Door")]
+    pub fn door(&self) -> u32 {
+        self.door.code()
+    }
+
+    /// The declared `minimum`, as canonical decimal text, or `null`.
+    #[napi(getter, catch_unwind)]
+    pub fn minimum(&self) -> Option<String> {
+        self.bound(hc::RawConstraints::HAS_MINIMUM, self.raw.lower)
+    }
+
+    /// The declared `exclusiveMinimum`, as canonical decimal text, or `null`.
+    #[napi(getter, catch_unwind)]
+    pub fn exclusive_minimum(&self) -> Option<String> {
+        self.bound(hc::RawConstraints::HAS_EXCLUSIVE_MINIMUM, self.raw.lower)
+    }
+
+    /// The declared `maximum`, as canonical decimal text, or `null`.
+    #[napi(getter, catch_unwind)]
+    pub fn maximum(&self) -> Option<String> {
+        self.bound(hc::RawConstraints::HAS_MAXIMUM, self.raw.upper)
+    }
+
+    /// The declared `exclusiveMaximum`, as canonical decimal text, or `null`.
+    #[napi(getter, catch_unwind)]
+    pub fn exclusive_maximum(&self) -> Option<String> {
+        self.bound(hc::RawConstraints::HAS_EXCLUSIVE_MAXIMUM, self.raw.upper)
+    }
+
+    /// The declared `multipleOf`, as canonical decimal text, or `null`.
+    #[napi(getter, catch_unwind)]
+    pub fn multiple_of(&self) -> Option<String> {
+        self.bound(hc::RawConstraints::HAS_MULTIPLE_OF, self.raw.multiple_of)
+    }
+
+    /// What a value that is not a multiple of `multipleOf` becomes.
+    #[napi(getter, catch_unwind, ts_return_type = "Rounding")]
+    pub fn rounding(&self) -> u32 {
+        self.raw.rounding
+    }
+
+    /// The declared `minLength`, in code points, or `null`.
+    #[napi(getter, catch_unwind)]
+    pub fn min_length(&self) -> Option<u32> {
+        (self.raw.flags & hc::RawConstraints::HAS_MIN_LENGTH != 0).then_some(self.raw.min_length)
+    }
+
+    /// The declared `maxLength`, in code points, or `null`.
+    #[napi(getter, catch_unwind)]
+    pub fn max_length(&self) -> Option<u32> {
+        (self.raw.flags & hc::RawConstraints::HAS_MAX_LENGTH != 0).then_some(self.raw.max_length)
+    }
+
+    /// Whether text is trimmed of Unicode `White_Space` before it is judged.
+    #[napi(getter, catch_unwind)]
+    pub fn trim(&self) -> bool {
+        self.raw.flags & hc::RawConstraints::TRIM != 0
+    }
+
+    /// The declared `enum` entries as the caller gave them (strings, or `bigint`s at an
+    /// integer door), or `null`.
+    #[napi(getter, catch_unwind, js_name = "enum")]
+    pub fn entries(&self) -> Option<Vec<Either<String, BigInt>>> {
+        if self.raw.flags & hc::RawConstraints::HAS_ENUM == 0 {
+            return None;
+        }
+        Some(
+            self.entries
+                .iter()
+                .map(|entry| match entry {
+                    Entry::Text(text) | Entry::Integer(text) => Either::A(text.clone()),
+                    Entry::Big(value) => Either::B(BigInt::from(*value)),
+                })
+                .collect(),
+        )
+    }
+
+    /// The 72 bytes this declaration crosses a C ABI as, in the native byte order the core
+    /// reads in place: the size (`72`), the flags, the rounding code, `minLength`, `maxLength`
+    /// and a reserved zero as `u32`s, then the lower bound, the upper bound and `multipleOf` as
+    /// 16-byte decimals (the low 64 and high 32 bits of the magnitude, the scale, the sign, two
+    /// zero bytes): for a library that judges values across a C ABI of its own, with
+    /// `packedEnum` beside it.
+    #[napi(getter, catch_unwind)]
+    pub fn packed(&self) -> Uint8Array {
+        let raw = &self.raw;
+        let mut bytes = Vec::with_capacity(hc::RawConstraints::SIZE as usize);
+        for word in [
+            raw.size,
+            raw.flags,
+            raw.rounding,
+            raw.min_length,
+            raw.max_length,
+            raw._reserved,
+        ] {
+            bytes.extend_from_slice(&word.to_ne_bytes());
+        }
+        for decimal in [raw.lower, raw.upper, raw.multiple_of] {
+            bytes.extend_from_slice(&decimal.lo.to_ne_bytes());
+            bytes.extend_from_slice(&decimal.hi.to_ne_bytes());
+            bytes.extend_from_slice(&[decimal.scale, u8::from(decimal.negative), 0, 0]);
+        }
+        Uint8Array::from(bytes)
+    }
+
+    /// The `enum` list as the core reads it beside `packed`, empty for none: at an integer door
+    /// 16-byte decimals in native byte order, at `Door.Text` each entry a little-endian `u32`
+    /// byte length followed by its UTF-8.
+    #[napi(getter, catch_unwind)]
+    pub fn packed_enum(&self) -> Uint8Array {
+        Uint8Array::from(self.packed.clone())
+    }
+}
+
+/// The `Constraints` a checked door was handed, or `None` for anything else.
+fn constraints_arg<'a>(value: &'a Unknown<'_>) -> Option<ClassInstance<'a, Constraints>> {
+    match value.get_type() {
+        Ok(ValueType::Object) => unsafe { value.cast::<ClassInstance<Constraints>>() }.ok(),
+        _ => None,
+    }
+}
+
+/// What a numeric door wrote, as JavaScript holds it.
+enum Delivered {
+    Int(i32),
+    Uint(u32),
+    Big(BigInt),
+    Real(f64),
+    Text(String),
+}
+
+/// Reads the value a numeric door wrote to `slot`.
+///
+/// # Safety
+/// The core reported success at `door`, so `slot` holds that door's type.
+unsafe fn delivered(door: hc::Door, slot: &[u64; 2]) -> Option<Delivered> {
+    let at = slot.as_ptr();
+    // SAFETY: per the function contract; `slot` is 16 bytes, 8-aligned.
+    Some(unsafe {
+        match door {
+            hc::Door::I8 => Delivered::Int(i32::from(at.cast::<i8>().read())),
+            hc::Door::I16 => Delivered::Int(i32::from(at.cast::<i16>().read())),
+            hc::Door::I32 => Delivered::Int(at.cast::<i32>().read()),
+            hc::Door::I64 => Delivered::Big(BigInt::from(at.cast::<i64>().read())),
+            hc::Door::U8 => Delivered::Uint(u32::from(at.cast::<u8>().read())),
+            hc::Door::U16 => Delivered::Uint(u32::from(at.cast::<u16>().read())),
+            hc::Door::U32 => Delivered::Uint(at.cast::<u32>().read()),
+            hc::Door::U64 => Delivered::Big(BigInt::from(at.cast::<u64>().read())),
+            hc::Door::F32 => Delivered::Real(f64::from(at.cast::<f32>().read())),
+            hc::Door::F64 => Delivered::Real(at.cast::<f64>().read()),
+            hc::Door::Decimal => Delivered::Text(at.cast::<hc::Decimal>().read().to_string()),
+            _ => return None,
+        }
+    })
+}
+
+fn checked_success<'env, V: ToNapiValue>(
+    env: &'env Env,
+    value: V,
+    check: &hc::RawCheck,
+) -> Result<Object<'env>> {
+    let mut verdict = Object::new(env)?;
+    verdict.set("ok", true)?;
+    verdict.set("value", value)?;
+    verdict.set("adjusted", check.adjusted != 0)?;
+    verdict.set(
+        "enumIndex",
+        (check.enum_index != u32::MAX).then_some(check.enum_index),
+    )?;
+    Ok(verdict)
+}
+
+fn violated(env: &Env, keyword: u32, (offset, length): (u32, u32)) -> Result<Object<'_>> {
+    let mut verdict = Object::new(env)?;
+    verdict.set("ok", false)?;
+    verdict.set(
+        "violation",
+        Violation {
+            keyword: keyword_name(keyword),
+            offset,
+            length,
+        },
+    )?;
+    Ok(verdict)
+}
+
+/// A rejection from a checked export's return code, its span in the caller's units.
+fn rejected<'env>(
+    env: &'env Env,
+    code: i32,
+    span: (u32, u32),
+    check: &hc::RawCheck,
+) -> Result<Object<'env>> {
+    let reason = match code {
+        1 => hc::Reason::Empty,
+        2 => hc::Reason::Malformed,
+        3 => hc::Reason::OutOfRange,
+        4 => return violated(env, check.keyword, span),
+        _ => return Err(binding_bug("refused a declaration it had accepted")),
+    };
+    failure(
+        env,
+        hc::Fault {
+            reason,
+            offset: span.0,
+            len: span.1,
+        },
+    )
+}
+
+/// A numeric checked door's success: the value the door wrote, as JavaScript holds it.
+fn numeric_success<'env>(
+    env: &'env Env,
+    door: hc::Door,
+    slot: &[u64; 2],
+    check: &hc::RawCheck,
+) -> Result<Object<'env>> {
+    // SAFETY: the core reported success at `door`.
+    match unsafe { delivered(door, slot) } {
+        Some(Delivered::Int(value)) => checked_success(env, value, check),
+        Some(Delivered::Uint(value)) => checked_success(env, value, check),
+        Some(Delivered::Big(value)) => checked_success(env, value, check),
+        Some(Delivered::Real(value)) => checked_success(env, value, check),
+        Some(Delivered::Text(value)) => checked_success(env, value, check),
+        None => Err(binding_bug("judged a door that is not numeric")),
+    }
+}
+
+const NO_CHECK: hc::RawCheck = hc::RawCheck {
+    keyword: 0,
+    adjusted: 0,
+    enum_index: u32::MAX,
+};
+
+/// Casts numeric text through the door its `Constraints` are bound to, under the declared
+/// format (absent is the invariant one), then judges the value by them: `Checked<T>`, the
+/// door's own `Failure`, or `Violated` naming the first rule it breaks. The value is judged
+/// exactly, on the decimal the door read, never on a float. The value's type follows the
+/// door: `number` for `I8` to `U32`, `F32` and `F64`; `bigint` for `I64` and `U64`; canonical
+/// decimal text for `Decimal`. Spans are in the caller's units, as a fault's are.
+/// `Constraints` for `Door.Text`, or anything that is no `Constraints` (`undefined` and `null`
+/// included: a failed declaration's missing `.value`), is a contract violation: `malformed`
+/// with an empty span at 0.
+#[napi(
+    catch_unwind,
+    ts_args_type = "text: Text, constraints: Constraints, format?: NumFormat | undefined | null",
+    ts_return_type = "CheckedVerdict<number | bigint | string>"
+)]
+pub fn cast_checked<'env>(
+    env: &'env Env,
+    text: Unknown<'env>,
+    constraints: Unknown<'env>,
+    format: Unknown<'env>,
+) -> Result<Object<'env>> {
+    let (Some(constraints), Some(format)) = (constraints_arg(&constraints), num_format(&format))
+    else {
+        return contract(env);
+    };
+    let door = constraints.door;
+    if door == hc::Door::Text {
+        return contract(env);
+    }
+    let input = CheckedInput::read(env, &text);
+    match input {
+        CheckedInput::Absent => return failure(env, ABSENT),
+        CheckedInput::Invalid => return contract(env),
+        CheckedInput::Str(..) | CheckedInput::Bytes(_) => {}
+    }
+    let bytes = input.bytes();
+    let format = hc::RawNumFormat::from(format);
+    let mut slot = [0u64; 2];
+    let mut fault = RawFault::default();
+    let mut check = NO_CHECK;
+    // SAFETY: every pointer is live for the call, and `slot` holds any numeric door's type.
+    let code = unsafe {
+        abi::cast_checked(
+            door.code(),
+            0,
+            &format,
+            &constraints.raw,
+            constraints.packed.as_ptr(),
+            constraints.packed.len(),
+            bytes.as_ptr(),
+            bytes.len(),
+            slot.as_mut_ptr().cast(),
+            &mut fault,
+            &mut check,
+        )
+    };
+    match code {
+        0 => numeric_success(env, door, &slot, &check),
+        code => rejected(env, code, input.span(fault.offset, fault.len), &check),
+    }
+}
+
+/// Reads a number a source already decoded (a JSON parser's, a spreadsheet's numeric cell)
+/// through the door its `Constraints` are bound to, then judges it by them on the shortest
+/// decimal that names it: `0.1 + 0.2` is `0.30000000000000004`, which breaks
+/// `multipleOf: "0.1"` unrounded and rounds to `0.3` under `Rounding.Midpoint`. NaN is
+/// `malformed`; an infinity is `outOfRange` at a float or decimal door and `malformed` at an
+/// integer door. Every fault and violation has an empty span.
+/// `-0` is zero, delivered at a float door as `0`.
+#[napi(
+    catch_unwind,
+    ts_args_type = "value: number, constraints: Constraints",
+    ts_return_type = "CheckedVerdict<number | bigint | string>"
+)]
+pub fn cast_checked_from_number<'env>(
+    env: &'env Env,
+    value: Unknown<'env>,
+    constraints: Unknown<'env>,
+) -> Result<Object<'env>> {
+    let (Some(constraints), Some(value)) = (constraints_arg(&constraints), number(&value)) else {
+        return contract(env);
+    };
+    let door = constraints.door;
+    if door == hc::Door::Text {
+        return contract(env);
+    }
+    let mut slot = [0u64; 2];
+    let mut fault = RawFault::default();
+    let mut check = NO_CHECK;
+    // SAFETY: every pointer is live for the call, and `slot` holds any numeric door's type.
+    let code = unsafe {
+        abi::cast_checked_from_f64(
+            door.code(),
+            value,
+            &constraints.raw,
+            constraints.packed.as_ptr(),
+            constraints.packed.len(),
+            slot.as_mut_ptr().cast(),
+            &mut fault,
+            &mut check,
+        )
+    };
+    match code {
+        0 => numeric_success(env, door, &slot, &check),
+        code => rejected(env, code, (fault.offset, fault.len), &check),
+    }
+}
+
+/// Casts text as text: the input itself, once it is valid text (a `Uint8Array` must be UTF-8,
+/// and a string holding a lone surrogate is `malformed` at it), as a `Verdict<string>`. Empty
+/// input is `empty`; nothing is trimmed. With `Constraints` for `Door.Text` it is judged by
+/// them, a `CheckedVerdict<string>`: trimmed of Unicode `White_Space` when they say so
+/// (trimmed to nothing is `empty`), lengths counted in code points, and an `enum` matched under
+/// simple case folding, a match delivering the caller's own declared entry and its index.
+/// `Constraints` for another door, or anything that is no `Constraints`, is a contract
+/// violation: `malformed` with an empty span at 0. Plain or constrained is chosen by the number
+/// of arguments, not by the second one's value, so an explicit `undefined` or `null`
+/// declaration (a failed `Constraints.declare`'s missing `.value`) is that contract violation
+/// too, never "no rules".
+#[napi(
+    catch_unwind,
+    ts_args_type = "text: Text, constraints?: Constraints",
+    ts_return_type = "Verdict<string> | CheckedVerdict<string>"
+)]
+pub fn cast_text<'env>(
+    env: &'env Env,
+    text: Unknown<'env>,
+    constraints: Unknown<'env>,
+) -> Result<Object<'env>> {
+    let constraints = match constraints.get_type() {
+        Ok(ValueType::Undefined | ValueType::Null) => None,
+        _ => match constraints_arg(&constraints) {
+            Some(constraints) if constraints.door == hc::Door::Text => Some(constraints),
+            _ => return contract(env),
+        },
+    };
+    let input = CheckedInput::read(env, &text);
+    match input {
+        CheckedInput::Absent => return failure(env, ABSENT),
+        CheckedInput::Invalid => return contract(env),
+        CheckedInput::Str(..) | CheckedInput::Bytes(_) => {}
+    }
+    let bytes = input.bytes();
+    let mut span = hc::RawSpan { offset: 0, len: 0 };
+    let mut fault = RawFault::default();
+    let Some(constraints) = constraints else {
+        // SAFETY: every pointer is live for the call.
+        return match unsafe { abi::cast_text(bytes.as_ptr(), bytes.len(), &mut span, &mut fault) } {
+            0 => success(env, input.text_at(env, span.offset, span.len)?),
+            code => rejected(env, code, input.span(fault.offset, fault.len), &NO_CHECK),
+        };
+    };
+    let mut check = NO_CHECK;
+    // SAFETY: every pointer is live for the call; the text door writes a `RawSpan`.
+    let code = unsafe {
+        abi::cast_checked(
+            hc::Door::Text.code(),
+            0,
+            std::ptr::null(),
+            &constraints.raw,
+            constraints.packed.as_ptr(),
+            constraints.packed.len(),
+            bytes.as_ptr(),
+            bytes.len(),
+            (&raw mut span).cast(),
+            &mut fault,
+            &mut check,
+        )
+    };
+    if code != 0 {
+        return rejected(env, code, input.span(fault.offset, fault.len), &check);
+    }
+    if check.enum_index == u32::MAX {
+        return checked_success(env, input.text_at(env, span.offset, span.len)?, &check);
+    }
+    match constraints.entries.get(check.enum_index as usize) {
+        Some(Entry::Text(entry)) => checked_success(env, entry.as_str(), &check),
+        _ => Err(binding_bug("matched an enum entry never declared")),
+    }
+}
+
+/// Replaces the exported `castText` with one that reads its argument count, which a `#[napi]`
+/// function cannot see (napi hands it `undefined` for a missing argument): one argument is the
+/// plain door; two or more are the checked door, where the second must be `Constraints`, so an
+/// explicit `undefined` or `null` (a failed `Constraints.declare`'s missing `.value`) is the
+/// contract violation and never quietly "no rules". It runs once the exports are registered,
+/// on every entry alike: Node's addon, and the WebAssembly fallback under Node or in a
+/// browser. The installed function's own calls catch unwinds in napi's trampoline; this body
+/// catches its own.
+#[napi(module_exports)]
+pub fn cast_text_by_arity(mut exports: Object<'_>, env: Env) -> Result<()> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let by_arity =
+            env.create_function_from_closure::<(), napi::sys::napi_value, _>("castText", |ctx| {
+                let env: &Env = ctx.env;
+                let raw = env.raw();
+                let verdict = if ctx.length() < 2 {
+                    let text = if ctx.length() == 0 {
+                        // SAFETY: `()` is `undefined` in the live call's env.
+                        unsafe {
+                            Unknown::from_raw_unchecked(raw, ToNapiValue::to_napi_value(raw, ())?)
+                        }
+                    } else {
+                        ctx.get::<Unknown<'_>>(0)?
+                    };
+                    // SAFETY: as above.
+                    let none = unsafe {
+                        Unknown::from_raw_unchecked(raw, ToNapiValue::to_napi_value(raw, ())?)
+                    };
+                    cast_text(env, text, none)?
+                } else {
+                    let constraints = ctx.get::<Unknown<'_>>(1)?;
+                    if matches!(
+                        constraints.get_type(),
+                        Ok(ValueType::Undefined | ValueType::Null)
+                    ) {
+                        contract(env)?
+                    } else {
+                        cast_text(env, ctx.get::<Unknown<'_>>(0)?, constraints)?
+                    }
+                };
+                Ok(verdict.raw())
+            })?;
+        exports.set_named_property("castText", by_arity)
+    }))
+    .unwrap_or_else(|_| Err(binding_bug("panicked installing castText")))
+}
+
+/// Judges a declaration without building it, the way `Constraints.declare` does: `0` when every
+/// rule holds, otherwise the code of the first rule it breaks (`1` a keyword the door does not
+/// take, `2` minimum with exclusiveMinimum, `3` maximum with exclusiveMaximum, `4` a lower
+/// bound not below the upper, `5` multipleOf not positive, `6` a rounding without multipleOf,
+/// `7` minLength above maxLength, `8` a bound, step or entry the door cannot hold, `9` an entry
+/// that is not UTF-8 (a lone surrogate), `10` a duplicate entry, `11` a rounding code the core
+/// does not know, `12` an `enum` with no entries (`enum: []`; leaving `enum` out declares
+/// none), `13` a text entry no input can match: an empty one, or under `trim` one with leading
+/// or trailing white space). `-1` is a declaration this binding cannot read, whose wording
+/// `Constraints.declare` gives.
+#[napi(catch_unwind, ts_args_type = "spec: ConstraintsSpec")]
+pub fn cast_constraints_check(env: &Env, spec: Unknown<'_>) -> i32 {
+    match declaration(env, &spec) {
+        Ok(_) => 0,
+        Err(Problem::Refused(code)) => code,
+        Err(Problem::Contract(_)) => -1,
+    }
+}
+
+/// Converts a bound, step or integer `enum` entry written in invariant notation (an optional
+/// sign, digits with an optional `.` and fraction, an optional exponent: `"0.000001"`, `"-90"`,
+/// `"1e-6"`) to the exact decimal the core declares it as, as canonical text with its trailing
+/// zeros dropped (`"1.50"` is `"1.5"`): the conversion every bound a `Constraints` is given
+/// crosses. A value past 96 bits or 28 places, or text in any other notation, is refused as a
+/// declaration is (code 8).
+#[napi(
+    catch_unwind,
+    ts_args_type = "text: Text",
+    ts_return_type = "Declaration<string>"
+)]
+pub fn cast_declared_decimal<'env>(env: &'env Env, text: Unknown<'env>) -> Result<Object<'env>> {
+    let input = CheckedInput::read(env, &text);
+    let outcome = match input {
+        CheckedInput::Str(..) | CheckedInput::Bytes(_) => convert(input.bytes())
+            .map(|decimal| decimal.to_string())
+            .map_err(refused_message),
+        CheckedInput::Absent | CheckedInput::Invalid => {
+            clear_pending_exception(env);
+            Err("text must be a string or a Uint8Array".to_string())
+        }
+    };
+    declared(env, outcome)
 }

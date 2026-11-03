@@ -106,8 +106,8 @@ Under TinyGo the scheduler is cooperative and a call never yields, so every call
 primary.
 
 What that costs under contention is the binding's one large loss: `I32` on 12 goroutines at
-once is 19.7 ns a call in aggregate on the Apple M6, against 6.9 ns for the cgo binding this
-replaced, which took no lock at all — **2.9x slower** ([Benchmarks](#benchmarks)). A single
+once is 18.4 ns a call in aggregate on the Apple M6, against 7.2 ns for the cgo binding this
+replaced, which took no lock at all — **2.6x slower** ([Benchmarks](#benchmarks)). A single
 goroutine's calls are faster than they were.
 
 A fresh instance is 3 WebAssembly pages of linear memory, 192 KiB: the 64 KiB stack and the
@@ -122,7 +122,9 @@ core reads the text through a slice whose length may not exceed the guest's `isi
 2^31 − 1 on wasm32, whatever the host's word size, so a door takes a text of at most
 `MaxText` bytes: the smaller of that limit and what the guest and host can address beside the
 module's own pages. On a 64-bit host that is 2,147,483,647. A longer text panics, as a caller
-bug, before anything is allocated.
+bug, before anything is allocated. A checked door lays its declaration (84 bytes and its
+`enum` list) out past its text in the same scratch, so for it the text and the declaration
+together are what the base scratch must hold and what `MaxText` bounds.
 
 See [the repo root README](../README.md) for the full door table, the receipts, and the
 state of every other language binding.
@@ -160,6 +162,16 @@ rather than silently wrapping.
 | `ExcelSerialFromFloat64` | `CivilDateTime` | `ExcelEpoch` |
 | `ExcelTime` | `time.Duration` since midnight | — |
 | `ExcelDuration` | `Duration{Seconds, Nanos}` | — |
+| `String` | `string` — the text itself, once it is valid UTF-8 | — |
+
+The checked doors, `Check`, `CheckFromFloat64` and `CheckString`, judge a value by declared
+constraints and are under [Validation constraints](#validation-constraints).
+
+`Optional` presents a door's two results with Go's absent, a nil pointer: `age, fault :=
+hypercast.Optional(hypercast.I32(text, hypercast.Invariant))` is `nil, nil` for an `Empty`
+fault, a pointer to the value on success, and every other fault untouched. `OptionalChecked`
+does the same for a checked door's `(Checked[V], Rejection)`: only an `Empty` fault is absent,
+and a `*Violation` flows through.
 
 Plus three entry points that are not doors — `Available()`, `LoadError()` and
 `NativeVersion()` — covered under
@@ -317,6 +329,105 @@ korean := hypercast.DateFormat{Order: hypercast.YearMonthDay, AM: "오전", PM: 
 fmt.Println(hypercast.DateTimeWith("2026-07-01 오후 3:04", korean)) // the same wall clock
 ```
 
+## Validation constraints
+
+A value that parsed can still break a business rule. A `Constraints[V]` declares the rule
+with the OpenAPI Schema Object's keywords, bound by its type to one door
+(`Constraints[float64]` for `F64`, `Constraints[Decimal]` for `Exact`, `Constraints[string]`
+for the text door, …), and the checked doors judge the value by it, in the core and in exact
+decimal arithmetic:
+
+```go
+// Latitude: a multiple of 0.000001 between -90 and 90, finer input rounded half to even.
+latitude := hypercast.MustConstraints[float64](
+	hypercast.Minimum(-90), hypercast.Maximum(90),
+	hypercast.MultipleOf("0.000001"), hypercast.WithRounding(hypercast.Midpoint))
+// Euro cash: a multiple of 0.05, and anything else is wrong.
+euroCash := hypercast.MustConstraints[hypercast.Decimal](hypercast.MultipleOf("0.05"))
+// A sex code: one of three, whatever case and padding it arrived in.
+sex := hypercast.MustConstraints[string](hypercast.Trim(), hypercast.Enum("Female", "Male", "Other"))
+
+euro := hypercast.NumFormat{DecimalSep: ",", GroupSep: ".", Styles: hypercast.AllStyles, Currency: "€"}
+fmt.Println(hypercast.Check("45.1234567", hypercast.Invariant, latitude)) // {45.123457 true -1} <nil>
+fmt.Println(hypercast.Check("-90.5", hypercast.Invariant, latitude))      // {0 false -1} hypercast: breaks minimum at byte 0..5
+fmt.Println(hypercast.CheckFromFloat64(45.1234567, latitude))             // {45.123457 true -1} <nil>
+fmt.Println(hypercast.Check("€1.234,55", euro, euroCash))                 // {1234.55 false -1} <nil>
+fmt.Println(hypercast.Check("€12,37", euro, euroCash))                    // {0 false -1} hypercast: breaks multipleOf at byte 0..8
+fmt.Println(hypercast.Check("12,3x", euro, euroCash))                     // {0 false -1} hypercast: malformed at byte 4..5
+
+checked, rejection := hypercast.CheckString(" MALE ", sex)
+switch r := rejection.(type) {
+case nil:
+	fmt.Printf("%s, entry %d\n", checked.Value, checked.EnumIndex) // Male, entry 1
+case *hypercast.Fault:
+	fmt.Printf("%s at byte %d\n", r.Reason, r.Offset) // empty at byte 0, for "   "
+case *hypercast.Violation:
+	switch r.Keyword {
+	case hypercast.KeywordEnum:
+		fmt.Printf("not a sex code: bytes %d+%d\n", r.Offset, r.Length) // for "Femal": bytes 0+5
+	default: // keywords are open
+		fmt.Println("breaks", r.Keyword)
+	}
+}
+```
+
+A checked door returns `(Checked[V], Rejection)`, beside the plain doors' `(value, *Fault)`,
+which every plain door keeps, unchanged. `Checked[V]` is the `Value`, `Adjusted` (true only
+when rounding changed it) and `EnumIndex`, the matched entry at the text door and `-1`
+otherwise (an integer `enum` has no index: the value is the answer). A nil `Rejection` is
+success; otherwise it is one of two pointer types, sealed so nothing else implements it: the
+plain doors' own `*Fault` (it did not parse: the very type, so a parse failure reads the same
+at either door) or a `*Violation` (it parsed and broke a rule: its `Keyword` and the value's
+span, in bytes like a fault's). Both implement `error`. `Keyword` is a code with the OpenAPI
+names as its `String` (`exclusiveMinimum`) and the constants `KeywordMinimum` …
+`KeywordEnum`; `format` and `pattern` may join in a minor release, so a switch over keywords
+needs its `default` arm, and a code this binding does not know yet is kept (`keyword 9`).
+
+`Check[V Number, T Text]` is every numeric door's checked form, its door picked by the
+`Constraints` it is handed (`V` is inferred from it, `T` from the text), over a `string` or a
+`[]byte` with a `NumFormat`; `CheckFromFloat64` judges a number a source already decoded on
+the shortest decimal that names it (`0.1 + 0.2` breaks `MultipleOf("0.1")` under `Strict`,
+and rounds to `0.3` under `Midpoint`), with an empty span; `CheckString` is the text door's.
+The integer doors take `Minimum`, `ExclusiveMinimum`, `Maximum`, `ExclusiveMaximum`,
+`MultipleOf` with `WithRounding` (`Strict`, the default, then `Midpoint`, half to even,
+`Floor` and `Ceiling`) and `Enum`; `float32`, `float64` and `Decimal` the same without
+`Enum`; the text door takes `MinLength`, `MaxLength` (in code points), `Trim` (Unicode
+`White_Space`, U+00A0 included) and `Enum`, matched under Unicode simple case folding and
+delivering the caller's own declared string and its index. `NewConstraints` takes any rule
+at any door, and the core alone refuses one its door does not take. The first failure wins:
+the door parses, the text is trimmed, `MultipleOf` rounds or refuses, then the bounds, the
+lengths and `Enum` judge the result. A float door also judges the float it delivers against
+each bound read as the door reads it: `"1e-400"` at `float64` reads as `0`, so it breaks
+`ExclusiveMinimum("0")`. Bounds, steps and integer entries are text in invariant notation, a
+`Decimal` or a Go integer, all converted exactly by the core (`"1e-6"` is `0.000001`, and
+`"1e-29"`, past the 28 places a core decimal holds, is refused rather than rounded); a
+`float64` does not compile there, so `0.1` cannot be declared inexactly.
+
+A declaration is judged once, by the core, when it is built. `NewConstraints` returns a
+refusal as an `error` worded from the rule it broke, for a declaration read at run time;
+`MustConstraints`, for one written in code, panics with the same text, as a door does on a
+`NumFormat` the core would refuse (`MustConstraints[uint8](hypercast.Minimum(-1))` panics with
+"hypercast: Constraints refused (code 8): a bound, step or enum entry the door cannot hold.").
+A keyword declared twice is refused too. Leaving `Enum` out declares no `enum`, while `Enum()`
+with no entries declares one that no value could match: refused (code 12), as is a text entry
+no input can match (code 13: an empty one, or under `Trim` one with leading or trailing white
+space). After that a checked cast judges only data and
+panics on nothing for it. There is no default, as there is none for `NumFormat`: a zero
+`Constraints[V]` was never judged, so handing one to a checked door is a caller bug and
+panics; `MustConstraints[V]()` with no rules is the declaration of none.
+
+`String` is the plain text door: the input itself when it is valid UTF-8, untrimmed
+(`String("  Male ")` is `"  Male "`). A Go string can hold any bytes, so a `string` and a
+`[]byte` input are judged alike, at every door, plain or checked: invalid UTF-8 is
+`Malformed` at its first invalid sequence,
+and an `Enum` entry that is not UTF-8 is refused (code 9). Go's string model has no lone
+surrogate: its UTF-8 encoding is just invalid bytes, judged as any others are. A `string`
+input comes back as the caller's own string (a substring of it when trimmed) and an `Enum`
+match as the caller's own entry, so the checked doors make no allocation on success; a
+`[]byte` input to `String` or `CheckString` is copied into its result. `Constraints.Raw()`
+and `PackedEnum()` hand a declaration over in the core's own 72-byte layout and `enum` list,
+for a library judging values across a C ABI of its own.
+
 ## The core: `Available`, `LoadError`, `NativeVersion`
 
 The core is compiled into the binary, so there is nothing to load and nothing that can fail,
@@ -360,6 +471,15 @@ same name would have returned.
 - `RawDayPeriods` — the 40 bytes a `DateFormat`'s designators cross as beside the order: a
   size word and the AM and PM designators as `RawSymbol16`s (`DesignatorMaxBytes` is 16);
   a zero size is what crosses as null, nothing declared. `DateFormat.Raw()` builds one.
+- `RawConstraints` — the 72 bytes, 8-aligned, a `Constraints` crosses as
+  (`RawConstraintsSize`): a size word, the flags (`RawConstraintsHasMinimum` …
+  `RawConstraintsTrim`), the rounding code, the two lengths, a reserved word, then the lower
+  bound, the upper bound and `MultipleOf` as `Decimal`s. `Constraints.Raw()` builds one, and
+  `Constraints.PackedEnum()` is its `enum` list beside it (16-byte `Decimal`s in the host's
+  byte order at an integer door, a little-endian `uint32` length then the bytes per entry at
+  the text door). `RawCheck` (12 bytes) is what a checked door reports beside its value, and
+  `RawSpan` (8) what the text door writes; each layout is held to the generated header's
+  size by the suite.
 - `Valid()` on `UnixPrecision`, `DateOrder` and `ExcelEpoch`; `UnixPrecisionFromCode`,
   `DateOrderFromCode`, `ExcelEpochFromCode` and `ReasonFromCode` turn an ABI code back into
   the type, and `false` for any other value.
@@ -519,12 +639,16 @@ per-call to Go's stdlib.** Go's parsers are simply excellent (`time.Parse(RFC333
 ~21 ns, `strconv.Atoi` at ~4 ns on the machine below), and every HyperCast call copies its
 text into the core's memory and runs the core as translated, bounds-checked Go. Against the
 cgo binding it replaced, single calls are mostly faster, since no foreign call is paid any
-more: `Bool` 2.3x, `DateOnlyOrdered` 1.7x, `I32` 1.3x. The losses are the civil date-time
-doors (1.4–1.5x), a rejected cast (1.5x) and contention (2.9x), all in the table below. The
+more: `Bool` 2.4x, `DateOnlyOrdered` 1.7x, `I32` 1.3x. The losses are the civil date-time
+doors (1.5x), a rejected cast (1.4x), contention (2.6x) and, by 2%, the ISO span door, all in
+the table below. The
 declared-order date door beats `time.Parse` with a layout, and the messy date-time door is
 level with it. **0 B, 0 allocs on every door** on the success path, under stock Go and
-TinyGo, for any text of up to 65,376 bytes ([`MaxText`](#maxtext)); a failed cast allocates
-exactly its `*Fault`, and `allocs_test.go` holds both counts as tests. In Go specifically,
+TinyGo, for any text of up to 65,376 bytes ([`MaxText`](#maxtext)), the checked doors
+included (a checked door's declaration shares that scratch with its text), except that a
+`[]byte` input to the text doors is copied into the `string` they return; a failed cast
+allocates exactly its `*Fault` or `*Violation`, and `allocs_test.go` holds both counts as
+tests. In Go specifically,
 this binding earns its keep on the vocabulary, the closed error contract, and cross-language
 agreement — not per-call speed. The tabular layer,
 [HyperTabular](https://github.com/SkunkWerkx/HyperTabular), is where a per-call cost amortizes:
@@ -532,37 +656,38 @@ it calls once per chunk, not once per cell.
 
 ## Benchmarks
 
-`go test -bench=. -benchmem ./...`. Apple M6 (Mac18,5, 12 cores), macOS, Go 1.27.3,
-2026-11-01: six runs of each binding interleaved in one session, benchstat medians with
-benchstat's spread. The cgo column is the binding this one replaced, built from the same
-`rust/` (its archive built by the Forge's `build-static-libs.sh`), with this same benchmark
-file. Other work shared the machine during the session, so several rows are noisy, and the
-spread is printed with them; differences benchstat did not call significant are marked ~.
+`go test -bench=. -benchmem ./...`. Apple M6 (Mac18,5, 12 cores), macOS 27.2, Go 1.27.3,
+2026-11-02, on the core with the checked doors: six runs of each binding interleaved in one
+session, benchstat medians with benchstat's spread. The cgo column is the binding this one
+replaced (its tree as it stood before the translated core), linked against a static archive
+built from the same `rust/` (`cargo staticlib`), with this same benchmark file. Other work
+shared the machine (load average 1.5 to 4.5); differences benchstat did not call significant
+are marked ~.
 
 | Door | translated core | cgo binding | | stdlib |
 | --- | ---: | ---: | --- | ---: |
-| `Bool` | 10.7 ns ±40% | 24.1 ns | 2.3x faster | 1.4 ns `strconv.ParseBool` |
-| `I32` | 33.6 ns ±5% | 43.5 ns | 1.3x faster | 3.6 ns `strconv.Atoi` |
-| `I32` (grouped) | 37.6 ns ±4% | 45.0 ns | 1.2x faster | — |
-| `I32` (grouped), 12 goroutines, aggregate | 19.7 ns ±3% | 6.9 ns | **2.9x slower** | — |
-| `I32` (grouped), `$` declared | 43.3 ns ±4% | 46.9 ns | 1.1x faster | — |
-| `I32` (grouped), every symbol declared | 71.8 ns ±2% | 70.0 ns | ~ | — |
-| `I32("1,234x567")`, rejected | 96.0 ns ±3%, 1 alloc | 64.3 ns, 1 alloc | **1.5x slower** | 14.6 ns, 2 allocs `strconv.Atoi("1234x567")` |
-| `F64` | 42.8 ns ±38% | 50.2 ns | 1.2x faster | 14.9 ns `strconv.ParseFloat` |
-| `F64` (`1.234.567,89`), declared | 41.2 ns ±11% | 49.9 ns | 1.2x faster | — |
-| `F64` (`1.234.567,89`), `Detect` | 54.6 ns ±11% | 59.7 ns | 1.1x faster | — |
-| `Uuid` | 19.7 ns ±93% | 28.1 ns | ~ | 11.8 ns `google/uuid.Parse` |
-| `Timestamp` | 34.5 ns ±77% | 34.5 ns | ~ | 21.1 ns `time.Parse(RFC3339Nano)` |
-| `Span` (ISO) | 30.9 ns ±173% | 29.0 ns | ~ | 27.2 ns `ParseDuration` (Go dialect — different grammar) |
-| `TimeOfDay` | 20.4 ns ±166% | 28.2 ns | 1.4x faster | — |
-| `DateTime` (`1/7/2026 3:04 PM`) | 49.0 ns ±160% | 34.2 ns | **1.4x slower** | 46.9 ns `time.Parse` w/ layout |
-| `DateTimeWith`, `vorm.`/`nachm.` declared | 75.8 ns ±51% | 52.0 ns | **1.5x slower** | — |
-| `DateOnlyOrdered` (`1/7/2026`) | 15.5 ns ±19% | 26.0 ns | 1.7x faster | 28.0 ns `time.Parse` w/ layout |
+| `Bool` | 10.2 ns ±8% | 24.2 ns | 2.4x faster | 1.3 ns `strconv.ParseBool` |
+| `I32` | 34.6 ns ±6% | 45.1 ns | 1.3x faster | 3.5 ns `strconv.Atoi` |
+| `I32` (grouped) | 38.7 ns ±6% | 46.6 ns | 1.2x faster | — |
+| `I32` (grouped), 12 goroutines, aggregate | 18.4 ns ±8% | 7.2 ns | **2.6x slower** | — |
+| `I32` (grouped), `$` declared | 44.6 ns ±5% | 49.0 ns | 1.1x faster | — |
+| `I32` (grouped), every symbol declared | 72.0 ns ±4% | 71.8 ns | ~ | — |
+| `I32("1,234x567")`, rejected | 94.8 ns ±7%, 1 alloc | 65.9 ns, 1 alloc | **1.4x slower** | 14.3 ns, 2 allocs `strconv.Atoi("1234x567")` |
+| `F64` | 43.8 ns ±5% | 49.8 ns | 1.1x faster | 14.3 ns `strconv.ParseFloat` |
+| `F64` (`1.234.567,89`), declared | 42.3 ns ±5% | 49.2 ns | 1.2x faster | — |
+| `F64` (`1.234.567,89`), `Detect` | 56.9 ns ±3% | 57.5 ns | ~ | — |
+| `Uuid` | 19.1 ns ±4% | 28.8 ns | 1.5x faster | 11.3 ns `google/uuid.Parse` |
+| `Timestamp` | 33.4 ns ±3% | 35.3 ns | ~ | 21.3 ns `time.Parse(RFC3339Nano)` |
+| `Span` (ISO) | 30.4 ns ±7% | 29.8 ns | **2% slower** | 27.1 ns `ParseDuration` (Go dialect — different grammar) |
+| `TimeOfDay` | 20.8 ns ±6% | 28.0 ns | 1.3x faster | — |
+| `DateTime` (`1/7/2026 3:04 PM`) | 48.8 ns ±6% | 32.4 ns | **1.5x slower** | 47.2 ns `time.Parse` w/ layout |
+| `DateTimeWith`, `vorm.`/`nachm.` declared | 75.2 ns ±6% | 49.6 ns | **1.5x slower** | — |
+| `DateOnlyOrdered` (`1/7/2026`) | 15.8 ns ±4% | 26.5 ns | 1.7x faster | 28.2 ns `time.Parse` w/ layout |
 
 Every success row is 0 B and 0 allocations in both bindings. Separator detection costs
-~13 ns here (54.6 against 41.2 ns for the same text under a declared eurozone format). A
-declared symbol costs text that does not carry it: `I32("1,234,567")` is 37.6 ns under
-`Invariant`, 43.3 ns under a format declaring `$`, and 71.8 ns under one declaring every
+~15 ns here (56.9 against 42.3 ns for the same text under a declared eurozone format). A
+declared symbol costs text that does not carry it: `I32("1,234,567")` is 38.7 ns under
+`Invariant`, 44.6 ns under a format declaring `$`, and 72.0 ns under one declaring every
 symbol there is; declare what the feed actually carries.
 
 The table that follows **predates the translated core**: it measured the cgo binding for

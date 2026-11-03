@@ -9,7 +9,8 @@
 //! readonly` classes with public promoted properties, as 1.0 declared them, so they are
 //! registered as plain PHP classes (`values.rs`, `num_format.rs`): their objects are the
 //! engine's own, and serialization, comparison, clone, `var_dump`, reflection and every
-//! readonly refusal are PHP's, exactly as for 1.0's classes.
+//! readonly refusal are PHP's, exactly as for 1.0's classes. The validation constraints'
+//! `Constraints`, `Checked` and `Violation` are registered the same way (`constraints.rs`).
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -20,6 +21,7 @@ use ext_php_rs::types::Zval;
 mod args;
 mod cast;
 mod classes;
+mod constraints;
 mod dates;
 mod enums;
 mod errors;
@@ -128,6 +130,9 @@ pub fn get_module(module: ModuleBuilder) -> ModuleBuilder {
         .enumeration::<enums::DateOrder>()
         .enumeration::<enums::ExcelEpoch>()
         .enumeration::<enums::UnixPrecision>()
+        .enumeration::<enums::Door>()
+        .enumeration::<enums::Rounding>()
+        .enumeration::<enums::Keyword>()
         .class::<cast::Cast>()
         .class::<interop::NativeValues>()
         .class::<interop::NativePlatform>()

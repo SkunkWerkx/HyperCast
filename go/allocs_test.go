@@ -142,3 +142,43 @@ func TestOnlyATextPastTheBaseScratchAllocates(t *testing.T) {
 		t.Fatalf("U8 of %d bytes: 0 allocs per call, want the one-off instance's", len(longer))
 	}
 }
+
+// The checked doors hold the same zero on success: the declaration is laid out past the text
+// in the instance's own scratch, and a text enum match is the caller's own string. A
+// []byte input to the text doors is the exception, since its string is a copy.
+func TestEveryCheckedDoorIsAllocationFreeOnSuccess(t *testing.T) {
+	latitude := MustConstraints[float64](Minimum(-90), Maximum(90), MultipleOf("0.000001"), WithRounding(Midpoint))
+	cash := MustConstraints[Decimal](MultipleOf("0.05"))
+	codes := MustConstraints[int32](Enum(10, 20, 30))
+	sex := MustConstraints[string](Trim(), Enum("Female", "Male", "Other"))
+	name := MustConstraints[string](Trim(), MaxLength(10))
+	twenty := []byte("20") // converted once, outside the measured call
+	doors := []struct {
+		name string
+		call func() Rejection
+	}{
+		{"Check (float64)", func() Rejection { _, r := Check("45.1234567", Invariant, latitude); return r }},
+		{"Check (Decimal)", func() Rejection { _, r := Check("1,234.55", Invariant, cash); return r }},
+		{"Check (int32 enum)", func() Rejection { _, r := Check(twenty, Invariant, codes); return r }},
+		{"CheckFromFloat64", func() Rejection { _, r := CheckFromFloat64(45.1234567, latitude); return r }},
+		{"CheckString (enum)", func() Rejection { _, r := CheckString(" MALE ", sex); return r }},
+		{"CheckString (trimmed)", func() Rejection { _, r := CheckString("  Ada  ", name); return r }},
+		{"String", func() Rejection { _, f := String("text"); return nilIfNone(f) }},
+	}
+	for _, door := range doors {
+		if r := door.call(); r != nil {
+			t.Fatalf("%s: %v", door.name, r)
+		}
+		assertAllocs(t, door.name, 0, func() { door.call() })
+	}
+	// A rejection allocates exactly its *Violation, as a fault does its *Fault.
+	assertAllocs(t, "Check (violation)", 1, func() { Check("91", Invariant, latitude) })
+}
+
+// nilIfNone keeps a nil *Fault from becoming a non-nil Rejection.
+func nilIfNone(f *Fault) Rejection {
+	if f == nil {
+		return nil
+	}
+	return f
+}

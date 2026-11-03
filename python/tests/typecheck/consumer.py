@@ -15,13 +15,20 @@ from typing import assert_never, assert_type
 import hypercast
 from hypercast import (
     CastFailure,
+    Checked,
+    CheckedVerdict,
+    Constraints,
     DateOrder,
+    Door,
     ExcelEpoch,
     Fault,
+    Keyword,
     NumFormat,
+    Rounding,
     Success,
     UnixPrecision,
     Verdict,
+    Violation,
 )
 
 
@@ -35,6 +42,29 @@ def describe(verdict: Verdict[int]) -> str:
             assert_type(reason, CastFailure)
             assert_type(offset, int)
             assert_type(length, int)
+            return f"{reason.name} at {offset}+{length}"
+        case _:
+            assert_never(verdict)
+
+
+def judge(verdict: CheckedVerdict[float]) -> str:
+    """Presents a checked verdict by matching its three cases, exhaustively, and a keyword
+    with the default arm keywords need."""
+    match verdict:
+        case Checked(value, adjusted, enum_index):
+            assert_type(value, float)
+            assert_type(adjusted, bool)
+            assert_type(enum_index, int | None)
+            return f"got {value}"
+        case Violation(keyword, offset, length):
+            assert_type(keyword, Keyword)
+            assert_type(offset, int)
+            match keyword:
+                case Keyword.MINIMUM | Keyword.MAXIMUM:
+                    return "out of bounds"
+                case _:
+                    return f"breaks {keyword.name} at {offset}+{length}"
+        case Fault(reason, offset, length):
             return f"{reason.name} at {offset}+{length}"
         case _:
             assert_never(verdict)
@@ -108,3 +138,28 @@ assert_type(hypercast.cast_duration("…"), Success[datetime.timedelta] | Fault)
 assert_type(hypercast.optional(hypercast.cast_i32("", fmt)), Success[int] | Fault | None)
 assert_type(describe(hypercast.cast_i32("42", fmt)), str)
 assert_type(hypercast.native_version(), str)
+
+latitude = Constraints(
+    Door.F64, minimum="-90", maximum=90, multiple_of="0.000001", rounding=Rounding.MIDPOINT
+)
+assert_type(latitude, Constraints[float])
+assert_type(Constraints(Door.I32, enum=[1, "2", decimal.Decimal(3)]), Constraints[int])
+assert_type(
+    Constraints(Door.DECIMAL, multiple_of=decimal.Decimal("0.05")), Constraints[decimal.Decimal]
+)
+sex = Constraints(Door.TEXT, trim=True, enum=["Female", "Male", "Other"])
+assert_type(sex, Constraints[str])
+assert_type(latitude.minimum, decimal.Decimal | None)
+assert_type(latitude.rounding, Rounding)
+assert_type(latitude.packed, bytes)
+assert_type(hypercast.cast_checked("1", fmt, latitude), Checked[float] | Fault | Violation)
+assert_type(hypercast.cast_checked_from_float(1.0, latitude), Checked[float] | Fault | Violation)
+assert_type(hypercast.cast_text("x"), Success[str] | Fault)
+assert_type(hypercast.cast_text("x", sex), Checked[str] | Fault | Violation)
+assert_type(hypercast.cast_constraints_check(Door.U8, minimum="-1"), int)
+assert_type(hypercast.cast_declared_decimal("1e-6"), decimal.Decimal)
+assert_type(
+    hypercast.optional(hypercast.cast_text(" ", sex)), Checked[str] | Fault | Violation | None
+)
+assert_type(judge(hypercast.cast_checked("42", fmt, latitude)), str)
+assert_type(Keyword.ENUM.name, str)

@@ -181,4 +181,95 @@ public sealed class InteropTests
 		RefusedPeriods(new DateFormat(DateOrder.YearMonthDay, "\uDC00", "pm"));
 		new DateFormat(DateOrder.YearMonthDay, "a. m.", "p. m.").ToRaw().Pm.Length.ShouldBe((byte)5);
 	}
+
+	// include/hypercast.h, or null where the tree holds none: the musl suite stages only
+	// rust/Cargo.toml, corpus/ and csharp/, so its run asserts the literals below alone, and
+	// every leg that has the header proves each literal is the header's.
+	static readonly string? _header = FindHeader() is { } path ? File.ReadAllText(path) : null;
+
+	static string? FindHeader()
+	{
+		for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
+		{
+			var header = Path.Combine(dir.FullName, "include", "hypercast.h");
+			if (File.Exists(header))
+				return header;
+		}
+		return null;
+	}
+
+	// The value this binding restates for a `#define NAME value` of the generated header,
+	// held to that define wherever the header is there to read.
+	static uint Define(string name, uint restated)
+	{
+		if (_header is null)
+			return restated;
+		var match = System.Text.RegularExpressions.Regex.Match(_header, $@"^#define {name} (\d+)$",
+			System.Text.RegularExpressions.RegexOptions.Multiline);
+		match.Success.ShouldBeTrue($"{name} is not in include/hypercast.h");
+		uint.Parse(match.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture).ShouldBe(restated, name);
+		return restated;
+	}
+
+	[Fact]
+	void The_constraint_layouts_are_the_headers()
+	{
+		// Each restated layout, against the size cbindgen carries from the core's offset_of! asserts.
+		((uint)Unsafe.SizeOf<RawConstraints>()).ShouldBe(Define("HyperCastRawConstraints_SIZE", 72));
+		((uint)Unsafe.SizeOf<RawCheck>()).ShouldBe(Define("HyperCastRawCheck_SIZE", 12));
+		((uint)Unsafe.SizeOf<RawSpan>()).ShouldBe(Define("HyperCastRawSpan_SIZE", 8));
+		((uint)Unsafe.SizeOf<RawNumFormat>()).ShouldBe(Define("HyperCastRawNumFormat_SIZE", 92));
+		((uint)Unsafe.SizeOf<RawDayPeriods>()).ShouldBe(Define("HyperCastRawDayPeriods_SIZE", 40));
+		string[] fields = ["Size", "Flags", "Rounding", "MinLength", "MaxLength", "Reserved", "Lower", "Upper", "MultipleOf"];
+		fields.Select(static f => (int)Marshal.OffsetOf<RawConstraints>(f)).ShouldBe([0, 4, 8, 12, 16, 20, 24, 40, 56]);
+		new[] { "Keyword", "Adjusted", "EnumIndex" }.Select(static f => (int)Marshal.OffsetOf<RawCheck>(f)).ShouldBe([0, 4, 8]);
+		new[] { "Offset", "Length" }.Select(static f => (int)Marshal.OffsetOf<RawSpan>(f)).ShouldBe([0, 4]);
+		(RawConstraints.HasMinimum, RawConstraints.HasExclusiveMinimum, RawConstraints.HasMaximum, RawConstraints.HasExclusiveMaximum)
+			.ShouldBe((Define("HyperCastRawConstraints_HAS_MINIMUM", 1), Define("HyperCastRawConstraints_HAS_EXCLUSIVE_MINIMUM", 2),
+				Define("HyperCastRawConstraints_HAS_MAXIMUM", 4), Define("HyperCastRawConstraints_HAS_EXCLUSIVE_MAXIMUM", 8)));
+		(RawConstraints.HasMultipleOf, RawConstraints.HasMinLength, RawConstraints.HasMaxLength, RawConstraints.Trim)
+			.ShouldBe((Define("HyperCastRawConstraints_HAS_MULTIPLE_OF", 16), Define("HyperCastRawConstraints_HAS_MIN_LENGTH", 32),
+				Define("HyperCastRawConstraints_HAS_MAX_LENGTH", 64), Define("HyperCastRawConstraints_TRIM", 128)));
+		RawConstraints.HasEnum.ShouldBe(Define("HyperCastRawConstraints_HAS_ENUM", 256));
+	}
+
+	[Fact]
+	void A_declaration_packs_into_the_cores_layout()
+	{
+		var raw = new Constraints<decimal>(exclusiveMinimum: -1.5m, maximum: "79228162514264337593543950335",
+			multipleOf: 0.25m, rounding: Rounding.Floor).ToRaw();
+		var bytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(in raw, 1));
+		bytes.Length.ShouldBe(72);
+		MemoryMarshal.Read<uint>(bytes).ShouldBe(72u);
+		MemoryMarshal.Read<uint>(bytes[4..]).ShouldBe(RawConstraints.HasExclusiveMinimum | RawConstraints.HasMaximum | RawConstraints.HasMultipleOf);
+		MemoryMarshal.Read<uint>(bytes[8..]).ShouldBe(2u);
+		bytes[12..24].ToArray().ShouldAllBe(static b => b == 0);
+		// Each decimal: the 64 low bits, the 32 high bits, the scale, the sign, two of padding.
+		MemoryMarshal.Read<ulong>(bytes[24..]).ShouldBe(15ul);
+		MemoryMarshal.Read<uint>(bytes[32..]).ShouldBe(0u);
+		(bytes[36], bytes[37]).ShouldBe(((byte)1, (byte)1));
+		MemoryMarshal.Read<ulong>(bytes[40..]).ShouldBe(ulong.MaxValue);
+		MemoryMarshal.Read<uint>(bytes[48..]).ShouldBe(uint.MaxValue);
+		(bytes[52], bytes[53]).ShouldBe(((byte)0, (byte)0));
+		MemoryMarshal.Read<ulong>(bytes[56..]).ShouldBe(25ul);
+		(bytes[68], bytes[69]).ShouldBe(((byte)2, (byte)0));
+
+		var integers = new Constraints<long>(@enum: [-3, 9]).PackedEnum;
+		integers.Length.ShouldBe(32);
+		MemoryMarshal.Read<RawDecimal>(integers).ToDecimal().ShouldBe(-3m);
+		MemoryMarshal.Read<RawDecimal>(integers[16..]).ToDecimal().ShouldBe(9m);
+
+		var text = new Constraints<string>(minLength: 1, maxLength: 4, trim: true, @enum: ["é", "ab"]);
+		text.ToRaw().Flags.ShouldBe(RawConstraints.HasMinLength | RawConstraints.HasMaxLength | RawConstraints.Trim | RawConstraints.HasEnum);
+		(text.ToRaw().MinLength, text.ToRaw().MaxLength).ShouldBe((1u, 4u));
+		text.PackedEnum.ToArray().ShouldBe([2, 0, 0, 0, 0xC3, 0xA9, 2, 0, 0, 0, (byte)'a', (byte)'b']);
+		new Constraints<string>().PackedEnum.Length.ShouldBe(0);
+	}
+
+	[Fact]
+	void A_violation_decodes_from_its_keyword_code()
+	{
+		Abi.ToViolation(4, new RawFault(2, 3)).ShouldBe(new Violation(Keyword.ExclusiveMaximum, 2, 3));
+		Should.Throw<InvalidOperationException>(() => Abi.ToViolation(0, default));
+	}
 }

@@ -6,9 +6,10 @@ import HyperCastCore
 /// `@convention(c)` function pointers. The core is a static library linked into the
 /// executable on every platform this package builds for (`HyperCastCore`, a SwiftPM binary
 /// target), so there is nothing to find, open or deploy at run time. Every door returns a
-/// ``Verdict``: the value, or a ``Fault`` with a closed reason and the offending byte span.
-/// No door throws — bad data is a ``Fault`` — and a precondition failure means a caller
-/// bug, never data.
+/// ``Verdict``: the value, or a ``Fault`` with a closed reason and the offending byte span; a
+/// checked door, judged by ``Constraints``, a ``CheckedVerdict``, whose rejection is that
+/// ``Fault`` or a ``Violation``. No door throws — bad data is a ``Fault`` or a ``Violation`` —
+/// and a precondition failure means a caller bug, never data.
 ///
 /// Door names mirror the native ABI (`i32`, `f64`, `decimal`, `timestamp`, …) so the polyglot surface
 /// reads identically across bindings. Swift-flavored fidelity: `UInt8`–`UInt64` are native
@@ -179,7 +180,7 @@ public enum Cast {
     typealias RawNumFormat = Interop.RawNumFormat
     typealias RawDayPeriods = Interop.RawDayPeriods
 
-    private static func inputPointer(_ utf8: UnsafeRawBufferPointer) -> UnsafePointer<UInt8>? {
+    static func inputPointer(_ utf8: UnsafeRawBufferPointer) -> UnsafePointer<UInt8>? {
         // An empty buffer may carry a nil base address; the ABI never dereferences at len 0.
         utf8.baseAddress?.assumingMemoryBound(to: UInt8.self)
     }
@@ -293,7 +294,7 @@ public enum Cast {
     /// A native Swift `String` already stores contiguous UTF-8, so `withUTF8` hands the
     /// door a view of the string's own bytes — no `Array(text.utf8)` copy, which used to
     /// be one heap allocation and a memcpy on every `String` door.
-    private static func withUTF8<T>(_ text: String, _ body: (UnsafeRawBufferPointer) -> T) -> T {
+    static func withUTF8<T>(_ text: String, _ body: (UnsafeRawBufferPointer) -> T) -> T {
         var text = text
         return text.withUTF8 { body(UnsafeRawBufferPointer($0)) }
     }
@@ -876,6 +877,15 @@ public enum Cast {
     /// absent), everything else flows through untouched.
     public static func optional<T>(_ verdict: Verdict<T>) -> Verdict<T>? {
         if case .fault(let fault) = verdict, fault.reason == .empty {
+            return nil
+        }
+        return verdict
+    }
+
+    /// Presents a checked verdict optionally: an ``CastFailure/empty`` fault becomes `nil`,
+    /// everything else, a ``Violation`` included, flows through untouched.
+    public static func optional<T>(_ verdict: CheckedVerdict<T>) -> CheckedVerdict<T>? {
+        if case .rejection(.fault(let fault)) = verdict, fault.reason == .empty {
             return nil
         }
         return verdict

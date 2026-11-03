@@ -1,4 +1,4 @@
-"""Loads the shared library every FFI binding loads and calls all twenty-seven C exports.
+"""Loads the shared library every FFI binding loads and calls all thirty-two C exports.
 
 The Forge's check-cdylib job (hyper-check-core.yml) runs this against a freshly built no_std library on every platform
 the forge ships: a library that links but will not load, or loads but misbehaves at the ABI,
@@ -8,8 +8,9 @@ the library the way a host does (dlopen, LoadLibrary), with nothing compiled in 
 Every export is called at least twice: once with input it accepts, the value checked, and
 once with input it rejects, the reason (and the fault span where one is set) checked. The
 out-structs mirror rust/src/verdict.rs's #[repr(C)] layouts and NumFormat and DayPeriods
-mirror rust/src/abi.rs's RawNumFormat and RawDayPeriods, as the Go and Swift bindings do; a
-layout drift reads back wrong values.
+mirror rust/src/abi.rs's RawNumFormat and RawDayPeriods (and Constraints, Check and Span its
+RawConstraints, RawCheck and RawSpan), as the Go and Swift bindings do; a layout drift reads
+back wrong values.
 
 usage: python cdylib_smoke.py <path-to-library> <rust/Cargo.toml>
 """
@@ -23,7 +24,7 @@ from pathlib import Path
 lib_path, manifest = sys.argv[1], sys.argv[2]
 want = re.search(r'^version = "([^"]+)"', Path(manifest).read_text(encoding="utf-8"), re.MULTILINE)[1]
 
-OK, EMPTY, MALFORMED, OUT_OF_RANGE, CONTRACT_VIOLATION = 0, 1, 2, 3, -1
+OK, EMPTY, MALFORMED, OUT_OF_RANGE, VIOLATION, CONTRACT_VIOLATION = 0, 1, 2, 3, 4, -1
 
 
 class Fault(ctypes.Structure):
@@ -53,6 +54,20 @@ class DayPeriods(ctypes.Structure):
 class Decimal(ctypes.Structure):
     _fields_ = [("lo", ctypes.c_uint64), ("hi", ctypes.c_uint32),
                 ("scale", ctypes.c_uint8), ("negative", ctypes.c_bool)]
+
+
+class Constraints(ctypes.Structure):
+    _fields_ = [("size", ctypes.c_uint32), ("flags", ctypes.c_uint32), ("rounding", ctypes.c_uint32),
+                ("min_length", ctypes.c_uint32), ("max_length", ctypes.c_uint32), ("reserved", ctypes.c_uint32),
+                ("lower", Decimal), ("upper", Decimal), ("multiple_of", Decimal)]
+
+
+class Check(ctypes.Structure):
+    _fields_ = [("keyword", ctypes.c_uint32), ("adjusted", ctypes.c_uint32), ("enum_index", ctypes.c_uint32)]
+
+
+class Span(ctypes.Structure):
+    _fields_ = [("offset", ctypes.c_uint32), ("len", ctypes.c_uint32)]
 
 
 class Timestamp(ctypes.Structure):
@@ -129,6 +144,17 @@ TYPED = {"cast_decimal_from_f64": (Decimal, []), "cast_excel_serial_from_f64": (
 for name, (out, extra) in TYPED.items():
     fn = getattr(lib, name)
     fn.restype, fn.argtypes = i32, [ctypes.c_double, *extra, P(out), FaultP]
+# The validation constraints: the checked doors take a declaration, an `enum` list and a
+# nullable RawCheck, and write the door's own type through a void pointer.
+ConstraintsP, CheckP, SpanP, bytes_p = P(Constraints), P(Check), P(Span), ctypes.c_char_p
+lib.cast_checked.restype, lib.cast_checked.argtypes = i32, [u32, u32, FormatP, ConstraintsP, bytes_p, size, txt, size,
+                                                            ctypes.c_void_p, FaultP, CheckP]
+lib.cast_checked_from_f64.restype, lib.cast_checked_from_f64.argtypes = i32, [u32, ctypes.c_double, ConstraintsP,
+                                                                              bytes_p, size, ctypes.c_void_p,
+                                                                              FaultP, CheckP]
+lib.cast_constraints_check.restype, lib.cast_constraints_check.argtypes = i32, [u32, u32, ConstraintsP, bytes_p, size]
+lib.cast_text.restype, lib.cast_text.argtypes = i32, [txt, size, SpanP, FaultP]
+lib.cast_declared_decimal.restype, lib.cast_declared_decimal.argtypes = i32, [bytes_p, size, P(Decimal)]
 OUT_TYPES = {**PLAIN, **NUMERIC, **SELECTOR, **DATETIME, **{name: out for name, (out, _) in TYPED.items()}}
 called = set()
 
@@ -301,5 +327,118 @@ status, span, _ = typed("cast_excel_duration", -0.25)
 check(status == OK and (span.seconds, span.nanos) == (-21600, 0), "cast_excel_duration value")
 check(typed("cast_excel_duration", 1e10)[0] == OUT_OF_RANGE, "cast_excel_duration window")
 
-check(len(called) == 26, f"called {len(called)} cast exports, expected 26: {sorted(OUT_TYPES.keys() - called)}")
-print(f"cdylib smoke: {lib_path} {got}, all 27 exports called")
+
+
+# The validation constraints. HAS_MINIMUM 1, HAS_MAXIMUM 4, HAS_MULTIPLE_OF 16,
+# HAS_MAX_LENGTH 64, TRIM 128, HAS_ENUM 256 (the `enum` list is read only under it);
+# rounding 1 is midpoint.
+F64, I32, TEXT = 11, 4, 18
+
+
+def decimal(lo, scale=0, negative=False):
+    return Decimal(lo, 0, scale, negative)
+
+
+def constraints(flags=0, rounding=0, lower=None, upper=None, multiple_of=None, max_length=0):
+    declared = Constraints(ctypes.sizeof(Constraints), flags, rounding, 0, max_length, 0)
+    for name, value in (("lower", lower), ("upper", upper), ("multiple_of", multiple_of)):
+        if value is not None:
+            setattr(declared, name, value)
+    return declared
+
+
+def packed_text(*entries):
+    """Text `enum` entries as the ABI packs them: a little-endian u32 length, then the UTF-8."""
+    return b"".join(len(e.encode()).to_bytes(4, "little") + e.encode() for e in entries)
+
+
+def checked(door, declared, entries, text, out):
+    called.add("cast_checked")
+    raw = text.encode()
+    fault, report = Fault(0xFFFF, 0xFFFF), Check(7, 7, 7)
+    status = lib.cast_checked(door, 0, None, ctypes.byref(declared), entries, len(entries), raw, len(raw),
+                              ctypes.byref(out), ctypes.byref(fault), ctypes.byref(report))
+    return status, out, (fault.offset, fault.len), (report.keyword, report.adjusted, report.enum_index)
+
+
+for shape, size_ in ((Constraints, 72), (Check, 12), (Span, 8)):
+    check(ctypes.sizeof(shape) == size_,
+          f"{shape.__name__} is {ctypes.sizeof(shape)} bytes; rust/src/abi.rs pins {size_}")
+NO_INDEX = 0xFFFFFFFF
+latitude = constraints(1 | 4 | 16, 1, decimal(90, 0, True), decimal(90), decimal(1, 6))
+status, value, _, report = checked(F64, latitude, b"", "45.1234567", ctypes.c_double())
+check(status == OK and value.value == 45.123457 and report == (0, 1, NO_INDEX), "cast_checked rounds and reports")
+status, value, fault, report = checked(F64, latitude, b"", "91", ctypes.c_double())
+check(status == VIOLATION and fault == (0, 2) and report[0] == 3 and value.value == 0, "cast_checked violation")
+status, _, fault, report = checked(F64, latitude, b"", "9x", ctypes.c_double())
+check(status == MALFORMED and fault == (1, 1) and report == (7, 7, 7), "cast_checked fault leaves check alone")
+# A float door judges the float it delivers too: 0.99999999999 is 1.0 at f32, past exclusiveMaximum 1.
+below_one = constraints(8, upper=decimal(1))
+status, _, fault, report = checked(10, below_one, b"", "0.99999999999", ctypes.c_float())
+check(status == VIOLATION and fault == (0, 13) and report[0] == 4, "cast_checked delivered float")
+status, value, _, _ = checked(10, below_one, b"", "0.9999999", ctypes.c_float())
+check(status == OK and value.value < 1, "cast_checked delivered float below the bound")
+sexes = packed_text("Female", "Male", "Other")
+status, span, _, report = checked(TEXT, constraints(64 | 128 | 256, max_length=6), sexes, "\u00a0MALE ", Span())
+check(status == OK and (span.offset, span.len) == (2, 4) and report == (0, 0, 1), "cast_checked text enum")
+status, _, fault, report = checked(TEXT, constraints(64 | 128 | 256, max_length=6), sexes, " Mail ", Span())
+check(status == VIOLATION and fault == (1, 4) and report[0] == 8, "cast_checked text enum violation")
+for bad in (0, 71, 73):
+    unsized_ = constraints()
+    unsized_.size = bad
+    check(checked(I32, unsized_, b"", "1", ctypes.c_int32())[0] == CONTRACT_VIOLATION, f"cast_checked size {bad}")
+check(checked(12, constraints(), b"", "1", ctypes.c_int32())[0] == CONTRACT_VIOLATION, "cast_checked uuid door")
+
+called.add("cast_checked_from_f64")
+out, fault, report = ctypes.c_double(), Fault(0xFFFF, 0xFFFF), Check(7, 7, 7)
+status = lib.cast_checked_from_f64(F64, 0.1 + 0.2, ctypes.byref(constraints(16, 1, multiple_of=decimal(1, 1))), None,
+                                   0, ctypes.byref(out), ctypes.byref(fault), ctypes.byref(report))
+check(status == OK and out.value == 0.3 and report.adjusted == 1, "cast_checked_from_f64 rounds 0.1 + 0.2")
+status = lib.cast_checked_from_f64(F64, 91.0, ctypes.byref(latitude), None, 0, ctypes.byref(out),
+                                   ctypes.byref(fault), ctypes.byref(report))
+check(status == VIOLATION and (fault.offset, fault.len) == (0, 0) and report.keyword == 3,
+      "cast_checked_from_f64 violation, spanless")
+
+called.add("cast_constraints_check")
+judge = lib.cast_constraints_check
+check(judge(F64, 0, ctypes.byref(latitude), None, 0) == 0, "cast_constraints_check accepts")
+check(judge(TEXT, 0, ctypes.byref(constraints(256)), sexes, len(sexes)) == 0, "cast_constraints_check text enum")
+twice = packed_text("Male", "MALE")
+check(judge(TEXT, 0, ctypes.byref(constraints(256)), twice, len(twice)) == 10, "cast_constraints_check duplicate")
+check(judge(TEXT, 0, ctypes.byref(constraints()), sexes, len(sexes)) == 11, "cast_constraints_check enum without HAS_ENUM")
+check(judge(TEXT, 0, ctypes.byref(constraints(256)), None, 0) == 12, "cast_constraints_check empty enum")
+padded = packed_text(" Male")
+check(judge(TEXT, 0, ctypes.byref(constraints(128 | 256)), padded, len(padded)) == 13,
+      "cast_constraints_check enum entry no trimmed input matches")
+check(judge(6, 0, ctypes.byref(constraints(1, lower=decimal(1, 0, True))), None, 0) == 8,
+      "cast_constraints_check bound past the door")
+check(judge(TEXT, 0, ctypes.byref(constraints(256)), b"\x01\x00\x00\x00\xff", 5) == 9,
+      "cast_constraints_check not UTF-8")
+check(judge(I32, 0, None, None, 0) == 11, "cast_constraints_check null declaration")
+
+called.add("cast_text")
+span, fault = Span(), Fault(0xFFFF, 0xFFFF)
+raw = "\U0001F44D\U0001F3FD".encode()
+check(lib.cast_text(raw, len(raw), ctypes.byref(span), ctypes.byref(fault)) == OK and (span.offset, span.len) == (0, 8),
+      "cast_text value")
+check(lib.cast_text(b"ab\xffc", 4, ctypes.byref(span), ctypes.byref(fault)) == MALFORMED
+      and (fault.offset, fault.len) == (2, 1), "cast_text invalid UTF-8")
+check(lib.cast_text(None, 0, ctypes.byref(span), None) == EMPTY, "cast_text empty")
+
+called.add("cast_declared_decimal")
+declared = Decimal(0xA5A5, 0x5A5A, 99, True)
+check(lib.cast_declared_decimal(b"1.50", 4, ctypes.byref(declared)) == OK
+      and (declared.lo, declared.hi, declared.scale, declared.negative) == (15, 0, 1, False),
+      "cast_declared_decimal value")
+check(lib.cast_declared_decimal(b"-0", 2, ctypes.byref(declared)) == OK
+      and (declared.lo, declared.hi, declared.scale, declared.negative) == (0, 0, 0, False),
+      "cast_declared_decimal unsigned zero")
+declared = Decimal(0xA5A5, 0x5A5A, 99, True)
+check(lib.cast_declared_decimal(b"1e-29", 5, ctypes.byref(declared)) == 8
+      and (declared.lo, declared.hi, declared.scale, declared.negative) == (0xA5A5, 0x5A5A, 99, True),
+      "cast_declared_decimal refused, out untouched")
+check(lib.cast_declared_decimal(b"1\xff", 2, ctypes.byref(declared)) == 8, "cast_declared_decimal not UTF-8")
+check(lib.cast_declared_decimal(b"1", 1, None) == -1, "cast_declared_decimal null out")
+
+check(len(called) == 31, f"called {len(called)} cast exports, expected 31")
+print(f"cdylib smoke: {lib_path} {got}, all 32 exports called")

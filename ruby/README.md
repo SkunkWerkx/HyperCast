@@ -62,9 +62,14 @@ midnight, durations come back as exact `Rational` seconds across the core's whol
 | `excel_serial_from_float(value, epoch)` | zone-less `DateTime`, as `datetime` | `:y1900` / `:y1904` |
 | `excel_time(value)` | `Integer` nanoseconds since midnight | — |
 | `excel_duration(value)` | exact `Rational` seconds | — |
+| `text(text)` | the text itself as a `String`, once it is valid UTF-8 (the `String` passed when it is UTF-8 or US-ASCII, else a UTF-8 copy) | — |
+| `text(text, constraints)` | a checked verdict over the text — see [Validation constraints](#validation-constraints) | a `Constraints` for `:text` |
+| `checked(text, format, constraints)` [^overrides] | a checked verdict over the value the constraints' door reads — see [Validation constraints](#validation-constraints) | a `NumFormat` and a `Constraints` |
+| `checked_from_float(value, constraints)` | a checked verdict over a number already held | a `Constraints` |
 
-Every door returns a `Success` or a `Fault`; `HyperCast.optional(verdict)` folds `:empty`
-to `nil`. Beside the doors, `native_version` returns the loaded core's
+Every plain door returns a `Success` or a `Fault`, and every checked door a `Checked`, a
+`Fault` or a `Violation`; `HyperCast.optional(verdict)` folds `:empty` to `nil` for
+either, and passes every other rejection, a `Violation` included, through. Beside the doors, `native_version` returns the loaded core's
 `"major.minor.patch"` and `available?` answers `true`/`false` without ever raising — see
 [Is the native core there?](#is-the-native-core-there).
 
@@ -85,9 +90,33 @@ the same exception on every backend:
   that names nothing: an unknown Symbol, or anything that is not a Symbol (`"seconds"`
   included). `date(text, nil)` is not one of these: an explicit `nil` order is the strict ISO
   door, exactly as if it were left off.
-- `TypeError` for text that is not a `String` (anything with `to_str` is taken as one).
-- `String#encode`'s own `Encoding::` error for text in another encoding that cannot be
-  transcoded to UTF-8.
+- `ArgumentError` from `Constraints.new` (and `Constraints#with`) for a declaration the core
+  refuses, worded from its code — `Constraints refused (code 4): the lower bound is not
+  below the upper bound.` — and for a keyword of the wrong type: a `Float`, `true` or `false`
+  bound, a length that is not an `Integer` from 0 to 2³² − 1, a `trim` that is not `true` or
+  `false`, an `enum` that is not a list or a text entry that is not a `String`. Also from
+  `checked`, `checked_from_float` and `text` for constraints bound to the other kind of door,
+  and from `declared_decimal` for text it cannot convert (code 8). `KeyError` for a door or a
+  rounding that names nothing.
+- `TypeError` for text that is not a `String` (anything with `to_str` is taken as one), and
+  for constraints that are not a `Constraints`.
+
+Text in another encoding that cannot be transcoded to UTF-8 (a lone UTF-16 surrogate, bytes
+its encoding does not allow, a character with no Unicode counterpart, any character past ASCII
+in an encoding Ruby has no converter to UTF-8 for, such as EUC-TW) is data, not an
+exception: every door, plain or checked, judges it `:malformed` at that character, on both
+backends, never with a replacement standing for it; as an `enum` entry it is refused as an
+entry that is not UTF-8 (code 9); and as a `NumFormat` symbol or a day-period designator it is
+the caller's bug, an `ArgumentError` naming the field ("currency symbol ... must be whole
+characters with a UTF-8 form"), on both backends.
+
+A dummy encoding (`UTF-16` and `UTF-32` with their byte-order mark, `ISO-2022-JP`, `UTF-7`)
+is held to the same rule. Ruby cannot split its text into characters (its `String` counts
+bytes), so the text is transcoded whole, each conversion error judged `:malformed` as one
+character, and a span counts the characters of its UTF-8 form:
+`text.encode(Encoding::UTF_8, invalid: :replace, undef: :replace)[offset, length]` is the
+offending text. A dummy encoding with no converter to UTF-8 at all (`UTF-7`,
+`ISO-2022-JP-2`) is `:malformed` at its first byte.
 
 ### Is the native core there?
 
@@ -114,8 +143,8 @@ gem, which carries no Fiddle library, that `LoadError` names the universal gem i
 ### Fault spans index the String you passed
 
 A `Fault`'s `offset`/`length` are in the units `String#[]` slices by on your own input:
-character offsets for text — in any encoding; the core reads UTF-8, and the span is mapped
-back, an identity for ASCII — and byte offsets for a binary (`ASCII-8BIT`) String, whose
+character offsets for text — in any encoding but a dummy one (above); the core reads UTF-8,
+and the span is mapped back, an identity for ASCII — and byte offsets for a binary (`ASCII-8BIT`) String, whose
 characters are its bytes. Either way `text[offset, length]` is the offending text with no
 arithmetic on your side:
 
@@ -222,10 +251,13 @@ symbol over 16 bytes, a digit zero that is ASCII or does not start a digit block
 limits are `NumFormat::SYMBOL_MAX_BYTES` (8) and `NumFormat::CURRENCY_MAX_BYTES` (16).
 
 Across the ABI a `NumFormat` is a 92-byte, size-tagged struct that the core reads in
-place — `NumFormat#packed` is exactly those bytes: the size word, the flags, the digit
-zero's code point, then each symbol's UTF-8 bytes and length held inline. It is packed
-once per format object and memoized by identity on every backend, so declaring a currency
-or a culture's digits costs a cast nothing.
+place — `NumFormat#packed` is those bytes in little-endian order, as Python's
+`NumFormat.packed` is: the size word, the flags, the digit zero's code point, then each
+symbol's UTF-8 bytes and length held inline. On a little-endian host they are exactly the
+struct; on a big-endian one the three words are swapped to native order before they cross,
+which the Fiddle backend does itself. It is packed once per format object and memoized by
+identity on every backend, so declaring a currency or a culture's digits costs a cast
+nothing.
 
 **What stays English: the boolean lexicon.** `bool` reads its twenty lexemes
 (`true`/`false`, `yes`/`no`, `on`/`off`, …) in English only. No platform carries culture
@@ -305,6 +337,104 @@ packed per call — the Fiddle backend packs them into its per-thread scratch �
 that declares them costs about twice the plain call on the Magnus backend (the keyword
 scan is the cost: `am: nil, pm: nil` pays the same) and about half again on Fiddle.
 
+## Validation constraints
+
+A value that parsed can still break a business rule. `Constraints` declares the rule with the
+OpenAPI Schema Object's keywords, bound to one door (`:i32`, `:f64`, `:decimal`, `:text`, …),
+and a checked door judges the value by it, in the core and in exact decimal arithmetic:
+
+```ruby
+require "bigdecimal"
+
+# Latitude: a multiple of 0.000001 between -90 and 90, finer input rounded half to even.
+latitude = HyperCast::Constraints.new(door: :f64, minimum: "-90", maximum: "90",
+                                      multiple_of: "0.000001", rounding: :midpoint)
+# Euro cash: a multiple of 0.05, and anything else is wrong.
+euro_cash = HyperCast::Constraints.new(door: :decimal, multiple_of: BigDecimal("0.05"))
+# A sex code: one of three, whatever case and padding it arrived in.
+sex = HyperCast::Constraints.new(door: :text, trim: true, enum: %w[Female Male Other])
+
+invariant = HyperCast::NumFormat::INVARIANT
+euro = HyperCast::NumFormat.new(decimal_sep: ",", group_sep: ".", flags: HyperCast::ALL_STYLES, currency: "€")
+HyperCast.checked("45.1234567", invariant, latitude)
+# => Checked(value: 45.123457, adjusted: true, enum_index: nil)
+HyperCast.checked("-90.5", invariant, latitude)
+# => Violation(keyword: HyperCast::Keyword::MINIMUM, offset: 0, length: 5)
+HyperCast.checked_from_float(45.1234567, latitude)
+# => Checked(value: 45.123457, adjusted: true, enum_index: nil)
+HyperCast.checked("€1.234,55", euro, euro_cash)
+# => Checked(value: Decimal(magnitude: 123455, scale: 2, negative: false), adjusted: false, enum_index: nil)
+HyperCast.checked("€12,37", euro, euro_cash)
+# => Violation(keyword: HyperCast::Keyword::MULTIPLE_OF, offset: 0, length: 6)
+HyperCast.checked("12,3x", euro, euro_cash)
+# => Fault(reason: :malformed, offset: 4, length: 1)
+
+def describe(verdict)
+  case verdict
+  in HyperCast::Checked(value:, enum_index:) then "#{value}, entry #{enum_index}"  # " MALE " -> Male, entry 1
+  in HyperCast::Fault(reason:, offset:) then "#{reason} at character #{offset}"    # "   " -> empty at character 0
+  in HyperCast::Violation(keyword: HyperCast::Keyword::ENUM, offset:, length:)
+    "not a sex code: characters #{offset}+#{length}"                                 # "Femal" -> characters 0+5
+  in HyperCast::Violation(keyword:) then "breaks #{keyword.name}"                   # keywords are open
+  end
+end
+
+describe(HyperCast.text(" MALE ", sex)) # => "Male, entry 1"
+```
+
+A checked door answers `Checked(value, adjusted, enum_index)` — the value, `adjusted` (true
+only when rounding changed it) and, at `:text` with an `enum`, the index of the entry matched
+(`nil` otherwise, an integer `enum` included, where the value is the answer) — or one of the
+two rejections: the plain doors' own `Fault` (it did not parse: the very type, so a parse
+failure reads the same at either door) or a `Violation(keyword, offset, length)` (it parsed and
+broke a rule: the keyword and the value's span, in the units a fault's span is in, characters
+for text and bytes for a binary `String`). All three are `Data`, so they pattern-match.
+`Keyword` is a `Data` with constants (`Keyword::MINIMUM` … `Keyword::ENUM`), not a closed set:
+its `name` is the OpenAPI spelling (`"exclusiveMinimum"`), and `format` and `pattern` may join
+in a minor release, a code this gem does not name yet arriving as `Keyword.new(code: 9)`, named
+`"keyword 9"`. So a `case` over keywords needs its catch-all branch (the last `Violation` one
+above). The plain doors and their `Success` or `Fault` are unchanged.
+
+The integer doors take `minimum:`, `exclusive_minimum:`, `maximum:`, `exclusive_maximum:`,
+`multiple_of:` with a `rounding:` (`:strict`, the default, then `:midpoint`, half to even,
+`:floor` and `:ceiling`, the keys of `HyperCast::ROUNDINGS`) and `enum:`; `:f32`, `:f64` and
+`:decimal` the same without `enum:`; `:text` takes `min_length:`, `max_length:` (in code
+points), `trim:` (Unicode `White_Space`, U+00A0 included) and `enum:`, matched under Unicode
+simple case folding and delivering the `String` declared and its index: the very object when it
+is frozen, and when it is not, the frozen copy the declaration took of it (a `Hash` key's rule),
+so mutating the original afterwards changes nothing. The constructor takes every keyword at every door, and the core
+alone refuses one its door does not take. The first failure wins: the door parses, the text is
+trimmed, `multiple_of` rounds or refuses, then the bounds, the lengths and `enum` judge the
+result. A float door also judges the float it delivers against each bound read as the door reads
+it: `"1e-400"` at `:f64` reads as `0`, so it breaks `exclusive_minimum: "0"`. Bounds, steps and
+integer entries are an `Integer`, a `BigDecimal`, a `String` in invariant notation or a
+`HyperCast::Decimal`, all converted exactly by the core (`"1e-6"` is `0.000001`, and `"1e-29"`,
+past the 28 places a core decimal holds, is refused rather than rounded) and kept as the exact
+`HyperCast::Decimal` declared; never a `Float`, so `0.1` cannot be declared inexactly: a `Float`
+bound is an `ArgumentError`. `checked(text, format, constraints)` is every numeric door's checked
+form, with the same `separator:`, `delimiter:` and `unit:` overrides, and
+`checked_from_float(value, constraints)` judges a number a source already decoded on the shortest
+decimal that names it (`0.1 + 0.2` breaks `multiple_of: "0.1"` under `:strict`, and rounds to `0.3`
+under `:midpoint`), with an empty span. `text(text, constraints)` is the text door's.
+
+A declaration is judged once, by the core, when it is built, and one that cannot mean anything
+at its door is the caller's bug: `Constraints.new` raises `ArgumentError`, its message the rule
+(`Constraints.new(door: :u8, minimum: "-1")` raises "Constraints refused (code 8): a bound,
+step or enum entry the door cannot hold."). An `enum:` left `nil` is none, while `enum: []`
+declares one no value could match and is refused (code 12), as is a text entry no input can
+match (code 13: an empty one, or under `trim:` one with leading or trailing white space). The
+door is a required keyword, so no
+`Constraints` means "no rules" by accident; `Constraints.new(door: :f64)` declares none on
+purpose. Handing a declaration to the other kind of door (`:text` constraints to `checked`,
+numeric ones to `text`) is an `ArgumentError` too, and after that a checked cast judges only
+data and raises nothing for it. `HyperCast.constraints_check(door:, **keywords)` answers the
+same refusal as its code, `0` to `13` (`Constraints::REFUSALS` words each; a code past them
+reads "Constraints refused (code N): a rule this binding does not name."), without raising,
+and `HyperCast.declared_decimal(text)` is the conversion every bound crosses. A text `enum`
+entry crosses as its bytes, so one that is not UTF-8 (a binary `"\xFF".b`) is the core's
+refusal 9. A `Constraints` is an immutable `Data`: two declaring the same rules are equal, and
+`#with` builds a new one, judged again, as `Marshal.load` does.
+
 [^overrides]: Plus the optional keywords `separator:`, `delimiter:` and `unit:`, which
     override those fields of `format` for the call. See
     [Rails' words for a format](#rails-words-for-a-format-separator-delimiter-unit).
@@ -316,8 +446,9 @@ it reads the core's out-values out of its own buffers and needs the values the d
 have returned. `HyperCast::Interop` is the code the Fiddle backend's doors decode with, so
 the two cannot drift. It is loaded on every backend.
 
-- `SCALARS` — the `String#unpack` directive for one value of each scalar door (`:i32` is
-  `"l<"`; a bool is the byte 0 or 1).
+- `SCALARS` — the `String#unpack` directive for one value of each scalar door, in the host's
+  native byte order, the order the core writes in (`:i32` is `"l"`; a bool is the byte 0 or
+  1).
 - `RECORDS` — for each record door (`:decimal`, `:uuid`, `:timestamp`, `:date`, …), the
   directive that unpacks one value, how many fields that yields, and a lambda
   `(fields, at)` that builds the Ruby value from them. To decode a column, append `"*"` and
@@ -332,11 +463,21 @@ the two cannot drift. It is loaded on every backend.
 - `library_path(library, native_dir, repo_root)` — the shared library to `dlopen`: the
   staged `native/{rid}/` build, else the in-repo cargo build, else `nil`.
 
+A `Constraints` crosses a C ABI as two Strings, the layouts the core reads in place:
+`#packed` is the 72-byte `RawConstraints` in native byte order (the size, the flags, the
+rounding code, `min_length`, `max_length` and a reserved zero as `u32`s, then the lower bound,
+the upper bound and `multiple_of` as 16-byte decimals: the low 64 and high 32 bits of the
+magnitude, the scale, the sign and two zero bytes), and `#packed_enum` the `enum` list beside
+it (`""` for none): at an integer door 16-byte decimals in native byte order, at `:text` each
+entry a little-endian `u32` byte length followed by its UTF-8, read only when the flags carry
+`HAS_ENUM` (256), which any declared `enum:` sets (`Constraints::FLAGS`).
+`HyperCast::CHECKED_DOORS` maps each door to the core's door code.
+
 `NativePlatform.rid_and_library_name(library: "hypertabular")` gives the `{rid}` directory
 and file name for any SkunkWerkx core; `library:` defaults to `"hypercast"`.
 
 ```ruby
-HyperCast::Interop.decode(:i32, [-7].pack("l<"))           # => -7
+HyperCast::Interop.decode(:i32, [-7].pack("l"))            # => -7
 HyperCast::Interop.fault(2, 3, 1)                          # => Fault, reason :malformed
 HyperCast::Interop.version(0x000700)                       # => "0.7.0"
 ```
@@ -359,10 +500,13 @@ HyperCast::Interop.version(0x000700)                       # => "0.7.0"
    2.85 µs: a little behind `Time.iso8601`, sitting on Fiddle's per-call marshalling floor.
 
    Separator detection is nearly free here: `1.234.567,89` under `NumFormat::DETECT` runs
-   at 154 ns against 145 ns for the same text under a declared eurozone format. Reading a
-   format costs one pointer compare: `DETECT` is identity-matched like `INVARIANT`, and any
-   other format is resolved once per thread and memoized by identity — anchored in a
-   thread-variable so the memo's key can never be a recycled address.
+   at 154 ns against 145 ns for the same text under a declared eurozone format. Reading
+   `INVARIANT` or `DETECT` costs one pointer compare; any other format is resolved once per
+   thread and memoized by its `object_id`, which survives a compacting collection and is never
+   reused, so the memo cannot mistake a format built later for the one it remembers. That
+   lookup costs about 5 ns more than the address compare it replaced (Apple M6, Ruby 4.0.9,
+   2026-11-02: `1,234,567` under a declared `$` at 82 ns against 77 ns), and a thread
+   alternating between two formats now pays 970 ns per pair against 1.13 µs.
 
    A declared currency symbol costs text that does not carry one about 6 ns on the Magnus
    backend: in a run for 0.9.0, separate from the [Benchmarks](#benchmarks) table, `1,234,567`
@@ -422,7 +566,9 @@ rather than through `Data.new`, whose keyword handling alone cost more than the 
 | `:native` | the core linked into a Magnus extension | a precompiled platform gem is installed — every one carries an extension for each Ruby it installs on; see [Install](#install) — or the `hypercast-wasm` gem is linked into a ruby.wasm interpreter; see [Ruby in the browser](#ruby-in-the-browser) |
 | `:fiddle` | `libhypercast` for this platform, `dlopen`ed through Fiddle | no extension loads: the universal gem, on a Ruby or platform no platform gem covers; also the answer when nothing loads at all |
 
-Selection happens once, at `require`, in that order.
+Selection happens once, at `require`, in that order. Either way the gem has a door for each
+of the core's 32 C ABI exports: Fiddle calls the exports, and the extension the core's Rust
+functions behind them (`date` takes the order `cast_date_ordered` would).
 
 `HYPERCAST_PURE` forces `:fiddle`, even where an extension would load. It is a testing and
 diagnostic switch — CI runs the whole suite through it, and it is how to rule an extension

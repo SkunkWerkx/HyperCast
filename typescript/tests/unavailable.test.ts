@@ -22,6 +22,8 @@ test('the fallback literals equal the native values', () => {
   assert.deepEqual({ ...api.UnixPrecision }, { ...native.UnixPrecision })
   assert.deepEqual({ ...api.DateOrder }, { ...native.DateOrder })
   assert.deepEqual({ ...api.ExcelEpoch }, { ...native.ExcelEpoch })
+  assert.deepEqual({ ...api.Door }, { ...native.Door })
+  assert.deepEqual({ ...api.Rounding }, { ...native.Rounding })
   assert.deepEqual(
     { ...api.CastFailure },
     {
@@ -50,8 +52,20 @@ const api = require(process.env.HYPERCAST_INDEX)
 assert.equal(api.isAvailable(), false)
 assert.equal(api.NumStyles.All, 95)
 assert.equal(api.DateOrder.DayMonthYear, 3)
+assert.equal(api.Door.Text, 18)
+assert.equal(api.Rounding.Midpoint, 1)
+assert.equal(api.Keyword.MultipleOf, 'multipleOf')
 assert.equal(api.optional({ ok: false, fault: { reason: 'empty', offset: 0, length: 0 } }), null)
-for (const call of [() => api.castI32('1'), () => api.NumFormat.declare({}), () => api.nativeVersion()]) {
+for (const call of [
+  () => api.castI32('1'),
+  () => api.NumFormat.declare({}),
+  () => api.nativeVersion(),
+  () => api.Constraints.declare({}),
+  () => api.castChecked('1'),
+  () => api.castText('1'),
+  () => api.castConstraintsCheck({}),
+  () => api.castDeclaredDecimal('1'),
+]) {
   let thrown
   try { call() } catch (error) { thrown = error }
   assert.ok(api.isHyperCastError(thrown), String(thrown))

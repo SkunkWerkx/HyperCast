@@ -211,7 +211,7 @@ asserts in `rust/src/abi.rs` and carried in the header as `HyperCastRawConstrain
 
 ```c
 typedef struct {
-    uint32_t size;          // bytes the caller built; 0 = no constraints
+    uint32_t size;          // HyperCastRawConstraints_SIZE (72); any other size is refused
     uint32_t flags;         // see below
     uint32_t rounding;      // 0 strict, 1 midpoint (half-even), 2 floor, 3 ceiling
     uint32_t min_length;    // read when HAS_MIN_LENGTH

@@ -39,6 +39,13 @@ const castDecimalFromNumber = door('castDecimalFromNumber')
 const castExcelSerialFromNumber = door('castExcelSerialFromNumber')
 const castExcelTime = door('castExcelTime')
 const castExcelDuration = door('castExcelDuration')
+const castChecked = door('castChecked')
+const castCheckedFromNumber = door('castCheckedFromNumber')
+// castText chooses plain or constrained by arity in the addon itself (its module_exports hook),
+// so every entry, this one, the WebAssembly fallback and its browser entry, agrees.
+const castText = door('castText')
+const castConstraintsCheck = door('castConstraintsCheck')
+const castDeclaredDecimal = door('castDeclaredDecimal')
 // The format classes, or stand-ins whose static methods throw the same unavailable error.
 const formatClass = (name, statics) => {
   if (native) return native[name]
@@ -48,6 +55,7 @@ const formatClass = (name, statics) => {
 }
 const NumFormat = formatClass('NumFormat', ['declare', 'invariant', 'detect'])
 const DateFormat = formatClass('DateFormat', ['declare'])
+const Constraints = formatClass('Constraints', ['declare'])
 // Frozen literal fallbacks, so the enums exist (and keep their values) when the addon did not load.
 const NumStyles = native
   ? native.NumStyles
@@ -70,6 +78,37 @@ const DateOrder = native
   ? native.DateOrder
   : Object.freeze({ YearMonthDay: 1, MonthDayYear: 2, DayMonthYear: 3 })
 const ExcelEpoch = native ? native.ExcelEpoch : Object.freeze({ Y1900: 1, Y1904: 2 })
+const Door = native
+  ? native.Door
+  : Object.freeze({
+      I8: 2,
+      I16: 3,
+      I32: 4,
+      I64: 5,
+      U8: 6,
+      U16: 7,
+      U32: 8,
+      U64: 9,
+      F32: 10,
+      F64: 11,
+      Text: 18,
+      Decimal: 19,
+    })
+const Rounding = native
+  ? native.Rounding
+  : Object.freeze({ Strict: 0, Midpoint: 1, Floor: 2, Ceiling: 3 })
+// The keywords a violation names, by name. Open: a code this binding does not name yet
+// arrives as "keyword N", so a switch over keywords needs a default arm.
+const Keyword = Object.freeze({
+  Minimum: 'minimum',
+  ExclusiveMinimum: 'exclusiveMinimum',
+  Maximum: 'maximum',
+  ExclusiveMaximum: 'exclusiveMaximum',
+  MultipleOf: 'multipleOf',
+  MinLength: 'minLength',
+  MaxLength: 'maxLength',
+  Enum: 'enum',
+})
 const CastFailure = native
   ? native.CastFailure
   : Object.freeze({ Empty: 'empty', Malformed: 'malformed', OutOfRange: 'outOfRange' })
@@ -78,8 +117,8 @@ const isHyperCastError = (value) =>
   value instanceof Error &&
   typeof value.code === 'string' &&
   value.code.startsWith('ERR_HYPERCAST_')
-// An `empty` fault is absent: null. Everything else, a value that is no verdict included,
-// comes back as it went in.
+// An `empty` fault is absent: null. Everything else, a violation and a value that is no
+// verdict included, comes back as it went in.
 const optional = (verdict) =>
   verdict !== null &&
   typeof verdict === 'object' &&
@@ -119,11 +158,20 @@ module.exports = {
   castExcelSerialFromNumber,
   castExcelTime,
   castExcelDuration,
+  castChecked,
+  castCheckedFromNumber,
+  castText,
+  castConstraintsCheck,
+  castDeclaredDecimal,
   NumFormat,
   DateFormat,
+  Constraints,
   NumStyles,
   UnixPrecision,
   DateOrder,
   ExcelEpoch,
+  Door,
+  Rounding,
+  Keyword,
   CastFailure,
 }

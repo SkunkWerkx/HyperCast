@@ -130,17 +130,27 @@ val stageNativeLibrary = tasks.register<Sync>("stageNativeLibrary") {
         // What cargo itself read: the dep-info file beside each library lists the sources rustc
         // opened, which is exactly what makes cargo rebuild. Walking whole source trees would
         // fail forever on a file the build never reads (python_ext.rs, say). The JNI library holds
-        // the core inside it, so its dep-info covers the core's sources too. Dep-info lists no
-        // manifests, so the core's Cargo.toml is an extra for both.
+        // the core inside it, so its dep-info covers the core's sources too. A source newer than
+        // the library is a rebuild cargo has not done.
+        //
+        // Dep-info lists no manifests, and a manifest edit need not change the library at all (a
+        // comment, a field no build reads): cargo then rebuilds nothing, and a library older than
+        // its manifest is still current. Cargo rewrites the dep-info file on every run, rebuilt or
+        // fresh, so a manifest is judged against the later of the two: a dep-info newer than the
+        // manifest means cargo has run since the edit and judged the library current, or built it.
+        // (A plain `cargo build --release` in rust/ rewrites the same file, its rlib's dep-info
+        // sharing the name, so after a manifest edit `cargo cdylib` is the run that counts.)
         fun depInfo(dep: File): List<File>? {
             if (!dep.isFile) return null
             val line = dep.readLines().firstOrNull { it.contains(": ") } ?: return null
             return line.substringAfter(": ").trim().split(Regex("(?<!\\\\) +"))
                 .filter { it.isNotBlank() }.map { File(it.replace("\\ ", " ")) }
         }
-        fun stale(lib: File, dep: File, extra: List<File>, remedy: String) {
+        fun stale(lib: File, dep: File, manifests: List<File>, remedy: String) {
             val sources = depInfo(dep) ?: throw GradleException("${lib.name}: no dep-info at ${dep.relativeTo(projectDir)}: $remedy")
-            val newer = (sources + extra).filter { it.exists() && it.lastModified() > lib.lastModified() }
+            val judged = maxOf(lib.lastModified(), dep.lastModified())
+            val newer = sources.filter { it.exists() && it.lastModified() > lib.lastModified() } +
+                manifests.filter { it.exists() && it.lastModified() > judged }
             if (newer.isNotEmpty()) {
                 throw GradleException("${lib.name} is older than ${newer.first().relativeTo(projectDir)}: $remedy")
             }

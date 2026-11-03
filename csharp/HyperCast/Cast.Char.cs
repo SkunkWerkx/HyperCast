@@ -37,8 +37,8 @@ public static partial class Cast
 	/// One UTF-16 code unit is returned as it is without crossing into the native core, a
 	/// lone surrogate included: the verbatim rule is "exactly one character", and a
 	/// <see cref="char"/> is what this overload was handed. Anything longer is transcoded to
-	/// UTF-8 like every other <see cref="string"/> door, so a lone surrogate inside longer
-	/// text reads as U+FFFD and is malformed there.
+	/// UTF-8 like every other <see cref="string"/> door, a lone surrogate inside longer text
+	/// as the invalid sequence it is (never U+FFFD), so it is malformed there.
 	/// </remarks>
 	/// <param name="input">The raw scalar text.</param>
 	public static Verdict<char> Char(ReadOnlySpan<char> input)

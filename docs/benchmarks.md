@@ -9,7 +9,8 @@ figure includes the binding's crossing and any transcode.
 
 Two machines. Every table is linux-x64 on an Intel Core i9-11900H unless it says otherwise; Go's
 current figures and R's were measured on an Apple M6 (Mac18,5) under macOS on 2026-11-01
-([below](#go-and-r-on-an-apple-m6)), and the two groups are not comparable with each other. Two
+([below](#go-and-r-on-an-apple-m6)), as were the checked doors
+([below](#the-checked-doors-on-an-apple-m6)), and the two groups are not comparable with each other. Two
 labels mark figures whose implementation has since been replaced, kept until they are run again:
 
 - **C# †**: measured on .NET 11 RC 1 with BenchmarkDotNet's in-process toolchain, before the
@@ -78,6 +79,11 @@ BenchmarkDotNet, `[MemoryDiagnoser]`, lenience matched where the BCL has the kno
 loop-invariant string into nothing, which an FFI call structurally can't match. The loss is real
 either way and is printed as one.
 
+**2026-11-02 (Apple M6, .NET 11 RC 3).** The `string` doors now send a lone surrogate as WTF-8
+rather than U+FFFD. Measured A/B on that machine the rows are level within a nanosecond
+(`Cast.Uuid` 13.2 against 13.0 ns, `Cast.Timestamp` 30.2 against 30.2); the widest gap is
+`Cast.Decimal`, 27.9 against 26.9 ns. The table above predates the change.
+
 Read the table the way it's meant: the wins land exactly where the BCL runs culture machinery,
 the plain-number rows edge ahead while *also* carrying notations the BCL has no knob for at any
 price, and every number crosses a native boundary the BCL doesn't. The losses are where the BCL
@@ -106,6 +112,12 @@ nothing), `UUID.fromString` wins by six nanoseconds (23.0 vs 29.2 ns) and `new B
 by twenty-six (20.3 vs 46.7 ns). The full table is in
 [the Java README](../java/README.md#why-not-integerparseint--instantparse--the-formatter-zoo).
 
+**Correction, 2026-11-02 (Apple M6, Temurin 25.0.5).** The `String` doors now send a lone
+surrogate as WTF-8 instead of `getBytes(UTF_8)`'s `?`, keeping `getBytes` whenever its bytes
+hold no `?`. On that machine the longest texts pay for the look: `Cast.uuid` 16.5 ns against
+12.3 ns before, `Cast.timestamp` 26.2 against 21.2; the other `String` rows are level. The
+figures above predate the change; the Java README prints the A/B table.
+
 ## The messy-feed doors, cross-binding
 
 The declared-order date/date-time doors exist for text with no stdlib parser at all, so each row
@@ -121,7 +133,7 @@ benchmark session:
 | C# † | **37.9 ns** | 171.5 ns `DateTime.TryParse` (en-US) | **4.5x faster** |
 | PHP ‡ | 673 ns | 439 ns `DateTimeImmutable::createFromFormat` | 1.5x slower |
 | Ruby | 877 ns | 851 ns `DateTime.strptime` | level — see below |
-| Go, on an Apple M6 | 49.0 ns, 0 allocs | 46.9 ns `time.Parse` w/ layout | level — with the declared-order date door, which beats `time.Parse` (15.5 vs 28.0 ns) |
+| Go, on an Apple M6 | 48.8 ns, 0 allocs | 47.2 ns `time.Parse` w/ layout | level — with the declared-order date door, which beats `time.Parse` (15.8 vs 28.2 ns) |
 
 Go's linux-x64 row, which **predates the translated core** (the cgo binding, 0.9.0): 84 ns,
 0 allocs, against 118 ns `time.Parse` w/ layout, and the declared-order date door 67 against
@@ -163,24 +175,28 @@ cgo binding, before the translated core, measured 141 vs 125 ns on linux-x64.
 
 ## Go and R, on an Apple M6
 
-Measured on an Apple M6 (Mac18,5, 12 cores) under macOS on 2026-11-01, a different machine and
-OS from every table above, so they are not comparable to the linux-x64 numbers.
+Measured on an Apple M6 (Mac18,5, 12 cores) under macOS, Go on 2026-11-02 and R on 2026-11-01,
+a different machine and OS from every table above, so they are not comparable to the linux-x64
+numbers.
 
 **Go** 1.27.3, `go test -bench=. -benchmem` from `go/`, six runs of each binding interleaved in
-one session, benchstat medians. The cgo column is the binding the translated core replaced, built
-from the same `rust/` and run with the same benchmark file in the same session; other work shared
-the machine, so the spread is printed with the noisy rows in [the Go README](../go/README.md#benchmarks),
-which has every row. A selection:
+one session, benchstat medians, on the core with the checked doors. The cgo column is the binding
+the translated core replaced, linked against a static archive built from the same `rust/` and run
+with the same benchmark file in the same session; other work shared the machine, so the spread is
+printed in [the Go README](../go/README.md#benchmarks), which has every row. A selection:
 
 | Door | translated core | cgo binding | | stdlib |
 | --- | ---: | ---: | --- | ---: |
-| `Bool` | 10.7 ns | 24.1 ns | 2.3x faster | 1.4 ns `strconv.ParseBool` |
-| `I32` | 33.6 ns | 43.5 ns | 1.3x faster | 3.6 ns `strconv.Atoi` |
-| `I32` (grouped), 12 goroutines, aggregate | 19.7 ns | 6.9 ns | **2.9x slower** | — |
-| `I32("1,234x567")`, rejected | 96.0 ns, 1 alloc | 64.3 ns, 1 alloc | **1.5x slower** | 14.6 ns, 2 allocs `strconv.Atoi("1234x567")` |
-| `Timestamp` | 34.5 ns | 34.5 ns | ~ | 21.1 ns `time.Parse(RFC3339Nano)` |
-| `DateTime` (`1/7/2026 3:04 PM`) | 49.0 ns | 34.2 ns | **1.4x slower** | 46.9 ns `time.Parse` w/ layout |
-| `DateOnlyOrdered` (`1/7/2026`) | 15.5 ns | 26.0 ns | 1.7x faster | 28.0 ns `time.Parse` w/ layout |
+| `Bool` | 10.2 ns | 24.2 ns | 2.4x faster | 1.3 ns `strconv.ParseBool` |
+| `I32` | 34.6 ns | 45.1 ns | 1.3x faster | 3.5 ns `strconv.Atoi` |
+| `I32` (grouped), 12 goroutines, aggregate | 18.4 ns | 7.2 ns | **2.6x slower** | — |
+| `I32("1,234x567")`, rejected | 94.8 ns, 1 alloc | 65.9 ns, 1 alloc | **1.4x slower** | 14.3 ns, 2 allocs `strconv.Atoi("1234x567")` |
+| `Timestamp` | 33.4 ns | 35.3 ns | ~ | 21.3 ns `time.Parse(RFC3339Nano)` |
+| `DateTime` (`1/7/2026 3:04 PM`) | 48.8 ns | 32.4 ns | **1.5x slower** | 47.2 ns `time.Parse` w/ layout |
+| `DateOnlyOrdered` (`1/7/2026`) | 15.8 ns | 26.5 ns | 1.7x faster | 28.2 ns `time.Parse` w/ layout |
+
+The 2026-11-01 session, on the core before the checked doors, measured each of these rows within
+this session's spread; its contention row read 19.7 against 6.9 ns, 2.9x slower.
 
 Every success row is 0 B and 0 allocations in both bindings. Most Go doors still lose per call
 to Go's stdlib, whose parsers are excellent; the binding earns its keep on the vocabulary, the
@@ -204,6 +220,80 @@ the call an R user reaches for today.
 
 Every door allocates more than its base R counterpart: the verdict's five columns (and a
 timestamp's two exact ones) are R vectors of the input's length.
+
+## The checked doors, on an Apple M6
+
+Measured on an Apple M6 (12 cores, 32 GiB) under macOS 27.2 on 2026-11-01, with rustc 1.99.1: the
+same machine as the Go and R figures above, so not comparable to the linux-x64 tables.
+`cargo bench --bench cast_benchmarks -- checked` from `rust/`, Criterion point estimates, two runs
+back to back with the machine lightly loaded. Each checked door is timed beside the plain door it
+wraps, on the same text, with its `Constraints` built once outside the timed loop.
+
+A checked door runs the plain door and then judges the value, so it is slower by construction.
+These figures are the price of the verdict, not a win.
+
+| Case | plain | checked | cost of the verdict | run 2 (plain / checked) |
+| --- | ---: | ---: | ---: | ---: |
+| `f64`, latitude: `45.1234567` in (−90, 90], midpoint to 0.000001 | 6.69 ns | 85.1 ns | +78 ns | 6.64 / 85.0 ns |
+| `checked_from_f64`, the same rule and value, against `cast_f64` on the text | 6.69 ns | 259 ns | **+253 ns** | 6.64 / 262 ns |
+| `Decimal`, euro cash: `12.37`, strict to 0.05 (a violation) | 3.83 ns | 22.9 ns | +19 ns | 4.04 / 24.4 ns |
+| `Text`, `"  published "`, trimmed, against a three-entry `enum` | 3.90 ns | 59.8 ns | +56 ns | 3.94 / 61.1 ns |
+
+Every row is 0 allocations. The two runs agree within 2% except `Decimal`, which moved about 6%
+with wide intervals in run 2; read its cost as 19 to 20 ns. The loss is `checked_from_f64`:
+rounding is judged on the float's shortest decimal digits, so it formats the float and reads it
+back, about three times the checked text door. HyperTabular's spreadsheet path takes that route.
+
+### 2026-11-02: after the delivered-float judgement, and slower
+
+Measured on the same Apple M6 (12 cores, 32 GiB) under macOS 27.2 on 2026-11-02, with rustc
+1.99.1, by the same command, two runs back to back. The checked float doors now also judge the
+float they deliver against each bound as the door reads it, and the declaration gained
+`HAS_ENUM`. The machine was not lightly loaded this time (load average 4.6 to 7.3), so a
+control run of the 2026-11-01 code was taken in the same session; an earlier pair of runs was
+discarded because its second run doubled even the plain doors.
+
+| Case | plain | checked | cost of the verdict | run 2 (plain / checked) | 2026-11-01 code, same session |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `f64`, latitude | 7.24 ns | 88.7 ns | +81 ns | 8.51 / 93.0 ns | 7.20 / 85.5 ns |
+| `checked_from_f64`, latitude | 7.24 ns | 273 ns | **+266 ns** | 8.51 / 269 ns | 7.20 / 264 ns |
+| `Decimal`, euro cash (a violation) | 4.53 ns | 27.3 ns | +23 ns | 4.07 / 31.0 ns | 4.05 / 23.0 ns |
+| `Text`, trimmed `enum` | 4.02 ns | 65.8 ns | +62 ns | 4.41 / 66.7 ns | 3.95 / 61.9 ns |
+
+Every row is still 0 allocations. All four are slower than the 2026-11-01 receipt above, and
+the losses stand. Against the same-session control, `f64` is about 4% slower and
+`checked_from_f64` about 3%: the second judgement of the delivered float, whose bounds convert
+straight from their 64-bit significands. `Decimal` is about 18% slower although its case
+returns at `multipleOf` before any of the new code runs: `judge` is inlined either way, and
+forcing it in or out of line did not move it, so it is code layout, not work, and it was not
+recovered. `Text`, whose path did not change, moved about 6%, which is within this session's
+noise.
+
+### 2026-11-02, later: the `Decimal` loss re-measured (a correction)
+
+Measured on the same Apple M6 under macOS 27.2 later on 2026-11-02, with rustc 1.99.1, by the
+same command: two runs of the current code back to back, then the 2026-11-01 code as a control,
+with the machine less loaded than for the subsection above (load average 1.4 to 3.3). Nothing
+the checked doors run changed between the two sessions.
+
+| Case | plain | checked | cost of the verdict | run 2 (plain / checked) | 2026-11-01 code, same session |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `f64`, latitude | 6.67 ns | 87.6 ns | +81 ns | 6.60 / 87.9 ns | 6.79 / 84.7 ns |
+| `checked_from_f64`, latitude | 6.67 ns | 260 ns | **+253 ns** | 6.60 / 261 ns | 6.79 / 261 ns |
+| `Decimal`, euro cash (a violation) | 3.87 ns | 26.4 ns | +23 ns | 3.78 / 22.4 ns | 3.92 / 23.3 ns |
+| `Text`, trimmed `enum` | 4.00 ns | 60.1 ns | +56 ns | 3.92 / 61.1 ns | 3.92 / 59.6 ns |
+
+Every row is still 0 allocations. The subsection above overstated the `Decimal` loss: the same
+binary measures either about 22 to 24 ns or about 26 ns from one run to the next (run 1 and
+run 2 here, and five further interleaved pairs of the `Decimal` case alone: current code 26.4,
+25.4, 24.5, 26.4 and 24.1 ns, the 2026-11-01 code 22.8, 25.0, 24.3, 23.2 and 22.9 ns). Read the
+loss as about 9% by the median of those pairs (25.4 against 23.2 ns), and up to 13% on a
+slow run, not 18%. It is still a loss and it was not recovered: the instructions the
+case runs are the same in both builds (its callees, `cast_decimal`, `snap` and `compare`,
+disassemble identically, and the inlined judgement does no extra work), and keeping
+`checked_numeric` out of line did not move it, so it stays printed. Against this control, `f64`
+is about 3% slower (the second judgement of the delivered float), `checked_from_f64` level and
+`Text` within 1%.
 
 ## TypeScript
 

@@ -64,7 +64,9 @@ const baseText = int(basePages)*pageSize - textOffset
 // exceed on any host) and the guest's address space less the module's own pages and the
 // scratch's header, itself capped by the host's page limit on a 32-bit platform. On a 64-bit
 // host it is 2,147,483,647. A longer text panics, as a caller bug, before anything is
-// allocated: the translated core cannot address it.
+// allocated: the translated core cannot address it. A checked door's declaration is laid out
+// past its text in the same scratch, so for it the text and the declaration together are
+// what MaxText bounds.
 const MaxText = min(1<<31-1, hostMaxPages*pageSize-modulePages*pageSize-textOffset)
 
 // instancesCreated counts instances ever created, a hook for the tests that pin when a
@@ -193,21 +195,37 @@ const (
 // pooled one for a text that fits the base scratch, else a one-off instance sized for it. A
 // text longer than MaxText panics here, before anything is allocated.
 func acquireFor(n uintptr) (*instance, lease) {
-	if n <= uintptr(baseText) {
+	return acquireScratch(n, 0)
+}
+
+// acquireScratch is acquireFor for a text of n bytes with extra bytes laid out past it (a
+// checked door's declaration), which count against the base scratch and MaxText alike; the
+// panic names both, so its count is never mistaken for the text's alone.
+func acquireScratch(n, extra uintptr) (*instance, lease) {
+	total := n + extra
+	if total <= uintptr(baseText) {
 		return acquire()
 	}
-	if n > MaxText {
-		panic(fmt.Sprintf("hypercast: a text of %d bytes exceeds MaxText (%d)", n, MaxText))
+	if total > MaxText {
+		panic(fmt.Sprintf("hypercast: %s exceeds MaxText (%d)", describeScratch(n, extra), MaxText))
 	}
-	pages, ok := scratchPagesFor(uint64(n))
+	pages, ok := scratchPagesFor(uint64(total))
 	if !ok {
-		panic(fmt.Sprintf("hypercast: the core cannot address a text of %d bytes on this host", n))
+		panic(fmt.Sprintf("hypercast: the core cannot address %s on this host", describeScratch(n, extra)))
 	}
 	in, ok := newInstance(pages)
 	if !ok {
-		panic(fmt.Sprintf("hypercast: the core cannot address a text of %d bytes on this host", n))
+		panic(fmt.Sprintf("hypercast: the core cannot address %s on this host", describeScratch(n, extra)))
 	}
 	return in, leaseOneOff
+}
+
+// describeScratch names what a scratch must hold, for a panic.
+func describeScratch(n, extra uintptr) string {
+	if extra == 0 {
+		return fmt.Sprintf("a text of %d bytes", n)
+	}
+	return fmt.Sprintf("a text of %d bytes with a %d-byte declaration past it (%d bytes in all)", n, extra, n+extra)
 }
 
 // load copies the text at ptr into the scratch and returns the scratch's offset.
@@ -311,6 +329,8 @@ func decodeLE[V any](b *[16]byte) (v V) {
 		*p = RawDate{Year: le.Uint16(b[:]), Month: b[2], Day: b[3]}
 	case *RawCivil:
 		*p = RawCivil{Year: le.Uint16(b[:]), Month: b[2], Day: b[3], Nanos: le.Uint64(b[8:])}
+	case *RawSpan:
+		*p = RawSpan{Offset: le.Uint32(b[:]), Len: le.Uint32(b[4:])}
 	case *uuid.UUID: // bytes, in order
 		*p = *b
 	default:
@@ -475,6 +495,138 @@ func callExcelDuration(value float64) result {
 	in, how := acquire()
 	s := int32(in.scratch)
 	r := in.result(in.m.Xcast_excel_duration(value, s+outOffset, s+faultOffset))
+	release(in, how)
+	return r
+}
+
+// ---- The checked doors' calls ------------------------------------------------------------
+//
+// A checked call lays its declaration out past the text, 8-aligned: the 72-byte
+// RawConstraints, the 12-byte RawCheck the core reports into, then the enum list. Nothing
+// before the text moves, so the plain doors' layout and baseText are unchanged, and a
+// checked call's text and declaration together decide whether it fits the base scratch.
+
+const (
+	rawConstraintsBytes = 72
+	rawCheckBytes       = 12
+)
+
+// declarationAt is where a checked call's declaration starts, as an offset from the scratch:
+// the first 8-aligned offset past a text of n bytes.
+func declarationAt(n uintptr) uintptr {
+	return (textOffset + n + 7) &^ 7
+}
+
+// acquireChecked returns an instance whose scratch holds a text of n bytes and the
+// declaration d past it, and the declaration's offset in the scratch.
+func acquireChecked(n uintptr, d *declaration) (*instance, lease, uint32) {
+	at := declarationAt(n)
+	in, how := acquireScratch(n, at-textOffset-n+rawConstraintsBytes+rawCheckBytes+uintptr(d.enumBytes()))
+	in.loadDeclaration(uint32(at), d)
+	return in, how, uint32(at)
+}
+
+// loadDeclaration writes d at offset at of the scratch as the core reads it, field by field
+// in the guest's little-endian order: the RawConstraints, a RawCheck reset to "no keyword,
+// not adjusted, no entry", then the enum list. Integer entries are the guest's own
+// little-endian Decimals, whatever the host's order.
+func (in *instance) loadDeclaration(at uint32, d *declaration) {
+	le := binary.LittleEndian
+	base := in.scratch + at
+	dst := in.mem()[base : base+rawConstraintsBytes+rawCheckBytes]
+	le.PutUint32(dst[0:], d.raw.Size)
+	le.PutUint32(dst[4:], d.raw.Flags)
+	le.PutUint32(dst[8:], d.raw.Rounding)
+	le.PutUint32(dst[12:], d.raw.MinLength)
+	le.PutUint32(dst[16:], d.raw.MaxLength)
+	le.PutUint32(dst[20:], d.raw.Reserved)
+	putDecimal(dst[24:], &d.raw.Lower)
+	putDecimal(dst[40:], &d.raw.Upper)
+	putDecimal(dst[56:], &d.raw.MultipleOf)
+	le.PutUint32(dst[72:], 0)
+	le.PutUint32(dst[76:], 0)
+	le.PutUint32(dst[80:], math.MaxUint32)
+	entries := in.mem()[base+rawConstraintsBytes+rawCheckBytes:]
+	if d.decimals != nil {
+		for i := range d.decimals {
+			putDecimal(entries[16*i:], &d.decimals[i])
+		}
+		return
+	}
+	copy(entries, d.packedText)
+}
+
+func putDecimal(dst []byte, d *Decimal) {
+	binary.LittleEndian.PutUint64(dst[0:], d.Lo)
+	binary.LittleEndian.PutUint32(dst[8:], d.Hi)
+	dst[12] = d.Scale
+	dst[13] = 0
+	if d.Negative {
+		dst[13] = 1
+	}
+	dst[14], dst[15] = 0, 0
+}
+
+// check reads the RawCheck the core wrote at offset at of the scratch.
+func (in *instance) check(at uint32) RawCheck {
+	src := in.mem()[in.scratch+at+rawConstraintsBytes:]
+	le := binary.LittleEndian
+	return RawCheck{Keyword: le.Uint32(src[0:]), Adjusted: le.Uint32(src[4:]), EnumIndex: le.Uint32(src[8:])}
+}
+
+// callChecked is cast_checked: format is nil at the text door, which crosses it as null.
+func callChecked(door uint32, ptr unsafe.Pointer, length uintptr, format *RawNumFormat, d *declaration) (result, RawCheck) {
+	in, how, at := acquireChecked(length, d)
+	s := in.load(ptr, length)
+	var f int32
+	if format != nil {
+		in.loadFormat(format)
+		f = s + formatOffset
+	}
+	decl := s + int32(at)
+	r := in.result(in.m.Xcast_checked(int32(door), 0, f, decl, decl+rawConstraintsBytes+rawCheckBytes,
+		int32(d.enumBytes()), s+textOffset, int32(length), s+outOffset, s+faultOffset, decl+rawConstraintsBytes))
+	c := in.check(at)
+	release(in, how)
+	return r, c
+}
+
+// callCheckedFromF64 is cast_checked_from_f64.
+func callCheckedFromF64(door uint32, value float64, d *declaration) (result, RawCheck) {
+	in, how, at := acquireChecked(0, d)
+	s := int32(in.scratch)
+	decl := s + int32(at)
+	r := in.result(in.m.Xcast_checked_from_f64(int32(door), value, decl, decl+rawConstraintsBytes+rawCheckBytes,
+		int32(d.enumBytes()), s+outOffset, s+faultOffset, decl+rawConstraintsBytes))
+	c := in.check(at)
+	release(in, how)
+	return r, c
+}
+
+// callConstraintsCheck is cast_constraints_check: 0, or the core's refusal code.
+func callConstraintsCheck(door uint32, d *declaration) int32 {
+	in, how, at := acquireChecked(0, d)
+	decl := int32(in.scratch) + int32(at)
+	code := in.m.Xcast_constraints_check(int32(door), 0, decl, decl+rawConstraintsBytes+rawCheckBytes, int32(d.enumBytes()))
+	release(in, how)
+	return code
+}
+
+// callDeclaredDecimal is cast_declared_decimal, over the text at ptr: 0 with the decimal
+// in the out-value, or 8.
+func callDeclaredDecimal(ptr unsafe.Pointer, length uintptr) result {
+	in, how := acquireFor(length)
+	s := in.load(ptr, length)
+	r := in.result(in.m.Xcast_declared_decimal(s+textOffset, int32(length), s+outOffset))
+	release(in, how)
+	return r
+}
+
+// callText is cast_text: the span of the input once it is valid UTF-8.
+func callText(ptr unsafe.Pointer, length uintptr) result {
+	in, how := acquireFor(length)
+	s := in.load(ptr, length)
+	r := in.result(in.m.Xcast_text(s+textOffset, int32(length), s+outOffset, s+faultOffset))
 	release(in, how)
 	return r
 }

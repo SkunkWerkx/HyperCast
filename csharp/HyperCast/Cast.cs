@@ -354,12 +354,14 @@ public static partial class Cast
 		// GetMaxByteCount (3 bytes per char plus 3): that worst case sent any text past
 		// ~170 chars to the pool even when it was plain ASCII that fit with room to spare.
 		// Scalar text is almost always ASCII, so the rent is now genuinely the rare path.
-		if (Encoding.UTF8.TryGetBytes(chars, stack, out var written))
+		// Never with replacement: a lone surrogate reaches the core as the invalid sequence
+		// it is (WTF-8, as the checked doors send it), so every door judges the same bytes.
+		if (System.Text.Unicode.Utf8.FromUtf16(chars, stack, out _, out var written,
+				replaceInvalidSequences: false) == OperationStatus.Done)
 			return stack[..written];
-		var maxBytes = Encoding.UTF8.GetMaxByteCount(chars.Length);
-		var target = (rented = ArrayPool<byte>.Shared.Rent(maxBytes)).AsSpan();
-		written = Encoding.UTF8.GetBytes(chars, target);
-		return target[..written];
+		var length = Wtf8Length(chars);
+		var target = length <= stack.Length ? stack : (rented = ArrayPool<byte>.Shared.Rent(length)).AsSpan();
+		return target[..Wtf8(chars, target)];
 	}
 
 	static void Recycle(byte[]? rented)
@@ -376,10 +378,11 @@ public static partial class Cast
 	/// </summary>
 	static Verdict<T> Remap<T>(Verdict<T> verdict, ReadOnlySpan<byte> utf8, int charCount) where T : struct
 	{
+		// The checked doors' count (Cast.Checked.cs, Units): the bytes are WTF-8, where a lone
+		// surrogate's three bytes are one code unit, which Encoding.UTF8 would count as three.
 		if (utf8.Length == charCount || !verdict.TryGetValue(out Fault fault) || fault.Length == 0 && fault.Offset == 0)
 			return verdict;
-		var offset = Encoding.UTF8.GetCharCount(utf8[..fault.Offset]);
-		var length = Encoding.UTF8.GetCharCount(utf8.Slice(fault.Offset, fault.Length));
+		var (offset, length) = Units(utf8, fault.Offset, fault.Length);
 		return new(new Fault(fault.Reason, offset, length));
 	}
 
@@ -428,6 +431,18 @@ public static partial class Cast
 	/// <param name="verdict">The verdict from any door.</param>
 	public static Verdict<T>? Optional<T>(Verdict<T> verdict) where T : struct =>
 		verdict.TryGetValue(out Fault fault) && fault.Reason == CastFailure.Empty
+			? null
+			: verdict;
+
+	/// <summary>
+	/// Presents a checked verdict optionally: an <see cref="CastFailure.Empty"/> fault becomes
+	/// absent (<see langword="null"/>); every other outcome, a <see cref="Violation"/> included,
+	/// flows through untouched.
+	/// </summary>
+	/// <typeparam name="T">The cast value's type.</typeparam>
+	/// <param name="verdict">The verdict from any checked door.</param>
+	public static CheckedVerdict<T>? Optional<T>(CheckedVerdict<T> verdict) where T : notnull =>
+		verdict.TryGetValue(out Rejection rejection) && rejection.TryGetValue(out Fault fault) && fault.Reason == CastFailure.Empty
 			? null
 			: verdict;
 

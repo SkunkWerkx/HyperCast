@@ -34,8 +34,10 @@ import java.util.UUID;
  *
  * <p>A verdict comes back through the thread's {@link Scratch}: the value as two
  * {@code long}s in {@code out[0..2]} on success, the fault's span in {@code out[2..4]} on a
- * fault (java/jni/src/lib.rs's {@code Words} has each type's encoding, and the readers
- * below are its other half). A {@code byte[]} crosses pinned for the core call alone when it
+ * fault, and from a checked door its check in {@code out[4..7]} (java/jni/src/lib.rs's
+ * {@code Words} and {@code check_words} have each encoding, and the readers below are their
+ * other half). A checked door's {@code enum} list crosses as the direct buffer its
+ * {@link Constraints} holds, so it is neither pinned nor copied. A {@code byte[]} crosses pinned for the core call alone when it
  * is at most 64 KiB, and copied into native memory above that; a {@link MemorySegment} is
  * copied into a {@code byte[]} first, since JNI reaches no segment. Nothing here touches
  * {@code java.lang.foreign} on the way to a {@code byte[]} or {@link String} door.
@@ -103,6 +105,18 @@ final class NativeCore {
 
     private static native int hypercastVersion();
 
+    private static native int castChecked(
+            int door, byte[] format, byte[] constraints, ByteBuffer entries, byte[] in, long[] out);
+
+    private static native int castCheckedFromF64(
+            int door, double value, byte[] constraints, ByteBuffer entries, long[] out);
+
+    private static native int castConstraintsCheck(int door, byte[] constraints, ByteBuffer entries);
+
+    private static native int castText(byte[] in, long[] out);
+
+    private static native int castDeclaredDecimal(byte[] in, long[] out);
+
     private static native int jniNatives();
 
     /**
@@ -162,14 +176,15 @@ final class NativeCore {
     }
 
     /**
-     * Per-thread scratch: the four {@code long}s a native writes its verdict into, and the
+     * Per-thread scratch: the {@code long}s a native writes its verdict into, and the
      * format and designator layouts as the library reads them, each kept under an identity
      * memo the way the FFM tree keeps its segments. Doors never nest, so no call can observe
      * another's scratch mid-flight; nothing is shared between threads, so no door needs
      * locking.
      */
     static final class Scratch {
-        final long[] out = new long[4];
+        // out[0..2] the value, out[2..4] a fault's span, out[4..7] a checked door's check.
+        final long[] out = new long[8];
         private final byte[] format = new byte[FORMAT_BYTES];
         private NumFormat formatKey;
         private final byte[] periods = new byte[PERIODS_BYTES];
@@ -308,6 +323,49 @@ final class NativeCore {
         return castExcelSerialFromF64(value, code, s.out);
     }
 
+    /**
+     * A checked door: {@code door} is the core's door code ({@link Constraints#I32},
+     * {@link Constraints#TEXT}, ...), {@code format} the declared notation or {@code null} (the
+     * text door reads none), {@code constraints} the declaration already bound to the door.
+     */
+    static int checked(Scratch s, int door, byte[] in, NumFormat format, Constraints<?> constraints) {
+        Library.ensure();
+        byte[] declared = format == null ? null : s.format(format);
+        return castChecked(door, declared, constraints.raw(), constraints.entries(), in, s.out);
+    }
+
+    static int checked(Scratch s, int door, MemorySegment in, NumFormat format, Constraints<?> constraints) {
+        return checked(s, door, bytes(in), format, constraints);
+    }
+
+    /** A checked door over a {@code double} a source already decoded. */
+    static int checkedFromF64(Scratch s, int door, double value, Constraints<?> constraints) {
+        Library.ensure();
+        return castCheckedFromF64(door, value, constraints.raw(), constraints.entries(), s.out);
+    }
+
+    /** The core's judgement of a declaration: 0, or the refusal code. */
+    static int constraintsCheck(int door, byte[] raw, ByteBuffer entries) {
+        Library.ensure();
+        return castConstraintsCheck(door, raw, entries);
+    }
+
+    /** The text door: the span of valid UTF-8 input. */
+    static int text(Scratch s, byte[] in) {
+        Library.ensure();
+        return castText(in, s.out);
+    }
+
+    static int text(Scratch s, MemorySegment in) {
+        return text(s, bytes(in));
+    }
+
+    /** The core's conversion of a declared decimal: 0 with the value, or 8. */
+    static int declaredDecimal(Scratch s, byte[] utf8) {
+        Library.ensure();
+        return castDeclaredDecimal(utf8, s.out);
+    }
+
     // JNI reaches no segment, so its bytes cross as a heap copy.
     private static byte[] bytes(MemorySegment in) {
         return in.toArray(ValueLayout.JAVA_BYTE);
@@ -399,6 +457,31 @@ final class NativeCore {
     static Duration duration(Scratch s) {
         // Duration.ofSeconds normalizes the core's same-signed nanos adjustment correctly.
         return Duration.ofSeconds(s.out[0], s.out[1]);
+    }
+
+    /** The text door's span: the byte offset of the (trimmed) text. */
+    static int spanOffset(Scratch s) {
+        return (int) s.out[0];
+    }
+
+    /** The text door's span: the byte length of the (trimmed) text. */
+    static int spanLength(Scratch s) {
+        return (int) s.out[1];
+    }
+
+    /** A checked door's keyword code on a violation; 0 otherwise. */
+    static int checkKeyword(Scratch s) {
+        return (int) s.out[4];
+    }
+
+    /** Whether a checked door's rounding changed the value. */
+    static boolean checkAdjusted(Scratch s) {
+        return s.out[5] != 0;
+    }
+
+    /** The text {@code enum} entry a checked door matched, or -1 for none. */
+    static int checkEnumIndex(Scratch s) {
+        return (int) s.out[6];
     }
 
     static int faultOffset(Scratch s) {

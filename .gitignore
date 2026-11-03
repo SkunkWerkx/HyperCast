@@ -125,6 +125,9 @@ r/src/*.dll
 # csharp/HyperCast.Benchmarks/. Criterion's own output already lands under rust/target/,
 # covered by the **/target/ rule above.
 **/BenchmarkDotNet.Artifacts/
+# Its build of the generated benchmark projects (one numbered folder per run), next to the
+# benchmark project.
+**/.bdn/
 
 # IDE
 .idea/

@@ -77,6 +77,13 @@ class CheckJniTest {
             churn.start();
             // Designators beyond English, so the civil door carries its layout across.
             DateTimeFormat spanish = new DateTimeFormat(DateOrder.DAY_MONTH_YEAR, "a. m.", "p. m.");
+            // A declaration with an enum list, so the checked doors carry every layout and the
+            // list's direct buffer across.
+            Constraints<Integer> codes = Constraints.i32().enumOf("42", "7").build();
+            Constraints<String> sex =
+                    Constraints.text().trim(true).enumOf("Female", "Male").build();
+            Constraints<BigDecimal> cash =
+                    Constraints.decimal().multipleOf("0.05").build();
             try {
                 for (int pad : new int[] {0, 64 * 1024 - 4, 64 * 1024, 1 << 20}) {
                     String blank = " ".repeat(pad);
@@ -90,12 +97,24 @@ class CheckJniTest {
                                 new Success<>(LocalDateTime.of(2026, 1, 7, 15, 4)),
                                 Cast.dateTime(blank + "7/1/2026 3:04 p. m.", spanish));
                         expect(new Success<>(42L), Cast.i64(MemorySegment.ofArray(number), NumFormat.INVARIANT));
+                        expect(
+                                new Checked<>(42, false, java.util.OptionalInt.empty()),
+                                Cast.i32(number, NumFormat.INVARIANT, codes));
+                        expect(
+                                new Checked<>("Male", false, java.util.OptionalInt.of(1)),
+                                Cast.text(blank + "MALE", sex));
+                        expect(new Success<>("42"), Cast.text("42"));
                     }
+                    expect(
+                            new Violation<BigDecimal>(Keyword.MULTIPLE_OF, pad, 5),
+                            Cast.decimal(
+                                    (blank + "42.01").getBytes(StandardCharsets.UTF_8), NumFormat.INVARIANT, cash));
                     // A fault past the bound: its span is in the caller's bytes, whichever side.
                     byte[] bad = (blank + "x").getBytes(StandardCharsets.UTF_8);
                     expect(new Fault<Integer>(CastFailure.MALFORMED, pad, 1), Cast.i32(bad, NumFormat.INVARIANT));
                 }
                 expect(new Success<>(new BigDecimal("0.5")), Cast.decimalFromDouble(0.5));
+                expect(new Checked<>(7, false, java.util.OptionalInt.empty()), Cast.i32FromDouble(7, codes));
                 expect(Cast.nativeVersion(), Cast.nativeVersion());
             } finally {
                 stop.set(true);

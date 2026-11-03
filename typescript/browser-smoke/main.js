@@ -9,10 +9,12 @@
 // uses, so an integer past 2^53 keeps its digits.
 import booleanText from '../../corpus/boolean.json?raw'
 import charText from '../../corpus/char.json?raw'
+import constraintsText from '../../corpus/constraints.json?raw'
 import dateText from '../../corpus/date.json?raw'
 import dateOrderText from '../../corpus/date_order.json?raw'
 import datetimeText from '../../corpus/datetime.json?raw'
 import decimalText from '../../corpus/decimal.json?raw'
+import declarationsText from '../../corpus/declarations.json?raw'
 import durationText from '../../corpus/duration.json?raw'
 import excelSerialText from '../../corpus/excel_serial.json?raw'
 import integerText from '../../corpus/integer.json?raw'
@@ -43,6 +45,14 @@ function same(a, b) {
   if (keys.length !== Object.keys(b).length) return false
   return keys.every((key) => same(a[key], b[key]))
 }
+
+// A double's bits, so 0 and -0 differ: the core never delivers a negative zero.
+function bits(value) {
+  const view = new DataView(new ArrayBuffer(8))
+  view.setFloat64(0, value)
+  return view.getBigUint64(0)
+}
+const sameBits = (a, e) => typeof a === 'number' && typeof e === 'number' && bits(a) === bits(e)
 
 function check(ok, context) {
   if (!ok) throw new Error(context)
@@ -90,7 +100,7 @@ try {
   // as plain named exports. The import is dynamic so that a failure to load lands in `#out`
   // as a FAIL line instead of leaving the page blank.
   const api = await import('@skunkwerkx/hypercast-wasm32-wasip1')
-  const { DateFormat, NumFormat } = api
+  const { Constraints, DateFormat, Door, NumFormat, Rounding } = api
   log(`loaded: target=${api.__napiBindingTarget}`)
 
   const formats = new Map()
@@ -142,6 +152,114 @@ try {
     u64: api.castU64,
   }
 
+  // constraints.json, as tests/corpus.test.ts replays it: every row declared through the
+  // public constructor, a text row as bytes and as the string, floats compared by bits.
+  const doorOf = {
+    i8: Door.I8,
+    i16: Door.I16,
+    i32: Door.I32,
+    i64: Door.I64,
+    u8: Door.U8,
+    u16: Door.U16,
+    u32: Door.U32,
+    u64: Door.U64,
+    f32: Door.F32,
+    f64: Door.F64,
+    decimal: Door.Decimal,
+    text: Door.Text,
+  }
+  const roundingOf = {
+    strict: Rounding.Strict,
+    midpoint: Rounding.Midpoint,
+    floor: Rounding.Floor,
+    ceiling: Rounding.Ceiling,
+  }
+  const specOf = (v) => {
+    const { rounding, ...rest } = v.constraints
+    const spec = { door: doorOf[v.door], ...rest }
+    if (rounding !== undefined) spec.rounding = roundingOf[rounding]
+    return spec
+  }
+  const expectedOf = (v) => {
+    if (v.door === 'i64' || v.door === 'u64') return BigInt(v.value)
+    if (v.door === 'f32') return Math.fround(v.value)
+    return v.value
+  }
+  const judge = (ctx, v, verdict, span, units) => {
+    if (verdict.ok) {
+      check(v.expect === 'ok', `${ctx}: unexpectedly ${String(verdict.value)}`)
+      const expected = expectedOf(v)
+      const equal = v.door === 'f32' || v.door === 'f64' ? sameBits : (a, e) => a === e
+      check(equal(verdict.value, expected), `${ctx}: ${String(verdict.value)}`)
+      check(verdict.adjusted === v.adjusted, `${ctx}: adjusted`)
+      check(verdict.enumIndex === (v.enum_index ?? null), `${ctx}: enumIndex`)
+      return
+    }
+    const failed = verdict.violation ?? verdict.fault
+    if (verdict.violation) {
+      check(v.expect === 'violation', `${ctx}: violated ${failed.keyword}`)
+      check(failed.keyword === v.keyword, `${ctx}: keyword ${failed.keyword}`)
+    } else {
+      check(failed.reason === reasons[v.expect], `${ctx}: reason ${failed.reason}`)
+    }
+    check(failed.offset + failed.length <= units, `${ctx}: span past ${units}`)
+    if (span !== undefined) {
+      check(failed.offset === span[0] && failed.length === span[1], `${ctx}: span`)
+    }
+  }
+  const constrained = (v) => {
+    const ctx = `constraints.json ${JSON.stringify(v)}`
+    const spec = specOf(v)
+    const declared = Constraints.declare(spec)
+    if (v.expect === 'refused') {
+      check(!declared.ok, `${ctx}: declared`)
+      check(declared.message.startsWith(`Constraints refused (code ${v.refusal}):`), ctx)
+      check(api.castConstraintsCheck(spec) === v.refusal, `${ctx}: check`)
+      return
+    }
+    check(declared.ok, `${ctx}: ${declared.message}`)
+    const constraints = declared.value
+    if (v.from_f64 !== undefined) {
+      const value = typeof v.from_f64 === 'string' ? Number(v.from_f64) : v.from_f64
+      judge(ctx, v, api.castCheckedFromNumber(value, constraints), v.fault, 0)
+      return
+    }
+    const format = formatOf(v)
+    const door = (text) =>
+      v.door === 'text'
+        ? api.castText(text, constraints)
+        : api.castChecked(text, constraints, format)
+    if (v.input_bytes !== undefined) {
+      const bytes = new Uint8Array(v.input_bytes)
+      judge(`${ctx} as bytes`, v, door(bytes), v.fault, bytes.length)
+      return
+    }
+    const bytes = encoder.encode(v.input)
+    judge(`${ctx} as bytes`, v, door(bytes), v.fault, bytes.length)
+    const span = v.fault === undefined ? undefined : utf16Span(v.input, v.fault)
+    judge(`${ctx} as string`, v, door(v.input), span, v.input.length)
+  }
+  // declarations.json: the conversion, held to the raw triple its canonical text spells.
+  const declaredDecimal = (v) => {
+    const ctx = `declarations.json ${JSON.stringify(v)}`
+    const text = v.input_bytes === undefined ? v.input : new Uint8Array(v.input_bytes)
+    const declared = api.castDeclaredDecimal(text)
+    if (v.expect === 'refused') {
+      check(!declared.ok, `${ctx}: converted`)
+      check(declared.message.startsWith(`Constraints refused (code ${v.refusal}):`), ctx)
+      return
+    }
+    check(declared.ok, `${ctx}: ${declared.message}`)
+    const canonical = declared.value
+    const negative = canonical.startsWith('-')
+    const unsigned = negative ? canonical.slice(1) : canonical
+    const point = unsigned.indexOf('.')
+    const scale = point < 0 ? 0 : unsigned.length - point - 1
+    check(canonical === v.value, `${ctx}: ${canonical}`)
+    check(negative === v.negative && scale === v.scale, `${ctx}: sign or scale`)
+    check(BigInt(unsigned.replace('.', '')) === BigInt(v.magnitude), `${ctx}: magnitude`)
+  }
+
   const files = [
     ['boolean.json', booleanText, (v) => replay('boolean.json', v, api.castBool, v.value)],
     [
@@ -174,7 +292,7 @@ try {
         const expected =
           typeof v.value === 'number' && v.type === 'f32' ? Math.fround(v.value) : v.value
         const format = formatOf(v)
-        replay('real.json', v, (text) => door(text, format), expected)
+        replay('real.json', v, (text) => door(text, format), expected, sameBits)
       },
     ],
     [
@@ -281,6 +399,8 @@ try {
         }
       },
     ],
+    ['constraints.json', constraintsText, constrained],
+    ['declarations.json', declarationsText, declaredDecimal],
   ]
   for (const [name, text, run] of files) {
     const vectors = parse(text)
@@ -297,6 +417,20 @@ try {
   const refused = NumFormat.declare({ decimalSep: ',', groupSep: ',', flags: 0 })
   check(!refused.ok && typeof refused.message === 'string', 'NumFormat.declare refusal')
   log('contract: a wrong-typed argument and a refused declaration, neither thrown')
+
+  // castText picks plain or constrained by its argument count, here as in the package: a
+  // failed declaration's missing `.value` is a contract violation, never "no rules".
+  const missing = Constraints.declare({ door: Door.Text, minLength: 5, maxLength: 2 }).value
+  for (const [args, want] of [
+    [['x', missing], 'malformed'],
+    [['x', null], 'malformed'],
+    [['x'], 'ok'],
+  ]) {
+    const verdict = api.castText(...args)
+    const got = verdict.ok ? 'ok' : verdict.fault.reason
+    check(got === want, `castText(${args.length} arguments): ${JSON.stringify(verdict)}`)
+  }
+  log('castText: plain or constrained by argument count')
 
   log('PASS')
 } catch (error) {
