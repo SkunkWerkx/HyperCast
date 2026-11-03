@@ -32,7 +32,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **A TypeScript binding for Node and Bun, on npm as `@skunkwerkx/hypercast`.** A Node-API
   addon built with napi-rs, the core linked into the `.node` file, published as eight platform
   packages (`@skunkwerkx/hypercast-<platform>`, one per RID) that the root package picks
-  through `optionalDependencies`, so nothing compiles at install. Node 22.13 or newer and Bun,
+  through `optionalDependencies`, so nothing compiles at install. Node 22.14 or newer and Bun,
   CommonJS and ESM, text in as a string or a UTF-8 `Uint8Array`, and every door the other
   bindings have. No door throws: each returns `Verdict<T>`, `{ ok: true, value }` or `{ ok:
   false, fault: { reason, offset, length } }`, which narrows on `ok`; a fault's span is in
@@ -46,7 +46,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (s390x under QEMU) are a printed loss there: the smoke's checks pass and the process then
   never exits, the runtime reading its reference counts host-endian over little-endian wasm
   memory. Bun 1.4.4 cannot load the WebAssembly package and stays on the addon. The Node floor
-  is the runtime's, `^22.13.0 || >=23.5.0`. *(TypeScript)*
+  is Node-API 10's, `^22.14.0 || >=23.6.0`. *(TypeScript)*
 - **An R binding, as the source package `hypercast`.** A C shim over the core's C ABI,
   reached through `.Call`, with the core built as a static library from the Rust crates
   vendored into the tarball, so an install needs Rust but no network. Every door is

@@ -20,8 +20,10 @@ crate-type = ["cdylib"]
 # one interpose the other's `cast_*` symbols. `std` is named again, as rust/Cargo.toml's
 # `exports` comment asks of a consumer that turns the defaults off.
 hypercast = { path = "../rust", default-features = false, features = ["std", "exports"] }
-# napi6 for BigInt: cast_i64 and cast_u64 answer a `bigint`, so the whole 64-bit range is exact.
-napi = { version = "3", default-features = false, features = ["napi6"] }
+# napi10, the Node-API version every Node `engines` admits supports: BigInt (napi6), so cast_i64
+# and cast_u64 answer a `bigint` over the whole 64-bit range, and type tags (napi8), so a method
+# called on another class's instance is refused by Node before the native cast.
+napi = { version = "3", default-features = false, features = ["napi10"] }
 napi-derive = "3"
 
 [build-dependencies]
