@@ -47,6 +47,13 @@ a HyperCast release means bumping HyperCast in every one of HyperTabular's manif
 side uses `HyperCast\Interop` and the value classes, which the PIE extension now provides:
 it requires `ext-hypercast`, not a Composer package.
 
+HyperCast is HyperTabular's companion. HyperTabular's board doesn't take HyperCast from the
+registries; it takes the artifacts of the `ci.yml` run its `.github/hyper.json` pins (a
+`purpose=board` dispatch), by name. A renamed or new artifact here is therefore a change to the
+Forge's `companion_map.py` too. HyperTabular's release does take the registries: HyperCast
+releases first and must be live everywhere but CRAN before HyperTabular's `prepare-release.yml`
+(its `companions` job gates on it), and the Forge's runbook has the order ("Release order").
+
 ## Claims are measured
 
 Benchmark figures are dated, machine-specific receipts; losses are printed next to wins, and
@@ -242,7 +249,9 @@ promise, so every stable bump is re-proven by the legs that use it.
 - Registry versions can never be replaced. Release and recovery: `.github/RELEASING.md`
   and the Forge's `docs/release-runbook.md`. Recover by re-dispatching from the preserved
   packages, never by retagging or rebuilding. CRAN submission is by hand, from the R tarball
-  the tag run preserved.
+  the tag run preserved; the finalizer also attaches it to the GitHub Release, where
+  HyperTabular's release gate looks for it. HyperTabular's CRAN submission follows HyperCast's
+  acceptance.
 
 ## Local loop
 

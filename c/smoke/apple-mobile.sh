@@ -73,7 +73,7 @@ check_program() {
     *smoke_corpus*) args=("$corpus") ;;
   esac
   if [ "$#" -gt 0 ]; then
-    output="$("$@" "$program" "${args[@]}")" || fail "$rid: $program failed"
+    output="$("$@" "$program" ${args[@]+"${args[@]}"})" || fail "$rid: $program failed"
     output="$(printf '%s' "$output" | tr -d '\r')"
     [ "$output" = "$expected" ] || fail "$rid: the library reports $output, expected $expected"
     echo "  $rid: $output ($want)"
