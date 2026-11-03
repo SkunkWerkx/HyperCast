@@ -39,7 +39,9 @@ the Forge it uses to descend from it. Hold Forge merges while a preparation is i
    Every publisher must report nothing to do. That is the replay proof, so every release
    still exercises recovery, as a no-op instead of as the normal path.
 6. Submit the R package to CRAN by hand: download `release-packages` from the tag run and
-   upload its `cran/hypercast_X.Y.Z.tar.gz`, the attested bytes. No job uploads it.
+   upload its `cran/hypercast_X.Y.Z.tar.gz`, the attested bytes. No job uploads it to CRAN;
+   the finalizer attaches the same file to the GitHub Release, where HyperTabular's release gate
+   requires it. HyperTabular's own CRAN submission waits for this one's acceptance.
 
 Verify one file of each kind from the tag alone, exactly as a consumer would:
 
