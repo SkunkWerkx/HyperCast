@@ -20,6 +20,8 @@ fits.
 npm install @skunkwerkx/hypercast@<version>
 ```
 
+`bun add @skunkwerkx/hypercast@<version>` installs the same packages, and Node runs the result.
+
 The package itself is JavaScript and types; the core comes from one of nine companion
 packages. The native addon is a platform package that npm picks for you through
 `optionalDependencies`, so nothing compiles at install, one for each of eight platforms, as
@@ -595,7 +597,7 @@ whole suite. The WebAssembly fallback does not load on Bun 1.4.4 ([above](#when-
 
 ## Benchmarks
 
-No figures are published for this binding yet. `npm run bench` (and `npm run bench:bun`, and
+No figures are published for this binding yet. `bun run bench` (and `bun run bench:bun`, and
 either under `NAPI_RS_FORCE_WASI=error`) runs `bench/bench.ts`, with
 [mitata](https://github.com/evanwashere/mitata), against `parseInt`, `parseFloat` and
 `Date.parse`; a figure goes here with its date and machine once it is taken.
@@ -605,21 +607,21 @@ either under `NAPI_RS_FORCE_WASI=error`) runs `bench/bench.ts`, with
 From `typescript/`, with a Rust toolchain installed:
 
 ```sh
-npm ci
-npm run build       # the release addon for this machine, plus binding.js and binding.d.ts
-npm test            # node --test: the corpus, never-throws, the verdict's types, the declarations, the constraints, grouping, dates, the detailed doors
-npm run test:bun    # bun test
-npm run typecheck
-npm run lint
-npm run bench
+bun install --frozen-lockfile
+bun run build       # the release addon for this machine, plus binding.js and binding.d.ts
+bun run test        # node --test: the corpus, never-throws, the verdict's types, the declarations, the constraints, grouping, dates, the detailed doors
+bun run test:bun    # bun test
+bun run typecheck
+bun run lint
+bun run bench
 cargo test --release  # the Rust unit tests of the addon (detail decoding, the validation backstop)
 ```
 
 The WebAssembly fallback needs the `wasm32-wasip1` target (`rustup target add wasm32-wasip1`):
 
 ```sh
-npm run build:wasi                  # hypercast.wasm32-wasip1.wasm and the hypercast.wasip1* loaders
-NAPI_RS_FORCE_WASI=error npm test   # the same suite on the fallback, failing rather than falling back
+bun run build:wasi                  # hypercast.wasm32-wasip1.wasm and the hypercast.wasip1* loaders
+NAPI_RS_FORCE_WASI=error bun run test   # the same suite on the fallback, failing rather than falling back
 ```
 
 `tests/corpus.test.ts` replays every `corpus/*.json` file, each vector as its UTF-8 bytes (byte

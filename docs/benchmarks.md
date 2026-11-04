@@ -419,7 +419,7 @@ predates the white-space change and has not been re-run.
 
 ## TypeScript
 
-No figures are published yet. `npm run bench` (and `npm run bench:bun`, and either under
+No figures are published yet. `bun run bench` (and `bun run bench:bun`, and either under
 `NAPI_RS_FORCE_WASI=error` for the WebAssembly fallback) runs `typescript/bench/bench.ts` with
 mitata against `parseInt`, `parseFloat` and `Date.parse`; a figure goes here with its date and
 machine once it is taken.

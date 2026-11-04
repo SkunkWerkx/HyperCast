@@ -1,5 +1,8 @@
 # npm consumer tests
 
+The harness itself (Verdaccio, the bundlers) installs with Bun from `bun.lock`. npm appears here
+because the scenarios install as an npm user does, and publish to the local registry.
+
 What a consumer gets from the ten npm tarballs, proven by installing them. `run.sh` serves the
 packed tarballs from a local [Verdaccio](https://verdaccio.org) registry on port 4873, then
 runs each scenario in a fresh directory under `work/<scenario>/` with its own `package.json`,
@@ -21,7 +24,7 @@ run on Linux. `s390x` asserts a loss, not a platform: see below.
 ## Running locally
 
 Pack tarballs from this machine's one native and the WASI build (from the repository root;
-`npm run build` then `npm run build:wasi` in `typescript/` first):
+`bun run build` then `bun run build:wasi` in `typescript/` first):
 
 ```sh
 mkdir -p /tmp/node-artifacts/node-osx-arm64 /tmp/node-artifacts/node-wasm32-wasip1
@@ -68,6 +71,14 @@ pack carries no musl addon.
   22.13.0 bundles: a lockfile regenerated beside a darwin-arm64 `node_modules` names only that
   platform, and `npm ci --os=linux --cpu=x64` from it installs no native and loads the
   fallback. Node 22 users with a lockfile a Mac wrote are who the fallback is for.
+- **Bun as the package manager.** `bun add` from a cold cache, then Node: native loads with an
+  empty stderr, the other platform's package is skipped, the WASI package is installed, `bun
+  install --frozen-lockfile` reproduces it, and each `@skunkwerkx` package has the integrity npm's
+  lock gives it. Its cold install took 1.2 s where npm 11.20.0's took 1.6 s (Bun 1.4.4, the median of
+  five runs, 2026-11-04, Apple M6, Node 26.13, a local Verdaccio already holding every package,
+  two platforms' addons published of the eight). That is a small install from localhost, not a
+  claim about a real registry or a large tree. The control: with no platform package published,
+  the scenario fails.
 - **Bun.** Under `NAPI_RS_FORCE_WASI=error`, Bun 1.4.4 cannot initialise the WASI module (its
   `node:wasi` has no reactor `initialize`), so `require('@skunkwerkx/hypercast')` succeeds with
   `isAvailable() === false`, printed as `bun: ...` and never failing the run. The native addon
