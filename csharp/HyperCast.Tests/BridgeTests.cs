@@ -115,21 +115,31 @@ public sealed class BridgeTests
 			NumFormat.From(Culture(name)).Grouping.ShouldBe(NumGrouping.Western, name);
 			NumFormat.From(Culture(name)).Styles.HasFlag(NumStyles.Grouping).ShouldBeTrue(name);
 		}
+		// The next three shapes depend on the runtime's ICU (Windows' spells tok [3], Linux's spells
+		// en-BG's currency [3]), so each is proven on sizes set by hand, and on the culture where it has them.
+		static NumberFormatInfo Sized(int[] number, int[] currency)
+		{
+			var sized = (NumberFormatInfo)CultureInfo.InvariantCulture.NumberFormat.Clone();
+			sized.NumberGroupSizes = number;
+			sized.CurrencyGroupSizes = currency;
+			return sized;
+		}
 		// Toki Pona groups by twos, which no policy names: legacy, which reads them.
-		Culture("tok").NumberFormat.NumberGroupSizes.ShouldBe([2]);
-		Culture("tok").NumberFormat.CurrencyGroupSizes.ShouldBe([2]);
-		NumFormat.From(Culture("tok")).Grouping.ShouldBe(NumGrouping.Legacy);
-		NumFormat.From(Culture("tok-001")).Grouping.ShouldBe(NumGrouping.Legacy);
+		NumFormat.From(Sized([2], [2])).Grouping.ShouldBe(NumGrouping.Legacy);
+		foreach (var name in new[] { "tok", "tok-001" })
+			if (Culture(name).NumberFormat is { NumberGroupSizes: [2], CurrencyGroupSizes: [2] })
+				NumFormat.From(Culture(name)).Grouping.ShouldBe(NumGrouping.Legacy, name);
 		// en-US-POSIX writes no grouping anywhere ([0]): the flag goes, since nothing is grouped.
-		Culture("en-US-POSIX").NumberFormat.NumberGroupSizes.ShouldBe([0]);
-		Culture("en-US-POSIX").NumberFormat.CurrencyGroupSizes.ShouldBe([0]);
-		NumFormat.From(Culture("en-US-POSIX")).Styles.HasFlag(NumStyles.Grouping).ShouldBeFalse();
+		NumFormat.From(Sized([0], [0])).Styles.HasFlag(NumStyles.Grouping).ShouldBeFalse();
+		if (Culture("en-US-POSIX").NumberFormat is { NumberGroupSizes: [0], CurrencyGroupSizes: [0] })
+			NumFormat.From(Culture("en-US-POSIX")).Styles.HasFlag(NumStyles.Grouping).ShouldBeFalse();
 		// en-BG groups numbers and not currency: the flag stays for the one that does, as Western.
-		Culture("en-BG").NumberFormat.NumberGroupSizes.ShouldBe([3]);
-		Culture("en-BG").NumberFormat.CurrencyGroupSizes.ShouldBe([0]);
-		var bulgaria = NumFormat.From(Culture("en-BG"));
-		bulgaria.Grouping.ShouldBe(NumGrouping.Western);
-		bulgaria.Styles.HasFlag(NumStyles.Grouping).ShouldBeTrue();
+		foreach (var oneSided in new[] { Sized([3], [0]), Culture("en-BG").NumberFormat })
+		{
+			var bulgaria = NumFormat.From(oneSided);
+			bulgaria.Grouping.ShouldBe(NumGrouping.Western);
+			bulgaria.Styles.HasFlag(NumStyles.Grouping).ShouldBeTrue();
+		}
 		// ICU's ml, ta, mr and or write Indian numbers and Western currency: they disagree, so legacy.
 		foreach (var name in new[] { "ml-IN", "ta-IN", "mr-IN", "or-IN" })
 			if (Culture(name).NumberFormat.NumberGroupSizes is [3, 2] && Culture(name).NumberFormat.CurrencyGroupSizes is [3])
@@ -241,6 +251,11 @@ public sealed class BridgeTests
 			foreach (var value in new[] { 1234567.89m, 12345678.5m, 1234m })
 				foreach (var specifier in new[] { "N2", "C2" })
 				{
+					// A culture spelling both separators alike (mn-Mong-MN on Windows: `1,234,567,89`)
+					// writes text no reader can split.
+					var numbers = culture.NumberFormat;
+					if (specifier == "N2" ? numbers.NumberDecimalSeparator == numbers.NumberGroupSeparator : numbers.CurrencyDecimalSeparator == numbers.CurrencyGroupSeparator)
+						continue;
 					var text = value.ToString(specifier, culture);
 					if (Cast.Decimal(text, format) is Success<decimal> { Value: var read } && read == decimal.Round(value, 2, MidpointRounding.AwayFromZero))
 						continue;

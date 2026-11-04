@@ -419,16 +419,16 @@ def test_the_bridge_reads_the_values_every_locale_formats():
             )
         whole = locale.format_string("%d", 1234567, grouping=True)
         assert hypercast.cast_i64(whole, fmt) == Success(1234567), (name, whole)
-        digits = locale.localeconv()["frac_digits"]
-        places = digits if 0 <= digits <= 10 else 2
-        for value in (1234567.89, -1234567.89):
-            try:
-                money = locale.currency(value, grouping=True)
-            except ValueError:  # the C locale has no currency formatting
-                continue
-            want = Decimal(str(value)).quantize(Decimal(1).scaleb(-places))
-            assert hypercast.cast_decimal(money, fmt) == Success(want), (name, money)
         checked += 1
+        digits = locale.localeconv()["frac_digits"]
+        # CHAR_MAX says the locale has no currency formatting. locale.currency only knows 127, so
+        # where char is unsigned (aarch64 Linux) it would format the C locale's 255 as digits.
+        if not 0 <= digits <= 10:
+            continue
+        for value in (1234567.89, -1234567.89):
+            money = locale.currency(value, grouping=True)
+            want = Decimal(str(value)).quantize(Decimal(1).scaleb(-digits))
+            assert hypercast.cast_decimal(money, fmt) == Success(want), (name, money)
     assert checked >= 1
 
 

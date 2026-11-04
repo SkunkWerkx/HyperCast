@@ -13,6 +13,7 @@ use HyperCast\FaultDetail;
 use HyperCast\NumFormat;
 use HyperCast\Success;
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\RequiresPhp;
 use PHPUnit\Framework\Attributes\RequiresPhpExtension;
 use PHPUnit\Framework\TestCase;
 
@@ -244,6 +245,8 @@ final class GroupingTest extends TestCase
         }
     }
 
+    // The reflection call that writes a readonly slot from outside arrived in PHP 8.4.
+    #[RequiresPhp('>= 8.4')]
     public function testNothingOutsideThePolicyBitsReachesTheStyles(): void
     {
         // Past `unserialize` (reflection writes the readonly property's slot), packed() still
@@ -381,6 +384,22 @@ final class GroupingTest extends TestCase
         return [$format->grouping, ($format->flags & NumFormat::GROUPING) !== 0];
     }
 
+    /** What a formatter's own group sizes are: `none`, `western`, `indian` or `other`. */
+    private static function shape(\NumberFormatter $formatter): string
+    {
+        $primary = $formatter->getAttribute(\NumberFormatter::GROUPING_SIZE);
+        $secondary = $formatter->getAttribute(\NumberFormatter::SECONDARY_GROUPING_SIZE);
+        if ($formatter->getAttribute(\NumberFormatter::GROUPING_USED) === 0 || $primary <= 0) {
+            return 'none';
+        }
+        $secondary = $secondary === 0 ? $primary : $secondary;
+        return match ([$primary, $secondary]) {
+            [3, 3] => 'western',
+            [3, 2] => 'indian',
+            default => 'other',
+        };
+    }
+
     /** The three styles of a locale. */
     private static function styles(string $locale): array
     {
@@ -462,20 +481,31 @@ final class GroupingTest extends TestCase
             }
         }
         // The disagreeing locales: number Indian, currency Western. Legacy, whichever style is asked.
+        // ICU releases move these (ta's currency is Indian in some), so each is judged only where
+        // this ICU's patterns still disagree; testMixedNumberAndCurrencyPatterns holds the rule on
+        // patterns of its own.
         foreach (['ml', 'ml_IN', 'or', 'or_IN', 'mr', 'mr_IN', 'ta', 'ta_IN', 'ta_LK'] as $locale) {
-            foreach (self::styles($locale) as $style => $formatter) {
+            $formatters = self::styles($locale);
+            $shapes = [self::shape($formatters['decimal']), self::shape($formatters['currency'])];
+            if ($shapes !== ['indian', 'western']) {
+                continue;
+            }
+            foreach ($formatters as $style => $formatter) {
                 self::assertSame($legacy, self::declared($formatter), "{$locale} {$style}");
             }
         }
-        // Another shape: Toki Pona groups by two (`#,#0.###`).
+        // Another shape: Toki Pona groups by two (`#,#0.###`), in the ICU releases that have it.
         foreach (['tok', 'tok_001'] as $locale) {
             $formatters = self::styles($locale);
-            self::assertSame('#,#0.###', $formatters['decimal']->getPattern());
+            if ($formatters['decimal']->getPattern() !== '#,#0.###') {
+                continue;
+            }
             foreach ($formatters as $style => $formatter) {
                 self::assertSame($legacy, self::declared($formatter), "{$locale} {$style}");
             }
         }
         // Neither pattern groups (en_US_POSIX's `0.######` and `¤ 0.00`): GROUPING is cleared.
+        self::assertSame('none', self::shape(new \NumberFormatter('en_US_POSIX', \NumberFormatter::DECIMAL)));
         foreach (self::styles('en_US_POSIX') as $style => $formatter) {
             self::assertSame([NumFormat::GROUPING_WESTERN, false], self::declared($formatter), "POSIX {$style}");
         }
@@ -547,24 +577,11 @@ final class GroupingTest extends TestCase
     #[RequiresPhpExtension('intl')]
     public function testTheBridgeReadsEveryLocalesOwnOutputAndDeclaresWhatItsPatternsSay(): void
     {
-        $shape = static function (\NumberFormatter $f): string {
-            $primary = $f->getAttribute(\NumberFormatter::GROUPING_SIZE);
-            $secondary = $f->getAttribute(\NumberFormatter::SECONDARY_GROUPING_SIZE);
-            if ($f->getAttribute(\NumberFormatter::GROUPING_USED) === 0 || $primary <= 0) {
-                return 'none';
-            }
-            $secondary = $secondary === 0 ? $primary : $secondary;
-            return match ([$primary, $secondary]) {
-                [3, 3] => 'western',
-                [3, 2] => 'indian',
-                default => 'other',
-            };
-        };
         $locales = 0;
         $legacy = [];
         foreach (\ResourceBundle::getLocales('') as $locale) {
             ['decimal' => $decimal, 'currency' => $currency] = self::styles($locale);
-            $shapes = [$shape($decimal), $shape($currency)];
+            $shapes = [self::shape($decimal), self::shape($currency)];
             $voting = array_values(array_unique(array_diff($shapes, ['none'])));
             $expected = match (true) {
                 $voting === [] => [NumFormat::GROUPING_WESTERN, false],
@@ -582,9 +599,8 @@ final class GroupingTest extends TestCase
             $locales++;
         }
         self::assertGreaterThan(500, $locales);
-        foreach (['ml_IN', 'ta_LK', 'tok', 'tok_001'] as $locale) {
-            self::assertContains($locale, $legacy);
-        }
+        // ICU releases move the rest (ta_LK, tok); this one disagrees in every ICU the suite runs on.
+        self::assertContains('ml_IN', $legacy);
         // Percent patterns are outside the rule (owner's ruling): in `bn` the percent pattern
         // `#,##0%` is Western beside an Indian number pattern, and the bridge declares Indian
         // for all three styles, reading the number and currency patterns only.

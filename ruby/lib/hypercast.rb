@@ -664,9 +664,12 @@ module HyperCast
           head.bytesize < self::ENTRY_HEAD
 
         month, length = head.unpack("CL<")
-        name = bytes.byteslice(at + self::ENTRY_HEAD, length)
-        raise ArgumentError, "month names are cut short, or bytes trail the last entry" if name.bytesize < length
+        # Measured before slicing: where a C long is 32 bits (Windows), byteslice raises RangeError
+        # for a declared length past 2^31 - 1.
+        raise ArgumentError, "month names are cut short, or bytes trail the last entry" if
+          length > bytes.bytesize - at - self::ENTRY_HEAD
 
+        name = bytes.byteslice(at + self::ENTRY_HEAD, length)
         list << [month, name.force_encoding(Encoding::UTF_8)]
         at += self::ENTRY_HEAD + length
       end

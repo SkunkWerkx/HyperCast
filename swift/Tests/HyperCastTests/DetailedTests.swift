@@ -225,35 +225,48 @@ final class DetailedTests: XCTestCase {
         for identifier in ["en_US", "de_DE", "fr_FR", "de_CH", "ja_JP", "en_GB", "en_BG"] {
             XCTAssertTrue(declared(identifier) == (.western, true), identifier)
         }
-        // en_BG: its currency pattern doesn't group, its number pattern does: the flag stays.
-        let bulgaria = formatters("en_BG")
-        XCTAssertTrue(bulgaria.number.usesGroupingSeparator)
-        XCTAssertFalse(bulgaria.currency.usesGroupingSeparator)
-        for identifier in ["en_IN", "hi_IN", "mr_IN", "ta_IN", "ml_IN", "or_IN", "bn_IN"] {
-            let pair = formatters(identifier)
-            XCTAssertEqual(pair.number.groupingSize, 3, identifier)
-            XCTAssertEqual(pair.number.secondaryGroupingSize, 2, identifier)
-            XCTAssertTrue(declared(identifier) == (.indian, true), identifier)
-        }
-        // Toki Pona groups by twos, secondary 0 meaning "repeat the primary": neither Western
-        // nor Indian, so legacy, which reads it.
-        for identifier in ["tok", "tok_001"] {
-            let pair = formatters(identifier)
-            XCTAssertEqual(pair.number.groupingSize, 2)
-            XCTAssertEqual(pair.number.secondaryGroupingSize, 0)
-            XCTAssertTrue(declared(identifier) == (.legacy, true), identifier)
-        }
-        // en_US_POSIX groups in neither pattern (size 0): the flag is cleared.
-        XCTAssertTrue(declared("en_US_POSIX").1 == false)
-        XCTAssertEqual(Cast.i32("1234", locale: Locale(identifier: "en_US_POSIX")), .success(1234))
-        XCTAssertEqual(Cast.i32("1,234", locale: Locale(identifier: "en_US_POSIX")).fault?.reason, .malformed)
-
-        XCTAssertEqual(Cast.i32("12,34,567", locale: Locale(identifier: "en_IN")), .success(1_234_567))
-        XCTAssertEqual(Cast.i32("1,234,567", locale: Locale(identifier: "en_IN")).fault?.detail, .groupSize)
         XCTAssertEqual(Cast.i32("1,234,567", locale: Locale(identifier: "en_US")), .success(1_234_567))
         XCTAssertEqual(
             Cast.i32("12,34", locale: Locale(identifier: "en_US")),
             .fault(Fault(reason: .malformed, offset: 2, length: 3)))
+        #if canImport(Darwin)
+            // en_BG: its currency pattern doesn't group, its number pattern does: the flag stays.
+            let bulgaria = formatters("en_BG")
+            XCTAssertTrue(bulgaria.number.usesGroupingSeparator)
+            XCTAssertFalse(bulgaria.currency.usesGroupingSeparator)
+            for identifier in ["en_IN", "hi_IN", "mr_IN", "ta_IN", "ml_IN", "or_IN", "bn_IN"] {
+                let pair = formatters(identifier)
+                XCTAssertEqual(pair.number.groupingSize, 3, identifier)
+                XCTAssertEqual(pair.number.secondaryGroupingSize, 2, identifier)
+                XCTAssertTrue(declared(identifier) == (.indian, true), identifier)
+            }
+            // Toki Pona groups by twos, secondary 0 meaning "repeat the primary": neither Western
+            // nor Indian, so legacy, which reads it.
+            for identifier in ["tok", "tok_001"] {
+                let pair = formatters(identifier)
+                XCTAssertEqual(pair.number.groupingSize, 2)
+                XCTAssertEqual(pair.number.secondaryGroupingSize, 0)
+                XCTAssertTrue(declared(identifier) == (.legacy, true), identifier)
+            }
+            // en_US_POSIX groups in neither pattern (size 0): the flag is cleared.
+            XCTAssertTrue(declared("en_US_POSIX").1 == false)
+            XCTAssertEqual(Cast.i32("1234", locale: Locale(identifier: "en_US_POSIX")), .success(1234))
+            XCTAssertEqual(Cast.i32("1,234", locale: Locale(identifier: "en_US_POSIX")).fault?.reason, .malformed)
+
+            XCTAssertEqual(Cast.i32("12,34,567", locale: Locale(identifier: "en_IN")), .success(1_234_567))
+            XCTAssertEqual(Cast.i32("1,234,567", locale: Locale(identifier: "en_IN")).fault?.detail, .groupSize)
+        #else
+            // swift-corelibs-foundation gives every locale's NumberFormatter `#,##0.###`, and writes
+            // with it: en_IN's 1,234,567. The bridge reads what the platform writes, so Western.
+            for identifier in ["en_IN", "hi_IN", "ml_IN", "tok", "en_BG", "en_US_POSIX"] {
+                let pair = formatters(identifier)
+                XCTAssertEqual(pair.number.groupingSize, 3, identifier)
+                XCTAssertEqual(pair.number.secondaryGroupingSize, 0, identifier)
+                XCTAssertTrue(declared(identifier) == (.western, true), identifier)
+            }
+            XCTAssertEqual(Cast.i32("1,234,567", locale: Locale(identifier: "en_IN")), .success(1_234_567))
+            XCTAssertEqual(Cast.i32("12,34,567", locale: Locale(identifier: "en_IN")).fault?.detail, .groupSize)
+        #endif
     }
 
     /// One policy and one flag for number and currency values: every mixed case.
@@ -321,7 +334,12 @@ final class DetailedTests: XCTestCase {
         overridden.numberStyle = .decimal
         overridden.groupingSize = 3
         overridden.secondaryGroupingSize = 3
-        XCTAssertEqual(NumFormat.from(formatter: overridden).grouping, .legacy)
+        #if canImport(Darwin)
+            XCTAssertEqual(NumFormat.from(formatter: overridden).grouping, .legacy)
+        #else
+            // swift-corelibs-foundation's en_IN currency pattern is Western too, so they agree.
+            XCTAssertEqual(NumFormat.from(formatter: overridden).grouping, .western)
+        #endif
     }
 
     /// The bridge reads what the platform writes, for number and currency values alike: the
@@ -356,8 +374,8 @@ final class DetailedTests: XCTestCase {
     }
 
     /// Every locale the platform ships: no bridge call traps, its policy is the function of its
-    /// two patterns, the styles never carry a policy, and `en_BG` is the only one whose patterns
-    /// differ in whether they group.
+    /// two patterns, the styles never carry a policy, and on Apple's data `en_BG` is the only one
+    /// whose patterns differ in whether they group.
     func testEveryLocaleDeclaresThePolicyItsPatternsName() {
         var counts: [Grouping: Int] = [:]
         var cleared = 0
@@ -378,11 +396,19 @@ final class DetailedTests: XCTestCase {
                 XCTAssertNotEqual(grouping, .western, identifier)
             }
         }
-        XCTAssertGreaterThan(counts[.indian] ?? 0, 10)
         XCTAssertGreaterThan(counts[.western] ?? 0, 900)
-        XCTAssertEqual(oneSided, ["en_BG"])
-        XCTAssertEqual(cleared, 1, "en_US_POSIX alone groups in neither")
-        XCTAssertEqual(counts[.legacy], 2, "tok and tok_001")
+        #if canImport(Darwin)
+            XCTAssertGreaterThan(counts[.indian] ?? 0, 10)
+            XCTAssertEqual(oneSided, ["en_BG"])
+            XCTAssertEqual(cleared, 1, "en_US_POSIX alone groups in neither")
+            XCTAssertEqual(counts[.legacy], 2, "tok and tok_001")
+        #else
+            // swift-corelibs-foundation's patterns are all Western.
+            XCTAssertEqual(counts[.indian], nil)
+            XCTAssertEqual(oneSided, [])
+            XCTAssertEqual(cleared, 0)
+            XCTAssertEqual(counts[.legacy], nil)
+        #endif
     }
 
     // MARK: - the opt-in date shapes
