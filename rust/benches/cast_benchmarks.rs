@@ -231,6 +231,54 @@ fn checked_benchmarks(c: &mut Criterion) {
         b.iter(|| hypercast::cast_text_checked(black_box(b"  published "), &status))
     });
     group.finish();
+
+    // The same text bare and padded, so what an edge costs is measured against the text
+    // alone. The U+00A0 group has no base to run against (the base read none of it), so
+    // `cargo bench -- padded/` runs the ASCII pairs alone, on a build that rejects it.
+    let mut group = c.benchmark_group("padded");
+    group.bench_function("bool/plain", |b| {
+        b.iter(|| hypercast::cast_bool(black_box(b"true")).unwrap())
+    });
+    group.bench_function("bool/ascii-padded", |b| {
+        b.iter(|| hypercast::cast_bool(black_box(b" true\n")).unwrap())
+    });
+    group.bench_function("i64/plain", |b| {
+        b.iter(|| hypercast::cast_i64(black_box(b"1234567890123"), &format).unwrap())
+    });
+    group.bench_function("i64/ascii-padded", |b| {
+        b.iter(|| hypercast::cast_i64(black_box(b"  1234567890123\n"), &format).unwrap())
+    });
+    group.bench_function("f64/plain", |b| {
+        b.iter(|| hypercast::cast_f64(black_box(b"12345.6789"), &format).unwrap())
+    });
+    group.bench_function("f64/ascii-padded", |b| {
+        b.iter(|| hypercast::cast_f64(black_box(b"  12345.6789\n"), &format).unwrap())
+    });
+    group.bench_function("uuid/plain", |b| {
+        b.iter(|| hypercast::cast_uuid(black_box(b"550e8400-e29b-41d4-a716-446655440000")).unwrap())
+    });
+    group.bench_function("uuid/ascii-padded", |b| {
+        b.iter(|| {
+            hypercast::cast_uuid(black_box(b" 550e8400-e29b-41d4-a716-446655440000\n")).unwrap()
+        })
+    });
+    group.finish();
+
+    let mut group = c.benchmark_group("padded-nbsp");
+    group.bench_function("bool", |b| {
+        b.iter(|| hypercast::cast_bool(black_box("\u{a0}true\u{a0}".as_bytes())).unwrap())
+    });
+    group.bench_function("i64", |b| {
+        b.iter(|| {
+            hypercast::cast_i64(black_box("\u{a0}1234567890123\u{a0}".as_bytes()), &format).unwrap()
+        })
+    });
+    group.bench_function("f64", |b| {
+        b.iter(|| {
+            hypercast::cast_f64(black_box("\u{a0}12345.6789\u{a0}".as_bytes()), &format).unwrap()
+        })
+    });
+    group.finish();
 }
 
 criterion_group!(benches, benchmarks);

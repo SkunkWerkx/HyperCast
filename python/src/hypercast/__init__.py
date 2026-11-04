@@ -47,6 +47,7 @@ door's own ``Success[...] | Fault`` rather than ``Any``.
 from __future__ import annotations
 
 from enum import IntEnum
+from types import ModuleType
 from typing import TypeVar, Union, overload
 
 from . import _native
@@ -57,6 +58,9 @@ __all__ = [
     "Fault",
     "Verdict",
     "NumFormat",
+    "Detail",
+    "DateOptions",
+    "MonthNames",
     "UnixPrecision",
     "DateOrder",
     "ExcelEpoch",
@@ -107,7 +111,7 @@ class CastFailure(IntEnum):
     """The closed set of reasons a cast can fail — the native core's verdict codes, verbatim."""
 
     EMPTY = 1
-    """Required input was empty or whitespace. :func:`optional` surfaces this as ``None``."""
+    """Required input was empty or white space. :func:`optional` surfaces this as ``None``."""
     MALFORMED = 2
     """Input was present but not recognizable as the target type."""
     OUT_OF_RANGE = 3
@@ -188,15 +192,141 @@ class Rounding(IntEnum):
     """Up, toward positive infinity."""
 
 
+class Detail(IntEnum):
+    """What exactly a cast found wrong, beside the broad :class:`CastFailure` — the native core's
+    codes, verbatim, for diagnosing rejected data (``fault.detail``).
+
+    Published codes keep their numbers and meanings. New members may join in a minor release, so
+    a ``match`` over details needs a ``case _:`` arm, and a code this version names no member for
+    is :data:`UNKNOWN`: the fault's ``detail_code`` keeps the number, and its reason and span
+    still stand. A detail says what failed, never how to retry, and is independent of the
+    reason: an infinity is ``OUT_OF_RANGE`` at a float door and ``MALFORMED`` at an integer door,
+    and :data:`NOT_FINITE` at both.
+    """
+
+    BLANK = 1
+    """Empty, or only white space."""
+    UNEXPECTED_CHARACTER = 2
+    """A character the position doesn't allow, where the position allows several things: a
+    letter in a numeral, an undeclared symbol."""
+    DIGIT_EXPECTED = 3
+    """A numeral or digit field is under way, or a fixed position requires a digit, and another
+    character or the end is found (``0xG``, ``1e``, ``2026-0x-07``)."""
+    DELIMITER_EXPECTED = 4
+    """A required mark (``-``, ``:``, ``T``, ``}``, ``0x``, ``;``, a UUID hyphen) is missing or
+    different."""
+    TRAILING_TEXT = 5
+    """The value is complete, but more text follows."""
+    NO_DIGITS = 6
+    """The numeral is absent entirely: only a sign, a currency or percent affix, a bare radix
+    prefix, or a protobuf duration's bare ``s``."""
+    SIGN_MISPLACED = 7
+    """A sign where none may stand: a second sign, inside parentheses, mid-token, leading plus
+    trailing."""
+    PARENTHESES_UNBALANCED = 8
+    """``(`` without ``)``, or ``( )``."""
+    MARK_REPEATED = 9
+    """A once-only mark appears twice (a second decimal separator, a second ``T``)."""
+    GROUP_MISPLACED = 10
+    """A group separator not between digits, or an empty group."""
+    GROUP_SIZE = 11
+    """A group with the wrong digit count for the declared grouping."""
+    GROUP_IN_FRACTION = 12
+    """Grouping after the decimal separator or in an exponent."""
+    AMBIGUOUS_SEPARATOR = 13
+    """Separator detection can't tell ``.`` from ``,``."""
+    FRACTION_NOT_ALLOWED = 14
+    """A fraction where the type is whole: an integer door, a Unix count, a negative exponent at
+    an integer door, a fraction on a duration unit other than seconds."""
+    FIELD_WIDTH = 15
+    """A delimited field has the wrong number of digits."""
+    WRONG_LENGTH = 16
+    """A fixed-shape token, recognised by its total length, has the wrong length."""
+    COMPONENT_MISSING = 17
+    """A required part of the value is absent: a zone, seconds, a duration unit or any duration
+    component, the UUID after a bare ``GUID:``."""
+    NOT_RECOGNIZED = 18
+    """Not one of the door's accepted words or values."""
+    UNKNOWN_UNIT = 19
+    """An unknown or misplaced duration unit."""
+    INVALID_UTF8 = 20
+    """The bytes where the cast failed don't decode as UTF-8."""
+    TOO_LONG = 21
+    """Past an implementation limit: a 256-byte numeral, an 18-digit run, a span past
+    ``u32::MAX``."""
+    NOT_FINITE = 22
+    """A non-finite value: a NaN or infinity spelled at a numeric door, or a NaN or ∞ given to a
+    door that can't represent it."""
+    NOT_WHOLE = 23
+    """A non-integral number at a whole-number door."""
+    NEGATIVE_NOT_ALLOWED = 24
+    """Negative where the type has no negatives (an unsigned integer, an Excel serial)."""
+    TOO_LARGE = 25
+    """The magnitude exceeds what the target type represents."""
+    TOO_SMALL = 26
+    """Below a signed integer type's minimum."""
+    TOO_PRECISE = 27
+    """More fractional digits than the type holds."""
+    DATE_FIELD_OUT_OF_RANGE = 28
+    """A date field that names nothing: year 0, month 13, a day past the month's end."""
+    TIME_FIELD_OUT_OF_RANGE = 29
+    """An hour, minute, second or offset field out of range."""
+    OUTSIDE_WINDOW = 30
+    """A well-formed instant or duration past the supported window (years 0001–9999, ±10,000
+    years)."""
+    NONEXISTENT_DATE = 31
+    """A day that never existed: Excel's phantom 1900-02-29."""
+    NOT_A_SCALAR = 32
+    """A code point above U+10FFFF, or a surrogate."""
+    UNKNOWN = -1
+    """A code with no member here: published by a later core than this package names. Not a code
+    itself — ``Fault.detail_code`` holds the number."""
+
+    @classmethod
+    def from_code(cls, code: int) -> Detail:
+        """The member named for a core ``code``; :data:`UNKNOWN` for one this version does not
+        name (and for ``0``, which no detail ever is). Never raises."""
+        try:
+            return cls(code)
+        except ValueError:
+            return cls.UNKNOWN
+
+
+def _require_core_1_1(native: ModuleType) -> None:
+    """Refuses a native core below 1.1, before anything is bound to it.
+
+    A 1.0 core reads a format's grouping-policy bits as nothing and parses ``12,34`` as 1234
+    whatever was declared, so a request for strict grouping against it would silently be a
+    legacy parse. The package is built for the 1.1 core's surface (strict grouping, detail, date
+    options), and a core that lacks it is a mismatched install, never a degraded mode.
+
+    A capability check, not a numeric floor: the extension is the core, built from one crate,
+    so its version cannot differ from the package's, and a crate still numbered 1.0.0 before the
+    release bumps it (every dev and pre-release build) must load. What a 1.0 core lacks is the
+    1.1 surface, which is what is asked for.
+    """
+    if hasattr(native, "DateOptions") and hasattr(native.NumFormat, "GROUPING_WESTERN"):
+        return
+    found = native.native_version() if hasattr(native, "native_version") else "of unknown version"
+    raise ImportError(
+        f"hypercast needs a native core of version 1.1 or later; the loaded hypercast._native "
+        f"is {found}, which ignores the grouping policy a format declares. Reinstall hypercast "
+        f"so the package and its extension come from one release."
+    )
+
+
 # The extension's own types and doors ARE the package surface — no delegation defs, no
 # per-call Python frame on top (their docstrings live on the PyO3 functions/classes
 # themselves). _bind hands over the CastFailure members so faults carry the exact enum
 # members callers compare with `is`, plus uuid.UUID for cast_uuid's construction.
-_native._bind(CastFailure, Door, Rounding)
+_require_core_1_1(_native)
+_native._bind(CastFailure, Door, Rounding, Detail)
 
 Success = _native.Success
 Fault = _native.Fault
 NumFormat = _native.NumFormat
+DateOptions = _native.DateOptions
+MonthNames = _native.MonthNames
 Constraints = _native.Constraints
 Checked = _native.Checked
 Violation = _native.Violation

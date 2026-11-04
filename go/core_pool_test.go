@@ -85,14 +85,18 @@ func TestAOneOffInstanceIsNotPooled(t *testing.T) {
 func TestAPanicInsideTheCoreAbandonsThePrimary(t *testing.T) {
 	base := withFreshInstances(t)
 	p := primary()
-	trap := func(*core.Module, int32, int32, int32, int32) int32 { panic("trap") }
+	real := castDetailed
+	castDetailed = func(*core.Module, int32, int32, int32, int32, int32, int32, int32, int32, int32, int32, int32) int32 {
+		panic("trap")
+	}
 	func() {
+		defer func() { castDetailed = real }()
 		defer func() {
 			if recover() == nil {
 				t.Fatal("no panic")
 			}
 		}()
-		callPlain(trap, nil, 0)
+		Bool("yes")
 	}()
 	if p.mu.TryLock() {
 		p.mu.Unlock()

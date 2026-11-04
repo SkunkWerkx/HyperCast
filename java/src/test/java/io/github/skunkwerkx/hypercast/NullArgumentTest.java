@@ -55,6 +55,21 @@ class NullArgumentTest {
         if (type == Fault.class) {
             return new Fault<>(CastFailure.MALFORMED, 0, 1);
         }
+        if (type == DateOptions.class) {
+            return DateOptions.NONE;
+        }
+        if (type == MonthNames.class) {
+            return DetailedCastTest.english();
+        }
+        if (type == DetailedVerdict.class) {
+            return new DetailedSuccess<>(1);
+        }
+        if (type == DetailedCheckedVerdict.class) {
+            return new DetailedChecked<>(1, false, java.util.OptionalInt.empty());
+        }
+        if (type == DetailedFault.class) {
+            return new DetailedFault<>(CastFailure.MALFORMED, FaultDetail.BLANK, 0, 1);
+        }
         if (type == double.class) {
             return 1.0;
         }
@@ -93,6 +108,15 @@ class NullArgumentTest {
         if (type == Constraints.class) {
             return "constraints";
         }
+        if (type == DateOptions.class) {
+            return "options";
+        }
+        if (type == MonthNames.class) {
+            return "months";
+        }
+        if (type == DetailedVerdict.class || type == DetailedCheckedVerdict.class || type == DetailedFault.class) {
+            return "verdict";
+        }
         throw new AssertionError("no expected name for " + type);
     }
 
@@ -106,8 +130,19 @@ class NullArgumentTest {
 
     @Test
     void everyReferenceParameterRefusesNull() throws Exception {
+        // A new public door with a reference parameter changes this count on purpose.
+        assertEquals(312, refusals(Cast.class));
+    }
+
+    /** The detailed path's doors refuse null in the same words, parameter for parameter. */
+    @Test
+    void everyReferenceParameterOfTheDetailedPathRefusesNull() throws Exception {
+        assertEquals(387, refusals(DetailedCast.class));
+    }
+
+    private static int refusals(Class<?> doors) throws Exception {
         int checked = 0;
-        for (Method m : Cast.class.getDeclaredMethods()) {
+        for (Method m : doors.getDeclaredMethods()) {
             if (!Modifier.isPublic(m.getModifiers()) || !Modifier.isStatic(m.getModifiers())) {
                 continue;
             }
@@ -131,7 +166,6 @@ class NullArgumentTest {
                 checked++;
             }
         }
-        // A new public door with a reference parameter changes this count on purpose.
-        assertEquals(312, checked);
+        return checked;
     }
 }

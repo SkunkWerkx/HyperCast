@@ -26,6 +26,12 @@ import java.util.function.IntUnaryOperator;
  * {@code null} argument, a malformed {@link NumFormat} or {@link DateTimeFormat}, constraints
  * built for another door), never data.
  *
+ * <p>A failure here is a reason and a span. {@link DetailedCast} is the same doors answering a
+ * {@link DetailedVerdict} whose failure also names what failed ({@link FaultDetail}), and the one
+ * place the opt-in date shapes ({@link DateOptions}, {@link MonthNames}) are accepted: {@code Verdict}
+ * is sealed, so neither lives here. A numeric door's {@link NumFormat} carries a {@link Grouping},
+ * strict Western by default.
+ *
  * <p>Door names mirror the native ABI ({@code i32}, {@code f64}, {@code timestamp}, …) so
  * the polyglot surface reads identically across bindings. Each door takes a {@link String}
  * (UTF-8-encoded into a fresh {@code byte[]}), raw UTF-8 {@code byte[]} — the native
@@ -231,7 +237,7 @@ public final class Cast {
     // How many UTF-16 code units the first byteOffset UTF-8 bytes decode to: one per ASCII
     // or lead byte, two for the lead of a four-byte sequence (a supplementary code point is
     // a surrogate pair), none for a continuation byte.
-    private static int charIndex(byte[] utf8, int byteOffset) {
+    static int charIndex(byte[] utf8, int byteOffset) {
         int units = 0;
         for (int i = 0, n = Math.min(byteOffset, utf8.length); i < n; i++) {
             int b = utf8[i] & 0xFF;
@@ -331,7 +337,7 @@ public final class Cast {
     /**
      * Casts char text: one character, either verbatim — the input is exactly one character,
      * read <em>before</em> trimming, so {@code " "} is a space and {@code "6"} is the digit
-     * six — or a declared code point, ASCII-whitespace-trimmed and ASCII case-insensitive on
+     * six — or a declared code point, white-space-trimmed and ASCII case-insensitive on
      * the prefix: decimal {@code 65}, {@code U+0041}, {@code 0x41}, {@code &H41}, or an HTML
      * numeric entity {@code &#65;} / {@code &#x41;} (the closing {@code ;} required).
      * Culture-insensitive — no {@link NumFormat}.
@@ -393,21 +399,16 @@ public final class Cast {
             return new Success<>((char) scalar);
         }
         // A supplementary scalar the core accepted but one char cannot hold: out of range
-        // over the token the core read, the input less its ASCII whitespace edges.
+        // over the token the core read, the input less its white-space edges.
         int start = 0;
         int end = len;
-        while (start < end && asciiWhitespace(byteAt.applyAsInt(start))) {
-            start++;
+        for (int step; (step = WhiteSpace.lengthAt(byteAt, start, end)) > 0; ) {
+            start += step;
         }
-        while (end > start && asciiWhitespace(byteAt.applyAsInt(end - 1))) {
-            end--;
+        for (int step; (step = WhiteSpace.lengthBefore(byteAt, start, end)) > 0; ) {
+            end -= step;
         }
         return new Fault<>(CastFailure.OUT_OF_RANGE, start, end - start);
-    }
-
-    // The core's trim set: Rust's u8::is_ascii_whitespace (no vertical tab).
-    private static boolean asciiWhitespace(int b) {
-        return b == ' ' || b == '\t' || b == '\n' || b == '\f' || b == '\r';
     }
 
     // --- integers ---

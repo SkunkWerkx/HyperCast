@@ -207,6 +207,7 @@ def test_every_door_has_a_docstring(door):
         "decimal_sep",
         "group_sep",
         "flags",
+        "grouping",
         "currency",
         "currency_decimal_sep",
         "currency_group_sep",
@@ -224,6 +225,6 @@ def test_num_format_members_have_docstrings(member):
 
 
 def test_the_verdict_types_have_docstrings():
-    """Success, Fault and NumFormat carry docstrings."""
-    for cls in (Success, Fault, NumFormat):
+    """Success, Fault, NumFormat and the date declarations carry docstrings."""
+    for cls in (Success, Fault, NumFormat, hypercast.DateOptions, hypercast.MonthNames):
         assert cls.__doc__ and cls.__doc__.strip()

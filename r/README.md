@@ -48,17 +48,17 @@ x <- c("42", "(1,234)", "12x", "", NA)
 v <- cast_i32(x, num_format())
 v
 #> <hypercast_verdict: cast_i32> 2 ok, 2 faulted, 1 missing
-#>   value    ok    reason offset length
-#> 1    42  TRUE      <NA>     NA     NA
-#> 2 -1234  TRUE      <NA>     NA     NA
-#> 3    NA FALSE malformed      2      1
-#> 4    NA FALSE     empty      0      0
-#> 5    NA    NA      <NA>     NA     NA
+#>   value    ok    reason offset length               detail detail_code
+#> 1    42  TRUE      <NA>     NA     NA                 <NA>          NA
+#> 2 -1234  TRUE      <NA>     NA     NA                 <NA>          NA
+#> 3    NA FALSE malformed      2      1 unexpected_character           2
+#> 4    NA FALSE     empty      0      0                blank           1
+#> 5    NA    NA      <NA>     NA     NA                 <NA>          NA
 
 faults(v)
-#>   row    reason offset length
-#> 1   3 malformed      2      1
-#> 2   4     empty      0      0
+#>   row    reason offset length               detail detail_code
+#> 1   3 malformed      2      1 unexpected_character           2
+#> 2   4     empty      0      0                blank           1
 with(faults(v), substr(x[row], offset + 1, offset + length))
 #> [1] "x" ""
 optional(v)$ok
@@ -69,9 +69,12 @@ cast_decimal("1.234,50 €", eurozone)$value
 #> [1] "1234.5"
 cast_date(c("2026-02-30", "01/11/2026"), "day_month_year")
 #> <hypercast_verdict: cast_date> 1 ok, 1 faulted, 0 missing
-#>        value    ok       reason offset length
-#> 1       <NA> FALSE out_of_range      8      2
-#> 2 2026-11-01  TRUE         <NA>     NA     NA
+#>        value    ok       reason offset length                  detail
+#> 1       <NA> FALSE out_of_range      8      2 date_field_out_of_range
+#> 2 2026-11-01  TRUE         <NA>     NA     NA                    <NA>
+#>   detail_code
+#> 1          28
+#> 2          NA
 cast_timestamp("2026-11-01T12:34:56.789Z")$value
 #> [1] "2026-11-01 12:34:56 UTC"
 cast_u64("18446744073709551615", num_format())$value
@@ -91,11 +94,22 @@ vector as a data frame, one column per field, so every door returns a `hypercast
 | `reason` | `NA` | factor: `empty`, `malformed`, `out_of_range` | `NA` |
 | `offset` | `NA` | where the offending text starts, from 0 | `NA` |
 | `length` | `NA` | how long it runs | `NA` |
+| `detail` | `NA` | factor: what exactly failed (`fault_details`, or `unknown`) | `NA` |
+| `detail_code` | `NA` | the core's number for it | `NA` |
+
+`detail` and `detail_code` come last, after the five columns every earlier release had, so
+code that reads a verdict by name or by position keeps working. The detail is the core's
+shared vocabulary of 32 names (`fault_details`): `group_size`, `digit_expected`,
+`date_field_out_of_range`, and so on. It is for diagnosing rejected data, and it is a
+contract: published codes keep their numbers and meanings, new ones may appear in a minor
+release, and a code this version does not name reads `unknown` with its number in
+`detail_code` and the reason and span as usable as any other fault's. A violation of a
+declared rule has no detail (its `keyword` is the answer).
 
 `ok` is the discriminant: `v$value[v$ok %in% TRUE]` is the parsed values, and `is_ok(v)`
 is the column itself. `NA` in is `NA` out: a missing element is a missing row,
 never a fault. `faults(v)` is the faulted rows with `row` naming each one's element.
-`optional(v)` turns `empty` faults (empty or ASCII-whitespace input) into missing rows, the
+`optional(v)` turns `empty` faults (empty or white-space input) into missing rows, the
 same presentation every binding ships as `optional`. A verdict subsets, binds and converts as
 the data frame it is; `as.data.frame()` drops the class.
 
@@ -145,7 +159,7 @@ their own.
 
 A civil date-time names no instant until the caller names a zone:
 `as.POSIXct(v$value, tz = "America/Chicago")`. `cast_char()` reads U+0000 as `out_of_range`
-over the input less its ASCII whitespace edges, since an R string cannot hold it; C# and Java
+over the input less its white space edges, since an R string cannot hold it; C# and Java
 report a scalar their UTF-16 `char` cannot hold the same way.
 
 ### Declarations
@@ -153,15 +167,56 @@ report a scalar their UTF-16 `char` cannot hold the same way.
 Nothing is guessed. The number doors take a `num_format()`: decimal and group separators,
 style flags (`num_styles`: grouping, parentheses, exponent, radix prefixes, percent,
 separator detection, currency, trailing sign), currency, sign and percent spellings and a
-native digit zero. `num_format()` with no arguments is the invariant format with every style
-but detection; `num_format_detect()` adds detection; `num_format_from_localeconv()` bridges
-`Sys.localeconv()` (or any named vector of its fields). `cast_date()` and `cast_datetime()`
+native digit zero, and the grouping policy. `num_format()` with no arguments is the invariant
+format with every style but detection and strict Western grouping; `num_format_detect()` adds
+detection; `num_format_from_localeconv()` bridges `Sys.localeconv()` (or any named vector of
+its fields). `cast_date()` and `cast_datetime()`
 take a field `order` (`"year_month_day"`, `"month_day_year"`, `"day_month_year"`), with
 `NULL` for ISO 8601 only; `cast_datetime()` takes `am` and `pm` day periods; `cast_unix()`
 takes its `precision` and the Excel doors their `epoch` (`"y1900"`, `"y1904"`).
 
+Grouping is strict by default: `grouping = "western"` reads a group separator only between
+groups of exactly three digits counted from the decimal separator, so `1,234,567` reads and
+`12,34` is `malformed` (`group_size`, spanning `,34`). `grouping = "indian"` reads `12,34,567`
+(three digits beside the decimal separator, two to the left of them), and `grouping =
+"legacy"` is the escape hatch for 1.0's rule, a group separator anywhere between two digits
+(`12,34` is `1234`). A numeral without a group separator reads under all three, a policy
+never turns the `grouping` style on, and `flags` carries styles only (a policy there is an
+error). `num_format_from_localeconv()` reads the locale's own `grouping` and `mon_grouping`
+patterns (never its name): strict Western when every pattern that groups is groups of three,
+`"indian"` when every one is three then two, `"legacy"` for any other shape or when the number
+and currency patterns disagree (a bridge never rejects what its platform writes), and the
+`grouping` style is cleared only when neither pattern groups. R keeps `LC_NUMERIC` at `"C"`, so
+the currency pattern usually decides.
+
+The date doors keep today's shape rules unless asked. `date_options()` opts in to
+`"compact_date"` (`20260107` at `cast_date()`), `"space_separator"` and `"hour_offset"`
+(a space for the `T`, and `+00` or `-05`, at `cast_timestamp()`), `"common_forms"` (all three)
+and a `pivot` for two-digit years (`pivot = 2029` reads `1/7/26` as 2026, at `cast_date()` with
+an `order` and at `cast_datetime()`); `month_names()` declares a month vocabulary the ordered
+doors read Excel-style (`07-Jan-26`). Both are arguments of the date doors (`options` and
+`months`), and both are checked when declared.
+
+White space is Unicode's `White_Space`, the 25 code points (ASCII, U+0085, U+00A0, U+2000 to
+U+200A, U+202F, U+3000 among them). Every door ignores it at both ends (`cast_char()` given exactly one character keeps it), and the
+numeric doors also after a leading sign, before a trailing sign or a percent symbol, on either
+side of a currency symbol and inside accounting parentheses (`"- 12"`, `"( 12 )"`, `"12,5 %"`,
+`"1 234,56 €"`, the last two under a declared comma decimal separator, the last with a space group separator and `€` declared); between digits it is `malformed`, unless a space-like group separator is
+declared. An ASCII space, U+00A0 or U+202F declared as the group separator makes the input's
+choice of those three immaterial (Excel writes U+00A0, ICU's `fr` U+202F, an older system a
+space), a space-like separator with no digit after it is just white space, and any other
+separator stays exact. Input of nothing but white space is `empty`.
+
+A `num_format()` the core would refuse is an error at construction: a sign or percent symbol
+with white space in it, a decimal or currency decimal separator with white space in it, and a
+currency symbol that starts or ends in white space (`F CFA` is fine, and there an ASCII space,
+U+00A0 and U+202F read as each other). `cast_datetime()` day periods follow the same rule, and
+any run of white space may sit between a designator and the clock (`3:04\u202fPM` reads).
+
 `hypercast_native_version()` is the version of the loaded core, which equals the package
-version.
+version. The package links its core statically and, on load, proves the core enforces grouping
+policies (a strict Western `12,34` must come back `group_size`); it refuses to load against a
+core that does not, so a strict request is never read as a legacy one.
 
 ## Validation constraints
 
@@ -288,7 +343,7 @@ hypercast 1.0.0, bench 1.1.4
 | ISO dates | 19.93 µs | 2.29 ms | hypercast 115x faster |
 | ISO instants | 27.14 µs | 3.83 ms | hypercast 141x faster |
 
-Every door allocates more than its base R counterpart: the verdict's five columns (and a
+Every door allocates more than its base R counterpart: the verdict's seven columns (and a
 timestamp's two exact ones) are R vectors of the input's length.
 
 ## Local loop

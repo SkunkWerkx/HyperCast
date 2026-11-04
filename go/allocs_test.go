@@ -129,7 +129,7 @@ func TestAFaultIsTheOnlyAllocationOnFailure(t *testing.T) {
 	assertAllocs(t, "Timestamp (malformed)", 1, func() { Timestamp("not a timestamp") })
 }
 
-// The zero holds for a text the base scratch holds, 65,376 bytes; a longer one runs on a
+// The zero holds for a text the base scratch holds, 65,360 bytes; a longer one runs on a
 // one-off instance sized for it, and that instance is what it allocates.
 func TestOnlyATextPastTheBaseScratchAllocates(t *testing.T) {
 	fits := strings.Repeat(" ", baseText-1) + "7"

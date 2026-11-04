@@ -7,8 +7,10 @@ from __future__ import annotations
 import datetime as dt
 import importlib.metadata
 import inspect
+import locale
 import platform
 import re
+import subprocess
 import uuid as uuidlib
 from decimal import Decimal
 from pathlib import Path
@@ -143,6 +145,41 @@ def test_localeconv_bridge_carries_the_signs_the_currency_separators_and_the_sig
     assert isinstance(NumFormat.from_localeconv(), NumFormat)
 
 
+def _installed_locales() -> list[str]:
+    """What ``locale -a`` lists, or nothing where the machine has no such command (Windows,
+    Pyodide); CI often has only C and POSIX."""
+    try:
+        listed = subprocess.run(["locale", "-a"], capture_output=True, text=True, check=True)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return sorted(set(listed.stdout.split()))
+
+
+def test_localeconv_bridge_reads_every_locale_the_machine_has():
+    """``from_localeconv`` reads only the process's locale and throws on a symbol the core
+    cannot declare, so it is swept over each locale ``locale -a`` lists (skipping any
+    ``setlocale`` refuses) and must not throw: a real locale whose separator or sign holds white
+    space the core now refuses would be a finding, not something to work around here.
+    """
+    saved = locale.setlocale(locale.LC_ALL)
+    swept = 0
+    try:
+        for name in ["C", "POSIX", *_installed_locales()]:
+            try:
+                locale.setlocale(locale.LC_ALL, name)
+            except locale.Error:
+                continue
+            swept += 1
+            try:
+                fmt = NumFormat.from_localeconv()
+            except ValueError as err:  # pragma: no cover - the sweep's whole point
+                pytest.fail(f"from_localeconv() threw under {name}: {err}")
+            assert isinstance(fmt, NumFormat), name
+    finally:
+        locale.setlocale(locale.LC_ALL, saved)
+    assert swept >= 1
+
+
 def test_localeconv_bridge_never_puts_one_character_in_both_roles():
     """An empty field takes its invariant default unless the other separator already holds that
     character, in which case it takes the other of the pair, so a comma-decimal locale with no
@@ -194,12 +231,38 @@ def test_currency_symbol_is_declared_never_guessed():
 
 
 def test_currency_symbol_rules_are_a_caller_bug():
-    """1 to 16 UTF-8 bytes, no ASCII digit or whitespace — the core's CurrencySymbol rule, enforced
-    at construction like equal separators.
+    """1 to 16 UTF-8 bytes, no ASCII digit, no white space (any Unicode White_Space code point)
+    at either edge — the core's CurrencySymbol rule, enforced at construction like equal
+    separators. White space inside is part of the symbol: CLDR's CFA franc is ``F CFA``.
     """
-    for bad in ("$5", "US D", "x" * 17, "€" * 6):
-        with pytest.raises(ValueError):
+    for bad in ("$5", "x" * 17, "€" * 6):
+        with pytest.raises(ValueError, match="Currency symbol must be 1 to 16 UTF-8 bytes"):
             NumFormat(".", ",", NumFormat.ALL, bad)
+    for bad in (
+        " F",
+        "F ",
+        "\u00a0F",
+        "F\u00a0",
+        "\u202f",
+        "\u202fF\u202fCFA",
+        "\u3000$",
+        "$\u2009",
+    ):
+        with pytest.raises(ValueError, match="Currency symbol must not start or end with white"):
+            NumFormat(".", ",", NumFormat.ALL, bad)
+    # Length, then digit, then the edges: a symbol breaking two rules names the earlier one.
+    with pytest.raises(ValueError, match="1 to 16 UTF-8 bytes"):
+        NumFormat(".", ",", NumFormat.ALL, "\u00a0" * 9)
+    with pytest.raises(ValueError, match="1 to 16 UTF-8 bytes"):
+        NumFormat(".", ",", NumFormat.ALL, "\u00a01")
+    # Inside, any white space is declared as given; the core matches the three space-likes
+    # (ASCII space, U+00A0, U+202F) for each other and the rest exactly.
+    for space in (" ", "\u00a0", "\u202f", "\u2009", "\u3000", "\t"):
+        franc = f"F{space}CFA"
+        assert NumFormat(".", ",", NumFormat.ALL, franc).currency == franc
+    cfa = NumFormat(",", "\u00a0", NumFormat.ALL, "F\u202fCFA")
+    for space in (" ", "\u00a0", "\u202f"):
+        assert hypercast.cast_decimal(f"1,5{space}F{space}CFA", cfa) == Success(Decimal("1.5"))
     assert NumFormat(".", ",", NumFormat.ALL, "€" * 5).currency == "€" * 5  # 15 bytes
 
 
@@ -544,17 +607,45 @@ def test_native_digits_are_read_beside_ascii():
 
 def test_symbol_rules_are_a_caller_bug():
     """The C ABI's contract rules, raised at construction so a format that exists is one the core
-    reads: a sign or percent with whitespace or a digit, a symbol too long for its field, equal
-    currency separators in force, a digit zero that is ASCII or starts no digit block.
+    reads: a sign or percent with white space (any Unicode White_Space code point) or a digit, a
+    symbol too long for its field, a decimal separator with white space in it, equal currency
+    separators in force, a digit zero that is ASCII or starts no digit block.
     """
-    for name in ("minus_sign", "plus_sign", "percent"):
-        for bad in ("- ", " -", "a b", "1", "x" * 9, "\u2212" * 3):
-            with pytest.raises(ValueError):
+    symbols = {"minus_sign": "Minus sign", "plus_sign": "Plus sign", "percent": "Percent symbol"}
+    for name, what in symbols.items():
+        for bad in ("1", "x" * 9, "\u2212" * 3):
+            with pytest.raises(ValueError, match="1 to 8 UTF-8 bytes"):
                 NumFormat(".", ",", NumFormat.ALL, **{name: bad})
+        for bad in ("- ", " -", "a b", "\u00a0", "a\u202fb", "\u3000-"):
+            with pytest.raises(ValueError, match=f"{what} must not contain white space"):
+                NumFormat(".", ",", NumFormat.ALL, **{name: bad})
+        # Length, then digit, then white space.
+        with pytest.raises(ValueError, match="1 to 8 UTF-8 bytes"):
+            NumFormat(".", ",", NumFormat.ALL, **{name: "\u00a01"})
     for name in ("currency_decimal_sep", "currency_group_sep"):
         for bad in ("x" * 9, "1", "\u00a0" * 5):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="1 to 8 UTF-8 bytes"):
                 NumFormat(".", ",", NumFormat.ALL, **{name: bad})
+    # A decimal separator admits no white space at all: a numeral admits white space only as a
+    # group separator, so it could never match. A group separator may be or hold white space.
+    for bad in (" ", "x ", "\u00a0", "x\u202f", "\u3000"):
+        with pytest.raises(ValueError, match="Decimal separator must not contain white space"):
+            NumFormat(bad, ",", NumFormat.ALL)
+        with pytest.raises(ValueError, match="Currency decimal separator must not contain white"):
+            NumFormat(".", ",", NumFormat.ALL, "€", currency_decimal_sep=bad)
+        assert NumFormat(".", bad, NumFormat.ALL).group_sep == bad
+        assert NumFormat(".", ",", NumFormat.ALL, currency_group_sep=bad).currency_group_sep == bad
+    # The earlier rules' messages stand: length, then digit, then equal separators.
+    with pytest.raises(ValueError, match="1 to 8 UTF-8 bytes"):
+        NumFormat("\u00a0" * 5, ",", NumFormat.ALL)
+    with pytest.raises(ValueError, match="1 to 8 UTF-8 bytes"):
+        NumFormat("\u00a01", ",", NumFormat.ALL)
+    with pytest.raises(ValueError, match="must differ"):
+        NumFormat("\u00a0", "\u00a0", NumFormat.ALL)
+    with pytest.raises(ValueError, match="Currency decimal and group separators must differ"):
+        NumFormat(
+            ",", ".", NumFormat.ALL, "€", currency_decimal_sep="\u00a0", currency_group_sep="\u00a0"
+        )
     # The pair in force for a currency amount must differ, counting what each falls back to.
     with pytest.raises(ValueError, match="Currency decimal and group separators must differ"):
         NumFormat(".", ",", NumFormat.ALL, "€", currency_decimal_sep=",")
@@ -697,16 +788,26 @@ def test_datetime_reads_declared_day_periods_beside_am_pm():
 
 
 def test_day_period_rules_are_a_caller_bug():
-    """A designator is 1 to 16 UTF-8 bytes with no ASCII digit and no ASCII whitespace at either
-    end — the C ABI's contract rule, raised at the call the way a format's rules are at
-    construction.
+    """A designator is 1 to 16 UTF-8 bytes with no ASCII digit and no white space (any Unicode
+    White_Space code point) at either end — the C ABI's contract rule, raised at the call the way
+    a format's rules are at construction.
     """
     mdy = hypercast.DateOrder.MONTH_DAY_YEAR
-    for bad in (" am", "pm ", "a1", "x" * 17, "오" * 6):
+    for bad in ("a1", "x" * 17, "오" * 6):
         with pytest.raises(ValueError, match="1 to 16 UTF-8 bytes"):
             hypercast.cast_datetime("1/7/2026 3:04 PM", mdy, am=bad)
         with pytest.raises(ValueError, match="1 to 16 UTF-8 bytes"):
             hypercast.cast_datetime("1/7/2026 3:04 PM", mdy, pm=bad)
+    for bad in (" am", "pm ", "\u00a0AM", "PM\u202f", "\u3000", "\u00a0"):
+        with pytest.raises(ValueError, match="no white space at either end"):
+            hypercast.cast_datetime("1/7/2026 3:04 PM", mdy, am=bad)
+        with pytest.raises(ValueError, match="no white space at either end"):
+            hypercast.cast_datetime("1/7/2026 3:04 PM", mdy, pm=bad)
+    # Inside a designator white space is part of it, of any kind.
+    for inner in ("a.\u00a0m.", "a.\u202fm."):
+        assert hypercast.cast_datetime(
+            f"1/7/2026 3:04 {inner}", mdy, am=inner
+        ) == hypercast.Success(dt.datetime(2026, 1, 7, 3, 4))
     for wrong_type in (b"am", 1, None):
         with pytest.raises(TypeError):
             hypercast.cast_datetime("1/7/2026 3:04 PM", mdy, am=wrong_type)
@@ -729,7 +830,11 @@ def test_a_format_packs_as_the_core_reads_it():
     packed = NumFormat(",", ".", NumFormat.ALL, "€").packed
     assert len(packed) == 92
     assert packed[0:4] == (92).to_bytes(4, "little")
-    assert packed[4:8] == NumFormat.ALL.to_bytes(4, "little")
+    # The flags word carries the grouping policy in bits 8 and 9: strict Western by default.
+    assert packed[4:8] == (NumFormat.ALL | NumFormat.GROUPING_WESTERN).to_bytes(4, "little")
+    legacy = NumFormat(",", ".", NumFormat.ALL, "€", grouping=NumFormat.GROUPING_LEGACY).packed
+    assert legacy[4:8] == NumFormat.ALL.to_bytes(4, "little")
+    assert legacy[:4] + legacy[8:] == packed[:4] + packed[8:]
     assert packed[8:12] == bytes(4)
     assert packed[12:21] == _symbol(",", 8)
     assert packed[21:30] == _symbol(".", 8)
@@ -749,7 +854,9 @@ def test_a_format_packs_as_the_core_reads_it():
     ).packed
     assert len(full) == 92
     assert full[0:4] == (92).to_bytes(4, "little")
-    assert full[4:8] == (NumFormat.ALL | NumFormat.TRAILING_SIGN).to_bytes(4, "little")
+    assert full[4:8] == (
+        NumFormat.ALL | NumFormat.TRAILING_SIGN | NumFormat.GROUPING_WESTERN
+    ).to_bytes(4, "little")
     assert full[8:12] == (0x0660).to_bytes(4, "little")
     assert full[12:21] == _symbol("\u066b", 8)
     assert full[21:30] == _symbol("\u066c", 8)
@@ -761,7 +868,7 @@ def test_a_format_packs_as_the_core_reads_it():
     assert full[75:92] == _symbol("د.إ.", 16)
     # The README's own example, byte for byte.
     assert NumFormat(".", ",", NumFormat.ALL, "$").packed == (
-        b"\x5c\x00\x00\x00_\x00\x00\x00\x00\x00\x00\x00"
+        b"\x5c\x00\x00\x00_\x01\x00\x00\x00\x00\x00\x00"
         + b".\x00\x00\x00\x00\x00\x00\x00\x01"
         + b",\x00\x00\x00\x00\x00\x00\x00\x01"
         + bytes(45)

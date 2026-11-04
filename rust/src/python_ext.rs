@@ -26,13 +26,17 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::mem::MaybeUninit;
 use std::sync::OnceLock;
 
-use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyUnicodeEncodeError, PyValueError};
+use pyo3::exceptions::{
+    PyOverflowError, PyRuntimeError, PyTypeError, PyUnicodeEncodeError, PyValueError,
+};
 use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyString, PyTuple};
 
 use crate as core;
-use crate::checked::{CheckOutcome, judge_numeric, judge_numeric_from_f64, judge_text};
+use crate::checked::{
+    CheckOutcome, judge_numeric_detailed, judge_numeric_from_f64_detailed, judge_text_detailed,
+};
 use crate::constraints::{Entries, declared_decimal};
 
 /// Cached Python-side companions: the three CastFailure members (the package's own
@@ -48,6 +52,8 @@ static VALUES: OnceLock<crate::python::Values> = OnceLock::new();
 static DOOR: OnceLock<Py<PyAny>> = OnceLock::new();
 static ROUNDING: OnceLock<Py<PyAny>> = OnceLock::new();
 static DECIMAL: OnceLock<Py<PyAny>> = OnceLock::new();
+/// The package's own `Detail` IntEnum, which a fault's `detail` answers with.
+static DETAIL: OnceLock<Py<PyAny>> = OnceLock::new();
 
 fn values() -> PyResult<&'static crate::python::Values> {
     VALUES.get().ok_or_else(|| PyRuntimeError::new_err("hypercast._native used before _bind"))
@@ -100,6 +106,12 @@ impl Success {
 /// byte offsets for `bytes` input, code-point offsets for `str` input — so slicing the
 /// offending text back out of what you passed (`text[offset:offset + length]`) needs no
 /// mapping.
+///
+/// A door's fault also carries a ``detail``: what failed, finer than the reason, a
+/// :class:`Detail` (``detail_code`` is its raw number, kept when this binding names no member
+/// for it). A ``Fault`` built by hand has none unless ``detail_code`` is given. The detail is
+/// beside the fault, never part of it: equality, ``__match_args__`` and the three positional
+/// arguments are the reason, offset and length alone.
 #[pyclass(frozen, module = "hypercast")]
 struct Fault {
     #[pyo3(get)]
@@ -108,6 +120,9 @@ struct Fault {
     offset: u32,
     #[pyo3(get)]
     length: u32,
+    /// The detail's raw code, or `None` for a fault nobody classified.
+    #[pyo3(get)]
+    detail_code: Option<u32>,
 }
 
 #[pymethods]
@@ -118,8 +133,24 @@ impl Fault {
         ("reason", "offset", "length");
 
     #[new]
-    fn new(reason: Py<PyAny>, offset: u32, length: u32) -> Self {
-        Fault { reason, offset, length }
+    #[pyo3(signature = (reason, offset, length, *, detail_code = None))]
+    fn new(
+        reason: Py<PyAny>,
+        offset: u32,
+        length: u32,
+        #[pyo3(from_py_with = optional_detail_code)] detail_code: Option<u32>,
+    ) -> Self {
+        Fault { reason, offset, length, detail_code }
+    }
+
+    /// What failed, as a :class:`Detail` (``Detail.UNKNOWN`` for a code this version names no
+    /// member for, which ``detail_code`` keeps), or ``None`` when the fault carries no detail.
+    #[getter]
+    fn detail(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        let Some(code) = self.detail_code else {
+            return Ok(None);
+        };
+        Ok(Some(cached(py, &DETAIL)?.call_method1(intern!(py, "from_code"), (code,))?.unbind()))
     }
 
     fn __eq__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<bool> {
@@ -133,20 +164,41 @@ impl Fault {
     }
 
     fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
-        Ok(format!(
-            "Fault(reason={}, offset={}, length={})",
+        let mut text = format!(
+            "Fault(reason={}, offset={}, length={}",
             self.reason.bind(py).repr()?,
             self.offset,
             self.length
-        ))
+        );
+        if let Some(detail) = self.detail(py)? {
+            text.push_str(&format!(", detail={}", detail.bind(py).repr()?));
+        }
+        text.push(')');
+        Ok(text)
     }
 }
 
-/// Caller-declared numeric notation, held pre-resolved as the core's `NumFormat` so the
+/// Caller-declared numeric notation, held pre-validated as the core's `ValidNumFormat` so the
 /// hot path pays zero conversion.
 #[pyclass(frozen, module = "hypercast")]
 struct NumFormat {
-    resolved: core::NumFormat,
+    valid: core::ValidNumFormat,
+}
+
+impl NumFormat {
+    fn format(&self) -> &core::NumFormat {
+        self.valid.format()
+    }
+
+    /// The lenience flags alone: `flags` without the grouping policy, which has a getter of
+    /// its own.
+    fn lenience(&self) -> u32 {
+        self.format().flags & !core::NumFormat::GROUPING_POLICY
+    }
+
+    fn grouping_policy(&self) -> u32 {
+        self.format().flags & core::NumFormat::GROUPING_POLICY
+    }
 }
 
 #[pymethods]
@@ -169,26 +221,42 @@ impl NumFormat {
     const ALL: u32 = core::NumFormat::ALL;
     #[classattr]
     const SEPARATOR_DETECT: u32 = core::NumFormat::SEPARATOR_DETECT;
+    /// The legacy grouping policy: a group separator anywhere between two digits, whatever
+    /// the group sizes, so ``12,34`` is 1234.
+    #[classattr]
+    const GROUPING_LEGACY: u32 = core::NumFormat::GROUPING_LEGACY;
+    /// Strict Western grouping, the default: once a numeral uses a group separator, its
+    /// integer part is groups of exactly three digits counted leftward from the decimal
+    /// separator, the leftmost one to three, so ``12,34`` is ``MALFORMED``.
+    #[classattr]
+    const GROUPING_WESTERN: u32 = core::NumFormat::GROUPING_WESTERN;
+    /// Strict Indian grouping: the group beside the decimal separator holds three digits,
+    /// every group left of it two, the leftmost one or two (``12,34,567``).
+    #[classattr]
+    const GROUPING_INDIAN: u32 = core::NumFormat::GROUPING_INDIAN;
+    /// The mask of the policy's two bits, which names no policy itself.
+    #[classattr]
+    const GROUPING_POLICY: u32 = core::NumFormat::GROUPING_POLICY;
 
     // Python's own spelling — the constant-style name is the API.
     #[allow(non_snake_case)]
     #[classattr]
-    fn INVARIANT() -> NumFormat {
-        NumFormat { resolved: core::NumFormat::INVARIANT }
+    fn INVARIANT() -> PyResult<NumFormat> {
+        strict(core::NumFormat::INVARIANT)
     }
 
     // Python's own spelling, as with INVARIANT above.
     #[allow(non_snake_case)]
     #[classattr]
-    fn DETECT() -> NumFormat {
-        NumFormat { resolved: core::NumFormat::DETECT }
+    fn DETECT() -> PyResult<NumFormat> {
+        strict(core::NumFormat::DETECT)
     }
 
     #[new]
     #[pyo3(signature = (
         decimal_sep, group_sep, flags, currency = "", *,
         currency_decimal_sep = "", currency_group_sep = "", minus_sign = "", plus_sign = "",
-        percent = "", digit_zero = ""
+        percent = "", digit_zero = "", grouping = core::NumFormat::GROUPING_WESTERN
     ))]
     #[allow(clippy::too_many_arguments)] // The constructor's signature is the API.
     fn new(
@@ -202,6 +270,7 @@ impl NumFormat {
         #[pyo3(from_py_with = symbol_plus_sign)] plus_sign: &str,
         #[pyo3(from_py_with = symbol_percent)] percent: &str,
         #[pyo3(from_py_with = symbol_digit_zero)] digit_zero: &str,
+        #[pyo3(from_py_with = grouping_int)] grouping: u32,
     ) -> PyResult<Self> {
         declare(Declared {
             decimal_sep,
@@ -214,77 +283,86 @@ impl NumFormat {
             plus_sign,
             percent,
             digit_zero,
+            grouping,
         })
     }
 
     /// The declared decimal separator.
     #[getter]
     fn decimal_sep(&self) -> String {
-        self.resolved.decimal_sep.to_string()
+        self.format().decimal_sep.to_string()
     }
 
     /// The declared digit-group separator.
     #[getter]
     fn group_sep(&self) -> String {
-        self.resolved.group_sep.to_string()
+        self.format().group_sep.to_string()
     }
 
-    /// The bitwise OR of the lenience flags.
+    /// The bitwise OR of the lenience flags, the grouping policy not among them.
     #[getter]
     fn flags(&self) -> u32 {
-        self.resolved.flags
+        self.lenience()
+    }
+
+    /// The declared grouping policy: ``GROUPING_LEGACY``, ``GROUPING_WESTERN`` or
+    /// ``GROUPING_INDIAN``.
+    #[getter]
+    fn grouping(&self) -> u32 {
+        self.grouping_policy()
     }
 
     /// The declared currency symbol — ``""`` when none is declared.
     #[getter]
     fn currency(&self) -> String {
-        self.resolved.currency.as_str().to_string()
+        self.format().currency.as_str().to_string()
     }
 
     /// The decimal separator a currency amount is read with — ``""`` when it is
     /// ``decimal_sep``.
     #[getter]
     fn currency_decimal_sep(&self) -> String {
-        self.resolved.currency_decimal_sep.to_string()
+        self.format().currency_decimal_sep.to_string()
     }
 
     /// The digit-group separator a currency amount is read with — ``""`` when it is
     /// ``group_sep``.
     #[getter]
     fn currency_group_sep(&self) -> String {
-        self.resolved.currency_group_sep.to_string()
+        self.format().currency_group_sep.to_string()
     }
 
     /// The further spelling of the minus sign read beside ASCII ``-`` — ``""`` when none is
     /// declared.
     #[getter]
     fn minus_sign(&self) -> String {
-        self.resolved.minus_sign.to_string()
+        self.format().minus_sign.to_string()
     }
 
     /// The further spelling of the plus sign read beside ASCII ``+`` — ``""`` when none is
     /// declared.
     #[getter]
     fn plus_sign(&self) -> String {
-        self.resolved.plus_sign.to_string()
+        self.format().plus_sign.to_string()
     }
 
     /// The further spelling of the percent symbol read beside ASCII ``%`` — ``""`` when none
     /// is declared.
     #[getter]
     fn percent(&self) -> String {
-        self.resolved.percent.to_string()
+        self.format().percent.to_string()
     }
 
     /// The zero of the native digits read beside ASCII ``0``–``9`` — ``""`` when none are
     /// declared.
     #[getter]
     fn digit_zero(&self) -> String {
-        self.resolved.digits.zero().map(String::from).unwrap_or_default()
+        self.format().digits.zero().map(String::from).unwrap_or_default()
     }
 
     /// The 92 bytes this format crosses a C ABI as — the core's own size-tagged layout, which
-    /// it reads in place: the size (``92``), the flags and the native digits' zero code point
+    /// it reads in place: the size (``92``), the flags (the grouping policy in bits 8 and 9
+    /// among them) and the native digits' zero code point
     /// (``0`` for none) as little-endian ``u32``\ s, then each symbol as its UTF-8 followed by
     /// its byte length, zero-padded — 8 bytes plus the length for the decimal, group,
     /// currency-decimal and currency-group separators, the minus and plus signs and the
@@ -292,19 +370,20 @@ impl NumFormat {
     /// a library that declares numeric columns across a C ABI of its own.
     #[getter]
     fn packed<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
-        PyBytes::new(py, &core::RawNumFormat::from(self.resolved).to_le_bytes())
+        PyBytes::new(py, &core::RawNumFormat::from(*self.format()).to_le_bytes())
     }
 
     /// The constructor call that builds this format again: the four positional arguments
-    /// always, then only the keyword arguments that declare something.
+    /// always, then only the keyword arguments that declare something (``grouping`` when it
+    /// is not strict Western, the default).
     fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
         let repr = |text: &str| -> PyResult<String> { PyString::new(py, text).repr()?.extract() };
-        let format = &self.resolved;
+        let format = self.format();
         let mut call = format!(
             "NumFormat({}, {}, {}, {}",
             repr(format.decimal_sep.as_str())?,
             repr(format.group_sep.as_str())?,
-            format.flags,
+            self.lenience(),
             repr(format.currency.as_str())?
         );
         for (name, symbol) in [
@@ -319,6 +398,13 @@ impl NumFormat {
                 call.push_str(&format!(", {name}={}", repr(symbol)?));
             }
         }
+        match self.grouping_policy() {
+            core::NumFormat::GROUPING_WESTERN => {}
+            core::NumFormat::GROUPING_INDIAN => {
+                call.push_str(", grouping=NumFormat.GROUPING_INDIAN")
+            }
+            _ => call.push_str(", grouping=NumFormat.GROUPING_LEGACY"),
+        }
         call.push(')');
         Ok(call)
     }
@@ -332,13 +418,28 @@ impl NumFormat {
     /// amount) as ``TRAILING_SIGN``. ``localeconv()`` carries no percent symbol and no
     /// native digits, so those stay undeclared: ASCII ``%`` and ``0``–``9``.
     ///
+    /// The grouping is read from the locale's own digit-group patterns, ``grouping`` for numbers
+    /// and ``mon_grouping`` for currency amounts, never from the locale's name and never from
+    /// the input. A pattern is read as C defines it: sizes from the decimal separator outward,
+    /// a trailing ``0`` repeating the last size, ``CHAR_MAX`` (this platform's: 127, or 255 where ``char`` is unsigned) ending grouping, and one
+    /// with no size (``[]``, ``[127]``, ``[0]``) not grouping at all. One format has one policy
+    /// and one ``GROUPING`` flag for both, so, over the patterns that do group: all Western
+    /// (``[3, 0]``, ``[3, 3, 0]``) is strict Western, all Indian (``[3, 2, 0]``) is strict
+    /// Indian, and a pattern of any other shape (groups of two, ``[3, 127]``) or patterns that
+    /// disagree (``ml``'s Indian numbers and Western currency) is legacy,
+    /// ``GROUPING_LEGACY``, which reads a group separator between any two digits. ``GROUPING``
+    /// is cleared only when neither pattern groups; when just one does not (a currency with no
+    /// grouping), the flag stays for the other, so a grouped currency amount is still read:
+    /// the format cannot forbid grouping for one kind of value alone. A dict that carries
+    /// neither key declares nothing: strict Western with ``GROUPING`` on, as the constructor.
+    ///
     /// A separator the locale leaves empty takes its invariant default (``.`` decimal, ``,``
     /// group) unless the other separator already holds that character, in which case it
     /// takes the other of the pair — so a comma-decimal locale with no thousands separator
     /// groups on ``.`` rather than colliding; an empty currency separator keeps the number
     /// separator it stands in for, by the same rule. Two separators the locale itself
-    /// declares equal are still the ``ValueError`` the constructor raises. Every lenience is
-    /// on, radix prefixes and percent included; narrow the flags, or construct a
+    /// declares equal are still the ``ValueError`` the constructor raises. Every other lenience
+    /// is on, radix prefixes and percent included; narrow the flags, or construct a
     /// ``NumFormat`` outright, for anything stricter.
     #[staticmethod]
     #[pyo3(signature = (conv = None))]
@@ -376,7 +477,11 @@ impl NumFormat {
             Ok(if sign == "-" || sign == "+" { String::new() } else { sign })
         };
         let (minus_sign, plus_sign) = (sign("negative_sign")?, sign("positive_sign")?);
+        let (grouping, grouped) = grouping_of(&conv);
         let mut flags = core::NumFormat::ALL;
+        if !grouped {
+            flags &= !core::NumFormat::GROUPING;
+        }
         if let Some(position) = conv.get_item("n_sign_posn")?
             && matches!(position.extract::<i64>(), Ok(2 | 4))
         {
@@ -393,8 +498,69 @@ impl NumFormat {
             plus_sign: &plus_sign,
             percent: "",
             digit_zero: "",
+            grouping,
         })
     }
+}
+
+/// What a digit-group pattern groups like, as C's `localeconv` defines one: sizes from the
+/// decimal separator outward, a trailing `0` repeating the last size, `CHAR_MAX` ending
+/// grouping after the last size, so no size at all is no grouping.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    /// No size: the locale does not group.
+    Ungrouped,
+    /// Threes, repeated.
+    Western,
+    /// A three, then twos, repeated.
+    Indian,
+    /// Any other shape: groups of two, a size that ends, a size no digit group can have.
+    Other,
+}
+
+fn shape(pattern: &[i64]) -> Shape {
+    // The platform's own, as CPython reports a `localeconv()` size list: 255 where `char` is
+    // unsigned (aarch64 Linux), 127 elsewhere.
+    const CHAR_MAX: i64 = std::ffi::c_char::MAX as i64;
+    // A list that stops with no terminator is read as C reads a string that ends: as a `0`.
+    let (sizes, repeats) = match pattern.split_last() {
+        Some((&CHAR_MAX, sizes)) => (sizes, false),
+        Some((0, sizes)) => (sizes, true),
+        _ => (pattern, true),
+    };
+    match sizes {
+        [] => Shape::Ungrouped,
+        _ if !repeats => Shape::Other,
+        threes if threes.iter().all(|size| *size == 3) => Shape::Western,
+        [3, twos @ ..] if twos.iter().all(|size| *size == 2) => Shape::Indian,
+        _ => Shape::Other,
+    }
+}
+
+/// The grouping policy of a locale's digit-group patterns, and whether the format groups at
+/// all: over the patterns that group, all Western is strict Western, all Indian strict
+/// Indian, anything else (another shape, or patterns that disagree) legacy; `GROUPING` is off
+/// only when every pattern the dict carries is ungrouped. A key that is absent (or not a list
+/// of ints) says nothing, and a dict that says nothing declares the constructor's default.
+fn grouping_of(conv: &Bound<'_, PyDict>) -> (u32, bool) {
+    let shapes: Vec<Shape> = ["grouping", "mon_grouping"]
+        .into_iter()
+        .filter_map(|name| {
+            let value = conv.get_item(name).ok()??;
+            value.extract::<Vec<i64>>().ok().map(|pattern| shape(&pattern))
+        })
+        .collect();
+    let enabled: Vec<Shape> = shapes.iter().copied().filter(|s| *s != Shape::Ungrouped).collect();
+    let policy = match enabled.as_slice() {
+        [] => core::NumFormat::GROUPING_WESTERN,
+        [first, rest @ ..] if rest.iter().all(|s| s == first) => match first {
+            Shape::Western => core::NumFormat::GROUPING_WESTERN,
+            Shape::Indian => core::NumFormat::GROUPING_INDIAN,
+            _ => core::NumFormat::GROUPING_LEGACY,
+        },
+        _ => core::NumFormat::GROUPING_LEGACY,
+    };
+    (policy, shapes.is_empty() || !enabled.is_empty())
 }
 
 /// A locale's separator pair as the bridge reads it: a field the locale leaves empty takes
@@ -429,15 +595,19 @@ struct Declared<'a> {
     plus_sign: &'a str,
     percent: &'a str,
     digit_zero: &'a str,
+    grouping: u32,
 }
 
 /// The one place a format is built, so the constructor and the locale bridge refuse the
 /// same caller bugs — the C ABI's own contract rules, raised here at construction so a
 /// format that exists is one the core reads: a separator that is not 1 to 8 UTF-8 bytes,
-/// equal separators (the number pair, or the pair a currency amount is read with), a sign or
-/// percent symbol with whitespace in it, a currency symbol the core cannot carry, a digit
-/// zero that starts no digit block.
+/// equal separators (the number pair, or the pair a currency amount is read with), a decimal
+/// separator, sign or percent symbol with white space in it, a currency symbol the core
+/// cannot carry, a digit zero that starts no digit block. The flags come first, as the core's
+/// own check takes them (the grouping policy, then a bit it does not define); within a field the
+/// rules apply in this order: length, digit, equal separators, white space.
 fn declare(declared: Declared<'_>) -> PyResult<NumFormat> {
+    let flags = declared_flags(declared.flags, declared.grouping)?;
     let decimal_sep = separator("Decimal separator", declared.decimal_sep)?;
     let group_sep = separator("Group separator", declared.group_sep)?;
     if decimal_sep == group_sep {
@@ -446,6 +616,7 @@ fn declare(declared: Declared<'_>) -> PyResult<NumFormat> {
             declared.decimal_sep
         )));
     }
+    no_white_space("Decimal separator", declared.decimal_sep)?;
     let currency_decimal_sep =
         optional("Currency decimal separator", declared.currency_decimal_sep, false)?;
     let currency_group_sep =
@@ -459,7 +630,8 @@ fn declare(declared: Declared<'_>) -> PyResult<NumFormat> {
             "Currency decimal and group separators must differ; both are \"{decimal}\""
         )));
     }
-    let resolved = core::NumFormat::with_separators(decimal_sep, group_sep, declared.flags)
+    no_white_space("Currency decimal separator", declared.currency_decimal_sep)?;
+    let resolved = core::NumFormat::with_separators(decimal_sep, group_sep, flags)
         .with_currency(currency_symbol(declared.currency)?)
         .with_currency_separators(currency_decimal_sep, currency_group_sep)
         .with_signs(
@@ -468,8 +640,62 @@ fn declare(declared: Declared<'_>) -> PyResult<NumFormat> {
         )
         .with_percent(optional("Percent symbol", declared.percent, true)?)
         .with_digits(native_digits(declared.digit_zero)?);
-    debug_assert!(resolved.check(), "every contract rule is raised above");
-    Ok(NumFormat { resolved })
+    Ok(NumFormat { valid: refuse_unless_checked(&resolved)? })
+}
+
+/// A policy given as `grouping`, with the leniences of `flags`: a lenience mask never carries
+/// the policy, and the policy is one of the three the core names, never the refused `11` nor
+/// any other bits. The core judges which bits it defines.
+fn declared_flags(flags: u32, grouping: u32) -> PyResult<u32> {
+    const POLICY: u32 = core::NumFormat::GROUPING_POLICY;
+    if grouping & !POLICY != 0 || grouping == POLICY {
+        return Err(PyValueError::new_err(format!(
+            "Grouping must be NumFormat.GROUPING_LEGACY, GROUPING_WESTERN or GROUPING_INDIAN; got {grouping}"
+        )));
+    }
+    if flags & POLICY != 0 {
+        return Err(PyValueError::new_err(format!(
+            "Flags are the lenience mask and must not carry grouping bits (declare the policy \
+             with grouping=); got {flags}"
+        )));
+    }
+    let declared = flags | grouping;
+    match (core::NumFormat { flags: declared, ..core::NumFormat::INVARIANT }).validate() {
+        Err(core::DeclarationError::UnknownFlag) => Err(PyValueError::new_err(format!(
+            "Flags set a bit this version does not define; got {flags}"
+        ))),
+        _ => Ok(declared),
+    }
+}
+
+/// A named format with strict Western grouping: what `INVARIANT` and `DETECT` are.
+fn strict(format: core::NumFormat) -> PyResult<NumFormat> {
+    let valid = format
+        .with_grouping(core::NumFormat::GROUPING_WESTERN)
+        .validate()
+        .map_err(|_| binding_bug("refused a named format it had accepted"))?;
+    Ok(NumFormat { valid })
+}
+
+/// The backstop behind every per-field rule above, in every build: a format the core's own
+/// `check` refuses is a caller bug, so a validator that lags the core raises here rather than
+/// handing the doors a format they cannot read.
+fn refuse_unless_checked(resolved: &core::NumFormat) -> PyResult<core::ValidNumFormat> {
+    resolved
+        .validate()
+        .map_err(|_| PyValueError::new_err("NumFormat declares a format the core refuses"))
+}
+
+/// A text with no white space (any Unicode `White_Space` code point) in it, or a caller bug.
+/// A decimal separator admits none: a numeral admits white space only as a group separator,
+/// so such a declaration could never match.
+fn no_white_space(what: &str, text: &str) -> PyResult<()> {
+    if text.chars().any(core::is_white_space) {
+        return Err(PyValueError::new_err(format!(
+            "{what} must not contain white space; got \"{text}\""
+        )));
+    }
+    Ok(())
 }
 
 /// A number separator: 1 to 8 UTF-8 bytes with no ASCII digit, the core's own rule, or a
@@ -483,31 +709,38 @@ fn separator(what: &str, text: &str) -> PyResult<core::Symbol<8>> {
 }
 
 /// A symbol a caller need not declare: `""` declares none; anything else is a `separator`,
-/// and with `flush` (a sign, the percent symbol — read against the digits) one with no
-/// ASCII whitespace in it either.
+/// and with `flush` (a sign, the percent symbol — read against the digits) one with no white
+/// space in it either, checked after the separator's own rules.
 fn optional(what: &str, text: &str, flush: bool) -> PyResult<core::Symbol<8>> {
     if text.is_empty() {
         return Ok(core::Symbol::NONE);
     }
-    if flush && text.bytes().any(|byte| byte.is_ascii_whitespace()) {
-        return Err(PyValueError::new_err(format!(
-            "{what} must be 1 to 8 UTF-8 bytes with no ASCII digit or whitespace; got \"{text}\""
-        )));
+    let symbol = separator(what, text)?;
+    if flush {
+        no_white_space(what, text)?;
     }
-    separator(what, text)
+    Ok(symbol)
 }
 
 /// The declared currency symbol: `""` declares none; anything else must be a valid
-/// `CurrencySymbol` (1 to 16 UTF-8 bytes, no ASCII digit or whitespace), or it is a caller
-/// bug raised here, at construction, the way equal separators are.
+/// `CurrencySymbol` (1 to 16 UTF-8 bytes, no ASCII digit, no white space at either edge:
+/// inside is part of the symbol, CLDR's ``F CFA``), or it is a caller bug raised here, at
+/// construction, the way equal separators are. A symbol breaking two rules names the
+/// earlier: length, digit, white space.
 fn currency_symbol(text: &str) -> PyResult<core::CurrencySymbol> {
     if text.is_empty() {
         return Ok(core::CurrencySymbol::NONE);
     }
     core::CurrencySymbol::new(text).ok_or_else(|| {
-        PyValueError::new_err(format!(
-            "Currency symbol must be 1 to 16 UTF-8 bytes with no ASCII digit or whitespace; got \"{text}\""
-        ))
+        let by_length_or_digit = text.len() > core::CurrencySymbol::MAX_BYTES
+            || text.bytes().any(|byte| byte.is_ascii_digit());
+        PyValueError::new_err(if by_length_or_digit {
+            format!(
+                "Currency symbol must be 1 to 16 UTF-8 bytes with no ASCII digit; got \"{text}\""
+            )
+        } else {
+            format!("Currency symbol must not start or end with white space; got \"{text}\"")
+        })
     })
 }
 
@@ -530,21 +763,26 @@ fn native_digits(text: &str) -> PyResult<core::NativeDigits> {
 }
 
 /// A day-period designator for ``cast_datetime``: `""` declares none; anything else is 1 to
-/// 16 UTF-8 bytes with no ASCII digit and no ASCII whitespace at either end (inside is fine:
+/// 16 UTF-8 bytes with no ASCII digit and no white space at either end (inside is fine:
 /// Spanish ``a. m.``), or a caller bug raised at the call, the way a format's rules are at
-/// construction.
+/// construction. Length and digit are checked before the edges.
 fn designator(what: &str, text: &str) -> PyResult<core::Symbol<16>> {
     if text.is_empty() {
         return Ok(core::Symbol::NONE);
     }
-    let edges = text.bytes().next().is_some_and(|byte| byte.is_ascii_whitespace())
-        || text.bytes().last().is_some_and(|byte| byte.is_ascii_whitespace());
-    if !edges && let Some(symbol) = core::Symbol::new(text) {
-        return Ok(symbol);
+    let Some(symbol) = core::Symbol::new(text) else {
+        return Err(PyValueError::new_err(format!(
+            "Day period {what} must be 1 to 16 UTF-8 bytes with no ASCII digit; got \"{text}\""
+        )));
+    };
+    if text.chars().next().is_some_and(core::is_white_space)
+        || text.chars().next_back().is_some_and(core::is_white_space)
+    {
+        return Err(PyValueError::new_err(format!(
+            "Day period {what} must have no white space at either end; got \"{text}\""
+        )));
     }
-    Err(PyValueError::new_err(format!(
-        "Day period {what} must be 1 to 16 UTF-8 bytes with no ASCII digit and no whitespace at either end; got \"{text}\""
-    )))
+    Ok(symbol)
 }
 
 /// Door input: str or bytes, each a zero-copy view into the caller's own object. A `str`
@@ -604,11 +842,11 @@ impl Text<'_> {
         }
     }
 
-    /// Presents a fault in the caller's own units: the core's byte span as-is for `bytes`
+    /// Presents a failure in the caller's own units: the core's byte span as-is for `bytes`
     /// input, remapped to code points for `str` input. An ASCII `str` needs no mapping and
     /// pays one length comparison (code points equal bytes); only a non-ASCII `str`, and
     /// only on the fault path, counts code points.
-    fn present(&self, failed: core::Fault) -> PyResult<core::Fault> {
+    fn present(&self, failed: core::Failure) -> PyResult<core::Failure> {
         let Text::Str(text, _) = self else {
             return Ok(failed);
         };
@@ -617,7 +855,7 @@ impl Text<'_> {
             return Ok(failed);
         }
         let (offset, len) = code_point_span(bytes, failed.offset, failed.len);
-        Ok(core::Fault { reason: failed.reason, offset, len })
+        Ok(core::Failure { offset, len, ..failed })
     }
 }
 
@@ -633,20 +871,22 @@ fn code_points(bytes: &[u8]) -> u32 {
     bytes.iter().filter(|byte| **byte & 0xC0 != 0x80).count() as u32
 }
 
-fn fault(py: Python<'_>, failed: core::Fault) -> PyResult<Py<PyAny>> {
+fn fault(py: Python<'_>, failed: core::Failure) -> PyResult<Py<PyAny>> {
     let member = match failed.reason {
         core::Reason::Empty => &EMPTY,
         core::Reason::Malformed => &MALFORMED,
         core::Reason::OutOfRange => &OUT_OF_RANGE,
     };
     let reason = cached(py, member)?.clone().unbind();
-    Ok(Py::new(py, Fault { reason, offset: failed.offset, length: failed.len })?.into_any())
+    let detail_code = Some(failed.detail.code());
+    Ok(Py::new(py, Fault { reason, offset: failed.offset, length: failed.len, detail_code })?
+        .into_any())
 }
 
 fn verdict<'py, T>(
     py: Python<'py>,
     text: &Text<'_>,
-    outcome: Result<T, core::Fault>,
+    outcome: Result<T, core::Failure>,
     into: impl FnOnce(Python<'py>, T) -> PyResult<Py<PyAny>>,
 ) -> PyResult<Py<PyAny>> {
     match outcome {
@@ -658,11 +898,11 @@ fn verdict<'py, T>(
     }
 }
 
-/// A typed door's verdict: the reason alone, presented as a fault with an empty span (there
-/// is no text for one to index).
+/// A typed door's verdict: the reason and detail, presented as a fault with an empty span
+/// (there is no text for one to index).
 fn typed<'py, T>(
     py: Python<'py>,
-    outcome: Result<T, core::Reason>,
+    outcome: Result<T, core::Failure>,
     into: impl FnOnce(Python<'py>, T) -> PyResult<Py<PyAny>>,
 ) -> PyResult<Py<PyAny>> {
     match outcome {
@@ -670,7 +910,7 @@ fn typed<'py, T>(
             let value = into(py, value)?;
             Ok(Py::new(py, Success { value })?.into_any())
         }
-        Err(reason) => fault(py, core::Fault { reason, offset: 0, len: 0 }),
+        Err(failed) => fault(py, core::Failure { offset: 0, len: 0, ..failed }),
     }
 }
 
@@ -681,7 +921,7 @@ macro_rules! numeric_doors {
         $(#[$doc])*
         #[pyfunction]
         fn $door(py: Python<'_>, text: Text<'_>, fmt: PyRef<'_, NumFormat>) -> PyResult<Py<PyAny>> {
-            verdict(py, &text, core::$core(text.bytes()?, &fmt.resolved), |py, value| {
+            verdict(py, &text, core::detailed::$core(text.bytes()?, &fmt.valid), |py, value| {
                 Ok(value.into_pyobject(py)?.into_any().unbind())
             })
         }
@@ -717,7 +957,7 @@ numeric_doors! {
 /// never rounded.
 #[pyfunction]
 fn cast_decimal(py: Python<'_>, text: Text<'_>, fmt: PyRef<'_, NumFormat>) -> PyResult<Py<PyAny>> {
-    verdict(py, &text, core::cast_decimal(text.bytes()?, &fmt.resolved), decimal_value)
+    verdict(py, &text, core::detailed::cast_decimal(text.bytes()?, &fmt.valid), decimal_value)
 }
 
 /// Reads a ``float`` as the exact ``decimal.Decimal`` it names: the shortest decimal that
@@ -726,7 +966,7 @@ fn cast_decimal(py: Python<'_>, text: Text<'_>, fmt: PyRef<'_, NumFormat>) -> Py
 /// ``MALFORMED``; an infinity, past 96 bits or more than 28 places is ``OUT_OF_RANGE``.
 #[pyfunction]
 fn cast_decimal_from_float(py: Python<'_>, value: f64) -> PyResult<Py<PyAny>> {
-    typed(py, core::decimal_from_f64(value), decimal_value)
+    typed(py, core::detailed::decimal_from_f64(value), decimal_value)
 }
 
 fn decimal_value(py: Python<'_>, value: core::Decimal) -> PyResult<Py<PyAny>> {
@@ -744,7 +984,7 @@ fn native_version() -> String {
 /// Casts boolean text under the natural-language lexicon.
 #[pyfunction]
 fn cast_bool(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
-    verdict(py, &text, core::cast_bool(text.bytes()?), |py, value| {
+    verdict(py, &text, core::detailed::cast_bool(text.bytes()?), |py, value| {
         Ok(value.into_pyobject(py)?.to_owned().into_any().unbind())
     })
 }
@@ -754,7 +994,7 @@ fn cast_bool(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
 /// one-character ``str``. Past ``U+10FFFF`` or a surrogate is ``OUT_OF_RANGE``.
 #[pyfunction]
 fn cast_char(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
-    verdict(py, &text, core::cast_char(text.bytes()?), |py, value| {
+    verdict(py, &text, core::detailed::cast_char(text.bytes()?), |py, value| {
         Ok(value.into_pyobject(py)?.into_any().unbind())
     })
 }
@@ -763,7 +1003,7 @@ fn cast_char(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
 /// ``uuid.UUID``.
 #[pyfunction]
 fn cast_uuid(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
-    verdict(py, &text, core::cast_uuid(text.bytes()?), |py, bytes| {
+    verdict(py, &text, core::detailed::cast_uuid(text.bytes()?), |py, bytes| {
         Ok(values()?.uuid(py, bytes)?.unbind())
     })
 }
@@ -772,10 +1012,277 @@ fn instant(py: Python<'_>, ts: core::Timestamp) -> PyResult<Py<PyAny>> {
     Ok(values()?.instant(py, ts)?.unbind())
 }
 
-/// Casts an RFC 3339 instant to an aware UTC ``datetime`` (microsecond truncation).
+// --- Date options ---------------------------------------------------------------------------
+//
+// The shapes the date doors read beyond their plain ones are opt-in, declared with these two
+// types and judged by the core's own validation, as `DateOptions::validate` runs it, on every
+// call: nothing is kept between calls, and the core refuses a declaration here at construction
+// the way it would at a call.
+
+/// Which date shapes a door also reads, and the pivot two-digit years are read around. Built
+/// from the flag constants (``COMPACT_DATE``, ``SPACE_SEPARATOR``, ``HOUR_OFFSET``), or
+/// ``COMMON_FORMS`` for all three: every shape is opt-in, so a door given none reads exactly
+/// what it always has. An option a door does not read is ignored by it. An option bit this
+/// version does not define, or a pivot outside ``100``–``9999`` (``0`` is none), is a
+/// ``ValueError`` here. Immutable.
+///
+/// ``COMPACT_DATE`` lets :func:`cast_date` read ``yyyyMMdd``; ``SPACE_SEPARATOR`` lets
+/// :func:`cast_timestamp` read a space where the ``T`` goes and ``HOUR_OFFSET`` an offset of
+/// ``±hh``. The pivot is the last year of the hundred-year window a two-digit year is read in
+/// (``26`` is 2026 under a pivot of ``2029``), for the ordered :func:`cast_date` and
+/// :func:`cast_datetime`; without one a two-digit year is a fault.
+#[pyclass(frozen, module = "hypercast")]
+struct DateOptions {
+    options: core::DateOptions,
+}
+
+impl DateOptions {
+    fn declare(flags: u32, pivot: u32) -> PyResult<Self> {
+        // A pivot too wide for the core's own type is refused as the same bad pivot.
+        let pivot16 = u16::try_from(pivot).unwrap_or(u16::MAX);
+        let options = core::DateOptions::from_flags(flags).with_pivot(pivot16);
+        match options.validate(None) {
+            Ok(_) => Ok(DateOptions { options }),
+            Err(core::DeclarationError::DateFlags) => Err(PyValueError::new_err(format!(
+                "Date option flags set a bit this version does not define; got {flags}"
+            ))),
+            Err(core::DeclarationError::DatePivot) => Err(PyValueError::new_err(format!(
+                "Date pivot must be 0 (none) or 100 to 9999; got {pivot}"
+            ))),
+            Err(_) => Err(binding_bug("refused date options it should not judge")),
+        }
+    }
+}
+
+#[pymethods]
+impl DateOptions {
+    /// ``cast_date`` also reads ``yyyyMMdd``, eight ASCII digits.
+    #[classattr]
+    const COMPACT_DATE: u32 = core::DateOptions::COMPACT_DATE;
+    /// ``cast_timestamp`` also reads a single space where the ``T`` goes.
+    #[classattr]
+    const SPACE_SEPARATOR: u32 = core::DateOptions::SPACE_SEPARATOR;
+    /// ``cast_timestamp`` also reads an offset of ``±hh``, with no minutes.
+    #[classattr]
+    const HOUR_OFFSET: u32 = core::DateOptions::HOUR_OFFSET;
+
+    /// ``COMPACT_DATE``, ``SPACE_SEPARATOR`` and ``HOUR_OFFSET`` together, the shapes real
+    /// feeds mix with RFC 3339; never a pivot, never month names.
+    // Python's own spelling — the constant-style name is the API.
+    #[allow(non_snake_case)]
+    #[classattr]
+    fn COMMON_FORMS() -> DateOptions {
+        DateOptions { options: core::DateOptions::COMMON_FORMS }
+    }
+
+    #[new]
+    #[pyo3(signature = (flags = 0, pivot = 0))]
+    fn new(
+        #[pyo3(from_py_with = date_flags_int)] flags: u32,
+        #[pyo3(from_py_with = date_pivot_int)] pivot: u32,
+    ) -> PyResult<Self> {
+        DateOptions::declare(flags, pivot)
+    }
+
+    /// These options with ``pivot`` as the pivot, ``0`` for none.
+    fn with_pivot(
+        &self,
+        #[pyo3(from_py_with = date_pivot_int)] pivot: u32,
+    ) -> PyResult<DateOptions> {
+        DateOptions::declare(self.options.flags(), pivot)
+    }
+
+    /// The bitwise OR of the shape flags.
+    #[getter]
+    fn flags(&self) -> u32 {
+        self.options.flags()
+    }
+
+    /// The last year of the window a two-digit year is read in, ``0`` for none.
+    #[getter]
+    fn pivot(&self) -> u32 {
+        u32::from(self.options.pivot())
+    }
+
+    fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
+        other.cast::<DateOptions>().is_ok_and(|other| other.get().options == self.options)
+    }
+
+    fn __hash__(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        (self.options.flags(), self.options.pivot()).hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// The constructor call that builds these options again.
+    fn __repr__(&self) -> String {
+        match self.options.pivot() {
+            0 => format!("DateOptions(flags={})", self.options.flags()),
+            pivot => format!("DateOptions(flags={}, pivot={pivot})", self.options.flags()),
+        }
+    }
+}
+
+/// Month names a date door reads in the month field, the way Excel writes them
+/// (``07-Jan-26``): ``(month, name)`` pairs, a month 1–12 each, aliases as separate pairs
+/// (``Sep`` and ``Sept``), every month with at least one. Built by the caller; none is looked
+/// up from a locale. A name is 1 to 64 UTF-8 bytes holding no ASCII digit, ``/``, ``-`` or
+/// white space (``.`` is fine anywhere), and no two names may fold to the same spelling; a
+/// vocabulary that breaks a rule is a ``ValueError`` naming it. Names match under simple
+/// case folding, the longest one followed by the date's separator winning, and punctuation is
+/// part of the name. Passed to :func:`cast_date` and :func:`cast_datetime` as ``months``,
+/// where it replaces the numeric month at the position the declared ``DateOrder`` gives it.
+/// Immutable.
+#[pyclass(frozen, module = "hypercast")]
+struct MonthNames {
+    packed: Vec<u8>,
+}
+
+impl MonthNames {
+    /// The vocabulary the core judges `packed` to be, or the caller's bug it names.
+    fn judged(packed: Vec<u8>) -> PyResult<Self> {
+        match core::MonthNames::from_packed(&packed) {
+            Ok(_) => Ok(MonthNames { packed }),
+            Err(core::DeclarationError::MonthNames(fault)) => {
+                Err(PyValueError::new_err(format!("Month names refused: {fault}.")))
+            }
+            Err(_) => Err(binding_bug("refused a vocabulary with a rule it does not judge")),
+        }
+    }
+
+    /// The entries, read back out of the layout `judged` accepted.
+    fn declared_entries(&self) -> Vec<(u8, &str)> {
+        let mut entries = Vec::new();
+        let mut rest = self.packed.as_slice();
+        while let [month, a, b, c, d, tail @ ..] = rest {
+            let len = u32::from_le_bytes([*a, *b, *c, *d]) as usize;
+            let (Some(name), Some(after)) = (tail.get(..len), tail.get(len..)) else {
+                break;
+            };
+            let Ok(name) = std::str::from_utf8(name) else {
+                break;
+            };
+            entries.push((*month, name));
+            rest = after;
+        }
+        entries
+    }
+}
+
+#[pymethods]
+impl MonthNames {
+    #[new]
+    fn new(entries: &Bound<'_, PyAny>) -> PyResult<Self> {
+        if entries.is_instance_of::<PyString>() || entries.is_instance_of::<PyBytes>() {
+            return Err(PyTypeError::new_err(
+                "month names must be an iterable of (month, name) pairs, not a single str or bytes",
+            ));
+        }
+        let mut packed = Vec::new();
+        for (i, entry) in entries.try_iter()?.enumerate() {
+            let entry = entry?;
+            let Some((month, name)) = month_name_pair(&entry) else {
+                return Err(PyTypeError::new_err(format!(
+                    "month names must be (month, name) pairs; entry {i} is {}",
+                    entry.get_type().name().map_or_else(|_| "?".into(), |name| name.to_string())
+                )));
+            };
+            // A month no byte holds is refused by the core as the month it is not.
+            packed.push(u8::try_from(month).unwrap_or(u8::MAX));
+            str_bytes(&name, |bytes| {
+                let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+                packed.extend_from_slice(&len.to_le_bytes());
+                packed.extend_from_slice(bytes);
+            })?;
+        }
+        MonthNames::judged(packed)
+    }
+
+    /// Reads a vocabulary from the layout the core takes across its C ABI: each entry a month
+    /// byte (1–12), a little-endian ``u32`` byte length, then that many UTF-8 bytes, with no
+    /// padding. The core's own rules judge it; one it breaks is a ``ValueError``.
+    #[staticmethod]
+    fn from_packed(data: &Bound<'_, PyBytes>) -> PyResult<Self> {
+        MonthNames::judged(data.as_bytes().to_vec())
+    }
+
+    /// The vocabulary in the layout the core's C ABI takes (:meth:`from_packed` reads it back).
+    #[getter]
+    fn packed<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.packed)
+    }
+
+    /// The ``(month, name)`` pairs, in the order they were declared.
+    #[getter]
+    fn entries<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        PyTuple::new(py, self.declared_entries())
+    }
+
+    fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
+        other.cast::<MonthNames>().is_ok_and(|other| other.get().packed == self.packed)
+    }
+
+    fn __hash__(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.packed.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// The constructor call that builds this vocabulary again.
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        Ok(format!("MonthNames({})", PyTuple::new(py, self.declared_entries())?.repr()?))
+    }
+}
+
+/// An entry of a vocabulary: any two-item sequence of an `int` month and a `str` name.
+fn month_name_pair<'py>(entry: &Bound<'py, PyAny>) -> Option<(i64, Bound<'py, PyString>)> {
+    let pair = entry.extract::<Vec<Bound<'py, PyAny>>>().ok()?;
+    let [month, name] = pair.as_slice() else {
+        return None;
+    };
+    if month.is_instance_of::<PyBool>() || !month.is_instance_of::<PyInt>() {
+        return None;
+    }
+    // An `int` too wide for any month is a month the core refuses, not a wrong type.
+    Some((month.extract().unwrap_or(i64::MAX), name.cast::<PyString>().ok()?.clone()))
+}
+
+/// Runs a date door under the declared options and vocabulary, judged by the core on every
+/// call, and not at all when neither is declared: the door then reads what it always has.
+fn with_date_options<R>(
+    options: Option<&DateOptions>,
+    months: Option<&MonthNames>,
+    door: impl FnOnce(Option<&core::ValidDateOptions<'_>>) -> R,
+) -> PyResult<R> {
+    if options.is_none() && months.is_none() {
+        return Ok(door(None));
+    }
+    let months = months
+        .map(|names| core::MonthNames::from_packed(&names.packed))
+        .transpose()
+        .map_err(|_| binding_bug("refused a vocabulary it had accepted"))?;
+    let valid = options
+        .map_or(core::DateOptions::NONE, |declared| declared.options)
+        .validate(months)
+        .map_err(|_| binding_bug("refused date options it had accepted"))?;
+    Ok(door(Some(&valid)))
+}
+
+/// Casts an RFC 3339 instant to an aware UTC ``datetime`` (microsecond truncation). With
+/// ``options`` carrying ``SPACE_SEPARATOR`` it also reads a space where the ``T`` goes, and
+/// with ``HOUR_OFFSET`` an offset of ``±hh``; given none, exactly the strict shape.
 #[pyfunction]
-fn cast_timestamp(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
-    verdict(py, &text, core::cast_timestamp(text.bytes()?), instant)
+#[pyo3(signature = (text, *, options = None))]
+fn cast_timestamp(
+    py: Python<'_>,
+    text: Text<'_>,
+    options: Option<PyRef<'_, DateOptions>>,
+) -> PyResult<Py<PyAny>> {
+    let bytes = text.bytes()?;
+    let outcome = with_date_options(options.as_deref(), None, |valid| {
+        core::detailed::cast_timestamp(bytes, valid)
+    })?;
+    verdict(py, &text, outcome, instant)
 }
 
 /// Casts an integer Unix-epoch value under the declared ``UnixPrecision``.
@@ -784,7 +1291,7 @@ fn cast_unix(py: Python<'_>, text: Text<'_>, precision: u32) -> PyResult<Py<PyAn
     let Some(precision) = core::UnixPrecision::from_code(precision) else {
         return Err(PyValueError::new_err("precision must be a UnixPrecision"));
     };
-    verdict(py, &text, core::cast_unix(text.bytes()?, precision), instant)
+    verdict(py, &text, core::detailed::cast_unix(text.bytes()?, precision), instant)
 }
 
 /// Casts an Excel date serial under the declared ``ExcelEpoch``.
@@ -793,7 +1300,7 @@ fn cast_excel_serial(py: Python<'_>, text: Text<'_>, epoch: u32) -> PyResult<Py<
     let Some(epoch) = core::ExcelEpoch::from_code(epoch) else {
         return Err(PyValueError::new_err("epoch must be an ExcelEpoch"));
     };
-    verdict(py, &text, core::cast_excel_serial(text.bytes()?, epoch), instant)
+    verdict(py, &text, core::detailed::cast_excel_serial(text.bytes()?, epoch), instant)
 }
 
 /// Reads an Excel serial ``float`` under the declared ``ExcelEpoch`` as the naive
@@ -804,20 +1311,20 @@ fn cast_excel_serial_from_float(py: Python<'_>, value: f64, epoch: u32) -> PyRes
     let Some(epoch) = core::ExcelEpoch::from_code(epoch) else {
         return Err(PyValueError::new_err("epoch must be an ExcelEpoch"));
     };
-    typed(py, core::excel_serial(value, epoch), civil_value)
+    typed(py, core::detailed::excel_serial(value, epoch), civil_value)
 }
 
 /// Reads the fraction of an Excel serial ``float`` as a ``time`` of day (microsecond
 /// truncation).
 #[pyfunction]
 fn cast_excel_time(py: Python<'_>, value: f64) -> PyResult<Py<PyAny>> {
-    typed(py, core::excel_time(value), time_value)
+    typed(py, core::detailed::excel_time(value), time_value)
 }
 
 /// Reads a ``float`` count of days as a ``timedelta`` (microsecond truncation toward zero).
 #[pyfunction]
 fn cast_excel_duration(py: Python<'_>, value: f64) -> PyResult<Py<PyAny>> {
-    typed(py, core::excel_duration(value), duration_value)
+    typed(py, core::detailed::excel_duration(value), duration_value)
 }
 
 fn date_value(py: Python<'_>, date: core::Date) -> PyResult<Py<PyAny>> {
@@ -825,33 +1332,54 @@ fn date_value(py: Python<'_>, date: core::Date) -> PyResult<Py<PyAny>> {
 }
 
 /// Casts a calendar date: strict ISO ``yyyy-MM-dd`` with no order, the separated forms
-/// under a declared ``DateOrder``.
+/// under a declared ``DateOrder``. ``options`` opens the opt-in shapes: ``COMPACT_DATE`` lets
+/// the ISO form read ``yyyyMMdd``, and under an order its pivot reads two-digit years and
+/// ``months`` (a :class:`MonthNames`) the month names Excel writes; each is judged by the
+/// core, and a door given neither reads exactly what it always has.
 #[pyfunction]
-#[pyo3(signature = (text, order = None))]
-fn cast_date(py: Python<'_>, text: Text<'_>, order: Option<u32>) -> PyResult<Py<PyAny>> {
+#[pyo3(signature = (text, order = None, *, options = None, months = None))]
+fn cast_date(
+    py: Python<'_>,
+    text: Text<'_>,
+    order: Option<u32>,
+    options: Option<PyRef<'_, DateOptions>>,
+    months: Option<PyRef<'_, MonthNames>>,
+) -> PyResult<Py<PyAny>> {
     let Some(order) = order else {
-        return verdict(py, &text, core::cast_date(text.bytes()?), date_value);
+        let bytes = text.bytes()?;
+        let outcome = with_date_options(options.as_deref(), None, |valid| {
+            core::detailed::cast_date(bytes, valid)
+        })?;
+        return verdict(py, &text, outcome, date_value);
     };
     let Some(order) = core::DateOrder::from_code(order) else {
         return Err(PyValueError::new_err("order must be a DateOrder"));
     };
-    verdict(py, &text, core::cast_date_ordered(text.bytes()?, order), date_value)
+    let bytes = text.bytes()?;
+    let outcome = with_date_options(options.as_deref(), months.as_deref(), |valid| {
+        core::detailed::cast_date_ordered(bytes, order, valid)
+    })?;
+    verdict(py, &text, outcome, date_value)
 }
 
 /// Casts a zone-less civil date-time under a declared ``DateOrder`` to a naive
 /// ``datetime``. The day periods ``am`` and ``pm`` declare a culture's designators
 /// (``"vorm."``/``"nachm."``, ``"오전"``/``"오후"``), read exactly, after the clock or
 /// ahead of it, beside the English ``AM``/``PM``, which are read whatever is declared;
-/// each is 1 to 16 UTF-8 bytes with no ASCII digit and no whitespace at either end, or a
-/// ``ValueError``, a caller bug like a malformed ``NumFormat``.
+/// each is 1 to 16 UTF-8 bytes with no ASCII digit and no white space at either end, or a
+/// ``ValueError``, a caller bug like a malformed ``NumFormat``. ``options`` (its pivot) and
+/// ``months`` read two-digit years and month names in the date, as :func:`cast_date` does.
 #[pyfunction]
-#[pyo3(signature = (text, order, *, am = "", pm = ""))]
+#[pyo3(signature = (text, order, *, am = "", pm = "", options = None, months = None))]
+#[allow(clippy::too_many_arguments)] // The signature is the API.
 fn cast_datetime(
     py: Python<'_>,
     text: Text<'_>,
     order: u32,
     #[pyo3(from_py_with = symbol_am)] am: &str,
     #[pyo3(from_py_with = symbol_pm)] pm: &str,
+    options: Option<PyRef<'_, DateOptions>>,
+    months: Option<PyRef<'_, MonthNames>>,
 ) -> PyResult<Py<PyAny>> {
     let Some(order) = core::DateOrder::from_code(order) else {
         return Err(PyValueError::new_err("order must be a DateOrder"));
@@ -859,10 +1387,18 @@ fn cast_datetime(
     // Nothing declared takes the core's own English door, where the designators are a
     // constant the parser folds away; the declared path pays for its two checks.
     if am.is_empty() && pm.is_empty() {
-        return verdict(py, &text, core::cast_datetime(text.bytes()?, order), civil_value);
+        let bytes = text.bytes()?;
+        let outcome = with_date_options(options.as_deref(), months.as_deref(), |valid| {
+            core::detailed::cast_datetime(bytes, order, valid)
+        })?;
+        return verdict(py, &text, outcome, civil_value);
     }
     let periods = core::DayPeriods::new(designator("am", am)?, designator("pm", pm)?);
-    verdict(py, &text, core::cast_datetime_with(text.bytes()?, order, &periods), civil_value)
+    let bytes = text.bytes()?;
+    let outcome = with_date_options(options.as_deref(), months.as_deref(), |valid| {
+        core::detailed::cast_datetime_with(bytes, order, &periods, valid)
+    })?;
+    verdict(py, &text, outcome, civil_value)
 }
 
 fn civil_value(py: Python<'_>, civil: core::CivilDateTime) -> PyResult<Py<PyAny>> {
@@ -872,7 +1408,7 @@ fn civil_value(py: Python<'_>, civil: core::CivilDateTime) -> PyResult<Py<PyAny>
 /// Casts an ISO 24-hour time-of-day to a ``time`` (microsecond truncation).
 #[pyfunction]
 fn cast_time(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
-    verdict(py, &text, core::cast_time(text.bytes()?), time_value)
+    verdict(py, &text, core::detailed::cast_time(text.bytes()?), time_value)
 }
 
 fn time_value(py: Python<'_>, nanos: u64) -> PyResult<Py<PyAny>> {
@@ -883,7 +1419,7 @@ fn time_value(py: Python<'_>, nanos: u64) -> PyResult<Py<PyAny>> {
 /// ``timedelta`` (microsecond truncation toward zero).
 #[pyfunction]
 fn cast_duration(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> {
-    verdict(py, &text, core::cast_duration(text.bytes()?), duration_value)
+    verdict(py, &text, core::detailed::cast_duration(text.bytes()?), duration_value)
 }
 
 fn duration_value(py: Python<'_>, span: core::Duration) -> PyResult<Py<PyAny>> {
@@ -985,6 +1521,37 @@ symbols! {
     symbol_digit_zero => "digit_zero",
     symbol_am => "am",
     symbol_pm => "pm",
+}
+
+/// A declaration's integer in the 32 unsigned bits the core counts it in. A wrong type is the
+/// `TypeError` extraction raises; an `int` outside those bits is a declaration the core could
+/// not read, so a `ValueError` naming the field, as every other refused declaration is.
+fn declared_u32(what: &str, obj: &Bound<'_, PyAny>) -> PyResult<u32> {
+    match obj.extract::<u32>() {
+        Err(err) if err.is_instance_of::<PyOverflowError>(obj.py()) => Err(PyValueError::new_err(
+            format!("{what} must be an int in 32 unsigned bits; got {}", obj.str()?),
+        )),
+        other => other,
+    }
+}
+
+/// One extractor per such field: `from_py_with` takes a path, not a closure.
+macro_rules! declared_ints {
+    ($($fn:ident => $name:literal),+) => {$(
+        fn $fn<'py>(obj: &'py Bound<'py, PyAny>) -> PyResult<u32> {
+            declared_u32($name, obj)
+        }
+    )+};
+}
+
+declared_ints! {
+    date_flags_int => "Date option flags",
+    date_pivot_int => "Date pivot",
+    grouping_int => "Grouping"
+}
+
+fn optional_detail_code<'py>(obj: &'py Bound<'py, PyAny>) -> PyResult<Option<u32>> {
+    if obj.is_none() { Ok(None) } else { declared_u32("detail_code", obj).map(Some) }
 }
 
 /// A `str` encoded with its lone surrogates kept (`surrogatepass`).
@@ -1616,14 +2183,14 @@ impl Violation {
 }
 
 /// What a checked judge answers: the value and what was reported beside it, or a rejection.
-type Judgement<T> = Result<(T, CheckOutcome), core::Rejection>;
+type Judgement<T> = Result<(T, CheckOutcome), core::detailed::Rejection>;
 
 /// Runs a numeric judge, which writes the value to the pointer it is handed.
 ///
 /// # Safety
 /// `T` must be the type the judge writes on success.
 unsafe fn judged<T>(
-    judge: impl FnOnce(*mut u8) -> Option<Result<CheckOutcome, core::Rejection>>,
+    judge: impl FnOnce(*mut u8) -> Option<Result<CheckOutcome, core::detailed::Rejection>>,
 ) -> PyResult<Judgement<T>> {
     let mut out = MaybeUninit::<T>::uninit();
     match judge(out.as_mut_ptr().cast()) {
@@ -1640,7 +2207,7 @@ unsafe fn judged<T>(
 fn numeric(
     py: Python<'_>,
     door: core::Door,
-    judge: impl FnOnce(*mut u8) -> Option<Result<CheckOutcome, core::Rejection>>,
+    judge: impl FnOnce(*mut u8) -> Option<Result<CheckOutcome, core::detailed::Rejection>>,
 ) -> PyResult<Judgement<Py<PyAny>>> {
     macro_rules! at {
         ($ty:ty) => {{
@@ -1689,11 +2256,11 @@ fn checked(
             Checked { value, adjusted: outcome.adjusted, enum_index: outcome.enum_index },
         )?
         .into_any()),
-        Err(core::Rejection::Fault(failed)) => {
+        Err(core::detailed::Rejection::Failure(failed)) => {
             let (offset, len) = span(failed.offset, failed.len)?;
-            fault(py, core::Fault { reason: failed.reason, offset, len })
+            fault(py, core::Failure { offset, len, ..failed })
         }
-        Err(core::Rejection::Violation(broken)) => {
+        Err(core::detailed::Rejection::Violation(broken)) => {
             let (offset, length) = span(broken.offset, broken.len)?;
             let keyword = Py::new(py, Keyword { code: broken.keyword.code() })?;
             Ok(Py::new(py, Violation { keyword, offset, length })?.into_any())
@@ -1735,7 +2302,10 @@ fn cast_checked(
     let entries = Entries::packed(door, &constraints.packed);
     let judgement = numeric(py, door, |out| {
         // SAFETY: `numeric` hands a pointer to the type `door` writes.
-        unsafe { judge_numeric(door, bytes, &fmt.resolved, &constraints.raw, &entries, out) }
+        unsafe {
+            judge_numeric_detailed(door, bytes, fmt.format(), &constraints.raw, &entries, out)
+        }
+        .map(|verdict| verdict.map_err(|rejection| core::detailed::classified(rejection, bytes)))
     })?;
     checked(py, Some(&input), judgement)
 }
@@ -1759,7 +2329,7 @@ fn cast_checked_from_float(
     let entries = Entries::packed(door, &constraints.packed);
     let judgement = numeric(py, door, |out| {
         // SAFETY: `numeric` hands a pointer to the type `door` writes.
-        unsafe { judge_numeric_from_f64(door, value, &constraints.raw, &entries, out) }
+        unsafe { judge_numeric_from_f64_detailed(door, value, &constraints.raw, &entries, out) }
     })?;
     checked(py, None, judgement)
 }
@@ -1781,14 +2351,14 @@ fn cast_text(
     let input = Input::new(text)?;
     let bytes = input.bytes()?;
     let Some(constraints) = constraints else {
-        return match core::cast_text(bytes) {
+        return match core::detailed::cast_text(bytes) {
             Ok(valid) => {
                 let value = input.text_at(py, (0, valid.len() as u32))?;
                 Ok(Py::new(py, Success { value })?.into_any())
             }
             Err(failed) => {
                 let (offset, len) = input.span(failed.offset, failed.len)?;
-                fault(py, core::Fault { reason: failed.reason, offset, len })
+                fault(py, core::Failure { offset, len, ..failed })
             }
         };
     };
@@ -1796,7 +2366,7 @@ fn cast_text(
         return Err(wrong_door(py, &constraints, "cast_checked")?);
     }
     let entries = Entries::packed(core::Door::Text, &constraints.packed);
-    let judgement = match judge_text(bytes, &constraints.raw, &entries) {
+    let judgement = match judge_text_detailed(bytes, &constraints.raw, &entries) {
         None => return Err(binding_bug("refused a declaration it had accepted")),
         Some(Err(rejection)) => Err(rejection),
         Some(Ok(outcome)) => {
@@ -1871,14 +2441,16 @@ fn cast_declared_decimal(py: Python<'_>, text: Text<'_>) -> PyResult<Py<PyAny>> 
 }
 
 /// Hands the package's own `CastFailure` IntEnum (plus `uuid.UUID` and `decimal.Decimal`)
-/// to this backend so faults carry the exact members callers compare with `is`, and its
-/// `Door` and `Rounding` IntEnums, which a declaration's getters answer with.
+/// to this backend so faults carry the exact members callers compare with `is`, its
+/// `Door` and `Rounding` IntEnums, which a declaration's getters answer with, and its
+/// `Detail`, which a fault's `detail` answers with.
 #[pyfunction]
 fn _bind(
     py: Python<'_>,
     cast_failure: Bound<'_, PyAny>,
     door: Bound<'_, PyAny>,
     rounding: Bound<'_, PyAny>,
+    detail: Bound<'_, PyAny>,
 ) -> PyResult<()> {
     let _ = EMPTY.set(cast_failure.getattr("EMPTY")?.unbind());
     let _ = MALFORMED.set(cast_failure.getattr("MALFORMED")?.unbind());
@@ -1886,8 +2458,16 @@ fn _bind(
     let _ = VALUES.set(crate::python::Values::import(py)?);
     let _ = DOOR.set(door.unbind());
     let _ = ROUNDING.set(rounding.unbind());
+    let _ = DETAIL.set(detail.unbind());
     let _ = DECIMAL.set(py.import("decimal")?.getattr("Decimal")?.unbind());
     Ok(())
+}
+
+/// The core's own name for a detail code (``"blank"``, ``"group_size"``), or ``None`` for a
+/// code it does not publish: what the package's ``Detail`` members are held to.
+#[pyfunction]
+fn _detail_name(code: u32) -> Option<&'static str> {
+    core::Detail::from_code(code).map(core::Detail::name)
 }
 
 // Name must match module-name's last segment in pyproject.toml ("hypercast._native") —
@@ -1904,6 +2484,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Success>()?;
     m.add_class::<Fault>()?;
     m.add_class::<NumFormat>()?;
+    m.add_class::<DateOptions>()?;
+    m.add_class::<MonthNames>()?;
     m.add_class::<Constraints>()?;
     m.add_class::<Checked>()?;
     m.add_class::<Violation>()?;
@@ -1940,5 +2522,28 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cast_declared_decimal, m)?)?;
     m.add_function(wrap_pyfunction!(native_version, m)?)?;
     m.add_function(wrap_pyfunction!(_bind, m)?)?;
+    m.add_function(wrap_pyfunction!(_detail_name, m)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The backstop is a real check, not a debug assertion: a format whose decimal separator
+    /// holds white space, built from the core's public fields so none of `declare`'s per-field
+    /// validators ran, is refused, and `cargo test --release` holds it to the same answer.
+    #[test]
+    fn the_backstop_refuses_what_the_core_refuses_in_every_build() {
+        let lagging = core::NumFormat {
+            decimal_sep: core::Symbol::new("\u{a0}").expect("a symbol"),
+            ..core::NumFormat::INVARIANT
+        };
+        assert!(!lagging.check());
+        assert!(refuse_unless_checked(&lagging).is_err());
+        assert!(refuse_unless_checked(&core::NumFormat::INVARIANT).is_ok());
+        // Nor does a declaration the 1.1 flag rules refuse get through it.
+        let policy = core::NumFormat::INVARIANT.with_grouping(core::NumFormat::GROUPING_POLICY);
+        assert!(refuse_unless_checked(&policy).is_err());
+    }
 }

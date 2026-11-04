@@ -2,7 +2,8 @@ import Foundation
 import HyperCastCore
 
 // The checked doors: each numeric door, and the text door, judged by a door-bound
-// Constraints<T> after it parses, through cast_checked, cast_checked_from_f64 and cast_text.
+// Constraints<T> after it parses, through cast_checked_detailed, cast_checked_detailed_from_f64
+// and the text door of cast_detailed, which report a failure's detail beside its span.
 // The declaration itself is judged once, by cast_constraints_check, when it is built, its
 // decimal text converted by cast_declared_decimal. Spans are UTF-8 bytes, as the core counts
 // them and as every Fault here already is, so nothing is remapped.
@@ -17,6 +18,17 @@ extension Cast {
     static var headerRawConstraintsSize: Int { Int(HyperCastRawConstraints_SIZE) }
     static var headerRawCheckSize: Int { Int(HyperCastRawCheck_SIZE) }
     static var headerRawSpanSize: Int { Int(HyperCastRawSpan_SIZE) }
+    static var headerRawFaultDetailSize: Int { Int(HyperCastRawFaultDetail_SIZE) }
+    static var headerRawDateOptionsSize: Int { Int(HyperCastRawDateOptions_SIZE) }
+    static var headerRawDateOptionsMinSize: Int { Int(HyperCastRawDateOptions_MIN_SIZE) }
+    // The header's grouping policy bits — legacy, Western, Indian and the mask — and its
+    // date-option bits, in the order Grouping and DateOptions restate them, which the suite pins.
+    static var headerGroupingBits: [UInt32] {
+        [
+            HyperCastNumFormat_GROUPING_LEGACY, HyperCastNumFormat_GROUPING_WESTERN,
+            HyperCastNumFormat_GROUPING_INDIAN, HyperCastNumFormat_GROUPING_POLICY,
+        ].map { UInt32($0) }
+    }
     // The header's flag bits, in the order Constraints restates them, which the suite pins.
     static var headerConstraintFlags: [UInt32] {
         [
@@ -44,7 +56,7 @@ extension Cast {
     /// Runs a checked door over the caller's bytes; `format` is nil at the text door.
     private static func checked<D>(
         _ utf8: UnsafeRawBufferPointer, _ format: NumFormat?, _ constraints: Constraints<D>,
-        _ out: inout OutScratch, _ faultOut: inout FaultScratch, _ check: inout CheckScratch
+        _ out: inout OutScratch, _ faultOut: inout DetailScratch, _ check: inout CheckScratch
     ) -> Int32 {
         var rawFormat = format?.raw ?? Interop.zeroRawFormat
         var declared = constraints.raw
@@ -54,7 +66,7 @@ extension Cast {
                     withUnsafeBytes(of: &rawFormat) { formatRaw in
                         withUnsafeBytes(of: &declared) { declaredRaw in
                             constraints.packed.withUnsafeBufferPointer { entries in
-                                cast_checked(
+                                cast_checked_detailed(
                                     constraints.door, 0,
                                     format == nil ? nil : .init(OpaquePointer(formatRaw.baseAddress)),
                                     .init(OpaquePointer(declaredRaw.baseAddress)), entries.baseAddress,
@@ -74,7 +86,7 @@ extension Cast {
         read: (UnsafeRawBufferPointer) -> T
     ) -> CheckedVerdict<T> {
         var out: OutScratch = (0, 0)
-        var faultOut: FaultScratch = (0, 0)
+        var faultOut = Interop.freshRawFaultDetail
         var check = noCheck
         let code = checked(utf8, format, constraints, &out, &faultOut, &check)
         guard code == 0 else { return .rejection(rejection(code, faultOut, check)) }
@@ -85,7 +97,7 @@ extension Cast {
         _ value: Double, _ constraints: Constraints<T>, read: (UnsafeRawBufferPointer) -> T
     ) -> CheckedVerdict<T> {
         var out: OutScratch = (0, 0)
-        var faultOut: FaultScratch = (0, 0)
+        var faultOut = Interop.freshRawFaultDetail
         var check = noCheck
         var declared = constraints.raw
         let code = withUnsafeMutableBytes(of: &out) { outRaw in
@@ -93,9 +105,9 @@ extension Cast {
                 withUnsafeMutableBytes(of: &check) { checkRaw in
                     withUnsafeBytes(of: &declared) { declaredRaw in
                         constraints.packed.withUnsafeBufferPointer { entries in
-                            cast_checked_from_f64(
-                                constraints.door, value, .init(OpaquePointer(declaredRaw.baseAddress)),
-                                entries.baseAddress, UInt(entries.count), outRaw.baseAddress,
+                            cast_checked_detailed_from_f64(
+                                constraints.door, 0, .init(OpaquePointer(declaredRaw.baseAddress)),
+                                entries.baseAddress, UInt(entries.count), value, outRaw.baseAddress,
                                 .init(OpaquePointer(faultRaw.baseAddress)), .init(OpaquePointer(checkRaw.baseAddress)))
                         }
                     }
@@ -114,15 +126,15 @@ extension Cast {
 
     /// The rejection a nonzero code names: 4 a violation of the keyword the check carries,
     /// 1 to 3 the door's own fault, both spanning UTF-8 bytes of the input.
-    private static func rejection(_ code: Int32, _ span: FaultScratch, _ check: CheckScratch) -> Rejection {
+    private static func rejection(_ code: Int32, _ span: DetailScratch, _ check: CheckScratch) -> Rejection {
         precondition(code != -1, "libhypercast reported a contract violation — a binding bug, please report it")
         guard code == 4 else {
-            return .fault(Interop.fault(code: code, offset: span.0, length: span.1))
+            return .fault(Interop.fault(code: code, offset: span.1, length: span.2, detail: span.3))
         }
         guard let keyword = Keyword(rawValue: check.0) else {
             preconditionFailure("libhypercast reported a violation of no keyword — a binding bug, please report it")
         }
-        return .violation(Violation(keyword: keyword, offset: Int(span.0), length: Int(span.1)))
+        return .violation(Violation(keyword: keyword, offset: Int(span.1), length: Int(span.2)))
     }
 
     // MARK: - checked i8
@@ -555,19 +567,14 @@ extension Cast {
     }
 
     private static func plainText(_ utf8: UnsafeRawBufferPointer, whole: String?) -> Verdict<String> {
-        var span: SpanScratch = (0, 0)
-        var faultOut: FaultScratch = (0, 0)
-        let code = withUnsafeMutableBytes(of: &span) { spanRaw in
-            withUnsafeMutableBytes(of: &faultOut) { faultRaw in
-                cast_text(
-                    inputPointer(utf8), UInt(utf8.count), .init(OpaquePointer(spanRaw.baseAddress)),
-                    .init(OpaquePointer(faultRaw.baseAddress)))
-            }
-        }
+        var spanOut: OutScratch = (0, 0)
+        var faultOut = Interop.freshRawFaultDetail
+        let code = callDetailed(door: DoorCode.text, param: 0, utf8, out: &spanOut, fault: &faultOut)
         precondition(code != -1, "libhypercast reported a contract violation — a binding bug, please report it")
         guard code == 0 else {
-            return .fault(Interop.fault(code: code, offset: faultOut.0, length: faultOut.1))
+            return .fault(withUnsafeBytes(of: &faultOut) { detailedFault(code, $0) })
         }
+        let span = withUnsafeBytes(of: &spanOut) { $0.load(as: SpanScratch.self) }
         return .success(slice(utf8, span, whole: whole))
     }
 
@@ -575,7 +582,7 @@ extension Cast {
         _ utf8: UnsafeRawBufferPointer, whole: String?, _ constraints: Constraints<String>
     ) -> CheckedVerdict<String> {
         var out: OutScratch = (0, 0)
-        var faultOut: FaultScratch = (0, 0)
+        var faultOut = Interop.freshRawFaultDetail
         var check = noCheck
         let code = checked(utf8, nil, constraints, &out, &faultOut, &check)
         guard code == 0 else { return .rejection(rejection(code, faultOut, check)) }

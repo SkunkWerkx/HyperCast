@@ -46,17 +46,19 @@ const basePages uint32 = 1
 const hostMaxPages = min(65536, math.MaxInt>>16)
 
 // The scratch layout, at offsets from the scratch's start: the out-value (16 bytes, the
-// widest door's, 8-aligned), the fault span, the 92-byte RawNumFormat and the 40-byte
-// RawDayPeriods (each 4-aligned, as the core reads them in place), then the text.
+// widest door's, 8-aligned), the 16-byte RawFaultDetail, the 92-byte RawNumFormat, the
+// 40-byte RawDayPeriods and the 12-byte RawDateOptions (each 4-aligned, as the core reads them
+// in place), then the text. A month vocabulary is laid out past the text.
 const (
 	outOffset     = 0
 	faultOffset   = 16
-	formatOffset  = 24
+	formatOffset  = faultOffset + 16
 	periodsOffset = formatOffset + 92
-	textOffset    = periodsOffset + 40
+	optionsOffset = periodsOffset + 40
+	textOffset    = optionsOffset + 12
 )
 
-// baseText is the longest text the base scratch holds: 65,376 bytes.
+// baseText is the longest text the base scratch holds: 65,360 bytes.
 const baseText = int(basePages)*pageSize - textOffset
 
 // MaxText is the longest text a door takes, in bytes: the smaller of the guest's slice
@@ -64,9 +66,9 @@ const baseText = int(basePages)*pageSize - textOffset
 // exceed on any host) and the guest's address space less the module's own pages and the
 // scratch's header, itself capped by the host's page limit on a 32-bit platform. On a 64-bit
 // host it is 2,147,483,647. A longer text panics, as a caller bug, before anything is
-// allocated: the translated core cannot address it. A checked door's declaration is laid out
-// past its text in the same scratch, so for it the text and the declaration together are
-// what MaxText bounds.
+// allocated: the translated core cannot address it. A checked door's declaration, and a
+// detailed date door's month vocabulary, is laid out past its text in the same scratch, so for
+// them the text and what follows it together are what MaxText bounds.
 const MaxText = min(1<<31-1, hostMaxPages*pageSize-modulePages*pageSize-textOffset)
 
 // instancesCreated counts instances ever created, a hook for the tests that pin when a
@@ -149,7 +151,7 @@ func primary() *instance {
 // instance meanwhile, so the live count tracks the goroutines concurrently inside a door,
 // approximately GOMAXPROCS. Only base-sized instances are ever pooled. Under TinyGo the
 // scheduler is cooperative and a call never yields, so the primary is always free and the
-// pool goes unused, unless a call panicked on the primary (callPlain's comment).
+// pool goes unused, unless a call panicked on the primary (the comment above callDetailed).
 var pool = newPool()
 
 func newPool() *sync.Pool {
@@ -274,7 +276,8 @@ func put16(dst []byte, s *RawSymbol16) {
 }
 
 // result reads the verdict back out of the scratch: the out-value's 16 bytes as the core
-// wrote them on success, the fault span on a failure.
+// wrote them on success, the fault's span and detail on a failure (and on a checked door's
+// violation, code 4, whose detail is 0).
 func (in *instance) result(code int32) (r result) {
 	r.code = code
 	mem := in.mem()[in.scratch : in.scratch+textOffset]
@@ -283,8 +286,9 @@ func (in *instance) result(code int32) (r result) {
 		copy((*[16]byte)(unsafe.Pointer(&r.out))[:], mem[outOffset:])
 	case code > 0:
 		r.fault = rawFault{
-			Offset: binary.LittleEndian.Uint32(mem[faultOffset:]),
-			Length: binary.LittleEndian.Uint32(mem[faultOffset+4:]),
+			Offset: binary.LittleEndian.Uint32(mem[faultOffset+4:]),
+			Length: binary.LittleEndian.Uint32(mem[faultOffset+8:]),
+			Detail: binary.LittleEndian.Uint32(mem[faultOffset+12:]),
 		}
 	}
 	return r
@@ -369,134 +373,107 @@ func packedVersion() uint32 {
 
 // ---- The calls cast.go's doors make ----------------------------------------------------
 //
-// Each acquires an instance for its text, copies the text (and the format or day periods)
-// into the scratch, calls the core's export with scratch offsets, reads the verdict back and
-// releases the instance; the memory slice is read after the call, never cached across it.
-// The doors are the generated Module's methods, held as method expressions with no closure,
-// since TinyGo would heap-allocate a closure and the zero-allocation tests run there too.
+// Each acquires an instance for its text, copies the text and the declarations its door
+// reads into the scratch, calls the core's export with scratch offsets, reads the verdict back
+// and releases the instance; the memory slice is read after the call, never cached across it.
+// Every door crosses through the core's detailed exports (cast_detailed and its three
+// siblings), the only ones that read the grouping policy, the date options and the month
+// vocabulary, and the ones that write a failure's detail; a plain door drops the detail.
 //
 // release is not deferred, on purpose. A call that panics part-way is a core bug (a bounds
 // check in the generated code), and it leaves the guest's stack pointer wherever the trap
 // found it, so the instance must never serve another call: it is abandoned, still locked if
-// it was the primary, and later calls take the pool (core_test.go holds both). A deferred release would hand it back.
-// Under TinyGo a defer also moves every pointer the function passes on to the heap, the
-// format and the day periods among them, which would cost the doors their zero
-// allocations there.
+// it was the primary, and later calls take the pool (core_test.go holds both). A deferred
+// release would hand it back. Under TinyGo a defer also moves every pointer the function
+// passes on to the heap, the format and the day periods among them, which would cost the
+// doors their zero allocations there.
 
-// The symbol types cast.go's doors are written against: a door's export as a method
-// expression on the generated Module.
-type (
-	plainSymbol   = func(m *core.Module, ptr, length, out, fault int32) int32
-	numericSymbol = func(m *core.Module, ptr, length, format, out, fault int32) int32
+// The core's door codes (rust/src/door.rs), which the detailed exports dispatch on.
+const (
+	doorBool        = 1
+	doorI8          = 2
+	doorI16         = 3
+	doorI32         = 4
+	doorI64         = 5
+	doorU8          = 6
+	doorU16         = 7
+	doorU32         = 8
+	doorU64         = 9
+	doorF32         = 10
+	doorF64         = 11
+	doorUuid        = 12
+	doorTimestamp   = 13
+	doorUnix        = 14
+	doorDate        = 15
+	doorTime        = 16
+	doorDuration    = 17
+	doorText        = 18
+	doorDecimal     = 19
+	doorDateOrdered = 20
+	doorDateTime    = 21
+	doorExcelSerial = 22
+	doorChar        = 23
 )
 
-var (
-	symBool      plainSymbol = (*core.Module).Xcast_bool
-	symChar      plainSymbol = (*core.Module).Xcast_char
-	symUuid      plainSymbol = (*core.Module).Xcast_uuid
-	symTimestamp plainSymbol = (*core.Module).Xcast_timestamp
-	symDate      plainSymbol = (*core.Module).Xcast_date
-	symTime      plainSymbol = (*core.Module).Xcast_time
-	symDuration  plainSymbol = (*core.Module).Xcast_duration
+// castDetailed is the core's cast_detailed, held as a method expression on the generated
+// Module with no closure (TinyGo would heap-allocate a closure, and the zero-allocation tests
+// run there too); a variable so that core_pool_test.go can make it trap.
+var castDetailed = (*core.Module).Xcast_detailed
 
-	symI8      numericSymbol = (*core.Module).Xcast_i8
-	symI16     numericSymbol = (*core.Module).Xcast_i16
-	symI32     numericSymbol = (*core.Module).Xcast_i32
-	symI64     numericSymbol = (*core.Module).Xcast_i64
-	symU8      numericSymbol = (*core.Module).Xcast_u8
-	symU16     numericSymbol = (*core.Module).Xcast_u16
-	symU32     numericSymbol = (*core.Module).Xcast_u32
-	symU64     numericSymbol = (*core.Module).Xcast_u64
-	symF32     numericSymbol = (*core.Module).Xcast_f32
-	symF64     numericSymbol = (*core.Module).Xcast_f64
-	symDecimal numericSymbol = (*core.Module).Xcast_decimal
-)
-
-func callPlain(sym plainSymbol, ptr unsafe.Pointer, length uintptr) result {
-	in, how := acquireFor(length)
-	s := in.load(ptr, length)
-	r := in.result(sym(in.m, s+textOffset, int32(length), s+outOffset, s+faultOffset))
-	release(in, how)
-	return r
+// resetFault writes the RawFaultDetail's size word before a call: the core reads it and never
+// writes it.
+func (in *instance) resetFault() {
+	binary.LittleEndian.PutUint32(in.mem()[in.scratch+faultOffset:], RawFaultDetailSize)
 }
 
-func callNumeric(sym numericSymbol, ptr unsafe.Pointer, length uintptr, format *RawNumFormat) result {
-	in, how := acquireFor(length)
+// callDetailed is cast_detailed over the text at ptr: the door and its param, the format (nil
+// but at the numeric doors, which cross it as null only from no caller), the day periods (nil
+// declares nothing: English), the date options (nil: none) and the month vocabulary, packed,
+// laid out past the text ("" for none, a null pointer and a length of 0).
+func callDetailed(door, param uint32, ptr unsafe.Pointer, length uintptr, format *RawNumFormat,
+	periods *RawDayPeriods, options *RawDateOptions, vocab string) result {
+	in, how := acquireScratch(length, uintptr(len(vocab)))
 	s := in.load(ptr, length)
-	in.loadFormat(format)
-	r := in.result(sym(in.m, s+textOffset, int32(length), s+formatOffset, s+outOffset, s+faultOffset))
-	release(in, how)
-	return r
-}
-
-func callUnix(ptr unsafe.Pointer, length uintptr, precision uint32) result {
-	in, how := acquireFor(length)
-	s := in.load(ptr, length)
-	r := in.result(in.m.Xcast_unix(s+textOffset, int32(length), int32(precision), s+outOffset, s+faultOffset))
-	release(in, how)
-	return r
-}
-
-func callDateOrdered(ptr unsafe.Pointer, length uintptr, order uint32) result {
-	in, how := acquireFor(length)
-	s := in.load(ptr, length)
-	r := in.result(in.m.Xcast_date_ordered(s+textOffset, int32(length), int32(order), s+outOffset, s+faultOffset))
-	release(in, how)
-	return r
-}
-
-// nil periods declares nothing and crosses as a null pointer, the English-only call.
-func callDateTime(ptr unsafe.Pointer, length uintptr, order uint32, periods *RawDayPeriods) result {
-	in, how := acquireFor(length)
-	s := in.load(ptr, length)
-	var p int32
+	in.resetFault()
+	var f, p, o, v int32
+	if format != nil {
+		in.loadFormat(format)
+		f = s + formatOffset
+	}
 	if periods != nil {
 		in.loadPeriods(periods)
 		p = s + periodsOffset
 	}
-	r := in.result(in.m.Xcast_datetime(s+textOffset, int32(length), int32(order), p, s+outOffset, s+faultOffset))
+	if options != nil {
+		in.loadOptions(options)
+		o = s + optionsOffset
+	}
+	if vocab != "" {
+		v = s + textOffset + int32(length)
+		copy(in.mem()[uint32(v):], vocab)
+	}
+	r := in.result(castDetailed(in.m, int32(door), int32(param), f, p, o, v, int32(len(vocab)),
+		s+textOffset, int32(length), s+outOffset, s+faultOffset))
 	release(in, how)
 	return r
 }
 
-func callExcelSerial(ptr unsafe.Pointer, length uintptr, epoch uint32) result {
-	in, how := acquireFor(length)
-	s := in.load(ptr, length)
-	r := in.result(in.m.Xcast_excel_serial(s+textOffset, int32(length), int32(epoch), s+outOffset, s+faultOffset))
-	release(in, how)
-	return r
-}
-
-func callDecimalFromF64(value float64) result {
+// callDetailedFromF64 is cast_detailed_from_f64: a typed door over a float64 the caller holds.
+func callDetailedFromF64(door, param uint32, value float64) result {
 	in, how := acquire()
 	s := int32(in.scratch)
-	r := in.result(in.m.Xcast_decimal_from_f64(value, s+outOffset, s+faultOffset))
+	in.resetFault()
+	r := in.result(in.m.Xcast_detailed_from_f64(int32(door), int32(param), value, s+outOffset, s+faultOffset))
 	release(in, how)
 	return r
 }
 
-func callExcelSerialFromF64(value float64, epoch uint32) result {
-	in, how := acquire()
-	s := int32(in.scratch)
-	r := in.result(in.m.Xcast_excel_serial_from_f64(value, int32(epoch), s+outOffset, s+faultOffset))
-	release(in, how)
-	return r
-}
-
-func callExcelTime(value float64) result {
-	in, how := acquire()
-	s := int32(in.scratch)
-	r := in.result(in.m.Xcast_excel_time(value, s+outOffset, s+faultOffset))
-	release(in, how)
-	return r
-}
-
-func callExcelDuration(value float64) result {
-	in, how := acquire()
-	s := int32(in.scratch)
-	r := in.result(in.m.Xcast_excel_duration(value, s+outOffset, s+faultOffset))
-	release(in, how)
-	return r
+// loadOptions writes the date options the same way as the format: three little-endian words.
+func (in *instance) loadOptions(options *RawDateOptions) {
+	dst := in.mem()[in.scratch+optionsOffset : in.scratch+optionsOffset+12]
+	binary.LittleEndian.PutUint32(dst[0:], options.Size)
+	binary.LittleEndian.PutUint32(dst[4:], options.Flags)
+	binary.LittleEndian.PutUint32(dst[8:], options.Pivot)
 }
 
 // ---- The checked doors' calls ------------------------------------------------------------
@@ -574,30 +551,33 @@ func (in *instance) check(at uint32) RawCheck {
 	return RawCheck{Keyword: le.Uint32(src[0:]), Adjusted: le.Uint32(src[4:]), EnumIndex: le.Uint32(src[8:])}
 }
 
-// callChecked is cast_checked: format is nil at the text door, which crosses it as null.
+// callChecked is cast_checked_detailed: format is nil at the text door, which crosses it as
+// null.
 func callChecked(door uint32, ptr unsafe.Pointer, length uintptr, format *RawNumFormat, d *declaration) (result, RawCheck) {
 	in, how, at := acquireChecked(length, d)
 	s := in.load(ptr, length)
+	in.resetFault()
 	var f int32
 	if format != nil {
 		in.loadFormat(format)
 		f = s + formatOffset
 	}
 	decl := s + int32(at)
-	r := in.result(in.m.Xcast_checked(int32(door), 0, f, decl, decl+rawConstraintsBytes+rawCheckBytes,
+	r := in.result(in.m.Xcast_checked_detailed(int32(door), 0, f, decl, decl+rawConstraintsBytes+rawCheckBytes,
 		int32(d.enumBytes()), s+textOffset, int32(length), s+outOffset, s+faultOffset, decl+rawConstraintsBytes))
 	c := in.check(at)
 	release(in, how)
 	return r, c
 }
 
-// callCheckedFromF64 is cast_checked_from_f64.
+// callCheckedFromF64 is cast_checked_detailed_from_f64.
 func callCheckedFromF64(door uint32, value float64, d *declaration) (result, RawCheck) {
 	in, how, at := acquireChecked(0, d)
 	s := int32(in.scratch)
+	in.resetFault()
 	decl := s + int32(at)
-	r := in.result(in.m.Xcast_checked_from_f64(int32(door), value, decl, decl+rawConstraintsBytes+rawCheckBytes,
-		int32(d.enumBytes()), s+outOffset, s+faultOffset, decl+rawConstraintsBytes))
+	r := in.result(in.m.Xcast_checked_detailed_from_f64(int32(door), 0, decl, decl+rawConstraintsBytes+rawCheckBytes,
+		int32(d.enumBytes()), value, s+outOffset, s+faultOffset, decl+rawConstraintsBytes))
 	c := in.check(at)
 	release(in, how)
 	return r, c
@@ -618,15 +598,6 @@ func callDeclaredDecimal(ptr unsafe.Pointer, length uintptr) result {
 	in, how := acquireFor(length)
 	s := in.load(ptr, length)
 	r := in.result(in.m.Xcast_declared_decimal(s+textOffset, int32(length), s+outOffset))
-	release(in, how)
-	return r
-}
-
-// callText is cast_text: the span of the input once it is valid UTF-8.
-func callText(ptr unsafe.Pointer, length uintptr) result {
-	in, how := acquireFor(length)
-	s := in.load(ptr, length)
-	r := in.result(in.m.Xcast_text(s+textOffset, int32(length), s+outOffset, s+faultOffset))
 	release(in, how)
 	return r
 }

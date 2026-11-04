@@ -24,7 +24,9 @@ mod args;
 mod cast;
 mod classes;
 mod constraints;
+mod date_options;
 mod dates;
+mod detailed;
 mod enums;
 mod errors;
 mod interop;
@@ -147,7 +149,9 @@ pub fn get_module(module: ModuleBuilder) -> ModuleBuilder {
         .enumeration::<enums::Door>()
         .enumeration::<enums::Rounding>()
         .enumeration::<enums::Keyword>()
+        .enumeration::<enums::FaultDetail>()
         .class::<cast::Cast>()
+        .class::<detailed::DetailedCast>()
         .class::<interop::NativeValues>()
         .class::<interop::NativePlatform>()
 }

@@ -66,10 +66,16 @@ pub(crate) enum Value {
     Constraints = 6,
     Checked = 7,
     Violation = 8,
+    DetailedFault = 9,
+    DateOptions = 10,
+    MonthNames = 11,
 }
 
 /// The value classes' entries, written once each, in MINIT.
-static ENTRIES: [AtomicPtr<ClassEntry>; 9] = [
+static ENTRIES: [AtomicPtr<ClassEntry>; 12] = [
+    AtomicPtr::new(ptr::null_mut()),
+    AtomicPtr::new(ptr::null_mut()),
+    AtomicPtr::new(ptr::null_mut()),
     AtomicPtr::new(ptr::null_mut()),
     AtomicPtr::new(ptr::null_mut()),
     AtomicPtr::new(ptr::null_mut()),
@@ -89,6 +95,8 @@ pub(crate) enum Type {
     String,
     Bool,
     Class(&'static str),
+    /// `array`.
+    Array,
     /// `?int`.
     NullableInt,
     /// `?array`.
@@ -156,6 +164,7 @@ fn declare(ce: &mut ClassEntry, name: &str, ty: Type, promoted: bool) {
         Type::String => 1 << IS_STRING,
         Type::Bool => (1 << IS_FALSE) | (1 << IS_TRUE),
         Type::Class(_) => _ZEND_TYPE_NAME_BIT,
+        Type::Array => 1 << IS_ARRAY,
         Type::NullableInt => (1 << IS_LONG) | (1 << IS_NULL),
         Type::NullableArray => (1 << IS_ARRAY) | (1 << IS_NULL),
         Type::NullableClass(_) => _ZEND_TYPE_NAME_BIT | (1 << IS_NULL),
@@ -307,6 +316,35 @@ pub(crate) fn read(value: Value, object: *mut zend_object, name: &str) -> PhpRes
     Ok(copy)
 }
 
+/// Reads `$object->name` as `read` does, except that an uninitialized property is `None`
+/// rather than the engine's `Error`: for a property an older version of the class did not have,
+/// which an object unserialized from that version never wrote.
+pub(crate) fn read_if_set(
+    value: Value,
+    object: *mut zend_object,
+    name: &str,
+) -> PhpResult<Option<Zval>> {
+    let mut rv = Zval::new();
+    // SAFETY: as in `read`; silent, so an uninitialized property is the engine's null and no
+    // error.
+    let found = unsafe {
+        zend_read_property(
+            entry(value),
+            object,
+            name.as_ptr().cast(),
+            name.len(),
+            true,
+            &raw mut rv,
+        )
+    };
+    if ExecutorGlobals::has_exception() {
+        return Err(pending("property read"));
+    }
+    // SAFETY: a live zval, the property's or `rv`; the copy holds its own reference.
+    let copy = unsafe { found.as_ref() }.map(Zval::shallow_clone);
+    Ok(copy.filter(|zv| !zv.is_null()))
+}
+
 /// A property read as a string's bytes (the declared type guarantees one).
 pub(crate) fn read_bytes(value: Value, object: *mut zend_object, name: &str) -> PhpResult<Vec<u8>> {
     let zv = read(value, object, name)?;
@@ -404,5 +442,7 @@ pub(crate) fn throw(e: PhpException) {
 pub(crate) fn register_all() -> ext_php_rs::error::Result<()> {
     super::values::register()?;
     super::num_format::register()?;
-    super::constraints::register()
+    super::constraints::register()?;
+    super::date_options::register()?;
+    super::detailed::register()
 }

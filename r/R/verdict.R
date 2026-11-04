@@ -1,10 +1,66 @@
 reasons <- c("empty", "malformed", "out_of_range")
 
+#' Fault details
+#'
+#' What exactly failed, beside a fault's broad reason: the core's shared vocabulary of
+#' details, by name and by its numeric code. A verdict's `detail` column is a factor over
+#' these names (and `"unknown"`), and its `detail_code` column holds the core's number.
+#'
+#' The vocabulary is a contract of its own. Published codes keep their numbers and meanings,
+#' new codes may appear in a minor release, and a code this version does not name reads as
+#' `"unknown"` with its number kept in `detail_code`: code that branches on a detail needs a
+#' default arm (`switch()`). The reason and the span of such a fault are as usable as any
+#' other's. A detail says what failed, never how to retry. The same failure at two doors
+#' shares one code, though its reason may differ (`Inf` is `out_of_range` at a float door and
+#' `malformed` at an integer door, and `not_finite` at both).
+#'
+#' A detail is `NA` where there is no fault, and for a violation of a declared rule (which
+#' names its `keyword` instead).
+#'
+#' @format A named integer vector of the 32 codes the core publishes.
+#' @family verdicts
+#' @export
+#' @examples
+#' fault_details
+#' v <- cast_i32(c("12,34", "12x", "1e99"), num_format())
+#' v$detail
+#' v$detail_code
+fault_details <- c(
+  blank = 1L, unexpected_character = 2L, digit_expected = 3L, delimiter_expected = 4L,
+  trailing_text = 5L, no_digits = 6L, sign_misplaced = 7L, parentheses_unbalanced = 8L,
+  mark_repeated = 9L, group_misplaced = 10L, group_size = 11L, group_in_fraction = 12L,
+  ambiguous_separator = 13L, fraction_not_allowed = 14L, field_width = 15L, wrong_length = 16L,
+  component_missing = 17L, not_recognized = 18L, unknown_unit = 19L, invalid_utf8 = 20L,
+  too_long = 21L, not_finite = 22L, not_whole = 23L, negative_not_allowed = 24L, too_large = 25L,
+  too_small = 26L, too_precise = 27L, date_field_out_of_range = 28L,
+  time_field_out_of_range = 29L, outside_window = 30L, nonexistent_date = 31L,
+  not_a_scalar = 32L
+)
+
+detail_levels <- c(names(fault_details), "unknown")
+
+# The core's detail codes as the factor a verdict carries: a published code as its name, a
+# code this version does not name as "unknown", and a missing one as NA. Never an error: a
+# newer core's vocabulary is still a fault with a usable reason and span.
+detail_factor <- function(code) {
+  index <- match(code, fault_details)
+  index[!is.na(code) & is.na(index)] <- length(detail_levels)
+  structure(index, levels = detail_levels, class = "factor")
+}
+
+# The detail column and the raw code beside it, appended after every 1.0 column.
+add_detail <- function(cols) {
+  cols$detail_code <- cols$detail
+  cols$detail <- detail_factor(cols$detail)
+  cols
+}
+
 # The C shim's columns as a verdict: the reason codes as a factor, the value (and its exact
 # parts) in R's classes for the door's kind, and the data frame's class and row names.
 new_verdict <- function(cols, door) {
   n <- length(cols$ok)
   cols$reason <- structure(cols$reason, levels = reasons, class = "factor")
+  cols <- add_detail(cols)
   switch(door,
     timestamp = , unix = , excel_serial = {
       cols$value <- .POSIXct(cols$value, tz = "UTC")
@@ -41,9 +97,17 @@ new_verdict <- function(cols, door) {
 #' | `reason` | `NA` | a factor: `empty`, `malformed` or `out_of_range` | `NA` |
 #' | `offset` | `NA` | where the offending text starts, counted from 0 | `NA` |
 #' | `length` | `NA` | how long it runs | `NA` |
+#' | `detail` | `NA` | a factor: what exactly failed, one of [fault_details] or `unknown` | `NA` |
+#' | `detail_code` | `NA` | the core's number for it | `NA` |
 #'
 #' A missing row is an `NA` element of the input, which no door reads: `NA` in, `NA` out.
 #' [optional()] turns `empty` faults into missing rows too.
+#'
+#' `detail` and `detail_code` come last, after the five columns every earlier release had in
+#' this order, so code that reads a verdict by name or by position keeps working; binding a
+#' verdict made before this column existed to one made after is a binding of different
+#' columns. The two together are what [fault_details] describes, and a `detail` the version
+#' does not know reads `unknown` with its code in `detail_code`.
 #'
 #' `offset` and `length` count in the units `substr()` counts the input in, so `substr(x,
 #' offset + 1, offset + length)` gives back the offending text. That is characters for a
@@ -66,8 +130,8 @@ new_verdict <- function(cols, door) {
 #'   [hypercast_checked_verdict] too).
 #' @param ... Passed on to the data frame's print method.
 #' @return `is_ok()` returns a logical vector. `faults()` returns a data frame with columns
-#'   `row`, `reason`, `offset` and `length`, one row per faulted element. `print()` returns
-#'   `x` invisibly.
+#'   `row`, `reason`, `offset`, `length`, `detail` and `detail_code`, one row per faulted
+#'   element. `print()` returns `x` invisibly.
 #' @name hypercast_verdict
 #' @family verdicts
 #' @examples
@@ -103,20 +167,27 @@ faults.hypercast_verdict <- function(x) {
 }
 
 fault_rows <- function(x, rows) {
-  data.frame(row = rows, reason = x$reason[rows], offset = x$offset[rows],
-             length = x$length[rows])
+  out <- data.frame(row = rows, reason = x$reason[rows], offset = x$offset[rows],
+                    length = x$length[rows])
+  # A verdict from before the detail column existed has none to list.
+  if (all(c("detail", "detail_code") %in% names(x))) {
+    out$detail <- x$detail[rows]
+    out$detail_code <- x$detail_code[rows]
+  }
+  out
 }
 
 #' Empty as absent
 #'
-#' Presents a verdict optionally: every `empty` fault (input that was empty or only ASCII
-#' whitespace, or for the text door with `trim`, only Unicode `White_Space`) becomes a
+#' Presents a verdict optionally: every `empty` fault (input that was empty or only white
+#' space, the 25 Unicode `White_Space` code points) becomes a
 #' missing row, as an `NA` element is, and every other row, a violation included, is left as
 #' it is. The same presentation every HyperCast binding ships (`optional`, `Optional`), for
 #' data where an absent value is not a failure.
 #'
 #' @param x A `hypercast_verdict` or a `hypercast_checked_verdict`, as a door returns.
-#' @return `x`, with `ok`, `reason`, `offset` and `length` set to `NA` in each `empty` row.
+#' @return `x`, with `ok`, `reason`, `offset`, `length` and `detail` set to `NA` in each `empty`
+#'   row.
 #' @family verdicts
 #' @export
 #' @examples
@@ -142,6 +213,10 @@ empty_as_missing <- function(x) {
   x$reason[empty] <- NA
   x$offset[empty] <- NA_integer_
   x$length[empty] <- NA_integer_
+  if ("detail" %in% names(x)) {
+    x$detail[empty] <- NA
+    x$detail_code[empty] <- NA_integer_
+  }
   x
 }
 
@@ -176,6 +251,7 @@ check_verdict <- function(x, checked = FALSE) {
 new_checked_verdict <- function(cols, door) {
   n <- length(cols$ok)
   cols$reason <- structure(cols$reason, levels = reasons, class = "factor")
+  cols <- add_detail(cols)
   cols$keyword <- keyword_name(cols$keyword)
   structure(cols,
             class = c("hypercast_checked_verdict", "data.frame"),
@@ -202,6 +278,7 @@ new_checked_verdict <- function(cols, door) {
 #' | `reason` | `NA` | `empty`, `malformed` or `out_of_range` | `NA` | `NA` |
 #' | `keyword` | `NA` | `NA` | the rule broken | `NA` |
 #' | `offset`, `length` | `NA` | the offending text | the value | `NA` |
+#' | `detail`, `detail_code` | `NA` | what failed, as a [hypercast_verdict]'s | `NA` | `NA` |
 #'
 #' `keyword` is character, OpenAPI's spelling: `"minimum"`, `"exclusiveMinimum"`,
 #' `"maximum"`, `"exclusiveMaximum"`, `"multipleOf"`, `"minLength"`, `"maxLength"` or
@@ -212,7 +289,8 @@ new_checked_verdict <- function(cols, door) {
 #' empty. An integer `enum` gives no index: the value is the answer.
 #'
 #' `is_ok()` is the `ok` column, `faults()` the faulted rows (`row`, `reason`, `offset`,
-#' `length`), `violations()` the violated rows (`row`, `keyword`, `offset`, `length`), and
+#' `length`, `detail`, `detail_code`), `violations()` the violated rows (`row`, `keyword`,
+#' `offset`, `length`), and
 #' [optional()] turns `empty` faults into missing rows. A checked verdict is a data frame of
 #' its own class, so binding it with a plain verdict is a binding of different columns.
 #'

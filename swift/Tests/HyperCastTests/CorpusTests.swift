@@ -99,11 +99,20 @@ final class CorpusTests: XCTestCase {
     /// key — a symbol, the currency separators, the digit zero — only where the vector
     /// carries it; absent declares nothing.
     private func format(of vector: [String: Any]) -> NumFormat {
-        guard let format = vector["format"] as? [String: Any] else { return .invariant }
+        // A row that declares no format reads the core's invariant one, legacy grouping.
+        guard let format = vector["format"] as? [String: Any] else { return NumFormat.invariant.withGrouping(.legacy) }
         let symbol = { (key: String) in format[key] as? String ?? "" }
+        // `grouping` names the policy; absent means legacy, the core's and the C ABI's meaning.
+        let grouping: Grouping =
+            switch format["grouping"] as? String {
+            case nil, "legacy": .legacy
+            case "western": .western
+            case "indian": .indian
+            case let other?: fatalError("unknown grouping \(other)")
+            }
         return NumFormat(
             decimalSeparator: symbol("decimal_sep"), groupSeparator: symbol("group_sep"),
-            styles: NumStyles(rawValue: UInt32(format["flags"] as! Int)),
+            styles: NumStyles(rawValue: UInt32(format["flags"] as! Int)), grouping: grouping,
             currencySymbol: symbol("currency"),
             currencyDecimalSeparator: symbol("currency_decimal_sep"),
             currencyGroupSeparator: symbol("currency_group_sep"),
@@ -135,7 +144,55 @@ final class CorpusTests: XCTestCase {
                 XCTAssertEqual(fault.offset, span[0], "\(domain): '\(input)' fault offset", file: file, line: line)
                 XCTAssertEqual(fault.length, span[1], "\(domain): '\(input)' fault length", file: file, line: line)
             }
+            assertDetail(domain, vector, fault, file: file, line: line)
         }
+    }
+
+    /// Every failure row names its `detail`: the fault carries that vocabulary member, under
+    /// its raw code, which is the code the published table numbers it by.
+    private func assertDetail(
+        _ label: String, _ vector: [String: Any], _ fault: Fault, file: StaticString = #filePath, line: UInt = #line
+    ) {
+        let input = vector["input"] as? String ?? "\(vector["input_bytes"] ?? vector["from_f64"] ?? "")"
+        guard let named = vector["detail"] as? String else {
+            return XCTFail("\(label): '\(input)' fails but the row names no detail", file: file, line: line)
+        }
+        XCTAssertEqual(fault.detail?.name, named, "\(label): '\(input)' detail", file: file, line: line)
+        XCTAssertEqual(
+            fault.detailCode, Self.detailCodes[named], "\(label): '\(input)' detail code", file: file, line: line)
+        XCTAssertGreaterThanOrEqual(fault.detailCode, 1, file: file, line: line)
+    }
+
+    /// The published detail table, name to code: the spec's numbers, restated here once.
+    static let detailCodes: [String: UInt32] = {
+        let names = [
+            "blank", "unexpected_character", "digit_expected", "delimiter_expected", "trailing_text", "no_digits",
+            "sign_misplaced", "parentheses_unbalanced", "mark_repeated", "group_misplaced", "group_size",
+            "group_in_fraction", "ambiguous_separator", "fraction_not_allowed", "field_width", "wrong_length",
+            "component_missing", "not_recognized", "unknown_unit", "invalid_utf8", "too_long", "not_finite",
+            "not_whole", "negative_not_allowed", "too_large", "too_small", "too_precise", "date_field_out_of_range",
+            "time_field_out_of_range", "outside_window", "nonexistent_date", "not_a_scalar",
+        ]
+        return Dictionary(uniqueKeysWithValues: names.enumerated().map { ($0.element, UInt32($0.offset + 1)) })
+    }()
+
+    /// The options a row declares: its named flags (or raw `flag_bits`), pivot and month names.
+    private func options(of row: [String: Any]) -> DateOptions {
+        let declared = row["options"] as! [String: Any]
+        var flags: DateOptions.Flags = []
+        for name in declared["flags"] as? [String] ?? [] {
+            switch name {
+            case "compact_date": flags.insert(.compactDate)
+            case "space_separator": flags.insert(.spaceSeparator)
+            case "hour_offset": flags.insert(.hourOffset)
+            case "common_forms": flags.formUnion(.commonForms)
+            case let other: XCTFail("unknown option flag \(other)")
+            }
+        }
+        let months = (declared["months"] as? [[Any]]).map { entries in
+            MonthNames(entries.map { (month: $0[0] as! Int, name: $0[1] as! String) })
+        }
+        return DateOptions(flags: flags, pivot: declared["pivot"] as? Int, months: months)
     }
 
     func testBooleanCorpus() throws {
@@ -255,7 +312,11 @@ final class CorpusTests: XCTestCase {
 
     func testTimestampCorpus() throws {
         for vector in try corpus("timestamp.json") {
-            assertVerdict("timestamp", vector, Cast.timestamp(inputBytes(vector)), expectedInstant(vector))
+            let verdict =
+                vector["options"] == nil
+                ? Cast.timestamp(inputBytes(vector))
+                : Cast.timestamp(inputBytes(vector), options: options(of: vector))
+            assertVerdict("timestamp", vector, verdict, expectedInstant(vector))
         }
     }
 
@@ -284,7 +345,10 @@ final class CorpusTests: XCTestCase {
                 expected = DateComponents(
                     year: year, month: (vector["month"] as! Int), day: (vector["day"] as! Int))
             }
-            assertVerdict("date", vector, Cast.date(inputBytes(vector)), expected)
+            let verdict =
+                vector["options"] == nil
+                ? Cast.date(inputBytes(vector)) : Cast.date(inputBytes(vector), options: options(of: vector))
+            assertVerdict("date", vector, verdict, expected)
         }
     }
 
@@ -299,7 +363,11 @@ final class CorpusTests: XCTestCase {
                 expected = DateComponents(
                     year: year, month: (vector["month"] as! Int), day: (vector["day"] as! Int))
             }
-            assertVerdict("date_order", vector, Cast.date(inputBytes(vector), order: order), expected)
+            let verdict =
+                vector["options"] == nil
+                ? Cast.date(inputBytes(vector), order: order)
+                : Cast.date(inputBytes(vector), order: order, options: options(of: vector))
+            assertVerdict("date_order", vector, verdict, expected)
         }
     }
 
@@ -322,14 +390,28 @@ final class CorpusTests: XCTestCase {
             }
             // A vector declares its day periods together or not at all; without them the
             // order-only door is the one under test.
-            let verdict: Verdict<DateComponents> =
-                if let am = vector["am"] as? String {
-                    Cast.dateTime(
-                        inputBytes(vector),
-                        format: DateFormat(order: order, amSymbol: am, pmSymbol: vector["pm"] as! String))
-                } else {
-                    Cast.dateTime(inputBytes(vector), order: order)
-                }
+            let verdict: Verdict<DateComponents>
+            if vector["options"] == nil {
+                verdict =
+                    if let am = vector["am"] as? String {
+                        Cast.dateTime(
+                            inputBytes(vector),
+                            format: DateFormat(order: order, amSymbol: am, pmSymbol: vector["pm"] as! String))
+                    } else {
+                        Cast.dateTime(inputBytes(vector), order: order)
+                    }
+            } else {
+                let declared = options(of: vector)
+                verdict =
+                    if let am = vector["am"] as? String {
+                        Cast.dateTime(
+                            inputBytes(vector),
+                            format: DateFormat(order: order, amSymbol: am, pmSymbol: vector["pm"] as! String),
+                            options: declared)
+                    } else {
+                        Cast.dateTime(inputBytes(vector), order: order, options: declared)
+                    }
+            }
             assertVerdict("datetime", vector, verdict, expected)
         }
     }
@@ -346,6 +428,131 @@ final class CorpusTests: XCTestCase {
             }
             assertVerdict("time", vector, Cast.time(inputBytes(vector)), expected)
         }
+    }
+
+    /// `formats.json`: the white-space table, and the declarations the core refuses. A
+    /// constructor here traps on a refusal, so a declaration is judged through the
+    /// `isDeclarable…` predicates the constructors check, and the rules that have a message
+    /// (the flags, the date options, the month names) assert the binding's message for the
+    /// rule the row names.
+    func testFormatsCorpus() throws {
+        var kinds = Set<String>()
+        for vector in try corpus("formats.json") {
+            let kind = vector["kind"] as! String
+            kinds.insert(kind)
+            switch kind {
+            case "white_space":
+                let spelling = vector["code_point"] as! String
+                let value = UInt32(spelling.dropFirst(2), radix: 16)!
+                let scalar = Unicode.Scalar(value)!
+                XCTAssertEqual(NumFormat.isWhiteSpace(scalar), vector["white_space"] as! Bool, spelling)
+            case "num_format":
+                let format = vector["format"] as! [String: Any]
+                let symbol = { (key: String) in format[key] as? String ?? "" }
+                let flags = UInt32(format["flags"] as! Int)
+                let rule = vector["rule"] as? String
+                let refusal = NumFormat.refusal(ofFlags: flags)
+                XCTAssertEqual(
+                    Self.declares(
+                        decimal: symbol("decimal_sep"), group: symbol("group_sep"), currency: symbol("currency"),
+                        currencyDecimal: symbol("currency_decimal_sep"), currencyGroup: symbol("currency_group_sep"),
+                        minus: symbol("minus_sign"), plus: symbol("plus_sign"), percent: symbol("percent"),
+                        flags: flags),
+                    vector["expect"] as! String == "ok", "\(format)")
+                switch rule {
+                case "grouping_policy": XCTAssertTrue(refusal?.contains("Grouping policy 3") ?? false, "\(format)")
+                case "unknown_flag": XCTAssertTrue(refusal?.contains("are not defined") ?? false, "\(format)")
+                default: XCTAssertNil(refusal, "\(format): its flags are declarable")
+                }
+            case "day_periods":
+                let am = vector["am"] as? String ?? "", pm = vector["pm"] as? String ?? ""
+                XCTAssertEqual(
+                    DateFormat.isDeclarable(designator: am) && DateFormat.isDeclarable(designator: pm),
+                    vector["expect"] as! String == "ok", "\(am) \(pm)")
+            case "date_options":
+                let flags: UInt32
+                if let bits = vector["flag_bits"] as? Int {
+                    flags = UInt32(bits)
+                } else {
+                    flags = (vector["flags"] as? [String] ?? []).reduce(0) { bits, name in
+                        bits
+                            | (["compact_date": 1, "space_separator": 2, "hour_offset": 4, "common_forms": 7][name]
+                                ?? UInt32.max)
+                    }
+                }
+                let pivot = UInt32(vector["pivot"] as? Int ?? 0)
+                let refusal = DateOptions.refusal(flags: flags, pivot: pivot)
+                XCTAssertEqual(refusal == nil, vector["expect"] as! String == "ok", "\(vector)")
+                switch vector["rule"] as? String {
+                case "flags": XCTAssertTrue(refusal?.contains("not defined") ?? false, "\(vector)")
+                case "pivot": XCTAssertTrue(refusal?.contains("pivot") ?? false, "\(vector)")
+                default: break
+                }
+            case "month_names":
+                monthNamesRow(vector)
+            case let other:
+                XCTFail("formats: unknown kind \(other)")
+            }
+        }
+        XCTAssertEqual(
+            kinds, ["white_space", "num_format", "day_periods", "date_options", "month_names"])
+    }
+
+    /// A `month_names` row twice: through the binding's declaration (the entries, where the row
+    /// spells them as such) and through the core, handed the packed layout the row spells, with
+    /// any `append_bytes` a refusal row adds raw, which the binding's entries can't spell.
+    private func monthNamesRow(_ vector: [String: Any]) {
+        let entries = (vector["months"] as! [[Any]]).map { (month: $0[0] as! Int, name: $0[1] as! String) }
+        let ok = vector["expect"] as! String == "ok"
+        let rule = vector["rule"] as? String
+        var packed: [UInt8] = []
+        for entry in entries {
+            let name = Array(entry.name.utf8)
+            packed.append(UInt8(truncatingIfNeeded: entry.month))
+            withUnsafeBytes(of: UInt32(name.count).littleEndian) { packed += $0 }
+            packed += name
+        }
+        packed += (vector["append_bytes"] as? [Int] ?? []).map { UInt8($0) }
+        // A length of 0 means no vocabulary to the core, so an empty one is judged by the binding alone.
+        if !packed.isEmpty {
+            XCTAssertEqual(Cast.vocabularyIsAccepted(packed), ok, "the core on \(vector)")
+        }
+        guard vector["append_bytes"] == nil else { return }
+        switch Result { () throws(MonthNames.Refused) in try MonthNames.declare(entries) } {
+        case .success:
+            XCTAssertTrue(ok, "\(vector) was declared")
+        case .failure(let refused):
+            XCTAssertFalse(ok, "\(vector): \(refused.message)")
+            let wanted: String =
+                switch rule {
+                case "month": "must be 1 through 12"
+                case "name_length": "must be 1 to 64"
+                case "character": "ASCII digit, a slash, a hyphen or white space"
+                case "month_missing": "has no name"
+                case "duplicate": "fold to the same spelling"
+                default: "no such rule \(rule ?? "nil")"
+                }
+            XCTAssertTrue(refused.message.contains(wanted), "\(vector): \(refused.message)")
+        }
+    }
+
+    /// Whether a declaration passes every rule the `NumFormat` constructor checks: each
+    /// number separator, the two different, the pair a currency amount is read with
+    /// different, each decimal separator free of white space, and the `flags` word.
+    private static func declares(
+        decimal: String, group: String, currency: String, currencyDecimal: String, currencyGroup: String,
+        minus: String, plus: String, percent: String, flags: UInt32
+    ) -> Bool {
+        let inForce = (
+            currencyDecimal.isEmpty ? decimal : currencyDecimal, currencyGroup.isEmpty ? group : currencyGroup
+        )
+        return NumFormat.isDeclarable(decimalSeparator: decimal) && NumFormat.isDeclarable(separator: group)
+            && decimal != group
+            && (currencyDecimal.isEmpty || NumFormat.isDeclarable(decimalSeparator: currencyDecimal))
+            && (currencyGroup.isEmpty || NumFormat.isDeclarable(separator: currencyGroup))
+            && inForce.0 != inForce.1 && NumFormat.isDeclarable(sign: minus) && NumFormat.isDeclarable(sign: plus)
+            && NumFormat.isDeclarable(sign: percent) && NumFormat.isDeclarable(currencySymbol: currency)
+            && NumFormat.refusal(ofFlags: flags) == nil
     }
 
     func testDurationCorpus() throws {
@@ -518,6 +725,7 @@ final class CorpusTests: XCTestCase {
             XCTAssertEqual(violation.keyword.name, vector["keyword"] as? String, label, file: file, line: line)
             XCTAssertEqual(violation.offset, span?[0], "\(label): offset", file: file, line: line)
             XCTAssertEqual(violation.length, span?[1], "\(label): length", file: file, line: line)
+            XCTAssertNil(vector["detail"], "\(label): a violation names no detail", file: file, line: line)
         case .rejection(.fault(let fault)):
             let reason: CastFailure? =
                 switch expect {
@@ -529,6 +737,7 @@ final class CorpusTests: XCTestCase {
             XCTAssertEqual(fault.reason, reason, "\(label): unexpectedly \(fault)", file: file, line: line)
             XCTAssertEqual(fault.offset, span?[0], "\(label): offset", file: file, line: line)
             XCTAssertEqual(fault.length, span?[1], "\(label): length", file: file, line: line)
+            assertDetail(label, vector, fault, file: file, line: line)
         }
     }
 
@@ -695,7 +904,8 @@ final class CorpusTests: XCTestCase {
     /// The plain shapes, which the checked doors leave alone: `Verdict<T>` is exactly
     /// `.success(T)` or `.fault(Fault)` (the switch has no default, so a third case, or a
     /// changed payload, stops this compiling), a `Fault` is exactly its reason, offset and
-    /// length, and `CastFailure` is exactly the core's three reasons.
+    /// length (plus the raw `detailCode`, which equality ignores), and `CastFailure` is exactly the
+    /// core's three reasons.
     func testPlainShapesAreUnchanged() {
         func describe(_ verdict: Verdict<Int32>) -> String {
             switch verdict {
@@ -705,10 +915,13 @@ final class CorpusTests: XCTestCase {
         }
         XCTAssertEqual(describe(Cast.i32("12", format: .invariant)), "success 12")
         XCTAssertEqual(describe(Cast.i32("1x", format: .invariant)), "fault malformed 1 1")
+        XCTAssertEqual(describe(Cast.i32("12,34", format: .invariant)), "fault malformed 2 3")
         let fault = Fault(reason: .outOfRange, offset: 1, length: 2)
-        XCTAssertEqual(Mirror(reflecting: fault).children.map(\.label), ["reason", "offset", "length"])
         XCTAssertEqual(
-            Mirror(reflecting: fault).children.map { "\(type(of: $0.value))" }, ["CastFailure", "Int", "Int"])
+            Mirror(reflecting: fault).children.map(\.label), ["reason", "offset", "length", "detailCode"])
+        XCTAssertEqual(
+            Mirror(reflecting: fault).children.map { "\(type(of: $0.value))" },
+            ["CastFailure", "Int", "Int", "UInt32"])
         XCTAssertEqual([CastFailure.empty, .malformed, .outOfRange].map(\.rawValue), [1, 2, 3])
         XCTAssertNil(CastFailure(rawValue: 0))
         XCTAssertNil(CastFailure(rawValue: 4))

@@ -46,7 +46,7 @@ import (
 type CastFailure int32
 
 const (
-	// Empty means required input was empty or whitespace.
+	// Empty means required input was empty or white space.
 	Empty CastFailure = 1
 	// Malformed means input was present but not recognizable as the target type.
 	Malformed CastFailure = 2
@@ -113,14 +113,17 @@ func textPtr[T Text](text T) (unsafe.Pointer, uintptr) {
 	}
 }
 
+// rawFault is a RawFaultDetail as core.go reads it back: the span and the detail, without the
+// size word the core never writes.
 type rawFault struct {
 	Offset uint32
 	Length uint32
+	Detail uint32
 }
 
 // The verdict as core.go hands it back, by value: 16 bytes of out-value (8-aligned, the
 // widest door's size — every door reads its own prefix through a typed view), the core's
-// code, and the fault span.
+// code, and the fault's span and detail.
 type result struct {
 	out   [2]uint64
 	code  int32
@@ -151,7 +154,7 @@ type rawDecimal struct {
 // array of any other length is another type, so a drift on this side fails the build. The
 // out-value holds the widest of them.
 var (
-	_ [8]byte  = [unsafe.Sizeof(rawFault{})]byte{}
+	_ [12]byte = [unsafe.Sizeof(rawFault{})]byte{}
 	_ [16]byte = [unsafe.Sizeof(rawDecimal{})]byte{}
 	_ [16]byte = [unsafe.Sizeof(result{}.out)]byte{}
 )
@@ -160,8 +163,8 @@ var (
 type NumStyles uint32
 
 const (
-	// Grouping permits the group separator between digits (sizes not validated — between
-	// digits is the rule).
+	// Grouping permits the group separator between digits, its groups judged by the
+	// format's GroupingPolicy.
 	Grouping NumStyles = 1 << iota
 	// Parentheses permits accounting negation: (1,234) is -1234.
 	Parentheses
@@ -182,7 +185,7 @@ const (
 
 	// CurrencySymbol permits the format's declared Currency once, at either edge of the
 	// numeric body: leading, before or after a sign ("$5", "-$5", "$ -5"), or trailing
-	// ("5 €", "1.234,50 kr."), with optional ASCII whitespace between symbol and digits;
+	// ("5 €", "1.234,50 kr."), with optional white space between symbol and digits;
 	// accounting parentheses wrap symbol and digits together ("($5)"). With no Currency
 	// declared the flag matches nothing and changes nothing. A Currency declared while
 	// this flag is off is Malformed at the symbol. Every integer, real and decimal door.
@@ -190,15 +193,69 @@ const (
 
 	// TrailingSign permits the sign after the digits ("5-", "5 -", "5+", "5 €-", "5- €",
 	// "2.5%-"), the way a culture whose negative pattern is "n-" writes it: ASCII '-'/'+'
-	// or the declared MinusSign/PlusSign, once, with optional ASCII whitespace before it,
+	// or the declared MinusSign/PlusSign, once, with optional white space before it,
 	// and never beside a leading sign or inside accounting parentheses. Not part of
 	// AllStyles: a caller sets it from the culture's own negative pattern.
 	TrailingSign NumStyles = 1 << 7
 
 	// AllStyles is every lenience on but TrailingSign, which is declared from a culture's
-	// negative pattern rather than assumed.
+	// negative pattern rather than assumed. It never carries a grouping policy.
 	AllStyles = Grouping | Parentheses | Exponent | RadixPrefixes | Percent | CurrencySymbol
+
+	// GroupingPolicyMask is the two bits of Styles, 8 and 9, that hold the GroupingPolicy
+	// rather than a lenience: NumFormat.GroupingPolicy reads them, and NewNumFormat,
+	// WithGrouping and WithStyles keep the two apart. Both bits set names no policy and is a
+	// caller bug, as is any bit above them.
+	GroupingPolicyMask NumStyles = 3 << 8
+
+	// definedStyles is every bit a NumFormat's Styles may carry.
+	definedStyles = AllStyles | SeparatorDetect | TrailingSign | GroupingPolicyMask
 )
+
+// GroupingPolicy is how the Grouping lenience judges the groups between a numeral's group
+// separators — the native core's policy bits, verbatim, held in bits 8 and 9 of a
+// NumFormat's Styles (GroupingPolicyMask). A policy never enables grouping: with Grouping
+// off, a group separator stays Malformed under every policy, and an ungrouped numeral is
+// valid under every policy. No policy resolves an ambiguous "1,234" under SeparatorDetect.
+type GroupingPolicy uint32
+
+const (
+	// GroupingLegacy accepts a group separator anywhere between two digits ("12,34" is
+	// 1234), as every 1.0 door did. It is policy 00, so a NumFormat literal that declares no
+	// policy, the zero value included, keeps it; Invariant and NewNumFormat do not.
+	GroupingLegacy GroupingPolicy = 0
+	// GroupingWestern requires groups of exactly three digits counted leftward from the
+	// decimal separator (or the numeral's end), the leftmost group one to three: "1,234,567"
+	// reads and "12,34" is Malformed. Once a numeral uses a group separator every group must
+	// conform, and no group separator may follow the decimal separator or sit in an
+	// exponent. Native digits and the space-like separators count as digits and separators;
+	// a currency amount's group separator follows the same rule.
+	GroupingWestern GroupingPolicy = 1 << 8
+	// GroupingIndian requires the group next to the decimal separator to hold three digits
+	// and every group left of it two, the leftmost one or two: "12,34,567" reads and
+	// "1,234,567" is Malformed. Only when declared; the rest as GroupingWestern.
+	GroupingIndian GroupingPolicy = 2 << 8
+)
+
+// String names the policy in lower case — "legacy", "western", "indian" — and
+// "GroupingPolicy(N)" for bits that name none.
+func (p GroupingPolicy) String() string {
+	switch p {
+	case GroupingLegacy:
+		return "legacy"
+	case GroupingWestern:
+		return "western"
+	case GroupingIndian:
+		return "indian"
+	default:
+		return fmt.Sprintf("GroupingPolicy(%d)", uint32(p))
+	}
+}
+
+// valid reports whether p is one of the three policies.
+func (p GroupingPolicy) valid() bool {
+	return p == GroupingLegacy || p == GroupingWestern || p == GroupingIndian
+}
 
 // NumFormat is the caller-declared numeric notation for the integer, real and decimal
 // doors. The core carries no culture data, and neither does Go's standard library, so
@@ -210,23 +267,37 @@ const (
 // declares nothing else reads exactly what Invariant reads, and nothing that parsed
 // before a symbol was declared stops parsing once it is.
 //
-// A format the core would refuse is a caller bug and panics, never a verdict: a number
-// separator that is empty or longer than SymbolMaxBytes, equal number separators (or
+// Styles carries the lenience flags and, in bits 8 and 9, the GroupingPolicy. NewNumFormat
+// builds a format with strict Western grouping, as Invariant and Detect declare it;
+// WithGrouping replaces the policy and WithStyles the flags, each keeping the other. A
+// literal that sets no policy bits, the zero value included, is GroupingLegacy, which is what
+// every 1.0 format meant, and a format stored by 1.0 code (encoding/json, encoding/gob) reads
+// back with that meaning.
+//
+// A format the core would refuse is a caller bug and panics, never a verdict: Styles naming
+// no grouping policy (both bits of GroupingPolicyMask set) or setting a bit no style or policy
+// defines, a number separator that is empty or longer than SymbolMaxBytes, equal number
+// separators (or
 // equal separators in force for a currency amount), any symbol that is not valid UTF-8 or
-// carries an ASCII digit, a sign or percent symbol carrying ASCII whitespace, a Currency
-// longer than CurrencyMaxBytes or carrying ASCII whitespace, or a DigitZero that starts no
-// Unicode digit block. NumFormat.Raw reports the same check as an error.
+// carries an ASCII digit, a sign, percent symbol or decimal separator (plain or currency)
+// carrying white space, a Currency longer than CurrencyMaxBytes or starting or ending in
+// white space, or a DigitZero that starts no Unicode digit block. White space is Unicode's
+// White_Space property; a group separator may carry it, and ' ', U+00A0 and U+202F declared
+// as a group separator stand for each other in the input; so do they inside a Currency,
+// which may hold a gap of its own ("F CFA"). NumFormat.Raw reports the same check as an
+// error.
 type NumFormat struct {
 	// DecimalSep is the decimal separator ('.' invariant, ',' in eurozone text): 1 to
-	// SymbolMaxBytes bytes of UTF-8 with no ASCII digit. Required.
+	// SymbolMaxBytes bytes of UTF-8 with no ASCII digit and no white space. Required.
 	DecimalSep string
 	// GroupSep is the digit-group separator (',' invariant, '.', ' ' or ", " elsewhere),
-	// likewise; must differ from DecimalSep. Required.
+	// likewise, but white space is fine; must differ from DecimalSep. Required.
 	GroupSep string
 	Styles   NumStyles
 	// Currency is the symbol the CurrencySymbol style accepts ("$", "€", "kr.", "CHF") —
 	// matched whole at the edges of the numeric body, never inside the digit scan, so a
-	// symbol containing a separator character is fine. Empty declares none.
+	// symbol containing a separator character is fine. White space may sit inside it
+	// ("F CFA") but not at either edge. Empty declares none.
 	Currency string
 	// CurrencyDecimalSep is the decimal separator of a currency amount, read in place of
 	// DecimalSep when CurrencySymbol is set, Currency is declared and the symbol is found
@@ -256,13 +327,53 @@ type NumFormat struct {
 	DigitZero rune
 }
 
-// Invariant is the invariant profile — '.' decimal, ',' grouping, every lenience on, no
-// currency symbol or other spelling declared.
-var Invariant = NumFormat{DecimalSep: ".", GroupSep: ",", Styles: AllStyles}
+// Invariant is the invariant profile — '.' decimal, ',' grouping, every lenience on, strict
+// Western grouping, no currency symbol or other spelling declared: NewNumFormat(".", ",",
+// AllStyles). Invariant.WithGrouping(GroupingLegacy) reads "12,34" as 1.0's Invariant did.
+var Invariant = NewNumFormat(".", ",", AllStyles)
 
 // Detect is the detection profile — every lenience on, './,' roles resolved per input by
-// SeparatorDetect's structural rules.
-var Detect = NumFormat{DecimalSep: ".", GroupSep: ",", Styles: AllStyles | SeparatorDetect}
+// SeparatorDetect's structural rules, strict Western grouping.
+var Detect = NewNumFormat(".", ",", AllStyles|SeparatorDetect)
+
+// NewNumFormat is a format with the two number separators and the lenience flags, under strict
+// Western grouping (GroupingWestern); WithGrouping declares GroupingIndian or GroupingLegacy
+// instead, and the further spellings are the result's fields to fill. styles carrying a bit of
+// GroupingPolicyMask is a caller bug and panics: the policy is declared apart from the flags.
+func NewNumFormat(decimalSep, groupSep string, styles NumStyles) NumFormat {
+	if styles&GroupingPolicyMask != 0 {
+		panic(fmt.Sprintf("hypercast: NewNumFormat styles %#x carry grouping policy bits; declare the policy with WithGrouping", uint32(styles)))
+	}
+	return NumFormat{DecimalSep: decimalSep, GroupSep: groupSep, Styles: styles | NumStyles(GroupingWestern)}
+}
+
+// GroupingPolicy is the format's grouping policy: the bits of Styles under
+// GroupingPolicyMask. GroupingLegacy for a format that sets none.
+func (f NumFormat) GroupingPolicy() GroupingPolicy {
+	return GroupingPolicy(f.Styles & GroupingPolicyMask)
+}
+
+// WithGrouping is the format under policy, which replaces the current one (never combines
+// with it); every lenience flag and symbol is kept. A value other than GroupingLegacy,
+// GroupingWestern and GroupingIndian is a caller bug and panics.
+func (f NumFormat) WithGrouping(policy GroupingPolicy) NumFormat {
+	if !policy.valid() {
+		panic(fmt.Sprintf("hypercast: undefined %v", policy))
+	}
+	f.Styles = f.Styles&^GroupingPolicyMask | NumStyles(policy)
+	return f
+}
+
+// WithStyles is the format with styles as its lenience flags, which replace the current ones;
+// the grouping policy and every symbol are kept. styles carrying a bit of GroupingPolicyMask is
+// a caller bug and panics, as in NewNumFormat.
+func (f NumFormat) WithStyles(styles NumStyles) NumFormat {
+	if styles&GroupingPolicyMask != 0 {
+		panic(fmt.Sprintf("hypercast: WithStyles styles %#x carry grouping policy bits; declare the policy with WithGrouping", uint32(styles)))
+	}
+	f.Styles = f.Styles&GroupingPolicyMask | styles
+	return f
+}
 
 // raw is Raw for the doors, which treat a malformed format as the caller bug it is,
 // written into the door's own local.
@@ -386,13 +497,13 @@ const (
 // declares a numeric notation. Declared, never looked up — Go's standard library carries
 // no culture data, so an application fills these from its own. The English AM/PM are read
 // whatever is declared, ASCII case-insensitively; a declared designator is matched byte
-// for byte, after the clock ("3:04 nachm.", optional space before) or ahead of it
-// ("오후 3:04", optional space after). Empty designators declare nothing, which is exactly
+// for byte, after the clock ("3:04 nachm.") or ahead of it ("오후 3:04"), with any run of
+// white space (or none) between designator and clock, so "3:04\u202fPM" reads. Empty designators declare nothing, which is exactly
 // what DateTime reads.
 //
 // A designator the core would refuse is a caller bug and panics, never a verdict: longer
 // than DesignatorMaxBytes of UTF-8, not valid UTF-8, carrying an ASCII digit, or starting
-// or ending in ASCII whitespace (the grammar around it reads that; an inner space, as in
+// or ending in white space (the grammar around it reads that; an inner space, as in
 // "a. m.", is fine). DateFormat.Raw reports the same check as an error.
 type DateFormat struct {
 	Order DateOrder
@@ -477,8 +588,7 @@ func Optional[V any](value V, fault *Fault) (*V, *Fault) {
 // (t/f, yes/no, y/n, 1/0, on/off, enabled/disabled, active/inactive, checked/unchecked,
 // in/out), ASCII case-insensitive.
 func Bool[T Text](text T) (bool, *Fault) {
-	ptr, length := textPtr(text)
-	r := callPlain(symBool, ptr, length)
+	r := textCall(doorBool, text)
 	if r.code != 0 {
 		return false, failed(r.code, &r.fault)
 	}
@@ -486,25 +596,36 @@ func Bool[T Text](text T) (bool, *Fault) {
 }
 
 // Char casts one character: text that is exactly one UTF-8 scalar is that scalar verbatim,
-// before any trimming (" " is a space, "6" is the digit six); otherwise, ASCII whitespace
+// before any trimming (" " is a space, "6" is the digit six); otherwise, white space
 // trimmed, exactly one declared code point — decimal 65, U+0041, 0x41, &H41, or an HTML
 // numeric entity &#65; / &#x41; (the ; required), prefixes ASCII case-insensitive. A
 // code point past U+10FFFF or a surrogate is OutOfRange; the rune returned is always a
 // valid Unicode scalar.
 func Char[T Text](text T) (rune, *Fault) {
-	ptr, length := textPtr(text)
-	r := callPlain(symChar, ptr, length)
+	r := textCall(doorChar, text)
 	if r.code != 0 {
 		return 0, failed(r.code, &r.fault)
 	}
 	return rune(read[uint32](&r)), nil
 }
 
-func numericDoor[T Text, V any](sym numericSymbol, text T, format NumFormat) (V, *Fault) {
+// textCall is a door that reads its text and nothing else.
+func textCall[T Text](door uint32, text T) result {
+	ptr, length := textPtr(text)
+	return callDetailed(door, 0, ptr, length, nil, nil, nil, "")
+}
+
+// numericCall is a numeric door under the declared format, which panics here when the core
+// would refuse it.
+func numericCall[T Text](door uint32, text T, format NumFormat) result {
 	var raw RawNumFormat
 	format.raw(&raw)
 	ptr, length := textPtr(text)
-	r := callNumeric(sym, ptr, length, &raw)
+	return callDetailed(door, 0, ptr, length, &raw, nil, nil, "")
+}
+
+func numericDoor[T Text, V any](door uint32, text T, format NumFormat) (V, *Fault) {
+	r := numericCall(door, text, format)
 	if r.code != 0 {
 		var zero V
 		return zero, failed(r.code, &r.fault)
@@ -517,54 +638,54 @@ func numericDoor[T Text, V any](sym numericSymbol, text T, format NumFormat) (V,
 // never accepted), and 0x/&H/0b two's-complement radix prefixes (0xFF is -1). The other
 // integer doors share these rules at their own widths.
 func I8[T Text](text T, format NumFormat) (int8, *Fault) {
-	return numericDoor[T, int8](symI8, text, format)
+	return numericDoor[T, int8](doorI8, text, format)
 }
 
 // I16 casts integer text to int16. Rules as I8.
 func I16[T Text](text T, format NumFormat) (int16, *Fault) {
-	return numericDoor[T, int16](symI16, text, format)
+	return numericDoor[T, int16](doorI16, text, format)
 }
 
 // I32 casts integer text to int32. Rules as I8.
 func I32[T Text](text T, format NumFormat) (int32, *Fault) {
-	return numericDoor[T, int32](symI32, text, format)
+	return numericDoor[T, int32](doorI32, text, format)
 }
 
 // I64 casts integer text to int64. Rules as I8.
 func I64[T Text](text T, format NumFormat) (int64, *Fault) {
-	return numericDoor[T, int64](symI64, text, format)
+	return numericDoor[T, int64](doorI64, text, format)
 }
 
 // U8 casts integer text to uint8. Rules as I8.
 func U8[T Text](text T, format NumFormat) (uint8, *Fault) {
-	return numericDoor[T, uint8](symU8, text, format)
+	return numericDoor[T, uint8](doorU8, text, format)
 }
 
 // U16 casts integer text to uint16. Rules as I8.
 func U16[T Text](text T, format NumFormat) (uint16, *Fault) {
-	return numericDoor[T, uint16](symU16, text, format)
+	return numericDoor[T, uint16](doorU16, text, format)
 }
 
 // U32 casts integer text to uint32. Rules as I8.
 func U32[T Text](text T, format NumFormat) (uint32, *Fault) {
-	return numericDoor[T, uint32](symU32, text, format)
+	return numericDoor[T, uint32](doorU32, text, format)
 }
 
 // U64 casts integer text to uint64 — natively unsigned, no widening games. Rules as I8.
 func U64[T Text](text T, format NumFormat) (uint64, *Fault) {
-	return numericDoor[T, uint64](symU64, text, format)
+	return numericDoor[T, uint64](doorU64, text, format)
 }
 
 // F32 casts real text under the declared format: finite values only (NaN/Infinity literals
 // are Malformed, overflow to infinity is OutOfRange), declared separators and grouping,
 // accounting parentheses, exponent, and trailing percent (50% is 0.5).
 func F32[T Text](text T, format NumFormat) (float32, *Fault) {
-	return numericDoor[T, float32](symF32, text, format)
+	return numericDoor[T, float32](doorF32, text, format)
 }
 
 // F64 casts real text to float64. Rules as F32.
 func F64[T Text](text T, format NumFormat) (float64, *Fault) {
-	return numericDoor[T, float64](symF64, text, format)
+	return numericDoor[T, float64](doorF64, text, format)
 }
 
 // Exact casts decimal text to a Decimal under the declared format — the same grammar and
@@ -573,7 +694,7 @@ func F64[T Text](text T, format NumFormat) (float64, *Fault) {
 // 2^96 - 1 or a scale past 28 is OutOfRange, not approximated. Named Exact because the
 // result type already owns the identifier Decimal, the way Span returns a Duration.
 func Exact[T Text](text T, format NumFormat) (Decimal, *Fault) {
-	out, fault := numericDoor[T, rawDecimal](symDecimal, text, format)
+	out, fault := numericDoor[T, rawDecimal](doorDecimal, text, format)
 	if fault != nil {
 		return Decimal{}, fault
 	}
@@ -635,24 +756,26 @@ func Numeric[V Number, T Text](text T, format NumFormat) (V, *Fault) {
 // urn:uuid:/GUID:/UUID: prefixes — to a uuid.UUID (RFC 9562 byte order, which is exactly
 // uuid.UUID's own layout).
 func Uuid[T Text](text T) (uuid.UUID, *Fault) {
-	ptr, length := textPtr(text)
-	r := callPlain(symUuid, ptr, length)
+	r := textCall(doorUuid, text)
 	if r.code != 0 {
 		return uuid.UUID{}, failed(r.code, &r.fault)
 	}
 	return read[uuid.UUID](&r), nil
 }
 
-// instantDoor serves both instant-shaped doors: a zero precision means the RFC 3339 door
-// (symTimestamp), anything else the Unix-epoch door.
-func instantDoor[T Text](text T, precision UnixPrecision) (time.Time, *Fault) {
-	ptr, length := textPtr(text)
-	var r result
+// instantCall serves both instant-shaped doors: a zero precision means the RFC 3339 door
+// under the date options (nil for none), anything else the Unix-epoch door.
+func instantCall[T Text](text T, precision UnixPrecision, options *DateOptions) result {
 	if precision == 0 {
-		r = callPlain(symTimestamp, ptr, length)
-	} else {
-		r = callUnix(ptr, length, uint32(precision))
+		return dateCall(doorTimestamp, 0, text, nil, options)
 	}
+	ptr, length := textPtr(text)
+	return callDetailed(doorUnix, uint32(precision), ptr, length, nil, nil, nil, "")
+}
+
+// instantDoor serves both instant-shaped doors, as instantCall with no date options.
+func instantDoor[T Text](text T, precision UnixPrecision) (time.Time, *Fault) {
+	r := instantCall(text, precision, nil)
 	if r.code != 0 {
 		return time.Time{}, failed(r.code, &r.fault)
 	}
@@ -674,6 +797,12 @@ func Unix[T Text](text T, precision UnixPrecision) (time.Time, *Fault) {
 	return instantDoor(text, precision)
 }
 
+// excelSerialCall is the Excel serial door over text, for an epoch the caller checked.
+func excelSerialCall[T Text](text T, epoch ExcelEpoch) result {
+	ptr, length := textPtr(text)
+	return callDetailed(doorExcelSerial, uint32(epoch), ptr, length, nil, nil, nil, "")
+}
+
 // ExcelSerial casts an Excel date serial under a caller-declared ExcelEpoch to a UTC
 // time.Time. The whole part counts days from the system's own day zero and the fraction is
 // the time of day, so "45292.75" is 2024-01-01T18:00:00Z. A spreadsheet cell carries no
@@ -690,8 +819,7 @@ func ExcelSerial[T Text](text T, epoch ExcelEpoch) (time.Time, *Fault) {
 	if epoch != Excel1900 && epoch != Excel1904 {
 		panic(fmt.Sprintf("hypercast: undefined ExcelEpoch %d", epoch))
 	}
-	ptr, length := textPtr(text)
-	r := callExcelSerial(ptr, length, uint32(epoch))
+	r := excelSerialCall(text, epoch)
 	if r.code != 0 {
 		return time.Time{}, failed(r.code, &r.fault)
 	}
@@ -700,8 +828,7 @@ func ExcelSerial[T Text](text T, epoch ExcelEpoch) (time.Time, *Fault) {
 
 // DateOnly casts a strict ISO 8601 yyyy-MM-dd calendar date.
 func DateOnly[T Text](text T) (Date, *Fault) {
-	ptr, length := textPtr(text)
-	r := callPlain(symDate, ptr, length)
+	r := dateCall(doorDate, 0, text, nil, nil)
 	if r.code != 0 {
 		return Date{}, failed(r.code, &r.fault)
 	}
@@ -717,8 +844,7 @@ func DateOnlyOrdered[T Text](text T, order DateOrder) (Date, *Fault) {
 	if order < YearMonthDay || order > DayMonthYear {
 		panic(fmt.Sprintf("hypercast: undefined DateOrder %d", order))
 	}
-	ptr, length := textPtr(text)
-	r := callDateOrdered(ptr, length, uint32(order))
+	r := dateCall(doorDateOrdered, uint32(order), text, nil, nil)
 	if r.code != 0 {
 		return Date{}, failed(r.code, &r.fault)
 	}
@@ -737,7 +863,11 @@ func DateTime[T Text](text T, order DateOrder) (CivilDateTime, *Fault) {
 	if order < YearMonthDay || order > DayMonthYear {
 		panic(fmt.Sprintf("hypercast: undefined DateOrder %d", order))
 	}
-	return civilDoor(text, order, nil)
+	r := dateCall(doorDateTime, uint32(order), text, nil, nil)
+	if r.code != 0 {
+		return CivilDateTime{}, failed(r.code, &r.fault)
+	}
+	return read[RawCivil](&r).CivilDateTime(), nil
 }
 
 // DateTimeWith is DateTime under a declared DateFormat: the same grammar under its Order,
@@ -751,14 +881,7 @@ func DateTimeWith[T Text](text T, format DateFormat) (CivilDateTime, *Fault) {
 	}
 	var periods RawDayPeriods
 	format.raw(&periods)
-	return civilDoor(text, format.Order, &periods)
-}
-
-// civilDoor serves both civil date-time doors; nil periods declares nothing and crosses as
-// null, the English-only call.
-func civilDoor[T Text](text T, order DateOrder, periods *RawDayPeriods) (CivilDateTime, *Fault) {
-	ptr, length := textPtr(text)
-	r := callDateTime(ptr, length, uint32(order), periods)
+	r := dateCall(doorDateTime, uint32(format.Order), text, &periods, nil)
 	if r.code != 0 {
 		return CivilDateTime{}, failed(r.code, &r.fault)
 	}
@@ -768,8 +891,7 @@ func civilDoor[T Text](text T, order DateOrder, periods *RawDayPeriods) (CivilDa
 // TimeOfDay casts an ISO 24-hour time-of-day to a time.Duration since midnight —
 // nanosecond-exact, and comfortably inside time.Duration's range.
 func TimeOfDay[T Text](text T) (time.Duration, *Fault) {
-	ptr, length := textPtr(text)
-	r := callPlain(symTime, ptr, length)
+	r := textCall(doorTime, text)
 	if r.code != 0 {
 		return 0, failed(r.code, &r.fault)
 	}
@@ -779,8 +901,7 @@ func TimeOfDay[T Text](text T) (time.Duration, *Fault) {
 // Span casts a duration (ISO 8601 fixed components, invariant colon form, or protobuf JSON
 // seconds) to the protobuf pair — see Duration for why not time.Duration directly.
 func Span[T Text](text T) (Duration, *Fault) {
-	ptr, length := textPtr(text)
-	r := callPlain(symDuration, ptr, length)
+	r := textCall(doorDuration, text)
 	if r.code != 0 {
 		return Duration{}, failed(r.code, &r.fault)
 	}
@@ -862,7 +983,7 @@ func Scalar[V ScalarTarget, T Text](text T, format NumFormat) (V, *Fault) {
 // Malformed; an infinity, a magnitude past 2^96 - 1 or more than 28 places is OutOfRange —
 // the digits are never cut to fit. A typed door's Fault has no span: Offset and Length are 0.
 func ExactFromFloat64(value float64) (Decimal, *Fault) {
-	r := callDecimalFromF64(value)
+	r := callDetailedFromF64(doorDecimal, 0, value)
 	if r.code != 0 {
 		return Decimal{}, failed(r.code, &r.fault)
 	}
@@ -883,7 +1004,7 @@ func ExcelSerialFromFloat64(value float64, epoch ExcelEpoch) (CivilDateTime, *Fa
 	if epoch != Excel1900 && epoch != Excel1904 {
 		panic(fmt.Sprintf("hypercast: undefined ExcelEpoch %d", epoch))
 	}
-	r := callExcelSerialFromF64(value, uint32(epoch))
+	r := callDetailedFromF64(doorExcelSerial, uint32(epoch), value)
 	if r.code != 0 {
 		return CivilDateTime{}, failed(r.code, &r.fault)
 	}
@@ -896,7 +1017,7 @@ func ExcelSerialFromFloat64(value float64, epoch ExcelEpoch) (CivilDateTime, *Fa
 // midnight.
 // A negative, NaN or infinite serial is Malformed; one past 9999-12-31 is OutOfRange.
 func ExcelTime(value float64) (time.Duration, *Fault) {
-	r := callExcelTime(value)
+	r := callDetailedFromF64(doorTime, 0, value)
 	if r.code != 0 {
 		return 0, failed(r.code, &r.fault)
 	}
@@ -908,7 +1029,7 @@ func ExcelTime(value float64) (time.Duration, *Fault) {
 // and twelve hours, and a negative span is negative, its size snapped as a serial's time. NaN
 // or an infinity is Malformed; beyond ±10,000 years is OutOfRange.
 func ExcelDuration(value float64) (Duration, *Fault) {
-	r := callExcelDuration(value)
+	r := callDetailedFromF64(doorDuration, 0, value)
 	if r.code != 0 {
 		return Duration{}, failed(r.code, &r.fault)
 	}

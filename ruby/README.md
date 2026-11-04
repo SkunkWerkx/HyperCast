@@ -51,11 +51,11 @@ midnight, durations come back as exact `Rational` seconds across the core's whol
 | `f32` `f64` `(text, format)` [^overrides] | `Float` (f32 widened losslessly) | a `NumFormat` |
 | `decimal(text, format)` [^overrides] | `HyperCast::Decimal` — exact sign, 96-bit magnitude, base-10 scale | a `NumFormat` |
 | `uuid(text)` | lowercase hyphenated `String` (`SecureRandom.uuid`'s shape) | — |
-| `timestamp(text)` | UTC `Time`, full nanoseconds | — |
+| `timestamp(text, options: nil)` | UTC `Time`, full nanoseconds | optionally a `DateOptions` — see [Date shapes](#date-shapes-dateoptions-and-monthnames) |
 | `unix(text, precision)` | UTC `Time` | `:seconds` / `:milliseconds` / `:microseconds` / `:nanoseconds` |
 | `excel_serial(text, epoch)` | UTC `Time` | `:y1900` / `:y1904` |
-| `date(text, order = nil)` | `Date` | strict ISO, or `:year_month_day` / `:month_day_year` / `:day_month_year` |
-| `datetime(text, order, am: nil, pm: nil)` | zone-less `DateTime`, exact `Rational` seconds | a field order, as `date`; optionally a culture's own AM/PM words, read beside the English ones — see [`datetime`: a culture's AM/PM](#datetime-a-cultures-ampm) |
+| `date(text, order = nil, options: nil, months: nil)` | `Date` | strict ISO, or `:year_month_day` / `:month_day_year` / `:day_month_year`; optionally a `DateOptions` and `MonthNames` — see [Date shapes](#date-shapes-dateoptions-and-monthnames) |
+| `datetime(text, order, am: nil, pm: nil, options: nil, months: nil)` | zone-less `DateTime`, exact `Rational` seconds | a field order, as `date`; optionally a culture's own AM/PM words, read beside the English ones — see [`datetime`: a culture's AM/PM](#datetime-a-cultures-ampm) — and a `DateOptions` and `MonthNames` |
 | `time(text)` | `Integer` nanoseconds since midnight | — |
 | `duration(text)` | exact `Rational` seconds | — |
 | `decimal_from_float(value)` | `HyperCast::Decimal`, the shortest that names the number (`0.1` is one tenth) | — |
@@ -67,11 +67,24 @@ midnight, durations come back as exact `Rational` seconds across the core's whol
 | `checked(text, format, constraints)` [^overrides] | a checked verdict over the value the constraints' door reads — see [Validation constraints](#validation-constraints) | a `NumFormat` and a `Constraints` |
 | `checked_from_float(value, constraints)` | a checked verdict over a number already held | a `Constraints` |
 
+White space is Unicode's `White_Space`, the 25 code points (ASCII, U+0085, U+00A0, U+2000 to
+U+200A, U+202F, U+3000 among them). Every door but plain `text` ignores it at both ends (`char` given exactly one character keeps it), and the
+numeric doors also after a leading sign, before a trailing sign or a percent symbol, on either
+side of a currency symbol and inside accounting parentheses (`"- 12"`, `"( 12 )"`, `"12,5 %"`,
+`"1 234,56 €"`, the last two under a declared comma decimal separator, the last with a space group separator and `€` declared); between digits it is `:malformed`, unless a space-like group separator is
+declared. An ASCII space, U+00A0 or U+202F declared as the group separator makes the input's
+choice of those three immaterial (Excel writes U+00A0, ICU's `fr` U+202F, an older system a
+space), a space-like separator with no digit after it is just white space, and any other
+separator stays exact. Input of nothing but white space is `:empty`.
+
 Every plain door returns a `Success` or a `Fault`, and every checked door a `Checked`, a
 `Fault` or a `Violation`; `HyperCast.optional(verdict)` folds `:empty` to `nil` for
 either, and passes every other rejection, a `Violation` included, through. Beside the doors, `native_version` returns the loaded core's
 `"major.minor.patch"` and `available?` answers `true`/`false` without ever raising — see
 [Is the native core there?](#is-the-native-core-there).
+
+Every `Fault` a door returns carries `detail`, what exactly was wrong, beside the broad
+reason — see [Fault detail](#fault-detail).
 
 ### Errors
 
@@ -82,10 +95,15 @@ the same exception on every backend:
   `delimiter:` and `unit:` keywords) or `NumFormat.from_i18n` for a malformed format: a
   separator that is empty, longer than 8 UTF-8 bytes or not distinct from its partner
   (the pair in force for currency amounts included), any symbol carrying an ASCII digit, a
-  sign, percent or currency symbol carrying ASCII whitespace, a currency symbol longer than
-  16 bytes, or a digit zero that is ASCII or starts no digit block. And from `datetime` for
+  sign, percent symbol or decimal separator carrying white space, a currency symbol longer
+  than 16 bytes or starting or ending in white space (inside it white space is fine, as in
+  `F CFA`), or a digit zero that is ASCII or starts no digit block, `flags:` that is not an
+  `Integer` of bits 0 to 7 (a grouping policy belongs in `grouping:`, not in the mask) and a
+  `grouping:` that is not `:western`, `:indian` or `:legacy`. And from `DateOptions.new` for
+  flags this version does not define or a pivot outside 100 to 9999, and from `MonthNames` for
+  a vocabulary that breaks a rule. And from `datetime` for
   a day-period designator that is empty, longer than 16 bytes, carries an ASCII digit or
-  starts or ends in ASCII whitespace.
+  starts or ends in white space.
 - `KeyError` — `Hash#fetch`'s own, `key not found: …` — for a precision, epoch or date order
   that names nothing: an unknown Symbol, or anything that is not a Symbol (`"seconds"`
   included). `date(text, nil)` is not one of these: an explicit `nil` order is the strict ISO
@@ -182,6 +200,31 @@ deliberately not a dependency of this one, so under Bundler add it to your own G
 HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",", flags: HyperCast::ALL_STYLES, currency: "$")
 ```
 
+**Grouping is a policy**, declared apart from the flags with `grouping:`. The default,
+`:western`, reads a numeral that uses the group separator as groups of exactly three digits
+counted from the decimal separator (or the numeral's end), the leftmost one to three:
+`1,234,567` reads, and `12,34` is a `:malformed` `Fault` spanning the bad group with its
+separator (`,34`) and the detail `Detail::GROUP_SIZE`. `:indian` reads lakh and crore (`12,34,567`:
+three beside the decimal separator, two in each group to its left, the leftmost one or two),
+and `:legacy` is 1.0's reading, a group separator anywhere between two digits. An ungrouped
+numeral reads under every policy, grouping never follows the decimal separator or an exponent,
+digits count as digits (native ones included), and a policy only judges groups: without the
+`GROUPING` flag a group separator stays refused. `INVARIANT` and `DETECT` are strict Western,
+`#with(grouping: …)` and `#override` keep the policy of the format they start from, and
+`from_i18n` takes `grouping:` too (a Rails locale Hash says nothing about it). The policy is
+not a member of `NumFormat`, as `detail` is not of `Fault`: the ten members, `to_h`, `inspect`,
+the constructors, and array and hash patterns are 1.0's, `grouping` is a reader that a pattern
+can name (`in { grouping: :indian }`), and it counts in `==`, `eql?` and `hash`. A `NumFormat`
+loaded from a 1.0 Marshal payload carries none and keeps 1.0's meaning, `:legacy` (stored data does not
+change with the constants). Because it is not a member, `grouping:` is keyword-only: `NumFormat.new` takes the ten
+members positionally or by keyword, but `Data.new` cannot mix positional members with keywords, so the policy is
+never the eleventh positional argument. `12,34` moving
+from a value to a `Fault` is the change from 1.0; `grouping: :legacy` is the way back.
+Across the ABI the policy rides in bits 8 and 9 of the flags word (`GROUPING_LEGACY`,
+`GROUPING_WESTERN`, `GROUPING_INDIAN`; both bits set is refused), which is why the Fiddle
+backend refuses a core older than 1.1 as it loads, naming it: a 1.0 core would read the same
+bits as legacy grouping without a word.
+
 The flags are `GROUPING`, `PARENTHESES`, `EXPONENT`, `RADIX_PREFIXES`, `PERCENT` and
 `CURRENCY` (`ALL_STYLES` is all six), plus `TRAILING_SIGN` — deliberately not in
 `ALL_STYLES`; see below — and the `SEPARATOR_DETECT` policy. A separator is 1 to 8 UTF-8
@@ -196,10 +239,12 @@ default — `INVARIANT` and `DETECT` declare none) reads exactly as the invarian
 and nothing that parsed before stops parsing when a symbol is declared.
 
 - `currency:` — honored only while `CURRENCY` is set: once, leading (`$5`, `-$5`, `$ -5`)
-  or trailing (`5 €`, `1.234,50 kr.`), with optional ASCII whitespace between symbol and
+  or trailing (`5 €`, `1.234,50 kr.`), with optional white space between symbol and
   digits, and accounting parentheses wrapping symbol and digits together (`($5)`). Declared
   with the flag off, the symbol is a `:malformed` `Fault` at the symbol; the flag with
-  nothing declared matches nothing.
+  nothing declared matches nothing. White space inside the symbol is
+  allowed (`F CFA`, where an ASCII space, U+00A0 and U+202F read as each other); at either
+  edge of it, never.
 - `currency_decimal_sep:`, `currency_group_sep:` — the separators a currency amount is
   written with, for a culture whose plain numbers and amounts differ (Swiss German writes
   `1.234,5` and `CHF 1'234.50`). Read in place of the number separators when `CURRENCY` is
@@ -246,13 +291,15 @@ HyperCast.decimal("٥٠٪", arabic)          # => Success(value: Decimal(magnitu
 A malformed field is an `ArgumentError` at construction, naming the field — the same
 caller-bug treatment equal separators have always had: an empty or over-long separator, an
 equal pair (the number pair, or the pair in force for currency amounts), a symbol carrying
-an ASCII digit, a sign, percent or currency symbol carrying ASCII whitespace, a currency
-symbol over 16 bytes, a digit zero that is ASCII or does not start a digit block. The
+an ASCII digit, a sign, percent symbol or decimal separator carrying white space, a
+currency symbol over 16 bytes or starting or ending in white space (inside it white space
+is fine, as in `F CFA`), a digit zero that is ASCII or does not start a digit block. The
 limits are `NumFormat::SYMBOL_MAX_BYTES` (8) and `NumFormat::CURRENCY_MAX_BYTES` (16).
 
 Across the ABI a `NumFormat` is a 92-byte, size-tagged struct that the core reads in
 place — `NumFormat#packed` is those bytes in little-endian order, as Python's
-`NumFormat.packed` is: the size word, the flags, the digit zero's code point, then each
+`NumFormat.packed` is: the size word, the flags with the grouping policy in bits 8 and 9
+(`NumFormat#raw_flags`), the digit zero's code point, then each
 symbol's UTF-8 bytes and length held inline. On a little-endian host they are exactly the
 struct; on a big-endian one the three words are swapped to native order before they cross,
 which the Fiddle backend does itself. It is packed once per format object and memoized by
@@ -309,13 +356,65 @@ and `0`–`9` — and a locale that writes them differently declares them on the
 A call without the keywords allocates nothing extra on either backend. A call with them builds a format each time (a few microseconds), so in a loop,
 build it once with `override` or `from_i18n` and pass that instead.
 
+### Fault detail
+
+A `Fault` the core reports carries `detail`, a `HyperCast::Detail`: the core's numeric `code`
+and its published `name` (`:group_size`, `:digit_expected`, `:not_finite`, …, 32 of them, one
+constant each: `Detail::GROUP_SIZE`). The reason stays the broad classification and the span
+stays what it was; the detail says what in that span was wrong. A later core may add codes,
+so a case over details needs an `else`: a code this gem does not name is kept as a `Detail`
+whose `name` is `:unknown` and whose `code` is the number.
+
+```ruby
+case HyperCast.i32("12,34", HyperCast::NumFormat::INVARIANT)
+in HyperCast::Fault(reason: :malformed, detail: HyperCast::Detail::GROUP_SIZE) then "a group of the wrong size"
+in HyperCast::Fault(detail:) then detail.name
+end
+```
+
+`detail` is not a member of `Fault`: `members`, `to_h`, `==`, `hash`, `inspect`, the
+constructors (a hand-built `Fault.new(reason:, offset:, length:)` has `detail` nil and equals
+the one a door returns) and `Fault(reason:, offset:, length:)` patterns are unchanged. A
+`Violation` has no detail. Typed and checked doors carry one too.
+
+### Date shapes: `DateOptions` and `MonthNames`
+
+The date doors read the shapes they always read unless the caller opts in. `options:` takes a
+`DateOptions` (`flags:` and `pivot:`): `COMPACT_DATE` reads `20260107` at `date`,
+`SPACE_SEPARATOR` a space where the `T` goes and `HOUR_OFFSET` an offset of `±hh` (`+00`) at
+`timestamp`; `COMMON_FORMS` is all three, and a flag a door does not read is ignored. A
+`pivot` (100 to 9999) is the last year of the 100-year window a two-digit year reads in
+(`DateOptions.new(pivot: 2029)` reads `26` as 2026), at `date` with an order and at
+`datetime`; there is no default. `months:` takes a `MonthNames`, a vocabulary the caller
+builds, from a Hash of name to month or an Array of `[month, name]` pairs, and never looked
+up: `HyperCast::MonthNames.new("Jan" => 1, …)` makes the month field of an ordered date read
+`07-Jan-26` (with a pivot) and `7-Jan-2026`, in the position the declared order selects.
+Names match under simple case folding, the longest followed by the separator winning;
+punctuation is part of a name, so with `janv.` declared and `.` as the separator `7.janv..26`
+reads and `7.janv.26` is `:malformed`. Each name is 1 to 64 bytes with no ASCII digit, `/`,
+`-` or white space, every month needs a name, and two names equal under case folding are
+refused (an `ArgumentError`; the core has the last word on the folding, so on the Fiddle backend building a
+vocabulary is one native call and raises the `LoadError` of a missing library, as a door does).
+`MonthNames#packed` is the layout the core reads: each entry a
+month byte, a little-endian `u32` length and the UTF-8 bytes, which `MonthNames.from_packed`
+reads back.
+
+```ruby
+months = HyperCast::MonthNames.new(%w[Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec].each_with_index.to_h { |n, i| [n, i + 1] })
+HyperCast.date("07-Jan-26", :day_month_year, options: HyperCast::DateOptions.new(pivot: 2029), months: months)
+# => Success(value: #<Date: 2026-01-07 ...>)
+HyperCast.timestamp("2026-01-07 15:04:05+00", options: HyperCast::DateOptions::COMMON_FORMS)
+# => Success(value: 2026-01-07 15:04:05 UTC)
+```
+
 ### `datetime`: a culture's AM/PM
 
 The civil date-time door reads a 12-hour clock's `AM`/`PM` ASCII case-insensitively, after
 the clock (`3:04 PM`) or ahead of it (`PM 3:04`). `am:` and `pm:` declare a culture's own
 words beside the English ones — German's `vorm.`/`nachm.`, Korean's `오전`/`오후`
 (written ahead of the clock), Spanish's `a. m.`/`p. m.` (a space inside is fine) — matched
-exactly, with or without a space between word and clock. English is still read whatever is
+exactly, with any run of white space or none between word and clock (so the `3:04\u202fPM`
+that ICU 72 and later write for `en_US` reads). English is still read whatever is
 declared; `nil`, the default, declares nothing, so a call without the keywords reads the
 English pair only. Like a `NumFormat`'s symbols the words are declared, never looked up:
 Ruby's stdlib has no day-period data, and `I18n.t("time.am")`/`("time.pm")` are where a
@@ -329,7 +428,7 @@ HyperCast.datetime("2026-01-07 오후 3:04", :year_month_day, am: "오전", pm: 
 HyperCast.datetime("1/7/2026 3:04 nachm.", :day_month_year) # => Fault(reason: :malformed, offset: 13, length: 1)
 ```
 
-A designator is 1 to 16 UTF-8 bytes with no ASCII digit and no ASCII whitespace at either
+A designator is 1 to 16 UTF-8 bytes with no ASCII digit and no white space at either
 end; anything else is an `ArgumentError`. Only `datetime` reads them — `date` has no time
 part. Across the ABI they are a 40-byte, size-tagged struct passed beside the order, null
 when nothing is declared. The designators are keywords, so they are read, validated and
@@ -455,8 +554,12 @@ the two cannot drift. It is loaded on every backend.
   step that many fields at a time.
 - `VALUE_BYTES` — the bytes one value of each door takes.
 - `decode(door, bytes)` — one value, from the bytes the core wrote for it.
-- `fault(code, offset, length)` — the `Fault` a nonzero verdict code names; a code that names
-  no reason is a `KeyError`.
+- `fault(code, offset, length, detail = nil)` — the `Fault` a nonzero verdict code names, with
+  the core's detail code (a code this gem does not name becomes an `:unknown` `Detail`); a
+  code that names no reason is a `KeyError`.
+- `raw_fault(code, raw, bytes = nil)` — the same from the 16 bytes of a `RawFaultDetail`
+  (`FAULT_BYTES`: the size word, then the span's offset and length and the detail code), the
+  span mapped to characters over `bytes` when given.
 - `characters(bytes, offset, length)` — the core's byte span as the character span
   `String#[]` slices by.
 - `version(word)` — a packed `*_version` word as `"major.minor.patch"`.
@@ -567,7 +670,7 @@ rather than through `Data.new`, whose keyword handling alone cost more than the 
 | `:fiddle` | `libhypercast` for this platform, `dlopen`ed through Fiddle | no extension loads: the universal gem, on a Ruby or platform no platform gem covers; also the answer when nothing loads at all |
 
 Selection happens once, at `require`, in that order. Either way the gem has a door for each
-of the core's 32 C ABI exports: Fiddle calls the exports, and the extension the core's Rust
+of the core's 36 C ABI exports: Fiddle calls the exports, and the extension the core's Rust
 functions behind them (`date` takes the order `cast_date_ordered` would).
 
 `HYPERCAST_PURE` forces `:fiddle`, even where an extension would load. It is a testing and

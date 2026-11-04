@@ -6,6 +6,13 @@
 // the from_double doors included, floats compared by their bits), and declarations.json
 // through ConstraintValue::decimal, the core's conversion of a declaration's text.
 //
+// Every row goes through the plain door and its detailed twin, which must agree on the reason
+// and span, and every failure row's `detail` is held against the Failure's, by name and by
+// code. A row's `grouping` declares its policy (absent is legacy, the core's meaning: a format
+// the C++ header would otherwise default to strict Western), and its `options` (flags, pivot,
+// month names) go through the detailed date doors alone, which are the only ones to take them.
+// formats.json declares the formats, options and vocabularies and holds each to its verdict.
+//
 // usage: smoke_corpus <corpus directory>; prints the library's version when every vector
 // passes, as the other smoke programs do. run.sh runs it against each build of the archive.
 
@@ -18,6 +25,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -256,6 +264,8 @@ private:
 
 int failures = 0;
 int vectors = 0;
+// How many declaration rows of each formats.json kind were judged.
+std::map<std::string, int> declarations;
 
 void fail(const char *file, const Json &vector, const char *what) {
   ++failures;
@@ -275,21 +285,75 @@ const char *reason_name(hc::CastFailure reason) {
   return "?";
 }
 
-// The verdict against the vector's "expect" and "fault"; then `same` holds the value.
-template <class T, class Same>
-void check(const char *file, const Json &vector, const hc::Verdict<T> &verdict,
-           std::size_t input_size, Same same) {
-  ++vectors;
-  const std::string &expect = vector.find("expect")->text;
-  if (const T *value = verdict.value_if()) {
-    if (expect != "ok") {
-      fail(file, vector, "parsed, expected a fault");
-    } else if (!same(*value)) {
-      fail(file, vector, "wrong value");
+// The published details, by their code (the spec's table), restated so that a corpus row's name
+// is held to the number the core reports as well as to the name the header gives it.
+const char *const detail_names[] = {"",
+                                    "blank",
+                                    "unexpected_character",
+                                    "digit_expected",
+                                    "delimiter_expected",
+                                    "trailing_text",
+                                    "no_digits",
+                                    "sign_misplaced",
+                                    "parentheses_unbalanced",
+                                    "mark_repeated",
+                                    "group_misplaced",
+                                    "group_size",
+                                    "group_in_fraction",
+                                    "ambiguous_separator",
+                                    "fraction_not_allowed",
+                                    "field_width",
+                                    "wrong_length",
+                                    "component_missing",
+                                    "not_recognized",
+                                    "unknown_unit",
+                                    "invalid_utf8",
+                                    "too_long",
+                                    "not_finite",
+                                    "not_whole",
+                                    "negative_not_allowed",
+                                    "too_large",
+                                    "too_small",
+                                    "too_precise",
+                                    "date_field_out_of_range",
+                                    "time_field_out_of_range",
+                                    "outside_window",
+                                    "nonexistent_date",
+                                    "not_a_scalar"};
+
+// The code a corpus detail name stands for, or 0 for a name that is none.
+std::uint32_t detail_code(const std::string &name) {
+  for (std::uint32_t code = 1; code < sizeof detail_names / sizeof *detail_names; ++code) {
+    if (name == detail_names[code]) {
+      return code;
     }
+  }
+  return 0;
+}
+
+// A failure row's `detail`, held against the Failure's: the row names one, the header names the
+// Failure's the same, and the raw code is the one the table gives that name.
+void check_detail(const char *file, const Json &vector, const hc::Failure &failure) {
+  const Json *named = vector.find("detail");
+  if (named == nullptr) {
+    fail(file, vector, "a failure row names no detail");
     return;
   }
-  const hc::Fault &fault = verdict.fault();
+  const std::uint32_t code = detail_code(named->text);
+  if (code == 0) {
+    fail(file, vector, "the row's detail is no published one");
+  } else if (failure.detail_code() != code) {
+    fail(file, vector, "wrong detail code");
+  }
+  if (hc::name(failure.detail) != named->text) {
+    fail(file, vector, "wrong detail name");
+  }
+}
+
+// The vector's "expect" and "fault" against a fault's reason and span.
+void check_fault(const char *file, const Json &vector, const hc::Fault &fault,
+                 std::size_t input_size) {
+  const std::string &expect = vector.find("expect")->text;
   if (expect != reason_name(fault.reason)) {
     fail(file, vector, "wrong verdict");
   }
@@ -302,6 +366,47 @@ void check(const char *file, const Json &vector, const hc::Verdict<T> &verdict,
       fail(file, vector, "wrong fault span");
     }
   }
+}
+
+// The vector's "expect" and "fault" against a detailed verdict, then its `detail`; `same` holds
+// the value. `plain`, when the row takes no options (the plain doors never see the new shapes),
+// is the plain door's verdict, which must be this one's projection.
+template <class T, class Same>
+void check(const char *file, const Json &vector, const std::optional<hc::Verdict<T>> &plain,
+           const hc::DetailedVerdict<T> &verdict, std::size_t input_size, Same same) {
+  ++vectors;
+  const std::string &expect = vector.find("expect")->text;
+  if (plain.has_value() && !(*plain == verdict.to_verdict())) {
+    fail(file, vector, "the plain door and the detailed door disagree");
+  }
+  if (const T *value = verdict.value_if()) {
+    if (expect != "ok") {
+      fail(file, vector, "parsed, expected a fault");
+    } else if (!same(*value)) {
+      fail(file, vector, "wrong value");
+    }
+    if (vector.find("detail") != nullptr) {
+      fail(file, vector, "names a detail but parsed");
+    }
+    return;
+  }
+  const hc::Failure &failure = verdict.failure();
+  check_fault(file, vector, failure.fault(), input_size);
+  check_detail(file, vector, failure);
+}
+
+// A row with no options: the plain door's verdict beside its detailed twin's.
+template <class T, class Same>
+void check(const char *file, const Json &vector, const hc::Verdict<T> &plain,
+           const hc::DetailedVerdict<T> &verdict, std::size_t input_size, Same same) {
+  check(file, vector, std::optional<hc::Verdict<T>>(plain), verdict, input_size, same);
+}
+
+// A row with options: only the detailed door takes them.
+template <class T, class Same>
+void check(const char *file, const Json &vector, const hc::DetailedVerdict<T> &verdict,
+           std::size_t input_size, Same same) {
+  check(file, vector, std::optional<hc::Verdict<T>>(), verdict, input_size, same);
 }
 
 std::string decimal_text(const hc::Decimal &decimal) {
@@ -336,19 +441,43 @@ bool same_civil(const Json &vector, const hc::CivilDateTime &value) {
   return same_date(vector, value.date) && value.nanos_of_day == vector.find("nanos_of_day")->u64();
 }
 
-hc::NumFormat format_of(const char *file, const Json &vector) {
-  const Json *format = vector.find("format");
-  if (format == nullptr) {
-    return hc::NumFormat::invariant();
+// The grouping policy bits a format declares: `grouping` is "legacy", "western" or "indian",
+// and absent means the policy bits its `flags` carry (none: legacy, the core's meaning for a
+// format that declares no policy), so a `formats.json` row can declare a policy no name spells.
+std::uint32_t grouping_of(const Json &format) {
+  const Json *named = format.find("grouping");
+  if (named == nullptr) {
+    return static_cast<std::uint32_t>(format.find("flags")->u64()) &
+           HyperCastNumFormat_GROUPING_POLICY;
   }
+  if (named->text == "legacy") {
+    return HyperCastNumFormat_GROUPING_LEGACY;
+  }
+  if (named->text == "western") {
+    return HyperCastNumFormat_GROUPING_WESTERN;
+  }
+  if (named->text == "indian") {
+    return HyperCastNumFormat_GROUPING_INDIAN;
+  }
+  ++failures;
+  std::fprintf(stderr, "corpus: unknown grouping \"%s\"\n", named->text.c_str());
+  return HyperCastNumFormat_GROUPING_LEGACY;
+}
+
+// What a row's `format` declares, field for field: the styles are `flags` without its policy
+// bits (a style mask never carries one), which `grouping` names.
+hc::NumFormat::Fields fields_of(const Json &format) {
   auto symbol = [&](const char *key) {
-    const Json *field = format->find(key);
+    const Json *field = format.find(key);
     return field ? std::string_view(field->text) : std::string_view();
   };
   hc::NumFormat::Fields fields;
   fields.decimal_sep = symbol("decimal_sep");
   fields.group_sep = symbol("group_sep");
-  fields.styles = static_cast<hc::NumStyles>(format->find("flags")->u64());
+  fields.styles =
+      static_cast<hc::NumStyles>(static_cast<std::uint32_t>(format.find("flags")->u64()) &
+                                 ~static_cast<std::uint32_t>(HyperCastNumFormat_GROUPING_POLICY));
+  fields.grouping = static_cast<hc::Grouping>(grouping_of(format));
   fields.currency = symbol("currency");
   fields.currency_decimal_sep = symbol("currency_decimal_sep");
   fields.currency_group_sep = symbol("currency_group_sep");
@@ -361,19 +490,94 @@ hc::NumFormat format_of(const char *file, const Json &vector) {
     auto cp = hc::cast_char(zero);
     fields.digit_zero = cp.value();
   }
-  if (auto declared = hc::NumFormat::declare(fields)) {
+  return fields;
+}
+
+// The format a row declares. Without a `format` the row reads as the core's null format does:
+// the invariant separators with legacy grouping, not the strict Western the header defaults to.
+hc::NumFormat format_of(const char *file, const Json &vector) {
+  const Json *format = vector.find("format");
+  if (format == nullptr) {
+    return hc::NumFormat::invariant().with_grouping(hc::Grouping::legacy);
+  }
+  if (auto declared = hc::NumFormat::declare(fields_of(*format))) {
     return *declared;
   }
   fail(file, vector, "the core refuses the vector's format");
   return hc::NumFormat::invariant();
 }
 
+// The date options and month names a row's `options` declare: flags by name, a pivot and a
+// vocabulary. The names are views into the row, packed into this struct's own storage, which
+// is why it is built in place and never copied.
+struct Options {
+  hc::DateOptions options;
+  hc::MonthNames months;
+  std::uint8_t storage[2048];
+  Options() = default;
+  Options(const Options &) = delete;
+  Options &operator=(const Options &) = delete;
+};
+
+hc::DateStyles styles_of(const Json &options, bool &known) {
+  hc::DateStyles styles = hc::DateStyles::none;
+  if (const Json *flags = options.find("flags")) {
+    for (const Json &flag : flags->items) {
+      if (flag.text == "compact_date") {
+        styles = styles | hc::DateStyles::compact_date;
+      } else if (flag.text == "space_separator") {
+        styles = styles | hc::DateStyles::space_separator;
+      } else if (flag.text == "hour_offset") {
+        styles = styles | hc::DateStyles::hour_offset;
+      } else if (flag.text == "common_forms") {
+        styles = styles | hc::DateStyles::common_forms;
+      } else {
+        known = false;
+      }
+    }
+  }
+  return styles;
+}
+
+bool options_of(const char *file, const Json &vector, Options &out) {
+  const Json &options = *vector.find("options");
+  bool known = true;
+  const hc::DateStyles styles = styles_of(options, known);
+  const Json *pivot = options.find("pivot");
+  if (!known) {
+    fail(file, vector, "unknown date option flag");
+    return false;
+  }
+  if (auto declared =
+          hc::DateOptions::declare(styles, pivot ? static_cast<std::uint32_t>(pivot->u64()) : 0)) {
+    out.options = *declared;
+  } else {
+    fail(file, vector, "the core refuses the vector's date options");
+    return false;
+  }
+  if (const Json *months = options.find("months")) {
+    std::vector<hc::MonthName> entries;
+    for (const Json &pair : months->items) {
+      entries.push_back({static_cast<std::uint8_t>(pair.items[0].u64()), pair.items[1].text});
+    }
+    if (auto declared = hc::MonthNames::declare(entries.data(), entries.size(), out.storage)) {
+      out.months = *declared;
+    } else {
+      fail(file, vector, "the core refuses the vector's month names");
+      return false;
+    }
+  }
+  return true;
+}
+
 // A plain door as a callable: the name is an overload set, its checked door beside it.
 #define PLAIN(door) [](hc::Text text, const hc::NumFormat &format) { return door(text, format); }
 
-template <class T, class Door> void integer(const char *file, const Json &vector, Door door) {
+template <class T, class Plain, class Detailed>
+void integer(const char *file, const Json &vector, Plain plain, Detailed detailed) {
   const std::string &input = vector.find("input")->text;
-  check(file, vector, door(input, format_of(file, vector)), input.size(), [&](T value) {
+  const hc::NumFormat format = format_of(file, vector);
+  check(file, vector, plain(input, format), detailed(input, format), input.size(), [&](T value) {
     const Json &expected = *vector.find("value");
     if constexpr (std::is_signed_v<T>) {
       return static_cast<std::int64_t>(value) == expected.i64();
@@ -594,6 +798,65 @@ hc::Checked<T> checked_from_double(double value, const hc::Constraints<T> &const
   }
 }
 
+// The same doors under hypercast::detailed.
+template <class T>
+hc::DetailedChecked<T> detailed_checked_door(hc::Text text, const hc::NumFormat &format,
+                                             const hc::Constraints<T> &constraints) {
+  if constexpr (std::is_same_v<T, std::int8_t>) {
+    return hc::detailed::cast_i8(text, format, constraints);
+  } else if constexpr (std::is_same_v<T, std::int16_t>) {
+    return hc::detailed::cast_i16(text, format, constraints);
+  } else if constexpr (std::is_same_v<T, std::int32_t>) {
+    return hc::detailed::cast_i32(text, format, constraints);
+  } else if constexpr (std::is_same_v<T, std::int64_t>) {
+    return hc::detailed::cast_i64(text, format, constraints);
+  } else if constexpr (std::is_same_v<T, std::uint8_t>) {
+    return hc::detailed::cast_u8(text, format, constraints);
+  } else if constexpr (std::is_same_v<T, std::uint16_t>) {
+    return hc::detailed::cast_u16(text, format, constraints);
+  } else if constexpr (std::is_same_v<T, std::uint32_t>) {
+    return hc::detailed::cast_u32(text, format, constraints);
+  } else if constexpr (std::is_same_v<T, std::uint64_t>) {
+    return hc::detailed::cast_u64(text, format, constraints);
+  } else if constexpr (std::is_same_v<T, float>) {
+    return hc::detailed::cast_f32(text, format, constraints);
+  } else if constexpr (std::is_same_v<T, double>) {
+    return hc::detailed::cast_f64(text, format, constraints);
+  } else if constexpr (std::is_same_v<T, hc::Decimal>) {
+    return hc::detailed::cast_decimal(text, format, constraints);
+  } else {
+    return hc::detailed::cast_text(text, constraints);
+  }
+}
+
+template <class T>
+hc::DetailedChecked<T> detailed_checked_from_double(double value,
+                                                    const hc::Constraints<T> &constraints) {
+  if constexpr (std::is_same_v<T, std::int8_t>) {
+    return hc::detailed::cast_i8_from_double(value, constraints);
+  } else if constexpr (std::is_same_v<T, std::int16_t>) {
+    return hc::detailed::cast_i16_from_double(value, constraints);
+  } else if constexpr (std::is_same_v<T, std::int32_t>) {
+    return hc::detailed::cast_i32_from_double(value, constraints);
+  } else if constexpr (std::is_same_v<T, std::int64_t>) {
+    return hc::detailed::cast_i64_from_double(value, constraints);
+  } else if constexpr (std::is_same_v<T, std::uint8_t>) {
+    return hc::detailed::cast_u8_from_double(value, constraints);
+  } else if constexpr (std::is_same_v<T, std::uint16_t>) {
+    return hc::detailed::cast_u16_from_double(value, constraints);
+  } else if constexpr (std::is_same_v<T, std::uint32_t>) {
+    return hc::detailed::cast_u32_from_double(value, constraints);
+  } else if constexpr (std::is_same_v<T, std::uint64_t>) {
+    return hc::detailed::cast_u64_from_double(value, constraints);
+  } else if constexpr (std::is_same_v<T, float>) {
+    return hc::detailed::cast_f32_from_double(value, constraints);
+  } else if constexpr (std::is_same_v<T, double>) {
+    return hc::detailed::cast_f64_from_double(value, constraints);
+  } else {
+    return hc::detailed::cast_decimal_from_double(value, constraints);
+  }
+}
+
 // The checked value against the vector's "value": integers exactly, floats by their bits (so
 // a -0.0 fails), a decimal by its sign, magnitude and scale (its canonical text), and text by
 // its bytes.
@@ -680,12 +943,14 @@ template <class T> void constrained(const char *file, const Json &vector) {
   std::string bytes;
   std::size_t input_size = 0;
   std::optional<hc::Checked<T>> checked;
+  std::optional<hc::DetailedChecked<T>> detailed;
   if (const Json *number = vector.find("from_f64")) {
     if constexpr (C::is_text) {
       fail(file, vector, "a double at the text door");
       return;
     } else {
       checked = checked_from_double(number_of(*number), *constraints);
+      detailed = detailed_checked_from_double(number_of(*number), *constraints);
     }
   } else {
     if (const Json *raw = vector.find("input_bytes")) {
@@ -697,7 +962,13 @@ template <class T> void constrained(const char *file, const Json &vector) {
     }
     input_size = bytes.size();
     const hc::Text text(reinterpret_cast<const std::uint8_t *>(bytes.data()), bytes.size());
-    checked = checked_door(text, format_of(file, vector), *constraints);
+    const hc::NumFormat format = format_of(file, vector);
+    checked = checked_door(text, format, *constraints);
+    detailed = detailed_checked_door(text, format, *constraints);
+  }
+  // The detailed door is the plain one's answer with the detail added.
+  if (!(detailed->to_checked() == *checked)) {
+    fail(file, vector, "the plain door and the detailed door disagree");
   }
 
   if (const hc::CheckedValue<T> *ok = checked->value_if()) {
@@ -729,6 +1000,11 @@ template <class T> void constrained(const char *file, const Json &vector) {
     return;
   }
   const hc::Rejection &rejection = checked->rejection();
+  if (const hc::Failure *failure = detailed->rejection().failure_if()) {
+    check_detail(file, vector, *failure);
+  } else if (vector.find("detail") != nullptr) {
+    fail(file, vector, "names a detail but is a violation");
+  }
   std::size_t offset = 0;
   std::size_t length = 0;
   if (const hc::Violation *violation = rejection.violation_if()) {
@@ -813,93 +1089,229 @@ void declaration(const char *file, const Json &vector) {
   }
 }
 
+// The packed bytes of a month vocabulary a `month_names` row declares: each entry's month byte,
+// little-endian length and name, then any `append_bytes` the row adds raw (a refusal row's way
+// to cut an entry short or leave trailing bytes the builder cannot make).
+std::vector<std::uint8_t> packed_months(const Json &row) {
+  std::vector<std::uint8_t> packed;
+  for (const Json &pair : row.find("months")->items) {
+    packed.push_back(static_cast<std::uint8_t>(pair.items[0].u64()));
+    const std::string &name = pair.items[1].text;
+    for (int shift = 0; shift < 32; shift += 8) {
+      packed.push_back(static_cast<std::uint8_t>(name.size() >> shift));
+    }
+    packed.insert(packed.end(), name.begin(), name.end());
+  }
+  if (const Json *raw = row.find("append_bytes")) {
+    for (const Json &byte : raw->items) {
+      packed.push_back(static_cast<std::uint8_t>(byte.u64()));
+    }
+  }
+  return packed;
+}
+
+// A declaration row of formats.json: `expect` "ok" or "refused" (its `rule` is the Rust core's
+// ordering label, which the C++ declarations do not distinguish: each answers only with
+// std::nullopt). `white_space` rows pin the core's predicate, which C++ delegates to rather
+// than restates, so they are not replayed here. `date_options` declares flags (by name, or as
+// `flag_bits` when no name spells them) and a pivot; `month_names` a vocabulary, which the
+// builder and the packed layout must each judge as the row says.
+void format_declaration(const char *file, const Json &vector) {
+  const std::string &kind = vector.find("kind")->text;
+  if (kind == "white_space") {
+    return;
+  }
+  ++vectors;
+  bool declared = false;
+  if (kind == "num_format") {
+    declared = hc::NumFormat::declare(fields_of(*vector.find("format"))).has_value();
+  } else if (kind == "day_periods") {
+    const Json *am = vector.find("am");
+    const Json *pm = vector.find("pm");
+    declared =
+        hc::DateFormat::declare(hc::DateOrder::year_month_day, am ? std::string_view(am->text) : "",
+                                pm ? std::string_view(pm->text) : "")
+            .has_value();
+  } else if (kind == "date_options") {
+    bool known = true;
+    hc::DateStyles styles = styles_of(vector, known);
+    if (const Json *bits = vector.find("flag_bits")) {
+      styles = static_cast<hc::DateStyles>(bits->u64());
+    }
+    const Json *pivot = vector.find("pivot");
+    if (!known) {
+      fail(file, vector, "unknown date option flag");
+      return;
+    }
+    declared =
+        hc::DateOptions::declare(styles, pivot ? static_cast<std::uint32_t>(pivot->u64()) : 0)
+            .has_value();
+  } else if (kind == "month_names") {
+    const std::vector<std::uint8_t> packed = packed_months(vector);
+    const bool from_packed = hc::MonthNames::from_packed(packed.data(), packed.size()).has_value();
+    declared = from_packed;
+    if (vector.find("append_bytes") == nullptr) {
+      std::vector<hc::MonthName> entries;
+      for (const Json &pair : vector.find("months")->items) {
+        entries.push_back({static_cast<std::uint8_t>(pair.items[0].u64()), pair.items[1].text});
+      }
+      std::vector<std::uint8_t> storage(packed.size() + 16);
+      const auto built = hc::MonthNames::declare(entries.data(), entries.size(),
+                                                 hc::EnumStorage(storage.data(), storage.size()));
+      if (built.has_value() != from_packed) {
+        fail(file, vector, "the builder and the packed layout disagree");
+      } else if (built.has_value() && (built->size() != packed.size() ||
+                                       !std::equal(packed.begin(), packed.end(), built->data()))) {
+        fail(file, vector, "the builder packed other bytes than the layout");
+      }
+      if (hc::MonthNames::storage_size(entries.data(), entries.size()) != packed.size()) {
+        fail(file, vector, "storage_size is not the packed size");
+      }
+    }
+  } else {
+    fail(file, vector, "unknown formats kind");
+    return;
+  }
+  const std::string &expect = vector.find("expect")->text;
+  if (expect == "refused" && declared) {
+    fail(file, vector, "declared, expected the core to refuse it");
+  } else if (expect == "ok" && !declared) {
+    fail(file, vector, "refused, expected it declared");
+  } else if (expect != "ok" && expect != "refused") {
+    fail(file, vector, "unknown expect");
+  }
+  ++declarations[kind];
+}
+
 void replay(const char *name, const Json &vector) {
   const std::string &input = vector.find("input") ? vector.find("input")->text : std::string();
   const std::string_view file(name);
   const auto order = [&] { return static_cast<hc::DateOrder>(vector.find("order")->u64()); };
+  // A row with `options` goes through the detailed date doors alone, which take them.
+  const bool optioned = vector.find("options") != nullptr;
+  Options options;
+  if (optioned && !options_of(name, vector, options)) {
+    return;
+  }
   if (file == "boolean.json") {
-    check(name, vector, hc::cast_bool(input), input.size(),
+    check(name, vector, hc::cast_bool(input), hc::detailed::cast_bool(input), input.size(),
           [&](bool value) { return value == vector.find("value")->boolean; });
   } else if (file == "char.json") {
-    check(name, vector, hc::cast_char(input), input.size(),
+    check(name, vector, hc::cast_char(input), hc::detailed::cast_char(input), input.size(),
           [&](char32_t value) { return value == vector.find("value")->u64(); });
   } else if (file == "integer.json") {
     const std::string &type = vector.find("type")->text;
     if (type == "i8") {
-      integer<std::int8_t>(name, vector, PLAIN(hc::cast_i8));
+      integer<std::int8_t>(name, vector, PLAIN(hc::cast_i8), PLAIN(hc::detailed::cast_i8));
     } else if (type == "i16") {
-      integer<std::int16_t>(name, vector, PLAIN(hc::cast_i16));
+      integer<std::int16_t>(name, vector, PLAIN(hc::cast_i16), PLAIN(hc::detailed::cast_i16));
     } else if (type == "i32") {
-      integer<std::int32_t>(name, vector, PLAIN(hc::cast_i32));
+      integer<std::int32_t>(name, vector, PLAIN(hc::cast_i32), PLAIN(hc::detailed::cast_i32));
     } else if (type == "i64") {
-      integer<std::int64_t>(name, vector, PLAIN(hc::cast_i64));
+      integer<std::int64_t>(name, vector, PLAIN(hc::cast_i64), PLAIN(hc::detailed::cast_i64));
     } else if (type == "u8") {
-      integer<std::uint8_t>(name, vector, PLAIN(hc::cast_u8));
+      integer<std::uint8_t>(name, vector, PLAIN(hc::cast_u8), PLAIN(hc::detailed::cast_u8));
     } else if (type == "u16") {
-      integer<std::uint16_t>(name, vector, PLAIN(hc::cast_u16));
+      integer<std::uint16_t>(name, vector, PLAIN(hc::cast_u16), PLAIN(hc::detailed::cast_u16));
     } else if (type == "u32") {
-      integer<std::uint32_t>(name, vector, PLAIN(hc::cast_u32));
+      integer<std::uint32_t>(name, vector, PLAIN(hc::cast_u32), PLAIN(hc::detailed::cast_u32));
     } else if (type == "u64") {
-      integer<std::uint64_t>(name, vector, PLAIN(hc::cast_u64));
+      integer<std::uint64_t>(name, vector, PLAIN(hc::cast_u64), PLAIN(hc::detailed::cast_u64));
     } else {
       fail(name, vector, "unknown integer type");
     }
   } else if (file == "real.json") {
+    const hc::NumFormat format = format_of(name, vector);
     if (vector.find("type")->text == "f32") {
-      check(name, vector, hc::cast_f32(input, format_of(name, vector)), input.size(),
+      check(name, vector, hc::cast_f32(input, format), hc::detailed::cast_f32(input, format),
+            input.size(),
             [&](float value) { return same_checked_value(*vector.find("value"), value); });
     } else {
-      check(name, vector, hc::cast_f64(input, format_of(name, vector)), input.size(),
+      check(name, vector, hc::cast_f64(input, format), hc::detailed::cast_f64(input, format),
+            input.size(),
             [&](double value) { return same_checked_value(*vector.find("value"), value); });
     }
   } else if (file == "decimal.json") {
-    check(name, vector, hc::cast_decimal(input, format_of(name, vector)), input.size(),
-          [&](const hc::Decimal &value) { return same_decimal(vector, value); });
+    const hc::NumFormat format = format_of(name, vector);
+    check(name, vector, hc::cast_decimal(input, format), hc::detailed::cast_decimal(input, format),
+          input.size(), [&](const hc::Decimal &value) { return same_decimal(vector, value); });
   } else if (file == "uuid.json") {
-    check(name, vector, hc::cast_uuid(input), input.size(), [&](const hc::Uuid &value) {
-      static const char digits[] = "0123456789abcdef";
-      std::string hex;
-      for (std::uint8_t byte : value.bytes) {
-        hex += digits[byte >> 4];
-        hex += digits[byte & 0x0F];
-      }
-      return hex == vector.find("value")->text;
-    });
+    check(name, vector, hc::cast_uuid(input), hc::detailed::cast_uuid(input), input.size(),
+          [&](const hc::Uuid &value) {
+            static const char digits[] = "0123456789abcdef";
+            std::string hex;
+            for (std::uint8_t byte : value.bytes) {
+              hex += digits[byte >> 4];
+              hex += digits[byte & 0x0F];
+            }
+            return hex == vector.find("value")->text;
+          });
   } else if (file == "timestamp.json") {
-    check(name, vector, hc::cast_timestamp(input), input.size(),
-          [&](const hc::Timestamp &value) { return same_instant(vector, value); });
+    auto same = [&](const hc::Timestamp &value) { return same_instant(vector, value); };
+    if (optioned) {
+      check(name, vector, hc::detailed::cast_timestamp(input, options.options), input.size(), same);
+    } else {
+      check(name, vector, hc::cast_timestamp(input), hc::detailed::cast_timestamp(input),
+            input.size(), same);
+    }
   } else if (file == "unix.json") {
     const auto precision = static_cast<hc::UnixPrecision>(vector.find("precision")->u64());
-    check(name, vector, hc::cast_unix(input, precision), input.size(),
-          [&](const hc::Timestamp &value) { return same_instant(vector, value); });
+    check(name, vector, hc::cast_unix(input, precision), hc::detailed::cast_unix(input, precision),
+          input.size(), [&](const hc::Timestamp &value) { return same_instant(vector, value); });
   } else if (file == "excel_serial.json") {
     const auto epoch = static_cast<hc::ExcelEpoch>(vector.find("epoch")->u64());
-    check(name, vector, hc::cast_excel_serial(input, epoch), input.size(),
+    check(name, vector, hc::cast_excel_serial(input, epoch),
+          hc::detailed::cast_excel_serial(input, epoch), input.size(),
           [&](const hc::Timestamp &value) { return same_instant(vector, value); });
   } else if (file == "date.json") {
-    check(name, vector, hc::cast_date(input), input.size(),
-          [&](const hc::Date &value) { return same_date(vector, value); });
+    auto same = [&](const hc::Date &value) { return same_date(vector, value); };
+    if (optioned) {
+      check(name, vector, hc::detailed::cast_date(input, options.options), input.size(), same);
+    } else {
+      check(name, vector, hc::cast_date(input), hc::detailed::cast_date(input), input.size(), same);
+    }
   } else if (file == "date_order.json") {
-    check(name, vector, hc::cast_date(input, order()), input.size(),
-          [&](const hc::Date &value) { return same_date(vector, value); });
+    auto same = [&](const hc::Date &value) { return same_date(vector, value); };
+    if (optioned) {
+      check(name, vector, hc::detailed::cast_date(input, order(), options.options, options.months),
+            input.size(), same);
+    } else {
+      check(name, vector, hc::cast_date(input, order()), hc::detailed::cast_date(input, order()),
+            input.size(), same);
+    }
   } else if (file == "datetime.json") {
     const Json *am = vector.find("am");
     const Json *pm = vector.find("pm");
     auto same = [&](const hc::CivilDateTime &value) { return same_civil(vector, value); };
     if (am == nullptr && pm == nullptr) {
-      check(name, vector, hc::cast_datetime(input, order()), input.size(), same);
+      if (optioned) {
+        check(name, vector,
+              hc::detailed::cast_datetime(input, order(), options.options, options.months),
+              input.size(), same);
+      } else {
+        check(name, vector, hc::cast_datetime(input, order()),
+              hc::detailed::cast_datetime(input, order()), input.size(), same);
+      }
     } else if (auto format = hc::DateFormat::declare(order(), am ? std::string_view(am->text) : "",
                                                      pm ? std::string_view(pm->text) : "")) {
-      check(name, vector, hc::cast_datetime(input, *format), input.size(), same);
+      if (optioned) {
+        check(name, vector,
+              hc::detailed::cast_datetime(input, *format, options.options, options.months),
+              input.size(), same);
+      } else {
+        check(name, vector, hc::cast_datetime(input, *format),
+              hc::detailed::cast_datetime(input, *format), input.size(), same);
+      }
     } else {
       fail(name, vector, "the core refuses the vector's day periods");
     }
   } else if (file == "time.json") {
-    check(name, vector, hc::cast_time(input), input.size(), [&](std::chrono::nanoseconds value) {
-      return static_cast<std::uint64_t>(value.count()) == vector.find("nanos")->u64();
-    });
+    check(name, vector, hc::cast_time(input), hc::detailed::cast_time(input), input.size(),
+          [&](std::chrono::nanoseconds value) {
+            return static_cast<std::uint64_t>(value.count()) == vector.find("nanos")->u64();
+          });
   } else if (file == "duration.json") {
-    check(name, vector, hc::cast_duration(input), input.size(),
+    check(name, vector, hc::cast_duration(input), hc::detailed::cast_duration(input), input.size(),
           [&](const hc::Duration &value) { return same_span(vector, value); });
   } else if (file == "typed.json") {
     // The double is named by its bits, which spell NaN and the infinities JSON cannot.
@@ -910,19 +1322,22 @@ void replay(const char *name, const Json &vector) {
     // A typed door's fault has no text to index: its span must be empty, which an input of
     // size 0 holds it to.
     if (door == "decimal") {
-      check(name, vector, hc::cast_decimal_from_double(value), 0,
+      check(name, vector, hc::cast_decimal_from_double(value),
+            hc::detailed::cast_decimal_from_double(value), 0,
             [&](const hc::Decimal &out) { return same_decimal(vector, out); });
     } else if (door == "excel_serial") {
       const auto epoch = static_cast<hc::ExcelEpoch>(vector.find("epoch")->u64());
-      check(name, vector, hc::cast_excel_serial_from_double(value, epoch), 0,
+      check(name, vector, hc::cast_excel_serial_from_double(value, epoch),
+            hc::detailed::cast_excel_serial_from_double(value, epoch), 0,
             [&](const hc::CivilDateTime &out) { return same_civil(vector, out); });
     } else if (door == "excel_time") {
-      check(name, vector, hc::cast_excel_time(value), 0, [&](std::chrono::nanoseconds out) {
-        return static_cast<std::uint64_t>(out.count()) == vector.find("nanos")->u64();
-      });
+      check(name, vector, hc::cast_excel_time(value), hc::detailed::cast_excel_time(value), 0,
+            [&](std::chrono::nanoseconds out) {
+              return static_cast<std::uint64_t>(out.count()) == vector.find("nanos")->u64();
+            });
     } else if (door == "excel_duration") {
-      check(name, vector, hc::cast_excel_duration(value), 0,
-            [&](const hc::Duration &out) { return same_span(vector, out); });
+      check(name, vector, hc::cast_excel_duration(value), hc::detailed::cast_excel_duration(value),
+            0, [&](const hc::Duration &out) { return same_span(vector, out); });
     } else {
       fail(name, vector, "unknown typed door");
     }
@@ -930,6 +1345,8 @@ void replay(const char *name, const Json &vector) {
     constraints(name, vector);
   } else if (file == "declarations.json") {
     declaration(name, vector);
+  } else if (file == "formats.json") {
+    format_declaration(name, vector);
   } else {
     fail(name, vector, "no replay for this file");
   }
@@ -959,8 +1376,8 @@ int main(int argc, char **argv) {
     }
   }
   std::sort(names.begin(), names.end());
-  if (error || names.size() < 17) {
-    std::fprintf(stderr, "corpus: %s holds %zu corpus files, expected 17 or more\n", argv[1],
+  if (error || names.size() < 18) {
+    std::fprintf(stderr, "corpus: %s holds %zu corpus files, expected 18 or more\n", argv[1],
                  names.size());
     return 1;
   }
@@ -979,6 +1396,14 @@ int main(int argc, char **argv) {
   if (failures > 0) {
     std::fprintf(stderr, "corpus: %d of %d vectors failed\n", failures, vectors);
     return 1;
+  }
+  // The replay must have judged each kind of declaration, so a row type the corpus gains and
+  // this replay skips cannot pass for lack of looking.
+  for (const char *kind : {"num_format", "day_periods", "date_options", "month_names"}) {
+    if (declarations[kind] == 0) {
+      std::fprintf(stderr, "corpus: no %s row was judged in formats.json\n", kind);
+      return 1;
+    }
   }
   std::fprintf(stderr, "corpus: %d vectors in %zu files pass\n", vectors, names.size());
   const std::string_view version = hc::native_version();

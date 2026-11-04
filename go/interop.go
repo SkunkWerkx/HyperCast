@@ -214,43 +214,122 @@ type RawSpan struct {
 // RawSpanSize is a RawSpan's size: 8 bytes.
 const RawSpanSize = uint32(unsafe.Sizeof(RawSpan{}))
 
-// asciiSpace reports an ASCII whitespace byte — the core's rule verbatim: space, \t, \n,
-// \f, \r (not \v), which would collide with the trimming around a symbol.
-func asciiSpace(b byte) bool {
-	return b == ' ' || b == '\t' || b == '\n' || b == '\f' || b == '\r'
+// RawFaultDetail is a detailed export's failure as the core writes it: 16 bytes, 4-aligned. The
+// caller writes Size (RawFaultDetailSize, or a larger multiple of 4 from a later layout) and
+// the core writes the rest, only on a failure (and on a checked violation, whose Detail is 0).
+// FailureFromCode reads one.
+type RawFaultDetail struct {
+	// Size is the bytes the caller provides, at least RawFaultDetailSize; never written.
+	Size uint32
+	// Offset is where the offending bytes start in the caller's input.
+	Offset uint32
+	// Len is how many bytes they run; 0 at a typed door.
+	Len uint32
+	// Detail is the Detail code, 1 or more; 0 on a checked violation.
+	Detail uint32
 }
+
+// RawFaultDetailSize is a RawFaultDetail's size, the least Size the core accepts: 16 bytes.
+const RawFaultDetailSize = uint32(unsafe.Sizeof(RawFaultDetail{}))
+
+// RawDateOptions is DateOptions' shapes and pivot as they cross the ABI: 12 bytes, 4-aligned,
+// a size word (RawDateOptionsSize, or RawDateOptionsMinSize for the size and flags alone, the
+// pivot then 0), the DateShapes bits and the pivot. The core reads it in place and never
+// writes it; the month vocabulary crosses beside it (MonthNames.Packed). DateOptions.Raw
+// builds one.
+type RawDateOptions struct {
+	Size  uint32
+	Flags uint32
+	Pivot uint32
+}
+
+// RawDateOptionsSize is the size word a RawDateOptions carries: its own 12 bytes.
+const RawDateOptionsSize = uint32(unsafe.Sizeof(RawDateOptions{}))
+
+// RawDateOptionsMinSize is the smallest size word the core reads: the size and flags words.
+const RawDateOptionsMinSize = 8
+
+// asciiWhiteSpace reports an ASCII white-space byte: \t, \n, \v, \f, \r and space. Small
+// enough to inline, since the symbol checks run it on every cast.
+func asciiWhiteSpace(b byte) bool {
+	return b == ' ' || b-'\t' <= '\r'-'\t'
+}
+
+// isWhiteSpace reports whether r has the Unicode White_Space property: the 25 code points
+// of PropList.txt, which is what the core trims and what a numeral may not contain. U+200B,
+// U+FEFF and U+180E are not among them. The table is the core's (rust/src/text.rs
+// WHITE_SPACE), held to corpus/formats.json by the corpus replay.
+func isWhiteSpace(r rune) bool {
+	if r < 0x80 {
+		return r >= 0 && asciiWhiteSpace(byte(r))
+	}
+	switch r {
+	case 0x85, 0xA0, 0x1680, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000:
+		return true
+	}
+	return r >= 0x2000 && r <= 0x200A
+}
+
+// spaces is where a declared symbol may not carry white space.
+type spaces uint8
+
+const (
+	// spaceAnywhere places no limit: a group separator, whose white space the input's own
+	// spaces stand for.
+	spaceAnywhere spaces = iota
+	// spaceNowhere refuses white space anywhere in the symbol: signs, percent symbols and
+	// decimal separators, which sit flush against the digits.
+	spaceNowhere
+	// spaceAtEdges refuses it at either edge only: a currency symbol, whose interior may
+	// hold a gap ("F CFA"), since the grammar trims around the symbol.
+	spaceAtEdges
+)
 
 // symbolOK is the core's rule for one declared symbol, decided without naming the fault:
-// at most capacity UTF-8 bytes, valid UTF-8, no ASCII digit, and — for a symbol the
-// grammar trims around (signs, percent, currency) — no ASCII whitespace. An empty symbol
-// passes: the caller decides whether that is "none declared" or a missing separator. This
-// runs on every cast, so the one-byte symbol nearly every format declares is decided
-// inline, and the rest in one pass over the bytes with no call out for ASCII.
-func symbolOK(symbol string, capacity int, flush bool) bool {
+// at most capacity UTF-8 bytes, valid UTF-8, no ASCII digit, and white space only where
+// space allows it. An empty symbol passes: the caller decides whether that is "none
+// declared" or a missing separator. This runs on every cast, so the one-byte symbol
+// nearly every format declares is decided inline, and the rest in one pass over the bytes
+// with no call out for ASCII.
+func symbolOK(symbol string, capacity int, space spaces) bool {
 	if len(symbol) == 1 {
 		b := symbol[0]
-		return b < 0x80 && !(b >= '0' && b <= '9') && !(flush && asciiSpace(b))
+		return b < 0x80 && !(b >= '0' && b <= '9') && !(space != spaceAnywhere && asciiWhiteSpace(b))
 	}
-	return len(symbol) == 0 || symbolOKSlow(symbol, capacity, flush)
+	return len(symbol) == 0 || symbolOKSlow(symbol, capacity, space)
 }
 
-func symbolOKSlow(symbol string, capacity int, flush bool) bool {
+func symbolOKSlow(symbol string, capacity int, space spaces) bool {
 	if len(symbol) > capacity {
 		return false
 	}
 	ascii := true
 	for i := 0; i < len(symbol); i++ {
 		b := symbol[i]
-		if b >= '0' && b <= '9' || flush && asciiSpace(b) {
+		if b >= '0' && b <= '9' || space == spaceNowhere && asciiWhiteSpace(b) {
 			return false
 		}
 		ascii = ascii && b < 0x80
 	}
-	return ascii || utf8.ValidString(symbol)
+	if !ascii && !(utf8.ValidString(symbol) && !(space == spaceNowhere && hasWhiteSpace(symbol))) {
+		return false
+	}
+	return !(space == spaceAtEdges && whiteSpaceAtAnEdge(symbol))
 }
 
-// symbolFault names what symbolOK refused, as the doors' panic text.
-func symbolFault(what, symbol string, capacity int, flush bool) error {
+// hasWhiteSpace reports whether a white-space code point occurs in text.
+func hasWhiteSpace(text string) bool {
+	for _, r := range text {
+		if isWhiteSpace(r) {
+			return true
+		}
+	}
+	return false
+}
+
+// symbolFault names what symbolOK refused, as the doors' panic text. The rules apply in
+// the core's order: length, UTF-8, digit, then white space.
+func symbolFault(what, symbol string, capacity int, space spaces) error {
 	if len(symbol) > capacity {
 		return fmt.Errorf("%s %q exceeds %d UTF-8 bytes", what, symbol, capacity)
 	}
@@ -258,12 +337,25 @@ func symbolFault(what, symbol string, capacity int, flush bool) error {
 		return fmt.Errorf("%s %q is not valid UTF-8", what, symbol)
 	}
 	for i := 0; i < len(symbol); i++ {
-		switch b := symbol[i]; {
-		case b >= '0' && b <= '9':
+		if b := symbol[i]; b >= '0' && b <= '9' {
 			return fmt.Errorf("%s %q must not contain an ASCII digit", what, symbol)
-		case flush && asciiSpace(b):
-			return fmt.Errorf("%s %q must not contain ASCII whitespace", what, symbol)
 		}
+	}
+	switch space {
+	case spaceNowhere:
+		return whiteSpaceFault(what, symbol)
+	case spaceAtEdges:
+		if whiteSpaceAtAnEdge(symbol) {
+			return fmt.Errorf("%s %q must not start or end with white space", what, symbol)
+		}
+	}
+	return nil
+}
+
+// whiteSpaceFault names the white space symbolOK refused in a symbol, nil when there is none.
+func whiteSpaceFault(what, symbol string) error {
+	if hasWhiteSpace(symbol) {
+		return fmt.Errorf("%s %q must not contain white space", what, symbol)
 	}
 	return nil
 }
@@ -308,10 +400,13 @@ func (f NumFormat) digitZeroOK() bool {
 // valid is the check every numeric door runs on its format, decided without naming the
 // fault — the fast path, since it runs on every cast; fault names what it refused.
 func (f NumFormat) valid() bool {
+	if f.Styles&^definedStyles != 0 || f.Styles&GroupingPolicyMask == GroupingPolicyMask {
+		return false
+	}
 	if f.DecimalSep == "" || f.GroupSep == "" || f.DecimalSep == f.GroupSep {
 		return false
 	}
-	if !symbolOK(f.DecimalSep, SymbolMaxBytes, false) || !symbolOK(f.GroupSep, SymbolMaxBytes, false) {
+	if !symbolOK(f.DecimalSep, SymbolMaxBytes, spaceNowhere) || !symbolOK(f.GroupSep, SymbolMaxBytes, spaceAnywhere) {
 		return false
 	}
 	// Everything below is declared by few formats and skipped in one test by the rest.
@@ -319,45 +414,69 @@ func (f NumFormat) valid() bool {
 		f.MinusSign == "" && f.PlusSign == "" && f.Percent == "" && f.DigitZero == 0 {
 		return true
 	}
-	if !symbolOK(f.CurrencyDecimalSep, SymbolMaxBytes, false) || !symbolOK(f.CurrencyGroupSep, SymbolMaxBytes, false) {
+	if !symbolOK(f.CurrencyDecimalSep, SymbolMaxBytes, spaceNowhere) || !symbolOK(f.CurrencyGroupSep, SymbolMaxBytes, spaceAnywhere) {
 		return false
 	}
 	if decimal, group := f.currencySeparators(); decimal == group {
 		return false
 	}
-	return symbolOK(f.MinusSign, SymbolMaxBytes, true) && symbolOK(f.PlusSign, SymbolMaxBytes, true) &&
-		symbolOK(f.Percent, SymbolMaxBytes, true) && symbolOK(f.Currency, CurrencyMaxBytes, true) && f.digitZeroOK()
+	return symbolOK(f.MinusSign, SymbolMaxBytes, spaceNowhere) && symbolOK(f.PlusSign, SymbolMaxBytes, spaceNowhere) &&
+		symbolOK(f.Percent, SymbolMaxBytes, spaceNowhere) && symbolOK(f.Currency, CurrencyMaxBytes, spaceAtEdges) && f.digitZeroOK()
 }
 
 // fault names why valid refused the format, as the doors' panic text; nil when it did not.
+// The rules apply in the core's order: the Styles bits (the grouping policy, then undefined
+// bits), each symbol's length, UTF-8 and digit, then equal separators, then white space.
 func (f NumFormat) fault() error {
+	if f.Styles&GroupingPolicyMask == GroupingPolicyMask {
+		return fmt.Errorf("Styles %#x names no grouping policy: bits 8 and 9 are both set", uint32(f.Styles))
+	}
+	if extra := f.Styles &^ definedStyles; extra != 0 {
+		return fmt.Errorf("Styles %#x set bits HyperCast does not define: %#x", uint32(f.Styles), uint32(extra))
+	}
 	if f.DecimalSep == "" || f.GroupSep == "" {
 		return fmt.Errorf("decimal separator %q and group separator %q must both be declared", f.DecimalSep, f.GroupSep)
+	}
+	for _, symbol := range []struct{ what, text string }{
+		{"decimal separator", f.DecimalSep}, {"group separator", f.GroupSep},
+	} {
+		if err := symbolFault(symbol.what, symbol.text, SymbolMaxBytes, spaceAnywhere); err != nil {
+			return err
+		}
 	}
 	if f.DecimalSep == f.GroupSep {
 		return fmt.Errorf("decimal and group separators must differ; both are %q", f.DecimalSep)
 	}
-	for _, symbol := range []struct {
-		what     string
-		text     string
-		capacity int
-		flush    bool
-	}{
-		{"decimal separator", f.DecimalSep, SymbolMaxBytes, false},
-		{"group separator", f.GroupSep, SymbolMaxBytes, false},
-		{"currency decimal separator", f.CurrencyDecimalSep, SymbolMaxBytes, false},
-		{"currency group separator", f.CurrencyGroupSep, SymbolMaxBytes, false},
-		{"minus sign", f.MinusSign, SymbolMaxBytes, true},
-		{"plus sign", f.PlusSign, SymbolMaxBytes, true},
-		{"percent symbol", f.Percent, SymbolMaxBytes, true},
-		{"currency symbol", f.Currency, CurrencyMaxBytes, true},
+	if err := whiteSpaceFault("decimal separator", f.DecimalSep); err != nil {
+		return err
+	}
+	for _, symbol := range []struct{ what, text string }{
+		{"currency decimal separator", f.CurrencyDecimalSep}, {"currency group separator", f.CurrencyGroupSep},
 	} {
-		if err := symbolFault(symbol.what, symbol.text, symbol.capacity, symbol.flush); err != nil {
+		if err := symbolFault(symbol.what, symbol.text, SymbolMaxBytes, spaceAnywhere); err != nil {
 			return err
 		}
 	}
 	if decimal, group := f.currencySeparators(); decimal == group {
 		return fmt.Errorf("currency decimal and group separators must differ; both are %q", decimal)
+	}
+	if err := whiteSpaceFault("currency decimal separator", f.CurrencyDecimalSep); err != nil {
+		return err
+	}
+	for _, symbol := range []struct {
+		what     string
+		text     string
+		capacity int
+		space    spaces
+	}{
+		{"minus sign", f.MinusSign, SymbolMaxBytes, spaceNowhere},
+		{"plus sign", f.PlusSign, SymbolMaxBytes, spaceNowhere},
+		{"percent symbol", f.Percent, SymbolMaxBytes, spaceNowhere},
+		{"currency symbol", f.Currency, CurrencyMaxBytes, spaceAtEdges},
+	} {
+		if err := symbolFault(symbol.what, symbol.text, symbol.capacity, symbol.space); err != nil {
+			return err
+		}
 	}
 	if !f.digitZeroOK() {
 		return fmt.Errorf("digit zero %q starts no Unicode digit block", f.DigitZero)
@@ -370,7 +489,7 @@ func (f NumFormat) fault() error {
 // hand the backends a pointer to it, so the 92 bytes are copied once, into the C call.
 func (f NumFormat) layout(raw *RawNumFormat) {
 	raw.Size = RawNumFormatSize
-	raw.Flags = uint32(f.Styles)
+	raw.Flags = uint32(f.Styles) // the lenience flags and the grouping policy
 	raw.DigitZero = uint32(f.DigitZero)
 	symbol8(&raw.DecimalSep, f.DecimalSep)
 	symbol8(&raw.GroupSep, f.GroupSep)
@@ -386,11 +505,15 @@ func (f NumFormat) layout(raw *RawNumFormat) {
 // does with its format argument, as an error rather than the doors' panic. The core's
 // rules verbatim: each number separator one to SymbolMaxBytes UTF-8 bytes with no ASCII
 // digit, the two different; each currency separator the same or empty, and the pair in
-// force for a currency amount different; each sign and the percent symbol the same or
-// empty, with no ASCII whitespace; the currency symbol at most CurrencyMaxBytes, no digit,
-// no whitespace; the digit zero 0, or a code point outside ASCII that starts a run of ten
-// digits sharing its UTF-8 prefix (every Unicode digit block does; one whose value modulo
-// 64 exceeds 54 does not).
+// force for a currency amount different; each decimal separator, plain and currency, free
+// of white space (a group separator may carry it); each sign and the percent symbol the
+// same or empty, with no white space; the currency symbol at most CurrencyMaxBytes, no
+// digit, no white space at either edge (inside is fine: "F CFA"); the digit zero 0, or a
+// code point outside ASCII that starts a run of ten digits sharing its UTF-8 prefix (every
+// Unicode digit block does; one whose value modulo 64 exceeds 54 does not). Before them, the
+// Styles: no bit but a lenience flag or a grouping policy, and not both policy bits. Flags
+// carries the policy in bits 8 and 9, which only the core's detailed exports read: the 1.0
+// exports ignore bit 8 and up and parse with legacy grouping.
 func (f NumFormat) Raw() (raw RawNumFormat, err error) {
 	if !f.valid() {
 		return RawNumFormat{}, f.fault()
@@ -400,10 +523,19 @@ func (f NumFormat) Raw() (raw RawNumFormat, err error) {
 }
 
 // designatorOK is the core's rule for one day-period designator, decided without naming
-// the fault: empty, or a symbol with no ASCII whitespace at either end.
+// the fault: empty, or a symbol with no white space at either end.
 func designatorOK(designator string) bool {
-	return symbolOK(designator, DesignatorMaxBytes, false) &&
-		(designator == "" || !asciiSpace(designator[0]) && !asciiSpace(designator[len(designator)-1]))
+	return symbolOK(designator, DesignatorMaxBytes, spaceAtEdges)
+}
+
+// whiteSpaceAtAnEdge reports whether text starts or ends in a white-space code point.
+func whiteSpaceAtAnEdge(text string) bool {
+	if text == "" {
+		return false
+	}
+	first, _ := utf8.DecodeRuneInString(text)
+	last, _ := utf8.DecodeLastRuneInString(text)
+	return isWhiteSpace(first) || isWhiteSpace(last)
 }
 
 // valid is the check DateTimeWith runs on its format's designators, the fast path; fault
@@ -416,11 +548,11 @@ func (f DateFormat) valid() bool {
 // did not.
 func (f DateFormat) fault() error {
 	for _, designator := range []struct{ what, text string }{{"AM designator", f.AM}, {"PM designator", f.PM}} {
-		if err := symbolFault(designator.what, designator.text, DesignatorMaxBytes, false); err != nil {
+		if err := symbolFault(designator.what, designator.text, DesignatorMaxBytes, spaceAnywhere); err != nil {
 			return err
 		}
-		if text := designator.text; text != "" && (asciiSpace(text[0]) || asciiSpace(text[len(text)-1])) {
-			return fmt.Errorf("%s %q must not start or end in ASCII whitespace", designator.what, text)
+		if whiteSpaceAtAnEdge(designator.text) {
+			return fmt.Errorf("%s %q must not start or end in white space", designator.what, designator.text)
 		}
 	}
 	return nil
@@ -437,7 +569,7 @@ func (f DateFormat) layout(raw *RawDayPeriods) {
 // Raw validates the format's designators and lays them out as the core reads them — what
 // DateTimeWith does with its format argument, as an error rather than the door's panic.
 // The core's rules verbatim: each designator empty or at most DesignatorMaxBytes of valid
-// UTF-8 with no ASCII digit and no ASCII whitespace at either end. The order is not
+// UTF-8 with no ASCII digit and no white space at either end. The order is not
 // checked here: it crosses beside the designators, and DateOrder.Valid reports it.
 func (f DateFormat) Raw() (raw RawDayPeriods, err error) {
 	if !f.valid() {
@@ -494,6 +626,17 @@ func FaultFromCode(code, offset, length uint32) (*Fault, bool) {
 	return &Fault{Reason: reason, Offset: int(offset), Length: int(length)}, true
 }
 
+// FailureFromCode is the detailed failure a nonzero verdict code, its byte span and its
+// Detail code name (the fields of a RawFaultDetail), and false when the code names no reason
+// — a binding bug, not data. A Detail this binding does not name is kept, never refused.
+func FailureFromCode(code, offset, length, detail uint32) (*Failure, bool) {
+	reason, ok := ReasonFromCode(code)
+	if !ok {
+		return nil, false
+	}
+	return &Failure{Reason: reason, Detail: Detail(detail), Offset: int(offset), Length: int(length)}, true
+}
+
 // FormatVersion renders a native library's packed version word — major<<16 | minor<<8 |
 // patch, as a *_version() export returns it — as "major.minor.patch".
 func FormatVersion(packed uint32) string {
@@ -536,6 +679,10 @@ var (
 	_ [56]byte = [unsafe.Offsetof(RawConstraints{}.MultipleOf)]byte{}
 	_ [12]byte = [unsafe.Sizeof(RawCheck{})]byte{}
 	_ [8]byte  = [unsafe.Sizeof(RawSpan{})]byte{}
+	_ [16]byte = [unsafe.Sizeof(RawFaultDetail{})]byte{}
+	_ [12]byte = [unsafe.Offsetof(RawFaultDetail{}.Detail)]byte{}
+	_ [12]byte = [unsafe.Sizeof(RawDateOptions{})]byte{}
+	_ [8]byte  = [unsafe.Offsetof(RawDateOptions{}.Pivot)]byte{}
 
 	_ [16]byte = [unsafe.Sizeof(Decimal{})]byte{}
 	_ [0]byte  = [unsafe.Offsetof(Decimal{}.Lo)]byte{}

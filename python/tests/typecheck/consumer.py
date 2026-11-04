@@ -18,11 +18,14 @@ from hypercast import (
     Checked,
     CheckedVerdict,
     Constraints,
+    DateOptions,
     DateOrder,
+    Detail,
     Door,
     ExcelEpoch,
     Fault,
     Keyword,
+    MonthNames,
     NumFormat,
     Rounding,
     Success,
@@ -43,6 +46,24 @@ def describe(verdict: Verdict[int]) -> str:
             assert_type(offset, int)
             assert_type(length, int)
             return f"{reason.name} at {offset}+{length}"
+        case _:
+            assert_never(verdict)
+
+
+def diagnose(verdict: Verdict[int]) -> str:
+    """Reads a failure's detail: a keyword pattern beside the positional one, an `UNKNOWN` arm
+    for a code this version names no member for, and the raw number beside it."""
+    match verdict:
+        case Success():
+            return "ok"
+        case Fault(detail=Detail.GROUP_SIZE):
+            return "a group of the wrong size"
+        case Fault(detail=Detail.UNKNOWN) as unnamed:
+            assert_type(unnamed.detail_code, int | None)
+            return f"detail {unnamed.detail_code}"
+        case Fault() as other:
+            assert_type(other.detail, Detail | None)
+            return "something else"
         case _:
             assert_never(verdict)
 
@@ -163,3 +184,26 @@ assert_type(
 )
 assert_type(judge(hypercast.cast_checked("42", fmt, latitude)), str)
 assert_type(Keyword.ENUM.name, str)
+
+assert_type(NumFormat.GROUPING_WESTERN, int)
+assert_type(NumFormat(".", ",", NumFormat.ALL, grouping=NumFormat.GROUPING_INDIAN), NumFormat)
+assert_type(fmt.grouping, int)
+assert_type(diagnose(hypercast.cast_i32("12,34", fmt)), str)
+assert_type(Detail.from_code(11), Detail)
+options = DateOptions(DateOptions.COMPACT_DATE, pivot=2029)
+assert_type(options, DateOptions)
+assert_type(DateOptions.COMMON_FORMS.with_pivot(2029).pivot, int)
+months = MonthNames([(1, "Jan"), (2, "Feb")])
+assert_type(months.entries, tuple[tuple[int, str], ...])
+assert_type(
+    hypercast.cast_date("07-Jan-26", DateOrder.DAY_MONTH_YEAR, options=options, months=months),
+    Success[datetime.date] | Fault,
+)
+assert_type(
+    hypercast.cast_datetime("…", DateOrder.YEAR_MONTH_DAY, options=options, months=months),
+    Success[datetime.datetime] | Fault,
+)
+assert_type(
+    hypercast.cast_timestamp("…", options=DateOptions.COMMON_FORMS),
+    Success[datetime.datetime] | Fault,
+)

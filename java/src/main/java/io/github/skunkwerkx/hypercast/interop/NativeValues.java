@@ -2,7 +2,9 @@ package io.github.skunkwerkx.hypercast.interop;
 
 import io.github.skunkwerkx.hypercast.CastFailure;
 import io.github.skunkwerkx.hypercast.DateTimeFormat;
+import io.github.skunkwerkx.hypercast.DetailedFault;
 import io.github.skunkwerkx.hypercast.Fault;
+import io.github.skunkwerkx.hypercast.FaultDetail;
 import io.github.skunkwerkx.hypercast.NumFormat;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
@@ -20,10 +22,10 @@ import java.util.UUID;
 
 /**
  * The native core's C ABI values, read and written: every out-value layout a door fills, the
- * 92-byte numeric format and the 40-byte day-period designators it reads, the sizes of the
- * validation constraints' layouts, the verdict code and span of a fault, and the packed
- * version word. Public for a library that carries HyperCast's verdicts across a C ABI of its
- * own (HyperTabular does) — it reads these out of its own buffers through exactly the
+ * 92-byte numeric format, the 40-byte day-period designators and the 12-byte date options it
+ * reads, the sizes of the validation constraints' layouts, the verdict code and span of a
+ * fault (and, from a detailed export, its detail), and the packed version word. Public for a
+ * library that carries HyperCast's verdicts across a C ABI of its own (HyperTabular does) — it reads these out of its own buffers through exactly the
  * conversions every {@link io.github.skunkwerkx.hypercast.Cast} door uses, so a value it hands
  * out is the value the door would have.
  *
@@ -59,7 +61,8 @@ public final class NativeValues {
      * packed with no padding — 8 bytes and the length for the decimal, group,
      * currency-decimal and currency-group separators, the minus and plus signs and the
      * percent symbol (at 12, 21, 30, 39, 48, 57 and 66), 16 and the length for the currency
-     * symbol (at 75). A length of 0 declares nothing.
+     * symbol (at 75). A length of 0 declares nothing. The flags word is
+     * {@link NumFormat#flags()}: the styles, and the grouping policy in bits 8 and 9.
      */
     public static final long FORMAT_BYTES = 92;
 
@@ -72,6 +75,20 @@ public final class NativeValues {
 
     /** A fault's span: {@code {u32 offset, u32 length}}, in bytes of the input. */
     public static final long FAULT_BYTES = 8;
+
+    /**
+     * A detailed export's fault, size-tagged: {@code {u32 size, u32 offset, u32 length, u32
+     * detail}}. The caller writes {@code size} (16 or more, a multiple of 4) and the core
+     * writes the other three, only on a failure: the span in bytes of the input, and the detail
+     * code, 1 or more, or 0 for a checked violation. 4-byte aligned.
+     */
+    public static final long FAULT_DETAIL_BYTES = 16;
+
+    /**
+     * The date options, size-tagged: {@code {u32 size, u32 flags, u32 pivot}}. The core accepts
+     * a {@code size} of 8, the flags alone (no pivot), or 12. 4-byte aligned.
+     */
+    public static final long DATE_OPTIONS_BYTES = 12;
 
     /**
      * A declaration of validation constraints, size-tagged: {@code u32 size} (72),
@@ -200,7 +217,7 @@ public final class NativeValues {
     public static void writeFormat(NumFormat format, MemorySegment segment, long at) {
         segment.asSlice(at, FORMAT_BYTES).fill((byte) 0);
         segment.set(ValueLayout.JAVA_INT, at, (int) FORMAT_BYTES);
-        segment.set(ValueLayout.JAVA_INT, at + 4, format.styles());
+        segment.set(ValueLayout.JAVA_INT, at + 4, format.flags());
         segment.set(ValueLayout.JAVA_INT, at + 8, format.digitZero());
         long next = symbol(format.decimalSeparator(), 8, segment, at + 12);
         next = symbol(format.groupSeparator(), 8, segment, next);
@@ -230,6 +247,20 @@ public final class NativeValues {
         symbol(format.pmDesignator(), 16, segment, next);
     }
 
+    /**
+     * Writes the date options in the core's layout, the whole {@link #DATE_OPTIONS_BYTES} of it.
+     *
+     * @param flags the option flags, {@link io.github.skunkwerkx.hypercast.DateOptions#flags()}
+     * @param pivot the two-digit-year pivot, 0 for none
+     * @param segment the segment to write into
+     * @param at the byte offset to write at, 4-byte aligned
+     */
+    public static void writeDateOptions(int flags, int pivot, MemorySegment segment, long at) {
+        segment.set(ValueLayout.JAVA_INT, at, (int) DATE_OPTIONS_BYTES);
+        segment.set(ValueLayout.JAVA_INT, at + 4, flags);
+        segment.set(ValueLayout.JAVA_INT, at + 8, pivot);
+    }
+
     // One symbol field: the symbol's UTF-8 bytes at `at`, into a field `capacity` bytes wide
     // (already zeroed), and its length in the byte after. Returns the offset after the field.
     private static long symbol(String symbol, int capacity, MemorySegment segment, long at) {
@@ -254,6 +285,45 @@ public final class NativeValues {
                 .orElseThrow(() -> new IllegalStateException(
                         code + " is not a verdict reason code — a binding bug, please report it"));
         return new Fault<>(reason, offset, length);
+    }
+
+    /**
+     * The detailed fault a nonzero verdict code, its span and its detail code name. A detail
+     * this binding does not name is kept as the code it is, never an error.
+     *
+     * @param code the verdict code: 1 empty, 2 malformed, 3 out of range
+     * @param offset the span's byte offset
+     * @param length the span's byte length
+     * @param detail the detail code, as the unsigned 32-bit word the core wrote
+     * @param <T> the type the cast was for
+     * @return the fault
+     * @throws IllegalStateException {@code code} is no reason, a binding bug and not data; a detail
+     *     is never refused
+     */
+    public static <T> DetailedFault<T> detailedFault(int code, int offset, int length, int detail) {
+        CastFailure reason = CastFailure.fromCode(code)
+                .orElseThrow(() -> new IllegalStateException(
+                        code + " is not a verdict reason code — a binding bug, please report it"));
+        return new DetailedFault<>(reason, FaultDetail.of(detail), offset, length);
+    }
+
+    /**
+     * The detailed fault a nonzero verdict code and a {@link #FAULT_DETAIL_BYTES} fault the
+     * core wrote name.
+     *
+     * @param code the verdict code: 1 empty, 2 malformed, 3 out of range
+     * @param segment the segment holding the fault
+     * @param at the fault's byte offset, 4-byte aligned
+     * @param <T> the type the cast was for
+     * @return the fault
+     * @throws IllegalStateException {@code code} is no reason
+     */
+    public static <T> DetailedFault<T> detailedFault(int code, MemorySegment segment, long at) {
+        return detailedFault(
+                code,
+                segment.get(ValueLayout.JAVA_INT, at + 4),
+                segment.get(ValueLayout.JAVA_INT, at + 8),
+                segment.get(ValueLayout.JAVA_INT, at + 12));
     }
 
     /**

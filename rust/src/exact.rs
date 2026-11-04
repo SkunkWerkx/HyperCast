@@ -13,10 +13,11 @@
 
 use core::cmp::Ordering;
 
+use crate::detail::Failure;
 use crate::integer::split_sign;
 use crate::real::{Route, Token, route, walk};
 use crate::typed::ShortestDigits;
-use crate::verdict::{Decimal, Fault, NumFormat};
+use crate::verdict::{Decimal, NumFormat};
 
 /// The bound an effective position is clamped to. Every value beyond it on either side
 /// judges identically: below `-C` it is a nonzero fraction smaller than any step or bound
@@ -146,7 +147,7 @@ impl<'a> Exact<'a> {
         start: usize,
         format: &'a NumFormat,
         percent_door: bool,
-    ) -> Result<Exact<'a>, Fault> {
+    ) -> Result<Exact<'a>, Failure> {
         let mut resolved = NumFormat::EMPTY;
         let (way, used) = route(text, start, format, &mut resolved)?;
         let mut shape = Shape::new(text.len());
@@ -216,7 +217,6 @@ impl<'a> Exact<'a> {
     }
 
     /// True for a negative value; zero never is.
-    #[cfg(test)]
     pub(crate) fn negative(&self) -> bool {
         self.negative
     }
@@ -894,6 +894,12 @@ mod tests {
         .with_signs(symbol("minus_sign"), symbol("plus_sign"))
         .with_percent(symbol("percent"))
         .with_digits(digits)
+        .with_grouping(match format.get("grouping").and_then(Value::as_str) {
+            Some("western") => NumFormat::GROUPING_WESTERN,
+            Some("indian") => NumFormat::GROUPING_INDIAN,
+            Some("legacy") => NumFormat::GROUPING_LEGACY,
+            _ => format["flags"].as_u64().unwrap() as u32 & NumFormat::GROUPING_POLICY,
+        })
     }
 
     fn has_radix_prefix(text: &[u8]) -> bool {

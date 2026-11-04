@@ -512,6 +512,150 @@ final class CastTests: XCTestCase {
         }
     }
 
+    /// Every locale the platform ships through the bridge: a symbol the declaration rules
+    /// accept is declared as the locale spells it, and one they refuse is left undeclared,
+    /// never trapped on. What the rules refuse is white space inside a sign, the percent
+    /// symbol or either decimal separator, and at either edge of the currency symbol; a group separator
+    /// may be white space, and the locale's own may be a no-break space.
+    func testEveryLocaleDerivesAFormatAndLosesOnlyWhatTheRulesRefuse() {
+        func unicode(_ text: String) -> String {
+            text.unicodeScalars.map { "U+" + String($0.value, radix: 16, uppercase: true) }.joined(separator: " ")
+        }
+        for identifier in Locale.availableIdentifiers {
+            let formatter = NumberFormatter()
+            formatter.locale = Locale(identifier: identifier)
+            formatter.numberStyle = .decimal
+            let format = NumFormat.from(formatter: formatter)
+            func expect(_ role: String, _ spelled: String?, _ declared: String, accepted: Bool, beside ascii: String) {
+                let symbol = spelled ?? ""
+                if symbol.isEmpty || symbol == ascii { return }
+                if accepted {
+                    XCTAssertEqual(declared, symbol, "\(identifier): \(role) \(unicode(symbol)) should be declared")
+                } else {
+                    XCTAssertNotEqual(declared, symbol, "\(identifier): \(role) \(unicode(symbol)) is refused")
+                }
+            }
+            expect(
+                "minus", formatter.minusSign, format.minusSign,
+                accepted: NumFormat.isDeclarable(sign: formatter.minusSign ?? ""),
+                beside: "-")
+            expect(
+                "plus", formatter.plusSign, format.plusSign,
+                accepted: NumFormat.isDeclarable(sign: formatter.plusSign ?? ""),
+                beside: "+")
+            expect(
+                "percent", formatter.percentSymbol, format.percentSymbol,
+                accepted: NumFormat.isDeclarable(sign: formatter.percentSymbol ?? ""), beside: "%")
+            expect(
+                "currency", formatter.currencySymbol, format.currencySymbol,
+                accepted: NumFormat.isDeclarable(currencySymbol: formatter.currencySymbol ?? ""), beside: "")
+            if let decimal = formatter.decimalSeparator, decimal != formatter.groupingSeparator {
+                expect(
+                    "decimal separator", decimal, format.decimalSeparator,
+                    accepted: NumFormat.isDeclarable(decimalSeparator: decimal), beside: "")
+            }
+            if let group = formatter.groupingSeparator, group != formatter.decimalSeparator {
+                expect(
+                    "group separator", group, format.groupSeparator, accepted: NumFormat.isDeclarable(separator: group),
+                    beside: "")
+            }
+        }
+    }
+
+    // MARK: - white space (Unicode White_Space, not only ASCII)
+
+    func testWhiteSpaceIsTheTwentyFiveCodePoints() {
+        let table: Set<UInt32> = [
+            0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x20, 0x85, 0xA0, 0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005,
+            0x2006, 0x2007, 0x2008, 0x2009, 0x200A, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000,
+        ]
+        XCTAssertEqual(table.count, 25)
+        for value in 0...0x3100 {
+            guard let scalar = Unicode.Scalar(UInt32(value)) else { continue }
+            XCTAssertEqual(
+                NumFormat.isWhiteSpace(scalar), table.contains(UInt32(value)), "U+\(String(value, radix: 16))")
+        }
+    }
+
+    func testDeclarationsRefuseWhiteSpaceWhereNothingCouldMatchIt() {
+        // A sign and the percent symbol sit flush against the digits: none inside either.
+        for symbol in ["\u{00A0}", "A\u{202F}B", "\u{3000}", "\u{0085}", "a b"] {
+            XCTAssertFalse(NumFormat.isDeclarable(sign: symbol), symbol)
+        }
+        // A currency symbol may hold white space inside (CLDR's CFA franc is `F\u{202F}CFA`) and
+        // not at either edge.
+        for inside in [" ", "\u{00A0}", "\u{202F}", "\u{2009}", "\u{3000}", "\t"] {
+            XCTAssertTrue(NumFormat.isDeclarable(currencySymbol: "F\(inside)CFA"), inside)
+        }
+        for symbol in [
+            "\u{00A0}", " F", "F ", "\u{202F}F\u{202F}CFA", "F\u{00A0}CFA\u{00A0}", "\u{3000}F", "F\u{0085}",
+        ] {
+            XCTAssertFalse(NumFormat.isDeclarable(currencySymbol: symbol), symbol)
+        }
+        XCTAssertFalse(NumFormat.isDeclarable(currencySymbol: String(repeating: "\u{00A0}", count: 9)))
+        XCTAssertFalse(NumFormat.isDeclarable(currencySymbol: "F CFA1"))
+        XCTAssertTrue(NumFormat.isDeclarable(sign: ""))
+        XCTAssertTrue(NumFormat.isDeclarable(currencySymbol: ""))
+        XCTAssertTrue(NumFormat.isDeclarable(sign: "\u{200B}"))
+        // A decimal separator may not hold any, a group separator may be nothing else.
+        for symbol in ["\u{00A0}", "x\u{202F}", " ", "\u{2009}"] {
+            XCTAssertFalse(NumFormat.isDeclarable(decimalSeparator: symbol), symbol)
+            XCTAssertTrue(NumFormat.isDeclarable(separator: symbol), symbol)
+        }
+        XCTAssertTrue(NumFormat.isDeclarable(decimalSeparator: ","))
+        // A designator may hold white space inside and not at either end.
+        XCTAssertTrue(DateFormat.isDeclarable(designator: "a.\u{202F}m."))
+        for symbol in ["\u{00A0}AM", "AM\u{3000}", "\u{202F}", " PM"] {
+            XCTAssertFalse(DateFormat.isDeclarable(designator: symbol), symbol)
+        }
+    }
+
+    func testNumbersIgnoreWhiteSpaceOutsideTheNumeral() {
+        for edge in ["\u{00A0}", "\u{3000}", "\u{2009}\u{0085}", "\u{000B}"] {
+            XCTAssertEqual(Cast.i32("\(edge)42\(edge)", format: .invariant), .success(42), edge)
+            XCTAssertEqual(Cast.f64("\(edge)-2.5\(edge)", format: .invariant), .success(-2.5), edge)
+        }
+        // Declared as one of the three space-like separators, a group reads as any of them.
+        let spaced = NumFormat(decimalSeparator: ",", groupSeparator: "\u{202F}", styles: .all)
+        for group in [" ", "\u{00A0}", "\u{202F}"] {
+            XCTAssertEqual(Cast.f64("1\(group)234,5", format: spaced), .success(1234.5), group)
+        }
+        // Inside the numeral, any other white space is malformed where it stands.
+        guard case .fault(let fault) = Cast.i32("1\u{3000}2", format: spaced) else {
+            return XCTFail("a white-space code point that is no declared group should be malformed")
+        }
+        XCTAssertEqual(fault.reason, .malformed)
+    }
+
+    func testACurrencySymbolWithWhiteSpaceInsideMatchesAcrossTheThreeSpaces() {
+        let cfa = NumFormat(decimalSeparator: ",", groupSeparator: ".", styles: .all, currencySymbol: "F\u{202F}CFA")
+        XCTAssertEqual(cfa.currencySymbol, "F\u{202F}CFA")
+        for space in [" ", "\u{00A0}", "\u{202F}"] {
+            XCTAssertEqual(Cast.i32("1.500 F\(space)CFA", format: cfa), .success(1500), space)
+            XCTAssertEqual(Cast.i32("F\(space)CFA 1.500", format: cfa), .success(1500), space)
+        }
+        // The Burkina Faso and Senegal locales write the CFA franc this way and keep it.
+        for identifier in ["fr_BF", "fr_SN"] {
+            let format = NumFormat.from(locale: Locale(identifier: identifier))
+            XCTAssertTrue(format.currencySymbol.contains("CFA"), identifier)
+            XCTAssertEqual(
+                Cast.i32("1\u{202F}500 \(format.currencySymbol)", format: format), .success(1500), identifier)
+        }
+    }
+
+    func testTheCharDoorTrimsWhiteSpaceButKeepsOneScalarVerbatim() {
+        XCTAssertEqual(Cast.char("\u{3000}"), .success("\u{3000}"))
+        XCTAssertEqual(Cast.char("\u{00A0}U+0041\u{2009}"), .success("A"))
+        XCTAssertEqual(Cast.char("\u{00A0}&#x41;\u{3000}"), .success("A"))
+    }
+
+    func testTheDayPeriodGapIsAnyWhiteSpaceRun() {
+        let afternoon = DateComponents(year: 2026, month: 1, day: 7, hour: 15, minute: 4, second: 0, nanosecond: 0)
+        for gap in ["\u{00A0}", "\u{202F}", " \u{3000} ", ""] {
+            XCTAssertEqual(Cast.dateTime("2026-01-07 3:04\(gap)PM", order: .yearMonthDay), .success(afternoon), gap)
+        }
+    }
+
     // MARK: - declared symbols (0.9.0): read beside ASCII, never instead of it
 
     func testSeparatorsMayBeTwoCharacters() throws {

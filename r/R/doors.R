@@ -27,8 +27,10 @@ as_number <- function(x) {
   stop("x must be a numeric vector", call. = FALSE)
 }
 
-text_door <- function(x, door, format = NULL, periods = NULL, code = 0L) {
-  cols <- .Call(C_cast_text, as_text(x), door, format, periods, code, session_native())
+text_door <- function(x, door, format = NULL, periods = NULL, code = 0L, options = NULL,
+                      months = NULL) {
+  cols <- .Call(C_cast_text, as_text(x), door, format, periods, code, session_native(),
+                check_date_options(options), check_months(months))
   new_verdict(cols, door)
 }
 
@@ -75,11 +77,11 @@ epoch_code <- function(epoch) declared(epoch, c("y1900", "y1904"), "epoch")
 #' `cast_char()` reads one character: an input of exactly one character is that character
 #' verbatim, before any trimming (`" "` is a space, `"6"` the digit six); anything else is
 #' one declared code point, `65`, `U+0041`, `0x41`, `&H41`, or an HTML entity `&#65;` or
-#' `&#x41;` (the `;` required), ASCII case-insensitive on the prefix, with optional ASCII
-#' whitespace around it. A surrogate or anything past `U+10FFFF` is `out_of_range`. So is
+#' `&#x41;` (the `;` required), ASCII case-insensitive on the prefix, with optional white
+#' space around it. A surrogate or anything past `U+10FFFF` is `out_of_range`. So is
 #' `U+0000`, which the core accepts and an R string cannot hold: like the C# and Java
 #' bindings with a scalar their `char` cannot hold, this binding reports it as `out_of_range`
-#' over the input less its ASCII whitespace edges.
+#' over the input less its white space edges.
 #'
 #' `cast_uuid()` reads every .NET `Guid` text form (`D`, `N`, `B`, `P` and `X`) and the
 #' `urn:uuid:`, `GUID:` and `UUID:` prefixes.
@@ -193,6 +195,11 @@ cast_decimal <- function(x, format) text_door(x, "decimal", check_format(format)
 #' names no zone, and is read as UTC. Instants run from `0001-01-01T00:00:00Z` to
 #' `9999-12-31T23:59:59.999999999Z`; a fraction past nine digits truncates to the nanosecond.
 #'
+#' Strict RFC 3339 is the default, and a caller can rely on it: `2026-01-07 15:04:05Z`
+#' (a space for the `T`) and `+00` (an offset of hours alone) are `malformed`. `options`, a
+#' [date_options()], opts in to either (`"space_separator"`, `"hour_offset"`, or both with
+#' `"common_forms"`), and nothing else in it applies to this door.
+#'
 #' `value` is a `POSIXct` in UTC: a double of seconds, exact to the microsecond across
 #' present-day instants but not to the nanosecond. The exact instant is in two more columns,
 #' protobuf's `Timestamp` pair: `seconds` (a whole double, exact) and `nanos` (an integer,
@@ -203,6 +210,8 @@ cast_decimal <- function(x, format) text_door(x, "decimal", check_format(format)
 #'   `"nanoseconds"`.
 #' @param epoch The date system: `"y1900"` (serial `1` is 1900-01-01, the Windows default)
 #'   or `"y1904"` (serial `0` is 1904-01-01).
+#' @param options `NULL` (the default, today's shape rules), or a [date_options()] declaration
+#'   of the opt-in shapes, which the door reads where it applies and ignores otherwise.
 #' @return A [hypercast_verdict] with columns `value`, `seconds` and `nanos` before the
 #'   verdict's own.
 #' @family doors
@@ -211,7 +220,7 @@ cast_decimal <- function(x, format) text_door(x, "decimal", check_format(format)
 #' cast_timestamp(c("2026-01-02T15:04:05.123456789+05:00", "2026-01-02T15:04:05"))
 #' cast_unix("1700000000123", "milliseconds")$value
 #' cast_excel_serial(c("45292.75", "60"), "y1900")
-cast_timestamp <- function(x) text_door(x, "timestamp")
+cast_timestamp <- function(x, options = NULL) text_door(x, "timestamp", options = options)
 
 #' @rdname cast_timestamp
 #' @export
@@ -232,6 +241,14 @@ cast_excel_serial <- function(x, epoch) text_door(x, "excel_serial", code = epoc
 #' `1-7-2026`) in the declared field order: `"1/7/2026"` is January 7th under
 #' `"month_day_year"` and July 1st under `"day_month_year"` only because the caller said
 #' which. A four-digit first field is a year, so ISO dates read under any order.
+#'
+#' The shapes beyond those are all opt-in, declared with `options` ([date_options()]) and
+#' `months` ([month_names()]); without them every door keeps today's rules. `"compact_date"`
+#' reads `20260107` at `cast_date()` without `order`; a `pivot` reads two-digit years at the
+#' ordered doors (`1/7/26`, the one year in the 100-year window ending at the pivot); and
+#' `months` reads a declared month name in the month field, Excel style (`07-Jan-26`,
+#' `7-Jan-2026`), in the position `order` selects. A `months` vocabulary without `order` at
+#' `cast_date()` can only be a mistake (the ISO door reads no month names) and is an error.
 #'
 #' `cast_datetime()` reads the zone-less civil date-times of the AM/PM world: a date in the
 #' declared order and an optional 24-hour or `AM`/`PM` time (`1/7/2026 3:04 PM`,
@@ -265,7 +282,11 @@ cast_excel_serial <- function(x, epoch) text_door(x, "excel_serial", code = epoc
 #' @param order The field order: `"year_month_day"`, `"month_day_year"` or
 #'   `"day_month_year"`. `NULL`, for `cast_date()`, reads strict ISO only.
 #' @param am,pm A culture's day-period words, read beside `AM` and `PM`: 1 to 16 UTF-8 bytes
-#'   with no ASCII digit and no whitespace at either end; `""` declares none.
+#'   with no ASCII digit and no white space at either end; `""` declares none.
+#' @param options `NULL` (the default, today's shape rules), or a [date_options()] declaration
+#'   of the opt-in shapes, which the door reads where it applies and ignores otherwise.
+#' @param months `NULL` (the default, numeric months only), or a [month_names()] vocabulary
+#'   the month field may be spelled with.
 #' @return A [hypercast_verdict].
 #' @family doors
 #' @export
@@ -276,25 +297,33 @@ cast_excel_serial <- function(x, epoch) text_door(x, "excel_serial", code = epoc
 #' v
 #' as.POSIXct(v$value, tz = "America/Chicago")
 #' cast_datetime("7.1.2026 3:04 nachm.", "day_month_year", am = "vorm.", pm = "nachm.")$value
+#' cast_date(c("20260107", "1/7/26"), "month_day_year", date_options("common_forms", 2029))
+#' months <- month_names(c(Jan = 1, Feb = 2, Mar = 3, Apr = 4, May = 5, Jun = 6, Jul = 7,
+#'                         Aug = 8, Sep = 9, Oct = 10, Nov = 11, Dec = 12))
+#' cast_date("07-Jan-26", "day_month_year", date_options(pivot = 2029), months)$value
 #' cast_time(c("15:04:05.123456789", "24:00"))
 #' cast_duration(c("P1DT6H", "-1.5s", "P1Y"))
-cast_date <- function(x, order = NULL) {
+cast_date <- function(x, order = NULL, options = NULL, months = NULL) {
   if (is.null(order)) {
-    return(text_door(x, "date"))
+    if (!is.null(months)) {
+      stop("months needs an order: a month vocabulary is read at the ordered date door",
+           call. = FALSE)
+    }
+    return(text_door(x, "date", options = options))
   }
-  text_door(x, "date_ordered", code = date_order_code(order))
+  text_door(x, "date_ordered", code = date_order_code(order), options = options, months = months)
 }
 
 #' @rdname cast_date
 #' @export
-cast_datetime <- function(x, order, am = "", pm = "") {
+cast_datetime <- function(x, order, am = "", pm = "", options = NULL, months = NULL) {
   code <- date_order_code(order)
   am_bytes <- symbol_bytes(am, "Day period am", 16L, edges = TRUE)
   pm_bytes <- symbol_bytes(pm, "Day period pm", 16L, edges = TRUE)
   periods <- if (length(am_bytes) || length(pm_bytes)) {
     c(u32_le(40L), pack_symbol(am_bytes, 16L), pack_symbol(pm_bytes, 16L), raw(2))
   }
-  text_door(x, "datetime", periods = periods, code = code)
+  text_door(x, "datetime", periods = periods, code = code, options = options, months = months)
 }
 
 #' @rdname cast_date

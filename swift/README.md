@@ -20,7 +20,7 @@ import HyperCast
 
 switch Cast.i32("(1,234)", format: .invariant) {
 case .success(let value): print("got \(value)")  // -1234, accounting negative
-case .fault(let fault): print("\(fault.reason) at byte \(fault.offset)")
+case .fault(let fault): print("\(fault.reason) at byte \(fault.offset): \(fault.detail?.name ?? "")")
 }  // no default: the compiler mandates both arms, and only both arms
 
 switch Cast.timestamp("2026-01-02T15:04:05.123456789+05:00") {
@@ -220,6 +220,18 @@ own.
 linked into your executable — and a call across the C ABI per cast. For plain invariant
 integers, `Int32("...")` is the reasonable choice.
 
+A fault also says what failed in its span: `fault.detail` is a `FaultDetail`, the core's
+shared vocabulary (`.groupSize`, `.digitExpected`, `.tooLarge`, …, 32 published codes), and
+`fault.detailCode` its raw number. The reason stays the broad classification and the detail
+never changes it or the span. `FaultDetail` is an open struct, like `Keyword`: any code
+decodes without trapping and keeps its `rawValue`, `name` is `nil` for a code this binding
+doesn't publish (and `isPublished` false), the fault around it is still whole, a code a later
+release names becomes the equal member, and a `switch` over a detail needs a `default`.
+`Fault`'s equality is its reason and span, as it always was, so a fault you built with
+`Fault(reason:offset:length:)` (no detail, `detail == nil`) equals the door's for the same
+failure; compare `detailCode` to compare details. A violation of a declared rule names a
+keyword, not a detail.
+
 Every door also takes an `UnsafeRawBufferPointer` — the primitive the `String` and
 `[UInt8]` forms wrap — so a caller already holding a buffer (a mapped file, one field of a
 delimited line) casts a slice of it without copying anything out first.
@@ -227,21 +239,55 @@ delimited line) casts a slice of it without copying anything out first.
 ## Declared formats and currency
 
 The numeric doors take a `NumFormat` — declared separators plus `NumStyles` lenience flags
-— with no default argument: `.invariant` (`.` decimal, `,` grouping, every lenience on) or
-`NumFormat.from(locale:)`, which reads the locale's own symbols. The core carries no culture
+— with no default argument: `.invariant` (`.` decimal, `,` grouping, every lenience on, strict
+Western grouping) or `NumFormat.from(locale:)`, which reads the locale's own symbols. The core carries no culture
 table, so everything a culture spells differently is declared, never looked up — and every
 declared spelling is read *beside* the ASCII one, which the core reads whatever is declared.
 A declared minus sign does not stop `-` being read, a declared percent symbol does not stop
 `%`, native digits do not stop `0`–`9`: nothing that parsed before stops parsing, and a
 format that declares nothing reads exactly what it always did.
 
+White space is Unicode's `White_Space`, the 25 code points (ASCII, U+0085, U+00A0, U+2000 to
+U+200A, U+202F, U+3000 among them). Every door but plain `Cast.text` ignores it at both ends (`Cast.char` given exactly one character keeps it), and the
+numeric doors also after a leading sign, before a trailing sign or a percent symbol, on either
+side of a currency symbol and inside accounting parentheses (`"- 12"`, `"( 12 )"`, `"12,5 %"`,
+`"1 234,56 €"`, the last two under a declared comma decimal separator, the last with a space group separator and `€` declared); between digits it is `.malformed`, unless a space-like group separator is
+declared. An ASCII space, U+00A0 or U+202F declared as the group separator makes the input's
+choice of those three immaterial (Excel writes U+00A0, ICU's `fr` U+202F, an older system a
+space), a space-like separator with no digit after it is just white space, and any other
+separator stays exact. Input of nothing but white space is `.empty`.
+
+- **Grouping.** `NumFormat` takes the policy beside the styles, `grouping:`, and it defaults
+  to `.western`: groups of exactly three digits counted from the decimal separator (the
+  leftmost one to three), so `1,234,567` reads and `12,34` and `1234,567` are `malformed`
+  at the group (`.groupSize`, spanning the group and its separator: `,34`). `.indian`
+  reads `12,34,567`, and `.legacy` a separator anywhere between two digits, as every format
+  did before 1.1 (`12,34` was 1234). A numeral that uses no separator is valid under all of
+  them, grouping after the decimal separator or in an exponent is never allowed
+  (`.groupInFraction`), and the policy only judges groups: with `.grouping` off a group
+  separator stays forbidden, and `.separatorDetect` resolves its own `1,234`. The policy
+  is separate from the styles (a `NumStyles` never carries it, and one that sets a bit the
+  core doesn't define is a precondition failure); `withStyles(_:)` keeps the policy,
+  `withGrouping(_:)` replaces it. `NumFormat.from(locale:)` and `from(formatter:)` never
+  reject what the platform writes, so they read its number and currency patterns in full
+  (`groupingSize`, `secondaryGroupingSize` where 0 repeats the primary size, and
+  `usesGroupingSeparator`) and give the one policy and one `.grouping` flag the format has for
+  both: every pattern that groups Western (groups of three) is `.western`, every one Indian
+  (three, then twos: `en_IN`, `hi`) is `.indian`, and any other shape (Toki Pona's groups of
+  two) or two that disagree is `.legacy`, which reads any grouping. `.grouping` is cleared only
+  when neither pattern groups (`en_US_POSIX`); if just one does not (`en_BG`'s currency) the
+  flag stays, so an ungrouped value stays valid — a format can't forbid grouping in a
+  currency amount alone. The rule depends on the two patterns only, never on the input.
 - **Separators** (`decimalSeparator`, `groupSeparator`) are short strings: one or two
   characters, up to 8 UTF-8 bytes, no ASCII digit — a comma and a space, a narrow no-break
-  space — and never equal to each other.
+  space — and never equal to each other. The group separator may be white space (Unicode
+  `White_Space`, U+00A0 and U+202F included), and a group declared as a space, U+00A0 or
+  U+202F reads as any of the three; a decimal separator, the currency one included, may
+  not contain any, since a numeral admits white space only as a group.
 - **Currency.** With `.currency` in the styles (part of `.all`) the declared
   `currencySymbol` is accepted once at either edge of the number — leading, before or after
   a sign (`$5`, `-$5`, `$ -5`), or trailing (`5 €`, `1.234,50 kr.`) — with optional
-  whitespace between symbol and digits, and accounting parentheses wrap the two together
+  white space between symbol and digits, and accounting parentheses wrap the two together
   (`($5)`). A symbol declared with the flag off is `malformed` at the symbol; the flag with
   no symbol declared changes nothing. When the symbol is in the text, the digits are read
   with `currencyDecimalSeparator` and `currencyGroupSeparator` where those are declared (a
@@ -263,8 +309,9 @@ format that declares nothing reads exactly what it always did.
   Arabic-Indic `٠`–`٩`, U+FF10 for the fullwidth digits); a radix-prefixed body stays ASCII.
 
 Every rule is a precondition on the initializer, a caller bug the same way equal separators
-are: a sign or percent symbol is 1 to 8 bytes with no ASCII digit or whitespace, the currency
-symbol at most 16 with neither, the digit zero non-ASCII and the start of a digit block.
+are: a sign or percent symbol is 1 to 8 bytes with no ASCII digit or white space, the currency
+symbol at most 16 with no ASCII digit and no white space at either end (inside is fine, as
+in `F CFA`), a decimal separator no white space, the digit zero non-ASCII and the start of a digit block.
 The core checks the same rules and reports a violation as a contract error, which no
 well-typed call here can reach.
 
@@ -305,15 +352,35 @@ no platform carries a lexicon of boolean words, so there is nothing a bridge cou
 declared one from, and `ja` or `oui` is a caller's mapping ahead of the door, not a
 format's.
 
+### Date options and month names
+
+The date doors keep their strict shapes unless the caller opens more, with a `DateOptions`
+(`Cast.timestamp(_:options:)`, `date(_:options:)`, `date(_:order:options:)`,
+`dateTime(_:order:options:)`, `dateTime(_:format:options:)`, each over `String`, `[UInt8]`
+and `UnsafeRawBufferPointer`): `.compactDate` (`20260107` at the date door),
+`.spaceSeparator` and `.hourOffset` (`2026-01-07 03:04:05+00` at the timestamp door),
+`DateOptions.commonForms` for all three (no pivot, no month names), a `pivot` (100 through
+9999, the last year of a 100-year window: `26` is 2026 under 2029, `30` is 1930) for
+two-digit years at the order doors, and `months`, a `MonthNames`. A door reads only the
+options that are its own. `MonthNames` is built by the caller from `(month, name)` entries
+(`Jan`, `Sept`, `janv.`): each name 1 to 64 bytes with no ASCII digit, `/`, `-` or white
+space, every month named, no two names equal under simple case folding, or the
+initializer's precondition fails. Names are read in the month field in the position `order`
+selects (`07-Jan-26`), longest first among those followed by the date's own separator, with
+their punctuation kept: with `janv.` declared and `.` as the separator, `7.janv..26` reads
+and `7.janv.26` is `malformed`. The vocabulary is checked by the core on every call, so
+build the `DateOptions` once.
+
 ### Day periods
 
 `Cast.dateTime` also takes a `DateFormat` — the `DateOrder` plus the day-period designators
 a culture writes beside a 12-hour clock, `amSymbol` and `pmSymbol` — beside the `order:`
 overload, which is the same door with nothing declared. A declared designator is
-read after the clock (`3:04 nachm.`, the space optional) or ahead of it (`오후 3:04`), by
+read after the clock (`3:04 nachm.`) or ahead of it (`오후 3:04`), with any run of white space
+or none between (so the `3:04\u202fPM` Apple platforms write for `en_US` reads), by
 its exact bytes, beside the English `AM`/`PM`, which are read whatever is declared, ASCII
 case-insensitively, after the clock or ahead of it. A designator is 1 to 16
-UTF-8 bytes with no ASCII digit and no ASCII whitespace at either end (a space inside is
+UTF-8 bytes with no ASCII digit and no white space at either end (a space inside is
 fine: Spanish writes `a. m.`). `DateFormat.from(locale:)` reads the order off the locale's
 short-date pattern, as `DateOrder.from(locale:)` does, and the designators off a
 `DateFormatter`'s `amSymbol` and `pmSymbol`, both or neither: a locale whose designators
@@ -376,6 +443,10 @@ takes an `UnsafeRawBufferPointer` starting at one value, aligned for its widest 
   `UInt32` length then UTF-8 bytes per entry at the text door).
 - `Interop.fault(code:offset:length:)` — the `Fault` a nonzero verdict code and its byte
   span name; any code other than 1–3 is a precondition failure, a binding bug.
+  `Interop.fault(code:offset:length:detail:)` and `Interop.fault(code:faultDetail:)` (a
+  detailed export's 16-byte `Interop.RawFaultDetail`: the capacity word, offset, length,
+  detail) add the detail code, which an unknown one never refuses.
+- `Interop.RawDateOptions` — the 12-byte date options (`Interop.rawDateOptionsSize`).
 - `Interop.version(_:)` — a `*_version()` export's packed `major << 16 | minor << 8 | patch`
   word as `"major.minor.patch"`.
 
@@ -422,6 +493,11 @@ the largest), and the linker keeps only what your executable reaches.
 No door throws: bad data is a `Verdict`'s `Fault` (or a checked door's `Violation`), and the core is linked in, so there is
 nothing to fail to load. `Cast.isAvailable` is always `true`; it keeps the availability
 probe every binding carries.
+
+The package needs the 1.1 core, and a 1.0 one can't be linked by mistake: the doors call the
+core's detailed exports directly, a 1.0 core doesn't have them, so the build fails (to
+compile, and to link) instead of a strict request being read as legacy. There is no run-time
+version check to forget.
 
 iOS, the iOS simulator and Mac Catalyst get the same archives from a second binary target,
 `HyperCastCoreApple.xcframework`: an app for those is built by Xcode, which links a static

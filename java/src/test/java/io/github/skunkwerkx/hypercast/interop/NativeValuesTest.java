@@ -10,6 +10,7 @@ import io.github.skunkwerkx.hypercast.DateOrder;
 import io.github.skunkwerkx.hypercast.DateTimeFormat;
 import io.github.skunkwerkx.hypercast.ExcelEpoch;
 import io.github.skunkwerkx.hypercast.Fault;
+import io.github.skunkwerkx.hypercast.Grouping;
 import io.github.skunkwerkx.hypercast.NumFormat;
 import io.github.skunkwerkx.hypercast.UnixPrecision;
 import java.lang.foreign.Arena;
@@ -146,7 +147,7 @@ class NativeValuesTest {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment segment = arena.allocate(NativeValues.FORMAT_BYTES + 4, 4);
             NumFormat wide =
-                    new NumFormat("٫", "٬", NumFormat.STYLE_ALL, "€".repeat(5), "' ", ", ", "−", "＋", "٪", 0x0660);
+                    new NumFormat("٫", "٬", NumFormat.STYLE_ALL, "€".repeat(5), "';", ", ", "−", "＋", "٪", 0x0660);
             NativeValues.writeFormat(wide, segment, 4);
             NumFormat format = new NumFormat(",", ".", NumFormat.STYLE_ALL | NumFormat.STYLE_TRAILING_SIGN, "€")
                     .withSigns("−", "");
@@ -154,7 +155,8 @@ class NativeValuesTest {
 
             byte[] expected = new byte[92];
             word(expected, 0, 92);
-            word(expected, 4, NumFormat.STYLE_ALL | NumFormat.STYLE_TRAILING_SIGN);
+            // The flags word is the styles and, in bits 8 and 9, the default strict Western policy.
+            word(expected, 4, NumFormat.STYLE_ALL | NumFormat.STYLE_TRAILING_SIGN | (1 << 8));
             word(expected, 8, 0);
             symbol(expected, 12, 8, ",");
             symbol(expected, 21, 8, ".");
@@ -168,6 +170,14 @@ class NativeValuesTest {
             assertEquals(1, segment.get(ValueLayout.JAVA_BYTE, 4 + 20));
             assertEquals(3, segment.get(ValueLayout.JAVA_BYTE, 4 + 56));
             assertEquals(3, segment.get(ValueLayout.JAVA_BYTE, 4 + 91));
+
+            // The policy bits are the grouping's: legacy 0, Western 1 << 8, Indian 2 << 8.
+            for (Grouping grouping : Grouping.values()) {
+                NativeValues.writeFormat(format.withGrouping(grouping), segment, 4);
+                assertEquals(
+                        NumFormat.STYLE_ALL | NumFormat.STYLE_TRAILING_SIGN | grouping.code(),
+                        segment.get(ValueLayout.JAVA_INT, 4 + 4));
+            }
 
             // The wide one, for the record: every field filled, the digit zero as its code point.
             NativeValues.writeFormat(wide, segment, 4);

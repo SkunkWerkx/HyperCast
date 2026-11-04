@@ -20,7 +20,10 @@
 //! The thread-local is `const`-initialised and holds a type with no `Drop`, so reaching it
 //! from inside the allocator registers no destructor and allocates nothing itself.
 
-use hypercast::{NumFormat, RawCheck, RawConstraints, RawNumFormat, RawSpan, UnixPrecision};
+use hypercast::{
+    NumFormat, RawCheck, RawConstraints, RawDateOptions, RawFaultDetail, RawNumFormat, RawSpan,
+    UnixPrecision,
+};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
@@ -84,6 +87,59 @@ unsafe extern "C" {
     ) -> i32;
     fn cast_text(ptr: *const u8, len: usize, out: *mut RawSpan, fault: *mut RawFault) -> i32;
     fn cast_declared_decimal(ptr: *const u8, len: usize, out: *mut hypercast::Decimal) -> i32;
+    fn cast_detailed(
+        door: u32,
+        param: u32,
+        format: *const RawNumFormat,
+        periods: *const hypercast::RawDayPeriods,
+        date_options: *const RawDateOptions,
+        vocab_ptr: *const u8,
+        vocab_len: usize,
+        ptr: *const u8,
+        len: usize,
+        out: *mut u8,
+        fault: *mut RawFaultDetail,
+    ) -> i32;
+    fn cast_detailed_from_f64(
+        door: u32,
+        param: u32,
+        value: f64,
+        out: *mut u8,
+        fault: *mut RawFaultDetail,
+    ) -> i32;
+    fn cast_checked_detailed(
+        door: u32,
+        param: u32,
+        format: *const RawNumFormat,
+        constraints: *const RawConstraints,
+        enum_ptr: *const u8,
+        enum_len: usize,
+        ptr: *const u8,
+        len: usize,
+        out: *mut u8,
+        fault: *mut RawFaultDetail,
+        check: *mut RawCheck,
+    ) -> i32;
+    fn cast_checked_detailed_from_f64(
+        door: u32,
+        param: u32,
+        constraints: *const RawConstraints,
+        enum_ptr: *const u8,
+        enum_len: usize,
+        value: f64,
+        out: *mut u8,
+        fault: *mut RawFaultDetail,
+        check: *mut RawCheck,
+    ) -> i32;
+}
+
+/// One detailed export call with its out-params on the stack: the return code.
+fn detailed_export(call: impl Fn(*mut u8, *mut RawFaultDetail, *mut RawCheck) -> i32) -> i32 {
+    let mut out = [0u64; 3];
+    let mut fault = RawFaultDetail { size: RawFaultDetail::SIZE, offset: 0, len: 0, detail: 0 };
+    let mut check = RawCheck { keyword: 0, adjusted: 0, enum_index: 0 };
+    // `out` one byte in: the detailed exports write unaligned.
+    call(unsafe { out.as_mut_ptr().cast::<u8>().add(1) }, &mut fault, &mut check)
 }
 
 /// One export call with its out-params on the stack: the return code.
@@ -199,6 +255,80 @@ fn allocation_free() {
         hypercast::cast_duration(b"3.000000001s").unwrap()
     });
 
+    // The detailed doors, failing: the detail and its UTF-8 judgement are on the stack too.
+    let valid = format.validate().unwrap();
+    assert_allocation_free("detailed cast_i64", || {
+        hypercast::detailed::cast_i64(b"(1,234,567)", &valid).unwrap()
+    });
+    assert_allocation_free("detailed cast_i32 failure", || {
+        hypercast::detailed::cast_i32(b"12\xC3\xA9x", &valid).unwrap_err()
+    });
+    assert_allocation_free("detailed cast_f64 invalid UTF-8", || {
+        hypercast::detailed::cast_f64(b"1.5\xFF", &valid).unwrap_err()
+    });
+    assert_allocation_free("detailed cast_decimal failure", || {
+        hypercast::detailed::cast_decimal(b"79228162514264337593543950336", &valid).unwrap_err()
+    });
+    assert_allocation_free("detailed cast_timestamp failure", || {
+        hypercast::detailed::cast_timestamp(b"2026-01-02T15:04Z", None).unwrap_err()
+    });
+    let names = [
+        (1, "Jan"),
+        (2, "Feb"),
+        (3, "Mar"),
+        (4, "Apr"),
+        (5, "May"),
+        (6, "Jun"),
+        (7, "Jul"),
+        (8, "Aug"),
+        (9, "Sep"),
+        (10, "Oct"),
+        (11, "Nov"),
+        (12, "Dec"),
+    ];
+    assert_allocation_free("date options: validate, vocabulary included", || {
+        hypercast::DateOptions::COMMON_FORMS
+            .with_pivot(2029)
+            .validate(Some(hypercast::MonthNames::from_entries(&names)))
+            .unwrap()
+            .pivot()
+    });
+    let options = hypercast::DateOptions::COMMON_FORMS
+        .with_pivot(2029)
+        .validate(Some(hypercast::MonthNames::from_entries(&names)))
+        .unwrap();
+    let packed = std::cell::RefCell::new([0u8; 160]);
+    assert_allocation_free("month names: pack", || {
+        hypercast::MonthNames::from_entries(&names).pack(&mut *packed.borrow_mut())
+    });
+    let packed = packed.into_inner();
+    assert_allocation_free("month names: from_packed", || {
+        hypercast::MonthNames::from_packed(
+            &packed[..hypercast::MonthNames::from_entries(&names).pack(&mut []).unwrap()],
+        )
+        .is_ok()
+    });
+    assert_allocation_free("detailed date doors under options", || {
+        let order = hypercast::DateOrder::DayMonthYear;
+        let options = Some(&options);
+        let date = hypercast::detailed::cast_date_ordered("07-Jan-26", order, options).unwrap();
+        hypercast::detailed::cast_date("20260107", options).unwrap();
+        hypercast::detailed::cast_datetime("7-Feb-2026 3:04 PM", order, options).unwrap();
+        hypercast::detailed::cast_timestamp("2026-01-07 15:04:05+05", options).unwrap();
+        date
+    });
+    assert_allocation_free("detailed date doors under options, failing", || {
+        let order = hypercast::DateOrder::DayMonthYear;
+        let options = Some(&options);
+        hypercast::detailed::cast_date_ordered("07-Foo-26", order, options).unwrap_err();
+        hypercast::detailed::cast_date_ordered("07-Jan", order, options).unwrap_err();
+        hypercast::detailed::cast_date_ordered("07-J\u{212A}x-26", order, options).unwrap_err();
+        hypercast::detailed::cast_timestamp("2026-01-07 15:04:05+2", options).unwrap_err()
+    });
+    assert_allocation_free("detailed i32_from_f64 failure", || {
+        hypercast::detailed::i32_from_f64(f64::NAN).unwrap_err()
+    });
+
     // The checked doors: judgement, rounding and delivery, on the stack.
     let dec = |text: &str| hypercast::decimal_for_declaration(text).unwrap();
     let latitude = hypercast::Constraints::<f64>::numeric(
@@ -211,6 +341,9 @@ fn allocation_free() {
     .unwrap();
     assert_allocation_free("cast_checked rounded", || {
         hypercast::cast_checked(b"45.1234567", &format, &latitude).unwrap()
+    });
+    assert_allocation_free("detailed cast_checked failure", || {
+        hypercast::detailed::cast_checked(b"45.1x", &valid, &latitude).unwrap_err()
     });
     let long = format!("0.1{}1", "0".repeat(300));
     assert_allocation_free("cast_checked long", || {
@@ -242,6 +375,25 @@ fn allocation_free() {
     });
     assert_allocation_free("cast_text_checked violation", || {
         hypercast::cast_text_checked(b"Mail", &sexes).unwrap_err()
+    });
+
+    // A declaration to and from its C ABI form, into and out of stack buffers.
+    assert_allocation_free("from_raw numeric", || {
+        hypercast::Constraints::<f64>::from_raw(latitude.raw(), &[]).unwrap()
+    });
+    assert_allocation_free("pack_enum codes", || {
+        let mut out = [0u8; 32];
+        codes.pack_enum(&mut out).unwrap()
+    });
+    let mut sexes_packed = [0u8; 64];
+    let sexes_len = sexes.pack_enum(&mut sexes_packed).unwrap();
+    assert_allocation_free("pack_enum text", || {
+        let mut out = [0u8; 64];
+        sexes.pack_enum(&mut out).unwrap()
+    });
+    assert_allocation_free("from_raw text", || {
+        hypercast::Constraints::<hypercast::Text>::from_raw(sexes.raw(), &sexes_packed[..sexes_len])
+            .unwrap()
     });
 
     // The same judgements through the C exports, over a sample of
@@ -343,6 +495,132 @@ fn allocation_free() {
     assert_allocation_free("cast_declared_decimal contract violation", || unsafe {
         cast_declared_decimal(b"1".as_ptr(), 1, core::ptr::null_mut())
     });
+
+    // The four detailed exports: every kind of door, a value and each kind of failure, date
+    // options with a vocabulary judged on the call, the checked pair's codes, and refusals.
+    let mut months = Vec::new();
+    for (month, name) in [
+        (1, "Jan"),
+        (2, "Feb"),
+        (3, "Mar"),
+        (4, "Apr"),
+        (5, "May"),
+        (6, "Jun"),
+        (7, "Jul"),
+        (8, "Aug"),
+        (9, "Sep"),
+        (9, "Sept"),
+        (10, "Oct"),
+        (11, "Nov"),
+        (12, "Dec"),
+    ] {
+        months.push(month);
+        months.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        months.extend_from_slice(name.as_bytes());
+    }
+    let pivot = RawDateOptions { size: RawDateOptions::SIZE, flags: 7, pivot: 2029 };
+    let strict = RawNumFormat::from(NumFormat::STRICT);
+    let text_door = |door: u32, param: u32, format: *const RawNumFormat, input: &[u8]| {
+        detailed_export(|out, fault, _| unsafe {
+            cast_detailed(
+                door,
+                param,
+                format,
+                core::ptr::null(),
+                &pivot,
+                months.as_ptr(),
+                months.len(),
+                input.as_ptr(),
+                input.len(),
+                out,
+                fault,
+            )
+        })
+    };
+    type DetailedSample<'a> = (&'a str, u32, u32, *const RawNumFormat, &'a [u8], i32);
+    let null = core::ptr::null();
+    let detailed_samples: [DetailedSample; 16] = [
+        ("cast_detailed i32", 4, 0, null, b"-12", 0),
+        ("cast_detailed i32 failure", 4, 0, null, b"12a", 2),
+        ("cast_detailed i32 not UTF-8", 4, 0, null, b"1\xFF", 2),
+        ("cast_detailed strict", 4, 0, &strict, b"1,234,567", 0),
+        ("cast_detailed strict group", 4, 0, &strict, b"12,34", 2),
+        ("cast_detailed f64", 11, 0, null, b"1.5e3", 0),
+        ("cast_detailed decimal", 19, 0, null, b"-12.50", 0),
+        ("cast_detailed char", 23, 0, null, b"U+00E9", 0),
+        ("cast_detailed uuid", 12, 0, null, b"not-a-guid", 2),
+        ("cast_detailed text", 18, 0, null, b"abc", 0),
+        ("cast_detailed timestamp", 13, 0, null, b"2026-01-07 15:04:05+00", 0),
+        ("cast_detailed date", 15, 0, null, b"20260107", 0),
+        ("cast_detailed date_ordered", 20, 3, null, b"7-Sept-26", 0),
+        ("cast_detailed date_ordered name", 20, 3, null, b"7-Sepx-26", 2),
+        ("cast_detailed datetime", 21, 2, null, b"Jan/7/26 3:04 PM", 0),
+        ("cast_detailed refused", 24, 0, null, b"1", -1),
+    ];
+    for (door_name, door, param, format, input, code) in detailed_samples {
+        assert_eq!(text_door(door, param, format, input), code, "{door_name}");
+        assert_allocation_free(door_name, || text_door(door, param, format, input));
+    }
+    let typed = |door: u32, param: u32, value: f64| {
+        detailed_export(|out, fault, _| unsafe {
+            cast_detailed_from_f64(door, param, value, out, fault)
+        })
+    };
+    for (door_name, door, param, value, code) in [
+        ("cast_detailed_from_f64 decimal", 19, 0, 0.1, 0),
+        ("cast_detailed_from_f64 serial", 22, 1, 60.0, 3),
+        ("cast_detailed_from_f64 time", 16, 0, f64::NAN, 2),
+        ("cast_detailed_from_f64 duration", 17, 0, 1.5, 0),
+        ("cast_detailed_from_f64 refused", 18, 0, 1.0, -1),
+    ] {
+        assert_eq!(typed(door, param, value), code, "{door_name}");
+        assert_allocation_free(door_name, || typed(door, param, value));
+    }
+    let checked_detailed = |door: u32, raw: &RawConstraints, entries: &[u8], input: &[u8]| {
+        detailed_export(|out, fault, check| unsafe {
+            cast_checked_detailed(
+                door,
+                0,
+                core::ptr::null(),
+                raw,
+                entries.as_ptr(),
+                entries.len(),
+                input.as_ptr(),
+                input.len(),
+                out,
+                fault,
+                check,
+            )
+        })
+    };
+    for (door_name, door, raw, entries, input, code) in samples {
+        let door_name = door_name.replace("cast_checked", "cast_checked_detailed");
+        assert_eq!(checked_detailed(door, raw, entries, input), code, "{door_name}");
+        assert_allocation_free(&door_name, || checked_detailed(door, raw, entries, input));
+    }
+    let checked_typed = |value: f64| {
+        detailed_export(|out, fault, check| unsafe {
+            cast_checked_detailed_from_f64(
+                11,
+                0,
+                &latitude_raw,
+                core::ptr::null(),
+                0,
+                value,
+                out,
+                fault,
+                check,
+            )
+        })
+    };
+    for (door_name, value, code) in [
+        ("cast_checked_detailed_from_f64", 45.1234567, 0),
+        ("cast_checked_detailed_from_f64 violation", 91.0, 4),
+        ("cast_checked_detailed_from_f64 NaN", f64::NAN, 2),
+    ] {
+        assert_eq!(checked_typed(value), code, "{door_name}");
+        assert_allocation_free(door_name, || checked_typed(value));
+    }
 
     // The failure paths must stay allocation-free too — a fault is a span, never captured text.
     assert_allocation_free("cast_bool failure", || hypercast::cast_bool(b"maybe").unwrap_err());

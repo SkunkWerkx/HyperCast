@@ -346,7 +346,9 @@ val checkFloorApi = tasks.register<Exec>("checkFloorApi") {
 // multi-release layout picks the FFM NativeCore on a 25 JVM and the JNI one on 21.
 // `test` runs on Gradle's own JDK (25), `testFloor` on the floor.
 fun Test.suite(backend: String, feature: Int) {
-    useJUnitPlatform()
+    // The downgrade test needs a real 1.0 core, so it is its own task (testDowngrade, below) and
+    // never one of the two suites checkSuiteParity compares.
+    useJUnitPlatform { excludeTags("downgrade") }
     testClassesDirs = sourceSets.test.get().output.classesDirs
     classpath = files(tasks.jar) + sourceSets.test.get().output + configurations.testRuntimeClasspath.get()
     dependsOn(validateMultiReleaseJar, noNativeJar, checkFloorApi)
@@ -379,6 +381,36 @@ tasks.test {
 // The same suite on the floor JDK, through the toolchain: the JNI path end to end.
 val testFloor = tasks.register<Test>("testFloor") {
     suite("jni", jdkFloor)
+    javaLauncher = javaToolchains.launcherFor {
+        languageVersion = JavaLanguageVersion.of(jdkFloor)
+    }
+}
+
+// The downgrade test: a strict request against a real 1.0 core is rejected, never parsed in
+// legacy mode. It is handed the older libraries (-Phypercast.v1Core=<libhypercast.so/.dylib/.dll of a
+// build of tag v1.0.0>, -Phypercast.preDetailedCore=<a core with every 1.0-era export and none of
+// the detailed ones>, -Phypercast.v1Jni=<a libhypercast_jni of a core without the detailed
+// exports>) and runs its child JVMs on the JDK of whichever task runs it: `testDowngrade` on
+// Gradle's 25 (FFM), `testDowngradeFloor` on the floor (JNI). Outside `check`: the 1.0
+// libraries are not something CI builds here.
+fun Test.downgrade() {
+    useJUnitPlatform { includeTags("downgrade") }
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = files(tasks.jar) + sourceSets.test.get().output + configurations.testRuntimeClasspath.get()
+    dependsOn(tasks.jar)
+    jvmArgs("--enable-native-access=ALL-UNNAMED")
+    for (name in listOf("hypercast.v1Core", "hypercast.preDetailedCore", "hypercast.v1Jni")) {
+        providers.gradleProperty(name).orNull?.let { systemProperty(name, it) }
+    }
+    outputs.upToDateWhen { false }
+}
+
+tasks.register<Test>("testDowngrade") {
+    downgrade()
+}
+
+tasks.register<Test>("testDowngradeFloor") {
+    downgrade()
     javaLauncher = javaToolchains.launcherFor {
         languageVersion = JavaLanguageVersion.of(jdkFloor)
     }

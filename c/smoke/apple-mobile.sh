@@ -71,6 +71,7 @@ check_program() {
   [ "$got" = "$want" ] || fail "$rid: linked for platform $got, expected $want"
   case "$program" in
     *smoke_corpus*) args=("$corpus") ;;
+    *smoke_downgrade*) args=(accept) ;;
   esac
   if [ "$#" -gt 0 ]; then
     output="$("$@" "$program" ${args[@]+"${args[@]}"})" || fail "$rid: $program failed"

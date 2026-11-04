@@ -4,6 +4,13 @@
 //! of capturing the offending text (which would allocate), a fault points back into the
 //! caller's own input buffer as a byte span.
 
+use crate::detail::Failure;
+use crate::site::Site;
+use crate::text::{
+    contains_white_space, space_like_len, space_like_len_back, white_space_len,
+    white_space_len_back,
+};
+
 /// The closed set of reasons a cast can fail. Adding a member is a deliberate breaking
 /// change: every exhaustive match over this enum — in the core and in every binding's
 /// discriminated union — must be updated together.
@@ -12,7 +19,7 @@
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reason {
-    /// Required input was empty or whitespace. Bindings surface this as "absent" (null/None)
+    /// Required input was empty or white space. Bindings surface this as "absent" (null/None)
     /// on their optional doors — the core has one door per type, not a required/optional pair.
     Empty = 1,
     /// Input was present but not recognizable as the target type.
@@ -74,9 +81,9 @@ impl core::fmt::Display for Fault {
 /// type has in its own platform's error culture.
 impl core::error::Error for Fault {}
 
+/// The unit tests' spellings of a fault.
+#[cfg(test)]
 impl Fault {
-    pub(crate) const EMPTY: Fault = Fault { reason: Reason::Empty, offset: 0, len: 0 };
-
     pub(crate) fn malformed(offset: usize, len: usize) -> Fault {
         let (offset, len) = span_of(offset, len);
         Fault { reason: Reason::Malformed, offset, len }
@@ -190,11 +197,11 @@ impl<const N: usize> Symbol<N> {
     }
 
     /// Whether a symbol read across the ABI keeps [`new`](Self::new)'s rules — a length of
-    /// `1..=N`, no ASCII digit, well-formed UTF-8 — and, with `flush`, has no ASCII
-    /// whitespace in it either (a sign or a percent symbol sits flush against the digits).
-    /// Every numeric cast through the C ABI checks two separators, so the common one-byte
-    /// symbol is decided without a loop or a call, and UTF-8 is checked only once a byte is
-    /// outside ASCII.
+    /// `1..=N`, no ASCII digit, well-formed UTF-8 — and, with `flush`, has no white space
+    /// in it either (a sign or a percent symbol sits flush against the digits). The checks
+    /// run in that order. Every numeric cast through the C ABI checks two separators, so the
+    /// common one-byte symbol is decided without a loop or a call, and UTF-8 and white space
+    /// beyond ASCII are looked for only once a byte is outside ASCII.
     #[inline]
     pub(crate) fn check(&self, flush: bool) -> bool {
         let len = usize::from(self.len);
@@ -203,17 +210,32 @@ impl<const N: usize> Symbol<N> {
         }
         if len == 1 {
             let byte = self.bytes[0];
-            return byte < 0x80 && !byte.is_ascii_digit() && !(flush && byte.is_ascii_whitespace());
+            return byte < 0x80
+                && !byte.is_ascii_digit()
+                && !(flush && matches!(byte, 0x09..=0x0D | 0x20));
         }
         let symbol = self.as_bytes();
         let mut ascii = true;
         for &byte in symbol {
-            if byte.is_ascii_digit() || (flush && byte.is_ascii_whitespace()) {
+            if byte.is_ascii_digit() {
                 return false;
             }
             ascii &= byte < 0x80;
         }
-        ascii || utf8_ok(symbol)
+        if !ascii && !utf8_ok(symbol) {
+            return false;
+        }
+        !(flush && contains_white_space(symbol))
+    }
+
+    /// Whether a white-space code point occurs in the symbol, the one-byte symbol decided
+    /// without a call.
+    #[inline]
+    pub(crate) fn has_white_space(&self) -> bool {
+        match self.as_bytes() {
+            [byte] => matches!(byte, 0x09..=0x0D | 0x20),
+            symbol => contains_white_space(symbol),
+        }
     }
 
     /// [`check`](Self::check), with nothing declared passing too.
@@ -273,7 +295,7 @@ impl<const N: usize> Symbol<N> {
 /// ASCII more often than not. Overlong forms, surrogates and code points past U+10FFFF are
 /// refused, exactly as there.
 #[inline]
-fn utf8_ok(bytes: &[u8]) -> bool {
+pub(crate) fn utf8_ok(bytes: &[u8]) -> bool {
     let mut i = 0;
     while let Some(&lead) = bytes.get(i) {
         let (len, floor) = match lead {
@@ -313,10 +335,16 @@ impl<const N: usize> core::fmt::Display for Symbol<N> {
 /// `руб.`). Empty is [`CurrencySymbol::NONE`]: nothing declared, nothing matched.
 ///
 /// The symbol is matched whole, at the edges of the numeric body — leading (before or
-/// after a sign) or trailing, with optional ASCII whitespace between it and the digits —
+/// after a sign) or trailing, with optional white space between it and the digits —
 /// and only while [`NumFormat::CURRENCY`] is set. It never participates in the digit scan,
 /// so a symbol that happens to contain a separator character (`kr.` under `.` grouping)
 /// is fine.
+///
+/// White space may sit inside a symbol (CLDR's `F CFA`, written with U+202F), never at its
+/// edges, where the doors ignore it. Inside, `' '`, U+00A0 and U+202F stand for each other
+/// in the input, one character for one: `F CFA` declared with any of them reads `F CFA`
+/// written with any of them. Every other character, other white space included, matches
+/// exactly; a run of spaces never matches one, and the space is never optional.
 ///
 /// ABI layout: the 16 bytes, then the length, 17 bytes with no alignment, as a [`Symbol`].
 #[repr(C)]
@@ -347,9 +375,9 @@ impl CurrencySymbol {
     pub const NONE: CurrencySymbol = CurrencySymbol { bytes: [0; Self::MAX_BYTES], len: 0 };
 
     /// Declares `symbol`. `None` when it is empty, longer than [`MAX_BYTES`](Self::MAX_BYTES)
-    /// bytes, or contains an ASCII digit or ASCII whitespace — those would collide with the
-    /// digit scan and the trimming the doors do around the symbol, so they are a caller
-    /// bug, not a symbol.
+    /// bytes, contains an ASCII digit, or starts or ends with a white-space code point —
+    /// those would collide with the digit scan and the trimming the doors do around the
+    /// symbol, so they are a caller bug, not a symbol. White space inside it is allowed.
     pub const fn new(symbol: &str) -> Option<CurrencySymbol> {
         let source = symbol.as_bytes();
         if source.is_empty() || source.len() > Self::MAX_BYTES {
@@ -359,18 +387,22 @@ impl CurrencySymbol {
         let mut i = 0;
         while i < source.len() {
             let byte = source[i];
-            if byte.is_ascii_digit() || byte.is_ascii_whitespace() {
+            if byte.is_ascii_digit() {
                 return None;
             }
             bytes[i] = byte;
             i += 1;
         }
+        if white_space_len(source) != 0 || white_space_len_back(source) != 0 {
+            return None;
+        }
         Some(CurrencySymbol { bytes, len: source.len() as u8 })
     }
 
     /// Whether a symbol read across the ABI keeps [`new`](Self::new)'s rules, nothing
-    /// declared passing too: a length of at most 16, no ASCII digit or whitespace, and
-    /// well-formed UTF-8, which is checked only once a byte is outside ASCII.
+    /// declared passing too: a length of at most 16, no ASCII digit, well-formed UTF-8, which
+    /// is checked only once a byte is outside ASCII, and no white space at either edge, in
+    /// that order.
     #[inline]
     pub(crate) fn check(&self) -> bool {
         let len = usize::from(self.len);
@@ -383,12 +415,92 @@ impl CurrencySymbol {
         let symbol = self.as_bytes();
         let mut ascii = true;
         for &byte in symbol {
-            if byte.is_ascii_digit() || byte.is_ascii_whitespace() {
+            if byte.is_ascii_digit() {
                 return false;
             }
             ascii &= byte < 0x80;
         }
-        ascii || utf8_ok(symbol)
+        if !ascii && !utf8_ok(symbol) {
+            return false;
+        }
+        white_space_len(symbol) == 0 && white_space_len_back(symbol) == 0
+    }
+
+    /// What follows the symbol where it starts `text`, or `None` where it doesn't. An exact
+    /// match is tried first; only a symbol with a space-like character inside can match
+    /// otherwise, each of its `' '`, U+00A0 and U+202F matching any one of the three. The
+    /// symbol's length in `text` can differ from its declared length, so callers measure it
+    /// from what is returned.
+    #[inline]
+    pub(crate) fn strip_leading<'t>(&self, text: &'t [u8]) -> Option<&'t [u8]> {
+        let symbol = self.as_bytes();
+        if symbol.is_empty() {
+            return None;
+        }
+        match text.strip_prefix(symbol) {
+            Some(rest) => Some(rest),
+            None => Self::strip_leading_spaced(symbol, text),
+        }
+    }
+
+    /// [`strip_leading`](Self::strip_leading) past the exact match: the symbol read
+    /// character by character from the front.
+    #[inline(never)]
+    fn strip_leading_spaced<'t>(mut symbol: &[u8], mut text: &'t [u8]) -> Option<&'t [u8]> {
+        while let [want, after @ ..] = symbol {
+            let width = space_like_len(symbol);
+            if width == 0 {
+                match text {
+                    [got, rest @ ..] if got == want => (symbol, text) = (after, rest),
+                    _ => return None,
+                }
+            } else {
+                symbol = symbol.get(width..)?;
+                let got = space_like_len(text);
+                if got == 0 {
+                    return None;
+                }
+                text = text.get(got..)?;
+            }
+        }
+        Some(text)
+    }
+
+    /// What precedes the symbol where it ends `text`, or `None` where it doesn't: the mirror
+    /// of [`strip_leading`](Self::strip_leading).
+    #[inline]
+    pub(crate) fn strip_trailing<'t>(&self, text: &'t [u8]) -> Option<&'t [u8]> {
+        let symbol = self.as_bytes();
+        if symbol.is_empty() {
+            return None;
+        }
+        match text.strip_suffix(symbol) {
+            Some(rest) => Some(rest),
+            None => Self::strip_trailing_spaced(symbol, text),
+        }
+    }
+
+    /// [`strip_trailing`](Self::strip_trailing) past the exact match: the symbol read
+    /// character by character from the back.
+    #[inline(never)]
+    fn strip_trailing_spaced<'t>(mut symbol: &[u8], mut text: &'t [u8]) -> Option<&'t [u8]> {
+        while let [before @ .., want] = symbol {
+            let width = space_like_len_back(symbol);
+            if width == 0 {
+                match text {
+                    [rest @ .., got] if got == want => (symbol, text) = (before, rest),
+                    _ => return None,
+                }
+            } else {
+                symbol = symbol.get(..symbol.len().checked_sub(width)?)?;
+                let got = space_like_len_back(text);
+                if got == 0 {
+                    return None;
+                }
+                text = text.get(..text.len().checked_sub(got)?)?;
+            }
+        }
+        Some(text)
     }
 
     /// The symbol's UTF-8 bytes — empty for [`NONE`](Self::NONE).
@@ -502,12 +614,14 @@ impl NativeDigits {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NumFormat {
     /// Bitwise OR of the `GROUPING`/`PARENS`/`EXPONENT`/`RADIX_PREFIX`/`PERCENT`/`CURRENCY`/
-    /// `TRAILING_SIGN` flags, plus the `SEPARATOR_DETECT` policy.
+    /// `TRAILING_SIGN` flags, plus the `SEPARATOR_DETECT` policy and, in bits 8 and 9, the
+    /// grouping policy (`GROUPING_LEGACY`, `GROUPING_WESTERN` or `GROUPING_INDIAN`).
     pub flags: u32,
     /// Native digits read beside ASCII `0`–`9`. [`NativeDigits::NONE`] declares none.
     pub digits: NativeDigits,
     /// The declared decimal separator (`.` invariant, `,` in eurozone-style text): one or
-    /// two characters. An empty symbol matches nothing, so no fraction can be written.
+    /// two characters, with no white space in them (a numeral admits white space only as a
+    /// group separator). An empty symbol matches nothing, so no fraction can be written.
     pub decimal_sep: Symbol<8>,
     /// The declared digit-group separator (`,` invariant, `.` or U+00A0 elsewhere). Must
     /// differ from `decimal_sep`; the doors check the decimal separator first, so a caller
@@ -516,8 +630,8 @@ pub struct NumFormat {
     pub group_sep: Symbol<8>,
     /// The decimal separator of a currency amount — read in place of `decimal_sep` when the
     /// declared symbol is present in the text, as the BCL switches to a culture's
-    /// `CurrencyDecimalSeparator` when it sees the symbol. [`Symbol::NONE`] keeps
-    /// `decimal_sep`.
+    /// `CurrencyDecimalSeparator` when it sees the symbol, and with no white space in it
+    /// either. [`Symbol::NONE`] keeps `decimal_sep`.
     pub currency_decimal_sep: Symbol<8>,
     /// The group separator of a currency amount, likewise. [`Symbol::NONE`] keeps `group_sep`.
     pub currency_group_sep: Symbol<8>,
@@ -536,9 +650,11 @@ pub struct NumFormat {
 }
 
 impl NumFormat {
-    /// Permit `group_sep` between digits (group sizes are not validated — a separator must
-    /// simply sit between two digits, HyperCast's own deterministic rule where .NET's
-    /// `AllowThousands` deferred to per-culture quirks).
+    /// Permit `group_sep` between digits. Under the legacy grouping policy group sizes are not
+    /// validated — a separator must simply sit between two digits, HyperCast's own
+    /// deterministic rule where .NET's `AllowThousands` deferred to per-culture quirks; a
+    /// strict policy ([`GROUPING_WESTERN`](Self::GROUPING_WESTERN),
+    /// [`GROUPING_INDIAN`](Self::GROUPING_INDIAN)) judges every group.
     pub const GROUPING: u32 = 1 << 0;
     /// Permit accounting parentheses as negation: `(1,234)` is -1234.
     pub const PARENS: u32 = 1 << 1;
@@ -565,14 +681,14 @@ impl NumFormat {
     pub const SEPARATOR_DETECT: u32 = 1 << 5;
     /// Permit the declared [`currency`](Self::currency) symbol at either edge of the
     /// numeric body — leading (`$5`, `-$5`, `$ -5`) or trailing (`5 €`, `1.234,50 kr.`),
-    /// once, with optional ASCII whitespace between symbol and digits; accounting
+    /// once, with optional white space between symbol and digits; accounting
     /// parentheses wrap the symbol along with the digits (`($5)`, `(1.234,50 kr.)`). With
     /// [`CurrencySymbol::NONE`] declared the flag matches nothing and changes nothing.
     /// Integer and real doors.
     pub const CURRENCY: u32 = 1 << 6;
     /// Permit the sign after the digits (`5-`, `5 -`, `5 €-`, `5- €`), the way a culture
     /// whose negative pattern is `n-` writes it and .NET's `AllowTrailingSign` reads it:
-    /// ASCII `-`/`+` or the declared signs, once, with optional ASCII whitespace before it,
+    /// ASCII `-`/`+` or the declared signs, once, with optional white space before it,
     /// and never beside a leading sign or inside accounting parentheses. Not part of
     /// [`ALL`](Self::ALL): a bridge sets it from the culture's own negative pattern.
     pub const TRAILING_SIGN: u32 = 1 << 7;
@@ -586,9 +702,43 @@ impl NumFormat {
         | Self::PERCENT
         | Self::CURRENCY;
 
+    /// Grouping policy `00`, legacy: a group separator anywhere between two digits, whatever
+    /// the group sizes (`12,34` is 1234). What a format declaring no policy has: the C ABI's
+    /// null format, a 1.0 layout, [`new`](Self::new) with no policy bits, and
+    /// [`INVARIANT`](Self::INVARIANT).
+    pub const GROUPING_LEGACY: u32 = 0;
+    /// Grouping policy `01`, strict Western: once a numeral uses a group separator, its
+    /// integer part is groups of exactly three digits counted leftward from the decimal
+    /// separator (or the numeral's end), the leftmost group one to three. An ungrouped
+    /// numeral stays valid; grouping after the decimal separator or in an exponent never is.
+    /// Digits are counted as digits, native ones included, never bytes, and the rule holds for
+    /// the currency group separator and each space-like separator alike. A policy only
+    /// judges groups: with [`GROUPING`](Self::GROUPING) off, a group separator stays forbidden.
+    pub const GROUPING_WESTERN: u32 = 1 << 8;
+    /// Grouping policy `10`, strict Indian (lakh and crore): as
+    /// [`GROUPING_WESTERN`](Self::GROUPING_WESTERN), but the group next to the decimal
+    /// separator has three digits, every group to its left two, and the leftmost one or two
+    /// (`12,34,567`).
+    pub const GROUPING_INDIAN: u32 = 2 << 8;
+    /// The two policy bits, 8 and 9, within `flags`. Policy `11` is refused by
+    /// [`check`](Self::check). Set a policy with [`with_grouping`](Self::with_grouping), which
+    /// replaces the field.
+    pub const GROUPING_POLICY: u32 = 3 << 8;
+
+    /// Every `flags` bit 1.1 defines; [`check`](Self::check) refuses a format with any other.
+    const DEFINED: u32 =
+        Self::ALL | Self::SEPARATOR_DETECT | Self::TRAILING_SIGN | Self::GROUPING_POLICY;
+
     /// The invariant profile — `.` decimal, `,` grouping, every default lenience on, nothing
-    /// else declared. This is what the FFI doors use when the caller passes a null format.
+    /// else declared, and legacy grouping. This is what the FFI doors use when the caller
+    /// passes a null format.
     pub const INVARIANT: NumFormat = NumFormat::new('.', ',', Self::ALL);
+
+    /// The invariant profile with strict Western grouping: `.` decimal, `,` grouping, every
+    /// default lenience on ([`ALL`](Self::ALL)) and
+    /// [`GROUPING_WESTERN`](Self::GROUPING_WESTERN), so `1,234` is 1234 and `12,34` is
+    /// `Malformed`.
+    pub const STRICT: NumFormat = NumFormat::new('.', ',', Self::ALL | Self::GROUPING_WESTERN);
 
     /// Every field empty, the number separators included — not a format on its own (an
     /// empty separator matches nothing, and the ABI refuses it), but the bytes a layout
@@ -678,18 +828,56 @@ impl NumFormat {
         NumFormat { digits, ..self }
     }
 
+    /// The same format with the grouping policy `policy`
+    /// ([`GROUPING_LEGACY`](Self::GROUPING_LEGACY),
+    /// [`GROUPING_WESTERN`](Self::GROUPING_WESTERN) or
+    /// [`GROUPING_INDIAN`](Self::GROUPING_INDIAN)). The policy field is replaced, never ORed
+    /// into, so a second call changes the policy rather than combining two; only the
+    /// [`GROUPING_POLICY`](Self::GROUPING_POLICY) bits of `policy` are read, and every other
+    /// flag is kept.
+    pub const fn with_grouping(self, policy: u32) -> NumFormat {
+        let flags = (self.flags & !Self::GROUPING_POLICY) | (policy & Self::GROUPING_POLICY);
+        NumFormat { flags, ..self }
+    }
+
+    /// The group sizes a strict policy demands, as `(leftmost, inner)`: the leftmost group
+    /// holds one to `leftmost` digits and every group after it `inner`, but the last, which
+    /// holds three. `None` for legacy (and for the refused policy `11`, which no validated
+    /// format carries).
+    #[inline(always)]
+    pub(crate) fn strict_groups(&self) -> Option<(u32, u32)> {
+        match self.flags & Self::GROUPING_POLICY {
+            Self::GROUPING_WESTERN => Some((3, 3)),
+            Self::GROUPING_INDIAN => Some((2, 2)),
+            _ => None,
+        }
+    }
+
     pub(crate) fn allows(&self, flag: u32) -> bool {
         self.flags & flag != 0
     }
 
-    /// Whether a format read across the ABI is one this API would declare: each number
-    /// separator one to eight bytes with no ASCII digit, the two different; each currency
-    /// separator the same or empty, and the pair in force different; each sign and the
-    /// percent symbol the same or empty and with no ASCII whitespace; the currency symbol
-    /// a [`CurrencySymbol`] or empty; the digits a [`NativeDigits`] or none. Anything else
-    /// is a caller bug, not a data verdict, and the C ABI reports it as one.
+    /// Whether a format read across the ABI is one this API would declare: `flags` sets only
+    /// bits this version defines (0 to 9) and names a grouping policy (never `11`); each
+    /// number separator one to eight bytes with no ASCII digit, the two different; each
+    /// currency separator the same or empty, and the pair in force different; each decimal
+    /// separator, plain and currency, free of white space (a numeral admits white space only
+    /// as a group separator); each sign and the percent symbol the same or empty and with no
+    /// white space; the currency symbol a [`CurrencySymbol`] or empty; the digits a
+    /// [`NativeDigits`] or none. Anything else is a caller bug, not a data verdict, and the
+    /// C ABI reports it as one. Within a field the rules apply in this order: length, digit,
+    /// equal separators, white space.
+    ///
+    /// The `flags` rules are 1.1's: 1.0 ignored undefined bits. The 1.0 C exports still do,
+    /// reading only bits 0 to 7 (so they always parse with legacy grouping) before judging
+    /// the rest; [`validate`](Self::validate) and every newer interface apply them.
     #[inline]
     pub fn check(&self) -> bool {
+        if self.flags & !Self::DEFINED != 0
+            || self.flags & Self::GROUPING_POLICY == Self::GROUPING_POLICY
+        {
+            return false;
+        }
         if !self.decimal_sep.check(false) || !self.group_sep.check(false) {
             return false;
         }
@@ -699,6 +887,9 @@ impl NumFormat {
             && self.decimal_sep.len == self.group_sep.len
             && self.decimal_sep == self.group_sep
         {
+            return false;
+        }
+        if self.decimal_sep.has_white_space() {
             return false;
         }
         // Everything below is declared by few formats; one word of their lengths and the
@@ -719,6 +910,7 @@ impl NumFormat {
         }
         let (decimal, group) = self.separators(true);
         decimal != group
+            && !self.currency_decimal_sep.has_white_space()
             && self.minus_sign.check_optional(true)
             && self.plus_sign.check_optional(true)
             && self.percent.check_optional(true)
@@ -747,13 +939,29 @@ impl NumFormat {
         }
     }
 
+    /// The byte length of the group separator in force (the currency one where `currency`
+    /// says so) at `text[at..]`, or `0` when there is none. A space-like separator (`' '`,
+    /// U+00A0 or U+202F) stands for all three, since real data mixes them; any other
+    /// separator matches exactly.
+    #[inline]
+    pub(crate) fn group_at(&self, text: &[u8], at: usize, currency: bool) -> usize {
+        let (_, group) = self.separators(currency);
+        let Some(rest) = text.get(at..) else {
+            return 0;
+        };
+        if space_like(group.as_bytes()) {
+            return space_like_len(rest);
+        }
+        if group.matches(rest, 0) { group.len() } else { 0 }
+    }
+
     /// Resolves this format's `.`/`,` roles for `text` (trimmed, offset `start` in the
     /// caller's input) under [`SEPARATOR_DETECT`](Self::SEPARATOR_DETECT)'s rules,
     /// returning a concrete declared-separator format for the ordinary engines to run
     /// with. The currency separators are resolved along with the number ones: detection
     /// governs the whole token. The one fault detection itself can produce: `Malformed` at
     /// a structurally undecidable separator.
-    pub(crate) fn resolve_detected(&self, text: &[u8], start: usize) -> Result<NumFormat, Fault> {
+    pub(crate) fn resolve_detected(&self, text: &[u8], start: usize) -> Result<NumFormat, Failure> {
         let flags = self.flags & !Self::SEPARATOR_DETECT;
         let (mut dots, mut commas) = (0usize, 0usize);
         let (mut last_dot, mut last_comma) = (0usize, 0usize);
@@ -855,6 +1063,13 @@ impl core::fmt::Display for Decimal {
     }
 }
 
+/// Whether a declared group separator is one of the three that stand for each other.
+#[inline]
+fn space_like(separator: &[u8]) -> bool {
+    let len = space_like_len(separator);
+    len != 0 && len == separator.len()
+}
+
 /// The single-separator-kind arm of separator detection: repeated ⇒ grouping; a
 /// non-3-digit right run ⇒ decimal; a 3-digit right run with a `0` integer part ⇒
 /// decimal; anything else is undecidable.
@@ -865,7 +1080,7 @@ fn resolve_single_sep(
     count: usize,
     sep: char,
     other: char,
-) -> Result<(char, char), Fault> {
+) -> Result<(char, char), Failure> {
     if count >= 2 {
         return Ok((other, sep));
     }
@@ -881,7 +1096,7 @@ fn resolve_single_sep(
     if left == 1 && before.last() == Some(&b'0') {
         return Ok((sep, other));
     }
-    Err(Fault::malformed(start + at, 1))
+    Err(Failure::at(Site::DetectAmbiguous, start + at, 1))
 }
 
 impl Default for NumFormat {
@@ -889,6 +1104,99 @@ impl Default for NumFormat {
         Self::INVARIANT
     }
 }
+
+impl NumFormat {
+    /// The format, validated for the [`detailed`](crate::detailed) doors: what
+    /// [`check`](Self::check) accepts, or the [`DeclarationError`] saying why not, the
+    /// `flags` rules first (policy `11` is [`GroupingPolicy`](DeclarationError::GroupingPolicy),
+    /// then an undefined bit [`UnknownFlag`](DeclarationError::UnknownFlag)). A refusal is a
+    /// caller's mistake in declaring the format, never a verdict on data, so it is kept apart
+    /// from a [`Failure`].
+    pub fn validate(self) -> Result<ValidNumFormat, DeclarationError> {
+        if self.flags & Self::GROUPING_POLICY == Self::GROUPING_POLICY {
+            Err(DeclarationError::GroupingPolicy)
+        } else if self.flags & !Self::DEFINED != 0 {
+            Err(DeclarationError::UnknownFlag)
+        } else if self.check() {
+            Ok(ValidNumFormat { format: self })
+        } else {
+            Err(DeclarationError::NumFormat)
+        }
+    }
+}
+
+/// A [`NumFormat`] that [`NumFormat::validate`] has accepted: what the
+/// [`detailed`](crate::detailed) numeric doors take, so a declaration they could not honour
+/// never reaches them.
+// Transparent, so a format the C ABI reads in place can be taken as validated in place
+// ([`from_checked`](Self::from_checked)) without a copy.
+#[non_exhaustive]
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ValidNumFormat {
+    format: NumFormat,
+}
+
+impl ValidNumFormat {
+    /// [`NumFormat::INVARIANT`], validated.
+    pub const INVARIANT: ValidNumFormat = ValidNumFormat { format: NumFormat::INVARIANT };
+
+    /// `format`, which [`NumFormat::check`] has accepted (the rules
+    /// [`validate`](NumFormat::validate) judges), as the validated format it is, in place.
+    // The detailed C exports (ffi.rs), so unused in a build without `exports`.
+    #[cfg_attr(not(feature = "exports"), allow(dead_code))]
+    pub(crate) fn from_checked(format: &NumFormat) -> &ValidNumFormat {
+        // SAFETY: `ValidNumFormat` is `repr(transparent)` over its one `NumFormat` field.
+        unsafe { &*core::ptr::from_ref(format).cast::<ValidNumFormat>() }
+    }
+
+    /// The format it validated.
+    pub const fn format(&self) -> &NumFormat {
+        &self.format
+    }
+}
+
+impl Default for ValidNumFormat {
+    fn default() -> Self {
+        Self::INVARIANT
+    }
+}
+
+/// Why a declaration was refused at validation: the caller's mistake, reported before any
+/// input is read. More members may join in a minor release.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeclarationError {
+    /// A [`NumFormat`] breaks [`NumFormat::check`]'s rules: a separator, sign, percent or
+    /// currency symbol, or the native digits, that the format's constructors would not declare.
+    NumFormat,
+    /// A [`NumFormat`] declares grouping policy `11`
+    /// ([`GROUPING_POLICY`](NumFormat::GROUPING_POLICY) all set), which names no policy.
+    GroupingPolicy,
+    /// A [`NumFormat`] sets a `flags` bit this version doesn't define (bit 10 or above).
+    UnknownFlag,
+    /// [`DateOptions`](crate::DateOptions) carry an option bit this core doesn't define.
+    DateFlags,
+    /// The pivot of [`DateOptions`](crate::DateOptions) is neither 0 nor 100 through 9999.
+    DatePivot,
+    /// A [`MonthNames`](crate::MonthNames) vocabulary breaks the rule inside.
+    MonthNames(crate::date_options::MonthNamesFault),
+}
+
+impl core::fmt::Display for DeclarationError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            DeclarationError::NumFormat => "the number format declares a symbol it may not",
+            DeclarationError::GroupingPolicy => "the number format declares grouping policy 11",
+            DeclarationError::UnknownFlag => "the number format sets an undefined flag",
+            DeclarationError::DateFlags => "the date options set a bit this core does not define",
+            DeclarationError::DatePivot => "the date pivot is neither 0 nor 100 through 9999",
+            DeclarationError::MonthNames(fault) => return write!(f, "the month names: {fault}"),
+        })
+    }
+}
+
+impl core::error::Error for DeclarationError {}
 
 /// A point in time, independent of any time zone or calendar — protobuf's
 /// `google.protobuf.Timestamp` layout exactly, so every binding folds it into its platform
@@ -946,11 +1254,27 @@ pub struct Duration {
     pub nanos: i32,
 }
 
-/// Trims leading and trailing ASCII whitespace, returning the trimmed slice and the byte
-/// offset it starts at in the original input — the offset every fault span is rebased by,
-/// so spans always index the caller's own buffer.
+/// Trims leading and trailing Unicode `White_Space`, returning the trimmed slice and the
+/// byte offset it starts at in the original input — the offset every fault span is rebased
+/// by, so spans always index the caller's own buffer.
+///
+/// The common input has a visible ASCII byte at both ends, and returns on those two
+/// compares; everything else (white space, a non-ASCII or control edge) takes the scan.
+#[inline]
 pub(crate) fn trim(input: &[u8]) -> (&[u8], usize) {
-    let stripped = input.trim_ascii_start();
-    let start = input.len() - stripped.len();
-    (stripped.trim_ascii_end(), start)
+    if let (Some(&first), Some(&last)) = (input.first(), input.last())
+        && matches!(first, 0x21..=0x7F)
+        && matches!(last, 0x21..=0x7F)
+    {
+        return (input, 0);
+    }
+    trim_scan(input)
+}
+
+#[inline(never)]
+fn trim_scan(input: &[u8]) -> (&[u8], usize) {
+    let start = crate::text::skip_white_space(input);
+    let rest = input.get(start..).unwrap_or_default();
+    let end = rest.len().saturating_sub(crate::text::skip_white_space_back(rest));
+    (rest.get(..end).unwrap_or_default(), start)
 }

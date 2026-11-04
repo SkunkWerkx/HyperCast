@@ -13,7 +13,10 @@
 //! parentheses, the currency symbol and the signs around the digits ([`frame`]) — and the
 //! digit reader that knows a declared native set ([`read_digit`]).
 
+use crate::detail::Failure;
 use crate::lane;
+use crate::site::Site;
+use crate::text::{skip_white_space, skip_white_space_back};
 use crate::verdict::{Fault, NumFormat, trim};
 
 /// The UTF-8 length of the character starting at `text[at]`, clamped to the text — so a
@@ -56,6 +59,8 @@ pub(crate) fn read_digit(text: &[u8], at: usize, format: &NumFormat) -> Option<(
 /// leading symbol, or (with [`NumFormat::TRAILING_SIGN`]) after them, after a trailing
 /// symbol included. What is left is the digits with their separators and an exponent,
 /// which each door reads its own way.
+/// White space of any kind and amount around each of those is no part of the numeral and
+/// is ignored; inside the numeral only a declared group separator may be white space.
 pub(crate) struct Frame<'t> {
     /// The digits, separators and exponent, nothing else.
     pub(crate) body: &'t [u8],
@@ -75,23 +80,23 @@ pub(crate) fn frame<'t>(
     start: usize,
     format: &NumFormat,
     percent_door: bool,
-) -> Result<Frame<'t>, Fault> {
+) -> Result<Frame<'t>, Failure> {
     // Percent strips first, exactly as Svartalfheim checked `trimmed[^1]` first — the parens
     // and sign live inside the percent body: `(2.5)%` is -0.025. A trailing sign may follow
     // the percent (`2.5%-`); it is read here and applied below like any other.
     let mut post_sign: Option<TrailingSign> = None;
     let (body, percent) = match strip_percent(text, format, percent_door) {
-        Some(rest) => (rest.trim_ascii_end(), true),
+        Some(rest) => (trim_end(rest), true),
         None => match strip_signed_percent(text, start, format, percent_door) {
             Some((rest, sign)) => {
                 post_sign = Some(sign);
-                (rest.trim_ascii_end(), true)
+                (trim_end(rest), true)
             }
             None => (text, false),
         },
     };
     if body.is_empty() {
-        return Err(Fault::malformed(start, text.len()));
+        return Err(Failure::at(Site::FramePercentOnly, start, text.len()));
     }
     let (body, base, parens) = strip_parens(body, start, format)?;
     let symbol = strip_currency(body, base, format)?;
@@ -100,7 +105,7 @@ pub(crate) fn frame<'t>(
     if let Some((_, at, len)) = after_symbol {
         // A sign after the symbol and another after the percent: the inner one is the fault.
         if post_sign.is_some() {
-            return Err(Fault::malformed(at, len));
+            return Err(Failure::at(Site::FrameSignAfterSymbolAndPercent, at, len));
         }
         post_sign = after_symbol;
     }
@@ -108,38 +113,44 @@ pub(crate) fn frame<'t>(
     let mut negative = parens;
     let mut signed = parens;
     let leading = read_sign(body, format);
-    if let Some(pre) = pre_sign {
+    if let Some((pre, pre_at, pre_len)) = pre_sign {
         // The sign sat ahead of a leading currency symbol (`-$5`); a second one after it,
-        // or one inside accounting parens, is double negation nonsense.
-        if parens || leading.is_some() {
-            return Err(Fault::malformed(base, leading.map_or(1, |(_, len)| len)));
+        // or one inside accounting parens, is double negation nonsense. The fault is the
+        // second sign, or the one inside the parens.
+        if let Some((_, len)) = leading {
+            return Err(Failure::at(Site::FrameSecondSignAfterSymbol, base, len));
+        }
+        if parens {
+            return Err(Failure::at(Site::FrameSignBeforeSymbolInParens, pre_at, pre_len));
         }
         negative = pre;
         signed = true;
     } else if let Some((minus, len)) = leading {
         if parens {
             // A sign inside accounting parens is double negation nonsense.
-            return Err(Fault::malformed(base, len));
+            return Err(Failure::at(Site::FrameSignInParens, base, len));
         }
         negative = minus;
         signed = true;
-        body = body.get(len..).unwrap_or_default();
-        base += len;
+        let rest = body.get(len..).unwrap_or_default();
+        let gap = skip_white_space(rest);
+        body = rest.get(gap..).unwrap_or_default();
+        base += len + gap;
     }
     if format.allows(NumFormat::TRAILING_SIGN)
         && let Some((minus, len)) = read_trailing_sign(body, format)
     {
         let at = body.len() - len;
         if signed {
-            return Err(Fault::malformed(base + at, len));
+            return Err(Failure::at(Site::FrameTrailingSignTwice, base + at, len));
         }
         negative = minus;
         signed = true;
-        body = body.get(..at).unwrap_or_default().trim_ascii_end();
+        body = trim_end(body.get(..at).unwrap_or_default());
     }
     if let Some((minus, at, len)) = post_sign {
         if signed {
-            return Err(Fault::malformed(at, len));
+            return Err(Failure::at(Site::FramePostSignTwice, at, len));
         }
         negative = minus;
     }
@@ -162,6 +173,12 @@ fn strip_percent<'t>(text: &'t [u8], format: &NumFormat, percent_door: bool) -> 
     None
 }
 
+/// `text` less the white space that ends it.
+#[inline]
+fn trim_end(text: &[u8]) -> &[u8] {
+    text.get(..text.len().saturating_sub(skip_white_space_back(text))).unwrap_or_default()
+}
+
 /// A trailing sign as `frame` records one: negative, offset in the caller's input, length.
 type TrailingSign = (bool, usize, usize);
 
@@ -181,7 +198,7 @@ fn strip_signed_percent<'t>(
         return None;
     }
     let (minus, len) = read_trailing_sign(text, format)?;
-    let ahead = text.get(..text.len() - len)?;
+    let ahead = trim_end(text.get(..text.len() - len)?);
     let rest = strip_percent(ahead, format, true)?;
     Some((rest, (minus, start + text.len() - len, len)))
 }
@@ -192,55 +209,59 @@ fn strip_parens<'t>(
     text: &'t [u8],
     start: usize,
     format: &NumFormat,
-) -> Result<(&'t [u8], usize, bool), Fault> {
+) -> Result<(&'t [u8], usize, bool), Failure> {
     if !format.allows(NumFormat::PARENS) || text.first() != Some(&b'(') {
         return Ok((text, start, false));
     }
     let [_, inner @ .., b')'] = text else {
-        return Err(Fault::malformed(start, text.len()));
+        return Err(Failure::at(Site::FrameParensUnclosed, start, text.len()));
     };
     let (inner, inner_start) = trim(inner);
     if inner.is_empty() {
-        return Err(Fault::malformed(start, text.len()));
+        return Err(Failure::at(Site::FrameParensEmpty, start, text.len()));
     }
     Ok((inner, start + 1 + inner_start, true))
 }
 
 /// What [`strip_currency`] leaves: the body less the symbol, and the signs it read on the
 /// symbol's far side — ahead of a leading symbol (`-$5`), or after a trailing one
-/// (`5 €-`, with where it sits in the caller's input and its length).
+/// (`5 €-`), each with where it sits in the caller's input and its length.
 struct Currency<'t> {
     body: &'t [u8],
     base: usize,
-    pre_sign: Option<bool>,
+    pre_sign: Option<(bool, usize, usize)>,
     post_sign: Option<(bool, usize, usize)>,
     found: bool,
 }
 
 /// Strips the declared currency symbol when the flag permits, from either edge of the
 /// (already paren-stripped) body: leading — before or after a sign — or trailing, once,
-/// with ASCII whitespace between symbol and digits trimmed away. The sign consumed ahead
+/// with white space between symbol, sign and digits trimmed away. The symbol is matched as
+/// [`CurrencySymbol`](crate::CurrencySymbol) says, so its length in the input can differ
+/// from the declaration's; every offset here is measured in the input. The sign consumed ahead
 /// of a leading symbol, and a trailing sign after a trailing symbol, are reported for
 /// [`frame`] to apply exactly as it would a sign it read itself.
 fn strip_currency<'t>(
     body: &'t [u8],
     base: usize,
     format: &NumFormat,
-) -> Result<Currency<'t>, Fault> {
+) -> Result<Currency<'t>, Failure> {
     let untouched = Currency { body, base, pre_sign: None, post_sign: None, found: false };
     if !format.allows(NumFormat::CURRENCY) || format.currency.is_empty() {
         return Ok(untouched);
     }
-    let symbol = format.currency.as_bytes();
+    let symbol = &format.currency;
     let (sign, sign_len) = match read_sign(body, format) {
-        Some((minus, len)) => (Some(minus), len),
+        Some((minus, len)) => {
+            (Some((minus, base, len)), len + body.get(len..).map_or(0, skip_white_space))
+        }
         None => (None, 0),
     };
-    if let Some(after_symbol) = body.get(sign_len..).and_then(|rest| rest.strip_prefix(symbol)) {
+    if let Some(after_symbol) = body.get(sign_len..).and_then(|rest| symbol.strip_leading(rest)) {
         let after = body.len() - after_symbol.len();
         let (rest, rest_start) = trim(after_symbol);
         if rest.is_empty() {
-            return Err(Fault::malformed(base, body.len()));
+            return Err(Failure::at(Site::FrameCurrencyOnlyLeading, base, body.len()));
         }
         let base = base + after + rest_start;
         return Ok(Currency { body: rest, base, pre_sign: sign, post_sign: None, found: true });
@@ -253,15 +274,15 @@ fn strip_currency<'t>(
         None
     };
     let ahead = match trailing {
-        Some((_, len)) => body.get(..body.len() - len).unwrap_or_default(),
+        Some((_, len)) => trim_end(body.get(..body.len() - len).unwrap_or_default()),
         None => body,
     };
-    let Some(before_symbol) = ahead.strip_suffix(symbol) else {
+    let Some(before_symbol) = symbol.strip_trailing(ahead) else {
         return Ok(untouched);
     };
     let (rest, rest_start) = trim(before_symbol);
     if rest.is_empty() {
-        return Err(Fault::malformed(base, body.len()));
+        return Err(Failure::at(Site::FrameCurrencyOnlyTrailing, base, body.len()));
     }
     let post_sign = trailing.map(|(minus, len)| (minus, base + body.len() - len, len));
     Ok(Currency { body: rest, base: base + rest_start, pre_sign: None, post_sign, found: true })
@@ -328,15 +349,19 @@ fn parse_radix(
     min: i128,
     max: i128,
     bits: u32,
-) -> Result<i128, Fault> {
+) -> Result<i128, Failure> {
     if digits.is_empty() {
-        return Err(Fault::malformed(start, text.len()));
+        return Err(Failure::at(Site::RadixNoDigits, start, text.len()));
     }
     let mut pattern: u128 = 0;
     let mut over = false;
     for (index, &byte) in digits.iter().enumerate() {
         let Some(digit) = digit_value(byte, radix) else {
-            return Err(Fault::malformed(start + 2 + index, char_len_at(digits, index)));
+            return Err(Failure::at(
+                Site::RadixDigitExpected,
+                start + 2 + index,
+                char_len_at(digits, index),
+            ));
         };
         pattern = match pattern
             .checked_mul(radix as u128)
@@ -351,7 +376,7 @@ fn parse_radix(
     }
     let mask: u128 = (1u128 << bits) - 1;
     if over || pattern > mask {
-        return Err(Fault::out_of_range(start, text.len()));
+        return Err(Failure::at(Site::RadixTooLarge, start, text.len()));
     }
     let value = if min < 0 && pattern > max as u128 {
         pattern as i128 - (1i128 << bits)
@@ -372,11 +397,14 @@ fn parse_int(
     max: i128,
     bits: u32,
     lenient_lane: bool,
-) -> Result<i128, Fault> {
+) -> Result<i128, Failure> {
     let (text, start) = trim(input);
     if text.is_empty() {
-        return Err(Fault::EMPTY);
+        return Err(Failure::spanless(Site::IntBlank));
     }
+    let out_of_range = |negative: bool, sites: [Site; 3]| {
+        range_failure(negative, min == 0, sites, start, text.len())
+    };
 
     // Fast path: `[+|-]digits`, the overwhelmingly common shape. 19 digits can't overflow
     // a u64 accumulator, and a pure digit run can't be a radix prefix, grouping, or an
@@ -398,7 +426,7 @@ fn parse_int(
         if plain {
             let signed = if sign == Some(b'-') { -(value as i128) } else { value as i128 };
             return if signed < min || signed > max {
-                Err(Fault::out_of_range(start, text.len()))
+                Err(out_of_range(signed < 0, FAST_RANGE))
             } else {
                 Ok(signed)
             };
@@ -431,7 +459,7 @@ fn parse_int(
         if let Some(negative) = lane::scan(text, format, false, &mut sink) {
             let value = if negative { -(sink.value as i128) } else { sink.value as i128 };
             return if value < min || value > max {
-                Err(Fault::out_of_range(start, text.len()))
+                Err(out_of_range(value < 0, LANE_RANGE))
             } else {
                 Ok(value)
             };
@@ -439,7 +467,8 @@ fn parse_int(
     }
 
     let Frame { body, base, negative, currency, .. } = frame(text, start, format, false)?;
-    let (decimal, group) = format.separators(currency);
+    let (decimal, _) = format.separators(currency);
+    let mut groups = Groups::new(format, base, Site::IntGroupSize);
 
     let mut i = 0;
     let mut acc: i128 = 0;
@@ -453,6 +482,7 @@ fn parse_int(
         if let Some((digit, len)) = read_digit(body, i, format) {
             any_digit = true;
             after_digit = true;
+            groups.digit(i);
             acc = match acc.checked_mul(10).and_then(|shifted| shifted.checked_add(digit as i128)) {
                 Some(next) => next,
                 None => {
@@ -462,17 +492,23 @@ fn parse_int(
             };
             i += len;
         } else if decimal.matches(body, i) {
+            groups.end(i)?;
             // A decimal point is never accepted on an integer.
-            return Err(Fault::malformed(base + i, decimal.len()));
-        } else if format.allows(NumFormat::GROUPING) && group.matches(body, i) {
-            let after = i + group.len();
+            return Err(Failure::at(Site::IntDecimalPoint, base + i, decimal.len()));
+        } else if let width @ 1.. = grouping(format, body, i, currency) {
+            let after = i + width;
+            // The group this separator closes comes first in reading order.
+            if after_digit {
+                groups.separator(i)?;
+            }
             if !after_digit || read_digit(body, after, format).is_none() {
-                return Err(Fault::malformed(base + i, group.len()));
+                return Err(Failure::at(Site::IntGroupMisplaced, base + i, width));
             }
             after_digit = false;
             i = after;
         } else if (byte == b'e' || byte == b'E') && format.allows(NumFormat::EXPONENT) && any_digit
         {
+            groups.end(i)?;
             let e_pos = i;
             i += 1;
             if body.get(i) == Some(&b'+') {
@@ -480,10 +516,10 @@ fn parse_int(
             }
             if body.get(i) == Some(&b'-') {
                 // A negative exponent demands a fraction — never integral.
-                return Err(Fault::malformed(base + i, 1));
+                return Err(Failure::at(Site::IntNegativeExponent, base + i, 1));
             }
             if read_digit(body, i, format).is_none() {
-                return Err(Fault::malformed(base + e_pos, 1));
+                return Err(Failure::at(Site::IntExponentDigitExpected, base + e_pos, 1));
             }
             while let Some((digit, len)) = read_digit(body, i, format) {
                 exp =
@@ -498,33 +534,199 @@ fn parse_int(
                 i += len;
             }
             if i != body.len() {
-                return Err(Fault::malformed(base + i, char_len_at(body, i)));
+                if let width @ 1.. = grouping(format, body, i, currency)
+                    && Groups::strict(format)
+                {
+                    return Err(Failure::at(Site::IntGroupInExponent, base + i, width));
+                }
+                let site = stray(
+                    body,
+                    i,
+                    format,
+                    [Site::IntAfterExponentSign, Site::IntAfterExponent, Site::IntAfterExponent],
+                );
+                return Err(Failure::at(site, base + i, char_len_at(body, i)));
             }
         } else {
-            return Err(Fault::malformed(base + i, char_len_at(body, i)));
+            groups.end(i)?;
+            let site = stray(
+                body,
+                i,
+                format,
+                [Site::IntSignMisplaced, Site::IntNotFinite, Site::IntUnexpected],
+            );
+            return Err(Failure::at(site, base + i, char_len_at(body, i)));
         }
     }
 
+    groups.end(body.len())?;
     if !any_digit {
-        return Err(Fault::malformed(start, text.len()));
+        return Err(Failure::at(Site::IntNoDigits, start, text.len()));
     }
     if over || (exp_over && acc != 0) {
-        return Err(Fault::out_of_range(start, text.len()));
+        return Err(out_of_range(
+            negative,
+            [Site::IntOverflowNegative, Site::IntOverflowTooLarge, Site::IntOverflowTooSmall],
+        ));
     }
     let mut value = acc;
     if exp > 0 && acc != 0 {
         value = match 10i128.checked_pow(exp).and_then(|scale| acc.checked_mul(scale)) {
             Some(scaled) => scaled,
-            None => return Err(Fault::out_of_range(start, text.len())),
+            None => {
+                return Err(out_of_range(
+                    negative,
+                    [Site::IntScaledNegative, Site::IntScaledTooLarge, Site::IntScaledTooSmall],
+                ));
+            }
         };
     }
     if negative {
         value = -value;
     }
     if value < min || value > max {
-        return Err(Fault::out_of_range(start, text.len()));
+        return Err(out_of_range(
+            value < 0,
+            [Site::IntRangeNegative, Site::IntRangeTooLarge, Site::IntRangeTooSmall],
+        ));
     }
     Ok(value)
+}
+
+/// The failure for a value outside the door's range, spanning the whole token: which of
+/// `[below_zero, above, below]` by its sign and whether the door is unsigned. Out of line, so
+/// that no path that succeeds sets anything up for it.
+#[cold]
+#[inline(never)]
+fn range_failure(
+    negative: bool,
+    unsigned: bool,
+    [below_zero, above, below]: [Site; 3],
+    start: usize,
+    len: usize,
+) -> Failure {
+    let site = match negative {
+        true if unsigned => below_zero,
+        true => below,
+        false => above,
+    };
+    Failure::at(site, start, len)
+}
+
+/// The fast path's range sites: below zero at an unsigned door, above the maximum, below
+/// the minimum.
+const FAST_RANGE: [Site; 3] = [Site::IntFastNegative, Site::IntFastTooLarge, Site::IntFastTooSmall];
+/// The lenient lane's range sites, in the same order.
+const LANE_RANGE: [Site; 3] = [Site::IntLaneNegative, Site::IntLaneTooLarge, Site::IntLaneTooSmall];
+
+/// Which of `[sign, not_finite, other]` a character the numeral doesn't allow at `body[at..]`
+/// is: a sign (a second one, or one inside the numeral), the first letter of a body that is
+/// exactly `nan`, `inf` or `infinity` (ASCII case-insensitive), or anything else.
+pub(crate) fn stray(
+    body: &[u8],
+    at: usize,
+    format: &NumFormat,
+    [sign, not_finite, other]: [Site; 3],
+) -> Site {
+    if read_sign(body.get(at..).unwrap_or_default(), format).is_some() {
+        sign
+    } else if at == 0
+        && (body.eq_ignore_ascii_case(b"nan")
+            || body.eq_ignore_ascii_case(b"inf")
+            || body.eq_ignore_ascii_case(b"infinity"))
+    {
+        not_finite
+    } else {
+        other
+    }
+}
+
+/// The byte length of a group separator at `text[at..]` where the format permits grouping
+/// ([`NumFormat::group_at`]), `0` otherwise.
+#[inline]
+pub(crate) fn grouping(format: &NumFormat, text: &[u8], at: usize, currency: bool) -> usize {
+    if format.allows(NumFormat::GROUPING) { format.group_at(text, at, currency) } else { 0 }
+}
+
+/// A strict grouping policy's judge ([`NumFormat::GROUPING_WESTERN`],
+/// [`NumFormat::GROUPING_INDIAN`]), fed a numeral's integer part as the engine reads it. Each
+/// group is judged as soon as it closes, at the next group separator or at whatever ends the
+/// integer part, so the leftmost invalid group in reading order is the one reported. Under
+/// legacy it judges nothing.
+pub(crate) struct Groups {
+    /// `(leftmost, inner)` from [`NumFormat::strict_groups`]; `None` once nothing is left to
+    /// judge (legacy, or the integer part has ended).
+    sizes: Option<(u32, u32)>,
+    /// Digits in the group being read.
+    digits: u32,
+    /// Where that group's span starts in the body: its first digit for the leftmost group,
+    /// its separator for every other.
+    start: usize,
+    /// Whether a group separator has been read.
+    separated: bool,
+    /// The body's offset in the caller's input, and the site a wrong size reports.
+    base: usize,
+    site: Site,
+}
+
+impl Groups {
+    #[inline]
+    pub(crate) fn new(format: &NumFormat, base: usize, site: Site) -> Groups {
+        Groups { sizes: format.strict_groups(), digits: 0, start: 0, separated: false, base, site }
+    }
+
+    /// One digit at `at` in the body.
+    #[inline(always)]
+    pub(crate) fn digit(&mut self, at: usize) {
+        // Nothing is counted where nothing will be judged: legacy keeps the digit loop bare.
+        if self.sizes.is_none() {
+            return;
+        }
+        if self.digits == 0 && !self.separated {
+            self.start = at;
+        }
+        self.digits += 1;
+    }
+
+    /// A group separator at `at`, right after a digit: the group it closes is judged, the
+    /// leftmost against `1..=leftmost`, any other against `inner`.
+    #[inline(always)]
+    pub(crate) fn separator(&mut self, at: usize) -> Result<(), Failure> {
+        let Some((leftmost, inner)) = self.sizes else {
+            return Ok(());
+        };
+        let fits = if self.separated { self.digits == inner } else { self.digits <= leftmost };
+        if !fits {
+            return Err(self.wrong(at));
+        }
+        self.separated = true;
+        self.digits = 0;
+        self.start = at;
+        Ok(())
+    }
+
+    /// The integer part ends at `at` (the decimal separator, an exponent, any other
+    /// character, or the body's end): a grouped numeral's last group holds three digits.
+    /// Nothing is judged after the first call.
+    #[inline(always)]
+    pub(crate) fn end(&mut self, at: usize) -> Result<(), Failure> {
+        if self.sizes.take().is_some() && self.separated && self.digits != 3 {
+            return Err(self.wrong(at));
+        }
+        Ok(())
+    }
+
+    /// Whether `format` declares a strict policy, under which a group separator after an
+    /// exponent's digits is grouping in the exponent rather than a stray character.
+    #[inline]
+    pub(crate) fn strict(format: &NumFormat) -> bool {
+        format.strict_groups().is_some()
+    }
+
+    #[cold]
+    fn wrong(&self, end: usize) -> Failure {
+        Failure::at(self.site, self.base + self.start, end.saturating_sub(self.start))
+    }
 }
 
 /// Whether `text` has an ASCII digit at `at`; false past either end (an `at` built by
@@ -537,12 +739,40 @@ macro_rules! integer_doors {
     ($($(#[$doc:meta])* $door:ident => $ty:ty),+ $(,)?) => {$(
         $(#[$doc])*
         pub fn $door(input: impl AsRef<[u8]>, format: &NumFormat) -> Result<$ty, Fault> {
-            let input = input.as_ref();
-            parse_int(input, format, <$ty>::MIN as i128, <$ty>::MAX as i128, <$ty>::BITS, true)
-                .map(|value| value as $ty)
+            integer::<$ty>(input.as_ref(), format).map_err(Failure::fault)
         }
     )+};
 }
+
+/// An integer door's one parse, for both entry points: the engine over `T`'s range.
+#[inline(always)]
+pub(crate) fn integer<T: Integer>(input: &[u8], format: &NumFormat) -> Result<T, Failure> {
+    parse_int(input, format, T::MIN, T::MAX, T::BITS, true).map(T::narrow)
+}
+
+/// An integer door's type, as the engine reads it.
+pub(crate) trait Integer: Copy {
+    const MIN: i128;
+    const MAX: i128;
+    const BITS: u32;
+    /// A value the engine has range-checked against `MIN..=MAX`.
+    fn narrow(value: i128) -> Self;
+}
+
+macro_rules! integers {
+    ($($ty:ty),+) => {$(
+        impl Integer for $ty {
+            const MIN: i128 = <$ty>::MIN as i128;
+            const MAX: i128 = <$ty>::MAX as i128;
+            const BITS: u32 = <$ty>::BITS;
+            fn narrow(value: i128) -> Self {
+                value as $ty
+            }
+        }
+    )+};
+}
+
+integers!(i8, i16, i32, i64, u8, u16, u32, u64);
 
 /// The engine's answer with the lenient lane switched off — what `lib.rs`'s differential
 /// test compares every integer door against.
@@ -553,7 +783,7 @@ pub(crate) fn engine_only<T: TryFrom<i128>>(
     min: i128,
     max: i128,
     bits: u32,
-) -> Result<T, Fault> {
+) -> Result<T, Failure> {
     parse_int(input, format, min, max, bits, false)
         .map(|value| T::try_from(value).ok().expect("the engine range-checked this"))
 }

@@ -133,12 +133,12 @@ Every door takes the text first — `str` or `bytes` — and returns `Success(va
 | `cast_f32` `cast_f64` `(text, fmt)` | a real under a declared `NumFormat` | `float` |
 | `cast_decimal(text, fmt)` | an exact decimal under a declared `NumFormat` | `decimal.Decimal` |
 | `cast_uuid(text)` | every .NET `Guid` form, plus `urn:uuid:`-style prefixes | `uuid.UUID` |
-| `cast_timestamp(text)` | an RFC 3339 instant | `datetime`, aware, UTC |
+| `cast_timestamp(text, *, options=None)` | an RFC 3339 instant, a `DateOptions` opening a space for the `T` and `±hh` offsets | `datetime`, aware, UTC |
 | `cast_unix(text, precision)` | an integer Unix-epoch value in a declared `UnixPrecision` | `datetime`, aware, UTC |
 | `cast_excel_serial(text, epoch)` | an Excel date serial in a declared `ExcelEpoch` | `datetime`, aware, UTC |
-| `cast_date(text)` | a strict ISO `yyyy-MM-dd` date | `date` |
-| `cast_date(text, order)` | a separated date in a declared `DateOrder` | `date` |
-| `cast_datetime(text, order, *, am="", pm="")` | a zone-less civil date-time in a declared `DateOrder`, a culture's day periods declared beside the English `AM`/`PM` | `datetime`, naive |
+| `cast_date(text, *, options=None)` | a strict ISO `yyyy-MM-dd` date, a `DateOptions` opening `yyyyMMdd` | `date` |
+| `cast_date(text, order, *, options=None, months=None)` | a separated date in a declared `DateOrder`, a pivot reading two-digit years and a `MonthNames` the month names Excel writes | `date` |
+| `cast_datetime(text, order, *, am="", pm="", options=None, months=None)` | a zone-less civil date-time in a declared `DateOrder`, a culture's day periods declared beside the English `AM`/`PM`, the pivot and month names as at `cast_date` | `datetime`, naive |
 | `cast_time(text)` | an ISO 24-hour time of day | `time` |
 | `cast_duration(text)` | ISO 8601, the invariant colon form, or protobuf JSON seconds | `timedelta` |
 | `cast_decimal_from_float(value)` | a `float` as the shortest decimal that names it (`0.1` is one tenth) | `decimal.Decimal` |
@@ -146,6 +146,15 @@ Every door takes the text first — `str` or `bytes` — and returns `Success(va
 | `cast_excel_time(value)` | the fraction of an Excel serial `float` | `time` |
 | `cast_excel_duration(value)` | a `float` count of days | `timedelta` |
 | `cast_text(text)` | the text itself, once it is valid text (`bytes` UTF-8, a `str` with no lone surrogate), untrimmed | `str` |
+
+White space is Unicode's `White_Space` — the 25 code points, ASCII and U+0085, U+00A0, U+2000
+to U+200A, U+202F, U+3000 among them — and it is ignored at both ends of every door but
+`cast_text`, so a cell pasted from Excel with a no-break space at its edge reads. The numeric
+doors also ignore it after a leading sign, before a trailing sign or a percent symbol, on
+either side of a currency symbol and inside accounting parentheses (`- 12`, `( 12 )`,
+`12,5 %`, `1 234,56 €`, the last two under a declared comma decimal separator, the last with a space group separator and `€` declared); between digits it is `MALFORMED`, unless a space-like group
+separator is declared (below). Text that is only white space is `EMPTY`. `cast_char` given
+exactly one character keeps it, so `"\u3000"` is U+3000.
 
 Nothing about the text is guessed; what a door cannot know from the text, the caller
 declares, as an `IntEnum`:
@@ -179,13 +188,68 @@ hypercast.cast_duration("PT1H30M")
 the clock (`3:04 PM`) or ahead of it (`PM 3:04`). A culture's own designators are declared
 beside them as the keyword-only `am` and `pm` — German `vorm.`/`nachm.`, Korean `오전`/`오후`,
 Spanish `a. m.`/`p. m.` — and read exactly as spelled, after the clock with an optional space
-before (`3:04 nachm.`) or ahead of it with an optional space after (`오후 3:04`). Nothing is
+before (`3:04 nachm.`) or ahead of it with an optional space after (`오후 3:04`); any run of
+white space stands where that one space does, so the `3:04\u202fPM` that ICU 72 and later
+write for `en_US` reads. Nothing is
 guessed from the text: undeclared, `nachm.` is the first offending character of a `MALFORMED`
-fault. A designator is 1 to 16 UTF-8 bytes with no ASCII digit and no whitespace at either
+fault. A designator is 1 to 16 UTF-8 bytes with no ASCII digit and no white space at either
 end (inside is fine, as in `a. m.`); anything else is a `ValueError` at the call, a caller's
 bug like a `NumFormat` that cannot be.
 
-A `Fault`'s `reason` is a `CastFailure` — `EMPTY` (nothing there, or only whitespace),
+### Date options and month names
+
+The date doors read only their strict shapes unless the caller opts in, so a feed that must be
+strict RFC 3339 can rely on a space separator or `+00` being refused. The opt-ins are a
+`DateOptions` (`options=`) and a `MonthNames` (`months=`), both validated by the core and both a
+`ValueError` when they could not mean anything:
+
+| Option | Door | Reads |
+| --- | --- | --- |
+| `DateOptions.COMPACT_DATE` | `cast_date` | `20260107`, eight ASCII digits |
+| `DateOptions.SPACE_SEPARATOR` | `cast_timestamp` | a single space in place of `T` |
+| `DateOptions.HOUR_OFFSET` | `cast_timestamp` | `±hh` offsets (`+00`, `-05`) |
+| the pivot (`DateOptions(flags, pivot)`) | `cast_date` with an order, `cast_datetime` | two-digit years |
+| `months` (a `MonthNames`) | `cast_date` with an order, `cast_datetime` | declared month names in the month field |
+
+`DateOptions.COMMON_FORMS` is the first three together, never a pivot or a vocabulary, and works
+unchanged at every date door: an option a door does not read is ignored, while a flag bit this
+version does not define is refused. The pivot is the last year of a hundred-year window, from 100
+to 9999 (`0` is none): a two-digit year is the one year in `[pivot - 99, pivot]` ending in it, so
+`26` is 2026 under `2029`. Four-digit years are unaffected, and without a pivot a two-digit year
+is a `FIELD_WIDTH` fault. Month names are Excel's style only, a declared name replacing the
+numeric month at the position the `DateOrder` gives it, with the repeated `/`, `-` or `.`
+separator (`07-Jan-26`, `7-Jan-2026`); a vocabulary never changes the declared order, and prose
+layouts are not read. Names match under simple case folding, the longest one followed by the
+separator winning, and punctuation is part of the name: with `janv.` declared and `.` as the
+separator, `7.janv..2026` reads and `7.janv.2026` is `MALFORMED`. A vocabulary is built by the
+caller (no locale supplies one), as `(month, name)` pairs with aliases as pairs of their own,
+every month with at least one, and a name that is 1 to 64 bytes without an ASCII digit, `/`,
+`-` or white space (`.` is fine) and does not fold to the same spelling as another:
+
+```python
+import datetime
+from hypercast import DateOptions, DateOrder, MonthNames
+
+english = MonthNames(
+    [(1, "Jan"), (2, "Feb"), (3, "Mar"), (4, "Apr"), (5, "May"), (6, "Jun"), (7, "Jul"),
+     (8, "Aug"), (9, "Sep"), (9, "Sept"), (10, "Oct"), (11, "Nov"), (12, "Dec")]
+)
+pivot = DateOptions(pivot=2029)
+hypercast.cast_date("07-Jan-26", DateOrder.DAY_MONTH_YEAR, options=pivot, months=english)
+# Success(value=datetime.date(2026, 1, 7))
+hypercast.cast_date("20260107", options=DateOptions(DateOptions.COMPACT_DATE))
+# Success(value=datetime.date(2026, 1, 7))
+hypercast.cast_timestamp("2026-01-07 03:04:05+05", options=DateOptions.COMMON_FORMS)
+# Success(value=datetime.datetime(2026, 1, 6, 22, 4, 5, tzinfo=datetime.timezone.utc))
+```
+
+`MonthNames.packed` is the vocabulary in the layout the core's C ABI takes (each entry a month
+byte, a little-endian `u32` byte length, then the UTF-8) and `MonthNames.from_packed(data)` reads
+it back under the same rules. The core judges a vocabulary on every call and keeps nothing between
+calls, so a door given `months` pays that judgement each time: it is the one declaration here
+that is not free once built.
+
+A `Fault`'s `reason` is a `CastFailure` — `EMPTY` (nothing there, or only white space),
 `MALFORMED` (present, but not the target type) or `OUT_OF_RANGE` (well-formed, outside the
 target's range) — compared with `is`. `hypercast.optional(verdict)` presents an `EMPTY`
 fault as `None` and passes everything else through, for the column where blank means
@@ -197,11 +261,42 @@ hypercast.optional(hypercast.cast_i32("   ", hypercast.NumFormat.INVARIANT))  # 
 hypercast.optional(hypercast.cast_i32("abc", hypercast.NumFormat.INVARIANT))
 ```
 
+### Fault detail
+
+A `Fault`'s `reason` is the broad class; its `detail` says what exactly failed, a `Detail`
+member (`GROUP_SIZE`, `DIGIT_EXPECTED`, `NOT_FINITE`, `INVALID_UTF8`, … thirty-two, numbered
+as the core numbers them) with its raw number beside it as `detail_code`. It is for diagnosing
+rejected data, and every plain, typed and checked door's fault carries one:
+
+```python
+verdict = hypercast.cast_i32("12,34", hypercast.NumFormat.INVARIANT)
+verdict  # Fault(reason=<CastFailure.MALFORMED: 2>, offset=2, length=3, detail=<Detail.GROUP_SIZE: 11>)
+verdict.detail, verdict.detail_code  # (<Detail.GROUP_SIZE: 11>, 11)
+
+match verdict:
+    case hypercast.Fault(detail=hypercast.Detail.GROUP_SIZE):
+        print("a group of the wrong size")
+    case hypercast.Fault(detail=hypercast.Detail.UNKNOWN) as other:
+        print("a detail from a later core:", other.detail_code)
+```
+
+The detail sits beside the fault, never in it: `Fault(reason, offset, length)` still takes those
+three arguments, destructures positionally, and is equal to any fault with the same three
+(equality ignores the detail), so code written for 1.0 reads the same. A `Fault` built by hand
+has `detail` `None` unless it is given `detail_code`. The published codes keep their numbers
+and meanings and may be joined by new ones in a minor release, so a `match` over details needs
+its default arm: a code this version names no member for is `Detail.UNKNOWN`, with
+`detail_code` holding the number, and the reason and span are as usable as ever. A `Violation`
+carries no detail: it is a value that parsed.
+
 Bad data is always a `Fault`. What raises is a caller's bug: `TypeError` for an argument of the wrong type (text that is neither `str` nor
 `bytes`, a format that is not a `NumFormat`, a `float` bound), `ValueError` for a declaration
 that names no member of its enum, a `NumFormat` or a `Constraints` that cannot be (below) or a
 day-period designator that cannot be, `OverflowError` for an integer
-too wide for the 32 unsigned bits a flag set or a declaration is. A `str` holding a lone
+too wide for the 32 unsigned bits a flag set or a declared enum member is (a `NumFormat`'s
+`flags`, a `DateOrder`); the 1.1 declarations take any `int` and refuse one outside their range
+as a `ValueError` like any other bad declaration: a `grouping`, a `DateOptions` flag set or
+pivot, a month number of a `MonthNames` and a `Fault`'s `detail_code`. A `str` holding a lone
 surrogate has no UTF-8 form; every door, plain or checked, reads it with the surrogate kept,
 never replaced, as `MALFORMED` text at its own code point. In a `NumFormat` symbol or a
 day-period designator it is a `UnicodeEncodeError` (a `ValueError`) that keeps Python's
@@ -220,27 +315,73 @@ no-break space, the `, ` some feeds carry), a bitwise OR of the lenience flags (
 `PARENTHESES`, `EXPONENT`, `RADIX_PREFIXES`, `PERCENT`, `CURRENCY`; `ALL` is all six —
 `TRAILING_SIGN` is opted into separately, from a culture's negative pattern, and
 `SEPARATOR_DETECT` is a separator *policy*, not a lenience, opted into separately too), an
-optional currency symbol, and then, as keyword arguments, what a culture spells differently:
+optional currency symbol, and then, as keyword arguments, the grouping policy (`grouping`,
+[below](#strict-grouping)) and what a culture spells differently:
 `currency_decimal_sep` and `currency_group_sep`, the separators a currency amount is read
 with; `minus_sign`, `plus_sign` and `percent`, further spellings of the signs and the
 percent symbol; and `digit_zero`, the zero of a set of native digits. `NumFormat.INVARIANT`
-is `.`/`,` with every lenience on and nothing else declared; `NumFormat.DETECT` is the same
+is `.`/`,` with every lenience on, strict Western grouping and nothing else declared;
+`NumFormat.DETECT` is the same
 with `SEPARATOR_DETECT` added, so the `.`/`,` roles are resolved per input from its
 structure (`1.234.567,89` and `1,234,567.89` both read) and an undecidable one is a
 `MALFORMED` fault, never a guess; `NumFormat.from_localeconv()` bridges
 `locale.localeconv()` ([below](#the-locale-bridge)). A format is immutable and reads back
-through `decimal_sep`, `group_sep`, `flags`, `currency` and the keyword fields by their
-own names, each `""` when it declares nothing. Unlike the C#, Java, Swift and PHP doors,
+through `decimal_sep`, `group_sep`, `flags` (the lenience flags alone), `grouping`,
+`currency` and the keyword fields by their own names, each `""` when it declares nothing. Rebuilding
+a format from its getters therefore needs the policy passed back, `grouping=f.grouping`: `flags`
+does not carry it, and a constructor call without it declares strict Western, so a legacy or
+Indian format copied without it would quietly change. Unlike the C#, Java, Swift and PHP doors,
 these take no platform format object (Ruby's take Rails' words as keywords instead): Python's `locale` is process-global, and
 `from_localeconv()` already reads it.
 
+### Strict grouping
+
+A group separator is judged by a grouping policy the format declares, as the keyword `grouping`
+beside the lenience flags (a `flags` mask never carries one; passing one in `flags` is a
+`ValueError`). **The default is strict Western**, `NumFormat.GROUPING_WESTERN`: once a numeral
+uses a group separator, its integer part is groups of exactly three digits counted leftward from
+the decimal separator, the leftmost one to three, so `1,234,567` reads and `12,34` is `MALFORMED`
+(a `GROUP_SIZE` detail, spanning `,34`), as is `1234,567` (spanning `1234`). An ungrouped
+numeral stays valid, there is no grouping after the decimal separator or in an exponent, and a
+strict policy does not turn grouping on: with `GROUPING` off a group separator stays forbidden.
+The rules count digits, never bytes, so native digits and a space-like group separator follow
+them, and a currency amount's group separator is judged the same way.
+`NumFormat.GROUPING_INDIAN` is the other strict policy, the group beside the decimal separator
+three digits and every group left of it two (`12,34,567`), and `NumFormat.GROUPING_LEGACY` keeps
+the reading before strict grouping, a group separator anywhere between two digits:
+
+```python
+western = hypercast.NumFormat(".", ",", hypercast.NumFormat.ALL)  # strict Western
+hypercast.cast_i32("1,234", western)  # Success(value=1234)
+hypercast.cast_i32("12,34", western)  # a MALFORMED Fault, GROUP_SIZE, at 2+3
+
+legacy = hypercast.NumFormat(
+    ".", ",", hypercast.NumFormat.ALL, grouping=hypercast.NumFormat.GROUPING_LEGACY
+)
+hypercast.cast_i32("12,34", legacy)  # Success(value=1234)
+
+indian = hypercast.NumFormat(
+    ".", ",", hypercast.NumFormat.ALL, grouping=hypercast.NumFormat.GROUPING_INDIAN
+)
+hypercast.cast_i64("12,34,567", indian)  # Success(value=1234567)
+```
+
+`grouping` is the policy and nothing else, so it replaces rather than combines; `3 << 8`
+(`GROUPING_POLICY`, the mask of the two bits) names no policy and is a `ValueError`, as is a bit of
+`flags` this version does not define. `NumFormat.INVARIANT` and `NumFormat.DETECT` are strict
+Western too, so a format nobody declared a policy for reads strictly. A package that
+loads a native core below 1.1 refuses to import (`ImportError`): such a core ignores the policy
+and would read `12,34` as 1234 whatever was declared.
+
 A currency symbol is declared, never guessed. With `CURRENCY` set and a symbol declared, the
 symbol is accepted once, leading (before or after the sign: `$5`, `-$5`, `$ -5`) or trailing
-(`5 €`, `1.234,50 kr.`), with optional whitespace between it and the digits, and accounting
+(`5 €`, `1.234,50 kr.`), with optional white space between it and the digits, and accounting
 parentheses wrap the symbol along with the digits (`($5)`). Declared but with the flag off,
 the symbol is simply the first offending byte of a `MALFORMED` fault; with no symbol declared
-the flag matches nothing. A symbol is 1 to 16 UTF-8 bytes with no ASCII digit or whitespace —
-anything else is a `ValueError` at construction, a caller bug like equal separators.
+the flag matches nothing. A symbol is 1 to 16 UTF-8 bytes with no ASCII digit and no white
+space at either end — anything else is a `ValueError` at construction, a caller bug like equal
+separators. White space inside is fine (`F CFA`), and there an ASCII space, U+00A0 and U+202F
+read as each other.
 
 ```python
 dollars = hypercast.NumFormat(".", ",", hypercast.NumFormat.ALL, "$")
@@ -262,6 +403,11 @@ declaration stops parsing after it. What each field adds:
   `n-` writes it: `5-`, `5 -`, `5+`, `5 €-`, `5- €`, `2.5%-`, `2.5-%`; ASCII or declared,
   never beside a leading sign and never inside accounting parentheses. Not in `ALL`:
   `from_localeconv()` sets it from the locale's sign position, and you set it from yours.
+- **Space-like group separators** — declare any of an ASCII space, U+00A0 or U+202F as the
+  group separator and the input may use any of the three, mixed (French data written by
+  Excel, by an older system and by ICU's `fr`); a space-like separator not followed by a
+  digit is not grouping, just white space. A declared separator that is not one of the three
+  stays exact, and so do U+2007 and U+3000.
 - **Currency separators** — with `CURRENCY` set, a symbol declared, *and* the symbol found
   in the text (either edge), the digits are read with `currency_decimal_sep` and
   `currency_group_sep`, each falling back to its number counterpart when not declared —
@@ -302,8 +448,9 @@ What the core refuses to carry is refused at construction, as a `ValueError` —
 own contract rules, so a `NumFormat` that exists is one the core reads: a separator, sign
 or percent symbol that is not 1 to 8 UTF-8 bytes or contains an ASCII digit, equal
 separators (the number pair, or the pair in force for a currency amount, counting what each
-falls back to), a sign or percent symbol with ASCII whitespace in it, a currency symbol over
-16 UTF-8 bytes or carrying an ASCII digit or whitespace, a digit zero that is ASCII or starts no Unicode digit block.
+falls back to), a sign or percent symbol with white space in it, a decimal separator (number or currency)
+with white space in it, a currency symbol over 16 UTF-8 bytes, carrying an ASCII digit or
+starting or ending in white space, a digit zero that is ASCII or starts no Unicode digit block.
 
 Not declared, by decision: `cast_bool`'s lexicon stays English-only. No platform carries
 culture data for a boolean vocabulary, so no bridge could fill such a field — a caller maps
@@ -326,11 +473,28 @@ separators, `currency_symbol`, `mon_decimal_point` and `mon_thousands_sep` as th
 separators, `negative_sign` and `positive_sign` as the signs (U+2212 for Estonian and Basque;
 an ASCII sign is already read, so it declares nothing), and an `n_sign_posn` of `2` or `4` —
 the sign after the amount — as `TRAILING_SIGN`. `localeconv()` has no percent symbol and no
-digits, so those stay ASCII. A separator the locale leaves empty takes its default (`.`/`,`
+digits, so those stay ASCII.
+
+The grouping is read from the locale's own digit-group patterns, `grouping` for numbers and
+`mon_grouping` for currency amounts, never from the locale's name and never from the input. A
+pattern is read as C defines it: sizes from the decimal separator outward, a trailing `0`
+repeating the last size, `CHAR_MAX` (127) ending grouping, and a pattern with no size (`[]`,
+`[127]`) not grouping at all. One format has one policy and one `GROUPING` flag for both kinds
+of value, so, over the patterns that do group: all Western (`[3, 0]`, `[3, 3, 0]`) is strict
+Western, all Indian (`[3, 2, 0]`, `en_IN`) is strict Indian, and a pattern of any other shape
+(groups of two, as Toki Pona writes them) or patterns that disagree (`ml`, `ta`: Indian numbers,
+Western currency) is `GROUPING_LEGACY`, which reads a group separator between any two digits —
+the bridge never rejects what its platform writes. `GROUPING` is cleared only when neither
+pattern groups (the C locale); when just one does not, the flag stays for the other, so an
+ungrouped currency amount and a grouped one both read (the format cannot forbid grouping for
+one kind of value alone). A dict that carries neither key declares nothing: strict Western with
+`GROUPING` on, as the constructor does.
+
+A separator the locale leaves empty takes its default (`.`/`,`
 for the number pair, the number pair for the currency pair) unless the other separator
 already holds that character, in which case it takes the other of the pair — a comma-decimal
-locale with no thousands separator groups on `.` rather than colliding. Every lenience is on;
-narrow the flags, or construct a `NumFormat` outright, for anything stricter.
+locale with no thousands separator groups on `.` rather than colliding. Every other lenience is
+on; narrow the flags, or construct a `NumFormat` outright, for anything stricter.
 
 ```python
 # With no argument, the process's own locale; here the fields et_EE.UTF-8 reports.
@@ -452,7 +616,8 @@ immutable and hashable, and its `repr` is the call that builds it again.
 For a library that carries HyperCast's verdicts across a C ABI of its own — HyperTabular's,
 for one — and has to hand its native layer a format in the core's own layout
 rather than a copy of it. `NumFormat.packed` is those 92 bytes, the size-tagged layout the
-core reads in place: the size (`92`), the flags and the native digits' zero code point (`0`
+core reads in place: the size (`92`), the flags (the grouping policy in bits 8 and 9 among
+them: `351` for `ALL` under strict Western) and the native digits' zero code point (`0`
 for none) as little-endian `u32`s at offsets 0, 4 and 8; then each symbol as its UTF-8
 zero-padded to its field, followed by its byte length — 8 + 1 bytes each for the decimal
 separator (offset 12), group separator (21), currency decimal separator (30), currency group
@@ -466,7 +631,7 @@ can be logged and restored:
 fmt = hypercast.NumFormat(".", ",", hypercast.NumFormat.ALL, "$")
 fmt  # NumFormat('.', ',', 95, '$')
 fmt.packed  # the 92 bytes:
-# b'\\\x00\x00\x00' + b'_\x00\x00\x00' + bytes(4)         size 92, flags 95, no native digits
+# b'\\\x00\x00\x00' + b'_\x01\x00\x00' + bytes(4)         size 92, flags 95 + strict Western, no digits
 #   + b'.' + bytes(7) + b'\x01' + b',' + bytes(7) + b'\x01'  the separators, each its UTF-8 then its length
 #   + bytes(45)                                            five symbols declared empty
 #   + b'$' + bytes(15) + b'\x01'                           the currency symbol
@@ -478,8 +643,10 @@ size, flags, rounding code, lengths and a reserved zero as `u32`s, then the lowe
 bound and `multiple_of` as 16-byte decimals; integer entries as such decimals, text entries a
 little-endian `u32` byte length followed by the UTF-8), which the core reads only when the
 flags carry `HAS_ENUM` (256), set whenever an `enum` is declared. The extension calls the
-core's Rust API directly rather than its C ABI, with a door for each of the core's 32 exports
-(`hypercast_version` as `native_version`, `cast_date_ordered` as `cast_date`'s order).
+core's Rust API directly rather than its C ABI, with a door for each of the core's 36 exports
+(`hypercast_version` as `native_version`, `cast_date_ordered` as `cast_date`'s order, and the
+four detailed exports served by the same doors, each of which is the core's own `detailed`
+door, so its fault carries a detail).
 
 The values themselves are built on the Rust side: an extension module of its own that
 presents them enables the crate's `python-values` feature and uses

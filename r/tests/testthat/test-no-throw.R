@@ -11,7 +11,7 @@ corpus_inputs <- function() {
   dir <- testthat::test_path("corpus")
   if (!dir.exists(dir)) dir <- file.path(testthat::test_path(), "..", "..", "..", "corpus")
   files <- list.files(dir, pattern = "\\.json$", full.names = TRUE)
-  stopifnot(length(files) == 17L)
+  stopifnot(length(files) == 18L)
   inputs <- unlist(lapply(files, function(path) {
     json <- paste(readLines(path, encoding = "UTF-8", warn = FALSE), collapse = "\n")
     json <- gsub("\\u0000", "\\uE000", json, fixed = TRUE)
@@ -51,6 +51,9 @@ hostile_strings <- function() {
     "\u202f1\u202f234,5", "\u2212 5", "1e999999999999", NA)
 }
 
+english_months <- month_names(c(Jan = 1, Feb = 2, Mar = 3, Apr = 4, May = 5, Jun = 6, Jul = 7,
+                                Aug = 8, Sep = 9, Sept = 9, Oct = 10, Nov = 11, Dec = 12))
+
 text_doors <- function() {
   f <- num_format()
   list(
@@ -74,6 +77,17 @@ text_doors <- function() {
     datetime_dmy = function(x) cast_datetime(x, "day_month_year"),
     datetime_periods = function(x) {
       cast_datetime(x, "year_month_day", am = "\uc624\uc804", pm = "a. m.")
+    },
+    decimal_indian = function(x) cast_decimal(x, num_format(grouping = "indian")),
+    decimal_legacy = function(x) cast_decimal(x, num_format(grouping = "legacy")),
+    timestamp_common = function(x) cast_timestamp(x, date_options("common_forms")),
+    date_compact = function(x) cast_date(x, options = date_options("common_forms")),
+    date_months = function(x) {
+      cast_date(x, "day_month_year", date_options("common_forms", 2029), english_months)
+    },
+    datetime_months = function(x) {
+      cast_datetime(x, "month_day_year", options = date_options(pivot = 100),
+                    months = english_months)
     },
     text = cast_text,
     checked_text = function(x) {
@@ -146,6 +160,13 @@ expect_quiet_verdict <- function(door, x, label) {
   }
   testthat::expect_true(all(is.na(v$value[!ok %in% TRUE])), label = label)
   testthat::expect_true(all(is.na(v$offset[!ok %in% FALSE])), label = label)
+  # A fault names its detail (a published one, here); a violation, a success and a missing
+  # row have none.
+  faulted <- if (checked) !is.na(v$reason) else ok %in% FALSE
+  testthat::expect_true(all(!is.na(v$detail[faulted]) & v$detail[faulted] != "unknown"),
+                        label = label)
+  testthat::expect_true(all(is.na(v$detail[!faulted]) & is.na(v$detail_code[!faulted])),
+                        label = label)
   v
 }
 

@@ -10,15 +10,17 @@
 #include "shim.h"
 
 /*
- * The doors, vectorised. Every element of `x` is one call into the core, and its verdict
- * becomes one row of the columns this file returns: the value (NA where the element
- * faulted), ok, the reason code (1 empty, 2 malformed, 3 out of range), and the fault's
- * offset and length in the caller's units. An NA element is no call at all: every column
- * is NA in its row. Nothing here raises an R error for any element of `x`; the only errors
- * are caller bugs R validated before the call (and the core's contract-violation code,
- * which that validation makes unreachable), and an interrupt.
+ * The doors, vectorised. Every element of `x` is one call into the core's detailed exports
+ * (cast_detailed, cast_detailed_from_f64 and the checked pair), and its verdict becomes one
+ * row of the columns this file returns: the value (NA where the element faulted), ok, the
+ * reason code (1 empty, 2 malformed, 3 out of range), the fault's offset and length in the
+ * caller's units, and its detail code (the core's, 1 or more; R names it). An NA element is
+ * no call at all: every column is NA in its row. Nothing here raises an R error for any element of
+ * `x`; the only errors are caller bugs R validated before the call (and the core's
+ * contract-violation code, which that validation makes unreachable), and an interrupt.
  *
- * The checked doors (cast_checked, cast_checked_from_f64, and cast_text with constraints) add
+ * The checked doors (cast_checked_detailed, cast_checked_detailed_from_f64, and cast_text with
+ * constraints) add
  * three columns, adjusted, enum_index and keyword, and one more outcome: a violation (code 4),
  * a value that parsed and broke a declared rule, whose keyword and span fill their columns
  * while reason stays NA.
@@ -141,79 +143,103 @@ union value {
 struct declared {
   HyperCastRawNumFormat format;
   HyperCastRawDayPeriods periods;
+  HyperCastRawDateOptions options;
+  const uint8_t *vocab;
+  uintptr_t vocab_len;
+  int has_format;
   int has_periods;
+  int has_options;
   uint32_t code; /* the precision, epoch or date order */
 };
 
-static int32_t text_door(enum door door, const uint8_t *p, uintptr_t n, const struct declared *d,
-                         union value *out, HyperCastRawFault *fault) {
-  const HyperCastRawNumFormat *f = &d->format;
+/* The core's door codes (rust/src/door.rs, `Door::code`) for every door this file reads. */
+static uint32_t abi_door(enum door door) {
   switch (door) {
   case BOOL_DOOR:
-    return cast_bool(p, n, &out->boolean, fault);
-  case CHAR_DOOR:
-    return cast_char(p, n, &out->scalar, fault);
+    return 1;
   case I8_DOOR:
-    return cast_i8(p, n, f, &out->i8, fault);
+    return 2;
   case I16_DOOR:
-    return cast_i16(p, n, f, &out->i16, fault);
+    return 3;
   case I32_DOOR:
-    return cast_i32(p, n, f, &out->i32, fault);
+    return 4;
   case I64_DOOR:
-    return cast_i64(p, n, f, &out->i64, fault);
+    return 5;
   case U8_DOOR:
-    return cast_u8(p, n, f, &out->u8, fault);
+    return 6;
   case U16_DOOR:
-    return cast_u16(p, n, f, &out->u16, fault);
+    return 7;
   case U32_DOOR:
-    return cast_u32(p, n, f, &out->u32, fault);
+    return 8;
   case U64_DOOR:
-    return cast_u64(p, n, f, &out->u64, fault);
+    return 9;
   case F32_DOOR:
-    return cast_f32(p, n, f, &out->f32, fault);
+    return 10;
   case F64_DOOR:
-    return cast_f64(p, n, f, &out->f64, fault);
-  case DECIMAL_DOOR:
-    return cast_decimal(p, n, f, &out->decimal, fault);
+    return 11;
   case UUID_DOOR:
-    return cast_uuid(p, n, out->uuid, fault);
+    return 12;
   case TIMESTAMP_DOOR:
-    return cast_timestamp(p, n, &out->timestamp, fault);
+    return 13;
   case UNIX_DOOR:
-    return cast_unix(p, n, d->code, &out->timestamp, fault);
-  case EXCEL_SERIAL_DOOR:
-    return cast_excel_serial(p, n, d->code, &out->timestamp, fault);
+    return 14;
   case DATE_DOOR:
-    return cast_date(p, n, &out->date, fault);
-  case DATE_ORDERED_DOOR:
-    return cast_date_ordered(p, n, d->code, &out->date, fault);
-  case DATETIME_DOOR:
-    return cast_datetime(p, n, d->code, d->has_periods ? &d->periods : NULL, &out->civil, fault);
+    return 15;
   case TIME_DOOR:
-    return cast_time(p, n, &out->nanos, fault);
+  case EXCEL_TIME_DOOR:
+    return 16;
   case DURATION_DOOR:
-    return cast_duration(p, n, &out->duration, fault);
+  case EXCEL_DURATION_DOOR:
+    return 17;
   case TEXT_DOOR:
-    return cast_text(p, n, &out->span, fault);
+    return 18;
+  case DECIMAL_DOOR:
+  case DECIMAL_FROM_DOUBLE_DOOR:
+    return 19;
+  case DATE_ORDERED_DOOR:
+    return 20;
+  case DATETIME_DOOR:
+    return 21;
+  case EXCEL_SERIAL_DOOR:
+  case EXCEL_SERIAL_FROM_DOUBLE_DOOR:
+    return 22;
+  case CHAR_DOOR:
+    return 23;
   default:
-    return -1;
+    return 0;
   }
 }
 
-static int32_t double_door(enum door door, double v, const struct declared *d, union value *out,
-                           HyperCastRawFault *fault) {
+/* The parameter a door declares (the Unix precision, a date order, an Excel epoch), else 0. */
+static uint32_t abi_param(enum door door, const struct declared *d) {
   switch (door) {
-  case DECIMAL_FROM_DOUBLE_DOOR:
-    return cast_decimal_from_f64(v, &out->decimal, fault);
+  case UNIX_DOOR:
+  case EXCEL_SERIAL_DOOR:
   case EXCEL_SERIAL_FROM_DOUBLE_DOOR:
-    return cast_excel_serial_from_f64(v, d->code, &out->civil, fault);
-  case EXCEL_TIME_DOOR:
-    return cast_excel_time(v, &out->nanos, fault);
-  case EXCEL_DURATION_DOOR:
-    return cast_excel_duration(v, &out->duration, fault);
+  case DATE_ORDERED_DOOR:
+  case DATETIME_DOOR:
+    return d->code;
   default:
-    return -1;
+    return 0;
   }
+}
+
+/* A detailed export's fault, as the caller sets it up: the size word, then nothing. */
+static HyperCastRawFaultDetail fault_slot(void) {
+  HyperCastRawFaultDetail f = {HyperCastRawFaultDetail_SIZE, 0, 0, 0};
+  return f;
+}
+
+static int32_t text_door(enum door door, const uint8_t *p, uintptr_t n, const struct declared *d,
+                         union value *out, HyperCastRawFaultDetail *fault) {
+  return cast_detailed(abi_door(door), abi_param(door, d), d->has_format ? &d->format : NULL,
+                       d->has_periods ? &d->periods : NULL, d->has_options ? &d->options : NULL,
+                       d->vocab, d->vocab_len, p, n, out, fault);
+}
+
+static int32_t double_door(enum door door, double v, const struct declared *d, union value *out,
+                           HyperCastRawFaultDetail *fault) {
+  return cast_detailed_from_f64(abi_door(door), abi_param(door, d), v, out, fault);
 }
 
 /* ---- declarations: decoded from the little-endian bytes R packed ---- */
@@ -259,13 +285,28 @@ static enum door door_arg(SEXP name) {
 }
 
 /*
- * `format`: NULL or a 92-byte raw vector; `periods`: NULL or a 40-byte raw vector; `code`: a
- * single integer (0 where the door takes none). R built and checked all three.
+ * The 12-byte RawDateOptions R packs (date_options()'s `packed`): the size, the option bits and
+ * the pivot as little-endian u32s.
  */
-static void declared_arg(SEXP format, SEXP periods, SEXP code, struct declared *d) {
+_Static_assert(sizeof(HyperCastRawDateOptions) == HyperCastRawDateOptions_SIZE, "RawDateOptions");
+static void read_options(SEXP packed, HyperCastRawDateOptions *out) {
+  const uint8_t *b = RAW(packed);
+  out->size = le32(b);
+  out->flags = le32(b + 4);
+  out->pivot = le32(b + 8);
+}
+
+/*
+ * `format`: NULL or a 92-byte raw vector; `periods`: NULL or a 40-byte raw vector; `code`: a
+ * single integer (0 where the door takes none); `options`: NULL or a 12-byte raw vector;
+ * `vocab`: NULL or the month names' packed raw vector. R built and checked all of them.
+ */
+static void declared_arg(SEXP format, SEXP periods, SEXP code, SEXP options, SEXP vocab,
+                         struct declared *d) {
   memset(d, 0, sizeof *d);
   if (TYPEOF(format) == RAWSXP && XLENGTH(format) == HyperCastRawNumFormat_SIZE) {
     read_format(format, &d->format);
+    d->has_format = 1;
   } else if (format != R_NilValue) {
     Rf_error("hypercast: format must be a packed num_format");
   }
@@ -275,14 +316,24 @@ static void declared_arg(SEXP format, SEXP periods, SEXP code, struct declared *
   } else if (periods != R_NilValue) {
     Rf_error("hypercast: periods must be packed day periods");
   }
+  if (TYPEOF(options) == RAWSXP && XLENGTH(options) == HyperCastRawDateOptions_SIZE) {
+    read_options(options, &d->options);
+    d->has_options = 1;
+  } else if (options != R_NilValue) {
+    Rf_error("hypercast: options must be packed date options");
+  }
+  if (TYPEOF(vocab) == RAWSXP) {
+    d->vocab_len = (uintptr_t)XLENGTH(vocab);
+    d->vocab = d->vocab_len ? RAW(vocab) : NULL;
+  } else if (vocab != R_NilValue) {
+    Rf_error("hypercast: months must be packed month names");
+  }
   if (TYPEOF(code) != INTSXP || XLENGTH(code) != 1 || INTEGER(code)[0] < 0)
     Rf_error("hypercast: code must be one non-negative integer");
   d->code = (uint32_t)INTEGER(code)[0];
 }
 
 /* ---- the columns ---- */
-
-#define MAX_COLUMNS 8
 
 struct columns {
   SEXP list;
@@ -300,6 +351,7 @@ struct columns {
   int *reason;
   int *offset;
   int *length;
+  int *detail;
   /* The checked doors' columns; NULL in a plain verdict. */
   int *adjusted;
   int *enum_index;
@@ -316,12 +368,13 @@ static SEXP column(struct columns *c, const char *name, SEXPTYPE type, R_xlen_t 
 
 /*
  * Allocates every column; the result is PROTECTed once, as c->list. A checked verdict adds
- * adjusted and enum_index after the value's columns and keyword after reason.
+ * adjusted and enum_index after the value's columns and keyword after reason. The detail
+ * column ends every verdict: after the 1.0 columns, so none of them moves.
  */
 static void columns_alloc(struct columns *c, enum kind kind, R_xlen_t n, int checked) {
   memset(c, 0, sizeof *c);
   c->kind = kind;
-  int total = checked ? 8 : 5;
+  int total = checked ? 9 : 6;
   switch (kind) {
   case INSTANT_KIND:
   case CIVIL_KIND:
@@ -377,6 +430,7 @@ static void columns_alloc(struct columns *c, enum kind kind, R_xlen_t n, int che
     c->keyword = INTEGER(column(c, "keyword", INTSXP, n));
   c->offset = INTEGER(column(c, "offset", INTSXP, n));
   c->length = INTEGER(column(c, "length", INTSXP, n));
+  c->detail = INTEGER(column(c, "detail", INTSXP, n));
 }
 
 /* The value columns of row i as missing. */
@@ -410,12 +464,18 @@ static void row_missing(struct columns *c, R_xlen_t i) {
     c->keyword[i] = NA_INTEGER;
   c->offset[i] = NA_INTEGER;
   c->length[i] = NA_INTEGER;
+  c->detail[i] = NA_INTEGER;
 }
 
 static int span_int(uint32_t v) { return v > (uint32_t)INT_MAX ? INT_MAX : (int)v; }
 
-/* Row i faulted with `reason` over offset/length, already in the caller's units. */
-static void row_fault(struct columns *c, R_xlen_t i, int reason, uint32_t offset, uint32_t length) {
+/*
+ * Row i faulted with `reason` over offset/length, already in the caller's units, for the
+ * core's `detail` code. A code this package does not name stays a code: R reads it as
+ * "unknown".
+ */
+static void row_fault(struct columns *c, R_xlen_t i, int reason, uint32_t offset, uint32_t length,
+                      uint32_t detail) {
   value_na(c, i);
   c->ok[i] = FALSE;
   c->reason[i] = reason;
@@ -423,6 +483,7 @@ static void row_fault(struct columns *c, R_xlen_t i, int reason, uint32_t offset
     c->keyword[i] = NA_INTEGER;
   c->offset[i] = span_int(offset);
   c->length[i] = span_int(length);
+  c->detail[i] = span_int(detail);
 }
 
 /* Row i parsed and broke the declared rule `keyword` over offset/length, in caller units. */
@@ -434,6 +495,7 @@ static void row_violation(struct columns *c, R_xlen_t i, uint32_t keyword, uint3
   c->keyword[i] = span_int(keyword);
   c->offset[i] = span_int(offset);
   c->length[i] = span_int(length);
+  c->detail[i] = NA_INTEGER; /* a violation carries no detail (the core writes 0) */
 }
 
 /* ---- rendering exact values as text ---- */
@@ -600,6 +662,7 @@ static void row_ok(struct columns *c, R_xlen_t i, enum door door, const union va
     c->keyword[i] = NA_INTEGER;
   c->offset[i] = NA_INTEGER;
   c->length[i] = NA_INTEGER;
+  c->detail[i] = NA_INTEGER;
   switch (door) {
   case BOOL_DOOR:
     c->lgl[i] = v->boolean != 0;
@@ -688,8 +751,37 @@ static uint32_t code_points(const uint8_t *b, uint32_t n) {
   return count;
 }
 
-static int ascii_space(uint8_t b) {
-  return b == ' ' || b == '\t' || b == '\n' || b == '\f' || b == '\r';
+/*
+ * The bytes of the white-space code point (Unicode White_Space, the core's is_white_space)
+ * that b[0..n) starts with, or 0: the 25 code points, as UTF-8. R's num_format.R and the
+ * corpus's formats.json hold the same list.
+ */
+static uint32_t white_space_len(const uint8_t *b, uint32_t n) {
+  if (n >= 1 && ((b[0] >= 0x09 && b[0] <= 0x0D) || b[0] == 0x20))
+    return 1;
+  if (n >= 2 && b[0] == 0xC2 && (b[1] == 0x85 || b[1] == 0xA0)) /* U+0085, U+00A0 */
+    return 2;
+  if (n < 3)
+    return 0;
+  if (b[0] == 0xE1 && b[1] == 0x9A && b[2] == 0x80) /* U+1680 */
+    return 3;
+  /* U+2000..U+200A, U+2028, U+2029, U+202F */
+  if (b[0] == 0xE2 && b[1] == 0x80 &&
+      ((b[2] >= 0x80 && b[2] <= 0x8A) || b[2] == 0xA8 || b[2] == 0xA9 || b[2] == 0xAF))
+    return 3;
+  if (b[0] == 0xE2 && b[1] == 0x81 && b[2] == 0x9F) /* U+205F */
+    return 3;
+  if (b[0] == 0xE3 && b[1] == 0x80 && b[2] == 0x80) /* U+3000 */
+    return 3;
+  return 0;
+}
+
+/* The bytes of the white-space code point that ends b[0..n), or 0. */
+static uint32_t white_space_len_back(const uint8_t *b, uint32_t n) {
+  for (uint32_t k = 1; k <= 3 && k <= n; k++)
+    if (white_space_len(b + n - k, k) == k)
+      return k;
+  return 0;
 }
 
 /*
@@ -705,6 +797,12 @@ static void present(const uint8_t *p, uintptr_t n, int chars, HyperCastRawFault 
   uint32_t start = code_points(p, (uint32_t)offset);
   f->len = code_points(p + offset, (uint32_t)(end - offset));
   f->offset = start;
+}
+
+/* The same, for a detailed fault's span: its detail is the core's and stays as it is. */
+static HyperCastRawFault span_of(const HyperCastRawFaultDetail *f) {
+  HyperCastRawFault span = {f->offset, f->len};
+  return span;
 }
 
 /* ---- the input ---- */
@@ -739,20 +837,27 @@ static const uint8_t *string_bytes(SEXP s, int native, uintptr_t *n, int *chars)
   return (const uint8_t *)c;
 }
 
+/* The core's detail codes this file assigns itself (rust/src/detail.rs). */
+#define DETAIL_UNEXPECTED_CHARACTER 2
+#define DETAIL_TOO_LONG 21
+
 /*
  * The char door's value U+0000 is a scalar the core accepts and an R string cannot hold (R's
  * strings are NUL-terminated), so it is reported the way C# and Java report a scalar their
- * UTF-16 char cannot hold: out of range, over the input less its ASCII whitespace edges.
+ * UTF-16 char cannot hold: out of range, over the input less its white space edges. The core
+ * read no fault, so the detail is this binding's: NUL is a character the position (an R
+ * string) does not allow.
  */
 static void nul_scalar(struct columns *c, R_xlen_t i, const uint8_t *p, uintptr_t n, int chars) {
   uintptr_t start = 0, end = n;
-  while (start < end && ascii_space(p[start]))
-    start++;
-  while (end > start && ascii_space(p[end - 1]))
-    end--;
+  uint32_t w;
+  while (start < end && (w = white_space_len(p + start, (uint32_t)(end - start))) != 0)
+    start += w;
+  while (end > start && (w = white_space_len_back(p + start, (uint32_t)(end - start))) != 0)
+    end -= w;
   HyperCastRawFault f = {(uint32_t)start, (uint32_t)(end - start)};
   present(p, n, chars, &f);
-  row_fault(c, i, 3, f.offset, f.len);
+  row_fault(c, i, 3, f.offset, f.len, DETAIL_UNEXPECTED_CHARACTER);
 }
 
 /*
@@ -786,17 +891,18 @@ static int element(SEXP x, int is_list, R_xlen_t i, int native, const uint8_t **
  * is all of it, otherwise the span's bytes in the encoding they were read in ("bytes" for a
  * string marked so, native for an unmarked one in an ASCII session, UTF-8 otherwise and for a
  * raw vector). U+0000 is valid UTF-8 a raw vector can carry and an R string cannot hold, so a
- * value holding it is out of range over the value, as cast_char()'s U+0000 is.
+ * value holding it is out of range over the value, as the char door's U+0000 is.
  */
 static void text_row(struct columns *c, R_xlen_t i, SEXP s, const uint8_t *p, uintptr_t n,
                      int chars, const HyperCastRawSpan *span) {
   if (span->offset > n || span->len > n - span->offset)
     Rf_error("hypercast: the core wrote a span outside the input (please report it)");
   const uint8_t *start = p + span->offset;
-  if (span->len > (uint32_t)INT_MAX || memchr(start, 0, span->len)) {
+  int too_long = span->len > (uint32_t)INT_MAX;
+  if (too_long || memchr(start, 0, span->len)) {
     HyperCastRawFault f = {span->offset, span->len};
     present(p, n, chars, &f);
-    row_fault(c, i, 3, f.offset, f.len);
+    row_fault(c, i, 3, f.offset, f.len, too_long ? DETAIL_TOO_LONG : DETAIL_UNEXPECTED_CHARACTER);
     return;
   }
   row_ok(c, i, TEXT_DOOR, NULL);
@@ -821,12 +927,13 @@ static void contract_violation(void) {
  * x: a character vector, or a list whose elements are raw vectors or NULL (NULL is
  * missing). native: string_bytes()'s session code.
  */
-SEXP C_cast_text(SEXP x, SEXP door_name, SEXP format, SEXP periods, SEXP code, SEXP native_mode) {
+SEXP C_cast_text(SEXP x, SEXP door_name, SEXP format, SEXP periods, SEXP code, SEXP native_mode,
+                 SEXP options, SEXP vocab) {
   enum door door = door_arg(door_name);
   if (door >= DECIMAL_FROM_DOUBLE_DOOR)
     Rf_error("hypercast: %s takes numbers", DOORS[door].name);
   struct declared d;
-  declared_arg(format, periods, code, &d);
+  declared_arg(format, periods, code, options, vocab, &d);
   int is_list = TYPEOF(x) == VECSXP;
   if (!is_list && TYPEOF(x) != STRSXP)
     Rf_error("hypercast: x must be a character vector or a list of raw vectors");
@@ -846,7 +953,7 @@ SEXP C_cast_text(SEXP x, SEXP door_name, SEXP format, SEXP periods, SEXP code, S
       continue;
     }
     union value v;
-    HyperCastRawFault f = {0, 0};
+    HyperCastRawFaultDetail f = fault_slot();
     int32_t rc = text_door(door, p, len, &d, &v, &f);
     if (rc == 0 && door == CHAR_DOOR && v.scalar == 0) {
       nul_scalar(&c, i, p, len, chars);
@@ -855,8 +962,9 @@ SEXP C_cast_text(SEXP x, SEXP door_name, SEXP format, SEXP periods, SEXP code, S
     } else if (rc == 0) {
       row_ok(&c, i, door, &v);
     } else if (rc >= 1 && rc <= 3) {
-      present(p, len, chars, &f);
-      row_fault(&c, i, rc, f.offset, f.len);
+      HyperCastRawFault span = span_of(&f);
+      present(p, len, chars, &span);
+      row_fault(&c, i, rc, span.offset, span.len, f.detail);
     } else {
       contract_violation();
     }
@@ -872,7 +980,7 @@ SEXP C_cast_double(SEXP x, SEXP door_name, SEXP code) {
   if (door < DECIMAL_FROM_DOUBLE_DOOR)
     Rf_error("hypercast: %s takes text", DOORS[door].name);
   struct declared d;
-  declared_arg(R_NilValue, R_NilValue, code, &d);
+  declared_arg(R_NilValue, R_NilValue, code, R_NilValue, R_NilValue, &d);
   if (TYPEOF(x) != REALSXP)
     Rf_error("hypercast: x must be a double vector");
   R_xlen_t n = XLENGTH(x);
@@ -886,12 +994,12 @@ SEXP C_cast_double(SEXP x, SEXP door_name, SEXP code) {
       continue;
     }
     union value v;
-    HyperCastRawFault f = {0, 0};
+    HyperCastRawFaultDetail f = fault_slot();
     int32_t rc = double_door(door, xs[i], &d, &v, &f);
     if (rc == 0) {
       row_ok(&c, i, door, &v);
     } else if (rc >= 1 && rc <= 3) {
-      row_fault(&c, i, rc, f.offset, f.len);
+      row_fault(&c, i, rc, f.offset, f.len, f.detail);
     } else {
       contract_violation();
     }
@@ -1202,18 +1310,20 @@ SEXP C_cast_checked(SEXP x, SEXP layout, SEXP format, SEXP native_mode) {
       continue;
     }
     union value v;
-    HyperCastRawFault f = {0, 0};
+    HyperCastRawFaultDetail f = fault_slot();
     HyperCastRawCheck check = {0, 0, UINT32_MAX};
-    int32_t rc = cast_checked(door, 0, d.door == TEXT_DOOR ? NULL : &fmt, &d.raw, d.enum_ptr,
-                              d.enum_len, p, len, &v, &f, &check);
+    int32_t rc = cast_checked_detailed(door, 0, d.door == TEXT_DOOR ? NULL : &fmt, &d.raw,
+                                       d.enum_ptr, d.enum_len, p, len, &v, &f, &check);
     if (rc == 0) {
       checked_ok(&c, i, &d, s, p, len, chars, &v, &check);
     } else if (rc >= 1 && rc <= 3) {
-      present(p, len, chars, &f);
-      row_fault(&c, i, rc, f.offset, f.len);
+      HyperCastRawFault span = span_of(&f);
+      present(p, len, chars, &span);
+      row_fault(&c, i, rc, span.offset, span.len, f.detail);
     } else if (rc == 4) {
-      present(p, len, chars, &f);
-      row_violation(&c, i, check.keyword, f.offset, f.len);
+      HyperCastRawFault span = span_of(&f);
+      present(p, len, chars, &span);
+      row_violation(&c, i, check.keyword, span.offset, span.len);
     } else {
       checked_contract_violation();
     }
@@ -1243,13 +1353,14 @@ SEXP C_cast_checked_double(SEXP x, SEXP layout, SEXP native_mode) {
       continue;
     }
     union value v;
-    HyperCastRawFault f = {0, 0};
+    HyperCastRawFaultDetail f = fault_slot();
     HyperCastRawCheck check = {0, 0, UINT32_MAX};
-    int32_t rc = cast_checked_from_f64(door, xs[i], &d.raw, d.enum_ptr, d.enum_len, &v, &f, &check);
+    int32_t rc = cast_checked_detailed_from_f64(door, 0, &d.raw, d.enum_ptr, d.enum_len, xs[i], &v,
+                                                &f, &check);
     if (rc == 0) {
       checked_ok(&c, i, &d, R_NilValue, NULL, 0, 0, &v, &check);
     } else if (rc >= 1 && rc <= 3) {
-      row_fault(&c, i, rc, f.offset, f.len);
+      row_fault(&c, i, rc, f.offset, f.len, f.detail);
     } else if (rc == 4) {
       row_violation(&c, i, check.keyword, f.offset, f.len);
     } else {
@@ -1309,6 +1420,52 @@ __attribute__((visibility("hidden")))
 #endif
 void rust_eh_personality(void);
 void rust_eh_personality(void) {}
+
+/*
+ * Whether the core this shared object is linked with enforces a strict grouping policy: a
+ * strict Western format must refuse "12,34" as a group of the wrong size (code 2, detail 11,
+ * group_size). A core that ignores the policy bits, as a 1.0 core does, reads it legacy and
+ * returns 0 (1234), so a strict request would silently be parsed legacy; the package refuses
+ * to load against one (R_init_hypercast). It is a capability probe, not a version number
+ * compare: a 1.1 core under development still names itself 1.0.0 until prepare-release
+ * moves the version, and the policy is what the package depends on. A 1.0 core has no
+ * cast_detailed to link against at all, so the probe is the guard against a core that
+ * links and still ignores the policy.
+ */
+int hypercast_core_enforces_grouping(void) {
+  HyperCastRawNumFormat f;
+  memset(&f, 0, sizeof f);
+  f.size = HyperCastRawNumFormat_SIZE;
+  f.format.flags = HyperCastNumFormat_GROUPING | HyperCastNumFormat_GROUPING_WESTERN;
+  f.format.decimal_sep.bytes[0] = '.';
+  f.format.decimal_sep.len = 1;
+  f.format.group_sep.bytes[0] = ',';
+  f.format.group_sep.len = 1;
+  const uint8_t text[] = {'1', '2', ',', '3', '4'};
+  int32_t out = 0;
+  HyperCastRawFaultDetail fault = fault_slot();
+  int32_t rc = cast_detailed(4, 0, &f, NULL, NULL, NULL, 0, text, sizeof text, &out, &fault);
+  return rc == 2 && fault.detail == 11 && fault.offset == 2 && fault.len == 3;
+}
+
+SEXP C_core_guard(void) { return ScalarLogical(hypercast_core_enforces_grouping()); }
+
+/*
+ * A month vocabulary as the core judges it: 0 when it is accepted, 1 when the core refuses it
+ * (a -1 from cast_detailed at the ordered date door, before anything is read), as
+ * month_names() judges every rule it can state itself and leaves the one only the core's
+ * case folding decides, a folded duplicate, to this.
+ */
+SEXP C_month_names_check(SEXP vocab) {
+  if (TYPEOF(vocab) != RAWSXP)
+    Rf_error("hypercast: months must be packed month names");
+  uintptr_t len = (uintptr_t)XLENGTH(vocab);
+  union value v;
+  HyperCastRawFaultDetail fault = fault_slot();
+  int32_t rc =
+      cast_detailed(20, 1, NULL, NULL, NULL, len ? RAW(vocab) : NULL, len, NULL, 0, &v, &fault);
+  return ScalarInteger(rc == -1);
+}
 
 /* The packed core version (major << 16 | minor << 8 | patch); R unpacks it. */
 SEXP C_native_version(void) { return ScalarInteger((int)hypercast_version()); }

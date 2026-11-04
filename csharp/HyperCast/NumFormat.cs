@@ -31,8 +31,8 @@ namespace HyperCast;
 /// symbol up to <see cref="MaxCurrencyBytes"/>.
 /// </para>
 /// </remarks>
-/// <param name="DecimalSeparator">The declared decimal separator: one to <see cref="MaxSymbolBytes"/> bytes of UTF-8, no ASCII digit.</param>
-/// <param name="GroupSeparator">The declared digit-group separator, likewise. Must differ from <paramref name="DecimalSeparator"/>.</param>
+/// <param name="DecimalSeparator">The declared decimal separator: one to <see cref="MaxSymbolBytes"/> bytes of UTF-8, no ASCII digit or white space.</param>
+/// <param name="GroupSeparator">The declared digit-group separator, likewise but for white space, which it may be or hold. Must differ from <paramref name="DecimalSeparator"/>.</param>
 /// <param name="Styles">The lenience flags.</param>
 public readonly record struct NumFormat(string DecimalSeparator, string GroupSeparator, NumStyles Styles)
 {
@@ -49,12 +49,16 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 	// format is reported against the argument the caller actually passed.
 	const string DoorParameter = "format";
 
-	/// <summary>The invariant profile — <c>.</c> decimal, <c>,</c> grouping, every lenience on, nothing else declared.</summary>
+	/// <summary>
+	/// The invariant profile — <c>.</c> decimal, <c>,</c> grouping (strict <see cref="NumGrouping.Western"/>),
+	/// every lenience on, nothing else declared.
+	/// </summary>
 	public static readonly NumFormat Invariant = new(".", ",", NumStyles.All);
 
 	/// <summary>
 	/// The detection profile — every lenience on, <c>.</c>/<c>,</c> roles resolved per
-	/// input by <see cref="NumStyles.SeparatorDetect"/>'s structural rules.
+	/// input by <see cref="NumStyles.SeparatorDetect"/>'s structural rules; groups, once the roles
+	/// are resolved, are judged as <see cref="NumGrouping.Western"/> ones.
 	/// </summary>
 	public static readonly NumFormat Detect = new(".", ",", NumStyles.All | NumStyles.SeparatorDetect);
 
@@ -66,6 +70,24 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 		: this(decimalSeparator.ToString(), groupSeparator.ToString(), styles)
 	{
 	}
+
+	/// <summary>Declares the separators, the flags and the grouping policy.</summary>
+	/// <param name="decimalSeparator">The declared decimal separator.</param>
+	/// <param name="groupSeparator">The declared digit-group separator. Must differ from <paramref name="decimalSeparator"/>.</param>
+	/// <param name="styles">The lenience flags.</param>
+	/// <param name="grouping">How strictly digit groups are judged.</param>
+	public NumFormat(string decimalSeparator, string groupSeparator, NumStyles styles, NumGrouping grouping)
+		: this(decimalSeparator, groupSeparator, styles) =>
+		Grouping = grouping;
+
+	/// <summary>Declares single-character separators, the flags and the grouping policy.</summary>
+	/// <param name="decimalSeparator">The declared decimal separator.</param>
+	/// <param name="groupSeparator">The declared digit-group separator. Must differ from <paramref name="decimalSeparator"/>.</param>
+	/// <param name="styles">The lenience flags.</param>
+	/// <param name="grouping">How strictly digit groups are judged.</param>
+	public NumFormat(char decimalSeparator, char groupSeparator, NumStyles styles, NumGrouping grouping)
+		: this(decimalSeparator.ToString(), groupSeparator.ToString(), styles) =>
+		Grouping = grouping;
 
 	/// <summary>Declares single-character separators, the flags and the currency symbol together.</summary>
 	/// <param name="decimalSeparator">The declared decimal separator.</param>
@@ -86,8 +108,17 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 		CurrencySymbol = currencySymbol;
 
 	/// <summary>
+	/// How strictly digit groups are judged, beside the <see cref="Styles"/> and never part of them:
+	/// <see cref="NumGrouping.Western"/> unless declared otherwise, so a style mask handed to the
+	/// constructor never carries a policy, and <c>with { Styles = … }</c> keeps this one. An
+	/// undefined value is a caller bug the doors reject with an <see cref="ArgumentException"/>.
+	/// </summary>
+	public NumGrouping Grouping { get; init; }
+
+	/// <summary>
 	/// The declared decimal separator. One to <see cref="MaxSymbolBytes"/> bytes of UTF-8
-	/// with no ASCII digit; anything else is a caller bug the doors reject with an
+	/// with no ASCII digit and no white space (a numeral admits white space only as a group
+	/// separator); anything else is a caller bug the doors reject with an
 	/// <see cref="ArgumentException"/>.
 	/// </summary>
 	/// <remarks>
@@ -106,8 +137,10 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 	/// <summary>
 	/// The declared currency symbol, honored only while <see cref="NumStyles.Currency"/> is
 	/// set (it is part of <see cref="NumStyles.All"/>). Empty — the default — declares none.
-	/// At most <see cref="MaxCurrencyBytes"/> bytes of UTF-8, containing no ASCII digit or
-	/// whitespace; anything else is a caller bug the doors reject with an
+	/// At most <see cref="MaxCurrencyBytes"/> bytes of UTF-8, containing no ASCII digit and no
+	/// white space at either end (the input's white space around it is ignored, so an edge could
+	/// never match; white space inside is the symbol's own, as in CLDR's <c>F CFA</c>, and the
+	/// core reads an ASCII space, U+00A0 and U+202F there as each other); anything else is a caller bug the doors reject with an
 	/// <see cref="ArgumentException"/>.
 	/// </summary>
 	public string CurrencySymbol { get => field ?? ""; init; } = "";
@@ -127,7 +160,8 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 	/// <summary>
 	/// The digit-group separator of a currency amount, as
 	/// <see cref="CurrencyDecimalSeparator"/>. Empty keeps <see cref="GroupSeparator"/>; the
-	/// pair in force must differ.
+	/// pair in force must differ. A group separator may be or hold white space; the
+	/// space-like three (<c>' '</c>, U+00A0, U+202F) declared stand for each other in the input.
 	/// </summary>
 	public string CurrencyGroupSeparator { get => field ?? ""; init; } = "";
 
@@ -136,7 +170,7 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 	/// digits, before or after a leading currency symbol, and after the digits under
 	/// <see cref="NumStyles.TrailingSign"/> (U+2212 in et-EE and eu-ES). ASCII <c>-</c> is
 	/// always read; empty — the default — declares no other. At most
-	/// <see cref="MaxSymbolBytes"/> bytes of UTF-8, with no ASCII digit or whitespace.
+	/// <see cref="MaxSymbolBytes"/> bytes of UTF-8, with no ASCII digit or white space.
 	/// </summary>
 	public string MinusSign { get => field ?? ""; init; } = "";
 
@@ -147,7 +181,7 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 	/// A further spelling of the percent symbol, read as a trailing <c>%</c> is while
 	/// <see cref="NumStyles.Percent"/> is set (<c>٪</c> in Arabic-script cultures, <c>％</c>
 	/// fullwidth). ASCII <c>%</c> is always read; empty — the default — declares no other.
-	/// At most <see cref="MaxSymbolBytes"/> bytes of UTF-8, with no ASCII digit or whitespace.
+	/// At most <see cref="MaxSymbolBytes"/> bytes of UTF-8, with no ASCII digit or white space.
 	/// </summary>
 	public string PercentSymbol { get => field ?? ""; init; } = "";
 
@@ -198,6 +232,19 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 	/// </summary>
 	/// <remarks>
 	/// <list type="bullet">
+	/// <item><description>The grouping the culture's own patterns write, so the bridge never rejects what the
+	/// platform itself formats. Both <see cref="NumberFormatInfo.NumberGroupSizes"/> and
+	/// <see cref="NumberFormatInfo.CurrencyGroupSizes"/> are read, whole, with .NET's meaning: the sizes run
+	/// from the decimal separator leftward, the last nonzero size repeats, a trailing <c>0</c> ends grouping
+	/// after the sizes before it, and <c>[0]</c> is no grouping at all. Only a pattern that groups is
+	/// counted. If every one is <c>3</c> (<c>[3]</c>) the policy is <see cref="NumGrouping.Western"/>; if every one is
+	/// three and then twos without end (<c>[3, 2]</c>: en-IN, hi-IN) it is <see cref="NumGrouping.Indian"/>;
+	/// if any is another shape (Toki Pona's twos, <c>[3, 0]</c>) or the two disagree (ICU's ml, ta, mr and or:
+	/// Indian numbers, Western currency) it is <see cref="NumGrouping.Legacy"/>, a deterministic fallback read
+	/// from the sizes alone, never from the culture's name or from any input. <see cref="NumStyles.Grouping"/>
+	/// is cleared only when neither pattern groups (en-US-POSIX); when just one does (en-BG writes no currency
+	/// grouping) it stays set, ungrouped values stay valid, and the format cannot prohibit grouping in the one
+	/// amount alone, since one policy and one flag serve both.</description></item>
 	/// <item><description><see cref="NumberFormatInfo.NumberDecimalSeparator"/> and
 	/// <see cref="NumberFormatInfo.NumberGroupSeparator"/> whole, however many characters
 	/// each is (<c>,</c> for a culture that declares no group separator), and
@@ -206,8 +253,8 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 	/// <see cref="NumberFormatInfo.CurrencyGroupSeparator"/>, each where it differs from the
 	/// number separator it stands in for, so a currency amount is read as the BCL reads one.</description></item>
 	/// <item><description>Whatever a runtime's data holds, the bridge never throws: a symbol
-	/// the core could not read (an ASCII digit in it, whitespace against the digits, past
-	/// its buffer) is left undeclared, and the ASCII spelling is read alone; a group separator
+	/// the core could not read (an ASCII digit in it, white space in a decimal separator, sign
+	/// or percent symbol or at the edge of a currency symbol, past its buffer) is left undeclared, and the ASCII spelling is read alone; a group separator
 	/// equal to the decimal one (NLS gives mn-Mong-MN a comma for both) takes the other of
 	/// <c>.</c> and <c>,</c>; a currency pair that would collide declares nothing.</description></item>
 	/// <item><description><see cref="NumberFormatInfo.NegativeSign"/>,
@@ -241,24 +288,28 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 		// and the two must differ, which a runtime's data does not promise (NLS gives
 		// mn-Mong-MN a comma for both), so a group separator equal to the decimal one takes
 		// the other of the ASCII pair, as the BCL itself then reads only the decimal.
-		var decimalSeparator = Separator(numberFormat.NumberDecimalSeparator, ".");
-		var groupSeparator = Separator(numberFormat.NumberGroupSeparator, ",");
+		var decimalSeparator = Separator(numberFormat.NumberDecimalSeparator, ".", group: false);
+		var groupSeparator = Separator(numberFormat.NumberGroupSeparator, ",", group: true);
 		if (groupSeparator == decimalSeparator)
 			groupSeparator = decimalSeparator == "," ? "." : ",";
 		// The currency pair, where it differs from the number pair; a pair in force that
 		// collides (a runtime's data again) declares nothing, and currency amounts read with
 		// the number pair.
-		var currencyDecimalSeparator = Declared(Separator(numberFormat.CurrencyDecimalSeparator, decimalSeparator), decimalSeparator);
-		var currencyGroupSeparator = Declared(Separator(numberFormat.CurrencyGroupSeparator, groupSeparator), groupSeparator);
+		var currencyDecimalSeparator = Declared(Separator(numberFormat.CurrencyDecimalSeparator, decimalSeparator, group: false), decimalSeparator);
+		var currencyGroupSeparator = Declared(Separator(numberFormat.CurrencyGroupSeparator, groupSeparator, group: true), groupSeparator);
 		if ((currencyDecimalSeparator.Length != 0 ? currencyDecimalSeparator : decimalSeparator)
 			== (currencyGroupSeparator.Length != 0 ? currencyGroupSeparator : groupSeparator))
 			currencyDecimalSeparator = currencyGroupSeparator = "";
 		var styles = NumStyles.All;
 		if (numberFormat.NumberNegativePattern is 3 or 4 || numberFormat.CurrencyNegativePattern is 3 or 6 or 7 or 10 or 11 or 13)
 			styles |= NumStyles.TrailingSign;
+		var (grouping, groups) = GroupingOf(GroupSizes(numberFormat, currency: false), GroupSizes(numberFormat, currency: true));
+		if (!groups)
+			styles &= ~NumStyles.Grouping;
 		var digits = FirstNativeDigit(numberFormat);
-		return new(decimalSeparator, groupSeparator, styles, Symbol(numberFormat.CurrencySymbol, "", MaxCurrencyBytes))
+		return new(decimalSeparator, groupSeparator, styles, Symbol(numberFormat.CurrencySymbol, "", MaxCurrencyBytes, Spaces.AtEdges))
 		{
+			Grouping = grouping,
 			CurrencyDecimalSeparator = currencyDecimalSeparator,
 			CurrencyGroupSeparator = currencyGroupSeparator,
 			MinusSign = Symbol(numberFormat.NegativeSign, "-", MaxSymbolBytes),
@@ -276,30 +327,33 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 	static string Declared(string symbol, string ascii) => symbol == ascii ? "" : symbol;
 
 	// A culture's separator where the core can read it, else `fallback`: one to
-	// MaxSymbolBytes bytes of UTF-8 with no ASCII digit (whitespace is a separator some
-	// cultures declare, and is read as one).
-	static string Separator(string separator, string fallback) =>
-		Declarable(separator, MaxSymbolBytes, flush: false) ? separator : fallback;
+	// MaxSymbolBytes bytes of UTF-8 with no ASCII digit, and no white space unless it is a
+	// group separator (white space is a group separator some cultures declare, and is read
+	// as one; a decimal separator could never hold it).
+	static string Separator(string separator, string fallback, bool group) =>
+		Declarable(separator, MaxSymbolBytes, group ? Spaces.Allowed : Spaces.Nowhere) ? separator : fallback;
 
 	// A culture's sign, percent or currency symbol where it differs from the ASCII one the
 	// core reads regardless and the core can read it, else nothing: the bridge never throws
 	// on a runtime's data, however a culture is spelled there.
-	static string Symbol(string symbol, string ascii, int maxBytes) =>
-		symbol != ascii && Declarable(symbol, maxBytes, flush: true) ? symbol : "";
+	static string Symbol(string symbol, string ascii, int maxBytes, Spaces spaces = Spaces.Nowhere) =>
+		symbol != ascii && Declarable(symbol, maxBytes, spaces) ? symbol : "";
 
 	// Whether `Encode` would accept the symbol: the same rules, answered rather than thrown,
 	// for a bridge that must map every culture a runtime ships.
-	internal static bool Declarable(string symbol, int maxBytes, bool flush)
+	internal static bool Declarable(string symbol, int maxBytes, Spaces spaces)
 	{
 		if (symbol.Length == 0)
 			return false;
 		if (symbol.Length == 1 && char.IsAscii(symbol[0]))
-			return !char.IsAsciiDigit(symbol[0]) && !(flush && IsAsciiWhitespace(symbol[0]));
+			return !char.IsAsciiDigit(symbol[0]) && !(spaces != Spaces.Allowed && WhiteSpace.IsWhiteSpace(symbol[0]));
+		if (spaces == Spaces.AtEdges && (WhiteSpace.IsWhiteSpace(symbol[0]) || WhiteSpace.IsWhiteSpace(symbol[^1])))
+			return false;
 		var bytes = 0;
 		for (var i = 0; i < symbol.Length; i++)
 		{
 			var c = symbol[i];
-			if (char.IsAsciiDigit(c) || (flush && IsAsciiWhitespace(c)))
+			if (char.IsAsciiDigit(c) || (spaces == Spaces.Nowhere && WhiteSpace.IsWhiteSpace(c)))
 				return false;
 			if (char.IsSurrogate(c))
 			{
@@ -312,8 +366,6 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 		}
 		return bytes <= maxBytes;
 	}
-
-	internal static bool IsAsciiWhitespace(char c) => c is ' ' or '\t' or '\n' or '\f' or '\r';
 
 	// A zero the core can start a digit block at: outside ASCII, and with ten successors
 	// that share its UTF-8 prefix, which every Unicode digit block has.
@@ -344,23 +396,94 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 
 	static volatile bool _cloneNativeDigits;
 
+	// The culture's group sizes, read as the digits are: NumberFormatInfo.NumberGroupSizes and
+	// CurrencyGroupSizes clone their array on every read, and the provider doors bridge on every
+	// call, so the BCL's own fields are read in place, with the public getter as the fallback
+	// should a runtime ever rename them.
+	static int[] GroupSizes(NumberFormatInfo numberFormat, bool currency)
+	{
+		if (!_cloneGroupSizes)
+		{
+			try
+			{
+				return currency ? CurrencyGroupSizesField(numberFormat) : NumberGroupSizesField(numberFormat);
+			}
+			catch (MissingMemberException)
+			{
+				_cloneGroupSizes = true;
+			}
+		}
+		return currency ? numberFormat.CurrencyGroupSizes : numberFormat.NumberGroupSizes;
+	}
+
+	static volatile bool _cloneGroupSizes;
+
+	[UnsafeAccessor(UnsafeAccessorKind.Field, Name = "numberGroupSizes")]
+	static extern ref int[] NumberGroupSizesField(NumberFormatInfo numberFormat);
+
+	[UnsafeAccessor(UnsafeAccessorKind.Field, Name = "currencyGroupSizes")]
+	static extern ref int[] CurrencyGroupSizesField(NumberFormatInfo numberFormat);
+
+	enum Shape { None, Western, Indian, Other }
+
+	// A pattern's shape, by .NET's meaning of its sizes: they run from the decimal separator leftward, a
+	// last size that is nonzero repeats without end, a trailing 0 stops grouping after the sizes before it,
+	// and a leading 0 (`[0]`) is no grouping at all. `[3]` is Western and `[3, 2]` Indian; a finite pattern
+	// (`[3, 0]` writes 1234,567) or any other size is no policy the core has a name for.
+	static Shape ShapeOf(int[] sizes)
+	{
+		if (sizes.Length == 0 || sizes[0] == 0)
+			return Shape.None;
+		if (sizes[^1] == 0)
+			return Shape.Other;
+		if (sizes.All(static size => size == 3))
+			return Shape.Western;
+		if (sizes.Length >= 2 && sizes[0] == 3 && sizes.Skip(1).All(static size => size == 2))
+			return Shape.Indian;
+		return Shape.Other;
+	}
+
+	// The one policy and the one Grouping flag a number pattern and a currency pattern share: counting
+	// only the patterns that group, both Western is Western, both Indian is Indian, and anything else
+	// (another shape, or two that disagree) is the legacy rule, which reads every one. Neither grouping
+	// clears the flag.
+	static (NumGrouping Grouping, bool Groups) GroupingOf(int[] number, int[] currency)
+	{
+		Shape first = ShapeOf(number), second = ShapeOf(currency);
+		if (first == Shape.None)
+			first = second;
+		if (second == Shape.None)
+			second = first;
+		return first == Shape.None ? (NumGrouping.Western, false)
+			: first == second && first == Shape.Western ? (NumGrouping.Western, true)
+			: first == second && first == Shape.Indian ? (NumGrouping.Indian, true)
+			: (NumGrouping.Legacy, true);
+	}
+
 	[UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_nativeDigits")]
 	static extern ref string[] NativeDigits(NumberFormatInfo numberFormat);
 
 	/// <summary>
 	/// Validates and converts to the native core's 92-byte layout — what every numeric door
 	/// does with its format argument, public for a library that declares numeric columns
-	/// across a C ABI of its own.
+	/// across a C ABI of its own. The grouping policy it writes (bits 8 and 9 of the flags word) takes
+	/// effect only through the four detailed exports, which every door of this binding calls; an old
+	/// 1.0 export ignores those bits and silently parses with legacy grouping, so a library passing
+	/// this layout to one must not rely on a strict policy.
 	/// </summary>
 	/// <exception cref="ArgumentException">
-	/// A contract violation — a caller bug, not a data verdict: a number separator missing
+	/// A contract violation — a caller bug, not a data verdict: an undefined <see cref="Grouping"/>
+	/// policy or a <see cref="Styles"/> bit no flag defines (the core's own 1.1 refusals); a number separator missing
 	/// or past <see cref="MaxSymbolBytes"/> bytes, the two equal, or the currency pair in
 	/// force equal; any symbol past its buffer, carrying an ASCII digit, or not whole code
-	/// points (a lone UTF-16 surrogate); ASCII whitespace in a sign, the percent or the
-	/// currency symbol; a <see cref="DigitZero"/> that starts no digit block.
+	/// points (a lone UTF-16 surrogate); white space (any of the Unicode set) in a sign, the
+	/// percent or either decimal separator, or at either end of the currency symbol; a
+	/// <see cref="DigitZero"/> that starts no digit block.
 	/// </exception>
 	public Interop.RawNumFormat ToRaw()
 	{
+		// The core's own order: the one flags word first, the policy before an undefined bit.
+		var flags = RawFlags();
 		var decimalSeparator = DecimalSeparator;
 		var groupSeparator = GroupSeparator;
 		if (decimalSeparator.Length == 0 || groupSeparator.Length == 0)
@@ -379,12 +502,12 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 			&& CurrencyDecimalSeparator.Length == 0 && CurrencyGroupSeparator.Length == 0
 			&& MinusSign.Length == 0 && PlusSign.Length == 0 && PercentSymbol.Length == 0 && DigitZero is null)
 		{
-			Check(decimalSeparator[0], decimalSeparator, "Decimal separator", flush: false);
-			Check(groupSeparator[0], groupSeparator, "Group separator", flush: false);
+			Check(decimalSeparator[0], decimalSeparator, "Decimal separator", spaces: Spaces.Nowhere);
+			Check(groupSeparator[0], groupSeparator, "Group separator", spaces: Spaces.Allowed);
 			var fast = new Interop.RawNumFormat
 			{
 				Size = (uint)Unsafe.SizeOf<Interop.RawNumFormat>(),
-				Flags = (uint)Styles,
+				Flags = flags,
 			};
 			fast.DecimalSep.Bytes[0] = (byte)decimalSeparator[0];
 			fast.DecimalSep.Length = 1;
@@ -392,7 +515,7 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 			fast.GroupSep.Length = 1;
 			if (currencySymbol.Length != 0)
 			{
-				Check(currencySymbol[0], currencySymbol, "Currency symbol", flush: true);
+				Check(currencySymbol[0], currencySymbol, "Currency symbol", spaces: Spaces.AtEdges);
 				fast.Currency.Bytes[0] = (byte)currencySymbol[0];
 				fast.Currency.Length = 1;
 			}
@@ -401,10 +524,10 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 		var raw = new Interop.RawNumFormat
 		{
 			Size = (uint)Unsafe.SizeOf<Interop.RawNumFormat>(),
-			Flags = (uint)Styles,
+			Flags = flags,
 		};
-		raw.DecimalSep.Length = Encode(decimalSeparator, raw.DecimalSep.Bytes, "Decimal separator", flush: false);
-		raw.GroupSep.Length = Encode(groupSeparator, raw.GroupSep.Bytes, "Group separator", flush: false);
+		raw.DecimalSep.Length = Encode(decimalSeparator, raw.DecimalSep.Bytes, "Decimal separator", spaces: Spaces.Nowhere);
+		raw.GroupSep.Length = Encode(groupSeparator, raw.GroupSep.Bytes, "Group separator", spaces: Spaces.Allowed);
 		// Everything below is declared by few formats, and each empty field costs one length check.
 		var currencyDecimalSeparator = CurrencyDecimalSeparator;
 		var currencyGroupSeparator = CurrencyGroupSeparator;
@@ -415,17 +538,17 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 			if (decimalInForce == groupInForce)
 				throw new ArgumentException(
 					$"Currency decimal and group separators must differ; both are '{decimalInForce}'.", DoorParameter);
-			raw.CurrencyDecimalSep.Length = Encode(currencyDecimalSeparator, raw.CurrencyDecimalSep.Bytes, "Currency decimal separator", flush: false);
-			raw.CurrencyGroupSep.Length = Encode(currencyGroupSeparator, raw.CurrencyGroupSep.Bytes, "Currency group separator", flush: false);
+			raw.CurrencyDecimalSep.Length = Encode(currencyDecimalSeparator, raw.CurrencyDecimalSep.Bytes, "Currency decimal separator", spaces: Spaces.Nowhere);
+			raw.CurrencyGroupSep.Length = Encode(currencyGroupSeparator, raw.CurrencyGroupSep.Bytes, "Currency group separator", spaces: Spaces.Allowed);
 		}
 		if (MinusSign is { Length: > 0 } minusSign)
-			raw.MinusSign.Length = Encode(minusSign, raw.MinusSign.Bytes, "Minus sign", flush: true);
+			raw.MinusSign.Length = Encode(minusSign, raw.MinusSign.Bytes, "Minus sign", spaces: Spaces.Nowhere);
 		if (PlusSign is { Length: > 0 } plusSign)
-			raw.PlusSign.Length = Encode(plusSign, raw.PlusSign.Bytes, "Plus sign", flush: true);
+			raw.PlusSign.Length = Encode(plusSign, raw.PlusSign.Bytes, "Plus sign", spaces: Spaces.Nowhere);
 		if (PercentSymbol is { Length: > 0 } percentSymbol)
-			raw.Percent.Length = Encode(percentSymbol, raw.Percent.Bytes, "Percent symbol", flush: true);
+			raw.Percent.Length = Encode(percentSymbol, raw.Percent.Bytes, "Percent symbol", spaces: Spaces.Nowhere);
 		if (currencySymbol.Length != 0)
-			raw.Currency.Length = Encode(currencySymbol, raw.Currency.Bytes, "Currency symbol", flush: true);
+			raw.Currency.Length = Encode(currencySymbol, raw.Currency.Bytes, "Currency symbol", spaces: Spaces.AtEdges);
 		if (DigitZero is { } zero)
 		{
 			if (!StartsDigitBlock(zero))
@@ -435,52 +558,98 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 		return raw;
 	}
 
+	// The core's flags word: the styles in bits 0 to 7 and the policy in bits 8 and 9, judged as
+	// the core judges a 1.1 format, so an undefined policy or style bit is an ArgumentException here
+	// and never a -1 from the core.
+	[MethodImpl(MethodImplOptions.AggressiveInlining)]
+	uint RawFlags()
+	{
+		var styles = (uint)Styles;
+		var policy = Grouping switch
+		{
+			NumGrouping.Western => 1u << 8,
+			NumGrouping.Indian => 2u << 8,
+			NumGrouping.Legacy => 0u,
+			_ => uint.MaxValue,
+		};
+		if (policy == uint.MaxValue)
+			ThrowGrouping(Grouping);
+		if ((styles & ~StyleBits) != 0)
+			ThrowStyles(styles);
+		return styles | policy;
+	}
+
+	// Every bit NumStyles defines: bits 0 to 7. The policy lives in bits 8 and 9, never in the styles.
+	const uint StyleBits = 0xFF;
+
+	[MethodImpl(MethodImplOptions.NoInlining)]
+	static void ThrowGrouping(NumGrouping grouping) =>
+		throw new ArgumentException(
+			$"Grouping {(int)grouping} is not a defined grouping policy; use Western, Indian or Legacy.", DoorParameter);
+
+	[MethodImpl(MethodImplOptions.NoInlining)]
+	static void ThrowStyles(uint styles) =>
+		throw new ArgumentException(
+			$"Styles 0x{styles:X} carry undefined flag bits; only the bits NumStyles defines (0 to 7) are flags.", DoorParameter);
+
 	// Encodes one declared symbol into its buffer and returns its length, validating as the
 	// core's own check does so a contract violation is an ArgumentException here and never
-	// a -1 from the core: at most the buffer's bytes, whole code points (a lone surrogate
-	// would transcode to U+FFFD and read as a symbol nobody declared), no ASCII digit, and
-	// no ASCII whitespace where `flush` says the symbol sits against the digits. Empty
-	// declares nothing and is length 0; a one-character ASCII symbol, which nearly every
-	// separator is, is decided here, inline, without the encoder. DateFormat's designators
-	// encode the same way.
+	// a -1 from the core, and in the core's order: at most the buffer's bytes, whole code
+	// points (a lone surrogate would transcode to U+FFFD and read as a symbol nobody
+	// declared), no ASCII digit, then white space as `spaces` allows: nowhere in a sign, the
+	// percent or a decimal separator (the input's white space around them is ignored, and a
+	// numeral admits white space only as a group separator), not at the edges of a currency
+	// symbol (its interior is the symbol's own, as in `F CFA`). Empty declares nothing and is length 0; a one-character ASCII
+	// symbol, which nearly every separator is, is decided here, inline, without the encoder.
+	// DateFormat's designators encode the same way.
 	[MethodImpl(MethodImplOptions.AggressiveInlining)]
-	internal static byte Encode(string symbol, Span<byte> bytes, string what, bool flush)
+	internal static byte Encode(string symbol, Span<byte> bytes, string what, Spaces spaces)
 	{
 		if (symbol.Length == 0)
 			return 0;
 		if (symbol.Length == 1 && char.IsAscii(symbol[0]))
 		{
-			Check(symbol[0], symbol, what, flush);
+			Check(symbol[0], symbol, what, spaces);
 			bytes[0] = (byte)symbol[0];
 			return 1;
 		}
-		return Transcode(symbol, bytes, what, flush);
+		return Transcode(symbol, bytes, what, spaces);
 	}
 
 	[MethodImpl(MethodImplOptions.NoInlining)]
-	static byte Transcode(string symbol, Span<byte> bytes, string what, bool flush)
+	static byte Transcode(string symbol, Span<byte> bytes, string what, Spaces spaces)
 	{
 		for (var i = 0; i < symbol.Length; i++)
 		{
 			var c = symbol[i];
-			Check(c, symbol, what, flush);
+			if (char.IsAsciiDigit(c))
+				ThrowDigit(symbol, what);
 			if (char.IsSurrogate(c) && !(char.IsHighSurrogate(c) && ++i < symbol.Length && char.IsLowSurrogate(symbol[i])))
 				throw new ArgumentException($"{what} '{symbol}' must be whole code points, not surrogate halves.", DoorParameter);
 		}
 		if (!Encoding.UTF8.TryGetBytes(symbol, bytes, out var written))
 			throw new ArgumentException($"{what} '{symbol}' exceeds {bytes.Length} UTF-8 bytes.", DoorParameter);
+		if (spaces == Spaces.Nowhere)
+			foreach (var c in symbol)
+				if (WhiteSpace.IsWhiteSpace(c))
+					ThrowWhiteSpace(symbol, what);
+		if (spaces == Spaces.AtEdges && (WhiteSpace.IsWhiteSpace(symbol[0]) || WhiteSpace.IsWhiteSpace(symbol[^1])))
+			ThrowWhiteSpaceAtEdge(symbol, what);
 		return (byte)written;
 	}
 
-	// The two checks every symbol passes, with the throws out of line so the check itself
-	// inlines to two compares.
+	// The two checks a one-character ASCII symbol passes, with the throws out of line so the
+	// check itself inlines to a few compares.
 	[MethodImpl(MethodImplOptions.AggressiveInlining)]
-	static void Check(char c, string symbol, string what, bool flush)
+	static void Check(char c, string symbol, string what, Spaces spaces)
 	{
 		if (char.IsAsciiDigit(c))
 			ThrowDigit(symbol, what);
-		if (flush && c is ' ' or '\t' or '\n' or '\f' or '\r')
-			ThrowWhitespace(symbol, what);
+		if (spaces != Spaces.Allowed && c is (>= '\t' and <= '\r') or ' ')
+			if (spaces == Spaces.Nowhere)
+				ThrowWhiteSpace(symbol, what);
+			else
+				ThrowWhiteSpaceAtEdge(symbol, what);
 	}
 
 	[MethodImpl(MethodImplOptions.NoInlining)]
@@ -488,6 +657,10 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 		throw new ArgumentException($"{what} '{symbol}' must not contain a digit.", DoorParameter);
 
 	[MethodImpl(MethodImplOptions.NoInlining)]
-	static void ThrowWhitespace(string symbol, string what) =>
-		throw new ArgumentException($"{what} '{symbol}' must not contain whitespace.", DoorParameter);
+	static void ThrowWhiteSpace(string symbol, string what) =>
+		throw new ArgumentException($"{what} '{symbol}' must not contain white space.", DoorParameter);
+
+	[MethodImpl(MethodImplOptions.NoInlining)]
+	internal static void ThrowWhiteSpaceAtEdge(string symbol, string what) =>
+		throw new ArgumentException($"{what} '{symbol}' must not start or end with white space.", DoorParameter);
 }

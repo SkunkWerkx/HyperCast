@@ -12,7 +12,7 @@ namespace HyperCast;
 /// <see cref="NumFormat"/>: declared, never looked up, with <see cref="From(CultureInfo)"/>
 /// filling it from a culture's own data, and the English <c>AM</c>/<c>PM</c> always read
 /// beside whatever is declared — after the clock (<c>3:04 nachm.</c>) or ahead of it
-/// (<c>오후 3:04</c>). A bare <see cref="DateOrder"/> still declares the order alone, as it
+/// (<c>오후 3:04</c>), with any run of white space, or none, between. A bare <see cref="DateOrder"/> still declares the order alone, as it
 /// always has.
 /// </summary>
 /// <param name="Order">The declared field order of the date. Never <see cref="DateOrder.Unspecified"/>.</param>
@@ -39,8 +39,8 @@ public readonly record struct DateFormat(DateOrder Order)
 	/// The designator of the first half of the day, matched exactly where the English
 	/// <c>AM</c> is matched case-insensitively. Empty — the default — declares none beside
 	/// <c>AM</c>. One to <see cref="MaxDesignatorBytes"/> bytes of UTF-8, with no ASCII
-	/// digit and no ASCII whitespace at either end (the grammar around it reads that; an
-	/// inner space, as in Spanish <c>a. m.</c>, is part of the word); anything else is a
+	/// digit and no white space at either end (the grammar around it reads that, any run of
+	/// it; an inner space, as in Spanish <c>a. m.</c> or <c>a.&#x202F;m.</c>, is part of the word); anything else is a
 	/// caller bug the door rejects with an <see cref="ArgumentException"/>.
 	/// </summary>
 	/// <remarks>
@@ -104,7 +104,7 @@ public readonly record struct DateFormat(DateOrder Order)
 	/// the core reads it regardless; so is one the core could not read — past
 	/// <see cref="MaxDesignatorBytes"/> bytes of UTF-8, which the Thai, Devanagari and a few
 	/// other scripts' words are, carrying an ASCII digit (Anii's <c>1ka</c>), or edged with
-	/// ASCII whitespace — and that culture reads the English pair only. Each designator is
+	/// white space — and that culture reads the English pair only. Each designator is
 	/// judged on its own, and every culture any runtime ships maps without a throw.
 	/// </remarks>
 	/// <param name="dateTimeFormat">The date-time formatting to derive from. Never null.</param>
@@ -118,12 +118,12 @@ public readonly record struct DateFormat(DateOrder Order)
 
 	// A culture's designator where it is not the English one the core reads regardless, and
 	// the core can read it: within the layout's bytes, no ASCII digit (Anii writes `1ka`),
-	// no ASCII whitespace at either end. Anything else is left undeclared, so the bridge
+	// no white space at either end. Anything else is left undeclared, so the bridge
 	// never throws on a runtime's data.
 	static string Declared(string designator, string english) =>
 		!designator.Equals(english, StringComparison.OrdinalIgnoreCase)
-			&& NumFormat.Declarable(designator, MaxDesignatorBytes, flush: false)
-			&& !IsAsciiWhitespace(designator[0]) && !IsAsciiWhitespace(designator[^1])
+			&& NumFormat.Declarable(designator, MaxDesignatorBytes, Spaces.Allowed)
+			&& !WhiteSpace.IsWhiteSpace(designator[0]) && !WhiteSpace.IsWhiteSpace(designator[^1])
 			? designator
 			: "";
 
@@ -136,7 +136,7 @@ public readonly record struct DateFormat(DateOrder Order)
 	/// <exception cref="ArgumentException">
 	/// A contract violation — a caller bug, not a data verdict: a designator past
 	/// <see cref="MaxDesignatorBytes"/> bytes, carrying an ASCII digit, not whole code points
-	/// (a lone UTF-16 surrogate), or starting or ending in ASCII whitespace.
+	/// (a lone UTF-16 surrogate), or starting or ending in white space.
 	/// </exception>
 	public Interop.RawDayPeriods ToRaw()
 	{
@@ -146,12 +146,12 @@ public readonly record struct DateFormat(DateOrder Order)
 		return raw;
 	}
 
+	// The edge rule comes last, as in the core: the length and the digit rules' messages stand.
 	static byte Encode(string designator, Span<byte> bytes, string what)
 	{
-		if (designator.Length != 0 && (IsAsciiWhitespace(designator[0]) || IsAsciiWhitespace(designator[^1])))
-			throw new ArgumentException($"{what} '{designator}' must not start or end with whitespace.", DoorParameter);
-		return NumFormat.Encode(designator, bytes, what, flush: false);
+		var length = NumFormat.Encode(designator, bytes, what, Spaces.Allowed);
+		if (designator.Length != 0 && (WhiteSpace.IsWhiteSpace(designator[0]) || WhiteSpace.IsWhiteSpace(designator[^1])))
+			throw new ArgumentException($"{what} '{designator}' must not start or end with white space.", DoorParameter);
+		return length;
 	}
-
-	static bool IsAsciiWhitespace(char c) => NumFormat.IsAsciiWhitespace(c);
 }

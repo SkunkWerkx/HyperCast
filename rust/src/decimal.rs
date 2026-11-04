@@ -12,9 +12,11 @@
 //! digit — the one thing a caller who reached for a decimal instead of a double is
 //! entitled to assume.
 
+use crate::detail::Failure;
 use crate::integer::split_sign;
 use crate::lane::{self, Sink};
 use crate::real::{MAX_NORMALIZED, is_plain, normalize, reads_plain};
+use crate::site::Site;
 use crate::verdict::{Decimal, Fault, NumFormat, trim};
 
 /// The largest magnitude a [`Decimal`] carries: 2⁹⁶ − 1.
@@ -29,21 +31,26 @@ const EXPONENT_CLAMP: i32 = 100_000;
 /// Empty ⇒ `Empty`; unrecognized ⇒ `Malformed`; a magnitude past 96 bits, or more
 /// fractional precision than 28 places can hold after trimming exact zeros, ⇒ `OutOfRange`.
 pub fn cast_decimal(input: impl AsRef<[u8]>, format: &NumFormat) -> Result<Decimal, Fault> {
-    decimal(input.as_ref(), format, true)
+    decimal(input.as_ref(), format, true).map_err(Failure::fault)
 }
 
 /// The engine's answer with the lenient lane switched off — what `lib.rs`'s differential
 /// test compares the door against.
 #[cfg(test)]
-pub(crate) fn engine_only(input: &[u8], format: &NumFormat) -> Result<Decimal, Fault> {
+pub(crate) fn engine_only(input: &[u8], format: &NumFormat) -> Result<Decimal, Failure> {
     decimal(input, format, false)
 }
 
+/// The decimal door's one parse, for both entry points; `lenient_lane` is `true` for both.
 #[inline(always)]
-fn decimal(input: &[u8], format: &NumFormat, lenient_lane: bool) -> Result<Decimal, Fault> {
+pub(crate) fn decimal(
+    input: &[u8],
+    format: &NumFormat,
+    lenient_lane: bool,
+) -> Result<Decimal, Failure> {
     let (text, start) = trim(input);
     if text.is_empty() {
-        return Err(Fault::EMPTY);
+        return Err(Failure::spanless(Site::DecimalBlank));
     }
     let resolved;
     let format = if format.allows(NumFormat::SEPARATOR_DETECT) {
@@ -61,11 +68,10 @@ fn decimal(input: &[u8], format: &NumFormat, lenient_lane: bool) -> Result<Decim
     if lenient_lane && let Some(value) = plain_exact(text, format) {
         return Ok(value);
     }
-    let whole_token = Fault::malformed(start, text.len());
-    let out_of_range = Fault::out_of_range(start, text.len());
+    // Every fault of the invariant reading spans the whole token.
+    let token = |site: Site| Failure::at(site, start, text.len());
     if is_plain(text, format) {
-        return from_invariant(text, false)
-            .map_err(|range| if range { out_of_range } else { whole_token });
+        return from_invariant(text, false).map_err(token);
     }
     // The lenient lane (lane.rs): grouped digits, a declared currency symbol and accounting
     // parentheses, read straight into the magnitude in one pass. Up to twenty-eight digits,
@@ -81,8 +87,7 @@ fn decimal(input: &[u8], format: &NumFormat, lenient_lane: bool) -> Result<Decim
     }
     let mut buf = [0u8; MAX_NORMALIZED];
     let (len, percent) = normalize(text, start, format, &mut buf)?;
-    from_invariant(buf.get(..len).unwrap_or_default(), percent)
-        .map_err(|range| if range { out_of_range } else { whole_token })
+    from_invariant(buf.get(..len).unwrap_or_default(), percent).map_err(token)
 }
 
 /// Reads a plain token with no exponent straight into a [`Decimal`]: recognition and
@@ -143,9 +148,8 @@ fn canonical(magnitude: u128, mut scale: u32, negative: bool) -> Decimal {
 }
 
 /// Reads the invariant shape `[+|-]digits[.digits][e[+|-]digits]` (with `.digits`-only
-/// mantissas allowed) into a [`Decimal`]. `Err(false)` is malformed, `Err(true)` is out of
-/// range.
-fn from_invariant(text: &[u8], percent: bool) -> Result<Decimal, bool> {
+/// mantissas allowed) into a [`Decimal`], or the site of its fault.
+fn from_invariant(text: &[u8], percent: bool) -> Result<Decimal, Site> {
     let mut i = 0;
     let negative = match text.first() {
         Some(b'-') => {
@@ -163,6 +167,8 @@ fn from_invariant(text: &[u8], percent: bool) -> Result<Decimal, bool> {
     let mut any_digit = false;
     let mut seen_point = false;
     let mut fraction_digits: u32 = 0;
+    // The whole part was already past 96 bits when the point was read.
+    let mut whole_over = false;
     // A fraction zero that no longer fits the magnitude is simply not read: it would only
     // widen the scale, and the reduction below would shed it again as an exact zero. Once
     // one has been skipped every later digit is either another skipped zero or a nonzero
@@ -177,20 +183,22 @@ fn from_invariant(text: &[u8], percent: bool) -> Result<Decimal, bool> {
                     i += 1;
                     continue;
                 }
-                _ => return Err(true),
+                _ if seen_point && !whole_over => return Err(Site::DecimalFractionTooPrecise),
+                _ => return Err(Site::DecimalWholeTooLarge),
             }
             if seen_point {
                 fraction_digits += 1;
             }
         } else if byte == b'.' && !seen_point {
             seen_point = true;
+            whole_over = magnitude > MAX_MAGNITUDE;
         } else {
             break;
         }
         i += 1;
     }
     if !any_digit {
-        return Err(false);
+        return Err(Site::DecimalNoDigits);
     }
     let mut exponent: i32 = 0;
     if let Some(b'e' | b'E') = text.get(i) {
@@ -212,14 +220,14 @@ fn from_invariant(text: &[u8], percent: bool) -> Result<Decimal, bool> {
             i += 1;
         }
         if i == digits_at {
-            return Err(false);
+            return Err(Site::DecimalExponentDigitExpected);
         }
         if exponent_negative {
             exponent = -exponent;
         }
     }
     if i != text.len() {
-        return Err(false);
+        return Err(Site::DecimalTrailing);
     }
 
     let mut scale: i32 = fraction_digits as i32 - exponent + if percent { 2 } else { 0 };
@@ -228,7 +236,10 @@ fn from_invariant(text: &[u8], percent: bool) -> Result<Decimal, bool> {
     }
     // A negative scale means the exponent outran the fraction: shift the magnitude left.
     while scale < 0 {
-        magnitude = magnitude.checked_mul(10).filter(|next| *next <= MAX_MAGNITUDE).ok_or(true)?;
+        magnitude = magnitude
+            .checked_mul(10)
+            .filter(|next| *next <= MAX_MAGNITUDE)
+            .ok_or(Site::DecimalShiftTooLarge)?;
         scale += 1;
     }
     // Canonical form: exact trailing zeros in the fraction are shed, always — `1.10` and
@@ -238,8 +249,11 @@ fn from_invariant(text: &[u8], percent: bool) -> Result<Decimal, bool> {
         magnitude /= 10;
         scale -= 1;
     }
-    if magnitude > MAX_MAGNITUDE || scale > MAX_SCALE as i32 {
-        return Err(true);
+    if magnitude > MAX_MAGNITUDE {
+        return Err(Site::DecimalTooLarge);
+    }
+    if scale > MAX_SCALE as i32 {
+        return Err(Site::DecimalTooPrecise);
     }
     Ok(Decimal { lo: magnitude as u64, hi: (magnitude >> 64) as u32, scale: scale as u8, negative })
 }

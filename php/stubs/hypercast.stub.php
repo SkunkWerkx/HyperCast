@@ -77,19 +77,28 @@ namespace HyperCast {
         public static function checkedText(string $text, \HyperCast\Constraints $constraints): \HyperCast\Checked|\HyperCast\Fault|\HyperCast\Violation {}
 
         /**
+         * With `DateOptions` and `MonthNames`, the shapes they open: `COMPACT_DATE` without an
+         * order; with one, the pivot and the month names.
+         *
          * @param string $text
          * @param \HyperCast\DateOrder|null $order
+         * @param \HyperCast\DateOptions|null $options
+         * @param \HyperCast\MonthNames|null $months
          * @return \HyperCast\Success|\HyperCast\Fault
          */
-        public static function date(string $text, ?\HyperCast\DateOrder $order = null): \HyperCast\Success|\HyperCast\Fault {}
+        public static function date(string $text, ?\HyperCast\DateOrder $order = null, ?\HyperCast\DateOptions $options = null, ?\HyperCast\MonthNames $months = null): \HyperCast\Success|\HyperCast\Fault {}
 
         /**
+         * With `DateOptions` and `MonthNames`, the pivot and the month names.
+         *
          * @param string $text
          * @param \HyperCast\DateOrder $order
          * @param \HyperCast\DayPeriods|null $periods
+         * @param \HyperCast\DateOptions|null $options
+         * @param \HyperCast\MonthNames|null $months
          * @return \HyperCast\Success|\HyperCast\Fault
          */
-        public static function datetime(string $text, \HyperCast\DateOrder $order, ?\HyperCast\DayPeriods $periods = null): \HyperCast\Success|\HyperCast\Fault {}
+        public static function datetime(string $text, \HyperCast\DateOrder $order, ?\HyperCast\DayPeriods $periods = null, ?\HyperCast\DateOptions $options = null, ?\HyperCast\MonthNames $months = null): \HyperCast\Success|\HyperCast\Fault {}
 
         /**
          * @param string $text
@@ -214,10 +223,13 @@ namespace HyperCast {
         public static function time(string $text): \HyperCast\Success|\HyperCast\Fault {}
 
         /**
+         * With `DateOptions`, the shapes they open: `SPACE_SEPARATOR` and `HOUR_OFFSET`.
+         *
          * @param string $text
+         * @param \HyperCast\DateOptions|null $options
          * @return \HyperCast\Success|\HyperCast\Fault
          */
-        public static function timestamp(string $text): \HyperCast\Success|\HyperCast\Fault {}
+        public static function timestamp(string $text, ?\HyperCast\DateOptions $options = null): \HyperCast\Success|\HyperCast\Fault {}
 
         /**
          * @param string $text
@@ -292,6 +304,266 @@ namespace HyperCast {
     }
 
     /**
+     * The doors again, each with its detail: a `Success` holding the value, the same one `Cast`
+     * returns, or a `DetailedFault` naming the reason, the byte span, and what exactly failed.
+     * Every door reads exactly as its `Cast` twin does: the two are one parse.
+     */
+    final class DetailedCast {
+        /**
+         * Not instantiable: every door is static.
+         */
+        private function __construct() {}
+
+        /**
+         * `true`/`false` and their common spellings.
+         *
+         * @param string $text
+         * @return \HyperCast\Success|\HyperCast\DetailedFault
+         */
+        public static function bool(string $text): \HyperCast\Success|\HyperCast\DetailedFault {}
+
+        /**
+         * One Unicode scalar value, as its UTF-8 string.
+         *
+         * @param string $text
+         * @return \HyperCast\Success|\HyperCast\DetailedFault
+         */
+        public static function char(string $text): \HyperCast\Success|\HyperCast\DetailedFault {}
+
+        /**
+         * Numeric text through the door its `Constraints` are bound to, then judged by them:
+         * `Checked`, or the door's own `DetailedFault`, or a `Violation` (which carries no detail).
+         *
+         * @param string $text
+         * @param \HyperCast\NumFormat|\NumberFormatter $format
+         * @param \HyperCast\Constraints $constraints
+         * @return \HyperCast\Checked|\HyperCast\DetailedFault|\HyperCast\Violation
+         */
+        public static function checked(string $text, \HyperCast\NumFormat|\NumberFormatter $format, \HyperCast\Constraints $constraints): \HyperCast\Checked|\HyperCast\DetailedFault|\HyperCast\Violation {}
+
+        /**
+         * A number already decoded through the door its `Constraints` are bound to. Every span is
+         * empty.
+         *
+         * @param float $value
+         * @param \HyperCast\Constraints $constraints
+         * @return \HyperCast\Checked|\HyperCast\DetailedFault|\HyperCast\Violation
+         */
+        public static function checkedFromFloat(float $value, \HyperCast\Constraints $constraints): \HyperCast\Checked|\HyperCast\DetailedFault|\HyperCast\Violation {}
+
+        /**
+         * Text judged by `Constraints` for `Door::Text`.
+         *
+         * @param string $text
+         * @param \HyperCast\Constraints $constraints
+         * @return \HyperCast\Checked|\HyperCast\DetailedFault|\HyperCast\Violation
+         */
+        public static function checkedText(string $text, \HyperCast\Constraints $constraints): \HyperCast\Checked|\HyperCast\DetailedFault|\HyperCast\Violation {}
+
+        /**
+         * With `DateOptions` and `MonthNames`, the shapes they open: `COMPACT_DATE` without an
+         * order; with one, the pivot and the month names.
+         *
+         * @param string $text
+         * @param \HyperCast\DateOrder|null $order
+         * @param \HyperCast\DateOptions|null $options
+         * @param \HyperCast\MonthNames|null $months
+         * @return \HyperCast\Success|\HyperCast\DetailedFault
+         */
+        public static function date(string $text, ?\HyperCast\DateOrder $order = null, ?\HyperCast\DateOptions $options = null, ?\HyperCast\MonthNames $months = null): \HyperCast\Success|\HyperCast\DetailedFault {}
+
+        /**
+         * With `DateOptions` and `MonthNames`, the pivot and the month names.
+         *
+         * @param string $text
+         * @param \HyperCast\DateOrder $order
+         * @param \HyperCast\DayPeriods|null $periods
+         * @param \HyperCast\DateOptions|null $options
+         * @param \HyperCast\MonthNames|null $months
+         * @return \HyperCast\Success|\HyperCast\DetailedFault
+         */
+        public static function datetime(string $text, \HyperCast\DateOrder $order, ?\HyperCast\DayPeriods $periods = null, ?\HyperCast\DateOptions $options = null, ?\HyperCast\MonthNames $months = null): \HyperCast\Success|\HyperCast\DetailedFault {}
+
+        /**
+         * @param string $text
+         * @param \HyperCast\NumFormat|\NumberFormatter $format
+         * @return \HyperCast\Success|\HyperCast\DetailedFault
+         */
+        public static function decimal(string $text, \HyperCast\NumFormat|\NumberFormatter $format): \HyperCast\Success|\HyperCast\DetailedFault {}
+
+        /**
+         * @param float $value
+         * @return \HyperCast\Success|\HyperCast\DetailedFault
+         */
+        public static function decimalFromFloat(float $value): \HyperCast\Success|\HyperCast\DetailedFault {}
+
+        /**
+         * @param string $text
+         * @return \HyperCast\Success|\HyperCast\DetailedFault
+         */
+        public static function duration(string $text): \HyperCast\Success|\HyperCast\DetailedFault {}
+
+        /**
+         * @param float $value
+         * @return \HyperCast\Success|\HyperCast\DetailedFault
+         */
+        public static function excelDuration(float $value): \HyperCast\Success|\HyperCast\DetailedFault {}
+
+        /**
+         * @param string $text
+         * @param \HyperCast\ExcelEpoch $epoch
+         * @return \HyperCast\Success|\HyperCast\DetailedFault
+         */
+        public static function excelSerial(string $text, \HyperCast\ExcelEpoch $epoch): \HyperCast\Success|\HyperCast\DetailedFault {}
+
+        /**
+         * @param float $value
+         * @param \HyperCast\ExcelEpoch $epoch
+         * @return \HyperCast\Success|\HyperCast\DetailedFault
+         */
+        public static function excelSerialFromFloat(float $value, \HyperCast\ExcelEpoch $epoch): \HyperCast\Success|\HyperCast\DetailedFault {}
+
+        /**
+         * Nanoseconds since midnight.
+         *
+         * @param float $value
+         * @return \HyperCast\Success|\HyperCast\DetailedFault
+         */
+        public static function excelTime(float $value): \HyperCast\Success|\HyperCast\DetailedFault {}
+
+        /**
+         * @param string $text
+         * @param \HyperCast\NumFormat|\NumberFormatter $format
+         * @return \HyperCast\Success|\HyperCast\DetailedFault
+         */
+        public static function f32(string $text, \HyperCast\NumFormat|\NumberFormatter $format): \HyperCast\Success|\HyperCast\DetailedFault {}
+
+        /**
+         * @param string $text
+         * @param \HyperCast\NumFormat|\NumberFormatter $format
+         * @return \HyperCast\Success|\HyperCast\DetailedFault
+         */
+        public static function f64(string $text, \HyperCast\NumFormat|\NumberFormatter $format): \HyperCast\Success|\HyperCast\DetailedFault {}
+
+        /**
+         * @param string $text
+         * @param \HyperCast\NumFormat|\NumberFormatter $format
+         * @return \HyperCast\Success|\HyperCast\DetailedFault
+         */
+        public static function i16(string $text, \HyperCast\NumFormat|\NumberFormatter $format): \HyperCast\Success|\HyperCast\DetailedFault {}
+
+        /**
+         * @param string $text
+         * @param \HyperCast\NumFormat|\NumberFormatter $format
+         * @return \HyperCast\Success|\HyperCast\DetailedFault
+         */
+        public static function i32(string $text, \HyperCast\NumFormat|\NumberFormatter $format): \HyperCast\Success|\HyperCast\DetailedFault {}
+
+        /**
+         * @param string $text
+         * @param \HyperCast\NumFormat|\NumberFormatter $format
+         * @return \HyperCast\Success|\HyperCast\DetailedFault
+         */
+        public static function i64(string $text, \HyperCast\NumFormat|\NumberFormatter $format): \HyperCast\Success|\HyperCast\DetailedFault {}
+
+        /**
+         * @param string $text
+         * @param \HyperCast\NumFormat|\NumberFormatter $format
+         * @return \HyperCast\Success|\HyperCast\DetailedFault
+         */
+        public static function i8(string $text, \HyperCast\NumFormat|\NumberFormatter $format): \HyperCast\Success|\HyperCast\DetailedFault {}
+
+        /**
+         * The verdict, plain or checked, or `null` for an `Empty` fault: every other verdict, a
+         * `Violation` included, comes back as it was.
+         *
+         * @param \HyperCast\Success|\HyperCast\Checked|\HyperCast\DetailedFault|\HyperCast\Violation $verdict
+         * @return \HyperCast\Success|\HyperCast\Checked|\HyperCast\DetailedFault|\HyperCast\Violation|null
+         */
+        public static function optional(\HyperCast\Success|\HyperCast\Checked|\HyperCast\DetailedFault|\HyperCast\Violation $verdict): \HyperCast\Success|\HyperCast\Checked|\HyperCast\DetailedFault|\HyperCast\Violation|null {}
+
+        /**
+         * Text as text: the input itself once it is valid UTF-8. Empty input is `Empty`, invalid
+         * UTF-8 `Malformed` at its bytes; nothing is trimmed.
+         *
+         * @param string $text
+         * @return \HyperCast\Success|\HyperCast\DetailedFault
+         */
+        public static function text(string $text): \HyperCast\Success|\HyperCast\DetailedFault {}
+
+        /**
+         * Nanoseconds since midnight.
+         *
+         * @param string $text
+         * @return \HyperCast\Success|\HyperCast\DetailedFault
+         */
+        public static function time(string $text): \HyperCast\Success|\HyperCast\DetailedFault {}
+
+        /**
+         * With `DateOptions`, the shapes they open: `SPACE_SEPARATOR` and `HOUR_OFFSET`.
+         *
+         * @param string $text
+         * @param \HyperCast\DateOptions|null $options
+         * @return \HyperCast\Success|\HyperCast\DetailedFault
+         */
+        public static function timestamp(string $text, ?\HyperCast\DateOptions $options = null): \HyperCast\Success|\HyperCast\DetailedFault {}
+
+        /**
+         * @param string $text
+         * @param \HyperCast\NumFormat|\NumberFormatter $format
+         * @return \HyperCast\Success|\HyperCast\DetailedFault
+         */
+        public static function u16(string $text, \HyperCast\NumFormat|\NumberFormatter $format): \HyperCast\Success|\HyperCast\DetailedFault {}
+
+        /**
+         * @param string $text
+         * @param \HyperCast\NumFormat|\NumberFormatter $format
+         * @return \HyperCast\Success|\HyperCast\DetailedFault
+         */
+        public static function u32(string $text, \HyperCast\NumFormat|\NumberFormatter $format): \HyperCast\Success|\HyperCast\DetailedFault {}
+
+        /**
+         * A `uint64_t` read into a PHP int, as `Cast::u64` reads it: above `PHP_INT_MAX` it wraps
+         * negative.
+         *
+         * @param string $text
+         * @param \HyperCast\NumFormat|\NumberFormatter $format
+         * @return \HyperCast\Success|\HyperCast\DetailedFault
+         */
+        public static function u64(string $text, \HyperCast\NumFormat|\NumberFormatter $format): \HyperCast\Success|\HyperCast\DetailedFault {}
+
+        /**
+         * @param string $text
+         * @param \HyperCast\NumFormat|\NumberFormatter $format
+         * @return \HyperCast\Success|\HyperCast\DetailedFault
+         */
+        public static function u8(string $text, \HyperCast\NumFormat|\NumberFormatter $format): \HyperCast\Success|\HyperCast\DetailedFault {}
+
+        /**
+         * @param string $text
+         * @param \HyperCast\UnixPrecision $precision
+         * @return \HyperCast\Success|\HyperCast\DetailedFault
+         */
+        public static function unix(string $text, \HyperCast\UnixPrecision $precision): \HyperCast\Success|\HyperCast\DetailedFault {}
+
+        /**
+         * The canonical lowercase hyphenated form.
+         *
+         * @param string $text
+         * @return \HyperCast\Success|\HyperCast\DetailedFault
+         */
+        public static function uuid(string $text): \HyperCast\Success|\HyperCast\DetailedFault {}
+
+        /**
+         * The 16 bytes, RFC 9562 order.
+         *
+         * @param string $text
+         * @return \HyperCast\Success|\HyperCast\DetailedFault
+         */
+        public static function uuidBytes(string $text): \HyperCast\Success|\HyperCast\DetailedFault {}
+    }
+
+    /**
      * The door a `Constraints` declaration is bound to: a numeric door or the text door, with
      * the core's ABI codes.
      */
@@ -316,6 +588,48 @@ namespace HyperCast {
     enum ExcelEpoch: int {
       case Y1900 = 1;
       case Y1904 = 2;
+    }
+
+    /**
+     * What exactly failed, the core's `detail` vocabulary: a case per published code, with the
+     * code as its value. A code this binding does not name yet (a newer core's) is `Unknown`, whose
+     * value `0` is the code reserved for "no detail": the raw code stays on the fault that carries
+     * it (`DetailedFault::$code`), so a `match` over details needs a `default` arm.
+     */
+    enum FaultDetail: int {
+      case Unknown = 0;
+      case Blank = 1;
+      case UnexpectedCharacter = 2;
+      case DigitExpected = 3;
+      case DelimiterExpected = 4;
+      case TrailingText = 5;
+      case NoDigits = 6;
+      case SignMisplaced = 7;
+      case ParenthesesUnbalanced = 8;
+      case MarkRepeated = 9;
+      case GroupMisplaced = 10;
+      case GroupSize = 11;
+      case GroupInFraction = 12;
+      case AmbiguousSeparator = 13;
+      case FractionNotAllowed = 14;
+      case FieldWidth = 15;
+      case WrongLength = 16;
+      case ComponentMissing = 17;
+      case NotRecognized = 18;
+      case UnknownUnit = 19;
+      case InvalidUtf8 = 20;
+      case TooLong = 21;
+      case NotFinite = 22;
+      case NotWhole = 23;
+      case NegativeNotAllowed = 24;
+      case TooLarge = 25;
+      case TooSmall = 26;
+      case TooPrecise = 27;
+      case DateFieldOutOfRange = 28;
+      case TimeFieldOutOfRange = 29;
+      case OutsideWindow = 30;
+      case NonexistentDate = 31;
+      case NotAScalar = 32;
     }
 
     /**
@@ -425,6 +739,16 @@ namespace HyperCast\Interop {
         public static function civil(int $year, int $month, int $day, int $nanosOfDay): \DateTimeImmutable {}
 
         /**
+         * Whether a core's packed `hypercast_version()` suits this extension's, or `$extensionVersion`
+         * when given: the same major version and a minor version no older, the patch ignored.
+         *
+         * @param int $coreVersion
+         * @param int|null $extensionVersion
+         * @return bool
+         */
+        public static function compatible(int $coreVersion, ?int $extensionVersion = null): bool {}
+
+        /**
          * Midnight UTC of a civil date.
          *
          * @param int $year
@@ -479,13 +803,18 @@ namespace HyperCast\Interop {
         public static function writeDayPeriods(\HyperCast\DayPeriods $periods, \FFI\CData $target): void {}
 
         /**
-         * Writes a format's packed layout into an `hc_format` (ext-ffi).
+         * Writes a format's packed layout into an `hc_format` (ext-ffi). A core that predates the
+         * grouping policy ignores its bits and parses every format as legacy, so a caller passes
+         * the `FFI` handle it loaded the core with: a strict policy is then refused for a core that
+         * lacks the detailed exports or is older than this extension, never written to be parsed
+         * as legacy. Without a handle, the caller owns that check.
          *
          * @param \HyperCast\NumFormat $format
          * @param \FFI\CData $target
+         * @param \FFI|null $core
          * @return void
          */
-        public static function writeFormat(\HyperCast\NumFormat $format, \FFI\CData $target): void {}
+        public static function writeFormat(\HyperCast\NumFormat $format, \FFI\CData $target, ?\FFI $core = null): void {}
     }
 }
 
@@ -574,6 +903,10 @@ namespace HyperCast {
         public const CURRENCY = 64;
         public const TRAILING_SIGN = 128;
         public const ALL = 95;
+        public const GROUPING_LEGACY = 0;
+        public const GROUPING_WESTERN = 256;
+        public const GROUPING_INDIAN = 512;
+        public const GROUPING_POLICY = 768;
         public const SYMBOL_MAX_BYTES = 8;
         public const CURRENCY_MAX_BYTES = 16;
         public const PACKED_BYTES = 92;
@@ -589,10 +922,11 @@ namespace HyperCast {
             public string $plusSign = '',
             public string $percent = '',
             public string $digitZero = '',
+            public int $grouping = \HyperCast\NumFormat::GROUPING_WESTERN,
         ) {}
 
         /**
-         * `.` and `,` with every notation: one instance per request.
+         * `.` and `,` with every notation and strict Western grouping: one instance per request.
          */
         public static function invariant(): \HyperCast\NumFormat {}
 
@@ -612,7 +946,80 @@ namespace HyperCast {
         public static function fromNumberFormatter(\NumberFormatter $formatter): \HyperCast\NumFormat {}
 
         /**
-         * The C ABI's `hc_format` layout.
+         * The same format under another grouping policy, which replaces the old one.
+         */
+        public function withGrouping(int $grouping): \HyperCast\NumFormat {}
+
+        /**
+         * Called by `unserialize()`: a format serialized under 1.0 has no `grouping` and keeps
+         * 1.0's meaning, `GROUPING_LEGACY`.
+         */
+        public function __wakeup(): void {}
+
+        /**
+         * The C ABI's `hc_format` layout, the grouping policy in its flags word.
+         */
+        public function packed(): string {}
+    }
+
+    /**
+     * A failed detailed verdict: why, the byte span of the input at fault, and what exactly
+     * failed, as the raw code the core reported and the named `FaultDetail` (`Unknown` for a
+     * code this binding does not name).
+     */
+    final readonly class DetailedFault {
+        public \HyperCast\CastFailure $reason;
+        public int $offset;
+        public int $length;
+        public int $code;
+        public \HyperCast\FaultDetail $detail;
+
+        public function __construct(
+            \HyperCast\CastFailure $reason,
+            int $offset,
+            int $length,
+            int $code,
+        ) {}
+
+        /**
+         * The plain `Fault` of the same reason and span.
+         */
+        public function toFault(): \HyperCast\Fault {}
+    }
+
+    /**
+     * Opt-in date shapes: option flags and a pivot for two-digit years. Nothing is on by
+     * default; `COMMON_FORMS` turns on the three shapes together and supplies no pivot.
+     */
+    final readonly class DateOptions {
+        public const COMPACT_DATE = 1;
+        public const SPACE_SEPARATOR = 2;
+        public const HOUR_OFFSET = 4;
+        public const COMMON_FORMS = 7;
+
+        public function __construct(
+            public int $flags = 0,
+            public int $pivot = 0,
+        ) {}
+    }
+
+    /**
+     * Month names for the date doors that read a month field: caller-built, a month number
+     * to a name or a list of names (aliases). The property holds a list per month.
+     */
+    final readonly class MonthNames {
+        public const MAX_NAME_BYTES = 64;
+
+        public function __construct(public array $months) {}
+
+        /**
+         * From the packed layout: per entry a month byte, a little-endian u32 length and the
+         * name's bytes.
+         */
+        public static function fromPacked(string $packed): \HyperCast\MonthNames {}
+
+        /**
+         * The packed layout, month by month.
          */
         public function packed(): string {}
     }

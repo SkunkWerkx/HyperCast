@@ -78,12 +78,13 @@ final class InteropTest extends TestCase
         $ffi = self::layouts();
         $target = $ffi->new('format');
         NativeValues::writeFormat(
-            new NumFormat(', ', '.', NumFormat::ALL, 'US$', "\u{66B}", "\u{66C}", "\u{2212}", "\u{FF0B}", "\u{66A}"),
+            new NumFormat(',;', '.', NumFormat::ALL, 'US$', "\u{66B}", "\u{66C}", "\u{2212}", "\u{FF0B}", "\u{66A}"),
             $target
         );
         NativeValues::writeFormat(new NumFormat(',', '.', NumFormat::ALL, '€'), $target);
         $this->assertSame(92, $target->size);
-        $this->assertSame(NumFormat::ALL, $target->flags);
+        // The flags word carries the grouping policy beside the styles: strict Western by default.
+        $this->assertSame(NumFormat::ALL | NumFormat::GROUPING_WESTERN, $target->flags);
         $this->assertSame(0, $target->digit_zero);
         $this->assertSame(1, $target->decimal_sep->len);
         $this->assertSame(',' . str_repeat("\0", 7), FFI::string($target->decimal_sep->bytes, 8));
@@ -94,6 +95,15 @@ final class InteropTest extends TestCase
         }
         $this->assertSame(3, $target->currency->len);
         $this->assertSame("€" . str_repeat("\0", 13), FFI::string($target->currency->bytes, 16));
+    }
+
+    public function testADecimalSeparatorWithASpaceIsNoLongerBuilt(): void
+    {
+        // 1.0 declared ', ' as a decimal separator; white space in one is now refused, so there is
+        // nothing to write. The test above keeps its two-byte separator, with no space in it.
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage("Decimal separator must not contain white space; got ', '");
+        new NumFormat(', ', '.', NumFormat::ALL);
     }
 
     public function testTheLayoutsAreTheSizesAndOffsetsTheCorePins(): void
@@ -119,7 +129,10 @@ final class InteropTest extends TestCase
         );
         $packed = $format->packed();
         $this->assertSame(92, \strlen($packed));
-        $this->assertSame([92, NumFormat::ALL | NumFormat::TRAILING_SIGN, 0x660], array_values(unpack('V3', $packed)));
+        $this->assertSame(
+            [92, NumFormat::ALL | NumFormat::TRAILING_SIGN | NumFormat::GROUPING_WESTERN, 0x660],
+            array_values(unpack('V3', $packed))
+        );
         $fields = [
             12 => ["\u{66B}", 8],
             21 => [', ', 8],

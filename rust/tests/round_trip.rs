@@ -291,15 +291,16 @@ fn every_one_character_edit_of_a_boolean_word_casts_exactly_when_the_reference_s
 
 /// What the strict grammar reads: `Ok(value)` for a sign and ASCII digits whose value fits
 /// `[min, max]`, `Err(OutOfRange)` for one that does not, `Err(Malformed)` for anything
-/// else. A minus sign applies to zero on an unsigned door too: `-0` is 0.
+/// else. White space after the sign is no part of the numeral (`- 12` is -12). A minus sign
+/// applies to zero on an unsigned door too: `-0` is 0.
 fn reference_int(s: &str, min: i128, max: i128) -> Result<i128, Reason> {
     let text = trim_ascii(s);
     if text.is_empty() {
         return Err(Reason::Empty);
     }
     let (negative, digits) = match text.as_bytes()[0] {
-        b'-' => (true, &text[1..]),
-        b'+' => (false, &text[1..]),
+        b'-' => (true, text[1..].trim_start()),
+        b'+' => (false, text[1..].trim_start()),
         _ => (false, text),
     };
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {

@@ -304,6 +304,34 @@ fn currency_symbol_rejects_what_would_collide_with_the_scan() {
 }
 
 #[test]
+fn a_currency_symbol_reads_any_of_the_three_spaces_inside_it() {
+    let cfa = |space: &str| CurrencySymbol::new(&format!("F{space}CFA")).unwrap();
+    for declared in [" ", "\u{A0}", "\u{202F}"] {
+        let symbol = cfa(declared);
+        for written in [" ", "\u{A0}", "\u{202F}"] {
+            let text = format!("F{written}CFA 5");
+            assert_eq!(symbol.strip_leading(text.as_bytes()), Some(b" 5".as_slice()));
+            let text = format!("5 F{written}CFA");
+            assert_eq!(symbol.strip_trailing(text.as_bytes()), Some(b"5 ".as_slice()));
+        }
+        // Other white space, a run, none, or a cut-off space never match.
+        for text in ["F\u{2009}CFA", "F\u{3000}CFA", "F  CFA", "FCFA", "F", "F\u{C2}CFA", ""] {
+            assert_eq!(symbol.strip_leading(text.as_bytes()), None, "{text:?}");
+            assert_eq!(symbol.strip_trailing(text.as_bytes()), None, "{text:?}");
+        }
+        assert_eq!(symbol.strip_leading(&[b'F', 0xE2, 0x80]), None);
+        assert_eq!(symbol.strip_trailing(&[0x80, 0xAF, b'C', b'F', b'A']), None);
+    }
+    // Any other white space inside matches only itself.
+    let thin = cfa("\u{2009}");
+    assert_eq!(thin.strip_leading("F\u{2009}CFA".as_bytes()), Some(b"".as_slice()));
+    assert_eq!(thin.strip_leading(b"F CFA"), None);
+    assert_eq!(thin.strip_trailing("F\u{202F}CFA".as_bytes()), None);
+    assert_eq!(CurrencySymbol::NONE.strip_leading(b"5"), None);
+    assert_eq!(CurrencySymbol::NONE.strip_trailing(b""), None);
+}
+
+#[test]
 fn separator_detection_carries_the_currency_through() {
     let detect = NumFormat::DETECT.with_currency(CurrencySymbol::new("€").unwrap());
     assert_eq!(cast_f64("€ 1.234.567,89".as_bytes(), &detect), Ok(1_234_567.89));
@@ -760,6 +788,11 @@ fn declared_day_periods_are_read_beside_am_and_pm_on_either_side_of_the_clock() 
     assert_eq!(raw("a. m.").resolve().map(|p| p.am.as_str().to_string()), Some("a. m.".into()));
     assert_eq!(raw(" am").resolve(), None);
     assert_eq!(raw("am ").resolve(), None);
+    for edge in ["\u{202F}PM", "PM\u{A0}", "\u{0B}am", "am\u{3000}", "\u{85}", "\u{2028}p"] {
+        assert_eq!(raw(edge).resolve(), None, "{edge:?}");
+    }
+    assert!(raw("a.\u{202F}m.").resolve().is_some());
+    assert!(raw("am\u{200B}").resolve().is_some());
     assert!(Symbol::<16>::new("a1").is_none());
     assert_eq!(RawDayPeriods { size: 3, ..RawDayPeriods::ZERO }.resolve(), None);
     assert_eq!(RawDayPeriods { size: 41, ..RawDayPeriods::ZERO }.resolve(), None);
@@ -830,17 +863,86 @@ fn a_crossing_currency_symbol_is_held_to_the_same_rules_as_a_declared_one() {
     let sixteen = "ABCDEFGHIJKLMNOP";
     assert_eq!(raw(sixteen.as_bytes(), 16, 0).resolve(), Some(&declared(sixteen)));
     // The rules `CurrencySymbol::new` enforces, each on its own: a digit, every ASCII
-    // whitespace byte, broken UTF-8 (a lone lead byte, and a symbol cut mid-character),
-    // and a length past the inline capacity.
+    // whitespace byte at an edge (inside, it is allowed), broken UTF-8 (a lone lead byte,
+    // and a symbol cut mid-character), and a length past the inline capacity.
     assert_eq!(raw(b"US1", 3, 0).resolve(), None);
     for space in *b" \t\n\x0C\r" {
-        assert_eq!(raw(&[b'k', space, b'r'], 3, 0).resolve(), None);
+        assert_eq!(
+            raw(&[b'k', space, b'r'], 3, 0).resolve(),
+            Some(&declared(&format!("k{}r", space as char)))
+        );
+        assert_eq!(raw(&[space, b'k'], 2, 0).resolve(), None);
+        assert_eq!(raw(&[b'k', space], 2, 0).resolve(), None);
     }
     assert_eq!(raw(&[0xC2], 1, 0).resolve(), None);
     assert_eq!(raw("€".as_bytes(), 2, 0).resolve(), None);
     assert_eq!(raw(b"$", 17, 0).resolve(), None);
-    // A vertical tab is not ASCII whitespace to Rust, so it stays a legal symbol byte.
-    assert_eq!(raw(&[b'k', 0x0B], 2, 0).resolve(), Some(&declared("k\u{0B}")));
+    // A vertical tab is white space to the core, so it may not end a symbol.
+    assert_eq!(raw(&[b'k', 0x0B], 2, 0).resolve(), None);
+    // Nor may any other white-space code point start or end one, while any may sit inside
+    // (`F CFA`); U+200B is not one, so it stays legal anywhere.
+    for space in ["\u{A0}k", "k\u{85}", "\u{202F}k", "k\u{202F}", "k\u{3000}", "\u{A0}"] {
+        assert_eq!(raw(space.as_bytes(), space.len() as u8, 0).resolve(), None);
+        assert!(CurrencySymbol::new(space).is_none());
+    }
+    for inside in ["k\u{A0}r", "F\u{202F}CFA", "F CFA", "k\u{85}r", "k\u{3000}r", "a\u{2009} b"] {
+        assert_eq!(
+            raw(inside.as_bytes(), inside.len() as u8, 0).resolve(),
+            Some(&declared(inside))
+        );
+        assert_eq!(CurrencySymbol::new(inside).unwrap().as_str(), inside);
+    }
+    assert!(CurrencySymbol::new("k\u{0B}").is_none());
+    assert_eq!(raw("k\u{200B}".as_bytes(), 4, 0).resolve(), Some(&declared("k\u{200B}")));
+}
+
+#[test]
+fn a_format_declaration_that_the_input_could_never_match_is_refused() {
+    let symbol = |text| Symbol::<8>::new(text).unwrap();
+    let base = NumFormat::new('.', ',', NumFormat::ALL);
+    assert!(base.check());
+    let spaces = ["\u{A0}", "\u{202F}", " ", "\t", "\u{0B}", "\u{2003}", "-\u{A0}", "\u{A0}%"];
+    for space in spaces {
+        // A sign or the percent symbol sits flush against the digits.
+        assert!(!NumFormat { minus_sign: symbol(space), ..base }.check(), "{space:?}");
+        assert!(!NumFormat { plus_sign: symbol(space), ..base }.check(), "{space:?}");
+        assert!(!NumFormat { percent: symbol(space), ..base }.check(), "{space:?}");
+    }
+    for space in ["\u{A0}", "\u{202F}", " ", ",\u{A0}", "\u{A0},"] {
+        // No numeral admits white space as a decimal separator.
+        assert!(!NumFormat { decimal_sep: symbol(space), ..base }.check(), "{space:?}");
+        assert!(
+            !NumFormat { currency_decimal_sep: symbol(space), ..base }.check(),
+            "currency {space:?}"
+        );
+        // A group separator may be or contain it.
+        assert!(NumFormat { group_sep: symbol(space), ..base }.check(), "{space:?}");
+        assert!(
+            NumFormat { currency_group_sep: symbol(space), ..base }.check(),
+            "currency {space:?}"
+        );
+    }
+    // A currency symbol may hold white space inside (`F CFA`, as CLDR writes it), never at
+    // an edge, where the doors ignore it.
+    let currency = |text| NumFormat { currency: CurrencySymbol::new(text).unwrap(), ..base };
+    for inside in ["F\u{202F}CFA", "F\u{A0}CFA", "F CFA"] {
+        assert!(currency(inside).check(), "{inside:?}");
+    }
+    let raw_currency = |text: &str| {
+        let mut bytes = RawNumFormat::from(base).to_le_bytes();
+        bytes[75..75 + text.len()].copy_from_slice(text.as_bytes());
+        bytes[91] = text.len() as u8;
+        RawNumFormat::from_le_bytes(bytes)
+    };
+    for edge in ["\u{A0}\u{20AC}", "\u{20AC}\u{A0}", "\u{202F}F", "F ", " F CFA", "F CFA\u{3000}"] {
+        assert!(CurrencySymbol::new(edge).is_none(), "{edge:?}");
+        let raw = raw_currency(edge);
+        assert!(!raw.format.check(), "{edge:?}");
+        assert!(raw.resolve().is_none(), "{edge:?}");
+    }
+    // The earlier rules stand: the digit is refused before white space is looked for.
+    assert!(!NumFormat::new('.', '1', NumFormat::ALL).check());
+    assert!(!NumFormat { decimal_sep: symbol(" "), group_sep: symbol(" "), ..base }.check());
 }
 
 #[test]
@@ -1659,12 +1761,14 @@ fn lane_formats() -> Vec<NumFormat> {
     formats
 }
 
+/// The doors' one parse with the lenient lane and without it: the same value, or the same
+/// failure, detail and span included.
 fn lane_agrees_with_the_engine(input: &[u8], format: &NumFormat) {
     let shown = || format!("{:?} under {format:?}", String::from_utf8_lossy(input));
     macro_rules! integers {
         ($($door:ident => $ty:ty),+) => {$(
             assert_eq!(
-                $door(input, format),
+                integer::integer::<$ty>(input, format),
                 integer::engine_only::<$ty>(
                     input, format, <$ty>::MIN as i128, <$ty>::MAX as i128, <$ty>::BITS),
                 "{} on {}", stringify!($door), shown()
@@ -1673,19 +1777,19 @@ fn lane_agrees_with_the_engine(input: &[u8], format: &NumFormat) {
     }
     integers!(cast_i8 => i8, cast_i64 => i64, cast_u8 => u8, cast_u64 => u64);
     assert_eq!(
-        cast_f32(input, format).map(f32::to_bits),
+        real::real_f32(input, format, true).map(f32::to_bits),
         real::engine_only_f32(input, format).map(f32::to_bits),
         "cast_f32 on {}",
         shown()
     );
     assert_eq!(
-        cast_f64(input, format).map(f64::to_bits),
+        real::real_f64(input, format, true).map(f64::to_bits),
         real::engine_only_f64(input, format).map(f64::to_bits),
         "cast_f64 on {}",
         shown()
     );
     assert_eq!(
-        cast_decimal(input, format),
+        decimal::decimal(input, format, true),
         decimal::engine_only(input, format),
         "cast_decimal on {}",
         shown()
@@ -2265,8 +2369,9 @@ mod constraint_exports {
             );
             assert_eq!(from_f64(i32_door, layout, 0.0, 0i32).0, want.1, "{field} {byte}");
         }
-        // A door code that names no door: never -1.
-        for (door, param) in [(0, 0), (23, 0), (14, 9), (20, 0)] {
+        // A door code that names no door: never -1. 23 (`Char`, from 1.1) is still none to
+        // this 1.0 export.
+        for (door, param) in [(0, 0), (23, 0), (24, 0), (14, 9), (20, 0)] {
             assert_eq!(cast_constraints_check(door, param, &RawConstraints::ZERO, null(), 0), 1);
             // The size is judged first, before the door.
             let short = RawConstraints { size: 71, ..RawConstraints::ZERO };
@@ -2376,5 +2481,1429 @@ mod constraint_exports {
         // A null `ptr` with a zero `len` is empty text, which no notation spells: 8.
         assert_eq!(cast_declared_decimal(null(), 0, &mut out), 8);
         assert_eq!(cast_declared_decimal(null(), 0, null_mut()), -1);
+    }
+}
+
+// --- packing an `enum` list ---
+
+#[test]
+fn packed_text_len_checks_its_sum() {
+    use crate::constraints::packed_text_len;
+    assert_eq!(packed_text_len([].into_iter()), Some(0));
+    assert_eq!(packed_text_len([0, 5].into_iter()), Some(13));
+    assert_eq!(packed_text_len([usize::MAX - 4].into_iter()), Some(usize::MAX));
+    assert_eq!(packed_text_len([usize::MAX - 3].into_iter()), None);
+    assert_eq!(packed_text_len([usize::MAX / 2, usize::MAX / 2].into_iter()), None);
+}
+
+// --- the white-space scanner ---
+
+#[test]
+fn white_space_scanner_matches_the_table() {
+    use crate::text::{WHITE_SPACE, white_space_len, white_space_len_back};
+    for c in WHITE_SPACE {
+        let mut buf = [0u8; 4];
+        let bytes = c.encode_utf8(&mut buf).as_bytes();
+        assert_eq!(white_space_len(bytes), c.len_utf8(), "{:04X}", c as u32);
+        assert_eq!(white_space_len_back(bytes), c.len_utf8(), "{:04X}", c as u32);
+        assert!(is_white_space(c), "{:04X}", c as u32);
+    }
+    for c in ['\u{200B}', '\u{FEFF}', '\u{180E}', '\u{0000}', '\u{00AD}', 'a'] {
+        let mut buf = [0u8; 4];
+        let bytes = c.encode_utf8(&mut buf).as_bytes();
+        assert_eq!(white_space_len(bytes), 0, "{:04X}", c as u32);
+        assert_eq!(white_space_len_back(bytes), 0, "{:04X}", c as u32);
+        assert!(!is_white_space(c), "{:04X}", c as u32);
+    }
+    for broken in [&b"\xC2"[..], b"\xE2\x80", b"\xC0\xA0"] {
+        assert_eq!(white_space_len(broken), 0);
+        assert_eq!(white_space_len_back(broken), 0);
+    }
+}
+
+#[test]
+fn trim_strips_unicode_edges() {
+    use crate::verdict::trim;
+    assert_eq!(trim("\u{A0}\u{3000} 12\u{202F}\n".as_bytes()), (&b"12"[..], 6));
+    assert_eq!(trim(b"\x0B12"), (&b"12"[..], 1));
+    assert_eq!(trim(b"12\xC2"), (&b"12\xC2"[..], 0));
+}
+
+#[test]
+fn white_space_runs_and_interior_scan() {
+    use crate::text::{contains_white_space, skip_white_space, skip_white_space_back};
+    let text = "\u{A0}\u{3000} 1 2\u{202F}\n".as_bytes();
+    assert_eq!(skip_white_space(text), 6);
+    assert_eq!(skip_white_space_back(text), 4);
+    assert_eq!(skip_white_space(b""), 0);
+    assert_eq!(skip_white_space(b" \t\x0B"), 3);
+    assert_eq!(skip_white_space_back(b"\xE2\x80"), 0);
+    assert!(contains_white_space(b"1\xC2\xA02"));
+    assert!(!contains_white_space(b"12\xC2\xE2\x80\xC0\xA0"));
+    assert!(!contains_white_space(b""));
+}
+
+// --- fault detail ---
+
+#[test]
+fn every_detail_round_trips() {
+    for (index, detail) in Detail::ALL.iter().enumerate() {
+        assert_eq!(detail.code(), index as u32 + 1, "{detail:?} is numbered in order");
+        assert_eq!(Detail::from_code(detail.code()), Some(*detail));
+    }
+    assert_eq!(Detail::from_code(0), None, "0 is no detail");
+    assert_eq!(Detail::from_code(33), None);
+    assert_eq!(Detail::from_code(u32::MAX), None);
+    let mut names: Vec<&str> = Detail::ALL.iter().map(|detail| detail.name()).collect();
+    names.sort_unstable();
+    names.dedup();
+    assert_eq!(names.len(), Detail::ALL.len(), "every name is its own");
+    assert_eq!(Detail::NotAScalar.to_string(), "not_a_scalar");
+}
+
+#[test]
+fn a_failure_projects_to_the_plain_fault() {
+    let failure = Failure::new(Reason::Malformed, Detail::DigitExpected, 2, 1);
+    assert_eq!(failure.fault(), Fault { reason: Reason::Malformed, offset: 2, len: 1 });
+    assert_eq!(Fault::from(failure), failure.fault());
+    assert_eq!(failure.to_string(), "malformed input at bytes 2..3 (digit_expected)");
+    let rejection = detailed::Rejection::from(failure);
+    assert_eq!(Rejection::from(rejection), Rejection::Fault(failure.fault()));
+}
+
+/// The invalid-UTF-8 detail is decided from the bytes at the winning span alone, widened to
+/// the whole sequences it starts or stops inside; the reason and span never move.
+#[test]
+fn invalid_utf8_is_decided_at_the_winning_span() {
+    let valid = ValidNumFormat::INVARIANT;
+    let detail = |input: &[u8]| detailed::cast_i32(input, &valid).unwrap_err();
+    // A stray byte where the numeral fails.
+    let stray = detail(b"12\xFF");
+    assert_eq!((stray.detail, stray.offset, stray.len), (Detail::InvalidUtf8, 2, 1));
+    // A whole letter that is valid UTF-8 is a letter, however much invalid text follows it.
+    let letter = detail(b"12\xC3\xA9\xFF");
+    assert_eq!((letter.detail, letter.offset, letter.len), (Detail::UnexpectedCharacter, 2, 2));
+    let ascii = detail(b"12x\xFF");
+    assert_eq!((ascii.detail, ascii.offset, ascii.len), (Detail::UnexpectedCharacter, 2, 1));
+    // A lead byte whose sequence is cut short by a digit.
+    let cut = detail(b"12\xC31");
+    assert_eq!((cut.detail, cut.offset, cut.len), (Detail::InvalidUtf8, 2, 2));
+    // An overlong encoding and a surrogate.
+    assert_eq!(detail(b"1\xC0\x80").detail, Detail::InvalidUtf8);
+    assert_eq!(detail(b"1\xED\xA0\x80").detail, Detail::InvalidUtf8);
+    // A token-wide span is judged whole.
+    let word = detailed::cast_bool(b"y\xFFs").unwrap_err();
+    assert_eq!((word.detail, word.offset, word.len), (Detail::InvalidUtf8, 0, 3));
+    assert_eq!(detailed::cast_bool(b"yess").unwrap_err().detail, Detail::NotRecognized);
+    // Every plain door's fault is the same either way.
+    for input in [&b"12\xFF"[..], b"12\xC3\xA9\xFF", b"12\xC31", b"\xFF"] {
+        assert_eq!(
+            cast_i32(input, &INVARIANT),
+            detailed::cast_i32(input, &valid).map_err(Failure::fault)
+        );
+    }
+    // A span that starts inside a valid character widens back to its lead byte.
+    let inside = Failure::new(Reason::Malformed, Detail::UnexpectedCharacter, 3, 1);
+    assert_eq!(inside.classified("12é".as_bytes()).detail, Detail::UnexpectedCharacter);
+    let orphan = Failure::new(Reason::Malformed, Detail::UnexpectedCharacter, 1, 1);
+    assert_eq!(orphan.classified(b"1\x80").detail, Detail::InvalidUtf8);
+    // Empty spans and empty input carry no bytes to judge.
+    assert_eq!(detailed::cast_i32("", &valid).unwrap_err().detail, Detail::Blank);
+}
+
+#[test]
+fn a_format_validates_as_check_judges_it() {
+    assert_eq!(NumFormat::INVARIANT.validate(), Ok(ValidNumFormat::INVARIANT));
+    assert_eq!(ValidNumFormat::default().format(), &NumFormat::INVARIANT);
+    let equal = NumFormat::new('.', '.', NumFormat::ALL);
+    assert!(!equal.check());
+    assert_eq!(equal.validate(), Err(DeclarationError::NumFormat));
+    assert!(!DeclarationError::NumFormat.to_string().is_empty());
+}
+
+// --- strict grouping ---
+
+#[test]
+fn the_grouping_constants_are_bits_eight_and_nine() {
+    assert_eq!(NumFormat::GROUPING_LEGACY, 0);
+    assert_eq!(NumFormat::GROUPING_WESTERN, 1 << 8);
+    assert_eq!(NumFormat::GROUPING_INDIAN, 2 << 8);
+    assert_eq!(NumFormat::GROUPING_POLICY, 3 << 8);
+    // `ALL` is a leniency mask and never carries a policy.
+    assert_eq!(NumFormat::ALL & NumFormat::GROUPING_POLICY, 0);
+}
+
+#[test]
+fn with_grouping_replaces_the_policy_never_ors_it() {
+    let western = INVARIANT.with_grouping(NumFormat::GROUPING_WESTERN);
+    assert_eq!(western.flags, NumFormat::ALL | NumFormat::GROUPING_WESTERN);
+    let indian = western.with_grouping(NumFormat::GROUPING_INDIAN);
+    assert_eq!(indian.flags, NumFormat::ALL | NumFormat::GROUPING_INDIAN, "replaced, not 11");
+    assert!(indian.check());
+    assert_eq!(indian.with_grouping(NumFormat::GROUPING_LEGACY), INVARIANT);
+    // Only the policy field is written; any other bit in the argument is ignored.
+    let stray = INVARIANT.with_grouping(NumFormat::GROUPING_WESTERN | NumFormat::TRAILING_SIGN);
+    assert_eq!(stray.flags, NumFormat::ALL | NumFormat::GROUPING_WESTERN);
+    // Everything else is kept.
+    let euro = NumFormat::new(',', '.', NumFormat::PARENS)
+        .with_currency(CurrencySymbol::new("€").unwrap())
+        .with_grouping(NumFormat::GROUPING_INDIAN);
+    assert_eq!(euro.flags, NumFormat::PARENS | NumFormat::GROUPING_INDIAN);
+    assert_eq!(euro.decimal_sep.as_bytes(), b",");
+    assert_eq!(euro.currency.as_bytes(), "€".as_bytes());
+}
+
+#[test]
+fn strict_is_invariant_with_western_grouping_and_invariant_stays_legacy() {
+    assert_eq!(
+        NumFormat::STRICT,
+        NumFormat { flags: NumFormat::ALL | NumFormat::GROUPING_WESTERN, ..INVARIANT }
+    );
+    assert!(NumFormat::STRICT.check());
+    assert_eq!(INVARIANT.flags & NumFormat::GROUPING_POLICY, NumFormat::GROUPING_LEGACY);
+    assert_eq!(NumFormat::DETECT.flags & NumFormat::GROUPING_POLICY, NumFormat::GROUPING_LEGACY);
+    assert_eq!(NumFormat::default(), INVARIANT);
+    assert_eq!(cast_i32(b"12,34", &INVARIANT), Ok(1234));
+    assert_eq!(reason(cast_i32(b"12,34", &NumFormat::STRICT)), Reason::Malformed);
+}
+
+#[test]
+fn a_refused_policy_and_undefined_flags_fail_validation() {
+    let refused = NumFormat { flags: NumFormat::ALL | NumFormat::GROUPING_POLICY, ..INVARIANT };
+    assert!(!refused.check());
+    assert_eq!(refused.validate(), Err(DeclarationError::GroupingPolicy));
+    for bit in 10..32 {
+        let unknown = NumFormat { flags: NumFormat::ALL | 1 << bit, ..INVARIANT };
+        assert!(!unknown.check(), "bit {bit}");
+        assert_eq!(unknown.validate(), Err(DeclarationError::UnknownFlag), "bit {bit}");
+    }
+    // Every defined bit, with each valid policy, is accepted.
+    for policy in
+        [NumFormat::GROUPING_LEGACY, NumFormat::GROUPING_WESTERN, NumFormat::GROUPING_INDIAN]
+    {
+        let every = NumFormat::ALL | NumFormat::SEPARATOR_DETECT | NumFormat::TRAILING_SIGN;
+        assert!(NumFormat { flags: every | policy, ..INVARIANT }.check());
+        assert!(NumFormat { flags: policy, ..INVARIANT }.validate().is_ok());
+    }
+    for error in [DeclarationError::GroupingPolicy, DeclarationError::UnknownFlag] {
+        assert!(!error.to_string().is_empty());
+    }
+}
+
+/// A strict policy enables nothing: with `GROUPING` cleared from `STRICT`, a group separator
+/// stays forbidden (plan Review Focus 5).
+#[test]
+fn a_strict_format_with_grouping_off_refuses_group_separators() {
+    let format = NumFormat { flags: NumFormat::STRICT.flags & !NumFormat::GROUPING, ..INVARIANT };
+    let format = format.validate().unwrap();
+    let refused = |failure: Failure| (failure.reason, failure.detail, failure.offset, failure.len);
+    let expected = Err((Reason::Malformed, Detail::UnexpectedCharacter, 1, 1));
+    assert_eq!(detailed::cast_i32("1,234", &format).map(|_| ()).map_err(refused), expected);
+    assert_eq!(detailed::cast_f64("1,234", &format).map(|_| ()).map_err(refused), expected);
+    assert_eq!(detailed::cast_decimal("1,234", &format).map(|_| ()).map_err(refused), expected);
+    assert_eq!(detailed::cast_i32("1234", &format), Ok(1234));
+}
+
+/// Native digits with a space-like group separator under strict Western: groups are counted
+/// in digits, never bytes (plan Review Focus 1).
+#[test]
+fn native_digits_with_a_space_like_separator_are_counted_as_digits() {
+    let format = NumFormat { group_sep: Symbol::new("\u{202f}").unwrap(), ..NumFormat::STRICT }
+        .with_digits(NativeDigits::new('\u{660}').unwrap())
+        .validate()
+        .unwrap();
+    let good = "\u{661}\u{202f}\u{662}\u{663}\u{664}";
+    assert_eq!(detailed::cast_i32(good, &format), Ok(1234));
+    assert_eq!(detailed::cast_f64(good, &format), Ok(1234.0));
+    assert_eq!(detailed::cast_decimal(good, &format).map(|d| d.lo), Ok(1234));
+    // The other space-like separators stand for U+202F.
+    assert_eq!(detailed::cast_i32("\u{661}\u{a0}\u{662}\u{663}\u{664}", &format), Ok(1234));
+    let bad = "\u{661}\u{662}\u{202f}\u{663}\u{664}";
+    for failure in [
+        detailed::cast_i32(bad, &format).unwrap_err(),
+        detailed::cast_f64(bad, &format).unwrap_err(),
+        detailed::cast_decimal(bad, &format).unwrap_err(),
+    ] {
+        // ` ٣٤`: the separator's three bytes and two two-byte digits.
+        assert_eq!(
+            (failure.reason, failure.detail, failure.offset, failure.len),
+            (Reason::Malformed, Detail::GroupSize, 4, 7)
+        );
+    }
+}
+
+/// The lenient lane validates strict groups itself, so a grouped token under the bindings'
+/// default policy stays on the fast path; whatever it can't validate falls through to the
+/// engine, which is authoritative. Both give the same verdict, detail and span.
+#[test]
+fn lane_and_engine_agree_on_grouping() {
+    let symbol = |text| CurrencySymbol::new(text).unwrap();
+    let wide = |text| Symbol::<8>::new(text).unwrap();
+    let policies =
+        [NumFormat::GROUPING_LEGACY, NumFormat::GROUPING_WESTERN, NumFormat::GROUPING_INDIAN];
+    let inputs = [
+        "1,234,567",
+        "12,34,567",
+        "1,23,45,678",
+        "1234,567",
+        "12,34",
+        "123,456",
+        "1,2,345",
+        "1,2345",
+        "1,23,456",
+        "12,345,678",
+        ",123",
+        "123,",
+        "1,,234",
+        "1234,",
+        "1,234,",
+        "1,234.5",
+        "12,34.5",
+        "1.234,5",
+        "1,234.56,7",
+        "1e1,000",
+        "1,234e3",
+        "12,34x",
+        "$1,234",
+        "$12,34",
+        "1,234$",
+        "(1,234)",
+        "(12,34)",
+        "-12,34,567.5",
+        "+1,234",
+        "1,234%",
+        "1234",
+        "1 234 567",
+        "12 34 567",
+        "1\u{a0}234\u{202f}567",
+        "1\u{a0}23",
+        "\u{661},\u{662}\u{663}\u{664}",
+        "\u{661}\u{662},\u{663}\u{664}",
+        "\u{661}\u{202f}\u{662}\u{663}\u{664}",
+        "\u{661}\u{662}\u{202f}\u{663}\u{664}",
+        "1.234.567",
+        "1.23.456",
+        "1.234,56",
+        "12.34,5",
+    ];
+    for policy in policies {
+        let formats = [
+            INVARIANT.with_currency(symbol("$")),
+            NumFormat::new('.', ' ', NumFormat::ALL),
+            NumFormat::new(',', '.', NumFormat::ALL).with_currency(symbol("$")),
+            INVARIANT.with_digits(NativeDigits::new('\u{660}').unwrap()),
+            NumFormat { group_sep: wide("\u{202f}"), ..INVARIANT }
+                .with_digits(NativeDigits::new('\u{660}').unwrap()),
+            NumFormat::DETECT,
+            INVARIANT.with_currency(symbol("$")).with_currency_separators(wide(","), wide(".")),
+        ];
+        for format in formats {
+            let format = format.with_grouping(policy);
+            for input in inputs {
+                lane_agrees_with_the_engine(input.as_bytes(), &format);
+            }
+        }
+    }
+
+    // The lane itself accepts strict input only when it validated the groups.
+    let lane = |input: &str, policy: u32| {
+        let format = INVARIANT.with_currency(symbol("$")).with_grouping(policy);
+        lane::scan(input.as_bytes(), &format, true, &mut lane::Exact::default()).is_some()
+    };
+    let western_valid =
+        ["1,234,567", "1,234", "1234567", "$1,234", "(1,234)", "1,234.5", "-1,234,567.25"];
+    let western_refused = ["12,34,567", "1234,567", "12,34", "1,23,456", "1,2345", "12,34.5"];
+    let indian_valid = ["12,34,567", "1,23,45,678", "1,234", "12,345", "$12,34,567.5", "1234567"];
+    let indian_refused = ["1,234,567", "123,456", "12,34", "1,2,345", "12,345,678", "1,23,4567"];
+    for input in western_valid {
+        assert!(lane(input, NumFormat::GROUPING_WESTERN), "western lane reads {input}");
+        assert!(lane(input, NumFormat::GROUPING_LEGACY), "legacy lane reads {input}");
+    }
+    for input in western_refused {
+        assert!(!lane(input, NumFormat::GROUPING_WESTERN), "western lane refuses {input}");
+        assert!(lane(input, NumFormat::GROUPING_LEGACY), "legacy lane reads {input}");
+    }
+    for input in indian_valid {
+        assert!(lane(input, NumFormat::GROUPING_INDIAN), "indian lane reads {input}");
+    }
+    for input in indian_refused {
+        assert!(!lane(input, NumFormat::GROUPING_INDIAN), "indian lane refuses {input}");
+    }
+}
+
+// --- date options (item 5) ---
+
+const ENGLISH: [(u8, &str); 13] = [
+    (1, "Jan"),
+    (2, "Feb"),
+    (3, "Mar"),
+    (4, "Apr"),
+    (5, "May"),
+    (6, "Jun"),
+    (7, "Jul"),
+    (8, "Aug"),
+    (9, "Sep"),
+    (9, "Sept"),
+    (10, "Oct"),
+    (11, "Nov"),
+    (12, "Dec"),
+];
+
+/// The English vocabulary and one more entry.
+fn english_with(extra: (u8, &str)) -> Vec<(u8, &str)> {
+    ENGLISH.into_iter().chain([extra]).collect()
+}
+
+fn valid_options<'a>(options: DateOptions, names: &'a [(u8, &'a str)]) -> ValidDateOptions<'a> {
+    options.validate(Some(MonthNames::from_entries(names))).unwrap()
+}
+
+/// A vocabulary packed as the ABI lays it out, written independently of `MonthNames::pack`.
+fn packed(entries: &[(u8, &str)]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for &(month, name) in entries {
+        bytes.push(month);
+        bytes.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(name.as_bytes());
+    }
+    bytes
+}
+
+#[test]
+fn the_option_flags_and_the_profile() {
+    assert_eq!(
+        (DateOptions::COMPACT_DATE, DateOptions::SPACE_SEPARATOR, DateOptions::HOUR_OFFSET),
+        (1, 2, 4)
+    );
+    assert_eq!(DateOptions::COMMON_FORMS.flags(), 7);
+    assert_eq!(DateOptions::COMMON_FORMS.pivot(), 0);
+    assert_eq!((DateOptions::NONE.flags(), DateOptions::NONE.pivot()), (0, 0));
+    assert_eq!(DateOptions::default(), DateOptions::NONE);
+    let pivoted = DateOptions::COMMON_FORMS.with_pivot(2029);
+    assert_eq!((pivoted.flags(), pivoted.pivot()), (7, 2029));
+    assert_eq!(DateOptions::from_flags(5).flags(), 5);
+    let valid = pivoted.validate(None).unwrap();
+    assert_eq!((valid.flags(), valid.pivot()), (7, 2029));
+    assert!(valid.months().is_none());
+    assert!(ValidDateOptions::NONE.months().is_none());
+    assert_eq!(DateOptions::NONE.validate(None).unwrap().flags(), 0);
+}
+
+#[test]
+fn the_options_validate_flags_then_pivot_then_vocabulary() {
+    // An unknown flag bit is refused, whatever else is set; every defined subset is accepted.
+    for bits in 0..8 {
+        assert!(DateOptions::from_flags(bits).validate(None).is_ok(), "{bits}");
+    }
+    for bit in 3..32 {
+        let refused = DateOptions::from_flags(1 << bit).validate(None);
+        assert_eq!(refused.unwrap_err(), DeclarationError::DateFlags, "bit {bit}");
+        assert_eq!(
+            DateOptions::from_flags(1 << bit).with_pivot(99).validate(None).err(),
+            Some(DeclarationError::DateFlags),
+            "flags are judged before the pivot, bit {bit}"
+        );
+    }
+    // The pivot: absent, or 100 through 9999.
+    for (pivot, accepted) in [
+        (0, true),
+        (1, false),
+        (99, false),
+        (100, true),
+        (2029, true),
+        (9999, true),
+        (10_000, false),
+    ] {
+        let verdict = DateOptions::NONE.with_pivot(pivot).validate(None);
+        assert_eq!(verdict.is_ok(), accepted, "pivot {pivot}");
+        if !accepted {
+            assert_eq!(verdict.unwrap_err(), DeclarationError::DatePivot);
+        }
+    }
+    assert_eq!(
+        DateOptions::NONE.with_pivot(u16::MAX).validate(None).unwrap_err(),
+        DeclarationError::DatePivot
+    );
+    // A bad pivot is reported before a bad vocabulary.
+    let none = MonthNames::from_entries(&[]);
+    assert_eq!(
+        DateOptions::NONE.with_pivot(99).validate(Some(none)).unwrap_err(),
+        DeclarationError::DatePivot
+    );
+    assert_eq!(
+        DateOptions::NONE.validate(Some(none)).unwrap_err(),
+        DeclarationError::MonthNames(MonthNamesFault::MonthMissing)
+    );
+    for error in [
+        DeclarationError::DateFlags,
+        DeclarationError::DatePivot,
+        DeclarationError::MonthNames(MonthNamesFault::Duplicate),
+    ] {
+        assert!(!error.to_string().is_empty());
+    }
+    for fault in [
+        MonthNamesFault::Layout,
+        MonthNamesFault::Month,
+        MonthNamesFault::Utf8,
+        MonthNamesFault::NameLength,
+        MonthNamesFault::Character,
+        MonthNamesFault::MonthMissing,
+        MonthNamesFault::Duplicate,
+    ] {
+        assert!(!fault.to_string().is_empty());
+    }
+}
+
+#[test]
+fn each_option_opens_its_one_shape_at_its_door() {
+    let compact = DateOptions::from_flags(DateOptions::COMPACT_DATE).validate(None).unwrap();
+    let space = DateOptions::from_flags(DateOptions::SPACE_SEPARATOR).validate(None).unwrap();
+    let hour = DateOptions::from_flags(DateOptions::HOUR_OFFSET).validate(None).unwrap();
+    let all = DateOptions::COMMON_FORMS.validate(None).unwrap();
+    let date = |o: &ValidDateOptions| detailed::cast_date("20260107", Some(o));
+    let stamp = |text: &str, o: &ValidDateOptions| detailed::cast_timestamp(text, Some(o));
+    let january = Date { year: 2026, month: 1, day: 7 };
+    assert_eq!(date(&compact), Ok(january));
+    assert_eq!(date(&all), Ok(january));
+    assert_eq!(date(&space).unwrap_err().detail, Detail::WrongLength);
+    assert_eq!(date(&hour).unwrap_err().detail, Detail::WrongLength);
+
+    let base = stamp("2026-01-07T15:04:05Z", &ValidDateOptions::NONE).unwrap();
+    assert_eq!(stamp("2026-01-07 15:04:05Z", &space), Ok(base));
+    assert_eq!(stamp("2026-01-07 15:04:05Z", &all), Ok(base));
+    for refused in [&compact, &hour, &ValidDateOptions::NONE] {
+        let failure = stamp("2026-01-07 15:04:05Z", refused).unwrap_err();
+        assert_eq!(
+            (failure.detail, failure.offset, failure.len),
+            (Detail::DelimiterExpected, 10, 1)
+        );
+    }
+    assert_eq!(stamp("2026-01-07T15:04:05+00", &hour), Ok(base));
+    assert_eq!(stamp("2026-01-07T15:04:05+00", &all), Ok(base));
+    for refused in [&compact, &space, &ValidDateOptions::NONE] {
+        let failure = stamp("2026-01-07T15:04:05+00", refused).unwrap_err();
+        assert_eq!(
+            (failure.detail, failure.offset, failure.len),
+            (Detail::DelimiterExpected, 22, 0)
+        );
+    }
+    // The old doors never see any of it.
+    assert!(cast_date("20260107").is_err());
+    assert!(cast_timestamp("2026-01-07 15:04:05Z").is_err());
+    assert!(cast_timestamp("2026-01-07T15:04:05+00").is_err());
+}
+
+#[test]
+fn options_that_ask_for_nothing_change_nothing() {
+    // Every corpus input of the four date doors, through the detailed door with no options,
+    // with an options value that sets nothing and with the irrelevant ones: one answer.
+    use serde_json::Value;
+    let names = MonthNames::from_entries(&ENGLISH);
+    let inert = [
+        DateOptions::NONE.validate(None).unwrap(),
+        DateOptions::NONE.validate(Some(names)).unwrap(),
+    ];
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../corpus");
+    for file in ["date.json", "timestamp.json", "date_order.json", "datetime.json"] {
+        let rows: Vec<Value> =
+            serde_json::from_str(&std::fs::read_to_string(root.join(file)).unwrap()).unwrap();
+        for row in rows.iter().filter(|row| row.get("options").is_none()) {
+            let input = row["input"].as_str().unwrap();
+            let order = row.get("order").map(|o| DateOrder::from_code(o.as_u64().unwrap() as u32));
+            for options in inert.iter().map(Some).chain([None]) {
+                let (plain, twin) = match (file, order.flatten()) {
+                    ("date.json", _) => (
+                        detailed::cast_date(input, None).map(|_| ()),
+                        detailed::cast_date(input, options).map(|_| ()),
+                    ),
+                    ("timestamp.json", _) => (
+                        detailed::cast_timestamp(input, None).map(|_| ()),
+                        detailed::cast_timestamp(input, options).map(|_| ()),
+                    ),
+                    ("date_order.json", Some(order)) => (
+                        detailed::cast_date_ordered(input, order, None).map(|_| ()),
+                        detailed::cast_date_ordered(input, order, options).map(|_| ()),
+                    ),
+                    (_, Some(order)) => (
+                        detailed::cast_datetime(input, order, None).map(|_| ()),
+                        detailed::cast_datetime(input, order, options).map(|_| ()),
+                    ),
+                    other => panic!("{other:?}"),
+                };
+                // A vocabulary alone opens names only, and no row without options has one.
+                assert_eq!(twin, plain, "{file} {input:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn every_pivot_maps_a_two_digit_year_into_its_window() {
+    for pivot in 100..=9999u16 {
+        let valid = DateOptions::NONE.with_pivot(pivot).validate(None).unwrap();
+        for yy in 0..100u16 {
+            let text = format!("1/1/{yy:02}");
+            let date =
+                detailed::cast_date_ordered(&text, DateOrder::MonthDayYear, Some(&valid)).unwrap();
+            let window = pivot - 99..=pivot;
+            let year = window.clone().find(|year| year % 100 == yy).unwrap();
+            assert_eq!(date.year, year, "pivot {pivot}, yy {yy}");
+            assert!(window.contains(&date.year));
+        }
+    }
+}
+
+#[test]
+fn the_pivot_leaves_other_year_widths_alone() {
+    let pivot = DateOptions::NONE.with_pivot(2029).validate(None).unwrap();
+    let year = |text: &str| {
+        detailed::cast_date_ordered(text, DateOrder::MonthDayYear, Some(&pivot)).map(|d| d.year)
+    };
+    assert_eq!(year("1/7/2026"), Ok(2026));
+    assert_eq!(year("1/7/0099"), Ok(99));
+    for (text, width) in [("1/7/6", 1), ("1/7/126", 3)] {
+        let failure = year(text).unwrap_err();
+        assert_eq!((failure.detail, failure.offset, failure.len), (Detail::FieldWidth, 4, width));
+    }
+    // Without a pivot, the same two-digit year is a width fault, exactly as the old door has it.
+    let failure = detailed::cast_date_ordered("1/7/26", DateOrder::MonthDayYear, None).unwrap_err();
+    assert_eq!(cast_date_ordered("1/7/26", DateOrder::MonthDayYear), Err(failure.fault()));
+    assert_eq!((failure.detail, failure.offset, failure.len), (Detail::FieldWidth, 4, 2));
+}
+
+#[test]
+fn month_names_read_where_the_declared_order_puts_the_month() {
+    let options = valid_options(DateOptions::NONE, &ENGLISH);
+    let read = |text: &str, order| detailed::cast_date_ordered(text, order, Some(&options));
+    let date = |month, day| Ok(Date { year: 2026, month, day });
+    assert_eq!(read("7-Jan-2026", DateOrder::DayMonthYear), date(1, 7));
+    assert_eq!(read("Jan-7-2026", DateOrder::MonthDayYear), date(1, 7));
+    assert_eq!(read("2026-Jan-7", DateOrder::YearMonthDay), date(1, 7));
+    // A vocabulary never overrides the declared order.
+    for (text, order) in [
+        ("Jan-7-2026", DateOrder::DayMonthYear),
+        ("Jan-7-2026", DateOrder::YearMonthDay),
+        ("7-Jan-2026", DateOrder::MonthDayYear),
+    ] {
+        assert_eq!(read(text, order).unwrap_err().detail, Detail::DigitExpected, "{text}");
+    }
+    // Names fold, simply: the Kelvin sign is a `k`, and costs three bytes where `k` costs one.
+    let german = [
+        (1, "Jan"),
+        (2, "Feb"),
+        (3, "Mär"),
+        (4, "Apr"),
+        (5, "Mai"),
+        (6, "Jun"),
+        (7, "Jul"),
+        (8, "Aug"),
+        (9, "Sep"),
+        (10, "Okt"),
+        (11, "Nov"),
+        (12, "Dez"),
+    ];
+    let options = valid_options(DateOptions::NONE, &german);
+    let read =
+        |text: &str| detailed::cast_date_ordered(text, DateOrder::DayMonthYear, Some(&options));
+    assert_eq!(read("7-O\u{212A}T-2026"), Ok(Date { year: 2026, month: 10, day: 7 }));
+    assert_eq!(read("7-MÄR-2026"), Ok(Date { year: 2026, month: 3, day: 7 }));
+    // `ß` is not `ss`: folding is simple, never full.
+    let sharp = [(1, "ß")].into_iter().chain(german.into_iter().skip(1));
+    let sharp: Vec<(u8, &str)> = sharp.collect();
+    let options = valid_options(DateOptions::NONE, &sharp);
+    let read =
+        |text: &str| detailed::cast_date_ordered(text, DateOrder::DayMonthYear, Some(&options));
+    assert!(read("7-ß-2026").is_ok());
+    assert_eq!(read("7-SS-2026").unwrap_err().detail, Detail::NotRecognized);
+}
+
+#[test]
+fn month_names_match_the_longest_eligible_entry() {
+    let dotted = [
+        (1, "janv."),
+        (2, "févr."),
+        (3, "mar"),
+        (3, "mar."),
+        (4, "avr."),
+        (5, "mai"),
+        (6, "juin"),
+        (7, "juil."),
+        (8, "août"),
+        (9, "sept."),
+        (10, "oct."),
+        (11, "nov."),
+        (12, "déc."),
+    ];
+    let options = valid_options(DateOptions::NONE, &dotted);
+    let read =
+        |text: &str| detailed::cast_date_ordered(text, DateOrder::DayMonthYear, Some(&options));
+    let (march, april) =
+        (Date { year: 2026, month: 3, day: 7 }, Date { year: 2026, month: 4, day: 7 });
+    // Both `mar` and `mar.` are followed by the `.` separator: the longer wins.
+    assert_eq!(read("7.mar..2026"), Ok(march));
+    // Only `mar` is followed by the separator here: the longer is not eligible, so it loses.
+    assert_eq!(read("7.mar.2026"), Ok(march));
+    // Punctuation is part of the name and is never stripped.
+    assert_eq!(read("7.avr..2026"), Ok(april));
+    let failure = read("7.avr.2026").unwrap_err();
+    assert_eq!((failure.reason, failure.detail), (Reason::Malformed, Detail::NotRecognized));
+    assert_eq!((failure.offset, failure.len), (2, 3));
+    // The separator after the name is the one declared by the first.
+    let failure = read("7-mar.2026").unwrap_err();
+    assert_eq!((failure.detail, failure.offset, failure.len), (Detail::DelimiterExpected, 5, 1));
+}
+
+#[test]
+fn an_unmatched_month_is_the_word_or_the_missing_mark() {
+    let options = valid_options(DateOptions::NONE, &ENGLISH);
+    let read =
+        |text: &str| detailed::cast_date_ordered(text, DateOrder::DayMonthYear, Some(&options));
+    let spans = |text: &str| {
+        let failure = read(text).unwrap_err();
+        (failure.reason, failure.detail, failure.offset, failure.len)
+    };
+    let (m, nr, de, dx) = (
+        Reason::Malformed,
+        Detail::NotRecognized,
+        Detail::DelimiterExpected,
+        Detail::DigitExpected,
+    );
+    assert_eq!(spans("7-Foo-2026"), (m, nr, 2, 3));
+    assert_eq!(spans("7-Janu-2026"), (m, nr, 2, 4));
+    assert_eq!(spans("7-Ja-2026"), (m, nr, 2, 2));
+    assert_eq!(spans("7-é-2026"), (m, nr, 2, 2));
+    // A declared name with no separator after it is a missing mark, not an unknown word.
+    assert_eq!(spans("7-Jan"), (m, de, 5, 0));
+    assert_eq!(spans("7-Jan 3"), (m, de, 5, 1));
+    assert_eq!(spans("7-Jan\u{00A0}3"), (m, de, 5, 2));
+    assert_eq!(spans("7-Jan/2026"), (m, de, 5, 1));
+    // No word at all is today's digit fault.
+    assert_eq!(spans("7--2026"), (m, dx, 2, 1));
+    assert_eq!(spans("7-"), (m, dx, 2, 0));
+}
+
+#[test]
+fn month_names_pack_as_pack_enum_does() {
+    let names = MonthNames::from_entries(&ENGLISH);
+    let expected = packed(&ENGLISH);
+    // The length first, with nothing written when the buffer is short.
+    assert_eq!(names.pack(&mut []), Some(expected.len()));
+    let mut short = vec![0xA5; expected.len() - 1];
+    assert_eq!(names.pack(&mut short), Some(expected.len()));
+    assert!(short.iter().all(|&byte| byte == 0xA5), "a short buffer is untouched");
+    // Exactly enough, and more than enough: the tail is untouched.
+    let mut out = vec![0xA5; expected.len() + 7];
+    assert_eq!(names.pack(&mut out), Some(expected.len()));
+    assert_eq!(out[..expected.len()], expected[..]);
+    assert!(out[expected.len()..].iter().all(|&byte| byte == 0xA5));
+    // What was read packs back to itself.
+    let read = MonthNames::from_packed(&expected).unwrap();
+    let mut again = vec![0; expected.len()];
+    assert_eq!(read.pack(&mut again), Some(expected.len()));
+    assert_eq!(again, expected);
+    assert_eq!(read.pack(&mut []), Some(expected.len()));
+    let mut short = vec![0xA5; expected.len() - 1];
+    assert_eq!(read.pack(&mut short), Some(expected.len()));
+    assert!(short.iter().all(|&byte| byte == 0xA5));
+    // The two sources judge and read alike.
+    let from_bytes = DateOptions::NONE.validate(Some(read)).unwrap();
+    let built = DateOptions::NONE.validate(Some(names)).unwrap();
+    for text in ["7-Sept-2026", "7-sep-2026", "7-Foo-2026"] {
+        assert_eq!(
+            detailed::cast_date_ordered(text, DateOrder::DayMonthYear, Some(&from_bytes)),
+            detailed::cast_date_ordered(text, DateOrder::DayMonthYear, Some(&built)),
+            "{text}"
+        );
+    }
+    // An empty vocabulary packs to nothing, and is itself refused.
+    assert_eq!(MonthNames::from_entries(&[]).pack(&mut []), Some(0));
+    assert_eq!(
+        MonthNames::from_packed(&[]).unwrap_err(),
+        DeclarationError::MonthNames(MonthNamesFault::MonthMissing)
+    );
+}
+
+#[test]
+fn a_vocabulary_is_judged_in_full_by_its_own_rule() {
+    let refused = |entries: &[(u8, &str)], extra: &[u8]| {
+        let mut bytes = packed(entries);
+        bytes.extend_from_slice(extra);
+        MonthNames::from_packed(&bytes).err()
+    };
+    let fault = |fault| Some(DeclarationError::MonthNames(fault));
+    // Layout comes first: a month byte of 0 that is cut short is a cut entry, not a bad month.
+    assert_eq!(refused(&ENGLISH, &[0]), fault(MonthNamesFault::Layout));
+    assert_eq!(refused(&ENGLISH, &[0, 3, 0, 0]), fault(MonthNamesFault::Layout));
+    assert_eq!(
+        refused(&ENGLISH, &[1, 0xFF, 0xFF, 0xFF, 0xFF, b'a']),
+        fault(MonthNamesFault::Layout)
+    );
+    // A name is 1 to 64 bytes, not characters.
+    assert_eq!(refused(&english_with((1, "")), &[]), fault(MonthNamesFault::NameLength));
+    assert_eq!(
+        refused(&english_with((1, &"é".repeat(33))), &[]),
+        fault(MonthNamesFault::NameLength)
+    );
+    assert_eq!(refused(&english_with((1, &"é".repeat(32))), &[]), None);
+    assert_eq!(
+        refused(&english_with((1, &"a".repeat(65))), &[]),
+        fault(MonthNamesFault::NameLength)
+    );
+    assert_eq!(refused(&english_with((1, &"a".repeat(64))), &[]), None);
+    // Only ASCII digits, `/`, `-` and white space are forbidden; `.` and look-alikes are not.
+    for (name, ok) in [
+        ("a1", false),
+        ("a/", false),
+        ("a-", false),
+        ("a b", false),
+        ("a\u{3000}", false),
+        ("a.", true),
+        (".", true),
+        ("a\u{0663}", true),
+        ("a\u{200B}", true),
+        ("a\u{FF0D}", true),
+    ] {
+        let want = if ok { None } else { fault(MonthNamesFault::Character) };
+        assert_eq!(refused(&english_with((1, name)), &[]), want, "{name:?}");
+    }
+    // A fold-equal pair is a duplicate even for one month, and a month needs an entry.
+    assert_eq!(refused(&english_with((1, "JAN")), &[]), fault(MonthNamesFault::Duplicate));
+    assert_eq!(refused(&english_with((2, "jan")), &[]), fault(MonthNamesFault::Duplicate));
+    assert_eq!(refused(&english_with((13, "x")), &[]), fault(MonthNamesFault::Month));
+    assert_eq!(refused(&english_with((0, "x")), &[]), fault(MonthNamesFault::Month));
+    let no_december: Vec<_> = ENGLISH.into_iter().filter(|&(month, _)| month != 12).collect();
+    assert_eq!(refused(&no_december, &[]), fault(MonthNamesFault::MonthMissing));
+    // Invalid UTF-8 in a name, which only the packed layout can carry.
+    assert_eq!(refused(&ENGLISH, &[1, 1, 0, 0, 0, 0xFF]), fault(MonthNamesFault::Utf8));
+    // The builder is judged by `validate` the same way.
+    let built = |entries: &[(u8, &str)]| {
+        DateOptions::NONE.validate(Some(MonthNames::from_entries(entries))).err()
+    };
+    assert_eq!(built(&english_with((1, "Ja1"))), fault(MonthNamesFault::Character));
+    assert_eq!(built(&english_with((1, "jan"))), fault(MonthNamesFault::Duplicate));
+    assert_eq!(built(&ENGLISH), None);
+}
+
+/// The duplicate rule across the 64 entries whose keys the judge keeps on the stack: a
+/// duplicate is found wherever its pair sits, kept or not, and the first broken rule in entry
+/// order still wins.
+#[test]
+fn a_vocabulary_past_64_entries_is_judged_as_any_other() {
+    // 130 distinct names without digits ("ma", "mb", …, "mfz"), every month covered.
+    let name = |index: usize| {
+        let mut name = String::from("m");
+        let mut rest = index;
+        loop {
+            name.push(char::from(b'a' + (rest % 26) as u8));
+            rest /= 26;
+            if rest == 0 {
+                break name;
+            }
+        }
+    };
+    let names: Vec<String> = (0..130).map(name).collect();
+    let entries = |names: &[String]| -> Vec<(u8, String)> {
+        names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| ((index % 12 + 1) as u8, name.clone()))
+            .collect()
+    };
+    let judged = |entries: &[(u8, String)]| {
+        let borrowed: Vec<(u8, &str)> = entries.iter().map(|(m, n)| (*m, n.as_str())).collect();
+        let built = DateOptions::NONE.validate(Some(MonthNames::from_entries(&borrowed))).err();
+        let read = MonthNames::from_packed(&packed(&borrowed)).err();
+        assert_eq!(built, read, "{entries:?}");
+        built
+    };
+    let fault = |fault| Some(DeclarationError::MonthNames(fault));
+    let with = |changes: &[(usize, &str)]| {
+        let mut names = names.clone();
+        for &(at, name) in changes {
+            names[at] = name.to_owned();
+        }
+        entries(&names)
+    };
+
+    assert_eq!(judged(&entries(&names)), None, "130 distinct names are accepted");
+    let first = names[0].clone();
+    // A duplicate of entry 0 at the first unkept index, and at the one after it.
+    assert_eq!(judged(&with(&[(64, &first)])), fault(MonthNamesFault::Duplicate));
+    assert_eq!(judged(&with(&[(65, &first)])), fault(MonthNamesFault::Duplicate));
+    // A duplicate between two entries neither of which is kept.
+    let seventy = names[70].clone();
+    assert_eq!(judged(&with(&[(80, &seventy)])), fault(MonthNamesFault::Duplicate));
+    // A case variant past 64, of a kept entry and of an unkept one.
+    let upper = names[3].to_uppercase();
+    assert_eq!(judged(&with(&[(100, &upper)])), fault(MonthNamesFault::Duplicate));
+    let upper = names[90].to_uppercase();
+    assert_eq!(judged(&with(&[(120, &upper)])), fault(MonthNamesFault::Duplicate));
+    // The first broken rule in entry order wins either side of the boundary.
+    assert_eq!(
+        judged(&with(&[(80, &seventy), (90, "bad name")])),
+        fault(MonthNamesFault::Duplicate)
+    );
+    assert_eq!(
+        judged(&with(&[(75, "bad name"), (80, &seventy)])),
+        fault(MonthNamesFault::Character)
+    );
+}
+
+mod sites {
+    use super::*;
+    use crate::site::{DOCS, SITES, Site, impractical, recorder, unreachable};
+    use serde_json::Value;
+    use std::collections::BTreeSet;
+    use std::path::PathBuf;
+
+    fn rows(path: PathBuf) -> Vec<Value> {
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        serde_json::from_str(&text).unwrap()
+    }
+
+    fn corpus(name: &str) -> Vec<Value> {
+        rows(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../corpus").join(name))
+    }
+
+    fn text(row: &Value) -> Vec<u8> {
+        match (row.get("input"), row.get("input_bytes")) {
+            (_, Some(bytes)) => {
+                bytes.as_array().unwrap().iter().map(|b| b.as_u64().unwrap() as u8).collect()
+            }
+            (Some(input), _) => input.as_str().unwrap().as_bytes().to_vec(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn bits(row: &Value) -> f64 {
+        f64::from_bits(u64::from_str_radix(row["bits"].as_str().unwrap(), 16).unwrap())
+    }
+
+    fn format_of(row: &Value) -> NumFormat {
+        let Some(format) = row.get("format") else {
+            return NumFormat::INVARIANT;
+        };
+        let symbol = |field: &str| match format.get(field).and_then(Value::as_str) {
+            Some(text) => Symbol::new(text).unwrap(),
+            None => Symbol::NONE,
+        };
+        let currency = format
+            .get("currency")
+            .and_then(Value::as_str)
+            .map_or(CurrencySymbol::NONE, |symbol| CurrencySymbol::new(symbol).unwrap());
+        let digits =
+            format.get("digit_zero").and_then(Value::as_str).map_or(NativeDigits::NONE, |zero| {
+                NativeDigits::new(zero.chars().next().unwrap()).unwrap()
+            });
+        NumFormat::with_separators(
+            symbol("decimal_sep"),
+            symbol("group_sep"),
+            format["flags"].as_u64().unwrap() as u32,
+        )
+        .with_currency(currency)
+        .with_currency_separators(symbol("currency_decimal_sep"), symbol("currency_group_sep"))
+        .with_signs(symbol("minus_sign"), symbol("plus_sign"))
+        .with_percent(symbol("percent"))
+        .with_digits(digits)
+        .with_grouping(match format.get("grouping").and_then(Value::as_str) {
+            Some("western") => NumFormat::GROUPING_WESTERN,
+            Some("indian") => NumFormat::GROUPING_INDIAN,
+            Some("legacy") => NumFormat::GROUPING_LEGACY,
+            _ => format["flags"].as_u64().unwrap() as u32 & NumFormat::GROUPING_POLICY,
+        })
+    }
+
+    fn order(row: &Value) -> DateOrder {
+        DateOrder::from_code(row["order"].as_u64().unwrap() as u32).unwrap()
+    }
+
+    fn epoch(row: &Value) -> ExcelEpoch {
+        ExcelEpoch::from_code(row["epoch"].as_u64().unwrap() as u32).unwrap()
+    }
+
+    fn periods(row: &Value) -> DayPeriods {
+        let designator = |field: &str| match row.get(field).and_then(Value::as_str) {
+            Some(text) => Symbol::new(text).unwrap(),
+            None => Symbol::NONE,
+        };
+        DayPeriods::new(designator("am"), designator("pm"))
+    }
+
+    /// A row's date options (none when it declares none), validated as the C ABI does with the
+    /// vocabulary in its packed layout, for the detailed date doors.
+    fn dated<T>(row: &Value, door: impl FnOnce(Option<&ValidDateOptions<'_>>) -> T) -> T {
+        let Some(options) = row.get("options") else {
+            return door(None);
+        };
+        let flag = |name: &str| match name {
+            "compact_date" => DateOptions::COMPACT_DATE,
+            "space_separator" => DateOptions::SPACE_SEPARATOR,
+            "hour_offset" => DateOptions::HOUR_OFFSET,
+            "common_forms" => DateOptions::COMMON_FORMS.flags(),
+            other => panic!("flag {other}"),
+        };
+        let flags = options["flags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .fold(0, |all, f| all | flag(f.as_str().unwrap()));
+        let pivot = options.get("pivot").map_or(0, |pivot| pivot.as_u64().unwrap() as u16);
+        let mut packed = Vec::new();
+        for pair in options.get("months").and_then(Value::as_array).into_iter().flatten() {
+            let name = pair[1].as_str().unwrap();
+            packed.push(pair[0].as_u64().unwrap() as u8);
+            packed.extend_from_slice(&(name.len() as u32).to_le_bytes());
+            packed.extend_from_slice(name.as_bytes());
+        }
+        let months = options.get("months").map(|_| MonthNames::from_packed(&packed).unwrap());
+        let valid = DateOptions::from_flags(flags).with_pivot(pivot).validate(months).unwrap();
+        door(Some(&valid))
+    }
+
+    /// A checked row's declaration, through `from_raw` as the C ABI hands it over.
+    fn checked<T: Numeric>(
+        row: &Value,
+        run: impl FnOnce(&Constraints<'_, T>) -> Option<Failure>,
+    ) -> Option<Failure> {
+        let c = &row["constraints"];
+        let dec = |field: &str| {
+            c.get(field).map(|v| decimal_for_declaration(v.as_str().unwrap()).unwrap())
+        };
+        let mut raw = RawConstraints::ZERO;
+        for (field, flag, upper) in [
+            ("minimum", RawConstraints::HAS_MINIMUM, false),
+            ("exclusiveMinimum", RawConstraints::HAS_EXCLUSIVE_MINIMUM, false),
+            ("maximum", RawConstraints::HAS_MAXIMUM, true),
+            ("exclusiveMaximum", RawConstraints::HAS_EXCLUSIVE_MAXIMUM, true),
+        ] {
+            if let Some(value) = dec(field) {
+                raw.flags |= flag;
+                *(if upper { &mut raw.upper } else { &mut raw.lower }) = value;
+            }
+        }
+        if let Some(value) = dec("multipleOf") {
+            raw.flags |= RawConstraints::HAS_MULTIPLE_OF;
+            raw.multiple_of = value;
+        }
+        raw.rounding = match c.get("rounding").and_then(Value::as_str) {
+            Some("midpoint") => 1,
+            Some("floor") => 2,
+            Some("ceiling") => 3,
+            _ => 0,
+        };
+        let mut entries = Vec::new();
+        if let Some(list) = c.get("enum").and_then(Value::as_array) {
+            raw.flags |= RawConstraints::HAS_ENUM;
+            for entry in list {
+                let d = decimal_for_declaration(entry.as_str().unwrap()).unwrap();
+                entries.extend_from_slice(&d.lo.to_ne_bytes());
+                entries.extend_from_slice(&d.hi.to_ne_bytes());
+                entries.extend_from_slice(&[d.scale, d.negative.into(), 0, 0]);
+            }
+        }
+        let constraints = Constraints::<T>::from_raw(raw, &entries).unwrap();
+        run(&constraints)
+    }
+
+    fn numeric_row<T: Numeric>(row: &Value) -> Option<Failure> {
+        let failure = |rejection: detailed::Rejection| match rejection {
+            detailed::Rejection::Failure(failure) => Some(failure),
+            detailed::Rejection::Violation(_) => None,
+        };
+        checked::<T>(row, |constraints| {
+            let verdict = match row.get("from_f64") {
+                Some(value) => {
+                    let value = match value.as_str() {
+                        Some("-0") => -0.0,
+                        Some("NaN") => f64::NAN,
+                        Some("Infinity") => f64::INFINITY,
+                        Some("-Infinity") => f64::NEG_INFINITY,
+                        Some(other) => panic!("from_f64 {other}"),
+                        None => value.as_f64().unwrap(),
+                    };
+                    detailed::checked_from_f64(value, constraints)
+                }
+                None => {
+                    let format = format_of(row).validate().unwrap();
+                    detailed::cast_checked(text(row), &format, constraints)
+                }
+            };
+            verdict.err().and_then(failure)
+        })
+    }
+
+    fn text_row(row: &Value) -> Option<Failure> {
+        let c = &row["constraints"];
+        let length = |field: &str| c.get(field).map(|n| n.as_u64().unwrap() as u32);
+        let rules = TextRules::new()
+            .trim(c.get("trim").and_then(Value::as_bool) == Some(true))
+            .maybe_min_length(length("minLength"))
+            .maybe_max_length(length("maxLength"));
+        let entries: Option<Vec<&str>> = c
+            .get("enum")
+            .map(|list| list.as_array().unwrap().iter().map(|e| e.as_str().unwrap()).collect());
+        let constraints = Constraints::text(rules, entries.as_deref()).unwrap();
+        match detailed::cast_text_checked(&text(row), &constraints) {
+            Err(detailed::Rejection::Failure(failure)) => Some(failure),
+            _ => None,
+        }
+    }
+
+    /// One row through its detailed door: the failure, or `None` for a value or a violation.
+    fn replay(file: &str, row: &Value) -> Option<Failure> {
+        let input = text(row);
+        let input = &input[..];
+        let drop_ok = |verdict: Result<(), Failure>| verdict.err();
+        macro_rules! door {
+            ($call:expr) => {
+                drop_ok($call.map(drop))
+            };
+        }
+        match file {
+            "boolean.json" => door!(detailed::cast_bool(input)),
+            "char.json" => door!(detailed::cast_char(input)),
+            "date.json" => door!(dated(row, |o| detailed::cast_date(input, o))),
+            "date_order.json" => {
+                door!(dated(row, |o| detailed::cast_date_ordered(input, order(row), o)))
+            }
+            "datetime.json" => door!(dated(row, |o| {
+                detailed::cast_datetime_with(input, order(row), &periods(row), o)
+            })),
+            "duration.json" => door!(detailed::cast_duration(input)),
+            "excel_serial.json" => door!(detailed::cast_excel_serial(input, epoch(row))),
+            "time.json" => door!(detailed::cast_time(input)),
+            "timestamp.json" => door!(dated(row, |o| detailed::cast_timestamp(input, o))),
+            "uuid.json" => door!(detailed::cast_uuid(input)),
+            "unix.json" => {
+                let precision =
+                    UnixPrecision::from_code(row["precision"].as_u64().unwrap() as u32).unwrap();
+                door!(detailed::cast_unix(input, precision))
+            }
+            "decimal.json" => {
+                door!(detailed::cast_decimal(input, &format_of(row).validate().unwrap()))
+            }
+            "integer.json" | "real.json" => {
+                let f = &format_of(row).validate().unwrap();
+                match row["type"].as_str().unwrap() {
+                    "i8" => door!(detailed::cast_i8(input, f)),
+                    "i16" => door!(detailed::cast_i16(input, f)),
+                    "i32" => door!(detailed::cast_i32(input, f)),
+                    "i64" => door!(detailed::cast_i64(input, f)),
+                    "u8" => door!(detailed::cast_u8(input, f)),
+                    "u16" => door!(detailed::cast_u16(input, f)),
+                    "u32" => door!(detailed::cast_u32(input, f)),
+                    "u64" => door!(detailed::cast_u64(input, f)),
+                    "f32" => door!(detailed::cast_f32(input, f)),
+                    "f64" => door!(detailed::cast_f64(input, f)),
+                    other => panic!("type {other}"),
+                }
+            }
+            "typed.json" | "typed_rust.json" => {
+                let value = bits(row);
+                let seconds = UnixPrecision::Seconds;
+                match row["door"].as_str().unwrap() {
+                    "decimal" => door!(detailed::decimal_from_f64(value)),
+                    "excel_serial" => door!(detailed::excel_serial(value, epoch(row))),
+                    "excel_time" => door!(detailed::excel_time(value)),
+                    "excel_duration" => door!(detailed::excel_duration(value)),
+                    "i8" => door!(detailed::i8_from_f64(value)),
+                    "i16" => door!(detailed::i16_from_f64(value)),
+                    "i32" => door!(detailed::i32_from_f64(value)),
+                    "i64" => door!(detailed::i64_from_f64(value)),
+                    "u8" => door!(detailed::u8_from_f64(value)),
+                    "u16" => door!(detailed::u16_from_f64(value)),
+                    "u32" => door!(detailed::u32_from_f64(value)),
+                    "u64" => door!(detailed::u64_from_f64(value)),
+                    "f32" => door!(detailed::f32_from_f64(value)),
+                    "bool" => door!(detailed::bool_from_f64(value)),
+                    "unix" => door!(detailed::unix_from_f64(value, seconds)),
+                    other => panic!("typed door {other}"),
+                }
+            }
+            "constraints.json" => match row["door"].as_str().unwrap() {
+                "i8" => numeric_row::<i8>(row),
+                "i16" => numeric_row::<i16>(row),
+                "i32" => numeric_row::<i32>(row),
+                "i64" => numeric_row::<i64>(row),
+                "u8" => numeric_row::<u8>(row),
+                "u16" => numeric_row::<u16>(row),
+                "u32" => numeric_row::<u32>(row),
+                "u64" => numeric_row::<u64>(row),
+                "f32" => numeric_row::<f32>(row),
+                "f64" => numeric_row::<f64>(row),
+                "decimal" => numeric_row::<Decimal>(row),
+                "text" => text_row(row),
+                other => panic!("constraints door {other}"),
+            },
+            other => panic!("no replay for {other}"),
+        }
+    }
+
+    /// The corpus files a door reads, and the Rust-only typed rows.
+    const FILES: [&str; 16] = [
+        "boolean.json",
+        "char.json",
+        "constraints.json",
+        "date.json",
+        "date_order.json",
+        "datetime.json",
+        "decimal.json",
+        "duration.json",
+        "excel_serial.json",
+        "integer.json",
+        "real.json",
+        "time.json",
+        "timestamp.json",
+        "typed.json",
+        "unix.json",
+        "uuid.json",
+    ];
+
+    /// Every corpus row (and every Rust-only typed row) through its detailed door, recording
+    /// on this thread only which sites fire: each failing row fires exactly one, the site of
+    /// the failure returned, whose reason is the failure's and whose detail is too (or the
+    /// detail is `invalid_utf8`, decided from the bytes); a row that parses fires none. Then
+    /// every site has fired but the ones the table lists as unreachable, and none of those.
+    #[test]
+    fn every_site_is_reached() {
+        let mut every = Vec::new();
+        for file in FILES {
+            let skip = matches!(file, "constraints.json");
+            for row in corpus(file) {
+                if skip && row["expect"] == "refused" {
+                    continue;
+                }
+                every.push((file, row));
+            }
+        }
+        let typed = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/typed_rust.json");
+        every.extend(rows(typed).into_iter().map(|row| ("typed_rust.json", row)));
+
+        let mut reached = BTreeSet::new();
+        recorder::start();
+        for (file, row) in &every {
+            let failure = replay(file, row);
+            let fired = recorder::take();
+            let label = format!("{file} {}", row.get("input").unwrap_or(&Value::Null));
+            match failure {
+                None if row["expect"] == "violation" || row["expect"] == "ok" => {
+                    assert!(fired.is_empty(), "{label}: parsed, yet fired {fired:?}");
+                }
+                None => panic!("{label}: expected a failure"),
+                Some(failure) => {
+                    let [site] = fired[..] else {
+                        panic!("{label}: fired {fired:?} for one failure");
+                    };
+                    assert_eq!(site.reason(), failure.reason, "{label}: {site:?}'s reason");
+                    assert!(
+                        failure.detail == site.detail() || failure.detail == Detail::InvalidUtf8,
+                        "{label}: {site:?} gave {:?}",
+                        failure.detail
+                    );
+                    reached.insert(site);
+                }
+            }
+        }
+
+        // An impractical site is reached by its named unit test, recorded the same way. One
+        // impractical only on 64 bits is, where `usize` is 32 bits, structurally unreachable:
+        // its test's input can't be built, and must neither fail nor fire.
+        let mut unreached = Vec::new();
+        let mut structural = BTreeSet::new();
+        for (site, test, _, only_64bit) in impractical() {
+            assert!(
+                !reached.contains(&site),
+                "{site:?} is marked impractical, yet a row reaches it"
+            );
+            let Some(&(_, reach)) = reach::ALL.iter().find(|(name, _)| *name == test) else {
+                panic!("{site:?} names unit test `{test}`, which reach::ALL doesn't hold");
+            };
+            recorder::take();
+            let failure = reach();
+            let fired = recorder::take();
+            if only_64bit && usize::BITS < 64 {
+                assert!(
+                    failure.is_none() && fired.is_empty(),
+                    "{site:?}: `{test}` reached it with a {}-bit usize ({fired:?})",
+                    usize::BITS
+                );
+                structural.insert(site);
+                continue;
+            }
+            match failure {
+                Some(failure) if fired[..] == [site] => {
+                    assert_eq!(
+                        (failure.reason, failure.detail),
+                        (site.reason(), site.detail()),
+                        "{test}: {site:?}"
+                    );
+                    reached.insert(site);
+                }
+                _ => unreached.push(site),
+            }
+        }
+        recorder::stop();
+        assert!(
+            unreached.is_empty(),
+            "impractical sites their unit tests don't reach: {unreached:?}"
+        );
+
+        let unreachable: BTreeSet<Site> = unreachable().map(|(site, _)| site).collect();
+        let missing: Vec<Site> = SITES
+            .iter()
+            .map(|&(site, ..)| site)
+            .filter(|site| {
+                !reached.contains(site) && !unreachable.contains(site) && !structural.contains(site)
+            })
+            .collect();
+        assert!(missing.is_empty(), "no corpus row reaches {missing:?}");
+        let listed: Vec<&Site> = unreachable.intersection(&reached).collect();
+        assert!(listed.is_empty(), "listed unreachable, yet reached: {listed:?}");
+    }
+
+    /// The bodies of the unit tests that reach the impractical sites, each returning the
+    /// failure its input gets (`every_site_is_reached` calls them under the recorder).
+    mod reach {
+        use super::*;
+
+        /// A unit test's body: the failure its input gets.
+        type Reach = fn() -> Option<Failure>;
+
+        pub(super) const ALL: &[(&str, Reach)] =
+            &[("iso_overflow", iso_overflow), ("checked_span_too_long", checked_span_too_long)];
+
+        /// An ISO duration of 300,000 maximal week components: 5.7 MB, past 128 bits of
+        /// nanoseconds.
+        pub(super) fn iso_overflow() -> Option<Failure> {
+            let mut text = String::from("P");
+            for _ in 0..300_000 {
+                text.push_str("999999999999999999W");
+            }
+            detailed::cast_duration(&text).err()
+        }
+
+        /// A success span ending past `u32::MAX`, decided where the text door decides it,
+        /// without 4 GiB of input.
+        pub(super) fn checked_span_too_long() -> Option<Failure> {
+            let past = usize::try_from(u64::from(u32::MAX) + 1).ok()?;
+            crate::checked::exact_span(0, past).err()
+        }
+    }
+
+    #[test]
+    fn iso_overflow() {
+        let failure = reach::iso_overflow().unwrap();
+        assert_eq!((failure.reason, failure.detail), (Reason::OutOfRange, Detail::TooLarge));
+        assert_eq!((failure.offset, failure.len), (0, 5_700_001));
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn checked_span_too_long() {
+        let failure = reach::checked_span_too_long().unwrap();
+        assert_eq!((failure.reason, failure.detail), (Reason::OutOfRange, Detail::TooLong));
+        assert_eq!((failure.offset, failure.len), (0, u32::MAX));
+    }
+
+    /// With a 32-bit `usize` no span can end past `u32::MAX`: the site can't fire.
+    #[cfg(not(target_pointer_width = "64"))]
+    #[test]
+    fn checked_span_too_long() {
+        assert_eq!(reach::checked_span_too_long(), None);
+        assert!(crate::checked::exact_span(usize::MAX, usize::MAX).is_ok());
+    }
+
+    /// The table names every site once, in declaration order, with the reason and detail the
+    /// site reports; every unreachable entry gives its reason.
+    #[test]
+    fn the_site_table_is_whole() {
+        for (index, &(site, reason, detail)) in SITES.iter().enumerate() {
+            assert_eq!(site as usize, index, "{site:?} is listed once, in order");
+            assert_eq!((site.reason(), site.detail()), (reason, detail), "{site:?}");
+        }
+        assert_eq!(DOCS.len(), SITES.len());
+        for (site, why) in unreachable() {
+            assert!(why.len() > 20, "{site:?} says why it is unreachable");
+        }
+        for (site, test, why, _) in impractical() {
+            assert!(why.len() > 20 && !test.is_empty(), "{site:?} names its test and says why");
+        }
+        for &(site, kind, _) in crate::site::MARKS {
+            assert!(
+                matches!(kind, "unreachable" | "impractical" | "impractical_on_64bit"),
+                "{site:?}: unknown mark {kind}"
+            );
+        }
+        // Empty input is `blank` and nothing else is.
+        for &(site, reason, detail) in SITES {
+            assert_eq!(reason == Reason::Empty, detail == Detail::Blank, "{site:?}");
+        }
+    }
+
+    /// `docs/fault-sites.md`, generated from the table: `HYPERCAST_BLESS=1` rewrites it, and
+    /// the test fails when it differs.
+    #[test]
+    fn docs_fault_sites_is_current() {
+        let mut doc = String::from(
+            "# Fault sites\n\n\
+             Generated from `rust/src/site.rs` by `docs_fault_sites_is_current` in \
+             `rust/src/tests.rs`; never edit it by hand (`HYPERCAST_BLESS=1 cargo test --lib \
+             docs_fault_sites` in `rust/` rewrites it).\n\n\
+             Every place a door fails, with the reason and detail it reports. A detailed door \
+             reports `invalid_utf8` instead wherever the bytes at the failure's span don't \
+             decode as UTF-8. The corpus reaches every site but two kinds, as \
+             `every_site_is_reached` checks: an **unreachable** site is a defensive check that \
+             no input reaches, for the reason given; an **impractical** site is reached only by \
+             inputs no corpus row can carry (megabytes, or past 4 GiB), and the named unit test \
+             in `rust/src/tests.rs` reaches it instead, under the same check.\n\n\
+             | Site | File | Reason | Detail | Condition |\n\
+             |---|---|---|---|---|\n",
+        );
+        let reason = |reason: Reason| match reason {
+            Reason::Empty => "empty",
+            Reason::Malformed => "malformed",
+            Reason::OutOfRange => "out_of_range",
+        };
+        for (&(site, file, condition), &(_, r, detail)) in DOCS.iter().zip(SITES) {
+            let mut condition: String =
+                condition.split_whitespace().collect::<Vec<_>>().join(" ").replace('|', "\\|");
+            if let Some((_, why)) = unreachable().find(|(s, _)| *s == site) {
+                condition.push_str(&format!(" **Unreachable:** {}.", why.replace('|', "\\|")));
+            }
+            if let Some((_, test, why, only_64bit)) = impractical().find(|(s, ..)| *s == site) {
+                condition.push_str(&format!(
+                    " **Impractical:** {}; reached by the unit test `{test}`.",
+                    why.replace('|', "\\|")
+                ));
+                if only_64bit {
+                    condition.push_str(
+                        " Where `usize` is 32 bits (wasm32) no length can pass `u32::MAX`, so the \
+                         site is structurally unreachable there, which the coverage test asserts.",
+                    );
+                }
+            }
+            doc.push_str(&format!(
+                "| `{site:?}` | `{file}` | `{}` | `{}` | {condition} |\n",
+                reason(r),
+                detail.name()
+            ));
+        }
+        doc.push_str(&format!(
+            "\n{} sites: {} unreachable, {} impractical.\n",
+            SITES.len(),
+            unreachable().count(),
+            impractical().count()
+        ));
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../docs/fault-sites.md");
+        let bless = std::env::var_os("HYPERCAST_BLESS").is_some();
+        if !bless && !path.parent().is_some_and(|docs| docs.is_dir()) {
+            eprintln!("skipped: no docs/ beside rust/, so this is not a whole checkout");
+            return;
+        }
+        if bless {
+            std::fs::write(&path, &doc).unwrap();
+        }
+        let current = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(current == doc, "docs/fault-sites.md is stale: run with HYPERCAST_BLESS=1");
     }
 }

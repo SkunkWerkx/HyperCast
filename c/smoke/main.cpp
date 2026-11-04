@@ -1,5 +1,9 @@
 // The C++ header against an unpacked release archive: every door through hypercast.hpp, each
 // verdict taken apart the ways the header offers, and the version printed beside main.c's.
+// This is also the header's compatibility test: it is the code as it was written before 1.1
+// (constructing a Fault, a Verdict and a Rejection, reading them by equality and by variant,
+// declaring formats by the positional Fields), and it still compiles and passes unchanged.
+// detailed.cpp holds what 1.1 added.
 // CMakeLists.txt builds it as C++17, C++20 and, where the compiler has it, C++23, warnings
 // as errors, and once more with exceptions off.
 
@@ -124,6 +128,17 @@ int main() {
   CHECK(decimal.ok() && text(decimal.value()) == "-1234.5" && decimal.value().scale == 1);
   fields.group_sep = ",";
   CHECK(!hc::NumFormat::declare(fields).has_value()); // equal separators
+  fields.group_sep = ".";
+  fields.decimal_sep = "\xc2\xa0";
+  CHECK(!hc::NumFormat::declare(fields).has_value()); // a decimal separator that is white space
+  fields.decimal_sep = ",";
+  fields.currency = "\xc2\xa0\xe2\x82\xac";
+  CHECK(!hc::NumFormat::declare(fields).has_value()); // a currency symbol starting with white space
+  // White space inside one is allowed (CLDR's `F CFA`; in octal, so `CFA` isn't read as hex).
+  fields.currency = "F\342\200\257CFA";
+  const auto cfa = hc::NumFormat::declare(fields);
+  CHECK(cfa.has_value() && hc::cast_i32("1.000 F\302\240CFA", *cfa).value() == 1000);
+  fields.currency = "\xe2\x82\xac";
   fields.group_sep = "123456789";
   CHECK(!hc::NumFormat::declare(fields).has_value()); // too long for the layout
   CHECK(hc::NumFormat::declare({".", ",", hc::NumStyles::all, {}, {}, {}, {}, {}, {}, 0}) ==
@@ -152,6 +167,8 @@ int main() {
   CHECK((hc::cast_datetime("7.1.2026 3:04 nachm.", *german).value() ==
          hc::CivilDateTime{{2026, 1, 7}, three_oh_four_pm}));
   CHECK(!hc::DateFormat::declare(hc::DateOrder::day_month_year, " am", "pm").has_value());
+  CHECK(
+      !hc::DateFormat::declare(hc::DateOrder::day_month_year, "am", "\xe2\x80\xafPM").has_value());
   CHECK(hc::DateFormat::declare(hc::DateOrder::year_month_day, "", "") ==
         hc::DateFormat(hc::DateOrder::year_month_day));
 

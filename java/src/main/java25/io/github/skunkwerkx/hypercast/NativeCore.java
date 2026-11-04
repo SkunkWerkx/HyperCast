@@ -25,6 +25,13 @@ import java.util.UUID;
  * verdict. The JDK 21 base tree has a class of the same name and the same members that
  * reaches the core through JNI instead.
  *
+ * <p>Every door crosses through one of the four detailed exports ({@code cast_detailed} and its
+ * three siblings), which alone take the grouping policy a {@link NumFormat} declares, date
+ * options and a month vocabulary, and report what failed. Every export is looked up in
+ * {@link Core}, the four detailed ones included, so a 1.0 core, which would ignore a strict
+ * grouping policy, fails the load rather than parse in legacy mode; the 1.0 exports are looked up
+ * too, and nothing calls them.
+ *
  * <p>The input crosses without a copy: every text downcall is linked
  * {@code critical(true)}, so the caller's own heap array or segment is handed to the native
  * side directly — sound because each door is a short, non-blocking parse over those bytes
@@ -61,64 +68,36 @@ final class NativeCore {
         // bounded parse over the bytes it was handed, with no callbacks and no allocation.
         private static final Linker.Option CRITICAL = Linker.Option.critical(true);
 
-        // (ptr, len, out, fault) -> code — the culture-insensitive doors.
-        private static final MethodHandle PLAIN = LINKER.downcallHandle(
+        // (door, param, format, periods, date_options, vocab_ptr, vocab_len, ptr, len, out,
+        // fault) -> code — cast_detailed: every text door, with whatever it declares.
+        private static final MethodHandle DETAILED = LINKER.downcallHandle(
                 FunctionDescriptor.of(
                         ValueLayout.JAVA_INT,
+                        ValueLayout.JAVA_INT,
+                        ValueLayout.JAVA_INT,
+                        ValueLayout.ADDRESS,
+                        ValueLayout.ADDRESS,
+                        ValueLayout.ADDRESS,
+                        ValueLayout.ADDRESS,
+                        ValueLayout.JAVA_LONG,
                         ValueLayout.ADDRESS,
                         ValueLayout.JAVA_LONG,
                         ValueLayout.ADDRESS,
                         ValueLayout.ADDRESS),
                 CRITICAL);
-        // (ptr, len, format, out, fault) -> code — the numeric doors.
-        private static final MethodHandle NUMERIC = LINKER.downcallHandle(
+        // (door, param, value, out, fault) -> code — cast_detailed_from_f64: the typed doors,
+        // which read a double the caller holds.
+        private static final MethodHandle DETAILED_FROM_F64 = LINKER.downcallHandle(
                 FunctionDescriptor.of(
                         ValueLayout.JAVA_INT,
-                        ValueLayout.ADDRESS,
-                        ValueLayout.JAVA_LONG,
-                        ValueLayout.ADDRESS,
-                        ValueLayout.ADDRESS,
-                        ValueLayout.ADDRESS),
-                CRITICAL);
-        // (ptr, len, discriminant, out, fault) -> code — the Unix door, and every other door
-        // that takes one declared u32: the Excel epoch, the date order.
-        private static final MethodHandle DECLARED = LINKER.downcallHandle(
-                FunctionDescriptor.of(
                         ValueLayout.JAVA_INT,
-                        ValueLayout.ADDRESS,
-                        ValueLayout.JAVA_LONG,
-                        ValueLayout.JAVA_INT,
-                        ValueLayout.ADDRESS,
-                        ValueLayout.ADDRESS),
-                CRITICAL);
-        // (ptr, len, discriminant, periods, out, fault) -> code — the civil date-time door:
-        // the declared order, and the day-period designators or NULL for none.
-        private static final MethodHandle CIVIL = LINKER.downcallHandle(
-                FunctionDescriptor.of(
-                        ValueLayout.JAVA_INT,
-                        ValueLayout.ADDRESS,
-                        ValueLayout.JAVA_LONG,
-                        ValueLayout.JAVA_INT,
-                        ValueLayout.ADDRESS,
-                        ValueLayout.ADDRESS,
-                        ValueLayout.ADDRESS),
-                CRITICAL);
-        // (value, out, fault) -> code — the typed doors, which read a double the caller holds.
-        private static final MethodHandle TYPED = LINKER.downcallHandle(
-                FunctionDescriptor.of(
-                        ValueLayout.JAVA_INT, ValueLayout.JAVA_DOUBLE, ValueLayout.ADDRESS, ValueLayout.ADDRESS),
-                CRITICAL);
-        // (value, discriminant, out, fault) -> code — the typed Excel serial door and its epoch.
-        private static final MethodHandle TYPED_DECLARED = LINKER.downcallHandle(
-                FunctionDescriptor.of(
                         ValueLayout.JAVA_INT,
                         ValueLayout.JAVA_DOUBLE,
-                        ValueLayout.JAVA_INT,
                         ValueLayout.ADDRESS,
                         ValueLayout.ADDRESS),
                 CRITICAL);
         // (door, param, format, constraints, enum_ptr, enum_len, ptr, len, out, fault, check)
-        // -> code — the checked door: a numeric door or Text, judged by a declaration.
+        // -> code — cast_checked_detailed: a numeric door or Text, judged by a declaration.
         private static final MethodHandle CHECKED = LINKER.downcallHandle(
                 FunctionDescriptor.of(
                         ValueLayout.JAVA_INT,
@@ -134,16 +113,17 @@ final class NativeCore {
                         ValueLayout.ADDRESS,
                         ValueLayout.ADDRESS),
                 CRITICAL);
-        // (door, value, constraints, enum_ptr, enum_len, out, fault, check) -> code — the
-        // checked door over a double a source already decoded.
+        // (door, param, constraints, enum_ptr, enum_len, value, out, fault, check) -> code —
+        // cast_checked_detailed_from_f64: the checked door over a double a source already decoded.
         private static final MethodHandle CHECKED_FROM_F64 = LINKER.downcallHandle(
                 FunctionDescriptor.of(
                         ValueLayout.JAVA_INT,
                         ValueLayout.JAVA_INT,
-                        ValueLayout.JAVA_DOUBLE,
+                        ValueLayout.JAVA_INT,
                         ValueLayout.ADDRESS,
                         ValueLayout.ADDRESS,
                         ValueLayout.JAVA_LONG,
+                        ValueLayout.JAVA_DOUBLE,
                         ValueLayout.ADDRESS,
                         ValueLayout.ADDRESS,
                         ValueLayout.ADDRESS),
@@ -219,9 +199,15 @@ final class NativeCore {
         private static final MemorySegment CAST_CONSTRAINTS_CHECK = export("cast_constraints_check");
         private static final MemorySegment CAST_TEXT = export("cast_text");
         private static final MemorySegment CAST_DECLARED_DECIMAL = export("cast_declared_decimal");
+        private static final MemorySegment CAST_DETAILED = export("cast_detailed");
+        private static final MemorySegment CAST_DETAILED_FROM_F64 = export("cast_detailed_from_f64");
+        private static final MemorySegment CAST_CHECKED_DETAILED = export("cast_checked_detailed");
+        private static final MemorySegment CAST_CHECKED_DETAILED_FROM_F64 = export("cast_checked_detailed_from_f64");
 
         private static MemorySegment export(String symbol) {
-            return LOOKUP.find(symbol).orElseThrow();
+            return LOOKUP.find(symbol)
+                    .orElseThrow(() -> new java.util.NoSuchElementException("libhypercast has no export " + symbol
+                            + ": a core older than this binding (a 1.0 core has none of the cast_detailed* exports)"));
         }
     }
 
@@ -254,7 +240,8 @@ final class NativeCore {
         // read JAVA_LONG out of `out`, which a 1-byte-aligned segment rejects outright.
         private final Arena fixed = Arena.ofAuto();
         private final MemorySegment out = fixed.allocate(16, 8);
-        private final MemorySegment fault = fixed.allocate(NativeValues.FAULT_BYTES, 4);
+        // A RawFaultDetail: the caller sets `size` once, the core never writes it.
+        private final MemorySegment fault = fixed.allocate(NativeValues.FAULT_DETAIL_BYTES, 4);
         private final MemorySegment formatSegment = fixed.allocate(NativeValues.FORMAT_BYTES, 4);
         private NumFormat formatKey;
         private final MemorySegment periodsSegment = fixed.allocate(NativeValues.DAY_PERIODS_BYTES, 4);
@@ -267,7 +254,12 @@ final class NativeCore {
         private Constraints<?> constraintsKey;
         private MemorySegment entriesSegment = MemorySegment.NULL;
 
-        private Scratch() {}
+        private final MemorySegment dateOptionsSegment = fixed.allocate(NativeValues.DATE_OPTIONS_BYTES, 4);
+        private DateOptions dateOptionsKey;
+
+        private Scratch() {
+            fault.set(ValueLayout.JAVA_INT, 0, (int) NativeValues.FAULT_DETAIL_BYTES);
+        }
 
         MemorySegment format(NumFormat declared) {
             // Formats are reused constants in practice (INVARIANT, DETECT, a per-locale
@@ -308,6 +300,19 @@ final class NativeCore {
             }
             return periodsSegment;
         }
+
+        // NULL when nothing is declared, which the core reads as no options; otherwise the
+        // layout, under the same identity memo.
+        MemorySegment dateOptions(DateOptions declared) {
+            if (declared == null || declared.isNone()) {
+                return MemorySegment.NULL;
+            }
+            if (dateOptionsKey != declared) {
+                NativeValues.writeDateOptions(declared.flags(), declared.pivot(), dateOptionsSegment, 0);
+                dateOptionsKey = declared;
+            }
+            return dateOptionsSegment;
+        }
     }
 
     private static final ThreadLocal<Scratch> SCRATCH = ThreadLocal.withInitial(Scratch::new);
@@ -342,130 +347,204 @@ final class NativeCore {
 
     // --- calls: each returns the core's code raw ---
 
-    /** A text door with nothing declared beside the text. */
-    static int plain(Scratch s, int door, byte[] in) {
-        return plain(s, door, input(in), in.length);
-    }
-
-    static int plain(Scratch s, int door, MemorySegment in) {
-        return plain(s, door, input(in), in.byteSize());
-    }
-
-    private static int plain(Scratch s, int door, MemorySegment in, long len) {
-        MemorySegment export = switch (door) {
-            case Door.BOOL -> Core.CAST_BOOL;
-            case Door.CHAR -> Core.CAST_CHAR;
-            case Door.UUID -> Core.CAST_UUID;
-            case Door.TIMESTAMP -> Core.CAST_TIMESTAMP;
-            case Door.DATE -> Core.CAST_DATE;
-            case Door.TIME -> Core.CAST_TIME;
-            case Door.DURATION -> Core.CAST_DURATION;
-            default -> throw Door.unknown(door);
-        };
+    // Every text door is cast_detailed: `door` is the core's code and `param` what it declares.
+    // A layout that is not declared crosses as NULL, which the core reads as none; each
+    // declaration is read only at the doors it is for, and a pointer a door ignores is never
+    // looked at.
+    private static int detailed(
+            Scratch s,
+            int door,
+            int param,
+            MemorySegment format,
+            MemorySegment periods,
+            MemorySegment dateOptions,
+            MemorySegment vocabulary,
+            MemorySegment in,
+            long len) {
+        // The export outside the try, in every call: a core that will not load surfaces as the
+        // LinkageError it is, not wrapped as a downcall failure.
+        MemorySegment export = Core.CAST_DETAILED;
         try {
-            return (int) Downcalls.PLAIN.invokeExact(export, in, len, s.out, s.fault);
+            return (int) Downcalls.DETAILED.invokeExact(
+                    export,
+                    door,
+                    param,
+                    format,
+                    periods,
+                    dateOptions,
+                    vocabulary,
+                    vocabulary.byteSize(),
+                    in,
+                    len,
+                    s.out,
+                    s.fault);
         } catch (Throwable t) {
             throw new AssertionError("hypercast: downcall failed unexpectedly", t);
         }
+    }
+
+    /** A text door with nothing declared beside the text. */
+    static int plain(Scratch s, int door, byte[] in) {
+        return detailed(
+                s,
+                door,
+                0,
+                MemorySegment.NULL,
+                MemorySegment.NULL,
+                MemorySegment.NULL,
+                MemorySegment.NULL,
+                input(in),
+                in.length);
+    }
+
+    static int plain(Scratch s, int door, MemorySegment in) {
+        return detailed(
+                s,
+                door,
+                0,
+                MemorySegment.NULL,
+                MemorySegment.NULL,
+                MemorySegment.NULL,
+                MemorySegment.NULL,
+                input(in),
+                in.byteSize());
     }
 
     /** A numeric door, under the declared format. */
     static int numeric(Scratch s, int door, byte[] in, NumFormat format) {
-        return numeric(s, door, input(in), in.length, format);
+        return detailed(
+                s,
+                door,
+                0,
+                s.format(format),
+                MemorySegment.NULL,
+                MemorySegment.NULL,
+                MemorySegment.NULL,
+                input(in),
+                in.length);
     }
 
     static int numeric(Scratch s, int door, MemorySegment in, NumFormat format) {
-        return numeric(s, door, input(in), in.byteSize(), format);
-    }
-
-    private static int numeric(Scratch s, int door, MemorySegment in, long len, NumFormat format) {
-        MemorySegment export = switch (door) {
-            case Door.I8 -> Core.CAST_I8;
-            case Door.I16 -> Core.CAST_I16;
-            case Door.I32 -> Core.CAST_I32;
-            case Door.I64 -> Core.CAST_I64;
-            case Door.U8 -> Core.CAST_U8;
-            case Door.U16 -> Core.CAST_U16;
-            case Door.U32 -> Core.CAST_U32;
-            case Door.U64 -> Core.CAST_U64;
-            case Door.F32 -> Core.CAST_F32;
-            case Door.F64 -> Core.CAST_F64;
-            case Door.DECIMAL -> Core.CAST_DECIMAL;
-            default -> throw Door.unknown(door);
-        };
-        try {
-            return (int) Downcalls.NUMERIC.invokeExact(export, in, len, s.format(format), s.out, s.fault);
-        } catch (Throwable t) {
-            throw new AssertionError("hypercast: downcall failed unexpectedly", t);
-        }
+        return detailed(
+                s,
+                door,
+                0,
+                s.format(format),
+                MemorySegment.NULL,
+                MemorySegment.NULL,
+                MemorySegment.NULL,
+                input(in),
+                in.byteSize());
     }
 
     /** A text door with one declared code: the Unix unit, the Excel epoch, the date order. */
     static int declared(Scratch s, int door, byte[] in, int code) {
-        return declared(s, door, input(in), in.length, code);
+        return detailed(
+                s,
+                door,
+                code,
+                MemorySegment.NULL,
+                MemorySegment.NULL,
+                MemorySegment.NULL,
+                MemorySegment.NULL,
+                input(in),
+                in.length);
     }
 
     static int declared(Scratch s, int door, MemorySegment in, int code) {
-        return declared(s, door, input(in), in.byteSize(), code);
-    }
-
-    private static int declared(Scratch s, int door, MemorySegment in, long len, int code) {
-        MemorySegment export = switch (door) {
-            case Door.UNIX -> Core.CAST_UNIX;
-            case Door.EXCEL_SERIAL -> Core.CAST_EXCEL_SERIAL;
-            case Door.DATE_ORDERED -> Core.CAST_DATE_ORDERED;
-            default -> throw Door.unknown(door);
-        };
-        try {
-            return (int) Downcalls.DECLARED.invokeExact(export, in, len, code, s.out, s.fault);
-        } catch (Throwable t) {
-            throw new AssertionError("hypercast: downcall failed unexpectedly", t);
-        }
+        return detailed(
+                s,
+                door,
+                code,
+                MemorySegment.NULL,
+                MemorySegment.NULL,
+                MemorySegment.NULL,
+                MemorySegment.NULL,
+                input(in),
+                in.byteSize());
     }
 
     /** The civil date-time door: the order, and the designators or {@code null} for none. */
     static int civil(Scratch s, byte[] in, int order, DateTimeFormat format) {
-        return civil(s, input(in), in.length, order, format);
+        return detailed(
+                s,
+                Door.DATETIME,
+                order,
+                MemorySegment.NULL,
+                s.periods(format),
+                MemorySegment.NULL,
+                MemorySegment.NULL,
+                input(in),
+                in.length);
     }
 
     static int civil(Scratch s, MemorySegment in, int order, DateTimeFormat format) {
-        return civil(s, input(in), in.byteSize(), order, format);
+        return detailed(
+                s,
+                Door.DATETIME,
+                order,
+                MemorySegment.NULL,
+                s.periods(format),
+                MemorySegment.NULL,
+                MemorySegment.NULL,
+                input(in),
+                in.byteSize());
     }
 
-    private static int civil(Scratch s, MemorySegment in, long len, int order, DateTimeFormat format) {
-        // The export outside the try, in every call: a core that will not load surfaces as the
-        // LinkageError it is, not wrapped as a downcall failure.
-        MemorySegment export = Core.CAST_DATETIME;
-        try {
-            return (int) Downcalls.CIVIL.invokeExact(export, in, len, order, s.periods(format), s.out, s.fault);
-        } catch (Throwable t) {
-            throw new AssertionError("hypercast: downcall failed unexpectedly", t);
-        }
+    /**
+     * A date door under {@link DateOptions} and a month vocabulary, either {@code null} for
+     * none: the timestamp, date, ordered date and civil date-time doors. {@code param} is the
+     * order at the last two; {@code format} the designators at the civil door only.
+     */
+    static int dated(
+            Scratch s, int door, int param, byte[] in, DateTimeFormat format, DateOptions options, MonthNames months) {
+        return detailed(
+                s,
+                door,
+                param,
+                MemorySegment.NULL,
+                s.periods(format),
+                s.dateOptions(options),
+                vocabulary(months),
+                input(in),
+                in.length);
+    }
+
+    static int dated(
+            Scratch s,
+            int door,
+            int param,
+            MemorySegment in,
+            DateTimeFormat format,
+            DateOptions options,
+            MonthNames months) {
+        return detailed(
+                s,
+                door,
+                param,
+                MemorySegment.NULL,
+                s.periods(format),
+                s.dateOptions(options),
+                vocabulary(months),
+                input(in),
+                in.byteSize());
+    }
+
+    // The packed vocabulary in native memory, or NULL for none.
+    private static MemorySegment vocabulary(MonthNames months) {
+        return months == null ? MemorySegment.NULL : MemorySegment.ofBuffer(months.vocabulary());
     }
 
     /** A typed door: a {@code double} the caller holds. */
     static int typed(Scratch s, int door, double value) {
-        MemorySegment export = switch (door) {
-            case Door.DECIMAL_FROM_F64 -> Core.CAST_DECIMAL_FROM_F64;
-            case Door.EXCEL_TIME -> Core.CAST_EXCEL_TIME;
-            case Door.EXCEL_DURATION -> Core.CAST_EXCEL_DURATION;
-            default -> throw Door.unknown(door);
-        };
-        try {
-            return (int) Downcalls.TYPED.invokeExact(export, value, s.out, s.fault);
-        } catch (Throwable t) {
-            throw new AssertionError("hypercast: downcall failed unexpectedly", t);
-        }
+        return typedDeclared(s, door, value, 0);
     }
 
     /** A typed door with one declared code: the Excel serial and its epoch. */
     static int typedDeclared(Scratch s, int door, double value, int code) {
-        if (door != Door.EXCEL_SERIAL_FROM_F64) {
-            throw Door.unknown(door);
-        }
-        MemorySegment export = Core.CAST_EXCEL_SERIAL_FROM_F64;
+        MemorySegment export = Core.CAST_DETAILED_FROM_F64;
         try {
-            return (int) Downcalls.TYPED_DECLARED.invokeExact(export, value, code, s.out, s.fault);
+            return (int) Downcalls.DETAILED_FROM_F64.invokeExact(export, door, code, value, s.out, s.fault);
         } catch (Throwable t) {
             throw new AssertionError("hypercast: downcall failed unexpectedly", t);
         }
@@ -486,7 +565,7 @@ final class NativeCore {
 
     private static int checked(
             Scratch s, int door, MemorySegment in, long len, NumFormat format, Constraints<?> constraints) {
-        MemorySegment export = Core.CAST_CHECKED;
+        MemorySegment export = Core.CAST_CHECKED_DETAILED;
         MemorySegment notation = format == null ? MemorySegment.NULL : s.format(format);
         MemorySegment declared = s.constraints(constraints);
         MemorySegment entries = s.entriesSegment;
@@ -500,15 +579,33 @@ final class NativeCore {
 
     /** A checked door over a {@code double} a source already decoded. */
     static int checkedFromF64(Scratch s, int door, double value, Constraints<?> constraints) {
-        MemorySegment export = Core.CAST_CHECKED_FROM_F64;
+        MemorySegment export = Core.CAST_CHECKED_DETAILED_FROM_F64;
         MemorySegment declared = s.constraints(constraints);
         MemorySegment entries = s.entriesSegment;
         try {
             return (int) Downcalls.CHECKED_FROM_F64.invokeExact(
-                    export, door, value, declared, entries, entries.byteSize(), s.out, s.fault, s.check);
+                    export, door, 0, declared, entries, entries.byteSize(), value, s.out, s.fault, s.check);
         } catch (Throwable t) {
             throw new AssertionError("hypercast: downcall failed unexpectedly", t);
         }
+    }
+
+    /**
+     * The core's judgement of a month vocabulary, 1 when it is whole and -1 when the core
+     * refuses it: the vocabulary is judged before the (empty) input is read, so an acceptable
+     * one reads nothing and answers {@code empty}.
+     */
+    static int monthNamesCheck(ByteBuffer vocabulary) {
+        return detailed(
+                scratch(),
+                Door.DATE_ORDERED,
+                1,
+                MemorySegment.NULL,
+                MemorySegment.NULL,
+                MemorySegment.NULL,
+                MemorySegment.ofBuffer(vocabulary),
+                MemorySegment.NULL,
+                0);
     }
 
     /** The core's judgement of a declaration: 0, or the refusal code. */
@@ -527,20 +624,11 @@ final class NativeCore {
 
     /** The text door: the span of valid UTF-8 input. */
     static int text(Scratch s, byte[] in) {
-        return text(s, input(in), in.length);
+        return plain(s, Door.TEXT, in);
     }
 
     static int text(Scratch s, MemorySegment in) {
-        return text(s, input(in), in.byteSize());
-    }
-
-    private static int text(Scratch s, MemorySegment in, long len) {
-        MemorySegment export = Core.CAST_TEXT;
-        try {
-            return (int) Downcalls.PLAIN.invokeExact(export, in, len, s.out, s.fault);
-        } catch (Throwable t) {
-            throw new AssertionError("hypercast: downcall failed unexpectedly", t);
-        }
+        return plain(s, Door.TEXT, in);
     }
 
     /** The core's conversion of a declared decimal: 0 with the value, or 8. */
@@ -658,11 +746,17 @@ final class NativeCore {
         return s.check.get(ValueLayout.JAVA_INT, 8);
     }
 
+    // The RawFaultDetail: size, then offset, length and detail.
     static int faultOffset(Scratch s) {
-        return s.fault.get(ValueLayout.JAVA_INT, 0);
+        return s.fault.get(ValueLayout.JAVA_INT, 4);
     }
 
     static int faultLength(Scratch s) {
-        return s.fault.get(ValueLayout.JAVA_INT, 4);
+        return s.fault.get(ValueLayout.JAVA_INT, 8);
+    }
+
+    /** The detail code of the fault the last failed call wrote: 1 or more, or 0 for a violation. */
+    static int faultDetail(Scratch s) {
+        return s.fault.get(ValueLayout.JAVA_INT, 12);
     }
 }

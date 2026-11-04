@@ -1,4 +1,4 @@
-"""Loads the shared library every FFI binding loads and calls all thirty-two C exports.
+"""Loads the shared library every FFI binding loads and calls all thirty-six C exports.
 
 The Forge's check-cdylib job (hyper-check-core.yml) runs this against a freshly built no_std library on every platform
 the forge ships: a library that links but will not load, or loads but misbehaves at the ABI,
@@ -9,8 +9,8 @@ Every export is called at least twice: once with input it accepts, the value che
 once with input it rejects, the reason (and the fault span where one is set) checked. The
 out-structs mirror rust/src/verdict.rs's #[repr(C)] layouts and NumFormat and DayPeriods
 mirror rust/src/abi.rs's RawNumFormat and RawDayPeriods (and Constraints, Check and Span its
-RawConstraints, RawCheck and RawSpan), as the Go and Swift bindings do; a layout drift reads
-back wrong values.
+RawConstraints, RawCheck and RawSpan, and FaultDetail and DateOptions its RawFaultDetail and
+RawDateOptions), as the Go and Swift bindings do; a layout drift reads back wrong values.
 
 usage: python cdylib_smoke.py <path-to-library> <rust/Cargo.toml>
 """
@@ -70,6 +70,15 @@ class Span(ctypes.Structure):
     _fields_ = [("offset", ctypes.c_uint32), ("len", ctypes.c_uint32)]
 
 
+class FaultDetail(ctypes.Structure):
+    _fields_ = [("size", ctypes.c_uint32), ("offset", ctypes.c_uint32), ("len", ctypes.c_uint32),
+                ("detail", ctypes.c_uint32)]
+
+
+class DateOptions(ctypes.Structure):
+    _fields_ = [("size", ctypes.c_uint32), ("flags", ctypes.c_uint32), ("pivot", ctypes.c_uint32)]
+
+
 class Timestamp(ctypes.Structure):
     _fields_ = [("seconds", ctypes.c_int64), ("nanos", ctypes.c_int32)]
 
@@ -88,6 +97,7 @@ class CivilDateTime(ctypes.Structure):
 
 GROUPING, PARENS, EXPONENT, RADIX_PREFIX, PERCENT, _, CURRENCY, TRAILING_SIGN = (1 << i for i in range(8))
 ALL = GROUPING | PARENS | EXPONENT | RADIX_PREFIX | PERCENT | CURRENCY
+GROUPING_WESTERN, GROUPING_INDIAN = 1 << 8, 2 << 8
 
 
 def symbol(field, text):
@@ -155,6 +165,16 @@ lib.cast_checked_from_f64.restype, lib.cast_checked_from_f64.argtypes = i32, [u3
 lib.cast_constraints_check.restype, lib.cast_constraints_check.argtypes = i32, [u32, u32, ConstraintsP, bytes_p, size]
 lib.cast_text.restype, lib.cast_text.argtypes = i32, [txt, size, SpanP, FaultP]
 lib.cast_declared_decimal.restype, lib.cast_declared_decimal.argtypes = i32, [bytes_p, size, P(Decimal)]
+# The detailed exports: a door code and its parameter, every out through a void pointer.
+DetailP, DateOptionsP, void_p, f64 = P(FaultDetail), P(DateOptions), ctypes.c_void_p, ctypes.c_double
+lib.cast_detailed.restype, lib.cast_detailed.argtypes = i32, [u32, u32, FormatP, PeriodsP, DateOptionsP, bytes_p,
+                                                              size, txt, size, void_p, DetailP]
+lib.cast_detailed_from_f64.restype, lib.cast_detailed_from_f64.argtypes = i32, [u32, u32, f64, void_p, DetailP]
+lib.cast_checked_detailed.restype, lib.cast_checked_detailed.argtypes = i32, [u32, u32, FormatP, ConstraintsP,
+                                                                              bytes_p, size, txt, size, void_p,
+                                                                              DetailP, CheckP]
+lib.cast_checked_detailed_from_f64.restype, lib.cast_checked_detailed_from_f64.argtypes = i32, [
+    u32, u32, ConstraintsP, bytes_p, size, f64, void_p, DetailP, CheckP]
 OUT_TYPES = {**PLAIN, **NUMERIC, **SELECTOR, **DATETIME, **{name: out for name, (out, _) in TYPED.items()}}
 called = set()
 
@@ -262,6 +282,11 @@ fails("cast_decimal", "1", CONTRACT_VIOLATION, ctypes.byref(same))
 unsized = num_format(".", ",", ALL)
 unsized.size = 0
 fails("cast_decimal", "1", CONTRACT_VIOLATION, ctypes.byref(unsized))
+# So is a decimal separator that is white space (U+00A0), which no input could match, a
+# sign or percent symbol containing white space, and a currency symbol starting with it.
+fails("cast_decimal", "1", CONTRACT_VIOLATION, ctypes.byref(num_format("\u00a0", ",", ALL)))
+fails("cast_decimal", "1", CONTRACT_VIOLATION, ctypes.byref(num_format(".", ",", ALL, minus_sign="\u202f")))
+fails("cast_decimal", "1", CONTRACT_VIOLATION, ctypes.byref(num_format(".", ",", ALL, "\u00a0\u20ac")))
 
 # The sweep's fields, each read beside its ASCII default: a declared minus sign and a
 # trailing sign, the currency separators once the symbol is seen, a declared percent,
@@ -309,6 +334,7 @@ check((dt.date.year, dt.date.month, dt.date.day, dt.nanos_of_day) == (2026, 7, 1
       "cast_datetime with declared day periods")
 fails("cast_datetime", "1/7/2026 3:04 nachm.", MALFORMED, 3, None, span=(13, 1))
 fails("cast_datetime", "1/7/2026 3:04 PM", CONTRACT_VIOLATION, 2, ctypes.byref(day_periods(" am", "pm")))
+fails("cast_datetime", "1/7/2026 3:04 PM", CONTRACT_VIOLATION, 2, ctypes.byref(day_periods("am", "\u202fPM")))
 
 status, dec, _ = typed("cast_decimal_from_f64", 0.1 + 0.2)
 check(status == OK and (dec.lo, dec.hi, dec.scale, dec.negative) == (30000000000000004, 0, 17, False),
@@ -440,5 +466,106 @@ check(lib.cast_declared_decimal(b"1e-29", 5, ctypes.byref(declared)) == 8
 check(lib.cast_declared_decimal(b"1\xff", 2, ctypes.byref(declared)) == 8, "cast_declared_decimal not UTF-8")
 check(lib.cast_declared_decimal(b"1", 1, None) == -1, "cast_declared_decimal null out")
 
-check(len(called) == 31, f"called {len(called)} cast exports, expected 31")
-print(f"cdylib smoke: {lib_path} {got}, all 32 exports called")
+# The four detailed exports reach the doors by Door's code (rust/src/door.rs) and write a
+# RawFaultDetail: the span and `detail`, which names what failed. A declared format is judged
+# by 1.1's rules, so its grouping policy (flag bits 8 and 9) holds there and nowhere else.
+for shape, size_ in ((FaultDetail, 16), (DateOptions, 12)):
+    check(ctypes.sizeof(shape) == size_,
+          f"{shape.__name__} is {ctypes.sizeof(shape)} bytes; rust/src/abi.rs pins {size_}")
+I32_DOOR, UUID_DOOR, DATE_DOOR, DATE_ORDERED, DECIMAL_DOOR, EXCEL_SERIAL, CHAR_DOOR = 4, 12, 15, 20, 19, 22, 23
+
+
+def fault_detail():
+    return FaultDetail(ctypes.sizeof(FaultDetail), 7, 7, 7)
+
+
+def detailed(door, param, text, out, fmt=None, options=None, vocab=b""):
+    called.add("cast_detailed")
+    raw, fault = text.encode(), fault_detail()
+    status = lib.cast_detailed(door, param, fmt, None, options, vocab or None, len(vocab), raw, len(raw),
+                               ctypes.byref(out), ctypes.byref(fault))
+    return status, out, (fault.offset, fault.len, fault.detail)
+
+
+strict = num_format(".", ",", ALL | GROUPING_WESTERN)
+status, value, fault = detailed(I32_DOOR, 0, "12,34", ctypes.c_int32(), ctypes.byref(strict))
+check(status == MALFORMED and value.value == 0 and fault == (2, 3, 11), "cast_detailed strict grouping (group_size)")
+check(ok("cast_i32", "12,34", ctypes.byref(strict)).value == 1234, "cast_i32 ignores the grouping policy")
+status, value, _ = detailed(I32_DOOR, 0, "1,234", ctypes.c_int32(), ctypes.byref(strict))
+check(status == OK and value.value == 1234, "cast_detailed strict grouping value")
+indian = num_format(".", ",", ALL | GROUPING_INDIAN)
+check(detailed(I32_DOOR, 0, "12,34,567", ctypes.c_int32(), ctypes.byref(indian))[1].value == 1234567,
+      "cast_detailed Indian grouping")
+status, value, fault = detailed(I32_DOOR, 0, "1", ctypes.c_int32(77), ctypes.byref(num_format(".", ",", ALL | (3 << 8))))
+check(status == CONTRACT_VIOLATION and value.value == 77 and fault == (7, 7, 7), "cast_detailed policy 3 writes nothing")
+check(detailed(24, 0, "1", ctypes.c_int32())[0] == CONTRACT_VIOLATION, "cast_detailed unknown door")
+check(detailed(I32_DOOR, 1, "1", ctypes.c_int32())[0] == CONTRACT_VIOLATION, "cast_detailed stray param")
+status, value, _ = detailed(UUID_DOOR, 0, "01020304-0506-0708-090a-0b0c0d0e0f10", (ctypes.c_uint8 * 16)())
+check(status == OK and bytes(value) == want_uuid.bytes, "cast_detailed uuid")
+status, value, fault = detailed(CHAR_DOOR, 0, "U+D800", ctypes.c_uint32())
+check(status == OUT_OF_RANGE and fault == (0, 6, 32), "cast_detailed char not_a_scalar")
+check(detailed(CHAR_DOOR, 0, "U+20AC", ctypes.c_uint32())[1].value == 0x20AC, "cast_detailed char")
+status, _, fault = detailed(DATE_DOOR, 0, "20260107", Date())
+check(status == MALFORMED and fault[2] == 16, "cast_detailed date wrong_length")
+status, d, _ = detailed(DATE_DOOR, 0, "20260107", Date(), options=ctypes.byref(DateOptions(12, 1, 0)))
+check(status == OK and (d.year, d.month, d.day) == (2026, 1, 7), "cast_detailed compact date")
+check(detailed(DATE_DOOR, 0, "2026-01-07", Date(), options=ctypes.byref(DateOptions(12, 8, 0)))[0]
+      == CONTRACT_VIOLATION, "cast_detailed undefined date option")
+months = b"".join(bytes([n + 1]) + len(m).to_bytes(4, "little") + m.encode()
+                  for n, m in enumerate("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()))
+status, d, _ = detailed(DATE_ORDERED, 3, "07-Jan-26", Date(), options=ctypes.byref(DateOptions(12, 0, 2029)),
+                        vocab=months)
+check(status == OK and (d.year, d.month, d.day) == (2026, 1, 7), "cast_detailed month vocabulary and pivot")
+check(detailed(DATE_ORDERED, 3, "7-Jan-2026", Date())[0] == MALFORMED, "cast_detailed without a vocabulary")
+check(detailed(DATE_ORDERED, 3, "7-Jan-2026", Date(), vocab=months[:-1])[0] == CONTRACT_VIOLATION,
+      "cast_detailed vocabulary cut short")
+fault = FaultDetail(12, 7, 7, 7)
+check(lib.cast_detailed(I32_DOOR, 0, None, None, None, None, 0, b"1", 1, ctypes.byref(ctypes.c_int32()),
+                        ctypes.byref(fault)) == CONTRACT_VIOLATION, "cast_detailed fault too small")
+
+
+def detailed_typed(door, param, value, out):
+    called.add("cast_detailed_from_f64")
+    fault = fault_detail()
+    status = lib.cast_detailed_from_f64(door, param, value, ctypes.byref(out), ctypes.byref(fault))
+    return status, out, (fault.offset, fault.len, fault.detail)
+
+
+status, dec, _ = detailed_typed(DECIMAL_DOOR, 0, 0.1, Decimal())
+check(status == OK and (dec.lo, dec.scale) == (1, 1), "cast_detailed_from_f64 decimal")
+status, _, fault = detailed_typed(DECIMAL_DOOR, 0, 1e300, Decimal())
+check(status == OUT_OF_RANGE and fault == (0, 0, 25), "cast_detailed_from_f64 too_large, spanless")
+status, wall, _ = detailed_typed(EXCEL_SERIAL, 1, 45292.75, CivilDateTime())
+check(status == OK and wall.date.year == 2024 and wall.nanos_of_day == 64800000000000,
+      "cast_detailed_from_f64 excel serial")
+check(detailed_typed(EXCEL_SERIAL, 3, 45292.75, CivilDateTime())[0] == CONTRACT_VIOLATION,
+      "cast_detailed_from_f64 epoch")
+check(detailed_typed(I32_DOOR, 0, 1.0, ctypes.c_int32())[0] == CONTRACT_VIOLATION, "cast_detailed_from_f64 i32 door")
+
+called.add("cast_checked_detailed")
+fault, report, out = fault_detail(), Check(7, 7, 7), ctypes.c_double()
+status = lib.cast_checked_detailed(F64, 0, None, ctypes.byref(latitude), None, 0, b"91", 2, ctypes.byref(out),
+                                   ctypes.byref(fault), ctypes.byref(report))
+check(status == VIOLATION and (fault.offset, fault.len, fault.detail) == (0, 2, 0)
+      and (report.keyword, report.adjusted, report.enum_index) == (3, 0, NO_INDEX), "cast_checked_detailed violation")
+cap = constraints(4, upper=decimal(1000))
+status = lib.cast_checked_detailed(I32, 0, ctypes.byref(strict), ctypes.byref(cap), None, 0, b"12,34", 5,
+                                   ctypes.byref(ctypes.c_int32()), ctypes.byref(fault), ctypes.byref(report))
+check(status == MALFORMED and fault.detail == 11, "cast_checked_detailed strict grouping")
+check(lib.cast_checked_detailed(F64, 1, None, ctypes.byref(latitude), None, 0, b"1", 1, ctypes.byref(out),
+                                ctypes.byref(fault), None) == CONTRACT_VIOLATION, "cast_checked_detailed stray param")
+
+called.add("cast_checked_detailed_from_f64")
+status = lib.cast_checked_detailed_from_f64(F64, 0, ctypes.byref(latitude), None, 0, -90.5, ctypes.byref(out),
+                                            ctypes.byref(fault), ctypes.byref(report))
+check(status == VIOLATION and report.keyword == 1 and (fault.len, fault.detail) == (0, 0),
+      "cast_checked_detailed_from_f64 violation, spanless")
+status = lib.cast_checked_detailed_from_f64(F64, 0, ctypes.byref(latitude), None, 0, float("nan"), ctypes.byref(out),
+                                            ctypes.byref(fault), ctypes.byref(report))
+check(status == MALFORMED and fault.detail == 22, "cast_checked_detailed_from_f64 NaN")
+check(lib.cast_checked_detailed_from_f64(F64, 2, ctypes.byref(latitude), None, 0, 1.0, ctypes.byref(out),
+                                         ctypes.byref(fault), None) == CONTRACT_VIOLATION,
+      "cast_checked_detailed_from_f64 stray param")
+
+check(len(called) == 35, f"called {len(called)} cast exports, expected 35")
+print(f"cdylib smoke: {lib_path} {got}, all 36 exports called")

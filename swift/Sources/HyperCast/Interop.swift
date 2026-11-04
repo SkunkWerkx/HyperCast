@@ -4,8 +4,10 @@ import Foundation
 /// its own (HyperTabular does): the value layouts the core writes, read through exactly the
 /// conversions every ``Cast`` door applies, the 92-byte numeric format and the 40-byte day
 /// periods it reads in place, the 72-byte validation constraints and their `enum` list, the
-/// verdict code and span of a fault, and the packed version word. A value read out of another library's buffer through these is the value the door
-/// of the same name would have returned.
+/// verdict code and span of a fault with its detail code, the 12-byte date options and the
+/// packed month vocabulary the date doors read, and the packed version word. A value read out
+/// of another library's buffer through these is the value the door of the same name would
+/// have returned.
 ///
 /// Each reader takes a view of one value's bytes, starting at the value, aligned for its
 /// widest field (8 bytes for the 16-byte values).
@@ -33,8 +35,25 @@ public enum Interop {
         UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32
     )
 
+    /// The native `RawFaultDetail`, 16 bytes, 4-aligned, which a detailed export fills: a size
+    /// word at 0, which the caller writes (16) and the core never touches, then the span's
+    /// `offset` at 4 and `len` at 8 and the detail code at 12. Carried as four `UInt32` words.
+    public typealias RawFaultDetail = (UInt32, UInt32, UInt32, UInt32)
+
+    /// The native `RawDateOptions`, 12 bytes, 4-aligned, which the date doors read in place: a
+    /// size word (12) at 0, the option bits at 4 and the two-digit-year pivot at 8 (`0` for
+    /// none). Carried as three `UInt32` words.
+    public typealias RawDateOptions = (UInt32, UInt32, UInt32)
+
     /// The size of the native format layout, in bytes, which its first word carries.
     public static let rawFormatSize = 92
+
+    /// The size of the native detailed-fault layout, in bytes, which the caller writes in its
+    /// first word.
+    public static let rawFaultDetailSize = 16
+
+    /// The size of the native date-options layout, in bytes, which its first word carries.
+    public static let rawDateOptionsSize = 12
 
     /// The size of the native day-periods layout, in bytes, which its first word carries.
     public static let rawDayPeriodsSize = 40
@@ -67,6 +86,8 @@ public enum Interop {
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
     )
     static let zeroRawDayPeriods: RawDayPeriods = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    // A detailed fault as the caller initialises it: its capacity, the rest zero.
+    static let freshRawFaultDetail: RawFaultDetail = (UInt32(rawFaultDetailSize), 0, 0, 0)
 
     /// Writes a symbol into a layout's field: its UTF-8 bytes at `offset`, its length in
     /// the byte after the field's `capacity`. The symbol was validated to fit.
@@ -162,15 +183,35 @@ public enum Interop {
         return Duration.seconds(seconds) + .nanoseconds(Int64(nanos))
     }
 
-    /// The fault a nonzero verdict code and its byte span name.
+    /// The fault a nonzero verdict code and its byte span name. It carries no detail.
     ///
     /// - Precondition: `code` is a reason (1 empty, 2 malformed, 3 out of range) — anything
     ///   else is a binding bug, not data.
     public static func fault(code: Int32, offset: UInt32, length: UInt32) -> Fault {
+        fault(code: code, offset: offset, length: length, detail: 0)
+    }
+
+    /// The fault a nonzero verdict code, its byte span and the detail code beside it name. A
+    /// detail code the binding doesn't know is kept, never refused.
+    ///
+    /// - Precondition: `code` is a reason (1 empty, 2 malformed, 3 out of range) — anything
+    ///   else is a binding bug, not data.
+    public static func fault(code: Int32, offset: UInt32, length: UInt32, detail: UInt32) -> Fault {
         guard let reason = CastFailure(rawValue: code) else {
             preconditionFailure("\(code) is not a verdict reason code — a binding bug, please report it")
         }
-        return Fault(reason: reason, offset: Int(offset), length: Int(length))
+        return Fault(reason: reason, offset: Int(offset), length: Int(length), detailCode: detail)
+    }
+
+    /// The fault a detailed export wrote: its `RawFaultDetail`, read from `raw` (the word at 4
+    /// the offset, at 8 the length, at 12 the detail code), under the verdict code the export
+    /// returned. The word at 0 is the caller's capacity and is not read.
+    public static func fault(code: Int32, faultDetail raw: UnsafeRawBufferPointer) -> Fault {
+        fault(
+            code: code,
+            offset: raw.load(fromByteOffset: 4, as: UInt32.self),
+            length: raw.load(fromByteOffset: 8, as: UInt32.self),
+            detail: raw.load(fromByteOffset: 12, as: UInt32.self))
     }
 
     /// A native library's packed version word — `major << 16 | minor << 8 | patch`, as a

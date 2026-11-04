@@ -8,6 +8,7 @@ const { spawnSync }: typeof import('node:child_process') = require('node:child_p
 const {
   copyFileSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 }: typeof import('node:fs') = require('node:fs')
@@ -24,6 +25,10 @@ test('the fallback literals equal the native values', () => {
   assert.deepEqual({ ...api.ExcelEpoch }, { ...native.ExcelEpoch })
   assert.deepEqual({ ...api.Door }, { ...native.Door })
   assert.deepEqual({ ...api.Rounding }, { ...native.Rounding })
+  assert.deepEqual({ ...api.Grouping }, { ...native.Grouping })
+  assert.deepEqual({ ...api.DateStyles }, { ...native.DateStyles })
+  // A string enum is a type in binding.d.ts and an object at runtime.
+  assert.deepEqual({ ...api.Detail }, { ...(native as unknown as { Detail: object }).Detail })
   assert.deepEqual(
     { ...api.CastFailure },
     {
@@ -53,6 +58,10 @@ assert.equal(api.isAvailable(), false)
 assert.equal(api.NumStyles.All, 95)
 assert.equal(api.DateOrder.DayMonthYear, 3)
 assert.equal(api.Door.Text, 18)
+assert.equal(api.Door.Char, 23)
+assert.equal(api.Grouping.Western, 256)
+assert.equal(api.DateStyles.CommonForms, 7)
+assert.equal(api.Detail.GroupSize, 'groupSize')
 assert.equal(api.Rounding.Midpoint, 1)
 assert.equal(api.Keyword.MultipleOf, 'multipleOf')
 assert.equal(api.optional({ ok: false, fault: { reason: 'empty', offset: 0, length: 0 } }), null)
@@ -65,6 +74,14 @@ for (const call of [
   () => api.castText('1'),
   () => api.castConstraintsCheck({}),
   () => api.castDeclaredDecimal('1'),
+  () => api.castDetailed(4, '1'),
+  () => api.castDetailedFromNumber(19, 1),
+  () => api.castCheckedDetailed('1'),
+  () => api.castCheckedDetailedFromNumber(1),
+  () => api.DateOptions.declare({}),
+  () => api.DateOptions.commonForms(),
+  () => api.MonthNames.declare([]),
+  () => api.MonthNames.fromPacked(new Uint8Array()),
 ]) {
   let thrown
   try { call() } catch (error) { thrown = error }
@@ -87,4 +104,74 @@ test('with no addon, the package loads and every door throws ERR_HYPERCAST_UNAVA
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+// The addon must be this package's. A stub binding.js stands in for a stale platform package or an
+// addon NAPI_RS_NATIVE_LIBRARY_PATH names: another core version, or one with no castDetailed.
+const PAIRING = `
+const assert = require('node:assert/strict')
+const api = require(process.env.HYPERCAST_INDEX)
+const want = JSON.parse(process.env.HYPERCAST_WANT)
+assert.equal(api.isAvailable(), want.available)
+if (!want.available) {
+  let thrown
+  try { api.castI32('1') } catch (error) { thrown = error }
+  assert.ok(api.isHyperCastError(thrown), String(thrown))
+  assert.match(thrown.cause.message, new RegExp(want.cause))
+  assert.equal(api.Grouping.Western, 256)
+} else {
+  assert.equal(api.nativeVersion(), want.version)
+}
+`
+
+function pairing(stub: (version: string) => string, want: Record<string, unknown>): void {
+  const dir = mkdtempSync(path.join(tmpdir(), 'hypercast-pairing-'))
+  try {
+    copyFileSync(path.resolve(__dirname, '..', 'index.js'), path.join(dir, 'index.js'))
+    copyFileSync(path.resolve(__dirname, '..', 'package.json'), path.join(dir, 'package.json'))
+    const version = JSON.parse(
+      readFileSync(path.resolve(__dirname, '..', 'package.json'), 'utf8'),
+    ).version
+    writeFileSync(path.join(dir, 'binding.js'), stub(version))
+    const result = spawnSync(process.execPath, ['-e', PAIRING], {
+      env: {
+        ...process.env,
+        HYPERCAST_INDEX: path.join(dir, 'index.js'),
+        HYPERCAST_WANT: JSON.stringify({ version, ...want }),
+      },
+      encoding: 'utf8',
+    })
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+test('an addon of another core version is treated as not loaded', () => {
+  pairing(
+    () => "module.exports = { nativeVersion: () => '0.9.0', castDetailed() {}, castI32() {} }\n",
+    { available: false, cause: 'the addon is core 0\\.9\\.0, and this package is' },
+  )
+})
+
+test('an addon with no castDetailed (a 1.0 addon) is treated as not loaded', () => {
+  pairing((version) => `module.exports = { nativeVersion: () => '${version}', castI32() {} }\n`, {
+    available: false,
+    cause: 'no castDetailed',
+  })
+})
+
+test('an addon that cannot report its version is treated as not loaded', () => {
+  pairing(() => 'module.exports = { castDetailed() {} }\n', {
+    available: false,
+    cause: 'nativeVersion is not a function',
+  })
+})
+
+test('an addon of this version with castDetailed is the addon', () => {
+  pairing(
+    (version) =>
+      `module.exports = { nativeVersion: () => '${version}', castDetailed() {}, castI32() {} }\n`,
+    { available: true },
+  )
 })

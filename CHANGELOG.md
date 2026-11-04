@@ -130,6 +130,34 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   binding spells the API in its own idiom (`docs/bindings.md`, "Constraints") and replays the
   same constraint and declaration corpora. *(Rust, C#, Java, Swift, Go, Python, Ruby, PHP,
   TypeScript, R, C, C++)*
+- **Rust: a declaration to and from its C ABI form.** `Constraints::from_raw` reads a
+  `RawConstraints` and its packed `enum` list, refused exactly where `check_constraints`
+  refuses, and `Constraints::pack_enum` writes the packed list for a declaration built in Rust,
+  without allocating: it reports the length it needs, and `None` only for a list too long to
+  size on a 32-bit target. They are for a parser that carries declarations across its own C ABI
+  and judges each value with the checked doors, as HyperTabular does. A text `enum` entry
+  longer than `u32::MAX` bytes, which the packed form cannot carry and no input can match, is
+  now refused as `NotHeldByDoor`. *(Rust)*
+- **Rust: `hypercast::is_white_space(c: char) -> bool`.** True for exactly the 25 code points
+  with Unicode's `White_Space` property, the set every door below now trims, so a caller that
+  holds text outside the doors splits it the way they do. It is a stable Unicode property, not
+  a list that will grow. *(Rust)*
+- **`corpus/formats.json`: declaration vectors, replayed by all twelve replayers.** A new vector
+  shape holds the 25 white-space code points and the near misses (U+200B, U+FEFF, U+180E,
+  U+0000, U+00AD) every binding's predicate or table is held to, each declaration the core
+  refuses or accepts with the rule that decides it (`length`, `digit`, `equal_separators`,
+  `white_space`, `currency_edge`, `designator_edge`), and day-period designators. The Rust,
+  C++, C#, Java, Swift, Go, Python, Ruby (both backends), PHP, TypeScript and R suites each
+  build the declaration through their own public API and expect their own refusal idiom, and
+  `.github/hyper.json`'s `r_corpus` lists the file. *(Rust, C#, Java, Swift, Go, Python, Ruby,
+  PHP, TypeScript, R, C, C++)*
+- **Every locale bridge that reads platform data is swept over every locale its platform ships.** C#'s (every .NET
+  culture), Java's (every JDK locale), Swift's (every `Locale.availableIdentifiers` entry) and
+  PHP's (every ICU locale, in the decimal, percent and currency styles, under `intl`) walk
+  the whole list, and Python's `from_localeconv` walks the locales the machine has. A throwing
+  bridge's sweep requires no throw; a dropping bridge's asserts what it leaves undeclared.
+  Ruby's `from_i18n` takes the caller's own hashes, so there is nothing to walk. *(C#, Java,
+  Swift, PHP, Python)*
 - **`optional` reads a checked verdict too.** An `Empty` fault is absent and every other
   rejection, a violation included, passes through: `optional_checked` in Rust, beside
   `optional`, `Cast.Optional(CheckedVerdict<T>)` in C#,
@@ -141,6 +169,85 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Every door reads Unicode white space where it read ASCII white space, and the numeric
+  doors ignore it around the numeral.** White space is the 25 code points with Unicode's
+  `White_Space` property (the table the checked text door's `trim` already used): ASCII, U+0085,
+  U+00A0, U+1680, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F and U+3000. Only a complete,
+  valid UTF-8 encoding of one counts, so a lone `C2` or an overlong form at an edge is still
+  malformed, and a span still indexes the caller's original bytes. Values that were `Malformed`
+  and now read:
+  - **At the edges of every text door** (the eight integers, `f32`, `f64`, `Decimal`, boolean,
+    char, UUID, timestamp, Unix counts, Excel serials as text, date, time, date-time and
+    duration): `"\u00A012"`, `"true\u3000"`, `"\u202F2026-01-07"` and the rest of what Excel,
+    Word and the web paste. Vertical tab (U+000B), which the ASCII trim left, now trims too, and
+    input of nothing but white space is `Empty` at every door that trims (`"\u00A0"` alone was
+    `Malformed`).
+    `cast_char` given exactly one character still returns it verbatim, so `"\u3000"` is
+    U+3000, and `cast_text` is unchanged.
+  - **Around the numeral at the numeric doors:** after a leading sign, before a trailing sign
+    or a percent symbol, on either side of a currency symbol and inside accounting
+    parentheses, of any kind and any amount, ASCII included: `"- 12"`, `"-\u00A012"`,
+    `"( 12 )"`, `"12,5\u202F%"`, and `"1\u202F234,56\u00A0€"` with `U+202F` declared as the
+    group separator and `€` as the currency. A space-like group separator not followed by a
+    digit is not grouping, just white space, which is how the second `U+202F` there reads. White
+    space between digits is still `Malformed` unless a space-like group separator is declared,
+    and Unix counts and Excel serials as text, which take no `NumFormat` grammar, are
+    edge-trimmed only, so `"- 12"` stays `Malformed` there.
+  - **The space-like group separators stand for each other.** Declaring any of an ASCII space,
+    U+00A0 or U+202F as the group separator (plain or currency) reads all three in the input,
+    mixed if need be, and only those three: U+2007 and U+3000 between digits are still
+    `Malformed`, and a declared group separator that is not space-like stays exact. CLDR and
+    ICU declare U+202F for French, Excel and Word write U+00A0, older systems an ASCII space.
+  - **The day-period gap.** Between a time and a trailing `AM`/`PM` designator, and after a
+    leading one, any run of white space (or none) reads where one optional ASCII space did, so
+    `3:00\u202FPM`, the way ICU 72+, JDK 20+ and Apple platforms format `en_US` times, is
+    15:00. This holds for the English pair and for declared designators alike.
+  - **Inside a declared currency symbol,** an ASCII space, U+00A0 and U+202F match each other,
+    one character for one: `F CFA` declared with U+202F (CLDR's West African CFA franc) reads
+    `1 000 F CFA` written with any of the three. Every other interior character, other white
+    space included (U+2009, U+3000), matches exactly, runs are not collapsed and white space
+    is never optional.
+
+  Declarations the input could never match are refused, in the core, `NumFormat::check` and
+  `DayPeriods::check` among them, and in every binding's own validator, each in its own
+  refusal idiom (a `ValueError`, an `ArgumentException`, an `Outcome` error, a panic, a
+  `false`, and so on) and with "white space" for "ASCII whitespace" in its message:
+  - **a sign or percent symbol containing any white space** (the refusal covered ASCII white
+    space only; U+00A0, U+202F, U+3000, U+0085 and the vertical tab now count);
+  - **a currency symbol with white space at either edge** (it was refused for ASCII white
+    space anywhere; inside is now allowed, so `F CFA` and `kr .` declare, which the culture
+    sweeps showed 23 ICU locales, 32 JDK locales, 23 .NET cultures and 23 Apple locales need);
+  - **a decimal separator or a currency decimal separator containing any white space**
+    (`", "` as a decimal separator, which was accepted and could never match, is now refused;
+    group separators, plain and currency, may still be or contain white space);
+  - **a day-period designator with white space at either edge** (ASCII only before; inside is
+    still fine, as in `a. m.`).
+
+  The order of the refusals is unchanged: length, digit and equal-separator rules come first, so
+  a declaration breaking two rules still reports the message it did. Python and TypeScript, whose
+  doors call the core without re-checking, now check the whole declaration in release builds
+  too (it was a `debug_assert!`), and word the refusal by rule: "must not contain white space"
+  for signs, percent and decimal separators, "must not start or end with white space" for
+  the currency symbol and designators. Each locale bridge keeps its failure policy (C# and
+  Swift leave an undeclarable platform symbol undeclared; Java, PHP, Python and Ruby throw), and
+  a before-and-after sweep of C#'s 1,073 cultures, Java's 1,158 JDK locales, Swift's 1,072
+  locale identifiers, PHP's 906 ICU locales in three styles and Python's 290 machine locales
+  found no locale whose derived format differs from before. In C# and Java the char
+  door's out-of-range span over a scalar the platform's character cannot hold is now over the
+  input less its white space edges, and R's is the same for U+0000; Swift's own
+  `isAsciiWhitespace`, which counted the vertical tab unlike the core, is gone. In PHP the
+  1.0 parity fixtures gain `divergences.json`: sixteen recorded answers, ten of them
+  the `CURRENCY` samples of de_DE, de_AT, fr_FR, fr_CH, sv_SE, nl_NL, es_ES, pt_BR, ru_RU and
+  et_EE (the U+00A0 beside the symbol that 1.0 answered `Malformed`, now `Success`), the rest
+  the reworded refusals and `kr .`, which now declares; each names its reason and a stale
+  entry fails the suite. C and C++ delegate to the core and gain the refusals with no change
+  of their own. Go's committed translated core is regenerated. The cost, measured on an Apple
+  M6 against the base (`docs/benchmarks.md`): input with nothing to trim reads as fast as
+  before to within the noise (the slowest case, `cast_duration` on an ISO string, +8.1% in
+  one run and -2.4% in a second), and input with white space at an edge takes about 2 ns
+  longer per call, `cast_bool` on `" true\n"` going from 1.32 to 3.29 ns (the `padded` group of
+  `rust/benches/cast_benchmarks.rs`, medians of three runs). *(Rust, C#, Java, Swift, Go, Python, Ruby, PHP, TypeScript, R, C,
+  C++)*
 - **The float doors return `0.0` for a negative zero, as `Decimal` and the integers already
   did.** `-0`, `(0)`, `-$0.00`, `-0,00` under declared separators, and an underflow like
   `-1e-400` all read to positive zero at `cast_f32` and `cast_f64`, and so does every float

@@ -481,11 +481,10 @@ fn check_designator(designator: &[u8], role: &str) -> PhpResult<()> {
             "{role} must not contain an ASCII digit; got '{text}'"
         )));
     }
-    let space = |b: u8| matches!(b, b' ' | b'\t' | b'\n' | b'\x0c' | b'\r');
-    let bytes = text.as_bytes();
-    if bytes.first().copied().is_some_and(space) || bytes.last().copied().is_some_and(space) {
+    let edge = |c: Option<char>| c.is_some_and(crate::is_white_space);
+    if edge(text.chars().next()) || edge(text.chars().next_back()) {
         return Err(invalid_argument(format!(
-            "{role} must not start or end with ASCII whitespace; got '{text}'"
+            "{role} must not start or end with white space; got '{text}'"
         )));
     }
     Ok(())

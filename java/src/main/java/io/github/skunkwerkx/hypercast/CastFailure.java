@@ -8,7 +8,7 @@ import java.util.Optional;
  * must be updated, in every binding at once.
  */
 public enum CastFailure {
-    /** Required input was empty or whitespace. The {@code *Optional} presentation surfaces this as absent. */
+    /** Required input was empty or white space. The {@code *Optional} presentation surfaces this as absent. */
     EMPTY(1),
 
     /** Input was present but not recognizable as the target type. */

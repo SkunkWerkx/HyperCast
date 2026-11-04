@@ -15,8 +15,8 @@ testthat::skip_if_not_installed("jsonlite")
 
 corpus_files <- c("boolean.json", "char.json", "constraints.json", "date.json",
                   "date_order.json", "datetime.json", "decimal.json", "declarations.json",
-                  "duration.json", "excel_serial.json", "integer.json", "real.json", "time.json",
-                  "timestamp.json", "typed.json", "unix.json", "uuid.json")
+                  "duration.json", "excel_serial.json", "formats.json", "integer.json", "real.json",
+                  "time.json", "timestamp.json", "typed.json", "unix.json", "uuid.json")
 
 corpus_dir <- function() {
   staged <- testthat::test_path("corpus")
@@ -59,6 +59,14 @@ read_vectors <- function(name) {
   rows
 }
 
+# The white-space code points the corpus pins, read from its true rows: the test's own
+# definition, which the package's table and its C scanner are both held to.
+white_space_points <- function() {
+  rows <- Filter(function(row) row$kind == "white_space" && row$white_space,
+                 read_vectors("formats.json"))
+  vapply(rows, function(row) strtoi(sub("^U\\+", "", row$code_point), 16L), 0L)
+}
+
 utf8_bytes <- function(text) {
   bytes <- charToRaw(enc2utf8(text))
   standin <- charToRaw(enc2utf8(nul_standin))
@@ -83,17 +91,49 @@ chars_in <- function(bytes, n) {
 
 has_nul <- function(row) grepl(nul_standin, row$input, fixed = TRUE)
 
+# A row's format. A row that declares no `grouping` keeps legacy semantics (the core's and the
+# C ABI's meaning), never the constructor's strict default. A formats.json row may carry a
+# policy in its `flags` (bits 8 and 9), which this binding declares beside the styles; a
+# policy no name spells (3) and a bit no style is reach the constructor as given, to be refused.
 format_of <- function(spec) {
   if (is.null(spec)) {
-    return(num_format())
+    return(num_format(grouping = "legacy"))
   }
   opt <- function(name) if (is.null(spec[[name]])) "" else spec[[name]]
-  num_format(spec$decimal_sep, spec$group_sep, spec$flags, currency = opt("currency"),
+  flags <- spec$flags
+  grouping <- if (is.null(spec$grouping)) "legacy" else spec$grouping
+  policy <- flags %/% 256 %% 4
+  if (is.null(spec$grouping) && flags >= 256 && flags < 1024 && policy != 3) {
+    grouping <- c("legacy", "western", "indian")[[policy + 1]]
+    flags <- flags %% 256
+  }
+  num_format(spec$decimal_sep, spec$group_sep, flags, currency = opt("currency"),
              currency_decimal_sep = opt("currency_decimal_sep"),
              currency_group_sep = opt("currency_group_sep"), minus_sign = opt("minus_sign"),
              plus_sign = opt("plus_sign"), percent = opt("percent"),
-             digit_zero = opt("digit_zero"))
+             digit_zero = opt("digit_zero"), grouping = grouping)
 }
+
+# A row's `options` as the date options and the month vocabulary the doors take.
+months_of <- function(months) {
+  month_names(stats::setNames(vapply(months, function(m) as.numeric(m[[1]]), 0),
+                              vapply(months, function(m) m[[2]], "")))
+}
+
+flags_of <- function(spec) {
+  if (!is.null(spec$flag_bits)) spec$flag_bits else vapply(spec$flags, identity, "")
+}
+
+options_of <- function(spec) {
+  if (is.null(spec)) {
+    return(list(options = NULL, months = NULL))
+  }
+  pivot <- if (is.null(spec$pivot)) 0L else spec$pivot
+  list(options = date_options(flags_of(spec), pivot),
+       months = if (!is.null(spec$months)) months_of(spec$months))
+}
+
+options_key <- function(row) as.character(jsonlite::toJSON(row$options, auto_unbox = TRUE))
 
 orders <- c("year_month_day", "month_day_year", "day_month_year")
 precisions <- c("seconds", "milliseconds", "microseconds", "nanoseconds")
@@ -102,6 +142,13 @@ epochs <- c("y1900", "y1904")
 # Groups rows by a key (a door, a format, an order) so each group is one vectorised call.
 groups <- function(rows, key) split(rows, vapply(rows, key, ""))
 
+# Every failure row names its detail: the name, and the core's number it stands for.
+expect_detail <- function(v, i, row, info) {
+  testthat::expect_false(is.null(row$detail), info = paste(info, "names no detail"))
+  testthat::expect_identical(as.character(v$detail[[i]]), row$detail, info = info)
+  testthat::expect_identical(v$detail_code[[i]], unname(fault_details[[row$detail]]), info = info)
+}
+
 # Checks verdict row i against corpus row `row`: the reason and pinned span, or `check_ok`
 # on a success. `units` is "bytes" or "chars"; `label` names the row in a failure.
 expect_row <- function(v, i, row, units, check_ok, label) {
@@ -109,11 +156,13 @@ expect_row <- function(v, i, row, units, check_ok, label) {
   testthat::expect_false(is.na(v$ok[[i]]), info = info)
   if (row$expect == "ok") {
     testthat::expect_true(v$ok[[i]], info = paste(info, "should parse; got", v$reason[[i]]))
+    testthat::expect_true(is.na(v$detail[[i]]) && is.na(v$detail_code[[i]]), info = info)
     if (isTRUE(v$ok[[i]])) check_ok(v, i, row, info)
     return(invisible())
   }
   testthat::expect_false(v$ok[[i]], info = paste(info, "unexpectedly parsed"))
   testthat::expect_identical(as.character(v$reason[[i]]), row$expect, info = info)
+  expect_detail(v, i, row, info)
   if (!is.null(row$fault)) {
     span <- c(row$fault[[1]], row$fault[[2]])
     if (units == "chars") {
@@ -191,7 +240,7 @@ test_that("boolean.json", {
 })
 
 # The vector pins the code point; the door returns the one-character string, and U+0000, which
-# no R string holds, as out_of_range over the input less its ASCII whitespace edges.
+# no R string holds, as out_of_range over the input less its white space edges.
 test_that("char.json", {
   rows <- read_vectors("char.json")
   nul <- vapply(rows, function(row) identical(row$value, 0L), FALSE)
@@ -199,14 +248,16 @@ test_that("char.json", {
     expect_identical(utf8ToInt(v$value[[i]]), row$value, info = info)
   }, "char")
   expect_gt(sum(nul), 0)
+  white <- white_space_points()
   for (row in rows[nul]) {
-    bytes <- utf8_bytes(row$input)
-    space <- as.raw(c(0x20, 0x09, 0x0a, 0x0c, 0x0d))
-    kept <- which(!bytes %in% space)
-    start <- min(kept) - 1L
-    end <- max(kept)
+    # The input's code points (the stand-in is U+0000's one byte), trimmed of white space.
+    points <- utf8ToInt(row$input)
+    width <- ifelse(points == utf8ToInt(nul_standin), 1L,
+                    1L + (points >= 0x80) + (points >= 0x800) + (points >= 0x10000))
+    kept <- which(!points %in% white)
     row$expect <- "out_of_range"
-    row$fault <- list(start, end - start)
+    row$detail <- "unexpected_character"
+    row$fault <- list(sum(width[seq_len(min(kept) - 1L)]), sum(width[min(kept):max(kept)]))
     replay_text(list(row), cast_char, NULL, "char U+0000")
   }
 })
@@ -261,7 +312,10 @@ test_that("uuid.json", {
 })
 
 test_that("timestamp.json", {
-  replay_text(read_vectors("timestamp.json"), cast_timestamp, expect_instant, "timestamp")
+  for (group in groups(read_vectors("timestamp.json"), options_key)) {
+    o <- options_of(group[[1]]$options)
+    replay_text(group, function(x) cast_timestamp(x, o$options), expect_instant, "timestamp")
+  }
 })
 
 test_that("unix.json", {
@@ -279,29 +333,36 @@ test_that("excel_serial.json", {
 })
 
 test_that("date.json", {
-  replay_text(read_vectors("date.json"), cast_date, function(v, i, row, info) {
-    expect_date(v$value[[i]], row, info)
-  }, "date")
+  for (group in groups(read_vectors("date.json"), options_key)) {
+    o <- options_of(group[[1]]$options)
+    # A row's vocabulary is one the ISO door never reads (the core ignores it there); the R door
+    # refuses a vocabulary without an order, so it is not passed.
+    replay_text(group, function(x) cast_date(x, options = o$options),
+                function(v, i, row, info) expect_date(v$value[[i]], row, info), "date")
+  }
 })
 
 test_that("date_order.json", {
-  for (group in groups(read_vectors("date_order.json"), function(row) as.character(row$order))) {
+  key <- function(row) paste(row$order, options_key(row))
+  for (group in groups(read_vectors("date_order.json"), key)) {
     order <- orders[[group[[1]]$order]]
-    replay_text(group, function(x) cast_date(x, order), function(v, i, row, info) {
-      expect_date(v$value[[i]], row, info)
-    }, order)
+    o <- options_of(group[[1]]$options)
+    replay_text(group, function(x) cast_date(x, order, o$options, o$months),
+                function(v, i, row, info) expect_date(v$value[[i]], row, info), order)
   }
 })
 
 test_that("datetime.json", {
   rows <- read_vectors("datetime.json")
-  key <- function(row) paste(row$order, row$am, row$pm)
+  key <- function(row) paste(row$order, row$am, row$pm, options_key(row))
   for (group in groups(rows, key)) {
     order <- orders[[group[[1]]$order]]
     am <- if (is.null(group[[1]]$am)) "" else group[[1]]$am
     pm <- if (is.null(group[[1]]$pm)) "" else group[[1]]$pm
-    replay_text(group, function(x) cast_datetime(x, order, am = am, pm = pm), expect_civil,
-                paste("datetime", order))
+    o <- options_of(group[[1]]$options)
+    replay_text(group, function(x) {
+      cast_datetime(x, order, am = am, pm = pm, options = o$options, months = o$months)
+    }, expect_civil, paste("datetime", order))
   }
 })
 
@@ -418,6 +479,7 @@ expect_checked_row <- function(v, i, row, units, label) {
     want_index <- if (is.null(row$enum_index)) NA_integer_ else as.integer(row$enum_index) + 1L
     testthat::expect_identical(v$enum_index[[i]], want_index, info = info)
     testthat::expect_true(is.na(v$reason[[i]]) && is.na(v$keyword[[i]]), info = info)
+    testthat::expect_true(is.na(v$detail[[i]]) && is.na(v$detail_code[[i]]), info = info)
     return(invisible())
   }
   testthat::expect_false(v$ok[[i]], info = paste(info, "unexpectedly passed"))
@@ -426,9 +488,13 @@ expect_checked_row <- function(v, i, row, units, label) {
   if (row$expect == "violation") {
     testthat::expect_true(is.na(v$reason[[i]]), info = info)
     testthat::expect_identical(v$keyword[[i]], row$keyword, info = info)
+    # A violation carries no detail (the core writes 0).
+    testthat::expect_null(row$detail, info = info)
+    testthat::expect_true(is.na(v$detail[[i]]) && is.na(v$detail_code[[i]]), info = info)
   } else {
     testthat::expect_identical(as.character(v$reason[[i]]), row$expect, info = info)
     testthat::expect_true(is.na(v$keyword[[i]]), info = info)
+    expect_detail(v, i, row, info)
   }
   span <- c(row$fault[[1]], row$fault[[2]])
   if (units == "chars") {
@@ -542,4 +608,104 @@ test_that("declarations.json", {
   }
   # Every row was replayed: the count is the file's, never a literal.
   expect_identical(replayed, length(rows))
+})
+
+# ---- formats.json: white space, and the declarations the core refuses ----
+
+# Each refusing rule's message, as num_format() and cast_datetime() word it. A length and a
+# digit refusal share one sentence, and so do the two edge rules (a designator's and a currency
+# symbol's); the rest are told apart from them and each other.
+rule_messages <- c(
+  length = "UTF-8 bytes with no ASCII digit", digit = "UTF-8 bytes with no ASCII digit",
+  equal_separators = "must differ", white_space = "must not contain white space",
+  designator_edge = "must not start or end with white space",
+  currency_edge = "must not start or end with white space",
+  grouping_policy = "must not carry a grouping policy",
+  unknown_flag = "holds only the styles of num_styles",
+  flags = "date options in date_flags", pivot = "a year from 100 to 9999",
+  layout = "cut short or has trailing bytes", utf8 = "Month name must be valid UTF-8",
+  month = "Month must be 1 to 12", month_missing = "have no name for month",
+  name_length = "must be 1 to 64 bytes long", character = "must not hold an ASCII digit",
+  duplicate = "fold to the same spelling"
+)
+
+test_that("formats.json: the package's white space table is the corpus's", {
+  rows <- Filter(function(row) row$kind == "white_space", read_vectors("formats.json"))
+  expect_gt(length(rows), 25L)
+  table <- getFromNamespace("white_space_code_points", "hypercast")
+  for (row in rows) {
+    point <- strtoi(sub("^U\\+", "", row$code_point), 16L)
+    expect_identical(point %in% table, row$white_space, info = row$code_point)
+  }
+  expect_setequal(table, white_space_points())
+  expect_length(table, 25L)
+})
+
+# The C scanner: U+0000 written as "U+0000" reads as out_of_range over the input less its
+# white space edges, so each white-space code point around it must come off both edges, whole.
+test_that("formats.json: the C scanner trims every white space code point, at both edges", {
+  for (point in white_space_points()) {
+    ws <- charToRaw(intToUtf8(point))
+    nul <- charToRaw("U+0000")
+    v <- cast_char(list(c(ws, nul), c(nul, ws), c(ws, nul, ws), c(ws, ws, nul, ws, ws)))
+    info <- sprintf("U+%04X", point)
+    expect_identical(as.character(v$reason), rep("out_of_range", 4L), info = info)
+    expect_identical(v$offset, c(length(ws), 0L, length(ws), 2L * length(ws)), info = info)
+    expect_identical(v$length, rep(6L, 4L), info = info)
+  }
+})
+
+# `declare` builds the declaration; it is called once, and its refusal read as a message.
+expect_refused_as <- function(declare, row) {
+  info <- as.character(jsonlite::toJSON(row, auto_unbox = TRUE))
+  message <- tryCatch({
+    declare()
+    NULL
+  }, error = conditionMessage)
+  if (row$expect == "ok") {
+    testthat::expect_null(message, info = info)
+    return(invisible())
+  }
+  testthat::expect_false(is.null(message), info = paste(info, "was not refused"))
+  testthat::expect_match(message, rule_messages[[row$rule]], fixed = TRUE, info = info)
+  # The message is the winning rule's alone: no other rule's wording is in it.
+  for (other in setdiff(unique(rule_messages), rule_messages[[row$rule]])) {
+    testthat::expect_false(grepl(other, message, fixed = TRUE),
+                           info = paste(info, "also says", other))
+  }
+}
+
+test_that("formats.json: num_format() and cast_datetime() refuse what the core refuses", {
+  rows <- read_vectors("formats.json")
+  counts <- c(num_format = 0L, day_periods = 0L, white_space = 0L, date_options = 0L,
+              month_names = 0L)
+  for (row in rows) {
+    counts[[row$kind]] <- counts[[row$kind]] + 1L
+    if (row$kind == "num_format") {
+      expect_refused_as(function() format_of(row$format), row)
+    } else if (row$kind == "day_periods") {
+      am <- if (is.null(row$am)) "" else row$am
+      pm <- if (is.null(row$pm)) "" else row$pm
+      expect_refused_as(function() {
+        cast_datetime("1/7/2026 3 PM", "month_day_year", am = am, pm = pm)
+      }, row)
+    } else if (row$kind == "date_options") {
+      pivot <- if (is.null(row$pivot)) 0L else row$pivot
+      expect_refused_as(function() date_options(flags_of(row), pivot), row)
+    } else if (row$kind == "month_names") {
+      expect_refused_as(function() {
+        if (is.null(row$append_bytes)) {
+          months_of(row$months)
+        } else {
+          packed <- getFromNamespace("month_names_packed", "hypercast")
+          packed(c(months_of(row$months)$packed, as.raw(unlist(row$append_bytes))))
+        }
+      }, row)
+    } else {
+      expect_identical(row$kind, "white_space")
+    }
+  }
+  # Every row was replayed, of every kind.
+  expect_identical(sum(counts), length(rows))
+  expect_true(all(counts > 0L))
 })

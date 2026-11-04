@@ -4,39 +4,45 @@
 //! 1. **Verbatim:** an input that is exactly one UTF-8 scalar is that scalar, checked
 //!    *before* trimming, so `" "` is a space, not `Empty`, and `"6"` is the digit six,
 //!    not U+0006.
-//! 2. Otherwise leading and trailing ASCII whitespace is ignored and the text must be
-//!    exactly one code-point spelling, ASCII case-insensitive on the prefix: decimal `65`,
-//!    `U+0041`, `0x41`, `&H41`, or an HTML numeric entity `&#65;` / `&#x41;` (the closing
-//!    `;` is required).
+//! 2. Otherwise leading and trailing white space (Unicode `White_Space`) is ignored and the
+//!    text must be exactly one code-point spelling, ASCII case-insensitive on the prefix:
+//!    decimal `65`, `U+0041`, `0x41`, `&H41`, or an HTML numeric entity `&#65;` / `&#x41;`
+//!    (the closing `;` is required).
 //!
 //! The wrong shape is `Malformed` at the first offending character, or over the whole token
 //! when the text simply ends too early (`U+`, `&#65`). A well-shaped spelling naming no
 //! scalar — past `U+10FFFF`, or a surrogate `U+D800..=U+DFFF` — is `OutOfRange` over the
 //! token. Culture-insensitive by nature, so no [`NumFormat`](crate::NumFormat) is accepted.
 
+use crate::detail::Failure;
 use crate::integer::char_len_at;
+use crate::site::Site;
 use crate::verdict::{Fault, trim};
 
 /// Casts char text. Empty or whitespace-only input (other than a single whitespace
 /// character, which is verbatim) ⇒ `Empty`.
 pub fn cast_char(input: impl AsRef<[u8]>) -> Result<char, Fault> {
-    let input = input.as_ref();
+    character(input.as_ref()).map_err(Failure::fault)
+}
+
+/// The char door's one parse, for both entry points.
+#[inline(always)]
+pub(crate) fn character(input: &[u8]) -> Result<char, Failure> {
     if input.is_empty() {
-        return Err(Fault::EMPTY);
+        return Err(Failure::spanless(Site::CharEmpty));
     }
     if let Some(scalar) = single_scalar(input) {
         return Ok(scalar);
     }
     let (text, start) = trim(input);
     if text.is_empty() {
-        return Err(Fault::EMPTY);
+        return Err(Failure::spanless(Site::CharBlank));
     }
-    let token = Fault::malformed(start, text.len());
-    // The offending character at `at` (relative to `text`), or the whole token when the
-    // text ran out before the grammar was satisfied.
-    let offending = |at: usize| match text.get(at) {
-        Some(_) => Fault::malformed(start + at, char_len_at(text, at)),
-        None => token,
+    // The offending character at `at` (relative to `text`), as `found`; or the whole token,
+    // as `ended`, when the text ran out before the grammar was satisfied.
+    let offending = |at: usize, found: Site, ended: Site| match text.get(at) {
+        Some(_) => Failure::at(found, start + at, char_len_at(text, at)),
+        None => Failure::at(ended, start, text.len()),
     };
 
     let (radix, digits_at, entity) = match text {
@@ -45,7 +51,7 @@ pub fn cast_char(input: impl AsRef<[u8]>) -> Result<char, Fault> {
         }
         [b'&', b'#', b'x' | b'X', ..] => (16, 3, true),
         [b'&', b'#', ..] => (10, 2, true),
-        [b'&', ..] => return Err(offending(1)),
+        [b'&', ..] => return Err(offending(1, Site::CharAmpersandMark, Site::CharAmpersandMark)),
         _ => (10, 0, false),
     };
 
@@ -61,18 +67,26 @@ pub fn cast_char(input: impl AsRef<[u8]>) -> Result<char, Fault> {
     }
     let after = digits_at + digits;
     if digits == 0 {
-        return Err(offending(after));
+        // Without a prefix the text never ends here: it is not empty.
+        let found = if digits_at == 0 { Site::CharNotASpelling } else { Site::CharDigitExpected };
+        return Err(offending(after, found, Site::CharBarePrefix));
     }
     if entity {
         match text.get(after) {
             Some(b';') if after + 1 == text.len() => {}
-            Some(b';') => return Err(offending(after + 1)),
-            _ => return Err(offending(after)),
+            Some(b';') => {
+                return Err(offending(
+                    after + 1,
+                    Site::CharEntityTrailing,
+                    Site::CharEntityTrailing,
+                ));
+            }
+            _ => return Err(offending(after, Site::CharEntityStray, Site::CharEntityUnterminated)),
         }
     } else if after != text.len() {
-        return Err(offending(after));
+        return Err(offending(after, Site::CharAfterDigits, Site::CharAfterDigits));
     }
-    char::from_u32(value).ok_or(Fault::out_of_range(start, text.len()))
+    char::from_u32(value).ok_or_else(|| Failure::at(Site::CharNotAScalar, start, text.len()))
 }
 
 /// The scalar `input` encodes when it is exactly one well-formed UTF-8 scalar.

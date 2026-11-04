@@ -1,7 +1,8 @@
 namespace HyperCast;
 
 /// <summary>
-/// The lenience flags of <see cref="NumFormat"/> — bit-for-bit the native core's flags.
+/// The lenience flags of <see cref="NumFormat"/> — bit-for-bit the native core's flags 0 to 7. The
+/// grouping policy (core bits 8 and 9) is <see cref="NumFormat.Grouping"/>, never a style.
 /// </summary>
 [Flags]
 public enum NumStyles : uint
@@ -10,9 +11,11 @@ public enum NumStyles : uint
 	None = 0,
 
 	/// <summary>
-	/// Permit the declared group separator between digits. Group sizes are not validated —
-	/// a separator must simply sit between two digits (HyperCast's own deterministic rule
-	/// where .NET's <c>AllowThousands</c> deferred to per-culture quirks).
+	/// Permit the declared group separator between digits, judged by the format's
+	/// <see cref="NumFormat.Grouping"/>: strict Western by default (<c>1,234,567</c>; <c>12,34</c> is
+	/// <see cref="CastFailure.Malformed"/>), Indian where declared, or, as <see cref="NumGrouping.Legacy"/>,
+	/// 1.0's rule that a separator simply sit between two digits. With this flag off a group
+	/// separator is forbidden under every policy.
 	/// </summary>
 	Grouping = 1,
 
@@ -52,7 +55,7 @@ public enum NumStyles : uint
 	/// <summary>
 	/// Permit the declared <see cref="NumFormat.CurrencySymbol"/> once, at either edge of the
 	/// numeric body — leading, before or after a sign (<c>$5</c>, <c>-$5</c>, <c>$ -5</c>), or
-	/// trailing (<c>5 €</c>, <c>1.234,50 kr.</c>) — with optional whitespace between symbol
+	/// trailing (<c>5 €</c>, <c>1.234,50 kr.</c>) — with optional white space between symbol
 	/// and digits; accounting parentheses wrap symbol and digits together (<c>($5)</c>).
 	/// With the symbol in the text, the digits are read with the declared
 	/// <see cref="NumFormat.CurrencyDecimalSeparator"/> and
@@ -65,7 +68,7 @@ public enum NumStyles : uint
 	/// Permit the sign after the digits — <c>5-</c>, <c>5 -</c>, <c>5 €-</c>, <c>5- €</c>,
 	/// <c>2.5%-</c> — the way a culture whose negative pattern is <c>n-</c> writes it and
 	/// .NET's <c>AllowTrailingSign</c> reads it: ASCII <c>-</c>/<c>+</c> or the declared signs,
-	/// once, with optional whitespace before it, never beside a leading sign or inside
+	/// once, with optional white space before it, never beside a leading sign or inside
 	/// accounting parentheses. Not part of <see cref="All"/>: <see cref="NumFormat.From(System.Globalization.NumberFormatInfo)"/>
 	/// sets it from the culture's own negative pattern rather than assuming it.
 	/// </summary>

@@ -32,11 +32,18 @@ import java.util.UUID;
  * builds the verdict. The JDK 25 tree has a class of the same name and the same members that
  * reaches the core through FFM instead.
  *
+ * <p>Every door crosses through one of the four detailed exports ({@code cast_detailed} and its
+ * three siblings), which alone take the grouping policy a {@link NumFormat} declares, date
+ * options and a month vocabulary, and report what failed; the 1.0 natives below stay declared,
+ * one per export, as {@code check_exports.py} holds every site to the whole ABI, and nothing
+ * calls them. A library without the detailed natives is a 1.0 library, which would ignore a strict
+ * grouping policy, and the count check in {@link Library} fails its load.
+ *
  * <p>A verdict comes back through the thread's {@link Scratch}: the value as two
  * {@code long}s in {@code out[0..2]} on success, the fault's span in {@code out[2..4]} on a
- * fault, and from a checked door its check in {@code out[4..7]} (java/jni/src/lib.rs's
- * {@code Words} and {@code check_words} have each encoding, and the readers below are their
- * other half). A checked door's {@code enum} list crosses as the direct buffer its
+ * fault, from a checked door its check in {@code out[4..7]}, and a fault's detail code in
+ * {@code out[7]} (java/jni/src/lib.rs's {@code Words} and {@code check_words} have each
+ * encoding, and the readers below are their other half). A checked door's {@code enum} list crosses as the direct buffer its
  * {@link Constraints} holds, so it is neither pinned nor copied. A {@code byte[]} crosses pinned for the core call alone when it
  * is at most 64 KiB, and copied into native memory above that; a {@link MemorySegment} is
  * copied into a {@code byte[]} first, since JNI reaches no segment. Nothing here touches
@@ -117,13 +124,32 @@ final class NativeCore {
 
     private static native int castDeclaredDecimal(byte[] in, long[] out);
 
+    private static native int castDetailed(
+            int door,
+            int param,
+            byte[] format,
+            byte[] periods,
+            byte[] dateOptions,
+            ByteBuffer vocabulary,
+            byte[] in,
+            long[] out);
+
+    private static native int castDetailedFromF64(int door, int param, double value, long[] out);
+
+    private static native int castCheckedDetailed(
+            int door, byte[] format, byte[] constraints, ByteBuffer entries, byte[] in, long[] out);
+
+    private static native int castCheckedDetailedFromF64(
+            int door, double value, byte[] constraints, ByteBuffer entries, long[] out);
+
     private static native int jniNatives();
 
     /**
      * The library, loaded once in this holder's class init. A platform this jar ships no build
      * for, or a library that will not load (a temp directory mounted noexec, say), fails this
      * class's init with the reason, and {@link Cast#isAvailable()} says so. A library whose
-     * natives are not the ones this class declares fails the same way. Nothing loads until a
+     * natives are not the ones this class declares fails the same way, as a 1.0 library does: it
+     * implements 33 of the 37. Nothing loads until a
      * member below needs the core: every one touches this holder first.
      */
     private static final class Library {
@@ -183,12 +209,15 @@ final class NativeCore {
      * locking.
      */
     static final class Scratch {
-        // out[0..2] the value, out[2..4] a fault's span, out[4..7] a checked door's check.
+        // out[0..2] the value, out[2..4] a fault's span, out[4..7] a checked door's check, out[7]
+        // a fault's detail code.
         final long[] out = new long[8];
         private final byte[] format = new byte[FORMAT_BYTES];
         private NumFormat formatKey;
         private final byte[] periods = new byte[PERIODS_BYTES];
         private DateTimeFormat periodsKey;
+        private final byte[] dateOptions = new byte[DATE_OPTIONS_BYTES];
+        private DateOptions dateOptionsKey;
 
         private Scratch() {}
 
@@ -214,6 +243,18 @@ final class NativeCore {
             }
             return periods;
         }
+
+        // null when nothing is declared, which the library hands the core as its null.
+        byte[] dateOptions(DateOptions declared) {
+            if (declared == null || declared.isNone()) {
+                return null;
+            }
+            if (dateOptionsKey != declared) {
+                packDateOptions(declared, dateOptions);
+                dateOptionsKey = declared;
+            }
+            return dateOptions;
+        }
     }
 
     private static final ThreadLocal<Scratch> SCRATCH = ThreadLocal.withInitial(Scratch::new);
@@ -231,20 +272,25 @@ final class NativeCore {
 
     // --- calls: each returns the core's code raw ---
 
+    // Every text door is cast_detailed: `door` is the core's code and `param` what it declares.
+    // A layout that is not declared crosses as null, which the library hands the core as its
+    // null; the core reads each declaration only at the doors it is for.
+    private static int detailed(
+            Scratch s,
+            int door,
+            int param,
+            byte[] format,
+            byte[] periods,
+            byte[] dateOptions,
+            ByteBuffer vocabulary,
+            byte[] in) {
+        Library.ensure();
+        return castDetailed(door, param, format, periods, dateOptions, vocabulary, in, s.out);
+    }
+
     /** A text door with nothing declared beside the text. */
     static int plain(Scratch s, int door, byte[] in) {
-        Library.ensure();
-        long[] out = s.out;
-        return switch (door) {
-            case Door.BOOL -> castBool(in, out);
-            case Door.CHAR -> castChar(in, out);
-            case Door.UUID -> castUuid(in, out);
-            case Door.TIMESTAMP -> castTimestamp(in, out);
-            case Door.DATE -> castDate(in, out);
-            case Door.TIME -> castTime(in, out);
-            case Door.DURATION -> castDuration(in, out);
-            default -> throw Door.unknown(door);
-        };
+        return detailed(s, door, 0, null, null, null, null, in);
     }
 
     static int plain(Scratch s, int door, MemorySegment in) {
@@ -254,22 +300,7 @@ final class NativeCore {
     /** A numeric door, under the declared format. */
     static int numeric(Scratch s, int door, byte[] in, NumFormat format) {
         Library.ensure();
-        byte[] declared = s.format(format);
-        long[] out = s.out;
-        return switch (door) {
-            case Door.I8 -> castI8(in, declared, out);
-            case Door.I16 -> castI16(in, declared, out);
-            case Door.I32 -> castI32(in, declared, out);
-            case Door.I64 -> castI64(in, declared, out);
-            case Door.U8 -> castU8(in, declared, out);
-            case Door.U16 -> castU16(in, declared, out);
-            case Door.U32 -> castU32(in, declared, out);
-            case Door.U64 -> castU64(in, declared, out);
-            case Door.F32 -> castF32(in, declared, out);
-            case Door.F64 -> castF64(in, declared, out);
-            case Door.DECIMAL -> castDecimal(in, declared, out);
-            default -> throw Door.unknown(door);
-        };
+        return detailed(s, door, 0, s.format(format), null, null, null, in);
     }
 
     static int numeric(Scratch s, int door, MemorySegment in, NumFormat format) {
@@ -278,14 +309,7 @@ final class NativeCore {
 
     /** A text door with one declared code: the Unix unit, the Excel epoch, the date order. */
     static int declared(Scratch s, int door, byte[] in, int code) {
-        Library.ensure();
-        long[] out = s.out;
-        return switch (door) {
-            case Door.UNIX -> castUnix(in, code, out);
-            case Door.EXCEL_SERIAL -> castExcelSerial(in, code, out);
-            case Door.DATE_ORDERED -> castDateOrdered(in, code, out);
-            default -> throw Door.unknown(door);
-        };
+        return detailed(s, door, code, null, null, null, null, in);
     }
 
     static int declared(Scratch s, int door, MemorySegment in, int code) {
@@ -295,32 +319,53 @@ final class NativeCore {
     /** The civil date-time door: the order, and the designators or {@code null} for none. */
     static int civil(Scratch s, byte[] in, int order, DateTimeFormat format) {
         Library.ensure();
-        return castDatetime(in, order, s.periods(format), s.out);
+        return detailed(s, Door.DATETIME, order, null, s.periods(format), null, null, in);
     }
 
     static int civil(Scratch s, MemorySegment in, int order, DateTimeFormat format) {
         return civil(s, bytes(in), order, format);
     }
 
+    /**
+     * A date door under {@link DateOptions} and a month vocabulary, either {@code null} for
+     * none: the timestamp, date, ordered date and civil date-time doors. {@code param} is the
+     * order at the last two; {@code format} the designators at the civil door only.
+     */
+    static int dated(
+            Scratch s, int door, int param, byte[] in, DateTimeFormat format, DateOptions options, MonthNames months) {
+        Library.ensure();
+        return detailed(
+                s,
+                door,
+                param,
+                null,
+                s.periods(format),
+                s.dateOptions(options),
+                months == null ? null : months.vocabulary(),
+                in);
+    }
+
+    static int dated(
+            Scratch s,
+            int door,
+            int param,
+            MemorySegment in,
+            DateTimeFormat format,
+            DateOptions options,
+            MonthNames months) {
+        return dated(s, door, param, bytes(in), format, options, months);
+    }
+
     /** A typed door: a {@code double} the caller holds. */
     static int typed(Scratch s, int door, double value) {
         Library.ensure();
-        long[] out = s.out;
-        return switch (door) {
-            case Door.DECIMAL_FROM_F64 -> castDecimalFromF64(value, out);
-            case Door.EXCEL_TIME -> castExcelTime(value, out);
-            case Door.EXCEL_DURATION -> castExcelDuration(value, out);
-            default -> throw Door.unknown(door);
-        };
+        return castDetailedFromF64(door, 0, value, s.out);
     }
 
     /** A typed door with one declared code: the Excel serial and its epoch. */
     static int typedDeclared(Scratch s, int door, double value, int code) {
         Library.ensure();
-        if (door != Door.EXCEL_SERIAL_FROM_F64) {
-            throw Door.unknown(door);
-        }
-        return castExcelSerialFromF64(value, code, s.out);
+        return castDetailedFromF64(door, code, value, s.out);
     }
 
     /**
@@ -331,7 +376,7 @@ final class NativeCore {
     static int checked(Scratch s, int door, byte[] in, NumFormat format, Constraints<?> constraints) {
         Library.ensure();
         byte[] declared = format == null ? null : s.format(format);
-        return castChecked(door, declared, constraints.raw(), constraints.entries(), in, s.out);
+        return castCheckedDetailed(door, declared, constraints.raw(), constraints.entries(), in, s.out);
     }
 
     static int checked(Scratch s, int door, MemorySegment in, NumFormat format, Constraints<?> constraints) {
@@ -341,7 +386,17 @@ final class NativeCore {
     /** A checked door over a {@code double} a source already decoded. */
     static int checkedFromF64(Scratch s, int door, double value, Constraints<?> constraints) {
         Library.ensure();
-        return castCheckedFromF64(door, value, constraints.raw(), constraints.entries(), s.out);
+        return castCheckedDetailedFromF64(door, value, constraints.raw(), constraints.entries(), s.out);
+    }
+
+    /**
+     * The core's judgement of a month vocabulary, 1 when it is whole and -1 when the core
+     * refuses it: the vocabulary is judged before the (empty) input is read, so an acceptable
+     * one reads nothing and answers {@code empty}.
+     */
+    static int monthNamesCheck(ByteBuffer vocabulary) {
+        Library.ensure();
+        return castDetailed(Door.DATE_ORDERED, 1, null, null, null, vocabulary, new byte[0], new long[8]);
     }
 
     /** The core's judgement of a declaration: 0, or the refusal code. */
@@ -352,8 +407,7 @@ final class NativeCore {
 
     /** The text door: the span of valid UTF-8 input. */
     static int text(Scratch s, byte[] in) {
-        Library.ensure();
-        return castText(in, s.out);
+        return detailed(s, Door.TEXT, 0, null, null, null, null, in);
     }
 
     static int text(Scratch s, MemorySegment in) {
@@ -492,6 +546,11 @@ final class NativeCore {
         return (int) s.out[3];
     }
 
+    /** The detail code of the fault the last failed call wrote: 1 or more, or 0 for a violation. */
+    static int faultDetail(Scratch s) {
+        return (int) s.out[7];
+    }
+
     // year << 16 | month << 8 | day
     private static LocalDate date(long packed) {
         return LocalDate.of((int) (packed >>> 16) & 0xFFFF, (int) (packed >>> 8) & 0xFF, (int) packed & 0xFF);
@@ -505,12 +564,15 @@ final class NativeCore {
     /** {@code RawDayPeriods}: the size word, then the two designators, then padding. */
     private static final int PERIODS_BYTES = 40;
 
+    /** {@code RawDateOptions}: the size word, the option flags and the pivot. */
+    private static final int DATE_OPTIONS_BYTES = 12;
+
     // The whole layout, zero past each symbol: the memo means a shorter symbol after a
     // longer one must not leave the tail behind. The format was validated when it was built.
     private static void packFormat(NumFormat format, byte[] into) {
         Arrays.fill(into, (byte) 0);
         ByteBuffer buffer = ByteBuffer.wrap(into).order(ByteOrder.nativeOrder());
-        buffer.putInt(FORMAT_BYTES).putInt(format.styles()).putInt(format.digitZero());
+        buffer.putInt(FORMAT_BYTES).putInt(format.flags()).putInt(format.digitZero());
         symbol(buffer, format.decimalSeparator(), 8);
         symbol(buffer, format.groupSeparator(), 8);
         symbol(buffer, format.currencyDecimalSeparator(), 8);
@@ -519,6 +581,14 @@ final class NativeCore {
         symbol(buffer, format.plusSign(), 8);
         symbol(buffer, format.percentSymbol(), 8);
         symbol(buffer, format.currencySymbol(), 16);
+    }
+
+    private static void packDateOptions(DateOptions options, byte[] into) {
+        ByteBuffer.wrap(into)
+                .order(ByteOrder.nativeOrder())
+                .putInt(DATE_OPTIONS_BYTES)
+                .putInt(options.flags())
+                .putInt(options.pivot());
     }
 
     private static void packPeriods(DateTimeFormat format, byte[] into) {

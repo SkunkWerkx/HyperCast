@@ -81,10 +81,28 @@ module HyperCast
       Decimal.new(magnitude: (hi << 64) | lo, scale: scale, negative: negative != 0)
     end
 
-    # The Fault a nonzero verdict code and its span name. A code that names no reason is a
-    # binding bug, not data: a KeyError.
-    def fault(code, offset, length)
-      Fault.new(reason: REASONS.fetch(code), offset: offset, length: length)
+    # The bytes of the ABI's size-tagged RawFaultDetail: the size word (16), then the span's
+    # offset and length and the detail code, each a u32 in the host's byte order. The core never
+    # writes the size word, and a caller's buffer larger than this is accepted (it writes only
+    # the last twelve bytes of these sixteen).
+    FAULT_BYTES = 16
+
+    # The Fault a nonzero verdict code and its span name, with the core's detail code when one
+    # is given (nil, or 0 for "no detail", leaves Fault#detail nil). A code that names no reason
+    # is a binding bug, not data: a KeyError. A detail code this gem does not name is kept, as a
+    # Detail whose #name is :unknown.
+    def fault(code, offset, length, detail = nil)
+      Fault.new(reason: REASONS.fetch(code), offset: offset, length: length,
+                detail: detail.nil? || detail.zero? ? nil : Detail.of(detail))
+    end
+
+    # The Fault a verdict code and the 16 bytes of a RawFaultDetail name. With +bytes+ (the
+    # UTF-8 the core read) the span is mapped to the units String#[] slices by, as #characters
+    # does; without them (a typed door has no text) it is as written.
+    def raw_fault(code, raw, bytes = nil)
+      offset, length, detail = raw.unpack("x4L3")
+      offset, length = characters(bytes, offset, length) if bytes
+      fault(code, offset, length, detail)
     end
 
     # The core's byte span over +bytes+, in the units String#[] slices by: an identity for a

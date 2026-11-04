@@ -132,7 +132,7 @@ func TestCurrencyDeclaredButStyleOffIsMalformedAtTheSymbol(t *testing.T) {
 }
 
 func TestInvalidCurrencySymbolsPanic(t *testing.T) {
-	for _, symbol := range []string{"$1", "US $", "\t€", "seventeen-bytes!!", "\xff"} {
+	for _, symbol := range []string{"$1", " €", "\t€", "\v€", "€\u00a0", "\u202fF CFA", "F CFA\u3000", "seventeen-bytes!!", "\xff"} {
 		func() {
 			defer func() {
 				if recover() == nil {
@@ -141,6 +141,18 @@ func TestInvalidCurrencySymbolsPanic(t *testing.T) {
 			}()
 			I32("5", NumFormat{DecimalSep: ".", GroupSep: ",", Styles: AllStyles, Currency: symbol})
 		}()
+	}
+	// White space inside the symbol is fine: CLDR's CFA franc, declared with any of the three
+	// space-like characters, reads any of them in the input.
+	for _, declared := range []string{" ", "\u00a0", "\u202f"} {
+		cfa := NumFormat{DecimalSep: ".", GroupSep: ",", Styles: AllStyles, Currency: "F" + declared + "CFA"}
+		for _, written := range []string{" ", "\u00a0", "\u202f"} {
+			for _, text := range []string{"5 F" + written + "CFA", "F" + written + "CFA 5"} {
+				if value, fault := I32(text, cfa); fault != nil || value != 5 {
+					t.Errorf("declared %q, %q: got %v %v", cfa.Currency, text, value, fault)
+				}
+			}
+		}
 	}
 	// Exactly 16 bytes is the ceiling, not past it.
 	sixteen := NumFormat{DecimalSep: ".", GroupSep: ",", Styles: AllStyles, Currency: "sixteen-bytes-ok"}
@@ -501,6 +513,10 @@ func TestAFormatTheCoreWouldRefusePanics(t *testing.T) {
 		{DecimalSep: "", GroupSep: ",", Styles: AllStyles},
 		{DecimalSep: ".", GroupSep: ",", Styles: AllStyles, CurrencyDecimalSep: ","},
 		{DecimalSep: ".", GroupSep: ",", Styles: AllStyles, MinusSign: "- "},
+		{DecimalSep: ".", GroupSep: ",", Styles: AllStyles, MinusSign: "\u00a0"},
+		{DecimalSep: ".", GroupSep: ",", Styles: AllStyles, PlusSign: "+\u202f"},
+		{DecimalSep: "\u00a0", GroupSep: ",", Styles: AllStyles},
+		{DecimalSep: ".", GroupSep: ",", Styles: AllStyles, CurrencyDecimalSep: "\u2009"},
 		{DecimalSep: ".", GroupSep: ",", Styles: AllStyles, Percent: "%1"},
 		{DecimalSep: ".", GroupSep: ",", Styles: AllStyles, DigitZero: '0'},
 		{DecimalSep: ".", GroupSep: "123456789", Styles: AllStyles},

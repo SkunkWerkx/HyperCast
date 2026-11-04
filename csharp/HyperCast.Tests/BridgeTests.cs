@@ -25,16 +25,254 @@ public sealed class BridgeTests
 	}
 
 	// The bridge's rule for a designator, restated: declared unless it is the English one,
-	// wider than the layout, carries an ASCII digit, or is edged with ASCII whitespace.
+	// wider than the layout, carries an ASCII digit, or is edged with white space (the
+	// corpus's set, not the binding's table).
 	static string Expected(string designator, string english) =>
 		designator.Length == 0
 			|| designator.Equals(english, StringComparison.OrdinalIgnoreCase)
 			|| Encoding.UTF8.GetByteCount(designator) > DateFormat.MaxDesignatorBytes
 			|| designator.Any(char.IsAsciiDigit)
-			|| designator[0] is ' ' or '\t' or '\n' or '\f' or '\r'
-			|| designator[^1] is ' ' or '\t' or '\n' or '\f' or '\r'
+			|| CorpusTests.IsWhiteSpace(designator[0])
+			|| CorpusTests.IsWhiteSpace(designator[^1])
 			? ""
 			: designator;
+
+	// Whether the core can read the symbol, restated: one to `maxBytes` bytes of whole code
+	// points, no ASCII digit, and no white space unless it is a group separator.
+	static bool Readable(string symbol, int maxBytes, bool mayHoldWhiteSpace)
+	{
+		if (symbol.Length == 0 || symbol.Any(char.IsAsciiDigit) || (!mayHoldWhiteSpace && symbol.Any(static c => CorpusTests.IsWhiteSpace(c))))
+			return false;
+		for (var i = 0; i < symbol.Length; i++)
+			if (char.IsLowSurrogate(symbol[i]) || (char.IsHighSurrogate(symbol[i]) && !(++i < symbol.Length && char.IsLowSurrogate(symbol[i]))))
+				return false;
+		return Encoding.UTF8.GetByteCount(symbol) <= maxBytes;
+	}
+
+	// A sign or percent symbol the bridge declares: not the ASCII one, and readable with no
+	// white space in it.
+	static string ExpectedSymbol(string symbol, string ascii, int maxBytes) =>
+		symbol != ascii && Readable(symbol, maxBytes, mayHoldWhiteSpace: false) ? symbol : "";
+
+	// The currency symbol the bridge declares: readable, with white space allowed inside (CLDR's
+	// `F CFA`) but not at either edge.
+	static string ExpectedCurrency(string symbol) =>
+		Readable(symbol, NumFormat.MaxCurrencyBytes, mayHoldWhiteSpace: true)
+			&& !CorpusTests.IsWhiteSpace(symbol[0]) && !CorpusTests.IsWhiteSpace(symbol[^1])
+			? symbol
+			: "";
+
+	// The separators the bridge declares for a culture's number data, restated: the culture's
+	// where readable (a decimal separator with no white space, a group separator with any),
+	// else the ASCII default; a group equal to the decimal one takes the other of the ASCII
+	// pair; the currency pair only where it differs from the number pair and does not collide.
+	static (string Decimal, string Group, string CurrencyDecimal, string CurrencyGroup) ExpectedSeparators(NumberFormatInfo data)
+	{
+		var number = Readable(data.NumberDecimalSeparator, NumFormat.MaxSymbolBytes, false) ? data.NumberDecimalSeparator : ".";
+		var group = Readable(data.NumberGroupSeparator, NumFormat.MaxSymbolBytes, true) ? data.NumberGroupSeparator : ",";
+		if (group == number)
+			group = number == "," ? "." : ",";
+		var currencyNumber = Readable(data.CurrencyDecimalSeparator, NumFormat.MaxSymbolBytes, false) ? data.CurrencyDecimalSeparator : number;
+		var currencyGroup = Readable(data.CurrencyGroupSeparator, NumFormat.MaxSymbolBytes, true) ? data.CurrencyGroupSeparator : group;
+		if (currencyNumber == currencyGroup)
+			return (number, group, "", "");
+		return (number, group, currencyNumber == number ? "" : currencyNumber, currencyGroup == group ? "" : currencyGroup);
+	}
+
+	// A format as the bridge declares it for hand-built group sizes: everything else invariant.
+	static NumFormat WithSizes(int[] number, int[] currency)
+	{
+		var data = (NumberFormatInfo)CultureInfo.InvariantCulture.NumberFormat.Clone();
+		data.NumberGroupSizes = number;
+		data.CurrencyGroupSizes = currency;
+		return NumFormat.From(data);
+	}
+
+	// The rule, restated from the owner's text: only a pattern that groups counts (a leading 0 is none); all of them
+	// [3] is Western, all [3, 2] Indian, anything else legacy; the flag goes only when neither groups.
+	static (NumGrouping, bool) ExpectedGrouping(int[] number, int[] currency)
+	{
+		var patterns = new[] { number, currency }.Where(static p => p.Length != 0 && p[0] != 0).ToArray();
+		if (patterns.Length == 0)
+			return (NumGrouping.Western, false);
+		if (patterns.All(static p => p is [3] or [3, 3]))
+			return (NumGrouping.Western, true);
+		if (patterns.All(static p => p is [3, 2] or [3, 2, 2]))
+			return (NumGrouping.Indian, true);
+		return (NumGrouping.Legacy, true);
+	}
+
+	[Fact]
+	void A_cultures_own_patterns_decide_the_grouping_policy_never_its_name()
+	{
+		// ICU spells en-IN and hi-IN with the Indian pattern, en-US and de-DE with the Western one.
+		Culture("en-IN").NumberFormat.NumberGroupSizes.ShouldBe([3, 2]);
+		Culture("en-IN").NumberFormat.CurrencyGroupSizes.ShouldBe([3, 2]);
+		foreach (var name in new[] { "en-IN", "hi-IN" })
+			NumFormat.From(Culture(name)).Grouping.ShouldBe(NumGrouping.Indian, name);
+		foreach (var name in new[] { "en-US", "de-DE", "fr-FR", "" })
+		{
+			NumFormat.From(Culture(name)).Grouping.ShouldBe(NumGrouping.Western, name);
+			NumFormat.From(Culture(name)).Styles.HasFlag(NumStyles.Grouping).ShouldBeTrue(name);
+		}
+		// The next three shapes depend on the runtime's ICU (Windows' spells tok [3], Linux's spells
+		// en-BG's currency [3]), so each is proven on sizes set by hand, and on the culture where it has them.
+		static NumberFormatInfo Sized(int[] number, int[] currency)
+		{
+			var sized = (NumberFormatInfo)CultureInfo.InvariantCulture.NumberFormat.Clone();
+			sized.NumberGroupSizes = number;
+			sized.CurrencyGroupSizes = currency;
+			return sized;
+		}
+		// Toki Pona groups by twos, which no policy names: legacy, which reads them.
+		NumFormat.From(Sized([2], [2])).Grouping.ShouldBe(NumGrouping.Legacy);
+		foreach (var name in new[] { "tok", "tok-001" })
+			if (Culture(name).NumberFormat is { NumberGroupSizes: [2], CurrencyGroupSizes: [2] })
+				NumFormat.From(Culture(name)).Grouping.ShouldBe(NumGrouping.Legacy, name);
+		// en-US-POSIX writes no grouping anywhere ([0]): the flag goes, since nothing is grouped.
+		NumFormat.From(Sized([0], [0])).Styles.HasFlag(NumStyles.Grouping).ShouldBeFalse();
+		if (Culture("en-US-POSIX").NumberFormat is { NumberGroupSizes: [0], CurrencyGroupSizes: [0] })
+			NumFormat.From(Culture("en-US-POSIX")).Styles.HasFlag(NumStyles.Grouping).ShouldBeFalse();
+		// en-BG groups numbers and not currency: the flag stays for the one that does, as Western.
+		foreach (var oneSided in new[] { Sized([3], [0]), Culture("en-BG").NumberFormat })
+		{
+			var bulgaria = NumFormat.From(oneSided);
+			bulgaria.Grouping.ShouldBe(NumGrouping.Western);
+			bulgaria.Styles.HasFlag(NumStyles.Grouping).ShouldBeTrue();
+		}
+		// ICU's ml, ta, mr and or write Indian numbers and Western currency: they disagree, so legacy.
+		foreach (var name in new[] { "ml-IN", "ta-IN", "mr-IN", "or-IN" })
+			if (Culture(name).NumberFormat.NumberGroupSizes is [3, 2] && Culture(name).NumberFormat.CurrencyGroupSizes is [3])
+				NumFormat.From(Culture(name)).Grouping.ShouldBe(NumGrouping.Legacy, name);
+		var disagreeing = CultureInfo.GetCultures(CultureTypes.AllCultures)
+			.Where(static c => c.NumberFormat.NumberGroupSizes is [3, 2] != c.NumberFormat.CurrencyGroupSizes is [3, 2]).ToArray();
+		foreach (var culture in disagreeing)
+			NumFormat.From(culture).Grouping.ShouldBe(NumGrouping.Legacy, culture.Name);
+
+		// The policy is read from the sizes, not the name: an English locale given the Indian sizes is Indian,
+		// an Indian one given the Western sizes is Western.
+		var indian = (NumberFormatInfo)Culture("en-US").NumberFormat.Clone();
+		indian.NumberGroupSizes = [3, 2];
+		indian.CurrencyGroupSizes = [3, 2];
+		NumFormat.From(indian).Grouping.ShouldBe(NumGrouping.Indian);
+		var western = (NumberFormatInfo)Culture("hi-IN").NumberFormat.Clone();
+		western.NumberGroupSizes = [3];
+		western.CurrencyGroupSizes = [3];
+		NumFormat.From(western).Grouping.ShouldBe(NumGrouping.Western);
+	}
+
+	[Fact]
+	void A_number_and_a_currency_pattern_share_one_policy_and_one_flag()
+	{
+		// (number, currency) → policy, and whether the flag stays. Only patterns that group count.
+		(int[] Number, int[] Currency, NumGrouping Policy, bool Groups)[] cases =
+		[
+			([3], [3], NumGrouping.Western, true),
+			([3, 2], [3, 2], NumGrouping.Indian, true),
+			([3], [3, 2], NumGrouping.Legacy, true),        // Western + Indian disagree
+			([3, 2], [3], NumGrouping.Legacy, true),
+			([3, 2], [0], NumGrouping.Indian, true),        // Indian + none
+			([0], [3, 2], NumGrouping.Indian, true),
+			([3], [0], NumGrouping.Western, true),          // Western + none
+			([0], [3], NumGrouping.Western, true),
+			([3], [2], NumGrouping.Legacy, true),           // Western + other
+			([2], [3], NumGrouping.Legacy, true),
+			([3, 2], [2], NumGrouping.Legacy, true),        // Indian + other
+			([2], [2], NumGrouping.Legacy, true),           // Toki Pona
+			([0], [2], NumGrouping.Legacy, true),           // none + other
+			([0], [0], NumGrouping.Western, false),         // none + none: the flag is cleared
+			([], [], NumGrouping.Western, false),
+			// .NET's meaning of the sizes: the last nonzero size repeats, a trailing 0 ends grouping.
+			([3, 3], [3], NumGrouping.Western, true),
+			([3, 2, 2], [3, 2], NumGrouping.Indian, true),
+			([3, 0], [3], NumGrouping.Legacy, true),        // 1234,567: finite, no policy
+			([3, 2, 0], [3, 2, 0], NumGrouping.Legacy, true),
+			([2, 3], [3], NumGrouping.Legacy, true),
+			([4], [4], NumGrouping.Legacy, true),
+		];
+		foreach (var (number, currency, policy, groups) in cases)
+		{
+			var label = $"[{string.Join(",", number)}] / [{string.Join(",", currency)}]";
+			var format = WithSizes(number, currency);
+			format.Grouping.ShouldBe(policy, label);
+			format.Styles.HasFlag(NumStyles.Grouping).ShouldBe(groups, label);
+		}
+		// The caller-built number [3] with currency [3, 2]: legacy, so each reads its own amounts.
+		var mixed = WithSizes([3], [3, 2]);
+		(Cast.Int32("1,234,567", mixed) is Success<int> { Value: 1_234_567 }).ShouldBeTrue();
+		(Cast.Int32("12,34,567", mixed) is Success<int> { Value: 1_234_567 }).ShouldBeTrue();
+		// Cleared grouping forbids a group separator, which no pattern of this culture writes.
+		(Cast.Int32("1,234", WithSizes([0], [0])) is Fault).ShouldBeTrue();
+		(Cast.Int32("1234", WithSizes([0], [0])) is Success<int> { Value: 1234 }).ShouldBeTrue();
+		// One flag serves both: with just the number grouped, an ungrouped amount is still valid.
+		(Cast.Int32("1234", WithSizes([3], [0])) is Success<int> { Value: 1234 }).ShouldBeTrue();
+	}
+
+	// What a platform writes it must read: the bridge's format against the culture's own "N" and "C" output.
+	static readonly decimal[] _values = [0, 7, 12.5m, 123, 1234, 12345.67m, 123456, 1234567.89m, 12345678, -1234567.89m, -42];
+
+	static void ReadsItsOwnOutput(CultureInfo culture)
+	{
+		var format = NumFormat.From(culture);
+		foreach (var value in _values)
+			foreach (var specifier in new[] { "N2", "C2", "N0" })
+			{
+				var text = value.ToString(specifier, culture);
+				var expected = decimal.Round(value, specifier == "N0" ? 0 : 2, MidpointRounding.AwayFromZero);
+				var verdict = Cast.Decimal(text, format);
+				(verdict.TryGetValue(out Success<decimal> ok) && ok.Value == expected)
+					.ShouldBeTrue($"{culture.Name}: {specifier} of {value} is '{text}', read as {verdict}");
+			}
+	}
+
+	[Fact]
+	void The_bridge_reads_what_representative_cultures_write()
+	{
+		foreach (var name in new[] { "tok", "en-IN", "hi-IN", "en-US", "en-BG", "en-US-POSIX", "de-DE", "fr-FR", "ml-IN", "ta-IN", "mr-IN", "or-IN", "de-CH", "ar-SA", "" })
+			ReadsItsOwnOutput(Culture(name));
+		// tok writes twos (1 23 45 67), which the legacy fallback reads; it could not before.
+		var tok = Culture("tok");
+		(Cast.Decimal(1234567.89m.ToString("N2", tok), NumFormat.From(tok)) is Success<decimal> { Value: 1234567.89m }).ShouldBeTrue();
+	}
+
+	/// <summary>
+	/// The rule held on every culture this runtime ships, as far as the data goes: the bridge's format reads the
+	/// culture's own formatted numbers and amounts. A culture is skipped only where its formatter and the
+	/// bridge differ for a reason that is not grouping (a symbol the core cannot read, left undeclared), which
+	/// is checked to be so.
+	/// </summary>
+	[Fact]
+	void The_bridge_reads_every_shipped_cultures_own_grouped_output()
+	{
+		var failures = new List<string>();
+		foreach (var culture in CultureInfo.GetCultures(CultureTypes.AllCultures))
+		{
+			var format = NumFormat.From(culture);
+			foreach (var value in new[] { 1234567.89m, 12345678.5m, 1234m })
+				foreach (var specifier in new[] { "N2", "C2" })
+				{
+					// A culture spelling both separators alike (mn-Mong-MN on Windows: `1,234,567,89`)
+					// writes text no reader can split.
+					var numbers = culture.NumberFormat;
+					if (specifier == "N2" ? numbers.NumberDecimalSeparator == numbers.NumberGroupSeparator : numbers.CurrencyDecimalSeparator == numbers.CurrencyGroupSeparator)
+						continue;
+					var text = value.ToString(specifier, culture);
+					if (Cast.Decimal(text, format) is Success<decimal> { Value: var read } && read == decimal.Round(value, 2, MidpointRounding.AwayFromZero))
+						continue;
+					failures.Add($"{culture.Name} {specifier} '{text}'");
+				}
+		}
+		// Anything this misses must be a symbol, never the digit groups: the same text with the groups taken out fares no better.
+		foreach (var culture in CultureInfo.GetCultures(CultureTypes.AllCultures))
+		{
+			var format = NumFormat.From(culture);
+			var text = 1234567.89m.ToString("N2", culture);
+			var verdict = Cast.Decimal(text, format);
+			if (verdict.TryGetValue(out Fault fault))
+				fault.Detail.ShouldNotBe(FaultDetail.GroupSize, $"{culture.Name} '{text}'");
+		}
+		failures.ShouldBeEmpty(string.Join("; ", failures.Take(20)));
+	}
 
 	[Fact]
 	void A_cultures_own_minus_sign_is_read_beside_the_ascii_one()
@@ -239,8 +477,8 @@ public sealed class BridgeTests
 			(Cast.DateTime("2026-01-07 3:04 pm", format with { Order = DateOrder.YearMonthDay }) is Success<DateTime> { Value: var value } && value == new DateTime(2026, 1, 7, 15, 4, 0)).ShouldBeTrue(am);
 		}
 		// A designator the layout cannot carry (Thai's and Nepali's words run past 16 bytes),
-		// one carrying an ASCII digit (Anii writes `1ka`/`1la`), and one edged with ASCII
-		// whitespace are left undeclared rather than thrown on, each judged on its own; the
+		// one carrying an ASCII digit (Anii writes `1ka`/`1la`), and one edged with white
+		// space (any kind) are left undeclared rather than thrown on, each judged on its own; the
 		// culture reads the English pair beside whatever is declared. Sixteen bytes exactly fits.
 		var sixteen = new string('ä', 8);
 		var seventeen = sixteen + "x";
@@ -251,6 +489,10 @@ public sealed class BridgeTests
 			("1ka", "1la", "", ""),
 			("vorm. ", "nachm.", "", "nachm."),
 			(" vorm.", "\tnachm.", "", ""),
+			("vorm.\u00A0", "nachm.", "", "nachm."),
+			("\u202Fvorm.", "\u3000nachm.", "", ""),
+			("vorm.\u2009", "\u0085nachm.", "", ""),
+			("a.\u202Fm.", "p.\u00A0m.", "a.\u202Fm.", "p.\u00A0m."),
 			("a. m.", "p. m.", "a. m.", "p. m."),
 		})
 		{
@@ -301,10 +543,47 @@ public sealed class BridgeTests
 		(odd.CurrencyDecimalSeparator, odd.CurrencyGroupSeparator).ShouldBe(("", ""));
 		Should.NotThrow(() => odd.ToRaw());
 		(Cast.Int32("-1,234", odd) is Success<int> { Value: -1234 }).ShouldBeTrue();
-		// A whitespace separator is one some cultures declare, and is read.
+		// A white-space group separator is one some cultures declare, and is read: any of the
+		// space-like three stands for the others at the door.
 		var spaced = NumFormat.From(new NumberFormatInfo { NumberGroupSeparator = " " });
 		spaced.GroupSeparator.ShouldBe(" ");
 		(Cast.Int32("1 234", spaced) is Success<int> { Value: 1234 }).ShouldBeTrue();
+		var narrow = NumFormat.From(new NumberFormatInfo { NumberDecimalSeparator = ",", NumberGroupSeparator = "\u202F", CurrencyDecimalSeparator = ",", CurrencyGroupSeparator = "\u00A0", CurrencySymbol = "€" });
+		(narrow.GroupSeparator, narrow.CurrencyGroupSeparator).ShouldBe(("\u202F", "\u00A0"));
+		(Cast.Int32("1\u00A0234", narrow) is Success<int> { Value: 1234 }).ShouldBeTrue();
+		(Cast.Decimal("1\u202F234,56\u00A0€", narrow) is Success<decimal> { Value: 1234.56m }).ShouldBeTrue();
+		// White space in a decimal separator, a sign or the percent symbol, or at the edge of a
+		// currency symbol, can never match the input (white space around a symbol is ignored), so
+		// each is left undeclared: a decimal separator falls back to the ASCII default, and a
+		// symbol to the ASCII spelling alone. Inside a currency symbol it is the symbol's own.
+		var blank = NumFormat.From(new NumberFormatInfo
+		{
+			NumberDecimalSeparator = "\u00A0",
+			NumberGroupSeparator = "\u202F",
+			CurrencyDecimalSeparator = "\u202F ",
+			CurrencyGroupSeparator = "\u00A0",
+			CurrencySymbol = "Kč\u00A0",
+			NegativeSign = "\u00A0-",
+			PositiveSign = "+\u202F",
+			PercentSymbol = "\u3000%",
+		});
+		(blank.DecimalSeparator, blank.GroupSeparator, blank.CurrencySymbol).ShouldBe((".", "\u202F", ""));
+		(blank.MinusSign, blank.PlusSign, blank.PercentSymbol).ShouldBe(("", "", ""));
+		(blank.CurrencyDecimalSeparator, blank.CurrencyGroupSeparator).ShouldBe(("", "\u00A0"));
+		Should.NotThrow(() => blank.ToRaw());
+		(Cast.Decimal("1\u00A0234.5", blank) is Success<decimal> { Value: 1234.5m }).ShouldBeTrue();
+		// The CFA franc: CLDR's symbol holds a U+202F, the input writes any of the space-like
+		// three there, and the symbol stays declared whole.
+		foreach (var cfa in new[] { "F\u202FCFA", "F\u00A0CFA", "F CFA", "F\u2009CFA" })
+		{
+			var franc = NumFormat.From(new NumberFormatInfo { CurrencySymbol = cfa });
+			franc.CurrencySymbol.ShouldBe(cfa);
+			Should.NotThrow(() => franc.ToRaw(), cfa);
+		}
+		var cfaFormat = NumFormat.From(new NumberFormatInfo { CurrencySymbol = "F\u202FCFA", NumberDecimalSeparator = ",", CurrencyDecimalSeparator = ",", NumberGroupSeparator = "\u00A0", CurrencyGroupSeparator = "\u00A0" });
+		foreach (var space in new[] { "\u202F", "\u00A0", " " })
+			(Cast.Decimal($"1\u00A0234,5{space}F{space}CFA", cfaFormat) is Success<decimal> { Value: 1234.5m }).ShouldBeTrue();
+		(Cast.Decimal("F\u00A0CFA 5", cfaFormat) is Success<decimal> { Value: 5m }).ShouldBeTrue();
 		// A lone surrogate half is not whole code points; the symbol is left undeclared.
 		NumFormat.From(new NumberFormatInfo { CurrencySymbol = "\ud83d" }).CurrencySymbol.ShouldBe("");
 		NumFormat.From(new NumberFormatInfo { CurrencySymbol = "💰" }).CurrencySymbol.ShouldBe("💰");
@@ -314,6 +593,10 @@ public sealed class BridgeTests
 	/// Every culture this runtime ships maps to a format and a date format the core accepts:
 	/// the bridge never throws on real data, and nothing it builds is a contract violation
 	/// at the crossing (which a door would surface as an <see cref="InvalidOperationException"/>).
+	/// It also asserts which symbols stay undeclared, by the rules restated above: an unreadable
+	/// culture symbol (a digit, white space in a sign, percent or decimal separator or at the
+	/// edge of a currency symbol, past its buffer) is left out, never worked around; white space
+	/// inside a currency symbol (the CFA franc's <c>F CFA</c>) stays declared.
 	/// </summary>
 	[Fact]
 	void Every_shipped_culture_bridges_without_a_throw_and_crosses_without_a_violation()
@@ -324,6 +607,16 @@ public sealed class BridgeTests
 		{
 			var format = NumFormat.From(culture);
 			Should.NotThrow(() => format.ToRaw(), culture.Name);
+			var data = culture.NumberFormat;
+			var (number, group, currencyNumber, currencyGroup) = ExpectedSeparators(data);
+			(format.DecimalSeparator, format.GroupSeparator, format.CurrencyDecimalSeparator, format.CurrencyGroupSeparator)
+				.ShouldBe((number, group, currencyNumber, currencyGroup), culture.Name);
+			(format.MinusSign, format.PlusSign, format.PercentSymbol, format.CurrencySymbol).ShouldBe((
+				ExpectedSymbol(data.NegativeSign, "-", NumFormat.MaxSymbolBytes), ExpectedSymbol(data.PositiveSign, "+", NumFormat.MaxSymbolBytes),
+				ExpectedSymbol(data.PercentSymbol, "%", NumFormat.MaxSymbolBytes), ExpectedCurrency(data.CurrencySymbol)), culture.Name);
+			// The grouping is what the culture's own patterns write, restated below.
+			var (policy, groups) = ExpectedGrouping(data.NumberGroupSizes, data.CurrencyGroupSizes);
+			(format.Grouping, format.Styles.HasFlag(NumStyles.Grouping)).ShouldBe((policy, groups), culture.Name);
 			(Cast.Int32("1", format) is Success<int> { Value: 1 }).ShouldBeTrue(culture.Name);
 			(Cast.Double($"1{format.DecimalSeparator}5", format) is Success<double> { Value: 1.5 }).ShouldBeTrue(culture.Name);
 			var dateFormat = DateFormat.From(culture);

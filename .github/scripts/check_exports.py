@@ -5,10 +5,13 @@ the one file that exports (cbindgen generates include/hypercast.h from it). Each
 SITES, and any difference fails the check: a missing export means a door nobody added to that
 binding, and an extra one means the binding still declares a door the core dropped or renamed.
 Both of those otherwise surface late, in one binding's suite on whichever leg calls the door.
+The one allowance is SUPERSEDES: a site that calls a 1.1 detailed export may omit the 1.0
+exports that export reaches by door code.
 
 The Python and Ruby extensions are not C ABI consumers: they link the core as a Rust crate
 and register the doors under their language's spelling, so their sites map each export to
-that spelling (a None folds the export into another entry point). The PHP extension
+that spelling (a None folds the export into another entry point: the four detailed exports
+fold into the doors, which are the core's detailed doors). The PHP extension
 (rust/src/php_ext/) is not a C ABI consumer either, and calls the core's Rust API, so it has no
 site; php_guard holds every PHP-callable function in it to `guard(`, and php_link its extern blocks to the php8/php8ts pair.
 
@@ -43,6 +46,80 @@ def python_spelling(export):
     if export == "cast_date_ordered":
         return None
     return export.replace("_from_f64", "_from_float")
+
+
+# The 1.1 detailed exports and the 1.0 exports each one reaches by door code, as
+# include/hypercast.h documents them: cast_detailed reads every text door (Door's codes 1 to
+# 23, cast_text's span at 18), cast_detailed_from_f64 the four typed doors, and the checked
+# pair the two checked exports. A site that calls a detailed export may omit the 1.0 exports
+# it supersedes (a binding that routes its doors through it no longer calls them); a site may
+# still declare them (C, C++ and C# declare every export). The exports no detailed one reaches
+# (hypercast_version, cast_constraints_check, cast_declared_decimal) and the four detailed
+# exports themselves are required at every site, in the site's own spelling.
+SUPERSEDES = {
+    "cast_detailed": (
+        "cast_bool",
+        "cast_i8",
+        "cast_i16",
+        "cast_i32",
+        "cast_i64",
+        "cast_u8",
+        "cast_u16",
+        "cast_u32",
+        "cast_u64",
+        "cast_f32",
+        "cast_f64",
+        "cast_uuid",
+        "cast_timestamp",
+        "cast_unix",
+        "cast_date",
+        "cast_time",
+        "cast_duration",
+        "cast_text",
+        "cast_decimal",
+        "cast_date_ordered",
+        "cast_datetime",
+        "cast_excel_serial",
+        "cast_char",
+    ),
+    "cast_detailed_from_f64": (
+        "cast_decimal_from_f64",
+        "cast_excel_serial_from_f64",
+        "cast_excel_time",
+        "cast_excel_duration",
+    ),
+    "cast_checked_detailed": ("cast_checked",),
+    "cast_checked_detailed_from_f64": ("cast_checked_from_f64",),
+}
+
+DETAILED = set(SUPERSEDES)
+
+
+def detail_folded(spelling):
+    """`spelling`, with the four detailed exports folded (None) into the existing doors: for
+    an extension that links the core as a Rust crate, each door it registers is the core's
+    own `detailed` door (a fault carries its detail), so there is no second door to declare,
+    and its 1.0 doors are required."""
+
+    def spelled(export):
+        return None if export in DETAILED else spelling(export)
+
+    spelled.__doc__ = f"{spelling.__name__}, with the detailed exports folded into the doors."
+    return spelled
+
+
+def superseded(wants, got):
+    """The names a site may omit: each 1.0 export, in the site's spelling, whose detailed
+    export the site calls. A detailed export the site folds (None) supersedes nothing."""
+    optional = set()
+    for detailed, olds in SUPERSEDES.items():
+        spelled = wants(detailed)
+        if spelled is not None and spelled in got:
+            optional |= {wants(old) for old in olds}
+    return optional - {None}
+
+
+pyo3_spelling = detail_folded(python_spelling)
 
 
 def ts_spelling(export):
@@ -282,8 +359,9 @@ def php_link(directory):
 
 
 def ruby_spelling(export):
-    """ruby_ext.rs's name: Python's, without the cast_ prefix (the module is the namespace)."""
-    spelled = python_spelling(export)
+    """ruby_ext.rs's name: the Python extension's (detailed exports folded), without the
+    cast_ prefix (the module is the namespace)."""
+    spelled = pyo3_spelling(export)
     return spelled and spelled.removeprefix("cast_")
 
 
@@ -294,6 +372,22 @@ _SWIFT_NOISE = re.compile(
     r'//[^\n]*|/\*.*?\*/|(#+)"""(?:.)*?"""\1|"""(?:\\.|[^\\])*?"""|(#+)"[^\n]*?"\2|"(?:\\.|[^"\\\n])*"',
     re.DOTALL,
 )
+
+
+# C, C++ and Go comments and string, char and raw-string literals.
+_C_NOISE = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])\'|`[^`]*`', re.DOTALL)
+
+
+def code_only(pattern):
+    """A site pattern that reads only code: comments and literals are blanked first, so a
+    comment naming an export never stands in for a call."""
+
+    def calls(text):
+        masked = _C_NOISE.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), text)
+        return [g for m in re.finditer(pattern, masked, re.MULTILINE) for g in m.groups() if g]
+
+    calls.pattern = pattern
+    return calls
 
 
 def swift_calls(text):
@@ -307,7 +401,9 @@ def swift_calls(text):
 # (binding, [(file glob, pattern)], what it must declare, names it may declare besides).
 # A pattern is a regex whose groups are the names, or a function from the file's text to them.
 # `all` is every export, `doors` every export but the version probe, and a function maps
-# each export to the binding's own name.
+# each export to the binding's own name. At every site, SUPERSEDES lets a binding that calls a
+# detailed export omit the 1.0 exports it supersedes (see superseded()). `code_only` sites
+# blank comments and literals first, so a comment naming an export is not a call.
 SITES = [
     (
         "C# (P/Invoke)",
@@ -380,9 +476,9 @@ SITES = [
     ),
     (
         # The binding's use of the translated core: every export is named in go/core.go, as a
-        # method expression (the doors cast.go passes around) or a call.
+        # method expression (the doors cast.go passes around) or a call, in code.
         "Go (binding calls)",
-        [("go/core.go", r"\.X((?:cast|hypercast)_\w+)\b")],
+        [("go/core.go", code_only(r"\.X((?:cast|hypercast)_\w+)\b"))],
         "all",
         (),
     ),
@@ -400,7 +496,7 @@ SITES = [
     ("C (include/hypercast.h)", [("include/hypercast.h", C_PROTOTYPE)], "all", ()),
     # The header-only C++ binding: every export is named qualified, as a call or (the numeric
     # doors) passed as a function, hence the word boundary rather than a parenthesis.
-    ("C++ (include/hypercast.hpp)", [("include/hypercast.hpp", r"::((?:cast|hypercast)_\w+)\b")], "all", ()),
+    ("C++ (include/hypercast.hpp)", [("include/hypercast.hpp", code_only(r"::((?:cast|hypercast)_\w+)\b"))], "all", ()),
     # napi-rs generates binding.d.ts from typescript/src/lib.rs (`npm run build` rewrites it),
     # so it is the one list of what TypeScript callers see, the macro-made doors included.
     (
@@ -410,9 +506,9 @@ SITES = [
         (),
     ),
     # The R package's C shim calls the core through the header vendor.sh stages from
-    # include/, so the calls it makes are its declarations.
-    ("R (C shim)", [("r/src/hypercast.c", r"\b(cast_[a-z0-9_]+|hypercast_version)\(")], "all", ()),
-    ("C (smoke)", [("c/smoke/main.c", r"\b((?:cast|hypercast)_\w+)\(")], "all", ()),
+    # include/, so the calls it makes (in code) are its declarations.
+    ("R (C shim)", [("r/src/hypercast.c", code_only(r"\b(cast_[a-z0-9_]+|hypercast_version)\("))], "all", ()),
+    ("C (smoke)", [("c/smoke/main.c", code_only(r"\b((?:cast|hypercast)_\w+)\("))], "all", ()),
     (
         "Ruby (Fiddle)",
         [("ruby/lib/hypercast/runtime.rb", r"(cast_\w+): :\w+|VERSION_PROBE = :(\w+)")],
@@ -428,14 +524,14 @@ SITES = [
     (
         "Python (PyO3)",
         [("rust/src/python_ext.rs", r"wrap_pyfunction!\((\w+), ")],
-        python_spelling,
-        ("_bind",),
+        pyo3_spelling,
+        ("_bind", "_detail_name"),
     ),
     (
         "Python (stubs)",
         [("python/src/hypercast/_native.pyi", r"(?m)^def (\w+)\(")],
-        python_spelling,
-        ("_bind",),
+        pyo3_spelling,
+        ("_bind", "_detail_name"),
     ),
     (
         "cdylib smoke",
@@ -480,19 +576,20 @@ def main():
     php_guard("rust/src/php_ext")
     php_link("rust/src/php_ext")
     napi_catch_unwind("typescript/src/lib.rs")
+    unknown = sorted((DETAILED | {name for olds in SUPERSEDES.values() for name in olds}) - exports)
+    if unknown:
+        sys.exit(f"check_exports: SUPERSEDES names {unknown}, which the core does not export")
     failed = False
     for binding, sources, wants, extra in SITES:
         if wants == "all":
-            expected = set(exports)
+            wants = str
         elif wants == "doors":
-            expected = exports - {VERSION}
-        else:
-            expected = {name for name in map(wants, exports) if name}
-        expected |= set(extra)
+            wants = lambda name: None if name == VERSION else name
+        expected = {name for name in map(wants, exports) if name} | set(extra)
         found = declared_list(sources)
         got = set(found)
         repeats = sorted({name for name in found if found.count(name) > 1}) if binding in UNIQUE_SITES else []
-        missing, stale = sorted(expected - got), sorted(got - expected)
+        missing, stale = sorted(expected - got - superseded(wants, got)), sorted(got - expected)
         if missing or stale or repeats:
             failed = True
             print(f"FAIL {binding}")
@@ -503,7 +600,9 @@ def main():
             for name in stale:
                 print(f"     declares {name}, which the core does not export")
         else:
-            print(f"ok   {binding}: {len(got)}")
+            omitted = len(expected - got)
+            note = f" ({omitted} 1.0 exports superseded by the detailed ones)" if omitted else ""
+            print(f"ok   {binding}: {len(got)}{note}")
     sys.exit(1 if failed else 0)
 
 

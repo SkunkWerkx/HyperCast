@@ -10,11 +10,12 @@ optional(x)
 \item{x}{A \code{hypercast_verdict} or a \code{hypercast_checked_verdict}, as a door returns.}
 }
 \value{
-\code{x}, with \code{ok}, \code{reason}, \code{offset} and \code{length} set to \code{NA} in each \code{empty} row.
+\code{x}, with \code{ok}, \code{reason}, \code{offset}, \code{length} and \code{detail} set to \code{NA} in each \code{empty}
+row.
 }
 \description{
-Presents a verdict optionally: every \code{empty} fault (input that was empty or only ASCII
-whitespace, or for the text door with \code{trim}, only Unicode \code{White_Space}) becomes a
+Presents a verdict optionally: every \code{empty} fault (input that was empty or only white
+space, the 25 Unicode \code{White_Space} code points) becomes a
 missing row, as an \code{NA} element is, and every other row, a violation included, is left as
 it is. The same presentation every HyperCast binding ships (\code{optional}, \code{Optional}), for
 data where an absent value is not a failure.
@@ -26,6 +27,7 @@ v$value
 }
 \seealso{
 Other verdicts:
+\code{\link{fault_details}},
 \code{\link{hypercast_checked_verdict}},
 \code{\link{hypercast_verdict}}
 }

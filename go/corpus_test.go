@@ -2,7 +2,10 @@ package hypercast
 
 // Replays the shared conformance corpus (corpus/*.json at the repository root) — the same
 // files every other binding's suite replays. Fault spans are byte offsets into the UTF-8
-// input, which is exactly what these doors receive, so span assertions hold verbatim.
+// input, which is exactly what these doors receive, so span assertions hold verbatim. Every
+// row replays through its detailed door too, which must name the row's detail (by name and by
+// code) on every failure; a row declaring date options replays through the detailed door
+// alone, the only one that takes them.
 
 import (
 	"encoding/json"
@@ -44,6 +47,81 @@ type vector struct {
 	// A datetime vector's day-period designators, declared together or not at all.
 	AM string `json:"am"`
 	PM string `json:"pm"`
+	// A formats.json row: its kind, and per kind the code point and its answer, or the
+	// refusal's winning rule.
+	Kind       string `json:"kind"`
+	CodePoint  string `json:"code_point"`
+	WhiteSpace *bool  `json:"white_space"`
+	Rule       string `json:"rule"`
+	// What a failure row says failed, by the core's name.
+	Detail string `json:"detail"`
+	// A date door row's opt-in shapes, pivot and month vocabulary.
+	Options *optionsSpec `json:"options"`
+	// A formats.json date_options row: its shapes by name or as raw bits, and its pivot; a
+	// month_names row: its entries, and bytes appended to their packed form.
+	Shapes      []string `json:"flags"`
+	FlagBits    *uint32  `json:"flag_bits"`
+	Pivot       int      `json:"pivot"`
+	Months      [][]any  `json:"months"`
+	AppendBytes []int    `json:"append_bytes"`
+}
+
+// A row's date options; absent keys declare nothing.
+type optionsSpec struct {
+	Shapes []string `json:"flags"`
+	Pivot  int      `json:"pivot"`
+	Months [][]any  `json:"months"`
+}
+
+// The corpus spells each shape by name; this is the binding's own constant for it.
+var corpusShapes = map[string]DateShapes{
+	"compact_date": CompactDate, "space_separator": SpaceSeparator, "hour_offset": HourOffset, "common_forms": CommonForms,
+}
+
+func shapesOf(t *testing.T, names []string) DateShapes {
+	t.Helper()
+	var shapes DateShapes
+	for _, name := range names {
+		shape, ok := corpusShapes[name]
+		if !ok {
+			t.Fatalf("unknown date shape %q", name)
+		}
+		shapes |= shape
+	}
+	return shapes
+}
+
+// monthEntries is a row's [month, name] pairs as MonthName entries.
+func monthEntries(t *testing.T, months [][]any) []MonthName {
+	t.Helper()
+	names := make([]MonthName, len(months))
+	for i, pair := range months {
+		month, okMonth := pair[0].(float64)
+		name, okName := pair[1].(string)
+		if len(pair) != 2 || !okMonth || !okName {
+			t.Fatalf("bad month entry %v", pair)
+		}
+		names[i] = MonthName{Month: time.Month(month), Name: name}
+	}
+	return names
+}
+
+// options is the row's DateOptions, built through the public API; the zero DateOptions when
+// the row declares none.
+func (v *vector) options(t *testing.T) DateOptions {
+	t.Helper()
+	if v.Options == nil {
+		return DateOptions{}
+	}
+	options := DateOptions{Shapes: shapesOf(t, v.Options.Shapes), Pivot: v.Options.Pivot}
+	if v.Options.Months != nil {
+		months, err := NewMonthNames(monthEntries(t, v.Options.Months)...)
+		if err != nil {
+			t.Fatalf("%q: the row's vocabulary was refused: %v", v.Input, err)
+		}
+		options.Months = months
+	}
+	return options
 }
 
 // A vector's declared format. Every key past the separators and flags is absent when the
@@ -59,7 +137,12 @@ type formatSpec struct {
 	PlusSign           string `json:"plus_sign"`
 	Percent            string `json:"percent"`
 	DigitZero          string `json:"digit_zero"` // a one-character string
+	// The grouping policy by name, replacing any policy bits in Flags; absent keeps them.
+	Grouping string `json:"grouping"`
 }
+
+// The corpus spells each grouping policy by name; this is the binding's own constant for it.
+var corpusGrouping = map[string]GroupingPolicy{"legacy": GroupingLegacy, "western": GroupingWestern, "indian": GroupingIndian}
 
 // corpus decodes corpus/<name> as the shape most files share.
 func corpus(t *testing.T, name string) []vector {
@@ -120,15 +203,18 @@ func decodeVectors(t *testing.T, path string, data []byte) []vector {
 	return vectors
 }
 
+// format is the row's NumFormat. A row declaring none means the core's invariant format,
+// legacy grouping (the C ABI's null format), which is Invariant under GroupingLegacy; a row
+// declaring no policy keeps the policy bits of its flags, none being legacy.
 func (v *vector) format() NumFormat {
 	if v.Format == nil {
-		return Invariant
+		return Invariant.WithGrouping(GroupingLegacy)
 	}
 	var zero rune
 	if v.Format.DigitZero != "" {
 		zero = []rune(v.Format.DigitZero)[0]
 	}
-	return NumFormat{
+	format := NumFormat{
 		DecimalSep:         v.Format.DecimalSep,
 		GroupSep:           v.Format.GroupSep,
 		Styles:             NumStyles(v.Format.Flags),
@@ -140,6 +226,14 @@ func (v *vector) format() NumFormat {
 		Percent:            v.Format.Percent,
 		DigitZero:          zero,
 	}
+	if v.Format.Grouping != "" {
+		policy, ok := corpusGrouping[v.Format.Grouping]
+		if !ok {
+			panic(fmt.Sprintf("unknown grouping %q", v.Format.Grouping))
+		}
+		format = format.WithGrouping(policy)
+	}
+	return format
 }
 
 var expectedReason = map[string]CastFailure{
@@ -176,14 +270,64 @@ func assertVerdict[V comparable](t *testing.T, domain string, v *vector, value V
 	}
 }
 
+// assertDetailed checks a detailed door's verdict as assertVerdict checks a plain one's, and
+// on a failure the row's detail, by the core's name and by its code (publishedDetails restates
+// the table).
+func assertDetailed[V comparable](t *testing.T, domain string, v *vector, value V, failure *Failure, expected V) {
+	t.Helper()
+	var fault *Fault
+	if failure != nil {
+		fault = failure.Fault()
+	}
+	assertVerdict(t, domain+" (detailed)", v, value, fault, expected)
+	if failure == nil {
+		return
+	}
+	assertDetail(t, domain, v.Input, v.Detail, failure.Detail)
+}
+
+// assertDetail checks a failure's detail against the row's, which every failure row declares.
+func assertDetail(t *testing.T, domain, input, want string, got Detail) {
+	t.Helper()
+	if want == "" {
+		t.Errorf("%s: %q failed (%s) but the row declares no detail", domain, input, got)
+		return
+	}
+	code := 0
+	for i, name := range publishedDetails {
+		if name == want {
+			code = i + 1
+		}
+	}
+	if code == 0 {
+		t.Fatalf("%s: %q declares unpublished detail %q", domain, input, want)
+	}
+	if got.String() != want || uint32(got) != uint32(code) {
+		t.Errorf("%s: %q detail %s (%d), want %s (%d)", domain, input, got, uint32(got), want, code)
+	}
+}
+
+// replay replays a row through its plain door (skipped when the row declares date options,
+// which only the detailed door takes) and its detailed door.
+func replay[V comparable](t *testing.T, domain string, v *vector, expected V, plain func() (V, *Fault), detailed func() (V, *Failure)) {
+	t.Helper()
+	if v.Options == nil {
+		value, fault := plain()
+		assertVerdict(t, domain, v, value, fault, expected)
+	}
+	value, failure := detailed()
+	assertDetailed(t, domain, v, value, failure, expected)
+}
+
 func TestCorpusBoolean(t *testing.T) {
 	for _, v := range corpus(t, "boolean.json") {
 		var expected bool
 		if v.Value != nil {
 			expected = string(v.Value) == "true"
 		}
-		value, fault := Bool(v.Input)
-		assertVerdict(t, "boolean", &v, value, fault, expected)
+		replay(t, "boolean", &v, expected,
+			func() (bool, *Fault) { return Bool(v.Input) },
+			func() (bool, *Failure) { return BoolDetailed(v.Input) })
 	}
 }
 
@@ -198,10 +342,12 @@ func TestCorpusChar(t *testing.T) {
 			}
 			expected = rune(n)
 		}
-		value, fault := Char(v.Input)
-		assertVerdict(t, "char", &v, value, fault, expected)
-		bytesValue, bytesFault := Char([]byte(v.Input))
-		assertVerdict(t, "char", &v, bytesValue, bytesFault, expected)
+		replay(t, "char", &v, expected,
+			func() (rune, *Fault) { return Char(v.Input) },
+			func() (rune, *Failure) { return CharDetailed(v.Input) })
+		replay(t, "char", &v, expected,
+			func() (rune, *Fault) { return Char([]byte(v.Input)) },
+			func() (rune, *Failure) { return CharDetailed([]byte(v.Input)) })
 	}
 }
 
@@ -210,29 +356,37 @@ func TestCorpusInteger(t *testing.T) {
 		format := v.format()
 		switch v.Type {
 		case "i8":
-			value, fault := I8(v.Input, format)
-			assertVerdict(t, "integer", &v, value, fault, int8(intValue(t, &v)))
+			replay(t, "integer", &v, int8(intValue(t, &v)),
+				func() (int8, *Fault) { return I8(v.Input, format) },
+				func() (int8, *Failure) { return I8Detailed(v.Input, format) })
 		case "i16":
-			value, fault := I16(v.Input, format)
-			assertVerdict(t, "integer", &v, value, fault, int16(intValue(t, &v)))
+			replay(t, "integer", &v, int16(intValue(t, &v)),
+				func() (int16, *Fault) { return I16(v.Input, format) },
+				func() (int16, *Failure) { return I16Detailed(v.Input, format) })
 		case "i32":
-			value, fault := I32(v.Input, format)
-			assertVerdict(t, "integer", &v, value, fault, int32(intValue(t, &v)))
+			replay(t, "integer", &v, int32(intValue(t, &v)),
+				func() (int32, *Fault) { return I32(v.Input, format) },
+				func() (int32, *Failure) { return I32Detailed(v.Input, format) })
 		case "i64":
-			value, fault := I64(v.Input, format)
-			assertVerdict(t, "integer", &v, value, fault, intValue(t, &v))
+			replay(t, "integer", &v, intValue(t, &v),
+				func() (int64, *Fault) { return I64(v.Input, format) },
+				func() (int64, *Failure) { return I64Detailed(v.Input, format) })
 		case "u8":
-			value, fault := U8(v.Input, format)
-			assertVerdict(t, "integer", &v, value, fault, uint8(uintValue(t, &v)))
+			replay(t, "integer", &v, uint8(uintValue(t, &v)),
+				func() (uint8, *Fault) { return U8(v.Input, format) },
+				func() (uint8, *Failure) { return U8Detailed(v.Input, format) })
 		case "u16":
-			value, fault := U16(v.Input, format)
-			assertVerdict(t, "integer", &v, value, fault, uint16(uintValue(t, &v)))
+			replay(t, "integer", &v, uint16(uintValue(t, &v)),
+				func() (uint16, *Fault) { return U16(v.Input, format) },
+				func() (uint16, *Failure) { return U16Detailed(v.Input, format) })
 		case "u32":
-			value, fault := U32(v.Input, format)
-			assertVerdict(t, "integer", &v, value, fault, uint32(uintValue(t, &v)))
+			replay(t, "integer", &v, uint32(uintValue(t, &v)),
+				func() (uint32, *Fault) { return U32(v.Input, format) },
+				func() (uint32, *Failure) { return U32Detailed(v.Input, format) })
 		case "u64":
-			value, fault := U64(v.Input, format)
-			assertVerdict(t, "integer", &v, value, fault, uintValue(t, &v))
+			replay(t, "integer", &v, uintValue(t, &v),
+				func() (uint64, *Fault) { return U64(v.Input, format) },
+				func() (uint64, *Failure) { return U64Detailed(v.Input, format) })
 		default:
 			t.Fatalf("integer: unknown type %q", v.Type)
 		}
@@ -278,11 +432,13 @@ func TestCorpusReal(t *testing.T) {
 		// By bits: zero has one form, and -0.0 == 0.0 would let a signed zero through.
 		switch v.Type {
 		case "f32":
-			value, fault := F32(v.Input, format)
-			assertVerdict(t, "real", &v, math.Float32bits(value), fault, math.Float32bits(float32(expected)))
+			replay(t, "real", &v, math.Float32bits(float32(expected)),
+				func() (uint32, *Fault) { value, fault := F32(v.Input, format); return math.Float32bits(value), fault },
+				func() (uint32, *Failure) { value, f := F32Detailed(v.Input, format); return math.Float32bits(value), f })
 		case "f64":
-			value, fault := F64(v.Input, format)
-			assertVerdict(t, "real", &v, math.Float64bits(value), fault, math.Float64bits(expected))
+			replay(t, "real", &v, math.Float64bits(expected),
+				func() (uint64, *Fault) { value, fault := F64(v.Input, format); return math.Float64bits(value), fault },
+				func() (uint64, *Failure) { value, f := F64Detailed(v.Input, format); return math.Float64bits(value), f })
 		default:
 			t.Fatalf("real: unknown type %q", v.Type)
 		}
@@ -311,6 +467,8 @@ func TestCorpusDecimal(t *testing.T) {
 		if fault == nil && value.String() != text {
 			t.Errorf("decimal: %q String() = %q, want %q", v.Input, value.String(), text)
 		}
+		detailed, failure := ExactDetailed(v.Input, v.format())
+		assertDetailed(t, "decimal", &v, detailed, failure, expected)
 	}
 }
 
@@ -328,8 +486,9 @@ func TestCorpusUuid(t *testing.T) {
 			}
 			expected = parsed
 		}
-		value, fault := Uuid(v.Input)
-		assertVerdict(t, "uuid", &v, value, fault, expected)
+		replay(t, "uuid", &v, expected,
+			func() (uuid.UUID, *Fault) { return Uuid(v.Input) },
+			func() (uuid.UUID, *Failure) { return UuidDetailed(v.Input) })
 	}
 }
 
@@ -342,22 +501,25 @@ func expectedInstant(v *vector) time.Time {
 
 func TestCorpusTimestamp(t *testing.T) {
 	for _, v := range corpus(t, "timestamp.json") {
-		value, fault := Timestamp(v.Input)
-		assertVerdict(t, "timestamp", &v, value, fault, expectedInstant(&v))
+		replay(t, "timestamp", &v, expectedInstant(&v),
+			func() (time.Time, *Fault) { return Timestamp(v.Input) },
+			func() (time.Time, *Failure) { return TimestampDetailed(v.Input, v.options(t)) })
 	}
 }
 
 func TestCorpusUnix(t *testing.T) {
 	for _, v := range corpus(t, "unix.json") {
-		value, fault := Unix(v.Input, UnixPrecision(v.Precision))
-		assertVerdict(t, "unix", &v, value, fault, expectedInstant(&v))
+		replay(t, "unix", &v, expectedInstant(&v),
+			func() (time.Time, *Fault) { return Unix(v.Input, UnixPrecision(v.Precision)) },
+			func() (time.Time, *Failure) { return UnixDetailed(v.Input, UnixPrecision(v.Precision)) })
 	}
 }
 
 func TestCorpusExcelSerial(t *testing.T) {
 	for _, v := range corpus(t, "excel_serial.json") {
-		value, fault := ExcelSerial(v.Input, ExcelEpoch(v.Epoch))
-		assertVerdict(t, "excel_serial", &v, value, fault, expectedInstant(&v))
+		replay(t, "excel_serial", &v, expectedInstant(&v),
+			func() (time.Time, *Fault) { return ExcelSerial(v.Input, ExcelEpoch(v.Epoch)) },
+			func() (time.Time, *Failure) { return ExcelSerialDetailed(v.Input, ExcelEpoch(v.Epoch)) })
 	}
 }
 
@@ -367,8 +529,9 @@ func TestCorpusDate(t *testing.T) {
 		if v.Year != nil {
 			expected = Date{Year: *v.Year, Month: time.Month(v.Month), Day: v.Day}
 		}
-		value, fault := DateOnly(v.Input)
-		assertVerdict(t, "date", &v, value, fault, expected)
+		replay(t, "date", &v, expected,
+			func() (Date, *Fault) { return DateOnly(v.Input) },
+			func() (Date, *Failure) { return DateOnlyDetailed(v.Input, v.options(t)) })
 	}
 }
 
@@ -385,6 +548,11 @@ func TestCorpusDateTime(t *testing.T) {
 			}
 		}
 		format := DateFormat{Order: DateOrder(v.Order), AM: v.AM, PM: v.PM}
+		detailed, failure := DateTimeDetailed(v.Input, format, v.options(t))
+		assertDetailed(t, "datetime", &v, detailed, failure, expected)
+		if v.Options != nil {
+			continue
+		}
 		if v.AM != "" || v.PM != "" {
 			declared++
 			value, fault := DateTimeWith(v.Input, format)
@@ -409,8 +577,9 @@ func TestCorpusDateOrder(t *testing.T) {
 		if v.Year != nil {
 			expected = Date{Year: *v.Year, Month: time.Month(v.Month), Day: v.Day}
 		}
-		value, fault := DateOnlyOrdered(v.Input, DateOrder(v.Order))
-		assertVerdict(t, "date_order", &v, value, fault, expected)
+		replay(t, "date_order", &v, expected,
+			func() (Date, *Fault) { return DateOnlyOrdered(v.Input, DateOrder(v.Order)) },
+			func() (Date, *Failure) { return DateOnlyOrderedDetailed(v.Input, DateOrder(v.Order), v.options(t)) })
 	}
 }
 
@@ -420,8 +589,9 @@ func TestCorpusTime(t *testing.T) {
 		if v.Expect == "ok" {
 			expected = time.Duration(v.Nanos)
 		}
-		value, fault := TimeOfDay(v.Input)
-		assertVerdict(t, "time", &v, value, fault, expected)
+		replay(t, "time", &v, expected,
+			func() (time.Duration, *Fault) { return TimeOfDay(v.Input) },
+			func() (time.Duration, *Failure) { return TimeOfDayDetailed(v.Input) })
 	}
 }
 
@@ -434,8 +604,9 @@ func TestCorpusDuration(t *testing.T) {
 			}
 			expected = Duration{Seconds: *v.Seconds, Nanos: int32(v.Nanos)}
 		}
-		value, fault := Span(v.Input)
-		assertVerdict(t, "duration", &v, value, fault, expected)
+		replay(t, "duration", &v, expected,
+			func() (Duration, *Fault) { return Span(v.Input) },
+			func() (Duration, *Failure) { return SpanDetailed(v.Input) })
 	}
 }
 
@@ -467,6 +638,8 @@ func TestCorpusTyped(t *testing.T) {
 			var got Decimal
 			got, fault = ExactFromFloat64(value)
 			assertVerdict(t, "typed decimal", &v, got, fault, expected)
+			detailed, failure := ExactFromFloat64Detailed(value)
+			assertDetailed(t, "typed decimal", &v, detailed, failure, expected)
 			if fault == nil && got.String() != text {
 				t.Errorf("typed decimal: %q String() = %q, want %q", v.Input, got.String(), text)
 			}
@@ -481,10 +654,14 @@ func TestCorpusTyped(t *testing.T) {
 			var got CivilDateTime
 			got, fault = ExcelSerialFromFloat64(value, ExcelEpoch(v.Epoch))
 			assertVerdict(t, "typed excel_serial", &v, got, fault, expected)
+			detailed, failure := ExcelSerialFromFloat64Detailed(value, ExcelEpoch(v.Epoch))
+			assertDetailed(t, "typed excel_serial", &v, detailed, failure, expected)
 		case "excel_time":
 			var got time.Duration
 			got, fault = ExcelTime(value)
 			assertVerdict(t, "typed excel_time", &v, got, fault, time.Duration(v.Nanos))
+			detailed, failure := ExcelTimeDetailed(value)
+			assertDetailed(t, "typed excel_time", &v, detailed, failure, time.Duration(v.Nanos))
 		case "excel_duration":
 			var expected Duration
 			if v.Seconds != nil {
@@ -493,6 +670,8 @@ func TestCorpusTyped(t *testing.T) {
 			var got Duration
 			got, fault = ExcelDuration(value)
 			assertVerdict(t, "typed excel_duration", &v, got, fault, expected)
+			detailed, failure := ExcelDurationDetailed(value)
+			assertDetailed(t, "typed excel_duration", &v, detailed, failure, expected)
 		default:
 			t.Fatalf("typed: unknown door %q", v.Door)
 		}
@@ -533,6 +712,7 @@ type constraintsVector struct {
 	Fault     []int           `json:"fault"`
 	Keyword   string          `json:"keyword"`
 	Refusal   int32           `json:"refusal"`
+	Detail    string          `json:"detail"`
 }
 
 // The corpus spells each rounding mode by name; this is the binding's own constant for it.
@@ -647,7 +827,7 @@ func assertRefused[V CheckedTarget](t *testing.T, v *constraintsVector) {
 
 // assertChecked checks one checked verdict against the vector; same reports how a delivered
 // value differs from the expected one ("" when it does not).
-func assertChecked[V any](t *testing.T, v *constraintsVector, how string, got Checked[V], rejection Rejection, same func(V) string) {
+func assertChecked[V any](t *testing.T, v *constraintsVector, how string, got Checked[V], rejection error, same func(V) string) {
 	t.Helper()
 	switch v.Expect {
 	case "ok":
@@ -688,6 +868,10 @@ func assertChecked[V any](t *testing.T, v *constraintsVector, how string, got Ch
 			t.Fatalf("constraints: %v unknown expect %q", v, v.Expect)
 		}
 		fault, ok := rejection.(*Fault)
+		if failure, detailed := rejection.(*Failure); detailed {
+			fault, ok = failure.Fault(), true
+			assertDetail(t, "constraints ("+how+")", v.String(), v.Detail, failure.Detail)
+		}
 		if !ok {
 			t.Errorf("constraints: %v (%s) -> %v %v, want %s", v, how, got, rejection, reason)
 			return
@@ -718,15 +902,21 @@ func replayNumber[V Number](t *testing.T, v *constraintsVector, same func(V) str
 	switch {
 	case v.FromF64 != nil:
 		got, rejection := CheckFromFloat64(v.fromF64(t), constraints)
-		assertChecked(t, v, "from float64", got, rejection, same)
+		assertChecked(t, v, "from float64", got, asError(rejection), same)
+		got, detailed := CheckFromFloat64Detailed(v.fromF64(t), constraints)
+		assertChecked(t, v, "from float64, detailed", got, asError(detailed), same)
 	case v.Input != nil:
 		got, rejection := Check(*v.Input, format, constraints)
-		assertChecked(t, v, "string", got, rejection, same)
+		assertChecked(t, v, "string", got, asError(rejection), same)
 		got, rejection = Check([]byte(*v.Input), format, constraints)
-		assertChecked(t, v, "bytes", got, rejection, same)
+		assertChecked(t, v, "bytes", got, asError(rejection), same)
+		got, detailed := CheckDetailed(*v.Input, format, constraints)
+		assertChecked(t, v, "string, detailed", got, asError(detailed), same)
 	case v.InputBytes != nil:
 		got, rejection := Check(v.bytes(), format, constraints)
-		assertChecked(t, v, "bytes", got, rejection, same)
+		assertChecked(t, v, "bytes", got, asError(rejection), same)
+		got, detailed := CheckDetailed(v.bytes(), format, constraints)
+		assertChecked(t, v, "bytes, detailed", got, asError(detailed), same)
 	default:
 		t.Fatalf("constraints: %v has no input", v)
 	}
@@ -770,9 +960,24 @@ func replayText(t *testing.T, v *constraintsVector) {
 		text = []byte(*v.Input)
 	}
 	got, rejection := CheckString(string(text), constraints)
-	assertChecked(t, v, "string", got, rejection, same)
+	assertChecked(t, v, "string", got, asError(rejection), same)
 	got, rejection = CheckString(text, constraints)
-	assertChecked(t, v, "bytes", got, rejection, same)
+	assertChecked(t, v, "bytes", got, asError(rejection), same)
+	got, detailed := CheckStringDetailed(text, constraints)
+	assertChecked(t, v, "bytes, detailed", got, asError(detailed), same)
+}
+
+// asError is a checked door's rejection as a plain error, nil for none (a nil interface of
+// either rejection type, never a typed nil).
+func asError[R interface {
+	error
+	comparable
+}](rejection R) error {
+	var none R
+	if rejection == none {
+		return nil
+	}
+	return rejection
 }
 
 // exactly compares an integer door's value with the vector's.
@@ -931,5 +1136,161 @@ func TestCorpusDeclarations(t *testing.T) {
 		default:
 			t.Fatalf("declarations: %q unknown expect %q", text, v.Expect)
 		}
+	}
+}
+
+// What fault() says for each rule formats.json names: the text each refused row must carry,
+// which also pins which rule won where a declaration breaks two.
+var ruleMessage = map[string]string{
+	"length":           " exceeds ",
+	"digit":            "must not contain an ASCII digit",
+	"equal_separators": "separators must differ",
+	"white_space":      "must not contain white space",
+	"designator_edge":  "must not start or end in white space",
+	"currency_edge":    "must not start or end with white space",
+	"grouping_policy":  "names no grouping policy",
+	"unknown_flag":     "does not define",
+	// DateOptions.
+	"flags": "does not define",
+	"pivot": "is neither 0 nor 100 through 9999",
+	// MonthNames.
+	"layout":        "is cut short",
+	"month":         "must be 1 through 12",
+	"utf8":          "is not valid UTF-8",
+	"name_length":   "must be 1 to 64 UTF-8 bytes",
+	"character":     "must not contain an ASCII digit, '/', '-' or white space",
+	"month_missing": "has no name",
+	"duplicate":     "fold to the same spelling",
+}
+
+// panics runs f and reports the panic's text, "" when it did not panic.
+func panics(f func()) (text string) {
+	defer func() {
+		if r := recover(); r != nil {
+			text = fmt.Sprint(r)
+		}
+	}()
+	f()
+	return ""
+}
+
+// corpus/formats.json: the white-space table, and the declarations the core accepts and
+// refuses. A refused declaration is refused by valid(), named by fault() with the rule's
+// message, errs from Raw(), and panics at the door; an accepted one does none of them. A month
+// vocabulary is refused by NewMonthNames (or, for the rows that append raw bytes, by the same
+// judgement over the packed form) with the rule's message, and MustMonthNames panics with it.
+func TestCorpusFormats(t *testing.T) {
+	var whiteSpace, numFormats, dayPeriods, dateOptions, monthNames int
+	for _, v := range corpus(t, "formats.json") {
+		var refusal error
+		var door func()
+		var label string
+		switch v.Kind {
+		case "white_space":
+			whiteSpace++
+			if v.WhiteSpace == nil || !strings.HasPrefix(v.CodePoint, "U+") {
+				t.Fatalf("formats: bad white_space row %+v", v)
+			}
+			code, err := strconv.ParseUint(v.CodePoint[2:], 16, 32)
+			if err != nil {
+				t.Fatalf("formats: %s: %v", v.CodePoint, err)
+			}
+			if got := isWhiteSpace(rune(code)); got != *v.WhiteSpace {
+				t.Errorf("formats: isWhiteSpace(%s) = %v, want %v", v.CodePoint, got, *v.WhiteSpace)
+			}
+			continue
+		case "num_format":
+			numFormats++
+			format := v.format()
+			label = fmt.Sprintf("%+v", format)
+			if (format.valid()) != (v.Expect == "ok") {
+				t.Errorf("formats: valid() of %s = %v, want %s", label, format.valid(), v.Expect)
+			}
+			refusal = format.fault()
+			if _, err := format.Raw(); (err == nil) != (v.Expect == "ok") {
+				t.Errorf("formats: Raw() of %s = %v, want %s", label, err, v.Expect)
+			}
+			door = func() { I32("5", format) }
+		case "day_periods":
+			dayPeriods++
+			format := DateFormat{Order: YearMonthDay, AM: v.AM, PM: v.PM}
+			label = fmt.Sprintf("%+v", format)
+			if format.valid() != (v.Expect == "ok") {
+				t.Errorf("formats: valid() of %s = %v, want %s", label, format.valid(), v.Expect)
+			}
+			refusal = format.fault()
+			if _, err := format.Raw(); (err == nil) != (v.Expect == "ok") {
+				t.Errorf("formats: Raw() of %s = %v, want %s", label, err, v.Expect)
+			}
+			door = func() { DateTimeWith("2026-01-02 03:04", format) }
+		case "date_options":
+			dateOptions++
+			options := DateOptions{Shapes: shapesOf(t, v.Shapes), Pivot: v.Pivot}
+			if v.FlagBits != nil {
+				options.Shapes = DateShapes(*v.FlagBits)
+			}
+			label = fmt.Sprintf("%+v", options)
+			if options.valid() != (v.Expect == "ok") {
+				t.Errorf("formats: valid() of %s = %v, want %s", label, options.valid(), v.Expect)
+			}
+			refusal = options.fault()
+			if _, err := options.Raw(); (err == nil) != (v.Expect == "ok") {
+				t.Errorf("formats: Raw() of %s = %v, want %s", label, err, v.Expect)
+			}
+			door = func() { DateOnlyOrderedDetailed("2026-01-07", YearMonthDay, options) }
+		case "month_names":
+			monthNames++
+			entries := monthEntries(t, v.Months)
+			label = fmt.Sprintf("%v %v", v.Months, v.AppendBytes)
+			if v.AppendBytes == nil {
+				_, refusal = NewMonthNames(entries...)
+				door = func() { MustMonthNames(entries...) }
+			} else {
+				packed := MonthNames{}
+				if base, err := NewMonthNames(entries...); err != nil {
+					t.Fatalf("formats: %s: the base vocabulary was refused: %v", label, err)
+				} else {
+					packed = base
+				}
+				bytes := packed.Packed()
+				for _, b := range v.AppendBytes {
+					bytes = append(bytes, byte(b))
+				}
+				_, refusal = monthNamesFromPacked(bytes)
+				door = func() {
+					if _, err := monthNamesFromPacked(bytes); err != nil {
+						panic(err.Error())
+					}
+				}
+			}
+		default:
+			t.Fatalf("formats: unknown kind %q", v.Kind)
+		}
+		switch v.Expect {
+		case "ok":
+			if refusal != nil {
+				t.Errorf("formats: %s: fault() = %v, want none", label, refusal)
+			}
+			if text := panics(door); text != "" {
+				t.Errorf("formats: %s: the door panicked: %s", label, text)
+			}
+		case "refused":
+			want, known := ruleMessage[v.Rule]
+			if !known {
+				t.Fatalf("formats: unknown rule %q", v.Rule)
+			}
+			if refusal == nil || !strings.Contains(refusal.Error(), want) {
+				t.Errorf("formats: %s: fault() = %v, want the %s rule (%q)", label, refusal, v.Rule, want)
+			}
+			if text := panics(door); text == "" || !strings.Contains(text, want) {
+				t.Errorf("formats: %s: the door panicked with %q, want the %s rule (%q)", label, text, v.Rule, want)
+			}
+		default:
+			t.Fatalf("formats: unknown expect %q", v.Expect)
+		}
+	}
+	if whiteSpace < 30 || numFormats == 0 || dayPeriods == 0 || dateOptions == 0 || monthNames == 0 {
+		t.Errorf("formats: replayed %d white_space, %d num_format, %d day_periods, %d date_options and %d month_names rows",
+			whiteSpace, numFormats, dayPeriods, dateOptions, monthNames)
 	}
 }

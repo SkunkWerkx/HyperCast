@@ -17,10 +17,11 @@ num_format(
   minus_sign = "",
   plus_sign = "",
   percent = "",
-  digit_zero = ""
+  digit_zero = "",
+  grouping = "western"
 )
 
-num_format_detect()
+num_format_detect(grouping = "western")
 
 num_format_from_localeconv(conv = Sys.localeconv())
 
@@ -48,6 +49,9 @@ none.}
 \item{digit_zero}{The zero of a block of native digits read beside ASCII \code{0}-\code{9}
 (\code{"\\\\u0660"} for Arabic-Indic); \code{""} declares none.}
 
+\item{grouping}{The grouping policy: \code{"western"} (the default), \code{"indian"} or
+\code{"legacy"}, the escape hatch for 1.0 behaviour.}
+
 \item{conv}{A named character vector shaped like \code{\link[=Sys.localeconv]{Sys.localeconv()}}'s.}
 
 \item{x}{A \code{hypercast_num_format}.}
@@ -55,10 +59,11 @@ none.}
 \item{...}{Ignored.}
 }
 \value{
-A \code{hypercast_num_format}: a list of the declared fields and \code{packed}, the 92
-bytes the format crosses the C ABI as (the core's size-tagged layout: the size, the flags
-and the digit zero as little-endian 32-bit words, then each symbol's UTF-8 bytes,
-zero-padded, and its length), for a library with a C ABI of its own.
+A \code{hypercast_num_format}: a list of the declared fields, \code{grouping} and \code{packed},
+the 92 bytes the format crosses the C ABI as (the core's size-tagged layout: the size,
+the flags (the styles and the policy) and the digit zero as little-endian 32-bit words,
+then each symbol's UTF-8 bytes, zero-padded, and its length), for a library with a C ABI
+of its own.
 }
 \description{
 The numeric doors read text under a format the caller declares: the separators, the
@@ -69,7 +74,23 @@ instead of it.
 }
 \details{
 \code{num_format()} with no arguments is the invariant format, \code{.} decimal and \verb{,} group
-separators with every lenience in \code{num_styles[["all"]]}. \code{num_format_detect()} resolves
+separators with every lenience in \code{num_styles[["all"]]}, and strict Western grouping.
+
+Grouping is strict unless the caller says otherwise. \code{grouping = "western"}, the default,
+reads a group separator only between groups of exactly three digits counted from the
+decimal separator (or the end of the numeral), the leftmost one to three: \verb{1,234,567} is
+read, \verb{12,34} is \code{malformed} (\code{group_size}, over \verb{,34}) and \verb{1234,567} is too (over
+\code{1234}). \code{"indian"} reads the group beside the decimal separator as three digits and every
+group to its left as two (\verb{12,34,567}). \code{"legacy"} reads a group separator anywhere
+between two digits, as every HyperCast release before 1.1 did (\verb{12,34} is \code{1234}); it is
+the escape hatch for data written that way. Ungrouped numerals (\code{1234567}) are read under
+all three; once a numeral uses a group separator every group must conform; grouping is
+never read after the decimal separator or in an exponent. The rules apply to the
+number and the currency group separator alike, to native digits, and to the white space
+group separators that stand for each other (\code{" "}, U+00A0, U+202F). A policy does not turn
+grouping on: with the \code{grouping} style off a group separator is \code{malformed} under all three.
+Separator detection stays independent of the policy: no policy resolves an ambiguous
+\verb{1,234}. \code{num_format_detect()} resolves
 the \code{.}/\verb{,} roles from each input's structure instead: a repeated separator is grouping
 (\verb{1.234.567,89}), with both present the rightmost is the decimal, a single one with other
 than three digits after it is the decimal (\verb{3,1415}), and so is one after a lone zero
@@ -84,14 +105,33 @@ the signs, and an \code{n_sign_posn} of \code{2} or \code{4} as \code{trailing_s
 leaves empty takes its invariant default unless the other separator holds that
 character, in which case it takes the other of the pair; an empty currency pair keeps the
 number separators. The locale carries no percent symbol and no native digits. Every
-lenience in \code{num_styles[["all"]]} is on.
+lenience in \code{num_styles[["all"]]} is on, except as the grouping rule below says.
+
+The grouping rule reads the locale's own \code{grouping} and \code{mon_grouping} patterns, never its
+name and never the input, and never rejects what the platform itself writes. Each is C's
+localeconv string: a byte per group size from the right, the last size repeating, \code{CHAR_MAX}
+ending the pattern (an empty string, or \code{CHAR_MAX} first, groups nothing). A format has one
+policy and one \code{grouping} style for numbers and currency amounts alike, so only the patterns
+that group count. All of them groups of three (\code{3}, \verb{3;3}): strict Western. All of them three
+then twos (\verb{3;2}): strict Indian. Any other shape (groups of two, a pattern that ends) or
+patterns that group and disagree (\verb{3;2} beside \code{3}): \code{"legacy"}, a group separator anywhere
+between two digits. The \code{grouping} style is cleared only when neither pattern groups; when
+just one does not, the style stays for the other (a numeral without a group separator is
+valid anyway), and a format cannot forbid currency grouping on its own. A vector that carries
+neither field declares nothing, and the format keeps the default. (R holds \code{LC_NUMERIC} at
+\code{"C"}, so a locale's number pattern is usually empty and its currency pattern decides.)
 
 A format that cannot be is an error when it is declared, never when it is read: a
 separator that is not 1 to 8 UTF-8 bytes or holds an ASCII digit, two equal separators
-(the number pair, or the pair a currency amount is read with), a sign or percent symbol
-with ASCII whitespace in it, a currency symbol that is not 1 to 16 such bytes, or a digit
-zero that starts no Unicode digit block. These are the core's own contract rules, raised
-in R so that every format that exists is one the core reads.
+(the number pair, or the pair a currency amount is read with), a decimal separator or a
+sign or percent symbol with white space in it, a currency symbol that is not 1 to 16 such
+bytes or has white space at either end, a digit zero that starts no Unicode digit block,
+or \code{flags} that carry a bit that is no style (a grouping policy, which \code{grouping} declares,
+or an undefined bit).
+White space is the 25 code points with the Unicode \code{White_Space} property; a group
+separator may be or contain it, and a currency symbol may hold it inside (\code{"F CFA"}). These
+are the core's own contract rules, raised in R so that every format that exists is one the
+core reads.
 }
 \examples{
 num_format()
@@ -100,6 +140,9 @@ cast_f64("1.234,5", eurozone)$value
 cast_f64(c("1.234.567,89", "3,1415", "12.185"), num_format_detect())
 cast_decimal("1.234,50 kr.", num_format(",", ".", currency = "kr."))$value
 num_format(flags = c("grouping", "parentheses"))
+cast_i32(c("1,234,567", "12,34"), num_format())
+cast_i32(c("12,34", "12,34,567"), num_format(grouping = "legacy"))$value
+cast_i32("12,34,567", num_format(grouping = "indian"))$value
 }
 \seealso{
 Other formats:

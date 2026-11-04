@@ -7,7 +7,7 @@ const assert: typeof import('node:assert/strict') = require('node:assert/strict'
 const { test }: typeof import('node:test') = require('node:test')
 const { types }: typeof import('node:util') = require('node:util')
 const api = require('../index.js') as typeof import('../index.js')
-const { Constraints, DateFormat, DateOrder, Door, NumFormat } = api
+const { Constraints, DateFormat, DateOptions, DateOrder, Door, MonthNames, NumFormat } = api
 
 type Door = (...args: unknown[]) => unknown
 
@@ -40,10 +40,31 @@ const doors: Record<string, Door> = {
   castChecked: api.castChecked,
   castCheckedFromNumber: api.castCheckedFromNumber,
   castText: api.castText,
+  castDetailed: api.castDetailed,
+  castDetailedFromNumber: api.castDetailedFromNumber,
+  castCheckedDetailed: api.castCheckedDetailed,
+  castCheckedDetailedFromNumber: api.castCheckedDetailedFromNumber,
 } as unknown as Record<string, Door>
 
 const dateFormat = DateFormat.declare({ order: DateOrder.DayMonthYear, am: 'vorm.', pm: 'nachm.' })
 assert.ok(dateFormat.ok)
+const months = MonthNames.declare([
+  [1, 'Jan'],
+  [2, 'Feb'],
+  [3, 'Mar'],
+  [4, 'Apr'],
+  [5, 'May'],
+  [6, 'Jun'],
+  [7, 'Jul'],
+  [8, 'Aug'],
+  [9, 'Sep'],
+  [10, 'Oct'],
+  [11, 'Nov'],
+  [12, 'Dec'],
+])
+assert.ok(months.ok)
+const dateOptions = DateOptions.declare({ flags: 7, pivot: 2029, months: months.value })
+assert.ok(dateOptions.ok)
 const numeric = Constraints.declare({ door: Door.I32, maximum: '40', multipleOf: '2' })
 assert.ok(numeric.ok)
 const textual = Constraints.declare({
@@ -113,6 +134,10 @@ const hostile: [string, unknown][] = [
   ],
   ['NumFormat', NumFormat.invariant()],
   ['DateFormat', dateFormat.value],
+  ['DateOptions', dateOptions.value],
+  ['MonthNames', months.value],
+  ['DateOptions.prototype', DateOptions.prototype],
+  ['MonthNames.prototype', MonthNames.prototype],
   ['NumFormat.prototype', NumFormat.prototype],
   ['Object.create(NumFormat.prototype)', Object.create(NumFormat.prototype)],
   ['DateOrder member', DateOrder.MonthDayYear],
@@ -172,9 +197,21 @@ function wellFormed(name: string, args: unknown[], verdict: unknown): void {
   }
   assert.ok(!('value' in v), ctx)
   assert.notEqual('fault' in v, 'violation' in v, ctx)
-  const fault = (v.fault ?? v.violation) as { reason?: unknown; offset: unknown; length: unknown }
+  const fault = (v.fault ?? v.violation) as {
+    reason?: unknown
+    offset: unknown
+    length: unknown
+    detail?: unknown
+    detailCode?: unknown
+  }
   if (v.fault) {
     assert.ok(['empty', 'malformed', 'outOfRange'].includes(fault.reason as string), ctx)
+    // A detailed fault names what failed, by name and by number, and the two agree on none.
+    if ('detail' in fault) {
+      assert.equal(typeof fault.detail, 'string', ctx)
+      assert.ok(Number.isInteger(fault.detailCode) && (fault.detailCode as number) >= 0, ctx)
+      assert.equal(fault.detail === 'none', fault.detailCode === 0, ctx)
+    }
   } else {
     assert.equal(typeof (v.violation as { keyword: unknown }).keyword, 'string', ctx)
   }
@@ -206,12 +243,19 @@ test('no door throws, for any argument in any position', () => {
       for (const [, second] of hostile) call([first, second])
     }
   }
-  assert.ok(calls > 28 * hostile.length * hostile.length)
+  assert.ok(calls > 32 * hostile.length * hostile.length)
 })
 
 test('the declarations never throw either', () => {
   // A getter or Proxy trap of the caller's that throws is cleared and answered as a refusal.
-  const declarations = [NumFormat.declare, DateFormat.declare, Constraints.declare]
+  const declarations = [
+    NumFormat.declare,
+    DateFormat.declare,
+    Constraints.declare,
+    DateOptions.declare,
+    MonthNames.declare,
+    MonthNames.fromPacked,
+  ]
   const throwing = new Proxy(
     {},
     {
@@ -222,7 +266,19 @@ test('the declarations never throw either', () => {
   )
   // Each declaration field also takes every hostile value, and a Proxy that throws.
   const specs: [string, unknown][] = [...hostile]
-  for (const field of ['door', 'minimum', 'multipleOf', 'rounding', 'maxLength', 'trim', 'enum']) {
+  for (const field of [
+    'door',
+    'minimum',
+    'multipleOf',
+    'rounding',
+    'maxLength',
+    'trim',
+    'enum',
+    'grouping',
+    'flags',
+    'pivot',
+    'months',
+  ]) {
     for (const [name, value] of [...hostile, ['throwing Proxy', throwing] as const]) {
       specs.push([`${field}: ${name}`, { door: Door.I32, [field]: value }])
       specs.push([`${field}: ${name} at Text`, { door: Door.Text, [field]: value }])
@@ -269,6 +325,25 @@ test('a contract violation is malformed with an empty span; absent text is empty
   assert.deepEqual(castI32(undefined), empty)
   assert.deepEqual(castI32(null), empty)
   assert.deepEqual(castI32(), empty)
+  // The detailed family: the same verdicts, a detail of 'none' (0) for the contract and 'blank'
+  // (1) for the absent.
+  const castDetailed = api.castDetailed as unknown as Door
+  const detailedContract = {
+    ok: false,
+    fault: { reason: 'malformed', offset: 0, length: 0, detail: 'none', detailCode: 0 },
+  }
+  const detailedEmpty = {
+    ok: false,
+    fault: { reason: 'empty', offset: 0, length: 0, detail: 'blank', detailCode: 1 },
+  }
+  assert.deepEqual(castDetailed(Door.I32, 42), detailedContract)
+  assert.deepEqual(castDetailed(Door.I32, '1', {}), detailedContract)
+  assert.deepEqual(castDetailed(999, '1'), detailedContract)
+  assert.deepEqual(castDetailed(Door.Unix, '1'), detailedContract)
+  assert.deepEqual(castDetailed(Door.Bool, 'yes', Door.I32), detailedContract)
+  assert.deepEqual(castDetailed(Door.I32, undefined), detailedEmpty)
+  assert.deepEqual(castDetailed(Door.I32, null), detailedEmpty)
+  assert.deepEqual(castDetailed(), detailedContract)
   // The contract is read before the text: absent text under a broken declaration is malformed.
   assert.deepEqual(castUnix(null, 9), contract)
 })

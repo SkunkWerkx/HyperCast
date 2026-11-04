@@ -2,7 +2,7 @@
 /// Adding a member is a deliberate breaking change: every exhaustive switch over this enum
 /// must be updated, in every binding at once.
 public enum CastFailure: Int32, Equatable, Sendable {
-    /// Required input was empty or whitespace. ``Cast/optional(_:)`` surfaces this as `nil`.
+    /// Required input was empty or white space. ``Cast/optional(_:)`` surfaces this as `nil`.
     case empty = 1
     /// Input was present but not recognizable as the target type.
     case malformed = 2
@@ -16,6 +16,11 @@ public enum CastFailure: Int32, Equatable, Sendable {
 ///
 /// `offset` and `length` are byte offsets into the UTF-8 representation of the input —
 /// exactly what the `[UInt8]` doors received, identical to `String.utf8` offsets.
+///
+/// A fault a door returns also says what failed there: ``detail``, with its raw ``detailCode``.
+/// Equality is the fault's reason and span and nothing else, as it always was, so a fault
+/// built by hand with ``init(reason:offset:length:)`` equals the door's fault for the same
+/// failure; compare ``detailCode`` to compare details.
 public struct Fault: Equatable, Sendable {
     /// Why the cast failed.
     public let reason: CastFailure
@@ -23,13 +28,31 @@ public struct Fault: Equatable, Sendable {
     public let offset: Int
     /// How many UTF-8 bytes the offending span covers.
     public let length: Int
+    /// The core's detail code for what failed in the span: 1 or more on a door's fault, 0 on a
+    /// fault built without one.
+    public let detailCode: UInt32
+
+    /// What failed in the span: the ``FaultDetail`` (``FaultDetail/name`` is `nil` for a code
+    /// this binding doesn't name), or `nil` for a fault built by hand without one.
+    public var detail: FaultDetail? { detailCode == 0 ? nil : FaultDetail(code: detailCode) }
 
     /// Builds a fault from its parts — what a test asserting an expected verdict needs; the
-    /// doors are what produce one otherwise.
+    /// doors are what produce one otherwise. It carries no detail.
     public init(reason: CastFailure, offset: Int, length: Int) {
+        self.init(reason: reason, offset: offset, length: length, detailCode: 0)
+    }
+
+    /// Builds a fault with the raw detail code the core reported (0 for none).
+    public init(reason: CastFailure, offset: Int, length: Int, detailCode: UInt32) {
         self.reason = reason
         self.offset = offset
         self.length = length
+        self.detailCode = detailCode
+    }
+
+    /// Two faults are equal when their reason and span are: the detail is not part of equality.
+    public static func == (lhs: Fault, rhs: Fault) -> Bool {
+        lhs.reason == rhs.reason && lhs.offset == rhs.offset && lhs.length == rhs.length
     }
 }
 

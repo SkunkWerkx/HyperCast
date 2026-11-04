@@ -18,10 +18,8 @@ public static partial class Cast
 	{
 		var raw = format.ToRaw();
 		sbyte value = 0;
-		RawFault fault = default;
-		int code;
-		fixed (byte* ptr = utf8)
-			code = cast_i8(ptr, (nuint)utf8.Length, &raw, &value, &fault);
+		var fault = RawFaultDetail.Empty;
+		var code = Detailed(DoorCodes.I8, 0, &raw, null, utf8, &value, &fault);
 		return code == 0 ? value : Failed<sbyte>(code, fault);
 	}
 
@@ -32,10 +30,8 @@ public static partial class Cast
 	{
 		var raw = format.ToRaw();
 		short value = 0;
-		RawFault fault = default;
-		int code;
-		fixed (byte* ptr = utf8)
-			code = cast_i16(ptr, (nuint)utf8.Length, &raw, &value, &fault);
+		var fault = RawFaultDetail.Empty;
+		var code = Detailed(DoorCodes.I16, 0, &raw, null, utf8, &value, &fault);
 		return code == 0 ? value : Failed<short>(code, fault);
 	}
 
@@ -46,10 +42,8 @@ public static partial class Cast
 	{
 		var raw = format.ToRaw();
 		int value = 0;
-		RawFault fault = default;
-		int code;
-		fixed (byte* ptr = utf8)
-			code = cast_i32(ptr, (nuint)utf8.Length, &raw, &value, &fault);
+		var fault = RawFaultDetail.Empty;
+		var code = Detailed(DoorCodes.I32, 0, &raw, null, utf8, &value, &fault);
 		return code == 0 ? value : Failed<int>(code, fault);
 	}
 
@@ -60,10 +54,8 @@ public static partial class Cast
 	{
 		var raw = format.ToRaw();
 		long value = 0;
-		RawFault fault = default;
-		int code;
-		fixed (byte* ptr = utf8)
-			code = cast_i64(ptr, (nuint)utf8.Length, &raw, &value, &fault);
+		var fault = RawFaultDetail.Empty;
+		var code = Detailed(DoorCodes.I64, 0, &raw, null, utf8, &value, &fault);
 		return code == 0 ? value : Failed<long>(code, fault);
 	}
 
@@ -74,10 +66,8 @@ public static partial class Cast
 	{
 		var raw = format.ToRaw();
 		byte value = 0;
-		RawFault fault = default;
-		int code;
-		fixed (byte* ptr = utf8)
-			code = cast_u8(ptr, (nuint)utf8.Length, &raw, &value, &fault);
+		var fault = RawFaultDetail.Empty;
+		var code = Detailed(DoorCodes.U8, 0, &raw, null, utf8, &value, &fault);
 		return code == 0 ? value : Failed<byte>(code, fault);
 	}
 
@@ -88,10 +78,8 @@ public static partial class Cast
 	{
 		var raw = format.ToRaw();
 		ushort value = 0;
-		RawFault fault = default;
-		int code;
-		fixed (byte* ptr = utf8)
-			code = cast_u16(ptr, (nuint)utf8.Length, &raw, &value, &fault);
+		var fault = RawFaultDetail.Empty;
+		var code = Detailed(DoorCodes.U16, 0, &raw, null, utf8, &value, &fault);
 		return code == 0 ? value : Failed<ushort>(code, fault);
 	}
 
@@ -102,10 +90,8 @@ public static partial class Cast
 	{
 		var raw = format.ToRaw();
 		uint value = 0;
-		RawFault fault = default;
-		int code;
-		fixed (byte* ptr = utf8)
-			code = cast_u32(ptr, (nuint)utf8.Length, &raw, &value, &fault);
+		var fault = RawFaultDetail.Empty;
+		var code = Detailed(DoorCodes.U32, 0, &raw, null, utf8, &value, &fault);
 		return code == 0 ? value : Failed<uint>(code, fault);
 	}
 
@@ -116,10 +102,8 @@ public static partial class Cast
 	{
 		var raw = format.ToRaw();
 		ulong value = 0;
-		RawFault fault = default;
-		int code;
-		fixed (byte* ptr = utf8)
-			code = cast_u64(ptr, (nuint)utf8.Length, &raw, &value, &fault);
+		var fault = RawFaultDetail.Empty;
+		var code = Detailed(DoorCodes.U64, 0, &raw, null, utf8, &value, &fault);
 		return code == 0 ? value : Failed<ulong>(code, fault);
 	}
 
@@ -135,10 +119,8 @@ public static partial class Cast
 	{
 		var raw = format.ToRaw();
 		float value = 0;
-		RawFault fault = default;
-		int code;
-		fixed (byte* ptr = utf8)
-			code = cast_f32(ptr, (nuint)utf8.Length, &raw, &value, &fault);
+		var fault = RawFaultDetail.Empty;
+		var code = Detailed(DoorCodes.F32, 0, &raw, null, utf8, &value, &fault);
 		return code == 0 ? value : Failed<float>(code, fault);
 	}
 
@@ -149,10 +131,8 @@ public static partial class Cast
 	{
 		var raw = format.ToRaw();
 		double value = 0;
-		RawFault fault = default;
-		int code;
-		fixed (byte* ptr = utf8)
-			code = cast_f64(ptr, (nuint)utf8.Length, &raw, &value, &fault);
+		var fault = RawFaultDetail.Empty;
+		var code = Detailed(DoorCodes.F64, 0, &raw, null, utf8, &value, &fault);
 		return code == 0 ? value : Failed<double>(code, fault);
 	}
 
@@ -173,10 +153,8 @@ public static partial class Cast
 	{
 		var raw = format.ToRaw();
 		RawDecimal value = default;
-		RawFault fault = default;
-		int code;
-		fixed (byte* ptr = utf8)
-			code = cast_decimal(ptr, (nuint)utf8.Length, &raw, &value, &fault);
+		var fault = RawFaultDetail.Empty;
+		var code = Detailed(DoorCodes.Decimal, 0, &raw, null, utf8, &value, &fault);
 		return code == 0
 			? value.ToDecimal()
 			: Failed<decimal>(code, fault);

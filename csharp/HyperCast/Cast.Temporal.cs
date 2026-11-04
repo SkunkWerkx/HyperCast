@@ -15,11 +15,10 @@ public static partial class Cast
 	public static unsafe Verdict<Guid> Uuid(ReadOnlySpan<byte> utf8)
 	{
 		Span<byte> bytes = stackalloc byte[16];
-		RawFault fault = default;
+		var fault = RawFaultDetail.Empty;
 		int code;
-		fixed (byte* ptr = utf8)
 		fixed (byte* value = bytes)
-			code = cast_uuid(ptr, (nuint)utf8.Length, value, &fault);
+			code = Detailed(DoorCodes.Uuid, 0, null, null, utf8, value, &fault);
 		return code == 0 ? Abi.ToGuid(bytes) : Failed<Guid>(code, fault);
 	}
 
@@ -51,10 +50,8 @@ public static partial class Cast
 	public static unsafe Verdict<DateTimeOffset> Timestamp(ReadOnlySpan<byte> utf8)
 	{
 		RawTimestamp value = default;
-		RawFault fault = default;
-		int code;
-		fixed (byte* ptr = utf8)
-			code = cast_timestamp(ptr, (nuint)utf8.Length, &value, &fault);
+		var fault = RawFaultDetail.Empty;
+		var code = Detailed(DoorCodes.Timestamp, 0, null, null, utf8, &value, &fault);
 		return code == 0 ? value.ToDateTimeOffset() : Failed<DateTimeOffset>(code, fault);
 	}
 
@@ -87,10 +84,8 @@ public static partial class Cast
 	{
 		var declared = Abi.Code(precision);
 		RawTimestamp value = default;
-		RawFault fault = default;
-		int code;
-		fixed (byte* ptr = utf8)
-			code = cast_unix(ptr, (nuint)utf8.Length, declared, &value, &fault);
+		var fault = RawFaultDetail.Empty;
+		var code = Detailed(DoorCodes.Unix, declared, null, null, utf8, &value, &fault);
 		return code == 0 ? value.ToDateTimeOffset() : Failed<DateTimeOffset>(code, fault);
 	}
 
@@ -132,10 +127,8 @@ public static partial class Cast
 	{
 		var declared = Abi.Code(epoch);
 		RawTimestamp value = default;
-		RawFault fault = default;
-		int code;
-		fixed (byte* ptr = utf8)
-			code = cast_excel_serial(ptr, (nuint)utf8.Length, declared, &value, &fault);
+		var fault = RawFaultDetail.Empty;
+		var code = Detailed(DoorCodes.ExcelSerial, declared, null, null, utf8, &value, &fault);
 		return code == 0 ? value.ToDateTimeOffset() : Failed<DateTimeOffset>(code, fault);
 	}
 
@@ -166,10 +159,8 @@ public static partial class Cast
 	public static unsafe Verdict<DateOnly> Date(ReadOnlySpan<byte> utf8)
 	{
 		RawDate value = default;
-		RawFault fault = default;
-		int code;
-		fixed (byte* ptr = utf8)
-			code = cast_date(ptr, (nuint)utf8.Length, &value, &fault);
+		var fault = RawFaultDetail.Empty;
+		var code = Detailed(DoorCodes.Date, 0, null, null, utf8, &value, &fault);
 		return code == 0
 			? value.ToDateOnly()
 			: Failed<DateOnly>(code, fault);
@@ -207,10 +198,8 @@ public static partial class Cast
 	{
 		var declared = Abi.Code(order);
 		RawDate value = default;
-		RawFault fault = default;
-		int code;
-		fixed (byte* ptr = utf8)
-			code = cast_date_ordered(ptr, (nuint)utf8.Length, declared, &value, &fault);
+		var fault = RawFaultDetail.Empty;
+		var code = Detailed(DoorCodes.DateOrdered, declared, null, null, utf8, &value, &fault);
 		return code == 0
 			? value.ToDateOnly()
 			: Failed<DateOnly>(code, fault);
@@ -255,10 +244,8 @@ public static partial class Cast
 	{
 		var declared = Abi.Code(order);
 		RawCivil value = default;
-		RawFault fault = default;
-		int code;
-		fixed (byte* ptr = utf8)
-			code = cast_datetime(ptr, (nuint)utf8.Length, declared, null, &value, &fault);
+		var fault = RawFaultDetail.Empty;
+		var code = Detailed(DoorCodes.DateTime, declared, null, null, utf8, &value, &fault);
 		return code == 0 ? value.ToDateTime() : Failed<System.DateTime>(code, fault);
 	}
 
@@ -283,7 +270,7 @@ public static partial class Cast
 	/// <see cref="DateTime(ReadOnlySpan{byte}, DateOrder)"/> under a declared
 	/// <see cref="DateFormat"/>: its <see cref="DateFormat.Order"/>, and its day-period
 	/// designators read beside the English <c>AM</c>/<c>PM</c>, exactly — after the clock
-	/// (<c>1.7.2026 3:04 nachm.</c>, with or without the space) or ahead of it
+	/// (<c>1.7.2026 3:04 nachm.</c>, with any run of white space or none between) or ahead of it
 	/// (<c>2026-01-07 오후 3:04</c>). A format declaring no designator is the bare
 	/// <see cref="DateOrder"/> cast; <see cref="DateFormat.From(System.Globalization.CultureInfo)"/>
 	/// fills one from a culture.
@@ -298,10 +285,8 @@ public static partial class Cast
 		var declared = Abi.Code(format.Order, nameof(format));
 		var periods = format.ToRaw();
 		RawCivil value = default;
-		RawFault fault = default;
-		int code;
-		fixed (byte* ptr = utf8)
-			code = cast_datetime(ptr, (nuint)utf8.Length, declared, format.HasDesignators ? &periods : null, &value, &fault);
+		var fault = RawFaultDetail.Empty;
+		var code = Detailed(DoorCodes.DateTime, declared, null, format.HasDesignators ? &periods : null, utf8, &value, &fault);
 		return code == 0 ? value.ToDateTime() : Failed<System.DateTime>(code, fault);
 	}
 
@@ -334,10 +319,8 @@ public static partial class Cast
 	public static unsafe Verdict<TimeOnly> Time(ReadOnlySpan<byte> utf8)
 	{
 		ulong nanos = 0;
-		RawFault fault = default;
-		int code;
-		fixed (byte* ptr = utf8)
-			code = cast_time(ptr, (nuint)utf8.Length, &nanos, &fault);
+		var fault = RawFaultDetail.Empty;
+		var code = Detailed(DoorCodes.Time, 0, null, null, utf8, &nanos, &fault);
 		return code == 0 ? Abi.ToTimeOnly(nanos) : Failed<TimeOnly>(code, fault);
 	}
 
@@ -369,10 +352,8 @@ public static partial class Cast
 	public static unsafe Verdict<TimeSpan> Duration(ReadOnlySpan<byte> utf8)
 	{
 		RawDuration value = default;
-		RawFault fault = default;
-		int code;
-		fixed (byte* ptr = utf8)
-			code = cast_duration(ptr, (nuint)utf8.Length, &value, &fault);
+		var fault = RawFaultDetail.Empty;
+		var code = Detailed(DoorCodes.Duration, 0, null, null, utf8, &value, &fault);
 		return code == 0 ? value.ToTimeSpan() : Failed<TimeSpan>(code, fault);
 	}
 

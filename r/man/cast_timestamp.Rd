@@ -6,7 +6,7 @@
 \alias{cast_excel_serial}
 \title{Instants}
 \usage{
-cast_timestamp(x)
+cast_timestamp(x, options = NULL)
 
 cast_unix(x, precision)
 
@@ -16,6 +16,9 @@ cast_excel_serial(x, epoch)
 \item{x}{A character vector (a factor is read as its levels), or a list of raw vectors
 holding UTF-8 bytes (a bare raw vector is one input). \code{NA} and \code{NULL} elements are
 missing.}
+
+\item{options}{\code{NULL} (the default, today's shape rules), or a \code{\link[=date_options]{date_options()}} declaration
+of the opt-in shapes, which the door reads where it applies and ignores otherwise.}
 
 \item{precision}{The unit: \code{"seconds"}, \code{"milliseconds"}, \code{"microseconds"} or
 \code{"nanoseconds"}.}
@@ -38,6 +41,11 @@ names no zone, and is read as UTC. Instants run from \verb{0001-01-01T00:00:00Z}
 \verb{9999-12-31T23:59:59.999999999Z}; a fraction past nine digits truncates to the nanosecond.
 }
 \details{
+Strict RFC 3339 is the default, and a caller can rely on it: \verb{2026-01-07 15:04:05Z}
+(a space for the \code{T}) and \code{+00} (an offset of hours alone) are \code{malformed}. \code{options}, a
+\code{\link[=date_options]{date_options()}}, opts in to either (\code{"space_separator"}, \code{"hour_offset"}, or both with
+\code{"common_forms"}), and nothing else in it applies to this door.
+
 \code{value} is a \code{POSIXct} in UTC: a double of seconds, exact to the microsecond across
 present-day instants but not to the nanosecond. The exact instant is in two more columns,
 protobuf's \code{Timestamp} pair: \code{seconds} (a whole double, exact) and \code{nanos} (an integer,

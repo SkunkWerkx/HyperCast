@@ -26,16 +26,50 @@ import java.util.concurrent.ConcurrentHashMap;
  * separator is 1 to 8 UTF-8 bytes with no ASCII digit, which covers every separator
  * any real locale declares ({@code .}, {@code ,}, U+00A0, U+202F, an apostrophe and a space).
  *
+ * <p>How digit groups are judged is the {@link Grouping}, declared apart from the styles and
+ * {@link Grouping#WESTERN strict Western} unless declared otherwise: {@code 1,234,567} reads,
+ * {@code 12,34} is {@link CastFailure#MALFORMED}. 1.0 read a group separator anywhere between
+ * two digits; {@code withGrouping(Grouping.LEGACY)} keeps that. Every constructor and
+ * {@link #INVARIANT} default to Western; {@link #from(Locale)} declares what the platform's own
+ * number and currency patterns say, so as never to reject the platform's own output:
+ * {@link Grouping#WESTERN} or {@link Grouping#INDIAN} when every pattern that groups does,
+ * {@link Grouping#LEGACY} for any other shape or patterns that disagree, and
+ * {@link #STYLE_GROUPING} cleared only when neither groups.
+ *
+ * <p><b>The one deviation from the record copy rule.</b> A record is normally copied by handing
+ * its components back to the canonical constructor ({@code new NumFormat(f.decimalSeparator(),
+ * ..., f.styles(), ...)}, a deconstruct-and-rebuild, a serialization library). That copy is exact
+ * for every field but one: {@link #styles()} answers the {@code STYLE_*} bits alone, because 1.0's
+ * ten components are the ones this record keeps (an eleventh would break 1.0's ten-binder record
+ * pattern), so the copy does not carry the {@link Grouping} and takes the default,
+ * {@link Grouping#WESTERN}. A copy of a Western format is equal to it; a copy of a
+ * {@link Grouping#LEGACY} or {@link Grouping#INDIAN} one (and a {@link #from(Locale) bridged}
+ * format may be legacy) is Western, so copy with {@link #withGrouping(Grouping)}, the
+ * {@code with*} methods (every component has one) or {@code format.withGrouping(copy.grouping())}.
+ * The policy lives inside the {@code styles} component of the canonical constructor, in bits 16
+ * and 17, as an internal encoding that callers must not set: the constructor accepts only the
+ * values a format of this class holds (0 Western, 1 legacy, 2 Indian) and refuses the rest.
+ *
  * <p>The boolean door's lexicon is not here, and stays English by decision: no platform
  * carries culture data for its yes/no words, so no bridge could fill one. A caller maps its
  * own words before the door.
  *
  * @param decimalSeparator the declared decimal separator: 1 to 8 UTF-8 bytes, no ASCII digit
- * @param groupSeparator the declared digit-group separator, likewise; must differ from
+ *     and no white space
+ * @param groupSeparator the declared digit-group separator, likewise but it may be or contain
+ *     white space (U+0020, U+00A0 and U+202F stand for each other); must differ from
  *     {@code decimalSeparator}
- * @param styles bitwise OR of the {@code STYLE_*} flags
+ * @param styles bitwise OR of the {@code STYLE_*} flags (bits 0 to 7). The {@link Grouping} is
+ *     not a style: declare it beside the mask ({@link #NumFormat(String, String, int, Grouping)},
+ *     {@link #withGrouping(Grouping)}), where it defaults to {@link Grouping#WESTERN}. As a
+ *     component of this record the mask is the stored word, which also holds the policy in bits
+ *     16 and 17 (0 Western, 1 legacy, 2 Indian; an internal encoding callers must not set, and 3
+ *     is refused), so {@link #styles()} answers the {@code STYLE_*} bits alone and
+ *     {@link #grouping()} the policy; a record rebuilt through the canonical constructor from
+ *     {@code styles()} keeps every style and takes the default policy (see the class
+ *     description's copy rule)
  * @param currencySymbol the declared currency symbol — at most 16 UTF-8 bytes, with no ASCII
- *     digit or ASCII whitespace; {@code ""} declares none
+ *     digit and no white space at either end (inside is fine); {@code ""} declares none
  * @param currencyDecimalSeparator the decimal separator of a currency amount, read in place
  *     of {@code decimalSeparator} when the declared symbol is in the text (a decimal point in
  *     Swiss French currency, a decimal comma in its numbers); {@code ""} keeps
@@ -43,7 +77,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * @param currencyGroupSeparator the group separator of a currency amount, likewise; {@code ""}
  *     keeps {@code groupSeparator}; the pair in force for a currency amount must differ
  * @param minusSign a further spelling of the minus sign, read wherever ASCII {@code -} is
- *     (U+2212 in Estonian and Basque): at most 8 UTF-8 bytes, no ASCII digit or whitespace;
+ *     (U+2212 in Estonian and Basque): at most 8 UTF-8 bytes, no ASCII digit or white space;
  *     {@code ""} declares none
  * @param plusSign a further spelling of the plus sign, likewise beside ASCII {@code +}
  * @param percentSymbol a further spelling of the percent symbol, read as a trailing
@@ -66,8 +100,10 @@ public record NumFormat(
         String percentSymbol,
         int digitZero) {
     /**
-     * Permit the declared group separator between digits. Group sizes are not validated —
-     * a separator must simply sit between two digits (HyperCast's own deterministic rule).
+     * Permit the declared group separator between digits. How the groups are judged is the
+     * {@link Grouping}: under the default {@link Grouping#WESTERN} every group must be three
+     * digits, under {@link Grouping#LEGACY} a separator must simply sit between two digits.
+     * Without this style a group separator is refused under every policy.
      */
     public static final int STYLE_GROUPING = 1;
     /** Permit accounting parentheses as negation: {@code (1,234)} is -1234. */
@@ -103,7 +139,7 @@ public record NumFormat(
     /**
      * Permit the declared {@link #currencySymbol()} at either edge of the numeric body —
      * leading ({@code $5}, {@code -$5}, {@code $ -5}) or trailing ({@code 5 €},
-     * {@code 1.234,50 kr.}), once, with optional ASCII whitespace between symbol and digits;
+     * {@code 1.234,50 kr.}), once, with optional white space between symbol and digits;
      * accounting parentheses wrap the symbol along with the digits ({@code ($5)}). A symbol
      * declared without this style is {@link CastFailure#MALFORMED} where it appears; this
      * style with no symbol declared matches nothing and changes nothing. With the symbol in
@@ -113,7 +149,7 @@ public record NumFormat(
     /**
      * Permit the sign after the digits ({@code 5-}, {@code 5 -}, {@code 5 €-}, {@code 5- €},
      * {@code 2.5%-}), the way a locale whose negative pattern is {@code n-} writes it: ASCII
-     * {@code -}/{@code +} or the declared signs, once, with optional ASCII whitespace before
+     * {@code -}/{@code +} or the declared signs, once, with optional white space before
      * it, and never beside a leading sign or inside accounting parentheses. Not part of
      * {@link #STYLE_ALL}: {@link #from(Locale)} sets it from the locale's own negative
      * pattern rather than assuming it.
@@ -130,13 +166,16 @@ public record NumFormat(
 
     /**
      * The invariant profile — {@code .} decimal, {@code ,} grouping, every default lenience
-     * on, nothing else declared.
+     * on, strict {@link Grouping#WESTERN} grouping, nothing else declared. As of 1.1 this
+     * rejects {@code 12,34}, which 1.0 read as 1234:
+     * {@code INVARIANT.withGrouping(Grouping.LEGACY)} is the 1.0 profile.
      */
     public static final NumFormat INVARIANT = new NumFormat(".", ",", STYLE_ALL);
 
     /**
      * The detection profile — every default lenience on, {@code .}/{@code ,} roles resolved
-     * per input by {@link #STYLE_SEPARATOR_DETECT}'s structural rules.
+     * per input by {@link #STYLE_SEPARATOR_DETECT}'s structural rules, strict
+     * {@link Grouping#WESTERN} grouping (no policy resolves an ambiguous {@code 1,234}).
      */
     public static final NumFormat DETECT = new NumFormat(".", ",", STYLE_ALL | STYLE_SEPARATOR_DETECT);
 
@@ -150,32 +189,56 @@ public record NumFormat(
      * loudly as the caller bug it is, never as a verdict: the number separators 1 to 8 UTF-8
      * bytes each and distinct; the currency separators the same or empty, and the pair in
      * force for a currency amount distinct; the signs and the percent symbol at most 8 bytes
-     * and the currency symbol at most 16, with no ASCII whitespace, which the doors trim
-     * around them; every symbol whole code points with no ASCII digit, which the digit scan
-     * would read first; and the digit zero the start of a block ten digits can be read from.
+     * and the currency symbol at most 16, with no white space in a sign or the percent
+     * symbol, which the doors trim around them, and in neither decimal separator, since the
+     * numeral admits white space only as a group separator; the currency symbol with none at
+     * either end, though inside is fine (CLDR's {@code F CFA}); every symbol whole code points with no ASCII digit,
+     * which the digit scan would read first; the digit zero the start of a block ten digits
+     * can be read from; and the styles only the defined {@code STYLE_*} bits. A declaration
+     * breaking two rules reports the first of: length, digit, equal separators, white space.
+     *
+     * <p>The canonical constructor is 1.0's, and declares {@link Grouping#WESTERN}: its
+     * {@code styles} is the {@code STYLE_*} mask, which may also carry the stored policy of a
+     * format this record itself handed out (not a spelling to write by hand: declare a
+     * {@link Grouping} with {@link #NumFormat(String, String, int, Grouping)} or
+     * {@link #withGrouping(Grouping)}).
      *
      * @throws IllegalArgumentException for any field the core would refuse
      * @throws NullPointerException if any symbol is null
      */
     public NumFormat {
-        checkSymbol("Decimal separator", decimalSeparator, SYMBOL_MAX_BYTES, true, false);
-        checkSymbol("Group separator", groupSeparator, SYMBOL_MAX_BYTES, true, false);
+        styles = stored(styles);
+        checkSymbol("Decimal separator", decimalSeparator, SYMBOL_MAX_BYTES, true);
+        checkSymbol("Group separator", groupSeparator, SYMBOL_MAX_BYTES, true);
         if (decimalSeparator.equals(groupSeparator)) {
             throw new IllegalArgumentException(
                     "Decimal and group separators must differ; both are '" + decimalSeparator + "'");
         }
-        checkSymbol("Currency decimal separator", currencyDecimalSeparator, SYMBOL_MAX_BYTES, false, false);
-        checkSymbol("Currency group separator", currencyGroupSeparator, SYMBOL_MAX_BYTES, false, false);
+        checkSymbol("Currency decimal separator", currencyDecimalSeparator, SYMBOL_MAX_BYTES, false);
+        checkSymbol("Currency group separator", currencyGroupSeparator, SYMBOL_MAX_BYTES, false);
         String currencyDecimal = currencyDecimalSeparator.isEmpty() ? decimalSeparator : currencyDecimalSeparator;
         String currencyGroup = currencyGroupSeparator.isEmpty() ? groupSeparator : currencyGroupSeparator;
         if (currencyDecimal.equals(currencyGroup)) {
             throw new IllegalArgumentException(
                     "A currency amount's decimal and group separators must differ; both are '" + currencyDecimal + "'");
         }
-        checkSymbol("Minus sign", minusSign, SYMBOL_MAX_BYTES, false, true);
-        checkSymbol("Plus sign", plusSign, SYMBOL_MAX_BYTES, false, true);
-        checkSymbol("Percent symbol", percentSymbol, SYMBOL_MAX_BYTES, false, true);
-        checkSymbol("Currency symbol", currencySymbol, CURRENCY_SYMBOL_MAX_BYTES, false, true);
+        checkSymbol("Minus sign", minusSign, SYMBOL_MAX_BYTES, false);
+        checkSymbol("Plus sign", plusSign, SYMBOL_MAX_BYTES, false);
+        checkSymbol("Percent symbol", percentSymbol, SYMBOL_MAX_BYTES, false);
+        checkSymbol("Currency symbol", currencySymbol, CURRENCY_SYMBOL_MAX_BYTES, false);
+        // White space comes last, so an earlier rule's message stands. A group separator may
+        // be or contain it. No decimal separator, sign or percent symbol can: the doors trim it
+        // around a sign and the percent symbol, and a numeral admits it only as a group
+        // separator. The currency symbol may hold it inside (CLDR's "F CFA"), not at an edge.
+        checkNoWhiteSpace("Decimal separator", decimalSeparator);
+        checkNoWhiteSpace("Currency decimal separator", currencyDecimalSeparator);
+        checkNoWhiteSpace("Minus sign", minusSign);
+        checkNoWhiteSpace("Plus sign", plusSign);
+        checkNoWhiteSpace("Percent symbol", percentSymbol);
+        if (WhiteSpace.atEdge(currencySymbol)) {
+            throw new IllegalArgumentException(
+                    "Currency symbol must not start or end with white space; got '" + currencySymbol + "'");
+        }
         // The core's rule: every decimal digit block Unicode defines starts at a code point
         // whose ten successors share its UTF-8 prefix, which is what lets a digit be read from
         // its last byte — a zero whose value modulo 64 is past 54 starts no such block, and an
@@ -237,14 +300,134 @@ public record NumFormat(
     }
 
     /**
+     * Declares the separators, styles and grouping policy, with no currency symbol and nothing
+     * else. The policy is declared apart from the styles, which never carry one.
+     *
+     * @param decimalSeparator the declared decimal separator
+     * @param groupSeparator the declared digit-group separator; must differ from {@code decimalSeparator}
+     * @param styles bitwise OR of the {@code STYLE_*} flags, and nothing else
+     * @param grouping how digit groups are judged
+     * @throws IllegalArgumentException if {@code styles} carries a bit that is no style
+     * @throws NullPointerException if {@code grouping} is null
+     */
+    public NumFormat(String decimalSeparator, String groupSeparator, int styles, Grouping grouping) {
+        this(decimalSeparator, groupSeparator, styles, "", grouping);
+    }
+
+    /**
+     * Declares the separators, styles, currency symbol and grouping policy, and nothing else.
+     *
+     * @param decimalSeparator the declared decimal separator
+     * @param groupSeparator the declared digit-group separator; must differ from {@code decimalSeparator}
+     * @param styles bitwise OR of the {@code STYLE_*} flags, and nothing else
+     * @param currencySymbol the declared currency symbol; {@code ""} declares none
+     * @param grouping how digit groups are judged
+     * @throws IllegalArgumentException if {@code styles} carries a bit that is no style
+     * @throws NullPointerException if {@code grouping} is null
+     */
+    public NumFormat(
+            String decimalSeparator, String groupSeparator, int styles, String currencySymbol, Grouping grouping) {
+        this(decimalSeparator, groupSeparator, join(styles, grouping), currencySymbol, "", "", "", "", "", 0);
+    }
+
+    /**
+     * Declares one-character separators, styles and grouping policy, with no currency symbol
+     * and nothing else.
+     *
+     * @param decimalSeparator the declared decimal separator
+     * @param groupSeparator the declared digit-group separator; must differ from {@code decimalSeparator}
+     * @param styles bitwise OR of the {@code STYLE_*} flags, and nothing else
+     * @param grouping how digit groups are judged
+     * @throws IllegalArgumentException if {@code styles} carries a bit that is no style
+     * @throws NullPointerException if {@code grouping} is null
+     */
+    public NumFormat(char decimalSeparator, char groupSeparator, int styles, Grouping grouping) {
+        this(String.valueOf(decimalSeparator), String.valueOf(groupSeparator), styles, "", grouping);
+    }
+
+    /**
+     * The {@code STYLE_*} flags alone, as 1.0's accessor answered: the {@link Grouping} is
+     * {@link #grouping()}, never a bit of this mask.
+     *
+     * @return bitwise OR of the {@code STYLE_*} flags
+     */
+    public int styles() {
+        return styles & STYLE_BITS;
+    }
+
+    /**
+     * How this format judges digit groups.
+     *
+     * @return the policy; {@link Grouping#WESTERN} unless declared otherwise
+     */
+    public Grouping grouping() {
+        return switch (styles >>> POLICY_SHIFT) {
+            case LEGACY_FIELD -> Grouping.LEGACY;
+            case INDIAN_FIELD -> Grouping.INDIAN;
+            default -> Grouping.WESTERN;
+        };
+    }
+
+    /**
+     * The {@code flags} word as the native core reads it: the {@code STYLE_*} bits and, in bits
+     * 8 and 9, the {@link Grouping#code() policy}. For a library that carries a format across
+     * the C ABI of its own, with {@link io.github.skunkwerkx.hypercast.interop.NativeValues}.
+     *
+     * @return the ABI flags
+     */
+    public int flags() {
+        return styles() | grouping().code();
+    }
+
+    /**
+     * The same format under another grouping policy, which replaces this one's.
+     * {@code INVARIANT.withGrouping(Grouping.LEGACY)} reads as 1.0 did.
+     *
+     * @param grouping how digit groups are judged
+     * @return the format with {@code grouping} in place of this one's
+     * @throws NullPointerException if {@code grouping} is null
+     */
+    public NumFormat withGrouping(Grouping grouping) {
+        return withStored(join(styles(), grouping));
+    }
+
+    /**
      * The same format under other styles — {@code INVARIANT.withStyles(STYLE_ALL | STYLE_TRAILING_SIGN)}
      * opts into a trailing sign, {@code withStyles(STYLE_ALL & ~STYLE_RADIX_PREFIXES)} out of
-     * radix prefixes.
+     * radix prefixes. The grouping policy is kept.
      *
-     * @param styles bitwise OR of the {@code STYLE_*} flags
+     * @param styles bitwise OR of the {@code STYLE_*} flags, and nothing else
      * @return the format with {@code styles} in place of this one's
+     * @throws IllegalArgumentException if {@code styles} carries a bit that is no style
      */
     public NumFormat withStyles(int styles) {
+        return withStored(join(styles, grouping()));
+    }
+
+    private NumFormat withStored(int stored) {
+        return new NumFormat(
+                decimalSeparator,
+                groupSeparator,
+                stored,
+                currencySymbol,
+                currencyDecimalSeparator,
+                currencyGroupSeparator,
+                minusSign,
+                plusSign,
+                percentSymbol,
+                digitZero);
+    }
+
+    /**
+     * The same format with other number separators, so that every component has a wither.
+     * Validated as the constructor does: 1 to 8 UTF-8 bytes each, distinct, no ASCII digit, no
+     * white space in the decimal separator (a currency pair that was distinct must stay so).
+     *
+     * @param decimalSeparator the declared decimal separator
+     * @param groupSeparator the declared digit-group separator; must differ from {@code decimalSeparator}
+     * @return the format with the separators in place of this one's
+     */
+    public NumFormat withSeparators(String decimalSeparator, String groupSeparator) {
         return new NumFormat(
                 decimalSeparator,
                 groupSeparator,
@@ -369,14 +552,39 @@ public record NumFormat(
      * separators, currency symbol, monetary separators, minus sign, percent symbol and zero
      * digit of its {@link DecimalFormatSymbols}, with every default lenience on, plus
      * {@link #STYLE_TRAILING_SIGN} when the locale's {@link DecimalFormat} writes a negative
-     * number with a suffix and no prefix ({@code 5-}). A symbol the core reads anyway — the
-     * ASCII minus and percent, a {@code 0} zero digit, a monetary separator equal to the
-     * number one — is left undeclared, since declaring it would change nothing; the plus sign
-     * is left undeclared because the symbols carry none. Nothing is ever taken away: ASCII
-     * {@code -}, {@code +}, {@code %} and {@code 0}–{@code 9} are read beside whatever the
-     * locale declares, so a locale whose {@code getMinusSign()} is U+2212 (Estonian, Basque)
-     * reads both {@code −5} and {@code -5}. Narrow the styles, or declare a {@code NumFormat}
-     * outright, for anything stricter.
+     * number with a suffix and no prefix ({@code 5-}), and the grouping its number and currency
+     * patterns declare (below). A symbol the core reads anyway — the ASCII minus and percent, a
+     * {@code 0} zero digit, a monetary separator equal to the number one — is left undeclared,
+     * since declaring it would change nothing; the plus sign is left undeclared because the
+     * symbols carry none. Nothing is ever taken away: ASCII {@code -}, {@code +}, {@code %}
+     * and {@code 0}–{@code 9} are read beside whatever the locale declares, so a locale whose
+     * {@code getMinusSign()} is U+2212 (Estonian, Basque) reads both {@code −5} and
+     * {@code -5}. Narrow the styles, or declare a {@code NumFormat} outright, for anything
+     * stricter.
+     *
+     * <p><b>The grouping rule.</b> A bridge never knowingly rejects its platform's own output,
+     * and one format has one {@link Grouping} and one {@link #STYLE_GROUPING} flag, shared by
+     * number and currency values. So both patterns are read, the platform's own
+     * ({@link NumberFormat#getInstance(Locale)} and
+     * {@link NumberFormat#getCurrencyInstance(Locale)}), never the locale's name and never the
+     * input, and only the ones that group count:
+     *
+     * <ul>
+     *   <li>every grouping pattern Western (groups of three) is {@link Grouping#WESTERN};
+     *   <li>every grouping pattern Indian (three, then twos) is {@link Grouping#INDIAN};
+     *   <li>any grouping pattern of another shape (Toki Pona's groups of two, {@code #,#0.###}),
+     *       or grouping patterns that disagree, is {@link Grouping#LEGACY}, which reads whatever
+     *       grouping the platform writes;
+     *   <li>{@link #STYLE_GROUPING} is cleared only when neither pattern groups. When just one
+     *       does not, the style stays for the other and an ungrouped value stays valid; the
+     *       format cannot prohibit grouping of currency amounts alone.
+     * </ul>
+     *
+     * The rule is deterministic: the same patterns give the same format. {@link DecimalFormat}
+     * keeps one grouping size, the last interval, with no secondary size, so the JDK's own pattern
+     * for an Indian locale reads {@code #,##0.###}, the JDK writes {@code 12,345,678} for it, and
+     * strict Western is right for what the platform produces. Text in CLDR's Indian grouping
+     * ({@code 12,34,567}) is read with {@code from(locale).withGrouping(Grouping.INDIAN)}.
      *
      * @param locale the locale to derive from, never null
      * @return the locale's notation, every field filled, with every default lenience style enabled
@@ -390,10 +598,12 @@ public record NumFormat(
         }
         // NumberFormat.getInstance is a DecimalFormat for every locale the JDK knows; a
         // formatting provider that supplies something else still yields its symbols, with no
-        // negative pattern to read a trailing sign from.
-        NumFormat derived = NumberFormat.getInstance(locale) instanceof DecimalFormat pattern
-                ? from(pattern)
-                : derive(DecimalFormatSymbols.getInstance(locale), STYLE_ALL);
+        // pattern to read a trailing sign or a grouping from.
+        NumFormat derived = NumberFormat.getInstance(locale) instanceof DecimalFormat number
+                ? from(
+                        number,
+                        NumberFormat.getCurrencyInstance(locale) instanceof DecimalFormat currency ? currency : null)
+                : derive(DecimalFormatSymbols.getInstance(locale), STYLE_ALL, Grouping.WESTERN);
         // Bounded by clearing rather than evicting: a process casts under a handful of
         // locales, and one that cycles through more than this many only pays the derivation
         // again. A NumFormat is an immutable record, so one instance is shared by every caller.
@@ -405,34 +615,138 @@ public record NumFormat(
     }
 
     /**
-     * Derives a format from a {@link DecimalFormat}'s own symbols and negative pattern —
-     * exactly what {@link #from(Locale)} does with {@code NumberFormat.getInstance(locale)},
-     * for a format the caller built or customized instead: its
-     * {@link DecimalFormat#getDecimalFormatSymbols() symbols} fill the fields as a locale's
-     * do, and a {@link DecimalFormat#getNegativeSuffix() negative suffix} with no
+     * Derives a format from a {@link DecimalFormat}'s own symbols and pattern: its
+     * {@link DecimalFormat#getDecimalFormatSymbols() symbols} fill the fields as a locale's do, a
+     * {@link DecimalFormat#getNegativeSuffix() negative suffix} with no
      * {@link DecimalFormat#getNegativePrefix() negative prefix} sets
-     * {@link #STYLE_TRAILING_SIGN}. Derived on every call, never cached.
+     * {@link #STYLE_TRAILING_SIGN}, and {@link DecimalFormat#toPattern() its pattern} declares
+     * the grouping by {@link #from(Locale)}'s rule, with this one pattern the only one read:
+     * Western, Indian or, for another shape, legacy; and {@link #STYLE_GROUPING} cleared when
+     * the pattern does not group. Derived on every call, never cached.
      *
      * @param format the format to derive from, never null
      * @return the format's notation, every field filled, with every default lenience style enabled
      * @throws NullPointerException if {@code format} is null
      */
     public static NumFormat from(DecimalFormat format) {
-        Objects.requireNonNull(format, "format");
-        int styles = STYLE_ALL;
-        if (!format.getNegativeSuffix().isEmpty() && format.getNegativePrefix().isEmpty()) {
-            styles |= STYLE_TRAILING_SIGN;
-        }
-        return derive(format.getDecimalFormatSymbols(), styles);
+        return from(format, null);
     }
 
-    private static NumFormat derive(DecimalFormatSymbols symbols, int styles) {
+    /**
+     * Derives a format from a number {@link DecimalFormat} and a currency one, as
+     * {@link #from(Locale)} does with a locale's two: the symbols and trailing sign are the
+     * number format's, and the grouping is {@link #from(Locale)}'s rule over both patterns.
+     * Derived on every call, never cached.
+     *
+     * @param number the number format, never null
+     * @param currency the currency format; {@code null} reads the number pattern alone
+     * @return the formats' notation, every field filled, with every default lenience style enabled
+     * @throws NullPointerException if {@code number} is null
+     */
+    public static NumFormat from(DecimalFormat number, DecimalFormat currency) {
+        Objects.requireNonNull(number, "number");
+        int styles = STYLE_ALL;
+        if (!number.getNegativeSuffix().isEmpty() && number.getNegativePrefix().isEmpty()) {
+            styles |= STYLE_TRAILING_SIGN;
+        }
+        Shape[] shapes = currency == null
+                ? new Shape[] {shapeOf(number.toPattern())}
+                : new Shape[] {shapeOf(number.toPattern()), shapeOf(currency.toPattern())};
+        if (java.util.Arrays.stream(shapes).allMatch(shape -> shape == Shape.NONE)) {
+            styles &= ~STYLE_GROUPING;
+        }
+        return derive(number.getDecimalFormatSymbols(), styles, groupingOf(shapes));
+    }
+
+    /** How one {@link DecimalFormat} pattern groups the integer part of its positive subpattern. */
+    enum Shape {
+        /** No group separator: grouping is off (a size of 0 included). */
+        NONE,
+        /** Groups of three. */
+        WESTERN,
+        /** Three beside the decimal separator, then twos. */
+        INDIAN,
+        /** Any other size (Toki Pona's groups of two). */
+        OTHER
+    }
+
+    /**
+     * The shape of a {@link DecimalFormat} pattern, read from its integer part (quoted text
+     * skipped, the negative subpattern ignored). The last interval is the primary group and the
+     * one before it the secondary, and a single separator has no secondary of its own, so it
+     * repeats the primary ({@code #,##0} is three then three): three then three is Western, three
+     * then two ({@code #,##,##0.###}, {@code ¤ #,##,##0.00}) Indian, no separator none, and
+     * anything else other.
+     */
+    static Shape shapeOf(String pattern) {
+        StringBuilder integer = new StringBuilder();
+        boolean quoted = false;
+        boolean inNumber = false;
+        for (int i = 0; i < pattern.length(); i++) {
+            char c = pattern.charAt(i);
+            if (c == '\'') {
+                quoted = !quoted;
+                if (inNumber) {
+                    break;
+                }
+            } else if (quoted) {
+                continue;
+            } else if (c == ';') {
+                break;
+            } else if (c == '#' || c == '0' || c == ',') {
+                inNumber = true;
+                integer.append(c);
+            } else if (inNumber) {
+                break;
+            }
+        }
+        String[] groups = integer.toString().split(",", -1);
+        int n = groups.length;
+        if (n < 2) {
+            return Shape.NONE;
+        }
+        int primary = groups[n - 1].length();
+        int secondary = n >= 3 ? groups[n - 2].length() : primary;
+        if (primary == 3 && secondary == 3) {
+            return Shape.WESTERN;
+        }
+        return primary == 3 && secondary == 2 ? Shape.INDIAN : Shape.OTHER;
+    }
+
+    /**
+     * The one {@link Grouping} for the shapes of a format's patterns, ignoring the ones that do
+     * not group: all Western is Western, all Indian is Indian, any other shape or a mix is
+     * legacy, and no pattern that groups at all is the default Western (with
+     * {@link #STYLE_GROUPING} cleared, the policy never applies).
+     */
+    static Grouping groupingOf(Shape... shapes) {
+        Grouping grouping = null;
+        for (Shape shape : shapes) {
+            Grouping own = switch (shape) {
+                case NONE -> null;
+                case WESTERN -> Grouping.WESTERN;
+                case INDIAN -> Grouping.INDIAN;
+                case OTHER -> Grouping.LEGACY;
+            };
+            if (own == null) {
+                continue;
+            }
+            if (grouping == null) {
+                grouping = own;
+            } else if (grouping != own) {
+                return Grouping.LEGACY;
+            }
+        }
+        return grouping == null ? Grouping.WESTERN : grouping;
+    }
+
+    private static NumFormat derive(DecimalFormatSymbols symbols, int styles, Grouping grouping) {
         String decimalSeparator = String.valueOf(symbols.getDecimalSeparator());
         String groupSeparator = String.valueOf(symbols.getGroupingSeparator());
         return new NumFormat(
                 decimalSeparator,
                 groupSeparator,
-                styles,
+                join(styles, grouping),
                 symbols.getCurrencySymbol(),
                 declared(symbols.getMonetaryDecimalSeparator(), decimalSeparator),
                 declared(symbols.getMonetaryGroupingSeparator(), groupSeparator),
@@ -449,12 +763,57 @@ public record NumFormat(
         return text.equals(implied) ? "" : text;
     }
 
-    // The core's rules for one symbol: whole code points, within the field's capacity, no
-    // ASCII digit (a digit is a digit before it is anything else, so such a symbol could
-    // never be matched), and — for the symbols that sit flush against the digits — no ASCII
-    // whitespace (space, \t, \n, \f, \r), which the doors trim around them. The two number
-    // separators must be declared; every other symbol may be empty.
-    private static void checkSymbol(String what, String symbol, int maxBytes, boolean required, boolean flush) {
+    // The styles component is the stored word: the STYLE_* bits (0 to 7) and, in bits 16 and 17,
+    // the policy as a field: 0 Western, 1 legacy, 2 Indian, and 3 never. Western is 0, so a 1.0
+    // constructor call, which carries no policy, means Western and its word is 1.0's own. The
+    // ABI's encoding (bits 8 and 9, where 0 is legacy) cannot be the stored one, which is why
+    // legacy has a field of its own. The ABI word is flags().
+    private static final int STYLE_BITS = 0xFF;
+    private static final int POLICY_SHIFT = 16;
+    private static final int POLICY_FIELD = 3 << POLICY_SHIFT;
+    private static final int WESTERN_FIELD = 0;
+    private static final int LEGACY_FIELD = 1;
+    private static final int INDIAN_FIELD = 2;
+
+    // The canonical constructor's word: styles and a stored policy that a format of this class
+    // could hold, and nothing else.
+    private static int stored(int styles) {
+        if ((styles & ~(STYLE_BITS | POLICY_FIELD)) != 0) {
+            throw undefinedStyles(styles);
+        }
+        if ((styles & POLICY_FIELD) >>> POLICY_SHIFT == 3) {
+            throw new IllegalArgumentException("The stored policy (bits 16 and 17 of the styles component, an "
+                    + "internal encoding) is 0 Western, 1 legacy or 2 Indian; 3 names no grouping policy");
+        }
+        return styles;
+    }
+
+    // A style mask and a policy declared apart: the mask may carry no bit that is no style.
+    private static int join(int styles, Grouping grouping) {
+        Objects.requireNonNull(grouping, "grouping");
+        if ((styles & ~STYLE_BITS) != 0) {
+            throw undefinedStyles(styles);
+        }
+        int field = switch (grouping) {
+            case LEGACY -> LEGACY_FIELD;
+            case WESTERN -> WESTERN_FIELD;
+            case INDIAN -> INDIAN_FIELD;
+        };
+        return styles | field << POLICY_SHIFT;
+    }
+
+    private static IllegalArgumentException undefinedStyles(int styles) {
+        return new IllegalArgumentException("Styles must be STYLE_* flags only (the grouping policy is declared as a "
+                + "Grouping, never in the mask); 0x"
+                + Integer.toHexString(styles).toUpperCase(Locale.ROOT)
+                + " has undefined bits");
+    }
+
+    // The core's rules for one symbol, short of white space: whole code points, within the
+    // field's capacity, and no ASCII digit (a digit is a digit before it is anything else,
+    // so such a symbol could never be matched). The two number separators must be declared;
+    // every other symbol may be empty.
+    private static void checkSymbol(String what, String symbol, int maxBytes, boolean required) {
         Objects.requireNonNull(symbol, what);
         if (symbol.isEmpty()) {
             if (required) {
@@ -475,10 +834,28 @@ public record NumFormat(
             if (c >= '0' && c <= '9') {
                 throw new IllegalArgumentException(what + " must not contain an ASCII digit; got '" + symbol + "'");
             }
-            if (flush && (c == ' ' || c == '\t' || c == '\n' || c == '\f' || c == '\r')) {
-                throw new IllegalArgumentException(what + " must not contain ASCII whitespace; got '" + symbol + "'");
-            }
         }
+    }
+
+    private static void checkNoWhiteSpace(String what, String symbol) {
+        if (WhiteSpace.contains(symbol)) {
+            throw new IllegalArgumentException(what + " must not contain white space; got '" + symbol + "'");
+        }
+    }
+
+    /**
+     * Renders every field and the {@link #grouping() grouping}, with the styles as
+     * {@link #styles()} answers them.
+     *
+     * @return a description of the format
+     */
+    @Override
+    public String toString() {
+        return "NumFormat[decimalSeparator=" + decimalSeparator + ", groupSeparator=" + groupSeparator + ", styles="
+                + styles() + ", currencySymbol=" + currencySymbol + ", currencyDecimalSeparator="
+                + currencyDecimalSeparator + ", currencyGroupSeparator=" + currencyGroupSeparator + ", minusSign="
+                + minusSign + ", plusSign=" + plusSign + ", percentSymbol=" + percentSymbol + ", digitZero="
+                + digitZero + ", grouping=" + grouping() + "]";
     }
 
     /** How many locales {@link #from(Locale)} keeps derived formats for. */

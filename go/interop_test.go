@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 	"unsafe"
 )
 
@@ -137,19 +138,48 @@ func TestAFormatErrsWhereTheDoorsPanic(t *testing.T) {
 		{DecimalSep: ".", GroupSep: ",", Percent: strings.Repeat("%", SymbolMaxBytes+1)},
 		{DecimalSep: ".", GroupSep: ",", Currency: strings.Repeat("$", CurrencyMaxBytes+1)},
 		{DecimalSep: ".", GroupSep: ",", Currency: "\xff"},
-		{DecimalSep: ".", GroupSep: ",", Currency: "U S"},
+		{DecimalSep: ".", GroupSep: ",", Currency: " F CFA"},
+		{DecimalSep: ".", GroupSep: ",", Currency: "F CFA "},
+		{DecimalSep: ".", GroupSep: ",", Currency: "\u00a0F CFA"},
+		{DecimalSep: ".", GroupSep: ",", Currency: "F\u00a0CFA\u00a0"},
+		{DecimalSep: ".", GroupSep: ",", Currency: "\u202fF"},
+		{DecimalSep: ".", GroupSep: ",", Currency: "F\u3000"},
+		{DecimalSep: ".", GroupSep: ",", Currency: "F\u0085"},
+		{DecimalSep: ".", GroupSep: ",", Currency: "\u00a0"},
 		{DecimalSep: ".", GroupSep: ",", DigitZero: '0'},
 		{DecimalSep: ".", GroupSep: ",", DigitZero: 0xD800},
 		{DecimalSep: ".", GroupSep: ",", DigitZero: 0x110000},
 		{DecimalSep: ".", GroupSep: ",", DigitZero: 0x6F7}, // ۷: modulo 64 past 54, no digit block starts there
+		{DecimalSep: ".", GroupSep: ",", MinusSign: "\u00a0"},
+		{DecimalSep: ".", GroupSep: ",", PlusSign: "A\u202fB"},
+		{DecimalSep: ".", GroupSep: ",", Percent: "\v"},
+		{DecimalSep: ".", GroupSep: ",", Percent: "\u3000"},
+		{DecimalSep: ".", GroupSep: ",", Currency: "€\u2009"},
+		{DecimalSep: "\u00a0", GroupSep: ","},
+		{DecimalSep: "x ", GroupSep: ","},
+		{DecimalSep: ",", GroupSep: ".", CurrencyDecimalSep: "\u202f"},
+		{DecimalSep: ",", GroupSep: ".", CurrencyDecimalSep: "x\u00a0"},
 	} {
 		if _, err := bad.Raw(); err == nil {
 			t.Errorf("Raw() of %+v did not err", bad)
 		}
 	}
-	// A separator may carry a space (French grouping, ", "); a sign may not.
-	if _, err := (NumFormat{DecimalSep: ",", GroupSep: " ", CurrencyGroupSep: ", "}).Raw(); err != nil {
-		t.Errorf("Raw() of a spaced separator: %v", err)
+	// White space inside a currency symbol is fine: F CFA with each of the three spaces, and
+	// the other white space too.
+	for _, gap := range []string{" ", "\u00a0", "\u202f", "\u2009", "\u3000", "\t"} {
+		if _, err := (NumFormat{DecimalSep: ".", GroupSep: ",", Currency: "F" + gap + "CFA"}).Raw(); err != nil {
+			t.Errorf("Raw() of the currency symbol F%qCFA: %v", gap, err)
+		}
+	}
+	// A group separator may carry white space (French grouping, ", "); a sign, the percent
+	// symbol, the currency symbol and a decimal separator may not.
+	for _, group := range []string{" ", "\u00a0", "\u202f", "\u2009", "\u3000"} {
+		if _, err := (NumFormat{DecimalSep: ",", GroupSep: group, CurrencyGroupSep: ", "}).Raw(); err != nil {
+			t.Errorf("Raw() of the group separator %q: %v", group, err)
+		}
+		if _, err := (NumFormat{DecimalSep: ".", GroupSep: ",", CurrencyDecimalSep: ",", CurrencyGroupSep: group}).Raw(); err != nil {
+			t.Errorf("Raw() of the currency group separator %q: %v", group, err)
+		}
 	}
 }
 
@@ -163,13 +193,23 @@ func TestADateFormatErrsWhereTheDoorPanics(t *testing.T) {
 	if raw, err := (DateFormat{Order: YearMonthDay}).Raw(); err != nil || raw.Size != 40 || raw.AM.Len != 0 || raw.PM.Len != 0 {
 		t.Errorf("Raw() of nothing declared = %+v, %v", raw, err)
 	}
-	if _, err := (DateFormat{Order: MonthDayYear, AM: "a. m.", PM: "p. m."}).Raw(); err != nil {
-		t.Errorf("Raw() of an inner space: %v", err)
+	for _, inner := range []DateFormat{
+		{Order: MonthDayYear, AM: "a. m.", PM: "p. m."},
+		{Order: MonthDayYear, AM: "a.\u202fm.", PM: "p.\u202fm."},
+		{Order: MonthDayYear, AM: "a.\u00a0m.", PM: "p.\u00a0m."},
+	} {
+		if _, err := inner.Raw(); err != nil {
+			t.Errorf("Raw() of an inner space in %+v: %v", inner, err)
+		}
 	}
 	for _, bad := range []DateFormat{
 		{AM: " vorm.", PM: "nachm."},
 		{AM: "vorm.", PM: "nachm. "},
 		{AM: "vorm.", PM: "nachm.\t"},
+		{AM: "vorm.", PM: "nachm.\v"},
+		{AM: "\u00a0vorm.", PM: "nachm."},
+		{AM: "vorm.", PM: "nachm.\u202f"},
+		{AM: "\u3000", PM: "nachm."},
 		{AM: "am1", PM: "pm"},
 		{AM: "\xff", PM: "pm"},
 		{AM: "am", PM: strings.Repeat("p", DesignatorMaxBytes+1)},
@@ -213,5 +253,51 @@ func TestTheRawLayoutsAreTheCoresBytes(t *testing.T) {
 	bytes = unsafe.Slice((*byte)(unsafe.Pointer(&periods)), unsafe.Sizeof(periods))
 	if len(bytes) != 40 || word(0) != 40 || symbol(4, 16) != "오전" || symbol(21, 16) != "오후" || bytes[38] != 0 || bytes[39] != 0 {
 		t.Errorf("periods = %v", bytes)
+	}
+}
+
+// The messages name the rule that broke: "white space" where this binding once said "ASCII
+// whitespace", and the older rules win where a declaration breaks two.
+func TestAFormatsFaultNamesTheRuleThatBrokeFirst(t *testing.T) {
+	for _, c := range []struct {
+		format NumFormat
+		want   string
+	}{
+		{NumFormat{DecimalSep: ".", GroupSep: ",", MinusSign: "\u00a0"}, `minus sign "\u00a0" must not contain white space`},
+		{NumFormat{DecimalSep: ".", GroupSep: ",", Currency: "€ "}, `currency symbol "€ " must not start or end with white space`},
+		{NumFormat{DecimalSep: ".", GroupSep: ",", Currency: "\u202fF CFA"}, `currency symbol "\u202fF CFA" must not start or end with white space`},
+		{NumFormat{DecimalSep: ".", GroupSep: ",", Currency: "F1 "}, `currency symbol "F1 " must not contain an ASCII digit`},
+		{NumFormat{DecimalSep: "\u202f", GroupSep: ","}, `decimal separator "\u202f" must not contain white space`},
+		{NumFormat{DecimalSep: ",", GroupSep: ".", CurrencyDecimalSep: "\u00a0"}, `currency decimal separator "\u00a0" must not contain white space`},
+		{NumFormat{DecimalSep: "\u00a0", GroupSep: "\u00a0"}, `decimal and group separators must differ; both are "\u00a0"`},
+		{NumFormat{DecimalSep: "\u00a01", GroupSep: ","}, `decimal separator "\u00a01" must not contain an ASCII digit`},
+		{NumFormat{DecimalSep: "1", GroupSep: "1"}, `decimal separator "1" must not contain an ASCII digit`},
+		{NumFormat{DecimalSep: ",", GroupSep: ".", CurrencyDecimalSep: "\u00a0", CurrencyGroupSep: "\u00a0"}, `currency decimal and group separators must differ; both are "\u00a0"`},
+	} {
+		err := c.format.fault()
+		if err == nil || err.Error() != c.want {
+			t.Errorf("fault() of %+v = %v, want %s", c.format, err, c.want)
+		}
+	}
+	if err := (DateFormat{AM: "AM\u00a0"}).fault(); err == nil || err.Error() != `AM designator "AM\u00a0" must not start or end in white space` {
+		t.Errorf("fault() of a trailing NBSP designator = %v", err)
+	}
+}
+
+// isWhiteSpace is the 25 code points of Unicode's White_Space property and no other, over
+// every code point.
+func TestIsWhiteSpaceIsTheUnicodePropertyAndNothingElse(t *testing.T) {
+	count := 0
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		got := isWhiteSpace(r)
+		if got != unicode.Is(unicode.White_Space, r) {
+			t.Errorf("isWhiteSpace(%U) = %v", r, got)
+		}
+		if got {
+			count++
+		}
+	}
+	if count != 25 {
+		t.Errorf("%d white-space code points, want 25", count)
 	}
 }

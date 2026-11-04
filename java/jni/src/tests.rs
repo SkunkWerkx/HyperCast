@@ -222,7 +222,7 @@ fn desc_of(n: &Native) -> &str {
     core::str::from_utf8(&n.descriptor[..n.descriptor.len() - 1]).unwrap()
 }
 
-const EXPORTS: [&str; 32] = [
+const EXPORTS: [&str; 36] = [
     "cast_bool",
     "cast_char",
     "cast_i8",
@@ -255,6 +255,10 @@ const EXPORTS: [&str; 32] = [
     "cast_constraints_check",
     "cast_text",
     "cast_declared_decimal",
+    "cast_detailed",
+    "cast_detailed_from_f64",
+    "cast_checked_detailed",
+    "cast_checked_detailed_from_f64",
 ];
 
 /// The input as Java hands it: the stub reads `array_len` for its length.
@@ -298,7 +302,7 @@ fn arr(out: &mut [jlong; 4]) -> jlongArray {
 #[test]
 fn the_table_has_an_entry_per_export_and_jni_natives_reports_it() {
     assert_eq!(NATIVES.len(), EXPORTS.len() + 1);
-    assert_eq!(unsafe { native_jni_natives(null_mut(), null_mut()) }, 33);
+    assert_eq!(unsafe { native_jni_natives(null_mut(), null_mut()) }, 37);
 }
 
 #[test]
@@ -350,6 +354,13 @@ fn table_descriptors_are_pinned() {
         ("castConstraintsCheck", "(I[BLjava/nio/ByteBuffer;)I"),
         ("castText", text),
         ("castDeclaredDecimal", text),
+        ("castDetailed", "(II[B[B[BLjava/nio/ByteBuffer;[B[J)I"),
+        ("castDetailedFromF64", "(IID[J)I"),
+        ("castCheckedDetailed", "(I[B[BLjava/nio/ByteBuffer;[B[J)I"),
+        (
+            "castCheckedDetailedFromF64",
+            "(ID[BLjava/nio/ByteBuffer;[J)I",
+        ),
         ("jniNatives", "()I"),
     ];
     assert_eq!(want.len(), NATIVES.len());
@@ -1182,4 +1193,553 @@ fn a_declared_decimal_is_the_cores_conversion() {
     assert_eq!((rc, &o[..2]), (8, &[UNTOUCHED, UNTOUCHED][..]));
     let (rc, _) = call_text(native_cast_declared_decimal, b"0.1x");
     assert_eq!(rc, 8);
+}
+
+// --- the detailed exports ---
+
+/// `NumFormat::INVARIANT` under a strict grouping policy, in the 92-byte layout.
+fn strict(policy: u32) -> [u8; 92] {
+    packed(NumFormat::INVARIANT.with_grouping(policy))
+}
+
+/// The 12-byte `RawDateOptions` as `NativeCore` packs it, in the platform's order.
+fn date_options(flags: u32, pivot: u32) -> [u8; 12] {
+    let mut bytes = [0u8; 12];
+    bytes[..4].copy_from_slice(&12u32.to_ne_bytes());
+    bytes[4..8].copy_from_slice(&flags.to_ne_bytes());
+    bytes[8..].copy_from_slice(&pivot.to_ne_bytes());
+    bytes
+}
+
+/// A month vocabulary as `NativeCore` packs it: each entry a month byte, a little-endian
+/// length, then the bytes.
+fn vocabulary(entries: &[(u8, &str)]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for (month, name) in entries {
+        bytes.push(*month);
+        bytes.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(name.as_bytes());
+    }
+    bytes
+}
+
+const ENGLISH_MONTHS: [(u8, &str); 12] = [
+    (1, "Jan"),
+    (2, "Feb"),
+    (3, "Mar"),
+    (4, "Apr"),
+    (5, "May"),
+    (6, "Jun"),
+    (7, "Jul"),
+    (8, "Aug"),
+    (9, "Sep"),
+    (10, "Oct"),
+    (11, "Nov"),
+    (12, "Dec"),
+];
+
+#[derive(Default)]
+struct Declared<'a> {
+    format: Option<&'a [u8; 92]>,
+    periods: Option<&'a [u8; 40]>,
+    options: Option<&'a [u8; 12]>,
+    vocab: Option<&'a [u8]>,
+}
+
+fn call_detailed(door: Door, declared: &Declared, input: &[u8]) -> (jint, [jlong; 8]) {
+    let mut stub = StubEnv::new();
+    let env = stub.env();
+    let mut o = checked_out();
+    let param = match door {
+        Door::Unix(p) => p as jint,
+        Door::DateOrdered(order) | Door::DateTime(order) => order as jint,
+        Door::ExcelSerial(epoch) => epoch as jint,
+        _ => 0,
+    };
+    let vocab = declared.vocab.map_or(null_mut(), buffer);
+    let rc = unsafe {
+        native_cast_detailed(
+            env,
+            null_mut(),
+            door.code() as jint,
+            param,
+            declared
+                .format
+                .map_or(null_mut(), |f| f.as_ptr().cast_mut().cast()),
+            declared
+                .periods
+                .map_or(null_mut(), |f| f.as_ptr().cast_mut().cast()),
+            declared
+                .options
+                .map_or(null_mut(), |f| f.as_ptr().cast_mut().cast()),
+            vocab,
+            text(input),
+            o.as_mut_ptr().cast(),
+        )
+    };
+    (rc, o)
+}
+
+#[test]
+fn every_detailed_text_door_writes_the_words_of_its_plain_native() {
+    use hypercast::{DateOrder, ExcelEpoch, UnixPrecision};
+    let none = Declared::default();
+    let words = |door: Door, input: &[u8]| {
+        let (rc, o) = call_detailed(door, &none, input);
+        assert_eq!(rc, 0, "{door:?}");
+        assert_eq!(
+            o[2..],
+            [UNTOUCHED; 6],
+            "{door:?}: only the value is written"
+        );
+        [o[0], o[1]]
+    };
+    assert_eq!(words(Door::Bool, b"yes"), [1, 0]);
+    assert_eq!(words(Door::Char, b"U+00E9"), [0xE9, 0]);
+    assert_eq!(words(Door::I8, b"-128"), [-128, 0]);
+    assert_eq!(words(Door::I16, b"-32,768"), [-32768, 0]);
+    assert_eq!(words(Door::I32, b"(1,234)"), [-1234, 0]);
+    assert_eq!(words(Door::I64, b"-9223372036854775808"), [i64::MIN, 0]);
+    assert_eq!(words(Door::U8, b"255"), [255, 0]);
+    assert_eq!(words(Door::U16, b"65535"), [65535, 0]);
+    assert_eq!(words(Door::U32, b"4294967295"), [4_294_967_295, 0]);
+    assert_eq!(words(Door::U64, b"18446744073709551615"), [-1, 0]);
+    assert_eq!(words(Door::F32, b"1.5"), [jlong::from(1.5f32.to_bits()), 0]);
+    assert_eq!(words(Door::F64, b"25.5%"), [0.255f64.to_bits() as jlong, 0]);
+    assert_eq!(
+        words(Door::Decimal, b"-1,234.50"),
+        [12345, (1 << 32) | (1 << 40)]
+    );
+    let uuid = words(Door::Uuid, b"f1e2d3c4-b5a6-9788-8968-5a4b3c2d1e0f");
+    assert_eq!(
+        uuid.map(|w| w as u64),
+        [0xf1e2_d3c4_b5a6_9788, 0x8968_5a4b_3c2d_1e0f]
+    );
+    assert_eq!(
+        words(Door::Timestamp, b"1970-01-01T00:00:01.5-00:01"),
+        [61, 500_000_000]
+    );
+    assert_eq!(
+        words(Door::Unix(UnixPrecision::Seconds), b"1700000000"),
+        [1_700_000_000, 0]
+    );
+    assert_eq!(
+        words(Door::ExcelSerial(ExcelEpoch::Y1900), b"45292.75"),
+        [1_704_132_000, 0]
+    );
+    assert_eq!(
+        words(Door::Date, b"2026-01-07"),
+        [(2026 << 16) | (1 << 8) | 7, 0]
+    );
+    assert_eq!(
+        words(Door::DateOrdered(DateOrder::DayMonthYear), b"1/7/2026"),
+        [(2026 << 16) | (7 << 8) | 1, 0]
+    );
+    assert_eq!(
+        words(
+            Door::DateTime(DateOrder::YearMonthDay),
+            b"2026-01-07 3:04 PM"
+        ),
+        [
+            (2026 << 16) | (1 << 8) | 7,
+            (15 * 3600 + 4 * 60) * 1_000_000_000
+        ]
+    );
+    assert_eq!(
+        words(Door::Time, b"15:04:05.000000001"),
+        [(15 * 3600 + 4 * 60 + 5) * 1_000_000_000 + 1, 0]
+    );
+    assert_eq!(words(Door::Duration, b"-1.5s"), [-1, -500_000_000]);
+    // Text's value is the span of the input.
+    assert_eq!(words(Door::Text, b"Male"), [0, 4]);
+}
+
+#[test]
+fn a_detailed_fault_writes_its_span_and_its_detail_to_the_last_word() {
+    let f = invariant();
+    let declared = Declared {
+        format: Some(&f),
+        ..Declared::default()
+    };
+    let (rc, o) = call_detailed(Door::I32, &declared, b"12x4");
+    assert_eq!(rc, 2);
+    // unexpected_character is detail 2.
+    assert_eq!(
+        o,
+        [
+            UNTOUCHED, UNTOUCHED, 2, 1, UNTOUCHED, UNTOUCHED, UNTOUCHED, 2
+        ]
+    );
+    with(|s| assert_eq!(s.long_writes, [(2, 2), (7, 1)]));
+    let (rc, o) = call_detailed(Door::Bool, &Declared::default(), b"");
+    assert_eq!((rc, o[2], o[3], o[7]), (1, 0, 0, 1));
+}
+
+#[test]
+fn the_declared_grouping_policy_decides_the_verdict_and_the_detail() {
+    for (policy, text, rc, span, detail) in [
+        (
+            NumFormat::GROUPING_LEGACY,
+            &b"12,34"[..],
+            0,
+            [UNTOUCHED, UNTOUCHED],
+            UNTOUCHED,
+        ),
+        // group_size is detail 11, spanning the group with its preceding separator.
+        (NumFormat::GROUPING_WESTERN, &b"12,34"[..], 2, [2, 3], 11),
+        (
+            NumFormat::GROUPING_INDIAN,
+            &b"1,23,456"[..],
+            0,
+            [UNTOUCHED, UNTOUCHED],
+            UNTOUCHED,
+        ),
+        (NumFormat::GROUPING_INDIAN, &b"1,234,567"[..], 2, [1, 4], 11),
+    ] {
+        let f = strict(policy);
+        let declared = Declared {
+            format: Some(&f),
+            ..Declared::default()
+        };
+        let (got, o) = call_detailed(Door::I64, &declared, text);
+        assert_eq!(
+            (got, [o[2], o[3]], o[7]),
+            (rc, span, detail),
+            "{policy:#x} {text:?}"
+        );
+    }
+}
+
+#[test]
+fn a_format_the_detailed_door_refuses_is_a_contract_violation_and_writes_nothing() {
+    // Policy 3 and an undefined flag bit: 1.1's check, which only the detailed exports make.
+    for flags in [3u32 << 8 | NumFormat::ALL, 1 << 10 | NumFormat::ALL] {
+        let mut bad = invariant();
+        bad[4..8].copy_from_slice(&flags.to_ne_bytes());
+        let declared = Declared {
+            format: Some(&bad),
+            ..Declared::default()
+        };
+        let (rc, o) = call_detailed(Door::I32, &declared, b"1");
+        assert_eq!((rc, o), (-1, checked_out()), "{flags:#x}");
+        with(|s| assert!(s.long_writes.is_empty()));
+    }
+    // The 1.0 native still ignores them, and parses legacy.
+    let mut stray = invariant();
+    stray[4..8].copy_from_slice(&(3u32 << 8 | NumFormat::ALL).to_ne_bytes());
+    assert_eq!(call_numeric(native_cast_i32, b"12,34", &stray).0, 0);
+}
+
+#[test]
+fn a_door_and_a_parameter_outside_the_export_are_refused_and_write_nothing() {
+    let mut stub = StubEnv::new();
+    let env = stub.env();
+    for (door, param) in [(0, 0), (24, 0), (4, 1), (14, 0), (14, 5), (20, 4)] {
+        let mut o = checked_out();
+        let rc = unsafe {
+            native_cast_detailed(
+                env,
+                null_mut(),
+                door,
+                param,
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                text(b"1"),
+                o.as_mut_ptr().cast(),
+            )
+        };
+        assert_eq!((rc, o), (-1, checked_out()), "door {door} param {param}");
+    }
+    // 18 (text) is a text door, not a typed one.
+    let mut o = checked_out();
+    let rc = unsafe {
+        native_cast_detailed_from_f64(env, null_mut(), 18, 0, 1.0, o.as_mut_ptr().cast())
+    };
+    assert_eq!((rc, o), (-1, checked_out()));
+}
+
+#[test]
+fn date_options_and_a_vocabulary_cross_beside_the_text() {
+    use hypercast::DateOrder;
+    let door = Door::DateOrdered(DateOrder::DayMonthYear);
+    let options = date_options(0, 2029);
+    let vocab = vocabulary(&ENGLISH_MONTHS);
+    let declared = Declared {
+        options: Some(&options),
+        vocab: Some(&vocab),
+        ..Declared::default()
+    };
+    let (rc, o) = call_detailed(door, &declared, b"07-Jan-26");
+    assert_eq!((rc, o[0]), (0, (2026 << 16) | (1 << 8) | 7));
+    // The vocabulary alone opens names and nothing else: no pivot, so the two-digit year is
+    // field_width (detail 15) at its digits.
+    let declared = Declared {
+        vocab: Some(&vocab),
+        ..Declared::default()
+    };
+    let (rc, o) = call_detailed(door, &declared, b"07-Jan-26");
+    assert_eq!((rc, o[2], o[3], o[7]), (2, 7, 2, 15));
+    // The options alone, without the vocabulary, leave a name unrecognized.
+    let declared = Declared {
+        options: Some(&options),
+        ..Declared::default()
+    };
+    let (rc, o) = call_detailed(door, &declared, b"07-Jan-26");
+    assert_eq!((rc, o[7]), (2, 3));
+    // COMPACT_DATE at the date door.
+    let compact = date_options(1, 0);
+    let declared = Declared {
+        options: Some(&compact),
+        ..Declared::default()
+    };
+    let (rc, o) = call_detailed(Door::Date, &declared, b"20260107");
+    assert_eq!((rc, o[0]), (0, (2026 << 16) | (1 << 8) | 7));
+    // A layout the core refuses: an undefined option bit, a size past its own, a bad pivot.
+    for bad in [date_options(8, 0), date_options(0, 99), {
+        let mut longer = date_options(0, 0);
+        longer[..4].copy_from_slice(&16u32.to_ne_bytes());
+        longer
+    }] {
+        let declared = Declared {
+            options: Some(&bad),
+            ..Declared::default()
+        };
+        let (rc, o) = call_detailed(Door::Date, &declared, b"2026-01-07");
+        assert_eq!((rc, o), (-1, checked_out()));
+    }
+}
+
+#[test]
+fn a_vocabulary_the_core_refuses_or_a_buffer_with_no_address_is_a_contract_violation() {
+    use hypercast::DateOrder;
+    let door = Door::DateOrdered(DateOrder::DayMonthYear);
+    // Eleven months only.
+    let vocab = vocabulary(&ENGLISH_MONTHS[..11]);
+    let declared = Declared {
+        vocab: Some(&vocab),
+        ..Declared::default()
+    };
+    let (rc, o) = call_detailed(door, &declared, b"07-Jan-2026");
+    assert_eq!((rc, o), (-1, checked_out()));
+    // A buffer with no address (not direct) is refused before any core call.
+    let vocab = vocabulary(&ENGLISH_MONTHS);
+    let mut stub = StubEnv::new();
+    let env = stub.env();
+    let mut o = checked_out();
+    let list = buffer(&vocab);
+    with(|s| s.buffer_address_null = true);
+    let rc = unsafe {
+        native_cast_detailed(
+            env,
+            null_mut(),
+            door.code() as jint,
+            3,
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            list,
+            text(b"07-Jan-2026"),
+            o.as_mut_ptr().cast(),
+        )
+    };
+    assert_eq!((rc, o), (-1, checked_out()));
+    with(|s| assert_eq!(s.crit_gets, 0));
+}
+
+#[test]
+fn an_exception_reading_the_date_options_pins_nothing_and_returns_pending() {
+    let options = date_options(0, 0);
+    let mut stub = StubEnv::new();
+    let env = stub.env();
+    with(|s| s.pending_after_region = true);
+    let mut o = checked_out();
+    let rc = unsafe {
+        native_cast_detailed(
+            env,
+            null_mut(),
+            Door::Date.code() as jint,
+            0,
+            null_mut(),
+            null_mut(),
+            options.as_ptr().cast_mut().cast(),
+            null_mut(),
+            text(b"2026-01-07"),
+            o.as_mut_ptr().cast(),
+        )
+    };
+    assert_eq!((rc, o), (PENDING, checked_out()));
+    with(|s| assert_eq!((s.crit_gets, s.crit_releases), (0, 0)));
+}
+
+#[test]
+fn a_large_detailed_input_is_copied_and_faults_with_the_same_span() {
+    let mut big = vec![b' '; CRITICAL_MAX + 1];
+    big.extend_from_slice(b"12x4");
+    let f = invariant();
+    let declared = Declared {
+        format: Some(&f),
+        ..Declared::default()
+    };
+    let (rc, o) = call_detailed(Door::I32, &declared, &big);
+    assert_eq!((rc, o[2], o[3], o[7]), (2, CRITICAL_MAX as jlong + 3, 1, 2));
+    with(|s| assert_eq!((s.mallocs, s.frees, s.crit_gets), (1, 1, 0)));
+}
+
+#[test]
+fn every_detailed_typed_door_writes_its_words_and_a_fault_has_no_span() {
+    let mut stub = StubEnv::new();
+    let env = stub.env();
+    let from = |door: i32, param: i32, value: f64| {
+        let mut o = checked_out();
+        let rc = unsafe {
+            native_cast_detailed_from_f64(
+                env,
+                null_mut(),
+                door,
+                param,
+                value,
+                o.as_mut_ptr().cast(),
+            )
+        };
+        (rc, o)
+    };
+    let (rc, o) = from(19, 0, 0.1 + 0.2);
+    assert_eq!((rc, o[0], o[1]), (0, 30_000_000_000_000_004, 17 << 32));
+    let (rc, o) = from(22, 1, 45292.75);
+    assert_eq!(
+        (rc, o[0], o[1]),
+        (0, (2024 << 16) | (1 << 8) | 1, 18 * 3600 * 1_000_000_000)
+    );
+    let (rc, o) = from(16, 0, 0.75);
+    assert_eq!((rc, o[0]), (0, 18 * 3600 * 1_000_000_000));
+    let (rc, o) = from(17, 0, -1.5);
+    assert_eq!((rc, o[0], o[1]), (0, -129_600, 0));
+    // not_finite is detail 22, with an empty span in out[2..4].
+    let (rc, o) = from(16, 0, f64::NAN);
+    assert_eq!((rc, o[2], o[3], o[7]), (2, 0, 0, 22));
+    assert_eq!(o[..2], [UNTOUCHED, UNTOUCHED]);
+}
+
+fn call_checked_detailed(
+    door: u32,
+    format: Option<&[u8; 92]>,
+    constraints: &[u8; 72],
+    input: &[u8],
+) -> (jint, [jlong; 8]) {
+    let mut stub = StubEnv::new();
+    let env = stub.env();
+    let mut o = checked_out();
+    let rc = unsafe {
+        native_cast_checked_detailed(
+            env,
+            null_mut(),
+            door as jint,
+            format.map_or(null_mut(), |f| f.as_ptr().cast_mut().cast()),
+            constraints.as_ptr().cast_mut().cast(),
+            null_mut(),
+            text(input),
+            o.as_mut_ptr().cast(),
+        )
+    };
+    (rc, o)
+}
+
+#[test]
+fn a_checked_detailed_door_writes_the_value_the_span_the_check_and_the_detail() {
+    let i32_door = Door::I32.code();
+    let f = strict(NumFormat::GROUPING_WESTERN);
+    // Strict Western: a one-digit group after a separator is group_size (11), spanning ",2".
+    let (rc, o) = call_checked_detailed(i32_door, Some(&f), &ten_by_five(1), b"1,2");
+    assert_eq!((rc, o[2], o[3], o[7]), (2, 1, 2, 11));
+    // A value: its words and the check, and no fault.
+    let (rc, o) = call_checked_detailed(i32_door, Some(&f), &ten_by_five(1), b"12");
+    assert_eq!(
+        (rc, &o[..2], &o[4..7]),
+        (0, &[10, 0][..], &[0, 1, NO_ENTRY][..])
+    );
+    assert_eq!((o[2], o[3], o[7]), (UNTOUCHED, UNTOUCHED, UNTOUCHED));
+    // A parse failure carries its detail (unexpected_character, 2).
+    let (rc, o) = call_checked_detailed(i32_door, Some(&f), &ten_by_five(0), b"1x");
+    assert_eq!(
+        (rc, o[2], o[3], &o[4..7], o[7]),
+        (2, 1, 1, &[0, 0, NO_ENTRY][..], 2)
+    );
+    // A violation spans the value, carries the keyword, and its detail is 0.
+    let (rc, o) = call_checked_detailed(i32_door, Some(&f), &ten_by_five(0), b"12");
+    assert_eq!(
+        (rc, o[2], o[3], &o[4..7], o[7]),
+        (4, 0, 2, &[5, 0, NO_ENTRY][..], 0)
+    );
+    with(|s| assert_eq!(s.long_writes, [(2, 2), (7, 1), (4, 3)]));
+}
+
+#[test]
+fn a_checked_detailed_door_judges_the_format_by_1_1_and_refuses_before_writing() {
+    let mut bad = invariant();
+    bad[4..8].copy_from_slice(&(3u32 << 8 | NumFormat::ALL).to_ne_bytes());
+    let (rc, o) = call_checked_detailed(Door::I32.code(), Some(&bad), &ten_by_five(0), b"12");
+    assert_eq!((rc, o), (-1, checked_out()));
+    with(|s| assert!(s.long_writes.is_empty()));
+    // The 1.0 checked native still parses it legacy.
+    let (rc, _) = call_checked(
+        Door::I32.code(),
+        Some(&bad),
+        &ten_by_five(0),
+        None,
+        b"12,34",
+    );
+    assert_eq!(rc, 4);
+}
+
+#[test]
+fn the_checked_detailed_door_over_a_double_writes_the_detail_of_a_fault() {
+    let mut stub = StubEnv::new();
+    let env = stub.env();
+    let none = wire(&declared(0));
+    let mut o = checked_out();
+    let rc = unsafe {
+        native_cast_checked_detailed_from_f64(
+            env,
+            null_mut(),
+            Door::I32.code() as jint,
+            f64::NAN,
+            none.as_ptr().cast_mut().cast(),
+            null_mut(),
+            o.as_mut_ptr().cast(),
+        )
+    };
+    // not_finite is detail 22.
+    assert_eq!((rc, o[2], o[3], o[7]), (2, 0, 0, 22));
+    let mut o = checked_out();
+    let rc = unsafe {
+        native_cast_checked_detailed_from_f64(
+            env,
+            null_mut(),
+            Door::I32.code() as jint,
+            7.0,
+            none.as_ptr().cast_mut().cast(),
+            null_mut(),
+            o.as_mut_ptr().cast(),
+        )
+    };
+    assert_eq!((rc, o[0], &o[4..7]), (0, 7, &[0, 0, NO_ENTRY][..]));
+    // A violation from a double: its span is empty, its detail 0.
+    let mut raw = declared(RawConstraints::HAS_MINIMUM);
+    raw.lower = whole(10, false);
+    let minimum = wire(&raw);
+    let mut o = checked_out();
+    let rc = unsafe {
+        native_cast_checked_detailed_from_f64(
+            env,
+            null_mut(),
+            Door::I32.code() as jint,
+            7.0,
+            minimum.as_ptr().cast_mut().cast(),
+            null_mut(),
+            o.as_mut_ptr().cast(),
+        )
+    };
+    assert_eq!((rc, o[2], o[3], o[7], o[4]), (4, 0, 0, 0, 1));
 }

@@ -49,10 +49,16 @@ const SYMBOLS_C = <<<'C'
 const REWRITES = [
     // ext-php-rs's argument info names a union of classes in one string, which cargo-php
     // prefixes with one backslash, and spells a nullable union with `?`, which PHP refuses.
-    // `optional()`, the one nullable answer, takes and gives a plain or a checked verdict.
+    // `optional()`, the one nullable answer, takes and gives a plain or a checked verdict, and
+    // so does the detailed twin's.
     [
         '?\\HyperCast\\Success|HyperCast\\Checked|HyperCast\\Fault|HyperCast\\Violation {',
         '\\HyperCast\\Success|\\HyperCast\\Checked|\\HyperCast\\Fault|\\HyperCast\\Violation|null {',
+        1,
+    ],
+    [
+        '?\\HyperCast\\Success|HyperCast\\Checked|HyperCast\\DetailedFault|HyperCast\\Violation {',
+        '\\HyperCast\\Success|\\HyperCast\\Checked|\\HyperCast\\DetailedFault|\\HyperCast\\Violation|null {',
         1,
     ],
     [
@@ -60,17 +66,33 @@ const REWRITES = [
         '\\HyperCast\\Success|\\HyperCast\\Checked|\\HyperCast\\Fault|\\HyperCast\\Violation',
         3,
     ],
+    [
+        '\\HyperCast\\Success|HyperCast\\DetailedFault',
+        '\\HyperCast\\Success|\\HyperCast\\DetailedFault',
+        54,
+    ],
+    [
+        '\\HyperCast\\Success|HyperCast\\Checked|HyperCast\\DetailedFault|HyperCast\\Violation',
+        '\\HyperCast\\Success|\\HyperCast\\Checked|\\HyperCast\\DetailedFault|\\HyperCast\\Violation',
+        3,
+    ],
     ['\\HyperCast\\Success|HyperCast\\Fault', '\\HyperCast\\Success|\\HyperCast\\Fault', 54],
+    [
+        '\\HyperCast\\Checked|HyperCast\\DetailedFault|HyperCast\\Violation',
+        '\\HyperCast\\Checked|\\HyperCast\\DetailedFault|\\HyperCast\\Violation',
+        6,
+    ],
     [
         '\\HyperCast\\Checked|HyperCast\\Fault|HyperCast\\Violation',
         '\\HyperCast\\Checked|\\HyperCast\\Fault|\\HyperCast\\Violation',
         6,
     ],
-    ['\\HyperCast\\NumFormat|NumberFormatter', '\\HyperCast\\NumFormat|\\NumberFormatter', 24],
+    ['\\HyperCast\\NumFormat|NumberFormatter', '\\HyperCast\\NumFormat|\\NumberFormatter', 48],
     // The classes are registered final; cargo-php's stubs leave the modifier out.
     ["    class Cast {\n", "    final class Cast {\n", 1],
     ["    class NativePlatform {\n", "    final class NativePlatform {\n", 1],
     ["    class NativeValues {\n", "    final class NativeValues {\n", 1],
+    ["    class DetailedCast {\n", "    final class DetailedCast {\n", 1],
 ];
 
 /** classes.rs registers these in MINIT as plain PHP classes, outside cargo-php's view. */
@@ -161,6 +183,10 @@ const VALUE_CLASSES = <<<'PHP'
             public const CURRENCY = 64;
             public const TRAILING_SIGN = 128;
             public const ALL = 95;
+            public const GROUPING_LEGACY = 0;
+            public const GROUPING_WESTERN = 256;
+            public const GROUPING_INDIAN = 512;
+            public const GROUPING_POLICY = 768;
             public const SYMBOL_MAX_BYTES = 8;
             public const CURRENCY_MAX_BYTES = 16;
             public const PACKED_BYTES = 92;
@@ -176,10 +202,11 @@ const VALUE_CLASSES = <<<'PHP'
                 public string $plusSign = '',
                 public string $percent = '',
                 public string $digitZero = '',
+                public int $grouping = \HyperCast\NumFormat::GROUPING_WESTERN,
             ) {}
 
             /**
-             * `.` and `,` with every notation: one instance per request.
+             * `.` and `,` with every notation and strict Western grouping: one instance per request.
              */
             public static function invariant(): \HyperCast\NumFormat {}
 
@@ -199,7 +226,80 @@ const VALUE_CLASSES = <<<'PHP'
             public static function fromNumberFormatter(\NumberFormatter $formatter): \HyperCast\NumFormat {}
 
             /**
-             * The C ABI's `hc_format` layout.
+             * The same format under another grouping policy, which replaces the old one.
+             */
+            public function withGrouping(int $grouping): \HyperCast\NumFormat {}
+
+            /**
+             * Called by `unserialize()`: a format serialized under 1.0 has no `grouping` and keeps
+             * 1.0's meaning, `GROUPING_LEGACY`.
+             */
+            public function __wakeup(): void {}
+
+            /**
+             * The C ABI's `hc_format` layout, the grouping policy in its flags word.
+             */
+            public function packed(): string {}
+        }
+
+        /**
+         * A failed detailed verdict: why, the byte span of the input at fault, and what exactly
+         * failed, as the raw code the core reported and the named `FaultDetail` (`Unknown` for a
+         * code this binding does not name).
+         */
+        final readonly class DetailedFault {
+            public \HyperCast\CastFailure $reason;
+            public int $offset;
+            public int $length;
+            public int $code;
+            public \HyperCast\FaultDetail $detail;
+
+            public function __construct(
+                \HyperCast\CastFailure $reason,
+                int $offset,
+                int $length,
+                int $code,
+            ) {}
+
+            /**
+             * The plain `Fault` of the same reason and span.
+             */
+            public function toFault(): \HyperCast\Fault {}
+        }
+
+        /**
+         * Opt-in date shapes: option flags and a pivot for two-digit years. Nothing is on by
+         * default; `COMMON_FORMS` turns on the three shapes together and supplies no pivot.
+         */
+        final readonly class DateOptions {
+            public const COMPACT_DATE = 1;
+            public const SPACE_SEPARATOR = 2;
+            public const HOUR_OFFSET = 4;
+            public const COMMON_FORMS = 7;
+
+            public function __construct(
+                public int $flags = 0,
+                public int $pivot = 0,
+            ) {}
+        }
+
+        /**
+         * Month names for the date doors that read a month field: caller-built, a month number
+         * to a name or a list of names (aliases). The property holds a list per month.
+         */
+        final readonly class MonthNames {
+            public const MAX_NAME_BYTES = 64;
+
+            public function __construct(public array $months) {}
+
+            /**
+             * From the packed layout: per entry a month byte, a little-endian u32 length and the
+             * name's bytes.
+             */
+            public static function fromPacked(string $packed): \HyperCast\MonthNames {}
+
+            /**
+             * The packed layout, month by month.
              */
             public function packed(): string {}
         }

@@ -360,6 +360,28 @@ impl FromZvalMut<'_> for Float {
     }
 }
 
+/// A `?int` parameter that defaults to `null`.
+pub struct OptInt(pub Option<i64>);
+
+impl FromZvalMut<'_> for OptInt {
+    const TYPE: DataType = DataType::Long;
+    const NULLABLE: bool = true;
+
+    fn from_zval_mut(zval: &mut Zval) -> Option<Self> {
+        if !coerce(zval) {
+            return None;
+        }
+        if zval.is_null() {
+            return Some(OptInt(None));
+        }
+        zval.long().map(|n| OptInt(Some(n)))
+    }
+
+    fn from_missing() -> Option<Self> {
+        Some(OptInt(None))
+    }
+}
+
 /// A `bool` parameter.
 pub struct Bool(pub bool);
 
@@ -418,6 +440,11 @@ object_arg!(
     /// `Success|Checked|Fault|Violation $verdict`: a plain door's verdict or a checked one's.
     VerdictArg,
     "HyperCast\\Success|HyperCast\\Checked|HyperCast\\Fault|HyperCast\\Violation"
+);
+object_arg!(
+    /// `Success|Checked|DetailedFault|Violation $verdict`: a detailed door's verdict.
+    DetailedVerdictArg,
+    "HyperCast\\Success|HyperCast\\Checked|HyperCast\\DetailedFault|HyperCast\\Violation"
 );
 object_arg!(
     /// `NumFormat $format`.
@@ -523,6 +550,47 @@ impl<'a> FromZvalMut<'a> for OptPeriodsArg<'a> {
         Some(OptPeriodsArg(None))
     }
 }
+
+/// A nullable object parameter that defaults to `null`.
+macro_rules! optional_object_arg {
+    ($(#[$doc:meta])* $name:ident, $class:literal) => {
+        $(#[$doc])*
+        pub struct $name<'a>(pub Option<&'a Zval>);
+
+        impl<'a> FromZvalMut<'a> for $name<'a> {
+            const TYPE: DataType = DataType::object($class);
+            const NULLABLE: bool = true;
+
+            fn from_zval_mut(zval: &'a mut Zval) -> Option<Self> {
+                if !coerce(zval) {
+                    return None;
+                }
+                let zval: &'a Zval = zval;
+                Some($name((!zval.is_null()).then_some(zval)))
+            }
+
+            fn from_missing() -> Option<Self> {
+                Some($name(None))
+            }
+        }
+    };
+}
+
+optional_object_arg!(
+    /// `?\FFI $core = null`.
+    OptFfiArg,
+    "FFI"
+);
+optional_object_arg!(
+    /// `?DateOptions $options = null`.
+    OptDateOptionsArg,
+    "HyperCast\\DateOptions"
+);
+optional_object_arg!(
+    /// `?MonthNames $months = null`.
+    OptMonthNamesArg,
+    "HyperCast\\MonthNames"
+);
 
 /// A hand-registered method's arguments: the call's argument zvals, in the frame, after the
 /// engine's count check. `None` when the count check failed (its `ArgumentCountError` pending).

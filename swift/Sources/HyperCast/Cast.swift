@@ -2,11 +2,12 @@ import Foundation
 import HyperCastCore
 
 /// Allocation-lean scalar casts — booleans, numerics (integers, reals, exact decimals),
-/// UUIDs, temporals — calling directly into the native `hypercast` core through
-/// `@convention(c)` function pointers. The core is a static library linked into the
+/// UUIDs, temporals — calling directly into the native `hypercast` core through the
+/// detailed exports. The core is a static library linked into the
 /// executable on every platform this package builds for (`HyperCastCore`, a SwiftPM binary
 /// target), so there is nothing to find, open or deploy at run time. Every door returns a
-/// ``Verdict``: the value, or a ``Fault`` with a closed reason and the offending byte span; a
+/// ``Verdict``: the value, or a ``Fault`` with a closed reason, the offending byte span and
+/// the ``FaultDetail`` of what failed there; a
 /// checked door, judged by ``Constraints``, a ``CheckedVerdict``, whose rejection is that
 /// ``Fault`` or a ``Violation``. No door throws — bad data is a ``Fault`` or a ``Violation`` —
 /// and a precondition failure means a caller bug, never data.
@@ -21,41 +22,58 @@ import HyperCastCore
 /// fraction zeros trimmed, so the scale is minimal — which is precisely what `Decimal`
 /// represents: nothing is lost between the core and the presentation.
 public enum Cast {
-    private typealias PlainFn =
+    typealias PlainFn =
         @convention(c) (
             UnsafePointer<UInt8>?, UInt, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?
         ) -> Int32
-    private typealias NumericFn =
+    typealias NumericFn =
         @convention(c) (
             UnsafePointer<UInt8>?, UInt, UnsafeRawPointer?, UnsafeMutableRawPointer?,
             UnsafeMutableRawPointer?
         ) -> Int32
-    private typealias UnixFn =
+    typealias UnixFn =
         @convention(c) (
             UnsafePointer<UInt8>?, UInt, UInt32, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?
         ) -> Int32
     // cast_datetime: the unix shape with the declared day periods (null = English AM/PM
     // only) after the order.
-    private typealias DateTimeFn =
+    typealias DateTimeFn =
         @convention(c) (
             UnsafePointer<UInt8>?, UInt, UInt32, UnsafeRawPointer?, UnsafeMutableRawPointer?,
             UnsafeMutableRawPointer?
         ) -> Int32
-    private typealias VersionFn = @convention(c) () -> UInt32
+    typealias VersionFn = @convention(c) () -> UInt32
+    // cast_checked and cast_checked_from_f64: the declaration, its enum list, the input or the
+    // double, then out, fault and check.
+    typealias CheckedFn =
+        @convention(c) (
+            UInt32, UInt32, UnsafeRawPointer?, UnsafeRawPointer?, UnsafePointer<UInt8>?, UInt,
+            UnsafePointer<UInt8>?, UInt, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?,
+            UnsafeMutableRawPointer?
+        ) -> Int32
+    typealias CheckedDoubleFn =
+        @convention(c) (
+            UInt32, Double, UnsafeRawPointer?, UnsafePointer<UInt8>?, UInt, UnsafeMutableRawPointer?,
+            UnsafeMutableRawPointer?, UnsafeMutableRawPointer?
+        ) -> Int32
     // The typed doors read a double the caller holds instead of text.
-    private typealias TypedFn =
+    typealias TypedFn =
         @convention(c) (
             Double, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?
         ) -> Int32
-    private typealias TypedDeclaredFn =
+    typealias TypedDeclaredFn =
         @convention(c) (
             Double, UInt32, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?
         ) -> Int32
 
-    // The native exports as one table, so every door reaches them the same way. A class:
-    // a reference is one retain where a struct of function pointers would be copied.
-    // Immutable once built, and C function pointers carry no state of their own.
-    private final class LoadedLibrary: Sendable {
+    // The 1.0 exports as one table. The doors below reach the core through the detailed exports
+    // (`cast_detailed` and its three siblings), which carry the fault's detail and the 1.1
+    // grouping policy; this table is the exports a 1.0 core had, which parse legacy and name no
+    // detail, kept so the suite can hold the two to each other (the doors agree with them on a
+    // legacy format) and so the export check finds every symbol this package links. A class: a
+    // reference is one retain where a struct of function pointers would be copied. Immutable
+    // once built, and C function pointers carry no state of their own.
+    final class LegacyExports: Sendable {
         let bool: PlainFn
         let char: PlainFn
         let i8: NumericFn
@@ -85,6 +103,9 @@ public enum Cast {
         let excelTime: TypedFn
         let excelDuration: TypedFn
         let version: VersionFn
+        let text: PlainFn
+        let checked: CheckedFn
+        let checkedFromF64: CheckedDoubleFn
 
         init(
             bool: PlainFn, char: PlainFn,
@@ -94,7 +115,8 @@ public enum Cast {
             unix: UnixFn, excelSerial: UnixFn, date: PlainFn, dateOrdered: UnixFn, dateTime: DateTimeFn,
             time: PlainFn, duration: PlainFn,
             decimalFromF64: TypedFn, excelSerialFromF64: TypedDeclaredFn, excelTime: TypedFn,
-            excelDuration: TypedFn, version: VersionFn
+            excelDuration: TypedFn, version: VersionFn, text: PlainFn, checked: CheckedFn,
+            checkedFromF64: CheckedDoubleFn
         ) {
             self.bool = bool
             self.char = char
@@ -108,6 +130,7 @@ public enum Cast {
             self.decimalFromF64 = decimalFromF64; self.excelSerialFromF64 = excelSerialFromF64
             self.excelTime = excelTime; self.excelDuration = excelDuration
             self.version = version
+            self.text = text; self.checked = checked; self.checkedFromF64 = checkedFromF64
         }
     }
 
@@ -116,7 +139,7 @@ public enum Cast {
     // HyperCastRawFault, ...), while the doors here fill and read them as raw bytes through
     // the shapes above, so each entry passes its raw pointers on as the typed ones, which
     // are the same pointers in the C ABI. Each is a C function of its own that calls the door.
-    private static let library = LoadedLibrary(
+    static let legacy = LegacyExports(
         bool: { cast_bool($0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3))) },
         char: { cast_char($0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3))) },
         i8: { cast_i8($0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3)), .init(OpaquePointer($4))) },
@@ -145,12 +168,17 @@ public enum Cast {
         excelSerialFromF64: { cast_excel_serial_from_f64($0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3))) },
         excelTime: { cast_excel_time($0, .init(OpaquePointer($1)), .init(OpaquePointer($2))) },
         excelDuration: { cast_excel_duration($0, .init(OpaquePointer($1)), .init(OpaquePointer($2))) },
-        version: hypercast_version)
-
-    // The core is linked in, so there is nothing to load and nothing that can fail.
-    private static func loaded() -> LoadedLibrary {
-        library
-    }
+        version: { hypercast_version() },
+        text: { cast_text($0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3))) },
+        checked: {
+            cast_checked(
+                $0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3)), $4, $5, $6, $7, $8,
+                .init(OpaquePointer($9)), .init(OpaquePointer($10)))
+        },
+        checkedFromF64: {
+            cast_checked_from_f64(
+                $0, $1, .init(OpaquePointer($2)), $3, $4, $5, .init(OpaquePointer($6)), .init(OpaquePointer($7)))
+        })
 
     /// Whether the native core is usable. Always `true`: the core is linked into the
     /// executable on every platform this package builds for, and a platform with no
@@ -158,7 +186,38 @@ public enum Cast {
     /// binding has under the same name, where the answer can be `false`.
     public static var isAvailable: Bool { true }
 
-    private static func fault(_ code: Int32, _ raw: UnsafeRawBufferPointer) -> Fault {
+    // The door codes of the detailed exports: `Door`'s numbering in rust/src/door.rs, which
+    // every binding dispatching through them restates. A door that declares something (a Unix
+    // precision, a date order, an Excel epoch) takes it as the `param` beside the code; every
+    // other door takes 0.
+    enum DoorCode {
+        static let bool: UInt32 = 1
+        static let i8: UInt32 = 2
+        static let i16: UInt32 = 3
+        static let i32: UInt32 = 4
+        static let i64: UInt32 = 5
+        static let u8: UInt32 = 6
+        static let u16: UInt32 = 7
+        static let u32: UInt32 = 8
+        static let u64: UInt32 = 9
+        static let f32: UInt32 = 10
+        static let f64: UInt32 = 11
+        static let uuid: UInt32 = 12
+        static let timestamp: UInt32 = 13
+        static let unix: UInt32 = 14
+        static let date: UInt32 = 15
+        static let time: UInt32 = 16
+        static let duration: UInt32 = 17
+        static let text: UInt32 = 18
+        static let decimal: UInt32 = 19
+        static let dateOrdered: UInt32 = 20
+        static let dateTime: UInt32 = 21
+        static let excelSerial: UInt32 = 22
+        static let char: UInt32 = 23
+    }
+
+    // The 1.0 fault: the span alone.
+    static func fault(_ code: Int32, _ raw: UnsafeRawBufferPointer) -> Fault {
         precondition(code != -1, "libhypercast reported a contract violation — a binding bug, please report it")
         return Interop.fault(
             code: code,
@@ -166,129 +225,198 @@ public enum Cast {
             length: raw.load(fromByteOffset: 4, as: UInt32.self))
     }
 
+    // The detailed fault: the span and the detail code, behind the capacity word the caller wrote.
+    static func detailedFault(_ code: Int32, _ raw: UnsafeRawBufferPointer) -> Fault {
+        precondition(code != -1, "libhypercast reported a contract violation — a binding bug, please report it")
+        return Interop.fault(code: code, faultDetail: raw)
+    }
+
     // The scratch every door needs, on the stack: 16 bytes for the widest out-value (a
     // timestamp or a civil date-time — two UInt64s so the core's i64/u64 stores land
-    // 8-aligned) and 8 for the fault span. A tuple of fixed-width integers has no heap
+    // 8-aligned) and 16 for the detailed fault (its capacity word, the span and the detail).
+    // A tuple of fixed-width integers has no heap
     // existence at all, where three heap `[UInt8]` arrays per call (four with the format)
     // would be most of what a door costs. Internal, not private, so the test
     // suite can pin both sizes to the ones rust/src/abi.rs and ffi.rs pin.
     typealias OutScratch = (UInt64, UInt64)
     typealias FaultScratch = (UInt32, UInt32)
+    typealias DetailScratch = Interop.RawFaultDetail
     // The native `RawNumFormat` and `RawDayPeriods`, under the names the test suite pins
     // their sizes by. A format's layout is computed when it is declared; a door copies it
     // onto the stack and hands the core a pointer, which it reads in place.
     typealias RawNumFormat = Interop.RawNumFormat
     typealias RawDayPeriods = Interop.RawDayPeriods
+    typealias RawDateOptions = Interop.RawDateOptions
 
     static func inputPointer(_ utf8: UnsafeRawBufferPointer) -> UnsafePointer<UInt8>? {
         // An empty buffer may carry a nil base address; the ABI never dereferences at len 0.
         utf8.baseAddress?.assumingMemoryBound(to: UInt8.self)
     }
 
+    /// The general call into `cast_detailed`: every declaration optional, the core's verdict
+    /// code returned as it came (−1, a refused declaration, included). A declaration a door
+    /// ignores is passed null and never read.
+    static func callDetailed(
+        door: UInt32, param: UInt32, _ utf8: UnsafeRawBufferPointer,
+        format: NumFormat? = nil, periods: DateFormat? = nil, options: DateOptions? = nil,
+        out: inout OutScratch, fault: inout DetailScratch
+    ) -> Int32 {
+        var rawFormat = format?.raw ?? Interop.zeroRawFormat
+        var rawPeriods = periods?.raw ?? Interop.zeroRawDayPeriods
+        var rawOptions: RawDateOptions = options?.raw ?? (0, 0, 0)
+        let declaresPeriods = periods?.declaresPeriods ?? false
+        let vocabulary = options?.months?.packed ?? []
+        return withUnsafeMutableBytes(of: &out) { outRaw in
+            withUnsafeMutableBytes(of: &fault) { faultRaw in
+                withUnsafeBytes(of: &rawFormat) { formatRaw in
+                    withUnsafeBytes(of: &rawPeriods) { periodsRaw in
+                        withUnsafeBytes(of: &rawOptions) { optionsRaw in
+                            vocabulary.withUnsafeBufferPointer { vocab in
+                                cast_detailed(
+                                    door, param,
+                                    format == nil ? nil : .init(OpaquePointer(formatRaw.baseAddress)),
+                                    declaresPeriods ? .init(OpaquePointer(periodsRaw.baseAddress)) : nil,
+                                    options == nil ? nil : .init(OpaquePointer(optionsRaw.baseAddress)),
+                                    vocab.baseAddress, UInt(vocab.count), inputPointer(utf8), UInt(utf8.count),
+                                    outRaw.baseAddress, .init(OpaquePointer(faultRaw.baseAddress)))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Whether the core accepts a packed month vocabulary: a probe call at the date-order door
+    /// with nothing else declared. −1 is a vocabulary the core refuses; any other code, a read
+    /// or a fault of the probe's own text, is an accepted one.
+    static func vocabularyIsAccepted(_ packed: [UInt8]) -> Bool {
+        var out: OutScratch = (0, 0)
+        var fault = Interop.freshRawFaultDetail
+        let probe = Array("2026-01-07".utf8)
+        let code = probe.withUnsafeBytes { text in
+            packed.withUnsafeBufferPointer { vocab in
+                withUnsafeMutableBytes(of: &out) { outRaw in
+                    withUnsafeMutableBytes(of: &fault) { faultRaw in
+                        cast_detailed(
+                            DoorCode.dateOrdered, DateOrder.yearMonthDay.rawValue, nil, nil, nil, vocab.baseAddress,
+                            UInt(vocab.count), inputPointer(text), UInt(text.count), outRaw.baseAddress,
+                            .init(OpaquePointer(faultRaw.baseAddress)))
+                    }
+                }
+            }
+        }
+        return code != -1
+    }
+
     /// Runs a culture-insensitive door over the caller's bytes, the verdict assembled from
     /// whichever half of the scratch the code says is live.
     private static func plainDoor<T>(
-        _ fn: PlainFn, _ utf8: UnsafeRawBufferPointer, read: (UnsafeRawBufferPointer) -> T
+        _ door: UInt32, _ utf8: UnsafeRawBufferPointer, read: (UnsafeRawBufferPointer) -> T
     ) -> Verdict<T> {
         var out: OutScratch = (0, 0)
-        var faultOut: FaultScratch = (0, 0)
+        var faultOut = Interop.freshRawFaultDetail
         let code = withUnsafeMutableBytes(of: &out) { outRaw in
             withUnsafeMutableBytes(of: &faultOut) { faultRaw in
-                fn(inputPointer(utf8), UInt(utf8.count), outRaw.baseAddress, faultRaw.baseAddress)
+                cast_detailed(
+                    door, 0, nil, nil, nil, nil, 0, inputPointer(utf8), UInt(utf8.count), outRaw.baseAddress,
+                    .init(OpaquePointer(faultRaw.baseAddress)))
             }
         }
         if code == 0 {
             return .success(withUnsafeBytes(of: &out, read))
         }
-        return .fault(withUnsafeBytes(of: &faultOut) { fault(code, $0) })
+        return .fault(withUnsafeBytes(of: &faultOut) { detailedFault(code, $0) })
     }
 
     private static func numericDoor<T>(
-        _ fn: NumericFn, _ utf8: UnsafeRawBufferPointer, _ format: NumFormat,
+        _ door: UInt32, _ utf8: UnsafeRawBufferPointer, _ format: NumFormat,
         read: (UnsafeRawBufferPointer) -> T
     ) -> Verdict<T> {
         var rawFormat = format.raw
         var out: OutScratch = (0, 0)
-        var faultOut: FaultScratch = (0, 0)
+        var faultOut = Interop.freshRawFaultDetail
         let code = withUnsafeMutableBytes(of: &out) { outRaw in
             withUnsafeMutableBytes(of: &faultOut) { faultRaw in
                 withUnsafeBytes(of: &rawFormat) { formatRaw in
-                    fn(
-                        inputPointer(utf8), UInt(utf8.count), formatRaw.baseAddress,
-                        outRaw.baseAddress, faultRaw.baseAddress)
+                    cast_detailed(
+                        door, 0, .init(OpaquePointer(formatRaw.baseAddress)), nil, nil, nil, 0, inputPointer(utf8),
+                        UInt(utf8.count), outRaw.baseAddress, .init(OpaquePointer(faultRaw.baseAddress)))
                 }
             }
         }
         if code == 0 {
             return .success(withUnsafeBytes(of: &out, read))
         }
-        return .fault(withUnsafeBytes(of: &faultOut) { fault(code, $0) })
+        return .fault(withUnsafeBytes(of: &faultOut) { detailedFault(code, $0) })
     }
 
-    /// The (ptr, len, u32, out, fault) shape — a declared precision, epoch or field order.
-    private static func unixDoor<T>(
-        _ fn: UnixFn, _ utf8: UnsafeRawBufferPointer, _ discriminant: UInt32,
+    /// The (door, param) shape — a declared precision, epoch or field order — and the date
+    /// doors' declarations: day periods and date options (with their month names) where the
+    /// door reads them.
+    static func parameterizedDoor<T>(
+        _ door: UInt32, _ param: UInt32, _ utf8: UnsafeRawBufferPointer,
+        periods: DateFormat? = nil, options: DateOptions? = nil,
         read: (UnsafeRawBufferPointer) -> T
     ) -> Verdict<T> {
         var out: OutScratch = (0, 0)
-        var faultOut: FaultScratch = (0, 0)
+        var faultOut = Interop.freshRawFaultDetail
+        let code = callDetailed(
+            door: door, param: param, utf8, periods: periods, options: options, out: &out, fault: &faultOut)
+        if code == 0 {
+            return .success(withUnsafeBytes(of: &out, read))
+        }
+        return .fault(withUnsafeBytes(of: &faultOut) { detailedFault(code, $0) })
+    }
+
+    /// The (door, param) shape without a declaration: a declared precision, epoch or field
+    /// order.
+    private static func unixDoor<T>(
+        _ door: UInt32, _ utf8: UnsafeRawBufferPointer, _ param: UInt32,
+        read: (UnsafeRawBufferPointer) -> T
+    ) -> Verdict<T> {
+        var out: OutScratch = (0, 0)
+        var faultOut = Interop.freshRawFaultDetail
         let code = withUnsafeMutableBytes(of: &out) { outRaw in
             withUnsafeMutableBytes(of: &faultOut) { faultRaw in
-                fn(
-                    inputPointer(utf8), UInt(utf8.count), discriminant, outRaw.baseAddress,
-                    faultRaw.baseAddress)
+                cast_detailed(
+                    door, param, nil, nil, nil, nil, 0, inputPointer(utf8), UInt(utf8.count), outRaw.baseAddress,
+                    .init(OpaquePointer(faultRaw.baseAddress)))
             }
         }
         if code == 0 {
             return .success(withUnsafeBytes(of: &out, read))
         }
-        return .fault(withUnsafeBytes(of: &faultOut) { fault(code, $0) })
+        return .fault(withUnsafeBytes(of: &faultOut) { detailedFault(code, $0) })
     }
 
     /// The date-time shape: a declared order, then the declared day periods — the format's
     /// layout on the stack, or null when nothing is declared, which is exactly the
-    /// order-only door's call.
-    private static func dateTimeDoor<T>(
-        _ fn: DateTimeFn, _ utf8: UnsafeRawBufferPointer, _ order: DateOrder, _ format: DateFormat?,
+    /// order-only door's call — and the date options, when the caller passes them.
+    static func dateTimeDoor<T>(
+        _ utf8: UnsafeRawBufferPointer, _ order: DateOrder, _ format: DateFormat?, _ options: DateOptions?,
         read: (UnsafeRawBufferPointer) -> T
     ) -> Verdict<T> {
-        var periods: RawDayPeriods = format?.raw ?? Interop.zeroRawDayPeriods
-        let order = order.rawValue
-        let declared = format?.declaresPeriods ?? false
-        var out: OutScratch = (0, 0)
-        var faultOut: FaultScratch = (0, 0)
-        let code = withUnsafeMutableBytes(of: &out) { outRaw in
-            withUnsafeMutableBytes(of: &faultOut) { faultRaw in
-                withUnsafeBytes(of: &periods) { periodsRaw in
-                    fn(
-                        inputPointer(utf8), UInt(utf8.count), order, declared ? periodsRaw.baseAddress : nil,
-                        outRaw.baseAddress, faultRaw.baseAddress)
-                }
-            }
-        }
-        if code == 0 {
-            return .success(withUnsafeBytes(of: &out, read))
-        }
-        return .fault(withUnsafeBytes(of: &faultOut) { fault(code, $0) })
+        parameterizedDoor(DoorCode.dateTime, order.rawValue, utf8, periods: format, options: options, read: read)
     }
 
     /// The typed shape: a double instead of text, then the declared epoch when the door
     /// takes one. There is no text for a fault's span to index, so the core leaves it empty.
     private static func typedDoor<T>(
-        _ value: Double, _ call: (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> Int32,
-        read: (UnsafeRawBufferPointer) -> T
+        _ door: UInt32, _ param: UInt32, _ value: Double, read: (UnsafeRawBufferPointer) -> T
     ) -> Verdict<T> {
         var out: OutScratch = (0, 0)
-        var faultOut: FaultScratch = (0, 0)
+        var faultOut = Interop.freshRawFaultDetail
         let code = withUnsafeMutableBytes(of: &out) { outRaw in
             withUnsafeMutableBytes(of: &faultOut) { faultRaw in
-                call(outRaw.baseAddress, faultRaw.baseAddress)
+                cast_detailed_from_f64(
+                    door, param, value, outRaw.baseAddress, .init(OpaquePointer(faultRaw.baseAddress)))
             }
         }
         if code == 0 {
             return .success(withUnsafeBytes(of: &out, read))
         }
-        return .fault(withUnsafeBytes(of: &faultOut) { fault(code, $0) })
+        return .fault(withUnsafeBytes(of: &faultOut) { detailedFault(code, $0) })
     }
 
     /// A native Swift `String` already stores contiguous UTF-8, so `withUTF8` hands the
@@ -317,18 +445,19 @@ public enum Cast {
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
     public static func bool(_ utf8: UnsafeRawBufferPointer) -> Verdict<Bool> {
-        plainDoor(loaded().bool, utf8) { $0.load(as: UInt8.self) != 0 }
+        plainDoor(DoorCode.bool, utf8) { $0.load(as: UInt8.self) != 0 }
     }
 
     // MARK: - char
 
     /// Casts char text to one `Unicode.Scalar`, verbatim or as a declared code point. An
     /// input that is exactly one scalar is that scalar, checked before any trimming — so
-    /// `" "` is a space and `"6"` the digit six. Otherwise ASCII whitespace is trimmed and
-    /// the text must be exactly one code-point spelling, ASCII case-insensitive on the
-    /// prefix: decimal `65`, `U+0041`, `0x41`, `&H41`, or an HTML numeric entity `&#65;` /
-    /// `&#x41;` (the `;` required). A spelling past `U+10FFFF` or naming a surrogate is
-    /// `.outOfRange`. Every scalar fits `Unicode.Scalar`, so nothing narrows here.
+    /// `" "` is a space and `"6"` the digit six. Otherwise white space (Unicode `White_Space`,
+    /// U+00A0 included) is trimmed and the text must be exactly one code-point spelling, ASCII
+    /// case-insensitive on the prefix: decimal `65`, `U+0041`, `0x41`, `&H41`, or an HTML
+    /// numeric entity `&#65;` / `&#x41;` (the `;` required). A spelling past `U+10FFFF` or
+    /// naming a surrogate is `.outOfRange`. Every scalar fits `Unicode.Scalar`, so nothing
+    /// narrows here.
     public static func char(_ text: String) -> Verdict<Unicode.Scalar> {
         withUTF8(text) { char($0) }
     }
@@ -342,7 +471,7 @@ public enum Cast {
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
     public static func char(_ utf8: UnsafeRawBufferPointer) -> Verdict<Unicode.Scalar> {
-        plainDoor(loaded().char, utf8, read: Interop.scalar)
+        plainDoor(DoorCode.char, utf8, read: Interop.scalar)
     }
 
     // MARK: - integers (the type's own range; grouping, parens, exponent, radix prefixes, currency per format)
@@ -363,7 +492,7 @@ public enum Cast {
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
     public static func i8(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<Int8> {
-        numericDoor(loaded().i8, utf8, format) { $0.load(as: Int8.self) }
+        numericDoor(DoorCode.i8, utf8, format) { $0.load(as: Int8.self) }
     }
 
     /// Casts integer text to a signed 16-bit value. Notation rules as
@@ -381,7 +510,7 @@ public enum Cast {
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
     public static func i16(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<Int16> {
-        numericDoor(loaded().i16, utf8, format) { $0.load(as: Int16.self) }
+        numericDoor(DoorCode.i16, utf8, format) { $0.load(as: Int16.self) }
     }
 
     /// Casts integer text to a signed 32-bit value. Notation rules as
@@ -399,7 +528,7 @@ public enum Cast {
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
     public static func i32(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<Int32> {
-        numericDoor(loaded().i32, utf8, format) { $0.load(as: Int32.self) }
+        numericDoor(DoorCode.i32, utf8, format) { $0.load(as: Int32.self) }
     }
 
     /// Casts integer text to a signed 64-bit value. Notation rules as
@@ -417,7 +546,7 @@ public enum Cast {
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
     public static func i64(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<Int64> {
-        numericDoor(loaded().i64, utf8, format) { $0.load(as: Int64.self) }
+        numericDoor(DoorCode.i64, utf8, format) { $0.load(as: Int64.self) }
     }
 
     /// Casts integer text to an unsigned 8-bit value. Notation rules as
@@ -435,7 +564,7 @@ public enum Cast {
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
     public static func u8(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<UInt8> {
-        numericDoor(loaded().u8, utf8, format) { $0.load(as: UInt8.self) }
+        numericDoor(DoorCode.u8, utf8, format) { $0.load(as: UInt8.self) }
     }
 
     /// Casts integer text to an unsigned 16-bit value. Notation rules as
@@ -453,7 +582,7 @@ public enum Cast {
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
     public static func u16(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<UInt16> {
-        numericDoor(loaded().u16, utf8, format) { $0.load(as: UInt16.self) }
+        numericDoor(DoorCode.u16, utf8, format) { $0.load(as: UInt16.self) }
     }
 
     /// Casts integer text to an unsigned 32-bit value. Notation rules as
@@ -471,7 +600,7 @@ public enum Cast {
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
     public static func u32(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<UInt32> {
-        numericDoor(loaded().u32, utf8, format) { $0.load(as: UInt32.self) }
+        numericDoor(DoorCode.u32, utf8, format) { $0.load(as: UInt32.self) }
     }
 
     /// Casts integer text to an unsigned 64-bit value — natively unsigned, no widening games.
@@ -489,7 +618,7 @@ public enum Cast {
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
     public static func u64(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<UInt64> {
-        numericDoor(loaded().u64, utf8, format) { $0.load(as: UInt64.self) }
+        numericDoor(DoorCode.u64, utf8, format) { $0.load(as: UInt64.self) }
     }
 
     // MARK: - reals (finite only; separators, parens, exponent, percent, currency per format)
@@ -510,7 +639,7 @@ public enum Cast {
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
     public static func f32(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<Float> {
-        numericDoor(loaded().f32, utf8, format) { $0.load(as: Float.self) }
+        numericDoor(DoorCode.f32, utf8, format) { $0.load(as: Float.self) }
     }
 
     /// Casts real text to a `Double`. Notation rules as ``f32(_:format:)-swift.type.method``.
@@ -527,7 +656,7 @@ public enum Cast {
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
     public static func f64(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<Double> {
-        numericDoor(loaded().f64, utf8, format) { $0.load(as: Double.self) }
+        numericDoor(DoorCode.f64, utf8, format) { $0.load(as: Double.self) }
     }
 
     // MARK: - decimal (exact; same grammar as the reals, never rounds)
@@ -555,7 +684,7 @@ public enum Cast {
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
     public static func decimal(_ utf8: UnsafeRawBufferPointer, format: NumFormat) -> Verdict<Decimal> {
-        numericDoor(loaded().decimal, utf8, format, read: Interop.decimal)
+        numericDoor(DoorCode.decimal, utf8, format, read: Interop.decimal)
     }
 
     // MARK: - generic numeric (for a caller that is itself generic over the target)
@@ -631,7 +760,7 @@ public enum Cast {
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
     public static func uuid(_ utf8: UnsafeRawBufferPointer) -> Verdict<UUID> {
-        plainDoor(loaded().uuid, utf8, read: Interop.uuid)
+        plainDoor(DoorCode.uuid, utf8, read: Interop.uuid)
     }
 
     // MARK: - temporals
@@ -654,7 +783,7 @@ public enum Cast {
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
     public static func timestamp(_ utf8: UnsafeRawBufferPointer) -> Verdict<Date> {
-        plainDoor(loaded().timestamp, utf8, read: Interop.instant)
+        plainDoor(DoorCode.timestamp, utf8, read: Interop.instant)
     }
 
     /// Casts an integer Unix-epoch value under a caller-declared unit to a `Date`.
@@ -671,7 +800,7 @@ public enum Cast {
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
     public static func unix(_ utf8: UnsafeRawBufferPointer, precision: UnixPrecision) -> Verdict<Date> {
-        unixDoor(loaded().unix, utf8, precision.rawValue, read: Interop.instant)
+        unixDoor(DoorCode.unix, utf8, precision.rawValue, read: Interop.instant)
     }
 
     /// Casts an Excel date serial under a caller-declared ``ExcelEpoch`` to a `Date`. The
@@ -697,7 +826,7 @@ public enum Cast {
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
     public static func excelSerial(_ utf8: UnsafeRawBufferPointer, epoch: ExcelEpoch) -> Verdict<Date> {
-        unixDoor(loaded().excelSerial, utf8, epoch.rawValue, read: Interop.instant)
+        unixDoor(DoorCode.excelSerial, utf8, epoch.rawValue, read: Interop.instant)
     }
 
     /// Casts a strict ISO 8601 `yyyy-MM-dd` calendar date to `DateComponents` (year, month,
@@ -715,7 +844,7 @@ public enum Cast {
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
     public static func date(_ utf8: UnsafeRawBufferPointer) -> Verdict<DateComponents> {
-        plainDoor(loaded().date, utf8, read: Interop.date)
+        plainDoor(DoorCode.date, utf8, read: Interop.date)
     }
 
     /// Casts a separated calendar date — three digit fields joined by one consistent
@@ -737,7 +866,7 @@ public enum Cast {
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
     public static func date(_ utf8: UnsafeRawBufferPointer, order: DateOrder) -> Verdict<DateComponents> {
-        unixDoor(loaded().dateOrdered, utf8, order.rawValue, read: Interop.date)
+        unixDoor(DoorCode.dateOrdered, utf8, order.rawValue, read: Interop.date)
     }
 
     /// Casts a zone-less civil date-time — the shape untrusted feeds actually send
@@ -764,13 +893,13 @@ public enum Cast {
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
     public static func dateTime(_ utf8: UnsafeRawBufferPointer, order: DateOrder) -> Verdict<DateComponents> {
-        dateTimeDoor(loaded().dateTime, utf8, order, nil, read: Interop.civil)
+        dateTimeDoor(utf8, order, nil, nil, read: Interop.civil)
     }
 
     /// Casts a zone-less civil date-time under a declared ``DateFormat``: the field order
     /// of ``dateTime(_:order:)-swift.type.method``, plus the day-period designators the
     /// text's culture writes beside a 12-hour clock — `1/7/2026 3:04 nachm.`,
-    /// `2026-01-07 오후 3:04` — read after the clock (a space optional) or ahead of it,
+    /// `2026-01-07 오후 3:04` — read after the clock or ahead of it, with any run of white space or none between,
     /// beside the English `AM`/`PM`, which are read whatever is declared. A format that
     /// declares no designator is exactly the order-only door.
     public static func dateTime(_ text: String, format: DateFormat) -> Verdict<DateComponents> {
@@ -786,7 +915,7 @@ public enum Cast {
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
     public static func dateTime(_ utf8: UnsafeRawBufferPointer, format: DateFormat) -> Verdict<DateComponents> {
-        dateTimeDoor(loaded().dateTime, utf8, format.order, format, read: Interop.civil)
+        dateTimeDoor(utf8, format.order, format, nil, read: Interop.civil)
     }
 
     /// Casts an ISO 24-hour time-of-day to `DateComponents` (hour, minute, second,
@@ -804,7 +933,7 @@ public enum Cast {
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
     public static func time(_ utf8: UnsafeRawBufferPointer) -> Verdict<DateComponents> {
-        plainDoor(loaded().time, utf8, read: Interop.time)
+        plainDoor(DoorCode.time, utf8, read: Interop.time)
     }
 
     /// Casts a duration (ISO 8601 fixed components, invariant colon form, or protobuf JSON
@@ -823,7 +952,7 @@ public enum Cast {
     /// the primitive the `String` and `[UInt8]` forms wrap, for a caller already holding a
     /// buffer (or a slice of one) to cast out of without copying.
     public static func duration(_ utf8: UnsafeRawBufferPointer) -> Verdict<Duration> {
-        plainDoor(loaded().duration, utf8, read: Interop.duration)
+        plainDoor(DoorCode.duration, utf8, read: Interop.duration)
     }
 
     // MARK: - typed doors (a number the caller already holds, not text)
@@ -836,8 +965,7 @@ public enum Cast {
     /// infinity, a magnitude past 2⁹⁶ − 1 or more than 28 places is `.outOfRange` — the digits
     /// are never cut to fit. A typed door's ``Fault`` has no span: its offset and length are 0.
     public static func decimalFromDouble(_ value: Double) -> Verdict<Decimal> {
-        let fn = loaded().decimalFromF64
-        return typedDoor(value, { fn(value, $0, $1) }, read: Interop.decimal)
+        typedDoor(DoorCode.decimal, 0, value, read: Interop.decimal)
     }
 
     /// Reads an Excel date serial the caller already holds as a `Double` under a declared
@@ -850,8 +978,7 @@ public enum Cast {
     /// serial below the system's first day and one past 9999-12-31 are `.outOfRange`; a
     /// negative, NaN or infinite serial is `.malformed`.
     public static func excelSerialFromDouble(_ value: Double, epoch: ExcelEpoch) -> Verdict<DateComponents> {
-        let fn = loaded().excelSerialFromF64
-        return typedDoor(value, { fn(value, epoch.rawValue, $0, $1) }, read: Interop.civil)
+        typedDoor(DoorCode.excelSerial, epoch.rawValue, value, read: Interop.civil)
     }
 
     /// Reads the fraction of an Excel serial the caller already holds as a `Double` as a time
@@ -860,8 +987,7 @@ public enum Cast {
     /// to a whole day is midnight. A negative, NaN or infinite serial is `.malformed`;
     /// one past 9999-12-31 is `.outOfRange`.
     public static func excelTime(_ value: Double) -> Verdict<DateComponents> {
-        let fn = loaded().excelTime
-        return typedDoor(value, { fn(value, $0, $1) }, read: Interop.time)
+        typedDoor(DoorCode.time, 0, value, read: Interop.time)
     }
 
     /// Reads a number of days the caller already holds as a `Double` — what an elapsed-time
@@ -869,8 +995,7 @@ public enum Cast {
     /// negative span is negative, its size snapped as a serial's time. NaN or an infinity is
     /// `.malformed`; beyond ±10,000 years is `.outOfRange`.
     public static func excelDuration(_ value: Double) -> Verdict<Duration> {
-        let fn = loaded().excelDuration
-        return typedDoor(value, { fn(value, $0, $1) }, read: Interop.duration)
+        typedDoor(DoorCode.duration, 0, value, read: Interop.duration)
     }
 
     /// Presents a verdict optionally: an ``CastFailure/empty`` fault becomes `nil` (Swift's
@@ -898,7 +1023,7 @@ public enum Cast {
     /// package's tag — so a caller can prove the two agree before the first cast and name
     /// the mismatch when they don't.
     public static func nativeVersion() -> String {
-        Interop.version(loaded().version())
+        Interop.version(legacy.version())
     }
 }
 

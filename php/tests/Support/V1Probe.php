@@ -30,6 +30,9 @@ final class V1Probe
     /** The classes the validation constraints added after 1.0, by short name under `HyperCast\`. */
     public const CONSTRAINT_CLASSES = ['Constraints', 'Checked', 'Violation', 'Door', 'Rounding', 'Keyword'];
 
+    /** The classes 1.1's fault detail and date options added, by short name under `HyperCast\`. */
+    public const DETAIL_CLASSES = ['DetailedCast', 'DetailedFault', 'FaultDetail', 'DateOptions', 'MonthNames'];
+
     /**
      * The public surface of each class (1.0's unless `$classes` names others), from
      * reflection: kind, modifiers, parent and interfaces, constants and enum cases, public

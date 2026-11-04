@@ -9,17 +9,57 @@ const { existsSync, readdirSync, readFileSync } = require('node:fs') as typeof i
 const path: typeof import('node:path') = require('node:path')
 const { test }: typeof import('node:test') = require('node:test')
 const api = require('../index.js') as typeof import('../index.js')
-const { Constraints, DateFormat, Door, NumFormat, Rounding } = api
+const {
+  Constraints,
+  DateFormat,
+  DateOptions,
+  DateOrder,
+  DateStyles,
+  Door,
+  Grouping,
+  MonthNames,
+  NumFormat,
+  Rounding,
+} = api
 type Verdict<T> = import('../index.js').Verdict<T>
+type DetailedVerdict<T> = import('../index.js').DetailedVerdict<T>
+type DetailedCheckedVerdict<T> = import('../index.js').DetailedCheckedVerdict<T>
 type CheckedVerdict<T> = import('../index.js').CheckedVerdict<T>
 type ConstraintsSpec = import('../index.js').ConstraintsSpec
+type NumFormatSpec = import('../index.js').NumFormatSpec
 type Text = import('../index.js').Text
 
 // One corpus record. Each file uses a subset of these fields; JSON.parse does not check them.
 interface Vector {
   input: string
   expect: 'ok' | 'empty' | 'malformed' | 'out_of_range' | 'violation' | 'refused'
+  kind?: 'white_space' | 'num_format' | 'day_periods' | 'date_options' | 'month_names'
+  rule?:
+    | 'length'
+    | 'digit'
+    | 'equal_separators'
+    | 'white_space'
+    | 'designator_edge'
+    | 'currency_edge'
+    | 'grouping_policy'
+    | 'unknown_flag'
+    | 'flags'
+    | 'pivot'
+    | 'layout'
+    | 'month'
+    | 'utf8'
+    | 'name_length'
+    | 'character'
+    | 'month_missing'
+    | 'duplicate'
   fault?: [number, number]
+  detail?: string
+  options?: { flags?: string[]; pivot?: number; months?: [number, string][] }
+  flag_bits?: number
+  pivot?: number
+  months?: [number, string][]
+  append_bytes?: number[]
+  flags?: string[]
   constraints?: Record<string, unknown>
   input_bytes?: number[]
   from_f64?: number | string
@@ -89,13 +129,63 @@ function utf16Span(input: string, [offset, length]: [number, number]): [number, 
   return [start, end - start]
 }
 
-// Runs `door` on the vector's bytes and on its string, and holds both verdicts to it.
+// The detail codes the spec publishes, by the corpus's spelling. They are written out here, not
+// read from the binding, so a renumbered or renamed code fails a row.
+const DETAIL_CODES: Record<string, number> = {
+  blank: 1,
+  unexpected_character: 2,
+  digit_expected: 3,
+  delimiter_expected: 4,
+  trailing_text: 5,
+  no_digits: 6,
+  sign_misplaced: 7,
+  parentheses_unbalanced: 8,
+  mark_repeated: 9,
+  group_misplaced: 10,
+  group_size: 11,
+  group_in_fraction: 12,
+  ambiguous_separator: 13,
+  fraction_not_allowed: 14,
+  field_width: 15,
+  wrong_length: 16,
+  component_missing: 17,
+  not_recognized: 18,
+  unknown_unit: 19,
+  invalid_utf8: 20,
+  too_long: 21,
+  not_finite: 22,
+  not_whole: 23,
+  negative_not_allowed: 24,
+  too_large: 25,
+  too_small: 26,
+  too_precise: 27,
+  date_field_out_of_range: 28,
+  time_field_out_of_range: 29,
+  outside_window: 30,
+  nonexistent_date: 31,
+  not_a_scalar: 32,
+}
+const camel = (snake: string): string =>
+  snake.replace(/_([a-z])/g, (_match, c: string) => c.toUpperCase())
+
+// A failure row names its detail, and a detailed fault carries it by name and by number.
+function holdsDetail(ctx: string, v: Vector, fault: { detail: string; detailCode: number }): void {
+  assert.ok(v.detail !== undefined, `${ctx}: a failure row names no detail`)
+  assert.ok(v.detail in DETAIL_CODES, `${ctx}: unknown detail ${v.detail}`)
+  assert.equal(fault.detail, camel(v.detail), `${ctx}: detail`)
+  assert.equal(fault.detailCode, DETAIL_CODES[v.detail], `${ctx}: detailCode`)
+}
+
+// Runs `door` and its detailed twin on the vector's bytes and on its string, and holds all
+// the verdicts to it: the twin has the same value, or the same reason and span plus the row's
+// detail, and the plain fault has no detail (the 1.0 shape).
 function replay<T>(
   file: string,
   v: Vector,
   door: (text: Text) => Verdict<T>,
   expected: unknown,
-  same: (actual: T, expected: unknown) => boolean = (a, e) => a === e,
+  same: (actual: T, expected: unknown) => boolean,
+  twin: (text: Text) => DetailedVerdict<T>,
 ): void {
   const forms: [Text, number, boolean][] = [
     [encoder.encode(v.input), encoder.encode(v.input).length, true],
@@ -104,12 +194,17 @@ function replay<T>(
   for (const [text, units, bytes] of forms) {
     const ctx = `${file} ${JSON.stringify(v)} as ${bytes ? 'bytes' : 'string'}`
     const verdict = door(text)
+    const detailed = twin(text)
     if (verdict.ok) {
       assert.equal(v.expect, 'ok', `${ctx}: unexpectedly cast to ${String(verdict.value)}`)
       assert.ok(same(verdict.value, expected), `${ctx}: ${String(verdict.value)} != ${expected}`)
+      assert.equal(v.detail, undefined, `${ctx}: a row that parses names a detail`)
+      assert.ok(detailed.ok, `${ctx}: the detailed twin faulted`)
+      assert.ok(same(detailed.value, expected), `${ctx}: twin ${String(detailed.value)}`)
       continue
     }
     const { reason, offset, length } = verdict.fault
+    assert.deepEqual(Object.keys(verdict.fault), ['reason', 'offset', 'length'], ctx)
     assert.notEqual(v.expect, 'ok', `${ctx}: faulted ${reason}`)
     assert.equal(reason, reasons[v.expect as keyof typeof reasons], ctx)
     assert.ok(offset + length <= units, `${ctx}: span ${offset}+${length} past ${units}`)
@@ -118,20 +213,37 @@ function replay<T>(
       const span = bytes ? v.fault : utf16Span(v.input, v.fault)
       assert.deepEqual([offset, length], span, `${ctx}: span`)
     }
+    assert.ok(!detailed.ok, `${ctx}: the detailed twin parsed`)
+    const fault = detailed.fault
+    assert.deepEqual([fault.reason, fault.offset, fault.length], [reason, offset, length], ctx)
+    holdsDetail(ctx, v, fault)
   }
 }
 
-const formats = new Map<string, InstanceType<typeof NumFormat>>()
-function formatOf(v: Vector): InstanceType<typeof NumFormat> | undefined {
-  if (v.format === undefined) return undefined
-  const key = JSON.stringify(v.format)
-  const cached = formats.get(key)
-  if (cached) return cached
-  const f = v.format
-  const declared = NumFormat.declare({
+// A vector's format as a caller writes it, for the public constructor. A row that declares no
+// `grouping` is legacy (the core's meaning); a policy a row's own `flags` carry is declared by
+// name, except the one no name spells, which stays in `flags` to be refused.
+const groupings = {
+  legacy: Grouping.Legacy,
+  western: Grouping.Western,
+  indian: Grouping.Indian,
+} as const
+function formatSpec(f: Record<string, string | number>): NumFormatSpec {
+  let flags = f.flags as number
+  let grouping: number | undefined
+  if (f.grouping !== undefined) {
+    grouping = groupings[f.grouping as keyof typeof groupings]
+  } else if ((flags & 0x300) === 0) {
+    grouping = Grouping.Legacy
+  } else if ((flags & 0x300) !== 0x300) {
+    grouping = flags & 0x300
+    flags &= ~0x300
+  }
+  return {
     decimalSep: f.decimal_sep as string,
     groupSep: f.group_sep as string,
-    flags: f.flags as number,
+    flags,
+    grouping: grouping as NumFormatSpec['grouping'],
     currency: f.currency as string | undefined,
     currencyDecimalSep: f.currency_decimal_sep as string | undefined,
     currencyGroupSep: f.currency_group_sep as string | undefined,
@@ -139,9 +251,55 @@ function formatOf(v: Vector): InstanceType<typeof NumFormat> | undefined {
     plusSign: f.plus_sign as string | undefined,
     percent: f.percent as string | undefined,
     digitZero: f.digit_zero as string | undefined,
+  }
+}
+
+// A row with no format is the invariant separators under legacy grouping, the core's meaning.
+const LEGACY_INVARIANT: InstanceType<typeof NumFormat> = (() => {
+  const declared = NumFormat.declare({
+    decimalSep: '.',
+    groupSep: ',',
+    flags: api.NumStyles.All,
+    grouping: Grouping.Legacy,
   })
+  assert.ok(declared.ok)
+  return declared.value
+})()
+
+const formats = new Map<string, InstanceType<typeof NumFormat>>()
+function formatOf(v: Vector): InstanceType<typeof NumFormat> {
+  if (v.format === undefined) return LEGACY_INVARIANT
+  const key = JSON.stringify(v.format)
+  const cached = formats.get(key)
+  if (cached) return cached
+  const declared = NumFormat.declare(formatSpec(v.format))
   assert.ok(declared.ok, `${key}: ${declared.ok ? '' : declared.message}`)
   formats.set(key, declared.value)
+  return declared.value
+}
+
+// The date options and month names a row declares, built through the public constructors.
+const styleBits: Record<string, number> = {
+  compact_date: DateStyles.CompactDate,
+  space_separator: DateStyles.SpaceSeparator,
+  hour_offset: DateStyles.HourOffset,
+  common_forms: DateStyles.CommonForms,
+}
+const styleOf = (names: string[] = []): number =>
+  names.reduce((bits, name) => bits | (styleBits[name] ?? Number.NaN), 0)
+function monthNamesOf(months: [number, string][]): InstanceType<typeof MonthNames> {
+  const declared = MonthNames.declare(months)
+  assert.ok(declared.ok, `${JSON.stringify(months)}: ${declared.ok ? '' : declared.message}`)
+  return declared.value
+}
+function optionsOf(v: Vector): InstanceType<typeof DateOptions> | undefined {
+  if (v.options === undefined) return undefined
+  const declared = DateOptions.declare({
+    flags: styleOf(v.options.flags),
+    pivot: v.options.pivot,
+    months: v.options.months === undefined ? undefined : monthNamesOf(v.options.months),
+  })
+  assert.ok(declared.ok, `${JSON.stringify(v.options)}: ${declared.ok ? '' : declared.message}`)
   return declared.value
 }
 
@@ -197,6 +355,7 @@ const files = [
   'typed.json',
   'constraints.json',
   'declarations.json',
+  'formats.json',
 ]
 
 test('every corpus file is replayed', () => {
@@ -204,51 +363,65 @@ test('every corpus file is replayed', () => {
   assert.deepEqual([...present].sort(), [...files].sort())
 })
 
+const strictEqual = (a: unknown, e: unknown): boolean => a === e
+
 test('boolean.json', () => {
-  for (const v of load('boolean.json')) replay('boolean.json', v, api.castBool, v.value)
+  for (const v of load('boolean.json')) {
+    const twin = (text: Text) => api.castDetailed(Door.Bool, text) as DetailedVerdict<boolean>
+    replay('boolean.json', v, api.castBool, v.value, strictEqual, twin)
+  }
 })
 
 test('char.json', () => {
   // The vector pins the code point; the door answers the one-character string.
   for (const v of load('char.json')) {
-    replay('char.json', v, api.castChar, v.value, (actual, code) => {
-      return [...actual].length === 1 && actual.codePointAt(0) === code
-    })
+    const twin = (text: Text) => api.castDetailed(Door.Char, text) as DetailedVerdict<string>
+    replay(
+      'char.json',
+      v,
+      api.castChar,
+      v.value,
+      (actual, code) => [...actual].length === 1 && actual.codePointAt(0) === code,
+      twin,
+    )
   }
 })
 
 test('integer.json', () => {
   const doors = {
-    i8: api.castI8,
-    i16: api.castI16,
-    i32: api.castI32,
-    i64: api.castI64,
-    u8: api.castU8,
-    u16: api.castU16,
-    u32: api.castU32,
-    u64: api.castU64,
+    i8: [api.castI8, Door.I8],
+    i16: [api.castI16, Door.I16],
+    i32: [api.castI32, Door.I32],
+    i64: [api.castI64, Door.I64],
+    u8: [api.castU8, Door.U8],
+    u16: [api.castU16, Door.U16],
+    u32: [api.castU32, Door.U32],
+    u64: [api.castU64, Door.U64],
   } as const
   for (const v of load('integer.json')) {
     const type = v.type as keyof typeof doors
-    const door = doors[type] as (
-      text: Text,
-      format?: InstanceType<typeof NumFormat>,
-    ) => Verdict<number | bigint>
+    const [plain, code] = doors[type] as unknown as [
+      (text: Text, format?: InstanceType<typeof NumFormat>) => Verdict<number | bigint>,
+      import('../index.js').Door,
+    ]
     const format = formatOf(v)
     // The 64-bit doors answer a bigint, exact over the whole range.
     const wide = type === 'i64' || type === 'u64'
     const expected = v.value === undefined ? undefined : wide ? BigInt(v.value as string) : v.value
-    replay('integer.json', v, (text) => door(text, format), expected)
+    const twin = (text: Text) =>
+      api.castDetailed(code, text, format) as DetailedVerdict<number | bigint>
+    replay('integer.json', v, (text) => plain(text, format), expected, strictEqual, twin)
   }
 })
 
 test('real.json', () => {
   for (const v of load('real.json')) {
-    const door = v.type === 'f32' ? api.castF32 : api.castF64
+    const [door, code] = v.type === 'f32' ? [api.castF32, Door.F32] : [api.castF64, Door.F64]
     const format = formatOf(v)
     const expected =
       typeof v.value === 'number' && v.type === 'f32' ? Math.fround(v.value) : v.value
-    replay('real.json', v, (text) => door(text, format), expected, sameBits)
+    const twin = (text: Text) => api.castDetailed(code, text, format) as DetailedVerdict<number>
+    replay('real.json', v, (text) => door(text, format), expected, sameBits, twin)
   }
 })
 
@@ -256,7 +429,9 @@ test('decimal.json', () => {
   // The canonical text pins sign, digits and scale at once: "1.10" can only come back "1.1".
   for (const v of load('decimal.json')) {
     const format = formatOf(v)
-    replay('decimal.json', v, (text) => api.castDecimal(text, format), v.value)
+    const twin = (text: Text) =>
+      api.castDetailed(Door.Decimal, text, format) as DetailedVerdict<string>
+    replay('decimal.json', v, (text) => api.castDecimal(text, format), v.value, strictEqual, twin)
   }
 })
 
@@ -266,38 +441,73 @@ test('uuid.json', () => {
       typeof v.value === 'string'
         ? v.value.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5')
         : undefined
-    replay('uuid.json', v, api.castUuid, expected)
+    const twin = (text: Text) => api.castDetailed(Door.Uuid, text) as DetailedVerdict<string>
+    replay('uuid.json', v, api.castUuid, expected, strictEqual, twin)
   }
 })
 
 test('timestamp.json', () => {
+  // A row with `options` runs through the date options its declaration builds, and only
+  // through them: the plain door with options and its detailed twin.
   for (const v of load('timestamp.json')) {
-    replay('timestamp.json', v, api.castTimestamp, timestampOf(v), deep)
+    const options = optionsOf(v)
+    const twin = (text: Text) =>
+      api.castDetailed(Door.Timestamp, text, undefined, options) as DetailedVerdict<
+        import('../index.js').Timestamp
+      >
+    replay(
+      'timestamp.json',
+      v,
+      (text) => api.castTimestamp(text, options),
+      timestampOf(v),
+      deep,
+      twin,
+    )
   }
 })
 
 test('unix.json', () => {
   for (const v of load('unix.json')) {
     const door = (text: Text) => api.castUnix(text, v.precision as number)
-    replay('unix.json', v, door, timestampOf(v), deep)
+    const twin = (text: Text) =>
+      api.castDetailed(Door.Unix, text, v.precision as number) as DetailedVerdict<
+        import('../index.js').Timestamp
+      >
+    replay('unix.json', v, door, timestampOf(v), deep, twin)
   }
 })
 
 test('excel_serial.json', () => {
   for (const v of load('excel_serial.json')) {
     const door = (text: Text) => api.castExcelSerial(text, v.epoch as number)
-    replay('excel_serial.json', v, door, timestampOf(v), deep)
+    const twin = (text: Text) =>
+      api.castDetailed(Door.ExcelSerial, text, v.epoch as number) as DetailedVerdict<
+        import('../index.js').Timestamp
+      >
+    replay('excel_serial.json', v, door, timestampOf(v), deep, twin)
   }
 })
 
 test('date.json', () => {
-  for (const v of load('date.json')) replay('date.json', v, api.castDate, dateOf(v), deep)
+  for (const v of load('date.json')) {
+    const options = optionsOf(v)
+    const twin = (text: Text) =>
+      api.castDetailed(Door.Date, text, undefined, options) as DetailedVerdict<
+        import('../index.js').CalendarDate
+      >
+    replay('date.json', v, (text) => api.castDate(text, undefined, options), dateOf(v), deep, twin)
+  }
 })
 
 test('date_order.json', () => {
   for (const v of load('date_order.json')) {
-    const door = (text: Text) => api.castDate(text, v.order as number)
-    replay('date_order.json', v, door, dateOf(v), deep)
+    const options = optionsOf(v)
+    const door = (text: Text) => api.castDate(text, v.order as number, options)
+    const twin = (text: Text) =>
+      api.castDetailed(Door.DateOrdered, text, v.order as number, options) as DetailedVerdict<
+        import('../index.js').CalendarDate
+      >
+    replay('date_order.json', v, door, dateOf(v), deep, twin)
   }
 })
 
@@ -310,20 +520,36 @@ test('datetime.json', () => {
       assert.ok(declared.ok, JSON.stringify(v))
       format = declared.value
     }
-    replay('datetime.json', v, (text) => api.castDatetime(text, format), civilOf(v), deep)
+    const options = optionsOf(v)
+    const twin = (text: Text) =>
+      api.castDetailed(Door.DateTime, text, format, options) as DetailedVerdict<
+        import('../index.js').CivilDateTime
+      >
+    replay(
+      'datetime.json',
+      v,
+      (text) => api.castDatetime(text, format, options),
+      civilOf(v),
+      deep,
+      twin,
+    )
   }
 })
 
 test('time.json', () => {
   for (const v of load('time.json')) {
     const expected = v.nanos === undefined ? undefined : timeOf(v.nanos)
-    replay('time.json', v, api.castTime, expected, deep)
+    const twin = (text: Text) =>
+      api.castDetailed(Door.Time, text) as DetailedVerdict<import('../index.js').TimeOfDay>
+    replay('time.json', v, api.castTime, expected, deep, twin)
   }
 })
 
 test('duration.json', () => {
   for (const v of load('duration.json')) {
-    replay('duration.json', v, api.castDuration, timestampOf(v), deep)
+    const twin = (text: Text) =>
+      api.castDetailed(Door.Duration, text) as DetailedVerdict<import('../index.js').Duration>
+    replay('duration.json', v, api.castDuration, timestampOf(v), deep, twin)
   }
 })
 
@@ -338,18 +564,23 @@ test('typed.json', () => {
     const door = v.door as string
     seen.add(door)
     let verdict: Verdict<unknown>
+    let twin: DetailedVerdict<unknown>
     let expected: unknown
     if (door === 'decimal') {
       verdict = api.castDecimalFromNumber(value)
+      twin = api.castDetailedFromNumber(Door.Decimal, value)
       expected = v.value
     } else if (door === 'excel_serial') {
       verdict = api.castExcelSerialFromNumber(value, v.epoch as number)
+      twin = api.castDetailedFromNumber(Door.ExcelSerial, value, v.epoch as number)
       expected = civilOf(v)
     } else if (door === 'excel_time') {
       verdict = api.castExcelTime(value)
+      twin = api.castDetailedFromNumber(Door.Time, value)
       expected = v.nanos === undefined ? undefined : timeOf(v.nanos)
     } else if (door === 'excel_duration') {
       verdict = api.castExcelDuration(value)
+      twin = api.castDetailedFromNumber(Door.Duration, value)
       expected = timestampOf(v)
     } else {
       throw new Error(`typed: unknown door ${door}`)
@@ -358,9 +589,19 @@ test('typed.json', () => {
     if (verdict.ok) {
       assert.equal(v.expect, 'ok', ctx)
       assert.deepEqual(verdict.value, expected, ctx)
+      assert.deepEqual(twin, verdict, `${ctx}: twin`)
+      assert.equal(v.detail, undefined, `${ctx}: a row that parses names a detail`)
     } else {
       assert.equal(verdict.fault.reason, reasons[v.expect as keyof typeof reasons], ctx)
       assert.deepEqual([verdict.fault.offset, verdict.fault.length], [0, 0], `${ctx}: span`)
+      assert.ok(!twin.ok, `${ctx}: the detailed twin parsed`)
+      const fault = twin.fault
+      assert.deepEqual(
+        [fault.reason, fault.offset, fault.length],
+        [verdict.fault.reason, 0, 0],
+        ctx,
+      )
+      holdsDetail(ctx, v, fault)
     }
   }
   assert.deepEqual([...seen].sort(), ['decimal', 'excel_duration', 'excel_serial', 'excel_time'])
@@ -424,11 +665,13 @@ const sameChecked = (door: string) => (a: unknown, e: unknown) =>
 function judge(
   ctx: string,
   v: Vector,
-  verdict: CheckedVerdict<unknown>,
+  verdict: CheckedVerdict<unknown> | DetailedCheckedVerdict<unknown>,
   span: [number, number] | undefined,
   units: number,
+  detailed: boolean,
 ): void {
   if (verdict.ok) {
+    assert.equal(v.detail, undefined, `${ctx}: a row that parses names a detail`)
     assert.equal(v.expect, 'ok', `${ctx}: unexpectedly ${String(verdict.value)}`)
     const expected = expectedValue(v)
     assert.ok(
@@ -442,6 +685,8 @@ function judge(
   if ('violation' in verdict) {
     assert.equal(v.expect, 'violation', `${ctx}: violated ${verdict.violation.keyword}`)
     const { keyword, offset, length } = verdict.violation
+    // A violation names a rule the value broke, not a failure to read it: no detail.
+    assert.equal(v.detail, undefined, `${ctx}: a violation names a detail`)
     assert.equal(keyword, v.keyword, ctx)
     assert.ok(offset + length <= units, `${ctx}: span ${offset}+${length} past ${units}`)
     if (span !== undefined) assert.deepEqual([offset, length], span, `${ctx}: span`)
@@ -451,6 +696,8 @@ function judge(
   assert.equal(reason, reasons[v.expect as keyof typeof reasons], `${ctx}: ${reason}`)
   assert.ok(offset + length <= units, `${ctx}: span ${offset}+${length} past ${units}`)
   if (span !== undefined) assert.deepEqual([offset, length], span, `${ctx}: span`)
+  if (detailed) holdsDetail(ctx, v, verdict.fault as { detail: string; detailCode: number })
+  else assert.deepEqual(Object.keys(verdict.fault), ['reason', 'offset', 'length'], ctx)
 }
 
 test('constraints.json', () => {
@@ -477,7 +724,9 @@ test('constraints.json', () => {
     const constraints = declared.value
     if (v.from_f64 !== undefined) {
       const value = typeof v.from_f64 === 'string' ? Number(v.from_f64) : v.from_f64
-      judge(ctx, v, api.castCheckedFromNumber(value, constraints), v.fault, 0)
+      judge(ctx, v, api.castCheckedFromNumber(value, constraints), v.fault, 0, false)
+      const twin = api.castCheckedDetailedFromNumber(value, constraints)
+      judge(`${ctx} detailed`, v, twin, v.fault, 0, true)
       typed++
       replayed++
       continue
@@ -487,17 +736,22 @@ test('constraints.json', () => {
       v.door === 'text'
         ? api.castText(text, constraints)
         : api.castChecked(text, constraints, format)
+    // The detailed door takes text constraints too, and reads the same format.
+    const twin = (text: Text) => api.castCheckedDetailed(text, constraints, format)
     if (v.input_bytes !== undefined) {
       // Bytes no string can spell (invalid UTF-8): the byte form alone.
       const bytes = new Uint8Array(v.input_bytes)
-      judge(`${ctx} as bytes`, v, door(bytes), v.fault, bytes.length)
+      judge(`${ctx} as bytes`, v, door(bytes), v.fault, bytes.length, false)
+      judge(`${ctx} as bytes detailed`, v, twin(bytes), v.fault, bytes.length, true)
       replayed++
       continue
     }
     const bytes = encoder.encode(v.input)
-    judge(`${ctx} as bytes`, v, door(bytes), v.fault, bytes.length)
+    judge(`${ctx} as bytes`, v, door(bytes), v.fault, bytes.length, false)
+    judge(`${ctx} as bytes detailed`, v, twin(bytes), v.fault, bytes.length, true)
     const span = v.fault === undefined ? undefined : utf16Span(v.input, v.fault)
-    judge(`${ctx} as string`, v, door(v.input), span, v.input.length)
+    judge(`${ctx} as string`, v, door(v.input), span, v.input.length, false)
+    judge(`${ctx} as string detailed`, v, twin(v.input), span, v.input.length, true)
     replayed++
   }
   assert.ok(refusals > 0 && typed > 0)
@@ -535,4 +789,102 @@ test('declarations.json', () => {
   }
   // Every row was replayed: the count is the file's, never a literal.
   assert.equal(replayed, vectors.length)
+})
+
+// The message this binding gives for each rule a declaration can break. The length and digit
+// rules share one message ("1 to 8 UTF-8 bytes with no ASCII digit"); the others each have
+// their own, so the rule that won is the one named.
+const ruleMessages = {
+  length: /must be 1 to (8|16) UTF-8 bytes with no ASCII digit; got /,
+  digit: /must be 1 to (8|16) UTF-8 bytes with no ASCII digit; got /,
+  equal_separators: /must differ; both are /,
+  white_space: /must not contain white space; got /,
+  designator_edge: /must not have white space at either end; got /,
+  currency_edge: /must not start or end with white space; got /,
+  grouping_policy: /flags must not carry a grouping policy; declare it as grouping; got /,
+  unknown_flag: /flags holds a bit no NumStyles member names; got /,
+  flags: /Date options flags must be DateStyles members combined; got /,
+  pivot: /Date options pivot must be 0 \(none\) or a year from 100 to 9999; got /,
+  layout: /Month names must be packed entries: a month byte/,
+  month: /Month names must each name a month, a whole number from 1 to 12/,
+  utf8: /Month names must be whole code points, not surrogate halves or bytes that are not UTF-8/,
+  name_length: /Month names must each be 1 to 64 UTF-8 bytes/,
+  character: /Month names must hold no ASCII digit, slash, hyphen or white space/,
+  month_missing: /Month names must name every month from 1 to 12 at least once/,
+  duplicate: /Month names must differ once case-folded, and two fold to the same spelling/,
+}
+
+// Holds a refused declaration to the message of the rule that won, and to no other's.
+function holdsRule(ctx: string, message: string, rule: string): void {
+  assert.match(message, ruleMessages[rule as keyof typeof ruleMessages], ctx)
+  const same = (r: string) => r === 'length' || r === 'digit'
+  for (const [other, pattern] of Object.entries(ruleMessages)) {
+    if (other === rule || (same(other) && same(rule))) continue
+    assert.doesNotMatch(message, pattern, `${ctx}: reads as ${other}`)
+  }
+}
+
+// A vocabulary's packed layout as the spec writes it: a month byte, a little-endian u32 byte
+// length, the UTF-8; then whatever raw bytes the row appends.
+function packMonths(months: [number, string][], append: number[] = []): Uint8Array {
+  const out: number[] = []
+  for (const [month, name] of months) {
+    const bytes = encoder.encode(name)
+    out.push(month, bytes.length & 255, (bytes.length >> 8) & 255, 0, 0, ...bytes)
+  }
+  return Uint8Array.from([...out, ...append])
+}
+
+test('formats.json', () => {
+  // The white_space rows pin a predicate; this binding calls the core's own `is_white_space`
+  // rather than restating it, and the Rust replayer holds that predicate to them. The
+  // declaration rows go through the public constructors, and each refusal is held to the
+  // message of the rule that wins. A vocabulary is declared both ways, from its entries and
+  // from the bytes the row spells, and must be judged alike.
+  const counts = {
+    white_space: 0,
+    num_format: 0,
+    day_periods: 0,
+    date_options: 0,
+    month_names: 0,
+  }
+  const vectors = load('formats.json')
+  for (const v of vectors) {
+    const ctx = `formats.json ${JSON.stringify(v)}`
+    const kind = v.kind as keyof typeof counts
+    counts[kind]++
+    if (kind === 'white_space') continue
+    const declarations: { ok: boolean; message?: string; value?: unknown }[] = []
+    if (kind === 'num_format') {
+      declarations.push(NumFormat.declare(formatSpec(v.format as Record<string, string | number>)))
+    } else if (kind === 'day_periods') {
+      declarations.push(DateFormat.declare({ order: DateOrder.DayMonthYear, am: v.am, pm: v.pm }))
+    } else if (kind === 'date_options') {
+      declarations.push(
+        DateOptions.declare({ flags: v.flag_bits ?? styleOf(v.flags), pivot: v.pivot }),
+      )
+    } else {
+      const months = v.months as [number, string][]
+      const bytes = packMonths(months, v.append_bytes)
+      declarations.push(MonthNames.fromPacked(bytes))
+      if (v.append_bytes === undefined) {
+        const built = MonthNames.declare(months)
+        declarations.push(built)
+        if (built.ok) assert.deepEqual(built.value.packed, bytes, `${ctx}: packs back`)
+      }
+    }
+    for (const declared of declarations) {
+      if (v.expect === 'ok') {
+        assert.ok(declared.ok, `${ctx}: ${declared.message ?? ''}`)
+        continue
+      }
+      assert.ok(!declared.ok, `${ctx}: declared`)
+      holdsRule(ctx, declared.message as string, v.rule as string)
+    }
+  }
+  for (const [kind, count] of Object.entries(counts)) assert.ok(count > 0, kind)
+  assert.equal(
+    Object.values(counts).reduce((total, count) => total + count, 0),
+    vectors.length,
+  )
 })

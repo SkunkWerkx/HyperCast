@@ -68,6 +68,27 @@ public static class Abi
 			? new Fault(reason, (int)span.Offset, (int)span.Length)
 			: throw new InvalidOperationException($"{code} is not a verdict reason code — a binding bug, please report it.");
 
+	/// <summary>The fault a nonzero verdict code and the detailed span name, the detail included.</summary>
+	/// <param name="code">The verdict code: 1 empty, 2 malformed, 3 out of range.</param>
+	/// <param name="fault">What a detailed export wrote.</param>
+	/// <exception cref="InvalidOperationException"><paramref name="code"/> is no reason — a binding bug, not data.</exception>
+	public static Fault ToFault(uint code, in RawFaultDetail fault) =>
+		ReasonFrom(code) is { } reason
+			? new Fault(reason, (int)fault.Offset, (int)fault.Length) { DetailCode = fault.Detail }
+			: throw new InvalidOperationException($"{code} is not a verdict reason code — a binding bug, please report it.");
+
+	/// <summary>The named detail of a raw detail code: 0 is <see cref="FaultDetail.None"/>, 1 to 32 the published members, anything else <see cref="FaultDetail.Unknown"/>.</summary>
+	/// <param name="code">The code a detailed export wrote.</param>
+	public static FaultDetail DetailFrom(uint code) =>
+		code <= (uint)FaultDetail.NotAScalar ? (FaultDetail)code : FaultDetail.Unknown;
+
+	/// <summary>The violation a checked detailed door's code 4, its keyword and its span name.</summary>
+	/// <param name="keyword">The keyword code the door wrote: 1 <c>minimum</c> … 8 <c>enum</c>.</param>
+	/// <param name="fault">The fault the door wrote: the span of the value, with a detail of 0.</param>
+	/// <exception cref="InvalidOperationException"><paramref name="keyword"/> is 0, which names no rule — a binding bug, not data.</exception>
+	public static Violation ToViolation(uint keyword, in RawFaultDetail fault) =>
+		ToViolation(keyword, new RawFault(fault.Offset, fault.Length));
+
 	/// <summary>The violation a checked door's code 4, its keyword and its span name.</summary>
 	/// <param name="keyword">The keyword code the door wrote: 1 <c>minimum</c> … 8 <c>enum</c>.</param>
 	/// <param name="span">The span of the value, in bytes of the input.</param>

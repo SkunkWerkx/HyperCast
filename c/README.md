@@ -110,11 +110,21 @@ Every door reads `len` bytes of UTF-8 and returns its verdict as the return code
 value written to `out`, or 1 empty, 2 malformed, 3 out of range with the offending span written
 to `fault` (when it is not null), which indexes the caller's own bytes. -1 is a contract
 violation: an undefined precision, epoch or date-order code, or a numeric format or day-period
-layout the core refuses. A null format is the invariant one (`.` and `,`, every lenience); a
-declared one is a `HyperCastRawNumFormat` the caller fills in, `size` first, and the core reads
+layout the core refuses. A null format is the invariant one (`.` and `,`, every lenience, legacy
+grouping); a declared one is a `HyperCastRawNumFormat` the caller fills in, `size` first, and the core reads
 in place. The header documents every function, type and layout. `hypercast_version()` is the
 one way to read the version at run time. A minor release may add functions; only a major
-release changes or removes one. The library exports 32 functions.
+release changes or removes one. The library exports 36 functions.
+
+White space is Unicode's `White_Space`, the 25 code points (ASCII, U+0085, U+00A0, U+2000 to
+U+200A, U+202F, U+3000 among them), and every door ignores it at both ends (`cast_char` given
+exactly one character keeps it); the numeric doors also ignore it around a sign, a percent or
+currency symbol and inside accounting parentheses, but not between digits, where it is
+malformed unless the format declares a space-like group separator (an ASCII space, U+00A0 or
+U+202F, read as each other). Nothing but white space is empty. A layout the core refuses (-1)
+includes a sign or percent symbol, or a decimal separator (number or currency), with white
+space in it, a currency symbol with white space at either edge, and a day-period designator
+with white space at either edge.
 
 Five of them carry validation constraints, the OpenAPI Schema Object's keywords judged after a
 door parses. `cast_constraints_check` judges a declaration once, a `HyperCastRawConstraints`
@@ -138,6 +148,49 @@ needs a default). The rounding codes are 0 strict, 1 midpoint (half to even), 2 
 `cast_declared_decimal` converts a bound, step or integer entry written in invariant notation
 into a `HyperCastDecimal`, exactly or not at all (8).
 
+Four more exports, 1.1's, reach the doors above by their door code (`cast_detailed`, with `param`
+for the Unix precision, date order or Excel epoch a door declares, and `0` elsewhere) and report
+what failed. A failure writes a `HyperCastRawFaultDetail` (16 bytes, `size` first and set by the
+caller; a larger one from a later layout is accepted and its tail never written; null is allowed)
+whose `detail` is the code of the vocabulary: 1 `blank`, 2 `unexpected_character`, 3
+`digit_expected` and so on to 32 `not_a_scalar`, `0` only on a checked violation. The codes keep
+their numbers; a later minor release may add more, which a reader treats as a failure with a usable
+reason and span. `cast_detailed_from_f64` is the four typed doors (19 decimal, 22 Excel serial with
+its epoch, 16 time, 17 duration), and `cast_checked_detailed` and `cast_checked_detailed_from_f64`
+the checked pair, with the same return codes as `cast_checked`'s. Every argument is validated
+before anything is written, and -1 writes nothing: an unknown door, a door outside the export's
+set, a `param` the door does not take, a `fault` under 16 bytes or not a multiple of 4, or a layout
+the core refuses.
+
+They also take what the 1.0 exports cannot. A format's grouping policy sits in bits 8 and 9 of its
+`flags`: `HyperCastNumFormat_GROUPING_LEGACY` (0, a group separator anywhere between two digits),
+`_GROUPING_WESTERN` (groups of three counted from the right, `12,34` malformed) and
+`_GROUPING_INDIAN` (the last group three digits, the others two). Policy 3 and any flag bit the core
+does not define are -1 there; a null format is the invariant one with legacy grouping, and every
+other export ignores bits 8 and up and always reads legacy. `cast_detailed` also takes a
+`HyperCastRawDateOptions` (`size` 8 or 12, then `flags`: `1` compact `yyyyMMdd` at door 15, `2` a
+space for the `T` and `4` `+hh` offsets at door 13; and `pivot`, 0 or 100 to 9999, the last year of
+the window a two-digit year is read in at doors 20 and 21) and a month vocabulary at 20 and 21,
+packed as each entry's month byte, a little-endian `uint32_t` length, and the UTF-8, which the core
+judges in full on every call.
+
+**A 1.0 core has none of this**: no detailed export, and a policy it reads as legacy. Check
+`hypercast_version()` before declaring a strict policy or calling the exports, and refuse a core
+that cannot drive the headers you built against: another major version, or a minor older than
+theirs (1.1.0 is `0x010100`; the patch never matters). `c/smoke/main.c` is the example:
+
+```c
+#define BUILT_AGAINST 0x010100u /* the headers' version, major << 16 | minor << 8 | patch */
+
+uint32_t version = hypercast_version();
+if ((version >> 16) != (BUILT_AGAINST >> 16) ||
+    ((version >> 8) & 0xff) < ((BUILT_AGAINST >> 8) & 0xff)) {
+  fprintf(stderr, "hypercast 1.1 is needed, found %u.%u.%u\n", version >> 16,
+          (version >> 8) & 0xff, version & 0xff);
+  return 1;
+}
+```
+
 ## C++
 
 `hypercast.hpp` is header-only and needs C++17. Every function is `noexcept`, nothing throws or
@@ -156,6 +209,10 @@ target_compile_features(app PRIVATE cxx_std_17)
 #include "hypercast.hpp"
 
 int main() {
+  // At startup: false means the linked library cannot drive this header (see below).
+  if (!hypercast::core_is_compatible()) {
+    return 3;
+  }
   auto verdict = hypercast::cast_i32("(1,234)", hypercast::NumFormat::invariant());
   if (const auto *value = verdict.value_if()) {
     std::printf("got %d\n", *value); // -1234, accounting negative
@@ -202,6 +259,77 @@ left are an enum value outside its enumerators (`static_cast<hypercast::DateOrde
 refused declaration's unbuilt `Constraints` handed to a door (below), caller bugs that end the
 program with `std::abort()`. `native_version()` is the linked library's version, and
 `is_available()` is always true: the core is linked in.
+
+### Grouping, detail and date shapes
+
+A `NumFormat` declares how its group separators are judged, beside its styles: `Grouping::western`
+by default (`NumFormat::invariant()` is strict Western, and so is `detect()` and a `Fields` that
+says nothing), `Grouping::indian`, or `Grouping::legacy`, a separator anywhere between two digits.
+`12,34` is `Malformed` under the first two, spanning `,34`, and 1234 under legacy
+(`invariant().with_grouping(Grouping::legacy)`); an ungrouped numeral stays valid, and with
+`NumStyles::grouping` off a group separator stays forbidden under every policy. `with_grouping`
+replaces the policy and keeps the styles; `styles()` never carries one, and `declare` refuses styles
+that do, a policy that is not one of the three, and a style bit that is not `NumStyles`'s. The
+plain doors honour the policy.
+
+```cpp
+const auto invariant = hypercast::NumFormat::invariant();
+auto bad = hypercast::detailed::cast_i32("12,34", invariant);
+const hypercast::Failure &failure = bad.failure();
+// failure.reason == CastFailure::malformed, failure.offset == 2, failure.length == 3,
+// failure.detail == Detail::group_size, hypercast::name(failure.detail) == "group_size"
+```
+
+`hypercast::detailed` has every door above under the same name and arguments, returning a
+`DetailedVerdict<T>` (or, with constraints, a `DetailedChecked<T>`): the value, or a `Failure`, a
+`Fault`'s `reason`, `offset` and `length` with a `Detail` beside them. `Fault` itself is as it was,
+its equality blind to any detail, and `failure.fault()` is the plain door's answer; a
+`DetailedVerdict` has the accessors of a `Verdict` (`failure_if()`, `failure()`, `to_verdict()`, ...),
+a `DetailedChecked` those of a `Checked` over a `DetailedRejection` (`is_failure()`,
+`failure_if()`, `violation_if()`, `to_checked()`, ...; a `Violation` has no detail).
+`Detail` is the vocabulary (`blank`, `unexpected_character`, `digit_expected`, ... `not_a_scalar`,
+numbered 1 to 32 as in the C section) and is open: any `std::uint32_t` is a value, `is_known` says
+whether this header names it, `name(detail)` spells it (`"group_size"`, or `"detail 999"` for a
+code a later core adds), and `failure.detail_code()` is the number. `none` is 0, a checked violation's.
+
+The date doors of `hypercast::detailed` take, after the text, the shapes the plain ones never read.
+A `DateOptions` holds `DateStyles` (`compact_date`, `space_separator`, `hour_offset`, or
+`common_forms` for the three) and a pivot; `DateOptions::declare(styles, pivot)` returns
+`std::nullopt` for a style bit it does not define or a pivot that is neither 0 nor 100 to 9999, and
+a default `DateOptions` is none. A `MonthNames` is a vocabulary, Excel style (`07-Jan-26`), packed
+into storage the caller owns as an `EnumStorage` is (`MonthNames::storage_size(entries)` bytes),
+declared from `MonthName{month, name}` entries or an already packed buffer, and judged once by the
+core: every month needs a name, none empty, past 64 bytes, or holding a digit, `/`, `-` or white
+space, and two that fold alike are refused. Punctuation is part of a name: with `janv.` declared
+and `.` the separator, `7.janv..2026` reads and `7.janv.2026` is `Malformed`.
+
+```cpp
+std::uint8_t storage[512];
+const hypercast::MonthName months[] = {{1, "Jan"}, {2, "Feb"}, {3, "Mar"},  {4, "Apr"},
+                                       {5, "May"}, {6, "Jun"}, {7, "Jul"},  {8, "Aug"},
+                                       {9, "Sep"}, {10, "Oct"}, {11, "Nov"}, {12, "Dec"}};
+const auto names = hypercast::MonthNames::declare(months, storage);
+const auto pivot = hypercast::DateOptions::declare(hypercast::DateStyles::none, 2029);
+auto date = hypercast::detailed::cast_date("07-Jan-26", hypercast::DateOrder::day_month_year,
+                                           *pivot, *names);
+// date.value() == hypercast::Date{2026, 1, 7}
+```
+
+**The core must be able to drive the header.** The header's own version is `HYPERCAST_VERSION_MAJOR`,
+`_MINOR` and `_PATCH` (and `HYPERCAST_VERSION`, packed as `hypercast_version()` packs the
+library's): the crate's version, which a release moves with everything else. A library drives it
+when its major version is the header's and its minor at least the header's, whatever the patch (a
+patch release adds no export); `core_is_compatible()` asks, once. **Call it at startup** and read
+`false` as a deployment error: a library older than the header (1.0 under the 1.1 header) has no
+detailed export and ignores a format's grouping policy, so nothing strict may reach it. A strict
+`declare`, `DateOptions::declare` and `MonthNames::declare` return `std::nullopt` against one, and
+a door handed a strict format, or a detailed door, writes one line naming both versions to stderr
+and ends the program with `std::abort()` instead of parsing it as legacy. A legacy format and the
+plain doors keep working against any core, as far as the library's own exports go. A program
+built from this header also names the detailed exports, so how a library without them is met
+depends on the platform: with lazy binding (Linux) the program loads and the guard is what
+fires, while on macOS every symbol is bound at load and the dynamic loader refuses the program
+first.
 
 ### Validation constraints
 

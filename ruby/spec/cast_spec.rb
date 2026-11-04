@@ -228,12 +228,32 @@ RSpec.describe HyperCast do
 
   it "treats an invalid currency symbol as a caller bug" do
     build = ->(currency) { HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",", flags: HyperCast::ALL_STYLES, currency: currency) }
-    expect { build.call("$1") }.to raise_error(ArgumentError)       # an ASCII digit
-    expect { build.call("US $") }.to raise_error(ArgumentError)     # ASCII whitespace
+    expect { build.call("$1") }.to raise_error(ArgumentError) # an ASCII digit
+    expect { build.call(" $") }
+      .to raise_error(ArgumentError, /currency symbol .* must not start or end with white space/)
+    expect { build.call("$\u00A0") }
+      .to raise_error(ArgumentError, /currency symbol .* must not start or end with white space/)
+    expect { build.call("\u202FF CFA") }
+      .to raise_error(ArgumentError, /currency symbol .* must not start or end with white space/)
+    expect { build.call("F CFA\u3000") }
+      .to raise_error(ArgumentError, /currency symbol .* must not start or end with white space/)
+    # White space inside a symbol is fine: CLDR's CFA franc, with each of the three spaces and others.
+    [" ", "\u00A0", "\u202F", "\u2009", "\u3000"].each do |space|
+      expect(build.call("F#{space}CFA").currency).to eq("F#{space}CFA")
+    end
     expect { build.call("€" * 6) }.to raise_error(ArgumentError)    # 18 UTF-8 bytes
     expect { build.call(:usd) }.to raise_error(ArgumentError)       # not a String
     expect(build.call("€" * 5).currency).to eq("€" * 5)             # 15 bytes: fine
     expect(build.call("").currency).to eq("")                       # none declared
+    expect(build.call("US $").currency).to eq("US $")               # white space inside is fine
+  end
+
+  it "reads a currency symbol with ASCII space, U+00A0 or U+202F inside it as one symbol" do
+    franc = HyperCast::NumFormat.new(decimal_sep: ",", group_sep: ".", flags: HyperCast::ALL_STYLES, currency: "F CFA")
+    ["F CFA", "F\u00A0CFA", "F\u202FCFA"].each do |symbol|
+      expect(described_class.decimal("12,5 #{symbol}", franc))
+        .to eq(HyperCast::Success.new(value: HyperCast::Decimal.new(magnitude: 125, scale: 1, negative: false))), symbol
+    end
   end
 
   it "keeps the currency limit on NumFormat, where it is documented" do
@@ -349,8 +369,14 @@ RSpec.describe HyperCast do
     end
 
     it "treats a malformed field as a caller bug, naming the field" do
-      expect { declare(minus_sign: "- ") }.to raise_error(ArgumentError, /minus sign .* ASCII digit or whitespace/)
-      expect { declare(plus_sign: "+1") }.to raise_error(ArgumentError, /plus sign .* ASCII digit or whitespace/)
+      expect { declare(minus_sign: "- ") }.to raise_error(ArgumentError, /minus sign .* must not contain white space/)
+      expect { declare(minus_sign: "\u00A0") }
+        .to raise_error(ArgumentError, /minus sign .* must not contain white space/)
+      expect { declare(plus_sign: "+1") }.to raise_error(ArgumentError, /plus sign .* must not contain an ASCII digit/)
+      expect { HyperCast::NumFormat.new(decimal_sep: "\u00A0", group_sep: ",", flags: HyperCast::ALL_STYLES) }
+        .to raise_error(ArgumentError, /decimal separator .* must not contain white space/)
+      expect { declare(currency_decimal_sep: "x\u202F", currency_group_sep: ".") }
+        .to raise_error(ArgumentError, /currency decimal separator .* must not contain white space/)
       expect { declare(percent: "\u066A" * 5) }.to raise_error(ArgumentError, /percent symbol .* exceeds 8 UTF-8 bytes/)
       expect { declare(percent: :percent) }.to raise_error(ArgumentError, /percent symbol must be a String/)
       expect { declare(currency_decimal_sep: ",") }
@@ -406,7 +432,10 @@ RSpec.describe HyperCast do
       packed = everything.packed
       expect(packed.bytesize).to eq(92)
       expect(packed.encoding).to eq(Encoding::ASCII_8BIT)
-      expect(packed[0, 12].unpack("L<L<L<")).to eq([92, 223, 0x660])
+      # The policy rides in bits 8 and 9 of the flags word: strict Western by default.
+      expect(packed[0, 12].unpack("L<L<L<")).to eq([92, 223 | HyperCast::GROUPING_WESTERN, 0x660])
+      expect(everything.with(grouping: :indian).packed[4, 4].unpack1("L<")).to eq(223 | HyperCast::GROUPING_INDIAN)
+      expect(everything.with(grouping: :legacy).packed[4, 4].unpack1("L<")).to eq(223)
       symbol = ->(at, width) { [packed[at, width].delete("\0"), packed[at + width].ord] }
       expect(symbol.call(12, 8)).to eq([",", 1])
       expect(symbol.call(21, 8)).to eq([". ", 2])
@@ -418,9 +447,10 @@ RSpec.describe HyperCast do
       expect(symbol.call(75, 16)).to eq(["kr.", 3])
       # Nothing declared is a length of 0 and zero bytes, the invariant included.
       expect(invariant.packed)
-        .to eq([92, HyperCast::ALL_STYLES,
+        .to eq([92, HyperCast::ALL_STYLES | HyperCast::GROUPING_WESTERN,
                 0].pack("L<L<L<") + ".\0\0\0\0\0\0\0\x01,\0\0\0\0\0\0\0\x01".b + ("\0" * 62).b)
-      expect(HyperCast::NumFormat::DETECT.packed[4, 4].unpack1("L<")).to eq(HyperCast::ALL_STYLES | HyperCast::SEPARATOR_DETECT)
+      expect(HyperCast::NumFormat::DETECT.packed[4, 4].unpack1("L<"))
+        .to eq(HyperCast::ALL_STYLES | HyperCast::SEPARATOR_DETECT | HyperCast::GROUPING_WESTERN)
     end
   end
 
@@ -461,6 +491,10 @@ RSpec.describe HyperCast do
     expect {
       described_class.datetime("1/7/2026", :day_month_year, am: "a1")
     }.to raise_error(ArgumentError, /am designator/)
+    expect { described_class.datetime("1/7/2026", :day_month_year, am: "vorm.\u00A0") }
+      .to raise_error(ArgumentError, /am designator .* no white space at either end/)
+    expect { described_class.datetime("1/7/2026", :day_month_year, pm: "\u3000nachm.") }
+      .to raise_error(ArgumentError, /pm designator .* no white space at either end/)
     expect { described_class.datetime("1/7/2026", :day_month_year, pm: "\uC624\uD6C4" * 3) }
       .to raise_error(ArgumentError, /pm designator/) # 18 bytes
     expect { described_class.datetime("1/7/2026", :day_month_year, am: :vorm) }
@@ -481,12 +515,17 @@ RSpec.describe HyperCast do
     eurozone = { separator: ",", delimiter: "." }
 
     it "replaces the named fields of the declared format on every numeric door" do
-      expect(described_class.i8("1.00", invariant, **eurozone)).to eq(HyperCast::Success.new(value: 100))
+      # Legacy grouping, where "1.00" is a group of two digits and still reads (strict Western,
+      # the default, refuses it: see the grouping specs).
+      legacy = invariant.with(grouping: :legacy)
+      expect(described_class.i8("1.00", invariant, **eurozone))
+        .to eq(HyperCast::Fault.new(reason: :malformed, offset: 1, length: 3))
+      expect(described_class.i8("1.00", legacy, **eurozone)).to eq(HyperCast::Success.new(value: 100))
       %i[i16 i32 i64 u16 u32 u64].each do |door|
         expect(described_class.public_send(door, "1.234", invariant, **eurozone))
           .to eq(HyperCast::Success.new(value: 1234)), door.to_s
       end
-      expect(described_class.u8("2.50", invariant, **eurozone)).to eq(HyperCast::Success.new(value: 250))
+      expect(described_class.u8("2.50", legacy, **eurozone)).to eq(HyperCast::Success.new(value: 250))
       expect(described_class.f32("1.234,5", invariant, **eurozone)).to eq(HyperCast::Success.new(value: 1234.5))
       expect(described_class.f64("1.234,5", invariant, **eurozone)).to eq(HyperCast::Success.new(value: 1234.5))
       expect(described_class.decimal("€1.234,50", invariant, **eurozone, unit: "€"))
