@@ -794,7 +794,7 @@ jobs:
           dotnet build "$SMOKE_PROJECT" -c Release -f net11.0-ios -r ios-arm64 -p:EnableCodeSigning=false -p:ValidateXcodeVersion=false
           app=$(find "$SMOKE_BIN/net11.0-ios/ios-arm64" -maxdepth 1 -name '*.app')
           nm -g "$app/HyperCast.AppleSmokeTest" > device-symbols.txt
-          for symbol in hypercast_version cast_bool cast_timestamp cast_excel_duration; do
+          for symbol in hypercast_version cast_detailed cast_detailed_from_f64 cast_checked_detailed cast_checked_detailed_from_f64; do
             grep -q " T _$symbol\$" device-symbols.txt \
               || { echo "::error::the iOS device app does not define $symbol; the core was not linked in"; exit 1; }
           done
