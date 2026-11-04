@@ -29,8 +29,11 @@ import (
 // the whole suite, the corpus replay included, at each, 4096 bytes is the smallest size that
 // passes everything and 2048 is the first that fails, with a bounds panic from the generated
 // code (the stack pointer runs below zero and the next access traps), never a wrong verdict
-// (2026-11-01, Apple M6, rustc 1.99.1). 65536 is 16x the smallest passing size, against a
-// floor of 8x, and it is HyperUuid's size too. The flag goes on the command line here, never
+// (2026-11-01, Apple M6, rustc 1.99.1). Re-measured after the detailed exports, the date
+// options and the month vocabulary joined the core (2026-11-03, same machine and rustc, in
+// steps of 512 bytes): 4608 passes everything and 4096 now fails the same way, on the checked
+// doors. 65536 is 14x the smallest passing size, against a floor of 8x, and it is HyperUuid's
+// size too. The flag goes on the command line here, never
 // into rust/.cargo/config.toml, so nothing else built for wasm32-wasip1 changes.
 const defaultStack = 65536
 

@@ -3895,7 +3895,12 @@ mod sites {
             impractical().count()
         ));
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../docs/fault-sites.md");
-        if std::env::var_os("HYPERCAST_BLESS").is_some() {
+        let bless = std::env::var_os("HYPERCAST_BLESS").is_some();
+        if !bless && !path.parent().is_some_and(|docs| docs.is_dir()) {
+            eprintln!("skipped: no docs/ beside rust/, so this is not a whole checkout");
+            return;
+        }
+        if bless {
             std::fs::write(&path, &doc).unwrap();
         }
         let current = std::fs::read_to_string(&path).unwrap_or_default();

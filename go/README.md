@@ -75,10 +75,10 @@ Every door is an ordinary Go call into that code; nothing crosses a foreign boun
 
 wasm2go's generated code bounds-checks every memory access and keeps the call stack in Go,
 so a core bug, a guest stack overflow included, is a Go panic and never a corrupted heap. The
-guest's stack is 64 KiB: regenerating the core at halving stack sizes and running the whole
-suite, the corpus replay included, at each, 4096 bytes is the smallest size that passes
-everything and 2048 the first that traps (a bounds panic from the generated code, never a
-wrong verdict), so the shipped size is a 16x margin over the tested paths, measured rather
+guest's stack is 64 KiB: regenerating the core at smaller stack sizes and running the whole
+suite, the corpus replay included, at each, 4608 bytes is the smallest size that passes
+everything and 4096 the first that traps (a bounds panic from the generated code, never a
+wrong verdict), so the shipped size is a 14x margin over the tested paths, measured rather
 than proved. A call that panics inside the core abandons the instance it ran on, whose guest
 stack it left mid-call, rather than hand it to the next caller.
 
@@ -115,7 +115,7 @@ core's data in 2 pages, plus one page of scratch.
 
 ## `MaxText`
 
-A door's text is copied into the instance's scratch. The base scratch holds 65,376 bytes; a
+A door's text is copied into the instance's scratch. The base scratch holds 65,360 bytes; a
 longer text runs on a one-off instance sized for it and dropped after the call, so neither
 the primary nor the pool keeps the pages, and that instance is the call's one allocation. The
 core reads the text through a slice whose length may not exceed the guest's `isize::MAX`,
@@ -123,8 +123,9 @@ core reads the text through a slice whose length may not exceed the guest's `isi
 `MaxText` bytes: the smaller of that limit and what the guest and host can address beside the
 module's own pages. On a 64-bit host that is 2,147,483,647. A longer text panics, as a caller
 bug, before anything is allocated. A checked door lays its declaration (84 bytes and its
-`enum` list) out past its text in the same scratch, so for it the text and the declaration
-together are what the base scratch must hold and what `MaxText` bounds.
+`enum` list), and a detailed date door its month vocabulary, out past its text in the same
+scratch, so for them the text and what follows it together are what the base scratch must
+hold and what `MaxText` bounds.
 
 See [the repo root README](../README.md) for the full door table, the receipts, and the
 state of every other language binding.
@@ -165,7 +166,10 @@ rather than silently wrapping.
 | `String` | `string` — the text itself, once it is valid UTF-8 | — |
 
 The checked doors, `Check`, `CheckFromFloat64` and `CheckString`, judge a value by declared
-constraints and are under [Validation constraints](#validation-constraints).
+constraints and are under [Validation constraints](#validation-constraints). Every door has
+a detailed twin (`I32Detailed`, `DateOnlyDetailed`, `CheckDetailed`, …) that also names what
+failed, and the detailed date doors take opt-in shapes: [Detailed doors](#detailed-doors-what-failed)
+and [Date options](#date-options-compact-dates-two-digit-years-and-month-names).
 
 `Optional` presents a door's two results with Go's absent, a nil pointer: `age, fault :=
 hypercast.Optional(hypercast.I32(text, hypercast.Invariant))` is `nil, nil` for an `Empty`
@@ -245,15 +249,16 @@ Every numeric door takes a `NumFormat` — the caller's declared notation, never
 Go's standard library carries no culture data, so there is no `From(culture)` bridge here
 as the C#, Java and Swift bindings have; the struct literal is the whole API, and an
 application fills it from whatever culture data it holds. `Invariant` is `"."`/`","` with
-`AllStyles` and nothing else declared; `Detect` adds `SeparatorDetect`. `AllStyles` is
-every lenience including `CurrencySymbol` (and excluding `SeparatorDetect` and
-`TrailingSign`), so keyed literals that predate a field keep compiling and keep their
-meaning.
+`AllStyles`, strict Western grouping and nothing else declared; `Detect` adds
+`SeparatorDetect`. `AllStyles` is every lenience including `CurrencySymbol` (and excluding
+`SeparatorDetect` and `TrailingSign`), so keyed literals that predate a field keep compiling
+and keep their meaning. `NewNumFormat(decimalSep, groupSep, styles)` builds a format under
+strict Western grouping, and the further fields are the result's to fill.
 
 | Field | Declares | Read |
 | --- | --- | --- |
 | `DecimalSep`, `GroupSep` | the number separators — 1 to 8 UTF-8 bytes each with no ASCII digit (`"."`, `","`, `" "`, `", "`), different from each other; the only required fields | always |
-| `Styles` | the `NumStyles` leniences | — |
+| `Styles` | the `NumStyles` leniences, and in bits 8 and 9 the `GroupingPolicy` | — |
 | `Currency` | the currency symbol (`"$"`, `"€"`, `"kr."`), at most 16 bytes | under `CurrencySymbol` |
 | `CurrencyDecimalSep`, `CurrencyGroupSep` | the separators of a currency amount, where a culture points and groups money differently from numbers; empty keeps the number separator | when `Currency` is declared and found in the text; ignored under `SeparatorDetect`, whose detection governs the whole token |
 | `MinusSign`, `PlusSign` | a further spelling of the sign (`"−"`, U+2212, in Estonian and Basque text) | wherever ASCII `-`/`+` are |
@@ -269,6 +274,31 @@ declared: an ASCII space, U+00A0 or U+202F declared as the group separator makes
 choice of those three immaterial, and a space-like separator with no digit after it is just
 white space. Input of nothing but white space is `Empty`. A day period may be set off from
 the clock by any run of white space (`3:04\u202fPM`).
+
+**Grouping policy.** `Grouping` permits a group separator between digits, and the format's
+`GroupingPolicy` judges the groups. `GroupingWestern` wants groups of exactly three digits
+counted from the decimal separator, the leftmost one to three (`1,234,567`; `12,34` is
+`Malformed`, spanning `,34`); `GroupingIndian` wants three next to the decimal separator and
+twos to the left (`12,34,567`); `GroupingLegacy` takes a separator anywhere between two digits,
+as 1.0 did. Under a strict policy, once a numeral uses a group separator every group must
+conform, no group may follow the decimal separator or sit in an exponent, digits are counted
+as digits (native ones included) and the space-like separators and the currency group
+separator follow the same rule; an ungrouped numeral is always fine, and with `Grouping` off a
+separator stays `Malformed` under every policy. The policy lives in `Styles` (the
+`GroupingPolicyMask` bits): `NewNumFormat`, `Invariant` and `Detect` are strict Western,
+`WithGrouping` replaces the policy (it never combines two) and `WithStyles` replaces the
+leniences, each keeping the other. A literal that sets no policy bits, the zero value
+included, is `GroupingLegacy`, which is what every 1.0 format meant, and so is a format 1.0
+code stored with `encoding/json` or `encoding/gob`.
+
+```go
+_, fault := hypercast.I32("12,34", hypercast.Invariant)
+fmt.Println(fault) // hypercast: malformed at byte 2..5
+v, _ := hypercast.I32("12,34,567", hypercast.Invariant.WithGrouping(hypercast.GroupingIndian))
+fmt.Println(v) // 1234567
+v, _ = hypercast.I32("12,34", hypercast.Invariant.WithGrouping(hypercast.GroupingLegacy))
+fmt.Println(v) // 1234
+```
 
 The rule for every field past the separators: **the ASCII spelling is always read, and a
 declared symbol is a further spelling read beside it.** Nothing that parsed before a symbol
@@ -290,7 +320,8 @@ pattern is `n-` or `n -` sets it; everything else leaves it off, so `"5-"` stays
 `Malformed` under `Invariant`.
 
 A format the core would refuse is a caller bug and panics, never a verdict — the way equal
-separators always have: a number separator that is empty or longer than 8 bytes, equal
+separators always have: `Styles` with both policy bits set (no policy) or a bit no style or
+policy defines, a number separator that is empty or longer than 8 bytes, equal
 number separators or equal separators in force for a currency amount, any symbol that is
 not valid UTF-8 or carries an ASCII digit, a sign or percent symbol with white space in it, a
 decimal separator (number or currency) with white space in it, a `Currency` longer than 16
@@ -340,6 +371,75 @@ fmt.Println(hypercast.DateTimeWith("1.7.2026 3:04 nachm.", german)) // July 1st,
 
 korean := hypercast.DateFormat{Order: hypercast.YearMonthDay, AM: "오전", PM: "오후"}
 fmt.Println(hypercast.DateTimeWith("2026-07-01 오후 3:04", korean)) // the same wall clock
+```
+
+## Detailed doors: what failed
+
+Every door has a detailed twin, named with `Detailed` (`BoolDetailed`, `I32Detailed`,
+`NumericDetailed`, `ScalarDetailed`, `ExactFromFloat64Detailed`, `StringDetailed`, …): the
+same parse in the core, returning a `*Failure` where the door returns a `*Fault`. A
+`Failure` carries the `Fault`'s `Reason`, `Offset` and `Length` and a `Detail` naming what
+failed, from a small shared vocabulary of 32 codes (`DetailBlank`, `DetailGroupSize`,
+`DetailNotFinite`, `DetailOutsideWindow`, …), whose `String()` is the core's snake-case name.
+`Fault()` projects it back to what the plain door returns. Go cannot give `Fault` a field
+without breaking unkeyed literals and equality, so the detail travels on this separate path
+and every 1.0 type is exactly as it was.
+
+The vocabulary is open: published codes keep their numbers and meanings, but a minor release
+may add one, so a `switch` over details needs a `default` arm. A code this binding doesn't name
+is kept, `Known()` false and `String()` `"detail N"`, and the reason and span stay usable.
+`CheckDetailed`, `CheckFromFloat64Detailed` and `CheckStringDetailed` return a
+`DetailedRejection`, a `*Failure` or a `*Violation` (sealed, as `Rejection` is), and
+`OptionalDetailed` and `OptionalCheckedDetailed` present them as `Optional` does.
+
+```go
+_, failure := hypercast.I32Detailed("12,34", hypercast.Invariant)
+fmt.Println(failure) // hypercast: malformed (group_size) at byte 2..5
+switch failure.Detail {
+case hypercast.DetailGroupSize, hypercast.DetailGroupMisplaced:
+	fmt.Println("check the grouping")
+default: // details are open
+	fmt.Println(failure.Detail)
+}
+```
+
+## Date options: compact dates, two-digit years and month names
+
+The detailed date doors take a `DateOptions`, every part of it opt-in: the zero
+`DateOptions` reads exactly what the plain door reads, and the plain doors never read the
+shapes below.
+
+| Option | Door | Reads |
+| --- | --- | --- |
+| `CompactDate` | `DateOnlyDetailed` | `20260107` (eight ASCII digits) |
+| `SpaceSeparator` | `TimestampDetailed` | one space in place of `T` |
+| `HourOffset` | `TimestampDetailed` | `±hh` offsets (`+00`, `-05`) |
+| `Pivot` | `DateOnlyOrderedDetailed`, `DateTimeDetailed` | a two-digit year, in the 100 years ending at the pivot (100 to 9999; 0 for none) |
+| `Months` | `DateOnlyOrderedDetailed`, `DateTimeDetailed` | a declared month name in the month field |
+
+`CommonForms` is the three shapes together and supplies no pivot or vocabulary; a shape a door
+doesn't read is ignored there, so one `DateOptions` serves every date door. `DateTimeDetailed`
+takes a `DateFormat`, so it is `DateTime` and `DateTimeWith` at once. A shape bit that isn't
+defined or a pivot outside 0 and 100 to 9999 is a caller bug and panics, and
+`DateOptions.Raw()` reports it as an `error`; build a `DateOptions` with field names.
+
+`MonthNames` is a caller-built vocabulary, judged once by `NewMonthNames` (or
+`MustMonthNames`): each `MonthName` maps a name to its month, aliases are separate entries,
+and every month needs one. A name is 1 to 64 UTF-8 bytes with no ASCII digit, `/`, `-` or
+white space (`.` is fine), and no two names may fold to the same spelling, even for one month.
+A name replaces the numeric month field the declared order selects, with the date's own
+separator, matched under Unicode simple case folding, the longest name followed by the
+separator winning; punctuation is part of the name, so with `janv.` declared `7.janv..2026`
+reads and `7.janv.2026` doesn't. The vocabulary works with no other option set.
+
+```go
+months := hypercast.MustMonthNames(
+	hypercast.MonthName{Month: time.January, Name: "Jan"}, /* … one or more per month … */
+	hypercast.MonthName{Month: time.December, Name: "Dec"},
+)
+date, _ := hypercast.DateOnlyOrderedDetailed("07-Jan-26", hypercast.DayMonthYear,
+	hypercast.DateOptions{Pivot: 2029, Months: months})
+fmt.Println(date) // {2026 January 7}
 ```
 
 ## Validation constraints
@@ -462,6 +562,14 @@ log.Printf("hypercast core %s", hypercast.NativeVersion())
 [HyperUuid](https://github.com/SkunkWerkx/HyperUuid)'s Go binding has the same three entry
 points.
 
+Nor can a binding meet an older core. The core is part of this package, regenerated with the
+crate (`TestCoreIsCurrent`, and `TestRegenerationCarriesTheCrateVersion` for the version it
+carries), and every door crosses through the core's detailed exports, the only ones that read a
+grouping policy: a 1.0 core, which would read a strict format as legacy, put in its place
+doesn't build. `HYPERCAST_DOWNGRADE_ROOT=<a v1.0.0 checkout> go test -run
+TestADowngradedCoreDoesNotBuild .` translates the 1.0 crate and shows the build failing on the
+missing detailed exports.
+
 ## Interop: building on HyperCast's C ABI
 
 For a module that carries HyperCast's verdicts across a C ABI of its own (HyperTabular
@@ -498,6 +606,14 @@ same name would have returned.
   the type, and `false` for any other value.
 - `FaultFromCode(code, offset, length)` — the `*Fault` a nonzero verdict code and its span
   name; `false` when the code names no reason, a binding bug rather than data.
+  `FailureFromCode(code, offset, length, detail)` is the `*Failure` a detailed export's
+  `RawFaultDetail` (16 bytes: a size word the caller writes, the span, the `Detail` code)
+  names, keeping a code this binding doesn't know.
+- `RawDateOptions` (12 bytes: a size word, the `DateShapes` bits, the pivot) — what a
+  `DateOptions` crosses as; `DateOptions.Raw()` builds one, and `MonthNames.Packed()` is the
+  vocabulary beside it (each entry a month byte, a little-endian `uint32` length, the name's
+  bytes). `NumFormat.Raw()`'s `Flags` carry the grouping policy in bits 8 and 9, which only
+  the core's detailed exports read: the 1.0 exports ignore bit 8 and up and parse legacy.
 - `FormatVersion(packed)` — a `*_version()` export's `major<<16 | minor<<8 | patch` word as
   `"major.minor.patch"`.
 
@@ -657,10 +773,10 @@ doors (1.5x), a rejected cast (1.4x), contention (2.6x) and, by 2%, the ISO span
 the table below. The
 declared-order date door beats `time.Parse` with a layout, and the messy date-time door is
 level with it. **0 B, 0 allocs on every door** on the success path, under stock Go and
-TinyGo, for any text of up to 65,376 bytes ([`MaxText`](#maxtext)), the checked doors
+TinyGo, for any text of up to 65,360 bytes ([`MaxText`](#maxtext)), the checked doors
 included (a checked door's declaration shares that scratch with its text), except that a
 `[]byte` input to the text doors is copied into the `string` they return; a failed cast
-allocates exactly its `*Fault` or `*Violation`, and `allocs_test.go` holds both counts as
+allocates exactly its `*Fault`, `*Failure` or `*Violation`, and `allocs_test.go` holds both counts as
 tests. In Go specifically,
 this binding earns its keep on the vocabulary, the closed error contract, and cross-language
 agreement — not per-call speed. The tabular layer,

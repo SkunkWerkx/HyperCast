@@ -214,6 +214,41 @@ type RawSpan struct {
 // RawSpanSize is a RawSpan's size: 8 bytes.
 const RawSpanSize = uint32(unsafe.Sizeof(RawSpan{}))
 
+// RawFaultDetail is a detailed export's failure as the core writes it: 16 bytes, 4-aligned. The
+// caller writes Size (RawFaultDetailSize, or a larger multiple of 4 from a later layout) and
+// the core writes the rest, only on a failure (and on a checked violation, whose Detail is 0).
+// FailureFromCode reads one.
+type RawFaultDetail struct {
+	// Size is the bytes the caller provides, at least RawFaultDetailSize; never written.
+	Size uint32
+	// Offset is where the offending bytes start in the caller's input.
+	Offset uint32
+	// Len is how many bytes they run; 0 at a typed door.
+	Len uint32
+	// Detail is the Detail code, 1 or more; 0 on a checked violation.
+	Detail uint32
+}
+
+// RawFaultDetailSize is a RawFaultDetail's size, the least Size the core accepts: 16 bytes.
+const RawFaultDetailSize = uint32(unsafe.Sizeof(RawFaultDetail{}))
+
+// RawDateOptions is DateOptions' shapes and pivot as they cross the ABI: 12 bytes, 4-aligned,
+// a size word (RawDateOptionsSize, or RawDateOptionsMinSize for the size and flags alone, the
+// pivot then 0), the DateShapes bits and the pivot. The core reads it in place and never
+// writes it; the month vocabulary crosses beside it (MonthNames.Packed). DateOptions.Raw
+// builds one.
+type RawDateOptions struct {
+	Size  uint32
+	Flags uint32
+	Pivot uint32
+}
+
+// RawDateOptionsSize is the size word a RawDateOptions carries: its own 12 bytes.
+const RawDateOptionsSize = uint32(unsafe.Sizeof(RawDateOptions{}))
+
+// RawDateOptionsMinSize is the smallest size word the core reads: the size and flags words.
+const RawDateOptionsMinSize = 8
+
 // asciiWhiteSpace reports an ASCII white-space byte: \t, \n, \v, \f, \r and space. Small
 // enough to inline, since the symbol checks run it on every cast.
 func asciiWhiteSpace(b byte) bool {
@@ -365,6 +400,9 @@ func (f NumFormat) digitZeroOK() bool {
 // valid is the check every numeric door runs on its format, decided without naming the
 // fault — the fast path, since it runs on every cast; fault names what it refused.
 func (f NumFormat) valid() bool {
+	if f.Styles&^definedStyles != 0 || f.Styles&GroupingPolicyMask == GroupingPolicyMask {
+		return false
+	}
 	if f.DecimalSep == "" || f.GroupSep == "" || f.DecimalSep == f.GroupSep {
 		return false
 	}
@@ -387,9 +425,15 @@ func (f NumFormat) valid() bool {
 }
 
 // fault names why valid refused the format, as the doors' panic text; nil when it did not.
-// The rules apply in the core's order: each symbol's length, UTF-8 and digit, then equal
-// separators, then white space.
+// The rules apply in the core's order: the Styles bits (the grouping policy, then undefined
+// bits), each symbol's length, UTF-8 and digit, then equal separators, then white space.
 func (f NumFormat) fault() error {
+	if f.Styles&GroupingPolicyMask == GroupingPolicyMask {
+		return fmt.Errorf("Styles %#x names no grouping policy: bits 8 and 9 are both set", uint32(f.Styles))
+	}
+	if extra := f.Styles &^ definedStyles; extra != 0 {
+		return fmt.Errorf("Styles %#x set bits HyperCast does not define: %#x", uint32(f.Styles), uint32(extra))
+	}
 	if f.DecimalSep == "" || f.GroupSep == "" {
 		return fmt.Errorf("decimal separator %q and group separator %q must both be declared", f.DecimalSep, f.GroupSep)
 	}
@@ -445,7 +489,7 @@ func (f NumFormat) fault() error {
 // hand the backends a pointer to it, so the 92 bytes are copied once, into the C call.
 func (f NumFormat) layout(raw *RawNumFormat) {
 	raw.Size = RawNumFormatSize
-	raw.Flags = uint32(f.Styles)
+	raw.Flags = uint32(f.Styles) // the lenience flags and the grouping policy
 	raw.DigitZero = uint32(f.DigitZero)
 	symbol8(&raw.DecimalSep, f.DecimalSep)
 	symbol8(&raw.GroupSep, f.GroupSep)
@@ -466,7 +510,10 @@ func (f NumFormat) layout(raw *RawNumFormat) {
 // same or empty, with no white space; the currency symbol at most CurrencyMaxBytes, no
 // digit, no white space at either edge (inside is fine: "F CFA"); the digit zero 0, or a
 // code point outside ASCII that starts a run of ten digits sharing its UTF-8 prefix (every
-// Unicode digit block does; one whose value modulo 64 exceeds 54 does not).
+// Unicode digit block does; one whose value modulo 64 exceeds 54 does not). Before them, the
+// Styles: no bit but a lenience flag or a grouping policy, and not both policy bits. Flags
+// carries the policy in bits 8 and 9, which only the core's detailed exports read: the 1.0
+// exports ignore bit 8 and up and parse with legacy grouping.
 func (f NumFormat) Raw() (raw RawNumFormat, err error) {
 	if !f.valid() {
 		return RawNumFormat{}, f.fault()
@@ -579,6 +626,17 @@ func FaultFromCode(code, offset, length uint32) (*Fault, bool) {
 	return &Fault{Reason: reason, Offset: int(offset), Length: int(length)}, true
 }
 
+// FailureFromCode is the detailed failure a nonzero verdict code, its byte span and its
+// Detail code name (the fields of a RawFaultDetail), and false when the code names no reason
+// — a binding bug, not data. A Detail this binding does not name is kept, never refused.
+func FailureFromCode(code, offset, length, detail uint32) (*Failure, bool) {
+	reason, ok := ReasonFromCode(code)
+	if !ok {
+		return nil, false
+	}
+	return &Failure{Reason: reason, Detail: Detail(detail), Offset: int(offset), Length: int(length)}, true
+}
+
 // FormatVersion renders a native library's packed version word — major<<16 | minor<<8 |
 // patch, as a *_version() export returns it — as "major.minor.patch".
 func FormatVersion(packed uint32) string {
@@ -621,6 +679,10 @@ var (
 	_ [56]byte = [unsafe.Offsetof(RawConstraints{}.MultipleOf)]byte{}
 	_ [12]byte = [unsafe.Sizeof(RawCheck{})]byte{}
 	_ [8]byte  = [unsafe.Sizeof(RawSpan{})]byte{}
+	_ [16]byte = [unsafe.Sizeof(RawFaultDetail{})]byte{}
+	_ [12]byte = [unsafe.Offsetof(RawFaultDetail{}.Detail)]byte{}
+	_ [12]byte = [unsafe.Sizeof(RawDateOptions{})]byte{}
+	_ [8]byte  = [unsafe.Offsetof(RawDateOptions{}.Pivot)]byte{}
 
 	_ [16]byte = [unsafe.Sizeof(Decimal{})]byte{}
 	_ [0]byte  = [unsafe.Offsetof(Decimal{}.Lo)]byte{}

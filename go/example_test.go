@@ -303,3 +303,56 @@ func ExampleString() {
 	fmt.Printf("%q %v\n", whole, fault)
 	// Output: "  Male " hypercast: malformed at byte 2..3
 }
+
+func ExampleNumFormat_WithGrouping() {
+	// Invariant judges every group: three digits, counted from the decimal separator.
+	_, fault := hypercast.I32("12,34", hypercast.Invariant)
+	fmt.Println(fault)
+	// Indian grouping is declared, never inferred, and legacy reads 1.0's way.
+	indian, _ := hypercast.I32("12,34,567", hypercast.Invariant.WithGrouping(hypercast.GroupingIndian))
+	legacy, _ := hypercast.I32("12,34", hypercast.Invariant.WithGrouping(hypercast.GroupingLegacy))
+	fmt.Println(indian, legacy)
+	// Output:
+	// hypercast: malformed at byte 2..5
+	// 1234567 1234
+}
+
+func ExampleI32Detailed() {
+	// The same parse as I32, naming what failed beside the reason and span.
+	_, failure := hypercast.I32Detailed("12,34", hypercast.Invariant)
+	fmt.Println(failure.Reason, failure.Detail, failure.Offset, failure.Length)
+	fmt.Println(failure)
+	switch failure.Detail {
+	case hypercast.DetailGroupSize, hypercast.DetailGroupMisplaced:
+		fmt.Println("check the grouping")
+	default: // details are open: a later release may add codes
+		fmt.Println(failure.Detail)
+	}
+	// Output:
+	// malformed group_size 2 3
+	// hypercast: malformed (group_size) at byte 2..5
+	// check the grouping
+}
+
+func ExampleDateOnlyOrderedDetailed() {
+	months := hypercast.MustMonthNames(
+		hypercast.MonthName{Month: time.January, Name: "Jan"}, hypercast.MonthName{Month: time.February, Name: "Feb"},
+		hypercast.MonthName{Month: time.March, Name: "Mar"}, hypercast.MonthName{Month: time.April, Name: "Apr"},
+		hypercast.MonthName{Month: time.May, Name: "May"}, hypercast.MonthName{Month: time.June, Name: "Jun"},
+		hypercast.MonthName{Month: time.July, Name: "Jul"}, hypercast.MonthName{Month: time.August, Name: "Aug"},
+		hypercast.MonthName{Month: time.September, Name: "Sep"}, hypercast.MonthName{Month: time.September, Name: "Sept"},
+		hypercast.MonthName{Month: time.October, Name: "Oct"}, hypercast.MonthName{Month: time.November, Name: "Nov"},
+		hypercast.MonthName{Month: time.December, Name: "Dec"},
+	)
+	options := hypercast.DateOptions{Pivot: 2029, Months: months}
+	date, _ := hypercast.DateOnlyOrderedDetailed("07-Jan-26", hypercast.DayMonthYear, options)
+	fmt.Println(date)
+	_, failure := hypercast.DateOnlyOrderedDetailed("07-Jan-26", hypercast.DayMonthYear, hypercast.DateOptions{Months: months})
+	fmt.Println(failure.Detail) // no pivot: a two-digit year is never guessed
+	compact, _ := hypercast.DateOnlyDetailed("20260107", hypercast.DateOptions{Shapes: hypercast.CommonForms})
+	fmt.Println(compact)
+	// Output:
+	// {2026 January 7}
+	// field_width
+	// {2026 January 7}
+}

@@ -333,36 +333,34 @@ type Constraints[V CheckedTarget] struct {
 	d declaration
 }
 
-// The native door codes (rust/src/door.rs) of the checked doors.
-const textDoor = 18
-
+// doorOf is the core's door code for V's checked door (core.go has the codes).
 func doorOf[V CheckedTarget]() uint32 {
 	var v V
 	switch any(&v).(type) {
 	case *int8:
-		return 2
+		return doorI8
 	case *int16:
-		return 3
+		return doorI16
 	case *int32:
-		return 4
+		return doorI32
 	case *int64:
-		return 5
+		return doorI64
 	case *uint8:
-		return 6
+		return doorU8
 	case *uint16:
-		return 7
+		return doorU16
 	case *uint32:
-		return 8
+		return doorU32
 	case *uint64:
-		return 9
+		return doorU64
 	case *float32:
-		return 10
+		return doorF32
 	case *float64:
-		return 11
+		return doorF64
 	case *string:
-		return textDoor
+		return doorText
 	case *Decimal:
-		return 19
+		return doorDecimal
 	default:
 		panic("unreachable: CheckedTarget admits no other type")
 	}
@@ -531,7 +529,7 @@ func (d *declaration) pack(rule Rule, door uint32) *refusal {
 	if len(rule.entries) == 0 {
 		return nil
 	}
-	if door != textDoor {
+	if door != doorText {
 		d.decimals = make([]Decimal, len(rule.entries))
 		for i, entry := range rule.entries {
 			var err *refusal
@@ -656,6 +654,11 @@ func rejected(r *result, c RawCheck) Rejection {
 	if r.code != 4 {
 		return failed(r.code, &r.fault)
 	}
+	return violated(r, c)
+}
+
+// violated is the *Violation a code 4 names, its span the value's.
+func violated(r *result, c RawCheck) *Violation {
 	if c.Keyword == 0 {
 		panic("hypercast: the core reported a violation of no keyword — a binding bug, please report it")
 	}
@@ -667,6 +670,11 @@ func checkedNumber[V Number](r *result, c RawCheck) (Checked[V], Rejection) {
 	if r.code != 0 {
 		return Checked[V]{EnumIndex: -1}, rejected(r, c)
 	}
+	return checkedValue[V](r, c), nil
+}
+
+// checkedValue is a numeric checked door's success.
+func checkedValue[V Number](r *result, c RawCheck) Checked[V] {
 	var out V
 	if p, ok := any(&out).(*Decimal); ok {
 		raw := read[rawDecimal](r)
@@ -674,7 +682,7 @@ func checkedNumber[V Number](r *result, c RawCheck) (Checked[V], Rejection) {
 	} else {
 		out = read[V](r)
 	}
-	return Checked[V]{Value: out, Adjusted: c.Adjusted != 0, EnumIndex: -1}, nil
+	return Checked[V]{Value: out, Adjusted: c.Adjusted != 0, EnumIndex: -1}
 }
 
 // Check casts numeric text to V under the declared format, as V's own door does (Check with
@@ -736,8 +744,7 @@ func OptionalChecked[V any](checked Checked[V], rejection Rejection) (*Checked[V
 // the caller's own string; a []byte input as a copy. Named for what it returns, since Text
 // is the constraint every door's input satisfies.
 func String[T Text](text T) (string, *Fault) {
-	ptr, length := textPtr(text)
-	r := callText(ptr, length)
+	r := textCall(doorText, text)
 	if r.code != 0 {
 		return "", failed(r.code, &r.fault)
 	}
@@ -752,15 +759,21 @@ func String[T Text](text T) (string, *Fault) {
 func CheckString[T Text](text T, constraints Constraints[string]) (Checked[string], Rejection) {
 	ptr, length := textPtr(text)
 	d := constraints.declaration()
-	r, c := callChecked(textDoor, ptr, length, nil, d)
+	r, c := callChecked(doorText, ptr, length, nil, d)
 	if r.code != 0 {
 		return Checked[string]{EnumIndex: -1}, rejected(&r, c)
 	}
+	return checkedText(text, d, &r, c), nil
+}
+
+// checkedText is the text checked door's success: the declared entry it matched, or the
+// input judged.
+func checkedText[T Text](text T, d *declaration, r *result, c RawCheck) Checked[string] {
 	if c.EnumIndex != math.MaxUint32 {
 		if uint64(c.EnumIndex) >= uint64(len(d.texts)) {
 			panic(fmt.Sprintf("hypercast: the core matched enum entry %d, which was never declared — a binding bug, please report it", c.EnumIndex))
 		}
-		return Checked[string]{Value: d.texts[c.EnumIndex], Adjusted: c.Adjusted != 0, EnumIndex: int(c.EnumIndex)}, nil
+		return Checked[string]{Value: d.texts[c.EnumIndex], Adjusted: c.Adjusted != 0, EnumIndex: int(c.EnumIndex)}
 	}
-	return Checked[string]{Value: slice(text, read[RawSpan](&r)), Adjusted: c.Adjusted != 0, EnumIndex: -1}, nil
+	return Checked[string]{Value: slice(text, read[RawSpan](r)), Adjusted: c.Adjusted != 0, EnumIndex: -1}
 }

@@ -109,11 +109,23 @@ func header() (string, bool) {
 // on every leg, and the size the generated header carries wherever the header is reachable.
 func TestTheLayoutsAreTheHeadersSizes(t *testing.T) {
 	sizes := map[string][2]uint32{
-		"HyperCastRawNumFormat_SIZE":   {RawNumFormatSize, 92},
-		"HyperCastRawDayPeriods_SIZE":  {RawDayPeriodsSize, 40},
-		"HyperCastRawConstraints_SIZE": {RawConstraintsSize, 72},
-		"HyperCastRawCheck_SIZE":       {RawCheckSize, 12},
-		"HyperCastRawSpan_SIZE":        {RawSpanSize, 8},
+		"HyperCastRawNumFormat_SIZE":       {RawNumFormatSize, 92},
+		"HyperCastRawDayPeriods_SIZE":      {RawDayPeriodsSize, 40},
+		"HyperCastRawConstraints_SIZE":     {RawConstraintsSize, 72},
+		"HyperCastRawCheck_SIZE":           {RawCheckSize, 12},
+		"HyperCastRawSpan_SIZE":            {RawSpanSize, 8},
+		"HyperCastRawFaultDetail_SIZE":     {RawFaultDetailSize, 16},
+		"HyperCastRawDateOptions_SIZE":     {RawDateOptionsSize, 12},
+		"HyperCastRawDateOptions_MIN_SIZE": {RawDateOptionsMinSize, 8},
+		// The grouping policy bits and the date shapes, which the header spells as shifts or
+		// not at all, are pinned to the core's values here (rust/src/verdict.rs,
+		// rust/src/date_options.rs).
+		"GROUPING_WESTERN": {uint32(GroupingWestern), 1 << 8},
+		"GROUPING_INDIAN":  {uint32(GroupingIndian), 2 << 8},
+		"GROUPING_POLICY":  {uint32(GroupingPolicyMask), 3 << 8},
+		"COMPACT_DATE":     {uint32(CompactDate), 1},
+		"SPACE_SEPARATOR":  {uint32(SpaceSeparator), 2},
+		"HOUR_OFFSET":      {uint32(HourOffset), 4},
 	}
 	flags := map[string][2]uint32{
 		"HAS_MINIMUM": {RawConstraintsHasMinimum, 1}, "HAS_EXCLUSIVE_MINIMUM": {RawConstraintsHasExclusiveMinimum, 2},
@@ -138,6 +150,9 @@ func TestTheLayoutsAreTheHeadersSizes(t *testing.T) {
 		return
 	}
 	for name, size := range sizes {
+		if !strings.HasPrefix(name, "HyperCast") {
+			continue
+		}
 		m := regexp.MustCompile(`#define ` + name + ` (\d+)`).FindStringSubmatch(text)
 		if m == nil {
 			t.Errorf("the header defines no %s", name)
@@ -149,6 +164,15 @@ func TestTheLayoutsAreTheHeadersSizes(t *testing.T) {
 	}
 	for flag, value := range flags {
 		want := fmt.Sprintf("#define HyperCastRawConstraints_%s %d\n", flag, value[0])
+		if !strings.Contains(text, want) {
+			t.Errorf("the header does not carry %q", strings.TrimSpace(want))
+		}
+	}
+	for _, want := range []string{
+		"#define HyperCastNumFormat_GROUPING_WESTERN (1 << 8)\n",
+		"#define HyperCastNumFormat_GROUPING_INDIAN (2 << 8)\n",
+		"#define HyperCastNumFormat_GROUPING_POLICY (3 << 8)\n",
+	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the header does not carry %q", strings.TrimSpace(want))
 		}
