@@ -386,13 +386,14 @@ class GoSiteTests(unittest.TestCase):
 
     def test_a_call_the_binding_drops_is_missing(self):
         text = (ROOT / 'go/core.go').read_text(encoding='utf-8')
-        self.assertIn('.Xcast_bool\n', text)
+        call = '.Xcast_declared_decimal('
+        self.assertEqual(text.count(call), 1)
         whole = self.found(self.calls, text)
-        got = self.found(self.calls, text.replace('.Xcast_bool\n', '.Xnot_an_export\n'))
-        self.assertEqual(whole - got, {'cast_bool'})
+        got = self.found(self.calls, text.replace(call, '.Xnot_an_export('))
+        self.assertEqual(whole - got, {'cast_declared_decimal'})
         # A comment naming it is not a call either.
-        got = self.found(self.calls, text.replace('.Xcast_bool\n', '.Xnot_an_export // .Xcast_bool\n'))
-        self.assertEqual(whole - got, {'cast_bool'})
+        got = self.found(self.calls, text.replace(call, '.Xnot_an_export( // .Xcast_declared_decimal(\n'))
+        self.assertEqual(whole - got, {'cast_declared_decimal'})
 
     def test_an_export_the_core_grows_is_stale(self):
         text = (ROOT / 'go/internal/core/core.go').read_text(encoding='utf-8')

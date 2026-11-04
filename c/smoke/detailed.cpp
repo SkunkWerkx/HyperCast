@@ -7,6 +7,7 @@
 // C++23, warnings as errors, and once more with exceptions off.
 
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -361,8 +362,9 @@ int main() {
   CHECK(text(hc::detailed::cast_decimal_from_double(0.1).value()) == "0.1");
   CHECK((hc::detailed::cast_decimal_from_double(1e300).failure() ==
          hc::Failure{hc::CastFailure::out_of_range, hc::Detail::too_large, 0, 0}));
-  CHECK((hc::detailed::cast_decimal_from_double(0.0 / 0.0).failure() ==
-         hc::Failure{hc::CastFailure::malformed, hc::Detail::not_finite, 0, 0}));
+  CHECK(
+      (hc::detailed::cast_decimal_from_double(std::numeric_limits<double>::quiet_NaN()).failure() ==
+       hc::Failure{hc::CastFailure::malformed, hc::Detail::not_finite, 0, 0}));
   CHECK((hc::detailed::cast_excel_serial_from_double(45292.75, hc::ExcelEpoch::y1900).value() ==
          hc::CivilDateTime{{2024, 1, 1}, 64800000000000ULL}));
   CHECK(hc::detailed::cast_excel_time(0.75).value() == std::chrono::hours(18));
@@ -390,8 +392,10 @@ int main() {
   CHECK(
       hc::detailed::cast_f64_from_double(-90.5, latitude.value()).rejection().violation().keyword ==
       hc::Keyword::minimum);
-  CHECK((hc::detailed::cast_f64_from_double(0.0 / 0.0, latitude.value()).rejection().failure() ==
-         hc::Failure{hc::CastFailure::malformed, hc::Detail::not_finite, 0, 0}));
+  CHECK((
+      hc::detailed::cast_f64_from_double(std::numeric_limits<double>::quiet_NaN(), latitude.value())
+          .rejection()
+          .failure() == hc::Failure{hc::CastFailure::malformed, hc::Detail::not_finite, 0, 0}));
   CHECK(!hc::optional(hc::detailed::cast_f64("  ", invariant, latitude.value())).has_value());
   std::uint8_t storage[32];
   hc::Constraints<std::string_view>::Fields code;

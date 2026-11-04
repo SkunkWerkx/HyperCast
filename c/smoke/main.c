@@ -10,6 +10,7 @@
 // was built against (see `core_is_current` below), because a core without the detailed exports
 // ignores the policy bits in a format's flags, so a strict format would silently read as legacy.
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -406,7 +407,7 @@ int main(void) {
         decimal.scale == 1);
   CHECK(cast_detailed_from_f64(19, 0, 1e300, &decimal, &detail) == 3 && detail.detail == 25 &&
         detail.offset == 0 && detail.len == 0); /* too_large */
-  CHECK(cast_detailed_from_f64(19, 0, 0.0 / 0.0, &decimal, &detail) == 2 && detail.detail == 22);
+  CHECK(cast_detailed_from_f64(19, 0, NAN, &decimal, &detail) == 2 && detail.detail == 22);
   CHECK(cast_detailed_from_f64(22, 1, 45292.75, &civil, &detail) == 0 && civil.date.year == 2024);
   CHECK(cast_detailed_from_f64(22, 3, 45292.75, &civil, &detail) == -1);
   CHECK(cast_detailed_from_f64(16, 0, 0.75, &nanos, &detail) == 0 && nanos == 64800000000000ULL);
@@ -444,8 +445,8 @@ int main(void) {
   CHECK(cast_checked_detailed_from_f64(11, 0, &latitude, NULL, 0, -90.5, &f64, &detail, &report) ==
             4 &&
         report.keyword == 1 && detail.len == 0 && detail.detail == 0);
-  CHECK(cast_checked_detailed_from_f64(11, 0, &latitude, NULL, 0, 0.0 / 0.0, &f64, &detail,
-                                       &report) == 2 &&
+  CHECK(cast_checked_detailed_from_f64(11, 0, &latitude, NULL, 0, NAN, &f64, &detail, &report) ==
+            2 &&
         detail.detail == 22);
   CHECK(cast_checked_detailed_from_f64(11, 2, &latitude, NULL, 0, 1.0, &f64, &detail, &report) ==
         -1);
