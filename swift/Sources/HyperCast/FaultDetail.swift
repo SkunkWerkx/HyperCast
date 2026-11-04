@@ -143,8 +143,9 @@ public struct FaultDetail: RawRepresentable, Hashable, Sendable, CustomStringCon
     /// The published spelling: `blank`, `unexpected_character`, … `not_a_scalar`; `nil` for a
     /// code this binding does not name.
     public var name: String? {
-        let index = Int(rawValue) - 1
-        return Self.published.indices.contains(index) ? Self.published[index] : nil
+        // Int(exactly:), since a code past Int.max would trap where Int is 32 bits (WebAssembly).
+        guard let code = Int(exactly: rawValue), Self.published.indices.contains(code - 1) else { return nil }
+        return Self.published[code - 1]
     }
 
     /// Whether this binding names the code (1 to 32).
