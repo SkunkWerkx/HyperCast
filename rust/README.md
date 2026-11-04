@@ -38,9 +38,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 The crate is simultaneously the engine under every binding in this repo — built as a
-`cdylib` (`libhypercast`) with 31 `cast_*` C-ABI exports (the text doors, plus
-`decimal_from_f64`, `excel_serial_from_f64`, `excel_time` and `excel_duration`, and the
-checked doors with their constraints check and declared-decimal conversion) and
+`cdylib` (`libhypercast`) with 35 `cast_*` C-ABI exports (the text doors, plus
+`decimal_from_f64`, `excel_serial_from_f64`, `excel_time` and `excel_duration`, the
+checked doors with their constraints check and declared-decimal conversion, and the four
+detailed exports that reach every door by its `Door` code and report each failure's
+`Detail`) and
 `hypercast_version`, loaded or linked by the
 C#, Java, Swift, Ruby, Python and C/C++ bindings, linked into the PHP extension, the
 TypeScript addon and the R package, and translated into Go source, all held to byte-identical verdicts by the
@@ -88,9 +90,20 @@ cast_i32("5 -", &trailing); // Ok(-5)
 
 Separators are `Symbol<8>`s — 1 to 8 UTF-8 bytes with no ASCII digit, so a culture
 whose group separator is a narrow no-break space or an LTR mark and a comma declares it
-whole. The civil date-time door takes the same declaration for the two halves of a 12-hour
-clock: `cast_datetime_with(text, order, &DayPeriods)` reads a culture's own designators
-after the clock (`3:04 nachm.`) or ahead of it (`오후 3:04`), beside `AM`/`PM`:
+whole. White space is the 25 code points `hypercast::is_white_space` names. A numeral admits
+it only as a group separator, which may be or contain it, so `NumFormat::check` (the gate
+the C ABI applies) refuses a decimal separator, plain or currency, with any in it; it
+refuses a sign or percent symbol with any too, and a currency symbol with any at either
+edge, though `CurrencySymbol::new("F CFA")` is fine. A group declared as an ASCII space,
+U+00A0 or U+202F reads as all three in the input, and inside a currency symbol the same
+three spaces match each other. Outside the numeral white space is ignored: at the edges,
+after a sign, around a currency symbol, inside parentheses and before a percent symbol.
+With U+202F declared as the group separator, a comma as the decimal one and `€` as the
+currency, `"1\u{202F}234,56\u{A0}€"` reads as 1234.56. The civil date-time door takes the
+same declaration for the two halves of a 12-hour clock: `cast_datetime_with(text, order,
+&DayPeriods)` reads a culture's own designators after the clock (`3:04 nachm.`) or ahead of
+it (`오후 3:04`), beside `AM`/`PM`, with any run of white space (or none) between designator
+and clock; `DayPeriods::check` refuses a designator with white space at either edge:
 
 ```rust
 use hypercast::{DateOrder, DayPeriods, Symbol, cast_datetime_with};
@@ -215,6 +228,71 @@ cast_char(" "); // Ok(' '), verbatim rather than Empty
 cast_char("U+D800"); // Err: OutOfRange, a surrogate
 ```
 
+## Constraints: the checked doors
+
+A value that parses can still be wrong for the field it fills. Every integer, real, decimal
+and text door has a checked twin that judges the value against rules in the same call, in the
+OpenAPI vocabulary: `minimum`, `exclusiveMinimum`, `maximum`, `exclusiveMaximum` and
+`multipleOf` for numbers, an integer `enum` for the integer doors, and `minLength`,
+`maxLength`, `enum` and `trim` for text. A `Constraints` is built once for one door, and the
+core refuses a declaration that can't mean anything there (a `minimum` above the `maximum`, a
+text keyword on a number) with a `Refusal`, before any value is judged.
+
+Bounds and steps are exact decimals, and a value is judged on its exact text, never on a
+float. `multipleOf` takes a `Rounding`: `Strict` rejects a value off the step, while
+`Midpoint` (ties to even), `Floor` and `Ceiling` round onto it and flag the result `adjusted`.
+A rejection is either the door's own `Fault`, unchanged, or a `Violation` naming the keyword
+and the span:
+
+```rust
+use hypercast::{
+    Constraints, Keyword, NumFormat, NumericRules, Rejection, Rounding, TextRules,
+    cast_checked, cast_text_checked, decimal_for_declaration,
+};
+
+let degrees = |text| decimal_for_declaration(text).unwrap();
+let latitude = Constraints::<f64>::numeric(
+    NumericRules::new()
+        .minimum(degrees("-90"))
+        .maximum(degrees("90"))
+        .multiple_of(degrees("0.000001"), Rounding::Midpoint),
+    None,
+)?;
+let format = NumFormat::INVARIANT;
+
+let near = cast_checked("51.47784461", &format, &latitude).unwrap();
+assert_eq!((near.value, near.adjusted), (51.477845, true)); // rounded onto the step
+
+match cast_checked("91.5", &format, &latitude) {
+    Err(Rejection::Violation(violation)) => assert_eq!(violation.keyword, Keyword::Maximum),
+    other => panic!("{other:?}"),
+}
+
+let sexes = Constraints::text(TextRules::new().trim(true), Some(&["Female", "Male", "Other"]))?;
+let male = cast_text_checked(b" MALE ", &sexes).unwrap();
+assert_eq!((male.value, male.enum_index), ("Male", Some(1))); // the declared spelling
+```
+
+`checked_from_f64` judges a number a parser already holds as a double, and
+`optional_checked` turns an `Empty` fault into `None` while every violation passes through.
+
+A parser that carries declarations across its own C ABI, as HyperTabular does, holds them in
+that ABI's form: `Constraints::raw()` and the `enum` list packed beside it.
+`Constraints::from_raw` reads that form back for a door, refused exactly where
+`check_constraints` refuses, and `Constraints::pack_enum` packs a list declared in Rust into a
+caller's buffer without allocating, answering the length it needs so a short buffer can be
+grown and the call repeated:
+
+```rust
+use hypercast::{Constraints, Text, TextRules};
+
+let sexes = Constraints::text(TextRules::new(), Some(&["Female", "Male"]))?;
+let mut packed = vec![0; sexes.pack_enum(&mut []).unwrap()];
+sexes.pack_enum(&mut packed);
+let read = Constraints::<Text>::from_raw(sexes.raw(), &packed)?;
+assert_eq!(hypercast::cast_text_checked(b"male", &read).unwrap().value, "Male");
+```
+
 ## Optional native-extension features
 
 Three additive cargo features link this same core straight into an interpreter as a real
@@ -278,11 +356,11 @@ HyperCast's verdicts — HyperTabular's native layer, for one. The value types
 out-values themselves; the rest is what turns the ABI's codes and format back into them,
 the same code the doors and `ffi.rs` use:
 
-- **The `exports` feature**, on by default, is the 31 `cast_*` symbols and
+- **The `exports` feature**, on by default, is the 35 `cast_*` symbols and
   `hypercast_version` as a symbol. A `#[no_mangle]` item is exported from whatever library
   the crate ends up in, so a crate building its own `cdylib` or `staticlib` takes
   `default-features = false`, naming `std` again if it wants it — otherwise its library
-  carries all 31, and its static archive cannot be linked into one program with
+  carries all 36, and its static archive cannot be linked into one program with
   `libhypercast.a` (`multiple definition of cast_bool`). `hypercast_version()` stays a Rust
   function either way.
 - **`RawNumFormat`** is `NumFormat` as it crosses the ABI: a size word, then the format
@@ -330,7 +408,12 @@ their existing limits and layouts.
 Every C export is checked at link time: the `no-panic` feature wraps each one in dtolnay's
 [`#[no_panic]`](https://docs.rs/no-panic), and `cargo no-panic` (an alias in
 `.cargo/config.toml`) links a release build that fails, naming the export, if the optimizer
-left any panic path in it. CI runs it on every pull request that touches the core or `.github/`.
+left any panic path in it. The generic API no export reaches (`Constraints::from_raw` and
+`Constraints::pack_enum`) is linked into the same build through `#[no_panic]` wrappers that
+exist only under the feature. CI runs it on every pull request that touches the core or
+`.github/`, then runs it again with `--cfg hypercast_canary`, which compiles in one function
+that can panic: that build must fail, naming the canary and nothing else, or the proof has
+stopped checking anything.
 
 To run the same proof from your own crate, turn on fat LTO in its release profile. Cargo
 ignores a dependency's profile, so a consumer's stock `--release` build compiles this crate
@@ -436,6 +519,57 @@ several times as much — under a declared `$` and `,`:
 | the same in parentheses (`($12,345.67)`) | 13.0 ns | 18.7 ns | 21.0 ns |
 
 (The integer door reads the same four shapes of `1234567`.)
+
+**Unicode white space: a receipt, 2026-11-03.** Every door now trims Unicode `White_Space` at
+its edges where it trimmed ASCII, and the tables above (linux-x64) predate that change. This
+one is a different machine, so it is not comparable with them: an Apple M6 (12 cores, 32 GiB)
+under macOS 27.2, rustc 1.99.1, `cargo bench --bench cast_benchmarks` run back to back on
+the base commit (`446b4f7`) and on the change, medians of Criterion's point estimates. The
+machine was not idle (load average 2.6 before the runs, 3.6 to 4.3 during, other
+applications open), and the comparators the change cannot touch moved by up to 3% in that
+time, so differences inside about 3% are noise, not gains or losses.
+
+| Door | base | change | diff |
+| --- | ---: | ---: | ---: |
+| `cast_date_ordered` (`1/7/2026`) | 3.49 ns | 3.23 ns | -7.4% |
+| `cast_uuid` (D format) | 4.98 ns | 4.78 ns | -4.0% |
+| `cast_i64` | 4.22 ns | 4.00 ns | -5.2% |
+| `cast_f64` | 6.71 ns | 6.79 ns | +1.2% |
+| `cast_decimal` (`12345.6789`) | 5.86 ns | 5.93 ns | +1.1% |
+| `cast_decimal` (`$12,345.67`, declared `$`) | 10.35 ns | 10.50 ns | +1.4% |
+| `cast_datetime` (`1/7/2026 3:04 PM`) | 8.08 ns | 8.29 ns | +2.6% |
+| `cast_timestamp` (RFC 3339) | 7.16 ns | 6.98 ns | -2.4% |
+| `cast_datetime` (ISO) | 7.84 ns | 7.22 ns | -7.9% |
+| `cast_duration` (ISO 8601) | 10.95 ns | 11.84 ns | **+8.1%** |
+
+On input with nothing to trim no door is measurably slower, bar `cast_duration` (ISO),
+the largest slowdown in the run, which moved more than any comparator did, so it is
+printed as a loss (its colon form, +2.6%, and the other doors in
+[`docs/benchmarks.md`](../docs/benchmarks.md#the-plain-doors-and-unicode-white-space-on-an-apple-m6)
+are inside the noise). A second whole-bench run the same day did not repeat it
+(`cast_duration` ISO -2.4%), and moved other cases by up to +12.6%, so the +8.1% is within
+what the machine does from run to run; `docs/benchmarks.md` prints that run's losses. **Input with white space at an edge is slower,** because the edge now
+takes a scan and not a single byte test, and that is a loss to print, not to excuse. The same
+two builds on the same text padded with an ASCII space and a newline:
+
+| Door (padded input) | base | change | diff |
+| --- | ---: | ---: | ---: |
+| `cast_bool` (` true\n`) | 1.32 ns | 3.29 ns | **+150%** |
+| `cast_i64` (`  1234567890123\n`) | 4.83 ns | 7.33 ns | +52% |
+| `cast_f64` (`  12345.6789\n`) | 7.78 ns | 8.57 ns | +10% |
+| `cast_uuid` (` ` and `\n` around a D-format UUID) | 5.16 ns | 7.02 ns | +36% |
+
+That is about 2 ns more than the base spent on the same padded cell (padding added 1.9 ns
+to `cast_bool`, 2.5 to `cast_i64`, 2.1 to `cast_f64` and 2.3 to `cast_uuid` on the change, and
+0.0, 0.0, -0.1 and 0.7 ns on the base; the `cast_f64` diff is small only because that base
+measured slow, 7.8 ns bare, see
+[`docs/benchmarks.md`](../docs/benchmarks.md#the-plain-doors-and-unicode-white-space-on-an-apple-m6)).
+These are medians of three runs, 2026-11-03 on an Apple M6 under a load average of 1.6 to 3.6,
+from the `padded` group of `benches/cast_benchmarks.rs` (`cargo bench --bench cast_benchmarks
+-- 'padded/'`), run on both builds with the same file. Padded with U+00A0 the same text costs
+the same (`cast_bool` 3.73 ns, `cast_i64` 7.09 ns, `cast_f64` 9.14 ns, the `padded-nbsp`
+group); there is no base to compare that one with, since the base read none of it. A feed
+padded on every cell pays the 2 ns on every cell.
 
 **Why this file carries a table instead of a boast:** `cast_uuid` is 12.8 ns against the
 `uuid` crate's 11.1 ns, and `cast_timestamp` is the one door ahead of its Rust counterpart

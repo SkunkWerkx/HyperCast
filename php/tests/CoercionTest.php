@@ -83,8 +83,13 @@ final class CoercionTest extends TestCase
             if (self::debugEngineWarnsTwice($mode, $case, $input)) {
                 $outcome['errors'] = [...$outcome['errors'], ...$outcome['errors']];
             }
-            $outcome = self::widened($case, $outcome);
-            $this->assertSame($outcome, self::$actual[$mode][$case][$input], "{$mode}, {$case}, input {$input}");
+            $outcome = self::refusedFlags($case, self::widened($case, $outcome));
+            $actual = self::$actual[$mode][$case][$input];
+            if ($case === 'NumFormat::fromLocaleconv $conv' && $input === 'null') {
+                $actual = self::withGroupingRestored($actual);
+            }
+            $actual = self::withoutDefaultGrouping($actual, $case === 'NumFormat::fromLocaleconv $conv' ? 0 : 256);
+            $this->assertSame($outcome, $actual, "{$mode}, {$case}, input {$input}");
         }
     }
 
@@ -107,6 +112,74 @@ final class CoercionTest extends TestCase
             $count
         );
         self::assertSame(1, $count, $case);
+        return $outcome;
+    }
+
+    /**
+     * A declared edit: `NumFormat`'s `flags` holds the styles only, bits 0 to 255 (1.0 ignored
+     * every other bit, and 1.1 refuses them, spec item 3), so the two integers 1.0 accepted
+     * outside that range are refused now: the negative one and the one past 32 bits. Every
+     * other input, and every other message, is 1.0's.
+     *
+     * @param array<string, mixed> $outcome
+     * @return array<string, mixed>
+     */
+    private static function refusedFlags(string $case, array $outcome): array
+    {
+        $flags = $outcome['result']['flags'] ?? null;
+        if ($case !== 'NumFormat::__construct $flags' || !\is_int($flags) || ($flags >= 0 && $flags <= 255)) {
+            return $outcome;
+        }
+        $outcome['exception'] = 'InvalidArgumentException';
+        // A policy spelled in the flags (bits 8 and 9) is named the `grouping` argument's.
+        $hint = ($flags & 768) !== 0 ? '; the grouping policy is the `grouping` argument' : '';
+        $outcome['message'] = "Flags must hold only the styles NumFormat declares, 0 through 255; got {$flags}{$hint}";
+        unset($outcome['result']);
+        return $outcome;
+    }
+
+    /**
+     * A declared edit: `fromLocaleconv(null)` reads the process locale, and the `C` locale's
+     * `localeconv()` has an empty `grouping` and `mon_grouping`: neither pattern groups, so the
+     * bridge clears `GROUPING` (and declares the default policy), where 1.0 left every lenience
+     * on. The one flag is put back before the rest of the dump is held to 1.0's.
+     *
+     * @param array<string, mixed> $outcome
+     * @return array<string, mixed>
+     */
+    private static function withGroupingRestored(array $outcome): array
+    {
+        $format = $outcome['result'] ?? null;
+        if (\is_array($format) && ($format['grouping'] ?? null) === 256 && ($format['flags'] & 1) === 0) {
+            $outcome['result']['flags'] |= 1;
+            $outcome['result']['grouping'] = 0;
+        }
+        return $outcome;
+    }
+
+    /**
+     * The other declared edit: 1.1's `NumFormat` has a `grouping` property, which a format built
+     * without a policy holds as the default, strict Western; a format `fromLocaleconv()` builds
+     * from an array that says nothing of grouping is legacy (nothing known of the platform's
+     * patterns), which is the 1.0 rule. Dropped from a dump where it holds that default, so every
+     * other field is still held to 1.0's; any other policy stays and fails.
+     *
+     * @param array<string, mixed> $outcome
+     * @return array<string, mixed>
+     */
+    private static function withoutDefaultGrouping(array $outcome, int $default): array
+    {
+        if (
+            ($outcome['class'] ?? null) === 'HyperCast\\NumFormat'
+            && ($outcome['grouping'] ?? null) === $default
+        ) {
+            unset($outcome['grouping']);
+        }
+        foreach ($outcome as $key => $value) {
+            if (\is_array($value)) {
+                $outcome[$key] = self::withoutDefaultGrouping($value, $default);
+            }
+        }
         return $outcome;
     }
 

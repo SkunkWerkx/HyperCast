@@ -31,8 +31,9 @@
 //! - [`cast_datetime`] — zone-less civil date-times under a declared [`DateOrder`]
 //!   (`1/7/2026 3:04 PM`, `2026-01-07 15:04:05`) to a [`CivilDateTime`]; no zone is read
 //!   and none is invented
-//! - [`Door`] — the numbering of every door above (plus `Text`, the bytes themselves), so
-//!   a layer that binds something to a door can name one
+//! - [`Door`] — the numbering of every text door above, [`cast_char`]'s included (plus
+//!   `Text`, the bytes themselves), so a layer that binds something to a door can name one,
+//!   and the codes the detailed C exports dispatch on
 //! - [`Constraints`] — JSON Schema's validation keywords (`minimum`, `multipleOf` with a
 //!   [`Rounding`], `maxLength`, `enum`, …) declared for a door, refused at declaration with a
 //!   [`Refusal`] when they cannot mean anything there ([`check_constraints`] is that judge)
@@ -42,11 +43,13 @@
 //!   [`Checked`] (the value, whether rounding `adjusted` it, a text `enum`'s index) or a
 //!   [`Rejection`], the door's own [`Fault`] or a [`Violation`] of one [`Keyword`]
 //! - [`cast_text`] — text as a door: valid UTF-8, untrimmed, empty as [`Reason::Empty`]
+//! - [`detailed`] — every door again, failing with a [`Failure`]: the same reason and span,
+//!   and the [`Detail`] of what failed; its numeric doors take a [`ValidNumFormat`]
 //!
 //! Text comes in as anything byte-viewable — `&str`, `String`, `&[u8]`, `Vec<u8>` — read
-//! as UTF-8 bytes; each door trims ASCII whitespace and treats trimmed-empty input as
-//! [`Reason::Empty`], which [`optional`] (and every binding's optional door) surfaces as
-//! absent. [`Fault`] implements [`core::error::Error`], so a verdict composes with `?`
+//! as UTF-8 bytes; each door trims Unicode white space ([`is_white_space`]) and treats
+//! trimmed-empty input as [`Reason::Empty`], which [`optional`] (and every binding's
+//! optional door) surfaces as absent. [`Fault`] implements [`core::error::Error`], so a verdict composes with `?`
 //! and ordinary error chains when propagate-on-failure is the caller's idiom.
 
 #![deny(missing_docs)]
@@ -163,7 +166,7 @@ macro_rules! personality_return {
 //
 // Assembly rather than a `#[no_mangle]` function, for the visibility: a `#[no_mangle]`
 // item is exported from a cdylib whatever its Rust visibility, which would put a 33rd
-// symbol beside the 32 C ABI exports, one any other library in the process could bind to.
+// symbol beside the 36 C ABI exports, one any other library in the process could bind to.
 // Defined hidden instead, it satisfies the library's own reference and is seen by nothing
 // outside it. Never compiled for the static libraries: two Hyper* archives that each
 // defined it could not be linked into one program, the duplicate-symbol failure that kept
@@ -251,7 +254,10 @@ mod boolean;
 mod character;
 mod checked;
 mod constraints;
+mod date_options;
 mod decimal;
+mod detail;
+pub mod detailed;
 mod door;
 mod exact;
 #[cfg(feature = "exports")]
@@ -261,7 +267,12 @@ mod float_table;
 mod fold_table;
 mod integer;
 mod lane;
+// Linked only into the no-panic proof's throwaway build, never a C ABI: kept out of the header.
+/// cbindgen:ignore
+#[cfg(feature = "no-panic")]
+mod no_panic_harness;
 mod real;
+mod site;
 mod temporal;
 mod text;
 mod typed;
@@ -282,7 +293,9 @@ mod python_ext;
 #[cfg(feature = "ruby")]
 mod ruby_ext;
 
-pub use abi::{RawCheck, RawConstraints, RawDayPeriods, RawNumFormat, RawSpan};
+pub use abi::{
+    RawCheck, RawConstraints, RawDateOptions, RawDayPeriods, RawFaultDetail, RawNumFormat, RawSpan,
+};
 pub use boolean::cast_bool;
 pub use character::cast_char;
 pub use checked::{
@@ -293,7 +306,9 @@ pub use constraints::{
     Bound, Constraints, Keyword, Numeric, NumericRules, Refusal, Rounding, Text, TextRules,
     check_constraints, decimal_for_declaration,
 };
+pub use date_options::{DateOptions, MonthNames, MonthNamesFault, ValidDateOptions};
 pub use decimal::cast_decimal;
+pub use detail::{Detail, Failure};
 pub use door::Door;
 pub use integer::{cast_i8, cast_i16, cast_i32, cast_i64, cast_u8, cast_u16, cast_u32, cast_u64};
 pub use real::{cast_f32, cast_f64};
@@ -303,7 +318,7 @@ pub use temporal::{
     cast_datetime_with, cast_duration, cast_excel_serial, cast_time, cast_timestamp, cast_unix,
     excel_duration, excel_serial, excel_time, unix_from_f64,
 };
-pub use text::cast_text;
+pub use text::{cast_text, is_white_space};
 pub use typed::{
     ShortestDigits, bool_from_f64, decimal_from_f64, f32_from_f64, i8_from_f64, i16_from_f64,
     i32_from_f64, i64_from_f64, shortest_digits, u8_from_f64, u16_from_f64, u32_from_f64,
@@ -311,8 +326,8 @@ pub use typed::{
 };
 pub use uuid::cast_uuid;
 pub use verdict::{
-    CivilDateTime, CurrencySymbol, Date, Decimal, Duration, Fault, NativeDigits, NumFormat, Reason,
-    Symbol, Timestamp,
+    CivilDateTime, CurrencySymbol, Date, Decimal, DeclarationError, Duration, Fault, NativeDigits,
+    NumFormat, Reason, Symbol, Timestamp, ValidNumFormat,
 };
 
 // `hypercast_version` is the C symbol itself when `exports` is on, as in 1.0.0, so the Rust

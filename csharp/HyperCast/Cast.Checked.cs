@@ -565,7 +565,7 @@ public static partial class Cast
 		ArgumentNullException.ThrowIfNull(constraints);
 		var raw = format.ToRaw();
 		var declared = constraints.ToRaw();
-		RawFault fault = default;
+		var fault = RawFaultDetail.Empty;
 		RawCheck check = default;
 		int code;
 		var entries = constraints.PackedEnum;
@@ -574,7 +574,7 @@ public static partial class Cast
 			RawDecimal value = default;
 			fixed (byte* ptr = utf8)
 			fixed (byte* list = entries)
-				code = cast_checked(constraints.Door, 0, &raw, &declared, list, (nuint)entries.Length,
+				code = cast_checked_detailed(constraints.Door, 0, &raw, &declared, list, (nuint)entries.Length,
 					ptr, (nuint)utf8.Length, &value, &fault, &check);
 			return code == 0 ? FoundDecimal<T>(value, check) : Rejected<T>(code, fault, check);
 		}
@@ -583,7 +583,7 @@ public static partial class Cast
 			T value = default;
 			fixed (byte* ptr = utf8)
 			fixed (byte* list = entries)
-				code = cast_checked(constraints.Door, 0, &raw, &declared, list, (nuint)entries.Length,
+				code = cast_checked_detailed(constraints.Door, 0, &raw, &declared, list, (nuint)entries.Length,
 					ptr, (nuint)utf8.Length, &value, &fault, &check);
 			return code == 0 ? Found(value, check) : Rejected<T>(code, fault, check);
 		}
@@ -608,7 +608,7 @@ public static partial class Cast
 	{
 		ArgumentNullException.ThrowIfNull(constraints);
 		var declared = constraints.ToRaw();
-		RawFault fault = default;
+		var fault = RawFaultDetail.Empty;
 		RawCheck check = default;
 		int code;
 		var entries = constraints.PackedEnum;
@@ -616,14 +616,14 @@ public static partial class Cast
 		{
 			RawDecimal value = default;
 			fixed (byte* list = entries)
-				code = cast_checked_from_f64(constraints.Door, number, &declared, list, (nuint)entries.Length, &value, &fault, &check);
+				code = cast_checked_detailed_from_f64(constraints.Door, 0, &declared, list, (nuint)entries.Length, number, &value, &fault, &check);
 			return code == 0 ? FoundDecimal<T>(value, check) : Rejected<T>(code, fault, check);
 		}
 		else
 		{
 			T value = default;
 			fixed (byte* list = entries)
-				code = cast_checked_from_f64(constraints.Door, number, &declared, list, (nuint)entries.Length, &value, &fault, &check);
+				code = cast_checked_detailed_from_f64(constraints.Door, 0, &declared, list, (nuint)entries.Length, number, &value, &fault, &check);
 			return code == 0 ? Found(value, check) : Rejected<T>(code, fault, check);
 		}
 	}
@@ -640,7 +640,7 @@ public static partial class Cast
 		return Found(Unsafe.As<decimal, T>(ref number), check);
 	}
 
-	static CheckedVerdict<T> Rejected<T>(int code, in RawFault fault, in RawCheck check) where T : notnull =>
+	static CheckedVerdict<T> Rejected<T>(int code, in RawFaultDetail fault, in RawCheck check) where T : notnull =>
 		code switch
 		{
 			4 => new(new Rejection(Abi.ToViolation(check.Keyword, fault))),
@@ -650,16 +650,15 @@ public static partial class Cast
 		};
 
 	static unsafe int JudgeText(ReadOnlySpan<byte> utf8, Constraints<string>? constraints,
-		out RawSpan span, out RawFault fault, out RawCheck check)
+		out RawSpan span, out RawFaultDetail fault, out RawCheck check)
 	{
 		RawSpan value = default;
-		RawFault failure = default;
+		var failure = RawFaultDetail.Empty;
 		RawCheck report = new(0, 0, uint.MaxValue);
 		int code;
 		if (constraints is null)
 		{
-			fixed (byte* ptr = utf8)
-				code = cast_text(ptr, (nuint)utf8.Length, &value, &failure);
+			code = Detailed(DoorCodes.Text, 0, null, null, utf8, &value, &failure);
 		}
 		else
 		{
@@ -667,7 +666,7 @@ public static partial class Cast
 			var entries = constraints.PackedEnum;
 			fixed (byte* ptr = utf8)
 			fixed (byte* list = entries)
-				code = cast_checked(constraints.Door, 0, null, &declared, list, (nuint)entries.Length,
+				code = cast_checked_detailed(constraints.Door, 0, null, &declared, list, (nuint)entries.Length,
 					ptr, (nuint)utf8.Length, &value, &failure, &report);
 		}
 		(span, fault, check) = (value, failure, report);

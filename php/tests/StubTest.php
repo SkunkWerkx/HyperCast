@@ -19,14 +19,16 @@ final class StubTest extends TestCase
     /**
      * Runs everywhere, without cargo-php: the committed stub, loaded alone in a PHP without the
      * extension, has the loaded extension's surface (V1Probe::surface(), the record 1.0 was held
-     * to, over 1.0's classes and the validation constraints'), declaration for declaration.
+     * to, over 1.0's classes, the validation constraints' and 1.1's detail and date options'),
+     * declaration for declaration.
      * This is what holds the value classes, which the tool writes by hand, to the extension.
      */
     public function testTheStubDeclaresTheLoadedSurface(): void
     {
         $root = \dirname(__DIR__);
         $classes = 'array_merge(HyperCast\Tests\Support\V1Probe::CLASSES, '
-            . 'HyperCast\Tests\Support\V1Probe::CONSTRAINT_CLASSES)';
+            . 'HyperCast\Tests\Support\V1Probe::CONSTRAINT_CLASSES, '
+            . 'HyperCast\Tests\Support\V1Probe::DETAIL_CLASSES)';
         $stubbed = self::child(
             ['-n'],
             'require ' . var_export($root . '/vendor/autoload.php', true) . ';'
@@ -34,7 +36,7 @@ final class StubTest extends TestCase
             . "echo json_encode(HyperCast\\Tests\\Support\\V1Probe::surface({$classes}), JSON_THROW_ON_ERROR);"
         );
         $loaded = json_encode(
-            V1Probe::surface([...V1Probe::CLASSES, ...V1Probe::CONSTRAINT_CLASSES]),
+            V1Probe::surface([...V1Probe::CLASSES, ...V1Probe::CONSTRAINT_CLASSES, ...V1Probe::DETAIL_CLASSES]),
             JSON_THROW_ON_ERROR
         );
         self::assertSame(

@@ -8,17 +8,84 @@
 use ext_php_rs::convert::IntoZval;
 use ext_php_rs::error::Result as ZvalResult;
 use ext_php_rs::exception::PhpResult;
+use ext_php_rs::ffi::zend_read_property;
 use ext_php_rs::flags::DataType;
 use ext_php_rs::prelude::*;
 use ext_php_rs::types::Zval;
+use ext_php_rs::zend::ExecutorGlobals;
 
-use super::args::{Bool, CDataArg, DayPeriodsArg, Int, NumFormatArg, Str};
+use super::args::{Bool, CDataArg, DayPeriodsArg, Int, NumFormatArg, OptFfiArg, OptInt, Str};
 use super::classes::{bytes_zval, call, int_zval, object_of};
 use super::dates;
 use super::enums::CastFailure;
 use super::errors::{logic, pending, runtime};
 use super::guard;
+use super::num_format::quietly;
 use super::values::{fault as new_fault, periods_packed};
+
+/// A member of an `FFI` object (a declared function or variable), or `None` when the object
+/// does not declare it: the engine's `FFI\Exception` for an undeclared name is cleared.
+fn ffi_member(core: &Zval, name: &str) -> Option<Zval> {
+    let object = object_of(core)?;
+    let mut rv = Zval::new();
+    // SAFETY: a live object, read through its own class entry as `$object->name` reads it.
+    let found = unsafe {
+        zend_read_property(
+            (*object).ce,
+            object,
+            name.as_ptr().cast(),
+            name.len(),
+            false,
+            &raw mut rv,
+        )
+    };
+    if ExecutorGlobals::has_exception() {
+        drop(ExecutorGlobals::take_exception());
+        return None;
+    }
+    // SAFETY: a live zval, the member's or `rv`.
+    unsafe { found.as_ref() }.map(Zval::shallow_clone)
+}
+
+/// Why a strict grouping policy may not be written for `core`, an `FFI` handle on the C
+/// library, or `None` when it may. A core that predates the policy ignores its bits and parses
+/// every format as legacy, so two checks, neither a hard-coded version: the library must
+/// declare the detailed exports (`cast_detailed`, which a 1.0 library does not have, and which
+/// an `FFI` handle only reads when its declarations name it and the library has it), and its
+/// `hypercast_version()` must have this extension's major version and a minor version no older.
+fn strict_refused(core: &Zval) -> Option<String> {
+    if ffi_member(core, "cast_detailed").is_none() {
+        return Some(
+            "the core's FFI handle does not declare cast_detailed, which a core that reads a \
+             grouping policy exports"
+                .to_owned(),
+        );
+    }
+    // An undeclared function is the engine's `FFI\Exception`, cleared: the refusal is the guard's.
+    let reported = quietly(call(Some(core), "hypercast_version", &mut []));
+    let Some(version) = reported.as_ref().and_then(Zval::long) else {
+        return Some(
+            "the core's FFI handle does not declare hypercast_version, so its version is unknown"
+                .to_owned(),
+        );
+    };
+    let own = i64::from(crate::hypercast_version());
+    (!versions_compatible(version, own)).then(|| {
+        format!(
+            "the core is {}, which does not match this extension, {} (the same major version and a \
+             minor version no older)",
+            version_text(version),
+            version_text(own)
+        )
+    })
+}
+
+/// Whether a core's packed version (`hypercast_version()`) suits the extension's: the same
+/// major version and a minor version no older; the patch is ignored.
+pub(crate) fn versions_compatible(core: i64, extension: i64) -> bool {
+    let (major, minor) = (|v: i64| v >> 16, |v: i64| (v >> 8) & 0xFF);
+    major(core) == major(extension) && minor(core) >= minor(extension)
+}
 
 /// A `\DateTimeImmutable`, built by PHP.
 pub struct DateTimeImmutable(Zval);
@@ -154,11 +221,37 @@ impl NativeValues {
         guard(|| Ok(version_text(packed.0)))
     }
 
-    /// Writes a format's packed layout into an `hc_format` (ext-ffi).
-    pub fn write_format(format: NumFormatArg<'_>, target: CDataArg<'_>) -> PhpResult<()> {
+    /// Whether a core's packed `hypercast_version()` suits this extension's, or `$extensionVersion`
+    /// when given: the same major version and a minor version no older, the patch ignored.
+    pub fn compatible(coreVersion: Int, extensionVersion: OptInt) -> PhpResult<bool> {
+        guard(|| {
+            let own = extensionVersion.0.unwrap_or_else(|| i64::from(crate::hypercast_version()));
+            Ok(versions_compatible(coreVersion.0, own))
+        })
+    }
+
+    /// Writes a format's packed layout into an `hc_format` (ext-ffi). A core that predates the
+    /// grouping policy ignores its bits and parses every format as legacy, so a caller passes
+    /// the `FFI` handle it loaded the core with: a strict policy is then refused for a core that
+    /// lacks the detailed exports or is older than this extension, never written to be parsed
+    /// as legacy. Without a handle, the caller owns that check.
+    pub fn write_format(
+        format: NumFormatArg<'_>,
+        target: CDataArg<'_>,
+        core: OptFfiArg<'_>,
+    ) -> PhpResult<()> {
         guard(|| {
             let object = object_of(format.0).ok_or_else(|| pending("format"))?;
             let packed = super::num_format::packed(object)?;
+            let flags = u32::from_le_bytes([packed[4], packed[5], packed[6], packed[7]]);
+            if let Some(core) = core.0
+                && flags & crate::NumFormat::GROUPING_POLICY != 0
+                && let Some(why) = strict_refused(core)
+            {
+                return Err(runtime(format!(
+                    "hypercast: a strict grouping policy is refused: {why}; declare GROUPING_LEGACY for it"
+                )));
+            }
             memcpy(target.0, &packed, 92)
         })
     }

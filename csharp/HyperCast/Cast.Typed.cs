@@ -20,8 +20,8 @@ public static partial class Cast
 	public static unsafe Verdict<decimal> DecimalFromDouble(double value)
 	{
 		RawDecimal raw = default;
-		RawFault fault = default;
-		var code = cast_decimal_from_f64(value, &raw, &fault);
+		var fault = RawFaultDetail.Empty;
+		var code = cast_detailed_from_f64(DoorCodes.Decimal, 0, value, &raw, &fault);
 		return code == 0
 			? raw.ToDecimal()
 			: Failed<decimal>(code, fault);
@@ -48,8 +48,8 @@ public static partial class Cast
 	{
 		var declared = Abi.Code(epoch);
 		RawCivil raw = default;
-		RawFault fault = default;
-		var code = cast_excel_serial_from_f64(value, declared, &raw, &fault);
+		var fault = RawFaultDetail.Empty;
+		var code = cast_detailed_from_f64(DoorCodes.ExcelSerial, declared, value, &raw, &fault);
 		return code == 0 ? raw.ToDateTime() : Failed<System.DateTime>(code, fault);
 	}
 
@@ -65,8 +65,8 @@ public static partial class Cast
 	public static unsafe Verdict<TimeOnly> ExcelTime(double value)
 	{
 		ulong nanos = 0;
-		RawFault fault = default;
-		var code = cast_excel_time(value, &nanos, &fault);
+		var fault = RawFaultDetail.Empty;
+		var code = cast_detailed_from_f64(DoorCodes.Time, 0, value, &nanos, &fault);
 		return code == 0 ? Abi.ToTimeOnly(nanos) : Failed<TimeOnly>(code, fault);
 	}
 
@@ -82,8 +82,8 @@ public static partial class Cast
 	public static unsafe Verdict<TimeSpan> ExcelDuration(double value)
 	{
 		RawDuration raw = default;
-		RawFault fault = default;
-		var code = cast_excel_duration(value, &raw, &fault);
+		var fault = RawFaultDetail.Empty;
+		var code = cast_detailed_from_f64(DoorCodes.Duration, 0, value, &raw, &fault);
 		return code == 0 ? raw.ToTimeSpan() : Failed<TimeSpan>(code, fault);
 	}
 }

@@ -102,19 +102,31 @@ offsets from the `ReadOnlySpan<byte>` doors, char offsets from the
 `string`/`ReadOnlySpan<char>` ones, so slicing the offending text back out of what you
 passed needs no mapping on either side.
 
+A fault also says what failed. `fault.Detail` is a `FaultDetail` from the core's published
+vocabulary (`UnexpectedCharacter`, `DigitExpected`, `GroupSize`, `TooLarge`,
+`DateFieldOutOfRange` … thirty-two names, finer than the three reasons) and `fault.DetailCode`
+is its raw number. A code a newer core adds decodes as `FaultDetail.Unknown` with the number
+kept in `DetailCode`, and its reason and span stay as usable as any other's, so a consumer
+tolerates one. The detail sits beside the fault's identity, not in it: `Fault`'s constructor,
+deconstruction and patterns are 1.0's, and two faults with the same reason and span are equal,
+and hash and print alike, whatever their details say. A `Fault` you construct names none
+(`FaultDetail.None`), and so does a `Violation`, which is not a fault.
+
 Before the first cast, `Cast.IsAvailable` says whether the native library resolved and
 `Cast.NativeVersion` names the core it loaded, as a `System.Version` (`null` when it did not
 load) — the probe a consumer with a managed fallback
 gates on, instead of catching `DllNotFoundException` around its first real call. It is
 probed once and never throws; every door lets a load failure propagate. A library that
-loaded but predates the probe reads as unavailable too: a stale binary beside a newer
-binding is exactly the mismatch it exists to name.
+loaded but predates the probe, or the detailed exports every door of this binding calls (a 1.0
+core), reads as unavailable too: a stale binary beside a newer binding is exactly the mismatch
+it exists to name. A 1.0 core would ignore the grouping policy below, so no door ever reaches
+one: a door on it throws `EntryPointNotFoundException`, never a verdict read with 1.0's rules.
 
 ## One character
 
 `Cast.Char` reads one `char`: an input that is exactly one character is that character,
-taken before any trimming (`" "` is a space, `"6"` is the digit six); otherwise, with ASCII
-whitespace trimmed, exactly one code-point spelling — `65`, `U+0041`, `0x41`, `&H41`, or an
+taken before any trimming (`" "` is a space, `"6"` is the digit six); otherwise, with white
+space trimmed, exactly one code-point spelling — `65`, `U+0041`, `0x41`, `&H41`, or an
 HTML numeric entity `&#65;` / `&#x41;` (the `;` required), case-insensitive on the prefix. A
 surrogate or anything past `U+10FFFF` spelled as a code point is `OutOfRange`. So is a real
 scalar above `U+FFFF` (`U+1F600`, or a verbatim emoji): the core accepts it, but one
@@ -183,6 +195,40 @@ Cast.Decimal("€1,234.50", CultureInfo.GetCultureInfo("en-DE")); // 1234.5: the
 Cast.Double("۵۰٪", CultureInfo.GetCultureInfo("fa-IR"));        // 0.5: Persian digits and ٪
 ```
 
+White space is Unicode's `White_Space`, the 25 code points (ASCII, U+0085, U+00A0, U+2000 to
+U+200A, U+202F, U+3000 among them). Every door ignores it at both ends (`Cast.Char` given
+exactly one character keeps it), and the numeric doors also after a leading sign, before a
+trailing sign or a percent symbol, on either side of a currency symbol and inside accounting
+parentheses (`"- 12"`, `"( 12 )"`, `"12,5 %"`, `"1 234,56 €"`, the last two under a declared comma decimal separator, the last with a space group separator and `€` declared); between digits it is
+`Malformed`, unless a space-like group separator is declared. An ASCII space, U+00A0 or U+202F
+declared as the group separator makes the input's choice of those three immaterial (Excel
+writes U+00A0, ICU's `fr` U+202F, an older system a space), a space-like separator with no
+digit after it is just white space, and any other separator stays exact. Input of nothing
+but white space is `Empty`.
+
+**Grouping is strict by default.** A `NumFormat`'s `Grouping` says how digit groups are judged
+where `NumStyles.Grouping` is set, beside the styles and never in them: `NumGrouping.Western`
+(the default, and what `NumFormat.Invariant` and `Detect` are) wants groups of exactly three
+digits counted from the decimal separator, the leftmost one to three; `Indian` wants three by the point, twos
+beyond, the leftmost one or two; and `Legacy` is 1.0's rule, a separator anywhere between two digits.
+So `Cast.Int32("12,34", NumFormat.Invariant)` is `Malformed` with `GroupSize`, spanning `,34`, where 1.0 read
+1234; `NumFormat.Invariant with { Grouping = NumGrouping.Legacy }` reads it as before. An ungrouped numeral stays
+valid under every policy, once a numeral groups every group must conform, grouping in the
+fraction or an exponent is `GroupInFraction`, native digits and the space-like separators are
+counted as digits like the rest, and with `Grouping` off a group separator is forbidden under every
+policy. `with { Styles = … }` keeps the policy, and the constructors take it as their own last argument
+(`new NumFormat('.', ',', NumStyles.All, NumGrouping.Indian)`), never as a style bit: an undefined policy,
+or a `NumStyles` value past the eight flags, is an `ArgumentException` like any other caller bug.
+`NumFormat.From` declares what the platform's own patterns write, so it never rejects the platform's
+output: both `NumberGroupSizes` and `CurrencyGroupSizes` are read with .NET's meaning (the last nonzero size
+repeats, a trailing `0` ends grouping, `[0]` is none), and only a pattern that groups counts. All
+`[3]` is `Western`; all `[3, 2]` is `Indian` (en-IN, hi-IN and sixty-one more on ICU); any other shape (Toki Pona's
+twos) or enabled patterns that disagree (ICU's ml, ta, mr and or: Indian numbers, Western currency)
+is `Legacy`, a deterministic fallback read from the sizes alone, never from a name or an input.
+`NumStyles.Grouping` is cleared only when neither pattern groups (en-US-POSIX); when just one does
+(en-BG writes no currency grouping) it stays set, ungrouped values stay valid, and the format cannot
+prohibit grouping in that one amount alone.
+
 The provider maps through `NumFormat.From(IFormatProvider)`: every field the core reads,
 from the culture's own data — its decimal and group separators, whole, however many
 characters each is; its currency symbol, and the separators it writes a currency amount
@@ -194,8 +240,9 @@ sees the symbol, as the core does); its `NegativeSign`, `PositiveSign` and
 `NumStyles.TrailingSign` when its negative pattern puts the sign after the digits
 (`NumberNegativePattern` 3 or 4, or a `CurrencyNegativePattern` of the same shape —
 `fy-NL` writes `€ 5,00-`) — with every lenience on. Whatever a runtime's data holds, the
-bridge never throws: a symbol the core could not read (an ASCII digit in it, whitespace
-against the digits, past its buffer) is left undeclared and the ASCII spelling read alone;
+bridge never throws: a symbol the core could not read (an ASCII digit in it, white space in a
+sign, percent or decimal separator or at either edge of the currency symbol, past its buffer)
+is left undeclared and the ASCII spelling read alone;
 a group separator equal to the decimal one (NLS gives `mn-Mong-MN` a comma for both) takes
 the other of `.` and `,`; a currency pair that would collide declares nothing. `null` means
 the current culture, resolved exactly as `TryParse` resolves it
@@ -258,8 +305,11 @@ Cast.Int32("5 −", declared);               // -5
 The rules a format must keep are the core's own, checked before the crossing and reported
 as an `ArgumentException` against the `format` argument, never as a verdict: a separator is
 one to eight bytes of UTF-8 with no ASCII digit and the two differ (so does the currency
-pair in force); a sign, the percent and the currency symbol carry no ASCII digit or
-whitespace; `DigitZero` is never ASCII and is the zero of a digit block; and every symbol is whole code points.
+pair in force, and neither decimal separator holds white space); a sign and the percent carry
+no ASCII digit or white space; the currency symbol carries no ASCII digit and neither starts
+nor ends in white space (`F CFA` is fine, and there an ASCII space, U+00A0 and U+202F read as
+each other); `DigitZero` is never ASCII and is the zero of a digit block; and every symbol is
+whole code points.
 
 ## A culture's date order and day periods
 
@@ -281,12 +331,13 @@ Cast.DateTime("2026-01-07 오후 3:04", CultureInfo.GetCultureInfo("ko-KR"));   
 Cast.Date("2026. 1. 7.".Replace(" ", "").TrimEnd('.'), korean.Order);        // Date has no time part: the order alone
 ```
 
-A declared designator is matched exactly, after the clock (with or without a space before
-it) or ahead of it; the English pair is matched ASCII case-insensitively beside it, and it
+A declared designator is matched exactly, after the clock (with or without white space before
+it: any run of it, so the `3:04\u202fPM` that ICU 72 and later write for `en-US` reads) or
+ahead of it; the English pair is matched ASCII case-insensitively beside it, and it
 too is read ahead of the clock (`PM 3:04`). `DateFormat.From` leaves the English pair
 undeclared, since the core reads it anyway, and leaves out a designator the core could not
 read — past the 16-byte layout (Thai's and Devanagari's words are), carrying an ASCII digit
-(Anii's `1ka`), or edged with ASCII whitespace — each judged on its own, so such a culture
+(Anii's `1ka`), or edged with white space — each judged on its own, so such a culture
 reads the English pair beside whatever is declared rather than throwing: every culture any
 runtime ships maps without one, whatever its ICU or NLS spells. A
 `DateTimeFormatInfo` built by hand maps the same way, so the `IFormatProvider?` overload
@@ -301,6 +352,23 @@ to 15 significant digits), `Cast.ExcelSerialFromDouble` (a `DateTime` of
 `DateTimeKind.Unspecified` under a declared `ExcelEpoch`), `Cast.ExcelTime` (a serial's
 fraction as a `TimeOnly`) and `Cast.ExcelDuration` (days as a `TimeSpan`). A typed door's
 `Fault` has no span: its offset and length are 0.
+
+## Date options
+
+Every date door keeps its strict shapes unless asked, and a `DateOptions` asks. Its `Shapes`
+(`DateShapes.CompactDate`, `SpaceSeparator`, `HourOffset`, or `DateOptions.CommonForms` for the
+three) open `20260107` at `Cast.Date`, and a space for `T` or `±hh` offsets at `Cast.Timestamp`; its
+`Pivot` (100 to 9999, the last year of a 100-year window) reads a two-digit year at the ordered
+date and civil date-time doors; its `Months`, a `MonthNames` you build (`new MonthNames((1, "Jan"), …)`,
+or `MonthNames.FromPacked` for the core's own bytes), reads those names in the month field, in the
+position the declared order selects — `07-Jan-26` with a pivot, `7-Jan-2026` without — matching
+simple-folded names, longest first, with punctuation part of the name. No option is a default: a
+strict RFC 3339 caller may rely on a space or `+00` being refused. Each door takes the options as its
+last argument (`Cast.Timestamp(text, DateOptions.CommonForms)`, `Cast.Date(text, order, options)`,
+`Cast.DateTime(text, order | format, options)`), a known option a door has no use for is ignored there, and an
+undefined shape bit, a pivot outside its range or a vocabulary the core would refuse is an
+`ArgumentException`. A vocabulary is judged in full on every call. Building a `MonthNames` asks the native core to judge it, so a missing or stale
+library throws `DllNotFoundException` or `EntryPointNotFoundException` there, at construction.
 
 ## Validation constraints
 
@@ -511,8 +579,9 @@ reflection anywhere in this assembly, and the project opts into (and fails the b
 trim/Native-AOT analyzers via `IsAotCompatible`.
 
 That claim is reproducible rather than asserted. `HyperCast.AotSmokeTest/` is a real
-AOT-published console app that crosses every native entry point the binding declares — the
-thirty-one `cast_*` functions and `hypercast_version` — plus the generic `Cast.Numeric<T>`
+AOT-published console app that crosses every native entry point the binding calls — the four
+detailed `cast_*` exports every door goes through, `cast_constraints_check`,
+`cast_declared_decimal` and `hypercast_version` — plus the generic `Cast.Numeric<T>`
 and `Cast.Scalar<T>` doors, a UTF-8 door, the checked doors and a refused declaration, and the
 unions' exhaustive `switch`es, and returns a nonzero exit code on any mismatch:
 
@@ -563,8 +632,8 @@ the Emscripten export, and the smoke test passes without it on .NET SDK 11.0.100
 **Target frameworks.** The package builds `net10.0` and `net11.0` from one source, and package validation holds their public APIs identical. Its targets file sits under `build/net10.0/` (and `buildTransitive/net10.0/`); NuGet hands that one file to .NET 11 projects too. A project older than .NET 10 is refused at restore with NU1202. Blazor WebAssembly works on both frameworks (see [Platform support](#platform-support)). HyperUuid's package is laid out the same way.
 
 `HyperCast.WasmSmokeTest` proves the whole chain in a real browser: a Blazor WebAssembly app
-(`net10.0` and `net11.0`) that imports that targets file, calls every native entry point — the thirty-one `cast_*`
-functions and `hypercast_version` — through the public `Cast` surface, and renders `PASS` or
+(`net10.0` and `net11.0`) that imports that targets file, calls every native entry point a door uses — the four detailed
+`cast_*` exports, `cast_constraints_check`, `cast_declared_decimal` and `hypercast_version` — through the public `Cast` surface, and renders `PASS` or
 `FAIL` into the page. Every one: the link proves each symbol is in the archive, and only a call proves it works
 through the pinvoke table.
 `./check.sh` in that directory stages the wasm static library, publishes the app four ways
@@ -591,7 +660,7 @@ the copy-local list, so a consumer's output carries only the linked `dotnet.nati
 
 That link happens whether or not the app ends up calling HyperCast. The targets file is
 evaluated before the trimmer runs and cannot see what it removes, so a client bundle whose
-trimmer drops `HyperCast.Managed` entirely still links the archive and all 32 entry points
+trimmer drops `HyperCast.Managed` entirely still links the archive and all 36 entry points
 into `dotnet.native.wasm`. One Blazor consumer measured the cost of that at 1.0.0, when there
 were 27, for this package and HyperUuid together, at 66 KB raw and 2 KB compressed.
 
@@ -748,7 +817,7 @@ cd rust && cargo cdylib
 
 Drop the result into `csharp/HyperCast/runtimes/<rid>/native/` and the package's own MSBuild
 globs will pick it up, or point `dlopen` at it however you prefer — the C ABI in
-`rust/src/ffi.rs` is the entire contract: the thirty-one `cast_*` functions and
+`rust/src/ffi.rs` is the entire contract: the thirty-five `cast_*` functions and
 `hypercast_version`, taking plain pointers into your own buffers. For local development
 nothing needs dropping anywhere: when no library has been staged under `runtimes/` for your
 machine's RID, the project copies `rust/target/release/` straight to the output, so
@@ -825,9 +894,14 @@ doors themselves use, so a value read that way is the value the door would have 
   `#[repr(C)]` out-value layouts, each with its door's conversion: `ToDateTimeOffset()`,
   `ToDateOnly()`, `ToDateTime()` (`DateTimeKind.Unspecified`), `ToTimeSpan()`,
   `ToDecimal()`; sub-tick nanoseconds truncate exactly as the doors truncate them.
-- `RawFault` — a fault's byte span, `Offset` and `Length`.
-- `RawNumFormat` — the core's 92-byte numeric format: a size word, the `NumStyles` bits
-  and the native digits' zero, then every declared symbol in place, each its UTF-8 bytes
+- `RawFault` — a fault's byte span, `Offset` and `Length`; `RawFaultDetail` — the 16-byte layout the
+  detailed exports write (a size word the caller states, the span, and the `Detail` code), and
+  `RawDateOptions` — the 12-byte date options they read (a size word, the `DateShapes` bits, the
+  pivot). `DateOptions.TryToRaw` builds the latter, and `MonthNames.Packed` is the vocabulary's bytes.
+- `RawNumFormat` — the core's 92-byte numeric format (its policy bits take effect only through
+  the four detailed exports; an old 1.0 export ignores them and silently parses legacy): a size word, the `NumStyles` bits
+  (bits 0 to 7) with the grouping policy (bits 8 and 9: 256 strict Western, 512 strict Indian, 0
+  legacy) and the native digits' zero, then every declared symbol in place, each its UTF-8 bytes
   and then its length (`RawSymbol`, nine bytes, for the separators, the signs and the
   percent symbol; `RawWideSymbol`, seventeen, for the currency symbol). The core reads it
   where it stands. `NumFormat.ToRaw()` builds it, validating as every numeric door does
@@ -847,7 +921,8 @@ doors themselves use, so a value read that way is the value the door would have 
 - `Abi` — `Code(UnixPrecision)`, `Code(DateOrder)` and `Code(ExcelEpoch)`, checked
   (`ArgumentOutOfRangeException` for an undefined value), and the way back as
   `UnixPrecisionFrom`, `DateOrderFrom`, `ExcelEpochFrom` and `ReasonFrom`, each `null` for a
-  code it does not name; `ToFault(code, RawFault)`; `ToTimeOnly(nanosOfDay)` and
+  code it does not name; `ToFault(code, RawFault)` and `ToFault(code, RawFaultDetail)`, which keeps the detail, with
+  `DetailFrom(code)` naming a code (`FaultDetail.Unknown` for one it does not); `ToTimeOnly(nanosOfDay)` and
   `ToGuid(rfc9562)` for the time and UUID out-values; `ToVersion(packed)` for a
   `*_version()` word, as a `System.Version`; and `ProbeVersion(Func<uint>)`, the probe
   `Cast.IsAvailable` and `Cast.NativeVersion` rest on — the same `System.Version`, or `null`

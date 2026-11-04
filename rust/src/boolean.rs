@@ -5,18 +5,25 @@
 //! Recognized true values: `true`, `t`, `yes`, `y`, `1`, `on`, `enabled`, `active`,
 //! `checked`, `in`. Recognized false values: `false`, `f`, `no`, `n`, `0`, `off`,
 //! `disabled`, `inactive`, `unchecked`, `out`. Matching is ASCII case-insensitive;
-//! leading and trailing ASCII whitespace is ignored. Culture-insensitive by nature —
-//! no [`NumFormat`](crate::NumFormat) is accepted.
+//! leading and trailing white space (Unicode `White_Space`) is ignored.
+//! Culture-insensitive by nature — no [`NumFormat`](crate::NumFormat) is accepted.
 
+use crate::detail::Failure;
+use crate::site::Site;
 use crate::verdict::{Fault, trim};
 
-/// Casts boolean text. Empty or whitespace input ⇒ `Empty`; unrecognized input ⇒
+/// Casts boolean text. Empty or white-space input ⇒ `Empty`; unrecognized input ⇒
 /// `Malformed` spanning the trimmed token.
 pub fn cast_bool(input: impl AsRef<[u8]>) -> Result<bool, Fault> {
-    let input = input.as_ref();
+    boolean(input.as_ref()).map_err(Failure::fault)
+}
+
+/// The boolean door's one parse, for both entry points.
+#[inline(always)]
+pub(crate) fn boolean(input: &[u8]) -> Result<bool, Failure> {
     let (text, start) = trim(input);
     if text.is_empty() {
-        return Err(Fault::EMPTY);
+        return Err(Failure::spanless(Site::BoolBlank));
     }
     // Length dispatch first: no lexeme pair shares a length and a truth value, so each arm
     // compares at most a couple of fixed-width candidates — no scratch buffer, no fold loop.
@@ -48,5 +55,5 @@ pub fn cast_bool(input: impl AsRef<[u8]>) -> Result<bool, Fault> {
         9 if text.eq_ignore_ascii_case(b"unchecked") => Some(false),
         _ => None,
     };
-    value.ok_or_else(|| Fault::malformed(start, text.len()))
+    value.ok_or_else(|| Failure::at(Site::BoolNotRecognized, start, text.len()))
 }

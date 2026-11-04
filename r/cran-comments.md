@@ -6,14 +6,14 @@ This is a new submission.
 
 * macOS 27.2 on Apple M6 (aarch64-apple-darwin27.0.0), R 4.6.2 (Homebrew build), rustc and
   cargo 1.99.1, pdfTeX 1.40.29 (TinyTeX, TeX Live 2026), `checkbashisms` 2.26.13, `qpdf`
-  12.4.2, `pandoc` 3.13; checked 2026-11-02.
+  12.4.2, `pandoc` 3.13; checked 2026-11-03.
 
 ## R CMD check results
 
 `R CMD check --as-cran hypercast_<version>.tar.gz`, with `_R_CHECK_CRAN_INCOMING_REMOTE_=TRUE`.
 
 macOS, R 4.6.2, with the PDF manual (TinyTeX), `checkbashisms`, `qpdf` and `pandoc` installed,
-on the tarball `R CMD build` made (351,073 bytes):
+on the tarball `R CMD build` made (463,622 bytes):
 
     Status: 1 NOTE
 
@@ -23,7 +23,7 @@ on the tarball `R CMD build` made (351,073 bytes):
     New submission
 
 The NOTE is the new-submission notice. The testthat expectations pass (`[ FAIL 0 | WARN 0 |
-SKIP 0 | PASS 11159 ]`), including the replay of the seventeen bundled corpus files every
+SKIP 0 | PASS 30880 ]`), including the replay of the eighteen bundled corpus files every
 binding of the project replays. `NEWS.md`'s heading carries the version number, which R's NEWS
 parser requires.
 

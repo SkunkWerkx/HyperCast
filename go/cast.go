@@ -46,7 +46,7 @@ import (
 type CastFailure int32
 
 const (
-	// Empty means required input was empty or whitespace.
+	// Empty means required input was empty or white space.
 	Empty CastFailure = 1
 	// Malformed means input was present but not recognizable as the target type.
 	Malformed CastFailure = 2
@@ -182,7 +182,7 @@ const (
 
 	// CurrencySymbol permits the format's declared Currency once, at either edge of the
 	// numeric body: leading, before or after a sign ("$5", "-$5", "$ -5"), or trailing
-	// ("5 €", "1.234,50 kr."), with optional ASCII whitespace between symbol and digits;
+	// ("5 €", "1.234,50 kr."), with optional white space between symbol and digits;
 	// accounting parentheses wrap symbol and digits together ("($5)"). With no Currency
 	// declared the flag matches nothing and changes nothing. A Currency declared while
 	// this flag is off is Malformed at the symbol. Every integer, real and decimal door.
@@ -190,7 +190,7 @@ const (
 
 	// TrailingSign permits the sign after the digits ("5-", "5 -", "5+", "5 €-", "5- €",
 	// "2.5%-"), the way a culture whose negative pattern is "n-" writes it: ASCII '-'/'+'
-	// or the declared MinusSign/PlusSign, once, with optional ASCII whitespace before it,
+	// or the declared MinusSign/PlusSign, once, with optional white space before it,
 	// and never beside a leading sign or inside accounting parentheses. Not part of
 	// AllStyles: a caller sets it from the culture's own negative pattern.
 	TrailingSign NumStyles = 1 << 7
@@ -213,20 +213,25 @@ const (
 // A format the core would refuse is a caller bug and panics, never a verdict: a number
 // separator that is empty or longer than SymbolMaxBytes, equal number separators (or
 // equal separators in force for a currency amount), any symbol that is not valid UTF-8 or
-// carries an ASCII digit, a sign or percent symbol carrying ASCII whitespace, a Currency
-// longer than CurrencyMaxBytes or carrying ASCII whitespace, or a DigitZero that starts no
-// Unicode digit block. NumFormat.Raw reports the same check as an error.
+// carries an ASCII digit, a sign, percent symbol or decimal separator (plain or currency)
+// carrying white space, a Currency longer than CurrencyMaxBytes or starting or ending in
+// white space, or a DigitZero that starts no Unicode digit block. White space is Unicode's
+// White_Space property; a group separator may carry it, and ' ', U+00A0 and U+202F declared
+// as a group separator stand for each other in the input; so do they inside a Currency,
+// which may hold a gap of its own ("F CFA"). NumFormat.Raw reports the same check as an
+// error.
 type NumFormat struct {
 	// DecimalSep is the decimal separator ('.' invariant, ',' in eurozone text): 1 to
-	// SymbolMaxBytes bytes of UTF-8 with no ASCII digit. Required.
+	// SymbolMaxBytes bytes of UTF-8 with no ASCII digit and no white space. Required.
 	DecimalSep string
 	// GroupSep is the digit-group separator (',' invariant, '.', ' ' or ", " elsewhere),
-	// likewise; must differ from DecimalSep. Required.
+	// likewise, but white space is fine; must differ from DecimalSep. Required.
 	GroupSep string
 	Styles   NumStyles
 	// Currency is the symbol the CurrencySymbol style accepts ("$", "€", "kr.", "CHF") —
 	// matched whole at the edges of the numeric body, never inside the digit scan, so a
-	// symbol containing a separator character is fine. Empty declares none.
+	// symbol containing a separator character is fine. White space may sit inside it
+	// ("F CFA") but not at either edge. Empty declares none.
 	Currency string
 	// CurrencyDecimalSep is the decimal separator of a currency amount, read in place of
 	// DecimalSep when CurrencySymbol is set, Currency is declared and the symbol is found
@@ -386,13 +391,13 @@ const (
 // declares a numeric notation. Declared, never looked up — Go's standard library carries
 // no culture data, so an application fills these from its own. The English AM/PM are read
 // whatever is declared, ASCII case-insensitively; a declared designator is matched byte
-// for byte, after the clock ("3:04 nachm.", optional space before) or ahead of it
-// ("오후 3:04", optional space after). Empty designators declare nothing, which is exactly
+// for byte, after the clock ("3:04 nachm.") or ahead of it ("오후 3:04"), with any run of
+// white space (or none) between designator and clock, so "3:04\u202fPM" reads. Empty designators declare nothing, which is exactly
 // what DateTime reads.
 //
 // A designator the core would refuse is a caller bug and panics, never a verdict: longer
 // than DesignatorMaxBytes of UTF-8, not valid UTF-8, carrying an ASCII digit, or starting
-// or ending in ASCII whitespace (the grammar around it reads that; an inner space, as in
+// or ending in white space (the grammar around it reads that; an inner space, as in
 // "a. m.", is fine). DateFormat.Raw reports the same check as an error.
 type DateFormat struct {
 	Order DateOrder
@@ -486,7 +491,7 @@ func Bool[T Text](text T) (bool, *Fault) {
 }
 
 // Char casts one character: text that is exactly one UTF-8 scalar is that scalar verbatim,
-// before any trimming (" " is a space, "6" is the digit six); otherwise, ASCII whitespace
+// before any trimming (" " is a space, "6" is the digit six); otherwise, white space
 // trimmed, exactly one declared code point — decimal 65, U+0041, 0x41, &H41, or an HTML
 // numeric entity &#65; / &#x41; (the ; required), prefixes ASCII case-insensitive. A
 // code point past U+10FFFF or a surrogate is OutOfRange; the rune returned is always a

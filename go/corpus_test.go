@@ -44,6 +44,12 @@ type vector struct {
 	// A datetime vector's day-period designators, declared together or not at all.
 	AM string `json:"am"`
 	PM string `json:"pm"`
+	// A formats.json row: its kind, and per kind the code point and its answer, or the
+	// refusal's winning rule.
+	Kind       string `json:"kind"`
+	CodePoint  string `json:"code_point"`
+	WhiteSpace *bool  `json:"white_space"`
+	Rule       string `json:"rule"`
 }
 
 // A vector's declared format. Every key past the separators and flags is absent when the
@@ -931,5 +937,105 @@ func TestCorpusDeclarations(t *testing.T) {
 		default:
 			t.Fatalf("declarations: %q unknown expect %q", text, v.Expect)
 		}
+	}
+}
+
+// What fault() says for each rule formats.json names: the text each refused row must carry,
+// which also pins which rule won where a declaration breaks two.
+var ruleMessage = map[string]string{
+	"length":           " exceeds ",
+	"digit":            "must not contain an ASCII digit",
+	"equal_separators": "separators must differ",
+	"white_space":      "must not contain white space",
+	"designator_edge":  "must not start or end in white space",
+	"currency_edge":    "must not start or end with white space",
+}
+
+// panics runs f and reports the panic's text, "" when it did not panic.
+func panics(f func()) (text string) {
+	defer func() {
+		if r := recover(); r != nil {
+			text = fmt.Sprint(r)
+		}
+	}()
+	f()
+	return ""
+}
+
+// corpus/formats.json: the white-space table, and the declarations the core accepts and
+// refuses. A refused declaration is refused by valid(), named by fault() with the rule's
+// message, errs from Raw(), and panics at the door; an accepted one does none of them.
+func TestCorpusFormats(t *testing.T) {
+	var whiteSpace, numFormats, dayPeriods int
+	for _, v := range corpus(t, "formats.json") {
+		var refusal error
+		var door func()
+		var label string
+		switch v.Kind {
+		case "white_space":
+			whiteSpace++
+			if v.WhiteSpace == nil || !strings.HasPrefix(v.CodePoint, "U+") {
+				t.Fatalf("formats: bad white_space row %+v", v)
+			}
+			code, err := strconv.ParseUint(v.CodePoint[2:], 16, 32)
+			if err != nil {
+				t.Fatalf("formats: %s: %v", v.CodePoint, err)
+			}
+			if got := isWhiteSpace(rune(code)); got != *v.WhiteSpace {
+				t.Errorf("formats: isWhiteSpace(%s) = %v, want %v", v.CodePoint, got, *v.WhiteSpace)
+			}
+			continue
+		case "num_format":
+			numFormats++
+			format := v.format()
+			label = fmt.Sprintf("%+v", format)
+			if (format.valid()) != (v.Expect == "ok") {
+				t.Errorf("formats: valid() of %s = %v, want %s", label, format.valid(), v.Expect)
+			}
+			refusal = format.fault()
+			if _, err := format.Raw(); (err == nil) != (v.Expect == "ok") {
+				t.Errorf("formats: Raw() of %s = %v, want %s", label, err, v.Expect)
+			}
+			door = func() { I32("5", format) }
+		case "day_periods":
+			dayPeriods++
+			format := DateFormat{Order: YearMonthDay, AM: v.AM, PM: v.PM}
+			label = fmt.Sprintf("%+v", format)
+			if format.valid() != (v.Expect == "ok") {
+				t.Errorf("formats: valid() of %s = %v, want %s", label, format.valid(), v.Expect)
+			}
+			refusal = format.fault()
+			if _, err := format.Raw(); (err == nil) != (v.Expect == "ok") {
+				t.Errorf("formats: Raw() of %s = %v, want %s", label, err, v.Expect)
+			}
+			door = func() { DateTimeWith("2026-01-02 03:04", format) }
+		default:
+			t.Fatalf("formats: unknown kind %q", v.Kind)
+		}
+		switch v.Expect {
+		case "ok":
+			if refusal != nil {
+				t.Errorf("formats: %s: fault() = %v, want none", label, refusal)
+			}
+			if text := panics(door); text != "" {
+				t.Errorf("formats: %s: the door panicked: %s", label, text)
+			}
+		case "refused":
+			want, known := ruleMessage[v.Rule]
+			if !known {
+				t.Fatalf("formats: unknown rule %q", v.Rule)
+			}
+			if refusal == nil || !strings.Contains(refusal.Error(), want) {
+				t.Errorf("formats: %s: fault() = %v, want the %s rule (%q)", label, refusal, v.Rule, want)
+			}
+			if text := panics(door); text == "" || !strings.Contains(text, want) {
+				t.Errorf("formats: %s: the door panicked with %q, want the %s rule (%q)", label, text, v.Rule, want)
+			}
+		default:
+			t.Fatalf("formats: unknown expect %q", v.Expect)
+		}
+	}
+	if whiteSpace < 30 || numFormats == 0 || dayPeriods == 0 {
+		t.Errorf("formats: replayed %d white_space, %d num_format and %d day_periods rows", whiteSpace, numFormats, dayPeriods)
 	}
 }

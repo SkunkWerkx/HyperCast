@@ -19,7 +19,9 @@ doors only), \code{percent} (\code{16}, a trailing \verb{\%} divides by 100, rea
 the declared separators), \code{currency} (\code{64}, the declared currency symbol at either edge),
 \code{trailing_sign} (\code{128}, the sign after the digits, as a culture whose negative pattern is
 \verb{n-} writes it) and \code{all} (\code{95}, every lenience but \code{trailing_sign}; not
-\code{separator_detect}, which is a policy).
+\code{separator_detect}, which is a policy). These are the bits 0 to 7 of the declared format's
+flags; the grouping policy sits in bits 8 and 9 and is declared apart, by \code{grouping} in
+\code{\link[=num_format]{num_format()}}, never inside a style mask.
 }
 \examples{
 num_styles

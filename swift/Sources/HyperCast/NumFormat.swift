@@ -1,15 +1,20 @@
 import Foundation
 
-/// The lenience flags of ``NumFormat`` — bit-for-bit the native core's flags.
+/// The lenience flags of ``NumFormat`` — bit-for-bit the native core's flags, bits 0 to 7.
+/// A style mask never carries the grouping policy (bits 8 and 9 of the native `flags`): that
+/// is ``Grouping``, declared beside it.
 public struct NumStyles: OptionSet, Sendable {
     /// The flag bits, exactly as the native format's `flags` field carries them.
     public let rawValue: UInt32
 
-    /// Wraps raw flag bits. Bits no flag below names are carried through untouched, and
-    /// mean nothing to the core.
+    /// Wraps raw flag bits. A bit no flag below names is carried through here, and a
+    /// ``NumFormat`` refuses it: the core accepts no undefined flag.
     public init(rawValue: UInt32) {
         self.rawValue = rawValue
     }
+
+    /// The bits the eight flags below define.
+    static let definedBits: UInt32 = 0xFF
 
     /// Permit the declared group separator between digits (sizes not validated — between
     /// digits is the rule).
@@ -33,14 +38,14 @@ public struct NumStyles: OptionSet, Sendable {
     public static let separatorDetect = NumStyles(rawValue: 1 << 5)
     /// Permit the declared ``NumFormat/currencySymbol`` at either edge of the numeric body
     /// — leading, before or after a sign (`$5`, `-$5`, `$ -5`), or trailing (`5 €`,
-    /// `1.234,50 kr.`) — once, with optional ASCII whitespace between symbol and digits;
+    /// `1.234,50 kr.`) — once, with optional white space between symbol and digits;
     /// accounting parentheses wrap the symbol along with the digits (`($5)`). With no
     /// symbol declared the flag matches nothing and changes nothing; a symbol declared
     /// without this flag is malformed at the symbol. Integer, real and decimal doors.
     public static let currency = NumStyles(rawValue: 1 << 6)
     /// Permit the sign after the digits (`5-`, `5 -`, `5 €-`, `5- €`, `2.5%-`), the way a
     /// culture whose negative pattern is `n-` writes it: ASCII `-`/`+` or the declared
-    /// signs, once, with optional ASCII whitespace before it, and never beside a leading
+    /// signs, once, with optional white space before it, and never beside a leading
     /// sign or inside accounting parentheses. Not part of ``all``: a trailing sign is a
     /// culture's own pattern, so ``NumFormat/from(locale:)`` sets this from the locale's
     /// negative pattern rather than assuming it.
@@ -51,6 +56,29 @@ public struct NumStyles: OptionSet, Sendable {
     public static let all: NumStyles = [
         .grouping, .parentheses, .exponent, .radixPrefixes, .percent, .currency,
     ]
+}
+
+/// How strictly a ``NumFormat`` reads group separators: the grouping policy, bits 8 and 9 of
+/// the native format's `flags`. It judges the groups of a numeral that uses the declared group
+/// separator, and only while ``NumStyles/grouping`` is on: with it off, a group separator stays
+/// forbidden under every policy. Separator detection (``NumStyles/separatorDetect``) is
+/// independent of it, and no policy resolves an ambiguous `1,234`.
+public enum Grouping: UInt32, Sendable, CaseIterable {
+    /// A group separator anywhere between two digits, whatever the group sizes (`12,34` and
+    /// `1,2,3` are read): how every format behaved before 1.1, and the escape hatch from the
+    /// strict default.
+    case legacy = 0
+    /// Groups of exactly three digits counted leftward from the decimal separator, the
+    /// leftmost of one to three digits: `1,234,567` is read, `12,34` and `1234,567` are
+    /// malformed at the group. A numeral with no separator stays valid. The default.
+    case western = 0x100
+    /// Indian grouping, declared only when it is meant: the group next to the decimal
+    /// separator has three digits, every group left of it has two, the leftmost one or two
+    /// (`12,34,567`).
+    case indian = 0x200
+
+    /// The mask of the two policy bits in the native `flags`.
+    static let mask: UInt32 = 0x300
 }
 
 /// Caller-declared numeric notation for the integer, real and decimal doors. The native
@@ -67,25 +95,33 @@ public struct NumStyles: OptionSet, Sendable {
 /// of them reads exactly what it did before they existed.
 public struct NumFormat: Equatable, Sendable {
     /// The text between the integer and fraction digits (`.` in ``invariant``, `,` in
-    /// eurozone text): 1 to 8 UTF-8 bytes, with no ASCII digit in it.
+    /// eurozone text): 1 to 8 UTF-8 bytes, with no ASCII digit or white space in it.
     public var decimalSeparator: String { symbol(at: 12, capacity: Self.maxSymbolBytes) }
     /// The text permitted between digits while ``NumStyles/grouping`` is in ``styles``
     /// (`,` in ``invariant``; `.`, a narrow no-break space or `, ` elsewhere). Same rules
-    /// as ``decimalSeparator``, and never equal to it.
+    /// as ``decimalSeparator``, except that it may be or contain white space (French and
+    /// Swedish group with a no-break space), and never equal to it. A group declared as a
+    /// space, U+00A0 or U+202F reads as any of the three.
     public var groupSeparator: String { symbol(at: 21, capacity: Self.maxSymbolBytes) }
-    /// The leniences this format permits.
-    public var styles: NumStyles { NumStyles(rawValue: raw.1) }
+    /// The leniences this format permits. Never carries the grouping policy: that is
+    /// ``grouping``.
+    public var styles: NumStyles { NumStyles(rawValue: raw.1 & NumStyles.definedBits) }
+    /// How strictly this format reads group separators. Strict Western unless declared
+    /// otherwise.
+    public var grouping: Grouping { Grouping(rawValue: raw.1 & Grouping.mask) ?? .legacy }
     /// The declared currency symbol (`$`, `€`, `kr.`, `CHF`), honored only while
     /// ``NumStyles/currency`` is in ``styles``; empty declares none. At most
-    /// 16 UTF-8 bytes, with no ASCII digit or ASCII whitespace in it — those would collide
-    /// with the digit scan and the trimming the doors do around the symbol.
+    /// 16 UTF-8 bytes, with no ASCII digit in it and no white space at either end — those
+    /// would collide with the digit scan and the trimming the doors do around the symbol.
+    /// White space inside is fine (`F CFA`), and a space, U+00A0 and U+202F there match
+    /// each other.
     public var currencySymbol: String { symbol(at: 75, capacity: Self.maxCurrencySymbolBytes) }
     /// The decimal separator a currency amount is read with, in place of
     /// ``decimalSeparator``: when ``NumStyles/currency`` is in ``styles``, a
     /// ``currencySymbol`` is declared and the symbol is in the text, at either edge — the
     /// way Foundation's number parsing switches to a locale's monetary separators when it
     /// sees the symbol (`en_NL` writes a decimal comma in numbers and a decimal point in
-    /// prices). Empty keeps ``decimalSeparator``; otherwise the separator rules apply.
+    /// prices). Empty keeps ``decimalSeparator``; otherwise its rules apply.
     /// Ignored under ``NumStyles/separatorDetect``, where detection governs the whole token.
     public var currencyDecimalSeparator: String { symbol(at: 30, capacity: Self.maxSymbolBytes) }
     /// The group separator of a currency amount, likewise; empty keeps ``groupSeparator``.
@@ -95,7 +131,7 @@ public struct NumFormat: Equatable, Sendable {
     /// digits, before or after a leading currency symbol, and after the digits under
     /// ``NumStyles/trailingSign`` (U+2212 in Estonian and Basque; Arabic-script locales
     /// write an Arabic letter mark ahead of `-`). Empty declares none; `-` is read whatever
-    /// is declared. 1 to 8 UTF-8 bytes, with no ASCII digit or ASCII whitespace in it. Two
+    /// is declared. 1 to 8 UTF-8 bytes, with no ASCII digit or white space in it. Two
     /// signs in one number, in either spelling, are malformed at the second.
     public var minusSign: String { symbol(at: 48, capacity: Self.maxSymbolBytes) }
     /// A further spelling of the plus sign, likewise beside ASCII `+`.
@@ -134,22 +170,31 @@ public struct NumFormat: Equatable, Sendable {
     static let maxSymbolBytes = Interop.symbolMaxBytes
 
     /// Declares a format from its separators and leniences, and whatever else the culture
-    /// spells differently from ASCII. Every field after `styles` defaults to nothing
-    /// declared, which reads exactly the ASCII default.
+    /// spells differently from ASCII. `grouping` is how strictly group separators are read and
+    /// defaults to ``Grouping/western``: `12,34` is malformed at the group, where before 1.1
+    /// it read as 1234 (declare ``Grouping/legacy`` for that, ``Grouping/indian`` for
+    /// `12,34,567`). Every field after `grouping` defaults to nothing declared, which reads
+    /// exactly the ASCII default.
     ///
-    /// - Precondition: the separators are each 1 to 8 UTF-8 bytes with no ASCII digit and
+    /// - Precondition: `styles` sets no bit the core doesn't define (a grouping policy is
+    ///   declared with `grouping`, never inside `styles`); the separators are each 1 to 8 UTF-8 bytes with no ASCII digit and
     ///   differ from each other; the currency separators are empty or the same, and the
-    ///   pair in force differs; the signs and the percent symbol are empty or 1 to 8 bytes
-    ///   with no ASCII digit or ASCII whitespace; `currencySymbol` is at most 16 UTF-8
-    ///   bytes with no ASCII digit or ASCII whitespace; `digitZero` is `nil` or a non-ASCII
-    ///   scalar whose value modulo 64 is at most 54. Any of these is a caller bug, not a
-    ///   data verdict — the core refuses the same layouts as a contract violation, and
-    ///   checking here means it never sees one from well-typed code.
+    ///   pair in force differs; neither decimal separator, the currency one included,
+    ///   contains white space (Unicode `White_Space`, U+00A0 included); the signs and the
+    ///   percent symbol are empty or 1 to 8 bytes with no ASCII digit or white space;
+    ///   `currencySymbol` is at most 16 UTF-8 bytes with no ASCII digit and no white space
+    ///   at either end;
+    ///   `digitZero` is `nil` or a non-ASCII scalar whose value modulo 64 is at most 54. Any
+    ///   of these is a caller bug, not a data verdict — the core refuses the same layouts as
+    ///   a contract violation, and checking here means it never sees one from well-typed
+    ///   code.
     public init(
-        decimalSeparator: String, groupSeparator: String, styles: NumStyles,
+        decimalSeparator: String, groupSeparator: String, styles: NumStyles, grouping: Grouping = .western,
         currencySymbol: String = "", currencyDecimalSeparator: String = "", currencyGroupSeparator: String = "",
         minusSign: String = "", plusSign: String = "", percentSymbol: String = "", digitZero: Unicode.Scalar? = nil
     ) {
+        let flags = styles.rawValue | grouping.rawValue
+        precondition(Self.refusal(ofFlags: flags) == nil, Self.refusal(ofFlags: flags) ?? "")
         precondition(
             Self.isDeclarable(separator: decimalSeparator),
             "Decimal separator '\(decimalSeparator)' must be 1 to \(Self.maxSymbolBytes) UTF-8 bytes "
@@ -174,20 +219,27 @@ public struct NumFormat: Equatable, Sendable {
             currencyDecimal != currencyGroup,
             "Currency decimal and group separators must differ; both are '\(currencyDecimal)'")
         precondition(
+            Self.isDeclarable(decimalSeparator: decimalSeparator),
+            "Decimal separator '\(decimalSeparator)' must not contain white space")
+        precondition(
+            currencyDecimalSeparator.isEmpty || Self.isDeclarable(decimalSeparator: currencyDecimalSeparator),
+            "Currency decimal separator '\(currencyDecimalSeparator)' must not contain white space")
+        precondition(
             Self.isDeclarable(sign: minusSign),
             "Minus sign '\(minusSign)' must be 1 to \(Self.maxSymbolBytes) UTF-8 bytes with no ASCII digit "
-                + "or whitespace")
+                + "or white space")
         precondition(
             Self.isDeclarable(sign: plusSign),
-            "Plus sign '\(plusSign)' must be 1 to \(Self.maxSymbolBytes) UTF-8 bytes with no ASCII digit or whitespace")
+            "Plus sign '\(plusSign)' must be 1 to \(Self.maxSymbolBytes) UTF-8 bytes with no ASCII digit "
+                + "or white space")
         precondition(
             Self.isDeclarable(sign: percentSymbol),
             "Percent symbol '\(percentSymbol)' must be 1 to \(Self.maxSymbolBytes) UTF-8 bytes with no ASCII digit "
-                + "or whitespace")
+                + "or white space")
         precondition(
             Self.isDeclarable(currencySymbol: currencySymbol),
             "Currency symbol '\(currencySymbol)' must be at most \(Self.maxCurrencySymbolBytes) UTF-8 bytes "
-                + "with no ASCII digit or whitespace")
+                + "with no ASCII digit, and must not start or end with white space")
         precondition(
             digitZero.map(Self.isDeclarable(digitZero:)) ?? true,
             "Digit zero U+\(String(digitZero?.value ?? 0, radix: 16, uppercase: true)) must be non-ASCII and start a "
@@ -197,7 +249,7 @@ public struct NumFormat: Equatable, Sendable {
         var raw = Interop.zeroRawFormat
         withUnsafeMutableBytes(of: &raw) { bytes in
             bytes.storeBytes(of: UInt32(Interop.rawFormatSize), toByteOffset: 0, as: UInt32.self)
-            bytes.storeBytes(of: styles.rawValue, toByteOffset: 4, as: UInt32.self)
+            bytes.storeBytes(of: styles.rawValue | grouping.rawValue, toByteOffset: 4, as: UInt32.self)
             bytes.storeBytes(of: digitZero?.value ?? 0, toByteOffset: 8, as: UInt32.self)
             Interop.store(decimalSeparator, in: bytes, at: 12, capacity: Self.maxSymbolBytes)
             Interop.store(groupSeparator, in: bytes, at: 21, capacity: Self.maxSymbolBytes)
@@ -214,20 +266,62 @@ public struct NumFormat: Equatable, Sendable {
     /// Declares a format from one-character separators — the shape every format declared
     /// before separators could be wider than a character, kept for a caller holding
     /// scalars. Everything else is nothing declared; see ``init(decimalSeparator:groupSeparator:styles:currencySymbol:currencyDecimalSeparator:currencyGroupSeparator:minusSign:plusSign:percentSymbol:digitZero:)``
-    /// for the rules.
+    /// for the rules; `grouping` defaults to ``Grouping/western`` as there.
     public init(
         decimalSeparator: Unicode.Scalar, groupSeparator: Unicode.Scalar, styles: NumStyles,
-        currencySymbol: String = ""
+        grouping: Grouping = .western, currencySymbol: String = ""
     ) {
         self.init(
             decimalSeparator: String(decimalSeparator), groupSeparator: String(groupSeparator), styles: styles,
-            currencySymbol: currencySymbol)
+            grouping: grouping, currencySymbol: currencySymbol)
+    }
+
+    /// This format with `styles` in place of its leniences: its grouping policy, separators and
+    /// every other field kept as they are.
+    ///
+    /// - Precondition: `styles` sets no bit the core doesn't define, as ``init(decimalSeparator:groupSeparator:styles:grouping:currencySymbol:currencyDecimalSeparator:currencyGroupSeparator:minusSign:plusSign:percentSymbol:digitZero:)``.
+    public func withStyles(_ styles: NumStyles) -> NumFormat {
+        let refusal = Self.refusal(ofFlags: styles.rawValue)
+        precondition(refusal == nil, refusal ?? "")
+        return replacingFlags(styles.rawValue | grouping.rawValue)
+    }
+
+    /// This format with `grouping` in place of its policy (replaced, never combined with the
+    /// current one): its leniences, separators and every other field kept as they are.
+    public func withGrouping(_ grouping: Grouping) -> NumFormat {
+        replacingFlags(styles.rawValue | grouping.rawValue)
+    }
+
+    private func replacingFlags(_ flags: UInt32) -> NumFormat {
+        var raw = raw
+        withUnsafeMutableBytes(of: &raw) { $0.storeBytes(of: flags, toByteOffset: 4, as: UInt32.self) }
+        return NumFormat(raw: raw)
+    }
+
+    private init(raw: Interop.RawNumFormat) {
+        self.raw = raw
     }
 
     /// Two formats are equal when they declare the same thing, which is when their layouts
     /// are the same bytes.
     public static func == (lhs: NumFormat, rhs: NumFormat) -> Bool {
         withUnsafeBytes(of: lhs.raw) { left in withUnsafeBytes(of: rhs.raw) { right in left.elementsEqual(right) } }
+    }
+
+    /// The core's rule for the `flags` word, which the 1.1 check applies to every declaration:
+    /// the grouping policy `3` (both policy bits) names no policy, and a bit no flag or policy
+    /// defines (bit 10 and up) is refused. `nil` when the word is declarable, else the message
+    /// the constructor traps with.
+    static func refusal(ofFlags flags: UInt32) -> String? {
+        if flags & Grouping.mask == Grouping.mask {
+            return "Grouping policy 3 names no policy; declare Grouping.legacy, .western or .indian."
+        }
+        if flags & ~(NumStyles.definedBits | Grouping.mask) != 0 {
+            return
+                "Style bits 0x\(String(flags & ~(NumStyles.definedBits | Grouping.mask), radix: 16, uppercase: true)) "
+                + "are not defined; the styles are bits 0 to 7, and a grouping policy is declared with Grouping."
+        }
+        return nil
     }
 
     /// The native format's rule for a number separator: 1 to 8 UTF-8 bytes with no ASCII
@@ -237,18 +331,27 @@ public struct NumFormat: Equatable, Sendable {
         (1...maxSymbolBytes).contains(symbol.utf8.count) && !symbol.utf8.contains(where: isAsciiDigit)
     }
 
-    /// The native format's rule for a sign or the percent symbol, which sit flush against
-    /// the digits: a separator's rules, and no ASCII whitespace either. Empty (none
-    /// declared) passes.
-    static func isDeclarable(sign symbol: String) -> Bool {
-        symbol.isEmpty || (isDeclarable(separator: symbol) && !symbol.utf8.contains(where: isAsciiWhitespace))
+    /// The native format's rule for a decimal separator, the currency one included: a
+    /// separator's rules, and no white space either. A numeral admits white space only as a
+    /// declared group separator, so a decimal separator holding any could never be matched.
+    static func isDeclarable(decimalSeparator symbol: String) -> Bool {
+        isDeclarable(separator: symbol) && !containsWhiteSpace(symbol)
     }
 
-    /// The native format's own rule for a currency symbol: no more than 16 UTF-8 bytes, and
-    /// no ASCII digit or ASCII whitespace anywhere in it. Empty (no symbol) passes.
+    /// The native format's rule for a sign or the percent symbol, which sit flush against
+    /// the digits: a separator's rules, and no white space either. Empty (none declared)
+    /// passes.
+    static func isDeclarable(sign symbol: String) -> Bool {
+        symbol.isEmpty || (isDeclarable(separator: symbol) && !containsWhiteSpace(symbol))
+    }
+
+    /// The native format's own rule for a currency symbol: no more than 16 UTF-8 bytes, no
+    /// ASCII digit, and no white space at either edge — inside is fine (CLDR writes the CFA
+    /// franc `F` U+202F `CFA`). Empty (no symbol) passes.
     static func isDeclarable(currencySymbol symbol: String) -> Bool {
-        symbol.utf8.count <= maxCurrencySymbolBytes
-            && !symbol.utf8.contains { byte in isAsciiDigit(byte) || isAsciiWhitespace(byte) }
+        let scalars = symbol.unicodeScalars
+        return symbol.utf8.count <= maxCurrencySymbolBytes && !symbol.utf8.contains(where: isAsciiDigit)
+            && !(scalars.first.map(isWhiteSpace) ?? false) && !(scalars.last.map(isWhiteSpace) ?? false)
     }
 
     /// The native format's rule for a digit zero: not ASCII, and a code point whose ten
@@ -263,16 +366,30 @@ public struct NumFormat: Equatable, Sendable {
         (0x30...0x39).contains(byte)
     }
 
-    static func isAsciiWhitespace(_ byte: UInt8) -> Bool {
-        byte == 0x20 || (0x09...0x0D).contains(byte)
+    /// Whether `scalar` has the Unicode `White_Space` property: the 25 code points of
+    /// PropList.txt (Unicode 17.0.0), which is what the core trims and what a number or a
+    /// date may not hold inside. U+200B, U+FEFF and U+180E are not white space. Held to the
+    /// corpus's `formats.json`.
+    static func isWhiteSpace(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x0009...0x000D, 0x0020, 0x0085, 0x00A0, 0x1680, 0x2000...0x200A, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000:
+            true
+        default:
+            false
+        }
     }
 
-    /// The invariant profile — `.` decimal, `,` grouping, every lenience on, nothing else
-    /// declared.
+    static func containsWhiteSpace(_ text: String) -> Bool {
+        text.unicodeScalars.contains(where: isWhiteSpace)
+    }
+
+    /// The invariant profile — `.` decimal, `,` grouping, every lenience on, strict Western
+    /// grouping, nothing else declared. (Before 1.1 it read a group separator anywhere between
+    /// two digits; ``withGrouping(_:)`` with ``Grouping/legacy`` gives that back.)
     public static let invariant = NumFormat(decimalSeparator: ".", groupSeparator: ",", styles: .all)
 
     /// The detection profile — every lenience on, `.`/`,` roles resolved per input by
-    /// ``NumStyles/separatorDetect``'s structural rules.
+    /// ``NumStyles/separatorDetect``'s structural rules, and strict Western grouping.
     public static let detect = NumFormat(
         decimalSeparator: ".", groupSeparator: ",", styles: [.all, .separatorDetect])
 
@@ -292,6 +409,11 @@ public struct NumFormat: Equatable, Sendable {
     /// included (an Arabic-script locale's minus is an Arabic letter mark then `-`, which is
     /// what its own formatter writes), so a locale's own formatted output parses under its
     /// format, and so does the plain ASCII spelling.
+    ///
+    /// The grouping is what the locale's own patterns say, number and currency alike (see
+    /// ``from(formatter:)``): strict Western or Indian when every pattern that groups is, ``Grouping/legacy``
+    /// when one is of another shape or they disagree, and ``NumStyles/grouping`` cleared only when
+    /// neither groups. The patterns are read, never the locale's name.
     ///
     /// Every lenience is on, radix prefixes and percent included; narrow the styles, or
     /// declare a `NumFormat` outright, for anything stricter. Deriving builds a
@@ -315,9 +437,31 @@ public struct NumFormat: Equatable, Sendable {
     /// none, `arab`, `arabext`, `fullwide`, `thai`, `mymr`, `khmr`, `laoo`, `tibt`, `mong`
     /// and the Indic scripts declare their block, anything else declares none. Meant for a
     /// decimal-style formatter: in the currency style the suffixes are the symbol, not a sign.
+    ///
+    /// **Grouping.** A bridge never rejects its platform's own output, and one format has one
+    /// policy and one ``NumStyles/grouping`` flag for number and currency values alike, so both
+    /// patterns are read in full: this formatter's own `groupingSize`, `secondaryGroupingSize`
+    /// and `usesGroupingSeparator`, and the currency pattern of its locale. A pattern groups when
+    /// `usesGroupingSeparator` is on and the primary size is above 0; a secondary size of 0
+    /// repeats the primary one (`NumberFormatter`'s own meaning), so (3, 0) groups by threes and
+    /// Toki Pona's (2, 0) by twos. Of the patterns that group:
+    ///
+    /// - all of groups of three: ``Grouping/western``;
+    /// - all a group of three then twos (`#,##,##0`): ``Grouping/indian``;
+    /// - one of any other shape, or two that disagree (some ICU versions write `ml`, `ta`, `mr` and
+    ///   `or` with an Indian number and a Western currency pattern; Apple's data here has both
+    ///   Indian): ``Grouping/legacy``, which reads any grouping and so reads what the platform wrote;
+    /// - none (`en_US_POSIX`): ``NumStyles/grouping`` is cleared, and a group separator is
+    ///   malformed.
+    ///
+    /// When only one of the two patterns groups (`en_BG`'s currency doesn't), the flag stays for
+    /// the other: the format can't prohibit grouping in a currency amount alone, so an ungrouped
+    /// value stays valid and a grouped one the platform never writes is read. The fallback is a
+    /// fixed function of the two patterns, never of the input. The currency pattern comes from a
+    /// second `NumberFormatter` on the formatter's locale, so deriving costs two.
     public static func from(formatter: NumberFormatter) -> NumFormat {
-        func separator(_ symbol: String?, orInvariant fallback: String) -> String {
-            symbol.flatMap { isDeclarable(separator: $0) ? $0 : nil } ?? fallback
+        func separator(_ symbol: String?, accepting: (String) -> Bool, orInvariant fallback: String) -> String {
+            symbol.flatMap { accepting($0) ? $0 : nil } ?? fallback
         }
         // A sign or the percent symbol is a further spelling: ASCII is read regardless, so
         // declaring it would say nothing.
@@ -326,17 +470,20 @@ public struct NumFormat: Equatable, Sendable {
         }
         // The currency separators are read in place of the number ones, so an equal one is
         // the number one and declaring it would say nothing either.
-        func currencySeparator(_ symbol: String?, beside number: String) -> String {
-            symbol.flatMap { $0 != number && isDeclarable(separator: $0) ? $0 : nil } ?? ""
+        func currencySeparator(_ symbol: String?, accepting: (String) -> Bool, beside number: String) -> String {
+            symbol.flatMap { $0 != number && accepting($0) ? $0 : nil } ?? ""
         }
-        let decimal = separator(formatter.decimalSeparator, orInvariant: ".")
-        var group = separator(formatter.groupingSeparator, orInvariant: ",")
+        let decimal = separator(
+            formatter.decimalSeparator, accepting: isDeclarable(decimalSeparator:), orInvariant: ".")
+        var group = separator(formatter.groupingSeparator, accepting: isDeclarable(separator:), orInvariant: ",")
         if group == decimal {
             group = decimal == "," ? "." : ","
         }
         // A pair that collapses to the same symbol is no pair.
-        var currencyDecimal = currencySeparator(formatter.currencyDecimalSeparator, beside: decimal)
-        var currencyGroup = currencySeparator(formatter.currencyGroupingSeparator, beside: group)
+        var currencyDecimal = currencySeparator(
+            formatter.currencyDecimalSeparator, accepting: isDeclarable(decimalSeparator:), beside: decimal)
+        var currencyGroup = currencySeparator(
+            formatter.currencyGroupingSeparator, accepting: isDeclarable(separator:), beside: group)
         if (currencyDecimal.isEmpty ? decimal : currencyDecimal) == (currencyGroup.isEmpty ? group : currencyGroup) {
             currencyDecimal = ""
             currencyGroup = ""
@@ -346,13 +493,64 @@ public struct NumFormat: Equatable, Sendable {
         if (formatter.negativePrefix ?? "").isEmpty && !(formatter.negativeSuffix ?? "").isEmpty {
             styles.insert(.trailingSign)
         }
+        let currencyFormatter = NumberFormatter()
+        currencyFormatter.locale = formatter.locale
+        currencyFormatter.numberStyle = .currency
+        let (grouping, groups) = Self.grouping(
+            number: GroupingShape(of: formatter), currency: GroupingShape(of: currencyFormatter))
+        if !groups {
+            styles.remove(.grouping)
+        }
         return NumFormat(
-            decimalSeparator: decimal, groupSeparator: group, styles: styles,
+            decimalSeparator: decimal, groupSeparator: group, styles: styles, grouping: grouping,
             currencySymbol: currency, currencyDecimalSeparator: currencyDecimal, currencyGroupSeparator: currencyGroup,
             minusSign: spelling(formatter.minusSign, beside: "-"),
             plusSign: spelling(formatter.plusSign, beside: "+"),
             percentSymbol: spelling(formatter.percentSymbol, beside: "%"),
             digitZero: digitZero(ofNumberingSystem: formatter.locale.numberingSystem.identifier))
+    }
+
+    /// The shape of a platform's grouping pattern.
+    enum GroupingShape: Equatable {
+        /// The pattern doesn't group.
+        case none
+        /// Groups of three.
+        case western
+        /// A group of three, then twos.
+        case indian
+        /// Any other group sizes.
+        case other
+
+        /// Reads a `NumberFormatter`'s pattern: it groups when it uses a grouping separator with a
+        /// primary size above 0, and a secondary size of 0 repeats the primary one.
+        init(of formatter: NumberFormatter) {
+            guard formatter.usesGroupingSeparator, formatter.groupingSize > 0 else {
+                self = .none
+                return
+            }
+            let primary = formatter.groupingSize
+            let secondary = formatter.secondaryGroupingSize == 0 ? primary : formatter.secondaryGroupingSize
+            switch (primary, secondary) {
+            case (3, 3): self = .western
+            case (3, 2): self = .indian
+            default: self = .other
+            }
+        }
+    }
+
+    /// The one policy and the one `grouping` flag a number pattern and a currency pattern share:
+    /// every pattern that groups Western is Western, every one Indian is Indian, any other shape
+    /// or a disagreement is legacy, and the flag is cleared only when neither groups. The
+    /// policy of a format with the flag cleared judges nothing, and is Western.
+    static func grouping(number: GroupingShape, currency: GroupingShape) -> (grouping: Grouping, groups: Bool) {
+        let grouping = [number, currency].filter { $0 != .none }
+        guard let first = grouping.first else { return (.western, false) }
+        guard grouping.allSatisfy({ $0 == first }) else { return (.legacy, true) }
+        switch first {
+        case .western: return (.western, true)
+        case .indian: return (.indian, true)
+        default: return (.legacy, true)
+        }
     }
 
     /// The zero digit of a numbering system, by ICU's identifier, for the systems whose ten
@@ -433,8 +631,8 @@ public enum DateOrder: UInt32, Sendable {
 /// Caller-declared civil date-time notation for ``Cast/dateTime(_:format:)-swift.type.method``:
 /// the field ``order`` of the date part, and the day-period designators a culture writes
 /// beside a 12-hour clock (`오전`/`오후`, `vorm.`/`nachm.`, `a. m.`/`p. m.`), read beside the
-/// English `AM`/`PM`, which are read whatever is declared — after the clock (`3:04 nachm.`,
-/// the space optional) or ahead of it (`오후 3:04`). A declared designator matches its exact
+/// English `AM`/`PM`, which are read whatever is declared — after the clock (`3:04 nachm.`)
+/// or ahead of it (`오후 3:04`), with any run of white space, or none, between. A declared designator matches its exact
 /// bytes; the English pair matches ASCII case-insensitively. Declared, never looked up, the
 /// way ``NumFormat`` is: ``from(locale:)`` fills it from the locale's own data, and
 /// ``Cast/dateTime(_:order:)-swift.type.method`` is this with nothing declared.
@@ -442,7 +640,7 @@ public struct DateFormat: Equatable, Sendable {
     /// The field order of the date part.
     public let order: DateOrder
     /// The designator of the first half of the day; empty declares none beside `AM`. 1 to 16
-    /// UTF-8 bytes, with no ASCII digit and no ASCII whitespace at either end — the grammar
+    /// UTF-8 bytes, with no ASCII digit and no white space at either end — the grammar
     /// around a designator reads that; a space inside is fine (`a. m.`).
     public var amSymbol: String { designator(at: 4) }
     /// The designator of the second half of the day; empty declares none beside `PM`. Same
@@ -467,16 +665,16 @@ public struct DateFormat: Equatable, Sendable {
     /// Declares the order and, optionally, the designators.
     ///
     /// - Precondition: each designator is empty or 1 to 16 UTF-8 bytes with no ASCII digit
-    ///   and no ASCII whitespace at either end — a caller bug otherwise, not a data verdict.
+    ///   and no white space at either end — a caller bug otherwise, not a data verdict.
     public init(order: DateOrder, amSymbol: String = "", pmSymbol: String = "") {
         precondition(
             Self.isDeclarable(designator: amSymbol),
             "AM designator '\(amSymbol)' must be 1 to \(Self.maxDesignatorBytes) UTF-8 bytes with no ASCII digit and "
-                + "no ASCII whitespace at either end")
+                + "no white space at either end")
         precondition(
             Self.isDeclarable(designator: pmSymbol),
             "PM designator '\(pmSymbol)' must be 1 to \(Self.maxDesignatorBytes) UTF-8 bytes with no ASCII digit and "
-                + "no ASCII whitespace at either end")
+                + "no white space at either end")
         self.order = order
         var raw = Interop.zeroRawDayPeriods
         withUnsafeMutableBytes(of: &raw) { bytes in
@@ -502,13 +700,13 @@ public struct DateFormat: Equatable, Sendable {
             }
     }
 
-    /// The native rule for a designator: 1 to 16 UTF-8 bytes, no ASCII digit, and no ASCII
-    /// whitespace at either end. Empty (none declared) passes.
+    /// The native rule for a designator: 1 to 16 UTF-8 bytes, no ASCII digit, and no white
+    /// space at either end. Empty (none declared) passes.
     static func isDeclarable(designator symbol: String) -> Bool {
         guard !symbol.isEmpty else { return true }
-        let utf8 = symbol.utf8
-        return utf8.count <= maxDesignatorBytes && !utf8.contains(where: NumFormat.isAsciiDigit)
-            && !NumFormat.isAsciiWhitespace(utf8.first!) && !NumFormat.isAsciiWhitespace(utf8.last!)
+        let scalars = symbol.unicodeScalars
+        return symbol.utf8.count <= maxDesignatorBytes && !symbol.utf8.contains(where: NumFormat.isAsciiDigit)
+            && !NumFormat.isWhiteSpace(scalars.first!) && !NumFormat.isWhiteSpace(scalars.last!)
     }
 
     /// Derives the format from a locale's own data: the field order of its short-date

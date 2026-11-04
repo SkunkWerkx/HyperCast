@@ -12,7 +12,8 @@ namespace HyperCast.Interop;
 
 /// <summary>
 /// The native core's numeric-format layout — the Rust crate's <c>RawNumFormat</c>, 92
-/// bytes with 4-byte alignment: a size word, the <see cref="NumStyles"/> bits, the native
+/// bytes with 4-byte alignment: a size word, the <see cref="NumStyles"/> bits and the grouping
+/// policy (bits 8 and 9 of the same word), the native
 /// digits' zero, then every declared symbol in place as its UTF-8 bytes followed by its
 /// length, with nothing between one field and the next. The core reads it where it stands,
 /// so a cast pays for a check of it and no copy. Built by <see cref="NumFormat.ToRaw"/>,
@@ -44,7 +45,7 @@ public struct RawNumFormat
 	/// <summary>The layout's size as the caller built it: 92.</summary>
 	public uint Size;
 
-	/// <summary>The <see cref="NumStyles"/> bits.</summary>
+	/// <summary>The <see cref="NumStyles"/> bits in bits 0 to 7, and the grouping policy in bits 8 and 9: 0 legacy, 256 strict Western, 512 strict Indian.</summary>
 	public uint Flags;
 
 	/// <summary>The native digits' zero code point; 0 declares none.</summary>
@@ -152,6 +153,58 @@ public readonly struct RawFault(uint offset, uint length)
 
 	/// <summary>The byte length of the offending span.</summary>
 	public readonly uint Length = length;
+}
+
+/// <summary>
+/// A fault's span and detail as the detailed exports write them — the Rust crate's
+/// <c>RawFaultDetail</c>, 16 bytes with 4-byte alignment: the size word the caller states,
+/// then the span and the detail code. The core accepts a <see cref="Size"/> of 16 or more
+/// that is a multiple of 4, writes bytes 4 to 16 only, and never writes the size word.
+/// </summary>
+/// <remarks>
+/// <see cref="Detail"/> is the published vocabulary's code (1 to 32), or 0 on a checked
+/// door's violation. A code this binding does not know decodes as
+/// <see cref="FaultDetail.Unknown"/> with the number kept, and the reason and span stay usable.
+/// </remarks>
+[StructLayout(LayoutKind.Sequential)]
+public struct RawFaultDetail
+{
+	/// <summary>The layout's size in bytes: 16.</summary>
+	public const uint SizeInBytes = 16;
+
+	/// <summary>The size the caller provides: <see cref="SizeInBytes"/> or more, a multiple of 4. The core never writes it.</summary>
+	public uint Size;
+
+	/// <summary>The byte offset of the offending span.</summary>
+	public uint Offset;
+
+	/// <summary>The byte length of the offending span.</summary>
+	public uint Length;
+
+	/// <summary>The detail code: 1 to 32 as published, 0 for none.</summary>
+	public uint Detail;
+
+	/// <summary>An empty layout with its <see cref="Size"/> stated, as every detailed call needs.</summary>
+	public static RawFaultDetail Empty => new() { Size = SizeInBytes };
+}
+
+/// <summary>
+/// The date options the detailed exports read — the Rust crate's <c>RawDateOptions</c>, 12
+/// bytes with 4-byte alignment: a size word, the option flags and the pivot year. The core
+/// accepts a size of 8 (the pivot then reads as absent) or 12, never more. Built by
+/// <see cref="DateOptions"/>, which validates on the way.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct RawDateOptions
+{
+	/// <summary>The layout's size as the caller built it: 12.</summary>
+	public uint Size;
+
+	/// <summary>The <see cref="DateShapes"/> bits.</summary>
+	public uint Flags;
+
+	/// <summary>The pivot year, the last year of the 100-year window; 0 for none, otherwise 100 to 9999.</summary>
+	public uint Pivot;
 }
 
 /// <summary>

@@ -7,7 +7,9 @@
 //! games — .NET `Guid`'s little-endian first three fields, SQL Server sort order — stay in
 //! the bindings, exactly where HyperUuid already put them.
 
+use crate::detail::Failure;
 use crate::integer::char_len_at;
+use crate::site::Site;
 use crate::verdict::{Fault, trim};
 
 const PREFIXES: [&[u8]; 3] = [b"urn:uuid:", b"guid:", b"uuid:"];
@@ -15,10 +17,15 @@ const PREFIXES: [&[u8]; 3] = [b"urn:uuid:", b"guid:", b"uuid:"];
 /// Casts UUID text to 16 bytes in RFC 9562 order. Empty ⇒ `Empty`; unrecognized ⇒
 /// `Malformed` at the first offending byte (or spanning the token for structural failures).
 pub fn cast_uuid(input: impl AsRef<[u8]>) -> Result<[u8; 16], Fault> {
-    let input = input.as_ref();
+    uuid(input.as_ref()).map_err(Failure::fault)
+}
+
+/// The UUID door's one parse, for both entry points.
+#[inline]
+pub(crate) fn uuid(input: &[u8]) -> Result<[u8; 16], Failure> {
     let (outer, outer_start) = trim(input);
     if outer.is_empty() {
-        return Err(Fault::EMPTY);
+        return Err(Failure::spanless(Site::UuidBlank));
     }
 
     let (mut text, mut start) = (outer, outer_start);
@@ -38,7 +45,7 @@ pub fn cast_uuid(input: impl AsRef<[u8]>) -> Result<[u8; 16], Fault> {
     }
     if text.is_empty() {
         // A bare prefix ("GUID:") is present-but-unrecognizable, not absent.
-        return Err(Fault::malformed(outer_start, outer.len()));
+        return Err(Failure::at(Site::UuidBarePrefix, outer_start, outer.len()));
     }
 
     match text {
@@ -82,13 +89,13 @@ fn hex(byte: u8) -> Option<u8> {
 /// `codegen-units = 1`, kept one here and `cast_uuid` failed the no-panic proof. A pair that
 /// is somehow absent reads as a non-hex byte.
 #[inline]
-fn hex_pair(text: &[u8], at: usize, start: usize) -> Result<u8, Fault> {
+fn hex_pair(text: &[u8], at: usize, start: usize) -> Result<u8, Failure> {
     let nibble = |at: usize| text.get(at).map_or(0xFF, |&byte| HEX[byte as usize]);
     let hi = nibble(at);
     let lo = nibble(at + 1);
     if hi | lo == 0xFF {
         let bad = if hi == 0xFF { at } else { at + 1 };
-        return Err(Fault::malformed(start + bad, char_len_at(text, bad)));
+        return Err(Failure::at(Site::UuidHexDigit, start + bad, char_len_at(text, bad)));
     }
     Ok((hi << 4) | lo)
 }
@@ -97,13 +104,14 @@ fn hex_pair(text: &[u8], at: usize, start: usize) -> Result<u8, Fault> {
 const D_PAIRS: [usize; 16] = [0, 2, 4, 6, 9, 11, 14, 16, 19, 21, 24, 26, 28, 30, 32, 34];
 
 /// D format: `dddddddd-dddd-dddd-dddd-dddddddddddd`.
-fn parse_d(text: &[u8], start: usize) -> Result<[u8; 16], Fault> {
+fn parse_d(text: &[u8], start: usize) -> Result<[u8; 16], Failure> {
     let Ok(d) = <&[u8; 36]>::try_from(text) else {
-        return Err(Fault::malformed(start, text.len()));
+        return Err(Failure::at(Site::UuidWrongLength, start, text.len()));
     };
     for hyphen in [8usize, 13, 18, 23] {
         if d[hyphen] != b'-' {
-            return Err(Fault::malformed(start + hyphen, char_len_at(text, hyphen)));
+            let len = char_len_at(text, hyphen);
+            return Err(Failure::at(Site::UuidHyphen, start + hyphen, len));
         }
     }
     // The 32 digits as four little-endian words of eight: the first group, the two groups
@@ -123,9 +131,9 @@ fn parse_d(text: &[u8], start: usize) -> Result<[u8; 16], Fault> {
 }
 
 /// N format: 32 bare hex digits.
-fn parse_n(text: &[u8], start: usize) -> Result<[u8; 16], Fault> {
+fn parse_n(text: &[u8], start: usize) -> Result<[u8; 16], Failure> {
     let Ok(n) = <&[u8; 32]>::try_from(text) else {
-        return Err(Fault::malformed(start, text.len()));
+        return Err(Failure::at(Site::UuidNWrongLength, start, text.len()));
     };
     let (words, _) = n.as_chunks::<8>();
     let mut packed = [0u64; 4];
@@ -182,54 +190,54 @@ fn decode8(word: u64) -> (u32, bool) {
 /// The fault for text [`decode_words`] refused: the first pair at `pairs` holding a non-hex
 /// byte, read again one pair at a time. Only reached on bad input.
 #[cold]
-fn first_bad_pair(text: &[u8], pairs: &[usize; 16], start: usize) -> Fault {
+fn first_bad_pair(text: &[u8], pairs: &[usize; 16], start: usize) -> Failure {
     pairs
         .iter()
         .find_map(|&at| hex_pair(text, at, start).err())
-        .unwrap_or(Fault::malformed(start, text.len()))
+        .unwrap_or_else(|| Failure::at(Site::UuidNoBadPair, start, text.len()))
 }
 
 /// B and P formats: a D-format UUID wrapped in `{}` or `()`.
-fn parse_wrapped(text: &[u8], start: usize, close: u8) -> Result<[u8; 16], Fault> {
+fn parse_wrapped(text: &[u8], start: usize, close: u8) -> Result<[u8; 16], Failure> {
     if text.len() != 38 {
-        return Err(Fault::malformed(start, text.len()));
+        return Err(Failure::at(Site::UuidWrappedWrongLength, start, text.len()));
     }
     let Some(inner) = text.get(1..37).filter(|_| text.last() == Some(&close)) else {
-        return Err(Fault::malformed(start + 37, char_len_at(text, 37)));
+        return Err(Failure::at(Site::UuidWrappedClose, start + 37, char_len_at(text, 37)));
     };
     parse_d(inner, start + 1)
 }
 
 /// X format: `{0xdddddddd,0xdddd,0xdddd,{0xdd,0xdd,0xdd,0xdd,0xdd,0xdd,0xdd,0xdd}}`,
 /// each component 1 to its full width in hex digits, no interior whitespace.
-fn parse_x(text: &[u8], start: usize) -> Result<[u8; 16], Fault> {
+fn parse_x(text: &[u8], start: usize) -> Result<[u8; 16], Failure> {
     let mut out = [0u8; 16];
     let mut i = 0;
-    let expect = |wanted: u8, i: &mut usize| -> Result<(), Fault> {
+    let expect = |wanted: u8, i: &mut usize| -> Result<(), Failure> {
         match text.get(*i) {
             Some(&byte) if byte == wanted => {
                 *i += 1;
                 Ok(())
             }
-            Some(_) => Err(Fault::malformed(start + *i, char_len_at(text, *i))),
-            None => Err(Fault::malformed(start, text.len())),
+            Some(_) => Err(Failure::at(Site::UuidXDelimiter, start + *i, char_len_at(text, *i))),
+            None => Err(Failure::at(Site::UuidXEnded, start, text.len())),
         }
     };
 
     // Reads `0x` + 1..=max_digits hex digits, big-endian into out[at..at + width].
     let component =
-        |i: &mut usize, out: &mut [u8; 16], at: usize, width: usize| -> Result<(), Fault> {
+        |i: &mut usize, out: &mut [u8; 16], at: usize, width: usize| -> Result<(), Failure> {
             let prefixed = matches!(text.get(*i..), Some([b'0', x, ..]) if x | 0x20 == b'x');
             if !prefixed {
                 let bad = (*i).min(text.len().saturating_sub(1));
-                return Err(Fault::malformed(start + bad, char_len_at(text, bad)));
+                return Err(Failure::at(Site::UuidXPrefix, start + bad, char_len_at(text, bad)));
             }
             *i += 2;
             let mut value: u64 = 0;
             let mut digits = 0;
             while let Some(nibble) = text.get(*i).and_then(|&byte| hex(byte)) {
                 if digits == width * 2 {
-                    return Err(Fault::malformed(start + *i, char_len_at(text, *i)));
+                    return Err(Failure::at(Site::UuidXWidth, start + *i, char_len_at(text, *i)));
                 }
                 value = (value << 4) | nibble as u64;
                 digits += 1;
@@ -237,7 +245,8 @@ fn parse_x(text: &[u8], start: usize) -> Result<[u8; 16], Fault> {
             }
             if digits == 0 {
                 let bad = (*i).min(text.len().saturating_sub(1));
-                return Err(Fault::malformed(start + bad, char_len_at(text, bad)));
+                let len = char_len_at(text, bad);
+                return Err(Failure::at(Site::UuidXDigitExpected, start + bad, len));
             }
             for (slot, byte) in out.iter_mut().skip(at).take(width).enumerate() {
                 *byte = (value >> ((width - 1 - slot) * 8)) as u8;
@@ -262,7 +271,7 @@ fn parse_x(text: &[u8], start: usize) -> Result<[u8; 16], Fault> {
     expect(b'}', &mut i)?;
     expect(b'}', &mut i)?;
     if i != text.len() {
-        return Err(Fault::malformed(start + i, char_len_at(text, i)));
+        return Err(Failure::at(Site::UuidXTrailing, start + i, char_len_at(text, i)));
     }
     Ok(out)
 }
@@ -272,7 +281,7 @@ mod tests {
     use super::*;
 
     /// The pair-by-pair decoder the SWAR one replaced, kept as its reference.
-    fn by_pairs(text: &[u8], pairs: &[usize; 16], start: usize) -> Result<[u8; 16], Fault> {
+    fn by_pairs(text: &[u8], pairs: &[usize; 16], start: usize) -> Result<[u8; 16], Failure> {
         let mut out = [0u8; 16];
         for (slot, &at) in out.iter_mut().zip(pairs) {
             *slot = hex_pair(text, at, start)?;
@@ -318,7 +327,7 @@ mod tests {
     fn swar_decode_faults_at_the_first_bad_digit() {
         let text = b"0aB1c2D3-e4F5-a6b7-C8d9-E0f1A2bXCgd5";
         assert_eq!(parse_d(text, 0), by_pairs(text, &D_PAIRS, 0));
-        assert_eq!(parse_d(text, 0), Err(Fault::malformed(31, 1)));
+        assert_eq!(parse_d(text, 0).map_err(Failure::fault), Err(Fault::malformed(31, 1)));
     }
 
     /// The decoded bytes are the `uuid` crate's for a spread of values.

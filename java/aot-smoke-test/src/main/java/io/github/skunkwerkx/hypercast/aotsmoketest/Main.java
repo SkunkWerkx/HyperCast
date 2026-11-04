@@ -5,10 +5,20 @@ import io.github.skunkwerkx.hypercast.CastFailure;
 import io.github.skunkwerkx.hypercast.Checked;
 import io.github.skunkwerkx.hypercast.CheckedVerdict;
 import io.github.skunkwerkx.hypercast.Constraints;
+import io.github.skunkwerkx.hypercast.DateOptions;
 import io.github.skunkwerkx.hypercast.DateOrder;
 import io.github.skunkwerkx.hypercast.DateTimeFormat;
+import io.github.skunkwerkx.hypercast.DetailedCast;
+import io.github.skunkwerkx.hypercast.DetailedChecked;
+import io.github.skunkwerkx.hypercast.DetailedCheckedVerdict;
+import io.github.skunkwerkx.hypercast.DetailedFault;
+import io.github.skunkwerkx.hypercast.DetailedSuccess;
+import io.github.skunkwerkx.hypercast.DetailedVerdict;
+import io.github.skunkwerkx.hypercast.DetailedViolation;
 import io.github.skunkwerkx.hypercast.ExcelEpoch;
 import io.github.skunkwerkx.hypercast.Fault;
+import io.github.skunkwerkx.hypercast.Grouping;
+import io.github.skunkwerkx.hypercast.MonthNames;
 import io.github.skunkwerkx.hypercast.NumFormat;
 import io.github.skunkwerkx.hypercast.Success;
 import io.github.skunkwerkx.hypercast.UnixPrecision;
@@ -65,6 +75,32 @@ public final class Main {
             case Violation<T> v -> "violation " + v.keyword() + " @ " + v.offset() + "+" + v.length();
             case Fault<T> f -> "fault " + f.reason() + " @ " + f.offset() + "+" + f.length();
         };
+        if (actual.equals(expected)) {
+            System.out.println("ok   " + name + " = " + actual);
+        } else {
+            System.out.println("FAIL " + name + ": " + actual + " (expected " + expected + ")");
+            failures++;
+        }
+    }
+
+    private static <T> void detailed(String name, DetailedVerdict<T> verdict, String expected) {
+        String actual = switch (verdict) {
+            case DetailedSuccess<T> s -> "ok " + s.value();
+            case DetailedFault<T> f -> "fault " + f.reason() + " " + f.detail() + " @ " + f.offset() + "+" + f.length();
+        };
+        report(name, actual, expected);
+    }
+
+    private static <T> void detailedChecked(String name, DetailedCheckedVerdict<T> verdict, String expected) {
+        String actual = switch (verdict) {
+            case DetailedChecked<T> c -> "checked " + c.value();
+            case DetailedViolation<T> v -> "violation " + v.keyword() + " @ " + v.offset() + "+" + v.length();
+            case DetailedFault<T> f -> "fault " + f.detail() + " @ " + f.offset() + "+" + f.length();
+        };
+        report(name, actual, expected);
+    }
+
+    private static void report(String name, String actual, String expected) {
         if (actual.equals(expected)) {
             System.out.println("ok   " + name + " = " + actual);
         } else {
@@ -204,6 +240,43 @@ public final class Main {
                 Constraints.text().trim(true).enumOf("M", "F", "X").build();
         checked("text checked", Cast.text(" F ", sex), "checked F");
 
+        // The strict default, and the detailed path's four downcall shapes: a text door with
+        // date options and a month vocabulary, a typed door, and the checked pair.
+        report(
+                "i32 (strict Western)",
+                String.valueOf(Cast.i32("12,34", NumFormat.INVARIANT)),
+                "Fault[reason=MALFORMED, offset=2, length=3]");
+        check("i32 (legacy)", Cast.i32("12,34", NumFormat.INVARIANT.withGrouping(Grouping.LEGACY)), 1234);
+        detailed("i32 detailed", DetailedCast.i32("12,34", NumFormat.INVARIANT), "fault MALFORMED group_size @ 2+3");
+        detailed("date (common forms)", DetailedCast.date("20260107", DateOptions.COMMON_FORMS), "ok 2026-01-07");
+        MonthNames english = MonthNames.builder()
+                .add(1, "Jan")
+                .add(2, "Feb")
+                .add(3, "Mar")
+                .add(4, "Apr")
+                .add(5, "May")
+                .add(6, "Jun")
+                .add(7, "Jul")
+                .add(8, "Aug")
+                .add(9, "Sep")
+                .add(10, "Oct")
+                .add(11, "Nov")
+                .add(12, "Dec")
+                .build();
+        detailed(
+                "date (month names, pivot)",
+                DetailedCast.date("07-Jan-26", DateOrder.DAY_MONTH_YEAR, new DateOptions(0, 2029), english),
+                "ok 2026-01-07");
+        detailed("excelTime detailed", DetailedCast.excelTime(Double.NaN), "fault MALFORMED not_finite @ 0+0");
+        detailedChecked(
+                "f64 checked detailed",
+                DetailedCast.f64("91", NumFormat.INVARIANT, latitude),
+                "violation maximum @ 0+2");
+        detailedChecked(
+                "f64FromDouble checked detailed",
+                DetailedCast.f64FromDouble(-91.0, latitude),
+                "violation minimum @ 0+0");
+
         System.out.println(failures == 0 ? "AOT smoke test passed." : "AOT smoke test FAILED (" + failures + ").");
         System.exit(failures == 0 ? 0 : 1);
     }
@@ -222,7 +295,7 @@ public final class Main {
         long natives = Arrays.stream(core.getDeclaredMethods())
                 .filter(m -> Modifier.isNative(m.getModifiers()))
                 .count();
-        require(natives == (ffm ? 0 : 33), expected + " expected, but NativeCore declares " + natives + " natives");
+        require(natives == (ffm ? 0 : 37), expected + " expected, but NativeCore declares " + natives + " natives");
         String major = "n/a (image)";
         if (System.getProperty("org.graalvm.nativeimage.imagecode") == null) {
             try (InputStream in = core.getResourceAsStream("NativeCore.class")) {

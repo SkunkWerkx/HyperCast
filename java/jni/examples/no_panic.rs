@@ -121,6 +121,32 @@ fn main() {
             black_box(hypercast_jni::native_cast_declared_decimal(
                 env, class, input, out,
             ));
+            let options = black_box(null_mut());
+            black_box(hypercast_jni::native_cast_detailed(
+                env, class, code, code, format, format, options, entries, input, out,
+            ));
+            black_box(hypercast_jni::native_cast_detailed_from_f64(
+                env, class, code, code, value, out,
+            ));
+            black_box(hypercast_jni::native_cast_checked_detailed(
+                env,
+                class,
+                code,
+                format,
+                constraints,
+                entries,
+                input,
+                out,
+            ));
+            black_box(hypercast_jni::native_cast_checked_detailed_from_f64(
+                env,
+                class,
+                code,
+                value,
+                constraints,
+                entries,
+                out,
+            ));
             black_box(hypercast_jni::native_jni_natives(env, class));
             black_box(hypercast_jni::JNI_OnLoad(
                 black_box(null_mut()),

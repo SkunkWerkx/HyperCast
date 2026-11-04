@@ -1,7 +1,9 @@
 // Proves the binding under Native AOT for real: this program publishes with PublishAot and
-// crosses every native entry point the binding declares — the thirty-one cast_* functions and
-// hypercast_version — against the real native library, including the generic door and the
-// union's compile-checked consumption. Exit code 0 only if every cast lands as expected.
+// crosses every native entry point the binding calls — the four detailed doors (cast_detailed,
+// cast_detailed_from_f64, cast_checked_detailed, cast_checked_detailed_from_f64) that every
+// cast goes through, cast_constraints_check, cast_declared_decimal and hypercast_version —
+// against the real native library, including the generic door and the union's compile-checked
+// consumption. Exit code 0 only if every cast lands as expected.
 //
 // The body lives here rather than in Program.cs so the apps that run it can call it: Program.cs
 // is the console entry point, and HyperCast.AppleSmokeTest and HyperCast.AndroidSmokeTest
@@ -101,9 +103,27 @@ internal static class SmokeTest
 		// The UTF-8 doors are the native contract itself — no transcode in front of the crossing.
 		Check("utf8", Cast.Int32("(1,234)"u8, NumFormat.Invariant), -1234);
 
+		// What 1.1 adds, through the same doors: a strict grouping policy (the default; Indian where
+		// declared), the detail a fault names, and the date options and month names a date door is given.
+		Check("indian grouping", Cast.Int32("12,34,567", NumFormat.Invariant with { Grouping = NumGrouping.Indian }), 1_234_567);
+		Check("legacy grouping", Cast.Int32("12,34", NumFormat.Invariant with { Grouping = NumGrouping.Legacy }), 1234);
+		if (Cast.Int32("12,34", NumFormat.Invariant) is Fault { Reason: CastFailure.Malformed, Offset: 2, Length: 3, Detail: FaultDetail.GroupSize })
+			Console.WriteLine("ok   strict grouping: group_size @ 2+3");
+		else
+		{
+			Console.WriteLine("FAIL strict grouping: 12,34 is not a group_size fault");
+			failures++;
+		}
+		Check("compact date", Cast.Date("20260107", DateOptions.CommonForms), new DateOnly(2026, 1, 7));
+		Check("month names", Cast.Date("07-Jan-26", DateOrder.DayMonthYear, new DateOptions(DateShapes.None, 2029)
+		{
+			Months = new MonthNames((1, "Jan"), (2, "Feb"), (3, "Mar"), (4, "Apr"), (5, "May"), (6, "Jun"),
+				(7, "Jul"), (8, "Aug"), (9, "Sep"), (10, "Oct"), (11, "Nov"), (12, "Dec")),
+		}), new DateOnly(2026, 1, 7));
+
 		// The checked doors: a declaration judged once (cast_constraints_check, its decimal text
-		// converted by cast_declared_decimal), then a value by it, from text (cast_checked) and from a double (cast_checked_from_f64), and the text door
-		// itself (cast_text). Each answer is pinned through the union's consumption, rendered.
+		// converted by cast_declared_decimal), then a value by it, from text (cast_checked_detailed) and from a double
+		// (cast_checked_detailed_from_f64), and the text door itself (cast_detailed, door 18). Each answer is pinned through the union's consumption, rendered.
 		void Judged<T>(string name, CheckedVerdict<T> verdict, string expected) where T : notnull
 		{
 			var rendered = verdict switch

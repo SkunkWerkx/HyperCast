@@ -1,4 +1,4 @@
-// The C ABI of the hypercast core (https://github.com/SkunkWerkx/HyperCast): the 32 functions
+// The C ABI of the hypercast core (https://github.com/SkunkWerkx/HyperCast): the 36 functions
 // the shared and static libraries export, which every binding calls through, and the
 // #[repr(C)] types they read and write. hypercast_version() is the library's version.
 //
@@ -48,6 +48,20 @@
 // bound, multipleOf or integer `enum` entry written in invariant notation into a
 // HyperCastDecimal, the one conversion every binding calls, and returns 0 or 8,
 // cast_constraints_check's code for a value no door can hold.
+//
+// The four detailed exports come last: cast_detailed, cast_detailed_from_f64,
+// cast_checked_detailed and cast_checked_detailed_from_f64 reach the doors above by their
+// door code, with the parameter a door declares (0 where it declares none), and write a
+// HyperCastRawFaultDetail, whose `detail` names what failed (a code a caller doesn't know is
+// still a failure with a usable reason and span). They judge a format by 1.1's rules, so
+// grouping policy HyperCastNumFormat_GROUPING_POLICY and any undefined flag bit are -1 there,
+// while every other export ignores flag bits 8 and up and parses with legacy grouping. The
+// date doors take HyperCastRawDateOptions and a month vocabulary through cast_detailed only.
+// Every argument is validated before anything is written, and -1 writes nothing. A strict
+// grouping policy needs a 1.1 core: a 1.0 core has no detailed exports and ignores the policy
+// bits, so before declaring one check that the core has the same major version and a minor at
+// least the one the caller needs, the patch ignored: `(hypercast_version() >> 16) == 1 &&
+// ((hypercast_version() >> 8) & 0xFF) >= 1`.
 
 #ifndef HYPERCAST_H
 #define HYPERCAST_H
@@ -107,10 +121,16 @@ typedef struct HyperCastSymbol_8 {
 // `руб.`). Empty is [`CurrencySymbol::NONE`]: nothing declared, nothing matched.
 //
 // The symbol is matched whole, at the edges of the numeric body — leading (before or
-// after a sign) or trailing, with optional ASCII whitespace between it and the digits —
+// after a sign) or trailing, with optional white space between it and the digits —
 // and only while [`NumFormat::CURRENCY`] is set. It never participates in the digit scan,
 // so a symbol that happens to contain a separator character (`kr.` under `.` grouping)
 // is fine.
+//
+// White space may sit inside a symbol (CLDR's `F CFA`, written with U+202F), never at its
+// edges, where the doors ignore it. Inside, `' '`, U+00A0 and U+202F stand for each other
+// in the input, one character for one: `F CFA` declared with any of them reads `F CFA`
+// written with any of them. Every other character, other white space included, matches
+// exactly; a run of spaces never matches one, and the space is never optional.
 //
 // ABI layout: the 16 bytes, then the length, 17 bytes with no alignment, as a [`Symbol`].
 typedef struct HyperCastCurrencySymbol {
@@ -136,12 +156,14 @@ typedef struct HyperCastCurrencySymbol {
 // 4-byte alignment; [`RawNumFormat`](crate::RawNumFormat) puts a size word ahead of it.
 typedef struct HyperCastNumFormat {
   // Bitwise OR of the `GROUPING`/`PARENS`/`EXPONENT`/`RADIX_PREFIX`/`PERCENT`/`CURRENCY`/
-  // `TRAILING_SIGN` flags, plus the `SEPARATOR_DETECT` policy.
+  // `TRAILING_SIGN` flags, plus the `SEPARATOR_DETECT` policy and, in bits 8 and 9, the
+  // grouping policy (`GROUPING_LEGACY`, `GROUPING_WESTERN` or `GROUPING_INDIAN`).
   uint32_t flags;
   // Native digits read beside ASCII `0`–`9`. [`NativeDigits::NONE`] declares none.
   HyperCastNativeDigits digits;
   // The declared decimal separator (`.` invariant, `,` in eurozone-style text): one or
-  // two characters. An empty symbol matches nothing, so no fraction can be written.
+  // two characters, with no white space in them (a numeral admits white space only as a
+  // group separator). An empty symbol matches nothing, so no fraction can be written.
   struct HyperCastSymbol_8 decimal_sep;
   // The declared digit-group separator (`,` invariant, `.` or U+00A0 elsewhere). Must
   // differ from `decimal_sep`; the doors check the decimal separator first, so a caller
@@ -150,8 +172,8 @@ typedef struct HyperCastNumFormat {
   struct HyperCastSymbol_8 group_sep;
   // The decimal separator of a currency amount — read in place of `decimal_sep` when the
   // declared symbol is present in the text, as the BCL switches to a culture's
-  // `CurrencyDecimalSeparator` when it sees the symbol. [`Symbol::NONE`] keeps
-  // `decimal_sep`.
+  // `CurrencyDecimalSeparator` when it sees the symbol, and with no white space in it
+  // either. [`Symbol::NONE`] keeps `decimal_sep`.
   struct HyperCastSymbol_8 currency_decimal_sep;
   // The group separator of a currency amount, likewise. [`Symbol::NONE`] keeps `group_sep`.
   struct HyperCastSymbol_8 currency_group_sep;
@@ -168,9 +190,11 @@ typedef struct HyperCastNumFormat {
   // set. [`CurrencySymbol::NONE`] declares nothing.
   struct HyperCastCurrencySymbol currency;
 } HyperCastNumFormat;
-// Permit `group_sep` between digits (group sizes are not validated — a separator must
-// simply sit between two digits, HyperCast's own deterministic rule where .NET's
-// `AllowThousands` deferred to per-culture quirks).
+// Permit `group_sep` between digits. Under the legacy grouping policy group sizes are not
+// validated — a separator must simply sit between two digits, HyperCast's own
+// deterministic rule where .NET's `AllowThousands` deferred to per-culture quirks; a
+// strict policy ([`GROUPING_WESTERN`](Self::GROUPING_WESTERN),
+// [`GROUPING_INDIAN`](Self::GROUPING_INDIAN)) judges every group.
 #define HyperCastNumFormat_GROUPING (1 << 0)
 // Permit accounting parentheses as negation: `(1,234)` is -1234.
 #define HyperCastNumFormat_PARENS (1 << 1)
@@ -197,14 +221,14 @@ typedef struct HyperCastNumFormat {
 #define HyperCastNumFormat_SEPARATOR_DETECT (1 << 5)
 // Permit the declared [`currency`](Self::currency) symbol at either edge of the
 // numeric body — leading (`$5`, `-$5`, `$ -5`) or trailing (`5 €`, `1.234,50 kr.`),
-// once, with optional ASCII whitespace between symbol and digits; accounting
+// once, with optional white space between symbol and digits; accounting
 // parentheses wrap the symbol along with the digits (`($5)`, `(1.234,50 kr.)`). With
 // [`CurrencySymbol::NONE`] declared the flag matches nothing and changes nothing.
 // Integer and real doors.
 #define HyperCastNumFormat_CURRENCY (1 << 6)
 // Permit the sign after the digits (`5-`, `5 -`, `5 €-`, `5- €`), the way a culture
 // whose negative pattern is `n-` writes it and .NET's `AllowTrailingSign` reads it:
-// ASCII `-`/`+` or the declared signs, once, with optional ASCII whitespace before it,
+// ASCII `-`/`+` or the declared signs, once, with optional white space before it,
 // and never beside a leading sign or inside accounting parentheses. Not part of
 // [`ALL`](Self::ALL): a bridge sets it from the culture's own negative pattern.
 #define HyperCastNumFormat_TRAILING_SIGN (1 << 7)
@@ -212,6 +236,28 @@ typedef struct HyperCastNumFormat {
 // is declared from a culture's pattern rather than assumed ([`SEPARATOR_DETECT`](Self::SEPARATOR_DETECT)
 // is a separator *policy*, not a lenience, and is deliberately not included either).
 #define HyperCastNumFormat_ALL (((((HyperCastNumFormat_GROUPING | HyperCastNumFormat_PARENS) | HyperCastNumFormat_EXPONENT) | HyperCastNumFormat_RADIX_PREFIX) | HyperCastNumFormat_PERCENT) | HyperCastNumFormat_CURRENCY)
+// Grouping policy `00`, legacy: a group separator anywhere between two digits, whatever
+// the group sizes (`12,34` is 1234). What a format declaring no policy has: the C ABI's
+// null format, a 1.0 layout, [`new`](Self::new) with no policy bits, and
+// [`INVARIANT`](Self::INVARIANT).
+#define HyperCastNumFormat_GROUPING_LEGACY 0
+// Grouping policy `01`, strict Western: once a numeral uses a group separator, its
+// integer part is groups of exactly three digits counted leftward from the decimal
+// separator (or the numeral's end), the leftmost group one to three. An ungrouped
+// numeral stays valid; grouping after the decimal separator or in an exponent never is.
+// Digits are counted as digits, native ones included, never bytes, and the rule holds for
+// the currency group separator and each space-like separator alike. A policy only
+// judges groups: with [`GROUPING`](Self::GROUPING) off, a group separator stays forbidden.
+#define HyperCastNumFormat_GROUPING_WESTERN (1 << 8)
+// Grouping policy `10`, strict Indian (lakh and crore): as
+// [`GROUPING_WESTERN`](Self::GROUPING_WESTERN), but the group next to the decimal
+// separator has three digits, every group to its left two, and the leftmost one or two
+// (`12,34,567`).
+#define HyperCastNumFormat_GROUPING_INDIAN (2 << 8)
+// The two policy bits, 8 and 9, within `flags`. Policy `11` is refused by
+// [`check`](Self::check). Set a policy with [`with_grouping`](Self::with_grouping), which
+// replaces the field.
+#define HyperCastNumFormat_GROUPING_POLICY (3 << 8)
 
 // [`NumFormat`] as it crosses the ABI — the size-tagged layout of 0.9.0: a size word, then
 // the format itself, byte for byte, 92 bytes with 4-byte alignment. The core reads the
@@ -328,8 +374,8 @@ typedef struct HyperCastSymbol_16 {
 // writes for the two halves of a 12-hour clock (`오전`/`오후`, `vorm.`/`nachm.`, `a. m.`/
 // `p. m.`), read beside the English `AM`/`PM`, which are always read. Declared, never
 // looked up, like every other piece of culture here; a binding's bridge fills them from
-// its platform's data. Up to 16 UTF-8 bytes each, with no ASCII digit and no ASCII
-// whitespace at either end (the grammar around a designator reads that).
+// its platform's data. Up to 16 UTF-8 bytes each, with no ASCII digit and no white
+// space at either end (the grammar around a designator reads that); inside stays allowed.
 //
 // ABI layout: the two designators in place, 34 bytes with no alignment, each its 16 bytes
 // then its length; [`RawDayPeriods`](crate::RawDayPeriods) puts a size word ahead of them.
@@ -477,6 +523,63 @@ typedef struct HyperCastRawSpan {
 } HyperCastRawSpan;
 // The layout's size in bytes.
 #define HyperCastRawSpan_SIZE 8
+
+// The date options as they cross the ABI: a size word, the option bits
+// ([`DateOptions::COMPACT_DATE`](crate::DateOptions::COMPACT_DATE) and the others), and the
+// two-digit-year pivot, 12 bytes with 4-byte alignment.
+//
+// | Offset | Field | Bytes |
+// | --- | --- | --- |
+// | 0 | `size`, a `u32` | 4 |
+// | 4 | `flags`, the option bits | 4 |
+// | 8 | `pivot`, `0` for none, else 100–9999 | 4 |
+//
+// `size` is [`MIN_SIZE`](Self::MIN_SIZE) (the size and flags words; the pivot is then `0`,
+// none) or [`SIZE`](Self::SIZE); any other size, a flag bit this core doesn't define, or a
+// pivot other than `0` or 100–9999 is a contract violation. A null pointer is no options. The
+// core never writes it.
+typedef struct HyperCastRawDateOptions {
+  // The bytes the caller built: [`RawDateOptions::SIZE`] or [`RawDateOptions::MIN_SIZE`].
+  uint32_t size;
+  // The option bits.
+  uint32_t flags;
+  // The last year of the window a two-digit year is read in; `0` for none.
+  uint32_t pivot;
+} HyperCastRawDateOptions;
+// The layout's size in bytes, which `size` carries.
+#define HyperCastRawDateOptions_SIZE 12
+// The smallest `size` the core reads: the size and flags words, with no pivot.
+#define HyperCastRawDateOptions_MIN_SIZE 8
+
+// A detailed export's fault: the span and the [`Detail`](crate::Detail) code, behind a size
+// word the caller writes, 16 bytes with 4-byte alignment.
+//
+// | Offset | Field | Bytes |
+// | --- | --- | --- |
+// | 0 | `size`, a `u32`, written by the caller | 4 |
+// | 4 | `offset`, where the span starts in the caller's input | 4 |
+// | 8 | `len`, the span's length in bytes | 4 |
+// | 12 | `detail`, a [`Detail`](crate::Detail) code, or `0` for a checked violation | 4 |
+//
+// `size` says how many bytes the caller provides: at least [`SIZE`](Self::SIZE) and a
+// multiple of 4, or the export refuses the call (−1) and writes nothing. A larger size, from
+// a caller built against a later layout, is accepted: this core writes bytes 4 to 16 and
+// never a byte past them, so such a caller sets any field beyond those to its neutral value
+// itself. The core never writes `size`, and writes the rest only on codes 1 to 3 (and on 4
+// at the checked exports); a null pointer is allowed and nothing is written.
+typedef struct HyperCastRawFaultDetail {
+  // The bytes the caller provides: [`RawFaultDetail::SIZE`] or more, a multiple of 4.
+  uint32_t size;
+  // Where the offending bytes start, as an offset into the caller's input.
+  uint32_t offset;
+  // How many bytes they run; 0 for a typed door, which has no text to index.
+  uint32_t len;
+  // What failed: a [`Detail`](crate::Detail) code, 1 or more; `0` on a checked violation.
+  // A code this binding doesn't know is still a failure with a usable reason and span.
+  uint32_t detail;
+} HyperCastRawFaultDetail;
+// The layout's size in bytes, the least `size` the core accepts.
+#define HyperCastRawFaultDetail_SIZE 16
 
 #ifdef __cplusplus
 extern "C" {
@@ -661,14 +764,66 @@ int32_t cast_text(const uint8_t *ptr, uintptr_t len, struct HyperCastRawSpan *ou
 
 // Converts a bound, `multipleOf` or integer `enum` entry written in invariant notation (an
 // optional sign, digits, an optional `.` and digits, an optional exponent; ASCII only, no
-// whitespace) at `ptr`/`len` into a `Decimal` at `out`, exactly: trailing zeros dropped,
-// zero unsigned. Returns 0 with `out` written, or 8 (a value no door can hold: a magnitude
+// white space of any kind) at `ptr`/`len` into a `Decimal` at `out`, exactly: trailing zeros
+// dropped, zero unsigned. Returns 0 with `out` written, or 8 (a value no door can hold: a magnitude
 // past 96 bits or a scale past 28, or text not in invariant notation, invalid UTF-8
 // included), leaving `out` untouched; 8 is `cast_constraints_check`'s code for the same
 // refusal. -1 is a contract violation: a null `out`, or a null `ptr` with a non-zero `len`.
 // Every binding converts a declaration's strings through this one export, so none restates
 // the conversion.
 int32_t cast_declared_decimal(const uint8_t *ptr, uintptr_t len, struct HyperCastDecimal *out);
+
+// Casts the text at `ptr`/`len` through door `door`, reporting a failure's detail. `door` is
+// `Door`'s code (1 bool, 2 to 9 the integers `int8_t` … `uint64_t`, 10 float, 11 double, 12
+// uuid, 13 timestamp, 14 unix, 15 date, 16 time, 17 duration, 18 text, 19 decimal, 20
+// date_ordered, 21 datetime, 22 excel_serial, 23 char) and `param` what the door declares,
+// numbered as its own export numbers it (14's precision, 20's and 21's order, 22's epoch),
+// and `0` at every other door. `out` receives exactly what that door's own export writes
+// (`cast_text`'s `RawSpan` at 18), and need not be aligned.
+//
+// Each declaration is read only by the doors it is for, and a pointer a door ignores is
+// never read: `format` by the numeric doors 2 to 11 and 19 (null for the invariant format,
+// legacy grouping), judged by 1.1's rules, so grouping policy 3 and any `flags` bit 1.1
+// doesn't define are refused; `periods` by 21 (null for English); `date_options` by 13, 15,
+// 20 and 21 (null for none); and the month vocabulary at `vocab_ptr`/`vocab_len` by 20 and 21
+// only, packed as each entry's month byte (1 to 12), a little-endian `uint32_t` byte length,
+// then that many UTF-8 bytes, a length of 0 meaning none whatever the pointer. The
+// vocabulary is independent of `date_options`: with null options it opens month names and
+// nothing else. It is judged in full on every call.
+//
+// Returns 0 with the value written to `out`; 1, 2 or 3, the door's own fault, with `offset`,
+// `len` and `detail` written to a non-null `fault`. -1 is a contract violation and writes
+// nothing: a `fault` whose `size` is under 16 or not a multiple of 4, an unknown door, a
+// `param` the door doesn't take, or a declaration the door reads and the core refuses
+// (a `date_options` size other than 8 or 12, an undefined option bit, a pivot other than 0
+// or 100 to 9999, a null `vocab_ptr` with a nonzero `vocab_len`, a vocabulary its rules
+// refuse).
+int32_t cast_detailed(uint32_t door, uint32_t param, const struct HyperCastRawNumFormat *format, const struct HyperCastRawDayPeriods *periods, const struct HyperCastRawDateOptions *date_options, const uint8_t *vocab_ptr, uintptr_t vocab_len, const uint8_t *ptr, uintptr_t len, void *out, struct HyperCastRawFaultDetail *fault);
+
+// Reads the double `value` through typed door `door`, reporting a failure's detail: the
+// doors with a typed export, 19 (`cast_decimal_from_f64`, a `Decimal`), 22 with `param` the
+// epoch (`cast_excel_serial_from_f64`, a `CivilDateTime`), 16 (`cast_excel_time`, a
+// `uint64_t`) and 17 (`cast_excel_duration`, a `Duration`), each as that export reads it.
+// `param` is `0` but at 22. `out` need not be aligned. A failure's span is empty, with no
+// text to index. Returns as `cast_detailed` does; -1 for any other door, a `param` the door
+// doesn't take, or a `fault` too small.
+int32_t cast_detailed_from_f64(uint32_t door, uint32_t param, double value, void *out, struct HyperCastRawFaultDetail *fault);
+
+// `cast_checked`, reporting a failure's detail: the same doors (the numeric ones and 18,
+// text), declaration, `enum` list and `out`, with `param` `0` (no checked door declares one)
+// and `format` judged by 1.1's rules (null for the invariant format; never read at 18).
+// Returns 0 with the value written to `out` and `check` written (`keyword` 0, `adjusted`,
+// `enum_index`); 1, 2 or 3, the door's own fault, with `offset`, `len` and `detail` written
+// to `fault`; or 4, a violation of a declared rule, with `fault` spanning the value and
+// `detail` 0, and `check` holding the `keyword`, `adjusted` 0 and `enum_index`
+// `UINT32_MAX`. `fault` and `check` may be null. -1 writes nothing: what `cast_checked`
+// refuses, a `fault` whose `size` is under 16 or not a multiple of 4, or a nonzero `param`.
+int32_t cast_checked_detailed(uint32_t door, uint32_t param, const struct HyperCastRawNumFormat *format, const struct HyperCastRawConstraints *constraints, const uint8_t *enum_ptr, uintptr_t enum_len, const uint8_t *ptr, uintptr_t len, void *out, struct HyperCastRawFaultDetail *fault, struct HyperCastRawCheck *check);
+
+// `cast_checked_from_f64`, reporting a failure's detail: the numeric doors, `param` `0`, and
+// the codes and writes of `cast_checked_detailed`, every span empty. -1 writes nothing: what
+// `cast_checked_from_f64` refuses, a `fault` too small, or a nonzero `param`.
+int32_t cast_checked_detailed_from_f64(uint32_t door, uint32_t param, const struct HyperCastRawConstraints *constraints, const uint8_t *enum_ptr, uintptr_t enum_len, double value, void *out, struct HyperCastRawFaultDetail *fault, struct HyperCastRawCheck *check);
 
 #ifdef __cplusplus
 }  // extern "C"

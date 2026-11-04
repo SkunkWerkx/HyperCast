@@ -12,10 +12,11 @@ use ext_php_rs::prelude::*;
 use ext_php_rs::types::Zval;
 
 use super::args::{
-    ConstraintsArg, EpochArg, Float, FormatArg, OptOrderArg, OptPeriodsArg, OrderArg, PrecisionArg,
-    Str, VerdictArg,
+    ConstraintsArg, EpochArg, Float, FormatArg, OptDateOptionsArg, OptMonthNamesArg, OptOrderArg,
+    OptPeriodsArg, OrderArg, PrecisionArg, Str, VerdictArg,
 };
 use super::classes::{Value, bool_zval, bytes_zval, float_zval, int_zval, object_of, read};
+use super::date_options::with_valid;
 use super::dates::{civil, date, instant};
 use super::enums::CastFailure;
 use super::errors::contract_violation;
@@ -90,16 +91,16 @@ fn spanless<T>(
     verdict(result.map_err(|reason| Fault { reason, offset: 0, len: 0 }), ok)
 }
 
-fn decimal_value(d: crate::Decimal) -> PhpResult<Zval> {
+pub(super) fn decimal_value(d: crate::Decimal) -> PhpResult<Zval> {
     // The C ABI's `uint64_t lo` read into a PHP int, as ext-ffi reads it: the same 64 bits.
     from_limbs(d.lo as i64, i64::from(d.hi), i64::from(d.scale), d.negative)
 }
 
-fn instant_value(t: Timestamp) -> PhpResult<Zval> {
+pub(super) fn instant_value(t: Timestamp) -> PhpResult<Zval> {
     instant(t.seconds, i64::from(t.nanos))
 }
 
-fn civil_value(c: CivilDateTime) -> PhpResult<Zval> {
+pub(super) fn civil_value(c: CivilDateTime) -> PhpResult<Zval> {
     civil(
         i64::from(c.date.year),
         i64::from(c.date.month),
@@ -108,13 +109,13 @@ fn civil_value(c: CivilDateTime) -> PhpResult<Zval> {
     )
 }
 
-fn duration_value(d: crate::Duration) -> PhpResult<Zval> {
+pub(super) fn duration_value(d: crate::Duration) -> PhpResult<Zval> {
     duration(d.seconds, i64::from(d.nanos))
 }
 
 /// The day periods a `DayPeriods` object declares: its packed bytes, the first 40 as 1.0's
 /// `FFI::memcpy` copied them, read as the C ABI reads them.
-fn declared_periods(periods: &Zval) -> PhpResult<crate::DayPeriods> {
+pub(super) fn declared_periods(periods: &Zval) -> PhpResult<crate::DayPeriods> {
     let object = object_of(periods).ok_or_else(contract_violation)?;
     let bytes = periods_packed(object)?;
     let mut raw = RawDayPeriods::ZERO;
@@ -267,8 +268,19 @@ impl Cast {
         guard(|| verdict(crate::cast_uuid(text.0), |bytes| Ok(bytes_zval(&bytes))))
     }
 
-    pub fn timestamp(text: Str<'_>) -> PhpResult<Verdict> {
-        guard(|| verdict(crate::cast_timestamp(text.0), instant_value))
+    /// With `DateOptions`, the shapes they open: `SPACE_SEPARATOR` and `HOUR_OFFSET`.
+    pub fn timestamp(text: Str<'_>, options: OptDateOptionsArg<'_>) -> PhpResult<Verdict> {
+        guard(|| {
+            with_valid(options.0, None, |valid| {
+                let result = match valid {
+                    None => crate::cast_timestamp(text.0),
+                    Some(valid) => {
+                        crate::detailed::cast_timestamp(text.0, Some(valid)).map_err(|f| f.fault())
+                    }
+                };
+                verdict(result, instant_value)
+            })
+        })
     }
 
     pub fn unix(text: Str<'_>, precision: PrecisionArg) -> PhpResult<Verdict> {
@@ -279,27 +291,58 @@ impl Cast {
         guard(|| verdict(crate::cast_excel_serial(text.0, epoch.0.into()), instant_value))
     }
 
-    pub fn date(text: Str<'_>, order: OptOrderArg) -> PhpResult<Verdict> {
+    /// With `DateOptions` and `MonthNames`, the shapes they open: `COMPACT_DATE` without an
+    /// order; with one, the pivot and the month names.
+    pub fn date(
+        text: Str<'_>,
+        order: OptOrderArg,
+        options: OptDateOptionsArg<'_>,
+        months: OptMonthNamesArg<'_>,
+    ) -> PhpResult<Verdict> {
         guard(|| {
-            let result = match order.0 {
-                None => crate::cast_date(text.0),
-                Some(order) => crate::cast_date_ordered(text.0, order.into()),
-            };
-            verdict(result, |d| date(i64::from(d.year), i64::from(d.month), i64::from(d.day)))
+            with_valid(options.0, months.0, |valid| {
+                let result = match (order.0, valid) {
+                    (None, None) => crate::cast_date(text.0),
+                    (Some(order), None) => crate::cast_date_ordered(text.0, order.into()),
+                    (None, Some(valid)) => {
+                        crate::detailed::cast_date(text.0, Some(valid)).map_err(|f| f.fault())
+                    }
+                    (Some(order), Some(valid)) => {
+                        crate::detailed::cast_date_ordered(text.0, order.into(), Some(valid))
+                            .map_err(|f| f.fault())
+                    }
+                };
+                verdict(result, |d| date(i64::from(d.year), i64::from(d.month), i64::from(d.day)))
+            })
         })
     }
 
+    /// With `DateOptions` and `MonthNames`, the pivot and the month names.
     pub fn datetime(
         text: Str<'_>,
         order: OrderArg,
         periods: OptPeriodsArg<'_>,
+        options: OptDateOptionsArg<'_>,
+        months: OptMonthNamesArg<'_>,
     ) -> PhpResult<Verdict> {
         guard(|| {
             let periods = match periods.0 {
                 Some(periods) => declared_periods(periods)?,
                 None => crate::DayPeriods::ENGLISH,
             };
-            verdict(crate::cast_datetime_with(text.0, order.0.into(), &periods), civil_value)
+            with_valid(options.0, months.0, |valid| {
+                let result = match valid {
+                    None => crate::cast_datetime_with(text.0, order.0.into(), &periods),
+                    Some(valid) => crate::detailed::cast_datetime_with(
+                        text.0,
+                        order.0.into(),
+                        &periods,
+                        Some(valid),
+                    )
+                    .map_err(|f| f.fault()),
+                };
+                verdict(result, civil_value)
+            })
         })
     }
 

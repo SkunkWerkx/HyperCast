@@ -19,10 +19,13 @@ use core::fmt;
 
 use crate::abi::RawConstraints;
 use crate::constraints::{Constraints, Entries, Keyword, Numeric, Text, check_without_duplicates};
+use crate::detail::Failure;
+use crate::detailed::Rejection as Detailed;
 use crate::door::Door;
 use crate::exact::{Exact, Rounded, Rounding, Snap, compare, snap, write_decimal_canonical};
 use crate::float::{Real, from_significand};
-use crate::text::{cast_text, code_points, eq_folded, trim_white_space};
+use crate::site::Site;
+use crate::text::{code_points, eq_folded, trim_white_space};
 use crate::typed::shortest_digits;
 use crate::verdict::{Decimal, Fault, NumFormat, Reason, span_of, trim};
 
@@ -131,6 +134,23 @@ impl From<Violation> for Rejection {
     }
 }
 
+/// A failure is the door's fault, its detail left out.
+impl From<Failure> for Rejection {
+    fn from(failure: Failure) -> Rejection {
+        Rejection::Fault(failure.fault())
+    }
+}
+
+/// A detailed rejection, its detail left out: the plain checked door's.
+impl From<Detailed> for Rejection {
+    fn from(rejection: Detailed) -> Rejection {
+        match rejection {
+            Detailed::Failure(failure) => Rejection::Fault(failure.fault()),
+            Detailed::Violation(violation) => Rejection::Violation(violation),
+        }
+    }
+}
+
 /// What a checked door reports beside its value, as the C exports carry it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CheckOutcome {
@@ -173,10 +193,10 @@ pub trait Judged: Copy {
     fn exact(_: Token) -> bool {
         false
     }
-    /// The plain text door.
-    fn read(_: Token, input: &[u8], format: &NumFormat) -> Result<Self, Fault>;
-    /// The plain typed door, for a number already decoded.
-    fn typed(_: Token, value: f64) -> Result<Self, Reason>;
+    /// The text door's one parse.
+    fn read(_: Token, input: &[u8], format: &NumFormat) -> Result<Self, Failure>;
+    /// The typed door's one parse, for a number already decoded.
+    fn typed(_: Token, value: f64) -> Result<Self, Failure>;
     /// The value as an integer, at an integer door.
     fn whole(self, _: Token) -> Option<i128> {
         None
@@ -212,16 +232,16 @@ pub trait Judged: Copy {
 }
 
 macro_rules! judged_integers {
-    ($($ty:ty => $read:path, $typed:path);+ $(;)?) => {$(
+    ($($ty:ty),+) => {$(
         impl Judged for $ty {
             fn integer(_: Token) -> bool {
                 true
             }
-            fn read(_: Token, input: &[u8], format: &NumFormat) -> Result<Self, Fault> {
-                $read(input, format)
+            fn read(_: Token, input: &[u8], format: &NumFormat) -> Result<Self, Failure> {
+                crate::integer::integer::<$ty>(input, format)
             }
-            fn typed(_: Token, value: f64) -> Result<Self, Reason> {
-                $typed(value)
+            fn typed(_: Token, value: f64) -> Result<Self, Failure> {
+                crate::typed::integer::<$ty>(value, <$ty>::MIN == 0)
             }
             fn whole(self, _: Token) -> Option<i128> {
                 Some(self.into())
@@ -233,23 +253,14 @@ macro_rules! judged_integers {
     )+};
 }
 
-judged_integers! {
-    i8 => crate::cast_i8, crate::i8_from_f64;
-    i16 => crate::cast_i16, crate::i16_from_f64;
-    i32 => crate::cast_i32, crate::i32_from_f64;
-    i64 => crate::cast_i64, crate::i64_from_f64;
-    u8 => crate::cast_u8, crate::u8_from_f64;
-    u16 => crate::cast_u16, crate::u16_from_f64;
-    u32 => crate::cast_u32, crate::u32_from_f64;
-    u64 => crate::cast_u64, crate::u64_from_f64;
-}
+judged_integers!(i8, i16, i32, i64, u8, u16, u32, u64);
 
 impl Judged for f32 {
-    fn read(_: Token, input: &[u8], format: &NumFormat) -> Result<Self, Fault> {
-        crate::cast_f32(input, format)
+    fn read(_: Token, input: &[u8], format: &NumFormat) -> Result<Self, Failure> {
+        crate::real::real_f32(input, format, true)
     }
-    fn typed(_: Token, value: f64) -> Result<Self, Reason> {
-        crate::f32_from_f64(value)
+    fn typed(_: Token, value: f64) -> Result<Self, Failure> {
+        crate::typed::f32_typed(value)
     }
     fn from_canonical(_: Token, text: &[u8]) -> Option<Self> {
         crate::float::parse::<f32>(text).filter(|value| value.is_finite())
@@ -263,14 +274,14 @@ impl Judged for f32 {
 }
 
 impl Judged for f64 {
-    fn read(_: Token, input: &[u8], format: &NumFormat) -> Result<Self, Fault> {
-        crate::cast_f64(input, format)
+    fn read(_: Token, input: &[u8], format: &NumFormat) -> Result<Self, Failure> {
+        crate::real::real_f64(input, format, true)
     }
-    fn typed(_: Token, value: f64) -> Result<Self, Reason> {
+    fn typed(_: Token, value: f64) -> Result<Self, Failure> {
         if value.is_nan() {
-            Err(Reason::Malformed)
+            Err(Failure::spanless(Site::CheckedF64Nan))
         } else if value.is_infinite() {
-            Err(Reason::OutOfRange)
+            Err(Failure::spanless(Site::CheckedF64Infinite))
         } else {
             // The core delivers no negative zero; `-0.0` is judged as zero and is `0.0`.
             Ok(crate::float::unsigned(value))
@@ -291,11 +302,11 @@ impl Judged for Decimal {
     fn exact(_: Token) -> bool {
         true
     }
-    fn read(_: Token, input: &[u8], format: &NumFormat) -> Result<Self, Fault> {
-        crate::cast_decimal(input, format)
+    fn read(_: Token, input: &[u8], format: &NumFormat) -> Result<Self, Failure> {
+        crate::decimal::decimal(input, format, true)
     }
-    fn typed(_: Token, value: f64) -> Result<Self, Reason> {
-        crate::decimal_from_f64(value)
+    fn typed(_: Token, value: f64) -> Result<Self, Failure> {
+        crate::typed::decimal_typed(value)
     }
     fn decimal(self, _: Token) -> Option<Decimal> {
         Some(self)
@@ -316,7 +327,7 @@ fn view_of<'a, T: Judged>(
     start: usize,
     format: &'a NumFormat,
     buf: &'a mut [u8; 40],
-) -> Result<Exact<'a>, Fault> {
+) -> Result<Exact<'a>, Failure> {
     if let Some(whole) = value.whole(TOKEN) {
         return Ok(Exact::from_integer(whole, buf));
     }
@@ -355,18 +366,15 @@ fn rounding(code: u32) -> Rounding {
 /// written.
 // The C exports' text doors (ffi.rs), so unused in a build without `exports`.
 #[cfg_attr(not(feature = "exports"), allow(dead_code))]
-pub(crate) fn exact_span(start: usize, len: usize) -> Result<(u32, u32), Fault> {
+pub(crate) fn exact_span(start: usize, len: usize) -> Result<(u32, u32), Failure> {
     match u32::try_from(start.saturating_add(len)) {
         Ok(_) => Ok(span_of(start, len)),
-        Err(_) => {
-            let (offset, len) = span_of(start, len);
-            Err(Fault { reason: Reason::OutOfRange, offset, len })
-        }
+        Err(_) => Err(Failure::at(Site::CheckedSpanTooLong, start, len)),
     }
 }
 
-fn violation(keyword: Keyword, span: (u32, u32)) -> Rejection {
-    Rejection::Violation(Violation::new(keyword, span.0, span.1))
+fn violation(keyword: Keyword, span: (u32, u32)) -> Detailed {
+    Detailed::Violation(Violation::new(keyword, span.0, span.1))
 }
 
 /// A delivered float's order against `bound` read as `T`'s door reads it: IEEE comparison of
@@ -427,10 +435,11 @@ fn judge<T: Judged>(
     span: (u32, u32),
     raw: &RawConstraints,
     entries: &Entries<'_>,
-) -> Result<(T, bool), Rejection> {
+) -> Result<(T, bool), Detailed> {
     let has = |flag: u32| raw.flags & flag != 0;
+    // `span` is already a span; this rebuilds the same one.
     let out_of_range =
-        Rejection::Fault(Fault { reason: Reason::OutOfRange, offset: span.0, len: span.1 });
+        |site: Site| Detailed::Failure(Failure::at(site, span.0 as usize, span.1 as usize));
 
     // `multipleOf`. The door accepted the value, so `snap` sees nothing longer than a door
     // reads (its own doc says why that matters).
@@ -443,7 +452,7 @@ fn judge<T: Judged>(
                 return Err(violation(Keyword::MultipleOf, span));
             }
             // A multiple too long to hold is past every door's range.
-            Snap::NotMultiple => return Err(out_of_range),
+            Snap::NotMultiple => return Err(out_of_range(Site::CheckedMultipleTooLong)),
             Snap::Rounded(multiple) => rounded = Some(multiple),
         }
     }
@@ -473,7 +482,14 @@ fn judge<T: Judged>(
     // Delivery: the door's own value, or the rounded one in the door's type.
     let (delivered, adjusted) = match &rounded {
         None => (value, false),
-        Some(multiple) => (deliver::<T>(multiple).ok_or(out_of_range)?, true),
+        Some(multiple) => {
+            // Below a signed integer type's minimum, or past what the type holds.
+            let past = || match T::integer(TOKEN) && multiple.as_exact().negative() {
+                true => out_of_range(Site::CheckedRoundedTooSmall),
+                false => out_of_range(Site::CheckedRoundedTooLarge),
+            };
+            (deliver::<T>(multiple).ok_or_else(past)?, true)
+        }
     };
 
     // A float door's delivered value, judged once more against each bound as the door reads
@@ -502,12 +518,12 @@ fn judge_text_value<'i, 'e>(
     input: &'i [u8],
     raw: &RawConstraints,
     entries: &Entries<'e>,
-) -> Result<JudgedText<'i, 'e>, Rejection> {
+) -> Result<JudgedText<'i, 'e>, Detailed> {
     let has = |flag: u32| raw.flags & flag != 0;
-    let text = cast_text(input)?;
+    let text = crate::text::text(input)?;
     let (text, start) = if has(RawConstraints::TRIM) { trim_white_space(text) } else { (text, 0) };
     if text.is_empty() {
-        return Err(Rejection::Fault(Fault::EMPTY));
+        return Err(Detailed::Failure(Failure::spanless(Site::CheckedTextBlank)));
     }
     let span = span_of(start, text.len());
     let length = code_points(text);
@@ -541,7 +557,7 @@ fn checked_numeric<T: Judged>(
     format: &NumFormat,
     raw: &RawConstraints,
     entries: &Entries<'_>,
-) -> Result<(T, CheckOutcome), Rejection> {
+) -> Result<(T, CheckOutcome), Detailed> {
     let value = T::read(TOKEN, input, format)?;
     let (text, start) = trim(input);
     let span = span_of(start, text.len());
@@ -557,8 +573,8 @@ fn checked_from_f64_numeric<T: Judged>(
     value: f64,
     raw: &RawConstraints,
     entries: &Entries<'_>,
-) -> Result<(T, CheckOutcome), Rejection> {
-    let read = T::typed(TOKEN, value).map_err(|reason| Fault { reason, offset: 0, len: 0 })?;
+) -> Result<(T, CheckOutcome), Detailed> {
+    let read = T::typed(TOKEN, value)?;
     let digits = shortest_digits(value);
     let view = Exact::from_shortest(value.is_sign_negative(), digits.as_ref());
     let (read, adjusted) = judge(read, &view, (0, 0), raw, entries)?;
@@ -580,9 +596,17 @@ pub fn cast_checked<T: Numeric>(
     format: &NumFormat,
     constraints: &Constraints<'_, T>,
 ) -> Result<Checked<T>, Rejection> {
+    checked(input.as_ref(), format, constraints).map_err(Rejection::from)
+}
+
+/// The checked numeric door's one parse, for both entry points.
+pub(crate) fn checked<T: Numeric>(
+    input: &[u8],
+    format: &NumFormat,
+    constraints: &Constraints<'_, T>,
+) -> Result<Checked<T>, Detailed> {
     let raw = constraints.raw();
-    let (value, outcome) =
-        checked_numeric::<T>(input.as_ref(), format, &raw, constraints.entries())?;
+    let (value, outcome) = checked_numeric::<T>(input, format, &raw, constraints.entries())?;
     Ok(Checked { value, adjusted: outcome.adjusted, enum_index: None })
 }
 
@@ -597,6 +621,14 @@ pub fn checked_from_f64<T: Numeric>(
     value: f64,
     constraints: &Constraints<'_, T>,
 ) -> Result<Checked<T>, Rejection> {
+    checked_typed(value, constraints).map_err(Rejection::from)
+}
+
+/// The checked typed door's one parse, for both entry points.
+pub(crate) fn checked_typed<T: Numeric>(
+    value: f64,
+    constraints: &Constraints<'_, T>,
+) -> Result<Checked<T>, Detailed> {
     let raw = constraints.raw();
     let (value, outcome) = checked_from_f64_numeric::<T>(value, &raw, constraints.entries())?;
     Ok(Checked { value, adjusted: outcome.adjusted, enum_index: None })
@@ -611,6 +643,14 @@ pub fn cast_text_checked<'a>(
     input: &'a [u8],
     constraints: &Constraints<'a, Text>,
 ) -> Result<Checked<&'a str>, Rejection> {
+    text_checked(input, constraints).map_err(Rejection::from)
+}
+
+/// The checked text door's one parse, for both entry points.
+pub(crate) fn text_checked<'a>(
+    input: &'a [u8],
+    constraints: &Constraints<'a, Text>,
+) -> Result<Checked<&'a str>, Detailed> {
     let raw = constraints.raw();
     let JudgedText { text, matched, .. } = judge_text_value(input, &raw, constraints.entries())?;
     Ok(match matched {
@@ -673,13 +713,33 @@ macro_rules! by_door {
 /// The C ABI's checked numeric door: re-judges the declaration (every rule but duplicates),
 /// then reads `input` through `door` and judges it, writing the value to `out` on success.
 /// `None` is a contract violation: a door that is not numeric, or a declaration
-/// [`check_constraints`](crate::check_constraints) refuses.
+/// [`check_constraints`](crate::check_constraints) refuses. A failure carries its detail, not
+/// yet classified at its span ([`Failure::classified`]).
 ///
 /// # Safety
 /// `out` must be valid for an unaligned write of the type `door` delivers (a [`Decimal`] at
 /// the decimal door).
 // The C exports' entry points (ffi.rs), so unused in a build without `exports`.
 #[cfg_attr(not(feature = "exports"), allow(dead_code))]
+pub(crate) unsafe fn judge_numeric_detailed(
+    door: Door,
+    input: &[u8],
+    format: &NumFormat,
+    raw: &RawConstraints,
+    entries: &Entries<'_>,
+    out: *mut u8,
+) -> Option<Result<CheckOutcome, Detailed>> {
+    if !door.is_numeric() || check_without_duplicates(door, raw, entries).is_err() {
+        return None;
+    }
+    by_door!(door, checked_numeric(input, format, raw, entries), out)
+}
+
+/// [`judge_numeric_detailed`], the detail left out: the extensions' checked door.
+///
+/// # Safety
+/// As [`judge_numeric_detailed`].
+#[cfg_attr(not(feature = "php"), allow(dead_code))]
 pub(crate) unsafe fn judge_numeric(
     door: Door,
     input: &[u8],
@@ -688,18 +748,35 @@ pub(crate) unsafe fn judge_numeric(
     entries: &Entries<'_>,
     out: *mut u8,
 ) -> Option<Result<CheckOutcome, Rejection>> {
+    // SAFETY: per the function contract.
+    unsafe { judge_numeric_detailed(door, input, format, raw, entries, out) }
+        .map(|verdict| verdict.map_err(Rejection::from))
+}
+
+/// [`judge_numeric_detailed`] for a number already decoded.
+///
+/// # Safety
+/// As [`judge_numeric_detailed`].
+// The C exports' entry points (ffi.rs), so unused in a build without `exports`.
+#[cfg_attr(not(feature = "exports"), allow(dead_code))]
+pub(crate) unsafe fn judge_numeric_from_f64_detailed(
+    door: Door,
+    value: f64,
+    raw: &RawConstraints,
+    entries: &Entries<'_>,
+    out: *mut u8,
+) -> Option<Result<CheckOutcome, Detailed>> {
     if !door.is_numeric() || check_without_duplicates(door, raw, entries).is_err() {
         return None;
     }
-    by_door!(door, checked_numeric(input, format, raw, entries), out)
+    by_door!(door, checked_from_f64_numeric(value, raw, entries), out)
 }
 
-/// [`judge_numeric`] for a number already decoded.
+/// [`judge_numeric_from_f64_detailed`], the detail left out.
 ///
 /// # Safety
-/// As [`judge_numeric`].
-// The C exports' entry points (ffi.rs), so unused in a build without `exports`.
-#[cfg_attr(not(feature = "exports"), allow(dead_code))]
+/// As [`judge_numeric_detailed`].
+#[cfg_attr(not(feature = "php"), allow(dead_code))]
 pub(crate) unsafe fn judge_numeric_from_f64(
     door: Door,
     value: f64,
@@ -707,10 +784,9 @@ pub(crate) unsafe fn judge_numeric_from_f64(
     entries: &Entries<'_>,
     out: *mut u8,
 ) -> Option<Result<CheckOutcome, Rejection>> {
-    if !door.is_numeric() || check_without_duplicates(door, raw, entries).is_err() {
-        return None;
-    }
-    by_door!(door, checked_from_f64_numeric(value, raw, entries), out)
+    // SAFETY: per the function contract.
+    unsafe { judge_numeric_from_f64_detailed(door, value, raw, entries, out) }
+        .map(|verdict| verdict.map_err(Rejection::from))
 }
 
 /// The C ABI's checked text door: re-judges the declaration (every rule but duplicates),
@@ -720,20 +796,29 @@ pub(crate) unsafe fn judge_numeric_from_f64(
 /// declaration.
 // The C exports' entry points (ffi.rs), so unused in a build without `exports`.
 #[cfg_attr(not(feature = "exports"), allow(dead_code))]
+pub(crate) fn judge_text_detailed(
+    input: &[u8],
+    raw: &RawConstraints,
+    entries: &Entries<'_>,
+) -> Option<Result<CheckOutcome, Detailed>> {
+    if check_without_duplicates(Door::Text, raw, entries).is_err() {
+        return None;
+    }
+    let judged = judge_text_value(input, raw, entries);
+    Some(judged.and_then(|JudgedText { text, start, matched, .. }| {
+        let span = exact_span(start, text.len())?;
+        Ok(CheckOutcome { adjusted: false, enum_index: matched.map(|(index, _)| index), span })
+    }))
+}
+
+/// [`judge_text_detailed`], the detail left out.
+#[cfg_attr(not(feature = "php"), allow(dead_code))]
 pub(crate) fn judge_text(
     input: &[u8],
     raw: &RawConstraints,
     entries: &Entries<'_>,
 ) -> Option<Result<CheckOutcome, Rejection>> {
-    if check_without_duplicates(Door::Text, raw, entries).is_err() {
-        return None;
-    }
-    Some(judge_text_value(input, raw, entries).and_then(
-        |JudgedText { text, start, matched, .. }| {
-            let span = exact_span(start, text.len())?;
-            Ok(CheckOutcome { adjusted: false, enum_index: matched.map(|(index, _)| index), span })
-        },
-    ))
+    judge_text_detailed(input, raw, entries).map(|verdict| verdict.map_err(Rejection::from))
 }
 
 #[cfg(test)]
@@ -1093,7 +1178,9 @@ mod tests {
         let max = u32::MAX as usize;
         assert_eq!(exact_span(0, max), Ok((0, u32::MAX)));
         assert_eq!(exact_span(1, max - 1), Ok((1, u32::MAX - 1)));
-        let out = |offset, len| Err(Fault { reason: Reason::OutOfRange, offset, len });
+        let out = |offset, len| {
+            Err(Failure::new(Reason::OutOfRange, crate::Detail::TooLong, offset, len))
+        };
         assert_eq!(exact_span(0, max + 1), out(0, u32::MAX));
         assert_eq!(exact_span(1, max), out(1, u32::MAX - 1));
         assert_eq!(exact_span(max, 1), out(u32::MAX, 0));

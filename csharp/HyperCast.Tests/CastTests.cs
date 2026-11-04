@@ -308,6 +308,12 @@ public sealed class CastTests
 		(Cast.Char("&#x41;"u8) is Success<char> { Value: 'A' }).ShouldBeTrue();
 		(Cast.Char("65x") is Fault { Reason: CastFailure.Malformed, Offset: 2, Length: 1 }).ShouldBeTrue();
 		(Cast.Char("  ") is Fault { Reason: CastFailure.Empty }).ShouldBeTrue();
+		// Exactly one character stays itself, white space or not; more than that trims every kind.
+		(Cast.Char("\u3000") is Success<char> { Value: '\u3000' }).ShouldBeTrue();
+		(Cast.Char("\u00A0"u8) is Success<char> { Value: '\u00A0' }).ShouldBeTrue();
+		(Cast.Char("\u00A0U+0041\u202F") is Success<char> { Value: 'A' }).ShouldBeTrue();
+		(Cast.Char("\u3000&#x41;\u00A0"u8) is Success<char> { Value: 'A' }).ShouldBeTrue();
+		(Cast.Char("\u00A0\u3000") is Fault { Reason: CastFailure.Empty }).ShouldBeTrue();
 		(Cast.Char("U+D800") is Fault { Reason: CastFailure.OutOfRange, Offset: 0, Length: 6 }).ShouldBeTrue();
 	}
 
@@ -319,6 +325,15 @@ public sealed class CastTests
 		(Cast.Char("😀") is Fault { Reason: CastFailure.OutOfRange, Offset: 0, Length: 2 }).ShouldBeTrue();
 		(Cast.Char(" U+1F600\t"u8) is Fault { Reason: CastFailure.OutOfRange, Offset: 1, Length: 7 }).ShouldBeTrue();
 		(Cast.Char(" &#128512; ") is Fault { Reason: CastFailure.OutOfRange, Offset: 1, Length: 9 }).ShouldBeTrue();
+		// Any white space at an edge is trimmed from the span, whole code points: U+00A0 is two
+		// bytes and U+3000 three, one char each; U+000B and U+0085 joined the set with the rest.
+		(Cast.Char("\u00A0U+1F600\u3000"u8) is Fault { Reason: CastFailure.OutOfRange, Offset: 2, Length: 7 }).ShouldBeTrue();
+		(Cast.Char("\u00A0U+1F600\u3000") is Fault { Reason: CastFailure.OutOfRange, Offset: 1, Length: 7 }).ShouldBeTrue();
+		(Cast.Char("\u3000U+1F600\u00A0"u8) is Fault { Reason: CastFailure.OutOfRange, Offset: 3, Length: 7 }).ShouldBeTrue();
+		(Cast.Char("\u202F&#128512;\u2009") is Fault { Reason: CastFailure.OutOfRange, Offset: 1, Length: 9 }).ShouldBeTrue();
+		(Cast.Char("\v\u0085&#x1F600;\u2028"u8) is Fault { Reason: CastFailure.OutOfRange, Offset: 3, Length: 9 }).ShouldBeTrue();
+		// A lone lead byte at the edge is not white space: the core reads no scalar there.
+		(Cast.Char([0xC2, .. "U+1F600"u8]) is Fault { Reason: CastFailure.Malformed }).ShouldBeTrue();
 		(Cast.Char("U+FFFF") is Success<char> { Value: '\uFFFF' }).ShouldBeTrue();
 	}
 

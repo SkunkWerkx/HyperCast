@@ -161,12 +161,23 @@ back inside the `Optional`.
 is exactly one character, `" "` and `"6"` included, or a declared code point (`65`,
 `U+00E9`, `0x41`, `&H41`, `&#233;`, `&#xE9;`). It returns a `Verdict<Character>`, and a
 `char` holds only the Basic Multilingual Plane, so a supplementary character the core
-accepts (`😀`, `U+1F600`) is `OUT_OF_RANGE` here, spanning the input less its ASCII
-whitespace edges, not split into half a surrogate pair. That is the one verdict where this
+accepts (`😀`, `U+1F600`) is `OUT_OF_RANGE` here, spanning the input less its white
+space edges, not split into half a surrogate pair. That is the one verdict where this
 binding departs from the core's by design. A `String` of exactly one UTF-16 code unit comes
 back as that `char` without crossing into the core, a lone surrogate included.
 
 ## NumFormat: declared, never guessed
+
+White space is Unicode's `White_Space`, the 25 code points (ASCII, U+0085, U+00A0, U+2000 to
+U+200A, U+202F, U+3000 among them). Every door ignores it at both ends (`Cast.character` given
+exactly one character keeps it), and the numeric doors also after a leading sign, before a
+trailing sign or a percent symbol, on either side of a currency symbol and inside accounting
+parentheses (`"- 12"`, `"( 12 )"`, `"12,5 %"`, `"1 234,56 €"`, the last two under a declared comma decimal separator, the last with a space group separator and `€` declared); between digits it is
+`MALFORMED`, unless a space-like group separator is declared. An ASCII space, U+00A0 or U+202F
+declared as the group separator makes the input's choice of those three immaterial (Excel
+writes U+00A0, CLDR's `fr` U+202F, an older system a space), a space-like separator with no
+digit after it is just white space, and any other separator stays exact. Input of nothing
+but white space is `EMPTY`.
 
 Every integer, real and decimal door takes a `NumFormat`: the two separators, the `STYLE_*`
 lenience flags, a currency symbol, and everything else a culture spells differently — the
@@ -175,7 +186,7 @@ and the percent symbol, and a block of native digits. One rule governs all of th
 ASCII default is *always* read, and a declared symbol is read beside it. `-5` parses under
 every format, `−5` (U+2212) too once that minus is declared, and nothing that parsed under
 a sparser format stops parsing under a fuller one. `NumFormat.INVARIANT` is `.`/`,` with
-every default lenience on and nothing else declared; `NumFormat.from(Locale)` fills every
+every default lenience on, strict Western grouping (below) and nothing else declared; `NumFormat.from(Locale)` fills every
 field from the locale's own `DecimalFormatSymbols`, so a US caller gets `$`, a German one
 `€`, an Estonian one its U+2212 minus and an Egyptian one `٠`–`٩`, `٫`, `٬` and `٪`:
 
@@ -214,7 +225,7 @@ inside the noise — where deriving the format on every call, every field of it,
 1199.0 ± 169.4 ns and 3.0 KB (JMH, linux-x64, Temurin 25).
 
 The currency symbol is matched whole, once, at either edge of the numeric body — leading
-(`$5`, `-$5`, `$ -5`) or trailing (`5 €`, `1.234,50 kr.`) with optional whitespace between
+(`$5`, `-$5`, `$ -5`) or trailing (`5 €`, `1.234,50 kr.`) with optional white space between
 it and the digits — and only while `STYLE_CURRENCY` (part of `STYLE_ALL`) is set: declared
 without it, the symbol is the `MALFORMED` span. With the symbol in the text, the digits are
 read with the currency separators where the format declares them — Swiss French writes a
@@ -240,8 +251,68 @@ a suffix and no prefix. No locale in the JDK's own CLDR data does, so
 suffix-negative format is declared from pattern data. Every rule the core enforces is
 enforced at construction and is a caller bug (`IllegalArgumentException`), never a
 verdict: separators of 1 to 8 bytes that differ (the pair in force for a currency amount
-too), signs and the percent symbol with no ASCII whitespace, no ASCII digit in any symbol,
-a currency symbol of at most 16 bytes, a zero that starts a decimal digit block.
+too), signs, the percent symbol and both decimal separators with no white space (any of
+the 25 Unicode `White_Space` code points; only a group separator may be or contain one), no
+ASCII digit in any symbol, a currency symbol of at most 16 bytes with no white space at
+either end (inside is fine: CLDR's `F CFA`), a zero that starts a decimal digit block.
+
+### Grouping: strict Western by default
+
+`STYLE_GROUPING` lets a group separator in; the format's `Grouping` says how the groups are
+judged, declared apart from the styles (a style mask never carries a policy). The default,
+for every constructor and for `NumFormat.INVARIANT`, is `Grouping.WESTERN`: groups of exactly
+three digits counted leftward from the decimal separator, the leftmost one to three, so
+`1,234,567` reads and `12,34` is `MALFORMED` (an invalid group spans its separator and its
+digits, `,34`). `Grouping.INDIAN`, only when declared, is three digits beside the decimal
+separator, two to their left, the leftmost one or two (`12,34,567`). `Grouping.LEGACY` is
+1.0's rule, a separator anywhere between two digits. Ungrouped numerals are valid under all
+three; once a numeral uses a separator every group must conform (`1234,567` is `MALFORMED`);
+there is no grouping after the decimal separator or in an exponent; and the rules count digits,
+native digits included, and apply to currency separators and to the interchangeable space-like
+separators. With `STYLE_GROUPING` off a separator is forbidden under every policy.
+
+```java
+Cast.i32("12,34", NumFormat.INVARIANT); // Fault: MALFORMED at (2, 3), where 1.0 read 1234
+Cast.i32("12,34", NumFormat.INVARIANT.withGrouping(Grouping.LEGACY)); // 1234, as in 1.0
+Cast.i32("12,34,567", NumFormat.INVARIANT.withGrouping(Grouping.INDIAN)); // 1234567
+new NumFormat(".", ",", NumFormat.STYLE_ALL, Grouping.INDIAN); // the policy beside the styles
+```
+
+`withGrouping` replaces the policy (never joins it with the old one) and `withStyles` and the
+other `with*` methods keep it. `NumFormat.grouping()` answers it, `styles()` the `STYLE_*`
+bits alone, and `flags()` the ABI word, the styles and the policy in bits 8 and 9. Bits that are
+no style are `IllegalArgumentException` at construction, as the policy `3 << 8` is for
+`Grouping.of`.
+
+**One deviation from the record copy rule.** Copying a record through its canonical constructor
+(`new NumFormat(f.decimalSeparator(), …, f.styles(), …)`, a deconstruct-and-rebuild, a
+serialization library) is exact for every component but the policy: `NumFormat` keeps 1.0's ten
+components, so that the ten-binder record pattern still compiles, and `styles()` answers the
+`STYLE_*` bits alone. A copy of a Western format equals it; a copy of a legacy or Indian format
+(and the bridge hands out legacy for a locale like `tok`) comes out Western. Copy with
+`withGrouping(original.grouping())` or the `with*` methods, of which every component now has one
+(`withSeparators` joined them). The policy sits in bits 16 and 17 of the canonical constructor's
+`styles` component (0 Western, 1 legacy, 2 Indian; 3 is refused): an internal encoding that
+callers must not set.
+
+**What the bridge declares.** A bridge never knowingly rejects its platform's own output, and one
+`NumFormat` has one policy and one `STYLE_GROUPING` flag, shared by number and currency values.
+`NumFormat.from(Locale)` therefore reads both of the platform's patterns,
+`NumberFormat.getInstance(locale)` and `getCurrencyInstance(locale)` (never the locale's name, never
+the input), and only the ones that group count: every grouping pattern Western declares
+`WESTERN`; every one Indian (`#,##,##0.###`) declares `INDIAN`; any of another shape (Toki Pona's
+groups of two, `#,#0.###`) or grouping patterns that disagree declare `LEGACY`, which reads
+whatever the platform writes. `STYLE_GROUPING` is cleared only when neither pattern groups
+(`en-US-POSIX`); when just one does not, the flag stays for the other and ungrouped values stay
+valid, since a format cannot prohibit grouping of currency amounts alone. The rule is
+deterministic: the same patterns give the same format. `from(DecimalFormat)` applies it to the one
+pattern it is given, and `from(DecimalFormat number, DecimalFormat currency)` to a pair.
+
+The JDK's `DecimalFormat` keeps one grouping size, the last interval (no secondary size), so its
+own pattern for an Indian locale reads `#,##0.###` and the JDK writes `12,345,678` for it: strict
+Western is right for what the platform produces. Text in CLDR's Indian grouping (`12,34,567`) is
+read by declaring it: `NumFormat.from(locale).withGrouping(Grouping.INDIAN)`. On JDK 25
+`tok`, `tok-001` and `tok-Latn-001` write groups of two and declare `LEGACY`.
 
 The boolean door's lexicon stays English (`true`/`yes`/`on`/`1` and the rest of the twenty),
 by decision: no platform carries culture data for yes/no words, so no bridge could fill one.
@@ -254,11 +325,62 @@ stays `100` (integer zeros are never touched), and zero is scale 0, never negati
 but a zero is ever dropped: precision past 2^96−1 or 28 places is `OUT_OF_RANGE`, never
 rounded.
 
+## DetailedCast: what failed
+
+A `Fault` carries a reason and a span. `DetailedCast` is every door of `Cast`, with the same
+names, shapes and input forms, answering a `DetailedVerdict` (or, with `Constraints`, a
+`DetailedCheckedVerdict`) whose failure also carries the core's `FaultDetail`: a small shared
+vocabulary of what failed (`digit_expected`, `group_size`, `too_large`, `not_finite`,
+`invalid_utf8` …), the same names and numbers in every binding, for people diagnosing rejected
+data and for programs that want to branch on it.
+
+```java
+String why = switch (DetailedCast.i32("12,34", NumFormat.INVARIANT)) {
+    case DetailedSuccess<Integer> s -> "got " + s.value();
+    case DetailedFault<Integer> f -> f.reason() + " " + f.detail() + " at char " + f.offset();
+}; // MALFORMED group_size at char 2
+```
+
+It is a separate class with its own result types because `Verdict` and `Rejection` are sealed:
+a detail on `Fault`, or a third case, would break the exhaustive switches written against them.
+`Cast`, `Verdict`, `Fault`, `Checked`, `Violation` and the rest are exactly what 1.0 shipped, and
+a detailed failure is the same reason and span: `DetailedFault.toFault()` is the `Fault` the
+plain door returns. A violation has no detail (nothing about the text was wrong), only its
+keyword. `FaultDetail` is a record with constants, as `Keyword` is: a published code keeps its
+number and meaning, new codes may arrive in a minor release, and a code this binding does not
+name is a `FaultDetail` that keeps it (`isKnown()` is false, `name()` is `detail 999`) beside a
+reason and span that stay usable.
+
+### Date options and month names
+
+The date doors keep today's shape rules unless `DetailedCast` is handed `DateOptions` (this
+deliberately differs from white-space tolerance, which every door took: strict RFC 3339 callers
+may rely on a space separator or `+00` being refused). `DateOptions.COMPACT_DATE` reads
+`20260107` at `date`, `SPACE_SEPARATOR` a space for `T` and `HOUR_OFFSET` `+00` or `-05` at
+`timestamp`; `DateOptions.COMMON_FORMS` is all three, safe at every door (an option that means
+nothing to a door is ignored there). The pivot, 100 to 9999, is the last year of the 100-year
+window a two-digit year reads in, with no default. A `MonthNames` vocabulary, built by the
+caller (the platform builds none: aliases and grammatical forms are your decisions), lets a
+month field be a declared name in the position the order selects, Excel style only:
+
+```java
+MonthNames english = MonthNames.builder().add(1, "Jan") /* … */.add(12, "Dec").build();
+DetailedCast.date("07-Jan-26", DateOrder.DAY_MONTH_YEAR, new DateOptions(0, 2029), english); // 2026-01-07
+DetailedCast.date("20260107", DateOptions.COMMON_FORMS); // 2026-01-07
+```
+
+Names fold case, punctuation is part of a name (`janv.` with `.` as the separator reads
+`7.janv..2026`, and `7.janv.2026` is `MALFORMED`), and a vocabulary the core would refuse (a
+month with no name, a name with a digit, `/`, `-` or white space, an empty or over-64-byte name,
+two names that fold to one spelling) is an `IllegalArgumentException` when built.
+
 ## DateTimeFormat: the date order and the day periods
 
 `Cast.dateTime` reads `1/7/2026 3:04 PM` under a declared `DateOrder`, and the English
 `AM`/`PM` are always read, ASCII case-insensitively, after the clock or ahead of it
-(`PM 3:04`). A culture's own designators are declared beside the order in a
+(`PM 3:04`), with any run of white space where one optional space stood, so the
+`3:04\u202fPM` that JDK 20 and later write for `Locale.US` reads. A culture's own designators
+are declared beside the order in a
 `DateTimeFormat` — `{order, amDesignator, pmDesignator}`, `NumFormat`'s parallel for the one
 temporal door that reads culture-sensitive text — and matched exactly, in either position,
 with the English pair still read beside them. `DateTimeFormat.from(Locale)` fills it from
@@ -278,7 +400,7 @@ Cast.dateTime(
 Cast.dateTime("2026-01-07 오후 3:04", DateOrder.YEAR_MONTH_DAY); // MALFORMED at 오: nothing declared
 ```
 
-A designator is 1 to 16 UTF-8 bytes with no ASCII digit and no ASCII whitespace at either
+A designator is 1 to 16 UTF-8 bytes with no ASCII digit and no white space at either
 end (a space inside, as in Spanish's `a. m.`, is fine); anything else is an
 `IllegalArgumentException` at construction. `from(Locale)` leaves the English pair
 undeclared, since the core reads it anyway, and so leaves a designator the layout cannot
@@ -293,7 +415,9 @@ the `DateOrder` alone, and 97.5 ± 7.4 ns with Spanish designators declared and 
 Nothing loads until the first door is called. A consumer with a managed fallback gates on
 `Cast.isAvailable()` first: probed once, cached, never throws — `false` when the platform
 library will not open, the jar carries no core for this OS/arch, or an older core lacks an
-export this binding was built against. The doors do
+export this binding was built against. That last guard is what keeps a 1.0 core from running
+a strict request: a 1.0 library has no detailed exports (the JNI one implements 33 natives
+of the 37), so its load fails and the policy bits it would ignore are never sent. The doors do
 not fall back. The first one to need a core that failed to load throws
 `ExceptionInInitializerError`, and every later one `NoClassDefFoundError`; either way the
 original failure is in its cause chain.
@@ -566,8 +690,11 @@ caller's own code ([above](#the-memorysegment-doors-on-jdk-21)).
   the 40-byte designator layout the date-time door reads; `fault(code, offset, length)`;
   `version(packed)` for a `*_version()` word; and the `*_BYTES` constants, each layout's
   size and so the stride of an array of them (`FORMAT_BYTES` is 92, `DAY_PERIODS_BYTES` 40,
-  `FAULT_BYTES` 8, and for the validation constraints `CONSTRAINTS_BYTES` 72, `CHECK_BYTES` 12
-  and `SPAN_BYTES` 8).
+  `FAULT_BYTES` 8, `FAULT_DETAIL_BYTES` 16 for the detailed exports' size-tagged fault and
+  `DATE_OPTIONS_BYTES` 12, and for the validation constraints `CONSTRAINTS_BYTES` 72, `CHECK_BYTES` 12
+  and `SPAN_BYTES` 8); `writeDateOptions` and `detailedFault(code, segment, at)`, which reads
+  a detailed fault and keeps a detail code it does not name. A format's flags word, with the
+  grouping policy in bits 8 and 9, is `NumFormat.flags()`.
 - `Constraints.toRaw()` and `packedEnum()` — a declaration in the core's 72-byte layout and its
   `enum` list as the core reads it beside that layout (integer entries in this platform's byte
   order, text entries behind little-endian length prefixes), so a
@@ -588,7 +715,9 @@ caller's own code ([above](#the-memorysegment-doors-on-jdk-21)).
 
 The jar carries two native libraries per platform, so build both before Gradle runs: `cargo
 cdylib` in `rust/`, then `cargo build --release --locked --lib` in `java/jni/`. The JNI library
-registers one native per C export, all 32, plus the count it reports to the loader. Gradle stages
+registers one native per C export, all 36, plus the count it reports to the loader. Every door
+crosses through the four detailed exports, which alone take the grouping policy, date options
+and a month vocabulary; the 1.0 natives stay declared, as every site holds the whole ABI. Gradle stages
 them into the jar and refuses a stale one: the build fails when either library is older than
 a source cargo read for it (its dep-info), or than a `Cargo.toml` cargo has not run since (an
 edit that changes nothing cargo builds is current once cargo has looked), or when one is built
@@ -611,6 +740,20 @@ API rather than `--release 21`, because `--release 21` refuses `java.lang.foreig
 Without a JDK 21 Gradle can see, `testFloor` fails with "Cannot find a Java installation …
 matching: {languageVersion=21 …}". `./gradlew :aot-smoke-test:runFloor` runs the smoke test
 on JDK 21, and `./gradlew :benchmarks:jmh -PjmhJdk=21` the benchmarks.
+
+The downgrade test, outside `check`, runs child JVMs with a real 1.0 core first on the class path
+and shows that `Cast.isAvailable()` is `false` and a strict request fails to load rather than
+parsing in legacy mode: against a build of tag `v1.0.0` (which lacks even the checked exports),
+against a core with every 1.0-era export and none of the detailed ones (the root cause then names
+`cast_detailed`, or on JNI the native-count mismatch), and a `libhypercast_jni` of a core without the
+detailed exports:
+
+```sh
+./gradlew testDowngrade testDowngradeFloor -Phypercast.v1Core=<libhypercast of tag v1.0.0> \
+  -Phypercast.preDetailedCore=<a libhypercast with the 1.0-era exports, no detailed ones> \
+  -Phypercast.v1Jni=<a libhypercast_jni without the detailed natives> \
+  -Porg.gradle.java.installations.paths=<path to a JDK 21>
+```
 
 ## Install
 

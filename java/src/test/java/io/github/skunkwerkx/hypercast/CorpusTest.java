@@ -1,5 +1,7 @@
 package io.github.skunkwerkx.hypercast;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -22,7 +24,9 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.util.Map;
 import java.util.UUID;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -60,27 +64,141 @@ final class CorpusTest {
     }
 
     /**
+     * The grouping policy a format declares: {@code "grouping"} is {@code "legacy"},
+     * {@code "western"} or {@code "indian"}, and absent means the policy bits the row's raw
+     * {@code flags} carry, which for every older row is legacy: the core's and the C ABI's
+     * meaning, not the constructors' new default.
+     */
+    private static Grouping groupingOf(JsonObject format) {
+        if (format.has("grouping")) {
+            return switch (format.get("grouping").getAsString()) {
+                case "legacy" -> Grouping.LEGACY;
+                case "western" -> Grouping.WESTERN;
+                case "indian" -> Grouping.INDIAN;
+                default -> throw new AssertionError("unknown grouping " + format.get("grouping"));
+            };
+        }
+        return Grouping.of(format.get("flags").getAsInt() & Grouping.POLICY_MASK);
+    }
+
+    /**
      * The format a vector declares: the two separators and the flags always, every other
      * field only where the vector names it — absent is not declared, exactly as the core's
-     * own replay reads it.
+     * own replay reads it. The policy is {@link #groupingOf} (legacy for a row declaring none);
+     * the styles are the flags without it, and a flag bit that is no style is the
+     * constructor's refusal.
      */
     private static NumFormat formatOf(JsonObject vector) {
         if (!vector.has("format")) {
-            return NumFormat.INVARIANT;
+            return NumFormat.INVARIANT.withGrouping(Grouping.LEGACY);
         }
         JsonObject format = vector.getAsJsonObject("format");
         String digitZero = symbolOf(format, "digit_zero");
+        Grouping grouping = groupingOf(format);
+        int styles = format.get("flags").getAsInt() & ~Grouping.POLICY_MASK;
         return new NumFormat(
-                format.get("decimal_sep").getAsString(),
-                format.get("group_sep").getAsString(),
-                format.get("flags").getAsInt(),
-                symbolOf(format, "currency"),
-                symbolOf(format, "currency_decimal_sep"),
-                symbolOf(format, "currency_group_sep"),
-                symbolOf(format, "minus_sign"),
-                symbolOf(format, "plus_sign"),
-                symbolOf(format, "percent"),
-                digitZero.isEmpty() ? 0 : digitZero.codePointAt(0));
+                        format.get("decimal_sep").getAsString(),
+                        format.get("group_sep").getAsString(),
+                        styles,
+                        symbolOf(format, "currency"),
+                        symbolOf(format, "currency_decimal_sep"),
+                        symbolOf(format, "currency_group_sep"),
+                        symbolOf(format, "minus_sign"),
+                        symbolOf(format, "plus_sign"),
+                        symbolOf(format, "percent"),
+                        digitZero.isEmpty() ? 0 : digitZero.codePointAt(0))
+                .withGrouping(grouping);
+    }
+
+    /** The detail vocabulary, restated: name to code, the spec's table. */
+    private static final Map<String, Integer> DETAIL_CODES = detailCodes();
+
+    private static Map<String, Integer> detailCodes() {
+        String[] names = {
+            "blank",
+            "unexpected_character",
+            "digit_expected",
+            "delimiter_expected",
+            "trailing_text",
+            "no_digits",
+            "sign_misplaced",
+            "parentheses_unbalanced",
+            "mark_repeated",
+            "group_misplaced",
+            "group_size",
+            "group_in_fraction",
+            "ambiguous_separator",
+            "fraction_not_allowed",
+            "field_width",
+            "wrong_length",
+            "component_missing",
+            "not_recognized",
+            "unknown_unit",
+            "invalid_utf8",
+            "too_long",
+            "not_finite",
+            "not_whole",
+            "negative_not_allowed",
+            "too_large",
+            "too_small",
+            "too_precise",
+            "date_field_out_of_range",
+            "time_field_out_of_range",
+            "outside_window",
+            "nonexistent_date",
+            "not_a_scalar"
+        };
+        Map<String, Integer> codes = new java.util.LinkedHashMap<>();
+        for (int i = 0; i < names.length; i++) {
+            codes.put(names[i], i + 1);
+        }
+        return codes;
+    }
+
+    /** A failure row's detail, named and by its raw code; every failure row must name one. */
+    private static void assertDetail(String label, JsonObject vector, FaultDetail detail) {
+        assertTrue(vector.has("detail"), label + ": a failure row names its detail");
+        String name = vector.get("detail").getAsString();
+        assertTrue(DETAIL_CODES.containsKey(name), label + ": unknown detail " + name);
+        assertEquals(name, detail.name(), label + ": detail");
+        assertEquals(DETAIL_CODES.get(name), detail.code(), label + ": detail code");
+        assertTrue(detail.isKnown(), label + ": a published detail is known");
+    }
+
+    /** The options a vector declares: flag names, a pivot, and a month vocabulary; or null. */
+    private static DateOptions optionsOf(JsonObject vector) {
+        if (!vector.has("options")) {
+            return null;
+        }
+        JsonObject options = vector.getAsJsonObject("options");
+        int flags = 0;
+        if (options.has("flags")) {
+            for (JsonElement name : options.getAsJsonArray("flags")) {
+                flags |= switch (name.getAsString()) {
+                    case "compact_date" -> DateOptions.COMPACT_DATE;
+                    case "space_separator" -> DateOptions.SPACE_SEPARATOR;
+                    case "hour_offset" -> DateOptions.HOUR_OFFSET;
+                    case "common_forms" -> DateOptions.COMMON_FORMS.flags();
+                    default -> throw new AssertionError("unknown option flag " + name);
+                };
+            }
+        }
+        return new DateOptions(
+                flags, options.has("pivot") ? options.get("pivot").getAsInt() : 0);
+    }
+
+    /** The month vocabulary a vector declares, through the builder; or null. */
+    private static MonthNames monthsOf(JsonObject vector) {
+        if (!vector.has("options") || !vector.getAsJsonObject("options").has("months")) {
+            return null;
+        }
+        MonthNames.Builder builder = MonthNames.builder();
+        for (JsonElement entry : vector.getAsJsonObject("options").getAsJsonArray("months")) {
+            builder.add(
+                    entry.getAsJsonArray().get(0).getAsInt(),
+                    entry.getAsJsonArray().get(1).getAsString());
+        }
+        return builder.build();
     }
 
     private static String symbolOf(JsonObject object, String key) {
@@ -113,6 +231,54 @@ final class CorpusTest {
         }
     }
 
+    private static CastFailure reasonOf(String expect, String label) {
+        return switch (expect) {
+            case "empty" -> CastFailure.EMPTY;
+            case "malformed" -> CastFailure.MALFORMED;
+            case "out_of_range" -> CastFailure.OUT_OF_RANGE;
+            default -> fail(label + ": expected '" + expect + "' but faulted");
+        };
+    }
+
+    /** The same row through the detailed path: value, reason and span as above, and the detail. */
+    private static <T> void assertDetailed(String domain, JsonObject vector, DetailedVerdict<T> verdict, T expected) {
+        String input = vector.get("input").getAsString();
+        String expect = vector.get("expect").getAsString();
+        String label = domain + ": '" + input + "'";
+        switch (verdict) {
+            case DetailedSuccess<T> success -> {
+                assertEquals("ok", expect, label + " unexpectedly parsed (detailed)");
+                assertSame(expected, success.value(), label + " (detailed)");
+            }
+            case DetailedFault<T> fault -> {
+                assertEquals(reasonOf(expect, label), fault.reason(), label + " (detailed)");
+                if (vector.has("fault")) {
+                    JsonArray span = vector.getAsJsonArray("fault");
+                    assertEquals(span.get(0).getAsInt(), fault.offset(), label + " detailed fault offset");
+                    assertEquals(span.get(1).getAsInt(), fault.length(), label + " detailed fault length");
+                }
+                assertDetail(label, vector, fault.detail());
+            }
+        }
+    }
+
+    /**
+     * One row through the plain door (unless it declares date options, which only the detailed
+     * path takes) and through the detailed door, which must agree on everything and add the
+     * detail.
+     */
+    private static <T> void both(
+            String domain,
+            JsonObject vector,
+            Supplier<Verdict<T>> plain,
+            Supplier<DetailedVerdict<T>> detailed,
+            T expected) {
+        if (!vector.has("options")) {
+            assertVerdict(domain, vector, plain.get(), expected);
+        }
+        assertDetailed(domain, vector, detailed.get(), expected);
+    }
+
     /**
      * Values compare as the core wrote them: a float or double by its bits, so zero, which the
      * core writes in one form, must arrive unsigned (boxed {@code equals} would also tell
@@ -138,7 +304,9 @@ final class CorpusTest {
     /**
      * The corpus pins a char as its code point. A {@code char} holds only the BMP, so a
      * supplementary scalar the core accepts is this binding's out-of-range over the trimmed
-     * input — the one place a Java verdict departs from the core's, by design.
+     * input — the one place a Java verdict departs from the core's, by design. The trim is
+     * the test's own, by code point over the string and counted in UTF-8 bytes, against this
+     * binding's restated {@link WhiteSpace} table.
      */
     @Test
     void charCorpus() {
@@ -148,26 +316,195 @@ final class CorpusTest {
             if (vector.has("value")) {
                 int scalar = vector.get("value").getAsInt();
                 if (scalar > Character.MAX_VALUE) {
-                    byte[] bytes = inputBytes(vector);
-                    int start = 0;
-                    int end = bytes.length;
-                    while (start < end && " \t\n\f\r".indexOf(bytes[start]) >= 0) {
-                        start++;
-                    }
-                    while (end > start && " \t\n\f\r".indexOf(bytes[end - 1]) >= 0) {
-                        end--;
-                    }
+                    int[] token = trimmedToken(vector.get("input").getAsString());
                     vector.addProperty("expect", "out_of_range");
                     JsonArray span = new JsonArray();
-                    span.add(start);
-                    span.add(end - start);
+                    span.add(token[0]);
+                    span.add(token[1]);
                     vector.add("fault", span);
+                    // One char cannot hold the scalar the core accepted: too large for the type.
+                    vector.addProperty("detail", "too_large");
                 } else {
                     expected = (char) scalar;
                 }
             }
-            assertVerdict("char", vector, Cast.character(inputBytes(vector)), expected);
+            byte[] input = inputBytes(vector);
+            both("char", vector, () -> Cast.character(input), () -> DetailedCast.character(input), expected);
         }
+    }
+
+    /** The input less its white-space edges: the token's UTF-8 byte offset and length. */
+    private static int[] trimmedToken(String input) {
+        int[] points = input.codePoints().toArray();
+        int first = 0;
+        int last = points.length;
+        while (first < last && WhiteSpace.is(points[first])) {
+            first++;
+        }
+        while (last > first && WhiteSpace.is(points[last - 1])) {
+            last--;
+        }
+        return new int[] {
+            new String(points, 0, first).getBytes(StandardCharsets.UTF_8).length,
+            new String(points, first, last - first).getBytes(StandardCharsets.UTF_8).length
+        };
+    }
+
+    /** The message fragment this binding gives each rule of {@code formats.json}. */
+    private static String ruleMessage(String rule) {
+        return switch (rule) {
+            case "length" -> "must be at most";
+            case "digit" -> "must not contain an ASCII digit";
+            case "equal_separators" -> "must differ";
+            case "white_space" -> "must not contain white space";
+            case "designator_edge", "currency_edge" -> "must not start or end with white space";
+            case "grouping_policy" -> "names no grouping policy";
+            case "unknown_flag", "flags" -> "undefined bits";
+            case "pivot" -> "Pivot must be";
+            case "layout" -> "month vocabulary is malformed";
+            case "month" -> "must be 1 to 12";
+            case "utf8" -> "must be valid UTF-8";
+            case "name_length" -> "UTF-8 bytes";
+            case "character" -> "must not contain an ASCII digit, '/', '-' or white space";
+            case "month_missing" -> "needs at least one name";
+            case "duplicate" -> "fold to the same spelling";
+            default -> throw new AssertionError("formats: unknown rule " + rule);
+        };
+    }
+
+    /** A vocabulary's entries as the core packs them: month byte, little-endian length, bytes. */
+    private static byte[] packedMonths(JsonObject vector) {
+        java.io.ByteArrayOutputStream packed = new java.io.ByteArrayOutputStream();
+        for (JsonElement entry : vector.getAsJsonArray("months")) {
+            byte[] name = entry.getAsJsonArray().get(1).getAsString().getBytes(StandardCharsets.UTF_8);
+            packed.write(entry.getAsJsonArray().get(0).getAsInt());
+            packed.writeBytes(java.nio.ByteBuffer.allocate(4)
+                    .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                    .putInt(name.length)
+                    .array());
+            packed.writeBytes(name);
+        }
+        if (vector.has("append_bytes")) {
+            for (JsonElement b : vector.getAsJsonArray("append_bytes")) {
+                packed.write(b.getAsInt());
+            }
+        }
+        return packed.toByteArray();
+    }
+
+    /** The options a {@code date_options} row declares: flag names or raw bits, and a pivot. */
+    private static void declareDateOptions(JsonObject vector) {
+        int flags = 0;
+        if (vector.has("flag_bits")) {
+            flags = vector.get("flag_bits").getAsInt();
+        } else {
+            for (JsonElement name : vector.getAsJsonArray("flags")) {
+                flags |= switch (name.getAsString()) {
+                    case "compact_date" -> DateOptions.COMPACT_DATE;
+                    case "space_separator" -> DateOptions.SPACE_SEPARATOR;
+                    case "hour_offset" -> DateOptions.HOUR_OFFSET;
+                    case "common_forms" -> DateOptions.COMMON_FORMS.flags();
+                    default -> throw new AssertionError("unknown option flag " + name);
+                };
+            }
+        }
+        // A pivot past an int is as refused as one past 9999, never wrapped into range.
+        long pivot = vector.has("pivot") ? vector.get("pivot").getAsLong() : 0;
+        new DateOptions(flags, (int) Math.min(pivot, Integer.MAX_VALUE));
+    }
+
+    /**
+     * A {@code month_names} row, built through {@link MonthNames#ofPacked} from the bytes the
+     * row spells and, where it appends none, through the builder as well; both must refuse a
+     * row with the one rule's message, and an accepted vocabulary packs back to its bytes.
+     */
+    private static void declareMonthNames(JsonObject vector) {
+        byte[] packed = packedMonths(vector);
+        MonthNames names = MonthNames.ofPacked(packed);
+        assertArrayEquals(packed, names.packed());
+        if (!vector.has("append_bytes")) {
+            MonthNames.Builder builder = MonthNames.builder();
+            for (JsonElement entry : vector.getAsJsonArray("months")) {
+                builder.add(
+                        entry.getAsJsonArray().get(0).getAsInt(),
+                        entry.getAsJsonArray().get(1).getAsString());
+            }
+            assertEquals(names, builder.build());
+        }
+    }
+
+    /**
+     * {@code corpus/formats.json}: the table this binding restates holds to every
+     * {@code white_space} row (and to no code point the corpus does not name true), and each
+     * declaration row is built through the public constructors — a {@code refused} row throws
+     * the message of the rule that wins, the ordering rows included.
+     */
+    @Test
+    void formatsCorpus() {
+        java.util.Set<Integer> expectedWhiteSpace = new java.util.TreeSet<>();
+        java.util.Set<String> rules = new java.util.TreeSet<>();
+        int[] rows = new int[4];
+        JsonArray vectors = corpus("formats.json");
+        for (JsonElement element : vectors) {
+            JsonObject vector = element.getAsJsonObject();
+            String kind = vector.get("kind").getAsString();
+            if (kind.equals("white_space")) {
+                String codePoint = vector.get("code_point").getAsString();
+                int scalar = Integer.parseInt(codePoint.substring(2), 16);
+                boolean expected = vector.get("white_space").getAsBoolean();
+                assertEquals(expected, WhiteSpace.is(scalar), codePoint);
+                if (expected) {
+                    expectedWhiteSpace.add(scalar);
+                }
+                rows[0]++;
+                continue;
+            }
+            Runnable declare = switch (kind) {
+                case "num_format" -> () -> formatOf(vector);
+                case "day_periods" ->
+                    () -> new DateTimeFormat(DateOrder.YEAR_MONTH_DAY, symbolOf(vector, "am"), symbolOf(vector, "pm"));
+                case "date_options" -> () -> declareDateOptions(vector);
+                case "month_names" -> () -> declareMonthNames(vector);
+                default -> throw new AssertionError("formats: unknown kind " + kind);
+            };
+            String label = kind + " " + vector;
+            if (vector.get("expect").getAsString().equals("refused")) {
+                String rule = vector.get("rule").getAsString();
+                IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, declare::run, label);
+                assertTrue(refused.getMessage().contains(ruleMessage(rule)), label + ": " + refused.getMessage());
+                rules.add(rule);
+            } else {
+                assertDoesNotThrow(declare::run, label);
+            }
+            rows[kind.equals("num_format") ? 1 : kind.equals("day_periods") ? 2 : 3]++;
+        }
+        for (int scalar = 0; scalar <= Character.MAX_CODE_POINT; scalar++) {
+            assertEquals(
+                    expectedWhiteSpace.contains(scalar), WhiteSpace.is(scalar), "U+" + Integer.toHexString(scalar));
+        }
+        assertEquals(25, expectedWhiteSpace.size());
+        assertEquals(
+                java.util.Set.of(
+                        "length",
+                        "digit",
+                        "equal_separators",
+                        "white_space",
+                        "designator_edge",
+                        "currency_edge",
+                        "grouping_policy",
+                        "unknown_flag",
+                        "flags",
+                        "pivot",
+                        "layout",
+                        "month",
+                        "utf8",
+                        "name_length",
+                        "character",
+                        "month_missing",
+                        "duplicate"),
+                rules);
+        assertEquals(vectors.size(), rows[0] + rows[1] + rows[2] + rows[3]);
+        assertTrue(rows[1] > 0 && rows[2] > 0 && rows[3] > 0, rows[1] + "/" + rows[2] + "/" + rows[3]);
     }
 
     @Test
@@ -175,7 +512,8 @@ final class CorpusTest {
         for (JsonElement element : corpus("boolean.json")) {
             JsonObject vector = element.getAsJsonObject();
             Boolean expected = vector.has("value") ? vector.get("value").getAsBoolean() : null;
-            assertVerdict("boolean", vector, Cast.bool(inputBytes(vector)), expected);
+            byte[] input = inputBytes(vector);
+            both("boolean", vector, () -> Cast.bool(input), () -> DetailedCast.bool(input), expected);
         }
     }
 
@@ -188,25 +526,60 @@ final class CorpusTest {
             JsonElement value = vector.get("value");
             switch (vector.get("type").getAsString()) {
                 case "i8" ->
-                    assertVerdict("integer", vector, Cast.i8(input, format), value == null ? null : value.getAsByte());
-                case "i16" ->
-                    assertVerdict(
-                            "integer", vector, Cast.i16(input, format), value == null ? null : value.getAsShort());
-                case "i32" ->
-                    assertVerdict("integer", vector, Cast.i32(input, format), value == null ? null : value.getAsInt());
-                case "i64" ->
-                    assertVerdict("integer", vector, Cast.i64(input, format), value == null ? null : value.getAsLong());
-                case "u8" ->
-                    assertVerdict("integer", vector, Cast.u8(input, format), value == null ? null : value.getAsInt());
-                case "u16" ->
-                    assertVerdict("integer", vector, Cast.u16(input, format), value == null ? null : value.getAsInt());
-                case "u32" ->
-                    assertVerdict("integer", vector, Cast.u32(input, format), value == null ? null : value.getAsLong());
-                case "u64" ->
-                    assertVerdict(
+                    both(
                             "integer",
                             vector,
-                            Cast.u64(input, format),
+                            () -> Cast.i8(input, format),
+                            () -> DetailedCast.i8(input, format),
+                            value == null ? null : value.getAsByte());
+                case "i16" ->
+                    both(
+                            "integer",
+                            vector,
+                            () -> Cast.i16(input, format),
+                            () -> DetailedCast.i16(input, format),
+                            value == null ? null : value.getAsShort());
+                case "i32" ->
+                    both(
+                            "integer",
+                            vector,
+                            () -> Cast.i32(input, format),
+                            () -> DetailedCast.i32(input, format),
+                            value == null ? null : value.getAsInt());
+                case "i64" ->
+                    both(
+                            "integer",
+                            vector,
+                            () -> Cast.i64(input, format),
+                            () -> DetailedCast.i64(input, format),
+                            value == null ? null : value.getAsLong());
+                case "u8" ->
+                    both(
+                            "integer",
+                            vector,
+                            () -> Cast.u8(input, format),
+                            () -> DetailedCast.u8(input, format),
+                            value == null ? null : value.getAsInt());
+                case "u16" ->
+                    both(
+                            "integer",
+                            vector,
+                            () -> Cast.u16(input, format),
+                            () -> DetailedCast.u16(input, format),
+                            value == null ? null : value.getAsInt());
+                case "u32" ->
+                    both(
+                            "integer",
+                            vector,
+                            () -> Cast.u32(input, format),
+                            () -> DetailedCast.u32(input, format),
+                            value == null ? null : value.getAsLong());
+                case "u64" ->
+                    both(
+                            "integer",
+                            vector,
+                            () -> Cast.u64(input, format),
+                            () -> DetailedCast.u64(input, format),
                             value == null ? null : value.getAsBigInteger().longValue());
                 default -> fail("integer: unknown type " + vector.get("type"));
             }
@@ -222,13 +595,19 @@ final class CorpusTest {
             JsonElement value = vector.get("value");
             switch (vector.get("type").getAsString()) {
                 case "f32" ->
-                    assertVerdict(
+                    both(
                             "real",
                             vector,
-                            Cast.f32(input, format),
+                            () -> Cast.f32(input, format),
+                            () -> DetailedCast.f32(input, format),
                             value == null ? null : (float) value.getAsDouble());
                 case "f64" ->
-                    assertVerdict("real", vector, Cast.f64(input, format), value == null ? null : value.getAsDouble());
+                    both(
+                            "real",
+                            vector,
+                            () -> Cast.f64(input, format),
+                            () -> DetailedCast.f64(input, format),
+                            value == null ? null : value.getAsDouble());
                 default -> fail("real: unknown type " + vector.get("type"));
             }
         }
@@ -252,8 +631,10 @@ final class CorpusTest {
                 assertEquals(0, canonical.compareTo(expected), "decimal: '" + input + "' canonical value");
                 assertEquals(canonical.scale(), expected.scale(), "decimal: '" + input + "' canonical scale");
             }
-            Verdict<BigDecimal> verdict = Cast.decimal(inputBytes(vector), formatOf(vector));
-            assertVerdict("decimal", vector, verdict, expected);
+            byte[] bytes = inputBytes(vector);
+            NumFormat format = formatOf(vector);
+            Verdict<BigDecimal> verdict = Cast.decimal(bytes, format);
+            both("decimal", vector, () -> verdict, () -> DetailedCast.decimal(bytes, format), expected);
             if (verdict instanceof Success<BigDecimal> success) {
                 assertEquals(
                         expected.unscaledValue(),
@@ -276,7 +657,9 @@ final class CorpusTest {
                         Long.parseUnsignedLong(hex.substring(0, 16), 16),
                         Long.parseUnsignedLong(hex.substring(16, 32), 16));
             }
-            assertVerdict("uuid", vector, Cast.uuid(inputBytes(vector)), expected);
+            byte[] input = inputBytes(vector);
+            UUID want = expected;
+            both("uuid", vector, () -> Cast.uuid(input), () -> DetailedCast.uuid(input), want);
         }
     }
 
@@ -291,7 +674,14 @@ final class CorpusTest {
     void timestampCorpus() {
         for (JsonElement element : corpus("timestamp.json")) {
             JsonObject vector = element.getAsJsonObject();
-            assertVerdict("timestamp", vector, Cast.timestamp(inputBytes(vector)), expectedInstant(vector));
+            byte[] input = inputBytes(vector);
+            DateOptions options = optionsOf(vector);
+            both(
+                    "timestamp",
+                    vector,
+                    () -> Cast.timestamp(input),
+                    () -> options == null ? DetailedCast.timestamp(input) : DetailedCast.timestamp(input, options),
+                    expectedInstant(vector));
         }
     }
 
@@ -306,7 +696,13 @@ final class CorpusTest {
                 case 4 -> UnixPrecision.NANOSECONDS;
                 default -> throw new IllegalStateException("unix: unknown precision " + vector.get("precision"));
             };
-            assertVerdict("unix", vector, Cast.unix(inputBytes(vector), precision), expectedInstant(vector));
+            byte[] input = inputBytes(vector);
+            both(
+                    "unix",
+                    vector,
+                    () -> Cast.unix(input, precision),
+                    () -> DetailedCast.unix(input, precision),
+                    expectedInstant(vector));
         }
     }
 
@@ -319,7 +715,13 @@ final class CorpusTest {
                 case 2 -> ExcelEpoch.Y1904;
                 default -> throw new IllegalStateException("excel_serial: unknown epoch " + vector.get("epoch"));
             };
-            assertVerdict("excel_serial", vector, Cast.excelSerial(inputBytes(vector), epoch), expectedInstant(vector));
+            byte[] input = inputBytes(vector);
+            both(
+                    "excel_serial",
+                    vector,
+                    () -> Cast.excelSerial(input, epoch),
+                    () -> DetailedCast.excelSerial(input, epoch),
+                    expectedInstant(vector));
         }
     }
 
@@ -333,7 +735,14 @@ final class CorpusTest {
                             vector.get("month").getAsInt(),
                             vector.get("day").getAsInt())
                     : null;
-            assertVerdict("date", vector, Cast.date(inputBytes(vector)), expected);
+            byte[] input = inputBytes(vector);
+            DateOptions options = optionsOf(vector);
+            both(
+                    "date",
+                    vector,
+                    () -> Cast.date(input),
+                    () -> options == null ? DetailedCast.date(input) : DetailedCast.date(input, options),
+                    expected);
         }
     }
 
@@ -353,7 +762,19 @@ final class CorpusTest {
                             vector.get("month").getAsInt(),
                             vector.get("day").getAsInt())
                     : null;
-            assertVerdict("date_order", vector, Cast.date(inputBytes(vector), order), expected);
+            byte[] input = inputBytes(vector);
+            DateOptions options = optionsOf(vector);
+            MonthNames months = monthsOf(vector);
+            both(
+                    "date_order",
+                    vector,
+                    () -> Cast.date(input, order),
+                    () -> options == null
+                            ? DetailedCast.date(input, order)
+                            : months == null
+                                    ? DetailedCast.date(input, order, options)
+                                    : DetailedCast.date(input, order, options, months),
+                    expected);
         }
     }
 
@@ -380,11 +801,34 @@ final class CorpusTest {
             // declares none through the DateOrder door it always used, which must agree with
             // a DateTimeFormat declaring none — the same null pointer either way.
             DateTimeFormat format = new DateTimeFormat(order, symbolOf(vector, "am"), symbolOf(vector, "pm"));
+            DateOptions options = optionsOf(vector);
+            MonthNames months = monthsOf(vector);
             if (format.englishOnly()) {
-                assertVerdict("datetime", vector, Cast.dateTime(input, order), expected);
+                both(
+                        "datetime",
+                        vector,
+                        () -> Cast.dateTime(input, order),
+                        () -> options == null
+                                ? DetailedCast.dateTime(input, order)
+                                : months == null
+                                        ? DetailedCast.dateTime(input, order, options)
+                                        : DetailedCast.dateTime(input, order, options, months),
+                        expected);
                 assertEquals(Cast.dateTime(input, order), Cast.dateTime(input, format));
+                assertEquals(
+                        DetailedCast.dateTime(input, order, DateOptions.NONE),
+                        DetailedCast.dateTime(input, format, DateOptions.NONE));
             } else {
-                assertVerdict("datetime", vector, Cast.dateTime(input, format), expected);
+                both(
+                        "datetime",
+                        vector,
+                        () -> Cast.dateTime(input, format),
+                        () -> options == null
+                                ? DetailedCast.dateTime(input, format)
+                                : months == null
+                                        ? DetailedCast.dateTime(input, format, options)
+                                        : DetailedCast.dateTime(input, format, options, months),
+                        expected);
             }
         }
     }
@@ -396,7 +840,8 @@ final class CorpusTest {
             LocalTime expected = vector.has("nanos")
                     ? LocalTime.ofNanoOfDay(vector.get("nanos").getAsLong())
                     : null;
-            assertVerdict("time", vector, Cast.time(inputBytes(vector)), expected);
+            byte[] input = inputBytes(vector);
+            both("time", vector, () -> Cast.time(input), () -> DetailedCast.time(input), expected);
         }
     }
 
@@ -409,7 +854,8 @@ final class CorpusTest {
                             vector.get("seconds").getAsLong(),
                             vector.get("nanos").getAsLong())
                     : null;
-            assertVerdict("duration", vector, Cast.duration(inputBytes(vector)), expected);
+            byte[] input = inputBytes(vector);
+            both("duration", vector, () -> Cast.duration(input), () -> DetailedCast.duration(input), expected);
         }
     }
 
@@ -440,6 +886,7 @@ final class CorpusTest {
                     }
                     Verdict<BigDecimal> cast = Cast.decimalFromDouble(value);
                     assertVerdict("typed decimal", vector, cast, expected);
+                    assertDetailed("typed decimal", vector, DetailedCast.decimalFromDouble(value), expected);
                     yield cast;
                 }
                 case "excel_serial" -> {
@@ -455,6 +902,8 @@ final class CorpusTest {
                             : null;
                     Verdict<LocalDateTime> cast = Cast.excelSerialFromDouble(value, epoch);
                     assertVerdict("typed excel_serial", vector, cast, expected);
+                    assertDetailed(
+                            "typed excel_serial", vector, DetailedCast.excelSerialFromDouble(value, epoch), expected);
                     yield cast;
                 }
                 case "excel_time" -> {
@@ -463,6 +912,7 @@ final class CorpusTest {
                             : null;
                     Verdict<LocalTime> cast = Cast.excelTime(value);
                     assertVerdict("typed excel_time", vector, cast, expected);
+                    assertDetailed("typed excel_time", vector, DetailedCast.excelTime(value), expected);
                     yield cast;
                 }
                 case "excel_duration" -> {
@@ -473,6 +923,7 @@ final class CorpusTest {
                             : null;
                     Verdict<Duration> cast = Cast.excelDuration(value);
                     assertVerdict("typed excel_duration", vector, cast, expected);
+                    assertDetailed("typed excel_duration", vector, DetailedCast.excelDuration(value), expected);
                     yield cast;
                 }
                 default -> throw new AssertionError("typed: unknown door " + door);
@@ -604,6 +1055,44 @@ final class CorpusTest {
         CheckedVerdict<T> fromDouble(double value, Constraints<T> constraints);
     }
 
+    /**
+     * A detailed checked door by name: the typed methods of {@link DetailedCast} are the same
+     * eleven shapes four times over, so the replay finds them by reflection, which also fails the
+     * row if the door is missing.
+     */
+    @SuppressWarnings("unchecked")
+    private static <T> DetailedCheckedVerdict<T> detailed(String name, Class<?>[] leading, Object... arguments) {
+        Class<?>[] types = java.util.Arrays.copyOf(leading, leading.length + 1);
+        types[leading.length] = Constraints.class;
+        try {
+            return (DetailedCheckedVerdict<T>)
+                    DetailedCast.class.getMethod(name, types).invoke(null, arguments);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("DetailedCast." + name + java.util.Arrays.toString(types), e);
+        }
+    }
+
+    /**
+     * A detailed checked verdict as the checked verdict it projects to, which {@link
+     * #assertChecked} judges, plus the detail of a parse failure. A violation names none.
+     */
+    private static <T> void assertDetailedChecked(
+            String label,
+            JsonObject vector,
+            DetailedCheckedVerdict<T> verdict,
+            java.util.function.IntUnaryOperator units,
+            java.util.function.Function<JsonElement, T> expected) {
+        CheckedVerdict<T> plain = switch (verdict) {
+            case DetailedChecked<T> ok -> new Checked<>(ok.value(), ok.adjusted(), ok.enumIndex());
+            case DetailedFault<T> fault -> fault.toFault();
+            case DetailedViolation<T> violation -> violation.toViolation();
+        };
+        assertChecked(label + " (detailed)", vector, plain, units, expected);
+        if (verdict instanceof DetailedFault<T> fault) {
+            assertDetail(label, vector, fault.detail());
+        }
+    }
+
     private static <T> void numericRow(
             JsonObject vector,
             Constraints.Builder<T> builder,
@@ -614,15 +1103,45 @@ final class CorpusTest {
             return;
         }
         String label = label(vector);
+        String name = vector.get("door").getAsString();
         if (vector.has("from_f64")) {
-            assertChecked(
-                    label, vector, door.fromDouble(fromF64(vector.get("from_f64")), constraints), u -> u, expected);
+            double value = fromF64(vector.get("from_f64"));
+            assertChecked(label, vector, door.fromDouble(value, constraints), u -> u, expected);
+            assertDetailedChecked(
+                    label,
+                    vector,
+                    detailed(name + "FromDouble", new Class<?>[] {double.class}, value, constraints),
+                    u -> u,
+                    expected);
             return;
         }
         String text = vector.get("input").getAsString();
         byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
         NumFormat format = formatOf(vector);
         assertChecked(label, vector, door.bytes(bytes, format, constraints), u -> u, expected);
+        assertDetailedChecked(
+                label,
+                vector,
+                detailed(name, new Class<?>[] {byte[].class, NumFormat.class}, bytes, format, constraints),
+                u -> u,
+                expected);
+        assertDetailedChecked(
+                label + " (segment)",
+                vector,
+                detailed(
+                        name,
+                        new Class<?>[] {MemorySegment.class, NumFormat.class},
+                        MemorySegment.ofArray(bytes),
+                        format,
+                        constraints),
+                u -> u,
+                expected);
+        assertDetailedChecked(
+                label + " (string)",
+                vector,
+                detailed(name, new Class<?>[] {String.class, NumFormat.class}, text, format, constraints),
+                u -> chars(bytes, u),
+                expected);
         assertChecked(
                 label + " (segment)",
                 vector,
@@ -652,6 +1171,13 @@ final class CorpusTest {
                 invalid[i] = (byte) raw.get(i).getAsInt();
             }
             assertChecked(label, vector, Cast.text(invalid, constraints), u -> u, value);
+            assertDetailedChecked(label, vector, DetailedCast.text(invalid, constraints), u -> u, value);
+            assertDetailedChecked(
+                    label + " (segment)",
+                    vector,
+                    DetailedCast.text(MemorySegment.ofArray(invalid), constraints),
+                    u -> u,
+                    value);
             assertChecked(
                     label + " (segment)",
                     vector,
@@ -665,6 +1191,15 @@ final class CorpusTest {
         assertChecked(label, vector, Cast.text(bytes, constraints), u -> u, value);
         assertChecked(
                 label + " (segment)", vector, Cast.text(MemorySegment.ofArray(bytes), constraints), u -> u, value);
+        assertDetailedChecked(label, vector, DetailedCast.text(bytes, constraints), u -> u, value);
+        assertDetailedChecked(
+                label + " (segment)",
+                vector,
+                DetailedCast.text(MemorySegment.ofArray(bytes), constraints),
+                u -> u,
+                value);
+        assertDetailedChecked(
+                label + " (string)", vector, DetailedCast.text(text, constraints), u -> chars(bytes, u), value);
         CheckedVerdict<String> fromString = Cast.text(text, constraints);
         assertChecked(label + " (string)", vector, fromString, u -> chars(bytes, u), value);
         if (fromString instanceof Checked<String> ok && ok.enumIndex().isPresent()) {

@@ -24,6 +24,8 @@
 //! and White's algorithm as `core` carries it for its own fallback), because `core`'s
 //! formatting machinery cannot be put under the no-panic proof.
 
+use crate::detail::Failure;
+use crate::site::Site;
 use crate::verdict::{Decimal, Reason};
 use core::cmp::Ordering;
 
@@ -41,24 +43,45 @@ fn is_integral(value: f64) -> bool {
     value.abs() >= 4_503_599_627_370_496.0 || (value as i64) as f64 == value
 }
 
-/// The whole number a double names, as an `i128`: non-integral (NaN and ∞ among them) is
-/// `Malformed`, past the `i128` range is `OutOfRange`. Below 2^53 in magnitude it is the
-/// double's own value; from there up it is the shortest decimal's, zeros and all.
-pub(crate) fn whole(value: f64) -> Result<i128, Reason> {
+/// The whole number a double names, as an `i128`, or `None` when it is past the `i128`
+/// range: NaN and ∞ are `not_finite`, any other non-integral value `not_whole`, both
+/// `Malformed`. Below 2^53 in magnitude it is the double's own value; from there up it is
+/// the shortest decimal's, zeros and all.
+pub(crate) fn whole(value: f64) -> Result<Option<i128>, Failure> {
+    if !value.is_finite() {
+        return Err(Failure::spanless(Site::WholeNotFinite));
+    }
     if !is_integral(value) {
-        return Err(Reason::Malformed);
+        return Err(Failure::spanless(Site::WholeNotWhole));
     }
     if value.abs() < 9_007_199_254_740_992.0 {
-        return Ok(i128::from(value as i64));
+        return Ok(Some(i128::from(value as i64)));
     }
-    let shortest = shortest_digits(value).ok_or(Reason::Malformed)?;
+    let shortest =
+        shortest_digits(value).ok_or_else(|| Failure::spanless(Site::WholeUnrepresentable))?;
     let digits = shortest.digits();
     let mut size = digits.iter().fold(0i128, |sum, &digit| sum * 10 + i128::from(digit - b'0'));
     // An integral double from 2^53 up has no more digits than its exponent.
     for _ in digits.len()..usize::try_from(shortest.exponent()).unwrap_or(0) {
-        size = size.checked_mul(10).ok_or(Reason::OutOfRange)?;
+        let Some(wider) = size.checked_mul(10) else {
+            return Ok(None);
+        };
+        size = wider;
     }
-    Ok(if value < 0.0 { -size } else { size })
+    Ok(Some(if value < 0.0 { -size } else { size }))
+}
+
+/// An integer typed door's one parse, for both entry points: the whole number in `T`'s
+/// range, or the range site by where the value fell.
+pub(crate) fn integer<T: TryFrom<i128>>(value: f64, unsigned: bool) -> Result<T, Failure> {
+    let fits = whole(value)?.and_then(|whole| T::try_from(whole).ok());
+    fits.ok_or_else(|| {
+        Failure::spanless(match value < 0.0 {
+            true if unsigned => Site::TypedIntNegative,
+            true => Site::TypedIntTooSmall,
+            false => Site::TypedIntTooLarge,
+        })
+    })
 }
 
 macro_rules! integer_door {
@@ -71,7 +94,7 @@ macro_rules! integer_door {
             "never rounded; an integral one past the type's range is `OutOfRange`."
         )]
         pub fn $door(value: f64) -> Result<$ty, Reason> {
-            <$ty>::try_from(whole(value)?).map_err(|_| Reason::OutOfRange)
+            integer::<$ty>(value, <$ty>::MIN == 0).map_err(|failure| failure.reason)
         }
     };
 }
@@ -91,12 +114,20 @@ integer_door!(u64_from_f64, u64, cast_u64);
 /// `OutOfRange`. Never a negative zero: `-0.0`, and a negative double too small for an
 /// `f32` (`-1e-300`), are `0.0`.
 pub fn f32_from_f64(value: f64) -> Result<f32, Reason> {
+    f32_typed(value).map_err(|failure| failure.reason)
+}
+
+/// The typed `f32` door's one parse, for both entry points.
+pub(crate) fn f32_typed(value: f64) -> Result<f32, Failure> {
     if value.is_nan() {
-        return Err(Reason::Malformed);
+        return Err(Failure::spanless(Site::F32TypedNan));
+    }
+    if value.is_infinite() {
+        return Err(Failure::spanless(Site::F32TypedInfinite));
     }
     let narrowed = value as f32;
     if narrowed.is_infinite() {
-        Err(Reason::OutOfRange)
+        Err(Failure::spanless(Site::F32TypedTooLarge))
     } else {
         Ok(crate::float::unsigned(narrowed))
     }
@@ -107,12 +138,19 @@ pub fn f32_from_f64(value: f64) -> Result<f32, Reason> {
 /// exactly `1` is true, exactly `0` (either sign) is false, and anything else is
 /// `Malformed`.
 pub fn bool_from_f64(value: f64) -> Result<bool, Reason> {
+    bool_typed(value).map_err(|failure| failure.reason)
+}
+
+/// The typed `bool` door's one parse, for both entry points.
+pub(crate) fn bool_typed(value: f64) -> Result<bool, Failure> {
     if value == 1.0 {
         Ok(true)
     } else if value == 0.0 {
         Ok(false)
+    } else if !value.is_finite() {
+        Err(Failure::spanless(Site::BoolTypedNotFinite))
     } else {
-        Err(Reason::Malformed)
+        Err(Failure::spanless(Site::BoolTypedNotRecognized))
     }
 }
 
@@ -123,11 +161,16 @@ pub fn bool_from_f64(value: f64) -> Result<bool, Reason> {
 /// result is canonical as the text door's is. NaN is `Malformed`; an infinity, a magnitude
 /// past 2⁹⁶ − 1 or more than 28 places is `OutOfRange` — the digits are never cut to fit.
 pub fn decimal_from_f64(value: f64) -> Result<Decimal, Reason> {
+    decimal_typed(value).map_err(|failure| failure.reason)
+}
+
+/// The typed decimal door's one parse, for both entry points.
+pub(crate) fn decimal_typed(value: f64) -> Result<Decimal, Failure> {
     if value.is_nan() {
-        return Err(Reason::Malformed);
+        return Err(Failure::spanless(Site::DecimalTypedNan));
     }
     if value.is_infinite() {
-        return Err(Reason::OutOfRange);
+        return Err(Failure::spanless(Site::DecimalTypedInfinite));
     }
     let negative = value.is_sign_negative();
     let Some(shortest) = shortest_digits(value) else {
@@ -142,14 +185,19 @@ pub fn decimal_from_f64(value: f64) -> Result<Decimal, Reason> {
     let shift = i32::from(shortest.exponent()) - digits.len() as i32;
     let scale = if shift >= 0 {
         for _ in 0..shift {
-            magnitude = magnitude.checked_mul(10).ok_or(Reason::OutOfRange)?;
+            magnitude = magnitude
+                .checked_mul(10)
+                .ok_or_else(|| Failure::spanless(Site::DecimalTypedShiftTooLarge))?;
         }
         0
     } else {
         shift.unsigned_abs()
     };
-    if magnitude > MAX_MAGNITUDE || scale > MAX_SCALE {
-        return Err(Reason::OutOfRange);
+    if magnitude > MAX_MAGNITUDE {
+        return Err(Failure::spanless(Site::DecimalTypedTooLarge));
+    }
+    if scale > MAX_SCALE {
+        return Err(Failure::spanless(Site::DecimalTypedTooPrecise));
     }
     // The digits never end in a zero, so with a positive scale this is already canonical.
     Ok(Decimal { lo: magnitude as u64, hi: (magnitude >> 64) as u32, scale: scale as u8, negative })

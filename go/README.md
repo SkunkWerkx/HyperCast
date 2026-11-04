@@ -260,6 +260,16 @@ meaning.
 | `Percent` | a further spelling of the percent symbol (`"٪"`, `"％"`) | as a trailing `%` is, under `Percent` — the real and decimal doors; the integer doors never read a percent |
 | `DigitZero` | native digits: the ten code points from this zero up (`'٠'` for the Arabic-Indic digits, `'０'` for fullwidth); `0` declares none | wherever a digit is — integer part, fraction, exponent; a `0x`/`0b` body stays ASCII |
 
+White space is Unicode's `White_Space`, the 25 code points (ASCII, U+0085, U+00A0, U+2000 to
+U+200A, U+202F, U+3000 among them). Every door ignores it at both ends (`Char` given exactly
+one character keeps it), and the numeric doors also after a leading sign, before a trailing sign or a percent symbol, on
+either side of a currency symbol and inside accounting parentheses (`"- 12"`, `"( 12 )"`,
+`"12,5 %"`, the percent one under a declared comma decimal separator); between digits it is `Malformed`, unless a space-like group separator is
+declared: an ASCII space, U+00A0 or U+202F declared as the group separator makes the input's
+choice of those three immaterial, and a space-like separator with no digit after it is just
+white space. Input of nothing but white space is `Empty`. A day period may be set off from
+the clock by any run of white space (`3:04\u202fPM`).
+
 The rule for every field past the separators: **the ASCII spelling is always read, and a
 declared symbol is a further spelling read beside it.** Nothing that parsed before a symbol
 was declared stops parsing once it is: `"-5"` is -5 under a format declaring `"−"`, and so
@@ -268,7 +278,7 @@ under a format declaring `'٠'`, and so are `"١٢٣"` and `"12٣"`. Two signs i
 are `Malformed` at the later one. Under `CurrencySymbol` with a `Currency` declared, the
 symbol is accepted once, whole, at either edge of the numeric body: leading, before or
 after a sign (`$5`, `-$5`, `$ -5`, `€−5`), or trailing (`5 €`, `1.234,50 kr.`), with
-optional ASCII whitespace between symbol and digits; accounting parentheses wrap symbol and
+optional white space between symbol and digits; accounting parentheses wrap symbol and
 digits together (`($5)`). It never takes part in the digit scan, so a symbol containing a
 separator character (`kr.` under `.` grouping) is fine. A symbol declared while the style
 is off is `Malformed` at the symbol; the style with no symbol declared is a no-op.
@@ -282,9 +292,11 @@ pattern is `n-` or `n -` sets it; everything else leaves it off, so `"5-"` stays
 A format the core would refuse is a caller bug and panics, never a verdict — the way equal
 separators always have: a number separator that is empty or longer than 8 bytes, equal
 number separators or equal separators in force for a currency amount, any symbol that is
-not valid UTF-8 or carries an ASCII digit, a sign, percent or currency symbol carrying ASCII
-whitespace, a `Currency` longer than 16 bytes, or a `DigitZero` that is ASCII or starts no
-Unicode digit block. `NumFormat.Raw()` reports the same check as an `error` for code that
+not valid UTF-8 or carries an ASCII digit, a sign or percent symbol with white space in it, a
+decimal separator (number or currency) with white space in it, a `Currency` longer than 16
+bytes or starting or ending in white space (`F CFA` is fine, and there an ASCII space,
+U+00A0 and U+202F read as each other), or a `DigitZero` that is ASCII or starts no Unicode
+digit block. `NumFormat.Raw()` reports the same check as an `error` for code that
 would rather not panic.
 
 ```go
@@ -311,14 +323,15 @@ words before the door.
 case-insensitively, after the clock or ahead of it. `DateTimeWith` takes a `DateFormat`
 instead of the bare `DateOrder` — the same declarative shape as `NumFormat`: the order, and
 the words the culture writes for the two halves of the day. A declared designator is
-matched byte for byte, after the clock (`3:04 nachm.`, optional space before) or ahead of
-it (`오후 3:04`, optional space after), and the English pair is read whatever is declared.
+matched byte for byte, after the clock (`3:04 nachm.`) or ahead of it (`오후 3:04`), with any
+run of white space or none between designator and clock (so the `3:04\u202fPM` that ICU 72 and
+later write for `en_US` reads), and the English pair is read whatever is declared.
 A `DateFormat` declaring no designators reads exactly what `DateTime` reads, and
 `DateTime` itself is unchanged. Only the civil date-time door reads them:
 `DateOnlyOrdered` has no time part.
 
 A designator is at most 16 UTF-8 bytes, carries no ASCII digit, and neither starts nor
-ends in ASCII whitespace (an inner space, as in Spanish `a. m.`, is fine); anything else
+ends in white space (an inner space, as in Spanish `a. m.`, is fine); anything else
 is a caller bug and panics, and `DateFormat.Raw()` reports it as an `error`.
 
 ```go
@@ -689,6 +702,14 @@ Every success row is 0 B and 0 allocations in both bindings. Separator detection
 declared symbol costs text that does not carry it: `I32("1,234,567")` is 38.7 ns under
 `Invariant`, 44.6 ns under a format declaring `$`, and 72.0 ns under one declaring every
 symbol there is; declare what the feed actually carries.
+
+**Not re-measured since the white-space change.** The first table above (translated core and
+cgo, 2026-11-02) predates it: the core now trims Unicode white space at every door's edges, and
+the translated core carries the same change, but its cost in Go was not measured.
+`rust/README.md`'s benchmarks measure it on the Rust core, where input with nothing to trim
+reads level and input with white space at an edge takes about 2 ns longer; the Go figures
+are unknown until `go test -bench=. -benchmem ./...` is re-run. The numbers above are as they
+were measured.
 
 The table that follows **predates the translated core**: it measured the cgo binding for
 0.9.0 on linux-x64 (an Intel Core i9-11900H, go1.27.2), one session, median of five runs,

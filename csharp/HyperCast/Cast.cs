@@ -383,10 +383,10 @@ public static partial class Cast
 		if (utf8.Length == charCount || !verdict.TryGetValue(out Fault fault) || fault.Length == 0 && fault.Offset == 0)
 			return verdict;
 		var (offset, length) = Units(utf8, fault.Offset, fault.Length);
-		return new(new Fault(fault.Reason, offset, length));
+		return new(fault with { Offset = offset, Length = length });
 	}
 
-	static Verdict<T> Failed<T>(int code, in RawFault fault) where T : struct =>
+	static Verdict<T> Failed<T>(int code, in RawFaultDetail fault) where T : struct =>
 		code == -1
 			? throw new InvalidOperationException(
 				"libhypercast reported a contract violation — a binding bug, please report it.")
@@ -399,6 +399,28 @@ public static partial class Cast
 	static readonly Lazy<Version?> _nativeVersion =
 		new(() => Abi.ProbeVersion(hypercast_version), LazyThreadSafetyMode.PublicationOnly);
 
+	// The 1.1 floor, asked of the library rather than inferred from its version stamp: the detailed
+	// exports are what a 1.0 core lacks. Asked of a door no one has (code 0), which answers -1 and writes nothing.
+	static readonly Lazy<bool> _detailedDoors = new(DetailedDoors, LazyThreadSafetyMode.PublicationOnly);
+
+	static unsafe bool DetailedDoors()
+	{
+		try
+		{
+			// Each answers -1 to door 0 without reading or writing anything else: all four must be there.
+			var fault = RawFaultDetail.Empty;
+			return cast_detailed(0, 0, null, null, null, null, 0, null, 0, null, &fault) == -1
+				&& cast_detailed_from_f64(0, 0, 0, null, &fault) == -1
+				&& cast_checked_detailed(0, 0, null, null, null, 0, null, 0, null, &fault, null) == -1
+				&& cast_checked_detailed_from_f64(0, 0, null, null, 0, 0, null, &fault, null) == -1;
+		}
+		catch (Exception e) when (e is DllNotFoundException or EntryPointNotFoundException
+			or BadImageFormatException or PlatformNotSupportedException or TypeInitializationException)
+		{
+			return false;
+		}
+	}
+
 	/// <summary>
 	/// <see langword="true"/> when the native library resolved and answered the version
 	/// probe. Probed once, then cached; a <see langword="false"/> is permanent for the
@@ -408,12 +430,15 @@ public static partial class Cast
 	/// </summary>
 	/// <remarks>
 	/// Also <see langword="false"/> when a library did load but predates the
-	/// <c>hypercast_version</c> export — a stale binary beside a newer binding is the
-	/// mismatch this probe exists to name. It says nothing about <em>which</em> version
+	/// <c>hypercast_version</c> export, or the detailed exports every door of this binding
+	/// calls (the core's 1.1) — a stale binary beside a newer binding is the
+	/// mismatch this probe exists to name. A 1.0 core is such a binary: it would ignore a
+	/// strict grouping policy, so no door ever reaches it (a door on one throws
+	/// <see cref="EntryPointNotFoundException"/>) and nothing is parsed with 1.0's rules. It says nothing about <em>which</em> version
 	/// answered, and compares nothing; that is <see cref="NativeVersion"/>, and the
 	/// comparison is the caller's.
 	/// </remarks>
-	public static bool IsAvailable => _nativeVersion.Value is not null;
+	public static bool IsAvailable => _nativeVersion.Value is not null && _detailedDoors.Value;
 
 	/// <summary>
 	/// The native core's own version — <c>major.minor.patch</c> as the library reports it,
@@ -458,10 +483,8 @@ public static partial class Cast
 	public static unsafe Verdict<bool> Boolean(ReadOnlySpan<byte> utf8)
 	{
 		byte value = 0;
-		RawFault fault = default;
-		int code;
-		fixed (byte* ptr = utf8)
-			code = cast_bool(ptr, (nuint)utf8.Length, &value, &fault);
+		var fault = RawFaultDetail.Empty;
+		var code = Detailed(DoorCodes.Bool, 0, null, null, utf8, &value, &fault);
 		return code == 0 ? value != 0 : Failed<bool>(code, fault);
 	}
 

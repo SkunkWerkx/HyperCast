@@ -24,9 +24,39 @@
 // (static_cast<DateOrder>(9)) and a refused declaration's unbuilt Constraints handed to a
 // door: caller bugs, not data, which end the program with std::abort(), as Swift's
 // precondition and C#'s exception do.
+//
+// What failed, and the date shapes (hypercast::detailed). The doors above report a Fault; the
+// same doors under hypercast::detailed report a Failure, a Fault's reason and span with a
+// Detail beside them (name(detail) spells it: group_size, too_large, ...; any number a later
+// core adds is a Detail too, never an error). Only they take date options: a DateOptions
+// (compact dates, a space for the `T`, +hh offsets, a two-digit-year pivot) and a MonthNames
+// vocabulary, each checked once by the core when it is declared.
+//
+// A numeric format also declares its grouping: strict Western by default (`12,34` is
+// Malformed), strict Indian, or Grouping::legacy, a group separator anywhere between two
+// digits. Strict grouping and everything detailed needs a core of this header's major version
+// and a minor version at least as new (the patch never matters: a patch release adds no export),
+// which the header checks at run time before it is used: core_is_compatible() asks, and a
+// program should ask it once at startup. A core that fails it lacks the detailed exports or
+// ignores the grouping policy, which would silently read as legacy: a strict declaration against
+// one is refused (std::nullopt), and a door handed a strict format by other means writes one
+// line naming both versions to stderr and ends the program with std::abort(), never parsing it
+// as legacy.
 
 #ifndef HYPERCAST_HPP
 #define HYPERCAST_HPP
+
+// The version of this header, packed as hypercast_version() packs the library's own:
+// major << 16 | minor << 8 | patch. It is the crate's version, which a release moves with
+// everything else (the smoke test holds the two equal). A core drives the header when its major
+// version is the header's and its minor is at least the header's: a library older than the
+// header it is called from lacks what that header added, and a patch release adds nothing, so
+// core_is_compatible() ignores the patch.
+#define HYPERCAST_VERSION_MAJOR 1
+#define HYPERCAST_VERSION_MINOR 0
+#define HYPERCAST_VERSION_PATCH 0
+#define HYPERCAST_VERSION                                                                          \
+  ((HYPERCAST_VERSION_MAJOR << 16) | (HYPERCAST_VERSION_MINOR << 8) | HYPERCAST_VERSION_PATCH)
 
 #if !defined(__cplusplus) ||                                                                       \
     (__cplusplus < 201703L && (!defined(_MSVC_LANG) || _MSVC_LANG < 201703L))
@@ -38,6 +68,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
@@ -60,10 +91,34 @@
 
 namespace hypercast {
 
+// The linked library's own version, packed as HYPERCAST_VERSION packs the header's.
+inline std::uint32_t native_version_number() noexcept { return ::hypercast_version(); }
+
+namespace detail {
+// Whether a core of this packed version drives a header of that one: the same major version, a
+// minor at least as new, and any patch (a patch release adds no export). The rule hypercast.h's
+// direct C callers apply to the headers they were built against.
+constexpr bool version_accepts(std::uint32_t core, std::uint32_t header) noexcept {
+  return (core >> 16) == (header >> 16) && ((core >> 8) & 0xFF) >= ((header >> 8) & 0xFF);
+}
+} // namespace detail
+
+// Whether the linked library can drive this header (HYPERCAST_VERSION): its major version is
+// the header's and its minor at least as new, whatever the patch. A core that fails has no
+// detailed exports, or reads no grouping policy in a format's flags, so strict grouping against
+// it would silently read as legacy; every path that uses either asks this first. A program that
+// uses them should ask it once at startup, and read an answer of false as a deployment error.
+// Read once, then remembered.
+inline bool core_is_compatible() noexcept {
+  static const bool compatible =
+      detail::version_accepts(::hypercast_version(), static_cast<std::uint32_t>(HYPERCAST_VERSION));
+  return compatible;
+}
+
 // The closed set of reasons a cast can fail: the core's verdict codes, verbatim. Adding a
 // member is a breaking change in every binding at once.
 enum class CastFailure : std::int32_t {
-  empty = 1,       // required input was empty or whitespace; optional() reads it as absent
+  empty = 1,       // required input was empty or white space; optional() reads it as absent
   malformed = 2,   // present, but not recognizable as the target type
   out_of_range = 3 // well formed, but outside the target's range: "256" for a u8
 };
@@ -81,6 +136,170 @@ struct Fault {
     return a.reason == b.reason && a.offset == b.offset && a.length == b.length;
   }
   friend constexpr bool operator!=(const Fault &a, const Fault &b) noexcept { return !(a == b); }
+};
+
+// What exactly a cast found wrong, beside its reason: the core's detail codes, which keep their
+// numbers and meanings. New codes may join in a minor release, so a Detail is open: any
+// std::uint32_t is a value, an unknown one keeps its number (the reason and span of its Failure
+// still stand), and name() spells it "detail N". `none` (0) is a checked door's Violation, which
+// breaks a rule rather than fails to parse; it is never a failure's detail. A detail says what
+// failed, never how to retry.
+enum class Detail : std::uint32_t {
+  none = 0,
+  blank = 1,                    // empty, or only white space
+  unexpected_character = 2,     // a character the position doesn't allow
+  digit_expected = 3,           // a digit was required: `0xG`, `1e`
+  delimiter_expected = 4,       // a required mark is missing or different
+  trailing_text = 5,            // the value is complete, but more text follows
+  no_digits = 6,                // no numeral at all: only a sign, a symbol or a bare prefix
+  sign_misplaced = 7,           // a sign where none may stand
+  parentheses_unbalanced = 8,   // `(` without `)`
+  mark_repeated = 9,            // a once-only mark appears twice
+  group_misplaced = 10,         // a group separator not between digits, or an empty group
+  group_size = 11,              // a group of the wrong digit count for the grouping
+  group_in_fraction = 12,       // grouping after the decimal separator or in an exponent
+  ambiguous_separator = 13,     // separator detection can't tell `.` from `,`
+  fraction_not_allowed = 14,    // a fraction where the type is whole
+  field_width = 15,             // a delimited field with the wrong number of digits
+  wrong_length = 16,            // a fixed-shape token of the wrong length
+  component_missing = 17,       // a required part of the value is absent
+  not_recognized = 18,          // not one of the door's accepted words or values
+  unknown_unit = 19,            // an unknown or misplaced duration unit
+  invalid_utf8 = 20,            // the bytes where the cast failed are not UTF-8
+  too_long = 21,                // past an implementation limit
+  not_finite = 22,              // a NaN or infinity
+  not_whole = 23,               // a non-integral number at a whole-number door
+  negative_not_allowed = 24,    // negative where the type has no negatives
+  too_large = 25,               // beyond what the type represents
+  too_small = 26,               // below a signed type's minimum
+  too_precise = 27,             // more fractional digits than the type holds
+  date_field_out_of_range = 28, // year 0, month 13, a day past the month's end
+  time_field_out_of_range = 29, // hour, minute, second or offset out of range
+  outside_window = 30,          // an instant or duration past the supported window
+  nonexistent_date = 31,        // Excel's phantom 1900-02-29
+  not_a_scalar = 32             // a code point above U+10FFFF, or a surrogate
+};
+
+// Whether this header names the detail: 1 to 32. A core newer than the header may report
+// others, which are no error.
+constexpr bool is_known(Detail detail) noexcept {
+  return static_cast<std::uint32_t>(detail) >= 1 && static_cast<std::uint32_t>(detail) <= 32;
+}
+
+// A detail's name, held by value: the snake_case spelling above (group_size, too_large), or
+// "detail N" for a code this header does not name, `none` included. Compare it with a string,
+// print c_str(), or take view() from a named DetailName (not a temporary, which would dangle).
+class DetailName {
+public:
+  constexpr std::string_view view() const & noexcept { return std::string_view(text_, size_); }
+  std::string_view view() const && = delete;
+  constexpr const char *c_str() const noexcept { return text_; }
+  constexpr std::size_t size() const noexcept { return size_; }
+
+  friend constexpr bool operator==(const DetailName &a, std::string_view b) noexcept {
+    return a.view() == b;
+  }
+  friend constexpr bool operator==(std::string_view a, const DetailName &b) noexcept {
+    return a == b.view();
+  }
+  friend constexpr bool operator!=(const DetailName &a, std::string_view b) noexcept {
+    return !(a == b);
+  }
+  friend constexpr bool operator!=(std::string_view a, const DetailName &b) noexcept {
+    return !(a == b);
+  }
+
+private:
+  friend constexpr DetailName name(Detail detail) noexcept;
+  constexpr DetailName() noexcept = default;
+  constexpr void append(std::string_view text) noexcept {
+    for (char c : text) {
+      text_[size_++] = c;
+    }
+    text_[size_] = '\0';
+  }
+
+  char text_[32] = {}; // "date_field_out_of_range" and "detail 4294967295", and a NUL
+  std::size_t size_ = 0;
+};
+
+constexpr DetailName name(Detail detail) noexcept {
+  constexpr std::string_view names[] = {"",
+                                        "blank",
+                                        "unexpected_character",
+                                        "digit_expected",
+                                        "delimiter_expected",
+                                        "trailing_text",
+                                        "no_digits",
+                                        "sign_misplaced",
+                                        "parentheses_unbalanced",
+                                        "mark_repeated",
+                                        "group_misplaced",
+                                        "group_size",
+                                        "group_in_fraction",
+                                        "ambiguous_separator",
+                                        "fraction_not_allowed",
+                                        "field_width",
+                                        "wrong_length",
+                                        "component_missing",
+                                        "not_recognized",
+                                        "unknown_unit",
+                                        "invalid_utf8",
+                                        "too_long",
+                                        "not_finite",
+                                        "not_whole",
+                                        "negative_not_allowed",
+                                        "too_large",
+                                        "too_small",
+                                        "too_precise",
+                                        "date_field_out_of_range",
+                                        "time_field_out_of_range",
+                                        "outside_window",
+                                        "nonexistent_date",
+                                        "not_a_scalar"};
+  DetailName out;
+  if (is_known(detail)) {
+    out.append(names[static_cast<std::uint32_t>(detail)]);
+    return out;
+  }
+  out.append("detail ");
+  char digits[10] = {};
+  std::size_t count = 0;
+  std::uint32_t code = static_cast<std::uint32_t>(detail);
+  do {
+    digits[count++] = static_cast<char>('0' + code % 10);
+    code /= 10;
+  } while (code != 0);
+  while (count > 0) {
+    const char digit[1] = {digits[--count]};
+    out.append(std::string_view(digit, 1));
+  }
+  return out;
+}
+
+// The failure case of a detailed door: a Fault's reason and span, and what failed in it. The
+// Fault is exactly what the plain door reports for the same text (fault()); Fault itself is
+// unchanged, and its equality never sees the detail.
+struct Failure {
+  CastFailure reason;
+  Detail detail;
+  std::size_t offset;
+  std::size_t length;
+
+  // The plain door's Fault: the reason and the span.
+  constexpr Fault fault() const noexcept { return Fault{reason, offset, length}; }
+  // The raw detail code, which an unknown detail keeps.
+  constexpr std::uint32_t detail_code() const noexcept {
+    return static_cast<std::uint32_t>(detail);
+  }
+
+  friend constexpr bool operator==(const Failure &a, const Failure &b) noexcept {
+    return a.reason == b.reason && a.detail == b.detail && a.offset == b.offset &&
+           a.length == b.length;
+  }
+  friend constexpr bool operator!=(const Failure &a, const Failure &b) noexcept {
+    return !(a == b);
+  }
 };
 
 // The outcome of a cast: exactly one of a value or a Fault, and nothing else. There is no
@@ -190,6 +409,108 @@ template <class T>
 constexpr std::optional<Verdict<T>> optional(const Verdict<T> &verdict) noexcept {
   if (const Fault *fault = verdict.fault_if();
       fault != nullptr && fault->reason == CastFailure::empty) {
+    return std::nullopt;
+  }
+  return verdict;
+}
+
+// The outcome of a detailed cast: exactly one of a value or a Failure, which is a Fault with
+// its Detail. The same accessors as Verdict, over those cases (failure_if(), failure()), and
+// to_verdict() for the plain Verdict the same text gives, detail dropped. Under C++23 with
+// <expected> it converts to std::expected<T, Failure>.
+template <class T> class [[nodiscard]] DetailedVerdict {
+  static_assert(std::is_trivially_copyable_v<T> && std::is_default_constructible_v<T>,
+                "a verdict holds a plain value");
+
+public:
+  using value_type = T;
+
+  constexpr DetailedVerdict(T success) noexcept : value_(success), failure_{}, ok_(true) {}
+  constexpr DetailedVerdict(Failure failure) noexcept : value_{}, failure_(failure), ok_(false) {}
+
+  constexpr bool ok() const noexcept { return ok_; }
+
+  constexpr const T *value_if() const noexcept { return ok_ ? &value_ : nullptr; }
+  constexpr const Failure *failure_if() const noexcept { return ok_ ? nullptr : &failure_; }
+
+  // Precondition: ok(). Otherwise a value-initialized T.
+  constexpr const T &value() const noexcept { return value_; }
+  // Precondition: !ok(). Otherwise a value-initialized Failure, whose reason is no enumerator.
+  constexpr const Failure &failure() const noexcept { return failure_; }
+
+  constexpr T value_or(T fallback) const noexcept { return ok_ ? value_ : fallback; }
+
+  // The plain Verdict: the value, or the Fault of this Failure.
+  constexpr Verdict<T> to_verdict() const noexcept {
+    if (ok_) {
+      return Verdict<T>(value_);
+    }
+    return Verdict<T>(failure_.fault());
+  }
+
+  template <class OnValue, class OnFailure>
+  constexpr std::invoke_result_t<OnValue &&, const T &> match(OnValue &&on_value,
+                                                              OnFailure &&on_failure) const
+      noexcept(std::is_nothrow_invocable_v<OnValue &&, const T &> &&
+               std::is_nothrow_invocable_v<OnFailure &&, const Failure &>) {
+    static_assert(std::is_same_v<std::invoke_result_t<OnValue &&, const T &>,
+                                 std::invoke_result_t<OnFailure &&, const Failure &>>,
+                  "match's two cases must return the same type");
+    if (ok_) {
+      return std::forward<OnValue>(on_value)(value_);
+    }
+    return std::forward<OnFailure>(on_failure)(failure_);
+  }
+
+  template <class Visitor>
+  constexpr std::invoke_result_t<Visitor &&, const T &> visit(Visitor &&visitor) const
+      noexcept(std::is_nothrow_invocable_v<Visitor &&, const T &> &&
+               std::is_nothrow_invocable_v<Visitor &&, const Failure &>) {
+    static_assert(std::is_same_v<std::invoke_result_t<Visitor &&, const T &>,
+                                 std::invoke_result_t<Visitor &&, const Failure &>>,
+                  "visit's two cases must return the same type");
+    if (ok_) {
+      return std::forward<Visitor>(visitor)(value_);
+    }
+    return std::forward<Visitor>(visitor)(failure_);
+  }
+
+  // The verdict as a std::variant: index 0 the value, index 1 the failure.
+  constexpr std::variant<T, Failure> to_variant() const noexcept {
+    if (ok_) {
+      return std::variant<T, Failure>(std::in_place_index<0>, value_);
+    }
+    return std::variant<T, Failure>(std::in_place_index<1>, failure_);
+  }
+
+#ifdef HYPERCAST_HAS_EXPECTED
+  constexpr std::expected<T, Failure> to_expected() const noexcept {
+    if (ok_) {
+      return std::expected<T, Failure>(std::in_place, value_);
+    }
+    return std::expected<T, Failure>(std::unexpect, failure_);
+  }
+  constexpr operator std::expected<T, Failure>() const noexcept { return to_expected(); }
+#endif
+
+  friend constexpr bool operator==(const DetailedVerdict &a, const DetailedVerdict &b) noexcept {
+    return a.ok_ == b.ok_ && (a.ok_ ? a.value_ == b.value_ : a.failure_ == b.failure_);
+  }
+  friend constexpr bool operator!=(const DetailedVerdict &a, const DetailedVerdict &b) noexcept {
+    return !(a == b);
+  }
+
+private:
+  T value_;
+  Failure failure_;
+  bool ok_;
+};
+
+// A detailed verdict presented optionally: a blank failure becomes std::nullopt.
+template <class T>
+constexpr std::optional<DetailedVerdict<T>> optional(const DetailedVerdict<T> &verdict) noexcept {
+  if (const Failure *failure = verdict.failure_if();
+      failure != nullptr && failure->reason == CastFailure::empty) {
     return std::nullopt;
   }
   return verdict;
@@ -419,12 +740,66 @@ constexpr NumStyles operator~(NumStyles a) noexcept {
 constexpr NumStyles &operator|=(NumStyles &a, NumStyles b) noexcept { return a = a | b; }
 constexpr NumStyles &operator&=(NumStyles &a, NumStyles b) noexcept { return a = a & b; }
 
+// How a numeral's group separators are judged: the policy a NumFormat declares beside its
+// styles. A policy only judges groups: with NumStyles::grouping off, a group separator stays
+// forbidden under every one. Policy bits 8 and 9 of the layout's flags, which never share the
+// styles; a value other than these three is a refused declaration.
+enum class Grouping : std::uint32_t {
+  legacy =
+      HyperCastNumFormat_GROUPING_LEGACY, // a separator anywhere between two digits: 12,34 is 1234
+  western =
+      HyperCastNumFormat_GROUPING_WESTERN,    // groups of three counted from the right: 1,234,567
+  indian = HyperCastNumFormat_GROUPING_INDIAN // lakh and crore: the last group three, the rest two
+};
+
 namespace detail {
 [[noreturn]] inline void contract_violation() noexcept {
   // The core refused an argument the types should have ruled out: an enum value outside its
   // enumerators. A caller bug, never data.
   std::abort();
 }
+
+// A strict or detailed cast reached a core that cannot drive this header (core_is_compatible()
+// is false): one line on stderr naming both versions, then the end of the program, rather than
+// parse a strict request as legacy. A deployment error, not a caller bug, so it says so.
+[[noreturn]] inline void stale_core() noexcept {
+  const std::uint32_t core = ::hypercast_version();
+  std::fprintf(stderr,
+               "hypercast: the linked library is %u.%u.%u, which cannot drive this header "
+               "(%d.%d.%d: the same major version and at least its minor are needed); "
+               "refusing a strict or detailed cast\n",
+               core >> 16, (core >> 8) & 0xFFu, core & 0xFFu, HYPERCAST_VERSION_MAJOR,
+               HYPERCAST_VERSION_MINOR, HYPERCAST_VERSION_PATCH);
+  std::abort();
+}
+
+// The core's Door codes, as the detailed exports number them (and the checked ones: 2 to 11,
+// 18 and 19).
+enum : std::uint32_t {
+  door_bool = 1,
+  door_i8 = 2,
+  door_i16 = 3,
+  door_i32 = 4,
+  door_i64 = 5,
+  door_u8 = 6,
+  door_u16 = 7,
+  door_u32 = 8,
+  door_u64 = 9,
+  door_f32 = 10,
+  door_f64 = 11,
+  door_uuid = 12,
+  door_timestamp = 13,
+  door_unix = 14,
+  door_date = 15,
+  door_time = 16,
+  door_duration = 17,
+  door_text = 18,
+  door_decimal = 19,
+  door_date_ordered = 20,
+  door_datetime = 21,
+  door_excel_serial = 22,
+  door_char = 23
+};
 
 template <class Symbol> constexpr bool store(Symbol &symbol, std::string_view text) noexcept {
   if (text.size() > sizeof symbol.bytes) {
@@ -447,7 +822,8 @@ template <class Raw> constexpr bool same_bytes(const Raw &a, const Raw &b) noexc
 // Caller-declared numeric notation for the integer, real and decimal doors: the separators,
 // the leniences, and whatever the text's culture spells differently from ASCII. The core
 // carries no culture data; a caller maps its own to these fields. 92 bytes, the core's
-// RawNumFormat, which it reads in place.
+// RawNumFormat, which it reads in place. Grouping defaults to strict Western everywhere a format
+// is declared: `12,34` is Malformed unless the caller declares Grouping::legacy.
 class NumFormat {
 public:
   // What NumFormat::declare reads. Every field after styles declares nothing when empty,
@@ -464,16 +840,27 @@ public:
     std::string_view plus_sign;            // a further plus beside ASCII +
     std::string_view percent;              // a further percent beside ASCII % (٪, ％)
     char32_t digit_zero = 0;               // the zero of native digits read beside 0-9 (U+0660)
+    Grouping grouping = Grouping::western; // how group separators are judged; styles holds none
   };
 
   // The format these fields declare, or std::nullopt for one the core refuses (a symbol that
-  // is too long, holds an ASCII digit or is not UTF-8, equal separators, a digit zero that
-  // starts no digit block, ...). The core itself is the judge, asked once here, so a door
-  // never meets a format it refuses.
+  // is too long, holds an ASCII digit or is not UTF-8, equal separators, a sign, percent
+  // symbol or decimal separator with white space in it, a currency symbol with white space
+  // at either edge, a digit zero that starts no digit block, a policy that is not one of
+  // Grouping's, a style bit that is not NumStyles's, or styles carrying a grouping policy). The
+  // core itself is the judge, asked once here, so a door never meets a format it refuses. A
+  // strict grouping needs a core as new as this header (core_is_compatible()): against an older one
+  // the declaration is refused, since that core would read the policy as legacy.
   static std::optional<NumFormat> declare(const Fields &fields) noexcept {
     NumFormat format;
     HyperCastNumFormat &f = format.raw_.format;
-    f.flags = static_cast<std::uint32_t>(fields.styles);
+    const std::uint32_t styles = static_cast<std::uint32_t>(fields.styles);
+    const std::uint32_t policy = static_cast<std::uint32_t>(fields.grouping);
+    if ((styles & HyperCastNumFormat_GROUPING_POLICY) != 0 ||
+        (policy & ~static_cast<std::uint32_t>(HyperCastNumFormat_GROUPING_POLICY)) != 0) {
+      return std::nullopt;
+    }
+    f.flags = styles | policy;
     f.digits = static_cast<HyperCastNativeDigits>(fields.digit_zero);
     if (!detail::store(f.decimal_sep, fields.decimal_sep) ||
         !detail::store(f.group_sep, fields.group_sep) ||
@@ -484,24 +871,61 @@ public:
         !detail::store(f.percent, fields.percent) || !detail::store(f.currency, fields.currency)) {
       return std::nullopt;
     }
-    // Empty text with a format the core reads is Empty; one it refuses is -1.
+    // Empty text with a format the core reads is Empty; one it refuses is -1. A format with no
+    // bits past the 1.0 flags is judged by the 1.0 rules, which any core has; a policy or a bit
+    // only a newer core knows needs the detailed judge, and so a core of the header's version.
     std::int32_t ignored = 0;
-    if (::cast_i32(nullptr, 0, &format.raw_, &ignored, nullptr) < 0) {
+    if (f.flags >> 8 == 0) {
+      if (::cast_i32(nullptr, 0, &format.raw_, &ignored, nullptr) < 0) {
+        return std::nullopt;
+      }
+      return format;
+    }
+    if (!core_is_compatible() ||
+        ::cast_detailed(detail::door_i32, 0, &format.raw_, nullptr, nullptr, nullptr, 0, nullptr, 0,
+                        &ignored, nullptr) < 0) {
       return std::nullopt;
     }
     return format;
   }
 
-  // `.` decimal and `,` group separators and NumStyles::all: what the core reads by default.
-  static constexpr NumFormat invariant() noexcept { return NumFormat(".", ",", NumStyles::all); }
-
-  // The ./, roles resolved per input from structure (NumStyles::separator_detect, beside
-  // all), where only unambiguous text resolves: `1,000` is Malformed, never guessed.
-  static constexpr NumFormat detect() noexcept {
-    return NumFormat(".", ",", NumStyles::all | NumStyles::separator_detect);
+  // `.` decimal and `,` group separators, NumStyles::all and strict Western grouping: what a
+  // caller of this header reads by default. `12,34` is Malformed; Grouping::legacy
+  // (invariant().with_grouping(Grouping::legacy)) is the 1.0 reading, 1234.
+  static constexpr NumFormat invariant() noexcept {
+    return NumFormat(".", ",", NumStyles::all, Grouping::western);
   }
 
-  NumStyles styles() const noexcept { return static_cast<NumStyles>(raw_.format.flags); }
+  // The ./, roles resolved per input from structure (NumStyles::separator_detect, beside
+  // all), where only unambiguous text resolves: `1,000` is Malformed, never guessed. Strict
+  // Western grouping, as invariant(); the policy never settles an ambiguous separator.
+  static constexpr NumFormat detect() noexcept {
+    return NumFormat(".", ",", NumStyles::all | NumStyles::separator_detect, Grouping::western);
+  }
+
+  // The leniences, which never carry the grouping policy (grouping() has it).
+  NumStyles styles() const noexcept {
+    return static_cast<NumStyles>(raw_.format.flags &
+                                  ~static_cast<std::uint32_t>(HyperCastNumFormat_GROUPING_POLICY));
+  }
+  Grouping grouping() const noexcept {
+    return static_cast<Grouping>(raw_.format.flags & HyperCastNumFormat_GROUPING_POLICY);
+  }
+  // This format with another grouping policy, replacing the current one (never combined with
+  // it), the styles and every symbol kept. One of Grouping's three values; any other is a
+  // contract violation and ends the program with std::abort(), as an undefined date order does.
+  constexpr NumFormat with_grouping(Grouping policy) const noexcept {
+    const std::uint32_t bits = static_cast<std::uint32_t>(policy);
+    if (bits != HyperCastNumFormat_GROUPING_LEGACY && bits != HyperCastNumFormat_GROUPING_WESTERN &&
+        bits != HyperCastNumFormat_GROUPING_INDIAN) {
+      detail::contract_violation();
+    }
+    NumFormat copy = *this;
+    copy.raw_.format.flags =
+        (copy.raw_.format.flags & ~static_cast<std::uint32_t>(HyperCastNumFormat_GROUPING_POLICY)) |
+        bits;
+    return copy;
+  }
   // Each symbol is a view into this NumFormat, so it is taken from a named one: on a temporary
   // it would dangle, and does not compile.
   std::string_view decimal_sep() const & noexcept { return detail::view(raw_.format.decimal_sep); }
@@ -539,10 +963,10 @@ public:
 
 private:
   constexpr NumFormat() noexcept : raw_{} { raw_.size = HyperCastRawNumFormat_SIZE; }
-  constexpr NumFormat(std::string_view decimal, std::string_view group,
-                      NumStyles leniences) noexcept
+  constexpr NumFormat(std::string_view decimal, std::string_view group, NumStyles leniences,
+                      Grouping policy) noexcept
       : NumFormat() {
-    raw_.format.flags = static_cast<std::uint32_t>(leniences);
+    raw_.format.flags = static_cast<std::uint32_t>(leniences) | static_cast<std::uint32_t>(policy);
     detail::store(raw_.format.decimal_sep, decimal);
     detail::store(raw_.format.group_sep, group);
   }
@@ -561,7 +985,7 @@ public:
   }
 
   // The order and the designators, or std::nullopt for a designator the core refuses: over
-  // 16 bytes, an ASCII digit, ASCII whitespace at either end, not UTF-8. Empty declares none.
+  // 16 bytes, an ASCII digit, white space at either end, not UTF-8. Empty declares none.
   static std::optional<DateFormat> declare(DateOrder date_order, std::string_view am_symbol,
                                            std::string_view pm_symbol) noexcept {
     DateFormat format(date_order);
@@ -597,6 +1021,216 @@ public:
 private:
   DateOrder order_;
   HyperCastRawDayPeriods raw_;
+};
+
+// The caller's bytes a declaration packs a list into, as the core reads it: an enum list (16
+// bytes a numeric entry, 4 plus its UTF-8 a text entry; Constraints<T>::storage_size says how
+// many) or a month vocabulary (5 plus its UTF-8 an entry; MonthNames::storage_size). Nothing is
+// allocated, so the storage is the caller's: it must outlive the declaration and every value
+// read through it (a text enum match is a view into it), and must not change after the
+// declaration. A copy of a Constraints or MonthNames refers to the same storage.
+class EnumStorage {
+public:
+  template <std::size_t N>
+  constexpr EnumStorage(std::uint8_t (&bytes)[N]) noexcept : data_(bytes), size_(N) {}
+  template <std::size_t N>
+  constexpr EnumStorage(std::array<std::uint8_t, N> &bytes) noexcept
+      : data_(bytes.data()), size_(N) {}
+  constexpr EnumStorage(std::uint8_t *data, std::size_t size) noexcept : data_(data), size_(size) {}
+
+  constexpr std::uint8_t *data() const noexcept { return data_; }
+  constexpr std::size_t size() const noexcept { return size_; }
+
+private:
+  std::uint8_t *data_;
+  std::size_t size_;
+};
+
+// The extra shapes the detailed date doors read, each opt-in: the doors without options keep
+// the shapes they always have.
+enum class DateStyles : std::uint32_t {
+  none = 0,
+  compact_date = 1,    // cast_date also reads `yyyyMMdd`, eight ASCII digits
+  space_separator = 2, // cast_timestamp also reads a single space where the `T` goes
+  hour_offset = 4,     // cast_timestamp also reads an offset of `+hh`, with no minutes
+  common_forms = 7     // all three together; never a pivot or a vocabulary
+};
+
+constexpr DateStyles operator|(DateStyles a, DateStyles b) noexcept {
+  return static_cast<DateStyles>(static_cast<std::uint32_t>(a) | static_cast<std::uint32_t>(b));
+}
+constexpr DateStyles operator&(DateStyles a, DateStyles b) noexcept {
+  return static_cast<DateStyles>(static_cast<std::uint32_t>(a) & static_cast<std::uint32_t>(b));
+}
+
+// The options of the detailed date doors: the styles above and a two-digit-year pivot, the
+// last year of the 100-year window a two-digit `yy` is read in (the one year in [pivot-99,
+// pivot] ending in `yy`; 0 is none, and then a two-digit year is a width fault; 100 to 9999
+// otherwise). A default DateOptions is no option. A known option a door does not read is
+// ignored; a style bit this header does not name is refused. 12 bytes, the core's
+// RawDateOptions. Needs a core as new as this header.
+class DateOptions {
+public:
+  // No option: every door reads exactly the shapes it always has.
+  constexpr DateOptions() noexcept : raw_{HyperCastRawDateOptions_SIZE, 0, 0} {}
+
+  static constexpr DateOptions none() noexcept { return DateOptions(); }
+  // compact_date, space_separator and hour_offset together, with no pivot.
+  static constexpr DateOptions common_forms() noexcept {
+    return DateOptions(DateStyles::common_forms, 0);
+  }
+
+  // The options these styles and this pivot declare, or std::nullopt for ones the core refuses
+  // (a style bit it does not define, a pivot that is neither 0 nor 100 to 9999), or when the
+  // core is older than this header. The core is the judge, asked once here.
+  static std::optional<DateOptions> declare(DateStyles styles, std::uint32_t pivot = 0) noexcept {
+    const DateOptions options(styles, pivot);
+    HyperCastDate ignored{};
+    if (!core_is_compatible() ||
+        ::cast_detailed(detail::door_date, 0, nullptr, nullptr, &options.raw_, nullptr, 0, nullptr,
+                        0, &ignored, nullptr) < 0) {
+      return std::nullopt;
+    }
+    return options;
+  }
+
+  constexpr DateStyles styles() const noexcept { return static_cast<DateStyles>(raw_.flags); }
+  constexpr std::uint32_t pivot() const noexcept { return raw_.pivot; }
+
+  // The layout the core reads, for a library that hands it to a C ABI of its own.
+  constexpr const HyperCastRawDateOptions &raw() const noexcept { return raw_; }
+
+  friend constexpr bool operator==(const DateOptions &a, const DateOptions &b) noexcept {
+    return a.raw_.size == b.raw_.size && a.raw_.flags == b.raw_.flags &&
+           a.raw_.pivot == b.raw_.pivot;
+  }
+  friend constexpr bool operator!=(const DateOptions &a, const DateOptions &b) noexcept {
+    return !(a == b);
+  }
+
+private:
+  constexpr DateOptions(DateStyles styles, std::uint32_t pivot) noexcept
+      : raw_{HyperCastRawDateOptions_SIZE, static_cast<std::uint32_t>(styles), pivot} {}
+
+  HyperCastRawDateOptions raw_;
+};
+
+// One entry of a month vocabulary: a month (1 to 12) and a name for it.
+struct MonthName {
+  std::uint8_t month;
+  std::string_view name;
+};
+
+// The month names a detailed cast_date(text, order) or cast_datetime reads in the month field,
+// Excel style (`07-Jan-26`), in the position the declared order selects, with the repeated
+// `/`, `-` or `.` separator. Caller-built: a name is a spelling the caller chose
+// (`Sep` and `Sept` are two entries), matched under simple case folding, the longest first
+// among those the separator follows. Punctuation is part of a name: with `janv.` declared and
+// `.` as the separator, `7.janv..2026` reads and `7.janv.2026` is Malformed.
+//
+// Each month needs an entry; no name is empty, over 64 bytes, or holds an ASCII digit, `/`, `-`
+// or white space (`.` is fine); two names that fold alike are refused. The core judges all of
+// it, once, when a vocabulary is declared, and again on every call that uses it. A default
+// MonthNames is no vocabulary. Packed into the caller's storage in the core's layout (a month
+// byte, a little-endian 32-bit length, the UTF-8, no padding), which must outlive the
+// MonthNames and every cast that reads it. Needs a core as new as this header.
+class MonthNames {
+public:
+  // No vocabulary: the month field stays numeric.
+  constexpr MonthNames() noexcept : data_(nullptr), size_(0) {}
+
+  // The vocabulary these entries declare, packed into `storage`, or std::nullopt for one the
+  // core refuses, for storage smaller than storage_size(entries) or a name past 4,294,967,295
+  // bytes, or when the core is older than this header. An empty list is refused: every month needs
+  // a name (a default MonthNames is the way to declare none).
+  static std::optional<MonthNames> declare(std::initializer_list<MonthName> entries,
+                                           EnumStorage storage) noexcept {
+    return pack(entries.begin(), entries.size(), storage);
+  }
+  template <std::size_t N>
+  static std::optional<MonthNames> declare(const MonthName (&entries)[N],
+                                           EnumStorage storage) noexcept {
+    return pack(entries, N, storage);
+  }
+  static std::optional<MonthNames> declare(const MonthName *entries, std::size_t count,
+                                           EnumStorage storage) noexcept {
+    return pack(entries, count, storage);
+  }
+
+  // A vocabulary already in the packed layout, which the core judges as it does any other; the
+  // bytes are borrowed, not copied. std::nullopt when it refuses them, or the list is empty
+  // (that is no vocabulary), or the core is older than this header.
+  static std::optional<MonthNames> from_packed(const std::uint8_t *bytes,
+                                               std::size_t size) noexcept {
+    if (bytes == nullptr || size == 0 || !core_is_compatible()) {
+      return std::nullopt;
+    }
+    HyperCastDate ignored{};
+    if (::cast_detailed(detail::door_date_ordered, 1, nullptr, nullptr, nullptr, bytes, size,
+                        nullptr, 0, &ignored, nullptr) < 0) {
+      return std::nullopt;
+    }
+    MonthNames names;
+    names.data_ = bytes;
+    names.size_ = size;
+    return names;
+  }
+
+  // The bytes the entries pack into: 5 plus its UTF-8 for each. Saturates at the largest size_t
+  // for a list too big to hold, which no storage fits.
+  static constexpr std::size_t storage_size(std::initializer_list<MonthName> entries) noexcept {
+    return packed_size(entries.begin(), entries.size());
+  }
+  template <std::size_t N>
+  static constexpr std::size_t storage_size(const MonthName (&entries)[N]) noexcept {
+    return packed_size(entries, N);
+  }
+  static constexpr std::size_t storage_size(const MonthName *entries, std::size_t count) noexcept {
+    return packed_size(entries, count);
+  }
+
+  // The packed layout, for a library that hands it to a C ABI of its own; empty for none.
+  constexpr const std::uint8_t *data() const noexcept { return data_; }
+  constexpr std::size_t size() const noexcept { return size_; }
+  constexpr bool empty() const noexcept { return size_ == 0; }
+
+private:
+  static constexpr std::size_t packed_size(const MonthName *entries, std::size_t count) noexcept {
+    std::size_t size = 0;
+    for (std::size_t i = 0; i < count; ++i) {
+      const std::size_t entry = 5 + entries[i].name.size();
+      if (entry < entries[i].name.size() || size + entry < size) {
+        return static_cast<std::size_t>(-1);
+      }
+      size += entry;
+    }
+    return size;
+  }
+
+  static std::optional<MonthNames> pack(const MonthName *entries, std::size_t count,
+                                        EnumStorage storage) noexcept {
+    if (count == 0 || packed_size(entries, count) > storage.size()) {
+      return std::nullopt;
+    }
+    std::size_t at = 0;
+    for (std::size_t i = 0; i < count; ++i) {
+      if (static_cast<std::uint64_t>(entries[i].name.size()) > UINT32_MAX) {
+        return std::nullopt;
+      }
+      const std::uint32_t length = static_cast<std::uint32_t>(entries[i].name.size());
+      storage.data()[at++] = entries[i].month;
+      for (int shift = 0; shift < 32; shift += 8) {
+        storage.data()[at++] = static_cast<std::uint8_t>(length >> shift); // little-endian
+      }
+      for (char c : entries[i].name) {
+        storage.data()[at++] = static_cast<std::uint8_t>(c);
+      }
+    }
+    return from_packed(storage.data(), at);
+  }
+
+  const std::uint8_t *data_;
+  std::size_t size_;
 };
 
 namespace detail {
@@ -653,12 +1287,51 @@ inline Verdict<T> finish(std::int32_t code, const T &value,
   return Verdict<T>(Fault{static_cast<CastFailure>(code), fault.offset, fault.len});
 }
 
+// A detailed export's fault buffer: its size word set, the rest for the core to write.
+inline HyperCastRawFaultDetail new_fault() noexcept {
+  return HyperCastRawFaultDetail{HyperCastRawFaultDetail_SIZE, 0, 0, 0};
+}
+
+// What a detailed export reports for a failure: the plain fault's span.
+inline HyperCastRawFault plain(const HyperCastRawFaultDetail &fault) noexcept {
+  return HyperCastRawFault{fault.offset, fault.len};
+}
+
+// cast_detailed, once the core is known to have it: a core older than this header may have no such
+// export and reads no grouping policy, so nothing past this point may run against one, and the
+// program ends rather than parse a strict request as legacy. -1, a contract violation, cannot come
+// from a format or option the types declared; it ends the program too.
+template <class Out>
+inline std::int32_t detailed_text(std::uint32_t door, std::uint32_t param,
+                                  const HyperCastRawNumFormat *format,
+                                  const HyperCastRawDayPeriods *periods,
+                                  const HyperCastRawDateOptions *options, const MonthNames &months,
+                                  Text text, Out *out, HyperCastRawFaultDetail *fault) noexcept {
+  if (!core_is_compatible()) {
+    stale_core();
+  }
+  const std::int32_t code = ::cast_detailed(door, param, format, periods, options, months.data(),
+                                            months.size(), text.data(), text.size(), out, fault);
+  if (code < 0) {
+    contract_violation();
+  }
+  return code;
+}
+
 template <class T, class Door>
-inline Verdict<T> numeric(Door door, Text text, const NumFormat &format) noexcept {
+inline Verdict<T> numeric(Door door, std::uint32_t code, Text text,
+                          const NumFormat &format) noexcept {
   T out{};
-  HyperCastRawFault fault{};
-  const std::int32_t code = door(text.data(), text.size(), &format.raw(), &out, &fault);
-  return finish(code, out, fault);
+  if (format.grouping() == Grouping::legacy) {
+    HyperCastRawFault fault{};
+    return finish(door(text.data(), text.size(), &format.raw(), &out, &fault), out, fault);
+  }
+  // The 1.0 exports read a format as legacy whatever its policy says: strict goes through the
+  // detailed export, and its detail is dropped.
+  HyperCastRawFaultDetail fault = new_fault();
+  const std::int32_t result =
+      detailed_text(code, 0, &format.raw(), nullptr, nullptr, MonthNames(), text, &out, &fault);
+  return finish(result, out, plain(fault));
 }
 
 inline Decimal decimal(const HyperCastDecimal &raw) noexcept {
@@ -708,47 +1381,53 @@ inline Verdict<char32_t> cast_char(Text text) noexcept {
 
 // Integers under a declared format; a value outside the type is OutOfRange.
 inline Verdict<std::int8_t> cast_i8(Text text, const NumFormat &format) noexcept {
-  return detail::numeric<std::int8_t>(::cast_i8, text, format);
+  return detail::numeric<std::int8_t>(::cast_i8, detail::door_i8, text, format);
 }
 inline Verdict<std::int16_t> cast_i16(Text text, const NumFormat &format) noexcept {
-  return detail::numeric<std::int16_t>(::cast_i16, text, format);
+  return detail::numeric<std::int16_t>(::cast_i16, detail::door_i16, text, format);
 }
 inline Verdict<std::int32_t> cast_i32(Text text, const NumFormat &format) noexcept {
-  return detail::numeric<std::int32_t>(::cast_i32, text, format);
+  return detail::numeric<std::int32_t>(::cast_i32, detail::door_i32, text, format);
 }
 inline Verdict<std::int64_t> cast_i64(Text text, const NumFormat &format) noexcept {
-  return detail::numeric<std::int64_t>(::cast_i64, text, format);
+  return detail::numeric<std::int64_t>(::cast_i64, detail::door_i64, text, format);
 }
 inline Verdict<std::uint8_t> cast_u8(Text text, const NumFormat &format) noexcept {
-  return detail::numeric<std::uint8_t>(::cast_u8, text, format);
+  return detail::numeric<std::uint8_t>(::cast_u8, detail::door_u8, text, format);
 }
 inline Verdict<std::uint16_t> cast_u16(Text text, const NumFormat &format) noexcept {
-  return detail::numeric<std::uint16_t>(::cast_u16, text, format);
+  return detail::numeric<std::uint16_t>(::cast_u16, detail::door_u16, text, format);
 }
 inline Verdict<std::uint32_t> cast_u32(Text text, const NumFormat &format) noexcept {
-  return detail::numeric<std::uint32_t>(::cast_u32, text, format);
+  return detail::numeric<std::uint32_t>(::cast_u32, detail::door_u32, text, format);
 }
 inline Verdict<std::uint64_t> cast_u64(Text text, const NumFormat &format) noexcept {
-  return detail::numeric<std::uint64_t>(::cast_u64, text, format);
+  return detail::numeric<std::uint64_t>(::cast_u64, detail::door_u64, text, format);
 }
 
 // Reals under a declared format; a magnitude beyond the type's finite range is OutOfRange,
 // and NaN and the infinities are never read.
 inline Verdict<float> cast_f32(Text text, const NumFormat &format) noexcept {
-  return detail::numeric<float>(::cast_f32, text, format);
+  return detail::numeric<float>(::cast_f32, detail::door_f32, text, format);
 }
 inline Verdict<double> cast_f64(Text text, const NumFormat &format) noexcept {
-  return detail::numeric<double>(::cast_f64, text, format);
+  return detail::numeric<double>(::cast_f64, detail::door_f64, text, format);
 }
 
 // An exact, canonical decimal under a declared format. Never rounds: a magnitude past 96 bits
 // or more than 28 significant places is OutOfRange.
 inline Verdict<Decimal> cast_decimal(Text text, const NumFormat &format) noexcept {
   HyperCastDecimal out{};
-  HyperCastRawFault fault{};
-  return detail::converted<Decimal>(
-      ::cast_decimal(text.data(), text.size(), &format.raw(), &out, &fault), out, fault,
-      detail::decimal);
+  if (format.grouping() == Grouping::legacy) {
+    HyperCastRawFault fault{};
+    return detail::converted<Decimal>(
+        ::cast_decimal(text.data(), text.size(), &format.raw(), &out, &fault), out, fault,
+        detail::decimal);
+  }
+  HyperCastRawFaultDetail fault = detail::new_fault();
+  const std::int32_t code = detail::detailed_text(detail::door_decimal, 0, &format.raw(), nullptr,
+                                                  nullptr, MonthNames(), text, &out, &fault);
+  return detail::converted<Decimal>(code, out, detail::plain(fault), detail::decimal);
 }
 
 // A UUID in any of the forms the core reads, as its RFC 9562 bytes.
@@ -1463,28 +2142,6 @@ template <class E> struct List {
 };
 } // namespace detail
 
-// The caller's bytes a declaration packs its enum list into, as the core reads it: 16 bytes a
-// numeric entry, 4 plus its UTF-8 a text entry (Constraints<T>::storage_size says how many).
-// Nothing is allocated, so the storage is the caller's: it must outlive the Constraints and
-// every value read through it (a text enum match is a view into it), and must not change
-// after the declaration. A copy of a Constraints refers to the same storage.
-class EnumStorage {
-public:
-  template <std::size_t N>
-  constexpr EnumStorage(std::uint8_t (&bytes)[N]) noexcept : data_(bytes), size_(N) {}
-  template <std::size_t N>
-  constexpr EnumStorage(std::array<std::uint8_t, N> &bytes) noexcept
-      : data_(bytes.data()), size_(N) {}
-  constexpr EnumStorage(std::uint8_t *data, std::size_t size) noexcept : data_(data), size_(size) {}
-
-  constexpr std::uint8_t *data() const noexcept { return data_; }
-  constexpr std::size_t size() const noexcept { return size_; }
-
-private:
-  std::uint8_t *data_;
-  std::size_t size_;
-};
-
 namespace detail {
 // The core's door code for a checked door's type.
 template <class T> constexpr std::uint32_t door_of() noexcept {
@@ -1777,8 +2434,20 @@ template <class T, class Raw = T, class Convert>
 inline Checked<T> checked(const Constraints<T> &constraints, const NumFormat *format, Text text,
                           Convert convert) noexcept {
   Raw out{};
-  HyperCastRawFault fault{};
   HyperCastRawCheck check{};
+  if (format != nullptr && format->grouping() != Grouping::legacy) {
+    // The 1.0 export reads a format as legacy whatever its policy says: strict goes through the
+    // detailed export, and its detail is dropped.
+    HyperCastRawFaultDetail fault = new_fault();
+    if (!core_is_compatible()) {
+      stale_core();
+    }
+    const std::int32_t code = ::cast_checked_detailed(
+        Constraints<T>::door, 0, &format->raw(), &constraints.raw(), constraints.enum_data(),
+        constraints.enum_size(), text.data(), text.size(), &out, &fault, &check);
+    return judged<T>(code, out, plain(fault), check, convert);
+  }
+  HyperCastRawFault fault{};
   const std::int32_t code =
       ::cast_checked(Constraints<T>::door, 0, format != nullptr ? &format->raw() : nullptr,
                      &constraints.raw(), constraints.enum_data(), constraints.enum_size(),
@@ -1951,6 +2620,513 @@ cast_text(Text text, const Constraints<std::string_view> &constraints) noexcept 
                                 span.len);
       });
 }
+
+// ---------------------------------------------------------------------------------------------
+// Detailed doors: every door above, reporting a Failure (the Fault, and what failed in it)
+// instead of a Fault, through the core's detailed exports. They honour a format's grouping
+// policy, and the date doors take a DateOptions and a MonthNames; a door without a
+// declaration reads exactly the shapes its plain twin does, and a Failure's fault() is the
+// plain door's Fault. All of it needs a core as new as this header (core_is_compatible()): against
+// an older one a detailed door ends the program, as a strict format does at a plain door.
+
+// The failure case of a detailed checked door: the door's own Failure (it did not parse), or a
+// Violation (it parsed and broke a declared rule; a Violation has no detail). Exactly one; no
+// default constructor. Accessors as Rejection's, over those cases.
+class DetailedRejection {
+public:
+  constexpr DetailedRejection(Failure failure) noexcept
+      : failure_(failure), violation_{}, is_failure_(true) {}
+  constexpr DetailedRejection(Violation violation) noexcept
+      : failure_{}, violation_(violation), is_failure_(false) {}
+
+  constexpr bool is_failure() const noexcept { return is_failure_; }
+
+  constexpr const Failure *failure_if() const noexcept { return is_failure_ ? &failure_ : nullptr; }
+  constexpr const Violation *violation_if() const noexcept {
+    return is_failure_ ? nullptr : &violation_;
+  }
+
+  // Precondition: is_failure(). Otherwise a value-initialized Failure.
+  constexpr const Failure &failure() const noexcept { return failure_; }
+  // Precondition: !is_failure(). Otherwise a value-initialized Violation.
+  constexpr const Violation &violation() const noexcept { return violation_; }
+
+  // The plain Rejection: the Fault of the Failure, or the Violation.
+  constexpr Rejection to_rejection() const noexcept {
+    if (is_failure_) {
+      return Rejection(failure_.fault());
+    }
+    return Rejection(violation_);
+  }
+
+  template <class OnFailure, class OnViolation>
+  constexpr std::invoke_result_t<OnFailure &&, const Failure &>
+  match(OnFailure &&on_failure, OnViolation &&on_violation) const
+      noexcept(std::is_nothrow_invocable_v<OnFailure &&, const Failure &> &&
+               std::is_nothrow_invocable_v<OnViolation &&, const Violation &>) {
+    static_assert(std::is_same_v<std::invoke_result_t<OnFailure &&, const Failure &>,
+                                 std::invoke_result_t<OnViolation &&, const Violation &>>,
+                  "match's two cases must return the same type");
+    if (is_failure_) {
+      return std::forward<OnFailure>(on_failure)(failure_);
+    }
+    return std::forward<OnViolation>(on_violation)(violation_);
+  }
+
+  template <class Visitor>
+  constexpr std::invoke_result_t<Visitor &&, const Failure &> visit(Visitor &&visitor) const
+      noexcept(std::is_nothrow_invocable_v<Visitor &&, const Failure &> &&
+               std::is_nothrow_invocable_v<Visitor &&, const Violation &>) {
+    static_assert(std::is_same_v<std::invoke_result_t<Visitor &&, const Failure &>,
+                                 std::invoke_result_t<Visitor &&, const Violation &>>,
+                  "visit's two cases must return the same type");
+    if (is_failure_) {
+      return std::forward<Visitor>(visitor)(failure_);
+    }
+    return std::forward<Visitor>(visitor)(violation_);
+  }
+
+  constexpr std::variant<Failure, Violation> to_variant() const noexcept {
+    if (is_failure_) {
+      return std::variant<Failure, Violation>(std::in_place_index<0>, failure_);
+    }
+    return std::variant<Failure, Violation>(std::in_place_index<1>, violation_);
+  }
+
+  friend constexpr bool operator==(const DetailedRejection &a,
+                                   const DetailedRejection &b) noexcept {
+    return a.is_failure_ == b.is_failure_ &&
+           (a.is_failure_ ? a.failure_ == b.failure_ : a.violation_ == b.violation_);
+  }
+  friend constexpr bool operator!=(const DetailedRejection &a,
+                                   const DetailedRejection &b) noexcept {
+    return !(a == b);
+  }
+
+private:
+  Failure failure_;
+  Violation violation_;
+  bool is_failure_;
+};
+
+// The outcome of a detailed checked cast: a CheckedValue or a DetailedRejection, two cases and
+// nothing else. The same accessors as Checked, over those cases, and to_checked() for the plain
+// Checked the same text gives. Under C++23 with <expected> it converts to
+// std::expected<CheckedValue<T>, DetailedRejection>. Deliberately no operator bool.
+template <class T> class [[nodiscard]] DetailedChecked {
+  static_assert(std::is_trivially_copyable_v<T> && std::is_default_constructible_v<T>,
+                "a checked verdict holds a plain value");
+
+public:
+  using value_type = T;
+
+  constexpr DetailedChecked(CheckedValue<T> success) noexcept
+      : value_(success), rejection_(Failure{}), ok_(true) {}
+  constexpr DetailedChecked(DetailedRejection failure) noexcept
+      : value_{}, rejection_(failure), ok_(false) {}
+
+  constexpr bool ok() const noexcept { return ok_; }
+
+  constexpr const CheckedValue<T> *value_if() const noexcept { return ok_ ? &value_ : nullptr; }
+  constexpr const DetailedRejection *rejection_if() const noexcept {
+    return ok_ ? nullptr : &rejection_;
+  }
+
+  // Precondition: ok(). Otherwise a value-initialized CheckedValue.
+  constexpr const CheckedValue<T> &value() const noexcept { return value_; }
+  // Precondition: !ok(). Otherwise a rejection holding a value-initialized Failure.
+  constexpr const DetailedRejection &rejection() const noexcept { return rejection_; }
+
+  constexpr T value_or(T fallback) const noexcept { return ok_ ? value_.value : fallback; }
+
+  // The plain Checked: the Fault of a Failure, the Violation as it is.
+  constexpr Checked<T> to_checked() const noexcept {
+    if (ok_) {
+      return Checked<T>(value_);
+    }
+    return Checked<T>(rejection_.to_rejection());
+  }
+
+  template <class OnValue, class OnRejection>
+  constexpr std::invoke_result_t<OnValue &&, const CheckedValue<T> &>
+  match(OnValue &&on_value, OnRejection &&on_rejection) const
+      noexcept(std::is_nothrow_invocable_v<OnValue &&, const CheckedValue<T> &> &&
+               std::is_nothrow_invocable_v<OnRejection &&, const DetailedRejection &>) {
+    static_assert(std::is_same_v<std::invoke_result_t<OnValue &&, const CheckedValue<T> &>,
+                                 std::invoke_result_t<OnRejection &&, const DetailedRejection &>>,
+                  "match's two cases must return the same type");
+    if (ok_) {
+      return std::forward<OnValue>(on_value)(value_);
+    }
+    return std::forward<OnRejection>(on_rejection)(rejection_);
+  }
+
+  template <class Visitor>
+  constexpr std::invoke_result_t<Visitor &&, const CheckedValue<T> &> visit(Visitor &&visitor) const
+      noexcept(std::is_nothrow_invocable_v<Visitor &&, const CheckedValue<T> &> &&
+               std::is_nothrow_invocable_v<Visitor &&, const DetailedRejection &>) {
+    static_assert(std::is_same_v<std::invoke_result_t<Visitor &&, const CheckedValue<T> &>,
+                                 std::invoke_result_t<Visitor &&, const DetailedRejection &>>,
+                  "visit's two cases must return the same type");
+    if (ok_) {
+      return std::forward<Visitor>(visitor)(value_);
+    }
+    return std::forward<Visitor>(visitor)(rejection_);
+  }
+
+  constexpr std::variant<CheckedValue<T>, DetailedRejection> to_variant() const noexcept {
+    if (ok_) {
+      return std::variant<CheckedValue<T>, DetailedRejection>(std::in_place_index<0>, value_);
+    }
+    return std::variant<CheckedValue<T>, DetailedRejection>(std::in_place_index<1>, rejection_);
+  }
+
+#ifdef HYPERCAST_HAS_EXPECTED
+  constexpr std::expected<CheckedValue<T>, DetailedRejection> to_expected() const noexcept {
+    if (ok_) {
+      return std::expected<CheckedValue<T>, DetailedRejection>(std::in_place, value_);
+    }
+    return std::expected<CheckedValue<T>, DetailedRejection>(std::unexpect, rejection_);
+  }
+  constexpr operator std::expected<CheckedValue<T>, DetailedRejection>() const noexcept {
+    return to_expected();
+  }
+#endif
+
+  friend constexpr bool operator==(const DetailedChecked &a, const DetailedChecked &b) noexcept {
+    return a.ok_ == b.ok_ && (a.ok_ ? a.value_ == b.value_ : a.rejection_ == b.rejection_);
+  }
+  friend constexpr bool operator!=(const DetailedChecked &a, const DetailedChecked &b) noexcept {
+    return !(a == b);
+  }
+
+private:
+  CheckedValue<T> value_;
+  DetailedRejection rejection_;
+  bool ok_;
+};
+
+// A detailed checked verdict presented optionally: a blank failure becomes std::nullopt; a
+// Violation, every other failure and every value come through as they are.
+template <class T>
+constexpr std::optional<DetailedChecked<T>> optional(const DetailedChecked<T> &checked) noexcept {
+  if (const DetailedRejection *rejection = checked.rejection_if()) {
+    if (const Failure *failure = rejection->failure_if();
+        failure != nullptr && failure->reason == CastFailure::empty) {
+      return std::nullopt;
+    }
+  }
+  return checked;
+}
+
+namespace detail {
+// The verdict a detailed export's return code names: 0 the value, 1 to 3 a failure. A -1 never
+// reaches here (detailed_text ends the program on one first).
+template <class T, class Raw, class Convert>
+inline DetailedVerdict<T> detailed_finish(std::int32_t code, const Raw &out,
+                                          const HyperCastRawFaultDetail &fault,
+                                          Convert convert) noexcept {
+  if (code == 0) {
+    return DetailedVerdict<T>(convert(out));
+  }
+  if (code < static_cast<std::int32_t>(CastFailure::empty) ||
+      code > static_cast<std::int32_t>(CastFailure::out_of_range)) {
+    contract_violation();
+  }
+  return DetailedVerdict<T>(Failure{static_cast<CastFailure>(code),
+                                    static_cast<Detail>(fault.detail), fault.offset, fault.len});
+}
+
+struct Identity {
+  template <class V> constexpr V operator()(const V &value) const noexcept { return value; }
+};
+
+// A text door by its code: `Raw` is what the export writes, `convert` makes the value of it.
+template <class T, class Raw = T, class Convert = Identity>
+inline DetailedVerdict<T>
+detailed_door(std::uint32_t door, std::uint32_t param, const HyperCastRawNumFormat *format,
+              const HyperCastRawDayPeriods *periods, const HyperCastRawDateOptions *options,
+              const MonthNames &months, Text text, Convert convert = Convert()) noexcept {
+  Raw out{};
+  HyperCastRawFaultDetail fault = new_fault();
+  const std::int32_t code =
+      detailed_text(door, param, format, periods, options, months, text, &out, &fault);
+  return detailed_finish<T>(code, out, fault, convert);
+}
+
+// A typed door by its code: a double in.
+template <class T, class Raw = T, class Convert = Identity>
+inline DetailedVerdict<T> detailed_typed(std::uint32_t door, std::uint32_t param, double value,
+                                         Convert convert = Convert()) noexcept {
+  if (!core_is_compatible()) {
+    stale_core();
+  }
+  Raw out{};
+  HyperCastRawFaultDetail fault = new_fault();
+  const std::int32_t code = ::cast_detailed_from_f64(door, param, value, &out, &fault);
+  if (code < 0) {
+    contract_violation();
+  }
+  return detailed_finish<T>(code, out, fault, convert);
+}
+
+inline std::chrono::nanoseconds time_of(std::uint64_t nanos) noexcept {
+  return std::chrono::nanoseconds(static_cast<std::int64_t>(nanos));
+}
+
+// The checked verdict a detailed checked export's return code names: 0 the value, 1 to 3 a
+// failure, 4 a violation.
+template <class T, class Raw, class Convert>
+inline DetailedChecked<T>
+detailed_judged(std::int32_t code, const Raw &out, const HyperCastRawFaultDetail &fault,
+                const HyperCastRawCheck &check, Convert convert) noexcept {
+  switch (code) {
+  case 0: {
+    std::optional<std::uint32_t> index;
+    if (check.enum_index != UINT32_MAX) {
+      index = check.enum_index;
+    }
+    return DetailedChecked<T>(CheckedValue<T>{convert(out, index), check.adjusted != 0, index});
+  }
+  case 1:
+  case 2:
+  case 3:
+    return DetailedChecked<T>(
+        DetailedRejection(Failure{static_cast<CastFailure>(code), static_cast<Detail>(fault.detail),
+                                  fault.offset, fault.len}));
+  case 4:
+    return DetailedChecked<T>(
+        DetailedRejection(Violation{static_cast<Keyword>(check.keyword), fault.offset, fault.len}));
+  default:
+    contract_violation();
+  }
+}
+
+template <class T, class Raw = T, class Convert>
+inline DetailedChecked<T> detailed_checked(const Constraints<T> &constraints,
+                                           const NumFormat *format, Text text,
+                                           Convert convert) noexcept {
+  if (!core_is_compatible()) {
+    stale_core();
+  }
+  Raw out{};
+  HyperCastRawFaultDetail fault = new_fault();
+  HyperCastRawCheck check{};
+  const std::int32_t code =
+      ::cast_checked_detailed(Constraints<T>::door, 0, format != nullptr ? &format->raw() : nullptr,
+                              &constraints.raw(), constraints.enum_data(), constraints.enum_size(),
+                              text.data(), text.size(), &out, &fault, &check);
+  return detailed_judged<T>(code, out, fault, check, convert);
+}
+
+template <class T, class Raw = T, class Convert>
+inline DetailedChecked<T> detailed_checked_from_double(const Constraints<T> &constraints,
+                                                       double value, Convert convert) noexcept {
+  if (!core_is_compatible()) {
+    stale_core();
+  }
+  Raw out{};
+  HyperCastRawFaultDetail fault = new_fault();
+  HyperCastRawCheck check{};
+  const std::int32_t code = ::cast_checked_detailed_from_f64(
+      Constraints<T>::door, 0, &constraints.raw(), constraints.enum_data(), constraints.enum_size(),
+      value, &out, &fault, &check);
+  return detailed_judged<T>(code, out, fault, check, convert);
+}
+} // namespace detail
+
+namespace detailed {
+
+// The plain doors, each returning a DetailedVerdict. Names and arguments mirror the plain
+// doors'; the date doors also take a DateOptions and a MonthNames, none by default.
+
+inline DetailedVerdict<bool> cast_bool(Text text) noexcept {
+  return detail::detailed_door<bool, std::uint8_t>(detail::door_bool, 0, nullptr, nullptr, nullptr,
+                                                   MonthNames(), text,
+                                                   [](std::uint8_t v) { return v != 0; });
+}
+
+inline DetailedVerdict<char32_t> cast_char(Text text) noexcept {
+  return detail::detailed_door<char32_t, std::uint32_t>(
+      detail::door_char, 0, nullptr, nullptr, nullptr, MonthNames(), text,
+      [](std::uint32_t v) { return static_cast<char32_t>(v); });
+}
+
+#define HYPERCAST_DETAILED_NUMERIC(Type, name, door)                                               \
+  inline DetailedVerdict<Type> name(Text text, const NumFormat &format) noexcept {                 \
+    return detail::detailed_door<Type>(door, 0, &format.raw(), nullptr, nullptr, MonthNames(),     \
+                                       text);                                                      \
+  }
+HYPERCAST_DETAILED_NUMERIC(std::int8_t, cast_i8, detail::door_i8)
+HYPERCAST_DETAILED_NUMERIC(std::int16_t, cast_i16, detail::door_i16)
+HYPERCAST_DETAILED_NUMERIC(std::int32_t, cast_i32, detail::door_i32)
+HYPERCAST_DETAILED_NUMERIC(std::int64_t, cast_i64, detail::door_i64)
+HYPERCAST_DETAILED_NUMERIC(std::uint8_t, cast_u8, detail::door_u8)
+HYPERCAST_DETAILED_NUMERIC(std::uint16_t, cast_u16, detail::door_u16)
+HYPERCAST_DETAILED_NUMERIC(std::uint32_t, cast_u32, detail::door_u32)
+HYPERCAST_DETAILED_NUMERIC(std::uint64_t, cast_u64, detail::door_u64)
+HYPERCAST_DETAILED_NUMERIC(float, cast_f32, detail::door_f32)
+HYPERCAST_DETAILED_NUMERIC(double, cast_f64, detail::door_f64)
+#undef HYPERCAST_DETAILED_NUMERIC
+
+inline DetailedVerdict<Decimal> cast_decimal(Text text, const NumFormat &format) noexcept {
+  return detail::detailed_door<Decimal, HyperCastDecimal>(detail::door_decimal, 0, &format.raw(),
+                                                          nullptr, nullptr, MonthNames(), text,
+                                                          detail::decimal);
+}
+
+inline DetailedVerdict<Uuid> cast_uuid(Text text) noexcept {
+  return detail::detailed_door<Uuid>(detail::door_uuid, 0, nullptr, nullptr, nullptr, MonthNames(),
+                                     text);
+}
+
+// An RFC 3339 instant; `options` may open a space for the `T` and `+hh` offsets.
+inline DetailedVerdict<Timestamp>
+cast_timestamp(Text text, const DateOptions &options = DateOptions()) noexcept {
+  return detail::detailed_door<Timestamp, HyperCastTimestamp>(detail::door_timestamp, 0, nullptr,
+                                                              nullptr, &options.raw(), MonthNames(),
+                                                              text, detail::timestamp);
+}
+
+inline DetailedVerdict<Timestamp> cast_unix(Text text, UnixPrecision precision) noexcept {
+  return detail::detailed_door<Timestamp, HyperCastTimestamp>(
+      detail::door_unix, static_cast<std::uint32_t>(precision), nullptr, nullptr, nullptr,
+      MonthNames(), text, detail::timestamp);
+}
+
+inline DetailedVerdict<Timestamp> cast_excel_serial(Text text, ExcelEpoch epoch) noexcept {
+  return detail::detailed_door<Timestamp, HyperCastTimestamp>(
+      detail::door_excel_serial, static_cast<std::uint32_t>(epoch), nullptr, nullptr, nullptr,
+      MonthNames(), text, detail::timestamp);
+}
+
+// A strict yyyy-MM-dd date; `options` may open `yyyyMMdd`.
+inline DetailedVerdict<Date> cast_date(Text text,
+                                       const DateOptions &options = DateOptions()) noexcept {
+  return detail::detailed_door<Date, HyperCastDate>(
+      detail::door_date, 0, nullptr, nullptr, &options.raw(), MonthNames(), text, detail::date);
+}
+
+// A separated date in the declared field order; `options` may add a pivot for a two-digit year,
+// and `months` names for the month field.
+inline DetailedVerdict<Date> cast_date(Text text, DateOrder order,
+                                       const DateOptions &options = DateOptions(),
+                                       const MonthNames &months = MonthNames()) noexcept {
+  return detail::detailed_door<Date, HyperCastDate>(
+      detail::door_date_ordered, static_cast<std::uint32_t>(order), nullptr, nullptr,
+      &options.raw(), months, text, detail::date);
+}
+
+// A zone-less date and time in the declared order, with the options and names of the date.
+inline DetailedVerdict<CivilDateTime>
+cast_datetime(Text text, DateOrder order, const DateOptions &options = DateOptions(),
+              const MonthNames &months = MonthNames()) noexcept {
+  return detail::detailed_door<CivilDateTime, HyperCastCivilDateTime>(
+      detail::door_datetime, static_cast<std::uint32_t>(order), nullptr, nullptr, &options.raw(),
+      months, text, detail::civil);
+}
+
+// The same under a declared DateFormat's order and day-period designators.
+inline DetailedVerdict<CivilDateTime>
+cast_datetime(Text text, const DateFormat &format, const DateOptions &options = DateOptions(),
+              const MonthNames &months = MonthNames()) noexcept {
+  return detail::detailed_door<CivilDateTime, HyperCastCivilDateTime>(
+      detail::door_datetime, static_cast<std::uint32_t>(format.order()), nullptr, &format.raw(),
+      &options.raw(), months, text, detail::civil);
+}
+
+inline DetailedVerdict<std::chrono::nanoseconds> cast_time(Text text) noexcept {
+  return detail::detailed_door<std::chrono::nanoseconds, std::uint64_t>(
+      detail::door_time, 0, nullptr, nullptr, nullptr, MonthNames(), text, detail::time_of);
+}
+
+inline DetailedVerdict<Duration> cast_duration(Text text) noexcept {
+  return detail::detailed_door<Duration, HyperCastDuration>(
+      detail::door_duration, 0, nullptr, nullptr, nullptr, MonthNames(), text, detail::duration);
+}
+
+// The text door: the input as a view of it, once it is valid UTF-8.
+inline DetailedVerdict<std::string_view> cast_text(Text text) noexcept {
+  return detail::detailed_door<std::string_view, HyperCastRawSpan>(
+      detail::door_text, 0, nullptr, nullptr, nullptr, MonthNames(), text,
+      [&](const HyperCastRawSpan &span) {
+        return std::string_view(reinterpret_cast<const char *>(text.data()) + span.offset,
+                                span.len);
+      });
+}
+
+// The typed doors: a double in, and an empty span on a failure.
+inline DetailedVerdict<Decimal> cast_decimal_from_double(double value) noexcept {
+  return detail::detailed_typed<Decimal, HyperCastDecimal>(detail::door_decimal, 0, value,
+                                                           detail::decimal);
+}
+
+inline DetailedVerdict<CivilDateTime> cast_excel_serial_from_double(double value,
+                                                                    ExcelEpoch epoch) noexcept {
+  return detail::detailed_typed<CivilDateTime, HyperCastCivilDateTime>(
+      detail::door_excel_serial, static_cast<std::uint32_t>(epoch), value, detail::civil);
+}
+
+inline DetailedVerdict<std::chrono::nanoseconds> cast_excel_time(double value) noexcept {
+  return detail::detailed_typed<std::chrono::nanoseconds, std::uint64_t>(detail::door_time, 0,
+                                                                         value, detail::time_of);
+}
+
+inline DetailedVerdict<Duration> cast_excel_duration(double value) noexcept {
+  return detail::detailed_typed<Duration, HyperCastDuration>(detail::door_duration, 0, value,
+                                                             detail::duration);
+}
+
+// The checked doors: the detailed parse under the declared format, then the value judged by the
+// constraints. A DetailedRejection's Failure carries the detail; a Violation has none.
+#define HYPERCAST_DETAILED_CHECKED(Type, name)                                                     \
+  inline DetailedChecked<Type> name(Text text, const NumFormat &format,                            \
+                                    const Constraints<Type> &constraints) noexcept {               \
+    return detail::detailed_checked<Type>(constraints, &format, text, detail::Same{});             \
+  }                                                                                                \
+  inline DetailedChecked<Type> name##_from_double(double value,                                    \
+                                                  const Constraints<Type> &constraints) noexcept { \
+    return detail::detailed_checked_from_double<Type>(constraints, value, detail::Same{});         \
+  }
+HYPERCAST_DETAILED_CHECKED(std::int8_t, cast_i8)
+HYPERCAST_DETAILED_CHECKED(std::int16_t, cast_i16)
+HYPERCAST_DETAILED_CHECKED(std::int32_t, cast_i32)
+HYPERCAST_DETAILED_CHECKED(std::int64_t, cast_i64)
+HYPERCAST_DETAILED_CHECKED(std::uint8_t, cast_u8)
+HYPERCAST_DETAILED_CHECKED(std::uint16_t, cast_u16)
+HYPERCAST_DETAILED_CHECKED(std::uint32_t, cast_u32)
+HYPERCAST_DETAILED_CHECKED(std::uint64_t, cast_u64)
+HYPERCAST_DETAILED_CHECKED(float, cast_f32)
+HYPERCAST_DETAILED_CHECKED(double, cast_f64)
+#undef HYPERCAST_DETAILED_CHECKED
+
+inline DetailedChecked<Decimal> cast_decimal(Text text, const NumFormat &format,
+                                             const Constraints<Decimal> &constraints) noexcept {
+  return detail::detailed_checked<Decimal, HyperCastDecimal>(constraints, &format, text,
+                                                             detail::AsDecimal{});
+}
+inline DetailedChecked<Decimal>
+cast_decimal_from_double(double value, const Constraints<Decimal> &constraints) noexcept {
+  return detail::detailed_checked_from_double<Decimal, HyperCastDecimal>(constraints, value,
+                                                                         detail::AsDecimal{});
+}
+
+// The checked text door: the input, trimmed when the constraints say so, judged by its lengths
+// and its enum; the value a view of the input, or on an enum match the declared entry.
+inline DetailedChecked<std::string_view>
+cast_text(Text text, const Constraints<std::string_view> &constraints) noexcept {
+  return detail::detailed_checked<std::string_view, HyperCastRawSpan>(
+      constraints, nullptr, text,
+      [&](const HyperCastRawSpan &span, std::optional<std::uint32_t> index) {
+        if (index.has_value()) {
+          return constraints.entry(*index);
+        }
+        return std::string_view(reinterpret_cast<const char *>(text.data()) + span.offset,
+                                span.len);
+      });
+}
+
+} // namespace detailed
 
 // Always true: the core is linked into the program, so there is nothing to fail to load. Kept
 // for parity with the bindings that load a library at run time.

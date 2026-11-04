@@ -23,6 +23,18 @@
 //! `castText`, `castConstraintsCheck`, `castDeclaredDecimal`) follow the same rules. Their
 //! declarations answer `{ ok: false, message }` as the formats' do, and a checked door adds a
 //! third verdict case, `{ ok: false, violation }`.
+//!
+//! A fault says why (`reason`) and where (`offset`, `length`). The four detailed doors
+//! (`castDetailed`, `castDetailedFromNumber`, `castCheckedDetailed`,
+//! `castCheckedDetailedFromNumber`) answer the same verdicts with a `DetailedFault`, which
+//! adds what failed: a named `detail` and its raw `detailCode`. The plain doors keep their
+//! 1.0 faults exactly, so no existing code sees a changed object. Both families read through
+//! the core's detailed C exports, so a `NumFormat`'s grouping policy and a `DateOptions` are
+//! honoured at every door that takes them.
+//!
+//! A `NumFormat` declares its grouping policy apart from its styles: strict Western unless
+//! the caller says `Grouping.Indian` or `Grouping.Legacy`, and a door given no format reads
+//! `NumFormat.invariant()`, which is strict Western too.
 
 use hypercast as hc;
 use napi::bindgen_prelude::{
@@ -35,7 +47,7 @@ use napi_derive::napi;
 /// The closed set of reasons a cast can fail.
 #[napi(string_enum)]
 pub enum CastFailure {
-    /// The text was absent, empty or whitespace.
+    /// The text was absent, empty or white space.
     #[napi(value = "empty")]
     Empty,
     /// The text was present but not recognizable as the target type.
@@ -84,6 +96,148 @@ pub struct Failure {
 /// The outcome of a cast: exactly one of `Success<T>` or `Failure`, told apart by `ok`.
 #[napi(js_name = "Verdict<T>")]
 pub type VerdictType = Either<SuccessCase, Failure>;
+
+/// What failed, the core's published detail vocabulary by name. The numbers never change and
+/// codes may be added in a minor release, so a `switch` needs a `default` arm: a code this
+/// binding does not name arrives as `'unknown'`, with its number in `detailCode`. `'none'` is
+/// code 0, for a fault with no detail to give: a contract violation.
+#[napi(string_enum)]
+pub enum Detail {
+    /// No detail: code 0.
+    #[napi(value = "none")]
+    None,
+    /// Empty, or only white space.
+    #[napi(value = "blank")]
+    Blank,
+    /// A character the position does not allow, where it allows several things.
+    #[napi(value = "unexpectedCharacter")]
+    UnexpectedCharacter,
+    /// A numeral or digit field is under way, or a position needs a digit, and something
+    /// else, or the end, is found.
+    #[napi(value = "digitExpected")]
+    DigitExpected,
+    /// A required mark (`-`, `:`, `T`, `;`, a UUID hyphen) is missing or different.
+    #[napi(value = "delimiterExpected")]
+    DelimiterExpected,
+    /// The value is complete and more text follows.
+    #[napi(value = "trailingText")]
+    TrailingText,
+    /// The numeral is absent: only a sign, an affix, or a bare radix prefix.
+    #[napi(value = "noDigits")]
+    NoDigits,
+    /// A sign where none may stand.
+    #[napi(value = "signMisplaced")]
+    SignMisplaced,
+    /// A `(` without its `)`, or `( )`.
+    #[napi(value = "parenthesesUnbalanced")]
+    ParenthesesUnbalanced,
+    /// A once-only mark appears twice.
+    #[napi(value = "markRepeated")]
+    MarkRepeated,
+    /// A group separator not between digits, or an empty group.
+    #[napi(value = "groupMisplaced")]
+    GroupMisplaced,
+    /// A group with the wrong number of digits for the grouping policy.
+    #[napi(value = "groupSize")]
+    GroupSize,
+    /// Grouping after the decimal separator or in an exponent.
+    #[napi(value = "groupInFraction")]
+    GroupInFraction,
+    /// Separator detection cannot tell `.` from `,`.
+    #[napi(value = "ambiguousSeparator")]
+    AmbiguousSeparator,
+    /// A fraction where the type is whole.
+    #[napi(value = "fractionNotAllowed")]
+    FractionNotAllowed,
+    /// A delimited field with the wrong number of digits.
+    #[napi(value = "fieldWidth")]
+    FieldWidth,
+    /// A fixed-shape token, recognised by its length, with the wrong length.
+    #[napi(value = "wrongLength")]
+    WrongLength,
+    /// A required part is absent: a zone, seconds, a duration unit.
+    #[napi(value = "componentMissing")]
+    ComponentMissing,
+    /// Not one of the door's accepted words or values.
+    #[napi(value = "notRecognized")]
+    NotRecognized,
+    /// An unknown or misplaced duration unit.
+    #[napi(value = "unknownUnit")]
+    UnknownUnit,
+    /// Bytes that do not decode as UTF-8 where the door fails.
+    #[napi(value = "invalidUtf8")]
+    InvalidUtf8,
+    /// Past an implementation limit: a 256-byte numeral, an 18-digit run.
+    #[napi(value = "tooLong")]
+    TooLong,
+    /// A non-finite value: a textual NaN or infinity, or a typed one that cannot be held.
+    #[napi(value = "notFinite")]
+    NotFinite,
+    /// A non-integral number at a whole-number door.
+    #[napi(value = "notWhole")]
+    NotWhole,
+    /// A negative where the type has no negatives.
+    #[napi(value = "negativeNotAllowed")]
+    NegativeNotAllowed,
+    /// The magnitude is more than the target type holds.
+    #[napi(value = "tooLarge")]
+    TooLarge,
+    /// Below a signed type's minimum.
+    #[napi(value = "tooSmall")]
+    TooSmall,
+    /// More fractional digits than the type holds.
+    #[napi(value = "tooPrecise")]
+    TooPrecise,
+    /// Year 0, month 13, a day past the month's end.
+    #[napi(value = "dateFieldOutOfRange")]
+    DateFieldOutOfRange,
+    /// An hour, minute, second or offset out of range.
+    #[napi(value = "timeFieldOutOfRange")]
+    TimeFieldOutOfRange,
+    /// A representable instant or duration past the supported window.
+    #[napi(value = "outsideWindow")]
+    OutsideWindow,
+    /// A day that never existed: Excel's phantom 1900-02-29.
+    #[napi(value = "nonexistentDate")]
+    NonexistentDate,
+    /// A code point above U+10FFFF, or a surrogate.
+    #[napi(value = "notAScalar")]
+    NotAScalar,
+    /// A code this binding does not name yet; the number is in `detailCode`.
+    #[napi(value = "unknown")]
+    Unknown,
+}
+
+/// The failure case of a detailed door: `reason`, `offset` and `length` as a plain `Fault`
+/// carries them, and what failed. `detailCode` is the core's own number, `detail` its name.
+#[napi(object, object_from_js = false)]
+pub struct DetailedFault {
+    /// Why the cast failed.
+    pub reason: CastFailure,
+    /// Where the offending span starts.
+    pub offset: u32,
+    /// How long it runs; 0 for `empty`, for a typed door and for a contract violation.
+    pub length: u32,
+    /// What failed, by name. Open, like `Violation.keyword`: a code this binding does not name
+    /// yet is `'unknown'`, and a later release may name more, so a `switch` needs a `default`.
+    #[napi(ts_type = "Detail | (string & {})")]
+    pub detail: Detail,
+    /// What failed, by the core's number: 1 to 32 are published; 0 is no detail.
+    pub detail_code: u32,
+}
+
+/// The failure case of a detailed verdict: `ok` is `false` and `fault` says why and what.
+#[napi(object, object_to_js = false, object_from_js = false)]
+pub struct DetailedFailure {
+    #[napi(ts_type = "false")]
+    pub ok: bool,
+    pub fault: DetailedFault,
+}
+
+/// The outcome of a detailed cast: exactly one of `Success<T>` or `DetailedFailure`, told
+/// apart by `ok`.
+#[napi(js_name = "DetailedVerdict<T>")]
+pub type DetailedVerdictType = Either<SuccessCase, DetailedFailure>;
 
 /// A declaration the binding refused: `ok` is `false` and `message` names the rule broken.
 #[napi(object, object_to_js = false, object_from_js = false)]
@@ -200,6 +354,23 @@ pub enum NumStyles {
     All = 95,
 }
 
+/// How strictly a `NumFormat` reads groups of digits, the core's grouping policy. It is declared
+/// apart from the styles, and replaces a policy rather than adding to one. It only matters
+/// where `NumStyles.Grouping` is on: with grouping off, a group separator stays forbidden
+/// under every policy.
+#[napi]
+pub enum Grouping {
+    /// A group separator anywhere between two digits (`12,34` is 1234), as every 1.0 format
+    /// read.
+    Legacy = 0,
+    /// Groups of exactly three digits counted from the decimal separator, the leftmost of one
+    /// to three (`1,234,567`; `12,34` is `malformed`). The default.
+    Western = 256,
+    /// A group of three beside the decimal separator and twos beyond it, the leftmost of one
+    /// or two (`12,34,567`; `1,234,567` is `malformed`).
+    Indian = 512,
+}
+
 /// The declared form of a `NumFormat`: `NumFormat.declare` reads it.
 #[napi(object, object_to_js = false, object_from_js = false)]
 pub struct NumFormatSpec {
@@ -207,9 +378,13 @@ pub struct NumFormatSpec {
     pub decimal_sep: String,
     /// The group separator, likewise, and different from `decimalSep`.
     pub group_sep: String,
-    /// The leniences, `NumStyles` members combined with `|`.
+    /// The leniences, `NumStyles` members combined with `|`. A style mask holds no grouping
+    /// policy: declare that as `grouping`.
     pub flags: u32,
-    /// The currency symbol, 1 to 16 UTF-8 bytes with no ASCII digit or whitespace.
+    /// How groups of digits are read; `Grouping.Western` when absent.
+    #[napi(ts_type = "Grouping")]
+    pub grouping: Option<u32>,
+    /// The currency symbol, 1 to 16 UTF-8 bytes with no ASCII digit and no white space at either end.
     pub currency: Option<String>,
     /// The decimal separator of a currency amount; absent keeps `decimalSep`.
     pub currency_decimal_sep: Option<String>,
@@ -235,6 +410,37 @@ pub struct DateFormatSpec {
     pub am: Option<String>,
     /// The designator of the second half of the day, read beside `PM`.
     pub pm: Option<String>,
+}
+
+/// The extra shapes a `DateOptions` opens, combined with `|`. Each is read at one door, and a
+/// style a door does not read is ignored there.
+#[napi]
+pub enum DateStyles {
+    None = 0,
+    /// `castDate` also reads `20260107`, eight ASCII digits as `yyyyMMdd`.
+    CompactDate = 1,
+    /// `castTimestamp` also reads one space where the `T` goes.
+    SpaceSeparator = 2,
+    /// `castTimestamp` also reads an offset of `±hh` (`+00`, `-05`).
+    HourOffset = 4,
+    /// `CompactDate`, `SpaceSeparator` and `HourOffset` together. It never supplies a pivot
+    /// or month names.
+    CommonForms = 7,
+}
+
+/// The declared form of a `DateOptions`: `DateOptions.declare` reads it.
+#[napi(object, object_to_js = false, object_from_js = false)]
+pub struct DateOptionsSpec {
+    /// The extra shapes, `DateStyles` members combined with `|`; none when absent.
+    #[napi(ts_type = "DateStyles")]
+    pub flags: Option<u32>,
+    /// The last year of the 100-year window a two-digit year is read in: `0` or absent for
+    /// none (a two-digit year is then a `fieldWidth` fault), otherwise 100 to 9999. A year
+    /// `yy` reads as the one year from `pivot - 99` to `pivot` that ends in `yy`.
+    pub pivot: Option<u32>,
+    /// Month names read in the month field of `castDate` with an order and of `castDatetime`.
+    #[napi(ts_type = "MonthNames")]
+    pub months: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------------------
@@ -340,10 +546,12 @@ fn number(value: &Unknown<'_>) -> Option<f64> {
     }
 }
 
-/// A `format` argument: absent is the invariant format, as a null format is at the C ABI.
+/// A `format` argument: absent is `NumFormat.invariant()`, the invariant separators under
+/// strict Western grouping. (A null format at the C ABI is the legacy one; this binding never
+/// passes one.)
 fn num_format(value: &Unknown<'_>) -> Option<hc::NumFormat> {
     match value.get_type() {
-        Ok(ValueType::Undefined | ValueType::Null) => Some(hc::NumFormat::INVARIANT),
+        Ok(ValueType::Undefined | ValueType::Null) => Some(hc::NumFormat::STRICT),
         Ok(ValueType::Object) => unsafe { value.cast::<ClassInstance<NumFormat>>() }
             .ok()
             .map(|format| format.resolved),
@@ -374,22 +582,152 @@ fn success<'env, V: ToNapiValue>(env: &'env Env, value: V) -> Result<Object<'env
 }
 
 fn failure(env: &Env, fault: hc::Fault) -> Result<Object<'_>> {
-    let reason = match fault.reason {
-        hc::Reason::Empty => CastFailure::Empty,
-        hc::Reason::Malformed => CastFailure::Malformed,
-        hc::Reason::OutOfRange => CastFailure::OutOfRange,
-    };
     let mut verdict = Object::new(env)?;
     verdict.set("ok", false)?;
     verdict.set(
         "fault",
         Fault {
-            reason,
+            reason: cast_failure(fault.reason),
             offset: fault.offset,
             length: fault.len,
         },
     )?;
     Ok(verdict)
+}
+
+fn cast_failure(reason: hc::Reason) -> CastFailure {
+    match reason {
+        hc::Reason::Empty => CastFailure::Empty,
+        hc::Reason::Malformed => CastFailure::Malformed,
+        hc::Reason::OutOfRange => CastFailure::OutOfRange,
+    }
+}
+
+/// The name of a detail code, `Detail::None` for 0 (no detail) and `Detail::Unknown` for a
+/// code the core publishes after this binding was written, or one it never did. Never fails:
+/// a failure with an unknown detail still has its reason and span.
+fn detail_of(code: u32) -> Detail {
+    let Some(published) = hc::Detail::from_code(code) else {
+        return if code == 0 {
+            Detail::None
+        } else {
+            Detail::Unknown
+        };
+    };
+    match published {
+        hc::Detail::Blank => Detail::Blank,
+        hc::Detail::UnexpectedCharacter => Detail::UnexpectedCharacter,
+        hc::Detail::DigitExpected => Detail::DigitExpected,
+        hc::Detail::DelimiterExpected => Detail::DelimiterExpected,
+        hc::Detail::TrailingText => Detail::TrailingText,
+        hc::Detail::NoDigits => Detail::NoDigits,
+        hc::Detail::SignMisplaced => Detail::SignMisplaced,
+        hc::Detail::ParenthesesUnbalanced => Detail::ParenthesesUnbalanced,
+        hc::Detail::MarkRepeated => Detail::MarkRepeated,
+        hc::Detail::GroupMisplaced => Detail::GroupMisplaced,
+        hc::Detail::GroupSize => Detail::GroupSize,
+        hc::Detail::GroupInFraction => Detail::GroupInFraction,
+        hc::Detail::AmbiguousSeparator => Detail::AmbiguousSeparator,
+        hc::Detail::FractionNotAllowed => Detail::FractionNotAllowed,
+        hc::Detail::FieldWidth => Detail::FieldWidth,
+        hc::Detail::WrongLength => Detail::WrongLength,
+        hc::Detail::ComponentMissing => Detail::ComponentMissing,
+        hc::Detail::NotRecognized => Detail::NotRecognized,
+        hc::Detail::UnknownUnit => Detail::UnknownUnit,
+        hc::Detail::InvalidUtf8 => Detail::InvalidUtf8,
+        hc::Detail::TooLong => Detail::TooLong,
+        hc::Detail::NotFinite => Detail::NotFinite,
+        hc::Detail::NotWhole => Detail::NotWhole,
+        hc::Detail::NegativeNotAllowed => Detail::NegativeNotAllowed,
+        hc::Detail::TooLarge => Detail::TooLarge,
+        hc::Detail::TooSmall => Detail::TooSmall,
+        hc::Detail::TooPrecise => Detail::TooPrecise,
+        hc::Detail::DateFieldOutOfRange => Detail::DateFieldOutOfRange,
+        hc::Detail::TimeFieldOutOfRange => Detail::TimeFieldOutOfRange,
+        hc::Detail::OutsideWindow => Detail::OutsideWindow,
+        hc::Detail::NonexistentDate => Detail::NonexistentDate,
+        hc::Detail::NotAScalar => Detail::NotAScalar,
+        // `hc::Detail` is non-exhaustive: a code a later core adds is named when this binding
+        // learns it, and `unknown` until then.
+        _ => Detail::Unknown,
+    }
+}
+
+/// The reason a detailed export's return code 1, 2 or 3 names.
+fn reason_of(code: i32) -> Option<hc::Reason> {
+    match code {
+        1 => Some(hc::Reason::Empty),
+        2 => Some(hc::Reason::Malformed),
+        3 => Some(hc::Reason::OutOfRange),
+        _ => None,
+    }
+}
+
+/// A detailed fault: a plain one's reason and span, plus what failed by name and by number. A
+/// code this binding does not name is `Detail::Unknown` with its number kept; the reason and
+/// span are as usable as ever.
+fn detailed_fault(reason: hc::Reason, (offset, length): (u32, u32), detail: u32) -> DetailedFault {
+    DetailedFault {
+        reason: cast_failure(reason),
+        offset,
+        length,
+        detail: detail_of(detail),
+        detail_code: detail,
+    }
+}
+
+/// A detailed failure's verdict: the fault as a plain one is, plus what failed.
+fn detailed_failure(
+    env: &Env,
+    reason: hc::Reason,
+    span: (u32, u32),
+    detail: u32,
+) -> Result<Object<'_>> {
+    let mut verdict = Object::new(env)?;
+    verdict.set("ok", false)?;
+    verdict.set("fault", detailed_fault(reason, span, detail))?;
+    Ok(verdict)
+}
+
+/// A failure's verdict in the family the door belongs to: with its detail at a detailed door,
+/// the plain fault at the others.
+fn fault_verdict(
+    env: &Env,
+    detailed: bool,
+    reason: hc::Reason,
+    span: (u32, u32),
+    detail: u32,
+) -> Result<Object<'_>> {
+    if detailed {
+        detailed_failure(env, reason, span, detail)
+    } else {
+        failure(
+            env,
+            hc::Fault {
+                reason,
+                offset: span.0,
+                len: span.1,
+            },
+        )
+    }
+}
+
+/// A contract violation's verdict in the door's family. A detailed one has no detail to give:
+/// code 0, `'none'`.
+fn contract_verdict(env: &Env, detailed: bool) -> Result<Object<'_>> {
+    clear_pending_exception(env);
+    fault_verdict(env, detailed, hc::Reason::Malformed, (0, 0), 0)
+}
+
+/// Absent input's verdict: the `empty` fault, whose detail is `blank`.
+fn absent_verdict(env: &Env, detailed: bool) -> Result<Object<'_>> {
+    fault_verdict(
+        env,
+        detailed,
+        hc::Reason::Empty,
+        (0, 0),
+        hc::Detail::Blank.code(),
+    )
 }
 
 /// A contract violation's verdict. Reading an argument of the wrong kind runs no JavaScript
@@ -612,6 +950,10 @@ fn declared<'env, T: ToNapiValue>(
     Ok(declaration)
 }
 
+/// The `flags` bits a style mask may hold: the eight `NumStyles` members' (bits 8 and 9 are the
+/// grouping policy, which `grouping` declares).
+const STYLE_BITS: u32 = 0xFF;
+
 /// A number separator: 1 to 8 UTF-8 bytes with no ASCII digit, the core's own rule.
 fn separator(what: &str, text: &str) -> std::result::Result<hc::Symbol<8>, String> {
     hc::Symbol::new(text).ok_or_else(|| {
@@ -619,8 +961,18 @@ fn separator(what: &str, text: &str) -> std::result::Result<hc::Symbol<8>, Strin
     })
 }
 
+fn has_white_space(text: &str) -> bool {
+    text.chars().any(hc::is_white_space)
+}
+
+/// The refusal of a symbol that holds white space, which no input can match: white space
+/// around a symbol is ignored, and a numeral admits it only as a group separator.
+fn white_space_refusal(what: &str, text: &str) -> String {
+    format!("{what} must not contain white space; got \"{text}\"")
+}
+
 /// A symbol a caller need not declare: absent or `""` declares none; with `flush` (a sign,
-/// the percent symbol) it may hold no ASCII whitespace either.
+/// the percent symbol) it may hold no white space either, checked after the length and digit.
 fn optional_symbol(
     what: &str,
     text: Option<&str>,
@@ -629,12 +981,21 @@ fn optional_symbol(
     let Some(text) = text.filter(|text| !text.is_empty()) else {
         return Ok(hc::Symbol::NONE);
     };
-    if flush && text.bytes().any(|byte| byte.is_ascii_whitespace()) {
-        return Err(format!(
-            "{what} must be 1 to 8 UTF-8 bytes with no ASCII digit or whitespace; got \"{text}\""
-        ));
+    let symbol = separator(what, text)?;
+    if flush && has_white_space(text) {
+        return Err(white_space_refusal(what, text));
     }
-    separator(what, text)
+    Ok(symbol)
+}
+
+/// The backstop behind the per-field validators, in every build: the core refuses the
+/// resolved format, so a validator above lags a rule the core has.
+fn refuse_unless_checked(resolved: &hc::NumFormat) -> std::result::Result<(), String> {
+    if resolved.check() {
+        Ok(())
+    } else {
+        Err("The NumFormat declaration is a format the core refuses".to_string())
+    }
 }
 
 fn declare_num_format(env: &Env, spec: &Object<'_>) -> std::result::Result<hc::NumFormat, String> {
@@ -648,6 +1009,29 @@ fn declare_num_format(env: &Env, spec: &Object<'_>) -> std::result::Result<hc::N
         .as_ref()
         .and_then(code)
         .ok_or_else(|| "flags must be a whole number from 0 to 4294967295".to_string())?;
+    if flags & hc::NumFormat::GROUPING_POLICY != 0 {
+        return Err(format!(
+            "flags must not carry a grouping policy; declare it as grouping; got {flags}"
+        ));
+    }
+    if flags & !STYLE_BITS != 0 {
+        return Err(format!(
+            "flags holds a bit no NumStyles member names; got {flags}"
+        ));
+    }
+    let grouping = match spec_field(env, spec, "grouping")? {
+        Some(value) if !matches!(value.get_type(), Ok(ValueType::Undefined)) => code(&value)
+            .filter(|&code| {
+                [
+                    hc::NumFormat::GROUPING_LEGACY,
+                    hc::NumFormat::GROUPING_WESTERN,
+                    hc::NumFormat::GROUPING_INDIAN,
+                ]
+                .contains(&code)
+            })
+            .ok_or_else(|| "grouping must be a Grouping".to_string())?,
+        _ => hc::NumFormat::GROUPING_WESTERN,
+    };
     let currency = spec_text(env, spec, "currency")?;
     let currency_decimal = spec_text(env, spec, "currencyDecimalSep")?;
     let currency_group = spec_text(env, spec, "currencyGroupSep")?;
@@ -662,6 +1046,9 @@ fn declare_num_format(env: &Env, spec: &Object<'_>) -> std::result::Result<hc::N
         return Err(format!(
             "Decimal and group separators must differ; both are \"{decimal_text}\""
         ));
+    }
+    if has_white_space(&decimal_text) {
+        return Err(white_space_refusal("Decimal separator", &decimal_text));
     }
     let currency_decimal_sep = optional_symbol(
         "Currency decimal separator",
@@ -681,13 +1068,31 @@ fn declare_num_format(env: &Env, spec: &Object<'_>) -> std::result::Result<hc::N
             "Currency decimal and group separators must differ; both are \"{decimal}\""
         ));
     }
+    if let Some(text) = currency_decimal.as_deref()
+        && has_white_space(text)
+    {
+        return Err(white_space_refusal("Currency decimal separator", text));
+    }
     let currency = match currency.as_deref().filter(|text| !text.is_empty()) {
         None => hc::CurrencySymbol::NONE,
-        Some(text) => hc::CurrencySymbol::new(text).ok_or_else(|| {
-            format!(
-                "Currency symbol must be 1 to 16 UTF-8 bytes with no ASCII digit or whitespace; got \"{text}\""
-            )
-        })?,
+        Some(text) => {
+            let refusal = || {
+                format!(
+                    "Currency symbol must be 1 to 16 UTF-8 bytes with no ASCII digit; got \"{text}\""
+                )
+            };
+            if !(1..=hc::CurrencySymbol::MAX_BYTES).contains(&text.len())
+                || text.bytes().any(|byte| byte.is_ascii_digit())
+            {
+                return Err(refusal());
+            }
+            if text.starts_with(hc::is_white_space) || text.ends_with(hc::is_white_space) {
+                return Err(format!(
+                    "Currency symbol must not start or end with white space; got \"{text}\""
+                ));
+            }
+            hc::CurrencySymbol::new(text).ok_or_else(refusal)?
+        }
     };
     let digits = match digit_zero.as_deref().filter(|text| !text.is_empty()) {
         None => hc::NativeDigits::NONE,
@@ -712,8 +1117,9 @@ fn declare_num_format(env: &Env, spec: &Object<'_>) -> std::result::Result<hc::N
             optional_symbol("Plus sign", plus.as_deref(), true)?,
         )
         .with_percent(optional_symbol("Percent symbol", percent.as_deref(), true)?)
-        .with_digits(digits);
-    debug_assert!(resolved.check(), "every contract rule is refused above");
+        .with_digits(digits)
+        .with_grouping(grouping);
+    refuse_unless_checked(&resolved)?;
     Ok(resolved)
 }
 
@@ -721,9 +1127,10 @@ fn declare_num_format(env: &Env, spec: &Object<'_>) -> std::result::Result<hc::N
 impl NumFormat {
     /// Declares a format, or says which rule the declaration breaks; never throws. The
     /// separators are each 1 to 8 UTF-8 bytes with no ASCII digit, and differ (so do the
-    /// pair a currency amount is read with); a sign or percent symbol holds no ASCII
-    /// whitespace; the currency symbol is at most 16 bytes with no ASCII digit or whitespace;
-    /// the digit zero is the one non-ASCII character a Unicode digit block starts at.
+    /// pair a currency amount is read with), and a decimal separator holds no white space; a
+    /// sign or percent symbol holds no white space; the currency symbol is at most 16 bytes
+    /// with no ASCII digit and no white space at either end (`F CFA` is fine); the digit zero is the one non-ASCII character
+    /// a Unicode digit block starts at.
     #[napi(
         catch_unwind,
         ts_args_type = "spec: NumFormatSpec",
@@ -738,21 +1145,22 @@ impl NumFormat {
         }
     }
 
-    /// The invariant format: `.` decimal, `,` grouping, `NumStyles.All`. What a door reads
-    /// with when its format is left out.
+    /// The invariant format: `.` decimal, `,` grouping, `NumStyles.All`, strict Western
+    /// grouping (`Grouping.Western`). What a door reads with when its format is left out.
     #[napi(factory, catch_unwind)]
     pub fn invariant() -> Self {
         NumFormat {
-            resolved: hc::NumFormat::INVARIANT,
+            resolved: hc::NumFormat::STRICT,
         }
     }
 
     /// The detection format: `NumStyles.All | NumStyles.SeparatorDetect`, the `.`/`,` roles
-    /// resolved per input from structure.
+    /// resolved per input from structure, under strict Western grouping. A grouping policy
+    /// never resolves an ambiguous separator.
     #[napi(factory, catch_unwind)]
     pub fn detect() -> Self {
         NumFormat {
-            resolved: hc::NumFormat::DETECT,
+            resolved: hc::NumFormat::DETECT.with_grouping(hc::NumFormat::GROUPING_WESTERN),
         }
     }
 
@@ -768,10 +1176,16 @@ impl NumFormat {
         self.resolved.group_sep.to_string()
     }
 
-    /// The leniences, `NumStyles` members combined.
+    /// The leniences, `NumStyles` members combined: never a grouping policy, which is `grouping`.
     #[napi(getter, catch_unwind)]
     pub fn flags(&self) -> u32 {
-        self.resolved.flags
+        self.resolved.flags & STYLE_BITS
+    }
+
+    /// How groups of digits are read.
+    #[napi(getter, catch_unwind, ts_return_type = "Grouping")]
+    pub fn grouping(&self) -> u32 {
+        self.resolved.flags & hc::NumFormat::GROUPING_POLICY
     }
 
     /// The currency symbol, `""` when none is declared.
@@ -821,7 +1235,9 @@ impl NumFormat {
     }
 
     /// The 92 bytes this format crosses a C ABI as (the core's size-tagged layout), for a
-    /// library that declares numeric columns across a C ABI of its own.
+    /// library that declares numeric columns across a C ABI of its own. The `flags` word
+    /// carries the grouping policy in bits 8 and 9, which only the core's detailed exports
+    /// read (the 1.0 exports ignore them and parse every group legacy).
     #[napi(getter, catch_unwind)]
     pub fn packed(&self) -> Uint8Array {
         Uint8Array::from(hc::RawNumFormat::from(self.resolved).to_le_bytes().to_vec())
@@ -837,25 +1253,22 @@ pub struct DateFormat {
 }
 
 /// A day-period designator: absent or `""` declares none; anything else is 1 to 16 UTF-8
-/// bytes with no ASCII digit and no ASCII whitespace at either end (`a. m.` is fine).
+/// bytes with no ASCII digit and no white space at either end (`a. m.` is fine).
 fn designator(what: &str, text: Option<&str>) -> std::result::Result<hc::Symbol<16>, String> {
     let Some(text) = text.filter(|text| !text.is_empty()) else {
         return Ok(hc::Symbol::NONE);
     };
-    let edges = text
-        .bytes()
-        .next()
-        .is_some_and(|byte| byte.is_ascii_whitespace())
-        || text
-            .bytes()
-            .last()
-            .is_some_and(|byte| byte.is_ascii_whitespace());
-    if !edges && let Some(symbol) = hc::Symbol::new(text) {
-        return Ok(symbol);
+    let Some(symbol) = hc::Symbol::new(text) else {
+        return Err(format!(
+            "Day period {what} must be 1 to 16 UTF-8 bytes with no ASCII digit; got \"{text}\""
+        ));
+    };
+    if text.starts_with(hc::is_white_space) || text.ends_with(hc::is_white_space) {
+        return Err(format!(
+            "Day period {what} must not have white space at either end; got \"{text}\""
+        ));
     }
-    Err(format!(
-        "Day period {what} must be 1 to 16 UTF-8 bytes with no ASCII digit and no whitespace at either end; got \"{text}\""
-    ))
+    Ok(symbol)
 }
 
 fn declare_date_format(env: &Env, spec: &Object<'_>) -> std::result::Result<DateFormat, String> {
@@ -877,7 +1290,7 @@ fn declare_date_format(env: &Env, spec: &Object<'_>) -> std::result::Result<Date
 impl DateFormat {
     /// Declares a field order and day periods, or says which rule the declaration breaks;
     /// never throws. Each designator is 1 to 16 UTF-8 bytes with no ASCII digit and no
-    /// whitespace at either end, read exactly, after the clock or ahead of it.
+    /// white space at either end, read exactly, after the clock or ahead of it.
     #[napi(
         catch_unwind,
         ts_args_type = "spec: DateFormatSpec",
@@ -908,6 +1321,258 @@ impl DateFormat {
     #[napi(getter, catch_unwind)]
     pub fn pm(&self) -> String {
         self.periods.pm.to_string()
+    }
+}
+
+/// The refusal of a month vocabulary, one message for each rule it can break.
+fn month_names_message(fault: hc::MonthNamesFault) -> String {
+    match fault {
+        hc::MonthNamesFault::Layout => "Month names must be packed entries: a month byte, a little-endian u32 length, then the name's UTF-8, with no entry cut short and no bytes after the last".to_string(),
+        hc::MonthNamesFault::Month => "Month names must each name a month, a whole number from 1 to 12".to_string(),
+        hc::MonthNamesFault::Utf8 => "Month names must be whole code points, not surrogate halves or bytes that are not UTF-8".to_string(),
+        hc::MonthNamesFault::NameLength => "Month names must each be 1 to 64 UTF-8 bytes".to_string(),
+        hc::MonthNamesFault::Character => "Month names must hold no ASCII digit, slash, hyphen or white space".to_string(),
+        hc::MonthNamesFault::MonthMissing => "Month names must name every month from 1 to 12 at least once".to_string(),
+        hc::MonthNamesFault::Duplicate => "Month names must differ once case-folded, and two fold to the same spelling".to_string(),
+        other => format!("Month names refused: {other}"),
+    }
+}
+
+/// A month vocabulary's packed bytes, judged in full by the core.
+fn judge_month_names(packed: Vec<u8>) -> std::result::Result<MonthNames, String> {
+    match hc::MonthNames::from_packed(&packed) {
+        Ok(_) => Ok(MonthNames { packed }),
+        Err(hc::DeclarationError::MonthNames(fault)) => Err(month_names_message(fault)),
+        Err(other) => Err(format!("Month names refused: {other}")),
+    }
+}
+
+/// An array argument's elements, or `None` when it is no array.
+fn elements<'env>(env: &Env, value: &Unknown<'env>) -> Option<Vec<Unknown<'env>>> {
+    let mut is_array = false;
+    // SAFETY: `env` and `value` are the live call's.
+    let status = unsafe { napi::sys::napi_is_array(env.raw(), value.raw(), &mut is_array) };
+    if status != napi::sys::Status::napi_ok || !is_array {
+        return None;
+    }
+    unsafe { value.cast::<Vec<Unknown>>() }.ok().or_else(|| {
+        clear_pending_exception(env);
+        None
+    })
+}
+
+/// The packed layout of the `[month, name]` entries a caller wrote. A month that is no whole
+/// number from 0 to 255 is written as 0, which the core refuses as a month; a name is its
+/// WTF-8, so a lone surrogate reaches the core to be refused as not UTF-8.
+fn pack_month_entries(env: &Env, value: &Unknown<'_>) -> std::result::Result<Vec<u8>, String> {
+    let entries = elements(env, value)
+        .ok_or_else(|| "Month names must be an array of [month, name] entries".to_string())?;
+    let mut packed = Vec::new();
+    for (i, entry) in entries.iter().enumerate() {
+        let pair = elements(env, entry)
+            .filter(|pair| pair.len() == 2)
+            .ok_or_else(|| format!("Month names entry {i} must be a [month, name] pair"))?;
+        let month = code(&pair[0])
+            .and_then(|month| u8::try_from(month).ok())
+            .unwrap_or(0);
+        if !matches!(pair[1].get_type(), Ok(ValueType::String)) {
+            return Err(format!(
+                "Month names entry {i} must be a [month, name] pair with a string name"
+            ));
+        }
+        let name = string_wtf8(env, &pair[1])
+            .ok_or_else(|| format!("Month names entry {i} could not be read"))?;
+        packed.push(month);
+        packed.extend_from_slice(&u32::try_from(name.len()).unwrap_or(u32::MAX).to_le_bytes());
+        packed.extend_from_slice(&name);
+    }
+    Ok(packed)
+}
+
+/// Declared month names for the date doors that read a month field (`castDate` with an order,
+/// `castDatetime`): `janvier`, `Sep` and `Sept`, `janv.`. Caller-built: no platform
+/// vocabulary is looked up. Each entry maps a name to a month from 1 to 12 and aliases are
+/// separate entries. Names match under simple case folding, and the longest name followed by
+/// the separator the date uses wins; punctuation is part of a name and never stripped, so
+/// with `janv.` declared and `.` as the separator, `7.janv..2026` reads while `7.janv.2026`
+/// does not unless `janv` is also declared. Every month needs a name; a name is 1 to 64 UTF-8
+/// bytes with no ASCII digit, `/`, `-` or white space, and two that fold alike are refused.
+/// Made by `MonthNames.declare` or `MonthNames.fromPacked`, never by `new`.
+#[napi]
+#[derive(Clone)]
+pub struct MonthNames {
+    packed: Vec<u8>,
+}
+
+#[napi]
+impl MonthNames {
+    /// Declares month names from `[month, name]` entries, or says which rule they break; never
+    /// throws.
+    #[napi(
+        catch_unwind,
+        ts_args_type = "entries: ReadonlyArray<readonly [month: number, name: string]>",
+        ts_return_type = "Declaration<MonthNames>"
+    )]
+    pub fn declare<'env>(env: &'env Env, entries: Unknown<'env>) -> Result<Object<'env>> {
+        match pack_month_entries(env, &entries).and_then(judge_month_names) {
+            Ok(names) => declared(env, Ok(names.into_instance(env)?)),
+            Err(message) => declared::<bool>(env, Err(message)),
+        }
+    }
+
+    /// Declares month names from their packed layout, the one the C ABI takes: each entry a
+    /// month byte (1 to 12), a little-endian `u32` byte length, then that many UTF-8 bytes. Says
+    /// which rule the bytes break; never throws.
+    #[napi(
+        catch_unwind,
+        ts_args_type = "bytes: Uint8Array",
+        ts_return_type = "Declaration<MonthNames>"
+    )]
+    pub fn from_packed<'env>(env: &'env Env, bytes: Unknown<'env>) -> Result<Object<'env>> {
+        let packed = match bytes.get_type() {
+            Ok(ValueType::Object) => unsafe { bytes.cast::<Uint8Array>() }
+                .map(|bytes| bytes.to_vec())
+                .map_err(|_| "Month names bytes must be a Uint8Array".to_string()),
+            _ => Err("Month names bytes must be a Uint8Array".to_string()),
+        };
+        match packed.and_then(judge_month_names) {
+            Ok(names) => declared(env, Ok(names.into_instance(env)?)),
+            Err(message) => declared::<bool>(env, Err(message)),
+        }
+    }
+
+    /// The names in the packed layout the core reads: each entry a month byte, a little-endian
+    /// `u32` byte length, then the UTF-8, in the order declared.
+    #[napi(getter, catch_unwind)]
+    pub fn packed(&self) -> Uint8Array {
+        Uint8Array::from(self.packed.clone())
+    }
+}
+
+/// The extra date shapes the date doors can read, a pivot for two-digit years, and month
+/// names: all opt in, so a door keeps its own shape rules unless it is given options. Made by
+/// `DateOptions.declare` or `DateOptions.commonForms`, never by `new`.
+#[napi]
+pub struct DateOptions {
+    flags: u32,
+    pivot: u32,
+    months: Option<MonthNames>,
+}
+
+/// A refused date-options declaration, worded for the rule that refused it.
+fn date_options_message(error: hc::DeclarationError, flags: u32, pivot: u32) -> String {
+    match error {
+        hc::DeclarationError::DateFlags => {
+            format!("Date options flags must be DateStyles members combined; got {flags}")
+        }
+        hc::DeclarationError::DatePivot => {
+            format!("Date options pivot must be 0 (none) or a year from 100 to 9999; got {pivot}")
+        }
+        hc::DeclarationError::MonthNames(fault) => month_names_message(fault),
+        other => format!("Date options refused: {other}"),
+    }
+}
+
+fn declare_date_options(env: &Env, spec: &Object<'_>) -> std::result::Result<DateOptions, String> {
+    let whole = |name: &str| -> std::result::Result<u32, String> {
+        match spec_field(env, spec, name)? {
+            Some(value) if !matches!(value.get_type(), Ok(ValueType::Undefined)) => code(&value)
+                .ok_or_else(|| format!("{name} must be a whole number from 0 to 4294967295")),
+            _ => Ok(0),
+        }
+    };
+    let flags = whole("flags")?;
+    let pivot = whole("pivot")?;
+    let months = match spec_field(env, spec, "months")? {
+        Some(value) if !matches!(value.get_type(), Ok(ValueType::Undefined)) => {
+            let names = match value.get_type() {
+                Ok(ValueType::Object) => unsafe { value.cast::<ClassInstance<MonthNames>>() }
+                    .ok()
+                    .map(|names| MonthNames {
+                        packed: names.packed.clone(),
+                    }),
+                _ => None,
+            };
+            Some(names.ok_or_else(|| "months must be a MonthNames".to_string())?)
+        }
+        _ => None,
+    };
+    // A pivot past a `u16` is refused as itself: `u16::MAX` is no pivot either.
+    let options =
+        hc::DateOptions::from_flags(flags).with_pivot(u16::try_from(pivot).unwrap_or(u16::MAX));
+    let names = months
+        .as_ref()
+        .map(|names| hc::MonthNames::from_packed(&names.packed))
+        .transpose()
+        .map_err(|error| date_options_message(error, flags, pivot))?;
+    options
+        .validate(names)
+        .map_err(|error| date_options_message(error, flags, pivot))?;
+    Ok(DateOptions {
+        flags,
+        pivot,
+        months,
+    })
+}
+
+#[napi]
+impl DateOptions {
+    /// Declares date options, or says which rule the declaration breaks; never throws. The
+    /// styles are `DateStyles` members, the pivot is 0 (none) or from 100 to 9999, and the
+    /// month names are a `MonthNames`.
+    #[napi(
+        catch_unwind,
+        ts_args_type = "spec: DateOptionsSpec",
+        ts_return_type = "Declaration<DateOptions>"
+    )]
+    pub fn declare<'env>(env: &'env Env, spec: Unknown<'env>) -> Result<Object<'env>> {
+        let outcome = spec_object(&spec, "The DateOptions declaration")
+            .and_then(|spec| declare_date_options(env, &spec));
+        match outcome {
+            Ok(options) => declared(env, Ok(options.into_instance(env)?)),
+            Err(message) => declared::<bool>(env, Err(message)),
+        }
+    }
+
+    /// `DateStyles.CommonForms`: compact dates, a space for the `T` and `±hh` offsets,
+    /// with no pivot and no month names. It works at every date door: a style a door does not
+    /// read is ignored there.
+    #[napi(factory, catch_unwind)]
+    pub fn common_forms() -> Self {
+        DateOptions {
+            flags: hc::DateOptions::COMMON_FORMS.flags(),
+            pivot: 0,
+            months: None,
+        }
+    }
+
+    /// The extra shapes, `DateStyles` members combined.
+    #[napi(getter, catch_unwind, ts_return_type = "DateStyles")]
+    pub fn flags(&self) -> u32 {
+        self.flags
+    }
+
+    /// The pivot, `0` for none.
+    #[napi(getter, catch_unwind)]
+    pub fn pivot(&self) -> u32 {
+        self.pivot
+    }
+
+    /// The declared month names, or `null`.
+    #[napi(getter, catch_unwind)]
+    pub fn months(&self) -> Option<MonthNames> {
+        self.months.clone()
+    }
+
+    /// The 12 bytes these options cross a C ABI as (the core's size-tagged layout: the size,
+    /// the flags and the pivot, each a little-endian `u32`), with `months.packed` beside it.
+    #[napi(getter, catch_unwind)]
+    pub fn packed(&self) -> Uint8Array {
+        let mut bytes = Vec::with_capacity(hc::RawDateOptions::SIZE as usize);
+        for word in [hc::RawDateOptions::SIZE, self.flags, self.pivot] {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        Uint8Array::from(bytes)
     }
 }
 
@@ -1025,12 +1690,26 @@ pub fn cast_uuid<'env>(env: &'env Env, text: Unknown<'env>) -> Result<Object<'en
 }
 
 /// Casts an RFC 3339 instant, its zone mandatory, to seconds and nanoseconds since the epoch.
+/// `options` (`DateOptions.declare({ flags: DateStyles.SpaceSeparator | DateStyles.HourOffset
+/// })`, or `DateOptions.commonForms()`) open a space for the `T` and `±hh` offsets; without
+/// them the door reads the strict shape.
 #[napi(
     catch_unwind,
-    ts_args_type = "text: Text",
+    ts_args_type = "text: Text, options?: DateOptions | undefined | null",
     ts_return_type = "Verdict<Timestamp>"
 )]
-pub fn cast_timestamp<'env>(env: &'env Env, text: Unknown<'env>) -> Result<Object<'env>> {
+pub fn cast_timestamp<'env>(
+    env: &'env Env,
+    text: Unknown<'env>,
+    options: Unknown<'env>,
+) -> Result<Object<'env>> {
+    if !is_nothing(&options) {
+        let call = Call::of(hc::Door::Timestamp, 0).and_then(|mut call| {
+            call.dates = dates_arg(&options)?;
+            Some(call)
+        });
+        return run(env, &text, call, false);
+    }
     door(
         env,
         &text,
@@ -1083,21 +1762,34 @@ pub fn cast_excel_serial<'env>(
 }
 
 /// Casts a calendar date: strict ISO `yyyy-MM-dd` with no order, the separated forms
-/// (`1/7/2026`, `1.7.2026`) under a declared one.
+/// (`1/7/2026`, `1.7.2026`) under a declared one. `options` open `20260107` (no order), and
+/// under an order a pivot for two-digit years and declared month names (`07-Jan-26`).
 #[napi(
     catch_unwind,
-    ts_args_type = "text: Text, order?: DateOrder | undefined | null",
+    ts_args_type = "text: Text, order?: DateOrder | undefined | null, options?: DateOptions | MonthNames | undefined | null",
     ts_return_type = "Verdict<CalendarDate>"
 )]
 pub fn cast_date<'env>(
     env: &'env Env,
     text: Unknown<'env>,
     order: Unknown<'env>,
+    options: Unknown<'env>,
 ) -> Result<Object<'env>> {
     let order = match order.get_type() {
         Ok(ValueType::Undefined | ValueType::Null) => Some(None),
         _ => code(&order).and_then(hc::DateOrder::from_code).map(Some),
     };
+    if !is_nothing(&options) {
+        let call = order.and_then(|order| {
+            let mut call = match order {
+                None => Call::of(hc::Door::Date, 0)?,
+                Some(order) => Call::of(hc::Door::DateOrdered(order), order as u32)?,
+            };
+            call.dates = dates_arg(&options)?;
+            Some(call)
+        });
+        return run(env, &text, call, false);
+    }
     door(
         env,
         &text,
@@ -1112,16 +1804,25 @@ pub fn cast_date<'env>(
 
 /// Casts a zone-less civil date-time under a declared order, or a `DateFormat` whose day
 /// periods are read beside the English `AM`/`PM`. No zone is read and none is invented.
+/// `options` give a pivot for two-digit years and declared month names.
 #[napi(
     catch_unwind,
-    ts_args_type = "text: Text, format: DateOrder | DateFormat",
+    ts_args_type = "text: Text, format: DateOrder | DateFormat, options?: DateOptions | MonthNames | undefined | null",
     ts_return_type = "Verdict<CivilDateTime>"
 )]
 pub fn cast_datetime<'env>(
     env: &'env Env,
     text: Unknown<'env>,
     format: Unknown<'env>,
+    options: Unknown<'env>,
 ) -> Result<Object<'env>> {
+    if !is_nothing(&options) {
+        let call = datetime_call(&format).and_then(|mut call| {
+            call.dates = dates_arg(&options)?;
+            Some(call)
+        });
+        return run(env, &text, call, false);
+    }
     let declared = match format.get_type() {
         Ok(ValueType::Number) => code(&format)
             .and_then(hc::DateOrder::from_code)
@@ -1268,22 +1969,53 @@ struct RawFault {
 
 // The layouts this file passes to the core, pinned at the sizes the header carries
 // (`HyperCastRawConstraints_SIZE` 72, `HyperCastRawCheck_SIZE` 12, `HyperCastRawSpan_SIZE` 8,
-// and the fault's two words); tests/constraints.test.ts holds the header to the same numbers.
+// `HyperCastRawFaultDetail_SIZE` 16, `HyperCastRawDateOptions_SIZE` 12 and the plain fault's
+// two words); tests/constraints.test.ts holds the header to the same numbers. A value a door
+// writes is read from a 16-byte slot, so none may outgrow it.
 const _: () = {
     assert!(size_of::<hc::RawConstraints>() == 72 && hc::RawConstraints::SIZE == 72);
     assert!(align_of::<hc::RawConstraints>() == 8);
     assert!(size_of::<hc::RawCheck>() == 12 && align_of::<hc::RawCheck>() == 4);
     assert!(size_of::<hc::RawSpan>() == 8 && align_of::<hc::RawSpan>() == 4);
     assert!(size_of::<RawFault>() == 8 && align_of::<RawFault>() == 4);
+    assert!(size_of::<hc::RawFaultDetail>() == 16 && hc::RawFaultDetail::SIZE == 16);
+    assert!(align_of::<hc::RawFaultDetail>() == 4);
+    assert!(size_of::<hc::RawDateOptions>() == 12 && hc::RawDateOptions::SIZE == 12);
+    assert!(align_of::<hc::RawDateOptions>() == 4);
     assert!(size_of::<hc::Decimal>() == 16 && align_of::<hc::Decimal>() == 8);
+    assert!(size_of::<hc::Timestamp>() == 16 && size_of::<hc::Duration>() == 16);
+    assert!(size_of::<hc::CivilDateTime>() <= 16 && align_of::<hc::CivilDateTime>() <= 8);
+    assert!(size_of::<hc::Date>() <= 16 && align_of::<hc::Date>() <= 8);
 };
 
-/// The core's checked exports, as include/hypercast.h declares them.
+/// The core's exports this file calls, as include/hypercast.h declares them. The detailed ones
+/// read a `NumFormat`'s grouping policy and report a failure's detail; the 1.0 checked exports
+/// ignore the policy bits and always parse legacy, so no door here calls them.
 mod abi {
     use super::{RawFault, hc};
 
     unsafe extern "C" {
-        pub(super) fn cast_checked(
+        pub(super) fn cast_detailed(
+            door: u32,
+            param: u32,
+            format: *const hc::RawNumFormat,
+            periods: *const hc::RawDayPeriods,
+            date_options: *const hc::RawDateOptions,
+            vocab_ptr: *const u8,
+            vocab_len: usize,
+            ptr: *const u8,
+            len: usize,
+            out: *mut std::ffi::c_void,
+            fault: *mut hc::RawFaultDetail,
+        ) -> i32;
+        pub(super) fn cast_detailed_from_f64(
+            door: u32,
+            param: u32,
+            value: f64,
+            out: *mut std::ffi::c_void,
+            fault: *mut hc::RawFaultDetail,
+        ) -> i32;
+        pub(super) fn cast_checked_detailed(
             door: u32,
             param: u32,
             format: *const hc::RawNumFormat,
@@ -1293,17 +2025,18 @@ mod abi {
             ptr: *const u8,
             len: usize,
             out: *mut std::ffi::c_void,
-            fault: *mut RawFault,
+            fault: *mut hc::RawFaultDetail,
             check: *mut hc::RawCheck,
         ) -> i32;
-        pub(super) fn cast_checked_from_f64(
+        pub(super) fn cast_checked_detailed_from_f64(
             door: u32,
-            value: f64,
+            param: u32,
             constraints: *const hc::RawConstraints,
             enum_ptr: *const u8,
             enum_len: usize,
+            value: f64,
             out: *mut std::ffi::c_void,
-            fault: *mut RawFault,
+            fault: *mut hc::RawFaultDetail,
             check: *mut hc::RawCheck,
         ) -> i32;
         pub(super) fn cast_constraints_check(
@@ -1327,11 +2060,14 @@ mod abi {
     }
 }
 
-/// The door a `Constraints` is bound to, numbered as the core numbers it: the integer family,
+/// A door, numbered as the core numbers it. A `Constraints` is bound to the integer family,
 /// the two reals and the exact decimal (judged by `castChecked` and `castCheckedFromNumber`),
-/// and text (judged by `castText`).
+/// or to text (judged by `castText`); `castDetailed` and `castDetailedFromNumber` take every
+/// door the core's detailed exports name.
 #[napi]
 pub enum Door {
+    /// A natural-language boolean.
+    Bool = 1,
     I8 = 2,
     I16 = 3,
     I32 = 4,
@@ -1342,8 +2078,28 @@ pub enum Door {
     U64 = 9,
     F32 = 10,
     F64 = 11,
+    /// A UUID in any text form the door reads.
+    Uuid = 12,
+    /// An RFC 3339 instant.
+    Timestamp = 13,
+    /// A Unix-epoch count; the declaration is a `UnixPrecision`.
+    Unix = 14,
+    /// A calendar date, strict ISO `yyyy-MM-dd` unless `DateStyles.CompactDate` is declared.
+    Date = 15,
+    /// An ISO 24-hour time of day.
+    Time = 16,
+    /// A duration.
+    Duration = 17,
     Text = 18,
     Decimal = 19,
+    /// A separated calendar date; the declaration is a `DateOrder`.
+    DateOrdered = 20,
+    /// A zone-less civil date-time; the declaration is a `DateOrder` or a `DateFormat`.
+    DateTime = 21,
+    /// An Excel date serial; the declaration is an `ExcelEpoch`.
+    ExcelSerial = 22,
+    /// One character, verbatim or as a declared code point.
+    Char = 23,
 }
 
 /// What a value that is not a multiple of the declared `multipleOf` becomes, the core's codes
@@ -1369,8 +2125,10 @@ pub enum Rounding {
 /// binary float, which holds most decimals only approximately.
 #[napi(object, object_to_js = false, object_from_js = false)]
 pub struct ConstraintsSpec {
-    /// The door the declaration is bound to.
-    #[napi(ts_type = "Door")]
+    /// The door the declaration is bound to: an integer, real or decimal door, or `Door.Text`.
+    #[napi(
+        ts_type = "Door.I8 | Door.I16 | Door.I32 | Door.I64 | Door.U8 | Door.U16 | Door.U32 | Door.U64 | Door.F32 | Door.F64 | Door.Decimal | Door.Text"
+    )]
     pub door: u32,
     /// The least value allowed.
     #[napi(ts_type = "string | bigint")]
@@ -1458,6 +2216,12 @@ pub type RejectionType = Either<Failure, Violated>;
 /// apart by `ok` and then by `'fault' in verdict`.
 #[napi(js_name = "CheckedVerdict<T>")]
 pub type CheckedVerdictType = Either3<CheckedCase, Failure, Violated>;
+
+/// The outcome of a detailed checked door: exactly one of `Checked<T>`, `DetailedFailure` or
+/// `Violated`, told apart by `ok` and then by `'fault' in verdict`. A violation names a rule
+/// the value broke, not a failure to read it, so it carries no detail.
+#[napi(js_name = "DetailedCheckedVerdict<T>")]
+pub type DetailedCheckedVerdictType = Either3<CheckedCase, DetailedFailure, Violated>;
 
 /// The refusals, in code order, for their wording.
 const REFUSALS: [hc::Refusal; 13] = [
@@ -1740,7 +2504,10 @@ fn declaration(env: &Env, spec: &Unknown<'_>) -> std::result::Result<Declared, P
     let door = declared_code(env, &spec, "door", "a Door")?
         .and_then(|code| hc::Door::from_code(code, 0))
         .filter(|door| door.is_numeric() || *door == hc::Door::Text)
-        .ok_or_else(|| Problem::Contract("door must be a Door".to_string()))?;
+        .ok_or_else(|| Problem::Contract(
+                "door must be a Door that carries constraints: an integer, real or decimal door, or Door.Text"
+                    .to_string(),
+            ))?;
     let mut raw = hc::RawConstraints::ZERO;
     let bound = |name: &str| -> std::result::Result<Option<hc::Decimal>, Problem> {
         match spec_field(env, &spec, name).map_err(Problem::Contract)? {
@@ -2161,6 +2928,162 @@ const NO_CHECK: hc::RawCheck = hc::RawCheck {
     enum_index: u32::MAX,
 };
 
+fn empty_fault() -> hc::RawFaultDetail {
+    hc::RawFaultDetail {
+        size: hc::RawFaultDetail::SIZE,
+        offset: 0,
+        len: 0,
+        detail: 0,
+    }
+}
+
+/// Which doors a checked entry point takes: `castChecked` the numeric ones, `castText` text,
+/// `castCheckedDetailed` either.
+#[derive(Clone, Copy, PartialEq)]
+enum CheckedDoors {
+    Numeric,
+    Text,
+    Either,
+}
+
+impl CheckedDoors {
+    fn takes(self, door: hc::Door) -> bool {
+        match self {
+            CheckedDoors::Numeric => door != hc::Door::Text,
+            CheckedDoors::Text => door == hc::Door::Text,
+            CheckedDoors::Either => true,
+        }
+    }
+}
+
+/// A checked text door's verdict: the text read by the core's detailed checked export (which
+/// reads the format's grouping policy, as the 1.0 export would not), judged by `constraints`.
+/// `detailed` chooses the family a failure is presented in. `format` is the numeric doors'
+/// and is never read at `Door.Text`.
+fn checked_text_verdict<'env>(
+    env: &'env Env,
+    input: &CheckedInput<'env>,
+    constraints: &Constraints,
+    format: Option<&hc::RawNumFormat>,
+    detailed: bool,
+) -> Result<Object<'env>> {
+    let door = constraints.door;
+    let bytes = input.bytes();
+    let mut slot = [0u64; 2];
+    let mut fault = empty_fault();
+    let mut check = NO_CHECK;
+    // SAFETY: every pointer is live for the call, and `slot` holds any door's value, a text
+    // door's `RawSpan` included.
+    let code = unsafe {
+        abi::cast_checked_detailed(
+            door.code(),
+            0,
+            format.map_or(std::ptr::null(), std::ptr::from_ref),
+            &constraints.raw,
+            constraints.packed.as_ptr(),
+            constraints.packed.len(),
+            bytes.as_ptr(),
+            bytes.len(),
+            slot.as_mut_ptr().cast(),
+            &mut fault,
+            &mut check,
+        )
+    };
+    let span = || input.span(fault.offset, fault.len);
+    match code {
+        0 if door == hc::Door::Text => {
+            // SAFETY: the core reported success at the text door, which writes a `RawSpan`.
+            let found = unsafe { slot.as_ptr().cast::<hc::RawSpan>().read() };
+            if check.enum_index == u32::MAX {
+                return checked_success(env, input.text_at(env, found.offset, found.len)?, &check);
+            }
+            match constraints.entries.get(check.enum_index as usize) {
+                Some(Entry::Text(entry)) => checked_success(env, entry.as_str(), &check),
+                _ => Err(binding_bug("matched an enum entry never declared")),
+            }
+        }
+        0 => numeric_success(env, door, &slot, &check),
+        4 => violated(env, check.keyword, span()),
+        code => match reason_of(code) {
+            Some(reason) => fault_verdict(env, detailed, reason, span(), fault.detail),
+            None => Err(binding_bug("refused a declaration it had accepted")),
+        },
+    }
+}
+
+/// A checked entry point over text: reads the arguments, then judges through
+/// [`checked_text_verdict`]. Anything the contract rules out is a `malformed` verdict with an
+/// empty span at 0, in the family the entry point answers in.
+fn checked_text<'env>(
+    env: &'env Env,
+    text: &Unknown<'env>,
+    constraints: &Unknown<'env>,
+    format: &Unknown<'env>,
+    doors: CheckedDoors,
+    detailed: bool,
+) -> Result<Object<'env>> {
+    let Some(constraints) = constraints_arg(constraints).filter(|c| doors.takes(c.door)) else {
+        return contract_verdict(env, detailed);
+    };
+    let format = if constraints.door == hc::Door::Text {
+        None
+    } else {
+        match num_format(format) {
+            Some(format) => Some(hc::RawNumFormat::from(format)),
+            None => return contract_verdict(env, detailed),
+        }
+    };
+    let input = CheckedInput::read(env, text);
+    match input {
+        CheckedInput::Absent => return absent_verdict(env, detailed),
+        CheckedInput::Invalid => return contract_verdict(env, detailed),
+        CheckedInput::Str(..) | CheckedInput::Bytes(_) => {}
+    }
+    checked_text_verdict(env, &input, &constraints, format.as_ref(), detailed)
+}
+
+/// A checked entry point over a number a source already decoded.
+fn checked_number<'env>(
+    env: &'env Env,
+    value: &Unknown<'env>,
+    constraints: &Unknown<'env>,
+    detailed: bool,
+) -> Result<Object<'env>> {
+    let (Some(constraints), Some(value)) = (constraints_arg(constraints), number(value)) else {
+        return contract_verdict(env, detailed);
+    };
+    let door = constraints.door;
+    if door == hc::Door::Text {
+        return contract_verdict(env, detailed);
+    }
+    let mut slot = [0u64; 2];
+    let mut fault = empty_fault();
+    let mut check = NO_CHECK;
+    // SAFETY: every pointer is live for the call, and `slot` holds any numeric door's type.
+    let code = unsafe {
+        abi::cast_checked_detailed_from_f64(
+            door.code(),
+            0,
+            &constraints.raw,
+            constraints.packed.as_ptr(),
+            constraints.packed.len(),
+            value,
+            slot.as_mut_ptr().cast(),
+            &mut fault,
+            &mut check,
+        )
+    };
+    let span = (fault.offset, fault.len);
+    match code {
+        0 => numeric_success(env, door, &slot, &check),
+        4 => violated(env, check.keyword, span),
+        code => match reason_of(code) {
+            Some(reason) => fault_verdict(env, detailed, reason, span, fault.detail),
+            None => Err(binding_bug("refused a declaration it had accepted")),
+        },
+    }
+}
+
 /// Casts numeric text through the door its `Constraints` are bound to, under the declared
 /// format (absent is the invariant one), then judges the value by them: `Checked<T>`, the
 /// door's own `Failure`, or `Violated` naming the first rule it breaks. The value is judged
@@ -2181,45 +3104,14 @@ pub fn cast_checked<'env>(
     constraints: Unknown<'env>,
     format: Unknown<'env>,
 ) -> Result<Object<'env>> {
-    let (Some(constraints), Some(format)) = (constraints_arg(&constraints), num_format(&format))
-    else {
-        return contract(env);
-    };
-    let door = constraints.door;
-    if door == hc::Door::Text {
-        return contract(env);
-    }
-    let input = CheckedInput::read(env, &text);
-    match input {
-        CheckedInput::Absent => return failure(env, ABSENT),
-        CheckedInput::Invalid => return contract(env),
-        CheckedInput::Str(..) | CheckedInput::Bytes(_) => {}
-    }
-    let bytes = input.bytes();
-    let format = hc::RawNumFormat::from(format);
-    let mut slot = [0u64; 2];
-    let mut fault = RawFault::default();
-    let mut check = NO_CHECK;
-    // SAFETY: every pointer is live for the call, and `slot` holds any numeric door's type.
-    let code = unsafe {
-        abi::cast_checked(
-            door.code(),
-            0,
-            &format,
-            &constraints.raw,
-            constraints.packed.as_ptr(),
-            constraints.packed.len(),
-            bytes.as_ptr(),
-            bytes.len(),
-            slot.as_mut_ptr().cast(),
-            &mut fault,
-            &mut check,
-        )
-    };
-    match code {
-        0 => numeric_success(env, door, &slot, &check),
-        code => rejected(env, code, input.span(fault.offset, fault.len), &check),
-    }
+    checked_text(
+        env,
+        &text,
+        &constraints,
+        &format,
+        CheckedDoors::Numeric,
+        false,
+    )
 }
 
 /// Reads a number a source already decoded (a JSON parser's, a spreadsheet's numeric cell)
@@ -2239,33 +3131,7 @@ pub fn cast_checked_from_number<'env>(
     value: Unknown<'env>,
     constraints: Unknown<'env>,
 ) -> Result<Object<'env>> {
-    let (Some(constraints), Some(value)) = (constraints_arg(&constraints), number(&value)) else {
-        return contract(env);
-    };
-    let door = constraints.door;
-    if door == hc::Door::Text {
-        return contract(env);
-    }
-    let mut slot = [0u64; 2];
-    let mut fault = RawFault::default();
-    let mut check = NO_CHECK;
-    // SAFETY: every pointer is live for the call, and `slot` holds any numeric door's type.
-    let code = unsafe {
-        abi::cast_checked_from_f64(
-            door.code(),
-            value,
-            &constraints.raw,
-            constraints.packed.as_ptr(),
-            constraints.packed.len(),
-            slot.as_mut_ptr().cast(),
-            &mut fault,
-            &mut check,
-        )
-    };
-    match code {
-        0 => numeric_success(env, door, &slot, &check),
-        code => rejected(env, code, (fault.offset, fault.len), &check),
-    }
+    checked_number(env, &value, &constraints, false)
 }
 
 /// Casts text as text: the input itself, once it is valid text (a `Uint8Array` must be UTF-8,
@@ -2289,13 +3155,19 @@ pub fn cast_text<'env>(
     text: Unknown<'env>,
     constraints: Unknown<'env>,
 ) -> Result<Object<'env>> {
-    let constraints = match constraints.get_type() {
-        Ok(ValueType::Undefined | ValueType::Null) => None,
-        _ => match constraints_arg(&constraints) {
-            Some(constraints) if constraints.door == hc::Door::Text => Some(constraints),
-            _ => return contract(env),
-        },
-    };
+    if !matches!(
+        constraints.get_type(),
+        Ok(ValueType::Undefined | ValueType::Null)
+    ) {
+        return checked_text(
+            env,
+            &text,
+            &constraints,
+            &constraints,
+            CheckedDoors::Text,
+            false,
+        );
+    }
     let input = CheckedInput::read(env, &text);
     match input {
         CheckedInput::Absent => return failure(env, ABSENT),
@@ -2305,39 +3177,10 @@ pub fn cast_text<'env>(
     let bytes = input.bytes();
     let mut span = hc::RawSpan { offset: 0, len: 0 };
     let mut fault = RawFault::default();
-    let Some(constraints) = constraints else {
-        // SAFETY: every pointer is live for the call.
-        return match unsafe { abi::cast_text(bytes.as_ptr(), bytes.len(), &mut span, &mut fault) } {
-            0 => success(env, input.text_at(env, span.offset, span.len)?),
-            code => rejected(env, code, input.span(fault.offset, fault.len), &NO_CHECK),
-        };
-    };
-    let mut check = NO_CHECK;
-    // SAFETY: every pointer is live for the call; the text door writes a `RawSpan`.
-    let code = unsafe {
-        abi::cast_checked(
-            hc::Door::Text.code(),
-            0,
-            std::ptr::null(),
-            &constraints.raw,
-            constraints.packed.as_ptr(),
-            constraints.packed.len(),
-            bytes.as_ptr(),
-            bytes.len(),
-            (&raw mut span).cast(),
-            &mut fault,
-            &mut check,
-        )
-    };
-    if code != 0 {
-        return rejected(env, code, input.span(fault.offset, fault.len), &check);
-    }
-    if check.enum_index == u32::MAX {
-        return checked_success(env, input.text_at(env, span.offset, span.len)?, &check);
-    }
-    match constraints.entries.get(check.enum_index as usize) {
-        Some(Entry::Text(entry)) => checked_success(env, entry.as_str(), &check),
-        _ => Err(binding_bug("matched an enum entry never declared")),
+    // SAFETY: every pointer is live for the call.
+    match unsafe { abi::cast_text(bytes.as_ptr(), bytes.len(), &mut span, &mut fault) } {
+        0 => success(env, input.text_at(env, span.offset, span.len)?),
+        code => rejected(env, code, input.span(fault.offset, fault.len), &NO_CHECK),
     }
 }
 
@@ -2388,6 +3231,380 @@ pub fn cast_text_by_arity(mut exports: Object<'_>, env: Env) -> Result<()> {
     .unwrap_or_else(|_| Err(binding_bug("panicked installing castText")))
 }
 
+// ---------------------------------------------------------------------------------------
+// The detailed doors, and the date doors that take options.
+//
+// Every text door is one call of the core's `cast_detailed`, told which door by its code and
+// what the door declares by `param` (a precision, an order, an epoch) and the layouts it
+// reads: the format, the day periods, the date options and the month names. The plain date
+// doors with options and the four detailed doors share this one path, and differ only in
+// whether a failure is presented with its detail.
+// ---------------------------------------------------------------------------------------
+
+/// The date options and month names a date door was given.
+#[derive(Default)]
+struct Dates {
+    options: Option<hc::RawDateOptions>,
+    months: Vec<u8>,
+}
+
+/// An `options` argument: absent, a `DateOptions`, or a `MonthNames` alone (which opens month
+/// names and nothing else). `None` for anything else, a contract violation.
+fn dates_arg(value: &Unknown<'_>) -> Option<Dates> {
+    match value.get_type() {
+        Ok(ValueType::Undefined | ValueType::Null) => Some(Dates::default()),
+        Ok(ValueType::Object) => {
+            if let Ok(options) = unsafe { value.cast::<ClassInstance<DateOptions>>() } {
+                return Some(Dates {
+                    options: Some(hc::RawDateOptions {
+                        size: hc::RawDateOptions::SIZE,
+                        flags: options.flags,
+                        pivot: options.pivot,
+                    }),
+                    months: options
+                        .months
+                        .as_ref()
+                        .map(|names| names.packed.clone())
+                        .unwrap_or_default(),
+                });
+            }
+            unsafe { value.cast::<ClassInstance<MonthNames>>() }
+                .ok()
+                .map(|names| Dates {
+                    options: None,
+                    months: names.packed.clone(),
+                })
+        }
+        _ => None,
+    }
+}
+
+/// One call of `cast_detailed`: the door and what it reads.
+struct Call {
+    door: hc::Door,
+    param: u32,
+    format: Option<hc::RawNumFormat>,
+    periods: Option<hc::RawDayPeriods>,
+    dates: Dates,
+}
+
+impl Call {
+    fn of(door: hc::Door, param: u32) -> Option<Call> {
+        Some(Call {
+            door: hc::Door::from_code(door.code(), param)?,
+            param,
+            format: None,
+            periods: None,
+            dates: Dates::default(),
+        })
+    }
+}
+
+fn is_nothing(value: &Unknown<'_>) -> bool {
+    matches!(value.get_type(), Ok(ValueType::Undefined | ValueType::Null))
+}
+
+/// The date-time door's call: a `DateOrder`, or a `DateFormat` whose day periods ride with it.
+fn datetime_call(declared: &Unknown<'_>) -> Option<Call> {
+    let datetime = |param: u32| Call::of(hc::Door::from_code(21, param)?, param);
+    match declared.get_type() {
+        Ok(ValueType::Number) => datetime(code(declared)?),
+        Ok(ValueType::Object) => {
+            let format = unsafe { declared.cast::<ClassInstance<DateFormat>>() }.ok()?;
+            let mut call = datetime(format.order as u32)?;
+            call.periods = Some(hc::RawDayPeriods::from(format.periods));
+            Some(call)
+        }
+        _ => None,
+    }
+}
+
+/// The call `castDetailed(door, text, declared, options)` makes, or `None` for a contract
+/// violation: a number that names no door, a declaration the door does not read (or none
+/// where it needs one), or options that are neither `DateOptions` nor `MonthNames`. The
+/// numeric doors read a `NumFormat`, absent is `NumFormat.invariant()`.
+fn detailed_call(
+    door: &Unknown<'_>,
+    declared: &Unknown<'_>,
+    options: &Unknown<'_>,
+) -> Option<Call> {
+    let code = code(door)?;
+    let mut call = match code {
+        2..=11 | 19 => {
+            let mut call = Call::of(hc::Door::from_code(code, 0)?, 0)?;
+            call.format = Some(hc::RawNumFormat::from(num_format(declared)?));
+            call
+        }
+        14 | 20 | 22 => {
+            let param = self::code(declared)?;
+            Call::of(hc::Door::from_code(code, param)?, param)?
+        }
+        21 => datetime_call(declared)?,
+        1 | 12 | 13 | 15 | 16 | 17 | 18 | 23 => {
+            if !is_nothing(declared) {
+                return None;
+            }
+            Call::of(hc::Door::from_code(code, 0)?, 0)?
+        }
+        _ => return None,
+    };
+    if matches!(code, 13 | 15 | 20 | 21) {
+        call.dates = dates_arg(options)?;
+    }
+    Some(call)
+}
+
+/// What the core made of a call.
+enum Issued {
+    Value([u64; 2]),
+    Fault(hc::Reason, hc::RawFaultDetail),
+    /// A call the core refused (-1): the binding validated less than the core does.
+    Refused,
+}
+
+fn issue(call: &Call, bytes: &[u8]) -> Issued {
+    let mut slot = [0u64; 2];
+    let mut fault = empty_fault();
+    let months = &call.dates.months;
+    // SAFETY: every pointer is live for the call (a pointer the door ignores is never read,
+    // and a null one is no declaration), `slot` is 16 bytes, which holds any door's value.
+    let code = unsafe {
+        abi::cast_detailed(
+            call.door.code(),
+            call.param,
+            call.format
+                .as_ref()
+                .map_or(std::ptr::null(), std::ptr::from_ref),
+            call.periods
+                .as_ref()
+                .map_or(std::ptr::null(), std::ptr::from_ref),
+            call.dates
+                .options
+                .as_ref()
+                .map_or(std::ptr::null(), std::ptr::from_ref),
+            months.as_ptr(),
+            months.len(),
+            bytes.as_ptr(),
+            bytes.len(),
+            slot.as_mut_ptr().cast(),
+            &mut fault,
+        )
+    };
+    match (code, reason_of(code)) {
+        (0, _) => Issued::Value(slot),
+        (_, Some(reason)) => Issued::Fault(reason, fault),
+        _ => Issued::Refused,
+    }
+}
+
+/// A text door's success: the value the door wrote, as JavaScript holds it.
+fn value_verdict<'env>(
+    env: &'env Env,
+    door: hc::Door,
+    slot: &[u64; 2],
+    input: &CheckedInput<'env>,
+) -> Result<Object<'env>> {
+    let at = slot.as_ptr();
+    // SAFETY: the core reported success at `door`, so `slot` holds that door's type, written
+    // at its start; `slot` is 16 bytes, 8-aligned, and no type is larger or stricter.
+    unsafe {
+        match door {
+            hc::Door::Bool => success(env, at.cast::<u8>().read() != 0),
+            hc::Door::Char => match char::from_u32(at.cast::<u32>().read()) {
+                Some(c) => success(env, String::from(c)),
+                None => Err(binding_bug("read a character that is no scalar value")),
+            },
+            hc::Door::Uuid => success(env, uuid_text(at.cast::<[u8; 16]>().read())),
+            hc::Door::Timestamp | hc::Door::Unix(_) | hc::Door::ExcelSerial(_) => {
+                success(env, timestamp(at.cast::<hc::Timestamp>().read()))
+            }
+            hc::Door::Date | hc::Door::DateOrdered(_) => {
+                success(env, calendar(at.cast::<hc::Date>().read()))
+            }
+            hc::Door::Time => success(env, time_of_day(at.cast::<u64>().read())),
+            hc::Door::Duration => success(env, duration(at.cast::<hc::Duration>().read())),
+            hc::Door::DateTime(_) => success(env, civil(at.cast::<hc::CivilDateTime>().read())),
+            hc::Door::Text => {
+                let found = at.cast::<hc::RawSpan>().read();
+                success(env, input.text_at(env, found.offset, found.len)?)
+            }
+            _ => match delivered(door, slot) {
+                Some(Delivered::Int(value)) => success(env, value),
+                Some(Delivered::Uint(value)) => success(env, value),
+                Some(Delivered::Big(value)) => success(env, value),
+                Some(Delivered::Real(value)) => success(env, value),
+                Some(Delivered::Text(value)) => success(env, value),
+                None => Err(binding_bug("read a door it does not know")),
+            },
+        }
+    }
+}
+
+/// Runs a text door: `call` is `None` for a contract violation. `detailed` chooses the family
+/// a failure is presented in.
+fn run<'env>(
+    env: &'env Env,
+    text: &Unknown<'env>,
+    call: Option<Call>,
+    detailed: bool,
+) -> Result<Object<'env>> {
+    let Some(call) = call else {
+        return contract_verdict(env, detailed);
+    };
+    let input = CheckedInput::read(env, text);
+    match input {
+        CheckedInput::Absent => return absent_verdict(env, detailed),
+        CheckedInput::Invalid => return contract_verdict(env, detailed),
+        CheckedInput::Str(..) | CheckedInput::Bytes(_) => {}
+    }
+    match issue(&call, input.bytes()) {
+        Issued::Value(slot) => value_verdict(env, call.door, &slot, &input),
+        Issued::Fault(reason, fault) => fault_verdict(
+            env,
+            detailed,
+            reason,
+            input.span(fault.offset, fault.len),
+            fault.detail,
+        ),
+        Issued::Refused => Err(binding_bug("refused a declaration it had accepted")),
+    }
+}
+
+/// The call `castDetailedFromNumber(door, value, declared)` makes: the four doors that read a
+/// number, as the plain typed doors do, or `None` for a contract violation.
+fn number_call(door: &Unknown<'_>, declared: &Unknown<'_>) -> Option<(hc::Door, u32)> {
+    let code = code(door)?;
+    let param = match code {
+        22 => self::code(declared)?,
+        16 | 17 | 19 if is_nothing(declared) => 0,
+        _ => return None,
+    };
+    hc::Door::from_code(code, param).map(|door| (door, param))
+}
+
+/// A typed door's success: the value the door wrote from a number, as JavaScript holds it.
+fn number_verdict<'env>(env: &'env Env, door: hc::Door, slot: &[u64; 2]) -> Result<Object<'env>> {
+    let at = slot.as_ptr();
+    // SAFETY: as `value_verdict`: the core reported success at `door`.
+    unsafe {
+        match door {
+            hc::Door::Decimal => success(env, at.cast::<hc::Decimal>().read().to_string()),
+            hc::Door::ExcelSerial(_) => success(env, civil(at.cast::<hc::CivilDateTime>().read())),
+            hc::Door::Time => success(env, time_of_day(at.cast::<u64>().read())),
+            hc::Door::Duration => success(env, duration(at.cast::<hc::Duration>().read())),
+            _ => Err(binding_bug("read a door that reads no number")),
+        }
+    }
+}
+
+/// Casts text through any door the core's detailed export names, and says what failed: a
+/// failure is a `DetailedFault`, the plain door's `reason`, `offset` and `length` with a named
+/// `detail` and its raw `detailCode`. The value is what the door's own function answers
+/// (`Door.Unix` a `Timestamp`, `Door.Char` a string, `Door.Text` the text itself).
+///
+/// `declared` is what the door declares: a `NumFormat` at the integer, real and decimal doors
+/// (absent is `NumFormat.invariant()`), a `UnixPrecision` at `Door.Unix`, a `DateOrder` at
+/// `Door.DateOrdered`, a `DateOrder` or `DateFormat` at `Door.DateTime`, an `ExcelEpoch` at
+/// `Door.ExcelSerial`, and nothing anywhere else. `options` are read by `Door.Timestamp`,
+/// `Door.Date`, `Door.DateOrdered` and `Door.DateTime` only (a `DateOptions`, or a
+/// `MonthNames` alone for names and nothing else) and ignored by every other door.
+/// A door that is no `Door` member, a declaration the door does not take, or options that are
+/// neither `DateOptions` nor `MonthNames` is a contract violation: `malformed` with an empty
+/// span at 0 and no detail (`'none'`, code 0). Absent text is `empty`, detail `blank`.
+#[napi(
+    catch_unwind,
+    ts_args_type = "door: Door, text: Text, declared?: NumFormat | DateFormat | UnixPrecision | DateOrder | ExcelEpoch | undefined | null, options?: DateOptions | MonthNames | undefined | null",
+    ts_return_type = "DetailedVerdict<boolean | number | bigint | string | Timestamp | CalendarDate | TimeOfDay | CivilDateTime | Duration>"
+)]
+pub fn cast_detailed<'env>(
+    env: &'env Env,
+    door: Unknown<'env>,
+    text: Unknown<'env>,
+    declared: Unknown<'env>,
+    options: Unknown<'env>,
+) -> Result<Object<'env>> {
+    let call = detailed_call(&door, &declared, &options);
+    run(env, &text, call, true)
+}
+
+/// Reads a number a source already decoded through one of the four doors that read one,
+/// `Door.Decimal`, `Door.ExcelSerial` (`declared` an `ExcelEpoch`, answering a
+/// `CivilDateTime`), `Door.Time` and `Door.Duration`, and says what failed. A failure has no
+/// text to index, so its span is empty.
+#[napi(
+    catch_unwind,
+    ts_args_type = "door: Door, value: number, declared?: ExcelEpoch | undefined | null",
+    ts_return_type = "DetailedVerdict<string | CivilDateTime | TimeOfDay | Duration>"
+)]
+pub fn cast_detailed_from_number<'env>(
+    env: &'env Env,
+    door: Unknown<'env>,
+    value: Unknown<'env>,
+    declared: Unknown<'env>,
+) -> Result<Object<'env>> {
+    let (Some((door, param)), Some(value)) = (number_call(&door, &declared), number(&value)) else {
+        return contract_verdict(env, true);
+    };
+    let mut slot = [0u64; 2];
+    let mut fault = empty_fault();
+    // SAFETY: every pointer is live for the call, and `slot` holds any of the four doors' types.
+    let code = unsafe {
+        abi::cast_detailed_from_f64(
+            door.code(),
+            param,
+            value,
+            slot.as_mut_ptr().cast(),
+            &mut fault,
+        )
+    };
+    match (code, reason_of(code)) {
+        (0, _) => number_verdict(env, door, &slot),
+        (_, Some(reason)) => detailed_failure(env, reason, (fault.offset, fault.len), fault.detail),
+        _ => Err(binding_bug("refused a declaration it had accepted")),
+    }
+}
+
+/// Casts text through the door its `Constraints` are bound to, `Door.Text` included, and
+/// judges the value by them, saying what failed: a `DetailedCheckedVerdict`. A failure to read
+/// is a `DetailedFault`; a value that broke a rule is `Violated`, as at `castChecked`, with no
+/// detail (a violation names the rule, not a failure to read). `format` is read by the numeric
+/// doors (absent is `NumFormat.invariant()`) and ignored at `Door.Text`.
+#[napi(
+    catch_unwind,
+    ts_args_type = "text: Text, constraints: Constraints, format?: NumFormat | undefined | null",
+    ts_return_type = "DetailedCheckedVerdict<number | bigint | string>"
+)]
+pub fn cast_checked_detailed<'env>(
+    env: &'env Env,
+    text: Unknown<'env>,
+    constraints: Unknown<'env>,
+    format: Unknown<'env>,
+) -> Result<Object<'env>> {
+    checked_text(
+        env,
+        &text,
+        &constraints,
+        &format,
+        CheckedDoors::Either,
+        true,
+    )
+}
+
+/// Reads a number a source already decoded through the door its `Constraints` are bound to,
+/// as `castCheckedFromNumber` does, and says what failed. Every span is empty.
+#[napi(
+    catch_unwind,
+    ts_args_type = "value: number, constraints: Constraints",
+    ts_return_type = "DetailedCheckedVerdict<number | bigint | string>"
+)]
+pub fn cast_checked_detailed_from_number<'env>(
+    env: &'env Env,
+    value: Unknown<'env>,
+    constraints: Unknown<'env>,
+) -> Result<Object<'env>> {
+    checked_number(env, &value, &constraints, true)
+}
+
 /// Judges a declaration without building it, the way `Constraints.declare` does: `0` when every
 /// rule holds, otherwise the code of the first rule it breaks (`1` a keyword the door does not
 /// take, `2` minimum with exclusiveMinimum, `3` maximum with exclusiveMaximum, `4` a lower
@@ -2430,4 +3647,74 @@ pub fn cast_declared_decimal<'env>(env: &'env Env, text: Unknown<'env>) -> Resul
         }
     };
     declared(env, outcome)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A format the per-field validators never saw: built from the core's public fields, with
+    /// a white-space decimal separator, so only the backstop can refuse it. It must refuse in a
+    /// release build too (`cargo test --release`), which a `debug_assert!` would not.
+    #[test]
+    fn the_backstop_refuses_a_format_the_core_refuses() {
+        let unseen = hc::NumFormat {
+            decimal_sep: hc::Symbol::new("\u{a0}").unwrap(),
+            ..hc::NumFormat::INVARIANT
+        };
+        assert!(!unseen.check());
+        let refusal = refuse_unless_checked(&unseen).unwrap_err();
+        assert!(refusal.contains("a format the core refuses"), "{refusal}");
+        assert_eq!(refuse_unless_checked(&hc::NumFormat::INVARIANT), Ok(()));
+    }
+
+    /// Every code the core publishes has a name here, and every other number is `unknown`
+    /// (0 is `none`). A core that publishes a thirty-third code fails this until it is named.
+    #[test]
+    fn every_published_detail_is_named_and_the_rest_are_unknown() {
+        for code in 1..=256 {
+            let named = !matches!(detail_of(code), Detail::Unknown | Detail::None);
+            assert_eq!(named, hc::Detail::from_code(code).is_some(), "code {code}");
+        }
+        assert!(matches!(detail_of(0), Detail::None));
+        assert_eq!(
+            (1..=256)
+                .filter(|&c| hc::Detail::from_code(c).is_some())
+                .count(),
+            32
+        );
+    }
+
+    /// A fault carrying a code no core published decodes: it never panics, the number is kept
+    /// and the reason and span are untouched.
+    #[test]
+    fn a_fault_with_an_unpublished_detail_decodes_with_its_reason_and_span() {
+        for code in [33, 999, u32::MAX] {
+            let raw = hc::RawFaultDetail {
+                size: hc::RawFaultDetail::SIZE,
+                offset: 3,
+                len: 2,
+                detail: code,
+            };
+            let reason = reason_of(2).expect("code 2 is malformed");
+            let fault = detailed_fault(reason, (raw.offset, raw.len), raw.detail);
+            assert!(matches!(fault.detail, Detail::Unknown), "{code}");
+            assert_eq!(fault.detail_code, code);
+            assert!(matches!(fault.reason, CastFailure::Malformed));
+            assert_eq!((fault.offset, fault.length), (3, 2));
+        }
+        let known = detailed_fault(hc::Reason::OutOfRange, (0, 4), 25);
+        assert!(matches!(known.detail, Detail::TooLarge));
+        assert_eq!(known.detail_code, 25);
+    }
+
+    #[test]
+    fn a_return_code_names_its_reason() {
+        assert_eq!(reason_of(1), Some(hc::Reason::Empty));
+        assert_eq!(reason_of(2), Some(hc::Reason::Malformed));
+        assert_eq!(reason_of(3), Some(hc::Reason::OutOfRange));
+        for code in [-1, 0, 4, 5] {
+            assert_eq!(reason_of(code), None);
+        }
+    }
 }

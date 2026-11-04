@@ -2,6 +2,9 @@ import type {
   CastFailure as Reason,
   CheckedVerdict,
   Constraints,
+  Detail as DetailName,
+  DetailedCheckedVerdict,
+  DetailedVerdict,
   Text,
   Verdict,
   Violation,
@@ -35,12 +38,20 @@ export {
   castExcelDuration,
   castChecked,
   castCheckedFromNumber,
+  castDetailed,
+  castDetailedFromNumber,
+  castCheckedDetailed,
+  castCheckedDetailedFromNumber,
   castConstraintsCheck,
   castDeclaredDecimal,
   NumFormat,
   DateFormat,
+  DateOptions,
+  MonthNames,
   Constraints,
   NumStyles,
+  Grouping,
+  DateStyles,
   UnixPrecision,
   DateOrder,
   ExcelEpoch,
@@ -57,6 +68,7 @@ export type {
   Text,
   NumFormatSpec,
   DateFormatSpec,
+  DateOptionsSpec,
   Timestamp,
   CalendarDate,
   TimeOfDay,
@@ -68,6 +80,10 @@ export type {
   Violated,
   Violation,
   Rejection,
+  DetailedFault,
+  DetailedFailure,
+  DetailedVerdict,
+  DetailedCheckedVerdict,
 } from './binding'
 /** The closed set of reasons a cast can fail. */
 export type CastFailure = Reason
@@ -76,6 +92,45 @@ export declare const CastFailure: {
   readonly Empty: 'empty'
   readonly Malformed: 'malformed'
   readonly OutOfRange: 'outOfRange'
+}
+/** What failed: the core's published detail vocabulary by name, `'none'` for code 0 (a contract violation) and `'unknown'` for a code this binding does not name yet, whose number is in `detailCode`. Open, like `Keyword`: a later release may name more, so a switch needs a default arm. */
+export type Detail = DetailName | (string & {})
+/** The detail names, for a caller who would rather not spell the strings. */
+export declare const Detail: {
+  readonly None: 'none'
+  readonly Blank: 'blank'
+  readonly UnexpectedCharacter: 'unexpectedCharacter'
+  readonly DigitExpected: 'digitExpected'
+  readonly DelimiterExpected: 'delimiterExpected'
+  readonly TrailingText: 'trailingText'
+  readonly NoDigits: 'noDigits'
+  readonly SignMisplaced: 'signMisplaced'
+  readonly ParenthesesUnbalanced: 'parenthesesUnbalanced'
+  readonly MarkRepeated: 'markRepeated'
+  readonly GroupMisplaced: 'groupMisplaced'
+  readonly GroupSize: 'groupSize'
+  readonly GroupInFraction: 'groupInFraction'
+  readonly AmbiguousSeparator: 'ambiguousSeparator'
+  readonly FractionNotAllowed: 'fractionNotAllowed'
+  readonly FieldWidth: 'fieldWidth'
+  readonly WrongLength: 'wrongLength'
+  readonly ComponentMissing: 'componentMissing'
+  readonly NotRecognized: 'notRecognized'
+  readonly UnknownUnit: 'unknownUnit'
+  readonly InvalidUtf8: 'invalidUtf8'
+  readonly TooLong: 'tooLong'
+  readonly NotFinite: 'notFinite'
+  readonly NotWhole: 'notWhole'
+  readonly NegativeNotAllowed: 'negativeNotAllowed'
+  readonly TooLarge: 'tooLarge'
+  readonly TooSmall: 'tooSmall'
+  readonly TooPrecise: 'tooPrecise'
+  readonly DateFieldOutOfRange: 'dateFieldOutOfRange'
+  readonly TimeFieldOutOfRange: 'timeFieldOutOfRange'
+  readonly OutsideWindow: 'outsideWindow'
+  readonly NonexistentDate: 'nonexistentDate'
+  readonly NotAScalar: 'notAScalar'
+  readonly Unknown: 'unknown'
 }
 /** A rule a violation names, in the OpenAPI spelling; open, so a switch needs a default arm. */
 export type Keyword = Violation['keyword']
@@ -104,6 +159,10 @@ export function isAvailable(): boolean
 export function optional<T>(verdict: Verdict<T>): Verdict<T> | null
 /** The same for a checked verdict: a violation is not absent, and comes back as it is. */
 export function optional<T>(verdict: CheckedVerdict<T>): CheckedVerdict<T> | null
+/** The same for a detailed verdict: an `empty` fault is absent. */
+export function optional<T>(verdict: DetailedVerdict<T>): DetailedVerdict<T> | null
+/** The same for a detailed checked verdict. */
+export function optional<T>(verdict: DetailedCheckedVerdict<T>): DetailedCheckedVerdict<T> | null
 export type HyperCastErrorCode = 'ERR_HYPERCAST_UNAVAILABLE'
 /** The one error this package throws: no addon loaded, so no door can answer. */
 export interface HyperCastError extends Error {

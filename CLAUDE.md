@@ -36,6 +36,15 @@ tell you.
   optimizer cannot remove. Don't route parsing back through `core`'s. Rationale: the
   `float.rs` header and the Forge README ledger, "A float parser the proof accepts".
   `java/jni/examples/no_panic.rs` proves the same for every JNI entry point.
+- The proof sees only what is linked into its cdylib, so `rust/src/no_panic_harness.rs`
+  (built only under the `no-panic` feature, `cbindgen:ignore`d so the header never sees it)
+  links `#[no_panic]` wrappers over the generic public API no export reaches:
+  `Constraints::from_raw` and `pack_enum`. A new public generic that a parser runs per value
+  gets a wrapper there. Core-checks then rebuilds with `--cfg hypercast_canary` (the Forge's
+  `no_panic_canary` input, `ci.yml`'s `core-checks`), which must fail naming only
+  `hypercast_canary`; locally, from the repo root in a Linux container,
+  `python3 ../HyperForge/.github/scripts/no_panic_canary.py --name hypercast_canary --root rust
+  -- cargo no-panic`.
 - `rust/tests/allocation_free.rs` demands zero allocations.
 
 ## Downstream: HyperTabular
@@ -83,10 +92,15 @@ its wins. Don't adjust numbers without re-running the harness, and don't drop a 
   the C smoke consumer `c/smoke/main.c`, `cdylib_smoke.py`, the prefixes in
   `.github/hyper.json` (the Forge's symbol check reads them), the AOT and wasm smoke tests, and
   the export count in the READMEs. `check_exports.py` fails on drift. The Blazor archive needs
-  no export list: the SDK's pinvoke table links every P/Invoke by symbol. The `RawNumFormat`
-  and `RawDayPeriods` layouts are pinned by `offset_of!` asserts in `rust/src/abi.rs`, carried
-  by the header as `HyperCastRawNumFormat_SIZE` and `HyperCastRawDayPeriods_SIZE`, and restated
-  in every binding.
+  no export list: the SDK's pinvoke table links every P/Invoke by symbol. The `RawNumFormat`,
+  `RawDayPeriods`, `RawFaultDetail` and `RawDateOptions` layouts are pinned by `offset_of!`
+  asserts in `rust/src/abi.rs`, carried by the header as `HyperCastRawNumFormat_SIZE`,
+  `HyperCastRawDayPeriods_SIZE`, `HyperCastRawFaultDetail_SIZE` and
+  `HyperCastRawDateOptions_SIZE`/`_MIN_SIZE`, and restated in every binding. The four detailed
+  exports (`cast_detailed`, `cast_detailed_from_f64`, `cast_checked_detailed`,
+  `cast_checked_detailed_from_f64`) take `Door`'s codes (`rust/src/door.rs`, `Char` = 23),
+  which every binding dispatching through them restates; `rust/tests/detailed_abi.rs` holds
+  them to the 1.0 exports.
 - The shared library's own name is set in three places that must agree: `rust/build.rs`
   (install name `@rpath/libhypercast.dylib`, soname `libhypercast.so`; `cdylib` feature only),
   `IMPORTED_SONAME` in `c/cmake/hypercastConfig.cmake`, and the `needed` check in

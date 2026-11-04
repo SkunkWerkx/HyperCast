@@ -21,8 +21,8 @@ faults(x)
 }
 \value{
 \code{is_ok()} returns a logical vector. \code{faults()} returns a data frame with columns
-\code{row}, \code{reason}, \code{offset} and \code{length}, one row per faulted element. \code{print()} returns
-\code{x} invisibly.
+\code{row}, \code{reason}, \code{offset}, \code{length}, \code{detail} and \code{detail_code}, one row per faulted
+element. \code{print()} returns \code{x} invisibly.
 }
 \description{
 Every door returns a \code{hypercast_verdict}: a data frame with one row per element of its
@@ -39,11 +39,19 @@ case.
    \code{reason} \tab \code{NA} \tab a factor: \code{empty}, \code{malformed} or \code{out_of_range} \tab \code{NA} \cr
    \code{offset} \tab \code{NA} \tab where the offending text starts, counted from 0 \tab \code{NA} \cr
    \code{length} \tab \code{NA} \tab how long it runs \tab \code{NA} \cr
+   \code{detail} \tab \code{NA} \tab a factor: what exactly failed, one of \link{fault_details} or \code{unknown} \tab \code{NA} \cr
+   \code{detail_code} \tab \code{NA} \tab the core's number for it \tab \code{NA} \cr
 }
 
 
 A missing row is an \code{NA} element of the input, which no door reads: \code{NA} in, \code{NA} out.
 \code{\link[=optional]{optional()}} turns \code{empty} faults into missing rows too.
+
+\code{detail} and \code{detail_code} come last, after the five columns every earlier release had in
+this order, so code that reads a verdict by name or by position keeps working; binding a
+verdict made before this column existed to one made after is a binding of different
+columns. The two together are what \link{fault_details} describes, and a \code{detail} the version
+does not know reads \code{unknown} with its code in \code{detail_code}.
 
 \code{offset} and \code{length} count in the units \code{substr()} counts the input in, so \code{substr(x, offset + 1, offset + length)} gives back the offending text. That is characters for a
 character vector, and bytes for a list of raw vectors, for a string marked \code{"bytes"} and
@@ -72,6 +80,7 @@ with(faults(cast_i32(x, num_format())), substr(x[row], offset + 1, offset + leng
 }
 \seealso{
 Other verdicts:
+\code{\link{fault_details}},
 \code{\link{hypercast_checked_verdict}},
 \code{\link[=optional]{optional()}}
 }

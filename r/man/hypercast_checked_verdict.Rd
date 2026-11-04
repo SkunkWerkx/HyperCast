@@ -38,6 +38,7 @@ rule, named by its keyword). A violation is never a fifth reason: \code{reason} 
    \code{reason} \tab \code{NA} \tab \code{empty}, \code{malformed} or \code{out_of_range} \tab \code{NA} \tab \code{NA} \cr
    \code{keyword} \tab \code{NA} \tab \code{NA} \tab the rule broken \tab \code{NA} \cr
    \code{offset}, \code{length} \tab \code{NA} \tab the offending text \tab the value \tab \code{NA} \cr
+   \code{detail}, \code{detail_code} \tab \code{NA} \tab what failed, as a \link{hypercast_verdict}'s \tab \code{NA} \tab \code{NA} \cr
 }
 
 
@@ -50,7 +51,8 @@ a violation spans the whole value (after trimming, for text), and a typed door's
 empty. An integer \code{enum} gives no index: the value is the answer.
 
 \code{is_ok()} is the \code{ok} column, \code{faults()} the faulted rows (\code{row}, \code{reason}, \code{offset},
-\code{length}), \code{violations()} the violated rows (\code{row}, \code{keyword}, \code{offset}, \code{length}), and
+\code{length}, \code{detail}, \code{detail_code}), \code{violations()} the violated rows (\code{row}, \code{keyword},
+\code{offset}, \code{length}), and
 \code{\link[=optional]{optional()}} turns \code{empty} faults into missing rows. A checked verdict is a data frame of
 its own class, so binding it with a plain verdict is a binding of different columns.
 }
@@ -64,6 +66,7 @@ optional(v)$ok
 }
 \seealso{
 Other verdicts:
+\code{\link{fault_details}},
 \code{\link{hypercast_verdict}},
 \code{\link[=optional]{optional()}}
 

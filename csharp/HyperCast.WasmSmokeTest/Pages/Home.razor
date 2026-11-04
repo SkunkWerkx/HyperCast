@@ -26,8 +26,9 @@
         // in the statically linked wasm module via LibraryImport("*"). The link already proves
         // every P/Invoked symbol is in the archive (wasm-ld refuses an undefined one); only a
         // call proves it works through the SDK's pinvoke table. That only holds for a door this
-        // page actually calls, so it calls all thirty-two entry points: the thirty-one cast_*
-        // functions and hypercast_version.
+        // page actually calls, so it calls every entry point a door uses: the four detailed cast_*
+        // exports every cast goes through, cast_constraints_check, cast_declared_decimal and
+        // hypercast_version.
         void Check<T>(string name, Verdict<T> verdict, T expected) where T : struct
         {
             if (verdict.TryGetValue(out Success<T> success) && success.Value.Equals(expected))
@@ -95,8 +96,17 @@
             Check("excel time", Cast.ExcelTime(0.75), new TimeOnly(18, 0));
             Check("excel duration", Cast.ExcelDuration(1.5), new TimeSpan(1, 12, 0, 0));
 
+            // What 1.1 adds, through the same doors: a strict grouping policy, the detail a fault names, and date options.
+            Check("indian grouping", Cast.Int32("12,34,567", NumFormat.Invariant with { Grouping = NumGrouping.Indian }), 1_234_567);
+            Check("legacy grouping", Cast.Int32("12,34", NumFormat.Invariant with { Grouping = NumGrouping.Legacy }), 1234);
+            if (Cast.Int32("12,34", NumFormat.Invariant) is Fault { Reason: CastFailure.Malformed, Offset: 2, Length: 3, Detail: FaultDetail.GroupSize })
+                lines.Add("ok   strict grouping: group_size @ 2+3");
+            else
+                Fail("strict grouping: 12,34 is not a group_size fault");
+            Check("compact date", Cast.Date("20260107", DateOptions.CommonForms), new DateOnly(2026, 1, 7));
+
             // The checked doors: cast_constraints_check and cast_declared_decimal when a declaration is built, then
-            // cast_checked, cast_checked_from_f64 and cast_text.
+            // cast_checked_detailed, cast_checked_detailed_from_f64 and cast_detailed (the text door).
             void Judged<T>(string name, CheckedVerdict<T> verdict, string expected) where T : notnull
             {
                 var rendered = verdict switch

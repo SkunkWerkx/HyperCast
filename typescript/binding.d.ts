@@ -73,7 +73,7 @@ export declare class DateFormat {
   /**
    * Declares a field order and day periods, or says which rule the declaration breaks;
    * never throws. Each designator is 1 to 16 UTF-8 bytes with no ASCII digit and no
-   * whitespace at either end, read exactly, after the clock or ahead of it.
+   * white space at either end, read exactly, after the clock or ahead of it.
    */
   static declare(spec: DateFormatSpec): Declaration<DateFormat>
   /** The field order. */
@@ -85,6 +85,67 @@ export declare class DateFormat {
 }
 
 /**
+ * The extra date shapes the date doors can read, a pivot for two-digit years, and month
+ * names: all opt in, so a door keeps its own shape rules unless it is given options. Made by
+ * `DateOptions.declare` or `DateOptions.commonForms`, never by `new`.
+ */
+export declare class DateOptions {
+  /**
+   * Declares date options, or says which rule the declaration breaks; never throws. The
+   * styles are `DateStyles` members, the pivot is 0 (none) or from 100 to 9999, and the
+   * month names are a `MonthNames`.
+   */
+  static declare(spec: DateOptionsSpec): Declaration<DateOptions>
+  /**
+   * `DateStyles.CommonForms`: compact dates, a space for the `T` and `±hh` offsets,
+   * with no pivot and no month names. It works at every date door: a style a door does not
+   * read is ignored there.
+   */
+  static commonForms(): DateOptions
+  /** The extra shapes, `DateStyles` members combined. */
+  get flags(): DateStyles
+  /** The pivot, `0` for none. */
+  get pivot(): number
+  /** The declared month names, or `null`. */
+  get months(): MonthNames | null
+  /**
+   * The 12 bytes these options cross a C ABI as (the core's size-tagged layout: the size,
+   * the flags and the pivot, each a little-endian `u32`), with `months.packed` beside it.
+   */
+  get packed(): Uint8Array
+}
+
+/**
+ * Declared month names for the date doors that read a month field (`castDate` with an order,
+ * `castDatetime`): `janvier`, `Sep` and `Sept`, `janv.`. Caller-built: no platform
+ * vocabulary is looked up. Each entry maps a name to a month from 1 to 12 and aliases are
+ * separate entries. Names match under simple case folding, and the longest name followed by
+ * the separator the date uses wins; punctuation is part of a name and never stripped, so
+ * with `janv.` declared and `.` as the separator, `7.janv..2026` reads while `7.janv.2026`
+ * does not unless `janv` is also declared. Every month needs a name; a name is 1 to 64 UTF-8
+ * bytes with no ASCII digit, `/`, `-` or white space, and two that fold alike are refused.
+ * Made by `MonthNames.declare` or `MonthNames.fromPacked`, never by `new`.
+ */
+export declare class MonthNames {
+  /**
+   * Declares month names from `[month, name]` entries, or says which rule they break; never
+   * throws.
+   */
+  static declare(entries: ReadonlyArray<readonly [month: number, name: string]>): Declaration<MonthNames>
+  /**
+   * Declares month names from their packed layout, the one the C ABI takes: each entry a
+   * month byte (1 to 12), a little-endian `u32` byte length, then that many UTF-8 bytes. Says
+   * which rule the bytes break; never throws.
+   */
+  static fromPacked(bytes: Uint8Array): Declaration<MonthNames>
+  /**
+   * The names in the packed layout the core reads: each entry a month byte, a little-endian
+   * `u32` byte length, then the UTF-8, in the order declared.
+   */
+  get packed(): Uint8Array
+}
+
+/**
  * Caller-declared numeric notation, held resolved as the core's own format. Made by
  * `NumFormat.declare`, `NumFormat.invariant` or `NumFormat.detect`, never by `new`.
  */
@@ -92,27 +153,31 @@ export declare class NumFormat {
   /**
    * Declares a format, or says which rule the declaration breaks; never throws. The
    * separators are each 1 to 8 UTF-8 bytes with no ASCII digit, and differ (so do the
-   * pair a currency amount is read with); a sign or percent symbol holds no ASCII
-   * whitespace; the currency symbol is at most 16 bytes with no ASCII digit or whitespace;
-   * the digit zero is the one non-ASCII character a Unicode digit block starts at.
+   * pair a currency amount is read with), and a decimal separator holds no white space; a
+   * sign or percent symbol holds no white space; the currency symbol is at most 16 bytes
+   * with no ASCII digit and no white space at either end (`F CFA` is fine); the digit zero is the one non-ASCII character
+   * a Unicode digit block starts at.
    */
   static declare(spec: NumFormatSpec): Declaration<NumFormat>
   /**
-   * The invariant format: `.` decimal, `,` grouping, `NumStyles.All`. What a door reads
-   * with when its format is left out.
+   * The invariant format: `.` decimal, `,` grouping, `NumStyles.All`, strict Western
+   * grouping (`Grouping.Western`). What a door reads with when its format is left out.
    */
   static invariant(): NumFormat
   /**
    * The detection format: `NumStyles.All | NumStyles.SeparatorDetect`, the `.`/`,` roles
-   * resolved per input from structure.
+   * resolved per input from structure, under strict Western grouping. A grouping policy
+   * never resolves an ambiguous separator.
    */
   static detect(): NumFormat
   /** The decimal separator. */
   get decimalSep(): string
   /** The group separator. */
   get groupSep(): string
-  /** The leniences, `NumStyles` members combined. */
+  /** The leniences, `NumStyles` members combined: never a grouping policy, which is `grouping`. */
   get flags(): number
+  /** How groups of digits are read. */
+  get grouping(): Grouping
   /** The currency symbol, `""` when none is declared. */
   get currency(): string
   /** The decimal separator of a currency amount, `""` when it is `decimalSep`. */
@@ -129,7 +194,9 @@ export declare class NumFormat {
   get digitZero(): string
   /**
    * The 92 bytes this format crosses a C ABI as (the core's size-tagged layout), for a
-   * library that declares numeric columns across a C ABI of its own.
+   * library that declares numeric columns across a C ABI of its own. The `flags` word
+   * carries the grouping policy in bits 8 and 9, which only the core's detailed exports
+   * read (the 1.0 exports ignore them and parse every group legacy).
    */
   get packed(): Uint8Array
 }
@@ -165,6 +232,21 @@ export declare function castChar(text: Text): Verdict<string>
 export declare function castChecked(text: Text, constraints: Constraints, format?: NumFormat | undefined | null): CheckedVerdict<number | bigint | string>
 
 /**
+ * Casts text through the door its `Constraints` are bound to, `Door.Text` included, and
+ * judges the value by them, saying what failed: a `DetailedCheckedVerdict`. A failure to read
+ * is a `DetailedFault`; a value that broke a rule is `Violated`, as at `castChecked`, with no
+ * detail (a violation names the rule, not a failure to read). `format` is read by the numeric
+ * doors (absent is `NumFormat.invariant()`) and ignored at `Door.Text`.
+ */
+export declare function castCheckedDetailed(text: Text, constraints: Constraints, format?: NumFormat | undefined | null): DetailedCheckedVerdict<number | bigint | string>
+
+/**
+ * Reads a number a source already decoded through the door its `Constraints` are bound to,
+ * as `castCheckedFromNumber` does, and says what failed. Every span is empty.
+ */
+export declare function castCheckedDetailedFromNumber(value: number, constraints: Constraints): DetailedCheckedVerdict<number | bigint | string>
+
+/**
  * Reads a number a source already decoded (a JSON parser's, a spreadsheet's numeric cell)
  * through the door its `Constraints` are bound to, then judges it by them on the shortest
  * decimal that names it: `0.1 + 0.2` is `0.30000000000000004`, which breaks
@@ -191,15 +273,17 @@ export declare function castConstraintsCheck(spec: ConstraintsSpec): number
 
 /**
  * Casts a calendar date: strict ISO `yyyy-MM-dd` with no order, the separated forms
- * (`1/7/2026`, `1.7.2026`) under a declared one.
+ * (`1/7/2026`, `1.7.2026`) under a declared one. `options` open `20260107` (no order), and
+ * under an order a pivot for two-digit years and declared month names (`07-Jan-26`).
  */
-export declare function castDate(text: Text, order?: DateOrder | undefined | null): Verdict<CalendarDate>
+export declare function castDate(text: Text, order?: DateOrder | undefined | null, options?: DateOptions | MonthNames | undefined | null): Verdict<CalendarDate>
 
 /**
  * Casts a zone-less civil date-time under a declared order, or a `DateFormat` whose day
  * periods are read beside the English `AM`/`PM`. No zone is read and none is invented.
+ * `options` give a pivot for two-digit years and declared month names.
  */
-export declare function castDatetime(text: Text, format: DateOrder | DateFormat): Verdict<CivilDateTime>
+export declare function castDatetime(text: Text, format: DateOrder | DateFormat, options?: DateOptions | MonthNames | undefined | null): Verdict<CivilDateTime>
 
 /** Casts decimal text under the declared format to its exact canonical text: trailing fraction zeros trimmed (`"1.10"` is `"1.1"`), never rounded, at most 28 places and 96 bits of magnitude. */
 export declare function castDecimal(text: Text, format?: NumFormat | undefined | null): Verdict<string>
@@ -220,6 +304,32 @@ export declare function castDecimalFromNumber(value: number): Verdict<string>
  * declaration is (code 8).
  */
 export declare function castDeclaredDecimal(text: Text): Declaration<string>
+
+/**
+ * Casts text through any door the core's detailed export names, and says what failed: a
+ * failure is a `DetailedFault`, the plain door's `reason`, `offset` and `length` with a named
+ * `detail` and its raw `detailCode`. The value is what the door's own function answers
+ * (`Door.Unix` a `Timestamp`, `Door.Char` a string, `Door.Text` the text itself).
+ *
+ * `declared` is what the door declares: a `NumFormat` at the integer, real and decimal doors
+ * (absent is `NumFormat.invariant()`), a `UnixPrecision` at `Door.Unix`, a `DateOrder` at
+ * `Door.DateOrdered`, a `DateOrder` or `DateFormat` at `Door.DateTime`, an `ExcelEpoch` at
+ * `Door.ExcelSerial`, and nothing anywhere else. `options` are read by `Door.Timestamp`,
+ * `Door.Date`, `Door.DateOrdered` and `Door.DateTime` only (a `DateOptions`, or a
+ * `MonthNames` alone for names and nothing else) and ignored by every other door.
+ * A door that is no `Door` member, a declaration the door does not take, or options that are
+ * neither `DateOptions` nor `MonthNames` is a contract violation: `malformed` with an empty
+ * span at 0 and no detail (`'none'`, code 0). Absent text is `empty`, detail `blank`.
+ */
+export declare function castDetailed(door: Door, text: Text, declared?: NumFormat | DateFormat | UnixPrecision | DateOrder | ExcelEpoch | undefined | null, options?: DateOptions | MonthNames | undefined | null): DetailedVerdict<boolean | number | bigint | string | Timestamp | CalendarDate | TimeOfDay | CivilDateTime | Duration>
+
+/**
+ * Reads a number a source already decoded through one of the four doors that read one,
+ * `Door.Decimal`, `Door.ExcelSerial` (`declared` an `ExcelEpoch`, answering a
+ * `CivilDateTime`), `Door.Time` and `Door.Duration`, and says what failed. A failure has no
+ * text to index, so its span is empty.
+ */
+export declare function castDetailedFromNumber(door: Door, value: number, declared?: ExcelEpoch | undefined | null): DetailedVerdict<string | CivilDateTime | TimeOfDay | Duration>
 
 /** Casts a duration (ISO 8601, the invariant colon form, or protobuf JSON seconds). */
 export declare function castDuration(text: Text): Verdict<Duration>
@@ -275,8 +385,13 @@ export declare function castText(text: Text, constraints?: Constraints): Verdict
 /** Casts an ISO 24-hour time of day. */
 export declare function castTime(text: Text): Verdict<TimeOfDay>
 
-/** Casts an RFC 3339 instant, its zone mandatory, to seconds and nanoseconds since the epoch. */
-export declare function castTimestamp(text: Text): Verdict<Timestamp>
+/**
+ * Casts an RFC 3339 instant, its zone mandatory, to seconds and nanoseconds since the epoch.
+ * `options` (`DateOptions.declare({ flags: DateStyles.SpaceSeparator | DateStyles.HourOffset
+ * })`, or `DateOptions.commonForms()`) open a space for the `T` and `±hh` offsets; without
+ * them the door reads the strict shape.
+ */
+export declare function castTimestamp(text: Text, options?: DateOptions | undefined | null): Verdict<Timestamp>
 
 /** Casts integer text to an unsigned 16-bit number under the declared format. */
 export declare function castU16(text: Text, format?: NumFormat | undefined | null): Verdict<number>
@@ -339,8 +454,8 @@ export interface CivilDateTime {
  * binary float, which holds most decimals only approximately.
  */
 export interface ConstraintsSpec {
-  /** The door the declaration is bound to. */
-  door: Door
+  /** The door the declaration is bound to: an integer, real or decimal door, or `Door.Text`. */
+  door: Door.I8 | Door.I16 | Door.I32 | Door.I64 | Door.U8 | Door.U16 | Door.U32 | Door.U64 | Door.F32 | Door.F64 | Door.Decimal | Door.Text
   /** The least value allowed. */
   minimum?: string | bigint
   /** The bound every value must lie above. */
@@ -377,6 +492,20 @@ export interface DateFormatSpec {
   pm?: string
 }
 
+/** The declared form of a `DateOptions`: `DateOptions.declare` reads it. */
+export interface DateOptionsSpec {
+  /** The extra shapes, `DateStyles` members combined with `|`; none when absent. */
+  flags?: DateStyles
+  /**
+   * The last year of the 100-year window a two-digit year is read in: `0` or absent for
+   * none (a two-digit year is then a `fieldWidth` fault), otherwise 100 to 9999. A year
+   * `yy` reads as the one year from `pivot - 99` to `pivot` that ends in `yy`.
+   */
+  pivot?: number
+  /** Month names read in the month field of `castDate` with an order and of `castDatetime`. */
+  months?: MonthNames
+}
+
 /**
  * The declared field order of a separated calendar date: `1/7/2026` is January 7th or
  * July 1st only because the caller said which.
@@ -387,15 +516,84 @@ export declare enum DateOrder {
   DayMonthYear = 3,
 }
 
+/**
+ * The extra shapes a `DateOptions` opens, combined with `|`. Each is read at one door, and a
+ * style a door does not read is ignored there.
+ */
+export declare enum DateStyles {
+  None = 0,
+  /** `castDate` also reads `20260107`, eight ASCII digits as `yyyyMMdd`. */
+  CompactDate = 1,
+  /** `castTimestamp` also reads one space where the `T` goes. */
+  SpaceSeparator = 2,
+  /** `castTimestamp` also reads an offset of `±hh` (`+00`, `-05`). */
+  HourOffset = 4,
+  /**
+   * `CompactDate`, `SpaceSeparator` and `HourOffset` together. It never supplies a pivot
+   * or month names.
+   */
+  CommonForms = 7,
+}
+
 /** The outcome of declaring a format: the format, or the reason it cannot be one. */
 export type Declaration<T> = Success<T> | Refusal
 
 /**
- * The door a `Constraints` is bound to, numbered as the core numbers it: the integer family,
+ * What failed, the core's published detail vocabulary by name. The numbers never change and
+ * codes may be added in a minor release, so a `switch` needs a `default` arm: a code this
+ * binding does not name arrives as `'unknown'`, with its number in `detailCode`. `'none'` is
+ * code 0, for a fault with no detail to give: a contract violation.
+ */
+export type Detail = 'none' | 'blank' | 'unexpectedCharacter' | 'digitExpected' | 'delimiterExpected' | 'trailingText' | 'noDigits' | 'signMisplaced' | 'parenthesesUnbalanced' | 'markRepeated' | 'groupMisplaced' | 'groupSize' | 'groupInFraction' | 'ambiguousSeparator' | 'fractionNotAllowed' | 'fieldWidth' | 'wrongLength' | 'componentMissing' | 'notRecognized' | 'unknownUnit' | 'invalidUtf8' | 'tooLong' | 'notFinite' | 'notWhole' | 'negativeNotAllowed' | 'tooLarge' | 'tooSmall' | 'tooPrecise' | 'dateFieldOutOfRange' | 'timeFieldOutOfRange' | 'outsideWindow' | 'nonexistentDate' | 'notAScalar' | 'unknown'
+
+/**
+ * The outcome of a detailed checked door: exactly one of `Checked<T>`, `DetailedFailure` or
+ * `Violated`, told apart by `ok` and then by `'fault' in verdict`. A violation names a rule
+ * the value broke, not a failure to read it, so it carries no detail.
+ */
+export type DetailedCheckedVerdict<T> = Checked<T> | DetailedFailure | Violated
+
+/** The failure case of a detailed verdict: `ok` is `false` and `fault` says why and what. */
+export interface DetailedFailure {
+  ok: false
+  fault: DetailedFault
+}
+
+/**
+ * The failure case of a detailed door: `reason`, `offset` and `length` as a plain `Fault`
+ * carries them, and what failed. `detailCode` is the core's own number, `detail` its name.
+ */
+export interface DetailedFault {
+  /** Why the cast failed. */
+  reason: CastFailure
+  /** Where the offending span starts. */
+  offset: number
+  /** How long it runs; 0 for `empty`, for a typed door and for a contract violation. */
+  length: number
+  /**
+   * What failed, by name. Open, like `Violation.keyword`: a code this binding does not name
+   * yet is `'unknown'`, and a later release may name more, so a `switch` needs a `default`.
+   */
+  detail: Detail | (string & {})
+  /** What failed, by the core's number: 1 to 32 are published; 0 is no detail. */
+  detailCode: number
+}
+
+/**
+ * The outcome of a detailed cast: exactly one of `Success<T>` or `DetailedFailure`, told
+ * apart by `ok`.
+ */
+export type DetailedVerdict<T> = Success<T> | DetailedFailure
+
+/**
+ * A door, numbered as the core numbers it. A `Constraints` is bound to the integer family,
  * the two reals and the exact decimal (judged by `castChecked` and `castCheckedFromNumber`),
- * and text (judged by `castText`).
+ * or to text (judged by `castText`); `castDetailed` and `castDetailedFromNumber` take every
+ * door the core's detailed exports name.
  */
 export declare enum Door {
+  /** A natural-language boolean. */
+  Bool = 1,
   I8 = 2,
   I16 = 3,
   I32 = 4,
@@ -406,8 +604,28 @@ export declare enum Door {
   U64 = 9,
   F32 = 10,
   F64 = 11,
+  /** A UUID in any text form the door reads. */
+  Uuid = 12,
+  /** An RFC 3339 instant. */
+  Timestamp = 13,
+  /** A Unix-epoch count; the declaration is a `UnixPrecision`. */
+  Unix = 14,
+  /** A calendar date, strict ISO `yyyy-MM-dd` unless `DateStyles.CompactDate` is declared. */
+  Date = 15,
+  /** An ISO 24-hour time of day. */
+  Time = 16,
+  /** A duration. */
+  Duration = 17,
   Text = 18,
   Decimal = 19,
+  /** A separated calendar date; the declaration is a `DateOrder`. */
+  DateOrdered = 20,
+  /** A zone-less civil date-time; the declaration is a `DateOrder` or a `DateFormat`. */
+  DateTime = 21,
+  /** An Excel date serial; the declaration is an `ExcelEpoch`. */
+  ExcelSerial = 22,
+  /** One character, verbatim or as a declared code point. */
+  Char = 23,
 }
 
 /** A signed span: whole seconds, and nanoseconds with the same sign (protobuf's `Duration`). */
@@ -447,6 +665,30 @@ export interface Fault {
   length: number
 }
 
+/**
+ * How strictly a `NumFormat` reads groups of digits, the core's grouping policy. It is declared
+ * apart from the styles, and replaces a policy rather than adding to one. It only matters
+ * where `NumStyles.Grouping` is on: with grouping off, a group separator stays forbidden
+ * under every policy.
+ */
+export declare enum Grouping {
+  /**
+   * A group separator anywhere between two digits (`12,34` is 1234), as every 1.0 format
+   * read.
+   */
+  Legacy = 0,
+  /**
+   * Groups of exactly three digits counted from the decimal separator, the leftmost of one
+   * to three (`1,234,567`; `12,34` is `malformed`). The default.
+   */
+  Western = 256,
+  /**
+   * A group of three beside the decimal separator and twos beyond it, the leftmost of one
+   * or two (`12,34,567`; `1,234,567` is `malformed`).
+   */
+  Indian = 512,
+}
+
 /** The core's version as `major.minor.patch`, unpacked from `hypercast_version()`. */
 export declare function nativeVersion(): string
 
@@ -456,9 +698,14 @@ export interface NumFormatSpec {
   decimalSep: string
   /** The group separator, likewise, and different from `decimalSep`. */
   groupSep: string
-  /** The leniences, `NumStyles` members combined with `|`. */
+  /**
+   * The leniences, `NumStyles` members combined with `|`. A style mask holds no grouping
+   * policy: declare that as `grouping`.
+   */
   flags: number
-  /** The currency symbol, 1 to 16 UTF-8 bytes with no ASCII digit or whitespace. */
+  /** How groups of digits are read; `Grouping.Western` when absent. */
+  grouping?: Grouping
+  /** The currency symbol, 1 to 16 UTF-8 bytes with no ASCII digit and no white space at either end. */
   currency?: string
   /** The decimal separator of a currency amount; absent keeps `decimalSep`. */
   currencyDecimalSep?: string

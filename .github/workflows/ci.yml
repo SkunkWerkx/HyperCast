@@ -196,6 +196,7 @@ jobs:
     with:
       no_panic_command: cargo no-panic
       no_panic_runners: '["ubuntu-26.04"]'
+      no_panic_canary: hypercast_canary
       corpus_oracle: ""
       big_endian: s390x-unknown-linux-gnu
 

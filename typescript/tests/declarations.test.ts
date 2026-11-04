@@ -3,7 +3,7 @@
 const assert: typeof import('node:assert/strict') = require('node:assert/strict')
 const { test }: typeof import('node:test') = require('node:test')
 const api = require('../index.js') as typeof import('../index.js')
-const { DateFormat, DateOrder, NumFormat, NumStyles } = api
+const { DateFormat, DateOrder, Grouping, NumFormat, NumStyles } = api
 type NumFormatSpec = import('../index.js').NumFormatSpec
 
 const base: NumFormatSpec = { decimalSep: '.', groupSep: ',', flags: NumStyles.All }
@@ -19,9 +19,18 @@ test('a NumFormat declaration refuses what the core cannot read, naming the rule
   assert.match(refused({ ...base, decimalSep: '' }), /^Decimal separator must be 1 to 8/)
   assert.match(refused({ ...base, groupSep: '123456789' }), /^Group separator must be 1 to 8/)
   assert.match(refused({ ...base, groupSep: '1' }), /no ASCII digit/)
-  assert.match(refused({ ...base, minusSign: '- ' }), /^Minus sign .* whitespace/)
-  assert.match(refused({ ...base, percent: ' %' }), /^Percent symbol/)
-  assert.match(refused({ ...base, currency: 'US $' }), /^Currency symbol/)
+  assert.match(refused({ ...base, minusSign: '- ' }), /^Minus sign must not contain white space/)
+  assert.match(refused({ ...base, percent: ' %' }), /^Percent symbol must not contain white space/)
+  assert.match(refused({ ...base, currency: ' $' }), /^Currency symbol must not start or end with/)
+  assert.match(
+    refused({ ...base, currency: 'US\u00a0' }),
+    /^Currency symbol must not start or end with white space; got "US\u00a0"/,
+  )
+  assert.match(refused({ ...base, decimalSep: '\u00a0' }), /^Decimal separator must not contain/)
+  assert.match(
+    refused({ ...base, currencyDecimalSep: 'x\u202f' }),
+    /^Currency decimal separator must not contain white space; got "x\u202f"/,
+  )
   assert.match(refused({ ...base, currency: '12345678901234567' }), /^Currency symbol/)
   assert.match(refused({ ...base, currencyDecimalSep: ',' }), /^Currency decimal and group/)
   assert.match(refused({ ...base, digitZero: '0' }), /^Digit zero/)
@@ -32,6 +41,27 @@ test('a NumFormat declaration refuses what the core cannot read, naming the rule
   assert.match(refused({ groupSep: ',', flags: 0 }), /^decimalSep is required/)
   assert.match(refused({ ...base, currency: 5 }), /^currency must be a string/)
   assert.match(refused(null), /must be an object/)
+})
+
+test('a currency symbol may hold white space inside, never at an edge', () => {
+  for (const space of [' ', '\u00a0', '\u202f', '\u2009', '\u3000']) {
+    const declared = NumFormat.declare({ ...base, currency: `F${space}CFA` })
+    assert.ok(declared.ok, JSON.stringify(space))
+    assert.equal(declared.value.currency, `F${space}CFA`)
+    for (const edge of [` F${space}CFA`, `F${space}CFA\u202f`, space]) {
+      assert.match(
+        refused({ ...base, currency: edge }),
+        /^Currency symbol must not start or end with white space; got /,
+      )
+    }
+  }
+  // The length and digit rules win over the edge rule, as in the core.
+  assert.match(refused({ ...base, currency: ' $1' }), /^Currency symbol must be 1 to 16 UTF-8/)
+  assert.match(refused({ ...base, currency: ' '.repeat(17) }), /^Currency symbol must be 1 to 16/)
+  // A matched symbol: the three spaces stand for each other inside it (the core's job).
+  const cfa = NumFormat.declare({ ...base, currency: 'F\u202fCFA' })
+  assert.ok(cfa.ok)
+  assert.deepEqual(api.castI32('12 F CFA', cfa.value), { ok: true, value: 12 })
 })
 
 test('a declared NumFormat reports what it declares', () => {
@@ -81,7 +111,8 @@ test('the invariant and detection formats, and the packed layout', () => {
   assert.equal(packed.length, 92)
   const view = new DataView(packed.buffer, packed.byteOffset, packed.byteLength)
   assert.equal(view.getUint32(0, true), 92)
-  assert.equal(view.getUint32(4, true), NumStyles.All)
+  // The flags word carries the grouping policy in bits 8 and 9: invariant() is strict Western.
+  assert.equal(view.getUint32(4, true), NumStyles.All | Grouping.Western)
   assert.equal(view.getUint32(8, true), 0)
   assert.deepEqual([packed[12], packed[20]], [0x2e, 1])
   assert.deepEqual([packed[21], packed[29]], [0x2c, 1])
@@ -95,7 +126,11 @@ test('a DateFormat declaration refuses an undeclared order and a bad designator'
   }
   assert.match(refuse({ order: 4 }), /^order must be a DateOrder/)
   assert.match(refuse({}), /^order must be a DateOrder/)
-  assert.match(refuse({ order: DateOrder.DayMonthYear, am: ' vorm.' }), /^Day period am/)
+  assert.match(
+    refuse({ order: DateOrder.DayMonthYear, am: ' vorm.' }),
+    /^Day period am must not have white space at either end/,
+  )
+  assert.match(refuse({ order: DateOrder.DayMonthYear, pm: 'PM\u00a0' }), /^Day period pm must not/)
   assert.match(refuse({ order: DateOrder.DayMonthYear, pm: 'p1' }), /^Day period pm/)
   assert.match(refuse({ order: DateOrder.DayMonthYear, pm: 'x'.repeat(17) }), /^Day period pm/)
   const declared = DateFormat.declare({ order: DateOrder.DayMonthYear, am: 'a. m.', pm: 'p. m.' })

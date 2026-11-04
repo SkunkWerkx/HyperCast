@@ -355,4 +355,63 @@ RSpec.describe "native backend" do
     want = "true #<data HyperCast::Fault reason=:malformed, offset=1, length=1>"
     expect([status.success?, out]).to eq([true, want])
   end
+
+  # Faults the extension builds without Data.new carry the detail as Data.new-built ones do, and
+  # nothing else about them differs.
+  it "hands back faults carrying their detail, equal to ones Data.new built" do
+    fault = HyperCast.i32("12,34", HyperCast::NumFormat::INVARIANT)
+    built = HyperCast::Fault.new(reason: :malformed, offset: 2, length: 3, detail: HyperCast::Detail::GROUP_SIZE)
+    expect(fault).to eq(built).and be_frozen
+    expect(fault).to eql(built)
+    expect(fault.hash).to eq(built.hash)
+    expect(fault.detail).to equal(HyperCast::Detail::GROUP_SIZE)
+    expect(fault.with(offset: 1).detail).to eq(HyperCast::Detail::GROUP_SIZE)
+    expect(Marshal.load(Marshal.dump(fault)).detail).to eq(HyperCast::Detail::GROUP_SIZE)
+    expect((fault in HyperCast::Fault(reason: :malformed, detail: HyperCast::Detail::GROUP_SIZE))).to be(true)
+    expect(HyperCast.decimal_from_float(Float::NAN).detail).to eq(HyperCast::Detail::NOT_FINITE)
+  end
+
+  it "agrees with the Fiddle backend on grouping, details and the date options" do
+    expression = <<~'RUBY'
+      invariant = HyperCast::NumFormat::INVARIANT
+      options = HyperCast::DateOptions
+      french = %w[janv. févr. mars avr. mai juin juil. août sept. oct. nov. déc.].each_with_index.to_h { |n, i| [n, i + 1] }
+      months = HyperCast::MonthNames.new(french)
+      [
+        HyperCast.i32("12,34", invariant), HyperCast.i32("12,34", invariant).detail,
+        HyperCast.i32("12,34,567", invariant.with(grouping: :indian)),
+        HyperCast.i32("12,34", invariant.with(grouping: :legacy)),
+        HyperCast.f64("1,234.5,6", invariant).detail, HyperCast.decimal("1234,567", invariant).detail,
+        HyperCast.checked("12,34", invariant, HyperCast::Constraints.new(door: :i32, maximum: "5")).detail,
+        HyperCast.date("20260107", options: options::COMMON_FORMS),
+        HyperCast.timestamp("2026-01-07 15:04:05+00", options: options::COMMON_FORMS),
+        HyperCast.date("7.janv..26", :day_month_year, options: options.new(pivot: 2029), months: months),
+        HyperCast.date("7.janv.26", :day_month_year, options: options.new(pivot: 2029), months: months).detail,
+        HyperCast.datetime("7.janv..2026 3:04 PM", :day_month_year, months: months),
+        HyperCast.excel_time(-1).detail,
+        HyperCast.i32("\u0661\u0662\u202F\u0663\u0664", HyperCast::NumFormat.new(decimal_sep: ".", group_sep: "\u202F", flags: 95, digit_zero: "\u0660"))
+      ].map(&:inspect).join("|")
+    RUBY
+    expect(fiddle_eval(expression)).to eq(eval(expression)) # rubocop:disable Security/Eval
+  end
+
+  it "agrees with the Fiddle backend on the caller bugs of 1.1" do
+    expression = <<~'RUBY'
+      bugs = [
+        -> { HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",", flags: HyperCast::GROUPING_POLICY) },
+        -> { HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",", flags: 1 << 10) },
+        -> { HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",", flags: 0, grouping: :nope) },
+        -> { HyperCast::DateOptions.new(flags: 8) }, -> { HyperCast::DateOptions.new(pivot: 99) },
+        -> { HyperCast::MonthNames.new({}) }, -> { HyperCast::MonthNames.from_packed("\x01".b) },
+        -> { HyperCast.date("x", :year_month_day, options: 1) }, -> { HyperCast.timestamp("x", options: 1) },
+        -> { HyperCast.datetime("x", :year_month_day, months: 1) },
+        -> { HyperCast.date("x", :year_month_day, months: :names) },
+        -> { HyperCast.date("x", :year_month_day, months: HyperCast::MonthNames.allocate.tap { |n| n.instance_variable_set(:@packed, "".b) }) }
+      ]
+      bugs.map { |bug| begin; bug.call; rescue StandardError => error; "#{error.class}: #{error.message}"; end }.join("|")
+    RUBY
+    native = eval(expression) # rubocop:disable Security/Eval
+    expect(native).not_to include("NoMethodError")
+    expect(fiddle_eval(expression)).to eq(native)
+  end
 end

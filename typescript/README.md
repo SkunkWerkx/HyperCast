@@ -73,7 +73,7 @@ type CastFailure = 'empty' | 'malformed' | 'outOfRange'
 `ok` is the discriminant, so TypeScript reaches `value` only after `verdict.ok` and `fault`
 only after `!verdict.ok`, and a `switch` over `fault.reason` is exhaustive over exactly three
 strings (a `default` that assigns the reason to `never` type-checks). `empty` is nothing
-there, or only whitespace; `malformed` is present but not the target type; `outOfRange` is
+there, or only white space; `malformed` is present but not the target type; `outOfRange` is
 well-formed but outside the target's range. `CastFailure.Empty`, `.Malformed` and
 `.OutOfRange` name the three strings for a caller who would rather not spell them.
 
@@ -115,7 +115,7 @@ offending text with no mapping:
   UTF-8 is offset 0, length 4).
 
 Every span satisfies `offset + length <= text.length` in those units. Text is read as given,
-and surrounding whitespace is trimmed before it is judged, so the span still indexes what
+and surrounding white space is trimmed before it is judged, so the span still indexes what
 was passed (`castI32('  12x  ')` is malformed at offset 4). A string with a lone surrogate
 has no UTF-8 form, so it is `malformed`, never thrown: every door, plain or checked, reads it
 as it is (WTF-8), so the fault is at the surrogate's own code unit and a lone surrogate never
@@ -137,11 +137,11 @@ returns a `Verdict<T>`:
 | `castF32` `castF64` `(text, format?)` | a real under a declared `NumFormat` | `number` (an `f32` widened exactly) |
 | `castDecimal(text, format?)` | an exact decimal under a declared `NumFormat` | `string`, canonical (`'1234.5'`) |
 | `castUuid(text)` | every .NET `Guid` form, plus `urn:uuid:`-style prefixes | `string`, lowercase hyphenated |
-| `castTimestamp(text)` | an RFC 3339 instant | `Timestamp` |
+| `castTimestamp(text, options?)` | an RFC 3339 instant (a space for the `T` and `±hh` offsets with `DateOptions`) | `Timestamp` |
 | `castUnix(text, precision)` | an integer Unix-epoch value in a declared `UnixPrecision` | `Timestamp` |
 | `castExcelSerial(text, epoch)` | an Excel date serial in a declared `ExcelEpoch` | `Timestamp` |
-| `castDate(text, order?)` | a strict ISO `yyyy-MM-dd` date, or a separated date in a declared `DateOrder` | `CalendarDate` |
-| `castDatetime(text, format)` | a zone-less civil date-time in a declared `DateOrder`, or a `DateFormat` that adds a culture's day periods | `CivilDateTime` |
+| `castDate(text, order?, options?)` | a strict ISO `yyyy-MM-dd` date, or a separated date in a declared `DateOrder`; `DateOptions` add `20260107`, a pivot and month names | `CalendarDate` |
+| `castDatetime(text, format, options?)` | a zone-less civil date-time in a declared `DateOrder`, or a `DateFormat` that adds a culture's day periods; `DateOptions` add a pivot and month names | `CivilDateTime` |
 | `castTime(text)` | an ISO 24-hour time of day | `TimeOfDay` |
 | `castDuration(text)` | ISO 8601, the invariant colon form, or protobuf JSON seconds | `Duration` |
 | `castDecimalFromNumber(value)` | a `number` as the shortest decimal that names it (`0.1` is one tenth) | `string`, canonical |
@@ -200,18 +200,62 @@ castDuration('PT1H30M')
 `castDatetime` reads the English `AM`/`PM` whatever is declared: ASCII, either case, after the
 clock (`3:04 PM`) or ahead of it (`PM 3:04`). A culture's own designators are declared beside
 them in a `DateFormat` (German `vorm.`/`nachm.`, Korean `오전`/`오후`, Spanish `a. m.`/`p. m.`)
-and read exactly as spelled, after the clock with an optional space before or ahead of it with
-an optional space after. Undeclared, `nachm.` is the first offending character of a
-`malformed` fault. A designator is 1 to 16 UTF-8 bytes with no ASCII digit and no whitespace at
-either end.
+and read exactly as spelled, after the clock with white space before or ahead of it with
+white space after: a run of any, so the `3:04\u202fPM` that ICU 72 and later write for `en_US`
+reads as well as `3:04 PM`. Undeclared, `nachm.` is the first offending character of a
+`malformed` fault. A designator is 1 to 16 UTF-8 bytes with no ASCII digit and no white space
+at either end (inside is fine, as in `a. m.`).
+
+White space is Unicode's `White_Space`, the 25 code points (ASCII, U+0085, U+00A0, U+2000 to
+U+200A, U+202F, U+3000 among them), and every door but the plain `castText` ignores it at both ends.
+The numeric doors also ignore it after a leading sign, before a trailing sign or a percent
+symbol, on either side of a currency symbol and inside accounting parentheses (`'- 12'`,
+`'( 12 )'`, `'12,5 %'`, the last under a declared comma decimal separator); between digits it is `malformed`, unless a space-like group
+separator is declared (below). Text that is only white space is `empty`.
+
+### Saying what failed
+
+A fault says why (`reason`) and where (`offset`, `length`), and its shape is the 1.0 one: no
+existing door's fault gained a field. The four detailed doors answer the same verdicts with a
+`DetailedFault`, which adds what failed, by name and by the core's number:
+
+| Door | Reads | Like |
+| --- | --- | --- |
+| `castDetailed(door, text, declared?, options?)` | any door the core names, `Door.Bool` to `Door.Char` | every text door above, and `castText` |
+| `castDetailedFromNumber(door, value, declared?)` | `Door.Decimal`, `Door.ExcelSerial` (`declared` an `ExcelEpoch`), `Door.Time`, `Door.Duration` | the four `FromNumber` and `Excel` doors |
+| `castCheckedDetailed(text, constraints, format?)` | a numeric or `Door.Text` `Constraints` | `castChecked` and `castText` with constraints |
+| `castCheckedDetailedFromNumber(value, constraints)` | a numeric `Constraints` | `castCheckedFromNumber` |
+
+```js
+const { castDetailed, Door } = require('@skunkwerkx/hypercast')
+
+castDetailed(Door.I32, '12x')
+// { ok: false, fault: { reason: 'malformed', offset: 2, length: 1,
+//                       detail: 'unexpectedCharacter', detailCode: 2 } }
+```
+
+`declared` is what the door declares: a `NumFormat` at the integer, real and decimal doors, a
+`UnixPrecision` at `Door.Unix`, a `DateOrder` at `Door.DateOrdered`, a `DateOrder` or
+`DateFormat` at `Door.DateTime`, an `ExcelEpoch` at `Door.ExcelSerial`, and nothing anywhere
+else. `detail` is one of the names in `Detail` (`blank`, `unexpectedCharacter`, `groupSize`,
+`tooLarge` and so on, 32 of them); `detailCode` is the core's number (1 to 32), which never
+changes. Published codes keep their meaning, and new ones may arrive in a minor release, so a
+`switch` over `detail` needs a `default` arm: a code this binding does not name yet is
+`'unknown'`, with its number in `detailCode` and the reason and span as usable as ever. `'none'`
+(code 0) is a fault with nothing to say: a contract violation, which is `malformed` at offset 0,
+length 0 as at every door. Absent text is `empty` with the detail `blank`. A checked door's
+violation is a rule the value broke, not a failure to read it, so it has no detail.
 
 ## Declared formats
 
 Every numeric door takes an optional `NumFormat`; left out (or `null`), it is
 `NumFormat.invariant()`: `.` and `,` with every lenience in `NumStyles.All` on and nothing else
-declared. `NumFormat.detect()` adds `NumStyles.SeparatorDetect`, so the `.`/`,` roles are
-resolved per input from its structure and an undecidable one is a `malformed` fault, never a
-guess. Anything else is declared from a spec:
+declared, and strict Western grouping. `NumFormat.detect()` adds `NumStyles.SeparatorDetect`, so
+the `.`/`,` roles are resolved per input from its structure and an undecidable one is a
+`malformed` fault, never a guess (a grouping policy never settles one). Anything else is declared
+from a spec:
+
+Anything else is declared from a spec:
 
 ```js
 const { castI32, castDecimal, castF64, NumFormat, NumStyles } = require('@skunkwerkx/hypercast')
@@ -235,19 +279,47 @@ NumFormat.declare({ decimalSep: ',', groupSep: ',', flags: NumStyles.All })
 // { ok: false, message: 'Decimal and group separators must differ; both are ","' }
 ```
 
-A spec (`NumFormatSpec`) has `decimalSep`, `groupSep` and `flags`, and optionally `currency`,
+### Grouping
+
+A format declares how strictly it reads groups of digits, apart from its styles, as a
+`Grouping`, in `grouping`:
+
+- **`Grouping.Western`**, the default (a declaration with no `grouping`, `invariant()` and
+  `detect()`): groups of exactly three digits counted from the decimal separator, the leftmost
+  of one to three. `1,234,567` reads; `12,34` and `1234,567` are `malformed` (`groupSize`).
+- **`Grouping.Indian`**: three beside the decimal separator and twos beyond it, the leftmost of
+  one or two (`12,34,567`).
+- **`Grouping.Legacy`**: a group separator anywhere between two digits, as every 1.0 format
+  read (`12,34` is 1234). This is the way back for data that grouped loosely.
+
+Ungrouped numerals stay valid under all three, and once a numeral groups every group must
+conform. A policy does not turn grouping on: with `NumStyles.Grouping` off a group separator is
+refused under every policy. Digits are counted as digits, native ones included, whatever
+separator sits between the groups. A style mask holds no policy: `flags` with bit 8 or 9 set is
+refused, naming `grouping`, and `NumFormat.flags` reads back the styles alone, with
+`NumFormat.grouping` beside it. `packed` carries the policy in bits 8 and 9 of its flags word.
+
+**This changed in 1.1:** a 1.0 declaration with no `grouping` now reads `12,34` as `malformed`
+where 1.0 read 1234. Declare `grouping: Grouping.Legacy` for the old reading. A door given no
+format reads `NumFormat.invariant()`, so it is strict too.
+
+A spec (`NumFormatSpec`) has `decimalSep`, `groupSep` and `flags`, and optionally `grouping`, `currency`,
 `currencyDecimalSep`, `currencyGroupSep`, `minusSign`, `plusSign`, `percent` and `digitZero`.
 The flags are a bitwise OR of `NumStyles`: `Grouping`, `Parentheses`, `Exponent`,
 `RadixPrefixes`, `Percent`, `Currency` (`All` is those six), and, opted into separately,
 `TrailingSign` and `SeparatorDetect`. The rules are the core's and every binding's: the ASCII
-spelling is always read, and a declared symbol is a further spelling read beside it; the
-repository root README has them in full.
+spelling is always read, and a declared symbol is a further spelling read beside it; declare
+an ASCII space, U+00A0 or U+202F as the group separator and the input may use any of the three
+(and mix them), while any other group separator stays exact; the repository root README has
+them in full.
 
 A declaration is a DU too, `Declaration<T> = Success<T> | Refusal`, where a `Refusal` is
 `{ ok: false, message }` with the same message the Python binding raises. What the core refuses
 to carry is refused here, never thrown: separators, signs or a percent symbol that are not 1
-to 8 UTF-8 bytes or contain an ASCII digit, equal separators, a currency symbol over 16 bytes
-or carrying a digit or whitespace, a digit zero that starts no Unicode digit block, flags
+to 8 UTF-8 bytes or contain an ASCII digit, equal separators, a sign or percent symbol with
+white space in it, a decimal separator (number or currency) with white space in it, a currency
+symbol over 16 bytes, carrying a digit or starting or ending in white space (`'F CFA'` is
+fine, and there an ASCII space, U+00A0 and U+202F read as each other), a digit zero that starts no Unicode digit block, flags
 that are not a whole number from 0 to 2^32 - 1, a field of the wrong type, or a getter on the
 spec that throws. A
 `NumFormat` reads back through getters of the same names, each `''` when it declares nothing,
@@ -256,6 +328,51 @@ that hands it to a C ABI of its own. `DateFormat.declare({ order, am?, pm? })` f
 pattern. Neither class has a public constructor: `new NumFormat()` throws napi's "Class
 contains no `constructor`" error, the one way to call this package wrongly that the types do
 not stop; use `declare`, `invariant()` or `detect()`.
+
+## Date options
+
+The date doors keep their strict shapes unless they are given options, so a caller who relies on
+strict RFC 3339 can rely on a space separator or `+00` being refused. Options are opt-in, built
+by `DateOptions.declare({ flags?, pivot?, months? })` (or `DateOptions.commonForms()`), and
+passed as the last argument of `castDate`, `castTimestamp`, `castDatetime` and `castDetailed`:
+
+| Option | Door | Accepts |
+| --- | --- | --- |
+| `DateStyles.CompactDate` | `castDate`, no order | `20260107` |
+| `DateStyles.SpaceSeparator` | `castTimestamp` | one space in place of the `T` |
+| `DateStyles.HourOffset` | `castTimestamp` | `±hh` offsets (`+00`, `-05`) |
+| `pivot` | with an order, and `castDatetime` | two-digit years |
+| `months` (a `MonthNames`) | with an order, and `castDatetime` | declared month names |
+
+`DateStyles.CommonForms` (or `DateOptions.commonForms()`) turns the three styles on together; it
+works at every date door, a style a door does not read is ignored there, and it never supplies a
+pivot or month names. A `pivot` is the last year of a 100-year window: `yy` reads as the one year
+from `pivot - 99` to `pivot` that ends in `yy`, so with 2029, `26` is 2026 and `30` is 1930. It
+is 0 (none: a two-digit year is `fieldWidth`) or from 100 to 9999, and is refused rather than
+narrowed. Month names are Excel style only (`07-Jan-26`): the name stands where the declared
+order puts the month, between the date's own separators, and never reorders the fields.
+
+```js
+const { DateOptions, MonthNames, DateOrder, castDate } = require('@skunkwerkx/hypercast')
+
+const months = MonthNames.declare([[1, 'janv.'], [2, 'févr.'], /* … every month … */ [12, 'déc.']])
+if (months.ok) {
+  const options = DateOptions.declare({ pivot: 2029, months: months.value })
+  if (options.ok) castDate('7.janv..26', DateOrder.DayMonthYear, options.value)
+  // { ok: true, value: { year: 2026, month: 1, day: 7 } }
+}
+```
+
+`MonthNames.declare(entries)` takes `[month, name]` entries, aliases as separate entries
+(`[9, 'Sep'], [9, 'Sept']`); `MonthNames.fromPacked(bytes)` takes the layout the C ABI does, each
+entry a month byte, a little-endian `u32` length and the UTF-8, and `packed` reads it back. Names
+match under simple case folding and the longest name followed by the date's separator wins;
+punctuation is part of a name, so with `janv.` declared and `.` as the separator `7.janv..26`
+reads and `7.janv.26` is `malformed` unless `janv` is declared too. Every month needs a name; a
+name is 1 to 64 UTF-8 bytes with no ASCII digit, `/`, `-` or white space, and two that fold alike
+are refused. A `MonthNames` passed alone (as `options`) opens month names and nothing else. A
+refusal is `{ ok: false, message }` naming the rule; passing something else as `options` to a
+date door is a contract violation, and a door that does not read options ignores them.
 
 ## Validation constraints
 
@@ -351,6 +468,19 @@ Constraints.declare({ door: Door.I32, minLength: 1 })
   names, and `packed` and `packedEnum` are the 72-byte `RawConstraints` and the `enum` list in
   the native byte order the core reads in place, the list read only when the flags carry
   `HAS_ENUM` (256), which any declared `enum` sets.
+
+## Versions
+
+The addon (and the WebAssembly fallback) is the core compiled in, not a library found at load
+time, so a core older than 1.1 cannot be loaded under it: the detailed exports and the strict
+grouping policy it calls are linked, and a build against a 1.0 core fails to compile. The plain
+numeric doors call the core's Rust doors, which honour a format's policy; the checked doors and
+the four detailed doors call the core's detailed exports, which do too. The 1.0 checked exports
+ignore the policy and would read every group legacy, so none is called. `index.js` also pairs
+the addon with the package when it loads: unless `nativeVersion()` equals the package's version
+and the addon has `castDetailed`, it is treated as not loaded (`isAvailable()` is `false`, every
+door throws `ERR_HYPERCAST_UNAVAILABLE` with the mismatch as its `cause`), which catches a stale
+platform package or an addon `NAPI_RS_NATIVE_LIBRARY_PATH` points at. `nativeVersion()` is the linked core's version, which the package version matches.
 
 ## What never throws, and the one thing that does
 
@@ -477,11 +607,12 @@ From `typescript/`, with a Rust toolchain installed:
 ```sh
 npm ci
 npm run build       # the release addon for this machine, plus binding.js and binding.d.ts
-npm test            # node --test: the corpus, never-throws, the verdict's types, the declarations, the constraints
+npm test            # node --test: the corpus, never-throws, the verdict's types, the declarations, the constraints, grouping, dates, the detailed doors
 npm run test:bun    # bun test
 npm run typecheck
 npm run lint
 npm run bench
+cargo test --release  # the Rust unit tests of the addon (detail decoding, the validation backstop)
 ```
 
 The WebAssembly fallback needs the `wasm32-wasip1` target (`rustup target add wasm32-wasip1`):

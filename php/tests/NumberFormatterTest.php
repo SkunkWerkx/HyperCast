@@ -198,6 +198,37 @@ final class NumberFormatterTest extends TestCase
         Cast::i32('1.234', $formatter);
     }
 
+    /**
+     * Every locale this ICU ships, through the bridge for the three styles the doors read:
+     * none throws. A symbol the core refuses (white space in a sign, a percent or currency
+     * symbol, or in a decimal separator) would be a real locale `fromNumberFormatter()`
+     * newly rejects; that is a finding, not something to allow-list here.
+     */
+    #[RequiresPhpExtension('intl')]
+    public function testNoLocaleThisIcuShipsIsRefusedByTheBridge(): void
+    {
+        $locales = \ResourceBundle::getLocales('');
+        $this->assertNotEmpty($locales);
+        $styles = [
+            'decimal' => \NumberFormatter::DECIMAL,
+            'percent' => \NumberFormatter::PERCENT,
+            'currency' => \NumberFormatter::CURRENCY,
+        ];
+        $built = 0;
+        foreach ($locales as $locale) {
+            foreach ($styles as $name => $style) {
+                $formatter = new \NumberFormatter($locale, $style);
+                try {
+                    NumFormat::fromNumberFormatter($formatter);
+                } catch (\InvalidArgumentException $e) {
+                    $this->fail("{$locale} {$name}: {$e->getMessage()}");
+                }
+                $built++;
+            }
+        }
+        $this->assertSame(\count($locales) * \count($styles), $built);
+    }
+
     public function testTheDoorsNeedNothingFromIntl(): void
     {
         if (\extension_loaded('intl')) {

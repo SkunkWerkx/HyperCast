@@ -495,7 +495,11 @@ class CiTests(unittest.TestCase):
         self.assertIn('uses: SkunkWerkx/.github/.github/workflows/hyper-core-checks.yml@master', core)
         self.assertEqual(self.needs(core), {'changes'})
         self.assertEqual(self.gate(core), self.g('core', 'ci'))
-        self.assertEqual(with_block(core), {'no_panic_command', 'no_panic_runners', 'corpus_oracle', 'big_endian'})
+        self.assertEqual(with_block(core),
+                         {'no_panic_command', 'no_panic_runners', 'no_panic_canary', 'corpus_oracle', 'big_endian'})
+        # The proof's negative control: rust/src/no_panic_harness.rs's canary must make the
+        # no-panic build fail, naming it alone, so the harness is shown to be checked.
+        self.assertIn('no_panic_canary: hypercast_canary\n', core)
         self.assertIn('big_endian: s390x-unknown-linux-gnu', core)
         # The no-panic proof is a GNU-ld link (rust/.cargo/config.toml's `no-panic` alias), so
         # Linux only; HyperCast's corpus has no oracle to re-derive it.

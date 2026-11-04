@@ -100,7 +100,7 @@ public sealed class InteropTests
 		var bytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(in raw, 1));
 		bytes.Length.ShouldBe(92);
 		MemoryMarshal.Read<uint>(bytes).ShouldBe(92u);
-		MemoryMarshal.Read<uint>(bytes[4..]).ShouldBe(223u);
+		MemoryMarshal.Read<uint>(bytes[4..]).ShouldBe(223u | 1u << 8); // the styles, and strict Western in bits 8 and 9
 		MemoryMarshal.Read<uint>(bytes[8..]).ShouldBe(0x0660u);
 		Symbol(bytes, 12, 9).ShouldBe(",");
 		Symbol(bytes, 21, 9).ShouldBe(". ");
@@ -165,6 +165,48 @@ public sealed class InteropTests
 		Refused(NumFormat.Invariant with { CurrencySymbol = new string('€', 6) });
 		Refused(NumFormat.Invariant with { DigitZero = (Rune)'0' });
 		Refused(NumFormat.Invariant with { DigitZero = new Rune(0x0677) });
+		// White space of any kind: in a sign or the percent symbol, at either edge of the
+		// currency symbol (the input's white space around them is ignored, so they could never
+		// match), and in either decimal separator (a group separator may be one).
+		foreach (var space in new[] { " ", "\u00A0", "\u202F", "\u3000", "\v", "\u0085" })
+		{
+			Refused(NumFormat.Invariant with { MinusSign = space });
+			Refused(NumFormat.Invariant with { PlusSign = "+" + space });
+			Refused(NumFormat.Invariant with { PercentSymbol = space + "%" });
+			Refused(NumFormat.Invariant with { CurrencySymbol = space });
+			Refused(NumFormat.Invariant with { CurrencySymbol = space + "F" });
+			Refused(NumFormat.Invariant with { CurrencySymbol = "F" + space });
+			Refused(NumFormat.Invariant with { CurrencySymbol = space + "F" + space + "CFA" });
+			// Inside, white space is the symbol's own (CLDR's `F CFA`), whatever kind.
+			(NumFormat.Invariant with { CurrencySymbol = "F" + space + "CFA" }).ToRaw();
+			Refused(new NumFormat(space, ",", NumStyles.None));
+			Refused(new NumFormat("x" + space, ",", NumStyles.None));
+			Refused(NumFormat.Invariant with { CurrencyDecimalSeparator = space, CurrencyGroupSeparator = "." });
+			Refused(NumFormat.Invariant with { CurrencyDecimalSeparator = "," + space, CurrencyGroupSeparator = "." });
+			new NumFormat(",", space, NumStyles.All).ToRaw();
+			(NumFormat.Invariant with { CurrencyDecimalSeparator = ",", CurrencyGroupSeparator = space }).ToRaw();
+		}
+		Should.Throw<ArgumentException>(() => (NumFormat.Invariant with { MinusSign = "\u00A0" }).ToRaw())
+			.Message.ShouldBe("Minus sign '\u00A0' must not contain white space. (Parameter 'format')");
+		Should.Throw<ArgumentException>(() => (NumFormat.Invariant with { CurrencySymbol = "\u00A0F" }).ToRaw())
+			.Message.ShouldBe("Currency symbol '\u00A0F' must not start or end with white space. (Parameter 'format')");
+		Should.Throw<ArgumentException>(() => (NumFormat.Invariant with { CurrencySymbol = "F\u202F" }).ToRaw())
+			.Message.ShouldBe("Currency symbol 'F\u202F' must not start or end with white space. (Parameter 'format')");
+		Should.Throw<ArgumentException>(() => (NumFormat.Invariant with { CurrencySymbol = new string('\u00A0', 9) }).ToRaw())
+			.Message.ShouldContain("UTF-8 bytes");
+		Should.Throw<ArgumentException>(() => (NumFormat.Invariant with { CurrencySymbol = "\u00A0$1" }).ToRaw())
+			.Message.ShouldContain("digit");
+		foreach (var (inside, bytes) in new[] { (" ", 5), ("\u00A0", 6), ("\u202F", 7) })
+			(NumFormat.Invariant with { CurrencySymbol = "F" + inside + "CFA" }).ToRaw().Currency.Length.ShouldBe((byte)bytes);
+		Should.Throw<ArgumentException>(() => new NumFormat("\u202F", ",", NumStyles.None).ToRaw())
+			.Message.ShouldBe("Decimal separator '\u202F' must not contain white space. (Parameter 'format')");
+		// The order of the core's check stands: length, then digit, then the separators' equality, then white space.
+		Should.Throw<ArgumentException>(() => new NumFormat(new string('\u00A0', 5), ",", NumStyles.None).ToRaw())
+			.Message.ShouldContain("UTF-8 bytes");
+		Should.Throw<ArgumentException>(() => new NumFormat("\u00A01", ",", NumStyles.None).ToRaw())
+			.Message.ShouldContain("digit");
+		Should.Throw<ArgumentException>(() => new NumFormat("\u00A0", "\u00A0", NumStyles.None).ToRaw())
+			.Message.ShouldContain("must differ");
 		// A comma-space separator is two characters and fine; so is a separator with a
 		// non-ASCII space, and a sign with a bidi mark.
 		new NumFormat(".", ", ", NumStyles.All).ToRaw().GroupSep.Length.ShouldBe((byte)2);
@@ -176,10 +218,16 @@ public sealed class InteropTests
 			Should.Throw<ArgumentException>(() => format.ToRaw()).ParamName.ShouldBe("format");
 		RefusedPeriods(new DateFormat(DateOrder.YearMonthDay, " am", "pm"));
 		RefusedPeriods(new DateFormat(DateOrder.YearMonthDay, "am", "pm "));
+		RefusedPeriods(new DateFormat(DateOrder.YearMonthDay, "\u00A0am", "pm"));
+		RefusedPeriods(new DateFormat(DateOrder.YearMonthDay, "am", "pm\u202F"));
+		RefusedPeriods(new DateFormat(DateOrder.YearMonthDay, "\u3000", "pm"));
+		Should.Throw<ArgumentException>(() => new DateFormat(DateOrder.YearMonthDay, "am\u00A0", "pm").ToRaw())
+			.Message.ShouldBe("AM designator 'am\u00A0' must not start or end with white space. (Parameter 'format')");
 		RefusedPeriods(new DateFormat(DateOrder.YearMonthDay, "a1", "pm"));
 		RefusedPeriods(new DateFormat(DateOrder.YearMonthDay, "am", new string('오', 6)));
 		RefusedPeriods(new DateFormat(DateOrder.YearMonthDay, "\uDC00", "pm"));
 		new DateFormat(DateOrder.YearMonthDay, "a. m.", "p. m.").ToRaw().Pm.Length.ShouldBe((byte)5);
+		new DateFormat(DateOrder.YearMonthDay, "a.\u202Fm.", "p.\u00A0m.").ToRaw().Am.Length.ShouldBe((byte)7);
 	}
 
 	// include/hypercast.h, or null where the tree holds none: the musl suite stages only

@@ -7,9 +7,9 @@
 \alias{cast_duration}
 \title{Dates, times and durations}
 \usage{
-cast_date(x, order = NULL)
+cast_date(x, order = NULL, options = NULL, months = NULL)
 
-cast_datetime(x, order, am = "", pm = "")
+cast_datetime(x, order, am = "", pm = "", options = NULL, months = NULL)
 
 cast_time(x)
 
@@ -23,8 +23,14 @@ missing.}
 \item{order}{The field order: \code{"year_month_day"}, \code{"month_day_year"} or
 \code{"day_month_year"}. \code{NULL}, for \code{cast_date()}, reads strict ISO only.}
 
+\item{options}{\code{NULL} (the default, today's shape rules), or a \code{\link[=date_options]{date_options()}} declaration
+of the opt-in shapes, which the door reads where it applies and ignores otherwise.}
+
+\item{months}{\code{NULL} (the default, numeric months only), or a \code{\link[=month_names]{month_names()}} vocabulary
+the month field may be spelled with.}
+
 \item{am, pm}{A culture's day-period words, read beside \code{AM} and \code{PM}: 1 to 16 UTF-8 bytes
-with no ASCII digit and no whitespace at either end; \code{""} declares none.}
+with no ASCII digit and no white space at either end; \code{""} declares none.}
 }
 \value{
 A \link{hypercast_verdict}.
@@ -37,6 +43,14 @@ without \code{order}. With \code{order} it reads separated dates (\code{1/7/2026
 which. A four-digit first field is a year, so ISO dates read under any order.
 }
 \details{
+The shapes beyond those are all opt-in, declared with \code{options} (\code{\link[=date_options]{date_options()}}) and
+\code{months} (\code{\link[=month_names]{month_names()}}); without them every door keeps today's rules. \code{"compact_date"}
+reads \code{20260107} at \code{cast_date()} without \code{order}; a \code{pivot} reads two-digit years at the
+ordered doors (\code{1/7/26}, the one year in the 100-year window ending at the pivot); and
+\code{months} reads a declared month name in the month field, Excel style (\code{07-Jan-26},
+\code{7-Jan-2026}), in the position \code{order} selects. A \code{months} vocabulary without \code{order} at
+\code{cast_date()} can only be a mistake (the ISO door reads no month names) and is an error.
+
 \code{cast_datetime()} reads the zone-less civil date-times of the AM/PM world: a date in the
 declared order and an optional 24-hour or \code{AM}/\code{PM} time (\verb{1/7/2026 3:04 PM},
 \verb{2026-01-07T15:04:05}, \verb{3 PM}, \verb{12 AM} is midnight). No zone is read and none is invented:
@@ -73,6 +87,10 @@ v <- cast_datetime("1/7/2026 3:04 PM", "month_day_year")
 v
 as.POSIXct(v$value, tz = "America/Chicago")
 cast_datetime("7.1.2026 3:04 nachm.", "day_month_year", am = "vorm.", pm = "nachm.")$value
+cast_date(c("20260107", "1/7/26"), "month_day_year", date_options("common_forms", 2029))
+months <- month_names(c(Jan = 1, Feb = 2, Mar = 3, Apr = 4, May = 5, Jun = 6, Jul = 7,
+                        Aug = 8, Sep = 9, Oct = 10, Nov = 11, Dec = 12))
+cast_date("07-Jan-26", "day_month_year", date_options(pivot = 2029), months)$value
 cast_time(c("15:04:05.123456789", "24:00"))
 cast_duration(c("P1DT6H", "-1.5s", "P1Y"))
 }

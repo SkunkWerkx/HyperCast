@@ -2,7 +2,7 @@
 # Stages what the R package builds and tests from: the wrapper crate's src/rust/Cargo.lock
 # derived from the core's, the vendored crates in src/rust/vendor.tar.xz (CRAN builds
 # offline) with the core itself among them, from this checkout's rust/, the core's C header
-# from include/ as src/include/hypercast.h, and the seventeen corpus files under
+# from include/ as src/include/hypercast.h, and the eighteen corpus files under
 # tests/testthat/corpus/.
 #   (no argument)  the full run: stage, then regenerate inst/AUTHORS from the vendored crates
 #   --stage        derive the lock, vendor the crates and the core, copy the header and corpus
@@ -28,8 +28,8 @@ REPO="$(cd "$PKG/.." && pwd)"
 # Every file in corpus/: the replay (tests/testthat/test-corpus.R) reads each one by name,
 # and a file missing from the tarball is a test failure, never a skip.
 CORPUS_FILES=(boolean.json char.json constraints.json date.json date_order.json datetime.json
-              decimal.json declarations.json duration.json excel_serial.json integer.json
-              real.json time.json timestamp.json typed.json unix.json uuid.json)
+              decimal.json declarations.json duration.json excel_serial.json formats.json
+              integer.json real.json time.json timestamp.json typed.json unix.json uuid.json)
 HEADER=include/hypercast.h
 # Cargo reads these relative to the working directory, src/rust.
 VENDORED=(--config 'source.crates-io.replace-with="vendored-sources"'

@@ -258,7 +258,7 @@ when the absence is deliberate.
 [^java-char]: `char` is a Java keyword, so the door is `character`.
 
 [^utf16-char]: A UTF-16 `char` holds no scalar past `U+FFFF`, so C# and Java return such a
-    scalar as `OutOfRange`, over the input less its ASCII whitespace edges, in the
+    scalar as `OutOfRange`, over the input less its white space edges, in the
     caller's units. A string of exactly one UTF-16 unit, including a lone surrogate, is
     returned as it is, without calling the core.
 
@@ -284,8 +284,15 @@ when the absence is deliberate.
     has the offset table every binding restates and pins in its interop tests.
 
 [^symbol]: 1 to 8 UTF-8 bytes, containing no ASCII digit; the two
-    must differ. A format read across the ABI that breaks a rule is a contract violation,
-    which each binding reports as its platform's argument error before the call.
+    must differ. A decimal separator, the currency one included, holds no white space (the 25
+    code points with Unicode's `White_Space` property): a numeral admits white space only as a
+    group separator, which may be or contain it. A group separator declared as an ASCII space,
+    U+00A0 or U+202F reads as all three in the input, and only those three. A sign or percent
+    symbol holds no white space either, and a currency symbol (1 to 16 UTF-8 bytes, no ASCII
+    digit) none at either edge; inside it white space is fine (`F CFA`), and there an ASCII
+    space, U+00A0 and U+202F read as each other. A format read across the ABI that breaks a
+    rule is a contract violation, which each binding reports as its platform's argument error
+    before the call.
 
 [^symbol-n]: Rust's generic `Symbol<N>` accepts at most `min(N, 255)` UTF-8 bytes, because
     its length crosses the ABI as one byte. The 8- and 16-byte symbols every binding carries
@@ -295,7 +302,7 @@ when the absence is deliberate.
     what the core reads anyway (ASCII `-`, `+`, `%`, `0`, and currency separators equal to
     the number ones); the reading is identical either way, and the check stays on its fast
     path. The C#, Java and Swift bridges never throw on their platform's data: a symbol or
-    designator the core would refuse (over its bytes, an ASCII digit in it, whitespace where
+    designator the core would refuse (over its bytes, an ASCII digit in it, white space where
     none may be) is left undeclared, and a culture whose two separators coincide groups with
     the other ASCII one. PHP's `fromNumberFormatter` raises `InvalidArgumentException` for a
     symbol it cannot carry, as its constructor does, by its own documented decision. Trailing-sign lenience comes from the culture's negative pattern: .NET's
@@ -305,7 +312,10 @@ when the absence is deliberate.
 
 [^periods]: A declared designator is read exactly as spelled, ahead of the clock or after
     it, beside the English `AM`/`PM`, which are read case-insensitively. Each is 1 to 16
-    UTF-8 bytes with no ASCII digit and no ASCII whitespace at either end (`a. m.` is fine).
+    UTF-8 bytes with no ASCII digit and no white space at either end (`a. m.` is fine). Between
+    a time and a trailing designator, or after a leading one, any run of white space (or none)
+    is read, so the `3:04\u202fPM` that ICU 72 and later, JDK 20 and later and Apple platforms
+    write for `en_US` reads.
     The plain `DateOrder` door is unchanged in every binding and reads English only.
 
 [^platform-format]: So a caller holding its platform's own culture or format object passes it
@@ -342,7 +352,7 @@ when the absence is deliberate.
     picks the concrete door itself.
 
 [^r-nul]: An R string cannot hold U+0000, which the core accepts, so `cast_char` reports it as
-    `out_of_range` over the input less its ASCII whitespace edges, as C# and Java report a
+    `out_of_range` over the input less its white space edges, as C# and Java report a
     scalar their UTF-16 `char` cannot hold (`r/R/doors.R`).
 
 [^ts-no-bridge]: The TypeScript binding ships no bridge from `Intl.NumberFormat` or `Intl.DateTimeFormat`:

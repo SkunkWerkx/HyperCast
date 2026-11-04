@@ -164,7 +164,7 @@ final class CastTest extends TestCase
 
     public function testCurrencySymbolValidationIsACallerBug(): void
     {
-        foreach (['$5', 'US D', "kr\t", str_repeat('€', 6), "\xFF"] as $bad) {
+        foreach (['$5', ' USD', "kr\t", str_repeat('€', 6), "\xFF"] as $bad) {
             try {
                 new NumFormat('.', ',', NumFormat::ALL, $bad);
                 $this->fail("currency '{$bad}' should have been rejected");
@@ -172,6 +172,8 @@ final class CastTest extends TestCase
                 $this->addToAssertionCount(1);
             }
         }
+        // White space inside a symbol is its own (CLDR's 'F CFA'); at an edge it is refused.
+        $this->assertSame('US D', (new NumFormat('.', ',', NumFormat::ALL, 'US D'))->currency);
         // Sixteen bytes exactly is the ceiling, not over it.
         $sixteen = str_repeat('€', 5) . 'k';
         $this->assertSame($sixteen, (new NumFormat('.', ',', NumFormat::ALL, $sixteen))->currency);
@@ -384,7 +386,9 @@ final class CastTest extends TestCase
 
     public function testDayPeriodValidationIsACallerBug(): void
     {
-        foreach (['', ' am', 'am ', "pm\t", 'a1', "\xFF", str_repeat('오', 6)] as $bad) {
+        $bads = ['', ' am', 'am ', "pm\t", "\u{A0}am", "am\u{202F}", "\u{3000}", "\u{85}pm", 'a1', "\xFF",
+            str_repeat('오', 6)];
+        foreach ($bads as $bad) {
             try {
                 new DayPeriods($bad, 'pm');
                 $this->fail("designator '{$bad}' should have been rejected");
@@ -395,14 +399,33 @@ final class CastTest extends TestCase
         // Sixteen bytes exactly is the ceiling, not over it; an internal space is fine.
         $sixteen = str_repeat('오', 5) . 'x';
         $this->assertSame($sixteen, (new DayPeriods($sixteen, 'p. m.'))->am);
+        // White space at an edge is refused whatever its kind, and the message says so; inside, any kind stands.
+        foreach ([[" am", 'AM'], ["a\u{A0}m\u{202F}", 'AM'], ["\u{2009}pm", 'PM']] as [$bad, $role]) {
+            try {
+                $role === 'AM' ? new DayPeriods($bad, 'pm') : new DayPeriods('am', $bad);
+                $this->fail("designator '{$bad}' should have been rejected");
+            } catch (\InvalidArgumentException $e) {
+                $this->assertSame(
+                    "{$role} designator must not start or end with white space; got '{$bad}'",
+                    $e->getMessage()
+                );
+            }
+        }
+        $inner = new DayPeriods("a.\u{202F}m.", "p.\u{A0}m.");
+        $this->assertSame(["a.\u{202F}m.", "p.\u{A0}m."], [$inner->am, $inner->pm]);
     }
 
     public function testSymbolValidationIsACallerBug(): void
     {
         $cases = [
-            'a minus sign with whitespace' => ['minusSign' => ' -'],
+            'a minus sign with white space' => ['minusSign' => ' -'],
+            'a minus sign with a no-break space' => ['minusSign' => "\u{A0}\u{2212}"],
+            'a plus sign with a narrow no-break space' => ['plusSign' => "+\u{202F}"],
             'a plus sign with a digit' => ['plusSign' => '+1'],
-            'a percent symbol with whitespace' => ['percent' => "%\t"],
+            'a percent symbol with white space' => ['percent' => "%\t"],
+            'a percent symbol with a no-break space' => ['percent' => "\u{A0}%"],
+            'a currency symbol with a no-break space' => ['currency' => "kr\u{A0}"],
+            'a currency decimal separator with white space' => ['currencyDecimalSep' => "\u{202F}"],
             'an over-long minus sign' => ['minusSign' => str_repeat("\u{2212}", 3)],
             'ill-formed UTF-8 in a sign' => ['minusSign' => "\xC3"],
             'a currency decimal separator with a digit' => ['currencyDecimalSep' => '0'],
@@ -421,9 +444,46 @@ final class CastTest extends TestCase
                 $this->addToAssertionCount(1);
             }
         }
+        // A decimal separator with white space is refused, whichever kind it is; a group separator's stands.
+        foreach ([' ', "\u{A0}", "\u{202F}", "x\u{2009}"] as $space) {
+            try {
+                new NumFormat($space, ',', NumFormat::ALL);
+                $this->fail('a decimal separator of ' . bin2hex($space) . ' should have been rejected');
+            } catch (\InvalidArgumentException $e) {
+                $this->assertSame("Decimal separator must not contain white space; got '{$space}'", $e->getMessage());
+            }
+        }
+        $this->assertSame("\u{202F}", (new NumFormat(',', "\u{202F}", NumFormat::ALL))->groupSep);
         // A currency pair declared in full may differ from the number pair in any way.
         $swapped = new NumFormat('.', ',', NumFormat::ALL, '€', ',', '.');
         $this->assertSame([',', '.'], [$swapped->currencyDecimalSep, $swapped->currencyGroupSep]);
+    }
+
+    public function testACurrencySymbolMayHoldWhiteSpaceInsideButNotAtAnEdge(): void
+    {
+        // CLDR's CFA franc, spelled with each of the spaces the core matches for each other,
+        // and with two it declares but does not match: all declared.
+        foreach ([' ', "\u{A0}", "\u{202F}", "\u{2009}", "\u{3000}", "\t"] as $space) {
+            $symbol = "F{$space}CFA";
+            $this->assertSame($symbol, (new NumFormat('.', ',', NumFormat::ALL, $symbol))->currency, bin2hex($space));
+        }
+        // At either edge, any kind is refused, with a message of its own.
+        foreach ([" F", "F\u{A0}", "\u{202F}F CFA", "F CFA\u{3000}", "\u{85}", ' '] as $bad) {
+            try {
+                new NumFormat('.', ',', NumFormat::ALL, $bad);
+                $this->fail('currency ' . bin2hex($bad) . ' should have been rejected');
+            } catch (\InvalidArgumentException $e) {
+                $this->assertSame(
+                    "Currency symbol must not start or end with white space; got '{$bad}'",
+                    $e->getMessage()
+                );
+            }
+        }
+        // The core reads a declared symbol's spaces as one: each of the three spells the others.
+        $cfa = new NumFormat('.', ',', NumFormat::ALL, "F\u{202F}CFA");
+        foreach ([' ', "\u{A0}", "\u{202F}"] as $space) {
+            $this->assertEquals(new Success(5.0), Cast::f64("5 F{$space}CFA", $cfa), bin2hex($space));
+        }
     }
 
     public function testFromLocaleconvReadsThePlatformShape(): void
@@ -515,7 +575,7 @@ final class CastTest extends TestCase
     public function testSeparatorsCrossAsTheirBytesAtEveryUtf8Width(): void
     {
         // One, two, three and four UTF-8 bytes, each in its field with its length after it.
-        foreach (['.', '·', "\u{202F}", "\u{1F600}", "\u{10FFFF}"] as $char) {
+        foreach (['.', '·', "\u{FF0E}", "\u{1F600}", "\u{10FFFF}"] as $char) {
             $packed = (new NumFormat($char, "\u{D7FF}", 0))->packed();
             $this->assertSame(str_pad($char, 8, "\0") . \chr(\strlen($char)), substr($packed, 12, 9), bin2hex($char));
             $this->assertSame("\u{D7FF}\0\0\0\0\0\x03", substr($packed, 21, 9));

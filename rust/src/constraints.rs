@@ -124,7 +124,9 @@ pub enum Refusal {
     /// `minLength` above `maxLength`.
     MinLengthAboveMax,
     /// A bound, step or `enum` entry the door cannot hold: a fraction or a value outside an
-    /// integer door's range, or a decimal past 96 bits or a scale of 28.
+    /// integer door's range, a decimal past 96 bits or a scale of 28, or a text `enum` entry
+    /// longer than `u32::MAX` bytes, which the packed form cannot carry and no input can match
+    /// (a judged input that long is `OutOfRange`).
     NotHeldByDoor,
     /// A text `enum` entry that is not valid UTF-8.
     EnumNotUtf8,
@@ -484,9 +486,56 @@ impl<'e, T: Numeric> Constraints<'e, T> {
         };
         Self::checked(T::DOOR, raw, entries)
     }
+
+    /// Reads a declaration in its C ABI form for `T`'s door: `raw`, and the integer `enum`
+    /// list packed as the C ABI passes it (16-byte [`Decimal`]s; empty for none). Refused
+    /// exactly where [`check_constraints`] refuses, duplicates included. For a parser that
+    /// carries declarations across its own C ABI and judges each value with the checked doors.
+    ///
+    /// ```
+    /// use hypercast::{Constraints, NumericRules, Rounding, decimal_for_declaration};
+    ///
+    /// let degrees = |text| decimal_for_declaration(text).unwrap();
+    /// let rules = NumericRules::new()
+    ///     .minimum(degrees("-90"))
+    ///     .maximum(degrees("90"))
+    ///     .multiple_of(degrees("0.000001"), Rounding::Midpoint);
+    /// let latitude = Constraints::<f64>::numeric(rules, None).unwrap();
+    /// // Across a C ABI and back: the struct, and no `enum` list.
+    /// let read = Constraints::<f64>::from_raw(latitude.raw(), &[]).unwrap();
+    /// let checked = hypercast::cast_checked("51.47784461", &Default::default(), &read).unwrap();
+    /// assert_eq!((checked.value, checked.adjusted), (51.477845, true));
+    /// ```
+    pub fn from_raw(raw: RawConstraints, entries: &'e [u8]) -> Result<Self, Refusal> {
+        Self::checked(T::DOOR, raw, Entries::packed(T::DOOR, entries))
+    }
 }
 
 impl<'e> Constraints<'e, Text> {
+    /// Reads a declaration in its C ABI form for the text door: `raw`, and the text `enum`
+    /// list packed as the C ABI passes it (each entry a little-endian `u32` byte length, then
+    /// its bytes; empty for none). Refused exactly where [`check_constraints`] refuses,
+    /// duplicates included.
+    ///
+    /// ```
+    /// use hypercast::{Constraints, Text};
+    ///
+    /// let mut packed = Vec::new();
+    /// for entry in ["Female", "Male"] {
+    ///     packed.extend_from_slice(&(entry.len() as u32).to_le_bytes());
+    ///     packed.extend_from_slice(entry.as_bytes());
+    /// }
+    /// let raw = hypercast::RawConstraints {
+    ///     flags: hypercast::RawConstraints::HAS_ENUM,
+    ///     ..hypercast::RawConstraints::ZERO
+    /// };
+    /// let sexes = Constraints::<Text>::from_raw(raw, &packed).unwrap();
+    /// let checked = hypercast::cast_text_checked(b"MALE", &sexes).unwrap();
+    /// assert_eq!((checked.value, checked.enum_index), ("Male", Some(1)));
+    /// ```
+    pub fn from_raw(raw: RawConstraints, entries: &'e [u8]) -> Result<Self, Refusal> {
+        Self::checked(Door::Text, raw, Entries::packed(Door::Text, entries))
+    }
     /// Declares the text keywords and a text `enum` (`None` for none; an empty list is
     /// refused with [`Refusal::EmptyEnum`]) for the text door.
     pub fn text(rules: TextRules, entries: Option<&'e [&'e str]>) -> Result<Self, Refusal> {
@@ -529,6 +578,76 @@ impl<'e, T> Constraints<'e, T> {
     pub(crate) fn entries(&self) -> &Entries<'e> {
         &self.entries
     }
+
+    /// Packs the `enum` list into `out` as the C ABI passes it beside [`raw`](Self::raw), and
+    /// returns the bytes the packed list takes (`Some(0)` for no `enum`): integers as 16-byte
+    /// [`Decimal`]s in their native layout, text as a little-endian `u32` byte length then the
+    /// bytes, and a list read by [`from_raw`](Self::from_raw) as it was given.
+    ///
+    /// When `out` is shorter than that, nothing is written and the length is still returned,
+    /// so a caller sizes its buffer and calls again. `None` when the packed list would take
+    /// more than `usize::MAX` bytes, which only a borrowed text list on a 32-bit target can
+    /// reach; nothing is written then either. Never allocates.
+    ///
+    /// ```
+    /// use hypercast::{Constraints, Text, TextRules};
+    ///
+    /// let sexes = Constraints::text(TextRules::new(), Some(&["Female", "Male"])).unwrap();
+    /// let len = sexes.pack_enum(&mut []).unwrap();
+    /// let mut packed = vec![0; len];
+    /// assert_eq!(sexes.pack_enum(&mut packed), Some(len));
+    /// let read = Constraints::<Text>::from_raw(sexes.raw(), &packed).unwrap();
+    /// assert_eq!(hypercast::cast_text_checked(b"male", &read).unwrap().value, "Male");
+    /// ```
+    pub fn pack_enum(&self, out: &mut [u8]) -> Option<usize> {
+        let len = self.entries.packed_len()?;
+        let Some(out) = out.get_mut(..len) else {
+            return Some(len);
+        };
+        match self.entries {
+            Entries::None => {}
+            Entries::PackedIntegers(bytes) | Entries::PackedText(bytes) => {
+                if let Some(out) = out.get_mut(..bytes.len()) {
+                    out.copy_from_slice(bytes);
+                }
+            }
+            Entries::Integers(entries) => {
+                let (chunks, _) = out.as_chunks_mut::<PACKED_DECIMAL>();
+                for (&entry, chunk) in entries.iter().zip(chunks) {
+                    *chunk = packed_integer(entry);
+                }
+            }
+            Entries::Text(entries) => {
+                let mut rest = out;
+                for entry in entries {
+                    // The checker refused any entry longer than `u32::MAX` bytes, and `len`
+                    // counted every byte written here, so neither split comes up short.
+                    let Some((length, tail)) = rest.split_at_mut_checked(4) else { break };
+                    let Some((bytes, tail)) = tail.split_at_mut_checked(entry.len()) else { break };
+                    length.copy_from_slice(&(entry.len() as u32).to_le_bytes());
+                    bytes.copy_from_slice(entry.as_bytes());
+                    rest = tail;
+                }
+            }
+        }
+        Some(len)
+    }
+}
+
+/// An integer `enum` entry as the C ABI packs it: a [`Decimal`] at scale 0 in its native
+/// layout (`lo`, `hi`, `scale`, the sign byte, two zero bytes). The checker held every entry to
+/// an integer door's range, so the magnitude fits the 96 bits `lo` and `hi` carry.
+fn packed_integer(entry: i128) -> [u8; PACKED_DECIMAL] {
+    let magnitude = entry.unsigned_abs();
+    let [l0, l1, l2, l3, l4, l5, l6, l7] = (magnitude as u64).to_ne_bytes();
+    let [h0, h1, h2, h3] = ((magnitude >> 64) as u32).to_ne_bytes();
+    [l0, l1, l2, l3, l4, l5, l6, l7, h0, h1, h2, h3, 0, u8::from(entry < 0), 0, 0]
+}
+
+/// The bytes a packed text list takes for entries of these byte lengths: `4 + len` each, or
+/// `None` past `usize::MAX`.
+pub(crate) fn packed_text_len(mut lengths: impl Iterator<Item = usize>) -> Option<usize> {
+    lengths.try_fold(0usize, |total, len| total.checked_add(len)?.checked_add(4))
 }
 
 /// An `enum` list: as Rust values, or packed as the C ABI passes it.
@@ -552,6 +671,18 @@ impl<'e> Entries<'e> {
     /// The `enum` list the ABI passes for `door`: packed text at the text door, packed
     /// integers anywhere else (where a door takes no integer `enum`, any entry is refused).
     /// Read only under [`HAS_ENUM`](RawConstraints::HAS_ENUM); empty is no entries.
+    /// The bytes the list takes packed as the C ABI passes it, or `None` past `usize::MAX`
+    /// (only a borrowed text list on a 32-bit target gets there: a list of `i128`s lives in
+    /// memory, and its packing takes no more bytes than it does).
+    fn packed_len(&self) -> Option<usize> {
+        match self {
+            Entries::None => Some(0),
+            Entries::Integers(entries) => entries.len().checked_mul(PACKED_DECIMAL),
+            Entries::Text(entries) => packed_text_len(entries.iter().map(|entry| entry.len())),
+            Entries::PackedIntegers(bytes) | Entries::PackedText(bytes) => Some(bytes.len()),
+        }
+    }
+
     pub(crate) fn packed(door: Door, bytes: &'e [u8]) -> Entries<'e> {
         match (bytes.is_empty(), door) {
             (true, _) => Entries::None,
@@ -814,11 +945,13 @@ fn check(
         return Err(Refusal::MinLengthAboveMax);
     }
 
-    // 8: every bound, step and integer entry held by the door.
+    // 8: every bound, step and integer entry held by the door, and every text entry short
+    // enough for the packed form's `u32` length.
     if (lower && !held(door, &raw.lower))
         || (upper && !held(door, &raw.upper))
         || (step && !held(door, &raw.multiple_of))
         || !integer_entries_held(door, entries)
+        || entries.texts().any(|entry| u32::try_from(entry.len()).is_err())
     {
         return Err(Refusal::NotHeldByDoor);
     }

@@ -409,3 +409,120 @@ impl Keyword {
         KEYWORD_CASES.iter().map(|(keyword, _)| *keyword).find(|keyword| keyword.code() == code)
     }
 }
+
+/// What exactly failed, the core's `detail` vocabulary: a case per published code, with the
+/// code as its value. A code this binding does not name yet (a newer core's) is `Unknown`, whose
+/// value `0` is the code reserved for "no detail": the raw code stays on the fault that carries
+/// it (`DetailedFault::$code`), so a `match` over details needs a `default` arm.
+#[php_enum]
+#[php(name = "HyperCast\\FaultDetail")]
+#[derive(Clone, Copy)]
+pub enum FaultDetail {
+    #[php(value = 0)]
+    Unknown,
+    #[php(value = 1)]
+    Blank,
+    #[php(value = 2)]
+    UnexpectedCharacter,
+    #[php(value = 3)]
+    DigitExpected,
+    #[php(value = 4)]
+    DelimiterExpected,
+    #[php(value = 5)]
+    TrailingText,
+    #[php(value = 6)]
+    NoDigits,
+    #[php(value = 7)]
+    SignMisplaced,
+    #[php(value = 8)]
+    ParenthesesUnbalanced,
+    #[php(value = 9)]
+    MarkRepeated,
+    #[php(value = 10)]
+    GroupMisplaced,
+    #[php(value = 11)]
+    GroupSize,
+    #[php(value = 12)]
+    GroupInFraction,
+    #[php(value = 13)]
+    AmbiguousSeparator,
+    #[php(value = 14)]
+    FractionNotAllowed,
+    #[php(value = 15)]
+    FieldWidth,
+    #[php(value = 16)]
+    WrongLength,
+    #[php(value = 17)]
+    ComponentMissing,
+    #[php(value = 18)]
+    NotRecognized,
+    #[php(value = 19)]
+    UnknownUnit,
+    #[php(value = 20)]
+    InvalidUtf8,
+    #[php(value = 21)]
+    TooLong,
+    #[php(value = 22)]
+    NotFinite,
+    #[php(value = 23)]
+    NotWhole,
+    #[php(value = 24)]
+    NegativeNotAllowed,
+    #[php(value = 25)]
+    TooLarge,
+    #[php(value = 26)]
+    TooSmall,
+    #[php(value = 27)]
+    TooPrecise,
+    #[php(value = 28)]
+    DateFieldOutOfRange,
+    #[php(value = 29)]
+    TimeFieldOutOfRange,
+    #[php(value = 30)]
+    OutsideWindow,
+    #[php(value = 31)]
+    NonexistentDate,
+    #[php(value = 32)]
+    NotAScalar,
+}
+
+impl FaultDetail {
+    /// The case for a core detail code, `Unknown` for one this binding does not name.
+    pub(crate) fn from_code(code: u32) -> FaultDetail {
+        match code {
+            1 => FaultDetail::Blank,
+            2 => FaultDetail::UnexpectedCharacter,
+            3 => FaultDetail::DigitExpected,
+            4 => FaultDetail::DelimiterExpected,
+            5 => FaultDetail::TrailingText,
+            6 => FaultDetail::NoDigits,
+            7 => FaultDetail::SignMisplaced,
+            8 => FaultDetail::ParenthesesUnbalanced,
+            9 => FaultDetail::MarkRepeated,
+            10 => FaultDetail::GroupMisplaced,
+            11 => FaultDetail::GroupSize,
+            12 => FaultDetail::GroupInFraction,
+            13 => FaultDetail::AmbiguousSeparator,
+            14 => FaultDetail::FractionNotAllowed,
+            15 => FaultDetail::FieldWidth,
+            16 => FaultDetail::WrongLength,
+            17 => FaultDetail::ComponentMissing,
+            18 => FaultDetail::NotRecognized,
+            19 => FaultDetail::UnknownUnit,
+            20 => FaultDetail::InvalidUtf8,
+            21 => FaultDetail::TooLong,
+            22 => FaultDetail::NotFinite,
+            23 => FaultDetail::NotWhole,
+            24 => FaultDetail::NegativeNotAllowed,
+            25 => FaultDetail::TooLarge,
+            26 => FaultDetail::TooSmall,
+            27 => FaultDetail::TooPrecise,
+            28 => FaultDetail::DateFieldOutOfRange,
+            29 => FaultDetail::TimeFieldOutOfRange,
+            30 => FaultDetail::OutsideWindow,
+            31 => FaultDetail::NonexistentDate,
+            32 => FaultDetail::NotAScalar,
+            _ => FaultDetail::Unknown,
+        }
+    }
+}

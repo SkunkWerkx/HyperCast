@@ -434,3 +434,21 @@ def test_the_constraint_types_have_docstrings():
         assert doc and doc.strip(), member
     for member in ("code", "name"):
         assert getattr(Keyword, member).__doc__, member
+
+
+def test_door_23_is_no_checked_door():
+    """23 is the core's character door, which no declaration can be bound to: a ValueError at
+    construction and at the refusal-code probe, whatever else is declared, never a quiet 'no
+    rules'. The doors a declaration can name are the numeric ones and text."""
+    for door in (23, 24, 0, 1, 12, 20, 21, 22):
+        with pytest.raises(ValueError, match="door must be a Door"):
+            Constraints(door)  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="door must be a Door"):
+            hypercast.cast_constraints_check(door)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="door must be a Door"):
+        Constraints(door=23, min_length=1)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="door must be a Door"):
+        hypercast.cast_constraints_check(door=23, trim=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        Door(23)
+    assert 23 not in {member.value for member in Door}

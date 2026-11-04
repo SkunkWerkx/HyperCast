@@ -97,15 +97,30 @@ class TypeScriptSiteTests(unittest.TestCase):
         self.assertEqual(self.mod.declared(site[1]), expected)
 
 
+def required(mod, got):
+    """Every core export a site that declares `got` must declare: all of them but the 1.0
+    exports superseded by a detailed export it calls."""
+    return mod.core_exports() - mod.superseded(str, got)
+
+
 class RSiteTests(unittest.TestCase):
-    def test_r_shim_site_reads_every_core_export(self):
-        import re
+    def test_r_shim_site_reads_every_required_core_export(self):
         mod = load('check_exports')
         site = next(s for s in mod.SITES if s[0] == 'R (C shim)')
         self.assertEqual([g for g, _ in site[1]], ['r/src/hypercast.c'])
         self.assertEqual(site[2:], ('all', ()))
         text = (ROOT / 'r/src/hypercast.c').read_text(encoding='utf-8')
-        self.assertEqual(set(re.findall(site[1][0][1], text)), mod.core_exports())
+        got = set(site[1][0][1](text))
+        self.assertTrue(got <= mod.core_exports(), got - mod.core_exports())
+        self.assertEqual(required(mod, got) - got, set())
+        self.assertTrue(mod.DETAILED <= got)
+
+    def test_r_shim_comment_is_not_a_call(self):
+        mod = load('check_exports')
+        site = next(s for s in mod.SITES if s[0] == 'R (C shim)')
+        calls = site[1][0][1]
+        self.assertEqual(calls('/* cast_bool(x) */ cast_i16(y);\n// hypercast_version()\n'), ['cast_i16'])
+        self.assertEqual(calls('Rf_error("cast_uuid(a) failed"); cast_text(p, n, &o, &f);'), ['cast_text'])
 
 
 class JavaSiteTests(unittest.TestCase):
@@ -356,18 +371,28 @@ class GoSiteTests(unittest.TestCase):
 
     def test_the_go_sites_are_the_generated_core_and_the_binding(self):
         self.assertEqual(self.core[1:], ([('go/internal/core/core.go', r'func \(m \*Module\) X((?:cast|hypercast)_\w+)\(')], 'all', ()))
-        self.assertEqual(self.calls[1:], ([('go/core.go', r'\.X((?:cast|hypercast)_\w+)\b')], 'all', ()))
-        for site in (self.core, self.calls):
-            self.assertEqual(self.mod.declared(site[1]), self.mod.core_exports(), site[0])
+        self.assertEqual([g for g, _ in self.calls[1]], ['go/core.go'])
+        self.assertEqual(self.calls[1][0][1].pattern, r'\.X((?:cast|hypercast)_\w+)\b')
+        self.assertEqual(self.calls[2:], ('all', ()))
+        self.assertEqual(self.mod.declared(self.core[1]), self.mod.core_exports(), self.core[0])
+        got = self.mod.declared(self.calls[1])
+        self.assertEqual(required(self.mod, got) - got, set(), self.calls[0])
 
     def found(self, site, text):
-        return set(self.re.findall(site[1][0][1], text, self.re.MULTILINE))
+        pattern = site[1][0][1]
+        if callable(pattern):
+            return set(pattern(text))
+        return set(self.re.findall(pattern, text, self.re.MULTILINE))
 
     def test_a_call_the_binding_drops_is_missing(self):
         text = (ROOT / 'go/core.go').read_text(encoding='utf-8')
         self.assertIn('.Xcast_bool\n', text)
+        whole = self.found(self.calls, text)
         got = self.found(self.calls, text.replace('.Xcast_bool\n', '.Xnot_an_export\n'))
-        self.assertEqual(self.mod.core_exports() - got, {'cast_bool'})
+        self.assertEqual(whole - got, {'cast_bool'})
+        # A comment naming it is not a call either.
+        got = self.found(self.calls, text.replace('.Xcast_bool\n', '.Xnot_an_export // .Xcast_bool\n'))
+        self.assertEqual(whole - got, {'cast_bool'})
 
     def test_an_export_the_core_grows_is_stale(self):
         text = (ROOT / 'go/internal/core/core.go').read_text(encoding='utf-8')
@@ -401,6 +426,7 @@ class SwiftSiteTests(unittest.TestCase):
 
     def test_the_site_is_the_swift_sources_and_reads_every_export(self):
         self.assertEqual(self.site[1:], ([('swift/Sources/HyperCast/*.swift', self.mod.swift_calls)], 'all', ()))
+        # Swift still calls every 1.0 export (its legacy table), so nothing is superseded here.
         self.assertEqual(self.mod.declared(self.site[1]), self.mod.core_exports())
 
     def test_a_call_or_a_function_passed_counts(self):
@@ -441,11 +467,14 @@ class SwiftSiteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             sources = Path(tmp) / 'swift/Sources/HyperCast'
             shutil.copytree(ROOT / 'swift/Sources/HyperCast', sources)
-            cast = sources / 'Cast.swift'
+            # cast_declared_decimal: no detailed export supersedes it, so dropping its one call
+            # (leaving it named in a comment) fails.
+            cast = sources / 'Constraints.swift'
             text = cast.read_text(encoding='utf-8')
-            line = '        uuid: { cast_uuid($0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3))) },\n'
+            line = ('            cast_declared_decimal(Cast.inputPointer(utf8), UInt(utf8.count), '
+                    '.init(OpaquePointer(out.baseAddress)))\n')
             self.assertIn(line, text)
-            cast.write_text(text.replace(line, '        uuid: { _, _, _, _ in 0 },  // cast_uuid($0, $1)\n'),
+            cast.write_text(text.replace(line, '            Int32(0)  // cast_declared_decimal(utf8)\n'),
                             encoding='utf-8')
             saved = (mod.ROOT, mod.SITES, mod.core_exports, mod.napi_catch_unwind, mod.php_guard,
                      mod.jni_no_panic)
@@ -462,7 +491,104 @@ class SwiftSiteTests(unittest.TestCase):
             with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as caught:
                 mod.main()
         self.assertEqual(caught.exception.code, 1)
-        self.assertIn('missing cast_uuid', out.getvalue())
+        self.assertIn('missing cast_declared_decimal', out.getvalue())
+
+
+class SupersedesTests(unittest.TestCase):
+    """The one allowance every site shares: a site that calls a 1.1 detailed export may omit
+    the 1.0 exports that export reaches by door code, and must still declare the rest."""
+
+    KEPT = {'hypercast_version', 'cast_constraints_check', 'cast_declared_decimal'}
+
+    def setUp(self):
+        self.mod = load('check_exports')
+
+    def test_every_export_is_superseded_kept_or_detailed(self):
+        mod = self.mod
+        olds = [name for names in mod.SUPERSEDES.values() for name in names]
+        self.assertEqual(len(olds), len(set(olds)))
+        self.assertEqual(mod.DETAILED, {'cast_detailed', 'cast_detailed_from_f64', 'cast_checked_detailed',
+                                        'cast_checked_detailed_from_f64'})
+        self.assertEqual(set(olds) | mod.DETAILED | self.KEPT, mod.core_exports())
+        self.assertFalse(set(olds) & (mod.DETAILED | self.KEPT))
+        self.assertEqual(len(mod.SUPERSEDES['cast_detailed']), 23)  # Door's codes 1 to 23
+
+    def test_only_a_called_detailed_export_supersedes(self):
+        mod = self.mod
+        self.assertEqual(mod.superseded(str, {'cast_detailed'}), set(mod.SUPERSEDES['cast_detailed']))
+        self.assertEqual(mod.superseded(str, {'cast_checked_detailed'}), {'cast_checked'})
+        self.assertEqual(mod.superseded(str, {'cast_i32', 'cast_checked'}), set())
+        self.assertEqual(mod.superseded(mod.camel, {'castDetailedFromF64'}),
+                         {'castDecimalFromF64', 'castExcelSerialFromF64', 'castExcelTime', 'castExcelDuration'})
+
+    def test_a_folded_detailed_export_supersedes_nothing(self):
+        mod = self.mod
+        for spelling in (mod.pyo3_spelling, mod.ruby_spelling):
+            for name in mod.DETAILED:
+                self.assertIsNone(spelling(name))
+            self.assertEqual(mod.superseded(spelling, {spelling(n) for n in mod.core_exports()}), set())
+        self.assertEqual(mod.ruby_spelling('cast_decimal_from_f64'), 'decimal_from_float')
+        self.assertEqual(mod.pyo3_spelling('hypercast_version'), 'native_version')
+
+    def run_site(self, text, supersedes=None):
+        import contextlib
+        import io
+        mod = self.mod
+        exports = mod.core_exports()
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / 'site.c').write_text(text, encoding='utf-8')
+            saved = {name: getattr(mod, name) for name in
+                     ('ROOT', 'SITES', 'core_exports', 'napi_catch_unwind', 'php_guard', 'php_link',
+                      'jni_no_panic', 'SUPERSEDES', 'DETAILED')}
+            self.addCleanup(lambda: [setattr(mod, k, v) for k, v in saved.items()])
+            mod.ROOT = Path(tmp)
+            mod.SITES = [('site', [('site.c', mod.code_only(r'\b((?:cast|hypercast)_\w+)\('))], 'all', ())]
+            mod.core_exports = lambda: exports
+            mod.napi_catch_unwind = mod.php_guard = mod.php_link = mod.jni_no_panic = lambda path: None
+            if supersedes is not None:
+                mod.SUPERSEDES, mod.DETAILED = supersedes, set(supersedes)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as caught:
+                mod.main()
+        return caught.exception.code, out.getvalue()
+
+    def calls(self, names):
+        return ''.join(f'{name}();\n' for name in sorted(names))
+
+    def test_a_site_calling_the_detailed_exports_and_the_kept_ones_passes(self):
+        code, out = self.run_site(self.calls(self.mod.DETAILED | self.KEPT))
+        self.assertEqual(code, 0, out)
+        self.assertIn('ok   site: 7 (29 1.0 exports superseded by the detailed ones)', out)
+
+    def test_a_site_calling_everything_passes(self):
+        code, out = self.run_site(self.calls(self.mod.core_exports()))
+        self.assertEqual(code, 0, out)
+        self.assertIn('ok   site: 36\n', out)
+
+    def test_a_kept_export_is_never_superseded(self):
+        code, out = self.run_site(self.calls((self.mod.DETAILED | self.KEPT) - {'cast_constraints_check'}))
+        self.assertEqual(code, 1)
+        self.assertIn('missing cast_constraints_check', out)
+
+    def test_without_its_detailed_export_a_dropped_door_is_missing(self):
+        names = self.mod.DETAILED | self.KEPT | set(self.mod.SUPERSEDES['cast_checked_detailed_from_f64'])
+        code, out = self.run_site(self.calls(names - {'cast_checked_detailed_from_f64', 'cast_checked_from_f64'}))
+        self.assertEqual(code, 1)
+        self.assertIn('missing cast_checked_detailed_from_f64\n', out)
+        self.assertIn('missing cast_checked_from_f64\n', out)
+        self.assertNotIn('missing cast_i32', out)
+
+    def test_a_comment_is_not_a_call(self):
+        code, out = self.run_site(self.calls((self.mod.DETAILED | self.KEPT) - {'cast_detailed'})
+                                  + '// cast_detailed(door, ...)\n/* cast_detailed() */\n')
+        self.assertEqual(code, 1)
+        self.assertIn('missing cast_detailed\n', out)
+        self.assertIn('missing cast_i32\n', out)
+
+    def test_a_table_naming_no_export_fails(self):
+        table = dict(self.mod.SUPERSEDES, cast_detailed=('cast_bogus',))
+        code, _ = self.run_site(self.calls(self.mod.core_exports()), supersedes=table)
+        self.assertIn('cast_bogus', str(code))
 
 
 if __name__ == '__main__':

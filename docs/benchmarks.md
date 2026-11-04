@@ -10,7 +10,10 @@ figure includes the binding's crossing and any transcode.
 Two machines. Every table is linux-x64 on an Intel Core i9-11900H unless it says otherwise; Go's
 current figures and R's were measured on an Apple M6 (Mac18,5) under macOS on 2026-11-01
 ([below](#go-and-r-on-an-apple-m6)), as were the checked doors
-([below](#the-checked-doors-on-an-apple-m6)), and the two groups are not comparable with each other. Two
+([below](#the-checked-doors-on-an-apple-m6)), and the Rust core's plain doors before and after the
+Unicode white-space change on 2026-11-03
+([below](#the-plain-doors-and-unicode-white-space-on-an-apple-m6)); the two groups are not
+comparable with each other. Two
 labels mark figures whose implementation has since been replaced, kept until they are run again:
 
 - **C# †**: measured on .NET 11 RC 1 with BenchmarkDotNet's in-process toolchain, before the
@@ -294,6 +297,125 @@ disassemble identically, and the inlined judgement does no extra work), and keep
 `checked_numeric` out of line did not move it, so it stays printed. Against this control, `f64`
 is about 3% slower (the second judgement of the delivered float), `checked_from_f64` level and
 `Text` within 1%.
+
+## The plain doors and Unicode white space, on an Apple M6
+
+Every door now trims Unicode `White_Space` at its edges where it trimmed ASCII (see the
+CHANGELOG), which puts a scan where a byte test was. Measured on the same Apple M6 (12 cores,
+32 GiB) under macOS 27.2 on 2026-11-03, with rustc 1.99.1: `cargo bench --bench cast_benchmarks`
+from `rust/`, once on a detached checkout of the base commit (`446b4f7`) and once on the
+change, back to back. Medians are Criterion's point estimates. The machine was not idle: load
+average 2.6 before the base run, 4.3 between the runs and 3.6 after, with other applications
+open, so read a difference under about 3% as noise (the comparators the change cannot touch,
+`f64/stdlib` and `i64/stdlib` and the rest, moved from -2.5% to +3.0%).
+
+| Case | base | change | diff |
+| --- | ---: | ---: | ---: |
+| bool/hypercast | 1.11 ns | 0.91 ns | -18.4% |
+| bool/stdlib | 0.37 ns | 0.37 ns | -0.2% |
+| i64/hypercast | 4.22 ns | 4.00 ns | -5.2% |
+| i64/stdlib | 3.51 ns | 3.52 ns | +0.0% |
+| f64/hypercast | 6.71 ns | 6.79 ns | +1.2% |
+| f64/stdlib | 4.50 ns | 4.64 ns | +3.0% |
+| f64-shapes/plain | 5.71 ns | 5.71 ns | +0.0% |
+| f64-shapes/grouped | 10.07 ns | 10.21 ns | +1.4% |
+| f64-shapes/currency | 9.72 ns | 9.87 ns | +1.5% |
+| f64-shapes/grouped currency | 10.20 ns | 10.38 ns | +1.7% |
+| f64-shapes/grouped currency in parens | 10.40 ns | 10.94 ns | +5.1% |
+| decimal-shapes/plain | 4.92 ns | 4.83 ns | -1.9% |
+| decimal-shapes/grouped | 10.39 ns | 10.23 ns | -1.6% |
+| decimal-shapes/currency | 9.35 ns | 9.29 ns | -0.7% |
+| decimal-shapes/grouped currency | 9.93 ns | 9.92 ns | -0.1% |
+| decimal-shapes/grouped currency in parens | 10.14 ns | 10.29 ns | +1.5% |
+| i64-shapes/plain | 2.74 ns | 2.55 ns | -7.1% |
+| i64-shapes/grouped | 6.40 ns | 6.01 ns | -6.0% |
+| i64-shapes/grouped currency | 6.83 ns | 6.51 ns | -4.7% |
+| i64-shapes/grouped currency in parens | 6.80 ns | 6.66 ns | -2.1% |
+| i32-declared-currency/invariant | 6.24 ns | 6.26 ns | +0.3% |
+| i32-declared-currency/declared $ | 6.74 ns | 6.57 ns | -2.4% |
+| i32-malformed/hypercast | 19.99 ns | 20.89 ns | +4.5% |
+| i32-malformed/stdlib | 2.13 ns | 2.15 ns | +1.0% |
+| decimal/hypercast | 5.86 ns | 5.93 ns | +1.1% |
+| decimal/hypercast grouped currency | 10.35 ns | 10.50 ns | +1.4% |
+| uuid/hypercast | 4.98 ns | 4.78 ns | -4.0% |
+| uuid/uuid-crate | 7.03 ns | 6.85 ns | -2.5% |
+| timestamp/hypercast | 7.16 ns | 6.98 ns | -2.4% |
+| timestamp/time-crate | 7.31 ns | 7.37 ns | +0.8% |
+| datetime/hypercast-messy | 8.08 ns | 8.29 ns | +2.6% |
+| datetime/hypercast-iso | 7.84 ns | 7.22 ns | -7.9% |
+| datetime/hypercast-date-ordered | 3.49 ns | 3.23 ns | -7.4% |
+| separator-detection/hypercast-detect | 16.68 ns | 16.78 ns | +0.6% |
+| separator-detection/hypercast-declared | 9.09 ns | 9.02 ns | -0.7% |
+| duration/hypercast-iso | 10.95 ns | 11.84 ns | +8.1% |
+| duration/hypercast-colon | 7.14 ns | 7.33 ns | +2.6% |
+| checked-f64/plain | 6.96 ns | 7.04 ns | +1.2% |
+| checked-f64/checked | 88.24 ns | 88.40 ns | +0.2% |
+| checked-f64/checked from_f64 | 264.88 ns | 270.44 ns | +2.1% |
+| checked-decimal/plain | 3.91 ns | 3.88 ns | -0.7% |
+| checked-decimal/checked | 26.64 ns | 26.57 ns | -0.3% |
+| checked-text/plain | 3.97 ns | 3.96 ns | -0.2% |
+| checked-text/checked | 62.03 ns | 62.26 ns | +0.4% |
+
+On text with nothing to trim, the doors are level inside the noise: nothing is clearly faster,
+and the slowest case, `duration/hypercast-iso`, is **+8.1%** (+0.9 ns, more than any
+comparator moved), printed here as the loss it may be. The `hypercast` rows that came out
+faster (`bool` -18.4%, `datetime/hypercast-iso` -7.9%, the date door -7.4%) are not claimed:
+the change reorganised the trim, and a few percent either way is layout and noise.
+
+**Padded input is slower.** The padded cases are a group of the same harness, `padded` in
+`rust/benches/cast_benchmarks.rs`: each door's text bare and padded with an ASCII space before
+and a newline after (` true\n`, `  1234567890123\n`, `  12345.6789\n`, and a D-format UUID in a
+space and a newline). They were run on 2026-11-03 on the same Apple M6 (macOS 27.2, rustc
+1.99.1), with that harness copied into the base checkout so both sides ran the same file,
+three times each, alternating base and change: twice as `cargo bench --bench cast_benchmarks
+-- 'padded/|duration/' --warm-up-time 1 --measurement-time 4` and once as the whole bench at
+Criterion's defaults. Load average ran 3.6 to 2.4 over the filtered pairs and 2.0 to 1.6 over
+the whole-bench pair, so the machine was not idle. Each figure is the median of the three
+runs' Criterion medians (the three runs of a case spread by 0.4 ns at most):
+
+| Case | base | change | diff |
+| --- | ---: | ---: | ---: |
+| `bool`, `true` | 1.32 ns | 1.39 ns | +5% |
+| `bool`, ` true\n` | 1.32 ns | 3.29 ns | **+150%** |
+| `i64`, `1234567890123` | 4.80 ns | 4.79 ns | 0% |
+| `i64`, `  1234567890123\n` | 4.83 ns | 7.33 ns | +52% |
+| `f64`, `12345.6789` | 7.85 ns | 6.47 ns | -18% |
+| `f64`, `  12345.6789\n` | 7.78 ns | 8.57 ns | +10% |
+| `uuid`, D format | 4.44 ns | 4.74 ns | +7% |
+| `uuid`, padded the same way | 5.16 ns | 7.02 ns | +36% |
+
+Read the padding cost inside each build, not the diff column. On the change, padding adds
+1.9 ns to `bool`, 2.5 to `i64`, 2.1 to `f64` and 2.3 to `uuid`; on the base it added 0.0,
+0.0, -0.1 and 0.7 ns. A padded cell is about 2 ns slower than on the base. The bare `f64` row
+shows why the diff column cannot be read: the same base commit measured 6.26 and 6.71 ns
+for the bare `f64` in the two earlier sessions and 7.85 ns here, because the bench file
+gained cases and the code moved, so the bare rows' -18% to +7% are layout, not claimed, and
+the padded diffs are percentages of that base (the earlier run, with a 6.63 ns base, had
+`f64` at +31%). Padded with U+00A0 on both sides (the `padded-nbsp` group, the change only,
+one run at 4 s, load 2.0) the change costs the same as with ASCII: `bool` 3.73 ns, `i64`
+7.09 ns, `f64` 9.14 ns; the base reads none of that text, so there is nothing to put beside
+it. This loss is the price of reading what Excel and the web paste, and it was not
+recovered.
+
+**The unpadded doors, a second time.** The whole-bench pair above is a second run of every
+case in the table further up, with the base and the change again back to back. The doors
+with nothing to trim showed no pattern of loss again, with the spread wider than
+the first time, from -22% to +13%: `f64/hypercast` and `f64-shapes/plain` read -17% and -22%
+on the base's 7.9 ns (the layout shift above), and the losses were `i32-malformed/hypercast` +9.4% (it was
++4.5% in the first run), `checked-decimal/checked` +12.6% (it was -0.3%), `uuid/hypercast`
++7.3% (it was -4.0%), `bool/hypercast` +6.3% and `checked-text/plain` +5.4%, printed here as
+the losses they may be. `duration/hypercast-iso`, the first run's +8.1%, did not repeat:
+-2.4% in the whole-bench run and -11% in the two filtered runs (10.5 ns against 11.9), so
+that loss is within what this machine moves from run to run. One case is slower in both
+sessions: `i32-malformed/hypercast`, +4.5% and +9.4% (a rejected input; its cause
+was not investigated), so it stays printed as a loss.
+
+History, since a first measurement of this change was worse: the same pair of runs taken
+before the trim was reworked (its scanners were out-of-line loops run at every call) showed
+every `hypercast` door +16% to +34% on unpadded input and `bool` +172% (1.10 to 2.99 ns),
+while the comparators stood still. The rework returns at once when an input's first and last
+bytes are visible ASCII and inlines the scanners, and the runs above are after it. Every other table in this file, each binding's included,
+predates the white-space change and has not been re-run.
 
 ## TypeScript
 

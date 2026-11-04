@@ -15,15 +15,16 @@ import java.util.concurrent.ConcurrentHashMap;
  * culture-sensitive text, and {@link #from(Locale)} is its bridge from the JDK's own
  * {@link DateFormatSymbols}.
  *
- * <p>A declared designator is matched exactly, after the clock ({@code 3:04 nachm.}, with an
- * optional space before it) or ahead of it ({@code 오후 3:04}, an optional space after), and
+ * <p>A declared designator is matched exactly, after the clock ({@code 3:04 nachm.}) or ahead
+ * of it ({@code 오후 3:04}), with any run of white space, or none, between designator and clock
+ * (so {@code 3:04\u202fPM}, as JDK 20 and later write {@code Locale.US}, reads), and
  * is read <em>beside</em> the English {@code AM}/{@code PM}, which the core always reads,
  * ASCII case-insensitively, in both positions. The {@link DateOrder} overloads of the door
  * declare none, which is exactly what they always read.
  *
  * @param order the declared field order of the date part
  * @param amDesignator the designator of the first half of the day: 1 to 16 UTF-8 bytes, no
- *     ASCII digit, no ASCII whitespace at either end (a space inside, as in {@code a. m.}, is
+ *     ASCII digit, no white space at either end (a space inside, as in {@code a. m.}, is
  *     fine); {@code ""} declares none beside {@code AM}
  * @param pmDesignator the designator of the second half, likewise; {@code ""} declares none
  *     beside {@code PM}
@@ -34,7 +35,7 @@ public record DateTimeFormat(DateOrder order, String amDesignator, String pmDesi
 
     /**
      * Validates the designators up front, by the core's own rules — whole code points, at
-     * most 16 UTF-8 bytes, no ASCII digit, no ASCII whitespace at either end, which the
+     * most 16 UTF-8 bytes, no ASCII digit, no white space at either end, which the
      * grammar around a designator reads itself — so a malformed one fails loudly as the
      * caller bug it is, never as a verdict.
      *
@@ -107,7 +108,7 @@ public record DateTimeFormat(DateOrder order, String amDesignator, String pmDesi
 
     // Why the core would refuse a designator, or null when it would not: whole code points,
     // within the field's capacity, no ASCII digit (a digit is a digit before it is anything
-    // else), and no ASCII whitespace (space, \t, \n, \f, \r) at either end. Empty passes —
+    // else), and no white space (any White_Space code point) at either end. Empty passes —
     // nothing declared.
     private static String refusal(String what, String designator) {
         Objects.requireNonNull(designator, what);
@@ -127,14 +128,10 @@ public record DateTimeFormat(DateOrder order, String amDesignator, String pmDesi
                 return what + " must not contain an ASCII digit; got '" + designator + "'";
             }
         }
-        if (asciiWhitespace(designator.charAt(0)) || asciiWhitespace(designator.charAt(designator.length() - 1))) {
-            return what + " must not start or end with ASCII whitespace; got '" + designator + "'";
+        if (WhiteSpace.atEdge(designator)) {
+            return what + " must not start or end with white space; got '" + designator + "'";
         }
         return null;
-    }
-
-    private static boolean asciiWhitespace(char c) {
-        return c == ' ' || c == '\t' || c == '\n' || c == '\f' || c == '\r';
     }
 
     /** How many locales {@link #from(Locale)} keeps derived formats for. */

@@ -154,7 +154,9 @@ and messages are the same in this extension, except:
 - A `\NumberFormatter` given to a door is converted on every call, each of its symbols and
   attributes asked once; 1.0 asked them all on every call to compare with the conversion it
   remembered per formatter, and again to convert when they had changed. Only a subclass that
-  overrides `getSymbol()` or `getTextAttribute()` can tell.
+  overrides `getSymbol()` or `getTextAttribute()` can tell. From 1.1 the conversion also asks
+  `getPattern()` and `getLocale()` and makes the locale's other number-or-currency formatter
+  with `NumberFormatter::create()`, to read the grouping rule (above).
 - `NativePlatform::ridAndLibraryName()` reads `/proc/self/maps` itself to tell musl from
   glibc, so `open_basedir` no longer applies to that read.
 - `Cast::f32('-0', ...)` and `Cast::f64('-0', ...)` are `0.0`; 1.0 returned `-0.0`. Zero has
@@ -170,6 +172,82 @@ coerced to bool" warning twice. The same check means a debug build's engine coer
 scalar before the extension sees it, so there `new Constraints(...)` gets a `float` bound
 already made a string and a `bool` length already made an `int`, which a release build refuses
 as a `TypeError` ([Validation constraints](#validation-constraints)).
+
+## 1.1: strict grouping, fault detail, date options
+
+Three changes in 1.1, each additive in its API and one of them deliberate in its answers.
+
+- **Grouping is strict by default.** `NumFormat::invariant()`, `detect()` and `new NumFormat(...)`
+  declare strict Western grouping: groups of exactly three digits counted from the decimal
+  separator, the leftmost one to three. `12,34` was 1234 through 1.0's invariant format and is
+  a `Malformed` fault now, spanning `,34`; `1,234` and `1234` read as before. The policy is the
+  last constructor argument, `grouping`, and a style mask never carries it (`flags` takes only
+  the styles, 0 through 255; an undefined bit is refused, which 1.0 ignored):
+
+  ```php
+  new NumFormat('.', ',', NumFormat::ALL);                                       // strict Western
+  new NumFormat('.', ',', NumFormat::ALL, grouping: NumFormat::GROUPING_INDIAN); // 12,34,567
+  new NumFormat('.', ',', NumFormat::ALL, grouping: NumFormat::GROUPING_LEGACY); // 1.0's rule
+  $format->withGrouping(NumFormat::GROUPING_LEGACY);                             // replaces the policy
+  ```
+
+  `GROUPING_LEGACY` (0) is the escape hatch: a group separator anywhere between two digits.
+  `GROUPING_WESTERN` (256) and `GROUPING_INDIAN` (512) are the bits the core reads from the
+  packed flags word, and `GROUPING_POLICY` (768) is their mask, not a policy. A `NumFormat`
+  unserialized from 1.0 carries no policy and keeps 1.0's meaning: `unserialize()` sets its
+  `grouping` to `GROUPING_LEGACY` (so `->grouping` reads, never an unset-property `Error`), and
+  the core is handed only the styles of its `flags`' low byte beside that policy, which is what
+  1.0's core read from whatever integer it stored (`-1` is every style, `351` is `95`). The strict
+  policies do not enable grouping: with `GROUPING` off a group separator stays forbidden.
+  The bridges never knowingly reject their platform's own output. They read the platform's
+  complete number and currency grouping patterns, and one `NumFormat` has one policy and one
+  `GROUPING` flag for both: when every pattern that groups is Western (groups of three) the
+  format is strict Western, when every one is Indian (a group of three, then groups of two) it is
+  strict Indian, and when one groups another way (Toki Pona, `tok`: groups of two) or they
+  disagree (ICU's `ml`, `mr`, `or` and `ta`: number `#,##,##0.###`, currency `¤#,##0.00`) it is
+  `GROUPING_LEGACY`. `GROUPING` is cleared only when neither groups (`en_US_POSIX`, the `C`
+  locale); when just one does not, the flag stays and that pattern's values stay valid ungrouped,
+  since a format cannot forbid currency grouping on its own. The fallback is fixed, never
+  inferred from the input. `fromNumberFormatter()` reads the formatter's own pattern (its
+  secondary size of zero repeats the primary: `#,##0` is groups of three) and its locale's
+  pattern for the other of the number and currency styles, made with `NumberFormatter::create()`
+  from `getLocale()`, so a customised formatter is judged by what it was set to; a percent
+  pattern is outside the rule. `fromLocaleconv()` reads `grouping` and `mon_grouping` (the last
+  size repeats; `[3, 2]` is Indian, empty is none); a key the array lacks has no vote, and an
+  array with neither says nothing, so it is legacy, as 1.0 read it.
+
+- **Fault detail** rides a result path of its own. `Fault` is `final readonly` and PHP compares
+  objects property by property (`==`, `assertEquals`, `serialize`), so a `detail` on it would
+  change what every existing fault equals. `HyperCast\DetailedCast` has every `Cast` door under
+  the same name and parameters and returns a `Success` or a `DetailedFault`: the same reason,
+  offset and length, the raw `code` the core reported, and `detail`, the `FaultDetail` case
+  that names it (`FaultDetail::GroupSize`). A code this binding does not name (a newer
+  core's, or one constructed: `new DetailedFault(CastFailure::Malformed, 0, 1, 999)`) is
+  `FaultDetail::Unknown` with the code kept, never an error, so a `match` over details wants a
+  `default` arm. `$fault->toFault()` is the plain `Fault`. A checked door's `Violation` carries
+  no detail.
+
+- **Date options** are opt-in: no door changes unless it is handed options. `DateOptions` holds
+  flags (`COMPACT_DATE`: `20260107` at `date`; `SPACE_SEPARATOR` and `HOUR_OFFSET` at
+  `timestamp`; `COMMON_FORMS` is all three, with no pivot) and a pivot (the last year of a
+  100-year window, 100 through 9999) for two-digit years at `date` with an order and at
+  `datetime`. `MonthNames` is a caller-built vocabulary, `[month => name or list of names]`,
+  read by the same two doors in the month field the order selects, matched under simple case
+  folding with the longest name followed by the separator winning; punctuation is part of a
+  name (`janv.` with `.` as the separator reads `7.janv..2026`). Both are trailing optional
+  parameters of `Cast` and `DetailedCast`: `Cast::date($text, $order, $options, $months)`,
+  `Cast::datetime($text, $order, $periods, $options, $months)`, `Cast::timestamp($text,
+  $options)`.
+
+**FFI consumers and a 1.0 core.** A core older than 1.1 ignores the policy bits and parses every
+format as legacy, and so do the 1.0 C exports on a 1.1 core: a strict format written by
+`Interop\NativeValues::writeFormat()` must go to the detailed exports (`cast_detailed` and its
+siblings), which read the policy. The guard is opt-in: `writeFormat($format, $target, $ffi)` takes
+the `FFI` handle the core was loaded with and refuses a strict policy unless that handle declares
+`cast_detailed` (a 1.0 library lacks it) and `hypercast_version()`, and the core's version has
+this extension's major and a minor no older (the patch is ignored; `NativeValues::compatible()` is
+that rule). Without a handle there is no check: the caller owns it. The extension's own core is
+linked in, so nothing else can meet an old one.
 
 ## Doors
 
@@ -188,6 +266,16 @@ as a `TypeError` ([Validation constraints](#validation-constraints)).
 | `Cast::decimalFromFloat`, `Cast::excelSerialFromFloat`, `Cast::excelTime`, `Cast::excelDuration` | as `decimal`, `datetime`, `time` and `duration` — read from a `float` a workbook already holds; the decimal is the shortest that names it |
 | `Cast::text` | `string` — the input itself, once it is valid UTF-8; nothing trimmed |
 | `Cast::checked`, `Cast::checkedFromFloat`, `Cast::checkedText` | a `Checked`, `Fault` or `Violation`: the value judged by declared `Constraints` ([below](#validation-constraints)) |
+
+White space is Unicode's `White_Space`, the 25 code points (ASCII, U+0085, U+00A0, U+2000 to
+U+200A, U+202F, U+3000 among them). Every door but `Cast::text` ignores it at both ends (`Cast::char` given exactly one character keeps it), and the
+numeric doors also after a leading sign, before a trailing sign or a percent symbol, on either
+side of a currency symbol and inside accounting parentheses (`"- 12"`, `"( 12 )"`, `"12,5 %"`,
+`"1 234,56 €"`, the last two under a declared comma decimal separator, the last with a space group separator and `€` declared); between digits it is `Malformed`, unless a space-like group separator is
+declared. An ASCII space, U+00A0 or U+202F declared as the group separator makes the input's
+choice of those three immaterial (Excel writes U+00A0, ICU's `fr` U+202F, an older system a
+space), a space-like separator with no digit after it is just white space, and any other
+separator stays exact. Input of nothing but white space is `Empty`.
 
 Every numeric door takes a `NumFormat` — `NumFormat::invariant()`, `NumFormat::detect()`
 (the `.`/`,` roles resolved per input from structure, ambiguous input a `Malformed` fault),
@@ -228,10 +316,11 @@ echo $verdict->value->magnitude;         // 12345
 ### Currency symbols
 
 `NumFormat` takes an optional fourth argument, the currency symbol — up to 16 bytes of
-UTF-8 (`$`, `€`, `kr.`, `CHF`, `R$`, `руб.`) with no ASCII digit or whitespace, or the
-constructor throws as the caller bug it is. With `NumFormat::CURRENCY` set (it is part of
+UTF-8 (`$`, `€`, `kr.`, `CHF`, `R$`, `руб.`, CLDR's `F CFA`) with no ASCII digit and no white space
+at either edge (inside is fine, and an ASCII space, U+00A0 and U+202F there match each other), or
+the constructor throws as the caller bug it is. With `NumFormat::CURRENCY` set (it is part of
 `NumFormat::ALL`) the symbol is accepted once, leading (`$5`, `-$5`, `$ -5`) or trailing
-(`5 €`, `1.234,50 kr.`), with optional whitespace between it and the digits; accounting
+(`5 €`, `1.234,50 kr.`), with optional white space between it and the digits; accounting
 parentheses wrap symbol and digits together (`($5)`). A symbol declared with the flag off is
 a `Malformed` fault at the symbol, never silently ignored; the flag with no symbol matches
 nothing. Every integer, real and decimal door honors it.
@@ -248,9 +337,9 @@ Cast::decimal('$ 19.99', $usd);          // Success(Decimal 19.99)
 optional named argument after the currency symbol, `''` (nothing declared) by default. One
 rule covers all of them: **the ASCII spelling is always read, and a declared symbol is a
 further spelling read beside it** — so declaring a symbol never stops anything that parsed
-before from parsing. A symbol the core cannot carry (an ASCII digit inside one, whitespace
-in a sign, a currency pair that collides, a digit zero that starts no digit block) is an
-`InvalidArgumentException` from the constructor, the caller bug it is.
+before from parsing. A symbol the core cannot carry (an ASCII digit inside one, white space
+in a sign, percent symbol or decimal separator, a currency pair that collides, a digit zero
+that starts no digit block) is an `InvalidArgumentException` from the constructor, the caller bug it is.
 
 | Argument | What it declares |
 | --- | --- |
@@ -285,11 +374,12 @@ Cast::decimal('٥٠٪', $egyptian);                 // Success(Decimal 0.5)
 
 `Cast::datetime` takes a `DayPeriods` beside the `DateOrder`: the words a culture writes
 for the two halves of a 12-hour clock, declared the same way the order is. A declared
-designator is matched byte for byte after the clock (`3:04 nachm.`, an optional space
-before it) or ahead of it (`오후 3:04`, an optional space after), and the English `AM`/`PM`
+designator is matched byte for byte after the clock (`3:04 nachm.`) or ahead of it
+(`오후 3:04`), with any run of white space or none between designator and clock (so the
+`3:04\u202fPM` that ICU 72 and later write for `en_US` reads), and the English `AM`/`PM`
 are always read in both places, ASCII case-insensitively — so a declared pair adds
 spellings and takes none away. Each designator is up to 16 bytes of UTF-8 with no ASCII
-digit and no ASCII whitespace at either end (an internal space is fine: Spanish's `a. m.`);
+digit and no white space at either end (an internal space is fine: Spanish's `a. m.`);
 anything else is an `InvalidArgumentException`. Only the datetime door reads them —
 `Cast::date` has no time part — and a two-argument call reads the English pair only.
 
@@ -512,7 +602,7 @@ order the core reads in place — the size, flags, rounding code, lengths and a 
 as such decimals, text entries a little-endian `u32` byte length followed by the bytes — what
 the core's checked C exports read, the list only when the flags carry `HAS_ENUM` (256), which
 any declared `enum` sets. The extension itself calls the core's Rust API, not the C
-ABI's 32 exports.
+ABI's 36 exports (1.1's four detailed ones included).
 
 ## Why not `filter_var` / `DateTimeImmutable::createFromFormat`?
 

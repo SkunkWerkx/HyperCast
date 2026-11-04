@@ -81,7 +81,9 @@ final class InteropTests: XCTestCase {
         XCTAssertEqual(Interop.rawFormatSize, 92)
         withUnsafeBytes(of: &raw) { bytes in
             XCTAssertEqual(bytes.load(fromByteOffset: 0, as: UInt32.self), 92)
-            XCTAssertEqual(bytes.load(fromByteOffset: 4, as: UInt32.self), NumStyles.all.rawValue | 128)
+            // The styles in bits 0 to 7 and, from 1.1, the policy in bits 8 and 9 (Western by default).
+            XCTAssertEqual(
+                bytes.load(fromByteOffset: 4, as: UInt32.self), NumStyles.all.rawValue | 128 | 0x100)
             XCTAssertEqual(bytes.load(fromByteOffset: 8, as: UInt32.self), 0x660)
             XCTAssertEqual(symbol(bytes, at: 12, capacity: 8), ",")
             XCTAssertEqual(symbol(bytes, at: 21, capacity: 8), ". ")

@@ -18,6 +18,20 @@
 * Number formats: `num_format()`, `num_format_detect()`, `num_format_from_localeconv()`
   and `num_styles`.
 * `hypercast_native_version()`: the version of the loaded Rust core.
+* Strict grouping: `num_format()`, `num_format_detect()` and `num_format_from_localeconv()`
+  take `grouping`, `"western"` by default (a group of exactly three digits, so `12,34` is
+  `malformed`), `"indian"` or `"legacy"` (a group separator anywhere between two digits, as
+  before). `flags` holds styles only. `num_format_from_localeconv()` chooses its grouping
+  by the locale's own patterns, never by name: strict Western when every pattern that groups
+  is three-digit, strict Indian when every one is three then two, `"legacy"` for any other
+  shape or when the number and currency patterns disagree (a bridge never rejects what its
+  platform writes), and the `grouping` style cleared only when neither pattern groups.
+* Fault detail: every verdict ends with `detail` (a factor over `fault_details`, with an
+  `unknown` level) and `detail_code`; `faults()` lists them. The package refuses to load
+  against a core that does not enforce grouping policies.
+* Opt-in date shapes: `date_options()` (`date_flags`, a two-digit-year `pivot`) and
+  `month_names()`, taken as `options` and `months` by `cast_date()`, `cast_datetime()` and
+  (`options`) `cast_timestamp()`.
 * Validation constraints: `hypercast_constraints()` declares a door's rules (bounds,
   `multiple_of` with a rounding, lengths, trimming and enumerations), judged once when
   declared; `cast_checked()`, `cast_checked_from_double()` and `cast_text()` with

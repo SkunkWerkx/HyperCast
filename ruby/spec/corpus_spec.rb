@@ -21,14 +21,33 @@ RSpec.describe "conformance corpus" do
     raise "corpus directory not found"
   end
 
+  # The invariant profile as a row that declares no policy reads it: legacy grouping, the core's
+  # and the C ABI's meaning (the binding's own INVARIANT is strict Western).
+  LEGACY_INVARIANT = HyperCast::NumFormat::INVARIANT.with(grouping: :legacy)
+
+  # A row's flags and grouping policy as this binding's constructor takes them apart. A row
+  # that names `grouping` declares that policy. One that doesn't declares the policy bits its raw
+  # `flags` carry, so a valid policy there moves out of the mask into `grouping:`, and none is
+  # legacy; a bit no policy or flag names stays in `flags`, to be refused as it is.
+  def grouping_of(spec)
+    flags = spec["flags"]
+    return [flags, spec["grouping"].to_sym] if spec.key?("grouping")
+
+    policy = HyperCast::GROUPING_POLICIES.key(flags & HyperCast::GROUPING_POLICY)
+    policy ? [flags & ~HyperCast::GROUPING_POLICY, policy] : [flags, :legacy]
+  end
+
   # Every key past the separators and flags is optional in the corpus: absent means nothing
-  # declared for that field, which is the Data class's own default.
+  # declared for that field, which is the Data class's own default. A row with no `grouping`
+  # keeps legacy semantics; `flags` is the row's raw word, so a row can carry a policy no
+  # name spells (a refusal).
   def format_of(vector)
     spec = vector["format"]
-    return HyperCast::NumFormat::INVARIANT unless spec
+    return LEGACY_INVARIANT unless spec
 
+    flags, grouping = grouping_of(spec)
     HyperCast::NumFormat.new(
-      decimal_sep: spec["decimal_sep"], group_sep: spec["group_sep"], flags: spec["flags"],
+      decimal_sep: spec["decimal_sep"], group_sep: spec["group_sep"], flags: flags, grouping: grouping,
       currency: spec.fetch("currency", ""),
       currency_decimal_sep: spec.fetch("currency_decimal_sep", ""),
       currency_group_sep: spec.fetch("currency_group_sep", ""),
@@ -45,15 +64,65 @@ RSpec.describe "conformance corpus" do
     in HyperCast::Success(value:)
       expect(expect_label).to eq("ok"), "#{domain}: #{input.inspect} unexpectedly parsed to #{value.inspect}"
       expect(value).to eq(expected), "#{domain}: #{input.inspect} -> #{value.inspect}, want #{expected.inspect}"
-    in HyperCast::Fault(reason:, offset:, length:)
+    in HyperCast::Fault(reason:, offset:, length:, detail:)
       expect(EXPECTED_REASON).to have_key(expect_label),
                                  "#{domain}: #{input.inspect} expected #{expect_label} but faulted"
       expect(reason).to eq(EXPECTED_REASON[expect_label]), "#{domain}: #{input.inspect} -> #{reason}"
+      assert_detail(domain, vector, detail)
       if (span = vector["fault"])
         expected_span = [input.byteslice(0, span[0]).length, input.byteslice(span[0], span[1]).length]
         expect([offset, length]).to eq(expected_span), "#{domain}: #{input.inspect} fault span"
       end
     end
+  end
+
+  # A failure row names its detail: the verdict's #detail is that named Detail, and its raw
+  # code is the published one.
+  def assert_detail(domain, vector, detail)
+    label = "#{domain}: #{vector['input'].inspect}"
+    expect(vector).to have_key("detail"), "#{label} names no detail"
+    expect(detail).to be_a(HyperCast::Detail), "#{label}: no detail"
+    expect(detail.name.to_s).to eq(vector["detail"]), "#{label}: detail #{detail.inspect}"
+    expect(detail.code).to eq(HyperCast::Detail::NAMES.key(vector["detail"].to_sym)), "#{label}: detail code"
+  end
+
+  FLAG_NAMES = {
+    "compact_date" => HyperCast::DateOptions::COMPACT_DATE,
+    "space_separator" => HyperCast::DateOptions::SPACE_SEPARATOR,
+    "hour_offset" => HyperCast::DateOptions::HOUR_OFFSET,
+    "common_forms" => HyperCast::DateOptions::COMMON_FORMS.flags
+  }.freeze
+
+  # The option bits a row declares: its named flags, or the raw `flag_bits` a refusal spells.
+  def flag_bits(options)
+    return options["flag_bits"] if options.key?("flag_bits")
+
+    options.fetch("flags", []).sum(0) { |name| FLAG_NAMES.fetch(name) } # rubocop:disable Style/SymbolProc
+  end
+
+  # The DateOptions a row's `options` declare (the vocabulary aside).
+  def date_options_of(options)
+    HyperCast::DateOptions.new(flags: flag_bits(options), pivot: options["pivot"])
+  end
+
+  # A row's vocabulary entries, [month, name] pairs, and the packed layout they spell.
+  def packed_months(options)
+    packed = options["months"].map { |month, name| [month, name.bytesize].pack("CL<") + name.b }.join.b
+    packed + options.fetch("append_bytes", []).pack("C*")
+  end
+
+  # The keywords a door row's `options` pass: options: always, months: when it declares names.
+  # The vocabulary is built from its entries, and again from its packed layout, which must agree.
+  # (The timestamp door takes no vocabulary, as the core's ignores one: its rows pass options only.)
+  def optioned(vector)
+    options = vector["options"] or return {}
+    keywords = { options: date_options_of(options) }
+    if options.key?("months")
+      names = HyperCast::MonthNames.new(options["months"])
+      expect(HyperCast::MonthNames.from_packed(packed_months(options))).to eq(names)
+      keywords[:months] = names
+    end
+    keywords
   end
 
   def expected_instant(vector)
@@ -135,7 +204,8 @@ RSpec.describe "conformance corpus" do
 
   it "replays timestamp.json" do
     corpus("timestamp.json").each do |vector|
-      assert_verdict("timestamp", vector, HyperCast.timestamp(vector["input"]), expected_instant(vector))
+      assert_verdict("timestamp", vector, HyperCast.timestamp(vector["input"], **optioned(vector).except(:months)),
+                     expected_instant(vector))
     end
   end
 
@@ -158,7 +228,7 @@ RSpec.describe "conformance corpus" do
   it "replays date.json" do
     corpus("date.json").each do |vector|
       expected = vector.key?("year") ? Date.new(vector["year"], vector["month"], vector["day"]) : nil
-      assert_verdict("date", vector, HyperCast.date(vector["input"]), expected)
+      assert_verdict("date", vector, HyperCast.date(vector["input"], **optioned(vector)), expected)
     end
   end
 
@@ -167,7 +237,7 @@ RSpec.describe "conformance corpus" do
     corpus("date_order.json").each do |vector|
       order = orders.fetch(vector["order"])
       expected = vector.key?("year") ? Date.new(vector["year"], vector["month"], vector["day"]) : nil
-      assert_verdict("date_order", vector, HyperCast.date(vector["input"], order), expected)
+      assert_verdict("date_order", vector, HyperCast.date(vector["input"], order, **optioned(vector)), expected)
     end
   end
 
@@ -185,11 +255,8 @@ RSpec.describe "conformance corpus" do
         expected = DateTime.new(vector["year"], vector["month"], vector["day"],
                                 hour, minute, second + Rational(frac, 1_000_000_000))
       end
-      verdict = if vector.key?("am")
-                  HyperCast.datetime(vector["input"], order, am: vector["am"], pm: vector["pm"])
-                else
-                  HyperCast.datetime(vector["input"], order)
-                end
+      periods = vector.key?("am") ? { am: vector["am"], pm: vector["pm"] } : {}
+      verdict = HyperCast.datetime(vector["input"], order, **periods, **optioned(vector))
       assert_verdict("datetime", vector, verdict, expected)
     end
   end
@@ -317,11 +384,13 @@ RSpec.describe "conformance corpus" do
       expect(enum_index).to eq(vector["enum_index"]), "#{label}: enum_index"
     in HyperCast::Violation(keyword:, offset:, length:)
       expect(expectation).to eq("violation"), "#{label}: #{verdict.inspect}"
+      expect(vector).not_to have_key("detail"), "#{label}: a violation names no detail"
       expect(keyword.name).to eq(vector["keyword"]), "#{label}: keyword"
       expect([offset, length]).to eq(span.call(*vector["fault"])), "#{label}: violation span"
-    in HyperCast::Fault(reason:, offset:, length:)
+    in HyperCast::Fault(reason:, offset:, length:, detail:)
       expect(EXPECTED_REASON).to have_key(expectation), "#{label}: expected #{expectation} but #{verdict.inspect}"
       expect(reason).to eq(EXPECTED_REASON[expectation]), "#{label}: #{reason}"
+      assert_detail(label, vector, detail)
       expect([offset, length]).to eq(span.call(*vector["fault"])), "#{label}: fault span"
     end
   end
@@ -423,19 +492,106 @@ RSpec.describe "conformance corpus" do
     expect(counts.keys.sort).to eq(%w[bytes ok refused])
   end
 
+  # The message each rule of formats.json raises, as hypercast.rb words it and the Magnus
+  # extension words the designator rule: asserted on every refused row, the ordering rows included.
+  RULE_MESSAGES = {
+    "length" => /exceeds \d+ UTF-8 bytes/,
+    "digit" => /must not contain an ASCII digit/,
+    "equal_separators" => /separators must differ/,
+    "white_space" => /must not contain white space/,
+    "currency_edge" => /currency symbol .* must not start or end with white space/,
+    "designator_edge" => /designator .* must be 1 to 16 UTF-8 bytes .* no white space at either end/,
+    "grouping_policy" => /must not carry a grouping policy/,
+    "unknown_flag" => /sets a bit this version does not define/,
+    "flags" => /date option flags \d+ set a bit this version does not define/,
+    "pivot" => /date pivot must be nil, 0, or 100 to 9999/,
+    "layout" => /month names are cut short, or bytes trail the last entry/,
+    "month" => /month .* must be an Integer from 1 to 12/,
+    "utf8" => /month name .* must be whole characters with a UTF-8 form/,
+    "name_length" => /month name .* must be 1 to 64 UTF-8 bytes/,
+    "character" => /month name .* must not contain an ASCII digit, a slash, a hyphen or white space/,
+    "month_missing" => /month names must name every month/,
+    "duplicate" => /two month names fold to the same spelling/
+  }.freeze
+
+  # The white_space rows hold hypercast.rb's restated class to the corpus (the Magnus backend
+  # reads the core's predicate, which the Rust suite holds to the same rows); the declaration
+  # rows go through the public constructor and a door, so both backends and the core's
+  # own refusal agree: an accepted declaration casts, a refused one raises the rule's message.
+  it "replays formats.json" do
+    vectors = corpus("formats.json")
+    kinds = vectors.map do |vector|
+      kind = vector.fetch("kind")
+      case kind
+      when "white_space"
+        scalar = [Integer(vector["code_point"].delete_prefix("U+"), 16)].pack("U")
+        expect(HyperCast.const_get(:WHITE_SPACE).match?(scalar)).to be(vector["white_space"]), vector["code_point"]
+      when "num_format"
+        label = "num_format #{vector['format']}"
+        if vector["expect"] == "refused"
+          expect { format_of(vector) }.to raise_error(ArgumentError, RULE_MESSAGES.fetch(vector["rule"])), label
+        else
+          format = format_of(vector)
+          expect(HyperCast.i32("1", format)).to eq(HyperCast::Success.new(value: 1)), label
+          expect(format.grouping).to eq(grouping_of(vector["format"]).last), label
+        end
+      when "date_options"
+        label = "date_options #{vector.slice('flags', 'flag_bits', 'pivot')}"
+        build = -> { date_options_of(vector) }
+        if vector["expect"] == "refused"
+          expect(&build).to raise_error(ArgumentError, RULE_MESSAGES.fetch(vector["rule"])), label
+        else
+          options = build.call
+          expect([options.flags, options.pivot]).to eq([flag_bits(vector), vector["pivot"]&.nonzero?]), label
+          expect(options.packed.unpack("L3")).to eq([12, flag_bits(vector), vector.fetch("pivot", 0)]), label
+        end
+      when "month_names"
+        label = "month_names #{vector['months']} #{vector['append_bytes']}"
+        packed = packed_months(vector)
+        from_packed = -> { HyperCast::MonthNames.from_packed(packed) }
+        built = -> { HyperCast::MonthNames.new(vector["months"]) }
+        if vector["expect"] == "refused"
+          message = RULE_MESSAGES.fetch(vector["rule"])
+          expect(&from_packed).to raise_error(ArgumentError, message), label
+          expect(&built).to raise_error(ArgumentError, message), label unless vector.key?("append_bytes")
+        else
+          names = from_packed.call
+          expect(names.packed).to eq(packed), label
+          expect(built.call).to eq(names), label
+        end
+      when "day_periods"
+        label = "day_periods #{vector['am'].inspect} #{vector['pm'].inspect}"
+        door = -> { HyperCast.datetime("1/7/2026 3:04", :day_month_year, am: vector["am"], pm: vector["pm"]) }
+        if vector["expect"] == "refused"
+          expect(&door).to raise_error(ArgumentError, RULE_MESSAGES.fetch(vector["rule"])), label
+        else
+          expect(door.call).to be_a(HyperCast::Success), label
+        end
+      else
+        raise "unknown formats.json kind #{kind.inspect}"
+      end
+      kind
+    end
+    expect(kinds.uniq.sort).to eq(%w[date_options day_periods month_names num_format white_space])
+    expect(vectors.count { |vector| vector["rule"] }).to eq(vectors.count { |vector| vector["expect"] == "refused" })
+  end
+
   # The plain doors' verdict is exactly what it was, the checked doors being additive:
   # Success(value) or Fault(reason, offset, length) over the three reasons, every plain door
   # keeps its parameters, and none answers with a checked case.
   it "keeps the plain verdict's shape" do
     expect(HyperCast::Success.members).to eq([:value])
     expect(HyperCast::Fault.members).to eq(%i[reason offset length])
+    expect(HyperCast::Fault.instance_method(:initialize).parameters)
+      .to eq([%i[keyreq reason], %i[keyreq offset], %i[keyreq length], %i[key detail]])
     expect(HyperCast::REASONS).to eq(1 => :empty, 2 => :malformed, 3 => :out_of_range)
     numeric = [%i[req text], %i[req format], %i[key separator], %i[key delimiter], %i[key unit]]
     plain = {
-      bool: [%i[req text]], char: [%i[req text]], uuid: [%i[req text]], timestamp: [%i[req text]],
+      bool: [%i[req text]], char: [%i[req text]], uuid: [%i[req text]],
       unix: [%i[req text], %i[req precision]], excel_serial: [%i[req text], %i[req epoch]],
-      date: [%i[req text], %i[opt order]],
-      datetime: [%i[req text], %i[req order], %i[key am], %i[key pm]],
+      timestamp: [%i[req text], %i[key options]],
+      date: [%i[req text], %i[opt order], %i[key options], %i[key months]],
+      datetime: [%i[req text], %i[req order], %i[key am], %i[key pm], %i[key options], %i[key months]],
       time: [%i[req text]], duration: [%i[req text]],
       decimal_from_float: [%i[req value]], excel_serial_from_float: [%i[req value], %i[req epoch]],
       excel_time: [%i[req value]], excel_duration: [%i[req value]]

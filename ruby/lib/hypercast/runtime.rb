@@ -14,18 +14,20 @@ module HyperCast
   module Runtime
     NATIVE_DIR = File.join(__dir__, "native")
 
-    # Each door's C signature, by shape — resolved to Fiddle types only in load_functions,
-    # so nothing here touches Fiddle until the Fiddle backend actually runs: plain is
-    # (text, len, out, fault), numeric adds the packed NumFormat pointer before out,
-    # declared a caller-declared u32 (precision, epoch, field order) in the same place, and
-    # civil the field order then the packed DayPeriods pointer (null for none). The typed
-    # doors take a double instead of the text and its length: typed is (value, out, fault),
-    # typed_declared adds the u32 after the value. The validation constraints come last: text
-    # is plain (its out-value the span of the input); checked is (door, param, format,
-    # constraints, enum, enum length, text, len, out, fault, check) and checked_from_f64 the
-    # same with a double for the format and the text; constraints_check is (door, param,
-    # constraints, enum, enum length), returning a refusal code rather than a verdict; and
-    # declared_decimal is (text, len, out).
+    # Each export's C signature, by shape — resolved to Fiddle types only in load_functions,
+    # so nothing here touches Fiddle until the Fiddle backend actually runs. The doors cross
+    # through the four detailed exports: detailed is (door, param, format, periods, date options,
+    # vocabulary, vocabulary length, text, len, out, fault), the one export every text door goes
+    # through; detailed_from_f64 is (door, param, value, out, fault) for the typed doors;
+    # checked_detailed is (door, param, format, constraints, enum, enum length, text, len, out,
+    # fault, check) and checked_detailed_from_f64 the same with a double for the format and the
+    # text. The 1.0 exports stay declared and resolved, the 1.0 surface: plain is (text, len, out,
+    # fault), numeric adds the packed NumFormat pointer before out, declared a caller-declared u32
+    # (precision, epoch, field order) in the same place, and civil the field order then the
+    # packed DayPeriods pointer (null for none); typed is (value, out, fault) and typed_declared
+    # adds the u32 after the value; checked and checked_from_f64 are the detailed pair without
+    # the fault's detail. constraints_check is (door, param, constraints, enum, enum length),
+    # returning a refusal code rather than a verdict; and declared_decimal is (text, len, out).
     DOORS = {
       cast_bool: :plain, cast_char: :plain,
       cast_i8: :numeric, cast_i16: :numeric, cast_i32: :numeric, cast_i64: :numeric,
@@ -38,8 +40,16 @@ module HyperCast
       cast_decimal_from_f64: :typed, cast_excel_serial_from_f64: :typed_declared,
       cast_excel_time: :typed, cast_excel_duration: :typed,
       cast_text: :plain, cast_checked: :checked, cast_checked_from_f64: :checked_from_f64,
-      cast_constraints_check: :constraints_check, cast_declared_decimal: :declared_decimal
+      cast_constraints_check: :constraints_check, cast_declared_decimal: :declared_decimal,
+      cast_detailed: :detailed, cast_detailed_from_f64: :detailed_from_f64,
+      cast_checked_detailed: :checked_detailed, cast_checked_detailed_from_f64: :checked_detailed_from_f64
     }.freeze
+
+    # What a core older than 1.1 lacks: the four detailed exports. The strict grouping policies
+    # and every detail ride on them, and a 1.0 core would read a policy request as legacy
+    # grouping without a word, so a library missing any of them is refused when it loads.
+    DETAILED_EXPORTS = %w[cast_detailed cast_detailed_from_f64 cast_checked_detailed
+                          cast_checked_detailed_from_f64].freeze
 
     # The one export that is not a door: the zero-argument version probe, returning the
     # core's packed version word (major << 16 | minor << 8 | patch) rather than a verdict
@@ -112,17 +122,46 @@ module HyperCast
         @functions || @mutex.synchronize { @functions ||= load_functions }
       end
 
+      # Refuses a library without the detailed exports, naming the core it found: a LoadError,
+      # which HyperCast.available? answers false for. The check is for the exports themselves,
+      # which are what a 1.1 core is, so it holds for a build of the unreleased tree as well.
+      def require_detailed(handle, path)
+        return if DETAILED_EXPORTS.all? { |name| handle.sym_defined?(name) }
+
+        found =
+          if handle.sym_defined?(VERSION_PROBE.to_s)
+            Interop.version(Fiddle::Function.new(handle[VERSION_PROBE.to_s], [], Fiddle::TYPE_UINT32_T).call)
+          else
+            "of no known version"
+          end
+        raise LoadError, "hypercast: #{path} is core #{found}, which predates 1.1: the strict grouping " \
+                         "policies and fault details need the detailed exports (cast_detailed, ...), " \
+                         "and a 1.0 core would read a strict request as legacy grouping. Install a 1.1 core"
+      end
+
       def load_functions
         path = library_path
         raise LoadError, missing_library_message if path.nil?
 
         handle = Fiddle.dlopen(path)
+        require_detailed(handle, path)
         plain = [Fiddle::TYPE_VOIDP, Fiddle::TYPE_SIZE_T, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP]
         signatures = {
           plain: plain,
           numeric: plain.dup.insert(2, Fiddle::TYPE_VOIDP),
           declared: plain.dup.insert(2, Fiddle::TYPE_UINT32_T),
           civil: plain.dup.insert(2, Fiddle::TYPE_UINT32_T, Fiddle::TYPE_VOIDP),
+          detailed: [Fiddle::TYPE_UINT32_T, Fiddle::TYPE_UINT32_T, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP,
+                     Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_SIZE_T, Fiddle::TYPE_VOIDP,
+                     Fiddle::TYPE_SIZE_T, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP],
+          detailed_from_f64: [Fiddle::TYPE_UINT32_T, Fiddle::TYPE_UINT32_T, Fiddle::TYPE_DOUBLE, Fiddle::TYPE_VOIDP,
+                              Fiddle::TYPE_VOIDP],
+          checked_detailed: [Fiddle::TYPE_UINT32_T, Fiddle::TYPE_UINT32_T, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP,
+                             Fiddle::TYPE_VOIDP, Fiddle::TYPE_SIZE_T, Fiddle::TYPE_VOIDP, Fiddle::TYPE_SIZE_T,
+                             Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP],
+          checked_detailed_from_f64: [Fiddle::TYPE_UINT32_T, Fiddle::TYPE_UINT32_T, Fiddle::TYPE_VOIDP,
+                                      Fiddle::TYPE_VOIDP, Fiddle::TYPE_SIZE_T, Fiddle::TYPE_DOUBLE,
+                                      Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP],
           typed: [Fiddle::TYPE_DOUBLE, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP],
           typed_declared: [Fiddle::TYPE_DOUBLE, Fiddle::TYPE_UINT32_T, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP],
           checked: [Fiddle::TYPE_UINT32_T, Fiddle::TYPE_UINT32_T, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP,

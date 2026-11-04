@@ -24,9 +24,12 @@ from hypercast import (
     CastFailure,
     Checked,
     Constraints,
+    DateOptions,
+    Detail,
     Door,
     ExcelEpoch,
     Fault,
+    MonthNames,
     NumFormat,
     Rounding,
     Success,
@@ -59,15 +62,38 @@ _EXPECTED_REASON = {
 }
 
 
+_GROUPINGS = {
+    "legacy": NumFormat.GROUPING_LEGACY,
+    "western": NumFormat.GROUPING_WESTERN,
+    "indian": NumFormat.GROUPING_INDIAN,
+}
+
+
+def _lenience_and_grouping(fmt: dict) -> tuple[int, int]:
+    """A row's flags split the way the constructor takes them: the lenience flags, and the
+    grouping policy, which a row names in ``grouping`` or, where it names none, is whatever
+    policy bits its raw flags carry: none, which is legacy, for every row older than strict
+    grouping."""
+    flags, named = fmt["flags"], fmt.get("grouping")
+    policy_bits = NumFormat.GROUPING_POLICY
+    if named is not None:
+        assert flags & policy_bits == 0, f"{fmt}: names a policy and carries bits"
+        return flags, _GROUPINGS[named]
+    return flags & ~policy_bits, flags & policy_bits
+
+
 def _format_of(vector: dict) -> NumFormat:
     fmt = vector.get("format")
     if fmt is None:
-        return NumFormat.INVARIANT
+        # No declaration at all is the core's own invariant format, which parses legacy: a row
+        # declaring no policy keeps the meaning it had before strict grouping.
+        return NumFormat(".", ",", NumFormat.ALL, grouping=NumFormat.GROUPING_LEGACY)
+    lenience, grouping = _lenience_and_grouping(fmt)
     # A key the vector leaves out declares nothing — the constructor's own default.
     return NumFormat(
         fmt["decimal_sep"],
         fmt["group_sep"],
-        fmt["flags"],
+        lenience,
         fmt.get("currency", ""),
         currency_decimal_sep=fmt.get("currency_decimal_sep", ""),
         currency_group_sep=fmt.get("currency_group_sep", ""),
@@ -75,7 +101,17 @@ def _format_of(vector: dict) -> NumFormat:
         plus_sign=fmt.get("plus_sign", ""),
         percent=fmt.get("percent", ""),
         digit_zero=fmt.get("digit_zero", ""),
+        grouping=grouping,
     )
+
+
+def _assert_detail(label: str, vector: dict, fault: Fault) -> None:
+    """A failure row's detail, by name and by raw code: every failure row names one, and the
+    fault carries it as the :class:`Detail` member and as the number."""
+    assert "detail" in vector, f"{label}: a failure row names no detail"
+    want = Detail[vector["detail"].upper()]
+    assert fault.detail is want, f"{label}: detail {fault.detail!r}, want {want!r}"
+    assert fault.detail_code == want.value, f"{label}: detail_code {fault.detail_code}"
 
 
 def _assert_verdict(domain: str, vector: dict, verdict, expected) -> None:
@@ -91,6 +127,7 @@ def _assert_verdict(domain: str, vector: dict, verdict, expected) -> None:
             assert reason is _EXPECTED_REASON[expect], f"{domain}: {text!r} -> {reason}"
             if "fault" in vector:
                 assert [offset, length] == vector["fault"], f"{domain}: {text!r} fault span"
+            _assert_detail(f"{domain}: {text!r}", vector, verdict)
         case other:  # pragma: no cover - the union is closed
             raise AssertionError(f"{domain}: {text!r} produced no case: {other!r}")
 
@@ -194,12 +231,46 @@ def _expected_instant(vector: dict) -> dt.datetime | None:
     return _EPOCH + dt.timedelta(seconds=vector["seconds"], microseconds=vector["nanos"] // 1000)
 
 
+_OPTION_FLAGS = {
+    "compact_date": DateOptions.COMPACT_DATE,
+    "space_separator": DateOptions.SPACE_SEPARATOR,
+    "hour_offset": DateOptions.HOUR_OFFSET,
+    "common_forms": DateOptions.COMMON_FORMS.flags,
+}
+
+
+def _date_options_of(declared: dict) -> DateOptions:
+    """A row's option flags (by name) and pivot, as the public constructor takes them."""
+    flags = 0
+    for name in declared.get("flags", []):
+        flags |= _OPTION_FLAGS[name]
+    return DateOptions(flags, declared.get("pivot", 0))
+
+
+def _date_keywords(vector: dict, *, months: bool = True) -> dict:
+    """The keyword arguments a row's ``options`` ask a date door for: the options, and a month
+    vocabulary built both ways (from its pairs and from its packed bytes, which must agree).
+    A row without any is the plain door. ``months=False`` is a door with no ``months`` keyword
+    (``cast_timestamp``, and ``cast_date`` without an order): a vocabulary a row declares for one
+    is a vocabulary that door ignores, so the row's verdict is the one without it."""
+    declared = vector.get("options")
+    if declared is None:
+        return {}
+    keywords: dict = {"options": _date_options_of(declared)}
+    if "months" in declared:
+        names = MonthNames([tuple(entry) for entry in declared["months"]])
+        assert MonthNames.from_packed(names.packed) == names
+        if months:
+            keywords["months"] = names
+    return keywords
+
+
 def test_timestamp_corpus():
-    """Replays corpus/timestamp.json."""
+    """Replays corpus/timestamp.json, the rows that declare date options through their keyword."""
     for vector in _corpus("timestamp.json"):
-        _assert_verdict(
-            "timestamp", vector, hypercast.cast_timestamp(_input(vector)), _expected_instant(vector)
-        )
+        keywords = _date_keywords(vector, months=False)
+        verdict = hypercast.cast_timestamp(_input(vector), **keywords)
+        _assert_verdict("timestamp", vector, verdict, _expected_instant(vector))
 
 
 def test_unix_corpus():
@@ -232,7 +303,8 @@ def test_date_corpus():
         expected = (
             dt.date(vector["year"], vector["month"], vector["day"]) if "year" in vector else None
         )
-        _assert_verdict("date", vector, hypercast.cast_date(_input(vector)), expected)
+        verdict = hypercast.cast_date(_input(vector), **_date_keywords(vector, months=False))
+        _assert_verdict("date", vector, verdict, expected)
 
 
 def test_date_order_corpus():
@@ -242,7 +314,8 @@ def test_date_order_corpus():
         expected = (
             dt.date(vector["year"], vector["month"], vector["day"]) if "year" in vector else None
         )
-        _assert_verdict("date_order", vector, hypercast.cast_date(_input(vector), order), expected)
+        verdict = hypercast.cast_date(_input(vector), order, **_date_keywords(vector))
+        _assert_verdict("date_order", vector, verdict, expected)
 
 
 def test_datetime_corpus():
@@ -259,7 +332,11 @@ def test_datetime_corpus():
             )
         # Declared day periods ride beside the order; a vector without them reads English only.
         verdict = hypercast.cast_datetime(
-            _input(vector), order, am=vector.get("am", ""), pm=vector.get("pm", "")
+            _input(vector),
+            order,
+            am=vector.get("am", ""),
+            pm=vector.get("pm", ""),
+            **_date_keywords(vector),
         )
         _assert_verdict("datetime", vector, verdict, expected)
 
@@ -450,6 +527,7 @@ def _assert_checked(label: str, vector: dict, verdict, span) -> None:
             assert expect in _EXPECTED_REASON, f"{label}: expected {expect} but {verdict!r}"
             assert reason is _EXPECTED_REASON[expect], f"{label}: {reason}"
             assert (offset, length) == span(*vector["fault"]), f"{label}: fault span"
+            _assert_detail(label, vector, verdict)
         case other:  # pragma: no cover - the union is closed
             raise AssertionError(f"{label}: produced no case: {other!r}")
 
@@ -588,9 +666,143 @@ def test_the_plain_verdict_keeps_its_shape():
     ]
     assert hypercast.Verdict[int].__args__ == (Success[int], Fault)
     for name, parameters in _PLAIN_DOORS.items():
-        door = getattr(hypercast, name)
-        assert list(inspect.signature(door).parameters) == parameters, name
+        # Every parameter a door had keeps its place and name: 1.1 adds only keyword-only ones
+        # (the date options), after them, so a 1.0 call still binds the same way.
+        declared = list(inspect.signature(getattr(hypercast, name)).parameters.values())
+        assert [p.name for p in declared[: len(parameters)]] == parameters, name
+        assert all(p.kind is p.KEYWORD_ONLY for p in declared[len(parameters) :]), name
+        for old in declared[: len(parameters)]:
+            was_keyword_only = name == "cast_datetime" and old.name in ("am", "pm")
+            assert (old.kind is old.KEYWORD_ONLY) == was_keyword_only, (name, old.name)
     assert type(hypercast.cast_i32("1", NumFormat.INVARIANT)) is Success
     assert type(hypercast.cast_i32("x", NumFormat.INVARIANT)) is Fault
     assert type(hypercast.cast_text("x")) is Success
     assert type(hypercast.cast_text(b"\xff")) is Fault
+
+
+# Each refusal rule of corpus/formats.json, as the phrase this binding's ValueError carries
+# for it. The length and digit rules share one message (a symbol "must be 1 to N UTF-8 bytes
+# with no ASCII digit"), so they share a phrase; every other rule has its own, and a refusal
+# must carry its rule's phrase and no other's, which is how the winning rule is asserted.
+_NUM_FORMAT_RULES = {
+    "length": "UTF-8 bytes with no ASCII digit",
+    "digit": "UTF-8 bytes with no ASCII digit",
+    "equal_separators": "must differ",
+    "white_space": "must not contain white space",
+    "currency_edge": "must not start or end with white space",
+    "grouping_policy": "Grouping must be",
+    "unknown_flag": "does not define",
+}
+# The date options' two rules and the vocabulary's seven, each by its own phrase (the core's
+# wording of the rule a vocabulary breaks).
+_DATE_OPTION_RULES = {
+    "flags": "flags set a bit this version does not define",
+    "pivot": "pivot must be 0 (none) or 100 to 9999",
+}
+_MONTH_NAME_RULES = {
+    "layout": "cut short",
+    "month": "outside 1 to 12",
+    "utf8": "is not UTF-8",
+    "name_length": "empty or longer than 64 bytes",
+    "character": "ASCII digit, a slash",
+    "month_missing": "has no name",
+    "duplicate": "fold to the same spelling",
+}
+_DAY_PERIOD_RULES = {
+    "length": "UTF-8 bytes with no ASCII digit",
+    "digit": "UTF-8 bytes with no ASCII digit",
+    "designator_edge": "no white space at either end",
+}
+
+
+def _assert_winning_rule(vector: dict, err: ValueError, rules: dict[str, str]) -> None:
+    rule, message = vector["rule"], str(err)
+    for other, phrase in rules.items():
+        if phrase == rules[rule]:
+            assert phrase in message, f"{vector}: {message!r} is not the {rule} message"
+        else:
+            assert phrase not in message, f"{vector}: {message!r} is the {other} message"
+
+
+def test_formats_corpus():
+    """Replays corpus/formats.json: each declaration through the public constructor (a format) or
+    the day-period keywords of ``cast_datetime``, a refusal being a ``ValueError`` that names the
+    winning rule.
+    """
+    mdy = hypercast.DateOrder.MONTH_DAY_YEAR
+    kinds = set()
+    rules_seen = set()
+    for vector in _corpus("formats.json"):
+        kind = vector["kind"]
+        kinds.add(kind)
+        if kind == "white_space":
+            # Skipped: this binding calls the core's is_white_space rather than restating the
+            # table, and the Rust replayer holds that predicate to these rows.
+            continue
+        if kind == "num_format":
+            declare = lambda: _format_of(vector)  # noqa: E731
+            rules = _NUM_FORMAT_RULES
+        elif kind == "date_options":
+            declare = lambda: _declared_date_options(vector)  # noqa: E731
+            rules = _DATE_OPTION_RULES
+        elif kind == "month_names":
+            declare = lambda: _declared_month_names(vector)  # noqa: E731
+            rules = _MONTH_NAME_RULES
+        else:
+            assert kind == "day_periods", f"unknown formats.json kind {kind!r}"
+            periods = {key: vector[key] for key in ("am", "pm") if key in vector}
+            declare = lambda: hypercast.cast_datetime("1/7/2026 3:04 PM", mdy, **periods)  # noqa: E731
+            rules = _DAY_PERIOD_RULES
+        if vector["expect"] == "ok":
+            declare()
+        else:
+            rules_seen.add((kind, vector["rule"]))
+            with pytest.raises(ValueError) as refused:
+                declare()
+            _assert_winning_rule(vector, refused.value, rules)
+    assert kinds == {
+        "white_space",
+        "num_format",
+        "day_periods",
+        "date_options",
+        "month_names",
+    }
+    # Every rule the binding words is refused by at least one row, so no phrase goes unasserted.
+    for kind, rules in (
+        ("num_format", _NUM_FORMAT_RULES),
+        ("date_options", _DATE_OPTION_RULES),
+        ("month_names", _MONTH_NAME_RULES),
+    ):
+        assert {rule for k, rule in rules_seen if k == kind} == set(rules), kind
+
+
+def _declared_date_options(vector: dict) -> DateOptions:
+    """A ``date_options`` row: its flags by name, or raw bits, and its pivot."""
+    if "flag_bits" in vector:
+        return DateOptions(vector["flag_bits"], vector.get("pivot", 0))
+    return _date_options_of(vector)
+
+
+def _declared_month_names(vector: dict) -> MonthNames:
+    """A ``month_names`` row through both constructors. Its pairs, packed as the spec lays them
+    out (a month byte, a little-endian ``u32`` length, the UTF-8) with any ``append_bytes``
+    after, go through ``from_packed``; a row with none is also built from its pairs, and the two
+    must agree on the outcome, the winning rule included.
+    """
+    packed = b""
+    for month, name in vector["months"]:
+        raw = name.encode("utf-8")
+        packed += bytes([month]) + len(raw).to_bytes(4, "little") + raw
+    packed += bytes(vector.get("append_bytes", []))
+    if "append_bytes" in vector:
+        return MonthNames.from_packed(packed)
+    try:
+        built = MonthNames([tuple(pair) for pair in vector["months"]])
+    except ValueError as err:
+        with pytest.raises(ValueError) as unpacked:
+            MonthNames.from_packed(packed)
+        assert str(unpacked.value) == str(err), "the two constructors judge one rule"
+        raise
+    assert built.packed == packed
+    assert MonthNames.from_packed(packed) == built
+    return built

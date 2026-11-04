@@ -11,7 +11,17 @@ import threading
 import pytest
 
 import hypercast
-from hypercast import Constraints, DateOrder, Door, ExcelEpoch, NumFormat, Rounding, UnixPrecision
+from hypercast import (
+    Constraints,
+    DateOptions,
+    DateOrder,
+    Door,
+    ExcelEpoch,
+    MonthNames,
+    NumFormat,
+    Rounding,
+    UnixPrecision,
+)
 
 pytestmark = pytest.mark.skipif(sys.platform == "emscripten", reason="Pyodide has no threads")
 
@@ -35,6 +45,11 @@ LATITUDE = Constraints(
 )
 EURO_CASH = Constraints(Door.DECIMAL, multiple_of="0.05")
 SEX = Constraints(Door.TEXT, trim=True, enum=["Female", "Male", "Other"])
+#: Shared date declarations, judged by the core on every call by every thread.
+PIVOT = DateOptions(0, 2029)
+MONTHS = MonthNames(
+    [(m, n) for m, n in enumerate("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(), 1)]
+)
 
 #: One call per door shape: text and bytes, success and every fault reason, a non-ASCII str
 #: whose fault span is remapped to code points, and each value type the package builds.
@@ -74,7 +89,20 @@ CALLS = [
     lambda: hypercast.cast_text(" MALE ", SEX),
     lambda: hypercast.cast_text("Fém\ud800", SEX),
     lambda: hypercast.cast_text(b"plain"),
+    lambda: hypercast.cast_i32("12,34", NumFormat.INVARIANT),
+    lambda: hypercast.cast_timestamp("2026-01-07 03:04:05+05", options=DateOptions.COMMON_FORMS),
+    lambda: hypercast.cast_date(
+        "07-Jan-26", DateOrder.DAY_MONTH_YEAR, options=PIVOT, months=MONTHS
+    ),
+    lambda: hypercast.cast_date(
+        "07-Foo-26", DateOrder.DAY_MONTH_YEAR, options=PIVOT, months=MONTHS
+    ),
 ]
+
+
+def _same(got, want) -> bool:
+    """A verdict equal to its single-threaded twin, and carrying the same detail."""
+    return got == want and getattr(got, "detail_code", None) == getattr(want, "detail_code", None)
 
 
 def _run_together(work) -> list:
@@ -123,7 +151,7 @@ def test_every_door_from_many_threads_at_once_gives_the_single_threaded_verdicts
             for k in range(len(CALLS)):
                 index = (k + i + round_) % len(CALLS)
                 got = CALLS[index]()
-                if got != expected[index]:
+                if not _same(got, expected[index]):
                     mismatches.append((index, got))
         return mismatches
 

@@ -16,18 +16,21 @@ use std::rc::Rc;
 use std::sync::OnceLock;
 
 use magnus::encoding::EncodingCapable;
-use magnus::rb_sys::{AsRawValue, FromRawValue};
+use magnus::rb_sys::{AsRawId, AsRawValue, FromRawValue};
 use magnus::scan_args::{get_kwargs, scan_args};
 use magnus::value::{Opaque, ReprValue};
 use magnus::{
-    Error, IntoValue, KwArgs, RArray, RClass, RHash, RModule, RString, RStruct, Ruby, Symbol,
-    Value, function, prelude::*,
+    Error, ExceptionClass, IntoValue, KwArgs, RArray, RClass, RHash, RModule, RString, RStruct,
+    Ruby, Symbol, Value, function, prelude::*,
 };
 use rb_sys::VALUE;
 
 use crate as core;
-use crate::checked::{CheckOutcome, judge_numeric, judge_numeric_from_f64, judge_text};
+use crate::checked::{
+    CheckOutcome, judge_numeric_detailed, judge_numeric_from_f64_detailed, judge_text_detailed,
+};
 use crate::constraints::{Entries, declared_decimal};
+use crate::detailed;
 
 /// Constant-referenced objects (classes, INVARIANT, DETECT) are anchored by Ruby constants,
 /// so they are never collected — but a compacting GC can still move them, rewriting every
@@ -46,8 +49,16 @@ struct Cached {
     checked_class: Opaque<Value>,
     violation_class: Opaque<Value>,
     keyword_class: Opaque<Value>,
+    detail_class: Opaque<Value>,
+    refused_class: Opaque<ExceptionClass>,
+    date_options_class: Opaque<RClass>,
+    month_names_class: Opaque<RClass>,
+    /// Detail 0 through 32 as the package's `Detail` constants (0 is an unknown one, never read).
+    details: Vec<Opaque<Value>>,
     invariant_raw: VALUE,
     detect_raw: VALUE,
+    invariant: core::ValidNumFormat,
+    detect: core::ValidNumFormat,
     empty: Opaque<Symbol>,
     malformed: Opaque<Symbol>,
     out_of_range: Opaque<Symbol>,
@@ -75,7 +86,14 @@ fn build_cache(ruby: &Ruby, hypercast: RModule) -> Result<Cached, Error> {
     let checked_class: Value = hypercast.const_get("Checked")?;
     let violation_class: Value = hypercast.const_get("Violation")?;
     let keyword_class: Value = hypercast.const_get("Keyword")?;
-    for pinned in [
+    let detail_class: Value = hypercast.const_get("Detail")?;
+    let refused_class: ExceptionClass = hypercast.const_get("RefusedDeclaration")?;
+    let date_options_class: RClass = hypercast.const_get("DateOptions")?;
+    let month_names_class: RClass = hypercast.const_get("MonthNames")?;
+    let details = (0..=32u32)
+        .map(|code| detail_class.funcall::<_, _, Value>("of", (code,)))
+        .collect::<Result<Vec<_>, Error>>()?;
+    for pinned in details.iter().copied().chain([
         hypercast.as_value(),
         invariant,
         detect,
@@ -88,7 +106,11 @@ fn build_cache(ruby: &Ruby, hypercast: RModule) -> Result<Cached, Error> {
         checked_class,
         violation_class,
         keyword_class,
-    ] {
+        detail_class,
+        refused_class.as_value(),
+        date_options_class.as_value(),
+        month_names_class.as_value(),
+    ]) {
         ruby.gc_register_mark_object(pinned);
     }
     let sym = |name: &str| ruby.to_symbol(name).as_raw();
@@ -103,8 +125,23 @@ fn build_cache(ruby: &Ruby, hypercast: RModule) -> Result<Cached, Error> {
         checked_class: Opaque::from(checked_class),
         violation_class: Opaque::from(violation_class),
         keyword_class: Opaque::from(keyword_class),
+        detail_class: Opaque::from(detail_class),
+        refused_class: Opaque::from(refused_class),
+        date_options_class: Opaque::from(date_options_class),
+        month_names_class: Opaque::from(month_names_class),
+        details: details.into_iter().map(Opaque::from).collect(),
         invariant_raw: invariant.as_raw(),
         detect_raw: detect.as_raw(),
+        // The two profiles hypercast.rb declares: `.`/`,` with strict Western grouping.
+        invariant: core::NumFormat::STRICT.validate().map_err(|refusal| {
+            Error::new(ruby.exception_runtime_error(), format!("INVARIANT: {refusal}"))
+        })?,
+        detect: core::NumFormat::DETECT
+            .with_grouping(core::NumFormat::GROUPING_WESTERN)
+            .validate()
+            .map_err(|refusal| {
+                Error::new(ruby.exception_runtime_error(), format!("DETECT: {refusal}"))
+            })?,
         empty: Opaque::from(ruby.to_symbol("empty")),
         malformed: Opaque::from(ruby.to_symbol("malformed")),
         out_of_range: Opaque::from(ruby.to_symbol("out_of_range")),
@@ -177,35 +214,65 @@ fn success(ruby: &Ruby, value: impl magnus::IntoValue) -> Result<Value, Error> {
     data(ruby.get_inner(cached().success), [value.into_value_with(ruby)])
 }
 
-/// Builds the Fault over `text` — the UTF-8 the core read — with its span in the units
-/// `String#[]` slices by (see `character_span`).
-fn fault(ruby: &Ruby, text: RString, failed: core::Fault) -> Result<Value, Error> {
+/// The package's `Detail` for a core detail: its published constant.
+fn detail_value(ruby: &Ruby, detail: core::Detail) -> Result<Value, Error> {
     let cache = cached();
-    let reason = ruby.get_inner(match failed.reason {
-        core::Reason::Empty => cache.empty,
-        core::Reason::Malformed => cache.malformed,
-        core::Reason::OutOfRange => cache.out_of_range,
-    });
-    let (offset, length) = character_span(text, failed.offset, failed.len);
-    data(
-        ruby.get_inner(cached().fault),
-        [reason.as_value(), offset.into_value_with(ruby), length.into_value_with(ruby)],
-    )
+    match cache.details.get(detail.code() as usize) {
+        Some(known) => Ok(ruby.get_inner(*known)),
+        None => ruby.get_inner(cache.detail_class).funcall("of", (detail.code(),)),
+    }
 }
 
-/// A typed door's Fault: the reason alone, over an empty span — there is no text for one
-/// to index.
-fn typed_fault(ruby: &Ruby, reason: core::Reason) -> Result<Value, Error> {
+/// The package's `Fault` with its `detail`, which is not a member (hypercast.rb has why), set
+/// as the instance variable `Fault#detail` reads, before the Data object is frozen.
+fn fault_value(
+    ruby: &Ruby,
+    reason: core::Reason,
+    (offset, length): (i64, i64),
+    detail: core::Detail,
+) -> Result<Value, Error> {
     let cache = cached();
     let reason = ruby.get_inner(match reason {
         core::Reason::Empty => cache.empty,
         core::Reason::Malformed => cache.malformed,
         core::Reason::OutOfRange => cache.out_of_range,
     });
-    data(
-        ruby.get_inner(cached().fault),
-        [reason.as_value(), 0i64.into_value_with(ruby), 0i64.into_value_with(ruby)],
-    )
+    let detail = detail_value(ruby, detail)?;
+    let class = ruby.get_inner(cache.fault);
+    // SAFETY: `class` is a live class object (cached at load); rb_obj_alloc runs its
+    // allocator and raises only when memory is exhausted.
+    let instance = unsafe { Value::from_raw(rb_sys::rb_obj_alloc(class.as_raw())) };
+    let Some(fields) = RStruct::from_value(instance) else {
+        let keywords = ruby.hash_new();
+        keywords.aset(ruby.to_symbol("reason"), reason)?;
+        keywords.aset(ruby.to_symbol("offset"), offset)?;
+        keywords.aset(ruby.to_symbol("length"), length)?;
+        keywords.aset(ruby.to_symbol("detail"), detail)?;
+        return class.funcall("new", (KwArgs(keywords),));
+    };
+    fields.aset(0, reason)?;
+    fields.aset(1, offset)?;
+    fields.aset(2, length)?;
+    // SAFETY: `instance` is the live, still unfrozen object just allocated; rb_ivar_set raises
+    // only on a frozen one.
+    unsafe {
+        rb_sys::rb_ivar_set(instance.as_raw(), ruby.intern("@detail").as_raw(), detail.as_raw())
+    };
+    instance.freeze();
+    Ok(instance)
+}
+
+/// Builds the Fault over `text` — the UTF-8 the core read — with its span in the units
+/// `String#[]` slices by (see `character_span`) and the core's detail.
+fn fault(ruby: &Ruby, text: RString, failed: core::Failure) -> Result<Value, Error> {
+    let span = character_span(text, failed.offset, failed.len);
+    fault_value(ruby, failed.reason, span, failed.detail)
+}
+
+/// A typed door's Fault: the reason and detail alone, over an empty span — there is no text
+/// for one to index.
+fn typed_fault(ruby: &Ruby, failed: core::Failure) -> Result<Value, Error> {
+    fault_value(ruby, failed.reason, (0, 0), failed.detail)
 }
 
 /// The core's byte span in the units `String#[]` slices by — the same rule as
@@ -248,7 +315,7 @@ fn utf8(ruby: &Ruby, text: RString) -> Result<RString, Error> {
 fn verdict<T: magnus::IntoValue>(
     ruby: &Ruby,
     text: RString,
-    outcome: Result<T, core::Fault>,
+    outcome: Result<T, core::Failure>,
 ) -> Result<Value, Error> {
     match outcome {
         Ok(value) => success(ruby, value),
@@ -269,7 +336,7 @@ thread_local! {
     /// alive. Only plain data lives here, deliberately — a GC-registered handle in a
     /// thread-local would try to unregister itself from a VM that has already shut down
     /// when the thread exits.
-    static LAST_FORMAT: RefCell<Option<(u64, core::NumFormat)>> = const { RefCell::new(None) };
+    static LAST_FORMAT: RefCell<Option<(u64, core::ValidNumFormat)>> = const { RefCell::new(None) };
 }
 
 /// The `object_id` an identity memo keys on: stable across compaction, never reused.
@@ -279,17 +346,18 @@ fn object_id(object: Value) -> Result<u64, Error> {
     u64::try_convert(id)
 }
 
-/// Resolves the declared format: INVARIANT and DETECT are identity-matched constants (pinned,
-/// so their addresses never move) and cost a pointer compare; any other format costs ten
-/// attribute reads the first time this thread sees it and an id lookup after that.
-fn resolve_format(ruby: &Ruby, format: Value) -> Result<core::NumFormat, Error> {
+/// Resolves the declared format, validated for the detailed doors: INVARIANT and DETECT are
+/// identity-matched constants (pinned, so their addresses never move) and cost a pointer
+/// compare; any other format costs eleven attribute reads the first time this thread sees it
+/// and an id lookup after that.
+fn resolve_format(ruby: &Ruby, format: Value) -> Result<core::ValidNumFormat, Error> {
     let raw = format.as_raw();
     let cache = cached();
     if raw == cache.invariant_raw {
-        return Ok(core::NumFormat::INVARIANT);
+        return Ok(cache.invariant);
     }
     if raw == cache.detect_raw {
-        return Ok(core::NumFormat::DETECT);
+        return Ok(cache.detect);
     }
     let id = object_id(format)?;
     let memo = LAST_FORMAT.with(|last| {
@@ -299,7 +367,7 @@ fn resolve_format(ruby: &Ruby, format: Value) -> Result<core::NumFormat, Error> 
         return Ok(resolved);
     }
     // Copied out (once per format per thread — this is the memo's miss path), and the
-    // whole format re-validated against the core's own rule below, so a Ruby-side check
+    // whole format validated against the core's own rules below, so a Ruby-side check
     // that drifted would surface here as an ArgumentError rather than a silent contract
     // violation. Each field is the UTF-8 the Data class stored; "" declares nothing.
     let malformed = |field: &str, text: &str| {
@@ -315,7 +383,8 @@ fn resolve_format(ruby: &Ruby, format: Value) -> Result<core::NumFormat, Error> 
         }
         core::Symbol::new(&text).ok_or_else(|| malformed(field, &text))
     };
-    let flags: u32 = format.funcall("flags", ())?;
+    // The style mask with the grouping policy in bits 8 and 9, as the native layout carries it.
+    let flags: u32 = format.funcall("raw_flags", ())?;
     let (decimal, group) = (symbol("decimal_sep")?, symbol("group_sep")?);
     if decimal.is_empty() || group.is_empty() {
         return Err(Error::new(ruby.exception_arg_error(), "separators must not be empty"));
@@ -338,13 +407,11 @@ fn resolve_format(ruby: &Ruby, format: Value) -> Result<core::NumFormat, Error> 
         .with_currency_separators(symbol("currency_decimal_sep")?, symbol("currency_group_sep")?)
         .with_signs(symbol("minus_sign")?, symbol("plus_sign")?)
         .with_percent(symbol("percent")?)
-        .with_digits(digits);
-    if !resolved.check() {
-        return Err(Error::new(
-            ruby.exception_arg_error(),
-            "malformed NumFormat: equal separators, or a symbol the core cannot read",
-        ));
-    }
+        .with_digits(digits)
+        .validate()
+        .map_err(|refusal| {
+            Error::new(ruby.exception_arg_error(), format!("malformed NumFormat: {refusal}"))
+        })?;
     LAST_FORMAT.with(|last| *last.borrow_mut() = Some((id, resolved)));
     Ok(resolved)
 }
@@ -357,14 +424,14 @@ fn with_bytes<T>(text: RString, parse: impl FnOnce(&[u8]) -> T) -> T {
 
 fn bool_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
     let text = utf8(ruby, text)?;
-    verdict(ruby, text, with_bytes(text, |bytes| core::cast_bool(bytes)))
+    verdict(ruby, text, with_bytes(text, |bytes| detailed::cast_bool(bytes)))
 }
 
 /// The scalar as a one-character UTF-8 String — what hypercast.rb's `Integer#chr(UTF_8)`
 /// yields on the Fiddle backend.
 fn char_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
     let text = utf8(ruby, text)?;
-    match with_bytes(text, |bytes| core::cast_char(bytes)) {
+    match with_bytes(text, |bytes| detailed::cast_char(bytes)) {
         Ok(scalar) => success(ruby, ruby.str_new(scalar.encode_utf8(&mut [0; 4]))),
         Err(failed) => fault(ruby, text, failed),
     }
@@ -376,7 +443,7 @@ fn char_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
 /// put through the package's own `NumFormat#override`, so the overridden format is built,
 /// validated and refused (an unknown keyword included) by the same Ruby code the Fiddle
 /// backend runs, with the same messages.
-fn numeric_args(ruby: &Ruby, args: &[Value]) -> Result<(RString, core::NumFormat), Error> {
+fn numeric_args(ruby: &Ruby, args: &[Value]) -> Result<(RString, core::ValidNumFormat), Error> {
     // SAFETY: called on the Ruby thread, inside the method call whose arguments these are.
     let keywords = unsafe { rb_sys::rb_keyword_given_p() } != 0;
     if let ([text, format], false) = (args, keywords) {
@@ -394,7 +461,7 @@ macro_rules! numeric_doors {
     ($($door:ident => $core:ident),+ $(,)?) => {$(
         fn $door(ruby: &Ruby, args: &[Value]) -> Result<Value, Error> {
             let (text, resolved) = numeric_args(ruby, args)?;
-            verdict(ruby, text, with_bytes(text, |bytes| core::$core(bytes, &resolved)))
+            verdict(ruby, text, with_bytes(text, |bytes| detailed::$core(bytes, &resolved)))
         }
     )+};
 }
@@ -417,7 +484,7 @@ numeric_doors! {
 /// a Bignum past 2⁶⁴ — the scale a small Integer, and the sign a Boolean.
 fn decimal_door(ruby: &Ruby, args: &[Value]) -> Result<Value, Error> {
     let (text, resolved) = numeric_args(ruby, args)?;
-    match with_bytes(text, |bytes| core::cast_decimal(bytes, &resolved)) {
+    match with_bytes(text, |bytes| detailed::cast_decimal(bytes, &resolved)) {
         Ok(decimal) => decimal_value(ruby, decimal),
         Err(failed) => fault(ruby, text, failed),
     }
@@ -438,9 +505,9 @@ fn decimal_object(ruby: &Ruby, decimal: core::Decimal) -> Result<Value, Error> {
 /// the Float. The value is taken as Ruby's own Float conversion takes it (`rb_num2dbl`): an
 /// Integer, Float or Rational, and a TypeError for anything else, a String included.
 fn decimal_from_float_door(ruby: &Ruby, value: f64) -> Result<Value, Error> {
-    match core::decimal_from_f64(value) {
+    match detailed::decimal_from_f64(value) {
         Ok(decimal) => decimal_value(ruby, decimal),
-        Err(reason) => typed_fault(ruby, reason),
+        Err(failed) => typed_fault(ruby, failed),
     }
 }
 
@@ -454,7 +521,7 @@ fn native_version() -> String {
 
 fn uuid_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
     let text = utf8(ruby, text)?;
-    match with_bytes(text, |bytes| core::cast_uuid(bytes)) {
+    match with_bytes(text, |bytes| detailed::cast_uuid(bytes)) {
         Ok(bytes) => {
             let mut hyphenated = String::with_capacity(36);
             for (index, byte) in bytes.iter().enumerate() {
@@ -483,9 +550,124 @@ fn utc_time(ruby: &Ruby, ts: core::Timestamp) -> Result<Value, Error> {
     success(ruby, time)
 }
 
-fn timestamp_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
+/// The date options and month names a date door was given, as the plain values the core
+/// reads: `options:` and `months:` are the package's own `DateOptions` and `MonthNames`, which
+/// hypercast.rb has already judged, and the core judges them again for each call.
+struct Dates {
+    flags: u32,
+    pivot: u16,
+    /// The vocabulary in its packed layout, a frozen String held by the `MonthNames`.
+    packed: Option<RString>,
+}
+
+/// Reads `options:` and `months:` (nil is none): a TypeError, worded as hypercast.rb words it,
+/// for anything but a `DateOptions` and a `MonthNames`. `months` is only taken up when the door
+/// reads a vocabulary, and is type-checked either way.
+fn dates(
+    ruby: &Ruby,
+    options: Option<Value>,
+    months: Option<Value>,
+    reads_months: bool,
+) -> Result<Option<Dates>, Error> {
+    let cache = cached();
+    let given = |value: Option<Value>| value.filter(|declared| !declared.is_nil());
+    let (options, months) = (given(options), given(months));
+    if let Some(options) = options
+        && !options.is_kind_of(ruby.get_inner(cache.date_options_class))
+    {
+        return Err(Error::new(
+            ruby.exception_type_error(),
+            format!("options must be a HyperCast::DateOptions; got {}", options.inspect()),
+        ));
+    }
+    if let Some(months) = months
+        && !months.is_kind_of(ruby.get_inner(cache.month_names_class))
+    {
+        return Err(Error::new(
+            ruby.exception_type_error(),
+            format!("months must be a HyperCast::MonthNames; got {}", months.inspect()),
+        ));
+    }
+    let months = months.filter(|_| reads_months);
+    if options.is_none() && months.is_none() {
+        return Ok(None);
+    }
+    let (flags, pivot) = match options {
+        Some(options) => {
+            let flags: u32 = options.funcall("flags", ())?;
+            let pivot: Option<u16> = options.funcall("pivot", ())?;
+            (flags, pivot.unwrap_or(0))
+        }
+        None => (0, 0),
+    };
+    // A vocabulary with no bytes is none, as the C ABI reads a length of 0 (a constructed
+    // MonthNames never has one; a hand-built object might, and both backends read it alike).
+    let packed = match months {
+        Some(months) => Some(months.funcall::<_, _, RString>("packed", ())?)
+            .filter(|packed| with_bytes(*packed, |bytes| !bytes.is_empty())),
+        None => None,
+    };
+    Ok(Some(Dates { flags, pivot, packed }))
+}
+
+/// The core's refusal of date options or month names hypercast.rb accepted: the caller's
+/// contract violation, `HyperCast::RefusedDeclaration` (an ArgumentError), worded as the Fiddle
+/// backend words it.
+fn refused(ruby: &Ruby) -> Error {
+    Error::new(
+        ruby.get_inner(cached().refused_class),
+        "the core refused the date options or month names",
+    )
+}
+
+/// Runs a date door over `text` with the declared options, the core judging them first (and for
+/// each call, as the C ABI does: nothing is kept between calls). The outer Result is the
+/// declaration's, the inner one the data's.
+fn dated<T>(
+    ruby: &Ruby,
+    text: RString,
+    declared: Option<&Dates>,
+    door: impl FnOnce(&[u8], Option<&core::ValidDateOptions<'_>>) -> Result<T, core::Failure>,
+) -> Result<Result<T, core::Failure>, Error> {
+    let Some(declared) = declared else {
+        return Ok(with_bytes(text, |bytes| door(bytes, None)));
+    };
+    let options = core::DateOptions::from_flags(declared.flags).with_pivot(declared.pivot);
+    match declared.packed {
+        None => {
+            let valid = options.validate(None).map_err(|_| refused(ruby))?;
+            Ok(with_bytes(text, |bytes| door(bytes, Some(&valid))))
+        }
+        Some(packed) => with_bytes(packed, |names| {
+            let names = core::MonthNames::from_packed(names).map_err(|_| refused(ruby))?;
+            let valid = options.validate(Some(names)).map_err(|_| refused(ruby))?;
+            Ok(with_bytes(text, |bytes| door(bytes, Some(&valid))))
+        }),
+    }
+}
+
+/// Whether the current call passed keywords. Called on the Ruby thread, inside the method call
+/// whose arguments these are.
+fn keywords_given() -> bool {
+    // SAFETY: as stated: on the Ruby thread, inside the method call.
+    unsafe { rb_sys::rb_keyword_given_p() != 0 }
+}
+
+/// `timestamp(text, options: nil)`.
+fn timestamp_door(ruby: &Ruby, args: &[Value]) -> Result<Value, Error> {
+    let (text, options) = if keywords_given() {
+        let scanned = scan_args::<(RString,), (), (), (), RHash, ()>(args)?;
+        let declared =
+            get_kwargs::<_, (), (Option<Value>,), ()>(scanned.keywords, &[], &["options"])?;
+        (scanned.required.0, declared.optional.0)
+    } else {
+        (scan_args::<(RString,), (), (), (), (), ()>(args)?.required.0, None)
+    };
+    let declared = dates(ruby, options, None, false)?;
     let text = utf8(ruby, text)?;
-    match with_bytes(text, |bytes| core::cast_timestamp(bytes)) {
+    match dated(ruby, text, declared.as_ref(), |bytes, options| {
+        detailed::cast_timestamp(bytes, options)
+    })? {
         Ok(ts) => utc_time(ruby, ts),
         Err(failed) => fault(ruby, text, failed),
     }
@@ -504,7 +686,7 @@ fn unix_door(ruby: &Ruby, text: RString, precision: Value) -> Result<Value, Erro
         },
     };
     let text = utf8(ruby, text)?;
-    match with_bytes(text, |bytes| core::cast_unix(bytes, precision)) {
+    match with_bytes(text, |bytes| detailed::cast_unix(bytes, precision)) {
         Ok(ts) => utc_time(ruby, ts),
         Err(failed) => fault(ruby, text, failed),
     }
@@ -525,7 +707,7 @@ fn resolve_epoch(ruby: &Ruby, epoch: Value) -> Result<core::ExcelEpoch, Error> {
 fn excel_serial_door(ruby: &Ruby, text: RString, epoch: Value) -> Result<Value, Error> {
     let epoch = resolve_epoch(ruby, epoch)?;
     let text = utf8(ruby, text)?;
-    match with_bytes(text, |bytes| core::cast_excel_serial(bytes, epoch)) {
+    match with_bytes(text, |bytes| detailed::cast_excel_serial(bytes, epoch)) {
         Ok(ts) => utc_time(ruby, ts),
         Err(failed) => fault(ruby, text, failed),
     }
@@ -536,19 +718,30 @@ fn excel_serial_door(ruby: &Ruby, text: RString, epoch: Value) -> Result<Value, 
 // The order is scanned as a plain Value: `date(text, nil)` is the documented
 // `order = nil` default spelled out, and means exactly what leaving it off means — scanned
 // as a Symbol it was a TypeError here and the strict ISO door on the other two backends.
+// `options:` and `months:` are keywords, scanned only when the call gave some.
 fn date_door(ruby: &Ruby, args: &[Value]) -> Result<Value, Error> {
-    let args = scan_args::<(RString,), (Option<Value>,), (), (), (), ()>(args)?;
-    let (text,) = args.required;
-    let (order,) = args.optional;
+    let (text, order, options, months) = if keywords_given() {
+        let scanned = scan_args::<(RString,), (Option<Value>,), (), (), RHash, ()>(args)?;
+        let declared = get_kwargs::<_, (), (Option<Value>, Option<Value>), ()>(
+            scanned.keywords,
+            &[],
+            &["options", "months"],
+        )?;
+        (scanned.required.0, scanned.optional.0, declared.optional.0, declared.optional.1)
+    } else {
+        let scanned = scan_args::<(RString,), (Option<Value>,), (), (), (), ()>(args)?;
+        (scanned.required.0, scanned.optional.0, None, None)
+    };
     let order = match order.filter(|declared| !declared.is_nil()) {
         None => None,
         Some(declared) => Some(resolve_order(ruby, declared)?),
     };
+    let declared = dates(ruby, options, months, order.is_some())?;
     let text = utf8(ruby, text)?;
-    let verdict = match order {
-        None => with_bytes(text, |bytes| core::cast_date(bytes)),
-        Some(order) => with_bytes(text, |bytes| core::cast_date_ordered(bytes, order)),
-    };
+    let verdict = dated(ruby, text, declared.as_ref(), |bytes, options| match order {
+        None => detailed::cast_date(bytes, options),
+        Some(order) => detailed::cast_date_ordered(bytes, order, options),
+    })?;
     match verdict {
         Ok(date) => {
             let class = ruby.get_inner(cached().date_class);
@@ -574,7 +767,7 @@ fn resolve_order(ruby: &Ruby, order: Value) -> Result<core::DateOrder, Error> {
 
 /// A declared day-period designator — hypercast.rb's `designator` rule, raising its
 /// ArgumentError worded the same: a String with a UTF-8 form, of 1 to 16 UTF-8 bytes with no
-/// ASCII digit and no ASCII whitespace at either end; nil declares nothing beside the English
+/// ASCII digit and no white space at either end; nil declares nothing beside the English
 /// word.
 fn designator(ruby: &Ruby, name: &str, text: Option<Value>) -> Result<core::Symbol<16>, Error> {
     let Some(text) = text.filter(|given| !given.is_nil()) else {
@@ -591,49 +784,55 @@ fn designator(ruby: &Ruby, name: &str, text: Option<Value>) -> Result<core::Symb
         .get_inner(cached().hypercast)
         .funcall("declared_utf8", (format!("{name} designator"), string))?;
     let declared = with_bytes(string, |bytes| {
-        let flush = |edge: Option<&u8>| edge.is_some_and(u8::is_ascii_whitespace);
-        if flush(bytes.first()) || flush(bytes.last()) {
+        let designator = std::str::from_utf8(bytes).ok()?;
+        if designator.starts_with(core::is_white_space)
+            || designator.ends_with(core::is_white_space)
+        {
             return None;
         }
-        std::str::from_utf8(bytes).ok().and_then(core::Symbol::<16>::new)
+        core::Symbol::<16>::new(designator)
     });
     declared.ok_or_else(|| {
         Error::new(
             ruby.exception_arg_error(),
             format!(
-                "{name} designator {} must be 1 to 16 UTF-8 bytes with no ASCII digit and no ASCII whitespace at either end",
+                "{name} designator {} must be 1 to 16 UTF-8 bytes with no ASCII digit and no white space at either end",
                 text.inspect()
             ),
         )
     })
 }
 
-/// The civil door's `(text, order, am: nil, pm: nil)`. With no keywords — the plain call,
-/// `(text, order)` — it is the two conversions the door always made and nothing else: no
-/// `scan_args`, no Hash. With keywords, the designators are read and validated here, by
-/// the rule hypercast.rb applies on the Fiddle backend, and read beside the English
-/// `AM`/`PM` for this call only — they are per-call text, not a memoized format object.
+/// The civil door's `(text, order, am: nil, pm: nil, options: nil, months: nil)`. With no
+/// keywords — the plain call, `(text, order)` — it is the two conversions the door always made
+/// and nothing else: no `scan_args`, no Hash. With keywords, the designators are read and
+/// validated here, by the rule hypercast.rb applies on the Fiddle backend, and read beside the
+/// English `AM`/`PM` for this call only — they are per-call text, not a memoized format object —
+/// and the date options and month names are taken up as the other date doors take them.
 fn datetime_door(ruby: &Ruby, args: &[Value]) -> Result<Value, Error> {
-    // SAFETY: called on the Ruby thread, inside the method call whose arguments these are.
-    let keywords = unsafe { rb_sys::rb_keyword_given_p() } != 0;
-    let (text, order, periods) = if let ([text, order], false) = (args, keywords) {
-        (RString::try_convert(*text)?, *order, core::DayPeriods::ENGLISH)
+    let keywords = keywords_given();
+    let (text, order, periods, options, months) = if let ([text, order], false) = (args, keywords) {
+        (RString::try_convert(*text)?, *order, core::DayPeriods::ENGLISH, None, None)
     } else {
         let scanned = scan_args::<(RString, Value), (), (), (), RHash, ()>(args)?;
         let (text, order) = scanned.required;
-        let declared = get_kwargs::<_, (), (Option<Value>, Option<Value>), ()>(
-            scanned.keywords,
-            &[],
-            &["am", "pm"],
-        )?;
-        let (am, pm) = declared.optional;
+        let declared = get_kwargs::<
+            _,
+            (),
+            (Option<Value>, Option<Value>, Option<Value>, Option<Value>),
+            (),
+        >(scanned.keywords, &[], &["am", "pm", "options", "months"])?;
+        let (am, pm, options, months) = declared.optional;
         let periods =
             core::DayPeriods::new(designator(ruby, "am", am)?, designator(ruby, "pm", pm)?);
-        (text, order, periods)
+        (text, order, periods, options, months)
     };
     let order = resolve_order(ruby, order)?;
+    let declared = dates(ruby, options, months, true)?;
     let text = utf8(ruby, text)?;
-    match with_bytes(text, |bytes| core::cast_datetime_with(bytes, order, &periods)) {
+    match dated(ruby, text, declared.as_ref(), |bytes, options| {
+        detailed::cast_datetime_with(bytes, order, &periods, options)
+    })? {
         Ok(civil) => civil_value(ruby, civil),
         Err(failed) => fault(ruby, text, failed),
     }
@@ -663,36 +862,36 @@ fn civil_value(ruby: &Ruby, civil: core::CivilDateTime) -> Result<Value, Error> 
 /// names — the typed twin of `excel_serial`.
 fn excel_serial_from_float_door(ruby: &Ruby, value: f64, epoch: Value) -> Result<Value, Error> {
     let epoch = resolve_epoch(ruby, epoch)?;
-    match core::excel_serial(value, epoch) {
+    match detailed::excel_serial(value, epoch) {
         Ok(civil) => civil_value(ruby, civil),
-        Err(reason) => typed_fault(ruby, reason),
+        Err(failed) => typed_fault(ruby, failed),
     }
 }
 
 /// Reads the fraction of an Excel serial number as nanoseconds since midnight.
 fn excel_time_door(ruby: &Ruby, value: f64) -> Result<Value, Error> {
-    match core::excel_time(value) {
+    match detailed::excel_time(value) {
         Ok(nanos) => success(ruby, nanos),
-        Err(reason) => typed_fault(ruby, reason),
+        Err(failed) => typed_fault(ruby, failed),
     }
 }
 
 /// Reads a number of days as exact Rational seconds.
 fn excel_duration_door(ruby: &Ruby, value: f64) -> Result<Value, Error> {
-    match core::excel_duration(value) {
+    match detailed::excel_duration(value) {
         Ok(span) => duration_value(ruby, span),
-        Err(reason) => typed_fault(ruby, reason),
+        Err(failed) => typed_fault(ruby, failed),
     }
 }
 
 fn time_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
     let text = utf8(ruby, text)?;
-    verdict(ruby, text, with_bytes(text, |bytes| core::cast_time(bytes)))
+    verdict(ruby, text, with_bytes(text, |bytes| detailed::cast_time(bytes)))
 }
 
 fn duration_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
     let text = utf8(ruby, text)?;
-    match with_bytes(text, |bytes| core::cast_duration(bytes)) {
+    match with_bytes(text, |bytes| detailed::cast_duration(bytes)) {
         Ok(span) => duration_value(ruby, span),
         Err(failed) => fault(ruby, text, failed),
     }
@@ -816,7 +1015,7 @@ fn declaration(ruby: &Ruby, constraints: Value, text: bool) -> Result<Rc<Declara
 }
 
 /// What a judge answers: `None` for a declaration the core refused.
-type Judgement = Option<Result<CheckOutcome, core::Rejection>>;
+type Judgement = Option<Result<CheckOutcome, detailed::Rejection>>;
 
 /// The success case: the package's own `Checked` Data.
 fn checked_value(ruby: &Ruby, value: Value, outcome: CheckOutcome) -> Result<Value, Error> {
@@ -826,19 +1025,20 @@ fn checked_value(ruby: &Ruby, value: Value, outcome: CheckOutcome) -> Result<Val
     )
 }
 
-/// A rejection: the door's `Fault`, or a `Violation` of the keyword broken, each spanned over
-/// `text` (the UTF-8 the core read) as a fault is — or, with no text, as the core wrote it.
+/// A rejection: the door's `Fault` with its detail, or a `Violation` of the keyword broken
+/// (which has none), each spanned over `text` (the UTF-8 the core read) as a fault is — or,
+/// with no text, as the core wrote it.
 fn rejected(
     ruby: &Ruby,
     text: Option<RString>,
-    rejection: core::Rejection,
+    rejection: detailed::Rejection,
 ) -> Result<Value, Error> {
     match rejection {
-        core::Rejection::Fault(failed) => match text {
+        detailed::Rejection::Failure(failed) => match text {
             Some(text) => fault(ruby, text, failed),
-            None => typed_fault(ruby, failed.reason),
+            None => typed_fault(ruby, failed),
         },
-        core::Rejection::Violation(broken) => {
+        detailed::Rejection::Violation(broken) => {
             let (offset, length) = match text {
                 Some(text) => character_span(text, broken.offset, broken.len),
                 None => (i64::from(broken.offset), i64::from(broken.len)),
@@ -927,7 +1127,7 @@ fn text_door(ruby: &Ruby, args: &[Value]) -> Result<Value, Error> {
     let text = utf8(ruby, text)?;
     let Some(constraints) = constraints.filter(|given| !given.is_nil()) else {
         return match with_bytes(text, |bytes| {
-            core::cast_text(bytes).map(|valid| valid.len() as u32)
+            detailed::cast_text(bytes).map(|valid| valid.len() as u32)
         }) {
             Ok(len) => success(ruby, text_value(ruby, text, (0, len))?),
             Err(failed) => fault(ruby, text, failed),
@@ -935,11 +1135,12 @@ fn text_door(ruby: &Ruby, args: &[Value]) -> Result<Value, Error> {
     };
     let declared = declaration(ruby, constraints, true)?;
     let entries = Entries::packed(core::Door::Text, &declared.packed);
-    let outcome = match with_bytes(text, |bytes| judge_text(bytes, &declared.raw, &entries)) {
-        None => return Err(binding_bug(ruby)),
-        Some(Err(rejection)) => return rejected(ruby, Some(text), rejection),
-        Some(Ok(outcome)) => outcome,
-    };
+    let outcome =
+        match with_bytes(text, |bytes| judge_text_detailed(bytes, &declared.raw, &entries)) {
+            None => return Err(binding_bug(ruby)),
+            Some(Err(rejection)) => return rejected(ruby, Some(text), rejection),
+            Some(Ok(outcome)) => outcome,
+        };
     let value = match outcome.enum_index {
         None => text_value(ruby, text, outcome.span)?,
         Some(index) => {
@@ -972,7 +1173,10 @@ fn checked_door(ruby: &Ruby, args: &[Value]) -> Result<Value, Error> {
     numeric_verdict(ruby, door, Some(text), |out| {
         with_bytes(text, |bytes| {
             // SAFETY: `numeric_verdict` hands 16 bytes, room for the type `door` writes.
-            unsafe { judge_numeric(door, bytes, &format, &declared.raw, &entries, out) }
+            unsafe {
+                judge_numeric_detailed(door, bytes, format.format(), &declared.raw, &entries, out)
+            }
+            .map(|verdict| verdict.map_err(|rejection| detailed::classified(rejection, bytes)))
         })
     })
 }
@@ -985,7 +1189,7 @@ fn checked_from_float_door(ruby: &Ruby, value: f64, constraints: Value) -> Resul
     let entries = Entries::packed(door, &declared.packed);
     numeric_verdict(ruby, door, None, |out| {
         // SAFETY: `numeric_verdict` hands 16 bytes, room for the type `door` writes.
-        unsafe { judge_numeric_from_f64(door, value, &declared.raw, &entries, out) }
+        unsafe { judge_numeric_from_f64_detailed(door, value, &declared.raw, &entries, out) }
     })
 }
 
@@ -1038,7 +1242,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     hypercast.define_singleton_method("f64", function!(f64_door, -1))?;
     hypercast.define_singleton_method("decimal", function!(decimal_door, -1))?;
     hypercast.define_singleton_method("uuid", function!(uuid_door, 1))?;
-    hypercast.define_singleton_method("timestamp", function!(timestamp_door, 1))?;
+    hypercast.define_singleton_method("timestamp", function!(timestamp_door, -1))?;
     hypercast.define_singleton_method("unix", function!(unix_door, 2))?;
     hypercast.define_singleton_method("excel_serial", function!(excel_serial_door, 2))?;
     hypercast.define_singleton_method("date", function!(date_door, -1))?;

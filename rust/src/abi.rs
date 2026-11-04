@@ -1,8 +1,9 @@
 //! The parts of the C ABI that are Rust API too: the version word every binding probes,
-//! [`NumFormat`] and the day-period designators as they cross the boundary, and the
-//! validation constraints' layouts ([`RawConstraints`], [`RawCheck`], [`RawSpan`]). They live
-//! outside `ffi` because that module is the `exports` feature — the 32 symbols, the version
-//! probe and the 31 `cast_*` exports — and a crate that links this one as an rlib to export a
+//! [`NumFormat`] and the day-period designators as they cross the boundary, the
+//! validation constraints' layouts ([`RawConstraints`], [`RawCheck`], [`RawSpan`]), and the
+//! detailed exports' fault and date options ([`RawFaultDetail`], [`RawDateOptions`]). They
+//! live outside `ffi` because that module is the `exports` feature — the 36 symbols, the
+//! version probe and the 35 `cast_*` exports — and a crate that links this one as an rlib to export a
 //! C ABI of its own takes the core with `exports` off, so its library carries none of them,
 //! while still reading the version and declaring a numeric column in exactly this layout.
 
@@ -47,6 +48,10 @@ const _: () = assert!(
         && align_of::<RawCheck>() == 4
         && RawSpan::SIZE as usize == size_of::<RawSpan>()
         && align_of::<RawSpan>() == 4
+        && RawFaultDetail::SIZE as usize == size_of::<RawFaultDetail>()
+        && align_of::<RawFaultDetail>() == 4
+        && RawDateOptions::SIZE as usize == size_of::<RawDateOptions>()
+        && align_of::<RawDateOptions>() == 4
 );
 const _: () =
     assert!(align_of::<u64>() != 8 || RawConstraints::SIZE as usize == size_of::<RawConstraints>());
@@ -70,6 +75,11 @@ const _: () = {
     assert!(core::mem::offset_of!(RawCheck, adjusted) == 4);
     assert!(core::mem::offset_of!(RawCheck, enum_index) == 8);
     assert!(core::mem::offset_of!(RawSpan, len) == 4);
+    assert!(core::mem::offset_of!(RawFaultDetail, offset) == 4);
+    assert!(core::mem::offset_of!(RawFaultDetail, len) == 8);
+    assert!(core::mem::offset_of!(RawFaultDetail, detail) == 12);
+    assert!(core::mem::offset_of!(RawDateOptions, flags) == 4);
+    assert!(core::mem::offset_of!(RawDateOptions, pivot) == 8);
 };
 
 // The constraint layout's words come first, then its three decimals, each 8-aligned with
@@ -162,9 +172,11 @@ impl RawNumFormat {
 
     /// The [`NumFormat`] this declares, in place, or `None` for a contract violation — a
     /// caller bug, not a data verdict: a `size` the core does not read, or a format
-    /// [`NumFormat::check`] refuses (a missing or over-long separator, equal separators, a
-    /// symbol with an ASCII digit in it or that is not UTF-8, whitespace in a sign, the
-    /// percent or the currency symbol, a digit zero that starts no digit block).
+    /// [`NumFormat::check`] refuses (an undefined `flags` bit or grouping policy `11`, which
+    /// the 1.0 exports cut away before asking; a missing or over-long separator, equal separators, a
+    /// symbol with an ASCII digit in it or that is not UTF-8, white space in a sign, the
+    /// percent or the currency symbol or in either decimal separator, a digit zero that
+    /// starts no digit block).
     #[inline]
     pub fn resolve(&self) -> Option<&NumFormat> {
         if self.size < Self::MIN_SIZE || self.size > Self::SIZE || !self.format.check() {
@@ -283,8 +295,8 @@ impl RawDayPeriods {
 
     /// The [`DayPeriods`] this declares, in place, or `None` for a contract violation: a
     /// `size` the core does not read, or a designator that is not valid (longer than 16
-    /// bytes, not UTF-8, carrying an ASCII digit, or starting or ending in ASCII whitespace,
-    /// which the grammar around it already reads).
+    /// bytes, not UTF-8, carrying an ASCII digit, or starting or ending in white space, which
+    /// the grammar around it already reads).
     #[inline]
     pub fn resolve(&self) -> Option<&DayPeriods> {
         if self.size < Self::MIN_SIZE || self.size > Self::SIZE || !self.periods.check() {
@@ -423,4 +435,72 @@ pub struct RawSpan {
 impl RawSpan {
     /// The layout's size in bytes.
     pub const SIZE: u32 = 8;
+}
+
+/// A detailed export's fault: the span and the [`Detail`](crate::Detail) code, behind a size
+/// word the caller writes, 16 bytes with 4-byte alignment.
+///
+/// | Offset | Field | Bytes |
+/// | --- | --- | --- |
+/// | 0 | `size`, a `u32`, written by the caller | 4 |
+/// | 4 | `offset`, where the span starts in the caller's input | 4 |
+/// | 8 | `len`, the span's length in bytes | 4 |
+/// | 12 | `detail`, a [`Detail`](crate::Detail) code, or `0` for a checked violation | 4 |
+///
+/// `size` says how many bytes the caller provides: at least [`SIZE`](Self::SIZE) and a
+/// multiple of 4, or the export refuses the call (−1) and writes nothing. A larger size, from
+/// a caller built against a later layout, is accepted: this core writes bytes 4 to 16 and
+/// never a byte past them, so such a caller sets any field beyond those to its neutral value
+/// itself. The core never writes `size`, and writes the rest only on codes 1 to 3 (and on 4
+/// at the checked exports); a null pointer is allowed and nothing is written.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RawFaultDetail {
+    /// The bytes the caller provides: [`RawFaultDetail::SIZE`] or more, a multiple of 4.
+    pub size: u32,
+    /// Where the offending bytes start, as an offset into the caller's input.
+    pub offset: u32,
+    /// How many bytes they run; 0 for a typed door, which has no text to index.
+    pub len: u32,
+    /// What failed: a [`Detail`](crate::Detail) code, 1 or more; `0` on a checked violation.
+    /// A code this binding doesn't know is still a failure with a usable reason and span.
+    pub detail: u32,
+}
+
+impl RawFaultDetail {
+    /// The layout's size in bytes, the least `size` the core accepts.
+    pub const SIZE: u32 = 16;
+}
+
+/// The date options as they cross the ABI: a size word, the option bits
+/// ([`DateOptions::COMPACT_DATE`](crate::DateOptions::COMPACT_DATE) and the others), and the
+/// two-digit-year pivot, 12 bytes with 4-byte alignment.
+///
+/// | Offset | Field | Bytes |
+/// | --- | --- | --- |
+/// | 0 | `size`, a `u32` | 4 |
+/// | 4 | `flags`, the option bits | 4 |
+/// | 8 | `pivot`, `0` for none, else 100–9999 | 4 |
+///
+/// `size` is [`MIN_SIZE`](Self::MIN_SIZE) (the size and flags words; the pivot is then `0`,
+/// none) or [`SIZE`](Self::SIZE); any other size, a flag bit this core doesn't define, or a
+/// pivot other than `0` or 100–9999 is a contract violation. A null pointer is no options. The
+/// core never writes it.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RawDateOptions {
+    /// The bytes the caller built: [`RawDateOptions::SIZE`] or [`RawDateOptions::MIN_SIZE`].
+    pub size: u32,
+    /// The option bits.
+    pub flags: u32,
+    /// The last year of the window a two-digit year is read in; `0` for none.
+    pub pivot: u32,
+}
+
+impl RawDateOptions {
+    /// The layout's size in bytes, which `size` carries.
+    pub const SIZE: u32 = 12;
+
+    /// The smallest `size` the core reads: the size and flags words, with no pivot.
+    pub const MIN_SIZE: u32 = 8;
 }

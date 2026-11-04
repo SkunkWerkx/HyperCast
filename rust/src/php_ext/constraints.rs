@@ -40,9 +40,12 @@ use super::enums::{CastFailure, Door, Keyword, Rounding};
 use super::errors::{contract_violation, pending};
 use super::guard;
 use super::values::{checked_args, decimal_text, fault, from_limbs, success};
-use crate::checked::{CheckOutcome, judge_numeric, judge_numeric_from_f64, judge_text};
+use crate::checked::{
+    CheckOutcome, judge_numeric, judge_numeric_detailed, judge_numeric_from_f64,
+    judge_numeric_from_f64_detailed, judge_text, judge_text_detailed,
+};
 use crate::constraints::{Entries, declared_decimal};
-use crate::{NumFormat, RawConstraints, Refusal, Rejection};
+use crate::{Failure, Fault, NumFormat, RawConstraints, Refusal, Rejection};
 
 const CONSTRAINTS: Declaration = Declaration {
     name: "HyperCast\\Constraints",
@@ -605,16 +608,42 @@ fn refused_by_judge(layout: &Layout) -> PhpException {
     }
 }
 
+/// Why a checked door refused: the plain door's fault, the detailed door's failure, or a
+/// violation of a declared rule (which carries no detail).
+enum Refused {
+    Fault(Fault),
+    Failure(Failure),
+    Violation(crate::Violation),
+}
+
+impl From<Rejection> for Refused {
+    fn from(rejection: Rejection) -> Refused {
+        match rejection {
+            Rejection::Fault(fault) => Refused::Fault(fault),
+            Rejection::Violation(violation) => Refused::Violation(violation),
+        }
+    }
+}
+
+impl From<crate::detailed::Rejection> for Refused {
+    fn from(rejection: crate::detailed::Rejection) -> Refused {
+        match rejection {
+            crate::detailed::Rejection::Failure(failure) => Refused::Failure(failure),
+            crate::detailed::Rejection::Violation(violation) => Refused::Violation(violation),
+        }
+    }
+}
+
 /// What a checked judge answers: the value and what was reported beside it, or a rejection.
-type Judgement = Result<(Zval, CheckOutcome), Rejection>;
+type Judgement = Result<(Zval, CheckOutcome), Refused>;
 
 /// Runs a numeric judge, which writes the value to the pointer it is handed.
 ///
 /// # Safety
 /// `T` must be the type the judge writes on success.
-unsafe fn judged<T>(
-    judge: impl FnOnce(*mut u8) -> Option<Result<CheckOutcome, Rejection>>,
-) -> Option<Result<(T, CheckOutcome), Rejection>> {
+unsafe fn judged<T, E>(
+    judge: impl FnOnce(*mut u8) -> Option<Result<CheckOutcome, E>>,
+) -> Option<Result<(T, CheckOutcome), E>> {
     let mut out = MaybeUninit::<T>::uninit();
     judge(out.as_mut_ptr().cast()).map(|judgement| {
         // SAFETY: on success the judge wrote a `T`, per the function contract.
@@ -625,16 +654,16 @@ unsafe fn judged<T>(
 /// Judges at a numeric door through `judge`, which writes that door's own type, and presents
 /// the value as the plain door does: an `int` (u64 as its bit pattern), a `float` (an f32
 /// widened exactly) or a `Decimal`. `None` is a refused declaration.
-fn numeric(
+fn numeric<E: Into<Refused>>(
     door: Door,
-    judge: impl FnOnce(*mut u8) -> Option<Result<CheckOutcome, Rejection>>,
+    judge: impl FnOnce(*mut u8) -> Option<Result<CheckOutcome, E>>,
 ) -> PhpResult<Option<Judgement>> {
     macro_rules! at {
         ($ty:ty, $present:expr) => {{
             // SAFETY: the door judged is `door`, which writes this type.
-            match unsafe { judged::<$ty>(judge) } {
+            match unsafe { judged::<$ty, E>(judge) } {
                 None => Ok(None),
-                Some(Err(rejection)) => Ok(Some(Err(rejection))),
+                Some(Err(rejection)) => Ok(Some(Err(rejection.into()))),
                 Some(Ok((value, outcome))) => Ok(Some(Ok(($present(value)?, outcome)))),
             }
         }};
@@ -669,10 +698,11 @@ fn verdict(judgement: Judgement) -> PhpResult<Zval> {
                 outcome.enum_index.map_or_else(null, |index| int_zval(i64::from(index))),
             ],
         ),
-        Err(Rejection::Fault(failed)) => {
+        Err(Refused::Fault(failed)) => {
             fault(CastFailure::from(failed.reason), i64::from(failed.offset), i64::from(failed.len))
         }
-        Err(Rejection::Violation(broken)) => {
+        Err(Refused::Failure(failed)) => super::detailed::detailed_fault(failed),
+        Err(Refused::Violation(broken)) => {
             let code = broken.keyword.code();
             let keyword = match Keyword::from_code(code) {
                 Some(keyword) => keyword.into_zval(false).map_err(|_| pending("Keyword case"))?,
@@ -683,9 +713,6 @@ fn verdict(judgement: Judgement) -> PhpResult<Zval> {
                 vec![keyword, int_zval(i64::from(broken.offset)), int_zval(i64::from(broken.len))],
             )
         }
-        // `Rejection` is the core's closed pair; nothing else reaches here.
-        #[allow(unreachable_patterns)]
-        Err(_) => Err(contract_violation()),
     }
 }
 
@@ -700,6 +727,28 @@ pub(crate) fn checked(text: &[u8], format: &NumFormat, constraints: &Zval) -> Ph
     verdict(judgement.ok_or_else(|| refused_by_judge(&layout))?)
 }
 
+/// `DetailedCast::checked`: `checked`, a failure carrying its detail.
+pub(crate) fn checked_detailed(
+    text: &[u8],
+    format: &NumFormat,
+    constraints: &Zval,
+) -> PhpResult<Zval> {
+    let Declared { door, layout, .. } = declaration_for(constraints, true)?;
+    let entries = Entries::packed(layout.door, &layout.packed);
+    let judgement = numeric(door, |out| {
+        // SAFETY: `numeric` hands a pointer to the type `door` writes.
+        unsafe { judge_numeric_detailed(layout.door, text, format, &layout.raw, &entries, out) }
+            .map(|judged| judged.map_err(|rejection| classified(rejection, text)))
+    })?;
+    verdict(judgement.ok_or_else(|| refused_by_judge(&layout))?)
+}
+
+/// A detailed rejection as the detailed door reports it for `text`: its failure classified at
+/// its span, which the judges leave to the door.
+fn classified(rejection: crate::detailed::Rejection, text: &[u8]) -> crate::detailed::Rejection {
+    crate::detailed::classified(rejection, text)
+}
+
 /// `Cast::checkedFromFloat`: a number already decoded, judged on the shortest decimal that
 /// names it.
 pub(crate) fn checked_from_float(value: f64, constraints: &Zval) -> PhpResult<Zval> {
@@ -712,12 +761,40 @@ pub(crate) fn checked_from_float(value: f64, constraints: &Zval) -> PhpResult<Zv
     verdict(judgement.ok_or_else(|| refused_by_judge(&layout))?)
 }
 
+/// `DetailedCast::checkedFromFloat`: `checked_from_float`, a failure carrying its detail.
+pub(crate) fn checked_from_float_detailed(value: f64, constraints: &Zval) -> PhpResult<Zval> {
+    let Declared { door, layout, .. } = declaration_for(constraints, true)?;
+    let entries = Entries::packed(layout.door, &layout.packed);
+    let judgement = numeric(door, |out| {
+        // SAFETY: `numeric` hands a pointer to the type `door` writes.
+        unsafe { judge_numeric_from_f64_detailed(layout.door, value, &layout.raw, &entries, out) }
+    })?;
+    verdict(judgement.ok_or_else(|| refused_by_judge(&layout))?)
+}
+
 /// `Cast::checkedText`: text judged by a text declaration. The value is the judged text (the
 /// input, or its trimmed span), or with an `enum` the caller's own declared entry.
 pub(crate) fn checked_text(text: &[u8], constraints: &Zval) -> PhpResult<Zval> {
+    checked_text_as(text, constraints, false)
+}
+
+/// `DetailedCast::checkedText`: `checked_text`, a failure carrying its detail.
+pub(crate) fn checked_text_detailed(text: &[u8], constraints: &Zval) -> PhpResult<Zval> {
+    checked_text_as(text, constraints, true)
+}
+
+fn checked_text_as(text: &[u8], constraints: &Zval, detailed: bool) -> PhpResult<Zval> {
     let Declared { layout, entries, .. } = declaration_for(constraints, false)?;
     let packed = Entries::packed(crate::Door::Text, &layout.packed);
-    let judged = judge_text(text, &layout.raw, &packed).ok_or_else(|| refused_by_judge(&layout))?;
+    let judged = if detailed {
+        judge_text_detailed(text, &layout.raw, &packed)
+            .ok_or_else(|| refused_by_judge(&layout))?
+            .map_err(|rejection| Refused::from(classified(rejection, text)))
+    } else {
+        judge_text(text, &layout.raw, &packed)
+            .ok_or_else(|| refused_by_judge(&layout))?
+            .map_err(Refused::from)
+    };
     let judgement = match judged {
         Err(rejection) => Err(rejection),
         Ok(outcome) => {
@@ -753,6 +830,14 @@ pub(crate) fn text(text: &[u8]) -> PhpResult<Zval> {
         Err(failed) => {
             fault(CastFailure::from(failed.reason), i64::from(failed.offset), i64::from(failed.len))
         }
+    }
+}
+
+/// `DetailedCast::text`: `text`, a failure carrying its detail.
+pub(crate) fn text_detailed(text: &[u8]) -> PhpResult<Zval> {
+    match crate::detailed::cast_text(text) {
+        Ok(valid) => success(bytes_zval(valid.as_bytes())),
+        Err(failed) => super::detailed::detailed_fault(failed),
     }
 }
 

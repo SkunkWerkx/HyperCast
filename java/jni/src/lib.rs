@@ -8,8 +8,9 @@
 //! `long`s in `out[0..2]` ([`Words`] has each type's encoding), on a fault its span's offset
 //! and length in `out[2..4]`, and on a contract violation (`-1`) nothing at all — the same
 //! writes the C ABI makes to its `out` and `fault` pointers. The checked doors also write
-//! the C ABI's `check` to `out[4..7]` on every verdict (see [`check_words`]), so Java hands
-//! them a `long[7]` or longer; every other native reads and writes `out[0..4]` alone.
+//! the C ABI's `check` to `out[4..7]` on every verdict (see [`check_words`]), and the four
+//! detailed natives write a fault's `detail` code to `out[7]` (on a violation, `0`), so
+//! Java hands every door a `long[8]`; the 1.0 natives read and write `out[0..4]` alone.
 //!
 //! The natives are `pub unsafe extern "system" fn`: as `pub` fns taking raw pointers they
 //! would otherwise fail clippy's `not_unsafe_ptr_arg_deref`. Their safety contract is
@@ -23,8 +24,8 @@ use core::ffi::{c_char, c_void};
 use core::mem::MaybeUninit;
 use core::ptr::{null, null_mut};
 use hypercast::{
-    CivilDateTime, Date, Decimal, Door, Duration, RawCheck, RawConstraints, RawDayPeriods,
-    RawNumFormat, RawSpan, Timestamp,
+    CivilDateTime, Date, DateOrder, Decimal, Door, Duration, ExcelEpoch, RawCheck, RawConstraints,
+    RawDateOptions, RawDayPeriods, RawFaultDetail, RawNumFormat, RawSpan, Timestamp, UnixPrecision,
 };
 use jni_sys::{
     JNI_ABORT, JNI_ERR, JNI_OK, JNI_VERSION_1_8, JNIEnv, JNINativeMethod, JavaVM, jbyte,
@@ -197,6 +198,50 @@ unsafe extern "C" {
     ) -> i32;
     fn cast_text(ptr: *const u8, len: usize, out: *mut RawSpan, fault: *mut RawFault) -> i32;
     fn cast_declared_decimal(ptr: *const u8, len: usize, out: *mut Decimal) -> i32;
+    fn cast_detailed(
+        door: u32,
+        param: u32,
+        format: *const RawNumFormat,
+        periods: *const RawDayPeriods,
+        date_options: *const RawDateOptions,
+        vocab_ptr: *const u8,
+        vocab_len: usize,
+        ptr: *const u8,
+        len: usize,
+        out: *mut c_void,
+        fault: *mut RawFaultDetail,
+    ) -> i32;
+    fn cast_detailed_from_f64(
+        door: u32,
+        param: u32,
+        value: f64,
+        out: *mut c_void,
+        fault: *mut RawFaultDetail,
+    ) -> i32;
+    fn cast_checked_detailed(
+        door: u32,
+        param: u32,
+        format: *const RawNumFormat,
+        constraints: *const RawConstraints,
+        enum_ptr: *const u8,
+        enum_len: usize,
+        ptr: *const u8,
+        len: usize,
+        out: *mut c_void,
+        fault: *mut RawFaultDetail,
+        check: *mut RawCheck,
+    ) -> i32;
+    fn cast_checked_detailed_from_f64(
+        door: u32,
+        param: u32,
+        constraints: *const RawConstraints,
+        enum_ptr: *const u8,
+        enum_len: usize,
+        value: f64,
+        out: *mut c_void,
+        fault: *mut RawFaultDetail,
+        check: *mut RawCheck,
+    ) -> i32;
     fn malloc(size: usize) -> *mut c_void;
     fn free(p: *mut c_void);
 }
@@ -230,7 +275,7 @@ macro_rules! native {
     };
 }
 
-const NATIVES: [Native; 33] = [
+const NATIVES: [Native; 37] = [
     native!("castBool", "([B[J)I", native_cast_bool),
     native!("castChar", "([B[J)I", native_cast_char),
     native!("castI8", "([B[B[J)I", native_cast_i8),
@@ -282,6 +327,26 @@ const NATIVES: [Native; 33] = [
         "castDeclaredDecimal",
         "([B[J)I",
         native_cast_declared_decimal
+    ),
+    native!(
+        "castDetailed",
+        "(II[B[B[BLjava/nio/ByteBuffer;[B[J)I",
+        native_cast_detailed
+    ),
+    native!(
+        "castDetailedFromF64",
+        "(IID[J)I",
+        native_cast_detailed_from_f64
+    ),
+    native!(
+        "castCheckedDetailed",
+        "(I[B[BLjava/nio/ByteBuffer;[B[J)I",
+        native_cast_checked_detailed
+    ),
+    native!(
+        "castCheckedDetailedFromF64",
+        "(ID[BLjava/nio/ByteBuffer;[J)I",
+        native_cast_checked_detailed_from_f64
     ),
     native!("jniNatives", "()I", native_jni_natives),
 ];
@@ -542,9 +607,9 @@ unsafe fn text_door<T: Words>(
     unsafe { finish(env, out, rc, &value, &fault) }
 }
 
-/// The two layouts a door reads besides its text, [`RawNumFormat`] and [`RawDayPeriods`]:
-/// `repr(C)` structs of `u32` and `u8` fields (and padding), so any bytes at all are a value
-/// of either, which the core's `resolve` then checks.
+/// The layouts a door reads besides its text, [`RawNumFormat`], [`RawDayPeriods`] and
+/// [`RawDateOptions`]: `repr(C)` structs of `u32` and `u8` fields (and padding), so any bytes
+/// at all are a value of any, which the core's `resolve` then checks.
 trait Layout: Copy {
     /// Nothing declared; the bytes Java sends overwrite all of it.
     const ZERO: Self;
@@ -556,6 +621,14 @@ impl Layout for RawNumFormat {
 
 impl Layout for RawDayPeriods {
     const ZERO: Self = RawDayPeriods::ZERO;
+}
+
+impl Layout for RawDateOptions {
+    const ZERO: Self = RawDateOptions {
+        size: 0,
+        flags: 0,
+        pivot: 0,
+    };
 }
 
 /// A layout as `NativeCore` packs it, in the platform's own byte order, copied onto the
@@ -1315,6 +1388,352 @@ pub unsafe extern "system" fn native_cast_checked_from_f64(
     };
     // SAFETY: the caller passes a live env and a `long[7]`.
     unsafe { finish_checked(env, out, rc, door, &slot, &fault, &check) }
+}
+
+/// A layout that may be absent: `Some(None)` for a null array (the core's null pointer, "none
+/// declared"), `Some(Some(layout))` for the bytes, and `None` with an exception pending (an
+/// array shorter than the layout), where the native returns [`PENDING`] before any core call.
+#[inline(always)]
+unsafe fn optional_layout<T: Layout>(env: *mut JNIEnv, array: jbyteArray) -> Option<Option<T>> {
+    if array.is_null() {
+        return Some(None);
+    }
+    // SAFETY: the caller passes a live env and a `byte[]`.
+    unsafe { read_layout::<T>(env, array) }.map(Some)
+}
+
+/// The pointer to a layout read by [`optional_layout`], or null.
+#[inline(always)]
+fn layout_ptr<T>(layout: &Option<T>) -> *const T {
+    match layout {
+        Some(layout) => layout,
+        None => null(),
+    }
+}
+
+const BOOL: u32 = Door::Bool.code();
+const UNIX: u32 = Door::Unix(UnixPrecision::Seconds).code();
+const UUID: u32 = Door::Uuid.code();
+const TIMESTAMP: u32 = Door::Timestamp.code();
+const DATE: u32 = Door::Date.code();
+const TIME: u32 = Door::Time.code();
+const DURATION: u32 = Door::Duration.code();
+const DATE_ORDERED: u32 = Door::DateOrdered(DateOrder::YearMonthDay).code();
+const DATETIME: u32 = Door::DateTime(DateOrder::YearMonthDay).code();
+const EXCEL_SERIAL: u32 = Door::ExcelSerial(ExcelEpoch::Y1900).code();
+const CHAR: u32 = Door::Char.code();
+
+/// Whether `T` fits the 16-byte, 8-aligned slot a door writes its value into (`[u64; 2]`).
+const fn fits_slot<T>() -> bool {
+    size_of::<T>() <= size_of::<[u64; 2]>() && align_of::<T>() <= align_of::<[u64; 2]>()
+}
+
+// Every type `detailed_words`, `typed_words` and `checked_words` read back out of the slot: each
+// must fit it, or the read would run past what the core wrote.
+const _: () = {
+    assert!(fits_slot::<u8>() && fits_slot::<i8>());
+    assert!(fits_slot::<u16>() && fits_slot::<i16>());
+    assert!(fits_slot::<u32>() && fits_slot::<i32>());
+    assert!(fits_slot::<u64>() && fits_slot::<i64>());
+    assert!(fits_slot::<f32>() && fits_slot::<f64>());
+    assert!(fits_slot::<[u8; 16]>());
+    assert!(fits_slot::<Timestamp>() && fits_slot::<Duration>());
+    assert!(fits_slot::<Date>() && fits_slot::<CivilDateTime>());
+    assert!(fits_slot::<RawSpan>() && fits_slot::<Decimal>());
+};
+
+/// The value any detailed door wrote into `slot`, as the words its 1.0 native hands back.
+/// Read only after a 0, which the core returns only for a door it knows.
+#[inline(always)]
+unsafe fn detailed_words(door: u32, slot: &[u64; 2]) -> [jlong; 2] {
+    let p = slot.as_ptr();
+    // SAFETY: `slot` is 16 bytes, 8-aligned and zeroed, so it holds any door's value; the core
+    // wrote the door's own type there, so a `bool` or a `Decimal`'s sign is valid.
+    unsafe {
+        match door {
+            BOOL => p.cast::<u8>().read().words(),
+            I8 => p.cast::<i8>().read().words(),
+            I16 => p.cast::<i16>().read().words(),
+            I32 => p.cast::<i32>().read().words(),
+            I64 => p.cast::<i64>().read().words(),
+            U8 => p.cast::<u8>().read().words(),
+            U16 => p.cast::<u16>().read().words(),
+            U32 | CHAR => p.cast::<u32>().read().words(),
+            U64 => p.cast::<u64>().read().words(),
+            F32 => p.cast::<f32>().read().words(),
+            F64 => p.cast::<f64>().read().words(),
+            UUID => p.cast::<[u8; 16]>().read().words(),
+            TIMESTAMP | UNIX | EXCEL_SERIAL => p.cast::<Timestamp>().read().words(),
+            DATE | DATE_ORDERED => p.cast::<Date>().read().words(),
+            TIME => p.cast::<u64>().read().words(),
+            DURATION => p.cast::<Duration>().read().words(),
+            DATETIME => p.cast::<CivilDateTime>().read().words(),
+            TEXT => p.cast::<RawSpan>().read().words(),
+            DECIMAL => p.cast::<Decimal>().read().words(),
+            _ => [0, 0],
+        }
+    }
+}
+
+/// The value a typed detailed door wrote into `slot`: the typed doors' own types, which for
+/// 22 is the civil date-time the text door's `Timestamp` is not.
+#[inline(always)]
+unsafe fn typed_words(door: u32, slot: &[u64; 2]) -> [jlong; 2] {
+    let p = slot.as_ptr();
+    // SAFETY: as `detailed_words`.
+    unsafe {
+        match door {
+            DECIMAL => p.cast::<Decimal>().read().words(),
+            EXCEL_SERIAL => p.cast::<CivilDateTime>().read().words(),
+            TIME => p.cast::<u64>().read().words(),
+            DURATION => p.cast::<Duration>().read().words(),
+            _ => [0, 0],
+        }
+    }
+}
+
+/// A fault the way the detailed exports take it: `size` is the caller's to set, the core
+/// writes the rest.
+const NO_FAULT: RawFaultDetail = RawFaultDetail {
+    size: RawFaultDetail::SIZE,
+    offset: 0,
+    len: 0,
+    detail: 0,
+};
+
+/// A detailed verdict where Java reads it: the value's words (`words_of`: the text doors' or the
+/// typed doors') to `out[0..2]` on a 0, and on a fault the span to `out[2..4]` and the `detail` code to `out[7]`. Nothing on `-1`.
+#[inline(always)]
+unsafe fn finish_detailed(
+    env: *mut JNIEnv,
+    out: jlongArray,
+    rc: i32,
+    words_of: unsafe fn(u32, &[u64; 2]) -> [jlong; 2],
+    door: u32,
+    slot: &[u64; 2],
+    fault: &RawFaultDetail,
+) -> jint {
+    if rc == 0 {
+        // SAFETY: the core wrote the value: it returns 0 only after it has.
+        let words = unsafe { words_of(door, slot) };
+        // SAFETY: the caller passes a live env and a `long[8]`.
+        unsafe { ((**env).v1_2.SetLongArrayRegion)(env, out, 0, 2, words.as_ptr()) };
+    } else if rc > 0 {
+        let span = [jlong::from(fault.offset), jlong::from(fault.len)];
+        let detail = [jlong::from(fault.detail)];
+        // SAFETY: as above.
+        unsafe {
+            ((**env).v1_2.SetLongArrayRegion)(env, out, 2, 2, span.as_ptr());
+            ((**env).v1_2.SetLongArrayRegion)(env, out, 7, 1, detail.as_ptr());
+        }
+    }
+    rc
+}
+
+/// `cast_detailed`: `door` is `Door`'s code and `param` what it declares. `format` is the
+/// 92-byte layout, `periods` the 40-byte one and `options` the 12-byte `RawDateOptions`, each
+/// null for none (the core's null); `vocab` is the packed month vocabulary in a direct
+/// buffer, or null. Every layout is read before the input is pinned.
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "system" fn native_cast_detailed(
+    env: *mut JNIEnv,
+    _class: jclass,
+    door: jint,
+    param: jint,
+    format: jbyteArray,
+    periods: jbyteArray,
+    options: jbyteArray,
+    vocab: jobject,
+    input: jbyteArray,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: the caller passes a live env and `byte[]`s.
+    let Some(format) = (unsafe { optional_layout::<RawNumFormat>(env, format) }) else {
+        return PENDING;
+    };
+    // SAFETY: as above.
+    let Some(periods) = (unsafe { optional_layout::<RawDayPeriods>(env, periods) }) else {
+        return PENDING;
+    };
+    // SAFETY: as above.
+    let Some(options) = (unsafe { optional_layout::<RawDateOptions>(env, options) }) else {
+        return PENDING;
+    };
+    // SAFETY: as above.
+    let Some((vocab_ptr, vocab_len)) = (unsafe { read_entries(env, vocab) }) else {
+        return -1;
+    };
+    let door = door as u32;
+    let mut slot = [0u64; 2];
+    let mut fault = NO_FAULT;
+    // SAFETY: as `native_cast_bool`; the layouts and the list outlive the call.
+    let rc = unsafe {
+        with_text(env, input, |p, n| {
+            cast_detailed(
+                door,
+                param as u32,
+                layout_ptr(&format),
+                layout_ptr(&periods),
+                layout_ptr(&options),
+                vocab_ptr,
+                vocab_len,
+                p,
+                n,
+                slot.as_mut_ptr().cast(),
+                &mut fault,
+            )
+        })
+    };
+    // SAFETY: the caller passes a live env and a `long[8]`.
+    unsafe { finish_detailed(env, out, rc, detailed_words, door, &slot, &fault) }
+}
+
+/// `cast_detailed_from_f64`: the typed doors, a `double` in and no input to pin.
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_detailed_from_f64(
+    env: *mut JNIEnv,
+    _class: jclass,
+    door: jint,
+    param: jint,
+    value: jdouble,
+    out: jlongArray,
+) -> jint {
+    let door = door as u32;
+    let mut slot = [0u64; 2];
+    let mut fault = NO_FAULT;
+    // SAFETY: the core writes only through the pointers it is handed.
+    let rc = unsafe {
+        cast_detailed_from_f64(
+            door,
+            param as u32,
+            value,
+            slot.as_mut_ptr().cast(),
+            &mut fault,
+        )
+    };
+    // SAFETY: the caller passes a live env and a `long[8]`.
+    unsafe { finish_detailed(env, out, rc, typed_words, door, &slot, &fault) }
+}
+
+/// A checked detailed verdict where Java reads it: [`finish_detailed`]'s writes, then the
+/// check to `out[4..7]` on every code but `-1` (the detail is `out[7]`, written with the
+/// fault).
+#[inline(always)]
+unsafe fn finish_checked_detailed(
+    env: *mut JNIEnv,
+    out: jlongArray,
+    rc: i32,
+    door: u32,
+    slot: &[u64; 2],
+    fault: &RawFaultDetail,
+    check: &RawCheck,
+) -> jint {
+    // SAFETY: the caller passes a live env and a `long[8]`; a checked door's value is its
+    // plain door's, which `checked_words` reads.
+    unsafe { finish_detailed(env, out, rc, checked_words, door, slot, fault) };
+    if rc >= 0 {
+        let words = check_words(check);
+        // SAFETY: as above.
+        unsafe { ((**env).v1_2.SetLongArrayRegion)(env, out, 4, 3, words.as_ptr()) };
+    }
+    rc
+}
+
+/// `cast_checked_detailed`: [`native_cast_checked`]'s arguments and layouts, the fault carrying
+/// its `detail` to `out[7]`. No checked door declares a parameter, so `param` is 0.
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "system" fn native_cast_checked_detailed(
+    env: *mut JNIEnv,
+    _class: jclass,
+    door: jint,
+    format: jbyteArray,
+    constraints: jbyteArray,
+    entries: jobject,
+    input: jbyteArray,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: the caller passes a live env and `byte[]`s.
+    let Some(declared) = (unsafe { read_layout::<WireConstraints>(env, constraints) }) else {
+        return PENDING;
+    };
+    let declared = declared.raw();
+    // SAFETY: as above.
+    let Some(format) = (unsafe { optional_layout::<RawNumFormat>(env, format) }) else {
+        return PENDING;
+    };
+    // SAFETY: as above.
+    let Some((enum_ptr, enum_len)) = (unsafe { read_entries(env, entries) }) else {
+        return -1;
+    };
+    let door = door as u32;
+    let mut slot = [0u64; 2];
+    let mut fault = NO_FAULT;
+    let mut check = NO_CHECK;
+    // SAFETY: as `native_cast_bool`; the layouts and the list outlive the call.
+    let rc = unsafe {
+        with_text(env, input, |p, n| {
+            cast_checked_detailed(
+                door,
+                0,
+                layout_ptr(&format),
+                &declared,
+                enum_ptr,
+                enum_len,
+                p,
+                n,
+                slot.as_mut_ptr().cast(),
+                &mut fault,
+                &mut check,
+            )
+        })
+    };
+    // SAFETY: the caller passes a live env and a `long[8]`.
+    unsafe { finish_checked_detailed(env, out, rc, door, &slot, &fault, &check) }
+}
+
+/// `cast_checked_detailed_from_f64`: the checked door over a `double` a source already
+/// decoded, the fault carrying its `detail` to `out[7]`.
+#[cfg_attr(feature = "no-panic", no_panic::no_panic)]
+pub unsafe extern "system" fn native_cast_checked_detailed_from_f64(
+    env: *mut JNIEnv,
+    _class: jclass,
+    door: jint,
+    value: jdouble,
+    constraints: jbyteArray,
+    entries: jobject,
+    out: jlongArray,
+) -> jint {
+    // SAFETY: the caller passes a live env and a `byte[]`.
+    let Some(declared) = (unsafe { read_layout::<WireConstraints>(env, constraints) }) else {
+        return PENDING;
+    };
+    let declared = declared.raw();
+    // SAFETY: as above.
+    let Some((enum_ptr, enum_len)) = (unsafe { read_entries(env, entries) }) else {
+        return -1;
+    };
+    let door = door as u32;
+    let mut slot = [0u64; 2];
+    let mut fault = NO_FAULT;
+    let mut check = NO_CHECK;
+    // SAFETY: the core writes only through the pointers it is handed.
+    let rc = unsafe {
+        cast_checked_detailed_from_f64(
+            door,
+            0,
+            &declared,
+            enum_ptr,
+            enum_len,
+            value,
+            slot.as_mut_ptr().cast(),
+            &mut fault,
+            &mut check,
+        )
+    };
+    // SAFETY: the caller passes a live env and a `long[8]`.
+    unsafe { finish_checked_detailed(env, out, rc, door, &slot, &fault, &check) }
 }
 
 /// Judges a declaration once, as `Constraints` is built: the core's 0 or refusal code, or

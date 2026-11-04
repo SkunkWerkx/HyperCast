@@ -11,8 +11,10 @@ use PHPUnit\Framework\TestCase;
  * The extension's public surface against 1.0's, recorded by tools/capture-v1-fixtures.php
  * into fixtures/v1/surface.json with the same code (V1Probe::surface()): every class, enum,
  * constant, case, method, parameter, default and property, after the edits `expected()`
- * declares: the one removal php/README.md lists under "Differences from 1.0", and the checked
- * doors the validation constraints add to `Cast` (every 1.0 member is unchanged).
+ * declares: the one removal php/README.md lists under "Differences from 1.0", the checked
+ * doors the validation constraints add to `Cast`, and 1.1's additions: `NumFormat`'s grouping
+ * policy and the optional date options on three doors. Every 1.0 member is unchanged but for a
+ * parameter added last, optional.
  */
 final class SurfaceTest extends TestCase
 {
@@ -46,7 +48,7 @@ final class SurfaceTest extends TestCase
 
     public function testEveryClassIsTheExtensions(): void
     {
-        foreach ([...V1Probe::CLASSES, ...V1Probe::CONSTRAINT_CLASSES] as $short) {
+        foreach ([...V1Probe::CLASSES, ...V1Probe::CONSTRAINT_CLASSES, ...V1Probe::DETAIL_CLASSES] as $short) {
             $class = new \ReflectionClass('HyperCast\\' . $short);
             self::assertTrue($class->isInternal(), $short);
             self::assertSame('hypercast', $class->getExtensionName(), $short);
@@ -100,7 +102,60 @@ final class SurfaceTest extends TestCase
         $optional['params'][0]['type'] = $any;
         $optional['return'] = "{$any}|null";
         unset($optional);
+        // 1.1: the opt-in date shapes, optional parameters added after every 1.0 one.
+        $nullable = static fn (string $name, string $type): array =>
+            ['name' => $name, 'type' => $type, 'optional' => true, 'default' => 'NULL', 'byRef' => false];
+        $options = $nullable('options', '?HyperCast\\DateOptions');
+        $months = $nullable('months', '?HyperCast\\MonthNames');
+        $surface['Cast']['methods']['timestamp']['params'][] = $options;
+        $surface['Cast']['methods']['date']['params'] = [
+            ...$surface['Cast']['methods']['date']['params'],
+            $options,
+            $months,
+        ];
+        $surface['Cast']['methods']['datetime']['params'] = [
+            ...$surface['Cast']['methods']['datetime']['params'],
+            $options,
+            $months,
+        ];
+        // 1.1: the FFI handle writeFormat() checks a strict policy against, the downgrade guard,
+        // and the version rule it applies.
+        $surface['Interop\\NativeValues']['methods']['writeFormat']['params'][] = $nullable('core', '?FFI');
+        $surface['Interop\\NativeValues']['methods']['compatible'] = [
+            'static' => true,
+            'params' => [$param('coreVersion', 'int'), $nullable('extensionVersion', '?int')],
+            'return' => 'bool',
+        ];
+        ksort($surface['Interop\\NativeValues']['methods']);
         ksort($surface['Cast']['methods']);
+        // 1.1: NumFormat's grouping policy, a property and a constructor parameter added last, the
+        // policy constants, and withGrouping().
+        $format = &$surface['NumFormat'];
+        $format['constants'] += [
+            'GROUPING_LEGACY' => 0,
+            'GROUPING_WESTERN' => 256,
+            'GROUPING_INDIAN' => 512,
+            'GROUPING_POLICY' => 768,
+        ];
+        ksort($format['constants']);
+        $format['methods']['__construct']['params'][] = [
+            'name' => 'grouping',
+            'type' => 'int',
+            'optional' => true,
+            'default' => 'HyperCast\\NumFormat::GROUPING_WESTERN',
+            'byRef' => false,
+        ];
+        $format['methods']['__wakeup'] = ['static' => false, 'params' => [], 'return' => 'void'];
+        $format['methods']['withGrouping'] = [
+            'static' => false,
+            'params' => [$param('grouping', 'int')],
+            'return' => 'HyperCast\\NumFormat',
+        ];
+        ksort($format['methods']);
+        $format['properties']['grouping'] =
+            ['type' => 'int', 'readonly' => true, 'static' => false, 'hasDefault' => false];
+        ksort($format['properties']);
+        unset($format);
         return self::normalise($surface);
     }
 

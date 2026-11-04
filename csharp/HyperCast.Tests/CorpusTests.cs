@@ -28,27 +28,63 @@ public sealed class CorpusTests
 		throw new DirectoryNotFoundException($"corpus directory not found above {AppContext.BaseDirectory}");
 	}
 
-	static JsonElement[] Corpus(string name)
+	internal static JsonElement[] Corpus(string name)
 	{
 		using var document = JsonDocument.Parse(File.ReadAllText(Path.Combine(_corpusDirectory, name)));
 		return [.. document.RootElement.EnumerateArray().Select(vector => vector.Clone())];
 	}
 
+	// White space as the corpus defines it: the `white_space` rows of formats.json that are
+	// true. Loaded once, so the tests that trim or judge a symbol on their own side hold an
+	// oracle of their own, and the binding's restated table is held to the same rows below.
+	static readonly HashSet<int> _whiteSpace =
+	[
+		.. Corpus("formats.json")
+			.Where(static v => v.GetProperty("kind").GetString() == "white_space" && v.GetProperty("white_space").GetBoolean())
+			.Select(static v => CodePoint(v)),
+	];
+
+	internal static bool IsWhiteSpace(int codePoint) => _whiteSpace.Contains(codePoint);
+
+	static int CodePoint(JsonElement vector) =>
+		int.Parse(vector.GetProperty("code_point").GetString()!.AsSpan(2), NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+
 	static byte[] InputBytes(JsonElement vector) =>
 		Encoding.UTF8.GetBytes(vector.GetProperty("input").GetString()!);
 
-	// Every key a vector's format may carry; one it does not carry declares nothing.
+	// Every key a vector's format may carry; one it does not carry declares nothing. `flags` is the
+	// core's word: the styles in bits 0 to 7 and a grouping policy in bits 8 and 9. A row's
+	// `grouping` names the policy outright; without one, the word's own policy bits decide, and a
+	// row that declares none is legacy, as the core reads it. A policy the binding has no name for
+	// (3, which the core refuses) and the bits past 9 are carried as they are, for the declaration to refuse.
 	static NumFormat FormatOf(JsonElement vector)
 	{
 		if (!vector.TryGetProperty("format", out var format))
-			return NumFormat.Invariant;
+			return NumFormat.Invariant with { Grouping = NumGrouping.Legacy };
 		string Symbol(string key) => format.TryGetProperty(key, out var symbol) ? symbol.GetString()! : "";
+		var flags = format.GetProperty("flags").GetUInt32();
+		var grouping = format.TryGetProperty("grouping", out var named)
+			? named.GetString() switch
+			{
+				"western" => NumGrouping.Western,
+				"indian" => NumGrouping.Indian,
+				"legacy" => NumGrouping.Legacy,
+				var other => throw new InvalidOperationException($"unknown grouping '{other}'"),
+			}
+			: ((flags >> 8) & 3) switch
+			{
+				0 => NumGrouping.Legacy,
+				1 => NumGrouping.Western,
+				2 => NumGrouping.Indian,
+				_ => (NumGrouping)3,
+			};
 		return new(
 			format.GetProperty("decimal_sep").GetString()!,
 			format.GetProperty("group_sep").GetString()!,
-			(NumStyles)format.GetProperty("flags").GetUInt32(),
+			(NumStyles)(flags & ~(3u << 8)),
 			Symbol("currency"))
 		{
+			Grouping = grouping,
 			CurrencyDecimalSeparator = Symbol("currency_decimal_sep"),
 			CurrencyGroupSeparator = Symbol("currency_group_sep"),
 			MinusSign = Symbol("minus_sign"),
@@ -57,6 +93,28 @@ public sealed class CorpusTests
 			DigitZero = format.TryGetProperty("digit_zero", out var zero) ? Rune.GetRuneAt(zero.GetString()!, 0) : null,
 		};
 	}
+
+	// A row's `options`: shape names, a pivot and a vocabulary, as the core's own replayers read them.
+	static DateShapes ShapesOf(JsonElement flags) =>
+		flags.EnumerateArray().Aggregate(DateShapes.None, static (shapes, flag) => shapes | flag.GetString() switch
+		{
+			"compact_date" => DateShapes.CompactDate,
+			"space_separator" => DateShapes.SpaceSeparator,
+			"hour_offset" => DateShapes.HourOffset,
+			"common_forms" => DateShapes.CommonForms,
+			var other => throw new InvalidOperationException($"unknown date option '{other}'"),
+		});
+
+	static MonthNames MonthsOf(JsonElement months) =>
+		new([.. months.EnumerateArray().Select(static e => (e[0].GetInt32(), e[1].GetString()!))]);
+
+	static DateOptions? OptionsOf(JsonElement vector) =>
+		vector.TryGetProperty("options", out var options)
+			? new DateOptions(ShapesOf(options.GetProperty("flags")), options.TryGetProperty("pivot", out var pivot) ? pivot.GetInt32() : 0)
+			{
+				Months = options.TryGetProperty("months", out var months) ? MonthsOf(months) : null,
+			}
+			: null;
 
 	[Fact]
 	void Decimal_corpus()
@@ -77,6 +135,30 @@ public sealed class CorpusTests
 			if (verdict.TryGetValue(out Success<decimal> success))
 				success.Value.ToString(CultureInfo.InvariantCulture).ShouldBe(vector.GetProperty("value").GetString());
 		}
+	}
+
+	// The published vocabulary, restated from the spec: a code is its place in the list, from 1.
+	static readonly string[] _details =
+	[
+		"blank", "unexpected_character", "digit_expected", "delimiter_expected", "trailing_text", "no_digits",
+		"sign_misplaced", "parentheses_unbalanced", "mark_repeated", "group_misplaced", "group_size", "group_in_fraction",
+		"ambiguous_separator", "fraction_not_allowed", "field_width", "wrong_length", "component_missing", "not_recognized",
+		"unknown_unit", "invalid_utf8", "too_long", "not_finite", "not_whole", "negative_not_allowed", "too_large", "too_small",
+		"too_precise", "date_field_out_of_range", "time_field_out_of_range", "outside_window", "nonexistent_date", "not_a_scalar",
+	];
+
+	static string Pascal(string snake) => string.Concat(snake.Split('_').Select(static w => char.ToUpperInvariant(w[0]) + w[1..]));
+
+	// A failing row names its detail: asserted as the named value and as the raw code, so the enum
+	// and the number are each held to the corpus.
+	internal static void AssertDetail(Fault fault, JsonElement vector, string label)
+	{
+		vector.TryGetProperty("detail", out var named).ShouldBeTrue($"{label}: a failing row names no detail");
+		var name = named.GetString()!;
+		var code = Array.IndexOf(_details, name) + 1;
+		code.ShouldBeGreaterThan(0, $"{label}: '{name}' is not in the vocabulary");
+		fault.DetailCode.ShouldBe((uint)code, $"{label}: detail code");
+		fault.Detail.ShouldBe(Enum.Parse<FaultDetail>(Pascal(name)), $"{label}: detail");
 	}
 
 	static void AssertVerdict<T>(string domain, JsonElement vector, Verdict<T> verdict, Func<JsonElement, T> expected)
@@ -108,6 +190,7 @@ public sealed class CorpusTests
 			fault.Offset.ShouldBe(span[0].GetInt32(), $"{domain}: '{input}' fault offset");
 			fault.Length.ShouldBe(span[1].GetInt32(), $"{domain}: '{input}' fault length");
 		}
+		AssertDetail(fault, vector, $"{domain}: '{input}'");
 	}
 
 	/// <summary>
@@ -130,6 +213,233 @@ public sealed class CorpusTests
 		foreach (var vector in Corpus("boolean.json"))
 			AssertVerdict("boolean", vector, Cast.Boolean(InputBytes(vector)),
 				static v => v.GetProperty("value").GetBoolean());
+	}
+
+	// Each rule of formats.json as the message this binding's refusal carries, so a row is
+	// held to the rule that wins, not just to a refusal.
+	static readonly Dictionary<string, string> _ruleMessages = new()
+	{
+		["length"] = "UTF-8 bytes.",
+		["digit"] = "must not contain a digit",
+		["equal_separators"] = "must differ",
+		["white_space"] = "must not contain white space",
+		["designator_edge"] = "must not start or end with white space",
+		["currency_edge"] = "must not start or end with white space",
+		["grouping_policy"] = "not a defined grouping policy",
+		["unknown_flag"] = "undefined flag bits",
+	};
+
+	// The message each rule of a month vocabulary's refusal carries, held to the same one-rule standard.
+	static readonly Dictionary<string, string> _monthRuleMessages = new()
+	{
+		["layout"] = "cut short",
+		["month"] = "is not 1 to 12",
+		["utf8"] = "well-formed UTF-8",
+		["name_length"] = "bytes long",
+		["character"] = "must not contain a digit",
+		["month_missing"] = "has no name",
+		["duplicate"] = "repeats an earlier name",
+	};
+
+	static void AssertMonthRefusal(string label, string rule, Action declare)
+	{
+		var message = Should.Throw<ArgumentException>(declare, label).Message;
+		foreach (var (name, fragment) in _monthRuleMessages)
+			if (name == rule)
+				message.ShouldContain(fragment, Case.Sensitive, $"{label}: expected the {name} rule, got: {message}");
+			else
+				message.ShouldNotContain(fragment, Case.Sensitive, $"{label}: expected the {rule} rule, got: {message}");
+	}
+
+	// A vocabulary row's bytes as the spec lays them out: each entry a month byte, a little-endian
+	// length, the UTF-8 bytes; then the row's own raw bytes, which no builder could say.
+	static byte[] PackedRow(JsonElement vector)
+	{
+		var packed = new List<byte>();
+		foreach (var entry in vector.GetProperty("months").EnumerateArray())
+		{
+			var name = Encoding.UTF8.GetBytes(entry[1].GetString()!);
+			packed.Add(entry[0].GetByte());
+			packed.AddRange(BitConverter.GetBytes((uint)name.Length));
+			packed.AddRange(name);
+		}
+		if (vector.TryGetProperty("append_bytes", out var raw))
+			packed.AddRange(raw.EnumerateArray().Select(static b => b.GetByte()));
+		return [.. packed];
+	}
+
+	void MonthNamesRow(JsonElement vector)
+	{
+		var packed = PackedRow(vector);
+		var label = $"month_names {vector.GetRawText()}";
+		var entries = vector.GetProperty("months").EnumerateArray().Select(static e => (e[0].GetInt32(), e[1].GetString()!)).ToArray();
+		var builder = !vector.TryGetProperty("append_bytes", out _);
+		if (vector.GetProperty("expect").GetString() == "refused")
+		{
+			var rule = vector.GetProperty("rule").GetString()!;
+			AssertMonthRefusal(label, rule, () => MonthNames.FromPacked(packed));
+			if (builder)
+				AssertMonthRefusal($"{label} (built)", rule, () => _ = new MonthNames(entries));
+			return;
+		}
+		MonthNames.FromPacked(packed).Packed.ToArray().ShouldBe(packed, label);
+		new MonthNames(entries).Packed.ToArray().ShouldBe(packed, $"{label} (built)");
+		// A vocabulary the core accepts is one a door takes: the same bytes go over the crossing.
+		Cast.Date("2026-01-07"u8, DateOrder.YearMonthDay, new DateOptions { Months = new MonthNames(entries) })
+			.ShouldBe(new DateOnly(2026, 1, 7), label);
+	}
+
+	static void DateOptionsRow(JsonElement vector)
+	{
+		var shapes = vector.TryGetProperty("flag_bits", out var bits) ? (DateShapes)bits.GetUInt32() : ShapesOf(vector.GetProperty("flags"));
+		var pivot = vector.TryGetProperty("pivot", out var year) ? year.GetInt32() : 0;
+		var options = new DateOptions(shapes, pivot);
+		var label = $"date_options {vector.GetRawText()}";
+		if (vector.GetProperty("expect").GetString() != "refused")
+		{
+			Should.NotThrow(() => options.TryToRaw(out _), label);
+			Should.NotThrow(() => Cast.Date("2026-01-07"u8, DateOrder.YearMonthDay, options), label);
+			return;
+		}
+		// The shapes are refused first, as the core judges them, and as an ArgumentException of its own;
+		// a pivot outside its range is the out-of-range kind.
+		if (vector.GetProperty("rule").GetString() == "flags")
+			Should.Throw<ArgumentException>(() => options.TryToRaw(out _), label).GetType().ShouldBe(typeof(ArgumentException), label);
+		else
+			Should.Throw<ArgumentOutOfRangeException>(() => options.TryToRaw(out _), label);
+		Should.Throw<ArgumentException>(() => Cast.Date("2026-01-07"u8, DateOrder.YearMonthDay, options), label);
+		Should.Throw<ArgumentException>(() => Cast.Timestamp("2026-01-07T00:00:00Z"u8, options), label);
+	}
+
+	static void AssertRefusal(string label, JsonElement vector, Action declare)
+	{
+		var rule = vector.GetProperty("rule").GetString()!;
+		var message = Should.Throw<ArgumentException>(declare, label).Message;
+		foreach (var (name, fragment) in _ruleMessages)
+			if (name == rule)
+				message.ShouldContain(fragment, Case.Sensitive, $"{label}: expected the {name} rule, got: {message}");
+			else if (fragment != _ruleMessages[rule])
+				message.ShouldNotContain(fragment, Case.Sensitive, $"{label}: expected the {rule} rule, got: {message}");
+	}
+
+	/// <summary>
+	/// <c>corpus/formats.json</c>: the declaration rules. A <c>white_space</c> row holds this
+	/// binding's restated table to the code point, at each place the binding applies it (a
+	/// sign, a decimal separator and a designator's edges through <c>ToRaw</c>; a char door's
+	/// span around a scalar a <see cref="char"/> cannot hold). A <c>num_format</c> or
+	/// <c>day_periods</c> row is declared through the public types, a refusal being the
+	/// <see cref="ArgumentException"/> a door would raise, with the message of the row's rule.
+	/// </summary>
+	[Fact]
+	void Formats_corpus()
+	{
+		var seen = new HashSet<string>();
+		foreach (var vector in Corpus("formats.json"))
+		{
+			var kind = vector.GetProperty("kind").GetString()!;
+			seen.Add(kind);
+			switch (kind)
+			{
+				case "white_space":
+					WhiteSpaceRow(vector);
+					break;
+				case "num_format":
+					var format = FormatOf(vector);
+					var label = $"num_format {vector.GetProperty("format").GetRawText()}";
+					if (vector.GetProperty("expect").GetString() == "refused")
+					{
+						AssertRefusal(label, vector, () => format.ToRaw());
+						break;
+					}
+					Should.NotThrow(() => format.ToRaw(), label);
+					Should.NotThrow(() => Cast.Int32("1", format), label);
+					break;
+				case "day_periods":
+					var am = vector.TryGetProperty("am", out var a) ? a.GetString()! : "";
+					var pm = vector.TryGetProperty("pm", out var p) ? p.GetString()! : "";
+					var dateFormat = new DateFormat(DateOrder.YearMonthDay, am, pm);
+					var periods = $"day_periods '{am}' '{pm}'";
+					if (vector.GetProperty("expect").GetString() == "refused")
+					{
+						AssertRefusal(periods, vector, () => dateFormat.ToRaw());
+						break;
+					}
+					Should.NotThrow(() => dateFormat.ToRaw(), periods);
+					Should.NotThrow(() => Cast.DateTime("2026-01-07 15:04", dateFormat), periods);
+					break;
+				case "date_options":
+					DateOptionsRow(vector);
+					break;
+				case "month_names":
+					MonthNamesRow(vector);
+					break;
+				default:
+					throw new InvalidOperationException($"formats: unknown kind '{kind}'");
+			}
+		}
+		seen.ShouldBe(["white_space", "num_format", "day_periods", "date_options", "month_names"], ignoreOrder: true);
+	}
+
+	static void WhiteSpaceRow(JsonElement vector)
+	{
+		var codePoint = CodePoint(vector);
+		var expected = vector.GetProperty("white_space").GetBoolean();
+		var text = char.ConvertFromUtf32(codePoint);
+		var label = $"U+{codePoint:X4}";
+		// The one rule `Encode` applies to a sign: through its single-character path, and
+		// through the transcoding one with the code point between two letters.
+		bool Refuses(NumFormat format) =>
+			Should.Throw<ArgumentException>(() => format.ToRaw(), label).Message.Contains("must not contain white space", StringComparison.Ordinal);
+		foreach (var sign in new[] { text, "A" + text + "B" })
+		{
+			var format = NumFormat.Invariant with { MinusSign = sign };
+			if (expected)
+				Refuses(format).ShouldBeTrue($"{label} in a sign");
+			else
+				Should.NotThrow(() => format.ToRaw(), $"{label} in a sign");
+		}
+		// A currency symbol never starts or ends with one, though it may hold one inside.
+		foreach (var currency in new[] { text, text + "F", "F" + text })
+		{
+			var format = NumFormat.Invariant with { CurrencySymbol = currency };
+			if (expected)
+				Should.Throw<ArgumentException>(() => format.ToRaw(), label).Message.ShouldContain("must not start or end with white space");
+			else
+				Should.NotThrow(() => format.ToRaw(), $"{label} at a currency symbol's edge");
+		}
+		Should.NotThrow(() => (NumFormat.Invariant with { CurrencySymbol = "F" + text + "CFA" }).ToRaw(), $"{label} inside a currency symbol");
+		// A decimal separator never holds one, though a group separator may.
+		var separator = new NumFormat(text, ",", NumStyles.None);
+		var group = new NumFormat(".", text, NumStyles.None);
+		if (expected)
+		{
+			Refuses(separator).ShouldBeTrue($"{label} as a decimal separator");
+			Should.NotThrow(() => group.ToRaw(), $"{label} as a group separator");
+		}
+		else
+		{
+			Should.NotThrow(() => separator.ToRaw(), $"{label} as a decimal separator");
+			Should.NotThrow(() => group.ToRaw(), $"{label} as a group separator");
+		}
+		// A designator's edges, either end.
+		foreach (var designator in new[] { text + "AM", "AM" + text })
+		{
+			var format = new DateFormat(DateOrder.YearMonthDay, designator, "PM");
+			if (expected)
+				Should.Throw<ArgumentException>(() => format.ToRaw(), label).Message.ShouldContain("must not start or end with white space");
+			else
+				Should.NotThrow(() => format.ToRaw(), $"{label} at a designator's edge");
+		}
+		// The char door's span: the core trims the code point (when it is white space) and the
+		// binding excludes it from the span it computes for a spelled scalar a char cannot hold.
+		if (!expected)
+			return;
+		var spelled = text + "U+1F600" + text;
+		var width = Encoding.UTF8.GetByteCount(text);
+		(Cast.Char(Encoding.UTF8.GetBytes(spelled)) is Fault { Reason: CastFailure.OutOfRange } wide && wide.Offset == width && wide.Length == 7)
+			.ShouldBeTrue($"{label} around a supplementary scalar (utf-8)");
+		(Cast.Char(spelled) is Fault { Reason: CastFailure.OutOfRange } units && units.Offset == text.Length && units.Length == 7)
+			.ShouldBeTrue($"{label} around a supplementary scalar (utf-16)");
 	}
 
 	/// <summary>
@@ -172,9 +482,14 @@ public sealed class CorpusTests
 			}
 			verdict.TryGetValue(out Fault wide).ShouldBeTrue($"{label} is past one char");
 			wide.Reason.ShouldBe(CastFailure.OutOfRange, label);
-			var trimmed = bytes.AsSpan().TrimStart(" \t\n\f\r"u8);
-			var start = bytes.Length - trimmed.Length;
-			Span(wide, start, trimmed.TrimEnd(" \t\n\f\r"u8).Length);
+			wide.Detail.ShouldBe(FaultDetail.TooLarge, label);
+			var text = vector.GetProperty("input").GetString()!;
+			var (first, last) = (0, text.Length);
+			while (first < last && IsWhiteSpace(text[first]))
+				first++;
+			while (last > first && IsWhiteSpace(text[last - 1]))
+				last--;
+			Span(wide, Encoding.UTF8.GetByteCount(text.AsSpan(0, first)), Encoding.UTF8.GetByteCount(text.AsSpan(first, last - first)));
 			return;
 		}
 		verdict.TryGetValue(out Fault fault).ShouldBeTrue($"{label} unexpectedly parsed");
@@ -187,6 +502,7 @@ public sealed class CorpusTests
 		}, label);
 		if (vector.TryGetProperty("fault", out var span))
 			Span(fault, span[0].GetInt32(), span[1].GetInt32());
+		AssertDetail(fault, vector, label);
 	}
 
 	[Fact]
@@ -272,7 +588,14 @@ public sealed class CorpusTests
 	void Timestamp_corpus()
 	{
 		foreach (var vector in Corpus("timestamp.json"))
-			AssertVerdict("timestamp", vector, Cast.Timestamp(InputBytes(vector)), ExpectedInstant);
+		{
+			var input = InputBytes(vector);
+			var verdict = OptionsOf(vector) is { } options ? Cast.Timestamp(input, options) : Cast.Timestamp(input);
+			// A row that asks for nothing reads the same under options that declare nothing.
+			if (OptionsOf(vector) is null)
+				Cast.Timestamp(input, default(DateOptions)).ShouldBe(verdict, vector.GetProperty("input").GetString());
+			AssertVerdict("timestamp", vector, verdict, ExpectedInstant);
+		}
 	}
 
 	[Fact]
@@ -299,22 +622,34 @@ public sealed class CorpusTests
 	void Date_corpus()
 	{
 		foreach (var vector in Corpus("date.json"))
-			AssertVerdict("date", vector, Cast.Date(InputBytes(vector)), static v => new DateOnly(
+		{
+			var input = InputBytes(vector);
+			var verdict = OptionsOf(vector) is { } options ? Cast.Date(input, options) : Cast.Date(input);
+			if (OptionsOf(vector) is null)
+				Cast.Date(input, default(DateOptions)).ShouldBe(verdict, vector.GetProperty("input").GetString());
+			AssertVerdict("date", vector, verdict, static v => new DateOnly(
 				v.GetProperty("year").GetInt32(),
 				v.GetProperty("month").GetInt32(),
 				v.GetProperty("day").GetInt32()));
+		}
 	}
 
 	[Fact]
 	void Date_order_corpus()
 	{
 		foreach (var vector in Corpus("date_order.json"))
-			AssertVerdict("date_order", vector,
-				Cast.Date(InputBytes(vector), (DateOrder)vector.GetProperty("order").GetUInt32()),
+		{
+			var input = InputBytes(vector);
+			var order = (DateOrder)vector.GetProperty("order").GetUInt32();
+			var verdict = OptionsOf(vector) is { } options ? Cast.Date(input, order, options) : Cast.Date(input, order);
+			if (OptionsOf(vector) is null)
+				Cast.Date(input, order, default).ShouldBe(verdict, vector.GetProperty("input").GetString());
+			AssertVerdict("date_order", vector, verdict,
 				static v => new DateOnly(
 					v.GetProperty("year").GetInt32(),
 					v.GetProperty("month").GetInt32(),
 					v.GetProperty("day").GetInt32()));
+		}
 	}
 
 	/// <summary>
@@ -330,11 +665,19 @@ public sealed class CorpusTests
 		{
 			var input = InputBytes(vector);
 			var order = (DateOrder)vector.GetProperty("order").GetUInt32();
-			var verdict = vector.TryGetProperty("am", out var am)
-				? Cast.DateTime(input, new DateFormat(order, am.GetString()!, vector.GetProperty("pm").GetString()!))
-				: Cast.DateTime(input, order);
-			if (!vector.TryGetProperty("am", out _))
+			var options = OptionsOf(vector);
+			var verdict = (vector.TryGetProperty("am", out var am), options) switch
+			{
+				(true, { } declared) => Cast.DateTime(input, new DateFormat(order, am.GetString()!, vector.GetProperty("pm").GetString()!), declared),
+				(true, null) => Cast.DateTime(input, new DateFormat(order, am.GetString()!, vector.GetProperty("pm").GetString()!)),
+				(false, { } declared) => Cast.DateTime(input, order, declared),
+				(false, null) => Cast.DateTime(input, order),
+			};
+			if (!vector.TryGetProperty("am", out _) && options is null)
+			{
 				Cast.DateTime(input, new DateFormat(order)).ShouldBe(verdict, vector.GetProperty("input").GetString());
+				Cast.DateTime(input, order, default).ShouldBe(verdict, vector.GetProperty("input").GetString());
+			}
 			AssertVerdict("datetime", vector, verdict, static v =>
 			{
 				var nanos = v.GetProperty("nanos_of_day").GetUInt64();
@@ -666,6 +1009,7 @@ public sealed class CorpusTests
 			_ => throw new InvalidOperationException($"{label}: expected '{expect}' but faulted {fault}"),
 		}, label);
 		(fault.Offset, fault.Length).ShouldBe(expectedSpan, $"{label}: fault span");
+		AssertDetail(fault, vector, label);
 	}
 
 	/// <summary>
@@ -682,7 +1026,10 @@ public sealed class CorpusTests
 				.Select(static m => $"{m.MemberType} {m}").Order(StringComparer.Ordinal)];
 		Surface(typeof(Verdict<>)).ShouldBe(_verdictSurface);
 		Surface(typeof(Success<>)).ShouldBe(_successSurface);
-		Surface(typeof(Fault)).ShouldBe(_faultSurface);
+		// Fault grew a detail beside its identity, and nothing else: every member 1.0 recorded is still
+		// there, and the one non-positional property (with its setter) is all that was added.
+		_faultSurface.ShouldBeSubsetOf(Surface(typeof(Fault)));
+		Surface(typeof(Fault)).Except(_faultSurface).ShouldBe(_faultSurfaceAdded, ignoreOrder: true);
 		typeof(Fault).GetConstructors().Single().GetParameters().Select(static p => $"{p.ParameterType.Name} {p.Name}")
 			.ShouldBe(["CastFailure Reason", "Int32 Offset", "Int32 Length"]);
 		Enum.GetUnderlyingType(typeof(CastFailure)).ShouldBe(typeof(byte));
@@ -740,6 +1087,15 @@ public sealed class CorpusTests
 		"Method Void Deconstruct(T ByRef)",
 		"Method Void set_Value(T)",
 		"Property T Value",
+	];
+	// What 1.1 added to Fault: DetailCode (init-only) and the named Detail read from it.
+	static readonly string[] _faultSurfaceAdded =
+	[
+		"Method HyperCast.FaultDetail get_Detail()",
+		"Method UInt32 get_DetailCode()",
+		"Method Void set_DetailCode(UInt32)",
+		"Property HyperCast.FaultDetail Detail",
+		"Property UInt32 DetailCode",
 	];
 	static readonly string[] _faultSurface =
 	[

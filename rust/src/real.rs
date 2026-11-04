@@ -10,9 +10,13 @@
 //! from a fixed stack buffer holding the normalized ASCII (declared separators swapped to
 //! invariant, grouping stripped). Nothing allocates.
 
+use crate::detail::Failure;
 use crate::float::{self, Real};
-use crate::integer::{Frame, char_len_at, frame, is_digit_at, read_digit, split_sign};
+use crate::integer::{
+    Frame, Groups, char_len_at, frame, grouping, is_digit_at, read_digit, split_sign, stray,
+};
 use crate::lane;
+use crate::site::Site;
 use crate::verdict::{Fault, NumFormat, trim};
 
 /// Upper bound on the normalized numeric text — Svartalfheim's decimal digit guard
@@ -24,21 +28,26 @@ macro_rules! real_doors {
     ($($(#[$doc:meta])* $door:ident / $inner:ident / $engine_only:ident => $ty:ty),+ $(,)?) => {$(
         $(#[$doc])*
         pub fn $door(input: impl AsRef<[u8]>, format: &NumFormat) -> Result<$ty, Fault> {
-            $inner(input.as_ref(), format, true)
+            $inner(input.as_ref(), format, true).map_err(Failure::fault)
         }
 
         /// The engine's answer with the lenient lane switched off — what `lib.rs`'s
         /// differential test compares the door against.
         #[cfg(test)]
-        pub(crate) fn $engine_only(input: &[u8], format: &NumFormat) -> Result<$ty, Fault> {
+        pub(crate) fn $engine_only(input: &[u8], format: &NumFormat) -> Result<$ty, Failure> {
             $inner(input, format, false)
         }
 
+        /// The door's one parse, for both entry points; `lenient_lane` is `true` for both.
         #[inline(always)]
-        fn $inner(input: &[u8], format: &NumFormat, lenient_lane: bool) -> Result<$ty, Fault> {
+        pub(crate) fn $inner(
+            input: &[u8],
+            format: &NumFormat,
+            lenient_lane: bool,
+        ) -> Result<$ty, Failure> {
             let (text, start) = trim(input);
             if text.is_empty() {
-                return Err(Fault::EMPTY);
+                return Err(Failure::spanless(Site::RealBlank));
             }
             // Separator detection resolves the '.'/',' roles from structure before either
             // path runs — it must precede is_plain, or "1.234" (ambiguous under
@@ -94,15 +103,15 @@ macro_rules! real_doors {
                 };
                 // A tiny negative percent can underflow to zero (`-1e-400%`); `float::parse`
                 // leaves every zero unsigned.
-                let value: $ty =
-                    float::parse(text_read).ok_or(Fault::malformed(start, text.len()))?;
+                let value: $ty = float::parse(text_read)
+                    .ok_or_else(|| Failure::at(Site::RealUnparsed, start, text.len()))?;
                 if !value.is_finite() {
-                    return Err(Fault::out_of_range(start, text.len()));
+                    return Err(Failure::at(Site::RealEngineTooLarge, start, text.len()));
                 }
                 return Ok(value);
             };
             if !value.is_finite() {
-                return Err(Fault::out_of_range(start, text.len()));
+                return Err(Failure::at(Site::RealTooLarge, start, text.len()));
             }
             Ok(value)
         }
@@ -165,7 +174,7 @@ pub(crate) fn route<'f>(
     start: usize,
     format: &'f NumFormat,
     resolved: &'f mut NumFormat,
-) -> Result<(Route, &'f NumFormat), Fault> {
+) -> Result<(Route, &'f NumFormat), Failure> {
     let format: &'f NumFormat = if format.allows(NumFormat::SEPARATOR_DETECT) {
         *resolved = format.resolve_detected(text, start)?;
         resolved
@@ -206,10 +215,11 @@ pub(crate) fn walk(
     format: &NumFormat,
     percent_door: bool,
     emit: &mut impl FnMut(Token) -> bool,
-) -> Result<(), Fault> {
+) -> Result<(), Failure> {
     let Frame { body, base, negative, percent, currency } =
         frame(text, start, format, percent_door)?;
-    let (decimal, group) = format.separators(currency);
+    let (decimal, _) = format.separators(currency);
+    let mut groups = Groups::new(format, base, Site::RealGroupSize);
 
     if negative && !emit(Token::Negative) {
         return Ok(());
@@ -223,13 +233,15 @@ pub(crate) fn walk(
         if let Some((digit, len)) = read_digit(body, i, format) {
             any_digit = true;
             after_digit = true;
+            groups.digit(i);
             if !emit(Token::Digit(digit)) {
                 return Ok(());
             }
             i += len;
         } else if decimal.matches(body, i) {
+            groups.end(i)?;
             if seen_decimal {
-                return Err(Fault::malformed(base + i, decimal.len()));
+                return Err(Failure::at(Site::RealMarkRepeated, base + i, decimal.len()));
             }
             seen_decimal = true;
             after_digit = false;
@@ -237,18 +249,25 @@ pub(crate) fn walk(
                 return Ok(());
             }
             i += decimal.len();
-        } else if format.allows(NumFormat::GROUPING) && group.matches(body, i) {
-            let after = i + group.len();
+        } else if let width @ 1.. = grouping(format, body, i, currency) {
+            let after = i + width;
+            // The group this separator closes comes first in reading order.
+            if after_digit && !seen_decimal {
+                groups.separator(i)?;
+            }
             // Grouping lives in the integer part only, strictly between digits.
             let between_digits =
                 !seen_decimal && after_digit && read_digit(body, after, format).is_some();
             if !between_digits {
-                return Err(Fault::malformed(base + i, group.len()));
+                let site =
+                    if seen_decimal { Site::RealGroupInFraction } else { Site::RealGroupMisplaced };
+                return Err(Failure::at(site, base + i, width));
             }
             after_digit = false;
             i = after;
         } else if (byte == b'e' || byte == b'E') && format.allows(NumFormat::EXPONENT) && any_digit
         {
+            groups.end(i)?;
             let e_pos = i;
             i += 1;
             let mut exp_sign = 0u8;
@@ -257,7 +276,7 @@ pub(crate) fn walk(
                 i += 1;
             }
             if read_digit(body, i, format).is_none() {
-                return Err(Fault::malformed(base + e_pos, 1));
+                return Err(Failure::at(Site::RealExponentDigitExpected, base + e_pos, 1));
             }
             if exp_sign != 0 && !emit(Token::ExponentSign(exp_sign)) {
                 return Ok(());
@@ -269,15 +288,34 @@ pub(crate) fn walk(
                 i += len;
             }
             if i != body.len() {
-                return Err(Fault::malformed(base + i, char_len_at(body, i)));
+                if let width @ 1.. = grouping(format, body, i, currency)
+                    && Groups::strict(format)
+                {
+                    return Err(Failure::at(Site::RealGroupInExponent, base + i, width));
+                }
+                let site = stray(
+                    body,
+                    i,
+                    format,
+                    [Site::RealAfterExponentSign, Site::RealAfterExponent, Site::RealAfterExponent],
+                );
+                return Err(Failure::at(site, base + i, char_len_at(body, i)));
             }
         } else {
-            return Err(Fault::malformed(base + i, char_len_at(body, i)));
+            groups.end(i)?;
+            let site = stray(
+                body,
+                i,
+                format,
+                [Site::RealSignMisplaced, Site::RealNotFinite, Site::RealUnexpected],
+            );
+            return Err(Failure::at(site, base + i, char_len_at(body, i)));
         }
     }
 
+    groups.end(body.len())?;
     if !any_digit {
-        return Err(Fault::malformed(start, text.len()));
+        return Err(Failure::at(Site::RealNoDigits, start, text.len()));
     }
     if percent {
         emit(Token::Percent);
@@ -353,7 +391,7 @@ pub(crate) fn normalize(
     start: usize,
     format: &NumFormat,
     buf: &mut [u8; MAX_NORMALIZED],
-) -> Result<(usize, bool), Fault> {
+) -> Result<(usize, bool), Failure> {
     let mut out = 0;
     let mut overflow = false;
     let mut percent = false;
@@ -388,7 +426,7 @@ pub(crate) fn normalize(
         true
     })?;
     if overflow {
-        return Err(Fault::malformed(start, text.len()));
+        return Err(Failure::at(Site::RealTooLong, start, text.len()));
     }
     Ok((out, percent))
 }

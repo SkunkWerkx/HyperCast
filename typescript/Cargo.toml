@@ -8,17 +8,19 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-# The core as an rlib. The plain doors are called as Rust functions; the validation
-# constraints are judged through the core's own C ABI (`cast_checked`, `cast_checked_from_f64`,
-# `cast_constraints_check`, `cast_text`, `cast_declared_decimal`), declared in src/lib.rs as
-# java/jni declares them, because their raw judges (a `RawConstraints` with its packed `enum`
-# beside it) are reachable from outside the crate only there. That needs `exports`, so the .node
-# exports the 32 C symbols too, and the WASI module exports the `cast_*` functions beside its
-# napi entry points. Harmless as Node and Bun load an addon (dlopen with RTLD_LOCAL), and
-# nothing links against the .node. The caveat: an embedder that loads it RTLD_GLOBAL, beside
-# another library exporting the same names (a libhypercast of a different version), could see
-# one interpose the other's `cast_*` symbols. `std` is named again, as rust/Cargo.toml's
-# `exports` comment asks of a consumer that turns the defaults off.
+# The core as an rlib. The plain doors are called as Rust functions (which honour a format's
+# grouping policy); the checked and detailed doors go through the core's own C ABI, declared in
+# src/lib.rs as java/jni declares them, because their raw judges (a `RawConstraints` with its
+# packed `enum` beside it) are reachable from outside the crate only there: the detailed
+# exports `cast_detailed`, `cast_detailed_from_f64`, `cast_checked_detailed` and
+# `cast_checked_detailed_from_f64` (the 1.0 `cast_checked` pair ignores the policy and is never
+# called), and `cast_constraints_check`, `cast_text`, `cast_declared_decimal`. That needs
+# `exports`, so the .node exports the 36 C symbols too, and the WASI module exports the `cast_*`
+# functions beside its napi entry points. Harmless as Node and Bun load an addon (dlopen with
+# RTLD_LOCAL), and nothing links against the .node. The caveat: an embedder that loads it
+# RTLD_GLOBAL, beside another library exporting the same names (a libhypercast of a different
+# version), could see one interpose the other's `cast_*` symbols. `std` is named again, as
+# rust/Cargo.toml's `exports` comment asks of a consumer that turns the defaults off.
 hypercast = { path = "../rust", default-features = false, features = ["std", "exports"] }
 # napi10, the Node-API version every Node `engines` admits supports: BigInt (napi6), so cast_i64
 # and cast_u64 answer a `bigint` over the whole 64-bit range, and type tags (napi8), so a method

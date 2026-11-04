@@ -3,12 +3,21 @@
 # on this platform, runs each program, and holds the version each reports to the archive's:
 #
 #   CMake       find_package(hypercast), hypercast::hypercast and hypercast::hypercast_static:
-#               main.c as each C standard the compiler has, main.cpp through hypercast.hpp as
-#               C++17, C++20 and C++23 with exceptions on and off, and corpus.cpp, which
-#               replays the conformance corpus (CMakeLists.txt has the list; SMOKE_CXX=1 makes
-#               the C++ programs required)
+#               main.c as each C standard the compiler has, main.cpp and detailed.cpp through
+#               hypercast.hpp as C++17, C++20 and C++23 with exceptions on and off, corpus.cpp,
+#               which replays the conformance corpus, and downgrade.cpp (CMakeLists.txt has the
+#               list; SMOKE_CXX=1 makes the C++ programs required)
 #   pkg-config  `pkg-config --cflags --libs hypercast`, and the archive in ${libdir} named
 #               directly, from C and C++ (not on Windows, where CMake is the way in)
+#
+# The downgrade test: the header against a core older than itself. Given SMOKE_CORE_10, a
+# directory holding the shared library of a real 1.0 core (`cargo cdylib` in a checkout of the
+# v1.0.0 tag), run.sh builds downgrade.cpp against it too, with the archive's header as a release
+# has it: its HYPERCAST_VERSION macros set to 1.1.0, newer than that core (a development tree's
+# are the crate's own, 1.0.0, which that core meets). The core has no cast_detailed, which a
+# program built from the header names, so downgrade_stubs.c stands in for it with a function that
+# ends the run with status 99: the header may only reach it behind its version guard, and a call
+# that gets through is the failure this test exists to catch. Not on Windows.
 #
 # A program linked to the shared library must record the library's own name (@rpath/ on
 # macOS, the soname elsewhere), never the path it was linked from, and one linked statically
@@ -18,6 +27,7 @@
 # usage: c/smoke/run.sh <unpacked archive> [<expected version>]
 #        SMOKE_ARCH=x86_64 c/smoke/run.sh ...   on Apple silicon, osx-x64 under Rosetta
 #        SMOKE_CORPUS=<dir>                     the corpus to replay; the checkout's by default
+#        SMOKE_CORE_10=<dir>                    a 1.0 core's shared library, for the downgrade test
 set -euo pipefail
 pkg="$(cd "$1" && pwd)"
 expected="${2:-}"
@@ -84,9 +94,17 @@ run_program() {
   if [ "$linkage" = static ]; then check_static_link "$program"; else check_shared_link "$program"; fi
   case "$program" in
     *smoke_corpus*) args=("$corpus") ;;
+    *smoke_downgrade*) args=(accept) ;;
   esac
   output="$(${run_as[@]+"${run_as[@]}"} "$program" ${args[@]+"${args[@]}"})" || fail "$program ($how) failed"
   check_version "hypercast_version() ($how)" "$(printf '%s' "$output" | tr -d '\r')"
+  # A strict plain door on a core of this version reads `12,34` as malformed.
+  case "$program" in
+    *smoke_downgrade*)
+      output="$(${run_as[@]+"${run_as[@]}"} "$program" door | tr -d '\r')" || fail "$program door ($how) failed"
+      [ "$output" = malformed ] || fail "$program door ($how) printed '$output', expected malformed"
+      ;;
+  esac
 }
 
 cmake_build() {
@@ -120,6 +138,11 @@ for function in $functions; do
   grep -qE "::$function([^a-z0-9_]|\$)" "$pkg/include/hypercast.hpp" || fail "hypercast.hpp never calls $function"
 done
 echo "  every one of the $(echo "$functions" | wc -l | tr -d ' ') functions hypercast.h declares is in main.c and hypercast.hpp"
+# The header's compile-time version is the archive's: a release moves it with the crate's, and
+# the macros are what a consumer's own #if reads (and what the header's run-time guard compares
+# the library's version to).
+macro() { sed -n -E "s/^#define HYPERCAST_VERSION_$1 ([0-9]+)\$/\1/p" "$pkg/include/hypercast.hpp"; }
+check_version "hypercast.hpp's HYPERCAST_VERSION macros" "$(macro MAJOR).$(macro MINOR).$(macro PATCH)"
 cmake_build shared OFF
 cmake_build static ON
 
@@ -127,11 +150,14 @@ if [ "$os" != windows ]; then
   export PKG_CONFIG_PATH="$pkg/lib/pkgconfig"
   check_version "pkg-config --modversion" "$(pkg-config --modversion hypercast)"
   libdir="$(pkg-config --variable=libdir hypercast)"
+  # main.c refuses a library older than the headers it is built against: the archive's version.
+  IFS=. read -r major minor patch <<<"$expected"
+  min_version="-DHYPERCAST_SMOKE_MIN_VERSION=$(((major << 16) | (minor << 8) | patch))"
   # shellcheck disable=SC2046 # pkg-config's flags are meant to split
-  cc ${arch_flags[@]+"${arch_flags[@]}"} -o "$work/pc-shared" "$here/main.c" $(pkg-config --cflags --libs hypercast) -Wl,-rpath,"$libdir"
+  cc ${arch_flags[@]+"${arch_flags[@]}"} "$min_version" -o "$work/pc-shared" "$here/main.c" $(pkg-config --cflags --libs hypercast) -Wl,-rpath,"$libdir"
   run_program "pkg-config, shared" "$work/pc-shared" shared
   # shellcheck disable=SC2046
-  cc ${arch_flags[@]+"${arch_flags[@]}"} -o "$work/pc-static" "$here/main.c" $(pkg-config --cflags hypercast) "$libdir/libhypercast.a"
+  cc ${arch_flags[@]+"${arch_flags[@]}"} "$min_version" -o "$work/pc-static" "$here/main.c" $(pkg-config --cflags hypercast) "$libdir/libhypercast.a"
   run_program "pkg-config, static" "$work/pc-static" static
   if command -v c++ >/dev/null; then
     # shellcheck disable=SC2046
@@ -145,6 +171,81 @@ if [ "$os" != windows ]; then
   elif [ "${SMOKE_CXX:-}" = 1 ]; then
     fail "SMOKE_CXX is set, but there is no c++ here"
   fi
+fi
+
+# The header against a core that cannot drive it: a strict request is refused, never read as
+# legacy. A core drives a header when its major version is the header's and its minor at least the
+# header's, whatever the patch; each leg below rewrites the header's version macros to say so.
+#
+# downgrade_leg <name> <header version> <library dir> <stubs: yes|no> <verdict: drives|refuses>
+# builds downgrade.cpp from the archive's header as that version, against the shared library in
+# the directory (the stand-in for cast_detailed linked too, for a core that has none), and runs it:
+# a core that drives the header passes `accept` and a strict door reads `12,34` as malformed; one
+# that cannot passes `refuse`, and a strict door writes the header's line naming both versions to
+# stderr and aborts (SIGABRT, 128 + 6 under a shell), printing nothing and never reaching the stand-in
+# for the missing export (status 99).
+downgrade_leg() {
+  local name="$1" header="$2" lib="$3" stubs="$4" verdict="$5" dir="$work/$1" major minor patch
+  IFS=. read -r major minor patch <<<"$header"
+  mkdir -p "$dir/include"
+  cp "$pkg/include/hypercast.h" "$dir/include/"
+  sed -E -e "s/^#define HYPERCAST_VERSION_MAJOR .*/#define HYPERCAST_VERSION_MAJOR $major/" \
+    -e "s/^#define HYPERCAST_VERSION_MINOR .*/#define HYPERCAST_VERSION_MINOR $minor/" \
+    -e "s/^#define HYPERCAST_VERSION_PATCH .*/#define HYPERCAST_VERSION_PATCH $patch/" \
+    "$pkg/include/hypercast.hpp" >"$dir/include/hypercast.hpp"
+  grep -qx "#define HYPERCAST_VERSION_MINOR $minor" "$dir/include/hypercast.hpp" || fail "$name: could not set the header's version macros"
+  local objects=()
+  if [ "$stubs" = yes ]; then
+    cc ${arch_flags[@]+"${arch_flags[@]}"} -I"$dir/include" -c -o "$dir/stubs.o" "$here/downgrade_stubs.c"
+    objects=("$dir/stubs.o")
+  fi
+  c++ ${arch_flags[@]+"${arch_flags[@]}"} -std=c++17 -I"$dir/include" -o "$dir/downgrade" "$here/downgrade.cpp" \
+    ${objects[@]+"${objects[@]}"} -L"$lib" -lhypercast -Wl,-rpath,"$lib"
+  local mode=refuse status=0 output
+  [ "$verdict" = drives ] && mode=accept
+  LEG_CORE="$(${run_as[@]+"${run_as[@]}"} "$dir/downgrade" "$mode" | tr -d '\r')" || fail "$name: downgrade $mode failed"
+  output="$(${run_as[@]+"${run_as[@]}"} "$dir/downgrade" door 2>"$dir/door.err" | tr -d '\r')" || status=$?
+  [ "$status" -ne 99 ] || fail "$name: the header called cast_detailed on a core without it: $(cat "$dir/door.err")"
+  if [ "$verdict" = drives ]; then
+    [ "$status" -eq 0 ] && [ "$output" = malformed ] || fail "$name: a strict door printed '$output' (status $status), expected malformed"
+  else
+    [ "$status" -eq 134 ] || fail "$name: a strict door exited $status, expected the header's abort (134)"
+    [ -z "$output" ] || fail "$name: a strict door printed '$output': parsed, not refused"
+    grep -q "the linked library is $LEG_CORE, which cannot drive this header ($header:" "$dir/door.err" ||
+      fail "$name: the abort does not name both versions: $(cat "$dir/door.err")"
+  fi
+}
+
+if [ "$os" != windows ] && command -v c++ >/dev/null; then
+  IFS=. read -r major minor patch <<<"$expected"
+  # The patch never matters: a header one patch ahead of the core still drives it.
+  downgrade_leg patch-ahead "$major.$minor.$((patch + 1))" "$pkg/lib" no drives
+  # Another major version is refused, though its minor is no newer than the core's.
+  downgrade_leg other-major "$((major + 1)).$minor.$patch" "$pkg/lib" no refuses
+  echo "  a header one patch ahead drives this core; one a major version ahead is refused, aborting with both versions named"
+fi
+
+# A real 1.0 core, with the header as the release that follows it has it (1.1.0, newer than that
+# core; a development tree's macros are the crate's own, 1.0.0, which that core meets).
+if [ -n "${SMOKE_CORE_10:-}" ]; then
+  [ "$os" != windows ] || fail "SMOKE_CORE_10 is not for Windows"
+  command -v c++ >/dev/null || fail "SMOKE_CORE_10 is set, but there is no c++ here"
+  old="$work/core10"
+  mkdir -p "$old"
+  # Whichever shared library the directory holds, under the name the header's archive uses: the
+  # install name (macOS) or soname recorded in a build of the tag is its own, not ours.
+  if [ "$os" = macos ]; then
+    cp "$SMOKE_CORE_10/libhypercast.dylib" "$old/" || fail "no libhypercast.dylib in $SMOKE_CORE_10"
+    install_name_tool -id @rpath/libhypercast.dylib "$old/libhypercast.dylib"
+  else
+    cp "$SMOKE_CORE_10/libhypercast.so" "$old/" || fail "no libhypercast.so in $SMOKE_CORE_10"
+  fi
+  downgrade_leg core-1.0 1.1.0 "$old" yes refuses
+  case "$LEG_CORE" in
+    1.0.*) ;;
+    *) fail "SMOKE_CORE_10 holds a core reporting $LEG_CORE, expected 1.0.x" ;;
+  esac
+  echo "  a $LEG_CORE core: strict grouping refused at declaration, a strict door aborts naming both versions, legacy still reads"
 fi
 
 echo "smoke: every build of $pkg reports $expected"

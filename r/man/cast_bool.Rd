@@ -31,11 +31,11 @@ one-character string for \code{cast_char()}; the lowercase hyphenated form for
 \code{cast_char()} reads one character: an input of exactly one character is that character
 verbatim, before any trimming (\code{" "} is a space, \code{"6"} the digit six); anything else is
 one declared code point, \code{65}, \code{U+0041}, \code{0x41}, \verb{&H41}, or an HTML entity \verb{&#65;} or
-\verb{&#x41;} (the \verb{;} required), ASCII case-insensitive on the prefix, with optional ASCII
-whitespace around it. A surrogate or anything past \verb{U+10FFFF} is \code{out_of_range}. So is
+\verb{&#x41;} (the \verb{;} required), ASCII case-insensitive on the prefix, with optional white
+space around it. A surrogate or anything past \verb{U+10FFFF} is \code{out_of_range}. So is
 \code{U+0000}, which the core accepts and an R string cannot hold: like the C# and Java
 bindings with a scalar their \code{char} cannot hold, this binding reports it as \code{out_of_range}
-over the input less its ASCII whitespace edges.
+over the input less its white space edges.
 
 \code{cast_uuid()} reads every .NET \code{Guid} text form (\code{D}, \code{N}, \code{B}, \code{P} and \code{X}) and the
 \verb{urn:uuid:}, \verb{GUID:} and \verb{UUID:} prefixes.

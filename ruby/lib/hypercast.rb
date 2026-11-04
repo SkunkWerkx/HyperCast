@@ -43,10 +43,107 @@ module HyperCast
   # byte offsets for a binary (ASCII-8BIT) String, whose characters are its bytes. Either
   # way `text[offset, length]` is the offending text, with no mapping on your side.
   # Nothing is captured — slicing it out of the input is the caller's choice.
-  Fault = Data.define(:reason, :offset, :length)
+  #
+  # A fault the core reports also carries #detail, what exactly was wrong (a Detail), beside the
+  # broad reason. It is not a member: equality, #hash, #to_h, #inspect, the members and the
+  # positional and keyword constructors are what they were, so a Fault built by hand with three
+  # arguments is #== to the same fault read from a door, and its #detail is nil. A pattern asks
+  # for it by name: `in Fault(reason: :malformed, detail: Detail::GROUP_SIZE)`.
+  Fault = Data.define(:reason, :offset, :length) do
+    # The three members, and optionally the Detail (or nil) the core reported.
+    def initialize(reason:, offset:, length:, detail: nil)
+      @detail = detail
+      super(reason: reason, offset: offset, length: length)
+    end
+
+    # What exactly was wrong, a Detail; nil for a Fault built without one.
+    attr_reader :detail
+
+    # The members, and #detail when a pattern names it.
+    def deconstruct_keys(keys)
+      return super unless keys&.include?(:detail)
+
+      super(keys - [:detail]).merge(detail: @detail)
+    end
+
+    # A copy with the given members replaced, keeping #detail unless one is given.
+    def with(**changes)
+      return self if changes.empty?
+
+      self.class.new(**to_h, detail: @detail, **changes)
+    end
+
+    # Marshal's form: the members and the detail, so a loaded fault keeps its detail.
+    def marshal_dump
+      to_h.merge(detail: @detail)
+    end
+
+    # Restores a fault from #marshal_dump's form through #initialize.
+    def marshal_load(members)
+      initialize(**members)
+    end
+  end
 
   # The native core's failure codes, mapped to the closed reason Symbols a Fault carries.
   REASONS = { 1 => :empty, 2 => :malformed, 3 => :out_of_range }.freeze
+
+  # What exactly a Fault found wrong: the native core's numeric code and its published name. The
+  # codes keep their numbers and meanings, and a later core may add more, so a case over details
+  # needs an else branch: a code this gem does not name is kept, its #name :unknown. The reason
+  # and span of a fault stay usable either way. The constants (Detail::BLANK ...
+  # Detail::NOT_A_SCALAR, one per published code) compare equal to every detail of their code, so
+  # `in Fault(detail: Detail::GROUP_SIZE)` matches.
+  Detail = Data.define(:code) do
+    # The published name as a Symbol (:group_size), or :unknown for a code this gem does not name.
+    def name
+      self.class::NAMES.fetch(code, :unknown)
+    end
+
+    # True for a code this gem does not name; #code still holds it.
+    def unknown?
+      !self.class::NAMES.key?(code)
+    end
+
+    # The name, as text ("group_size"; "unknown" for an unknown code).
+    def to_s
+      name.to_s
+    end
+
+    # The constant that names this detail (HyperCast::Detail::GROUP_SIZE), or the Data form for
+    # a code this gem does not name.
+    def inspect
+      unknown? ? super : "HyperCast::Detail::#{name.to_s.upcase}"
+    end
+
+    # The detail of a core's code: the constant of a published one, a new Detail for any other.
+    def self.of(code)
+      self::BY_CODE.fetch(code) { new(code: code) }
+    end
+  end
+
+  # The published name of each detail, by code.
+  Detail::NAMES = {
+    1 => :blank, 2 => :unexpected_character, 3 => :digit_expected, 4 => :delimiter_expected,
+    5 => :trailing_text, 6 => :no_digits, 7 => :sign_misplaced, 8 => :parentheses_unbalanced,
+    9 => :mark_repeated, 10 => :group_misplaced, 11 => :group_size, 12 => :group_in_fraction,
+    13 => :ambiguous_separator, 14 => :fraction_not_allowed, 15 => :field_width, 16 => :wrong_length,
+    17 => :component_missing, 18 => :not_recognized, 19 => :unknown_unit, 20 => :invalid_utf8,
+    21 => :too_long, 22 => :not_finite, 23 => :not_whole, 24 => :negative_not_allowed,
+    25 => :too_large, 26 => :too_small, 27 => :too_precise, 28 => :date_field_out_of_range,
+    29 => :time_field_out_of_range, 30 => :outside_window, 31 => :nonexistent_date, 32 => :not_a_scalar
+  }.freeze
+
+  # Each published detail by code, one frozen constant apiece (Detail::BLANK is code 1, and so
+  # on through Detail::NOT_A_SCALAR, code 32): a Fault's #detail is one of these.
+  Detail::BY_CODE = Detail::NAMES.to_h do |code, name|
+    [code, Detail.const_set(name.to_s.upcase, Detail.new(code: code))]
+  end.freeze
+
+  # The 25 code points of Unicode's White_Space property, the core's one notion of white
+  # space: a character class the declaration checks match with (the Magnus backend's designator
+  # check reads the core's own predicate). Held to corpus/formats.json by the suite.
+  WHITE_SPACE = /[\t\n\v\f\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]/
+  private_constant :WHITE_SPACE
 
   class << self
     private
@@ -85,24 +182,46 @@ module HyperCast
   # comma, space — is a separator), up to 8 UTF-8 bytes. A malformed format is a caller bug
   # (ArgumentError), never a verdict: an empty or over-long separator, equal separators (or
   # an equal pair in force for currency amounts), a symbol with no UTF-8 form (a lone UTF-16
-  # surrogate, bytes its encoding does not allow), a symbol carrying an ASCII digit, a sign
-  # or percent symbol carrying ASCII whitespace, a currency symbol longer than 16 bytes or
-  # carrying a digit or whitespace, or a digit zero that is ASCII or starts no digit block.
+  # surrogate, bytes its encoding does not allow), a symbol carrying an ASCII digit, a sign,
+  # percent symbol, or a decimal separator, carrying white space (a group separator may be
+  # white space), a currency symbol longer than 16 bytes or starting or ending in white
+  # space (inside it white space is fine: "F CFA"), or a digit zero that is ASCII or starts
+  # no digit block.
+  #
+  # Grouping is a policy, declared apart from the flags: `grouping:` is :western (the default:
+  # once a numeral uses the group separator, groups of exactly three digits counted from the
+  # decimal separator, the leftmost one to three, so "1,234,567" reads and "12,34" is a
+  # :malformed Fault with the detail Detail::GROUP_SIZE), :indian (the group beside the decimal
+  # separator three digits, every group to its left two, the leftmost one or two: "12,34,567") or
+  # :legacy (the group separator anywhere between two digits, as 1.0 read it). An ungrouped
+  # numeral reads under every policy, and a policy only judges groups: without the GROUPING flag
+  # a group separator is still refused. `flags` is the style mask (GROUPING ... TRAILING_SIGN)
+  # and never carries a policy: bits 8 and 9 or any other bit this version does not define is an
+  # ArgumentError.
   NumFormat = Data.define(:decimal_sep, :group_sep, :flags, :currency,
                           :currency_decimal_sep, :currency_group_sep,
                           :minus_sign, :plus_sign, :percent, :digit_zero) do
     # Validates every declared field up front — the separators (1 to 8 UTF-8 bytes each,
     # distinct from each other, and so the pair in force for currency amounts), the signs,
     # the percent and currency symbols (no ASCII digit, since a digit is a digit before it
-    # is anything else, and no ASCII whitespace, which would collide with the trimming
-    # around them) and the digit zero (one non-ASCII character whose ten successors share
-    # its UTF-8 prefix, which every Unicode digit block's zero does) — so a malformed
-    # format fails loudly as the caller bug it is. Every field is stored transcoded to
-    # UTF-8, the encoding the core reads — a separator handed over in another encoding (a
-    # no-break space read from a Latin-1 file, say) is the same code point on every backend
-    # rather than whatever its bytes happened to spell in the encoding it arrived in.
+    # is anything else, and no white space, which would collide with the trimming around
+    # them; the decimal separators carry none either, and a currency symbol only at its
+    # edges) and the digit zero (one non-ASCII
+    # character whose ten successors share its UTF-8 prefix, which every Unicode digit
+    # block's zero does) — so a malformed format fails loudly as the caller bug it is. Every
+    # field is stored transcoded to UTF-8, the encoding the core reads — a separator handed
+    # over in another encoding (a no-break space read from a Latin-1 file, say) is the same
+    # code point on every backend rather than whatever its bytes happened to spell in the
+    # encoding it arrived in.
     def initialize(decimal_sep:, group_sep:, flags:, currency: "", currency_decimal_sep: "",
-                   currency_group_sep: "", minus_sign: "", plus_sign: "", percent: "", digit_zero: "")
+                   currency_group_sep: "", minus_sign: "", plus_sign: "", percent: "", digit_zero: "",
+                   grouping: :western)
+      check_flags(flags)
+      raise ArgumentError, "grouping must be one of #{GROUPING_POLICIES.keys.inspect}; got #{grouping.inspect}" unless
+        GROUPING_POLICIES.key?(grouping)
+
+      @grouping = grouping
+
       limit = self.class::SYMBOL_MAX_BYTES
       decimal_sep = declared("decimal separator", decimal_sep, limit, required: true)
       group_sep = declared("group separator", group_sep, limit, required: true)
@@ -111,18 +230,86 @@ module HyperCast
 
       currency_decimal_sep = declared("currency decimal separator", currency_decimal_sep, limit)
       currency_group_sep = declared("currency group separator", currency_group_sep, limit)
+      currency = declared("currency symbol", currency, self.class::CURRENCY_MAX_BYTES)
+      minus_sign = declared("minus sign", minus_sign, limit)
+      plus_sign = declared("plus sign", plus_sign, limit)
+      percent = declared("percent symbol", percent, limit)
       money_decimal = currency_decimal_sep.empty? ? decimal_sep : currency_decimal_sep
       money_group = currency_group_sep.empty? ? group_sep : currency_group_sep
       raise ArgumentError, "currency decimal and group separators must differ; both are #{money_decimal.inspect}" if
         money_decimal == money_group
 
+      # White space comes last, after every field's length and digit and the equal separators.
+      { "decimal separator" => decimal_sep, "currency decimal separator" => currency_decimal_sep,
+        "minus sign" => minus_sign, "plus sign" => plus_sign, "percent symbol" => percent }.each do |field, symbol|
+        raise ArgumentError, "#{field} #{symbol.inspect} must not contain white space" if
+          symbol.match?(WHITE_SPACE)
+      end
+      # A currency symbol may hold white space inside ("F CFA"), never at an edge.
+      raise ArgumentError, "currency symbol #{currency.inspect} must not start or end with white space" if
+        currency.match?(/\A#{WHITE_SPACE.source}|#{WHITE_SPACE.source}\z/)
+
       super(decimal_sep: decimal_sep, group_sep: group_sep, flags: flags,
-            currency: declared("currency symbol", currency, self.class::CURRENCY_MAX_BYTES, flush: true),
-            currency_decimal_sep: currency_decimal_sep, currency_group_sep: currency_group_sep,
-            minus_sign: declared("minus sign", minus_sign, limit, flush: true),
-            plus_sign: declared("plus sign", plus_sign, limit, flush: true),
-            percent: declared("percent symbol", percent, limit, flush: true),
+            currency: currency, currency_decimal_sep: currency_decimal_sep, currency_group_sep: currency_group_sep,
+            minus_sign: minus_sign, plus_sign: plus_sign, percent: percent,
             digit_zero: digit_zero_of(digit_zero))
+    end
+
+    # The grouping policy, :western, :indian or :legacy. It is not a member, as Fault#detail is
+    # not: the ten members, #to_h, #inspect and the positional and keyword constructors are
+    # 1.0's, and the policy rides beside them, counting in #==, #eql? and #hash (a :legacy and a
+    # :western format must never be one memo key). A NumFormat restored from a 1.0 Marshal
+    # payload carries no policy and keeps 1.0's meaning, :legacy: it was legacy when 1.0 made it,
+    # and stored data does not change with the constants (a 1.1 payload keeps the policy it stores).
+    def grouping
+      @grouping || :legacy
+    end
+
+    # The flags word the native layout carries: #flags with the grouping policy in bits 8 and 9.
+    def raw_flags
+      flags | GROUPING_POLICIES.fetch(grouping)
+    end
+
+    # Equal when every member and the grouping policy are.
+    def ==(other)
+      super && grouping == other.grouping
+    end
+
+    # Eql when every member and the grouping policy are.
+    def eql?(other)
+      super && grouping.eql?(other.grouping)
+    end
+
+    # A hash over the members and the grouping policy.
+    def hash
+      [super, grouping].hash
+    end
+
+    # The members, and #grouping when a pattern names it.
+    def deconstruct_keys(keys)
+      return super unless keys&.include?(:grouping)
+
+      super(keys - [:grouping]).merge(grouping: grouping)
+    end
+
+    # A copy with the given members (or grouping:) replaced, keeping the policy unless one is
+    # given, and validated as NumFormat.new validates. With none given it is the format itself.
+    def with(**changes)
+      return self if changes.empty?
+
+      self.class.new(**to_h, grouping: grouping, **changes)
+    end
+
+    # Marshal's form: the members and the policy, so a loaded format keeps its policy and is
+    # judged again as a new one is. A 1.0 payload (the struct form) loads without a policy, which
+    # #grouping reads as :legacy.
+    def marshal_dump
+      to_h.merge(grouping: grouping)
+    end
+
+    # Restores a format from #marshal_dump's form through #initialize.
+    def marshal_load(members)
+      initialize(**members)
     end
 
     # This format with the fields Ruby's number vocabulary names replaced — the words Rails'
@@ -173,7 +360,11 @@ module HyperCast
     # (U+2212 for Estonian and Basque, for instance) declares it on the result with
     # Data#with (minus_sign: "−"). Every lenience is on, radix prefixes and percent included;
     # narrow flags: for anything stricter.
-    def self.from_i18n(number_format, currency_format: nil, flags: ALL_STYLES)
+    #
+    # The Hash says nothing about how a locale groups digits, so grouping: declares it — :western,
+    # the default, reads groups of three ("1.234.567,89"), :indian is lakh and crore
+    # ("12,34,567"), and :legacy reads a separator between any two digits, as 1.0 did.
+    def self.from_i18n(number_format, currency_format: nil, flags: ALL_STYLES, grouping: :western)
       entries = i18n_entries(number_format)
       separator = entries[:separator] || (entries[:delimiter] == "." ? "," : ".")
       delimiter = entries[:delimiter]
@@ -198,7 +389,7 @@ module HyperCast
         flags |= TRAILING_SIGN if trailing_sign?(money[:negative_format])
       end
       new(decimal_sep: separator, group_sep: delimiter, flags: flags, currency: currency,
-          currency_decimal_sep: currency_separator, currency_group_sep: currency_delimiter)
+          currency_decimal_sep: currency_separator, currency_group_sep: currency_delimiter, grouping: grouping)
     end
 
     # The I18n Hash's entries under Symbol keys, whatever keys it arrived with.
@@ -223,14 +414,14 @@ module HyperCast
 
     # The 92-byte little-endian form of the ABI's size-tagged NumFormat struct (what the
     # core's RawNumFormat::from_le_bytes reads, and Python's NumFormat.packed is): the size
-    # word (92), the flags, the digit zero's code point (0 for none), each a little-endian
-    # u32 on every host, then each symbol as its UTF-8 bytes zero-padded to its field
-    # followed by its byte length — eight bytes and a length for each of the two number
-    # separators, the two currency separators, the two signs and the percent symbol, in
-    # that order; sixteen and a length for the currency symbol. A length of 0 declares
-    # nothing.
+    # word (92), the flags with the grouping policy in bits 8 and 9 (#raw_flags), the digit
+    # zero's code point (0 for none), each a little-endian u32 on every host, then each symbol
+    # as its UTF-8 bytes zero-padded to its field followed by its byte length — eight bytes
+    # and a length for each of the two number separators, the two currency separators, the two
+    # signs and the percent symbol, in that order; sixteen and a length for the currency
+    # symbol. A length of 0 declares nothing.
     def packed
-      head = [self.class::PACKED_BYTES, flags, digit_zero.empty? ? 0 : digit_zero.ord].pack("L<L<L<")
+      head = [self.class::PACKED_BYTES, raw_flags, digit_zero.empty? ? 0 : digit_zero.ord].pack("L<L<L<")
       symbols = [decimal_sep, group_sep, currency_decimal_sep, currency_group_sep, minus_sign, plus_sign, percent]
       head + symbols.map { |symbol| [symbol, symbol.bytesize].pack("a8C") }.join +
         [currency, currency.bytesize].pack("a16C")
@@ -238,11 +429,22 @@ module HyperCast
 
     private
 
+    # The style mask: an Integer of the defined flag bits (0 through 7) and nothing else. The
+    # grouping policy has its own keyword, so bits 8 and 9 are refused as a policy in the wrong
+    # place, and any bit above them as one this version does not define.
+    def check_flags(flags)
+      raise ArgumentError, "flags must be an Integer; got #{flags.inspect}" unless flags.is_a?(Integer)
+      raise ArgumentError, "flags #{flags} must not carry a grouping policy (bits 8 and 9); declare it with " \
+                           "grouping:" if flags.anybits?(GROUPING_POLICY)
+      raise ArgumentError, "flags #{flags} sets a bit this version does not define (bit 10 and above)" unless
+        flags.between?(0, 0xFF)
+    end
+
     # The declared text of one field as the UTF-8 the core reads: a String of 1 to `limit`
-    # UTF-8 bytes with no ASCII digit — nor, for a symbol that sits flush against the
-    # digits (the signs, the percent and currency symbols), any ASCII whitespace — or ""
-    # where the field may be left undeclared. Anything else is the caller bug it names.
-    def declared(field, text, limit, flush: false, required: false)
+    # UTF-8 bytes with no ASCII digit, or "" where the field may be left undeclared. Anything
+    # else is the caller bug it names. White space is refused by the caller, once every
+    # field has passed this and the separators are known to differ.
+    def declared(field, text, limit, required: false)
       raise ArgumentError, "#{field} must be a String; got #{text.inspect}" unless text.is_a?(String)
 
       symbol = HyperCast.send(:declared_utf8, field, text)
@@ -253,12 +455,8 @@ module HyperCast
       end
       raise ArgumentError, "#{field} #{text.inspect} exceeds #{limit} UTF-8 bytes" if symbol.bytesize > limit
 
-      if flush
-        raise ArgumentError, "#{field} #{text.inspect} must not contain an ASCII digit or whitespace" if
-          symbol.match?(/[0-9\t\n\f\r ]/)
-      elsif symbol.match?(/[0-9]/)
-        raise ArgumentError, "#{field} #{text.inspect} must not contain an ASCII digit"
-      end
+      raise ArgumentError, "#{field} #{text.inspect} must not contain an ASCII digit" if symbol.match?(/[0-9]/)
+
       symbol
     end
 
@@ -291,7 +489,8 @@ module HyperCast
   # The size of NumFormat#packed — the native ABI's size-tagged NumFormat layout — in bytes.
   NumFormat::PACKED_BYTES = 92
 
-  # Permit the group separator between digits (sizes not validated — between digits is the rule).
+  # Permit the group separator between digits. The NumFormat's grouping policy judges the sizes
+  # (strict Western by default; :legacy accepts any sizes — between digits is the rule).
   GROUPING = 1
   # Permit accounting parentheses as negation: (1,234) is -1234.
   PARENTHESES = 1 << 1
@@ -312,13 +511,13 @@ module HyperCast
   SEPARATOR_DETECT = 1 << 5
   # Permit the format's declared currency symbol at either edge of the numeric body —
   # leading ("$5", "-$5", "$ -5") or trailing ("5 €", "1.234,50 kr."), once, with optional
-  # ASCII whitespace between symbol and digits; accounting parentheses wrap the symbol
+  # white space between symbol and digits; accounting parentheses wrap the symbol
   # along with the digits ("($5)"). With no symbol declared the flag matches nothing.
   # Integer, real and decimal doors.
   CURRENCY = 1 << 6
   # Permit the sign after the digits ("5-", "5 -", "5 €-", "5- €"), the way a locale whose
   # negative_format is "%n-" writes it: ASCII - and + or the format's declared signs, once,
-  # with optional ASCII whitespace before it, and never beside a leading sign or inside
+  # with optional white space before it, and never beside a leading sign or inside
   # accounting parentheses. Not part of ALL_STYLES — NumFormat.from_i18n sets it from the
   # locale's own negative_format rather than assuming it.
   TRAILING_SIGN = 1 << 7
@@ -327,12 +526,27 @@ module HyperCast
   # lenience, and is deliberately not included either).
   ALL_STYLES = GROUPING | PARENTHESES | EXPONENT | RADIX_PREFIXES | PERCENT | CURRENCY
 
-  # The invariant profile — '.' decimal, ',' grouping, every lenience on, no currency
-  # symbol declared.
+  # Grouping policy legacy, bits 8 and 9 clear: the group separator anywhere between two digits.
+  GROUPING_LEGACY = 0
+  # Grouping policy strict Western, bit 8: groups of exactly three digits from the decimal
+  # separator, the leftmost one to three.
+  GROUPING_WESTERN = 1 << 8
+  # Grouping policy strict Indian, bit 9: three digits beside the decimal separator, two in each
+  # group to its left, the leftmost one or two.
+  GROUPING_INDIAN = 2 << 8
+  # The two policy bits, 8 and 9, of the native flags word. Both set names no policy and is
+  # refused. A NumFormat declares its policy with grouping:, never in flags.
+  GROUPING_POLICY = 3 << 8
+
+  # The grouping policies a NumFormat's grouping: names, with their bits in the native flags word.
+  GROUPING_POLICIES = { legacy: GROUPING_LEGACY, western: GROUPING_WESTERN, indian: GROUPING_INDIAN }.freeze
+
+  # The invariant profile — '.' decimal, ',' grouping, every lenience on, strict Western
+  # grouping, no currency symbol declared.
   NumFormat::INVARIANT = NumFormat.new(decimal_sep: ".", group_sep: ",", flags: ALL_STYLES)
 
-  # The detection profile — every lenience on, ./, roles resolved per input by
-  # SEPARATOR_DETECT's structural rules.
+  # The detection profile — every lenience on, strict Western grouping, ./, roles resolved per
+  # input by SEPARATOR_DETECT's structural rules.
   NumFormat::DETECT = NumFormat.new(decimal_sep: ".", group_sep: ",",
                                     flags: ALL_STYLES | SEPARATOR_DETECT)
 
@@ -348,6 +562,181 @@ module HyperCast
   # is January 7th (:month_day_year, the en-US order) or July 1st (:day_month_year, the
   # en-GB order) only because the caller said which.
   DATE_ORDERS = { year_month_day: 1, month_day_year: 2, day_month_year: 3 }.freeze
+
+  # The date shapes the doors read only when the caller opts in: a flag set (the doors' own
+  # shapes stay exactly as they are without it) and a pivot for two-digit years. Passed as
+  # `options:` to the doors that read them — COMPACT_DATE at #date, SPACE_SEPARATOR and
+  # HOUR_OFFSET at #timestamp, the pivot at #date with an order and at #datetime — and a known
+  # option a door does not read is ignored. #flags is an Integer of the defined bits and nothing
+  # else (any other bit is an ArgumentError); #pivot is nil for none, or the last year of the
+  # 100-year window a two-digit year is read in, 100 through 9999: with a pivot of 2029, "26"
+  # is 2026 and "30" is 1930. A pivot of 0 is none, too.
+  DateOptions = Data.define(:flags, :pivot) do
+    # Validates the flags and the pivot up front, so options a door could not honour are the
+    # caller bug they are, never a verdict.
+    def initialize(flags: 0, pivot: nil)
+      raise ArgumentError, "date option flags must be an Integer; got #{flags.inspect}" unless flags.is_a?(Integer)
+      raise ArgumentError, "date option flags #{flags} set a bit this version does not define" unless
+        flags.nobits?(~self.class::DEFINED)
+      unless pivot.nil? || (pivot.is_a?(Integer) && (pivot.zero? || pivot.between?(100, 9999)))
+        raise ArgumentError, "date pivot must be nil, 0, or 100 to 9999; got #{pivot.inspect}"
+      end
+
+      super(flags: flags, pivot: pivot&.zero? ? nil : pivot)
+    end
+
+    # The 12 bytes the native layout carries, in the host's byte order: the size (12), the
+    # flags and the pivot (0 for none), as u32s.
+    def packed
+      [self.class::PACKED_BYTES, flags, pivot || 0].pack("L3")
+    end
+  end
+
+  # `cast_date` also reads `yyyyMMdd`, eight ASCII digits.
+  DateOptions::COMPACT_DATE = 1
+  # `cast_timestamp` also reads a single space where the `T` goes.
+  DateOptions::SPACE_SEPARATOR = 2
+  # `cast_timestamp` also reads an offset of `±hh`, with no minutes (`+00`, `-05`).
+  DateOptions::HOUR_OFFSET = 4
+  # Every flag this version defines.
+  DateOptions::DEFINED = DateOptions::COMPACT_DATE | DateOptions::SPACE_SEPARATOR | DateOptions::HOUR_OFFSET
+  # The size of DateOptions#packed, the native layout, in bytes.
+  DateOptions::PACKED_BYTES = 12
+  # COMPACT_DATE, SPACE_SEPARATOR and HOUR_OFFSET together: the shapes real feeds mix with
+  # RFC 3339. It supplies no pivot and no month names (`COMMON_FORMS.with(pivot: 2029)` adds one).
+  DateOptions::COMMON_FORMS = DateOptions.new(flags: DateOptions::DEFINED)
+
+  # Declared month names for the doors that read a month field (#date with an order, and
+  # #datetime): "Jan", "janvier", "janv.". Built by the caller, never looked up for a locale —
+  # aliases, abbreviations and grammatical forms are the caller's decisions — from a Hash of
+  # name => month, or an Array of [month, name] pairs (the order the native layout packs them in).
+  # Passed as `months:` it replaces the numeric month field, in the position the declared field
+  # order selects and with the date's own `/`, `-` or `.` separator: "07-Jan-26" reads with a
+  # pivot, "7-Jan-2026" without one, and a vocabulary never reorders fields.
+  #
+  # Names match under simple case folding, the longest name followed by the separator winning;
+  # punctuation is part of a name and never stripped, so with "janv." declared and "." as the
+  # separator "7.janv..2026" reads and "7.janv.2026" is :malformed unless "janv" is declared too.
+  # The vocabulary rules, each an ArgumentError here: every entry a month 1 through 12 and a
+  # String with a UTF-8 form of 1 to 64 bytes holding no ASCII digit, "/", "-" or white space ("."
+  # is fine anywhere); every month named at least once; no two names equal under case folding,
+  # even for one month.
+  MonthNames = Data.define(:entries) do
+    # Judges the entries against the rules, then has the core judge the vocabulary once more
+    # (the one rule Ruby cannot restate is the core's simple case folding), through the date
+    # door: on the Fiddle backend that is a native call, so building a vocabulary raises a
+    # LoadError, as every door does, when the shared library is missing.
+    def initialize(entries:)
+      list = self.class.send(:judged, self.class.send(:pairs, entries))
+      @packed = self.class.send(:pack, list)
+      super(entries: list)
+      self.class.send(:core_judges, self)
+    end
+
+    # The vocabulary in the packed layout the native core reads: each entry a month byte, a
+    # little-endian u32 byte length and the name's UTF-8 bytes, with no padding.
+    def packed
+      @packed
+    end
+
+    # Marshal's form: the entries, so a loaded vocabulary is judged again as a new one is.
+    def marshal_dump
+      entries
+    end
+
+    # Restores a vocabulary from #marshal_dump's entries through #initialize.
+    def marshal_load(list)
+      initialize(entries: list)
+    end
+
+    # The vocabulary read from its packed layout (what #packed returns), judged by the same rules
+    # as one built from entries; an entry cut short or bytes trailing the last one is an
+    # ArgumentError, as is a name that is not UTF-8.
+    def self.from_packed(bytes)
+      raise ArgumentError, "packed month names must be a String; got #{bytes.inspect}" unless bytes.is_a?(String)
+
+      bytes = bytes.b
+      list = []
+      at = 0
+      while at < bytes.bytesize
+        head = bytes.byteslice(at, self::ENTRY_HEAD)
+        raise ArgumentError, "month names are cut short, or bytes trail the last entry" if
+          head.bytesize < self::ENTRY_HEAD
+
+        month, length = head.unpack("CL<")
+        name = bytes.byteslice(at + self::ENTRY_HEAD, length)
+        raise ArgumentError, "month names are cut short, or bytes trail the last entry" if name.bytesize < length
+
+        list << [month, name.force_encoding(Encoding::UTF_8)]
+        at += self::ENTRY_HEAD + length
+      end
+      new(entries: list)
+    end
+
+    # Entries as [month, name] pairs: from a Hash of name => month, or any Enumerable of pairs.
+    def self.pairs(entries)
+      case entries
+      when Hash then entries.map { |name, month| [month, name] }
+      else
+        raise ArgumentError, "month names must be a Hash or an Array of [month, name] pairs; " \
+                             "got #{entries.inspect}" unless entries.respond_to?(:to_a)
+
+        entries.to_a.map do |pair|
+          raise ArgumentError, "a month name entry must be a [month, name] pair; got #{pair.inspect}" unless
+            pair.respond_to?(:to_ary) && pair.to_ary.size == 2
+
+          pair.to_ary
+        end
+      end
+    end
+
+    # The entries as frozen [month, UTF-8 name] pairs, once every rule holds, in the order the
+    # core meets them: each entry's month, UTF-8 form, length and characters; then each month's
+    # entry.
+    def self.judged(pairs)
+      list = pairs.map do |month, name|
+        raise ArgumentError, "month #{month.inspect} must be an Integer from 1 to 12" unless
+          month.is_a?(Integer) && month.between?(1, 12)
+        raise ArgumentError, "month name must be a String; got #{name.inspect}" unless name.is_a?(String)
+
+        text = name.encoding == Encoding::BINARY ? name.dup.force_encoding(Encoding::UTF_8) : name
+        text = HyperCast.send(:declared_utf8, "month name", text)
+        raise ArgumentError, "month name #{name.inspect} must be 1 to 64 UTF-8 bytes" unless
+          text.bytesize.between?(1, 64)
+        raise ArgumentError, "month name #{name.inspect} must not contain an ASCII digit, a slash, a hyphen " \
+                             "or white space" if text.match?(%r{[0-9/-]|#{WHITE_SPACE.source}})
+
+        [month, text.dup.freeze].freeze
+      end
+      missing = (1..12).reject { |month| list.any? { |entry, _| entry == month } }
+      raise ArgumentError, "month names must name every month; none for #{missing.join(', ')}" unless missing.empty?
+
+      list.freeze
+    end
+
+    # The vocabulary in its packed layout, a frozen binary String.
+    def self.pack(list)
+      list.map { |month, name| [month, name.bytesize].pack("CL<") + name.b }.join.b.freeze
+    end
+
+    # The core's last word on a vocabulary Ruby accepted, which only a folded duplicate can
+    # still fail: the core's simple case folding is not String#downcase(:fold)'s full one.
+    def self.core_judges(names)
+      HyperCast.date("", :year_month_day, months: names)
+    rescue RefusedDeclaration
+      raise ArgumentError, "two month names fold to the same spelling"
+    end
+    private_class_method :pairs, :judged, :pack, :core_judges
+  end
+
+  # A declaration Ruby accepted and the core refused: date options or month names that passed
+  # their own checks and still broke a rule only the core judges (a folded duplicate), or that
+  # were built without going through their constructors (Data#allocate, Marshal). The
+  # constructors turn it into the ArgumentError they document; a door raises it as it is.
+  class RefusedDeclaration < ArgumentError; end
+
+  # The bytes an entry takes before its name in MonthNames#packed: the month byte and the length.
+  MonthNames::ENTRY_HEAD = 5
 
   # An exact decimal, the decimal door's value: an unbounded Integer magnitude (the core's
   # 96-bit unsigned, so at most 2**96 - 1), an Integer base-10 scale (0..28 — the number of
@@ -393,6 +782,14 @@ module HyperCast
   # integer, real and decimal doors, and :text.
   CHECKED_DOORS = {
     i8: 2, i16: 3, i32: 4, i64: 5, u8: 6, u16: 7, u32: 8, u64: 9, f32: 10, f64: 11, text: 18, decimal: 19
+  }.freeze
+
+  # Every door that reads text, by name, mapped to the native core's door code (the numbering
+  # of its detailed exports).
+  DETAILED_DOORS = {
+    bool: 1, i8: 2, i16: 3, i32: 4, i64: 5, u8: 6, u16: 7, u32: 8, u64: 9, f32: 10, f64: 11, uuid: 12,
+    timestamp: 13, unix: 14, date: 15, time: 16, duration: 17, text: 18, decimal: 19, date_ordered: 20,
+    datetime: 21, excel_serial: 22, char: 23
   }.freeze
 
   # What a value that is not a multiple of a declared multiple_of becomes, mapped to the
@@ -753,23 +1150,22 @@ module HyperCast
     # (t/f, yes/no, y/n, 1/0, on/off, enabled/disabled, active/inactive,
     # checked/unchecked, in/out), ASCII case-insensitive.
     def bool(text)
-      plain(:cast_bool, text, 1) { |out| Interop.decode(:bool, out) }
+      crossing(1, 0, text, 1) { |out| Interop.decode(:bool, out) }
     end
 
     # Casts char text to a one-character UTF-8 String: an input of exactly one character is
     # that character verbatim (" " is a space), otherwise one declared code point — 65,
-    # U+0041, 0x41, &H41, &#65; or &#x41; — surrounded by optional ASCII whitespace. A code
+    # U+0041, 0x41, &H41, &#65; or &#x41; — surrounded by optional white space. A code
     # point past U+10FFFF, or a surrogate, is :out_of_range.
     def char(text)
-      plain(:cast_char, text, 4) { |out| Interop.decode(:char, out) }
+      crossing(23, 0, text, 4) { |out| Interop.decode(:char, out) }
     end
 
     %i[i8 i16 i32 i64 u8 u16 u32 u64].each do |door|
       unpack = Interop::SCALARS.fetch(door)
       size = Interop::VALUE_BYTES.fetch(door)
-      # Resolved once here, not inside the method: interpolating a Symbol per call built a
-      # String and interned it on every integer cast.
-      symbol = :"cast_#{door}"
+      # Resolved once here, not inside the method.
+      code = DETAILED_DOORS.fetch(door)
       # Integer doors: the target type's own range, declared grouping, accounting parens,
       # non-negative exponent, and 0x/&H/0b two's-complement radix prefixes. Ruby Integer
       # is unbounded, so u64 comes back as the true unsigned value. separator:, delimiter:
@@ -777,7 +1173,7 @@ module HyperCast
       define_method(door) do |text, format, separator: nil, delimiter: nil, unit: nil|
         format = format.override(separator: separator, delimiter: delimiter, unit: unit) if
           separator || delimiter || unit
-        numeric(symbol, text, format, size) { |out| out.unpack1(unpack) }
+        crossing(code, 0, text, size, format) { |out| out.unpack1(unpack) }
       end
     end
 
@@ -788,14 +1184,14 @@ module HyperCast
     def f32(text, format, separator: nil, delimiter: nil, unit: nil)
       format = format.override(separator: separator, delimiter: delimiter, unit: unit) if
         separator || delimiter || unit
-      numeric(:cast_f32, text, format, 4) { |out| Interop.decode(:f32, out) }
+      crossing(10, 0, text, 4, format) { |out| Interop.decode(:f32, out) }
     end
 
     # Casts real text to an IEEE double. Notation rules as f32.
     def f64(text, format, separator: nil, delimiter: nil, unit: nil)
       format = format.override(separator: separator, delimiter: delimiter, unit: unit) if
         separator || delimiter || unit
-      numeric(:cast_f64, text, format, 8) { |out| Interop.decode(:f64, out) }
+      crossing(11, 0, text, 8, format) { |out| Interop.decode(:f64, out) }
     end
 
     # Casts decimal text to an exact Decimal — the real doors' grammar (declared separators
@@ -807,27 +1203,30 @@ module HyperCast
     def decimal(text, format, separator: nil, delimiter: nil, unit: nil)
       format = format.override(separator: separator, delimiter: delimiter, unit: unit) if
         separator || delimiter || unit
-      numeric(:cast_decimal, text, format, 16) { |out| Interop.decode(:decimal, out) }
+      crossing(19, 0, text, 16, format) { |out| Interop.decode(:decimal, out) }
     end
 
     # Casts UUID text — all five .NET Guid formats (D/N/B/P/X) plus urn:uuid:/GUID:/UUID:
     # prefixes — to Ruby's UUID lingua franca: the lowercase hyphenated String (the same
     # shape SecureRandom.uuid returns).
     def uuid(text)
-      plain(:cast_uuid, text, 16) { |out| Interop.decode(:uuid, out) }
+      crossing(12, 0, text, 16) { |out| Interop.decode(:uuid, out) }
     end
 
     # Casts an RFC 3339 instant — zone mandatory — to a UTC Time at full nanosecond
-    # fidelity across the whole 0001-9999 window.
-    def timestamp(text)
-      plain(:cast_timestamp, text, 16) { |out| Interop.decode(:timestamp, out) }
+    # fidelity across the whole 0001-9999 window. options: (a DateOptions) opens the shapes
+    # RFC 3339 itself does not have, each only when asked for: SPACE_SEPARATOR a space where the
+    # T goes, HOUR_OFFSET an offset of ±hh ("+00"); other options are ignored here.
+    def timestamp(text, options: nil)
+      dated(options, nil)
+      crossing(13, 0, text, 16, nil, nil, options) { |out| Interop.decode(:timestamp, out) }
     end
 
     # Casts an integer Unix-epoch value under a caller-declared unit Symbol
     # (:seconds/:milliseconds/:microseconds/:nanoseconds) to a UTC Time. An unknown unit
     # is a caller bug (KeyError), never a verdict.
     def unix(text, precision)
-      declared(:cast_unix, text, UNIX_PRECISIONS.fetch(precision), 16) { |out| Interop.decode(:unix, out) }
+      crossing(14, UNIX_PRECISIONS.fetch(precision), text, 16) { |out| Interop.decode(:unix, out) }
     end
 
     # Casts an Excel date serial under a caller-declared epoch Symbol (:y1900/:y1904) to a
@@ -841,7 +1240,7 @@ module HyperCast
     # the text "1900-02-29" — so every serial above it is shifted one day against a naive
     # count. An unknown epoch is a caller bug (KeyError), never a verdict.
     def excel_serial(text, epoch)
-      declared(:cast_excel_serial, text, EXCEL_EPOCHS.fetch(epoch), 16) { |out| Interop.decode(:excel_serial, out) }
+      crossing(22, EXCEL_EPOCHS.fetch(epoch), text, 16) { |out| Interop.decode(:excel_serial, out) }
     end
 
     # Casts a calendar date to a Date. With no order declared: the strict ISO 8601
@@ -849,11 +1248,19 @@ module HyperCast
     # :month_day_year, :day_month_year), also the separated forms — "1/7/2026" is
     # January 7th or July 1st only because the caller said which; an unknown order is a
     # caller bug (KeyError), never a verdict.
-    def date(text, order = nil)
+    #
+    # options: (a DateOptions) opens shapes only when asked for: COMPACT_DATE, "20260107", at the
+    # ISO form; the pivot, two-digit years ("1/7/26"), with an order. months: (a MonthNames) opens
+    # declared month names in the month field ("7-Jan-2026") with an order. Options a form does
+    # not read are ignored.
+    def date(text, order = nil, options: nil, months: nil)
+      dated(options, months)
       if order.nil?
-        plain(:cast_date, text, 4) { |out| Interop.decode(:date, out) }
+        crossing(15, 0, text, 4, nil, nil, options) { |out| Interop.decode(:date, out) }
       else
-        declared(:cast_date_ordered, text, DATE_ORDERS.fetch(order), 4) { |out| Interop.decode(:date_ordered, out) }
+        crossing(20, DATE_ORDERS.fetch(order), text, 4, nil, nil, options, months) do |out|
+          Interop.decode(:date_ordered, out)
+        end
       end
     end
 
@@ -869,30 +1276,36 @@ module HyperCast
     # A 12-hour clock's AM/PM is read, before or after the clock ("3:04 PM", "PM 3:04"),
     # ASCII case-insensitively; am: and pm: declare a culture's own designators beside
     # them — "vorm."/"nachm.", "오전"/"오후", "a. m."/"p. m." — matched exactly, after the
-    # clock ("3:04 nachm.") or ahead of it ("오후 3:04"), with or without a space between.
+    # clock ("3:04 nachm.") or ahead of it ("오후 3:04"), with any run of white space or none between.
     # Declared, never looked up, like a NumFormat's symbols; nil (the default) declares
     # nothing, so a call without them is exactly the call it was. A designator is 1 to 16
-    # UTF-8 bytes with no ASCII digit and no ASCII whitespace at either end (a space inside
+    # UTF-8 bytes with no ASCII digit and no white space at either end (a space inside
     # is fine); anything else is a caller bug (ArgumentError). The designators are read,
     # validated and packed per call: a call that declares them costs about twice the plain
     # call on the Magnus backend (the keyword scan itself — nil keywords pay the same) and
     # about half again here on Fiddle.
-    def datetime(text, order, am: nil, pm: nil)
+    #
+    # options: (a DateOptions) gives two-digit years a pivot, and months: (a MonthNames) opens
+    # declared month names ("07-Jan-26 3:04 PM"), each only when asked for.
+    def datetime(text, order, am: nil, pm: nil, options: nil, months: nil)
+      dated(options, months)
       periods = packed_day_periods(am, pm) if am || pm
-      civil(:cast_datetime, text, DATE_ORDERS.fetch(order), periods, 16) { |out| Interop.decode(:datetime, out) }
+      crossing(21, DATE_ORDERS.fetch(order), text, 16, nil, periods, options, months) do |out|
+        Interop.decode(:datetime, out)
+      end
     end
 
     # Casts an ISO 24-hour time-of-day to an exact Integer of nanoseconds since midnight
     # (Ruby has no time-of-day type; the integer keeps every digit).
     def time(text)
-      plain(:cast_time, text, 8) { |out| Interop.decode(:time, out) }
+      crossing(16, 0, text, 8) { |out| Interop.decode(:time, out) }
     end
 
     # Casts a duration (ISO 8601 fixed components, invariant colon form, or protobuf JSON
     # seconds) to exact Rational seconds — full fidelity across the core's ±10,000-year
     # window, no wrapping and no truncation.
     def duration(text)
-      plain(:cast_duration, text, 16) { |out| Interop.decode(:duration, out) }
+      crossing(17, 0, text, 16) { |out| Interop.decode(:duration, out) }
     end
 
     # Reads a number a caller already holds — an Integer, Float or Rational, the way Ruby's
@@ -903,7 +1316,7 @@ module HyperCast
     # a magnitude past 2**96 - 1 or more than 28 places is :out_of_range. A typed door's
     # Fault has no span: offset and length are 0.
     def decimal_from_float(value)
-      typed(:cast_decimal_from_f64, float(value), 16) { |out| Interop.decode(:decimal, out) }
+      typed(19, 0, float(value), 16) { |out| Interop.decode(:decimal, out) }
     end
 
     # Reads an Excel serial number under a declared epoch Symbol (:y1900/:y1904) as the
@@ -912,18 +1325,18 @@ module HyperCast
     # is :out_of_range; a negative, NaN or infinite serial is :malformed.
     def excel_serial_from_float(value, epoch)
       number = float(value)
-      typed(:cast_excel_serial_from_f64, number, 16, EXCEL_EPOCHS.fetch(epoch)) { |out| Interop.decode(:datetime, out) }
+      typed(22, EXCEL_EPOCHS.fetch(epoch), number, 16) { |out| Interop.decode(:datetime, out) }
     end
 
     # Reads the fraction of an Excel serial number as an exact Integer of nanoseconds since
     # midnight, as time does; 0.75 and 45292.75 are both 18:00.
     def excel_time(value)
-      typed(:cast_excel_time, float(value), 8) { |out| Interop.decode(:time, out) }
+      typed(16, 0, float(value), 8) { |out| Interop.decode(:time, out) }
     end
 
     # Reads a number of days as exact Rational seconds, as duration does: 1.5 is 129600.
     def excel_duration(value)
-      typed(:cast_excel_duration, float(value), 16) { |out| Interop.decode(:duration, out) }
+      typed(17, 0, float(value), 16) { |out| Interop.decode(:duration, out) }
     end
 
     # Casts text as text: the input itself, as a String, once it is valid UTF-8 — a binary
@@ -937,15 +1350,13 @@ module HyperCast
     # delivering the very String declared and its index. Constraints for another door are an
     # ArgumentError (they go to checked).
     def text(text, constraints = nil)
-      bytes = utf8(text)
       if constraints.nil?
-        out, fault = scratch
-        rc = Runtime.function(:cast_text).call(input_ptr(bytes), bytes.bytesize, out, fault)
-        return verdict(rc, fault, bytes) { text_value(bytes, *out[0, 8].unpack("LL")) }
+        return crossing(18, 0, text, 8) { |out, bytes| text_value(bytes, *out.unpack("LL")) }
       end
+
+      bytes = utf8(text)
       _door, raw, entries = constrained(constraints, :text)
-      rc = checked_call(:cast_checked, CHECKED_DOORS.fetch(:text), 0, nil, raw, input_ptr(entries), entries.bytesize,
-                        input_ptr(bytes), bytes.bytesize)
+      rc = checked_call(CHECKED_DOORS.fetch(:text), nil, raw, entries, bytes)
       checked_verdict(rc, bytes) do |out, check|
         offset, length = out[0, 8].unpack("LL")
         index = check[8, 4].unpack1("L")
@@ -964,8 +1375,7 @@ module HyperCast
         separator || delimiter || unit
       bytes = utf8(text)
       symbol, raw, entries = constrained(constraints, :checked)
-      rc = checked_call(:cast_checked, CHECKED_DOORS.fetch(symbol), 0, packed_cache[format], raw,
-                        input_ptr(entries), entries.bytesize, input_ptr(bytes), bytes.bytesize)
+      rc = checked_call(CHECKED_DOORS.fetch(symbol), packed_cache[format], raw, entries, bytes)
       checked_verdict(rc, bytes) { |out| Interop.decode(symbol, out[0, Interop::VALUE_BYTES.fetch(symbol)]) }
     end
 
@@ -978,8 +1388,10 @@ module HyperCast
     def checked_from_float(value, constraints)
       number = float(value)
       symbol, raw, entries = constrained(constraints, :checked_from_float)
-      rc = checked_call(:cast_checked_from_f64, CHECKED_DOORS.fetch(symbol), number, raw,
-                        input_ptr(entries), entries.bytesize)
+      out, fault = scratch
+      rc = Runtime.function(:cast_checked_detailed_from_f64).call(CHECKED_DOORS.fetch(symbol), 0, raw,
+                                                                  input_ptr(entries), entries.bytesize, number,
+                                                                  out, fault, checked_scratch[1])
       checked_verdict(rc, nil) { |out| Interop.decode(symbol, out[0, Interop::VALUE_BYTES.fetch(symbol)]) }
     end
 
@@ -1114,66 +1526,72 @@ module HyperCast
       bytes.empty? ? nil : bytes
     end
 
-    # One 64-byte scratch allocation per thread, reused by every call: out-value at 0
-    # (16 bytes covers every door, and malloc's alignment covers the decimal's 8), fault
-    # span at 16, and the datetime door's packed day periods at 24 (40 bytes, 4-aligned,
-    # written only by a call that declares them). Two Fiddle::Pointer.malloc(..., RUBY_FREE)
-    # calls per cast — each registering a GC finalizer — measured as the dominant per-call
-    # cost by an order of magnitude. The NumFormat does not live here: each format owns
-    # its own packed pointer (see packed_cache), so a numeric call copies nothing into
-    # scratch before crossing. Allocated through Runtime.buffer, which loads the library
-    # first, so a missing one is reported as such before Fiddle is touched.
+    # One 96-byte scratch allocation per thread, reused by every call: out-value at 0 (16 bytes
+    # covers every door, and malloc's alignment covers the decimal's 8), the fault at 16 (a
+    # RawFaultDetail, 16 bytes: its size word written once, here, and never by the core; then the
+    # span and the detail), the datetime door's packed day periods at 32 (40 bytes, 4-aligned,
+    # written only by a call that declares them) and the date options at 72 (12 bytes, 4-aligned,
+    # likewise). Two Fiddle::Pointer.malloc(..., RUBY_FREE) calls per cast — each registering a GC
+    # finalizer — measured as the dominant per-call cost by an order of magnitude. The NumFormat
+    # does not live here: each format owns its own packed pointer (see packed_cache), so a numeric
+    # call copies nothing into scratch before crossing. Allocated through Runtime.buffer, which
+    # loads the library first, so a missing one is reported as such before Fiddle is touched.
     def scratch
       Thread.current[:hypercast_scratch] ||= begin
-        base = Runtime.buffer(64)
-        [base, base + 16, base + 24]
+        base = Runtime.buffer(96)
+        base[16, 4] = [Interop::FAULT_BYTES].pack("L")
+        [base, base + 16, base + 32, base + 72]
       end
     end
 
     # Presents a native return code as the verdict union: 0 yields a Success, a failure
-    # code becomes a Fault over `bytes` (the UTF-8 the core read), and -1 (contract
-    # violation) is a binding bug that raises.
+    # code becomes a Fault over `bytes` (the UTF-8 the core read) carrying the core's detail, and
+    # -1 (contract violation) is a binding bug that raises.
     def verdict(rc, fault, bytes)
       if rc.zero?
         Success.new(value: yield)
       elsif rc == -1
         raise "hypercast: libhypercast reported a contract violation — a binding bug, please report it"
       else
-        Interop.fault(rc, *Interop.characters(bytes, *fault[0, 8].unpack("LL")))
+        Interop.raw_fault(rc, fault[0, Interop::FAULT_BYTES], bytes)
       end
     end
 
-    # The shared body of every format-free door: one native call over the scratch buffers.
-    def plain(symbol, text, out_size)
+    # The shared body of every door that reads text: one detailed native call over the scratch
+    # buffers. door and param are the core's door code and what the door declares (0 for
+    # nothing); format is the numeric doors' NumFormat, periods the datetime door's packed day
+    # periods, options and months the date doors' DateOptions and MonthNames (nil for none), each
+    # crossing only where the door reads it. The block reads the value from the out-bytes and the
+    # UTF-8 the core read.
+    def crossing(door, param, text, out_size, format = nil, periods = nil, options = nil, months = nil)
       bytes = utf8(text)
-      out, fault = scratch
-      rc = Runtime.function(symbol).call(input_ptr(bytes), bytes.bytesize, out, fault)
-      verdict(rc, fault, bytes) { yield(out[0, out_size]) }
-    end
-
-    # The shared body of the integer/real/decimal doors: plain, plus the format's own
-    # packed pointer, passed straight through — no per-call copy of the 92 bytes into
-    # scratch.
-    def numeric(symbol, text, format, out_size)
-      bytes = utf8(text)
-      out, fault = scratch
-      rc = Runtime.function(symbol).call(input_ptr(bytes), bytes.bytesize, packed_cache[format], out, fault)
-      verdict(rc, fault, bytes) { yield(out[0, out_size]) }
-    end
-
-    # The civil date-time door's body: declared, plus the day periods after the order — the
-    # 40 packed bytes copied into this thread's scratch and passed from there, or nil
-    # (Fiddle's null) when none are declared, which the core reads as English AM/PM only.
-    def civil(symbol, text, code, periods, out_size)
-      bytes = utf8(text)
-      out, fault, slot = scratch
+      out, fault, slot, dates = scratch
       if periods
         slot[0, periods.bytesize] = periods
       else
         slot = nil
       end
-      rc = Runtime.function(symbol).call(input_ptr(bytes), bytes.bytesize, code, slot, out, fault)
-      verdict(rc, fault, bytes) { yield(out[0, out_size]) }
+      if options
+        dates[0, DateOptions::PACKED_BYTES] = options.packed
+      else
+        dates = nil
+      end
+      vocabulary = months&.packed
+      rc = Runtime.function(:cast_detailed).call(door, param, format && packed_cache[format], slot, dates,
+                                                 vocabulary, vocabulary ? vocabulary.bytesize : 0,
+                                                 input_ptr(bytes), bytes.bytesize, out, fault)
+      raise RefusedDeclaration, "the core refused the date options or month names" if rc == -1 && (options || months)
+
+      verdict(rc, fault, bytes) { yield(out[0, out_size], bytes) }
+    end
+
+    # Date options and month names as a date door takes them: each nil or the right type, a
+    # TypeError otherwise (what the Magnus extension raises for them too).
+    def dated(options, months)
+      raise TypeError, "options must be a HyperCast::DateOptions; got #{options.inspect}" unless
+        options.nil? || options.is_a?(DateOptions)
+      raise TypeError, "months must be a HyperCast::MonthNames; got #{months.inspect}" unless
+        months.nil? || months.is_a?(MonthNames)
     end
 
     # The 40-byte native form of the ABI's size-tagged DayPeriods struct, which the core
@@ -1187,7 +1605,7 @@ module HyperCast
     end
 
     # A declared day-period designator as the UTF-8 the core reads — 1 to 16 bytes, no
-    # ASCII digit, no ASCII whitespace at either end (the grammar around it reads that) —
+    # ASCII digit, no white space at either end (the grammar around it reads that) —
     # or "" for nil. Anything else is the caller bug it names, the same ArgumentError on
     # every backend.
     def designator(name, text)
@@ -1195,21 +1613,12 @@ module HyperCast
       raise ArgumentError, "#{name} designator must be a String; got #{text.inspect}" unless text.is_a?(String)
 
       designator = declared_utf8("#{name} designator", text)
-      unless designator.bytesize.between?(1, 16) && !designator.match?(/[0-9]|\A[\t\n\f\r ]|[\t\n\f\r ]\z/)
+      unless designator.bytesize.between?(1, 16) &&
+             !designator.match?(/[0-9]|\A#{WHITE_SPACE.source}|#{WHITE_SPACE.source}\z/)
         raise ArgumentError, "#{name} designator #{text.inspect} must be 1 to 16 UTF-8 bytes with no ASCII digit " \
-                             "and no ASCII whitespace at either end"
+                             "and no white space at either end"
       end
       designator
-    end
-
-    # The shared body of the four doors that take a caller-declared u32 — a precision, an
-    # epoch, or a field order — already resolved from its Symbol by the door. These bodies
-    # (plain, numeric, declared, and packed_version below) are the whole Fiddle crossing.
-    def declared(symbol, text, code, out_size)
-      bytes = utf8(text)
-      out, fault = scratch
-      rc = Runtime.function(symbol).call(input_ptr(bytes), bytes.bytesize, code, out, fault)
-      verdict(rc, fault, bytes) { yield(out[0, out_size]) }
     end
 
     # A typed door's number, converted the way the extension's argument is (C's
@@ -1226,17 +1635,17 @@ module HyperCast
       end
     end
 
-    # The shared body of the typed doors: a double instead of the text, then the declared
-    # u32 when the door takes one.
-    def typed(symbol, number, out_size, *declared)
+    # The shared body of the typed doors: a double instead of the text, through the core's
+    # detailed typed export (door and param as #crossing's; a typed door's span is empty).
+    def typed(door, param, number, out_size)
       out, fault = scratch
-      rc = Runtime.function(symbol).call(number, *declared, out, fault)
+      rc = Runtime.function(:cast_detailed_from_f64).call(door, param, number, out, fault)
       if rc.zero?
         Success.new(value: yield(out[0, out_size]))
       elsif rc == -1
         raise "hypercast: libhypercast reported a contract violation — a binding bug, please report it"
       else
-        Interop.fault(rc, 0, 0)
+        Interop.raw_fault(rc, fault[0, Interop::FAULT_BYTES])
       end
     end
 
@@ -1294,17 +1703,20 @@ module HyperCast
       end
     end
 
-    # The shared body of the checked doors: the door's own arguments, then the scratch
-    # out-value, fault and check.
-    def checked_call(symbol, *arguments)
+    # The shared body of the checked doors that read text: one detailed native call. door is
+    # the core's door code, format the packed NumFormat pointer (nil at :text, which never reads
+    # one), raw the packed constraints pointer and entries the packed enum.
+    def checked_call(door, format, raw, entries, bytes)
       out, fault = scratch
-      Runtime.function(symbol).call(*arguments, out, fault, checked_scratch[1])
+      Runtime.function(:cast_checked_detailed).call(door, 0, format, raw, input_ptr(entries), entries.bytesize,
+                                                    input_ptr(bytes), bytes.bytesize, out, fault,
+                                                    checked_scratch[1])
     end
 
     # Presents a checked door's return code as its verdict: 0 a Checked of the value the
-    # block reads from the out-value and check, 1 to 3 the door's Fault, 4 a Violation — each
-    # span over `bytes` (the UTF-8 the core read) as a Fault's is, or as written when there
-    # is no text — and -1 a binding bug that raises.
+    # block reads from the out-value and check, 1 to 3 the door's Fault with its detail, 4 a
+    # Violation (which carries none) — each span over `bytes` (the UTF-8 the core read) as a
+    # Fault's is, or as written when there is no text — and -1 a binding bug that raises.
     def checked_verdict(rc, bytes)
       out, fault = scratch
       check = checked_scratch[1]
@@ -1315,11 +1727,10 @@ module HyperCast
       end
       raise "hypercast: libhypercast reported a contract violation — a binding bug, please report it" unless
         rc.between?(1, 4)
+      return Interop.raw_fault(rc, fault[0, Interop::FAULT_BYTES], bytes) unless rc == 4
 
-      offset, length = fault[0, 8].unpack("LL")
+      offset, length = fault[4, 8].unpack("LL")
       offset, length = Interop.characters(bytes, offset, length) if bytes
-      return Interop.fault(rc, offset, length) unless rc == 4
-
       Violation.new(keyword: Keyword.new(code: check[0, 4].unpack1("L")), offset: offset, length: length)
     end
 

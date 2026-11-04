@@ -89,6 +89,30 @@ final class CastTest {
     }
 
     @Test
+    void characterSpanExcludesEveryWhiteSpaceEdge() {
+        // The token the core read is the input less its white-space edges, U+00A0 and U+3000
+        // included; the span counts a supplementary scalar whole, in the caller's own units.
+        record Row(String text, int byteOffset, int byteLength, int charOffset, int charLength) {}
+        for (Row row : List.of(
+                new Row("\u00a0U+1F600\u3000", 2, 7, 1, 7),
+                new Row("\u3000&#x1F600;\u00a0", 3, 9, 1, 9),
+                new Row("\u00a0&#128512;\u00a0", 2, 9, 1, 9),
+                new Row("\u2003\u202fU+1F600\u0085\u2029", 6, 7, 2, 7),
+                new Row("\u000bU+1F600\u000b", 1, 7, 1, 7))) {
+            byte[] utf8 = row.text().getBytes(StandardCharsets.UTF_8);
+            Fault<Character> inBytes = new Fault<>(CastFailure.OUT_OF_RANGE, row.byteOffset(), row.byteLength());
+            assertEquals(inBytes, Cast.character(utf8), row.text());
+            try (Arena arena = Arena.ofConfined()) {
+                assertEquals(inBytes, Cast.character(offHeap(arena, row.text())), row.text());
+            }
+            assertEquals(
+                    new Fault<Character>(CastFailure.OUT_OF_RANGE, row.charOffset(), row.charLength()),
+                    Cast.character(row.text()),
+                    row.text());
+        }
+    }
+
+    @Test
     void numFormatBridgesFromARealLocale() {
         NumFormat german = NumFormat.from(Locale.GERMANY);
         assertEquals(",", german.decimalSeparator());
@@ -337,7 +361,7 @@ final class CastTest {
     @Test
     void malformedSymbolsAreACallerBugNotAVerdict() {
         // The core's rules, enforced before the crossing: a separator 1 to 8 UTF-8 bytes, a
-        // sign or percent symbol at most 8 with no ASCII whitespace, every symbol whole code
+        // sign or percent symbol at most 8 with no white space, every symbol whole code
         // points with no ASCII digit, and a digit zero that starts a digit block.
         assertThrows(IllegalArgumentException.class, () -> new NumFormat("", ",", NumFormat.STYLE_ALL));
         assertThrows(IllegalArgumentException.class, () -> new NumFormat(".", "", NumFormat.STYLE_ALL));
@@ -360,6 +384,98 @@ final class CastTest {
         assertDoesNotThrow(() -> NumFormat.INVARIANT.withDigitZero(0xff10).withDigitZero(0x1d7ce));
     }
 
+    private static String refusalOf(Runnable declaration) {
+        return assertThrows(IllegalArgumentException.class, declaration::run).getMessage();
+    }
+
+    @Test
+    void whiteSpaceInADeclarationIsRefusedWhereTheInputCouldNeverMatchIt() {
+        // Any of the 25 White_Space code points, not only ASCII: a sign and the percent symbol
+        // sit flush against the digits, and a decimal separator is never white space (only a
+        // group separator may be, or contain it; the currency symbol, at its edges only).
+        for (String space : List.of(" ", "\t", "\u000b", "\u0085", "\u00a0", "\u2009", "\u202f", "\u3000")) {
+            String inner = "A" + space + "B";
+            for (String symbol : List.of(space, inner)) {
+                String what = "symbol " + symbol.codePoints().boxed().toList();
+                assertTrue(
+                        refusalOf(() -> NumFormat.INVARIANT.withSigns(symbol, ""))
+                                .contains("must not contain white space"),
+                        what);
+                assertTrue(
+                        refusalOf(() -> NumFormat.INVARIANT.withSigns("", symbol))
+                                .startsWith("Plus sign"),
+                        what);
+                assertTrue(
+                        refusalOf(() -> NumFormat.INVARIANT.withPercentSymbol(symbol))
+                                .startsWith("Percent symbol must not contain white space"),
+                        what);
+                assertTrue(
+                        refusalOf(() -> new NumFormat(symbol, ",", NumFormat.STYLE_ALL))
+                                .startsWith("Decimal separator must not contain white space"),
+                        what);
+                assertTrue(
+                        refusalOf(() -> new NumFormat(",", ".", NumFormat.STYLE_ALL, "\u20ac")
+                                        .withCurrencySeparators(symbol, "."))
+                                .startsWith("Currency decimal separator must not contain white space"),
+                        what);
+            }
+            // A group separator, plain or currency, may be or contain white space.
+            assertDoesNotThrow(() -> new NumFormat(",", space, NumFormat.STYLE_ALL));
+            assertDoesNotThrow(() -> new NumFormat(",", "x" + space, NumFormat.STYLE_ALL));
+            assertDoesNotThrow(
+                    () -> new NumFormat(".", ",", NumFormat.STYLE_ALL, "\u20ac").withCurrencySeparators(",", space));
+        }
+    }
+
+    @Test
+    void aCurrencySymbolMayHoldWhiteSpaceInsideButNotAtAnEdge() {
+        // CLDR's CFA franc, "F CFA", with each of the three interchangeable spaces; any other
+        // White_Space code point inside is declarable too (the core decides what matches).
+        for (String space : List.of(" ", "\u00a0", "\u202f", "\u2009", "\u3000", "\t")) {
+            NumFormat cfa = assertDoesNotThrow(
+                    () -> new NumFormat('.', ',', NumFormat.STYLE_ALL, "F" + space + "CFA"), "inside " + space);
+            assertEquals("F" + space + "CFA", cfa.currencySymbol());
+            for (String declared : List.of(
+                    space, space + "F", "F" + space, space + "F" + space + "CFA", "F" + space + "CFA" + space)) {
+                assertEquals(
+                        "Currency symbol must not start or end with white space; got '" + declared + "'",
+                        refusalOf(() -> new NumFormat('.', ',', NumFormat.STYLE_ALL, declared)),
+                        "edge " + declared.codePoints().boxed().toList());
+            }
+        }
+        // The three interchangeable spaces read each other inside the symbol, in the core.
+        NumFormat cfa = new NumFormat('.', ',', NumFormat.STYLE_ALL, "F\u202fCFA");
+        for (String space : List.of(" ", "\u00a0", "\u202f")) {
+            assertEquals(new Success<>(1234.5), Cast.f64("1,234.50 F" + space + "CFA", cfa), space);
+        }
+        // Length and digit still win over the edge rule.
+        assertTrue(refusalOf(() -> new NumFormat('.', ',', NumFormat.STYLE_ALL, "\u00a0".repeat(9)))
+                .startsWith("Currency symbol must be at most 16 UTF-8 bytes"));
+        assertTrue(refusalOf(() -> new NumFormat('.', ',', NumFormat.STYLE_ALL, "\u00a01"))
+                .startsWith("Currency symbol must not contain an ASCII digit"));
+    }
+
+    @Test
+    void anEarlierRuleStandsWhenADeclarationBreaksTwo() {
+        String nbsp = "\u00a0";
+        // Length, then digit, then equal separators, then white space.
+        assertTrue(refusalOf(() -> new NumFormat(nbsp.repeat(5), ",", NumFormat.STYLE_ALL))
+                .startsWith("Decimal separator must be at most 8 UTF-8 bytes"));
+        assertTrue(refusalOf(() -> new NumFormat(nbsp + "1", ",", NumFormat.STYLE_ALL))
+                .startsWith("Decimal separator must not contain an ASCII digit"));
+        assertTrue(refusalOf(() -> NumFormat.INVARIANT.withSigns(nbsp + "1", ""))
+                .startsWith("Minus sign must not contain an ASCII digit"));
+        assertTrue(refusalOf(() -> NumFormat.INVARIANT.withSigns(nbsp.repeat(5), ""))
+                .startsWith("Minus sign must be at most 8 UTF-8 bytes"));
+        assertEquals(
+                "Decimal and group separators must differ; both are '" + nbsp + "'",
+                refusalOf(() -> new NumFormat(nbsp, nbsp, NumFormat.STYLE_ALL)));
+        assertEquals(
+                "A currency amount's decimal and group separators must differ; both are '" + nbsp + "'",
+                refusalOf(() ->
+                        new NumFormat(",", ".", NumFormat.STYLE_ALL, "\u20ac").withCurrencySeparators(nbsp, nbsp)));
+    }
+
     @Test
     void currencySymbolComesFromTheLocaleAndIsHonoredOnlyWhenDeclared() {
         NumFormat us = NumFormat.from(Locale.US);
@@ -379,10 +495,11 @@ final class CastTest {
 
     @Test
     void malformedCurrencySymbolsAreACallerBugNotAVerdict() {
-        // The core's own rule, enforced before the crossing: no ASCII digit, no ASCII
-        // whitespace, at most 16 UTF-8 bytes, whole code points.
+        // The core's own rule, enforced before the crossing: no ASCII digit, no white space at
+        // either end (inside is fine: "US $"), at most 16 UTF-8 bytes, whole code points.
         assertThrows(IllegalArgumentException.class, () -> new NumFormat('.', ',', NumFormat.STYLE_ALL, "$1"));
-        assertThrows(IllegalArgumentException.class, () -> new NumFormat('.', ',', NumFormat.STYLE_ALL, "US $"));
+        assertThrows(IllegalArgumentException.class, () -> new NumFormat('.', ',', NumFormat.STYLE_ALL, "US$ "));
+        assertDoesNotThrow(() -> new NumFormat('.', ',', NumFormat.STYLE_ALL, "US $"));
         assertThrows(IllegalArgumentException.class, () -> new NumFormat('.', ',', NumFormat.STYLE_ALL, "€".repeat(6)));
         assertThrows(IllegalArgumentException.class, () -> new NumFormat('.', ',', NumFormat.STYLE_ALL, "\ud83d"));
         // The widest real symbols fit: "€" ×5 is 15 bytes.
@@ -493,8 +610,8 @@ final class CastTest {
                 Cast.dateTime("2026-01-07 오후 3:04", DateOrder.YEAR_MONTH_DAY));
         // Spanish, with a space inside the designator; German designators declared by hand,
         // since the JDK's data for de-DE is the English pair, which from(Locale) leaves undeclared.
-        // (The JDK's CLDR data spells them with a no-break space, which the core reads: only
-        // ASCII whitespace at a designator's edges is refused.)
+        // (The JDK's CLDR data spells them with a no-break space, which the core reads inside a
+        // designator: only white space at its edges is refused.)
         Locale spain = Locale.forLanguageTag("es-ES");
         assertEquals(
                 new DateTimeFormat(DateOrder.DAY_MONTH_YEAR, "a.\u00a0m.", "p.\u00a0m."), DateTimeFormat.from(spain));
@@ -544,7 +661,7 @@ final class CastTest {
     @Test
     void malformedDesignatorsAreACallerBugNotAVerdict() {
         // The core's rules, enforced before the crossing: at most 16 UTF-8 bytes, no ASCII
-        // digit, no ASCII whitespace at either end — a space inside is fine.
+        // digit, no white space at either end — a space inside is fine.
         assertThrows(IllegalArgumentException.class, () -> new DateTimeFormat(DateOrder.MONTH_DAY_YEAR, "am", "pm1"));
         assertThrows(IllegalArgumentException.class, () -> new DateTimeFormat(DateOrder.MONTH_DAY_YEAR, " am", "pm"));
         assertThrows(IllegalArgumentException.class, () -> new DateTimeFormat(DateOrder.MONTH_DAY_YEAR, "am", "pm "));
@@ -557,6 +674,16 @@ final class CastTest {
         assertThrows(NullPointerException.class, () -> new DateTimeFormat(DateOrder.MONTH_DAY_YEAR, null, "pm"));
         assertDoesNotThrow(() -> new DateTimeFormat(DateOrder.MONTH_DAY_YEAR, "a. m.", "p. m."));
         assertDoesNotThrow(() -> new DateTimeFormat(DateOrder.MONTH_DAY_YEAR, "ante meridiem.", ""));
+        // Any White_Space code point at an edge, not only ASCII; inside is fine, whichever.
+        for (String space : List.of("\u0085", "\u00a0", "\u2009", "\u202f", "\u3000")) {
+            assertTrue(refusalOf(() -> new DateTimeFormat(DateOrder.MONTH_DAY_YEAR, space + "am", "pm"))
+                    .contains("must not start or end with white space"));
+            assertTrue(refusalOf(() -> new DateTimeFormat(DateOrder.MONTH_DAY_YEAR, "am", "pm" + space))
+                    .contains("must not start or end with white space"));
+            assertTrue(refusalOf(() -> new DateTimeFormat(DateOrder.MONTH_DAY_YEAR, space, "pm"))
+                    .contains("must not start or end with white space"));
+            assertDoesNotThrow(() -> new DateTimeFormat(DateOrder.MONTH_DAY_YEAR, "a." + space + "m.", "p. m."));
+        }
     }
 
     @Test

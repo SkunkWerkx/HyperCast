@@ -1,7 +1,7 @@
 test_that("a verdict is a data frame of one row per element, in order", {
   v <- cast_i32(c("42", "(1,234)", "12x", "", NA), num_format())
   expect_s3_class(v, c("hypercast_verdict", "data.frame"), exact = TRUE)
-  expect_named(v, c("value", "ok", "reason", "offset", "length"))
+  expect_named(v, c("value", "ok", "reason", "offset", "length", "detail", "detail_code"))
   expect_identical(attr(v, "door"), "cast_i32")
   expect_identical(nrow(v), 5L)
   expect_identical(v$value, c(42, -1234, NA, NA, NA))
@@ -17,7 +17,8 @@ test_that("a verdict is a data frame of one row per element, in order", {
 test_that("an empty input is an empty verdict with every column", {
   v <- cast_timestamp(character())
   expect_identical(nrow(v), 0L)
-  expect_named(v, c("value", "seconds", "nanos", "ok", "reason", "offset", "length"))
+  expect_named(v, c("value", "seconds", "nanos", "ok", "reason", "offset", "length", "detail",
+                    "detail_code"))
   expect_s3_class(v$value, "POSIXct")
   expect_identical(nrow(faults(v)), 0L)
   expect_identical(nrow(cast_excel_time(numeric())), 0L)
@@ -99,6 +100,13 @@ test_that("U+0000 is out of range, the way a UTF-16 binding reports a scalar it 
   expect_identical(cast_char("0")$value, "0")
   raw_nul <- cast_char(list(as.raw(0L)))
   expect_identical(c(raw_nul$offset, raw_nul$length), c(0L, 1L))
+  # White space of any kind is an edge: U+00A0 and U+3000 (and their bytes) come off both ends.
+  edged <- cast_char(c("\u00a0U+0000\u3000", "\u2003&#0;\u00a0"))
+  expect_identical(as.character(edged$reason), rep("out_of_range", 2L))
+  expect_identical(edged$offset, c(1L, 1L))
+  expect_identical(edged$length, c(6L, 4L))
+  raw_edged <- cast_char(list(as.raw(c(0xc2, 0xa0, 0x00, 0xe3, 0x80, 0x80))))
+  expect_identical(c(raw_edged$offset, raw_edged$length), c(2L, 1L))
 })
 
 test_that("inputs are read in their own units: characters, or bytes for raw and \"bytes\"", {
@@ -174,7 +182,27 @@ test_that("num_format() declares a format, and refuses one that cannot be", {
   expect_error(num_format("1", ","), "no ASCII digit")
   expect_error(num_format("123456789", ","), "1 to 8 UTF-8 bytes")
   expect_error(num_format(currency_decimal_sep = ","), "Currency decimal and group")
-  expect_error(num_format(minus_sign = "- "), "whitespace")
+  expect_error(num_format(minus_sign = "- "), "must not contain white space")
+  expect_error(num_format(minus_sign = "\u00a0"), "Minus sign must not contain white space")
+  expect_error(num_format(percent = "\u202f%"), "Percent symbol must not contain white space")
+  expect_error(num_format(currency = " kr"),
+               "Currency symbol must not start or end with white space")
+  expect_error(num_format(currency = "kr\u00a0"),
+               "Currency symbol must not start or end with white space")
+  expect_error(num_format(currency = "\u202fF CFA"),
+               "Currency symbol must not start or end with white space")
+  expect_error(num_format(currency = "F CFA\u3000"),
+               "Currency symbol must not start or end with white space")
+  # White space inside a currency symbol is a declaration the core reads: F CFA, whichever space.
+  for (space in c(" ", "\u00a0", "\u202f", "\u2009", "\u3000")) {
+    cfa <- paste0("F", space, "CFA")
+    expect_identical(num_format(currency = cfa)$currency, cfa)
+  }
+  expect_error(num_format("\u00a0", ","), "Decimal separator must not contain white space")
+  expect_error(num_format(currency_decimal_sep = "x\u2009", currency_group_sep = "."),
+               "Currency decimal separator must not contain white space")
+  expect_error(num_format("\u00a0", "\u00a0"), "must differ")
+  expect_identical(num_format(",", "\u00a0")$group_sep, "\u00a0")
   expect_error(num_format(currency = "12"), "Currency symbol")
   expect_error(num_format(digit_zero = "0"), "Digit zero")
   expect_error(num_format(digit_zero = "\u0679"), "Digit zero")
@@ -214,7 +242,12 @@ test_that("the declarations and the input's type are arguments, checked before a
   expect_error(cast_date("1/7/2026", "mdy"), "order must be one of")
   expect_error(cast_unix("1", "ms"), "precision must be one of")
   expect_error(cast_excel_serial("1", 1900), "epoch must be one of")
-  expect_error(cast_datetime("1/7/2026 3 PM", "month_day_year", am = " am"), "Day period am")
+  expect_error(cast_datetime("1/7/2026 3 PM", "month_day_year", am = " am"),
+               "Day period am must not start or end with white space")
+  expect_error(cast_datetime("1/7/2026 3 PM", "month_day_year", am = "am\u00a0"),
+               "Day period am must not start or end with white space")
+  expect_error(cast_datetime("1/7/2026 3 PM", "month_day_year", pm = "\u202fpm"),
+               "Day period pm must not start or end with white space")
   expect_error(cast_datetime("1/7/2026 3 PM", "month_day_year", pm = "p1"), "Day period pm")
   expect_error(cast_bool(42), "character vector or a list of raw vectors")
   expect_error(cast_bool(list("yes")), "character vector or a list of raw vectors")
@@ -252,24 +285,278 @@ test_that("the plain verdict keeps exactly its columns, in order, for every kind
   for (shape in shapes) {
     v <- shape[[1]]
     expect_s3_class(v, c("hypercast_verdict", "data.frame"), exact = TRUE)
-    expect_identical(names(v), c(shape[[2]], verdict), info = attr(v, "door"))
+    expect_identical(names(v), c(shape[[2]], verdict, "detail", "detail_code"),
+                     info = attr(v, "door"))
+    expect_s3_class(v$detail, "factor")
+    expect_identical(levels(v$detail), c(names(fault_details), "unknown"))
+    expect_type(v$detail_code, "integer")
     expect_identical(levels(v$reason), c("empty", "malformed", "out_of_range"))
     expect_type(v$ok, "logical")
     expect_type(v$offset, "integer")
     expect_type(v$length, "integer")
   }
-  expect_identical(names(faults(cast_bool("x"))), c("row", "reason", "offset", "length"))
+  expect_identical(names(faults(cast_bool("x"))),
+                   c("row", "reason", "offset", "length", "detail", "detail_code"))
 })
 
 test_that("the checked verdict is its own class, with its own columns, in order", {
   v <- cast_checked("5", num_format(), hypercast_constraints("i32", minimum = "1"))
   expect_s3_class(v, c("hypercast_checked_verdict", "data.frame"), exact = TRUE)
   expect_identical(names(v), c("value", "adjusted", "enum_index", "ok", "reason", "keyword",
-                               "offset", "length"))
+                               "offset", "length", "detail", "detail_code"))
   expect_type(v$adjusted, "logical")
   expect_type(v$enum_index, "integer")
   expect_type(v$keyword, "character")
   expect_identical(levels(v$reason), c("empty", "malformed", "out_of_range"))
-  expect_identical(names(faults(v)), c("row", "reason", "offset", "length"))
+  expect_identical(names(faults(v)),
+                   c("row", "reason", "offset", "length", "detail", "detail_code"))
   expect_identical(names(violations(v)), c("row", "keyword", "offset", "length"))
+})
+
+# ---- strict grouping ----
+
+test_that("a format reads grouping strictly Western unless the caller says otherwise", {
+  f <- num_format()
+  expect_identical(f$grouping, "western")
+  v <- cast_i32(c("1,234,567", "12,34", "1234,567", "1234567", ",123", "123,", "1,,234"), f)
+  expect_identical(v$ok, c(TRUE, FALSE, FALSE, TRUE, FALSE, FALSE, FALSE))
+  expect_identical(v$value[c(1, 4)], c(1234567, 1234567))
+  expect_identical(as.character(v$detail[2:3]), c("group_size", "group_size"))
+  # An invalid group spans its separator: ",34"; an oversized leftmost one has none: "1234".
+  expect_identical(c(v$offset[2], v$length[2]), c(2L, 3L))
+  expect_identical(c(v$offset[3], v$length[3]), c(0L, 4L))
+  # Strict policies do not turn grouping on: the style stays the switch.
+  off <- num_format(flags = 0L)
+  expect_identical(as.character(cast_i32("1,234", off)$reason), "malformed")
+  expect_identical(as.character(cast_i32("1,234", off)$detail), "unexpected_character")
+})
+
+test_that("legacy and Indian grouping are explicit options", {
+  legacy <- num_format(grouping = "legacy")
+  expect_identical(cast_i32(c("12,34", "1,2,3"), legacy)$value, c(1234, 123))
+  indian <- num_format(grouping = "indian")
+  v <- cast_i32(c("12,34,567", "12,345", "123,456", "1,23,456"), indian)
+  expect_identical(v$ok, c(TRUE, TRUE, FALSE, TRUE))
+  expect_identical(as.character(v$detail[3]), "group_size")
+  expect_identical(num_format_detect(grouping = "legacy")$grouping, "legacy")
+  expect_error(num_format(grouping = "european"), "grouping must be one of")
+  expect_identical(capture.output(print(legacy)),
+                   "num_format(\".\", \",\", 95, grouping = \"legacy\")")
+  expect_identical(capture.output(print(num_format())), "num_format(\".\", \",\", 95)")
+})
+
+test_that("a style mask never carries a policy", {
+  expect_error(num_format(flags = 351), "must not carry a grouping policy")
+  expect_error(num_format(flags = 768), "must not carry a grouping policy")
+  expect_error(num_format(flags = 1119), "holds only the styles of num_styles")
+  expect_error(num_format(flags = 2147483743), "holds only the styles of num_styles")
+  # The policy sits beside the styles in the packed flags word, replaced and never OR-ed.
+  flags <- function(f) sum(as.integer(f$packed[5:8]) * 256^(0:3))
+  expect_identical(flags(num_format()), 95 + 256)
+  expect_identical(flags(num_format(grouping = "indian")), 95 + 512)
+  expect_identical(flags(num_format(grouping = "legacy")), 95)
+})
+
+test_that("native digits with a space-like group separator read strictly, in digits", {
+  f <- num_format(",", "\u202f", digit_zero = "\u0660")
+  v <- cast_i32(c("\u0661\u202f\u0662\u0663\u0664", "\u0661\u0662\u202f\u0663\u0664"), f)
+  expect_identical(v$ok, c(TRUE, FALSE))
+  expect_identical(v$value[[1]], 1234)
+  expect_identical(as.character(v$detail[[2]]), "group_size")
+  expect_identical(c(v$offset[[2]], v$length[[2]]), c(2L, 3L))
+  raw <- cast_i32(list(charToRaw("\u0661\u0662\u202f\u0663\u0664")), f)
+  expect_identical(c(raw$offset, raw$length), c(4L, 7L))
+})
+
+# localeconv's grouping as the bytes C writes: a size per group from the right, the last repeating,
+# 127 (CHAR_MAX) ending the pattern.
+sizes <- function(...) intToUtf8(c(...), multiple = FALSE)
+
+# `digits` written with `sep` under a localeconv grouping vector (what the platform itself writes).
+platform_grouped <- function(digits, sep, pattern) {
+  size <- pattern
+  out <- character()
+  rest <- digits
+  repeat {
+    n <- size[[1L]]
+    if (length(size) > 1L) size <- size[-1L]
+    if (n >= 127L || nchar(rest) <= n) break
+    out <- c(substring(rest, nchar(rest) - n + 1L), out)
+    rest <- substring(rest, 1L, nchar(rest) - n)
+  }
+  paste(c(rest, out), collapse = sep)
+}
+
+bridge <- function(...) {
+  num_format_from_localeconv(c(decimal_point = ".", thousands_sep = ",", ...))
+}
+policy_of <- function(...) bridge(...)$grouping
+groups <- function(f) bitwAnd(f$flags, num_styles[["grouping"]]) != 0L
+
+test_that("num_format_from_localeconv() declares the policy from the locale's own patterns", {
+  # The actual patterns: en-US (3), en-US-POSIX (primary 3, secondary 0: repeat), en-IN (3;2),
+  # tok (groups of two), en-BG (no currency grouping), ICU ml/ta (number 3;2, currency 3).
+  expect_identical(policy_of(grouping = sizes(3), mon_grouping = sizes(3)), "western")
+  expect_identical(policy_of(grouping = sizes(3, 3)), "western")
+  expect_identical(policy_of(grouping = sizes(3, 2), mon_grouping = sizes(3, 2)), "indian")
+  expect_identical(policy_of(grouping = sizes(3, 2, 2)), "indian")
+  expect_identical(policy_of(grouping = sizes(2), mon_grouping = sizes(2)), "legacy")
+  expect_identical(policy_of(grouping = sizes(2, 3)), "legacy")
+  expect_identical(policy_of(grouping = sizes(3, 2, 3)), "legacy")
+  # CHAR_MAX ends a pattern: a pattern that ends is another shape, and one that starts with it
+  # groups nothing.
+  expect_identical(policy_of(grouping = sizes(3, 127)), "legacy")
+  expect_false(groups(bridge(grouping = sizes(127), mon_grouping = "")))
+  expect_identical(policy_of(grouping = sizes(3), mon_grouping = sizes(127)), "western")
+  expect_true(groups(bridge(grouping = sizes(3), mon_grouping = sizes(127))))
+  # Several patterns: only the ones that group count.
+  expect_identical(policy_of(grouping = sizes(3), mon_grouping = ""), "western")
+  expect_identical(policy_of(grouping = sizes(3, 2), mon_grouping = ""), "indian")
+  expect_identical(policy_of(grouping = "", mon_grouping = sizes(3, 2)), "indian")
+  expect_identical(policy_of(grouping = sizes(3, 2), mon_grouping = sizes(127)), "indian")
+  expect_identical(policy_of(grouping = sizes(3, 2), mon_grouping = sizes(3)), "legacy")
+  expect_identical(policy_of(grouping = sizes(3), mon_grouping = sizes(3, 2)), "legacy")
+  expect_identical(policy_of(grouping = sizes(3), mon_grouping = sizes(2)), "legacy")
+  expect_identical(policy_of(grouping = sizes(2), mon_grouping = sizes(3, 2)), "legacy")
+  expect_true(groups(bridge(grouping = sizes(3, 2), mon_grouping = sizes(3))))
+  # Neither groups: the style is cleared (a group separator is then malformed); one that does
+  # keeps it.
+  none <- bridge(grouping = "", mon_grouping = "")
+  expect_false(groups(none))
+  expect_identical(none$grouping, "western")
+  expect_identical(cast_i32("1,234", none)$ok, FALSE)
+  expect_false(groups(bridge(grouping = sizes(127), mon_grouping = sizes(127))))
+  expect_true(groups(bridge(grouping = "", mon_grouping = sizes(3))))
+  # A vector that states neither pattern declares nothing: the default.
+  expect_true(groups(bridge()))
+  expect_identical(policy_of(), "western")
+  trailing <- num_format_from_localeconv(c(decimal_point = ",", n_sign_posn = "2"))
+  expect_identical(bitwAnd(trailing$flags, num_styles[["trailing_sign"]]), 128L)
+})
+
+test_that("the bridge's format reads what its platform writes, number and currency", {
+  money <- c(currency_symbol = "\u20b9", mon_decimal_point = ".", mon_thousands_sep = ",")
+  platforms <- list(
+    en_US = list(number = 3L, currency = 3L), posix = list(number = 3L, currency = 3L),
+    en_IN = list(number = c(3L, 2L), currency = c(3L, 2L)),
+    tok = list(number = 2L, currency = 2L),
+    en_BG = list(number = 3L, currency = 127L),
+    ml = list(number = c(3L, 2L), currency = 3L),
+    ta = list(number = c(3L, 2L), currency = 3L)
+  )
+  want <- c(en_US = "western", posix = "western", en_IN = "indian", tok = "legacy",
+            en_BG = "western", ml = "legacy", ta = "legacy")
+  for (name in names(platforms)) {
+    p <- platforms[[name]]
+    conv <- c(grouping = do.call(sizes, as.list(p$number)),
+              mon_grouping = do.call(sizes, as.list(p$currency)), money)
+    f <- bridge(conv)
+    expect_identical(f$grouping, unname(want[[name]]), info = name)
+    for (digits in c("7", "1234", "12345", "1234567", "123456789")) {
+      number <- platform_grouped(digits, ",", p$number)
+      expect_identical(cast_decimal(number, f)$value, digits, info = paste(name, number))
+      amount <- paste0("\u20b9", platform_grouped(digits, ",", p$currency), ".50")
+      expect_identical(cast_decimal(amount, f)$value, paste0(digits, ".5"),
+                       info = paste(name, amount))
+    }
+  }
+  # tok's groups of two read only because the bridge declared legacy, not strict Western.
+  tok <- bridge(grouping = sizes(2), mon_grouping = sizes(2))
+  expect_identical(cast_i64("12,34,56,78", tok)$value, "12345678")
+  expect_false(cast_i64("12,34,56,78", num_format())$ok)
+  # Platform values with no currency grouping, beside grouped numbers.
+  bg <- bridge(grouping = sizes(3), mon_grouping = sizes(127), money)
+  expect_identical(cast_decimal("\u20b91234567.50", bg)$value, "1234567.5")
+  expect_identical(cast_decimal("1,234,567.5", bg)$value, "1234567.5")
+})
+
+test_that("a format made before the policy existed prints as the legacy it read", {
+  old <- num_format()
+  old$grouping <- NULL
+  expect_identical(capture.output(print(old)),
+                   "num_format(\".\", \",\", 95, grouping = \"legacy\")")
+})
+
+test_that("the linked core enforces grouping policies, and the package says so on load", {
+  expect_true(.Call(getFromNamespace("C_core_guard", "hypercast")))
+})
+
+# ---- fault detail ----
+
+test_that("every failure names what failed, by name and by the core's code", {
+  v <- cast_i32(c("42", "12x", "", "99999999999", NA), num_format())
+  expect_identical(as.character(v$detail), c(NA, "unexpected_character", "blank", "too_large", NA))
+  expect_identical(v$detail_code, c(NA, 2L, 1L, 25L, NA))
+  expect_identical(unname(fault_details[["not_a_scalar"]]), 32L)
+  expect_length(fault_details, 32L)
+  expect_identical(unname(fault_details), 1:32)
+  f <- faults(v)
+  expect_identical(as.character(f$detail), c("unexpected_character", "blank", "too_large"))
+  expect_identical(f$detail_code, c(2L, 1L, 25L))
+  expect_identical(as.character(cast_f64("NaN", num_format())$detail), "not_finite")
+  # The same failure at two doors shares one code though the reason differs.
+  inf <- c(cast_i32("inf", num_format())$detail, cast_decimal_from_double(Inf)$detail,
+           cast_f64("inf", num_format())$detail)
+  expect_identical(as.character(inf), rep("not_finite", 3))
+  expect_identical(as.character(cast_decimal_from_double(NaN)$detail), "not_finite")
+  # An empty input is optional's missing row, with no detail.
+  o <- optional(cast_f64(c("1.5", "", "x"), num_format()))
+  expect_identical(as.character(o$detail), c(NA, NA, "unexpected_character"))
+  expect_identical(o$detail_code, c(NA, NA, 2L))
+})
+
+test_that("a checked verdict carries a detail on a fault and none on a violation", {
+  age <- hypercast_constraints("u8", minimum = 18L, maximum = 130L)
+  v <- cast_checked(c("42", "17", "x", ""), num_format(), age)
+  expect_identical(as.character(v$detail), c(NA, NA, "unexpected_character", "blank"))
+  expect_identical(v$detail_code, c(NA, NA, 2L, 1L))
+  expect_identical(v$keyword[[2]], "minimum")
+  expect_identical(as.character(faults(v)$detail), c("unexpected_character", "blank"))
+  d <- cast_checked_from_double(c(NaN, Inf), hypercast_constraints("f64"))
+  expect_identical(as.character(d$detail), c("not_finite", "not_finite"))
+  t <- cast_text(list(as.raw(c(0x61, 0xc3, 0x28))), hypercast_constraints("text"))
+  expect_identical(as.character(t$detail), "invalid_utf8")
+})
+
+test_that("a detail this version does not name is 'unknown', with its code and a usable fault", {
+  new_verdict <- getFromNamespace("new_verdict", "hypercast")
+  cols <- list(value = c(NA, NA, 1), ok = c(FALSE, FALSE, TRUE), reason = c(2L, 3L, NA),
+               offset = c(1L, 0L, NA), length = c(2L, 3L, NA), detail = c(999L, 11L, NA))
+  v <- new_verdict(cols, "f64")
+  expect_identical(as.character(v$detail), c("unknown", "group_size", NA))
+  expect_identical(v$detail_code, c(999L, 11L, NA))
+  expect_identical(as.character(v$reason), c("malformed", "out_of_range", NA))
+  expect_identical(c(v$offset[[1]], v$length[[1]]), c(1L, 2L))
+  f <- faults(v)
+  expect_identical(as.character(f$detail), c("unknown", "group_size"))
+  expect_identical(f$detail_code, c(999L, 11L))
+  expect_identical(as.character(optional(v)$detail), c("unknown", "group_size", NA))
+  # Branching on it needs a default arm, as a keyword does.
+  describe <- function(d) switch(as.character(d), group_size = "grouping", "other")
+  expect_identical(describe(v$detail[[1]]), "other")
+})
+
+test_that("1.0 code reads a verdict exactly as it always did", {
+  # Constructors as 1.0 called them, positionally.
+  f <- num_format(",", ".", c("grouping", "currency"), "kr.", "", "", "\u2212")
+  expect_identical(cast_decimal("\u22121.234,5 kr.", f)$value, "-1234.5")
+  v <- cast_i32(c("42", "(1,234)", "12x", "", NA), num_format())
+  # By name and by position: the five 1.0 columns keep their places.
+  expect_identical(names(v)[1:5], c("value", "ok", "reason", "offset", "length"))
+  expect_identical(v[[1]], v$value)
+  expect_identical(v[[5]], v$length)
+  expect_identical(v$value, c(42, -1234, NA, NA, NA))
+  expect_identical(as.character(v$reason), c(NA, NA, "malformed", "empty", NA))
+  expect_identical(v$offset, c(NA, NA, 2L, 0L, NA))
+  one <- as.data.frame(v)[c("value", "ok", "reason", "offset", "length")]
+  expect_identical(nrow(one), 5L)
+  expect_identical(nrow(rbind(v, v)), 10L)
+  expect_identical(v[2:3, ]$ok, c(TRUE, FALSE))
+  expect_identical(identical(v, cast_i32(c("42", "(1,234)", "12x", "", NA), num_format())), TRUE)
+  expect_identical(cast_datetime("7.1.2026 3:04 nachm.", "day_month_year", "vorm.", "nachm.")$ok,
+                   TRUE)
+  expect_identical(cast_date("1/7/2026", "month_day_year")$value, as.Date("2026-01-07"))
+  expect_identical(cast_timestamp("2026-01-07T15:04:05Z")$ok, TRUE)
+  expect_identical(is_ok(v), v$ok)
+  expect_identical(faults(v)[c("row", "reason", "offset", "length")]$row, 3:4)
 })
