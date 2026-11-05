@@ -91,8 +91,24 @@ What a successful door returns. Ranges and fidelity follow each binding's README
 | time, excel time | `u64` nanoseconds since midnight | `TimeOnly` | `LocalTime` | `time.Duration` since midnight | `DateComponents` | `int` nanoseconds since midnight | `Integer` nanoseconds since midnight | `datetime.time` | `TimeOfDay` {`hour`, `minute`, `second`, `nanos`} | `difftime` seconds since midnight, with an exact `nanos` column | `std::chrono::nanoseconds` since midnight |
 | duration, excel duration | `Duration` {`seconds`, `nanos`} | `TimeSpan` | `java.time.Duration` | `Duration` {`Seconds`, `Nanos`} (`AsDuration()`) | `Duration` | `HyperCast\Duration` {`seconds`, `nanos`} | `Rational` seconds | `datetime.timedelta` | `Duration` {`seconds`, `nanos`} | `difftime` in seconds, with exact `seconds` and `nanos` columns | `Duration` {`seconds`, `nanos`} |
 
-C#'s `DateTimeOffset`, `TimeOnly` and `TimeSpan` resolve to 100 ns ticks; PHP and Python
-truncate instants to microseconds. Each binding's README states its own fidelity.
+### Temporal precision
+
+The core reads every temporal door to the nanosecond, protobuf's resolution, and cuts digits
+past the ninth, never rounding. Where a host's own type holds less, the binding cuts at its
+edge, and no binding lets a value round into the next second. A row with less than nanoseconds
+loses the rest unless its last column says otherwise.
+
+| Binding | Instant | Time of day | Duration | Where the nanoseconds remain |
+| --- | --- | --- | --- | --- |
+| Rust, C, C++, Java, Go, Ruby, TypeScript | nanoseconds | nanoseconds | nanoseconds | the value |
+| C# | 100 ns ticks | 100 ns ticks | 100 ns ticks | nowhere |
+| Python | microseconds | microseconds | microseconds | nowhere |
+| PHP | microseconds | nanoseconds | nanoseconds | nowhere, for an instant |
+| Swift | `Date`, a `Double`: under a microsecond today, about 30 µs at year 9999 | nanoseconds | nanoseconds | nowhere, for an instant |
+| R | `POSIXct`, milliseconds | `difftime`, milliseconds | `difftime`, milliseconds | the `seconds`, `nanos` and `nanos_of_day` columns |
+
+A civil date-time follows its binding's instant, but for R, whose `value` text and
+`nanos_of_day` keep every digit, and Swift, whose `DateComponents` do too.
 
 ## Verdict
 
@@ -351,9 +367,8 @@ when the absence is deliberate.
     (`include/hypercast.hpp`, "Names mirror the C ABI's"), so a caller holding a generic `T`
     picks the concrete door itself.
 
-[^r-nul]: An R string cannot hold U+0000, which the core accepts, so `cast_char` reports it as
-    `out_of_range` over the input less its white space edges, as C# and Java report a
-    scalar their UTF-16 `char` cannot hold (`r/R/doors.R`).
+[^r-nul]: An R string cannot hold U+0000, which the core accepts, so `cast_char` delivers it as
+    `ok` with `NA` as its `value`, which no missing input or fault shares (`r/R/doors.R`).
 
 [^ts-no-bridge]: The TypeScript binding ships no bridge from `Intl.NumberFormat` or `Intl.DateTimeFormat`:
     formats, orders and day periods are declared through `NumFormat.declare`, the

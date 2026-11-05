@@ -78,10 +78,9 @@ epoch_code <- function(epoch) declared(epoch, c("y1900", "y1904"), "epoch")
 #' verbatim, before any trimming (`" "` is a space, `"6"` the digit six); anything else is
 #' one declared code point, `65`, `U+0041`, `0x41`, `&H41`, or an HTML entity `&#65;` or
 #' `&#x41;` (the `;` required), ASCII case-insensitive on the prefix, with optional white
-#' space around it. A surrogate or anything past `U+10FFFF` is `out_of_range`. So is
-#' `U+0000`, which the core accepts and an R string cannot hold: like the C# and Java
-#' bindings with a scalar their `char` cannot hold, this binding reports it as `out_of_range`
-#' over the input less its white space edges.
+#' space around it. A surrogate or anything past `U+10FFFF` is `out_of_range`. `U+0000`, the
+#' NUL character, is a valid value an R string cannot hold, so it is `ok` with `NA` as its
+#' `value`: a missing input has `ok` `NA` and a fault has `ok` `FALSE`, so nothing else reads so.
 #'
 #' `cast_uuid()` reads every .NET `Guid` text form (`D`, `N`, `B`, `P` and `X`) and the
 #' `urn:uuid:`, `GUID:` and `UUID:` prefixes.
@@ -200,8 +199,8 @@ cast_decimal <- function(x, format) text_door(x, "decimal", check_format(format)
 #' [date_options()], opts in to either (`"space_separator"`, `"hour_offset"`, or both with
 #' `"common_forms"`), and nothing else in it applies to this door.
 #'
-#' `value` is a `POSIXct` in UTC: a double of seconds, exact to the microsecond across
-#' present-day instants but not to the nanosecond. The exact instant is in two more columns,
+#' `value` is a `POSIXct` in UTC: a double of seconds, cut to the millisecond (never rounded, so
+#' it cannot carry into the next second). The exact instant is in two more columns,
 #' protobuf's `Timestamp` pair: `seconds` (a whole double, exact) and `nanos` (an integer,
 #' `0` to `999999999`, counting forward from `seconds` even before the epoch).
 #'
@@ -275,8 +274,8 @@ cast_excel_serial <- function(x, epoch) text_door(x, "excel_serial", code = epoc
 #' - `cast_duration()`: `difftime` in seconds, with `seconds` (double) and `nanos`
 #'   (integer, the sign of `seconds`).
 #'
-#' A `difftime` holds seconds as a double, exact to well under a microsecond for a time of
-#' day; the exact columns hold every nanosecond.
+#' A `difftime` holds seconds as a double, cut to the millisecond toward zero (never rounded, so
+#' a time of day stays inside its day); the exact columns hold every nanosecond.
 #'
 #' @inheritParams cast_bool
 #' @param order The field order: `"year_month_day"`, `"month_day_year"` or

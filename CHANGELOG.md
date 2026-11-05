@@ -170,6 +170,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The core credits Unicode.** Its case folding is generated from the Unicode Character
+  Database, so every package names `MIT AND Unicode-3.0` and carries `LICENSE-UNICODE` where its
+  format allows; PHP's release zips and Swift's hold only the library, and the README is their
+  notice. R names Unicode, Inc. in `Authors@R` and `inst/AUTHORS`. *(all bindings)*
+- **Swift — a `Date` no longer rounds into the next second.** A `Date` is a double, whose rounding
+  carried `9999-12-31T23:59:59.999999999Z` into the year 10000. It now stays on the last double
+  of its own second. *(Swift)*
 - **The JavaScript toolchain is Bun.** Every dependency tree here (`typescript/`, its browser
   smoke and consumer-test harness, `ruby/wasm-smoke/`) is locked by `bun.lock` and installed with
   `bun install --frozen-lockfile`, and CI, the local loop and Dependabot follow. npm keeps what
@@ -240,7 +247,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   locale identifiers, PHP's 906 ICU locales in three styles and Python's 290 machine locales
   found no locale whose derived format differs from before. In C# and Java the char
   door's out-of-range span over a scalar the platform's character cannot hold is now over the
-  input less its white space edges, and R's is the same for U+0000; Swift's own
+  input less its white space edges; Swift's own
   `isAsciiWhitespace`, which counted the vertical tab unlike the core, is gone. In PHP the
   1.0 parity fixtures gain `divergences.json`: sixteen recorded answers, ten of them
   the `CURRENCY` samples of de_DE, de_AT, fr_FR, fr_CH, sv_SE, nl_NL, es_ES, pt_BR, ru_RU and

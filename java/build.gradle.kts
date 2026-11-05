@@ -208,6 +208,7 @@ tasks.withType<Jar>().configureEach {
 tasks.jar {
     metaInf {
         from("../LICENSE")
+        from("../LICENSE-UNICODE")
         from("README.md")
     }
     // A stable module name for a consumer on the module path — without it the name is
@@ -494,6 +495,11 @@ mavenPublishing {
             license {
                 name.set("MIT")
                 url.set("https://opensource.org/license/mit")
+                distribution.set("repo")
+            }
+            license {
+                name.set("Unicode-3.0")
+                url.set("https://www.unicode.org/license.txt")
                 distribution.set("repo")
             }
         }

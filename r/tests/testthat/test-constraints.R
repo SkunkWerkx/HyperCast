@@ -44,7 +44,9 @@ test_that("a refused declaration is an error worded from the core's code", {
   expect_identical(refused(hypercast_constraints("u8", minimum = -1L)),
                    paste0("Constraints refused (code 8): ", held, "."))
   # An entry that is not UTF-8 reaches the core as its bytes, and the core refuses it.
+  # Marked, or a Latin-1 session would read these bytes as "a" and "y with diaeresis".
   invalid <- rawToChar(as.raw(c(0x61, 0xff)))
+  Encoding(invalid) <- "UTF-8"
   expect_identical(refused(hypercast_constraints("text", enum = invalid)),
                    "Constraints refused (code 9): an enum entry that is not UTF-8.")
   expect_identical(refused(hypercast_constraints("text", enum = c("Male", "MALE"))),

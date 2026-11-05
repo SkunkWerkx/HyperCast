@@ -12,11 +12,11 @@ name = "hypercast"
 dynamic = ["version"]
 description = "Allocation-free scalar parsing — booleans, numerics, UUIDs, temporals — as a Success/Fault verdict union (value or reason + offending span, never an exception). A PyO3 native extension linking a Rust core directly into CPython — no runtime bridge, no compiler needed to install on supported platforms, no dependencies."
 readme = "README.md"
-license = "MIT"
+license = "MIT AND Unicode-3.0"
 # A local copy, not a path up to the repo root: PEP 639 globs forbid `..` outright
 # ("the parent directory operator (`..`) at position 0 is not allowed"), and a symlink is
 # no better. Same reason rust/ carries its own — git stores one blob for all of them.
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "LICENSE-UNICODE"]
 authors = [{ name = "Brian Buvinghausen" }]
 # 3.11 floor: the oldest CPython still in upstream support (3.10 ends 2026-10-31). It is
 # comfortably past what the consumption idiom needs — match/case over the Success | Fault

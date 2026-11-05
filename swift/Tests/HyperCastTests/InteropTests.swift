@@ -18,6 +18,12 @@ final class InteropTests: XCTestCase {
             XCTAssertEqual(
                 Interop.instant(raw).timeIntervalSince1970, 1_767_366_245.123_456_789, accuracy: 1e-6)
         }
+        // A Double cannot hold this, and must not round into the year 10000.
+        bytes((253_402_300_799, 999_999_999)) { raw in
+            let seconds = Interop.instant(raw).timeIntervalSince1970
+            XCTAssertLessThan(seconds, 253_402_300_800)
+            XCTAssertEqual(seconds, 253_402_300_800.0.nextDown)
+        }
         // {u16 2026, u8 1, u8 7}, then 54,245,123,456,789 ns of the day at 8.
         bytes((UInt64(2026) | UInt64(1) << 16 | UInt64(7) << 24, 54_245_123_456_789)) { raw in
             XCTAssertEqual(Interop.date(raw), DateComponents(year: 2026, month: 1, day: 7))

@@ -77,8 +77,8 @@ exact columns \code{date} (\code{Date}) and \code{nanos_of_day} (double).
 (integer, the sign of \code{seconds}).
 }
 
-A \code{difftime} holds seconds as a double, exact to well under a microsecond for a time of
-day; the exact columns hold every nanosecond.
+A \code{difftime} holds seconds as a double, cut to the millisecond toward zero (never rounded, so
+a time of day stays inside its day); the exact columns hold every nanosecond.
 }
 \examples{
 cast_date(c("2024-02-29", "2026-02-29", "1/7/2026"))

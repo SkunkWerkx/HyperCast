@@ -13,7 +13,7 @@ Gem::Specification.new do |spec|
     dependencies beyond Fiddle.
   DESC
   spec.authors = ["Brian Buvinghausen"]
-  spec.license = "MIT"
+  spec.licenses = ["MIT", "Unicode-3.0"]
   spec.homepage = "https://github.com/SkunkWerkx/HyperCast"
   # 3.3 floor: the oldest Ruby still supported upstream (3.2 reached end of life on
   # 2026-03-31; Data.define, which the verdict case types are built on, arrived there). The
@@ -27,7 +27,7 @@ Gem::Specification.new do |spec|
   # is unpacked somewhere else entirely. Same reason rust/ and python/ carry their own.
   #
   # native/*/* is exactly the staged binaries, one directory per RID.
-  spec.files = Dir["lib/**/*.rb"] + Dir["lib/hypercast/native/*/*"] + ["README.md", "LICENSE"]
+  spec.files = Dir["lib/**/*.rb"] + Dir["lib/hypercast/native/*/*"] + ["README.md", "LICENSE", "LICENSE-UNICODE"]
   spec.require_paths = ["lib"]
 
   # fiddle was a Ruby default gem (effectively stdlib, no declaration needed) through Ruby

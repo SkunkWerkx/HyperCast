@@ -5,7 +5,9 @@ Version: 1.0.0
 Authors@R: c(
     person("Brian", "Buvinghausen", email = "buvinghausen@gmail.com",
            role = c("aut", "cre")),
-    person("Skunk Werkx", role = "cph")
+    person("Skunk Werkx", role = "cph"),
+    person("Unicode, Inc.", role = "cph",
+           comment = "case folding data in the vendored core; see inst/AUTHORS")
   )
 Description: Parses booleans, characters, integers, reals, exact decimals, UUIDs,
     dates, times, date-times, durations, Unix and spreadsheet serial instants from text,
@@ -14,7 +16,9 @@ Description: Parses booleans, characters, integers, reals, exact decimals, UUIDs
     malformed, out of range) with the offending span of the input. The work is done by a
     compiled 'Rust' core shared with the project's bindings for other languages, which
     neither allocates nor panics. Every cast is vectorised and returns a data frame with
-    one verdict per element; no cast signals an error for its data.
+    one verdict per element; no cast signals an error for its data. Optional declared
+    constraints (bounds, multiples, lengths and enumerations) judge each parsed value and
+    name the rule it broke.
 License: MIT + file LICENSE
 URL: https://github.com/SkunkWerkx/HyperCast
 BugReports: https://github.com/SkunkWerkx/HyperCast/issues

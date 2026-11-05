@@ -158,9 +158,11 @@ their own.
 | `cast_duration()`, `cast_excel_duration()` | `difftime` in seconds | `seconds` (double), `nanos` (integer) |
 
 A civil date-time names no instant until the caller names a zone:
-`as.POSIXct(v$value, tz = "America/Chicago")`. `cast_char()` reads U+0000 as `out_of_range`
-over the input less its white space edges, since an R string cannot hold it; C# and Java
-report a scalar their UTF-16 `char` cannot hold the same way.
+`as.POSIXct(v$value, tz = "America/Chicago")`. A `POSIXct` or `difftime` `value` is cut to the
+millisecond, never rounded, so it cannot carry into the next second, day or year; the exact
+columns hold every nanosecond ([Temporal precision](../docs/bindings.md#temporal-precision)). `cast_char()` reads U+0000, the NUL character, as `ok` with `NA` as
+its `value`, since an R string cannot hold it; a missing input has `ok` `NA` and a fault has
+`ok` `FALSE`, so nothing else reads that way.
 
 ### Declarations
 

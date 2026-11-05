@@ -6,7 +6,7 @@
 \alias{hypercast-package}
 \title{hypercast: Allocation-Free Casts of Scalars from Untrusted Text}
 \description{
-Parses booleans, characters, integers, reals, exact decimals, UUIDs, dates, times, date-times, durations, Unix and spreadsheet serial instants from text, under formats, field orders, precisions and epochs the caller declares rather than guesses. Every parse returns a verdict: the value, or a closed reason (empty, malformed, out of range) with the offending span of the input. The work is done by a compiled 'Rust' core shared with the project's bindings for other languages, which neither allocates nor panics. Every cast is vectorised and returns a data frame with one verdict per element; no cast signals an error for its data.
+Parses booleans, characters, integers, reals, exact decimals, UUIDs, dates, times, date-times, durations, Unix and spreadsheet serial instants from text, under formats, field orders, precisions and epochs the caller declares rather than guesses. Every parse returns a verdict: the value, or a closed reason (empty, malformed, out of range) with the offending span of the input. The work is done by a compiled 'Rust' core shared with the project's bindings for other languages, which neither allocates nor panics. Every cast is vectorised and returns a data frame with one verdict per element; no cast signals an error for its data. Optional declared constraints (bounds, multiples, lengths and enumerations) judge each parsed value and name the rule it broke.
 }
 \details{
 Every door takes a vector and returns a \link{hypercast_verdict}: a data frame with one row
@@ -35,6 +35,7 @@ Authors:
 Other contributors:
 \itemize{
   \item Skunk Werkx [copyright holder]
+  \item Unicode, Inc. (case folding data in the vendored core; see inst/AUTHORS) [copyright holder]
 }
 
 }

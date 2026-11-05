@@ -307,7 +307,9 @@ final class CorpusTests: XCTestCase {
     private func expectedInstant(_ vector: [String: Any]) -> Date? {
         guard let seconds = vector["seconds"] as? Int64 else { return nil }
         let nanos = vector["nanos"] as! Int64
-        return Date(timeIntervalSince1970: Double(seconds) + Double(nanos) / 1_000_000_000)
+        // The Double nearest the instant, but never one in the next second.
+        let rounded = Double(seconds) + Double(nanos) / 1_000_000_000
+        return Date(timeIntervalSince1970: rounded < Double(seconds + 1) ? rounded : rounded.nextDown)
     }
 
     func testTimestampCorpus() throws {

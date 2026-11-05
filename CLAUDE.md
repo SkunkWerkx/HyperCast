@@ -105,6 +105,9 @@ its wins. Don't adjust numbers without re-running the harness, and don't drop a 
   (install name `@rpath/libhypercast.dylib`, soname `libhypercast.so`; `cdylib` feature only),
   `IMPORTED_SONAME` in `c/cmake/hypercastConfig.cmake`, and the `needed` check in
   `c/smoke/run.sh`.
+- The Unicode notice: `LICENSE-UNICODE` at the root, its copies in `python/`, `ruby/` and
+  `typescript/` and `rust/unicode/LICENSE`, and `MIT AND Unicode-3.0` in every manifest. HyperUuid
+  carries no Unicode data and takes none of it; the Forge's `c_package.py` copies it when present.
 - The C archives: `C_RIDS` in the Forge's `c_package.py`, the platform list in `c/README.md`
   and the C row of the README's platform table.
 - Ruby ABIs: `ABIS` in `ruby/Rakefile`, `ruby_compat_version` in `ci.yml`, and in the Forge
@@ -272,8 +275,9 @@ promise, so every stable bump is re-proven by the legs that use it.
 
 ## Local loop
 
-The PR board runs a binding's lint and suite only when its tree, the core (`rust/`,
-`include/`, `c/`, `corpus/`), or `.github/` changed; `python3 .github/scripts/pr_changes.py`
+The PR board always builds the core. A binding's suite runs when its tree, the core (`rust/`,
+`include/`, `c/`, `corpus/`) or `.github/` changed; its lint when its tree or `.github/` did;
+Rust's lint when the core or `.github/` did; `python3 .github/scripts/pr_changes.py`
 classifies a `filename<TAB>previous_filename` list from stdin the way the `changes` job does
 (`--all` is the release board), and `python3 .github/scripts/pr_board.py` with `NEEDS`,
 `CHANGES` and `GITHUB_EVENT_NAME` set gives the verdict.

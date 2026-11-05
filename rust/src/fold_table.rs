@@ -5,6 +5,9 @@
 //! Generated, not typed, from `rust/unicode/CaseFolding-17.0.0.txt`. Regenerate with
 //! `HYPERCAST_BLESS=1 cargo test --test fold_table` in `rust/`; the test fails when
 //! this file differs from what it generates.
+//!
+//! The mappings are Unicode's: © Unicode, Inc., under the Unicode License v3
+//! (`rust/unicode/LICENSE`).
 
 pub(crate) static FOLD: [(u32, u32); 1512] = [
     (0x0041, 0x0061),

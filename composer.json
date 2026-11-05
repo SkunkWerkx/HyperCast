@@ -3,7 +3,7 @@
     "description": "Allocation-free scalar parsing as Success/Fault verdicts — a PHP extension over a Rust core, installed with PIE.",
     "type": "php-ext",
     "keywords": ["parsing", "parser", "cast", "validation", "decimal", "datetime", "uuid", "extension", "rust"],
-    "license": "MIT",
+    "license": "(MIT and Unicode-3.0)",
     "authors": [
         {
             "name": "Brian Buvinghausen"

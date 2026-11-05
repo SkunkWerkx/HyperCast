@@ -201,8 +201,8 @@ expect_bits <- function(got, want, info) {
 expect_instant <- function(v, i, row, info) {
   expect_bits(v$seconds[[i]], as.numeric(row$seconds), info)
   testthat::expect_identical(v$nanos[[i]], as.integer(row$nanos), info = info)
-  testthat::expect_equal(as.numeric(v$value[[i]]), row$seconds + row$nanos / 1e9,
-                         tolerance = 1e-12, info = info)
+  testthat::expect_identical(as.numeric(v$value[[i]]), row$seconds + trunc(row$nanos / 1e6) / 1e3,
+                             info = info)
 }
 
 expect_date <- function(got, row, info) {
@@ -248,18 +248,10 @@ test_that("char.json", {
     expect_identical(utf8ToInt(v$value[[i]]), row$value, info = info)
   }, "char")
   expect_gt(sum(nul), 0)
-  white <- white_space_points()
-  for (row in rows[nul]) {
-    # The input's code points (the stand-in is U+0000's one byte), trimmed of white space.
-    points <- utf8ToInt(row$input)
-    width <- ifelse(points == utf8ToInt(nul_standin), 1L,
-                    1L + (points >= 0x80) + (points >= 0x800) + (points >= 0x10000))
-    kept <- which(!points %in% white)
-    row$expect <- "out_of_range"
-    row$detail <- "unexpected_character"
-    row$fault <- list(sum(width[seq_len(min(kept) - 1L)]), sum(width[min(kept):max(kept)]))
-    replay_text(list(row), cast_char, NULL, "char U+0000")
-  }
+  # U+0000 is a success an R string cannot hold: `ok`, with NA as its value.
+  replay_text(rows[nul], cast_char, function(v, i, row, info) {
+    expect_identical(v$value[[i]], NA_character_, info = info)
+  }, "char U+0000")
 })
 
 test_that("integer.json", {
@@ -369,7 +361,7 @@ test_that("datetime.json", {
 test_that("time.json", {
   replay_text(read_vectors("time.json"), cast_time, function(v, i, row, info) {
     expect_bits(v$nanos[[i]], as.numeric(row$nanos), info)
-    expect_equal(as.numeric(v$value[[i]]), row$nanos / 1e9, tolerance = 1e-15, info = info)
+    expect_identical(as.numeric(v$value[[i]]), (row$nanos %/% 1e6) / 1e3, info = info)
   }, "time")
 })
 
@@ -639,20 +631,6 @@ test_that("formats.json: the package's white space table is the corpus's", {
   }
   expect_setequal(table, white_space_points())
   expect_length(table, 25L)
-})
-
-# The C scanner: U+0000 written as "U+0000" reads as out_of_range over the input less its
-# white space edges, so each white-space code point around it must come off both edges, whole.
-test_that("formats.json: the C scanner trims every white space code point, at both edges", {
-  for (point in white_space_points()) {
-    ws <- charToRaw(intToUtf8(point))
-    nul <- charToRaw("U+0000")
-    v <- cast_char(list(c(ws, nul), c(nul, ws), c(ws, nul, ws), c(ws, ws, nul, ws, ws)))
-    info <- sprintf("U+%04X", point)
-    expect_identical(as.character(v$reason), rep("out_of_range", 4L), info = info)
-    expect_identical(v$offset, c(length(ws), 0L, length(ws), 2L * length(ws)), info = info)
-    expect_identical(v$length, rep(6L, 4L), info = info)
-  }
 })
 
 # `declare` builds the declaration; it is called once, and its refusal read as a message.
