@@ -194,7 +194,7 @@ its wins. Don't adjust numbers without re-running the harness, and don't drop a 
   `typescript/` rewrites them.
 - `php/stubs/hypercast.stub.php` is generated from the extension by `php
   tools/generate-stubs.php` in `php/` (Linux or macOS), with cargo-php pinned to the
-  `CARGO_PHP_VERSION` that script names (0.2.1); `StubTest` regenerates and compares it when
+  `CARGO_PHP_VERSION` that script names (0.2.2); `StubTest` regenerates and compares it when
   `HYPERCAST_CHECK_STUBS=1`.
 - The root `Package.swift`'s release version and the two Swift zips' checksums are written by
   `ci.yml`'s `stage-release` job in the preparation run. No binary is committed anywhere.

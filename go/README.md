@@ -82,7 +82,7 @@ wrong verdict), so the shipped size is a 14x margin over the tested paths, measu
 than proved. A call that panics inside the core abandons the instance it ran on, whose guest
 stack it left mid-call, rather than hand it to the next caller.
 
-wasm2go is pre-1.0 (v0.4.19 today) with one maintainer. It is pinned in a tool module of its
+wasm2go is pre-1.0 (v0.4.20 today) with one maintainer. It is pinned in a tool module of its
 own, [`internal/wasm2go/`](internal/wasm2go), so it never enters your module graph, and
 because its output is committed, a dead wasm2go would cost this repository its regeneration
 step and cost a consumer nothing: the binding keeps working from the committed file.
