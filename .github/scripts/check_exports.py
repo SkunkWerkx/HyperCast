@@ -15,7 +15,7 @@ fold into the doors, which are the core's detailed doors). The PHP extension
 (rust/src/php_ext/) is not a C ABI consumer either, and calls the core's Rust API, so it has no
 site; php_guard holds every PHP-callable function in it to `guard(`, and php_link its extern blocks to the php8/php8ts pair.
 
-No dependencies and no build: CI runs it in the lint jobs, and so can a dev loop.
+No dependencies and no build: CI runs it in core-checks, and so can a dev loop.
 
 usage: python .github/scripts/check_exports.py
 """

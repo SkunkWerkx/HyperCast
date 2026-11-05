@@ -132,7 +132,7 @@ its wins. Don't adjust numbers without re-running the harness, and don't drop a 
 - The JDK floor: `jdkFloor` (`21`) in `java/build.gradle.kts`, `jdk_floor_version` in
   `ci.yml`, and the floor sentences in `java/README.md` and the README. JDK 21 reaches EOL at
   Temurin on 2029-12-31: then the floor is 25, and the JNI base, `java/jni/`, `java_jni`,
-  `lint_java_jni`, the JNI sites in `check_exports.py` and `checkFloorApi` go, the compile goes
+  the JNI sites in `check_exports.py` and `checkFloorApi` go, the compile goes
   back to `--release`, and the FFM `NativeCore` moves back into the base.
 - The .NET floor: `TargetFrameworks` in `csharp/Directory.Build.props` (the Apple and Android
   smoke tests, the gate probe and the benchmarks set their own), ci.yml's
@@ -238,13 +238,13 @@ promise, so every stable bump is re-proven by the legs that use it.
 - The board is one Forge workflow per concern: `core` (`hyper-core.yml`, the seven core legs,
   each with its cdylib export check and C smoke), `core-proofs` (`hyper-core-proofs.yml`, the
   no_std, no-allocator and no-panic proofs, on every pull request that builds the core), `core-checks` (`hyper-core-checks.yml`, the
-  static checks on three hosts, s390x included), `lint-<binding>` (one job on
-  `ubuntu-26.04-arm`) and `test-<binding>` (the binding's suite on its hosts), gated on what
+  static checks on three hosts, s390x included) and `test-<binding>` (one job per binding: its toolchain once, on a pull request that touched
+  its tree or `.github/` its linters on one leg, then its suite on its hosts), gated on what
   the pull request touched (`changes`, from `.github/scripts/pr_changes.py`; `pr-board` is the
   one status to read, red when a job failed or was skipped while its gate said run). Off a
   pull request nothing is gated and the whole release-mode board runs. A new binding is one
-  `lint-` and one `test-` caller, one class in `pr_changes.py` and one gate in `pr_board.py`
-  (its tests hold the three together).
+  `test-` caller, one class in `pr_changes.py` and one gate in `pr_board.py` (its tests hold the
+  three together).
 - `prepare-release.yml` and ci.yml's `core-checks` are one `uses:` each of a Forge reusable
   workflow; this repo keeps triggers, permissions and gates. `.github/hyper.json` is what the
   Forge knows about this project (crate and project names, the export rule, the cdylib smoke
@@ -277,7 +277,7 @@ promise, so every stable bump is re-proven by the legs that use it.
 ## Local loop
 
 The PR board always builds the core and proves its thesis (`core-proofs`). A binding's suite runs when its tree, the core (`rust/`,
-`include/`, `c/`, `corpus/`) or `.github/` changed; its lint when its tree or `.github/` did;
+`include/`, `c/`, `corpus/`) or `.github/` changed, with its linters ahead of it when its tree or `.github/` did;
 Rust's lint when the core or `.github/` did; `python3 .github/scripts/pr_changes.py`
 classifies a `filename<TAB>previous_filename` list from stdin the way the `changes` job does
 (`--all` is the release board), and `python3 .github/scripts/pr_board.py` with `NEEDS`,

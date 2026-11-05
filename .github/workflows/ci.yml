@@ -225,7 +225,7 @@ jobs:
   # runs on Linux only; there is no conformance oracle to re-derive (the corpus is checked by
   # every binding's suite); no RUSTFLAGS, since this crate's no_std build needs no entropy
   # backend; and `big_endian` runs the core's suite, corpus included, on s390x under QEMU.
-  # The bindings' own lints are the lint-<binding> jobs below. None of it waits on the core legs.
+  # The bindings' own lints run in their test-<binding> jobs below. None of it waits on the core legs.
   core-checks:
     needs: [changes]
     if: github.event_name != 'pull_request'
@@ -239,8 +239,9 @@ jobs:
       corpus_oracle: ""
       big_endian: s390x-unknown-linux-gnu
 
-  # Each binding's suite on the hosts it ships on, after its lint and the core legs (Go waits
-  # for its lint alone: its core is committed Go source). The inputs are the ones the native
+  # Each binding's job: on a pull request that touched it, its linters on one leg ahead of its
+  # suite; off one no lint, since what reached master has been linted. Its suite runs on the hosts
+  # it ships on, after the core legs (Go waits for nothing: its core is committed Go source). The inputs are the ones the native
   # workflow took for the binding; the jobs whose Forge workflow attests what it uploads
   # (jni-<rid>, node-<rid>, ruby-native-<rid>-<abi>, php-ext-<rid>-<minor>) hand down the two
   # scopes, as core does.
