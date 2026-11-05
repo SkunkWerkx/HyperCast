@@ -497,7 +497,7 @@ SITES = [
     # The header-only C++ binding: every export is named qualified, as a call or (the numeric
     # doors) passed as a function, hence the word boundary rather than a parenthesis.
     ("C++ (include/hypercast.hpp)", [("include/hypercast.hpp", code_only(r"::((?:cast|hypercast)_\w+)\b"))], "all", ()),
-    # napi-rs generates binding.d.ts from typescript/src/lib.rs (`npm run build` rewrites it),
+    # napi-rs generates binding.d.ts from typescript/src/lib.rs (`bun run build` rewrites it),
     # so it is the one list of what TypeScript callers see, the macro-made doors included.
     (
         "TypeScript (binding.d.ts)",

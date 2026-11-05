@@ -46,7 +46,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (s390x under QEMU) are a printed loss there: the smoke's checks pass and the process then
   never exits, the runtime reading its reference counts host-endian over little-endian wasm
   memory. Bun 1.4.4 cannot load the WebAssembly package and stays on the addon. The Node floor
-  is Node-API 10's, `^22.14.0 || >=23.6.0`. *(TypeScript)*
+  is Node-API 10's, `^22.14.0 || >=23.6.0`. npm or `bun add` installs it, and Node runs either.
+  *(TypeScript)*
 - **An R binding, as the source package `hypercast`.** A C shim over the core's C ABI,
   reached through `.Call`, with the core built as a static library from the Rust crates
   vendored into the tarball, so an install needs Rust but no network. Every door is
@@ -169,6 +170,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The JavaScript toolchain is Bun.** Every dependency tree here (`typescript/`, its browser
+  smoke and consumer-test harness, `ruby/wasm-smoke/`) is locked by `bun.lock` and installed with
+  `bun install --frozen-lockfile`, and CI, the local loop and Dependabot follow. npm keeps what
+  publishing needs: `npm pack` and `npm publish`, and the consumer scenarios that install as an
+  npm user does. Node still runs the suite, and the packages install from npm with either tool.
 - **Every door reads Unicode white space where it read ASCII white space, and the numeric
   doors ignore it around the numeral.** White space is the 25 code points with Unicode's
   `White_Space` property (the table the checked text door's `trim` already used): ASCII, U+0085,

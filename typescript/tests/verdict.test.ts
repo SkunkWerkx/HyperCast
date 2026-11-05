@@ -1,4 +1,4 @@
-// The verdict as a TypeScript caller holds it. `npm run typecheck` compiles this file, so the
+// The verdict as a TypeScript caller holds it. `bun run typecheck` compiles this file, so the
 // `@ts-expect-error` lines are assertions too: each must be an error, or tsc fails with
 // "Unused '@ts-expect-error' directive". Narrowing on `ok` is what makes `value` and `fault`
 // reachable, and a switch over `fault.reason` is exhaustive over exactly three reasons.

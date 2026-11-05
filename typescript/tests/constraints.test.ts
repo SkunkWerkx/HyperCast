@@ -1,7 +1,7 @@
 // Validation constraints as a TypeScript caller holds them: the declaration (its refusals and
 // what it reports back), the checked verdict and its narrowing, the door a declaration is bound
 // to, UTF-16 input that has no UTF-8 form, and the plain verdict's shape, which none of this
-// may change. `npm run typecheck` compiles this file, so the `@ts-expect-error` lines are
+// may change. `bun run typecheck` compiles this file, so the `@ts-expect-error` lines are
 // assertions too.
 const assert: typeof import('node:assert/strict') = require('node:assert/strict')
 const { existsSync, readFileSync } = require('node:fs') as typeof import('node:fs')

@@ -190,7 +190,7 @@ its wins. Don't adjust numbers without re-running the harness, and don't drop a 
   'TestCoreIsCurrent|TestRegenerationCarriesTheCrateVersion' .` diffs it. Any change under
   `rust/src` that reaches the cdylib means regenerating it; `prepare-release.yml` regenerates
   it at the version (the version is a literal in it).
-- `typescript/binding.js` and `binding.d.ts` are napi-rs output: `npm run build` in
+- `typescript/binding.js` and `binding.d.ts` are napi-rs output: `bun run build` in
   `typescript/` rewrites them.
 - `php/stubs/hypercast.stub.php` is generated from the extension by `php
   tools/generate-stubs.php` in `php/` (Linux or macOS), with cargo-php pinned to the
@@ -311,9 +311,9 @@ after `cargo cdylib`. Gradle stages both and refuses a stale one. Then, from `ja
 `-Porg.gradle.java.installations.paths=<jdk21>`.
 
 TypeScript builds its own addon, a napi-rs crate path-depending on `rust/`: from
-`typescript/`, `npm ci && npm run build && npm test`, then `npm run test:bun` and `npm run
-lint`. The WebAssembly fallback (`rustup target add wasm32-wasip1`): `npm run build:wasi`, then
-`NAPI_RS_FORCE_WASI=error npm test`. The consumer tests are `typescript/consumer-tests/README.md`
+`typescript/`, `bun install --frozen-lockfile && bun run build && bun run test`, then `bun run test:bun` and `bun run
+lint`. The WebAssembly fallback (`rustup target add wasm32-wasip1`): `bun run build:wasi`, then
+`NAPI_RS_FORCE_WASI=error bun run test`. The consumer tests are `typescript/consumer-tests/README.md`
 (Verdaccio on port 4873; `floor` and `s390x` need Docker).
 
 R builds the core from its vendor tarball, never from `rust/` directly: `r/tools/vendor.sh`
@@ -343,6 +343,15 @@ in `rust/`, after deleting `rust/target/.rustc_info.json` and
 `rust/target/wasm32-unknown-emscripten/` (cargo caches rustc's cfg without regard to the
 variable, and a cache from a plain cargo run for that target builds a different archive); the
 Forge's `wasm_archive_guard.py` checks the result.
+
+## Bun and npm
+
+Bun is the package manager and script runner for every JavaScript tree here, locked by `bun.lock`.
+npm is confined to the published packages: the Forge's `npm pkg set` and `npm pack`, `npm publish`,
+and the consumer scenarios that install as an npm user does (`bun-install` is the Bun user's; Bun
+has no s390x build, so the `s390x` scenario could not move in any case). Don't add another npm call.
+Bun's own runtime still can't load the WASI module, so `test:bun` under `NAPI_RS_FORCE_WASI=error`
+stays recorded, never gating. `bun run test` is the package script; `bun test` is Bun's runner.
 
 ## Working with the owner
 
