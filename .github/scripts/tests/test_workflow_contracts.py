@@ -206,34 +206,27 @@ class PreparationFlowTests(unittest.TestCase):
         self.assertIn('group: release-source-${{ github.repository }}', text)
         self.assertIn('actions: write', job)
 
-    def test_codeql_swift_leg_stages_the_preparation_runs_core(self):
-        # No checkout carries a Swift core since it left git (2026-10-30), so the Swift leg builds
-        # against the zips a release-mode ci.yml run attested: the one the preparation run names,
-        # or the newest green one on master for the weekly scan.
+    def test_codeql_swift_leg_builds_the_commit_it_scans(self):
+        # No checkout carries a Swift core, so the leg builds one with the repo's own script, before
+        # init so the tracer never sees cargo. It takes nothing from a CI run: that cost as long
+        # and failed when the run's core and the checkout's header differed.
         text = (WORKFLOWS / 'codeql.yml').read_text()
-        self.assertRegex(text, r'\n      ci_run_id:\n(?:        .*\n)*        required: false\n')
-        self.assertIn('attestations: read', text)
         job = jobs(WORKFLOWS / 'codeql.yml')['analyze']
+        for gone in ('ci_run_id', 'attestations: read', 'download-artifact', 'gh attestation', 'swift_release'):
+            self.assertNotIn(gone, text, gone)
         names = re.findall(r'^      - name: (.*)$', job, re.M)
-        wanted = ['Resolve the release-mode run whose core to build against', "Stage that run's attested Swift core",
-                  'Build the Swift library']
+        wanted = ['Build the core from this commit', 'Initialize CodeQL', 'Build the Swift library']
         self.assertEqual([n for n in names if n in wanted], wanted)
+        self.assertIn('run: .github/scripts/local-core.sh', job)
+        self.assertIn('FORGE: ${{ github.workspace }}/.hyperforge', job)
         # The Swift leg stays on macos-latest (macOS 26, Xcode 26.6), the image the scan has
         # passed on. On xcode-27 (macOS 27, Xcode 27.1) CodeQL 2.27.3's tracer broke SwiftPM's
         # manifest compile with "posix_spawn error: Bad CPU type in executable" (2026-11-01,
         # run 41280444097); the build legs' image is not this leg's until CodeQL proves it.
         self.assertIn('          - language: swift\n            build-mode: manual\n            runner: macos-latest\n', text)
         self.assertNotIn('runner: xcode-27', text)
-        for needle in ("if: matrix.build-mode == 'manual'", 'name: swift-release-assets', 'run-id: ${{ steps.run.outputs.id }}',
-                       '--signer-repo SkunkWerkx/.github', '--source-digest', 'swift_release.py" unpack --assets'):
-            with self.subTest(needle=needle):
-                self.assertIn(needle, job)
-        resolve = job.split('      - name: Resolve the release-mode run whose core to build against\n')[1].split('\n\n')[0]
-        self.assertIn('inputs.ci_run_id', resolve)
-        for needle in ('--workflow ci.yml', '--branch master', '--status success', '"workflow_dispatch" or .event == "schedule"'):
-            self.assertIn(needle, resolve)
         self.assertIn('repository: SkunkWerkx/.github', job)
-        self.assertEqual(job.count("if: matrix.build-mode == 'manual'"), 5, 'the Forge checkout, resolve, download, stage and build')
+        self.assertEqual(job.count("if: matrix.build-mode == 'manual'"), 4, 'the Forge checkout, the toolchain, the core and the build')
 
     def test_only_codeql_may_start_a_workflow(self):
         # Least privilege across the board: the attesting callers and the pack jobs hold the two
@@ -258,7 +251,7 @@ ATTESTING = {'hyper-core.yml', 'hyper-build-static.yml', 'hyper-build-android.ym
              'hyper-build-wheels.yml', 'hyper-build-php-extension.yml', 'hyper-test-java.yml',
              'hyper-test-typescript.yml', 'hyper-test-ruby.yml',
              'hyper-pack-nuget.yml', 'hyper-pack-crate.yml', 'hyper-pack-maven.yml'}
-NO_MODE = {'hyper-core-checks.yml', 'hyper-core-proofs.yml', 'hyper-lint-rust.yml', 'hyper-pack-nuget.yml', 'hyper-pack-crate.yml', 'hyper-pack-maven.yml'}
+NO_MODE = {'hyper-core-checks.yml', 'hyper-core-proofs.yml', 'hyper-pack-nuget.yml', 'hyper-pack-crate.yml', 'hyper-pack-maven.yml'}
 # The release tail of ci.yml, in dependency order (pr_board.py's TAIL): the Forge resolver, the
 # eight pack jobs, the inventory, CodeQL and B; gated on prepare-release.yml's master dispatch
 # with purpose=release (the default), so a purpose=board dispatch runs the board alone.
@@ -550,7 +543,8 @@ class CiTests(unittest.TestCase):
         self.assertIn('uses: SkunkWerkx/.github/.github/workflows/hyper-core.yml@master', core)
         self.assertEqual(self.needs(core), {'changes'})
         self.assertEqual(self.gate(core), "needs.changes.outputs.docs_only != 'true'")
-        self.assertEqual(with_block(core), {'mode', 'crate', 'project'})
+        self.assertEqual(with_block(core), {'mode', 'crate', 'project', 'lint'})
+        self.assertIn("      lint: ${{ github.event_name == 'pull_request' && needs.changes.outputs.lint_rust == 'true' }}\n", core)
         self.assertEqual(set(re.findall(r'^      ([a-z-]+): write$', header(core), re.M)), {'id-token', 'attestations'})
         self.assertEqual([name for name, job in self.jobs.items() if 'workflows/hyper-core.yml@master' in job], ['core'])
 
@@ -637,15 +631,15 @@ class CiTests(unittest.TestCase):
     def test_no_job_excludes_release_mode(self):
         for name, job in self.jobs.items():
             with self.subTest(job=name):
-                # lint-rust and core-proofs alone: off a pull request core-checks does the same.
-                if name not in ('lint-rust', 'core-proofs'):
+                # core-proofs alone: off a pull request core-checks does the same.
+                if name != 'core-proofs':
                     self.assertNotIn("event_name == 'pull_request'", self.gate(job) or '')
 
     def test_the_tail_replaces_request_staging(self):
         self.assertNotIn('request-staging', self.jobs)
         self.assertFalse((WORKFLOWS / 'stage-native-binaries.yml').exists())
-        # lint-rust and core-proofs are a pull request's alone; forge would skip on them.
-        board = set(self.jobs) - set(TAIL) - {'pr-board', 'lint-rust', 'core-proofs'}
+        # core-proofs is a pull request's alone; forge would skip on them.
+        board = set(self.jobs) - set(TAIL) - {'pr-board', 'core-proofs'}
         self.assertEqual(self.needs(self.jobs['forge']), board)
         for name in TAIL:
             with self.subTest(job=name):
@@ -690,7 +684,7 @@ class CiTests(unittest.TestCase):
 
     def test_codeql_is_dispatched_on_this_run_and_must_leave_no_open_alert(self):
         step = self.jobs['codeql']
-        for needle in ('actions/workflows/codeql.yml/dispatches', 'ref=master', 'inputs[ci_run_id]=${{ github.run_id }}',
+        for needle in ('actions/workflows/codeql.yml/dispatches', 'ref=master',
                        'X-GitHub-Api-Version: 2026-03-10', '.workflow_run_id', 'gh run watch', '--exit-status',
                        'code-scanning/alerts?state=open&ref=refs/heads/master', 'security-events: read',
                        # The dispatched run must have scanned this commit: master must still be A.
