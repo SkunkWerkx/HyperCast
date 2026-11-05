@@ -11,10 +11,10 @@ repositories {
 }
 
 dependencies {
-    implementation(rootProject)
+    implementation(project(":"))
 }
 
-val jdkFloor: Int by rootProject.extra
+val jdkFloor = rootProject.extra["jdkFloor"] as Int
 
 // Compiled for the library's floor the way its base is (-source/-target, not --release: the
 // slices are MemorySegments, a preview API in 21's signatures).
