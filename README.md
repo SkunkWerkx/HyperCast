@@ -234,4 +234,8 @@ Pull requests and issues are welcome. `.github/workflows/ci.yml` builds the core
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). The simple case folding that `enum` and month-name matching use is generated from
+the Unicode Character Database's `CaseFolding.txt`, © Unicode, Inc., under the
+[Unicode License v3](LICENSE-UNICODE). Packages name both, and carry both texts where the
+registry's format lets them. PHP's release zips hold one file by PIE's rule, and Swift's hold the
+library, so for those two this paragraph is the notice.

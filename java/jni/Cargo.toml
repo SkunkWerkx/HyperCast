@@ -4,7 +4,7 @@ version = "0.0.0"
 edition = "2024"
 rust-version = "1.89"
 description = "The JNI library the Java binding loads below JDK 25: one native per door over the HyperCast C ABI."
-license = "MIT"
+license = "MIT AND Unicode-3.0"
 publish = false
 
 # A cdylib is what the JVM loads; the rlib is what examples/no_panic.rs links to prove the

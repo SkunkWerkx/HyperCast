@@ -3,7 +3,7 @@
     "description": "Development harness for the hypercast PHP extension",
     "type": "library",
     "keywords": ["parsing", "parser", "cast", "validation", "decimal", "datetime", "uuid", "extension", "rust"],
-    "license": "MIT",
+    "license": "(MIT and Unicode-3.0)",
     "authors": [
         {
             "name": "Brian Buvinghausen"

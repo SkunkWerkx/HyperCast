@@ -92,21 +92,32 @@ test_that("a civil date-time names no instant until the caller names a zone", {
   expect_identical(cast_datetime("2026-01-07 15:04Z", "year_month_day")$ok, FALSE)
 })
 
-test_that("U+0000 is out of range, the way a UTF-16 binding reports a scalar it cannot hold", {
-  v <- cast_char(c(" U+0000 ", "&#0;", "00"))
-  expect_identical(as.character(v$reason), rep("out_of_range", 3))
-  expect_identical(v$offset, c(1L, 0L, 0L))
-  expect_identical(v$length, c(6L, 4L, 2L))
+test_that("value stops at the millisecond, and the exact columns keep the rest", {
+  end <- cast_timestamp("9999-12-31T23:59:59.999999999Z")
+  expect_identical(as.numeric(end$value), 253402300799.999)
+  expect_identical(format(end$value, "%Y"), "9999")
+  expect_identical(c(end$seconds, as.numeric(end$nanos)), c(253402300799, 999999999))
+  before <- cast_timestamp("1969-12-31T23:59:59.9999Z")
+  expect_identical(as.numeric(before$value), -1 + 0.999)
+  day <- cast_time("23:59:59.999999999")
+  expect_lt(as.numeric(day$value), 86400)
+  expect_identical(day$nanos, 86399999999999)
+  negative <- cast_duration("-PT0.0019S")
+  expect_identical(as.numeric(negative$value), -0.001)
+  expect_identical(negative$nanos, -1900000L)
+})
+
+test_that("U+0000 is a success with NA as its value, since an R string cannot hold it", {
+  v <- cast_char(list(charToRaw(" U+0000 "), charToRaw("&#0;"), charToRaw("00"), as.raw(0L),
+                      charToRaw("\u00a0U+0000\u3000")))
+  expect_identical(v$ok, rep(TRUE, 5L))
+  expect_identical(v$value, rep(NA_character_, 5L))
+  expect_identical(v$reason, factor(rep(NA, 5L), levels = levels(v$reason)))
+  expect_identical(nrow(faults(v)), 0L)
+  # Told apart from a missing input (ok is NA) and from a fault (ok is FALSE).
+  three <- cast_char(c("U+0000", NA, "ab"))
+  expect_identical(three$ok, c(TRUE, NA, FALSE))
   expect_identical(cast_char("0")$value, "0")
-  raw_nul <- cast_char(list(as.raw(0L)))
-  expect_identical(c(raw_nul$offset, raw_nul$length), c(0L, 1L))
-  # White space of any kind is an edge: U+00A0 and U+3000 (and their bytes) come off both ends.
-  edged <- cast_char(c("\u00a0U+0000\u3000", "\u2003&#0;\u00a0"))
-  expect_identical(as.character(edged$reason), rep("out_of_range", 2L))
-  expect_identical(edged$offset, c(1L, 1L))
-  expect_identical(edged$length, c(6L, 4L))
-  raw_edged <- cast_char(list(as.raw(c(0xc2, 0xa0, 0x00, 0xe3, 0x80, 0x80))))
-  expect_identical(c(raw_edged$offset, raw_edged$length), c(2L, 1L))
 })
 
 test_that("inputs are read in their own units: characters, or bytes for raw and \"bytes\"", {
@@ -172,9 +183,10 @@ test_that("num_format() declares a format, and refuses one that cannot be", {
   expect_identical(f$flags, 65L)
   expect_length(f$packed, 92L)
   expect_identical(f$packed[1:4], as.raw(c(92, 0, 0, 0)))
-  # print() writes the minus sign as the session's locale can (a "<U+2212>" escape in C).
+  # print() writes the minus sign as encodeString() does in this session's locale.
   expect_identical(capture.output(print(f)), capture.output(cat(
-    "num_format(\",\", \".\", 65, currency = \"kr.\", minus_sign = \"\u2212\")\n"
+    "num_format(\",\", \".\", 65, currency = \"kr.\", minus_sign = ",
+    encodeString("\u2212", quote = "\""), ")\n", sep = ""
   )))
   expect_identical(cast_decimal("\u22121.234,5 kr.", f)$value, "-1234.5")
   expect_identical(num_format_detect()$flags, 127L)

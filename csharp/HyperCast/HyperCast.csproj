@@ -16,7 +16,7 @@
     <RootNamespace>HyperCast</RootNamespace>
     <Description>Allocation-free scalar parsing — booleans, numerics, UUIDs, temporals — as a discriminated-union Verdict (value or reason + offending span, never an exception), AOT/trim-friendly P/Invoke bindings straight into a native Rust core (libhypercast). No runtime bridge, no reflection.</Description>
     <Authors>Brian Buvinghausen</Authors>
-    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageLicenseExpression>MIT AND Unicode-3.0</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/SkunkWerkx/HyperCast</PackageProjectUrl>
     <RepositoryUrl>https://github.com/SkunkWerkx/HyperCast</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
@@ -63,6 +63,7 @@
          machine-readable license (nuget.org renders the page from it); this ships the actual
          text alongside it, which the expression alone doesn't do. -->
     <None Include="../../LICENSE" Pack="true" PackagePath="\" />
+    <None Include="../../LICENSE-UNICODE" Pack="true" PackagePath="\" />
     <!-- Standard NuGet RID-specific native asset layout — populated by CI before packing
          (hyper-pack-nuget.yml arranges runtimes/{rid}/native/ from the ci.yml artifacts): the
          six desktop RIDs, the two musl ones (linux-musl-x64, linux-musl-arm64) and the two

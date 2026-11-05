@@ -568,7 +568,7 @@ static SEXP decimal_string(const HyperCastDecimal *d) {
 }
 
 static SEXP uuid_string(const uint8_t b[16]) {
-  static const char HEX[16] = "0123456789abcdef";
+  static const char HEX[17] = "0123456789abcdef";
   char buf[36];
   int o = 0;
   for (int k = 0; k < 16; k++) {
@@ -668,7 +668,8 @@ static void row_ok(struct columns *c, R_xlen_t i, enum door door, const union va
     c->lgl[i] = v->boolean != 0;
     break;
   case CHAR_DOOR:
-    SET_STRING_ELT(c->strings, i, scalar_string(v->scalar));
+    /* U+0000 is a success an R string cannot hold: `ok`, with NA, the one NA an `ok` row has. */
+    SET_STRING_ELT(c->strings, i, v->scalar ? scalar_string(v->scalar) : NA_STRING);
     break;
   case I8_DOOR:
     c->integer[i] = v->i8;
@@ -707,10 +708,14 @@ static void row_ok(struct columns *c, R_xlen_t i, enum door door, const union va
   case UUID_DOOR:
     SET_STRING_ELT(c->strings, i, uuid_string(v->uuid));
     break;
+  /*
+   * `value` is a double, whose rounding could carry the last nanoseconds of a day into the next
+   * or of 9999 into 10000, so it is cut to the millisecond, and the exact columns hold the rest.
+   */
   case TIMESTAMP_DOOR:
   case UNIX_DOOR:
   case EXCEL_SERIAL_DOOR:
-    c->real[i] = (double)v->timestamp.seconds + (double)v->timestamp.nanos / 1e9;
+    c->real[i] = (double)v->timestamp.seconds + (double)(v->timestamp.nanos / 1000000) / 1e3;
     c->extra_real[0][i] = (double)v->timestamp.seconds;
     c->extra_int[i] = v->timestamp.nanos;
     break;
@@ -727,12 +732,12 @@ static void row_ok(struct columns *c, R_xlen_t i, enum door door, const union va
     break;
   case TIME_DOOR:
   case EXCEL_TIME_DOOR:
-    c->real[i] = (double)v->nanos / 1e9;
+    c->real[i] = (double)(v->nanos / 1000000u) / 1e3;
     c->extra_real[0][i] = (double)v->nanos;
     break;
   case DURATION_DOOR:
   case EXCEL_DURATION_DOOR:
-    c->real[i] = (double)v->duration.seconds + (double)v->duration.nanos / 1e9;
+    c->real[i] = (double)v->duration.seconds + (double)(v->duration.nanos / 1000000) / 1e3;
     c->extra_real[0][i] = (double)v->duration.seconds;
     c->extra_int[i] = v->duration.nanos;
     break;
@@ -749,39 +754,6 @@ static uint32_t code_points(const uint8_t *b, uint32_t n) {
   for (uint32_t k = 0; k < n; k++)
     count += (b[k] & 0xC0) != 0x80;
   return count;
-}
-
-/*
- * The bytes of the white-space code point (Unicode White_Space, the core's is_white_space)
- * that b[0..n) starts with, or 0: the 25 code points, as UTF-8. R's num_format.R and the
- * corpus's formats.json hold the same list.
- */
-static uint32_t white_space_len(const uint8_t *b, uint32_t n) {
-  if (n >= 1 && ((b[0] >= 0x09 && b[0] <= 0x0D) || b[0] == 0x20))
-    return 1;
-  if (n >= 2 && b[0] == 0xC2 && (b[1] == 0x85 || b[1] == 0xA0)) /* U+0085, U+00A0 */
-    return 2;
-  if (n < 3)
-    return 0;
-  if (b[0] == 0xE1 && b[1] == 0x9A && b[2] == 0x80) /* U+1680 */
-    return 3;
-  /* U+2000..U+200A, U+2028, U+2029, U+202F */
-  if (b[0] == 0xE2 && b[1] == 0x80 &&
-      ((b[2] >= 0x80 && b[2] <= 0x8A) || b[2] == 0xA8 || b[2] == 0xA9 || b[2] == 0xAF))
-    return 3;
-  if (b[0] == 0xE2 && b[1] == 0x81 && b[2] == 0x9F) /* U+205F */
-    return 3;
-  if (b[0] == 0xE3 && b[1] == 0x80 && b[2] == 0x80) /* U+3000 */
-    return 3;
-  return 0;
-}
-
-/* The bytes of the white-space code point that ends b[0..n), or 0. */
-static uint32_t white_space_len_back(const uint8_t *b, uint32_t n) {
-  for (uint32_t k = 1; k <= 3 && k <= n; k++)
-    if (white_space_len(b + n - k, k) == k)
-      return k;
-  return 0;
 }
 
 /*
@@ -842,25 +814,6 @@ static const uint8_t *string_bytes(SEXP s, int native, uintptr_t *n, int *chars)
 #define DETAIL_TOO_LONG 21
 
 /*
- * The char door's value U+0000 is a scalar the core accepts and an R string cannot hold (R's
- * strings are NUL-terminated), so it is reported the way C# and Java report a scalar their
- * UTF-16 char cannot hold: out of range, over the input less its white space edges. The core
- * read no fault, so the detail is this binding's: NUL is a character the position (an R
- * string) does not allow.
- */
-static void nul_scalar(struct columns *c, R_xlen_t i, const uint8_t *p, uintptr_t n, int chars) {
-  uintptr_t start = 0, end = n;
-  uint32_t w;
-  while (start < end && (w = white_space_len(p + start, (uint32_t)(end - start))) != 0)
-    start += w;
-  while (end > start && (w = white_space_len_back(p + start, (uint32_t)(end - start))) != 0)
-    end -= w;
-  HyperCastRawFault f = {(uint32_t)start, (uint32_t)(end - start)};
-  present(p, n, chars, &f);
-  row_fault(c, i, 3, f.offset, f.len, DETAIL_UNEXPECTED_CHARACTER);
-}
-
-/*
  * Element i of x, a character vector or (is_list) a list of raw vectors: the bytes the core
  * reads, whether its spans count characters, and the string itself (R_NilValue for a raw
  * vector). 0 for a missing element, an NA string or a NULL.
@@ -891,7 +844,7 @@ static int element(SEXP x, int is_list, R_xlen_t i, int native, const uint8_t **
  * is all of it, otherwise the span's bytes in the encoding they were read in ("bytes" for a
  * string marked so, native for an unmarked one in an ASCII session, UTF-8 otherwise and for a
  * raw vector). U+0000 is valid UTF-8 a raw vector can carry and an R string cannot hold, so a
- * value holding it is out of range over the value, as the char door's U+0000 is.
+ * value holding it is out of range over the value: text with a NUL inside it is not absent.
  */
 static void text_row(struct columns *c, R_xlen_t i, SEXP s, const uint8_t *p, uintptr_t n,
                      int chars, const HyperCastRawSpan *span) {
@@ -955,9 +908,7 @@ SEXP C_cast_text(SEXP x, SEXP door_name, SEXP format, SEXP periods, SEXP code, S
     union value v;
     HyperCastRawFaultDetail f = fault_slot();
     int32_t rc = text_door(door, p, len, &d, &v, &f);
-    if (rc == 0 && door == CHAR_DOOR && v.scalar == 0) {
-      nul_scalar(&c, i, p, len, chars);
-    } else if (rc == 0 && door == TEXT_DOOR) {
+    if (rc == 0 && door == TEXT_DOOR) {
       text_row(&c, i, s, p, len, chars, &v.span);
     } else if (rc == 0) {
       row_ok(&c, i, door, &v);

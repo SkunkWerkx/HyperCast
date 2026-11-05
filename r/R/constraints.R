@@ -243,7 +243,7 @@ checked_layout <- function(constraints, text) {
 #'
 #' The text door's value is the input's own string when nothing was trimmed. U+0000, which
 #' a raw vector can carry and an R string cannot hold, makes the value `out_of_range` over
-#' the value, as [cast_char()] reports it.
+#' the value: text with a NUL inside it is not absent, unlike [cast_char()]'s lone `U+0000`.
 #'
 #' @param x A character vector (a factor is read as its levels) or a list of raw vectors
 #'   holding UTF-8 bytes, as the text doors take; for `cast_checked_from_double()`, a

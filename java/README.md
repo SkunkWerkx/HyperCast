@@ -733,8 +733,8 @@ API rather than `--release 21`, because `--release 21` refuses `java.lang.foreig
 `gradle.properties` turns toolchain auto-download off, so pass it explicitly.
 
 ```sh
-./gradlew check -Porg.gradle.java.installations.paths=<path to a JDK 21> \
-  -Porg.gradle.java.installations.auto-detect=false
+./gradlew check -Dorg.gradle.java.installations.paths=<path to a JDK 21> \
+  -Dorg.gradle.java.installations.auto-detect=false
 ```
 
 Without a JDK 21 Gradle can see, `testFloor` fails with "Cannot find a Java installation …
@@ -752,7 +752,7 @@ detailed exports:
 ./gradlew testDowngrade testDowngradeFloor -Phypercast.v1Core=<libhypercast of tag v1.0.0> \
   -Phypercast.preDetailedCore=<a libhypercast with the 1.0-era exports, no detailed ones> \
   -Phypercast.v1Jni=<a libhypercast_jni without the detailed natives> \
-  -Porg.gradle.java.installations.paths=<path to a JDK 21>
+  -Dorg.gradle.java.installations.paths=<path to a JDK 21>
 ```
 
 ## Install

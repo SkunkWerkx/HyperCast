@@ -105,6 +105,9 @@ its wins. Don't adjust numbers without re-running the harness, and don't drop a 
   (install name `@rpath/libhypercast.dylib`, soname `libhypercast.so`; `cdylib` feature only),
   `IMPORTED_SONAME` in `c/cmake/hypercastConfig.cmake`, and the `needed` check in
   `c/smoke/run.sh`.
+- The Unicode notice: `LICENSE-UNICODE` at the root, its copies in `python/`, `ruby/` and
+  `typescript/` and `rust/unicode/LICENSE`, and `MIT AND Unicode-3.0` in every manifest. HyperUuid
+  carries no Unicode data and takes none of it; the Forge's `c_package.py` copies it when present.
 - The C archives: `C_RIDS` in the Forge's `c_package.py`, the platform list in `c/README.md`
   and the C row of the README's platform table.
 - Ruby ABIs: `ABIS` in `ruby/Rakefile`, `ruby_compat_version` in `ci.yml`, and in the Forge
@@ -233,7 +236,8 @@ promise, so every stable bump is re-proven by the legs that use it.
   queued. The inventory records the commit that packed, and the tag run requires its own
   Forge to descend from it. Don't merge Forge changes while a preparation is in flight.
 - The board is one Forge workflow per concern: `core` (`hyper-core.yml`, the seven core legs,
-  each with its cdylib export check and C smoke), `core-checks` (`hyper-core-checks.yml`, the
+  each with its cdylib export check and C smoke), `core-proofs` (`hyper-core-proofs.yml`, the
+  no_std, no-allocator and no-panic proofs, on every pull request that builds the core), `core-checks` (`hyper-core-checks.yml`, the
   static checks on three hosts, s390x included), `lint-<binding>` (one job on
   `ubuntu-26.04-arm`) and `test-<binding>` (the binding's suite on its hosts), gated on what
   the pull request touched (`changes`, from `.github/scripts/pr_changes.py`; `pr-board` is the
@@ -272,8 +276,9 @@ promise, so every stable bump is re-proven by the legs that use it.
 
 ## Local loop
 
-The PR board runs a binding's lint and suite only when its tree, the core (`rust/`,
-`include/`, `c/`, `corpus/`), or `.github/` changed; `python3 .github/scripts/pr_changes.py`
+The PR board always builds the core and proves its thesis (`core-proofs`). A binding's suite runs when its tree, the core (`rust/`,
+`include/`, `c/`, `corpus/`) or `.github/` changed; its lint when its tree or `.github/` did;
+Rust's lint when the core or `.github/` did; `python3 .github/scripts/pr_changes.py`
 classifies a `filename<TAB>previous_filename` list from stdin the way the `changes` job does
 (`--all` is the release board), and `python3 .github/scripts/pr_board.py` with `NEEDS`,
 `CHANGES` and `GITHUB_EVENT_NAME` set gives the verdict.
@@ -308,7 +313,7 @@ test` runs the stub check (cargo-php and a C compiler needed).
 Java's JNI path needs its own library: `cargo build --release --locked --lib` in `java/jni/`,
 after `cargo cdylib`. Gradle stages both and refuses a stale one. Then, from `java/`,
 `./gradlew test testFloor checkSuiteParity javadoc` with a JDK 21 passed through
-`-Porg.gradle.java.installations.paths=<jdk21>`.
+`-Dorg.gradle.java.installations.paths=<jdk21>`.
 
 TypeScript builds its own addon, a napi-rs crate path-depending on `rust/`: from
 `typescript/`, `bun install --frozen-lockfile && bun run build && bun run test`, then `bun run test:bun` and `bun run

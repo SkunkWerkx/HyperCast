@@ -46,8 +46,8 @@ Strict RFC 3339 is the default, and a caller can rely on it: \verb{2026-01-07 15
 \code{\link[=date_options]{date_options()}}, opts in to either (\code{"space_separator"}, \code{"hour_offset"}, or both with
 \code{"common_forms"}), and nothing else in it applies to this door.
 
-\code{value} is a \code{POSIXct} in UTC: a double of seconds, exact to the microsecond across
-present-day instants but not to the nanosecond. The exact instant is in two more columns,
+\code{value} is a \code{POSIXct} in UTC: a double of seconds, cut to the millisecond (never rounded, so
+it cannot carry into the next second). The exact instant is in two more columns,
 protobuf's \code{Timestamp} pair: \code{seconds} (a whole double, exact) and \code{nanos} (an integer,
 \code{0} to \code{999999999}, counting forward from \code{seconds} even before the epoch).
 }

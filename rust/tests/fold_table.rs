@@ -38,7 +38,10 @@ fn generate(source: &str) -> String {
          //!\n\
          //! Generated, not typed, from `rust/unicode/CaseFolding-17.0.0.txt`. Regenerate with\n\
          //! `HYPERCAST_BLESS=1 cargo test --test fold_table` in `rust/`; the test fails when\n\
-         //! this file differs from what it generates.\n\n",
+         //! this file differs from what it generates.\n\
+         //!\n\
+         //! The mappings are Unicode's: © Unicode, Inc., under the Unicode License v3\n\
+         //! (`rust/unicode/LICENSE`).\n\n",
     );
     writeln!(out, "pub(crate) static FOLD: [(u32, u32); {}] = [", rows.len()).unwrap();
     for (from, to) in rows {

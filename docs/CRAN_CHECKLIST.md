@@ -2,6 +2,8 @@
 
 Oct 31, 2026 · @Buvy
 
+_Status 2026-11-05: HyperCast's rows 3, 7, 8 and 10 are in the core, the corpus and the bindings (CI run 41968517408). Its R type table is `r/README.md`, Values. The HyperTabular rows and contracts are not closed, and the R and packaging gates below stay open until the submitted tarball is checked._
+
 All twelve features below remain required for 1.1, with binding parity. This is our release gate, not a claim that CRAN requires feature parity with readr or readxl. CRAN acceptance also requires safe R integration and verification of the submitted packages.
 
 Assume HyperUuid's shared binding, build, packaging and review improvements will be ported. This document records the additional work specific to HyperCast and HyperTabular. The assessment behind it was a source review, not a new test run or an R CMD check; unchecked items require implementation and evidence before they can be closed.
@@ -44,11 +46,11 @@ Each row lands as one coordinated change: core, corpus vectors, then every bindi
 ### Core acceptance details
 
 - [ ] **Quotes:** scanner and cell extraction agree on when a quote is structural. Test every scanner engine, buffer/block splits, odd stray quotes, escaped quotes and multiline records. No record may disappear or merge silently.
-- [ ] **Grouping:** strict validation does not infer locale. `1,234` remains ambiguous without declared separators. Test grouping across numeric doors, currency separators and native digits; preserve the documented legacy mode.
+- [x] **Grouping:** strict validation does not infer locale. `1,234` remains ambiguous without declared separators. Test grouping across numeric doors, currency separators and native digits; preserve the documented legacy mode.
 - [ ] **Text:** define BOM handling, malformed sequences, truncated UTF-16 code units and embedded NUL behavior. Never silently replace invalid input. Validate headers as well as values before making host strings.
 - [ ] **Input ordering:** define decoding, skip/header selection, tokenization/unescaping, missing-token matching and casting order. Specify physical lines versus logical records, per-column token overrides and whether quoted tokens match.
 - [ ] **Formula state:** preserve uncached formulas separately from blanks and cached formula errors in each supported workbook format. Formula evaluation is outside scope.
-- [ ] **Trimming and dates:** preserve original byte offsets after NBSP trimming and the char door's single-whitespace behavior. Pin pivots, month vocabularies and new timestamp forms in the corpus.
+- [x] **Trimming and dates:** preserve original byte offsets after NBSP trimming and the char door's single-whitespace behavior. Pin pivots, month vocabularies and new timestamp forms in the corpus.
 - [ ] **ABI:** preserve 1.0 exports and layouts. Version or extend the affected fault, format, dialect, column and workbook interfaces explicitly; do not append fields to an existing C layout in place. Specify old-caller defaults and unknown-option handling. Review Rust API compatibility too.
 
 ## R and TypeScript bindings
@@ -105,7 +107,7 @@ These gates are additional to the shared HyperUuid packaging work. CRAN review r
 - [ ] **Tarball size and fixtures:** measure the built archive. CRAN's general data/documentation guideline is 5 MB; source tarballs should if possible stay below 10 MB. Keep a deliberate fixture manifest covering all shipped features; missing required fixtures fail tests. Do not broadly skip absent files. Verify the actual R dependency/vendor tree rather than assuming the plain core's tree.
 - [ ] **Panic boundary:** rerun the no-panic proof for affected exports and record its scope/toolchain. The current `no_std` artifacts abort on panic; `catch_unwind` cannot catch an abort. A C shim over proven exports may retain HyperUuid's architecture. Any allocating Rust wrapper needs separate containment of unwind-capable code before an FFI boundary. Do not claim the kernel proof covers the whole wrapper. Inspect the actual R shared library and explain relevant compiled-code findings in `cran-comments.md`.
 - [ ] **Release cadence.** CRAN asks for updates no more than every one to two months, so R ships a batch of releases, not every tag.
-- [ ] **HyperUuid's lessons first.** Carry every applicable reviewer comment into both packages before submission. The shared checklist is [HyperUuid/CRAN_CHECKLIST.md](../HyperUuid/CRAN_CHECKLIST.md).
+- [ ] **HyperUuid's lessons first.** Carry every applicable reviewer comment into both packages before submission. The shared checklist is [HyperUuid/docs/CRAN_CHECKLIST.md](../../HyperUuid/docs/CRAN_CHECKLIST.md).
 
 ## Evidence required to close the gate
 

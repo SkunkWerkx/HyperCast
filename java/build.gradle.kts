@@ -25,7 +25,8 @@ repositories {
 // The one source of the JDK floor: the base of the multi-release jar (Cast, the interop
 // package and the JNI NativeCore) compiles for jdkFloor, and src/main/java25 (the FFM
 // NativeCore) with --release 25. Gradle, Spotless, javadoc and publish all run on JDK 25.
-val jdkFloor by extra(21)
+val jdkFloor = 21
+extra.set("jdkFloor", jdkFloor)
 
 // The formatter, over every Java file in the build: the library, its tests, the floor-API
 // check (gradle/FloorApiCheck.java), the AOT smoke test and the JMH benchmarks. palantir-java-format is google-java-format's rules at a
@@ -208,6 +209,7 @@ tasks.withType<Jar>().configureEach {
 tasks.jar {
     metaInf {
         from("../LICENSE")
+        from("../LICENSE-UNICODE")
         from("README.md")
     }
     // A stable module name for a consumer on the module path — without it the name is
@@ -494,6 +496,11 @@ mavenPublishing {
             license {
                 name.set("MIT")
                 url.set("https://opensource.org/license/mit")
+                distribution.set("repo")
+            }
+            license {
+                name.set("Unicode-3.0")
+                url.set("https://www.unicode.org/license.txt")
                 distribution.set("repo")
             }
         }

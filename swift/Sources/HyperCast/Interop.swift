@@ -132,12 +132,14 @@ public enum Interop {
     }
 
     /// An instant: `seconds: i64` at 0, `nanos: i32` at 8. A `Date` is a `Double` of seconds,
-    /// so sub-microsecond fidelity degrades toward the window's edges: the timestamp, Unix
-    /// and Excel-serial doors' value.
+    /// so sub-microsecond fidelity degrades toward the window's edges, and where rounding would
+    /// carry it into the next second (the last nanoseconds of 9999 into 10000) it stays on the
+    /// last `Double` of its own: the timestamp, Unix and Excel-serial doors' value.
     public static func instant(_ raw: UnsafeRawBufferPointer) -> Date {
         let seconds = raw.load(fromByteOffset: 0, as: Int64.self)
         let nanos = raw.load(fromByteOffset: 8, as: Int32.self)
-        return Date(timeIntervalSince1970: Double(seconds) + Double(nanos) / 1_000_000_000)
+        let rounded = Double(seconds) + Double(nanos) / 1_000_000_000
+        return Date(timeIntervalSince1970: rounded < Double(seconds + 1) ? rounded : rounded.nextDown)
     }
 
     /// A calendar date: `year: u16` at 0, `month`/`day: u8` at 2/3, as year, month and day

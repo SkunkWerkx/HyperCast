@@ -46,7 +46,7 @@ rules. A declaration for another door is an error too.
 
 The text door's value is the input's own string when nothing was trimmed. U+0000, which
 a raw vector can carry and an R string cannot hold, makes the value \code{out_of_range} over
-the value, as \code{\link[=cast_char]{cast_char()}} reports it.
+the value: text with a NUL inside it is not absent, unlike \code{\link[=cast_char]{cast_char()}}'s lone \code{U+0000}.
 }
 \examples{
 latitude <- hypercast_constraints("f64", minimum = "-90", maximum = "90",

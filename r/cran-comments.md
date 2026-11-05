@@ -6,14 +6,22 @@ This is a new submission.
 
 * macOS 27.2 on Apple M6 (aarch64-apple-darwin27.0.0), R 4.6.2 (Homebrew build), rustc and
   cargo 1.99.1, pdfTeX 1.40.29 (TinyTeX, TeX Live 2026), `checkbashisms` 2.26.13, `qpdf`
-  12.4.2, `pandoc` 3.13; checked 2026-11-03.
+  12.4.2, `pandoc` 3.13.
+* Debian forky/sid on x86-64 (the `rocker/r-devel` image), R Under development (unstable)
+  (2026-11-01 r90825), with the distribution's rustc and cargo 1.97.1.
+* Ubuntu on aarch64 (the `rocker/r-ver:4.2.3` image), R 4.2.3, the package's declared floor, with
+  rustc and cargo 1.89.0, the core crate's `rust-version`.
+* GitHub Actions (rustc and cargo 1.99.1), `R CMD check --no-manual --as-cran` failing on any
+  NOTE: Ubuntu 26.04 x86-64 with R 4.6.2 and R 4.5.3, Ubuntu 26.04 aarch64 with R 4.6.2, macOS
+  27 aarch64 with R 4.6.2, and Windows x86-64 with R 4.6.2 (ucrt) and rustup's
+  `x86_64-pc-windows-gnu` target. All five: `Status: OK`.
 
 ## R CMD check results
 
 `R CMD check --as-cran hypercast_<version>.tar.gz`, with `_R_CHECK_CRAN_INCOMING_REMOTE_=TRUE`.
 
 macOS, R 4.6.2, with the PDF manual (TinyTeX), `checkbashisms`, `qpdf` and `pandoc` installed,
-on the tarball `R CMD build` made (463,622 bytes):
+on the tarball `R CMD build` made (480,576 bytes):
 
     Status: 1 NOTE
 
@@ -22,10 +30,22 @@ on the tarball `R CMD build` made (463,622 bytes):
 
     New submission
 
-The NOTE is the new-submission notice. The testthat expectations pass (`[ FAIL 0 | WARN 0 |
-SKIP 0 | PASS 30880 ]`), including the replay of the eighteen bundled corpus files every
-binding of the project replays. `NEWS.md`'s heading carries the version number, which R's NEWS
-parser requires.
+R-devel on Debian, `--no-manual`, with `pandoc` installed and that image's own hardening flags
+(`-Wdate-time -Werror=format-security -Wformat`, from Debian's `R CMD config CFLAGS`, not from this
+package's `Makevars`, which sets no compiler flags) declared in
+`_R_CHECK_COMPILATION_FLAGS_KNOWN_`:
+
+    Status: 1 NOTE
+
+    * checking CRAN incoming feasibility ... NOTE
+    New submission
+
+The testthat expectations pass on each (`[ FAIL 0 | WARN 0 | SKIP 0 | PASS 30895 ]`), including
+the replay of the eighteen bundled corpus files every binding of the project replays, and also
+in the C and ISO-8859-15 locales. The test suite runs without failure under AddressSanitizer
+on aarch64 Linux. `NEWS.md`'s heading carries the version number, which R's NEWS parser
+requires. If the incoming check lists possibly misspelled words in `DESCRIPTION` (such as
+"UUIDs", "booleans" or "vectorised"), they are spelled as intended.
 
 ## Compiled code
 
@@ -53,7 +73,10 @@ library on exactly, shared with its sibling crates; it is not lowered for the R 
 
 The wrapper crate in `src/rust/` depends on the `hypercast` crate from crates.io at exactly
 this package's version, as any Rust consumer of it would, and on nothing else; the core has
-no dependencies of its own, so `inst/AUTHORS` names no third-party crate. The vendored
+no dependencies of its own, so `inst/AUTHORS` names no third-party crate. The core does carry
+one third party's data: its case folding is generated from the Unicode Character Database's
+`CaseFolding.txt`, included unchanged, so Unicode, Inc. is a `cph` in `Authors@R` and is credited
+in `inst/AUTHORS` under the Unicode License v3. The vendored
 `hypercast` is that release's source as `cargo package` writes it, from the tagged commit
 the crates.io release is uploaded from.
 
@@ -78,4 +101,4 @@ to the binding and to R:
 
 Rtools ships no Rust, so the Windows build uses rustup's `x86_64-pc-windows-gnu` target
 (`aarch64-pc-windows-gnullvm` on ARM64), chosen by `tools/rustarch.R` in
-`src/Makevars.win`. Not tested locally; to be confirmed on win-builder.
+`src/Makevars.win`. Checked on Windows x86-64 in CI (above).

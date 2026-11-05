@@ -31,7 +31,8 @@ case .fault(let fault): print("\(fault.reason) at byte \(fault.offset)")
 
 Door names mirror the native ABI (`i32`, `f64`, `decimal`, `timestamp`, …); every door also
 takes raw UTF-8 `[UInt8]` for callers already holding bytes. Swift-flavored fidelity:
-`Duration` is attosecond-backed, so the duration door keeps every nanosecond the core
+an instant is a `Date`, a `Double` of seconds, so it holds under a microsecond today and about
+30 µs at the window's end, and never rounds into the next second. `Duration` is attosecond-backed, so the duration door keeps every nanosecond the core
 parses; the `Duration` presentation is also why `Package.swift` carries a `.macOS(.v13)`
 floor, and `.iOS(.v16)` and `.macCatalyst(.v16)` beside it (Linux has no availability
 gates — these only set the Darwin deployment targets).
@@ -427,7 +428,7 @@ through exactly the conversions every `Cast` door applies, so a value read out o
 library's buffer is the value the door of the same name would have returned. Each reader
 takes an `UnsafeRawBufferPointer` starting at one value, aligned for its widest field.
 
-- Out-values: `Interop.scalar` → `Unicode.Scalar`, `decimal` → `Decimal`, `uuid` → `UUID`, `instant` → `Date`, `date`,
+- Out-values: `Interop.scalar` → `Unicode.Scalar`, `decimal` → `Decimal`, `uuid` → `UUID`, `instant` → `Date` (a `Double`, which never rounds into the next second), `date`,
   `civil` and `time` → `DateComponents`, `duration` → `Duration`.
 - `Interop.rawFormat(_:)` — a `NumFormat` as the core reads it in place, the 92-byte
   `Interop.RawNumFormat` tuple: a size word, the flags, the digit zero, then every symbol
