@@ -246,7 +246,7 @@ final class GroupingTest extends TestCase
     }
 
     // The reflection call that writes a readonly slot from outside arrived in PHP 8.4.
-    #[RequiresPhp('>= 8.4')]
+    #[RequiresPhp('>= 8.4.0')]
     public function testNothingOutsideThePolicyBitsReachesTheStyles(): void
     {
         // Past `unserialize` (reflection writes the readonly property's slot), packed() still

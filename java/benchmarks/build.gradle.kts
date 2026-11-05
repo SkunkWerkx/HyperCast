@@ -3,7 +3,7 @@
 // java.lang parse with equivalent settings declared. Run by hand with `./gradlew :benchmarks:jmh`.
 plugins {
     java
-    id("me.champeau.jmh") version "0.7.3"
+    id("me.champeau.jmh") version "0.7.4"
 }
 
 repositories {
