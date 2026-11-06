@@ -73,7 +73,7 @@ translated module and a scratch region in the module's linear memory, where a do
 its `NumFormat` and its day periods are copied in and its value and fault span copied out.
 Every door is an ordinary Go call into that code; nothing crosses a foreign boundary.
 
-wasm2go's generated code bounds-checks every memory access and keeps the call stack in Go,
+wasm2go's generated code bounds-checks every memory access ([`internal/core/bounds_test.go`](internal/core/bounds_test.go) pins the checks) and keeps the call stack in Go,
 so a core bug, a guest stack overflow included, is a Go panic and never a corrupted heap. The
 guest's stack is 64 KiB: regenerating the core at smaller stack sizes and running the whole
 suite, the corpus replay included, at each, 4608 bytes is the smallest size that passes
@@ -106,9 +106,9 @@ Under TinyGo the scheduler is cooperative and a call never yields, so every call
 primary.
 
 What that costs under contention is the binding's one large loss: `I32` on 12 goroutines at
-once is 18.4 ns a call in aggregate on the Apple M6, against 7.2 ns for the cgo binding this
-replaced, which took no lock at all — **2.6x slower** ([Benchmarks](#benchmarks)). A single
-goroutine's calls are faster than they were.
+once is 20.4 ns a call in aggregate on the Apple M6, against 6.8 ns for the cgo binding this
+replaced, which took no lock at all — **3.0x slower** ([Benchmarks](#benchmarks)). A single
+goroutine's calls range from 1.5x faster than they were to 1.7x slower.
 
 A fresh instance is 3 WebAssembly pages of linear memory, 192 KiB: the 64 KiB stack and the
 core's data in 2 pages, plus one page of scratch.
@@ -741,7 +741,8 @@ go generate     # in go/: builds rust/ for wasm32-wasip1 and rewrites internal/c
 [`internal/wasm2go`](internal/wasm2go) is the generator: it builds the crate's `cargo cdylib`
 with the rustc named in its `rust-toolchain.toml` (1.99.1), a 64 KiB guest stack
 (`-C link-arg=-zstack-size=65536`) and wasi-libc for `memcmp`, `memcpy` and `memset` (`-l
-c`), then runs the wasm2go pinned in its own `go.mod`. The rustc is pinned as a
+c`), then runs the wasm2go pinned in its own `go.mod` with `-unsafe`, which replaces the memory helpers with `unsafe.Add` access behind a check of
+the access's last byte (CPUs without unaligned access keep the `encoding/binary` path). The rustc is pinned as a
 reproducibility constraint, not a floor: the wasm's bytes follow rustc's codegen, so one named
 toolchain makes the committed file reproducible, and a bump is a deliberate
 regenerate-and-commit. `HYPERCAST_CHECK_CORE=1 go test -count=1 -run
@@ -767,12 +768,12 @@ the core at the new version, since the version is a literal in the file.
 per-call to Go's stdlib.** Go's parsers are simply excellent (`time.Parse(RFC3339Nano)` at
 ~21 ns, `strconv.Atoi` at ~4 ns on the machine below), and every HyperCast call copies its
 text into the core's memory and runs the core as translated, bounds-checked Go. Against the
-cgo binding it replaced, single calls are mostly faster, since no foreign call is paid any
-more: `Bool` 2.4x, `DateOnlyOrdered` 1.7x, `I32` 1.3x. The losses are the civil date-time
-doors (1.5x), a rejected cast (1.4x), contention (2.6x) and, by 2%, the ISO span door, all in
-the table below. The
-declared-order date door beats `time.Parse` with a layout, and the messy date-time door is
-level with it. **0 B, 0 allocs on every door** on the success path, under stock Go and
+cgo binding it replaced, it is mixed: `Bool` 1.5x and `Uuid` 1.2x faster, `I32`, `TimeOfDay` and
+`DateOnlyOrdered` 1.1x faster, since no foreign call is paid any more. The losses are contention
+(3.0x), a rejected cast (1.7x), a declaration carrying every symbol and the messy date-time door
+with declared periods (1.3x and 1.5x), and 1.1x to 1.2x on the grouped integers, `Detect`,
+`Timestamp`, the ISO span door and the plain date-time door, all in the table below. The
+declared-order date door and the messy date-time door both beat `time.Parse` with a layout. **0 B, 0 allocs on every door** on the success path, under stock Go and
 TinyGo, for any text of up to 65,360 bytes ([`MaxText`](#maxtext)), the checked doors
 included (a checked door's declaration shares that scratch with its text), except that a
 `[]byte` input to the text doors is copied into the `string` they return; a failed cast
@@ -786,46 +787,44 @@ it calls once per chunk, not once per cell.
 ## Benchmarks
 
 `go test -bench=. -benchmem ./...`. Apple M6 (Mac18,5, 12 cores), macOS 27.2, Go 1.27.3,
-2026-11-02, on the core with the checked doors: six runs of each binding interleaved in one
+2026-11-05, on the core with the checked doors and the white-space trim: six runs of each binding interleaved in one
 session, benchstat medians with benchstat's spread. The cgo column is the binding this one
 replaced (its tree as it stood before the translated core), linked against a static archive
 built from the same `rust/` (`cargo staticlib`), with this same benchmark file. Other work
-shared the machine (load average 1.5 to 4.5); differences benchstat did not call significant
+shared the machine (load average 2.3 to 3.5); differences benchstat did not call significant
 are marked ~.
 
 | Door | translated core | cgo binding | | stdlib |
 | --- | ---: | ---: | --- | ---: |
-| `Bool` | 10.2 ns ±8% | 24.2 ns | 2.4x faster | 1.3 ns `strconv.ParseBool` |
-| `I32` | 34.6 ns ±6% | 45.1 ns | 1.3x faster | 3.5 ns `strconv.Atoi` |
-| `I32` (grouped) | 38.7 ns ±6% | 46.6 ns | 1.2x faster | — |
-| `I32` (grouped), 12 goroutines, aggregate | 18.4 ns ±8% | 7.2 ns | **2.6x slower** | — |
-| `I32` (grouped), `$` declared | 44.6 ns ±5% | 49.0 ns | 1.1x faster | — |
-| `I32` (grouped), every symbol declared | 72.0 ns ±4% | 71.8 ns | ~ | — |
-| `I32("1,234x567")`, rejected | 94.8 ns ±7%, 1 alloc | 65.9 ns, 1 alloc | **1.4x slower** | 14.3 ns, 2 allocs `strconv.Atoi("1234x567")` |
-| `F64` | 43.8 ns ±5% | 49.8 ns | 1.1x faster | 14.3 ns `strconv.ParseFloat` |
-| `F64` (`1.234.567,89`), declared | 42.3 ns ±5% | 49.2 ns | 1.2x faster | — |
-| `F64` (`1.234.567,89`), `Detect` | 56.9 ns ±3% | 57.5 ns | ~ | — |
-| `Uuid` | 19.1 ns ±4% | 28.8 ns | 1.5x faster | 11.3 ns `google/uuid.Parse` |
-| `Timestamp` | 33.4 ns ±3% | 35.3 ns | ~ | 21.3 ns `time.Parse(RFC3339Nano)` |
-| `Span` (ISO) | 30.4 ns ±7% | 29.8 ns | **2% slower** | 27.1 ns `ParseDuration` (Go dialect — different grammar) |
-| `TimeOfDay` | 20.8 ns ±6% | 28.0 ns | 1.3x faster | — |
-| `DateTime` (`1/7/2026 3:04 PM`) | 48.8 ns ±6% | 32.4 ns | **1.5x slower** | 47.2 ns `time.Parse` w/ layout |
-| `DateTimeWith`, `vorm.`/`nachm.` declared | 75.2 ns ±6% | 49.6 ns | **1.5x slower** | — |
-| `DateOnlyOrdered` (`1/7/2026`) | 15.8 ns ±4% | 26.5 ns | 1.7x faster | 28.2 ns `time.Parse` w/ layout |
+| `Bool` | 15.3 ns ±2% | 23.3 ns | 1.5x faster | 1.4 ns `strconv.ParseBool` |
+| `I32` | 40.4 ns ±1% | 42.9 ns | 1.1x faster | 3.6 ns `strconv.Atoi` |
+| `I32` (grouped) | 49.4 ns ±1% | 44.2 ns | **1.1x slower** | — |
+| `I32` (grouped), 12 goroutines, aggregate | 20.4 ns ±5% | 6.8 ns | **3.0x slower** | — |
+| `I32` (grouped), `$` declared | 50.0 ns ±2% | 46.5 ns | **1.1x slower** | — |
+| `I32` (grouped), every symbol declared | 92.8 ns ±2% | 70.4 ns | **1.3x slower** | — |
+| `I32("1,234x567")`, rejected | 107 ns ±1%, 1 alloc | 64.2 ns, 1 alloc | **1.7x slower** | 14.6 ns, 2 allocs `strconv.Atoi("1234x567")` |
+| `F64` | 50.5 ns ±1% | 50.2 ns | ~ | 14.4 ns `strconv.ParseFloat` |
+| `F64` (`1.234.567,89`), declared | 50.4 ns ±2% | 50.1 ns | ~ | — |
+| `F64` (`1.234.567,89`), `Detect` | 69.6 ns ±1% | 58.0 ns | **1.2x slower** | — |
+| `Uuid` | 22.8 ns ±2% | 28.0 ns | 1.2x faster | 12.2 ns `google/uuid.Parse` |
+| `Timestamp` | 40.5 ns ±2% | 33.8 ns | **1.2x slower** | 20.8 ns `time.Parse(RFC3339Nano)` |
+| `Span` (ISO) | 32.7 ns ±2% | 28.6 ns | **1.1x slower** | 27.8 ns `ParseDuration` (Go dialect — different grammar) |
+| `TimeOfDay` | 24.9 ns ±2% | 26.9 ns | 1.1x faster | — |
+| `DateTime` (`1/7/2026 3:04 PM`) | 39.2 ns ±1% | 31.4 ns | **1.2x slower** | 46.6 ns `time.Parse` w/ layout |
+| `DateTimeWith`, `vorm.`/`nachm.` declared | 72.9 ns ±3% | 48.6 ns | **1.5x slower** | — |
+| `DateOnlyOrdered` (`1/7/2026`) | 21.8 ns ±2% | 24.9 ns | 1.1x faster | 28.1 ns `time.Parse` w/ layout |
 
 Every success row is 0 B and 0 allocations in both bindings. Separator detection costs
-~15 ns here (56.9 against 42.3 ns for the same text under a declared eurozone format). A
-declared symbol costs text that does not carry it: `I32("1,234,567")` is 38.7 ns under
-`Invariant`, 44.6 ns under a format declaring `$`, and 72.0 ns under one declaring every
+~19 ns here (69.6 against 50.4 ns for the same text under a declared eurozone format). A
+declared symbol costs text that does not carry it: `I32("1,234,567")` is 49.4 ns under
+`Invariant`, 50.0 ns under a format declaring `$`, and 92.8 ns under one declaring every
 symbol there is; declare what the feed actually carries.
 
-**Not re-measured since the white-space change.** The first table above (translated core and
-cgo, 2026-11-02) predates it: the core now trims Unicode white space at every door's edges, and
-the translated core carries the same change, but its cost in Go was not measured.
-`rust/README.md`'s benchmarks measure it on the Rust core, where input with nothing to trim
-reads level and input with white space at an edge takes about 2 ns longer; the Go figures
-are unknown until `go test -bench=. -benchmem ./...` is re-run. The numbers above are as they
-were measured.
+`-unsafe` is measured apart: the same wasm translated with and without it, six interleaved runs
+in one session on the same day, makes every door 2% to 37% faster except the contended one, which
+is level (`DateOnlyOrdered` 22.1 ns against 35.2, `Bool` 15.6 against 17.2). `google/uuid.Parse`,
+which never touches the core, read 8% slower in the flag's binaries in every run: that is code
+layout rather than the flag, and it is the size of effect to allow for in any small row here.
 
 The table that follows **predates the translated core**: it measured the cgo binding for
 0.9.0 on linux-x64 (an Intel Core i9-11900H, go1.27.2), one session, median of five runs,

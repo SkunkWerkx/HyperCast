@@ -117,11 +117,11 @@ Each binding carries its ecosystem's own harness, HyperUuid-style: Criterion, Be
 | PHP ‡ | 538 ns | 560 ns `DateTimeImmutable` | level |
 | Ruby (Fiddle fallback) | 2.85 µs | — | a little behind `Time.iso8601`, atop Fiddle's per-call floor; kept as the zero-compile path |
 | Python (PyO3) | 252 ns | 146 ns `fromisoformat` (C-accelerated) | 1.7x slower |
-| Go, on an Apple M6 | 34.5 ns, 0 allocs | 21.1 ns `time.Parse(RFC3339Nano)` | 1.6x slower — Go's stdlib RFC 3339 path is exceptional |
+| Go, on an Apple M6 | 40.5 ns, 0 allocs | 20.8 ns `time.Parse(RFC3339Nano)` | 1.9x slower — Go's stdlib RFC 3339 path is exceptional |
 | R, on an Apple M6 | **27.14 µs** per 1000 strings | 3.83 ms `as.POSIXct` | **141x faster** |
 | TypeScript | not measured yet | | |
 
-Every row but Go's and R's was measured on linux-x64 on an Intel Core i9-11900H; Go's and R's on an Apple M6 (Mac18,5) under macOS, on 2026-11-01, so the two groups are not comparable with each other. † Measured on .NET 11 RC 1 with BenchmarkDotNet's in-process toolchain, before the harness moved to running each benchmark in its own process; the figures stand until it is run again. ‡ Predates the extension: it measured 1.0's FFI package.
+Every row but Go's and R's was measured on linux-x64 on an Intel Core i9-11900H; Go's and R's on an Apple M6 (Mac18,5) under macOS, Go on 2026-11-05 and R on 2026-11-01, so the two groups are not comparable with each other. † Measured on .NET 11 RC 1 with BenchmarkDotNet's in-process toolchain, before the harness moved to running each benchmark in its own process; the figures stand until it is run again. ‡ Predates the extension: it measured 1.0's FFI package.
 
 The honest reading: **the doors win wherever the platform's own parser is culture machinery, and draw or lose wherever it is a C builtin for the one shape being timed.** Swift, Java, Ruby and C# beat their platform's timestamp parser by 2.2-17x, and R's vectorised door beats `as.POSIXct` by two orders; PHP tied its, measured before the extension; Go and Python lose to theirs. What the interpreted tier pays for is the FFI *mechanism*, not the language, which is why Python, Ruby, PHP and TypeScript link the core into an extension instead of crossing a generic FFI ([why](docs/benchmarks.md#where-the-wins-come-from)), and why Go compiles it as Go source and crosses nothing at all.
 
