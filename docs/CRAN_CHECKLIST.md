@@ -2,17 +2,17 @@
 
 Oct 31, 2026 · @Buvy
 
-_Status 2026-11-05: HyperCast's rows 3, 7, 8 and 10 are in the core, the corpus and the bindings (CI run 41968517408). Its R type table is `r/README.md`, Values. The HyperTabular rows and contracts are not closed, and the R and packaging gates below stay open until the submitted tarball is checked._
+_Status 2026-11-05: HyperCast's rows 3, 7, 8 and 10 are in the core, the corpus and the bindings, proved by the full-board run [42152914672](https://github.com/SkunkWerkx/HyperCast/actions/runs/42152914672) at commit `9fbe8b2`, the companion pin in HyperTabular's `.github/hyper.json`. Its R type table is [`r/README.md`, Values](../r/README.md#values). The HyperTabular rows and contracts are not closed, and the R and packaging gates below stay open until the submitted tarballs are checked. Each box names its repo: **HyperCast**, **HyperTabular** or **both**. Ticked boxes carry their evidence in italics._
 
 All twelve features below remain required for 1.1, with binding parity. This is our release gate, not a claim that CRAN requires feature parity with readr or readxl. CRAN acceptance also requires safe R integration and verification of the submitted packages.
 
-Assume HyperUuid's shared binding, build, packaging and review improvements will be ported. This document records the additional work specific to HyperCast and HyperTabular. The assessment behind it was a source review, not a new test run or an R CMD check; unchecked items require implementation and evidence before they can be closed.
+HyperUuid's shared binding, build, packaging and review improvements are carried into both packages as each box below says; CRAN's feedback on HyperUuid is a gate of its own (see CRAN gates). This document records the additional work specific to HyperCast and HyperTabular. The assessment behind it was a source review, not a new test run or an R CMD check; unchecked items require implementation and evidence before they can be closed.
 
 ## Parity rule and order
 
 **The rule:** a feature is done when its shared behavior is implemented once, the corpus pins it, and every binding exposes it in its own idiom. Parsing belongs in the core; allocation, host representations and presentation belong in the bindings. A binding that can't follow says why, in its README.
 
-**Bindings in scope:** Rust, C#, Java, Go, Swift, Python, Ruby, PHP, TypeScript, R, C and C++. TypeScript, R, C and C++ arrive through the HyperUuid cascade.
+**Bindings in scope:** Rust, C#, Java, Go, Swift, Python, Ruby, PHP, TypeScript, R, C and C++. TypeScript, R, C and C++ follow the same rule as the rest.
 
 **Order:**
 
@@ -45,13 +45,15 @@ Each row lands as one coordinated change: core, corpus vectors, then every bindi
 
 ### Core acceptance details
 
-- [ ] **Quotes:** scanner and cell extraction agree on when a quote is structural. Test every scanner engine, buffer/block splits, odd stray quotes, escaped quotes and multiline records. No record may disappear or merge silently.
-- [x] **Grouping:** strict validation does not infer locale. `1,234` remains ambiguous without declared separators. Test grouping across numeric doors, currency separators and native digits; preserve the documented legacy mode.
-- [ ] **Text:** define BOM handling, malformed sequences, truncated UTF-16 code units and embedded NUL behavior. Never silently replace invalid input. Validate headers as well as values before making host strings.
-- [ ] **Input ordering:** define decoding, skip/header selection, tokenization/unescaping, missing-token matching and casting order. Specify physical lines versus logical records, per-column token overrides and whether quoted tokens match.
-- [ ] **Formula state:** preserve uncached formulas separately from blanks and cached formula errors in each supported workbook format. Formula evaluation is outside scope.
-- [x] **Trimming and dates:** preserve original byte offsets after NBSP trimming and the char door's single-whitespace behavior. Pin pivots, month vocabularies and new timestamp forms in the corpus.
-- [ ] **ABI:** preserve 1.0 exports and layouts. Version or extend the affected fault, format, dialect, column and workbook interfaces explicitly; do not append fields to an existing C layout in place. Specify old-caller defaults and unknown-option handling. Review Rust API compatibility too.
+- [ ] **HyperTabular, quotes:** scanner and cell extraction agree on when a quote is structural. Test every scanner engine, buffer/block splits, odd stray quotes, escaped quotes and multiline records. No record may disappear or merge silently.
+- [x] **HyperCast, grouping:** strict validation does not infer locale. `1,234` remains ambiguous without declared separators. Test grouping across numeric doors, currency separators and native digits; preserve the documented legacy mode.
+  _Strict Western grouping is the R default and `grouping = "indian"` is declared; `12,34` is `malformed` with detail `group_size` ([`r/README.md`](../r/README.md)); `corpus/` pins it and the run above is green._
+- [ ] **both, text:** define BOM handling, malformed sequences, truncated UTF-16 code units and embedded NUL behavior. Never silently replace invalid input. Validate headers as well as values before making host strings.
+- [ ] **HyperTabular, input ordering:** define decoding, skip/header selection, tokenization/unescaping, missing-token matching and casting order. Specify physical lines versus logical records, per-column token overrides and whether quoted tokens match.
+- [ ] **HyperTabular, formula state:** preserve uncached formulas separately from blanks and cached formula errors in each supported workbook format. Formula evaluation is outside scope.
+- [x] **HyperCast, trimming and dates:** preserve original byte offsets after NBSP trimming and the char door's single-whitespace behavior. Pin pivots, month vocabularies and new timestamp forms in the corpus.
+  _`r/README.md` documents the `pivot` for two-digit years, the month vocabulary and U+00A0 as `White_Space` trimmed at both ends, with `cast_char()` given exactly one character keeping it; `corpus/date.json` and `corpus/char.json` pin them._
+- [ ] **both, ABI:** preserve 1.0 exports and layouts. Version or extend the affected fault, format, dialect, column and workbook interfaces explicitly; do not append fields to an existing C layout in place. Specify old-caller defaults and unknown-option handling. Review Rust API compatibility too.
 
 ## R and TypeScript bindings
 
@@ -79,43 +81,62 @@ R users will compare this with readr, vroom, `data.table::fread` and readxl, so 
 | date | `Date` | no date-only type | TypeScript: `{year, month, day}` or `Temporal.PlainDate` |
 | duration | exact representation plus optional `difftime` conversion | `{seconds, nanos}` | Preserve sign and nanos; convenience conversion is explicit |
 | UUID | `character` | `string` | Direct |
-| char | `character` except U+0000 | `string` | R: a code-point/raw alternative or a documented conversion fault for U+0000; never silently drop it |
+| char | `character` except U+0000 | `string` | R: U+0000 is `ok` with `NA` as its `value`, plus a `code_point` column (HyperTabular D7); never silently dropped. D8 applies the same rule to text R can't hold, with `raw = TRUE` for the exact bytes |
 
-- [ ] **Representation decisions recorded:** select concrete classes/return types, constructors, missing-value representation and conversion behavior before implementing these APIs. Exact output must remain available for every supported core value, or the binding must explicitly report its representation limitation.
-- [ ] **Missingness:** distinguish input `NA`, declared missing tokens, blanks, ragged-row padding, malformed values and uncached formulas. Ordinary declared missingness is not a parse problem; preserve provenance where callers need to distinguish the cases.
-- [ ] **Conversion faults:** host representation failures are distinguishable from parser failures. They must not be reported as if the core rejected a valid value.
+- [x] **HyperCast, representation decisions recorded:** select concrete classes/return types, constructors, missing-value representation and conversion behavior before implementing these APIs. Exact output must remain available for every supported core value, or the binding must explicitly report its representation limitation.
+  _HyperCast's type table is [`r/README.md`, Values](../r/README.md#values), one R type per door with exact columns beside it. The U+0000 row waits on D7 and D8, which are their own box below._
+- [ ] **HyperTabular, representation decisions recorded:** table columns use the same classes, missing-value representation and conversion rules as HyperCast's standalone casts, and a table cell and a standalone cast agree.
+- [ ] **both, D7 and D8:** `cast_char()` gains a `code_point` column and keeps U+0000 `ok` with `NA` as its `value`; text R can't hold (an embedded NUL, or over `INT_MAX` bytes) is `ok` with `NA` on `cast_text()` and `col_text()`, with `raw = TRUE` for a list of raw vectors; HyperTabular's `problems()` adds a `host_conversion` row. `r/README.md` explains that `ok` alone does not guarantee a usable character value.
+- [ ] **both, missingness:** distinguish input `NA`, declared missing tokens, blanks, ragged-row padding, malformed values and uncached formulas. Ordinary declared missingness is not a parse problem; preserve provenance where callers need to distinguish the cases.
+- [ ] **both, conversion faults:** host representation failures are distinguishable from parser failures. They must not be reported as if the core rejected a valid value.
 
 **Cost:** eager R text conversion creates/interns strings and may dominate a read. Measure before promising speed; ALTREP is a possible later optimization, not a submission requirement.
 
 ## HyperTabular reader and diagnostic contracts
 
-- [ ] **Coordinates:** define source row versus output row, source column versus projected column, sheet identity and index bases. Preserve coordinates through skip, header selection, ranges, blank-row filtering and batches. Existing `Batch::line()` supplies source lines/rows but does not settle the whole contract.
-- [ ] **Spans:** identify whether a span indexes original file bytes, decoded cell bytes or unescaped text. Decoding and unescaping change offsets; retain mappings if original-file spans are promised. Define unavailable spans for typed workbook cells and host conversion faults.
-- [ ] **Ownership:** returned R vectors and diagnostics remain valid after the next batch, reader close and garbage collection. Never expose reused buffer storage without a lifetime mechanism that makes it safe.
-- [ ] **Cleanup:** define explicit close, finalization and use-after-close behavior. Release files and native buffers on success, errors and interrupts; cleanup must be safe when called more than once.
-- [ ] **Interrupts:** check at bounded safe points during long reads and conversions. HyperUuid's stack/R-owned-buffer assumptions do not cover growing arenas or file handles. Keep R error/interrupt long jumps out of live Rust frames and arrange cleanup for native resources.
-- [ ] **Limits:** check batch sizes, allocation arithmetic, core span limits and growth requests before allocation. Define oversized-record/workbook errors and cancellation behavior; no unchecked narrowing of lengths or coordinates.
-- [ ] **Headers:** define empty/duplicate name handling and preserve original names alongside any repaired names. Named plans must not silently select an unintended duplicate.
+- [ ] **HyperTabular, coordinates:** define source row versus output row, source column versus projected column, sheet identity and index bases. Preserve coordinates through skip, header selection, ranges, blank-row filtering and batches. Existing `Batch::line()` supplies source lines/rows but does not settle the whole contract.
+- [ ] **HyperTabular, spans:** identify whether a span indexes original file bytes, decoded cell bytes or unescaped text. Decoding and unescaping change offsets; retain mappings if original-file spans are promised. Define unavailable spans for typed workbook cells and host conversion faults.
+- [ ] **HyperTabular, ownership:** returned R vectors and diagnostics remain valid after the next batch, reader close and garbage collection. Never expose reused buffer storage without a lifetime mechanism that makes it safe.
+- [ ] **HyperTabular, cleanup:** define explicit close, finalization and use-after-close behavior. Release files and native buffers on success, errors and interrupts; cleanup must be safe when called more than once.
+- [ ] **HyperTabular, interrupts:** check at bounded safe points during long reads and conversions. HyperUuid's stack/R-owned-buffer assumptions do not cover growing arenas or file handles. Keep R error/interrupt long jumps out of live Rust frames and arrange cleanup for native resources.
+- [ ] **HyperTabular, limits:** check batch sizes, allocation arithmetic, core span limits and growth requests before allocation. Define oversized-record/workbook errors and cancellation behavior; no unchecked narrowing of lengths or coordinates.
+- [ ] **HyperTabular, headers:** define empty/duplicate name handling and preserve original names alongside any repaired names. Named plans must not silently select an unintended duplicate.
+
+- [ ] **HyperTabular, HyperCast rows 3, 7 and 8 reach it:** strict grouping and the `NumFormat` pattern, the fault `detail` and the new date shapes are exposed by HyperTabular's plan columns, `problems()` and corpus, in every binding, not only in HyperCast's own casts. Row 10 (NBSP trimming) needs no surface.
 
 ## CRAN gates
 
 These gates are additional to the shared HyperUuid packaging work. CRAN review remains discretionary; passing this list is our submission criterion, not a guarantee of acceptance.
 
-- [ ] **R dependency architecture:** record whether HyperTabular imports HyperCast's R functions/classes, uses a registered native API, or vendors its Rust crate independently. A Cargo dependency alone does not require an R package dependency. Declare actual R dependencies and compatible versions; preserve crate attribution either way.
-- [ ] **Submission order:** HyperCast goes first. If HyperTabular declares an R dependency on it, that dependency must be available on CRAN before HyperTabular's submission; budget the extra review cycle.
-- [ ] **Plan for the lockstep.** Every HyperCast update is checked against HyperTabular, and a break blocks the update until both are fixed. The Rust lockstep already works this way.
-- [ ] **Tarball size and fixtures:** measure the built archive. CRAN's general data/documentation guideline is 5 MB; source tarballs should if possible stay below 10 MB. Keep a deliberate fixture manifest covering all shipped features; missing required fixtures fail tests. Do not broadly skip absent files. Verify the actual R dependency/vendor tree rather than assuming the plain core's tree.
-- [ ] **Panic boundary:** rerun the no-panic proof for affected exports and record its scope/toolchain. The current `no_std` artifacts abort on panic; `catch_unwind` cannot catch an abort. A C shim over proven exports may retain HyperUuid's architecture. Any allocating Rust wrapper needs separate containment of unwind-capable code before an FFI boundary. Do not claim the kernel proof covers the whole wrapper. Inspect the actual R shared library and explain relevant compiled-code findings in `cran-comments.md`.
-- [ ] **Release cadence.** CRAN asks for updates no more than every one to two months, so R ships a batch of releases, not every tag.
-- [ ] **HyperUuid's lessons first.** Carry every applicable reviewer comment into both packages before submission. The shared checklist is [HyperUuid/docs/CRAN_CHECKLIST.md](../../HyperUuid/docs/CRAN_CHECKLIST.md).
+- [x] **both, R dependency architecture:** record whether HyperTabular imports HyperCast's R functions/classes, uses a registered native API, or vendors its Rust crate independently. Declare actual R dependencies and compatible versions; preserve crate attribution either way.
+  _HyperTabular's `r/DESCRIPTION` has `Imports: hypercast (>= 1.1.0)`, and `r/tools/vendor.sh` vendors the core and the `hypercast` crate into `src/rust/vendor.tar.xz`, with `inst/AUTHORS` generated from it._
+- [ ] **both, submission order:** HyperCast goes first. HyperTabular declares an R dependency on it, so HyperCast must be available on CRAN before HyperTabular's submission; budget the extra review cycle.
+- [ ] **both, lockstep.** Every HyperCast update is checked against HyperTabular, and a break blocks the update until both are fixed. The Rust lockstep already works this way; the R side needs the guard and the reverse-dependency step below.
+- [ ] **HyperCast, R-level compatibility guard:** a check that HyperTabular's R package still loads and passes against the HyperCast it imports, and an explicit failure when the versions disagree.
+- [ ] **both, reverse dependency:** a scripted step that checks hypertabular against a candidate hypercast, run before any hypercast submission.
+- [ ] **both, HyperUuid's feedback is a gate.** Carry every reviewer comment into both packages before submission, or record that CRAN said there are none. The owner's answer decides how this closes. The shared checklist is [HyperUuid/docs/CRAN_CHECKLIST.md](../../HyperUuid/docs/CRAN_CHECKLIST.md).
+- [ ] **both, tarball size and fixtures:** measure the built archive against CRAN's 5 MB guideline and the 10 MB ceiling. Keep a deliberate fixture manifest covering all shipped features, with `r_corpus` extended by the new fixtures; a missing required fixture fails the tests and is not skipped. Verify the actual R dependency/vendor tree.
+- [ ] **both, panic boundary:** rerun the no-panic proof for affected exports, including the new ones, and record its scope and toolchain. The current `no_std` artifacts abort on panic; `catch_unwind` cannot catch an abort. A C shim over proven exports may retain HyperUuid's architecture. Do not claim the kernel proof covers the whole wrapper. Inspect the actual R shared library and explain relevant compiled-code findings in `cran-comments.md`.
+- [ ] **both, `rchk`:** run on the built packages; record the result in `cran-comments.md`.
+- [ ] **both, `gctorture`:** the R lifecycle tests run under `gctorture`.
+- [ ] **both, valgrind:** run the tests and examples under valgrind.
+- [ ] **both, UBSAN and ASAN:** build and run the tests with the sanitizers.
+- [ ] **both, LTO build:** build and check with link-time optimisation on, as CRAN's checks do.
+- [ ] **both, noSuggests check:** `R CMD check` with `_R_CHECK_DEPENDS_ONLY_` set, so no suggested package is needed.
+- [ ] **both, C and ISO-8859-15 locales:** run the tests in each.
+- [ ] **both, check time:** measure `R CMD check` for each package against CRAN's ten-minute norm.
+- [ ] **HyperTabular, `cran-comments.md`:** brought up to HyperCast's level: R-devel, the R 4.2 floor, Windows, the r-oldrel section and the Unicode sentence.
+- [ ] **both, r-oldrel (D9):** the Rust floor stays 1.89, so the two r-oldrel macOS flavors (rustc 1.84.1) keep failing at `configure`, because both crates are edition 2024 and need Rust 1.85. Explain it in each `cran-comments.md`; revisit only if CRAN's HyperUuid feedback says otherwise.
+- [ ] **both, win-builder, mac-builder, rhub and checktor:** run on the exact tarballs. Those that upload or email the maintainer are the owner's to run.
+- [ ] **both, release cadence.** CRAN asks for updates no more than every one to two months, so R ships a batch of releases, not every tag.
 
 ## Evidence required to close the gate
 
-- [ ] **Core regression evidence:** corpus vectors cover every changed behavior and boundary; every scanner engine and binding agrees. Preserve allocation-free and no-panic checks and fault-span invariants.
-- [ ] **R value boundaries:** test integer extrema/sentinels, values around 2^53, decimal precision, temporal extremes, civil versus instant conversions, U+0000, invalid encodings and missingness. Verify standalone casts and table columns agree.
-- [ ] **Reader lifecycle:** test interrupted/erroring reads, repeated close, garbage collection, retained batches, header edge cases and coordinates after filtering/ranges. Exercise large-input limits with bounded fixtures.
-- [ ] **ABI and coexistence:** test old supported interfaces, new diagnostics/options, and both R packages loaded in either order. Verify symbols and the declared dependency architecture on supported platforms.
-- [ ] **Submission artifacts:** run `R CMD check --as-cran` on the exact source tarballs with current R-devel, plus Windows and macOS coverage. Resolve errors/warnings and explain remaining NOTEs. Record environments, commands, results, archive sizes and fixture coverage in `cran-comments.md`; inherited HyperUuid results do not substitute for these packages' checks.
+- [ ] **both, core regression evidence:** corpus vectors cover every changed behavior and boundary; every scanner engine and binding agrees. Preserve allocation-free and no-panic checks and fault-span invariants.
+- [ ] **both, R value boundaries:** test integer extrema/sentinels, values around 2^53, decimal precision, temporal extremes, civil versus instant conversions, U+0000, invalid encodings and missingness. Verify standalone casts and table columns agree.
+- [ ] **HyperTabular, reader lifecycle:** test interrupted/erroring reads, repeated close, garbage collection, retained batches, header edge cases and coordinates after filtering/ranges. Exercise large-input limits with bounded fixtures.
+- [ ] **both, ABI and coexistence:** test old supported interfaces, new diagnostics/options, and both R packages loaded in either order. Verify symbols and the declared dependency architecture on supported platforms.
+- [ ] **both, submission artifacts:** run `R CMD check --as-cran` on the exact source tarballs with current R-devel, plus Windows and macOS coverage. Resolve errors/warnings and explain remaining NOTEs. Record environments, commands, results, archive sizes and fixture coverage in `cran-comments.md`; inherited HyperUuid results do not substitute for these packages' checks.
 
 ## References
 
