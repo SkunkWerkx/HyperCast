@@ -178,28 +178,25 @@ cgo binding, before the translated core, measured 141 vs 125 ns on linux-x64.
 
 ## Go and R, on an Apple M6
 
-Measured on an Apple M6 (Mac18,5, 12 cores) under macOS, Go on 2026-11-02 and R on 2026-11-01,
+Measured on an Apple M6 (Mac18,5, 12 cores) under macOS, Go on 2026-11-05 and R on 2026-11-01,
 a different machine and OS from every table above, so they are not comparable to the linux-x64
 numbers.
 
 **Go** 1.27.3, `go test -bench=. -benchmem` from `go/`, six runs of each binding interleaved in
-one session, benchstat medians, on the core with the checked doors. The cgo column is the binding
+one session, benchstat medians, on the core with the checked doors and the white-space trim. The cgo column is the binding
 the translated core replaced, linked against a static archive built from the same `rust/` and run
 with the same benchmark file in the same session; other work shared the machine, so the spread is
 printed in [the Go README](../go/README.md#benchmarks), which has every row. A selection:
 
 | Door | translated core | cgo binding | | stdlib |
 | --- | ---: | ---: | --- | ---: |
-| `Bool` | 10.2 ns | 24.2 ns | 2.4x faster | 1.3 ns `strconv.ParseBool` |
-| `I32` | 34.6 ns | 45.1 ns | 1.3x faster | 3.5 ns `strconv.Atoi` |
-| `I32` (grouped), 12 goroutines, aggregate | 18.4 ns | 7.2 ns | **2.6x slower** | — |
-| `I32("1,234x567")`, rejected | 94.8 ns, 1 alloc | 65.9 ns, 1 alloc | **1.4x slower** | 14.3 ns, 2 allocs `strconv.Atoi("1234x567")` |
-| `Timestamp` | 33.4 ns | 35.3 ns | ~ | 21.3 ns `time.Parse(RFC3339Nano)` |
-| `DateTime` (`1/7/2026 3:04 PM`) | 48.8 ns | 32.4 ns | **1.5x slower** | 47.2 ns `time.Parse` w/ layout |
-| `DateOnlyOrdered` (`1/7/2026`) | 15.8 ns | 26.5 ns | 1.7x faster | 28.2 ns `time.Parse` w/ layout |
-
-The 2026-11-01 session, on the core before the checked doors, measured each of these rows within
-this session's spread; its contention row read 19.7 against 6.9 ns, 2.9x slower.
+| `Bool` | 15.3 ns | 23.3 ns | 1.5x faster | 1.4 ns `strconv.ParseBool` |
+| `I32` | 40.4 ns | 42.9 ns | 1.1x faster | 3.6 ns `strconv.Atoi` |
+| `I32` (grouped), 12 goroutines, aggregate | 20.4 ns | 6.8 ns | **3.0x slower** | — |
+| `I32("1,234x567")`, rejected | 107 ns, 1 alloc | 64.2 ns, 1 alloc | **1.7x slower** | 14.6 ns, 2 allocs `strconv.Atoi("1234x567")` |
+| `Timestamp` | 40.5 ns | 33.8 ns | **1.2x slower** | 20.8 ns `time.Parse(RFC3339Nano)` |
+| `DateTime` (`1/7/2026 3:04 PM`) | 39.2 ns | 31.4 ns | **1.2x slower** | 46.6 ns `time.Parse` w/ layout |
+| `DateOnlyOrdered` (`1/7/2026`) | 21.8 ns | 24.9 ns | 1.1x faster | 28.1 ns `time.Parse` w/ layout |
 
 Every success row is 0 B and 0 allocations in both bindings. Most Go doors still lose per call
 to Go's stdlib, whose parsers are excellent; the binding earns its keep on the vocabulary, the

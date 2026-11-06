@@ -358,10 +358,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a one-off instance, its one allocation, and the new `MaxText` (2,147,483,647 on a 64-bit
   host) bounds it: a longer text panics as a caller bug. Calls run on a primary instance when
   its lock is free, else on a pooled one. Every door stays at 0 allocations on success, now
-  under TinyGo too. On an Apple M6 (2026-11-02, Go 1.27.3, six interleaved runs each), single
-  calls are mostly faster than the cgo binding (`Bool` 10.2 against 24.2 ns, `I32` 34.6
-  against 45.1); the losses: `I32` on 12 goroutines 18.4 against 7.2 ns aggregate (2.6x), a
-  rejected cast 1.4x, the civil date-time doors 1.5x, and the ISO span door 2%. *(Go)*
+  under TinyGo too. On an Apple M6 (2026-11-05, Go 1.27.3, six interleaved runs each), it is
+  mixed against the cgo binding: `Bool` 15.3 against 23.3 ns, `I32` 40.4 against 42.9; the losses:
+  `I32` on 12 goroutines 20.4 against 6.8 ns aggregate (3.0x), a rejected cast 1.7x, the date-time
+  door with declared periods 1.5x, a declaration of every symbol 1.3x, and 1.1x to 1.2x on the
+  grouped integers, `Detect`, `Timestamp`, the ISO span door and the plain date-time door. *(Go)*
+- **Go — the core is translated with wasm2go's `-unsafe`.** Against the same wasm translated
+  without it, every door is 2% to 37% faster except the contended one, which is level, and no
+  door allocates more. Every memory access is still bounds-checked, which
+  `go/internal/core/bounds_test.go` now pins, and the whole suite runs on s390x under QEMU to prove
+  the big-endian path. *(Go)*
 
 - **Java runs on JDK 21.** The jar is multi-release: its base reaches the core through JNI,
   from a library built from the core for every platform, and JDK 25+ keeps FFM. The API,
