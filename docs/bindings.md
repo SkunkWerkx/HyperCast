@@ -159,6 +159,7 @@ everywhere except R, which counts from 1.
 | Construct | `NumFormat::new(decimal_sep, group_sep, flags)`, `with_separators(..)` | `new NumFormat(decimalSeparator, groupSeparator, styles[, currencySymbol])` with init-only properties | `new NumFormat(decimalSeparator, groupSeparator, styles[, currencySymbol])`, `with*` | `NumFormat{DecimalSep, GroupSep, Styles, Currency, ...}` literal | `NumFormat(decimalSeparator:groupSeparator:styles:currencySymbol:...)` | `new NumFormat($decimalSep, $groupSep, $flags, $currency = '', ...)` (named arguments) | `NumFormat.new(decimal_sep:, group_sep:, flags:, currency: "", ...)`, `with` | `NumFormat(decimal_sep, group_sep, flags, currency="", *, ...)` | `NumFormat.declare({ decimalSep, groupSep, flags, currency?, ... })` → `Declaration<NumFormat>` (`Success<NumFormat> \| Refusal`) | `num_format(decimal_sep = ".", group_sep = ",", flags = num_styles[["all"]], currency = "", ...)` | `NumFormat::declare(Fields{decimal_sep, group_sep, styles, currency, ...})` → `std::optional<NumFormat>` |
 | Invariant | `NumFormat::INVARIANT` (also `Default`) | `NumFormat.Invariant` | `NumFormat.INVARIANT` | `Invariant` | `NumFormat.invariant` | `NumFormat::invariant()` | `NumFormat::INVARIANT` | `NumFormat.INVARIANT` | `NumFormat.invariant()` (also what a left-out format means) | `num_format()` | `NumFormat::invariant()` |
 | Detect | `NumFormat::DETECT` | `NumFormat.Detect` | `NumFormat.DETECT` | `Detect` | `NumFormat.detect` | `NumFormat::detect()` | `NumFormat::DETECT` | `NumFormat.DETECT` | `NumFormat.detect()` | `num_format_detect()` | `NumFormat::detect()` |
+| Equal when declaring the same thing | `==` (`Eq`) | `==`, `Equals`, `GetHashCode` | `equals`, `hashCode` | `==` (comparable, a map key) | `==` (`Hashable`) | `==` | `==`, `eql?`, `hash` | `==`, `hash()` | `a.equals(b)` (`===` is identity) | `identical(a, b)` | `operator==` |
 | Decimal separator [^symbol] | `decimal_sep` (`Symbol<8>`) | `DecimalSeparator` (`string`) | `decimalSeparator()` (`String`) | `DecimalSep` (`string`) | `decimalSeparator` (`String`) | `decimalSep` (`string`) | `decimal_sep` | `decimal_sep` | `decimalSep` (`string`) | `decimal_sep` | `decimal_sep` (`std::string_view`) |
 | Group separator [^symbol] | `group_sep` (`Symbol<8>`) | `GroupSeparator` (`string`) | `groupSeparator()` (`String`) | `GroupSep` (`string`) | `groupSeparator` (`String`) | `groupSep` (`string`) | `group_sep` | `group_sep` | `groupSep` (`string`) | `group_sep` | `group_sep` (`std::string_view`) |
 | Currency separators (read once the declared symbol is found; empty keeps the number pair) | `currency_decimal_sep`, `currency_group_sep` (`with_currency_separators`) | `CurrencyDecimalSeparator`, `CurrencyGroupSeparator` | `currencyDecimalSeparator()`, `currencyGroupSeparator()` | `CurrencyDecimalSep`, `CurrencyGroupSep` | `currencyDecimalSeparator`, `currencyGroupSeparator` | `currencyDecimalSep`, `currencyGroupSep` | `currency_decimal_sep`, `currency_group_sep` | `currency_decimal_sep`, `currency_group_sep` | `currencyDecimalSep`, `currencyGroupSep` | `currency_decimal_sep`, `currency_group_sep` | `currency_decimal_sep`, `currency_group_sep` |
@@ -189,6 +190,18 @@ everywhere except R, which counts from 1.
 | Currency (`1 << 6`) | `NumFormat::CURRENCY` | `NumStyles.Currency` | `NumFormat.STYLE_CURRENCY` | `CurrencySymbol` | `.currency` | `NumFormat::CURRENCY` | `HyperCast::CURRENCY` | `NumFormat.CURRENCY` | `NumStyles.Currency` | `num_styles[["currency"]]` | `NumStyles::currency` |
 | Trailing sign (`1 << 7`; not in All; set by each bridge from the culture's negative pattern) | `NumFormat::TRAILING_SIGN` | `NumStyles.TrailingSign` | `NumFormat.STYLE_TRAILING_SIGN` | `TrailingSign` | `.trailingSign` | `NumFormat::TRAILING_SIGN` | `HyperCast::TRAILING_SIGN` | `NumFormat.TRAILING_SIGN` | `NumStyles.TrailingSign` | `num_styles[["trailing_sign"]]` | `NumStyles::trailing_sign` |
 | All leniences (not separator detect) | `NumFormat::ALL` | `NumStyles.All` | `NumFormat.STYLE_ALL` | `AllStyles` | `.all` | `NumFormat::ALL` | `HyperCast::ALL_STYLES` | `NumFormat.ALL` | `NumStyles.All` | `num_styles[["all"]]` | `NumStyles::all` |
+
+### Grouping policy
+
+Western is the default everywhere, and it's what a format with no declared policy reads. Indian is
+declared. Value 256 is retired permanently and never reused: [docs/grouping.md](grouping.md) has the
+rule, every entry point that refuses it, and the shapes neither policy reads.
+
+| Concept | Rust | C# | Java | Go | Swift | PHP | Ruby | Python | TypeScript | R | C++ |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Western (`0`) | `Grouping::Western` | `NumGrouping.Western` | `Grouping.WESTERN` | `GroupingWestern` | `.western` | `NumFormat::GROUPING_WESTERN` | `:western` | `NumFormat.GROUPING_WESTERN` | `Grouping.Western` | `"western"` | `Grouping::western` |
+| Indian (`512`) | `Grouping::Indian` | `NumGrouping.Indian` | `Grouping.INDIAN` | `GroupingIndian` | `.indian` | `NumFormat::GROUPING_INDIAN` | `:indian` | `NumFormat.GROUPING_INDIAN` | `Grouping.Indian` | `"indian"` | `Grouping::indian` |
+| Choosing one on a format | `.with_grouping(p)` | `with { Grouping = p }` | `.withGrouping(p)` | `.WithGrouping(p)` | `.withGrouping(p)` | `->withGrouping($p)` | `.with(grouping: p)` | `.with_grouping(p)` | `.withGrouping(p)` | `num_format_with_grouping(f, p)` | `.with_grouping(p)` |
 
 ## Declared enums
 
@@ -368,7 +381,9 @@ when the absence is deliberate.
     picks the concrete door itself.
 
 [^r-nul]: An R string cannot hold U+0000, which the core accepts, so `cast_char` delivers it as
-    `ok` with `NA` as its `value`, which no missing input or fault shares (`r/R/doors.R`).
+    `ok` with `NA` as its `value`, which no missing input or fault shares, and its `code_point`
+    column holds every character exactly (`r/R/doors.R`). `cast_text` does the same for text it
+    can't hold, with `raw = TRUE` for the exact bytes (`r/README.md`, Values).
 
 [^ts-no-bridge]: The TypeScript binding ships no bridge from `Intl.NumberFormat` or `Intl.DateTimeFormat`:
     formats, orders and day periods are declared through `NumFormat.declare`, the

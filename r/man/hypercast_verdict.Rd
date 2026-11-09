@@ -47,6 +47,11 @@ case.
 A missing row is an \code{NA} element of the input, which no door reads: \code{NA} in, \code{NA} out.
 \code{\link[=optional]{optional()}} turns \code{empty} faults into missing rows too.
 
+\code{ok} describes the core's acceptance. A value it accepted that R can't represent is \code{ok} with
+\code{value = NA}, so checking \code{ok} alone doesn't guarantee a usable character value: \code{\link[=cast_char]{cast_char()}}'s
+\code{U+0000}, whose \code{code_point} column is its exact output, and text with U+0000 inside it or over
+\code{INT_MAX} bytes, whose exact output is \code{\link[=cast_text]{cast_text()}}'s \code{raw = TRUE}.
+
 \code{detail} and \code{detail_code} come last, after the five columns every earlier release had in
 this order, so code that reads a verdict by name or by position keeps working; binding a
 verdict made before this column existed to one made after is a binding of different
@@ -61,9 +66,9 @@ reports a span in UTF-8 bytes; for text counted in characters it is re-expressed
 typed door, which reads a number rather than text, faults over an empty span (\code{0}, \code{0}).
 
 Where the value column cannot carry everything the core returned, the exact parts follow
-it as columns of their own: \code{seconds} and \code{nanos} for an instant and a duration, \code{nanos}
-for a time of day, \code{date} and \code{nanos_of_day} for a civil date-time. See the doors for each
-value's type.
+it as columns of their own: \code{code_point} for a character, \code{seconds} and \code{nanos} for an instant
+and a duration, \code{nanos} for a time of day, \code{date} and \code{nanos_of_day} for a civil date-time. See
+the doors for each value's type.
 
 A verdict is a data frame, so it subsets, binds and converts as one; \code{\link[=as.data.frame]{as.data.frame()}}
 drops the class. \code{is_ok()} is the \code{ok} column, and \code{faults()} the faulted rows, with

@@ -119,8 +119,9 @@ unsafe fn read_sized<T: Copy>(
 }
 
 /// The `flags` bits a 1.0 export reads: bits 8 and up (the grouping policy, and whatever a
-/// later version defines) are ignored, so these exports parse exactly as 1.0 did, with legacy
-/// grouping.
+/// later version defines) are ignored, so these exports always parse with Western grouping.
+/// That is 1.0's layout, and 1.1's default policy: these exports refuse the grouped shapes
+/// Western does (`0,125`, `12,34`, `1234,567`, `1,23,456`), which 1.0 read.
 const FLAGS_1_0: u32 = 0xFF;
 
 /// The format a 1.0 export parses with: the caller's layout with `flags` cut to
@@ -152,10 +153,10 @@ unsafe fn resolve_format(
             .resolve();
     }
     // SAFETY: per the function contract.
-    let mut legacy =
+    let mut masked =
         *unsafe { read_sized(format, RawNumFormat::ZERO, RawNumFormat::MIN_SIZE, scratch) }?;
-    legacy.format.flags &= FLAGS_1_0;
-    scratch.write(legacy).resolve()
+    masked.format.flags &= FLAGS_1_0;
+    scratch.write(masked).resolve()
 }
 
 /// # Safety
@@ -996,7 +997,7 @@ unsafe fn deliver<T>(
 }
 
 /// The format a detailed export parses with, judged by 1.1's rules ([`RawNumFormat::resolve`]
-/// unmasked: grouping policy `11` and an undefined `flags` bit are refused). Null is the
+/// unmasked: the retired bit 8, so 351 and 863, and an undefined `flags` bit are refused). Null is the
 /// invariant format.
 ///
 /// # Safety
@@ -1088,8 +1089,8 @@ fn text_span_detailed(input: &[u8]) -> Result<RawSpan, Failure> {
 ///
 /// Each declaration is read only by the doors it is for, and a pointer a door ignores is
 /// never read: `format` by the numeric doors 2 to 11 and 19 (null for the invariant format,
-/// legacy grouping), judged by 1.1's rules, so grouping policy 3 and any `flags` bit 1.1
-/// doesn't define are refused; `periods` by 21 (null for English); `date_options` by 13, 15,
+/// Western grouping), judged by 1.1's rules, so bit 8 and any other `flags` bit 1.1 doesn't
+/// define are refused; `periods` by 21 (null for English); `date_options` by 13, 15,
 /// 20 and 21 (null for none); and the month vocabulary at `vocab_ptr`/`vocab_len` by 20 and 21
 /// only, packed as each entry's month byte (1 to 12), a little-endian `uint32_t` byte length,
 /// then that many UTF-8 bytes, a length of 0 meaning none whatever the pointer. The

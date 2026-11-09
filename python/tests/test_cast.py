@@ -438,6 +438,35 @@ def test_equal_separators_are_a_caller_bug():
         NumFormat(".", ".", NumFormat.ALL)
 
 
+def test_a_format_equals_and_hashes_by_what_it_declares():
+    """Two formats declaring the same thing are equal and one ``dict`` key, however each was
+    made, as the core compares them; any field or the grouping policy apart, they differ."""
+    built = NumFormat(".", ",", NumFormat.ALL)
+    assert built == NumFormat.INVARIANT
+    assert built is not NumFormat.INVARIANT
+    assert hash(built) == hash(NumFormat.INVARIANT)
+    indian = built.with_grouping(NumFormat.GROUPING_INDIAN)
+    back = indian.with_grouping(NumFormat.GROUPING_WESTERN)
+    assert back == built and hash(back) == hash(built)
+    assert indian != built
+    assert NumFormat(".", ",", NumFormat.ALL, grouping=NumFormat.GROUPING_INDIAN) == indian
+    assert {built: "one", NumFormat.INVARIANT: "two", indian: "three"} == {
+        built: "two",
+        indian: "three",
+    }
+    for other in (
+        NumFormat(",", ".", NumFormat.ALL),
+        NumFormat(".", ",", NumFormat.GROUPING),
+        NumFormat(".", ",", NumFormat.ALL, "$"),
+        NumFormat(".", ",", NumFormat.ALL, minus_sign="\u2212"),
+        NumFormat(".", ",", NumFormat.ALL, digit_zero="\u0660"),
+        NumFormat.DETECT,
+    ):
+        assert other != built
+    assert built != built.packed
+    assert built != object()
+
+
 def test_separators_are_one_to_eight_utf8_bytes():
     """A separator is 1 to 8 UTF-8 bytes with no ASCII digit, the core's own rule: the
     comma-space and apostrophe-space groupings some feeds carry, read as declared.
@@ -830,11 +859,11 @@ def test_a_format_packs_as_the_core_reads_it():
     packed = NumFormat(",", ".", NumFormat.ALL, "€").packed
     assert len(packed) == 92
     assert packed[0:4] == (92).to_bytes(4, "little")
-    # The flags word carries the grouping policy in bits 8 and 9: strict Western by default.
-    assert packed[4:8] == (NumFormat.ALL | NumFormat.GROUPING_WESTERN).to_bytes(4, "little")
-    legacy = NumFormat(",", ".", NumFormat.ALL, "€", grouping=NumFormat.GROUPING_LEGACY).packed
-    assert legacy[4:8] == NumFormat.ALL.to_bytes(4, "little")
-    assert legacy[:4] + legacy[8:] == packed[:4] + packed[8:]
+    # The flags word carries the grouping policy: none for Western, the default, bit 9 for Indian.
+    assert packed[4:8] == NumFormat.ALL.to_bytes(4, "little")
+    indian = NumFormat(",", ".", NumFormat.ALL, "€", grouping=NumFormat.GROUPING_INDIAN).packed
+    assert indian[4:8] == (NumFormat.ALL | NumFormat.GROUPING_INDIAN).to_bytes(4, "little")
+    assert indian[:4] + indian[8:] == packed[:4] + packed[8:]
     assert packed[8:12] == bytes(4)
     assert packed[12:21] == _symbol(",", 8)
     assert packed[21:30] == _symbol(".", 8)
@@ -868,7 +897,7 @@ def test_a_format_packs_as_the_core_reads_it():
     assert full[75:92] == _symbol("د.إ.", 16)
     # The README's own example, byte for byte.
     assert NumFormat(".", ",", NumFormat.ALL, "$").packed == (
-        b"\x5c\x00\x00\x00_\x01\x00\x00\x00\x00\x00\x00"
+        b"\x5c\x00\x00\x00_\x00\x00\x00\x00\x00\x00\x00"
         + b".\x00\x00\x00\x00\x00\x00\x00\x01"
         + b",\x00\x00\x00\x00\x00\x00\x00\x01"
         + bytes(45)

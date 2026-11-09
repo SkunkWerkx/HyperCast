@@ -65,13 +65,14 @@ header = """
 // door code, with the parameter a door declares (0 where it declares none), and write a
 // HyperCastRawFaultDetail, whose `detail` names what failed (a code a caller doesn't know is
 // still a failure with a usable reason and span). They judge a format by 1.1's rules, so
-// grouping policy HyperCastNumFormat_GROUPING_POLICY and any undefined flag bit are -1 there,
-// while every other export ignores flag bits 8 and up and parses with legacy grouping. The
+// flag bit 8 (a policy field of 1 or 3) and any other undefined flag bit are -1 there, while
+// every other export ignores flag bits 8 and up and parses with Western grouping. The
 // date doors take HyperCastRawDateOptions and a month vocabulary through cast_detailed only.
-// Every argument is validated before anything is written, and -1 writes nothing. A strict
-// grouping policy needs a 1.1 core: a 1.0 core has no detailed exports and ignores the policy
-// bits, so before declaring one check that the core has the same major version and a minor at
-// least the one the caller needs, the patch ignored: `(hypercast_version() >> 16) == 1 &&
+// Every argument is validated before anything is written, and -1 writes nothing. Reading by
+// 1.1's grouping rules needs a 1.1 core: a 1.0 core has no detailed exports, ignores the policy
+// bits and reads a group separator between any two digits, so before relying on either check
+// that the core has the same major version and a minor at least the one the caller needs, the
+// patch ignored: `(hypercast_version() >> 16) == 1 &&
 // ((hypercast_version() >> 8) & 0xFF) >= 1`."""
 
 [parse]

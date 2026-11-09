@@ -54,13 +54,14 @@
 // door code, with the parameter a door declares (0 where it declares none), and write a
 // HyperCastRawFaultDetail, whose `detail` names what failed (a code a caller doesn't know is
 // still a failure with a usable reason and span). They judge a format by 1.1's rules, so
-// grouping policy HyperCastNumFormat_GROUPING_POLICY and any undefined flag bit are -1 there,
-// while every other export ignores flag bits 8 and up and parses with legacy grouping. The
+// flag bit 8 (a policy field of 1 or 3) and any other undefined flag bit are -1 there, while
+// every other export ignores flag bits 8 and up and parses with Western grouping. The
 // date doors take HyperCastRawDateOptions and a month vocabulary through cast_detailed only.
-// Every argument is validated before anything is written, and -1 writes nothing. A strict
-// grouping policy needs a 1.1 core: a 1.0 core has no detailed exports and ignores the policy
-// bits, so before declaring one check that the core has the same major version and a minor at
-// least the one the caller needs, the patch ignored: `(hypercast_version() >> 16) == 1 &&
+// Every argument is validated before anything is written, and -1 writes nothing. Reading by
+// 1.1's grouping rules needs a 1.1 core: a 1.0 core has no detailed exports, ignores the policy
+// bits and reads a group separator between any two digits, so before relying on either check
+// that the core has the same major version and a minor at least the one the caller needs, the
+// patch ignored: `(hypercast_version() >> 16) == 1 &&
 // ((hypercast_version() >> 8) & 0xFF) >= 1`.
 
 #ifndef HYPERCAST_H
@@ -157,7 +158,7 @@ typedef struct HyperCastCurrencySymbol {
 typedef struct HyperCastNumFormat {
   // Bitwise OR of the `GROUPING`/`PARENS`/`EXPONENT`/`RADIX_PREFIX`/`PERCENT`/`CURRENCY`/
   // `TRAILING_SIGN` flags, plus the `SEPARATOR_DETECT` policy and, in bits 8 and 9, the
-  // grouping policy (`GROUPING_LEGACY`, `GROUPING_WESTERN` or `GROUPING_INDIAN`).
+  // grouping policy: no bits for `GROUPING_WESTERN`, `GROUPING_INDIAN` when declared.
   uint32_t flags;
   // Native digits read beside ASCII `0`–`9`. [`NativeDigits::NONE`] declares none.
   HyperCastNativeDigits digits;
@@ -190,11 +191,10 @@ typedef struct HyperCastNumFormat {
   // set. [`CurrencySymbol::NONE`] declares nothing.
   struct HyperCastCurrencySymbol currency;
 } HyperCastNumFormat;
-// Permit `group_sep` between digits. Under the legacy grouping policy group sizes are not
-// validated — a separator must simply sit between two digits, HyperCast's own
-// deterministic rule where .NET's `AllowThousands` deferred to per-culture quirks; a
-// strict policy ([`GROUPING_WESTERN`](Self::GROUPING_WESTERN),
-// [`GROUPING_INDIAN`](Self::GROUPING_INDIAN)) judges every group.
+// Permit `group_sep` between digits. The grouping policy
+// ([`GROUPING_WESTERN`](Self::GROUPING_WESTERN), the default, or
+// [`GROUPING_INDIAN`](Self::GROUPING_INDIAN)) judges every group, HyperCast's own
+// deterministic rule where .NET's `AllowThousands` deferred to per-culture quirks.
 #define HyperCastNumFormat_GROUPING (1 << 0)
 // Permit accounting parentheses as negation: `(1,234)` is -1234.
 #define HyperCastNumFormat_PARENS (1 << 1)
@@ -216,8 +216,10 @@ typedef struct HyperCastNumFormat {
 // exactly 3 digits right is the decimal only when the integer part is exactly `0`
 // (`0,785` is 0.785 — `0785` would be no number at all). Everything else — `12.185`,
 // `1,000` — is genuinely ambiguous between dialects and comes back `Malformed` at the
-// undecidable separator, never guessed. Covers the `.`/`,` pair only; space/NBSP
-// grouping still needs a declared format.
+// undecidable separator, never guessed. Only the numeral counts: a declared symbol's
+// separator is no separator (`Rs.1,234` is as ambiguous as `1,234`), and declared native
+// digits are digits (`١,٢٣٤` too). Covers the `.`/`,` pair only; space/NBSP grouping still
+// needs a declared format.
 #define HyperCastNumFormat_SEPARATOR_DETECT (1 << 5)
 // Permit the declared [`currency`](Self::currency) symbol at either edge of the
 // numeric body — leading (`$5`, `-$5`, `$ -5`) or trailing (`5 €`, `1.234,50 kr.`),
@@ -236,27 +238,30 @@ typedef struct HyperCastNumFormat {
 // is declared from a culture's pattern rather than assumed ([`SEPARATOR_DETECT`](Self::SEPARATOR_DETECT)
 // is a separator *policy*, not a lenience, and is deliberately not included either).
 #define HyperCastNumFormat_ALL (((((HyperCastNumFormat_GROUPING | HyperCastNumFormat_PARENS) | HyperCastNumFormat_EXPONENT) | HyperCastNumFormat_RADIX_PREFIX) | HyperCastNumFormat_PERCENT) | HyperCastNumFormat_CURRENCY)
-// Grouping policy `00`, legacy: a group separator anywhere between two digits, whatever
-// the group sizes (`12,34` is 1234). What a format declaring no policy has: the C ABI's
-// null format, a 1.0 layout, [`new`](Self::new) with no policy bits, and
-// [`INVARIANT`](Self::INVARIANT).
-#define HyperCastNumFormat_GROUPING_LEGACY 0
-// Grouping policy `01`, strict Western: once a numeral uses a group separator, its
-// integer part is groups of exactly three digits counted leftward from the decimal
-// separator (or the numeral's end), the leftmost group one to three. An ungrouped
-// numeral stays valid; grouping after the decimal separator or in an exponent never is.
-// Digits are counted as digits, native ones included, never bytes, and the rule holds for
-// the currency group separator and each space-like separator alike. A policy only
-// judges groups: with [`GROUPING`](Self::GROUPING) off, a group separator stays forbidden.
-#define HyperCastNumFormat_GROUPING_WESTERN (1 << 8)
-// Grouping policy `10`, strict Indian (lakh and crore): as
+// Grouping policy `00`, Western, what a format that records no policy has: the C ABI's
+// null format, a 1.0 layout, a 1.0 serialized payload, [`new`](Self::new) with no policy
+// bits, [`INVARIANT`](Self::INVARIANT) and [`DETECT`](Self::DETECT). Once a numeral uses a
+// group separator, its integer part is groups of exactly three digits counted leftward from
+// the decimal separator (or the numeral's end), the leftmost group one to three and not
+// starting with a zero (`0,125` and `007,000` are `Malformed`). An ungrouped numeral stays
+// valid (`0125`); grouping after the decimal separator or in an exponent never is. Digits
+// are counted as digits, native ones included, never bytes, and the rule holds for the
+// currency group separator and each space-like separator alike. A policy only judges
+// groups: with [`GROUPING`](Self::GROUPING) off, a group separator stays forbidden.
+#define HyperCastNumFormat_GROUPING_WESTERN 0
+// Grouping policy `10`, Indian (lakh and crore), only when declared: as
 // [`GROUPING_WESTERN`](Self::GROUPING_WESTERN), but the group next to the decimal
 // separator has three digits, every group to its left two, and the leftmost one or two
 // (`12,34,567`).
 #define HyperCastNumFormat_GROUPING_INDIAN (2 << 8)
-// The two policy bits, 8 and 9, within `flags`. Policy `11` is refused by
-// [`check`](Self::check). Set a policy with [`with_grouping`](Self::with_grouping), which
-// replaces the field.
+// The policy field, bits 8 and 9, within `flags`. Only `00` and `10` are policies. Value 256
+// (bit 8) is retired permanently and never reused, so an old `351` can never gain a meaning:
+// [`check`](Self::check) and [`validate`](Self::validate) refuse `01` and `11`, and a future
+// policy, such as four-digit grouping, takes a new bit from bit 10 up. Set a policy with
+// [`with_grouping`](Self::with_grouping), which can't name a bad one. [`new`](Self::new),
+// [`with_separators`](Self::with_separators) and the public fields can, because 1.0 gave them
+// a plain `u32`: a plain door reads such a format Western, and
+// [`check`](Self::check) and [`validate`](Self::validate) are what refuse it.
 #define HyperCastNumFormat_GROUPING_POLICY (3 << 8)
 
 // [`NumFormat`] as it crosses the ABI — the size-tagged layout of 0.9.0: a size word, then
@@ -783,8 +788,8 @@ int32_t cast_declared_decimal(const uint8_t *ptr, uintptr_t len, struct HyperCas
 //
 // Each declaration is read only by the doors it is for, and a pointer a door ignores is
 // never read: `format` by the numeric doors 2 to 11 and 19 (null for the invariant format,
-// legacy grouping), judged by 1.1's rules, so grouping policy 3 and any `flags` bit 1.1
-// doesn't define are refused; `periods` by 21 (null for English); `date_options` by 13, 15,
+// Western grouping), judged by 1.1's rules, so bit 8 and any other `flags` bit 1.1 doesn't
+// define are refused; `periods` by 21 (null for English); `date_options` by 13, 15,
 // 20 and 21 (null for none); and the month vocabulary at `vocab_ptr`/`vocab_len` by 20 and 21
 // only, packed as each entry's month byte (1 to 12), a little-endian `uint32_t` byte length,
 // then that many UTF-8 bytes, a length of 0 meaning none whatever the pointer. The

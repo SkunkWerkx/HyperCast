@@ -186,7 +186,7 @@ and the percent symbol, and a block of native digits. One rule governs all of th
 ASCII default is *always* read, and a declared symbol is read beside it. `-5` parses under
 every format, `−5` (U+2212) too once that minus is declared, and nothing that parsed under
 a sparser format stops parsing under a fuller one. `NumFormat.INVARIANT` is `.`/`,` with
-every default lenience on, strict Western grouping (below) and nothing else declared; `NumFormat.from(Locale)` fills every
+every default lenience on, Western grouping (below) and nothing else declared; `NumFormat.from(Locale)` fills every
 field from the locale's own `DecimalFormatSymbols`, so a US caller gets `$`, a German one
 `€`, an Estonian one its U+2212 minus and an Egyptian one `٠`–`٩`, `٫`, `٬` and `٪`:
 
@@ -256,63 +256,62 @@ the 25 Unicode `White_Space` code points; only a group separator may be or conta
 ASCII digit in any symbol, a currency symbol of at most 16 bytes with no white space at
 either end (inside is fine: CLDR's `F CFA`), a zero that starts a decimal digit block.
 
-### Grouping: strict Western by default
+### Grouping: Western by default
 
 `STYLE_GROUPING` lets a group separator in; the format's `Grouping` says how the groups are
 judged, declared apart from the styles (a style mask never carries a policy). The default,
 for every constructor and for `NumFormat.INVARIANT`, is `Grouping.WESTERN`: groups of exactly
 three digits counted leftward from the decimal separator, the leftmost one to three, so
-`1,234,567` reads and `12,34` is `MALFORMED` (an invalid group spans its separator and its
-digits, `,34`). `Grouping.INDIAN`, only when declared, is three digits beside the decimal
-separator, two to their left, the leftmost one or two (`12,34,567`). `Grouping.LEGACY` is
-1.0's rule, a separator anywhere between two digits. Ungrouped numerals are valid under all
-three; once a numeral uses a separator every group must conform (`1234,567` is `MALFORMED`);
+`1,234,567` reads and `1,23,456` is `MALFORMED` (an invalid group spans its separator and its
+digits, `,23`). `Grouping.INDIAN`, only when declared, is three digits beside the decimal
+separator, two to their left, the leftmost one or two (`1,23,456`, `12,34,567`), and refuses `1,234,567`.
+Ungrouped numerals are valid under both; `12,34` and `1234,567` are `MALFORMED` under both, and a first group can't start with a zero (`0,125` is `MALFORMED`, spanning
+`0`);
 there is no grouping after the decimal separator or in an exponent; and the rules count digits,
 native digits included, and apply to currency separators and to the interchangeable space-like
-separators. With `STYLE_GROUPING` off a separator is forbidden under every policy.
+separators. With `STYLE_GROUPING` off a separator is forbidden under both. A shape neither policy reads is `MALFORMED` under a declared format, `INVARIANT` or a bridge, never misread, while `NumFormat.DETECT` infers by the delimiter rule, so `1,2345` is 1.2345 there: [docs/grouping.md](https://github.com/SkunkWerkx/HyperCast/blob/master/docs/grouping.md#parked).
 
 ```java
-Cast.i32("12,34", NumFormat.INVARIANT); // Fault: MALFORMED at (2, 3), where 1.0 read 1234
-Cast.i32("12,34", NumFormat.INVARIANT.withGrouping(Grouping.LEGACY)); // 1234, as in 1.0
-Cast.i32("12,34,567", NumFormat.INVARIANT.withGrouping(Grouping.INDIAN)); // 1234567
+Cast.i32("1,23,456", NumFormat.INVARIANT); // Fault: MALFORMED at (1, 3)
+Cast.i32("1,23,456", NumFormat.INVARIANT.withGrouping(Grouping.INDIAN)); // 123456
 new NumFormat(".", ",", NumFormat.STYLE_ALL, Grouping.INDIAN); // the policy beside the styles
 ```
 
 `withGrouping` replaces the policy (never joins it with the old one) and `withStyles` and the
 other `with*` methods keep it. `NumFormat.grouping()` answers it, `styles()` the `STYLE_*`
-bits alone, and `flags()` the ABI word, the styles and the policy in bits 8 and 9. Bits that are
-no style are `IllegalArgumentException` at construction, as the policy `3 << 8` is for
-`Grouping.of`.
+bits alone, and `flags()` the ABI word, the styles and `INDIAN`'s 512. Bits that are
+no style are `IllegalArgumentException` at construction, as 256 and 768 are for
+`Grouping.of`: bit 8 is retired permanently and never reused.
 
 **One deviation from the record copy rule.** Copying a record through its canonical constructor
 (`new NumFormat(f.decimalSeparator(), …, f.styles(), …)`, a deconstruct-and-rebuild, a
 serialization library) is exact for every component but the policy: `NumFormat` keeps 1.0's ten
 components, so that the ten-binder record pattern still compiles, and `styles()` answers the
-`STYLE_*` bits alone. A copy of a Western format equals it; a copy of a legacy or Indian format
-(and the bridge hands out legacy for a locale like `tok`) comes out Western. Copy with
+`STYLE_*` bits alone. A copy of a Western format equals it; a copy of an Indian format
+comes out Western. Copy with
 `withGrouping(original.grouping())` or the `with*` methods, of which every component now has one
 (`withSeparators` joined them). The policy sits in bits 16 and 17 of the canonical constructor's
-`styles` component (0 Western, 1 legacy, 2 Indian; 3 is refused): an internal encoding that
+`styles` component (0 Western, 2 Indian; 1 and 3 are refused): an internal encoding that
 callers must not set.
 
-**What the bridge declares.** A bridge never knowingly rejects its platform's own output, and one
-`NumFormat` has one policy and one `STYLE_GROUPING` flag, shared by number and currency values.
-`NumFormat.from(Locale)` therefore reads both of the platform's patterns,
-`NumberFormat.getInstance(locale)` and `getCurrencyInstance(locale)` (never the locale's name, never
-the input), and only the ones that group count: every grouping pattern Western declares
-`WESTERN`; every one Indian (`#,##,##0.###`) declares `INDIAN`; any of another shape (Toki Pona's
-groups of two, `#,#0.###`) or grouping patterns that disagree declare `LEGACY`, which reads
-whatever the platform writes. `STYLE_GROUPING` is cleared only when neither pattern groups
-(`en-US-POSIX`); when just one does not, the flag stays for the other and ungrouped values stay
-valid, since a format cannot prohibit grouping of currency amounts alone. The rule is
-deterministic: the same patterns give the same format. `from(DecimalFormat)` applies it to the one
-pattern it is given, and `from(DecimalFormat number, DecimalFormat currency)` to a pair.
+**What the bridge declares.** `NumFormat.from(Locale)` follows the platform's number pattern,
+`NumberFormat.getInstance(locale)` (never the locale's name, never the input). The JDK has only
+threes to give, so the bridge declares `WESTERN` on every JDK measured (21 and 25), Indian locales
+included. `Cast.i64("12,34,567", Locale.forLanguageTag("hi-IN"))` is a `MALFORMED` fault, as is every
+`Locale` door's reading of that shape, until you declare the policy:
+`Cast.i64("12,34,567", NumFormat.from(locale).withGrouping(Grouping.INDIAN))`. `STYLE_GROUPING` is
+cleared only when neither that pattern nor `getCurrencyInstance(locale)`'s groups (`en-US-POSIX`);
+when just one does not, the flag stays for the other and ungrouped values stay valid, since a
+format cannot prohibit grouping of currency amounts alone. The rule is deterministic: the same
+patterns give the same format. `from(DecimalFormat)` applies it to the one pattern it is given,
+and `from(DecimalFormat number, DecimalFormat currency)` to a pair.
 
 The JDK's `DecimalFormat` keeps one grouping size, the last interval (no secondary size), so its
-own pattern for an Indian locale reads `#,##0.###` and the JDK writes `12,345,678` for it: strict
-Western is right for what the platform produces. Text in CLDR's Indian grouping (`12,34,567`) is
-read by declaring it: `NumFormat.from(locale).withGrouping(Grouping.INDIAN)`. On JDK 25
-`tok`, `tok-001` and `tok-Latn-001` write groups of two and declare `LEGACY`.
+own pattern for an Indian locale reads `#,##0.###` and the JDK writes `12,345,678` for it: Western
+is right for what the platform produces. `new DecimalFormat("#,##,##0.###")` has already dropped the
+secondary size when `from(DecimalFormat)` reads it, so that bridge is Western too. Locale data comes
+from the JDK's own CLDR tables, never ICU. On JDK 25
+`tok`, `tok-001` and `tok-Latn-001` write groups of two and declare `WESTERN`, which refuses them: their ungrouped numerals read, their grouped ones don't.
 
 The boolean door's lexicon stays English (`true`/`yes`/`on`/`1` and the rest of the twenty),
 by decision: no platform carries culture data for yes/no words, so no bridge could fill one.
@@ -415,8 +414,8 @@ the `DateOrder` alone, and 97.5 ± 7.4 ns with Spanish designators declared and 
 Nothing loads until the first door is called. A consumer with a managed fallback gates on
 `Cast.isAvailable()` first: probed once, cached, never throws — `false` when the platform
 library will not open, the jar carries no core for this OS/arch, or an older core lacks an
-export this binding was built against. That last guard is what keeps a 1.0 core from running
-a strict request: a 1.0 library has no detailed exports (the JNI one implements 33 natives
+export this binding was built against. That last guard is what keeps a 1.0 core from reading
+a numeral by 1.0's rule: a 1.0 library has no detailed exports (the JNI one implements 33 natives
 of the 37), so its load fails and the policy bits it would ignore are never sent. The doors do
 not fall back. The first one to need a core that failed to load throws
 `ExceptionInInitializerError`, and every later one `NoClassDefFoundError`; either way the
@@ -742,8 +741,8 @@ matching: {languageVersion=21 …}". `./gradlew :aot-smoke-test:runFloor` runs t
 on JDK 21, and `./gradlew :benchmarks:jmh -PjmhJdk=21` the benchmarks.
 
 The downgrade test, outside `check`, runs child JVMs with a real 1.0 core first on the class path
-and shows that `Cast.isAvailable()` is `false` and a strict request fails to load rather than
-parsing in legacy mode: against a build of tag `v1.0.0` (which lacks even the checked exports),
+and shows that `Cast.isAvailable()` is `false` and a numeric request fails to load rather than
+reading by 1.0's rule: against a build of tag `v1.0.0` (which lacks even the checked exports),
 against a core with every 1.0-era export and none of the detailed ones (the root cause then names
 `cast_detailed`, or on JNI the native-count mismatch), and a `libhypercast_jni` of a core without the
 detailed exports:

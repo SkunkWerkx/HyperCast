@@ -103,6 +103,11 @@ new_verdict <- function(cols, door) {
 #' A missing row is an `NA` element of the input, which no door reads: `NA` in, `NA` out.
 #' [optional()] turns `empty` faults into missing rows too.
 #'
+#' `ok` describes the core's acceptance. A value it accepted that R can't represent is `ok` with
+#' `value = NA`, so checking `ok` alone doesn't guarantee a usable character value: [cast_char()]'s
+#' `U+0000`, whose `code_point` column is its exact output, and text with U+0000 inside it or over
+#' `INT_MAX` bytes, whose exact output is [cast_text()]'s `raw = TRUE`.
+#'
 #' `detail` and `detail_code` come last, after the five columns every earlier release had in
 #' this order, so code that reads a verdict by name or by position keeps working; binding a
 #' verdict made before this column existed to one made after is a binding of different
@@ -118,9 +123,9 @@ new_verdict <- function(cols, door) {
 #' typed door, which reads a number rather than text, faults over an empty span (`0`, `0`).
 #'
 #' Where the value column cannot carry everything the core returned, the exact parts follow
-#' it as columns of their own: `seconds` and `nanos` for an instant and a duration, `nanos`
-#' for a time of day, `date` and `nanos_of_day` for a civil date-time. See the doors for each
-#' value's type.
+#' it as columns of their own: `code_point` for a character, `seconds` and `nanos` for an instant
+#' and a duration, `nanos` for a time of day, `date` and `nanos_of_day` for a civil date-time. See
+#' the doors for each value's type.
 #'
 #' A verdict is a data frame, so it subsets, binds and converts as one; [as.data.frame()]
 #' drops the class. `is_ok()` is the `ok` column, and `faults()` the faulted rows, with

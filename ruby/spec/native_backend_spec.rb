@@ -380,7 +380,7 @@ RSpec.describe "native backend" do
       [
         HyperCast.i32("12,34", invariant), HyperCast.i32("12,34", invariant).detail,
         HyperCast.i32("12,34,567", invariant.with(grouping: :indian)),
-        HyperCast.i32("12,34", invariant.with(grouping: :legacy)),
+        HyperCast.i32("12,34", invariant.with(grouping: :indian)),
         HyperCast.f64("1,234.5,6", invariant).detail, HyperCast.decimal("1234,567", invariant).detail,
         HyperCast.checked("12,34", invariant, HyperCast::Constraints.new(door: :i32, maximum: "5")).detail,
         HyperCast.date("20260107", options: options::COMMON_FORMS),

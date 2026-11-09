@@ -103,15 +103,15 @@ internal static class SmokeTest
 		// The UTF-8 doors are the native contract itself — no transcode in front of the crossing.
 		Check("utf8", Cast.Int32("(1,234)"u8, NumFormat.Invariant), -1234);
 
-		// What 1.1 adds, through the same doors: a strict grouping policy (the default; Indian where
+		// What 1.1 adds, through the same doors: a grouping policy (the default; Indian where
 		// declared), the detail a fault names, and the date options and month names a date door is given.
 		Check("indian grouping", Cast.Int32("12,34,567", NumFormat.Invariant with { Grouping = NumGrouping.Indian }), 1_234_567);
-		Check("legacy grouping", Cast.Int32("12,34", NumFormat.Invariant with { Grouping = NumGrouping.Legacy }), 1234);
+		Check("western after indian", Cast.Int32("1,234,567", NumFormat.Invariant with { Grouping = NumGrouping.Indian } with { Grouping = NumGrouping.Western }), 1_234_567);
 		if (Cast.Int32("12,34", NumFormat.Invariant) is Fault { Reason: CastFailure.Malformed, Offset: 2, Length: 3, Detail: FaultDetail.GroupSize })
-			Console.WriteLine("ok   strict grouping: group_size @ 2+3");
+			Console.WriteLine("ok   grouping: group_size @ 2+3");
 		else
 		{
-			Console.WriteLine("FAIL strict grouping: 12,34 is not a group_size fault");
+			Console.WriteLine("FAIL grouping: 12,34 is not a group_size fault");
 			failures++;
 		}
 		Check("compact date", Cast.Date("20260107", DateOptions.CommonForms), new DateOnly(2026, 1, 7));

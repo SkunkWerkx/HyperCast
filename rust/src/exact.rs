@@ -621,7 +621,7 @@ mod tests {
     use super::*;
     use crate::real::{MAX_NORMALIZED, Route, normalize, route};
     use crate::typed::shortest_digits;
-    use crate::verdict::{CurrencySymbol, NativeDigits, Symbol, trim};
+    use crate::verdict::{CurrencySymbol, Grouping, NativeDigits, Symbol, trim};
     use bigdecimal::BigDecimal;
     use bigdecimal::num_bigint::BigInt;
     use core::cmp::Ordering::{Equal, Greater, Less};
@@ -895,10 +895,12 @@ mod tests {
         .with_percent(symbol("percent"))
         .with_digits(digits)
         .with_grouping(match format.get("grouping").and_then(Value::as_str) {
-            Some("western") => NumFormat::GROUPING_WESTERN,
-            Some("indian") => NumFormat::GROUPING_INDIAN,
-            Some("legacy") => NumFormat::GROUPING_LEGACY,
-            _ => format["flags"].as_u64().unwrap() as u32 & NumFormat::GROUPING_POLICY,
+            Some("western") => Grouping::Western,
+            Some("indian") => Grouping::Indian,
+            _ => {
+                let flags = format["flags"].as_u64().unwrap() as u32;
+                Grouping::from_code(flags & NumFormat::GROUPING_POLICY).unwrap()
+            }
         })
     }
 

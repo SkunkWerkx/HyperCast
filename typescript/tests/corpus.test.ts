@@ -221,10 +221,9 @@ function replay<T>(
 }
 
 // A vector's format as a caller writes it, for the public constructor. A row that declares no
-// `grouping` is legacy (the core's meaning); a policy a row's own `flags` carry is declared by
-// name, except the one no name spells, which stays in `flags` to be refused.
+// `grouping` is Western; a row's flags carrying Indian's bit are declared by name, and any other
+// policy bits stay in `flags`, to be refused.
 const groupings = {
-  legacy: Grouping.Legacy,
   western: Grouping.Western,
   indian: Grouping.Indian,
 } as const
@@ -233,10 +232,8 @@ function formatSpec(f: Record<string, string | number>): NumFormatSpec {
   let grouping: number | undefined
   if (f.grouping !== undefined) {
     grouping = groupings[f.grouping as keyof typeof groupings]
-  } else if ((flags & 0x300) === 0) {
-    grouping = Grouping.Legacy
-  } else if ((flags & 0x300) !== 0x300) {
-    grouping = flags & 0x300
+  } else if ((flags & 0x300) === Grouping.Indian) {
+    grouping = Grouping.Indian
     flags &= ~0x300
   }
   return {
@@ -254,21 +251,9 @@ function formatSpec(f: Record<string, string | number>): NumFormatSpec {
   }
 }
 
-// A row with no format is the invariant separators under legacy grouping, the core's meaning.
-const LEGACY_INVARIANT: InstanceType<typeof NumFormat> = (() => {
-  const declared = NumFormat.declare({
-    decimalSep: '.',
-    groupSep: ',',
-    flags: api.NumStyles.All,
-    grouping: Grouping.Legacy,
-  })
-  assert.ok(declared.ok)
-  return declared.value
-})()
-
 const formats = new Map<string, InstanceType<typeof NumFormat>>()
 function formatOf(v: Vector): InstanceType<typeof NumFormat> {
-  if (v.format === undefined) return LEGACY_INVARIANT
+  if (v.format === undefined) return NumFormat.invariant()
   const key = JSON.stringify(v.format)
   const cached = formats.get(key)
   if (cached) return cached
@@ -356,6 +341,7 @@ const files = [
   'constraints.json',
   'declarations.json',
   'formats.json',
+  'grouping.json',
 ]
 
 test('every corpus file is replayed', () => {
@@ -887,4 +873,91 @@ test('formats.json', () => {
     Object.values(counts).reduce((total, count) => total + count, 0),
     vectors.length,
   )
+})
+
+test('grouping.json', () => {
+  const declare = (spec: Partial<NumFormatSpec> = {}) =>
+    NumFormat.declare({ decimalSep: '.', groupSep: ',', flags: api.NumStyles.All, ...spec })
+  const value = <T>(declared: { ok: true; value: T } | { ok: false; message: string }): T => {
+    assert.ok(declared.ok, declared.ok ? '' : declared.message)
+    return declared.value
+  }
+  type Want = { value?: number; fault?: [number, number] }
+  const holds = (
+    label: string,
+    want: Want,
+    text: string,
+    format?: InstanceType<typeof NumFormat>,
+  ) => {
+    const verdicts = format
+      ? [api.castI64(text, format), api.castF64(text, format), api.castDecimal(text, format)]
+      : [api.castI64(text), api.castF64(text), api.castDecimal(text)]
+    for (const verdict of verdicts) {
+      if (want.fault) {
+        assert.ok(!verdict.ok, `${label} ${text}`)
+        assert.deepEqual(
+          [verdict.fault.reason, verdict.fault.offset, verdict.fault.length],
+          ['malformed', ...want.fault],
+          `${label} ${text}`,
+        )
+      } else {
+        assert.ok(verdict.ok, `${label} ${text}`)
+      }
+    }
+    if (want.fault) {
+      const detailed = format
+        ? api.castDetailed(Door.I64, text, format)
+        : api.castDetailed(Door.I64, text)
+      assert.ok(!detailed.ok)
+      assert.equal(detailed.fault.detail, 'groupSize', `${label} ${text}`)
+    } else {
+      const read = format ? api.castI64(text, format) : api.castI64(text)
+      assert.deepEqual(read, { ok: true, value: BigInt(want.value as number) }, `${label} ${text}`)
+    }
+  }
+  const indian = value(declare({ grouping: Grouping.Indian }))
+  const western = value(indian.withGrouping(Grouping.Western))
+  assert.equal(western.grouping, Grouping.Western)
+  let shapes = 0
+  for (const row of JSON.parse(readFileSync(path.join(CORPUS, 'grouping.json'), 'utf8'))) {
+    switch (row.kind) {
+      case 'shape':
+        shapes += 1
+        holds('no format', row.western, row.input)
+        holds('invariant', row.western, row.input, NumFormat.invariant())
+        holds('no grouping', row.western, row.input, value(declare()))
+        holds('declared', row.western, row.input, value(declare({ grouping: Grouping.Western })))
+        holds('indian to western', row.western, row.input, western)
+        holds('declared indian', row.indian, row.input, indian)
+        holds(
+          'western to indian',
+          row.indian,
+          row.input,
+          value(NumFormat.invariant().withGrouping(Grouping.Indian)),
+        )
+        break
+      case 'detect':
+        holds('detect', row, row.input, NumFormat.detect())
+        break
+      case 'refused_flags': {
+        const policy = row.flags & 0x300
+        assert.ok(!declare({ flags: row.flags }).ok, `flags ${row.flags}`)
+        assert.ok(!declare({ flags: 0, grouping: policy }).ok, `grouping ${policy}`)
+        assert.ok(!NumFormat.invariant().withGrouping(policy).ok, `withGrouping ${policy}`)
+        break
+      }
+      case 'accepted_flags': {
+        const grouping = row.flags & 0x300
+        const made = value(declare({ flags: row.flags & 0xff, grouping }))
+        assert.equal(
+          new DataView(made.packed.buffer, made.packed.byteOffset).getUint32(4, true),
+          row.flags,
+        )
+        break
+      }
+      default:
+        assert.fail(`unknown kind ${row.kind}`)
+    }
+  }
+  assert.ok(shapes >= 18)
 })

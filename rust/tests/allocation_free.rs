@@ -519,7 +519,7 @@ fn allocation_free() {
         months.extend_from_slice(name.as_bytes());
     }
     let pivot = RawDateOptions { size: RawDateOptions::SIZE, flags: 7, pivot: 2029 };
-    let strict = RawNumFormat::from(NumFormat::STRICT);
+    let western = RawNumFormat::from(NumFormat::INVARIANT);
     let text_door = |door: u32, param: u32, format: *const RawNumFormat, input: &[u8]| {
         detailed_export(|out, fault, _| unsafe {
             cast_detailed(
@@ -543,8 +543,8 @@ fn allocation_free() {
         ("cast_detailed i32", 4, 0, null, b"-12", 0),
         ("cast_detailed i32 failure", 4, 0, null, b"12a", 2),
         ("cast_detailed i32 not UTF-8", 4, 0, null, b"1\xFF", 2),
-        ("cast_detailed strict", 4, 0, &strict, b"1,234,567", 0),
-        ("cast_detailed strict group", 4, 0, &strict, b"12,34", 2),
+        ("cast_detailed western", 4, 0, &western, b"1,234,567", 0),
+        ("cast_detailed western group", 4, 0, &western, b"12,34", 2),
         ("cast_detailed f64", 11, 0, null, b"1.5e3", 0),
         ("cast_detailed decimal", 19, 0, null, b"-12.50", 0),
         ("cast_detailed char", 23, 0, null, b"U+00E9", 0),

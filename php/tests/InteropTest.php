@@ -83,8 +83,8 @@ final class InteropTest extends TestCase
         );
         NativeValues::writeFormat(new NumFormat(',', '.', NumFormat::ALL, '€'), $target);
         $this->assertSame(92, $target->size);
-        // The flags word carries the grouping policy beside the styles: strict Western by default.
-        $this->assertSame(NumFormat::ALL | NumFormat::GROUPING_WESTERN, $target->flags);
+        // The flags word carries the grouping policy beside the styles: Western, no bits, by default.
+        $this->assertSame(NumFormat::ALL, $target->flags);
         $this->assertSame(0, $target->digit_zero);
         $this->assertSame(1, $target->decimal_sep->len);
         $this->assertSame(',' . str_repeat("\0", 7), FFI::string($target->decimal_sep->bytes, 8));

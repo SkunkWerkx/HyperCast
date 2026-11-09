@@ -99,20 +99,21 @@ final class CorpusTests: XCTestCase {
     /// key — a symbol, the currency separators, the digit zero — only where the vector
     /// carries it; absent declares nothing.
     private func format(of vector: [String: Any]) -> NumFormat {
-        // A row that declares no format reads the core's invariant one, legacy grouping.
-        guard let format = vector["format"] as? [String: Any] else { return NumFormat.invariant.withGrouping(.legacy) }
+        // A row that declares no format reads the core's invariant one.
+        guard let format = vector["format"] as? [String: Any] else { return NumFormat.invariant }
         let symbol = { (key: String) in format[key] as? String ?? "" }
-        // `grouping` names the policy; absent means legacy, the core's and the C ABI's meaning.
+        // `grouping` names the policy; absent, the row's flags carry it.
+        let flags = UInt32(format["flags"] as! Int)
         let grouping: Grouping =
             switch format["grouping"] as? String {
-            case nil, "legacy": .legacy
+            case nil: Grouping(rawValue: flags & Grouping.mask)!
             case "western": .western
             case "indian": .indian
             case let other?: fatalError("unknown grouping \(other)")
             }
         return NumFormat(
             decimalSeparator: symbol("decimal_sep"), groupSeparator: symbol("group_sep"),
-            styles: NumStyles(rawValue: UInt32(format["flags"] as! Int)), grouping: grouping,
+            styles: NumStyles(rawValue: flags & ~Grouping.mask), grouping: grouping,
             currencySymbol: symbol("currency"),
             currencyDecimalSeparator: symbol("currency_decimal_sep"),
             currencyGroupSeparator: symbol("currency_group_sep"),
@@ -462,7 +463,8 @@ final class CorpusTests: XCTestCase {
                         flags: flags),
                     vector["expect"] as! String == "ok", "\(format)")
                 switch rule {
-                case "grouping_policy": XCTAssertTrue(refusal?.contains("Grouping policy 3") ?? false, "\(format)")
+                case "grouping_policy":
+                    XCTAssertTrue(refusal?.contains("names no grouping policy") ?? false, "\(format)")
                 case "unknown_flag": XCTAssertTrue(refusal?.contains("are not defined") ?? false, "\(format)")
                 default: XCTAssertNil(refusal, "\(format): its flags are declarable")
                 }
@@ -839,6 +841,75 @@ final class CorpusTests: XCTestCase {
     /// triple, scale included, and through the public initializer at the decimal door, which
     /// holds any decimal: the layout's `upper` field is the same triple, and a refused input
     /// is the core's refusal 8.
+    /// `corpus/grouping.json`: every shape under both policies, through every way a format is had.
+    /// A declaration traps on a bad word, which XCTest can't survive, so the rule the trap reads
+    /// is what `refused_flags` holds; `Grouping` has no case for a retired value at all.
+    func testGroupingCorpus() throws {
+        func holds(_ want: [String: Any], _ text: String, _ format: NumFormat, _ label: String) {
+            let context = "\(label) '\(text)'"
+            if let fault = want["fault"] as? [Int] {
+                let expected = Fault(reason: .malformed, offset: fault[0], length: fault[1])
+                XCTAssertEqual(Cast.i64(text, format: format).fault, expected, context)
+                XCTAssertEqual(Cast.f64(text, format: format).fault, expected, context)
+                XCTAssertEqual(Cast.decimal(text, format: format).fault, expected, context)
+                XCTAssertEqual(Cast.i64(text, format: format).fault?.detail, .groupSize, context)
+            } else {
+                let value = want["value"] as! Int
+                XCTAssertEqual(Cast.i64(text, format: format), .success(Int64(value)), context)
+                XCTAssertEqual(Cast.f64(text, format: format), .success(Double(value)), context)
+                XCTAssertNil(Cast.decimal(text, format: format).fault, context)
+            }
+        }
+        func bridge(primary: Int, secondary: Int) -> NumFormat {
+            let formatter = NumberFormatter()
+            formatter.locale = Locale(identifier: "en_US")
+            formatter.numberStyle = .decimal
+            formatter.groupingSize = primary
+            formatter.secondaryGroupingSize = secondary
+            return NumFormat.from(formatter: formatter)
+        }
+        let indian = NumFormat.invariant.withGrouping(.indian)
+        var shapes = 0
+        for row in try corpus("grouping.json") {
+            switch row["kind"] as! String {
+            case "shape":
+                shapes += 1
+                let text = row["input"] as! String
+                let west = row["western"] as! [String: Any], east = row["indian"] as! [String: Any]
+                holds(west, text, .invariant, "invariant")
+                holds(west, text, NumFormat(decimalSeparator: ".", groupSeparator: ",", styles: .all), "constructor")
+                holds(
+                    west, text, NumFormat(decimalSeparator: ".", groupSeparator: ",", styles: .all, grouping: .western),
+                    "declared")
+                holds(west, text, indian.withGrouping(.western), "indian to western")
+                holds(west, text, bridge(primary: 3, secondary: 3), "bridge threes")
+                holds(west, text, bridge(primary: 4, secondary: 0), "bridge fours")
+                holds(
+                    east, text, NumFormat(decimalSeparator: ".", groupSeparator: ",", styles: .all, grouping: .indian),
+                    "declared indian")
+                holds(east, text, indian, "western to indian")
+                holds(east, text, bridge(primary: 3, secondary: 2), "bridge ml, en_US's Western currency beside it")
+            case "detect":
+                holds(row, row["input"] as! String, .detect, "detect")
+            case "refused_flags":
+                let flags = UInt32(row["flags"] as! Int)
+                XCTAssertNotNil(NumFormat.refusal(ofFlags: flags), "\(flags)")
+                XCTAssertNil(Grouping(rawValue: flags & Grouping.mask), "\(flags)")
+                XCTAssertTrue(NumFormat.refusal(ofFlags: flags)?.contains("names no grouping policy") ?? false)
+            case "accepted_flags":
+                let flags = UInt32(row["flags"] as! Int)
+                XCTAssertNil(NumFormat.refusal(ofFlags: flags), "\(flags)")
+                let made = NumFormat(
+                    decimalSeparator: ".", groupSeparator: ",", styles: NumStyles(rawValue: flags & 0xFF),
+                    grouping: Grouping(rawValue: flags & Grouping.mask)!)
+                XCTAssertEqual(made.raw.1, flags)
+            case let other:
+                XCTFail("unknown kind \(other)")
+            }
+        }
+        XCTAssertGreaterThanOrEqual(shapes, 18)
+    }
+
     func testDeclarationsCorpus() throws {
         var replayed = 0
         let vectors = try corpus("declarations.json")

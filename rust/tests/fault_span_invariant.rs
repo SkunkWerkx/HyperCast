@@ -23,7 +23,7 @@
 
 use hypercast::{
     Constraints, CurrencySymbol, DateOptions, DateOrder, Detail, ExcelEpoch, Failure, Fault,
-    MonthNames, NumFormat, NumericRules, RawCheck, RawConstraints, RawNumFormat, RawSpan,
+    Grouping, MonthNames, NumFormat, NumericRules, RawCheck, RawConstraints, RawNumFormat, RawSpan,
     Rejection, Rounding, TextRules, UnixPrecision, decimal_for_declaration, detailed,
 };
 use serde_json::Value;
@@ -182,7 +182,7 @@ fn every_checked_door(input: &[u8], formats: &[NumFormat], declared: &Declaratio
     }
 }
 
-fn formats() -> [NumFormat; 10] {
+fn formats() -> [NumFormat; 9] {
     [
         NumFormat::INVARIANT,
         NumFormat::DETECT,
@@ -193,10 +193,9 @@ fn formats() -> [NumFormat; 10] {
         NumFormat::DETECT.with_currency(CurrencySymbol::new("€").unwrap()),
         NumFormat::new(',', '\u{202F}', NumFormat::ALL | NumFormat::TRAILING_SIGN)
             .with_currency(CurrencySymbol::new("€").unwrap()),
-        NumFormat::STRICT.with_currency(CurrencySymbol::new("$").unwrap()),
         NumFormat::new('.', '\u{202F}', NumFormat::ALL)
             .with_digits(hypercast::NativeDigits::new('\u{660}').unwrap())
-            .with_grouping(NumFormat::GROUPING_INDIAN),
+            .with_grouping(Grouping::Indian),
     ]
 }
 
@@ -537,10 +536,10 @@ fn through_the_exports(
         };
         let spanned = |detail: &hypercast::RawFaultDetail| (detail.offset, detail.len);
         // SAFETY: `format` is null or a live layout.
-        let legacy = unsafe { format.as_ref() }
+        let western = unsafe { format.as_ref() }
             .is_none_or(|f| f.format.flags & NumFormat::GROUPING_POLICY == 0);
-        if legacy {
-            // A strict policy is the detailed pair's alone: the 1.0 export parses legacy.
+        if western {
+            // A declared Indian is the detailed pair's alone: the 1.0 export parses Western.
             let label = String::from_utf8_lossy(input);
             assert_eq!(twin, code, "cast_checked_detailed on {label:?}");
             if code != 0 {

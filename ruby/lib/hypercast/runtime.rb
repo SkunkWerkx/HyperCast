@@ -45,9 +45,9 @@ module HyperCast
       cast_checked_detailed: :checked_detailed, cast_checked_detailed_from_f64: :checked_detailed_from_f64
     }.freeze
 
-    # What a core older than 1.1 lacks: the four detailed exports. The strict grouping policies
-    # and every detail ride on them, and a 1.0 core would read a policy request as legacy
-    # grouping without a word, so a library missing any of them is refused when it loads.
+    # What a core older than 1.1 lacks: the four detailed exports. The grouping policies and
+    # every detail ride on them, and a 1.0 core would read any format by 1.0's rules without a
+    # word, so a library missing any of them is refused when it loads.
     DETAILED_EXPORTS = %w[cast_detailed cast_detailed_from_f64 cast_checked_detailed
                           cast_checked_detailed_from_f64].freeze
 
@@ -134,9 +134,9 @@ module HyperCast
           else
             "of no known version"
           end
-        raise LoadError, "hypercast: #{path} is core #{found}, which predates 1.1: the strict grouping " \
+        raise LoadError, "hypercast: #{path} is core #{found}, which predates 1.1: the grouping " \
                          "policies and fault details need the detailed exports (cast_detailed, ...), " \
-                         "and a 1.0 core would read a strict request as legacy grouping. Install a 1.1 core"
+                         "and a 1.0 core would read every format by 1.0's rules. Install a 1.1 core"
       end
 
       def load_functions

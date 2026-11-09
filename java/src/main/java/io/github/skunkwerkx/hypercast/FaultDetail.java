@@ -69,7 +69,10 @@ public record FaultDetail(int code) {
     /** {@code group_misplaced}: a group separator not between digits, or an empty group. */
     public static final FaultDetail GROUP_MISPLACED = new FaultDetail(10);
 
-    /** {@code group_size}: a group with the wrong digit count under a strict {@link Grouping}. */
+    /**
+     * {@code group_size}: a group its {@link Grouping} refuses: the wrong digit count, or a
+     * first group that starts with a zero.
+     */
     public static final FaultDetail GROUP_SIZE = new FaultDetail(11);
 
     /** {@code group_in_fraction}: grouping after the decimal separator or in an exponent. */

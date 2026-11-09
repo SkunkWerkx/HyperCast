@@ -221,20 +221,18 @@ impl NumFormat {
     const ALL: u32 = core::NumFormat::ALL;
     #[classattr]
     const SEPARATOR_DETECT: u32 = core::NumFormat::SEPARATOR_DETECT;
-    /// The legacy grouping policy: a group separator anywhere between two digits, whatever
-    /// the group sizes, so ``12,34`` is 1234.
-    #[classattr]
-    const GROUPING_LEGACY: u32 = core::NumFormat::GROUPING_LEGACY;
-    /// Strict Western grouping, the default: once a numeral uses a group separator, its
+    /// Western grouping, the default: once a numeral uses a group separator, its
     /// integer part is groups of exactly three digits counted leftward from the decimal
-    /// separator, the leftmost one to three, so ``12,34`` is ``MALFORMED``.
+    /// separator, the leftmost one to three and not starting with a zero, so ``12,34`` and
+    /// ``0,125`` are ``MALFORMED``.
     #[classattr]
     const GROUPING_WESTERN: u32 = core::NumFormat::GROUPING_WESTERN;
-    /// Strict Indian grouping: the group beside the decimal separator holds three digits,
+    /// Indian grouping, only when declared: the group beside the decimal separator holds three digits,
     /// every group left of it two, the leftmost one or two (``12,34,567``).
     #[classattr]
     const GROUPING_INDIAN: u32 = core::NumFormat::GROUPING_INDIAN;
-    /// The mask of the policy's two bits, which names no policy itself.
+    /// The mask of the policy's two bits, which names no policy itself. Bit 8 (256) is retired and
+    /// never reused: ``ValueError`` from every constructor.
     #[classattr]
     const GROUPING_POLICY: u32 = core::NumFormat::GROUPING_POLICY;
 
@@ -242,14 +240,14 @@ impl NumFormat {
     #[allow(non_snake_case)]
     #[classattr]
     fn INVARIANT() -> PyResult<NumFormat> {
-        strict(core::NumFormat::INVARIANT)
+        named_format(core::NumFormat::INVARIANT)
     }
 
     // Python's own spelling, as with INVARIANT above.
     #[allow(non_snake_case)]
     #[classattr]
     fn DETECT() -> PyResult<NumFormat> {
-        strict(core::NumFormat::DETECT)
+        named_format(core::NumFormat::DETECT)
     }
 
     #[new]
@@ -305,11 +303,23 @@ impl NumFormat {
         self.lenience()
     }
 
-    /// The declared grouping policy: ``GROUPING_LEGACY``, ``GROUPING_WESTERN`` or
-    /// ``GROUPING_INDIAN``.
+    /// The declared grouping policy: ``GROUPING_WESTERN`` or ``GROUPING_INDIAN``.
     #[getter]
     fn grouping(&self) -> u32 {
         self.grouping_policy()
+    }
+
+    /// This format with the policy ``grouping`` in place of its own, everything else kept: how a
+    /// bridged format's column declares ``GROUPING_WESTERN`` or ``GROUPING_INDIAN``. Any other
+    /// value is the ``ValueError`` the constructor raises.
+    fn with_grouping(&self, #[pyo3(from_py_with = grouping_int)] grouping: u32) -> PyResult<Self> {
+        declared_flags(self.lenience(), grouping)?;
+        let Some(policy) = core::Grouping::from_code(grouping) else {
+            return Err(PyValueError::new_err(format!(
+                "Grouping must be NumFormat.GROUPING_WESTERN or GROUPING_INDIAN; got {grouping}"
+            )));
+        };
+        Ok(NumFormat { valid: refuse_unless_checked(&self.format().with_grouping(policy))? })
     }
 
     /// The declared currency symbol — ``""`` when none is declared.
@@ -373,9 +383,23 @@ impl NumFormat {
         PyBytes::new(py, &core::RawNumFormat::from(*self.format()).to_le_bytes())
     }
 
+    /// Equal to a format that declares the same thing, however each was made: the core's own
+    /// equality, every field and the grouping policy.
+    fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
+        other.cast::<NumFormat>().is_ok_and(|other| other.get().format() == self.format())
+    }
+
+    /// A hash of the layout the format crosses the ABI in, which holds each symbol's declared
+    /// bytes alone, as the core's equality does: equal formats are one ``dict`` key.
+    fn __hash__(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        core::RawNumFormat::from(*self.format()).to_le_bytes().hash(&mut hasher);
+        hasher.finish()
+    }
+
     /// The constructor call that builds this format again: the four positional arguments
     /// always, then only the keyword arguments that declare something (``grouping`` when it
-    /// is not strict Western, the default).
+    /// is not Western, the default).
     fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
         let repr = |text: &str| -> PyResult<String> { PyString::new(py, text).repr()?.extract() };
         let format = self.format();
@@ -398,12 +422,8 @@ impl NumFormat {
                 call.push_str(&format!(", {name}={}", repr(symbol)?));
             }
         }
-        match self.grouping_policy() {
-            core::NumFormat::GROUPING_WESTERN => {}
-            core::NumFormat::GROUPING_INDIAN => {
-                call.push_str(", grouping=NumFormat.GROUPING_INDIAN")
-            }
-            _ => call.push_str(", grouping=NumFormat.GROUPING_LEGACY"),
+        if self.grouping_policy() == core::NumFormat::GROUPING_INDIAN {
+            call.push_str(", grouping=NumFormat.GROUPING_INDIAN");
         }
         call.push(')');
         Ok(call)
@@ -418,20 +438,18 @@ impl NumFormat {
     /// amount) as ``TRAILING_SIGN``. ``localeconv()`` carries no percent symbol and no
     /// native digits, so those stay undeclared: ASCII ``%`` and ``0``–``9``.
     ///
-    /// The grouping is read from the locale's own digit-group patterns, ``grouping`` for numbers
-    /// and ``mon_grouping`` for currency amounts, never from the locale's name and never from
-    /// the input. A pattern is read as C defines it: sizes from the decimal separator outward,
-    /// a trailing ``0`` repeating the last size, ``CHAR_MAX`` (this platform's: 127, or 255 where ``char`` is unsigned) ending grouping, and one
-    /// with no size (``[]``, ``[127]``, ``[0]``) not grouping at all. One format has one policy
-    /// and one ``GROUPING`` flag for both, so, over the patterns that do group: all Western
-    /// (``[3, 0]``, ``[3, 3, 0]``) is strict Western, all Indian (``[3, 2, 0]``) is strict
-    /// Indian, and a pattern of any other shape (groups of two, ``[3, 127]``) or patterns that
-    /// disagree (``ml``'s Indian numbers and Western currency) is legacy,
-    /// ``GROUPING_LEGACY``, which reads a group separator between any two digits. ``GROUPING``
-    /// is cleared only when neither pattern groups; when just one does not (a currency with no
-    /// grouping), the flag stays for the other, so a grouped currency amount is still read:
-    /// the format cannot forbid grouping for one kind of value alone. A dict that carries
-    /// neither key declares nothing: strict Western with ``GROUPING`` on, as the constructor.
+    /// The policy follows the locale's number pattern, ``grouping``, never its name and never the
+    /// input: one all Indian (``[3, 2, 0]``) is Indian, and anything else is Western, so a locale
+    /// with another shape reads what is groups of three and refuses what isn't (``Malformed``),
+    /// never misreading it. A pattern is read as C defines it: sizes from the decimal separator
+    /// outward, a trailing ``0`` repeating the last size, ``CHAR_MAX`` (this platform's: 127, or
+    /// 255 where ``char`` is unsigned) ending grouping, and one with no size (``[]``, ``[127]``,
+    /// ``[0]``) not grouping at all. One format has one policy, so a locale with Indian numbers
+    /// and Western currency (``ml``) refuses a Western ``1,234,567``: declare
+    /// ``grouping=NumFormat.GROUPING_WESTERN`` on that column to read it. ``GROUPING`` is cleared
+    /// only when neither ``grouping`` nor ``mon_grouping`` groups; when just one does not (a
+    /// currency with no grouping), the flag stays for the other. A dict that carries neither key
+    /// declares nothing: Western with ``GROUPING`` on, as the constructor.
     ///
     /// A separator the locale leaves empty takes its invariant default (``.`` decimal, ``,``
     /// group) unless the other separator already holds that character, in which case it
@@ -537,30 +555,25 @@ fn shape(pattern: &[i64]) -> Shape {
     }
 }
 
-/// The grouping policy of a locale's digit-group patterns, and whether the format groups at
-/// all: over the patterns that group, all Western is strict Western, all Indian strict
-/// Indian, anything else (another shape, or patterns that disagree) legacy; `GROUPING` is off
-/// only when every pattern the dict carries is ungrouped. A key that is absent (or not a list
-/// of ints) says nothing, and a dict that says nothing declares the constructor's default.
+/// The grouping policy a locale's patterns declare, and whether the format groups at all: the
+/// number pattern all Indian is Indian, anything else Western; `GROUPING` is off only when every
+/// pattern the dict carries is ungrouped. A key that is absent (or not a list of ints) says
+/// nothing, and a dict that says nothing declares the constructor's default.
 fn grouping_of(conv: &Bound<'_, PyDict>) -> (u32, bool) {
-    let shapes: Vec<Shape> = ["grouping", "mon_grouping"]
-        .into_iter()
-        .filter_map(|name| {
-            let value = conv.get_item(name).ok()??;
-            value.extract::<Vec<i64>>().ok().map(|pattern| shape(&pattern))
-        })
-        .collect();
-    let enabled: Vec<Shape> = shapes.iter().copied().filter(|s| *s != Shape::Ungrouped).collect();
-    let policy = match enabled.as_slice() {
-        [] => core::NumFormat::GROUPING_WESTERN,
-        [first, rest @ ..] if rest.iter().all(|s| s == first) => match first {
-            Shape::Western => core::NumFormat::GROUPING_WESTERN,
-            Shape::Indian => core::NumFormat::GROUPING_INDIAN,
-            _ => core::NumFormat::GROUPING_LEGACY,
-        },
-        _ => core::NumFormat::GROUPING_LEGACY,
+    let pattern = |name: &str| -> Option<Shape> {
+        let value = conv.get_item(name).ok()??;
+        value.extract::<Vec<i64>>().ok().map(|pattern| shape(&pattern))
     };
-    (policy, shapes.is_empty() || !enabled.is_empty())
+    let (number, currency) = (pattern("grouping"), pattern("mon_grouping"));
+    let policy = if number == Some(Shape::Indian) {
+        core::NumFormat::GROUPING_INDIAN
+    } else {
+        core::NumFormat::GROUPING_WESTERN
+    };
+    let shapes = [number, currency];
+    let grouped = shapes.iter().all(Option::is_none)
+        || shapes.iter().flatten().any(|shape| *shape != Shape::Ungrouped);
+    (policy, grouped)
 }
 
 /// A locale's separator pair as the bridge reads it: a field the locale leaves empty takes
@@ -644,13 +657,14 @@ fn declare(declared: Declared<'_>) -> PyResult<NumFormat> {
 }
 
 /// A policy given as `grouping`, with the leniences of `flags`: a lenience mask never carries
-/// the policy, and the policy is one of the three the core names, never the refused `11` nor
-/// any other bits. The core judges which bits it defines.
+/// the policy, and the policy is one of the two the core names, so `256` and `768`, alone or
+/// over the styles (`351`, `863`), are refused here. The core judges which bits it defines.
 fn declared_flags(flags: u32, grouping: u32) -> PyResult<u32> {
     const POLICY: u32 = core::NumFormat::GROUPING_POLICY;
-    if grouping & !POLICY != 0 || grouping == POLICY {
+    if grouping != core::NumFormat::GROUPING_WESTERN && grouping != core::NumFormat::GROUPING_INDIAN
+    {
         return Err(PyValueError::new_err(format!(
-            "Grouping must be NumFormat.GROUPING_LEGACY, GROUPING_WESTERN or GROUPING_INDIAN; got {grouping}"
+            "Grouping must be NumFormat.GROUPING_WESTERN or GROUPING_INDIAN; got {grouping}"
         )));
     }
     if flags & POLICY != 0 {
@@ -668,12 +682,10 @@ fn declared_flags(flags: u32, grouping: u32) -> PyResult<u32> {
     }
 }
 
-/// A named format with strict Western grouping: what `INVARIANT` and `DETECT` are.
-fn strict(format: core::NumFormat) -> PyResult<NumFormat> {
-    let valid = format
-        .with_grouping(core::NumFormat::GROUPING_WESTERN)
-        .validate()
-        .map_err(|_| binding_bug("refused a named format it had accepted"))?;
+/// A named format, which declares no policy and so is Western: `INVARIANT` and `DETECT`.
+fn named_format(format: core::NumFormat) -> PyResult<NumFormat> {
+    let valid =
+        format.validate().map_err(|_| binding_bug("refused a named format it had accepted"))?;
     Ok(NumFormat { valid })
 }
 
@@ -2543,7 +2555,8 @@ mod tests {
         assert!(refuse_unless_checked(&lagging).is_err());
         assert!(refuse_unless_checked(&core::NumFormat::INVARIANT).is_ok());
         // Nor does a declaration the 1.1 flag rules refuse get through it.
-        let policy = core::NumFormat::INVARIANT.with_grouping(core::NumFormat::GROUPING_POLICY);
+        let policy =
+            core::NumFormat::new('.', ',', core::NumFormat::ALL | core::NumFormat::GROUPING_POLICY);
         assert!(refuse_unless_checked(&policy).is_err());
     }
 }

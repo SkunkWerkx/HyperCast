@@ -173,48 +173,55 @@ scalar before the extension sees it, so there `new Constraints(...)` gets a `flo
 already made a string and a `bool` length already made an `int`, which a release build refuses
 as a `TypeError` ([Validation constraints](#validation-constraints)).
 
-## 1.1: strict grouping, fault detail, date options
+## 1.1: grouping policies, fault detail, date options
 
 Three changes in 1.1, each additive in its API and one of them deliberate in its answers.
 
-- **Grouping is strict by default.** `NumFormat::invariant()`, `detect()` and `new NumFormat(...)`
-  declare strict Western grouping: groups of exactly three digits counted from the decimal
-  separator, the leftmost one to three. `12,34` was 1234 through 1.0's invariant format and is
-  a `Malformed` fault now, spanning `,34`; `1,234` and `1234` read as before. The policy is the
-  last constructor argument, `grouping`, and a style mask never carries it (`flags` takes only
-  the styles, 0 through 255; an undefined bit is refused, which 1.0 ignored):
+- **Grouping is Western by default.** `NumFormat::invariant()`, `detect()` and `new NumFormat(...)`
+  declare Western grouping: groups of exactly three digits counted from the decimal
+  separator, the leftmost one to three and not starting with a zero. `1,23,456` is a `Malformed`
+  fault, spanning `,23`, and so are `12,34` and `0,125`, spanning `,34` and `0`; `1,234` and `1234`
+  read. The policy is the last constructor argument, `grouping`, and a style mask never carries it
+  (`flags` takes only the styles, 0 through 255):
 
   ```php
-  new NumFormat('.', ',', NumFormat::ALL);                                       // strict Western
-  new NumFormat('.', ',', NumFormat::ALL, grouping: NumFormat::GROUPING_INDIAN); // 12,34,567
-  new NumFormat('.', ',', NumFormat::ALL, grouping: NumFormat::GROUPING_LEGACY); // 1.0's rule
-  $format->withGrouping(NumFormat::GROUPING_LEGACY);                             // replaces the policy
+  new NumFormat('.', ',', NumFormat::ALL);                                       // Western
+  new NumFormat('.', ',', NumFormat::ALL, grouping: NumFormat::GROUPING_INDIAN); // 1,23,456
+  $format->withGrouping(NumFormat::GROUPING_WESTERN);                            // replaces the policy
   ```
 
-  `GROUPING_LEGACY` (0) is the escape hatch: a group separator anywhere between two digits.
-  `GROUPING_WESTERN` (256) and `GROUPING_INDIAN` (512) are the bits the core reads from the
-  packed flags word, and `GROUPING_POLICY` (768) is their mask, not a policy. A `NumFormat`
-  unserialized from 1.0 carries no policy and keeps 1.0's meaning: `unserialize()` sets its
-  `grouping` to `GROUPING_LEGACY` (so `->grouping` reads, never an unset-property `Error`), and
-  the core is handed only the styles of its `flags`' low byte beside that policy, which is what
-  1.0's core read from whatever integer it stored (`-1` is every style, `351` is `95`). The strict
-  policies do not enable grouping: with `GROUPING` off a group separator stays forbidden.
-  The bridges never knowingly reject their platform's own output. They read the platform's
-  complete number and currency grouping patterns, and one `NumFormat` has one policy and one
-  `GROUPING` flag for both: when every pattern that groups is Western (groups of three) the
-  format is strict Western, when every one is Indian (a group of three, then groups of two) it is
-  strict Indian, and when one groups another way (Toki Pona, `tok`: groups of two) or they
-  disagree (ICU's `ml`, `mr`, `or` and `ta`: number `#,##,##0.###`, currency `¤#,##0.00`) it is
-  `GROUPING_LEGACY`. `GROUPING` is cleared only when neither groups (`en_US_POSIX`, the `C`
+  `GROUPING_WESTERN` (0) and `GROUPING_INDIAN` (512) are what the core reads from the packed flags
+  word, and `GROUPING_POLICY` (768) is the field's mask, not a policy. Bit 8 (256) is retired
+  permanently and never reused: the constructor, `withGrouping()` and `unserialize()` refuse 256 and
+  768. A `NumFormat` unserialized from 1.0 carries no policy and is Western. Its `flags` must hold
+  styles alone: `unserialize` refuses bit 8 (`351`, and `-1`, which 1.0 read as every style), the
+  Indian bit (`607`, since the policy is the `grouping` property) and anything past them (`1119`),
+  though 1.0 ignored those bits. A policy doesn't turn grouping on: with `GROUPING` off a group
+  separator stays forbidden.
+
+  The bridges follow the platform's number pattern: `fromNumberFormatter()` the ICU ext-intl links,
+  `fromLocaleconv()` the C library. A group of three then groups of two is Indian (`en_IN`), and
+  anything else Western. On ICU, `ml`, `mr` and `or` have an Indian number pattern and the currency
+  pattern `¤#,##0.00` on every version measured (66.1 to 79.1), and so does `ta` on 79.1 (`¤ #,##0.00`;
+  on 66.1 to 78.3 its currency is Indian too). A Western `₹1,234,567.50` through such a format is
+  `Malformed` until the column declares `withGrouping(NumFormat::GROUPING_WESTERN)`. The reverse is
+  `mr_IN` on glibc, `[3, 0]` for numbers and `[3, 2, 0]` for currency: its bridge is Western, and its
+  own `₹12,34,567.50` is `Malformed` until the column declares
+  `withGrouping(NumFormat::GROUPING_INDIAN)`. A shape neither policy reads (`tok` on ICU, `cmn_TW` and
+  `unm_US` on glibc) is `Malformed` under a declared format, `invariant()` or a bridge, never misread,
+  and its ungrouped numerals read, while `NumFormat::detect()` infers by the delimiter rule, so
+  `1,2345` is 1.2345 there:
+  [docs/grouping.md](https://github.com/SkunkWerkx/HyperCast/blob/master/docs/grouping.md#parked).
+  One format has one `GROUPING` flag for both: it is cleared only when neither pattern groups (the C
   locale); when just one does not, the flag stays and that pattern's values stay valid ungrouped,
-  since a format cannot forbid currency grouping on its own. The fallback is fixed, never
+  since a format cannot forbid currency grouping on its own. The rule is fixed, never
   inferred from the input. `fromNumberFormatter()` reads the formatter's own pattern (its
   secondary size of zero repeats the primary: `#,##0` is groups of three) and its locale's
   pattern for the other of the number and currency styles, made with `NumberFormatter::create()`
   from `getLocale()`, so a customised formatter is judged by what it was set to; a percent
   pattern is outside the rule. `fromLocaleconv()` reads `grouping` and `mon_grouping` (the last
-  size repeats; `[3, 2]` is Indian, empty is none); a key the array lacks has no vote, and an
-  array with neither says nothing, so it is legacy, as 1.0 read it.
+  size repeats; `[3, 2]` is Indian, empty is none); an array with neither key says nothing, so it
+  is Western.
 
 - **Fault detail** rides a result path of its own. `Fault` is `final readonly` and PHP compares
   objects property by property (`==`, `assertEquals`, `serialize`), so a `detail` on it would
@@ -239,11 +246,12 @@ Three changes in 1.1, each additive in its API and one of them deliberate in its
   `Cast::datetime($text, $order, $periods, $options, $months)`, `Cast::timestamp($text,
   $options)`.
 
-**FFI consumers and a 1.0 core.** A core older than 1.1 ignores the policy bits and parses every
-format as legacy, and so do the 1.0 C exports on a 1.1 core: a strict format written by
+**FFI consumers and a 1.0 core.** A core older than 1.1 reads every
+format by 1.0's rule, `0,125` as 125 and `1,23,456` as 123456; the 1.0 C exports on a 1.1 core read every
+format Western: an Indian format written by
 `Interop\NativeValues::writeFormat()` must go to the detailed exports (`cast_detailed` and its
 siblings), which read the policy. The guard is opt-in: `writeFormat($format, $target, $ffi)` takes
-the `FFI` handle the core was loaded with and refuses a strict policy unless that handle declares
+the `FFI` handle the core was loaded with and refuses any format unless that handle declares
 `cast_detailed` (a 1.0 library lacks it) and `hypercast_version()`, and the core's version has
 this extension's major and a minor no older (the patch is ignored; `NativeValues::compatible()` is
 that rule). Without a handle there is no check: the caller owns it. The extension's own core is

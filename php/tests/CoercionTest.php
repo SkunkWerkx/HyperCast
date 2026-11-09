@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace HyperCast\Tests;
 
+use HyperCast\NumFormat;
 use HyperCast\Tests\Support\CoercionMatrix;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -88,7 +89,7 @@ final class CoercionTest extends TestCase
             if ($case === 'NumFormat::fromLocaleconv $conv' && $input === 'null') {
                 $actual = self::withGroupingRestored($actual);
             }
-            $actual = self::withoutDefaultGrouping($actual, $case === 'NumFormat::fromLocaleconv $conv' ? 0 : 256);
+            $actual = self::withoutDefaultGrouping($actual);
             $this->assertSame($outcome, $actual, "{$mode}, {$case}, input {$input}");
         }
     }
@@ -150,34 +151,31 @@ final class CoercionTest extends TestCase
     private static function withGroupingRestored(array $outcome): array
     {
         $format = $outcome['result'] ?? null;
-        if (\is_array($format) && ($format['grouping'] ?? null) === 256 && ($format['flags'] & 1) === 0) {
+        if (\is_array($format) && ($format['flags'] & 1) === 0) {
             $outcome['result']['flags'] |= 1;
-            $outcome['result']['grouping'] = 0;
         }
         return $outcome;
     }
 
     /**
-     * The other declared edit: 1.1's `NumFormat` has a `grouping` property, which a format built
-     * without a policy holds as the default, strict Western; a format `fromLocaleconv()` builds
-     * from an array that says nothing of grouping is legacy (nothing known of the platform's
-     * patterns), which is the 1.0 rule. Dropped from a dump where it holds that default, so every
-     * other field is still held to 1.0's; any other policy stays and fails.
+     * The other declared edit: 1.1's `NumFormat` has a `grouping` property, Western unless a caller
+     * or a bridge says otherwise. Dropped from a dump where it holds that default, so every other
+     * field is still held to 1.0's; Indian stays and fails.
      *
      * @param array<string, mixed> $outcome
      * @return array<string, mixed>
      */
-    private static function withoutDefaultGrouping(array $outcome, int $default): array
+    private static function withoutDefaultGrouping(array $outcome): array
     {
         if (
             ($outcome['class'] ?? null) === 'HyperCast\\NumFormat'
-            && ($outcome['grouping'] ?? null) === $default
+            && ($outcome['grouping'] ?? null) === NumFormat::GROUPING_WESTERN
         ) {
             unset($outcome['grouping']);
         }
         foreach ($outcome as $key => $value) {
             if (\is_array($value)) {
-                $outcome[$key] = self::withoutDefaultGrouping($value, $default);
+                $outcome[$key] = self::withoutDefaultGrouping($value);
             }
         }
         return $outcome;

@@ -190,10 +190,10 @@ module HyperCast
   #
   # Grouping is a policy, declared apart from the flags: `grouping:` is :western (the default:
   # once a numeral uses the group separator, groups of exactly three digits counted from the
-  # decimal separator, the leftmost one to three, so "1,234,567" reads and "12,34" is a
-  # :malformed Fault with the detail Detail::GROUP_SIZE), :indian (the group beside the decimal
-  # separator three digits, every group to its left two, the leftmost one or two: "12,34,567") or
-  # :legacy (the group separator anywhere between two digits, as 1.0 read it). An ungrouped
+  # decimal separator, the leftmost one to three and not starting with a zero, so "1,234,567"
+  # reads and "12,34" and "0,125" are :malformed Faults with the detail Detail::GROUP_SIZE),
+  # or :indian (the group beside the decimal separator three digits, every group to its left two,
+  # the leftmost one or two: "12,34,567"), which reads only when declared. An ungrouped
   # numeral reads under every policy, and a policy only judges groups: without the GROUPING flag
   # a group separator is still refused. `flags` is the style mask (GROUPING ... TRAILING_SIGN)
   # and never carries a policy: bits 8 and 9 or any other bit this version does not define is an
@@ -255,18 +255,20 @@ module HyperCast
             digit_zero: digit_zero_of(digit_zero))
     end
 
-    # The grouping policy, :western, :indian or :legacy. It is not a member, as Fault#detail is
+    # The grouping policy, :western or :indian. It is not a member, as Fault#detail is
     # not: the ten members, #to_h, #inspect and the positional and keyword constructors are
-    # 1.0's, and the policy rides beside them, counting in #==, #eql? and #hash (a :legacy and a
+    # 1.0's, and the policy rides beside them, counting in #==, #eql? and #hash (an :indian and a
     # :western format must never be one memo key). A NumFormat restored from a 1.0 Marshal
-    # payload carries no policy and keeps 1.0's meaning, :legacy: it was legacy when 1.0 made it,
-    # and stored data does not change with the constants (a 1.1 payload keeps the policy it stores).
+    # payload carries no policy and is :western, like everything that records none.
     def grouping
-      @grouping || :legacy
+      @grouping || :western
     end
 
     # The flags word the native layout carries: #flags with the grouping policy in bits 8 and 9.
+    # A 1.0 Marshal payload is restored member by member with no call this class can hook, so a
+    # flags word it stored is judged here, on its first use.
     def raw_flags
+      check_flags(flags)
       flags | GROUPING_POLICIES.fetch(grouping)
     end
 
@@ -301,8 +303,8 @@ module HyperCast
     end
 
     # Marshal's form: the members and the policy, so a loaded format keeps its policy and is
-    # judged again as a new one is. A 1.0 payload (the struct form) loads without a policy, which
-    # #grouping reads as :legacy.
+    # judged again as a new one is, and a stored policy that isn't one is an ArgumentError here. A
+    # 1.0 payload (the struct form) loads without a policy, which #grouping reads as :western.
     def marshal_dump
       to_h.merge(grouping: grouping)
     end
@@ -362,8 +364,8 @@ module HyperCast
     # narrow flags: for anything stricter.
     #
     # The Hash says nothing about how a locale groups digits, so grouping: declares it — :western,
-    # the default, reads groups of three ("1.234.567,89"), :indian is lakh and crore
-    # ("12,34,567"), and :legacy reads a separator between any two digits, as 1.0 did.
+    # the default, reads groups of three ("1.234.567,89"), and :indian is lakh and crore
+    # ("12,34,567").
     def self.from_i18n(number_format, currency_format: nil, flags: ALL_STYLES, grouping: :western)
       entries = i18n_entries(number_format)
       separator = entries[:separator] || (entries[:delimiter] == "." ? "," : ".")
@@ -490,7 +492,7 @@ module HyperCast
   NumFormat::PACKED_BYTES = 92
 
   # Permit the group separator between digits. The NumFormat's grouping policy judges the sizes
-  # (strict Western by default; :legacy accepts any sizes — between digits is the rule).
+  # (Western by default, :indian when declared).
   GROUPING = 1
   # Permit accounting parentheses as negation: (1,234) is -1234.
   PARENTHESES = 1 << 1
@@ -526,26 +528,25 @@ module HyperCast
   # lenience, and is deliberately not included either).
   ALL_STYLES = GROUPING | PARENTHESES | EXPONENT | RADIX_PREFIXES | PERCENT | CURRENCY
 
-  # Grouping policy legacy, bits 8 and 9 clear: the group separator anywhere between two digits.
-  GROUPING_LEGACY = 0
-  # Grouping policy strict Western, bit 8: groups of exactly three digits from the decimal
-  # separator, the leftmost one to three.
-  GROUPING_WESTERN = 1 << 8
-  # Grouping policy strict Indian, bit 9: three digits beside the decimal separator, two in each
-  # group to its left, the leftmost one or two.
+  # Grouping policy Western, no bits, the default: groups of exactly three digits from the
+  # decimal separator, the leftmost one to three.
+  GROUPING_WESTERN = 0
+  # Grouping policy Indian, bit 9, only when declared: three digits beside the decimal separator,
+  # two in each group to its left, the leftmost one or two.
   GROUPING_INDIAN = 2 << 8
-  # The two policy bits, 8 and 9, of the native flags word. Both set names no policy and is
-  # refused. A NumFormat declares its policy with grouping:, never in flags.
+  # The two policy bits, 8 and 9, of the native flags word. Bit 8 (256) is retired and never
+  # reused, so 256 and 768 name no policy and are refused. A NumFormat declares its policy with
+  # grouping:, never in flags.
   GROUPING_POLICY = 3 << 8
 
   # The grouping policies a NumFormat's grouping: names, with their bits in the native flags word.
-  GROUPING_POLICIES = { legacy: GROUPING_LEGACY, western: GROUPING_WESTERN, indian: GROUPING_INDIAN }.freeze
+  GROUPING_POLICIES = { western: GROUPING_WESTERN, indian: GROUPING_INDIAN }.freeze
 
-  # The invariant profile — '.' decimal, ',' grouping, every lenience on, strict Western
+  # The invariant profile — '.' decimal, ',' grouping, every lenience on, Western
   # grouping, no currency symbol declared.
   NumFormat::INVARIANT = NumFormat.new(decimal_sep: ".", group_sep: ",", flags: ALL_STYLES)
 
-  # The detection profile — every lenience on, strict Western grouping, ./, roles resolved per
+  # The detection profile — every lenience on, Western grouping, ./, roles resolved per
   # input by SEPARATOR_DETECT's structural rules.
   NumFormat::DETECT = NumFormat.new(decimal_sep: ".", group_sep: ",",
                                     flags: ALL_STYLES | SEPARATOR_DETECT)

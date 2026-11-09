@@ -233,8 +233,9 @@ sites! {
     IntDecimalPoint = "integer.rs", Malformed, FractionNotAllowed;
     /// A group separator not between two digits.
     IntGroupMisplaced = "integer.rs", Malformed, GroupMisplaced;
-    /// Under a strict grouping policy, a group with the wrong number of digits: the span is
-    /// the group, with the separator before it unless it is the leftmost.
+    /// A group its grouping policy refuses: the wrong number of digits, or a first group that
+    /// starts with a zero. The span is the group, with the separator before it unless it
+    /// is the leftmost.
     IntGroupSize = "integer.rs", Malformed, GroupSize;
     /// A negative exponent at an integer door; the span is its `-`.
     IntNegativeExponent = "integer.rs", Malformed, FractionNotAllowed;
@@ -242,7 +243,7 @@ sites! {
     IntExponentDigitExpected = "integer.rs", Malformed, DigitExpected;
     /// A sign after the exponent's digits.
     IntAfterExponentSign = "integer.rs", Malformed, SignMisplaced;
-    /// Under a strict grouping policy, a group separator after the exponent's digits.
+    /// A group separator after the exponent's digits.
     IntGroupInExponent = "integer.rs", Malformed, GroupInFraction;
     /// Another character after the exponent's digits.
     IntAfterExponent = "integer.rs", Malformed, UnexpectedCharacter;
@@ -291,14 +292,15 @@ sites! {
     RealGroupInFraction = "real.rs", Malformed, GroupInFraction;
     /// A group separator not between two digits.
     RealGroupMisplaced = "real.rs", Malformed, GroupMisplaced;
-    /// Under a strict grouping policy, a group with the wrong number of digits: the span is
-    /// the group, with the separator before it unless it is the leftmost.
+    /// A group its grouping policy refuses: the wrong number of digits, or a first group that
+    /// starts with a zero. The span is the group, with the separator before it unless it
+    /// is the leftmost.
     RealGroupSize = "real.rs", Malformed, GroupSize;
     /// An `e` (and its sign) with no exponent digit after it; the span is the `e`.
     RealExponentDigitExpected = "real.rs", Malformed, DigitExpected;
     /// A sign after the exponent's digits.
     RealAfterExponentSign = "real.rs", Malformed, SignMisplaced;
-    /// Under a strict grouping policy, a group separator after the exponent's digits.
+    /// A group separator after the exponent's digits.
     RealGroupInExponent = "real.rs", Malformed, GroupInFraction;
     /// Another character after the exponent's digits.
     RealAfterExponent = "real.rs", Malformed, UnexpectedCharacter;

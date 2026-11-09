@@ -32,16 +32,16 @@
 // (compact dates, a space for the `T`, +hh offsets, a two-digit-year pivot) and a MonthNames
 // vocabulary, each checked once by the core when it is declared.
 //
-// A numeric format also declares its grouping: strict Western by default (`12,34` is
-// Malformed), strict Indian, or Grouping::legacy, a group separator anywhere between two
-// digits. Strict grouping and everything detailed needs a core of this header's major version
-// and a minor version at least as new (the patch never matters: a patch release adds no export),
-// which the header checks at run time before it is used: core_is_compatible() asks, and a
-// program should ask it once at startup. A core that fails it lacks the detailed exports or
-// ignores the grouping policy, which would silently read as legacy: a strict declaration against
-// one is refused (std::nullopt), and a door handed a strict format by other means writes one
-// line naming both versions to stderr and ends the program with std::abort(), never parsing it
-// as legacy.
+// A numeric format also declares its grouping: Western by default (`1,23,456`, `12,34` and `0,125`
+// are Malformed) or Grouping::indian (`1,23,456` reads, `1,234,567` is Malformed). with_grouping
+// chooses either. Every numeric door and everything detailed needs a core of this header's major
+// version and a minor version at least as new (the patch never matters: a patch release adds no
+// export), which the header checks at run time before it is used: core_is_compatible() asks, and a
+// program should ask it once at startup. A core that fails it lacks the detailed exports or reads
+// grouped numerals by 1.0's rule, where `1,23,456` is 123456 and `0,125` is 125: a declaration
+// against one is refused (std::nullopt), and a numeric door handed a format by other means writes
+// one line naming both versions to stderr and ends the program with std::abort(), never reading a
+// numeral by that rule.
 
 #ifndef HYPERCAST_HPP
 #define HYPERCAST_HPP
@@ -105,9 +105,9 @@ constexpr bool version_accepts(std::uint32_t core, std::uint32_t header) noexcep
 
 // Whether the linked library can drive this header (HYPERCAST_VERSION): its major version is
 // the header's and its minor at least as new, whatever the patch. A core that fails has no
-// detailed exports, or reads no grouping policy in a format's flags, so strict grouping against
-// it would silently read as legacy; every path that uses either asks this first. A program that
-// uses them should ask it once at startup, and read an answer of false as a deployment error.
+// detailed exports, or reads grouped numerals by 1.0's rule; every path that would reach either
+// asks this first. A program should ask it once at startup, and read an answer of false as a
+// deployment error.
 // Read once, then remembered.
 inline bool core_is_compatible() noexcept {
   static const bool compatible =
@@ -156,7 +156,7 @@ enum class Detail : std::uint32_t {
   parentheses_unbalanced = 8,   // `(` without `)`
   mark_repeated = 9,            // a once-only mark appears twice
   group_misplaced = 10,         // a group separator not between digits, or an empty group
-  group_size = 11,              // a group of the wrong digit count for the grouping
+  group_size = 11,              // a group of the wrong digit count, or a zero-led first group
   group_in_fraction = 12,       // grouping after the decimal separator or in an exponent
   ambiguous_separator = 13,     // separator detection can't tell `.` from `,`
   fraction_not_allowed = 14,    // a fraction where the type is whole
@@ -742,13 +742,11 @@ constexpr NumStyles &operator&=(NumStyles &a, NumStyles b) noexcept { return a =
 
 // How a numeral's group separators are judged: the policy a NumFormat declares beside its
 // styles. A policy only judges groups: with NumStyles::grouping off, a group separator stays
-// forbidden under every one. Policy bits 8 and 9 of the layout's flags, which never share the
-// styles; a value other than these three is a refused declaration.
+// forbidden under every one. Western is no bits, so a format is Western unless it says otherwise.
+// Value 256 (bit 8) is retired permanently and never reused, and a value other than these two is
+// a refused declaration; a future policy takes a new bit from bit 10 up.
 enum class Grouping : std::uint32_t {
-  legacy =
-      HyperCastNumFormat_GROUPING_LEGACY, // a separator anywhere between two digits: 12,34 is 1234
-  western =
-      HyperCastNumFormat_GROUPING_WESTERN,    // groups of three counted from the right: 1,234,567
+  western = HyperCastNumFormat_GROUPING_WESTERN, // groups of three from the right: 1,234,567
   indian = HyperCastNumFormat_GROUPING_INDIAN // lakh and crore: the last group three, the rest two
 };
 
@@ -759,15 +757,15 @@ namespace detail {
   std::abort();
 }
 
-// A strict or detailed cast reached a core that cannot drive this header (core_is_compatible()
+// A numeric or detailed cast reached a core that cannot drive this header (core_is_compatible()
 // is false): one line on stderr naming both versions, then the end of the program, rather than
-// parse a strict request as legacy. A deployment error, not a caller bug, so it says so.
+// read a numeral by that core's rule. A deployment error, not a caller bug, so it says so.
 [[noreturn]] inline void stale_core() noexcept {
   const std::uint32_t core = ::hypercast_version();
   std::fprintf(stderr,
                "hypercast: the linked library is %u.%u.%u, which cannot drive this header "
                "(%d.%d.%d: the same major version and at least its minor are needed); "
-               "refusing a strict or detailed cast\n",
+               "refusing a numeric or detailed cast\n",
                core >> 16, (core >> 8) & 0xFFu, core & 0xFFu, HYPERCAST_VERSION_MAJOR,
                HYPERCAST_VERSION_MINOR, HYPERCAST_VERSION_PATCH);
   std::abort();
@@ -816,14 +814,51 @@ template <class Symbol> inline std::string_view view(const Symbol &symbol) noexc
   return std::string_view(reinterpret_cast<const char *>(symbol.bytes), symbol.len);
 }
 
-template <class Raw> constexpr bool same_bytes(const Raw &a, const Raw &b) noexcept;
+// Defined ahead of the classes whose == call it, so that == is a constant expression.
+template <class Raw> constexpr bool same_bytes(const Raw &a, const Raw &b) noexcept {
+  // Field by field, so padding never counts; constexpr, so no memcmp.
+  if constexpr (std::is_same_v<Raw, HyperCastRawNumFormat>) {
+    const HyperCastNumFormat &x = a.format;
+    const HyperCastNumFormat &y = b.format;
+    auto same = [](const auto &s, const auto &t) {
+      if (s.len != t.len) {
+        return false;
+      }
+      for (std::size_t i = 0; i < s.len; ++i) {
+        if (s.bytes[i] != t.bytes[i]) {
+          return false;
+        }
+      }
+      return true;
+    };
+    return a.size == b.size && x.flags == y.flags && x.digits == y.digits &&
+           same(x.decimal_sep, y.decimal_sep) && same(x.group_sep, y.group_sep) &&
+           same(x.currency_decimal_sep, y.currency_decimal_sep) &&
+           same(x.currency_group_sep, y.currency_group_sep) && same(x.minus_sign, y.minus_sign) &&
+           same(x.plus_sign, y.plus_sign) && same(x.percent, y.percent) &&
+           same(x.currency, y.currency);
+  } else {
+    auto same = [](const auto &s, const auto &t) {
+      if (s.len != t.len) {
+        return false;
+      }
+      for (std::size_t i = 0; i < s.len; ++i) {
+        if (s.bytes[i] != t.bytes[i]) {
+          return false;
+        }
+      }
+      return true;
+    };
+    return a.size == b.size && same(a.periods.am, b.periods.am) && same(a.periods.pm, b.periods.pm);
+  }
+}
 } // namespace detail
 
 // Caller-declared numeric notation for the integer, real and decimal doors: the separators,
 // the leniences, and whatever the text's culture spells differently from ASCII. The core
 // carries no culture data; a caller maps its own to these fields. 92 bytes, the core's
-// RawNumFormat, which it reads in place. Grouping defaults to strict Western everywhere a format
-// is declared: `12,34` is Malformed unless the caller declares Grouping::legacy.
+// RawNumFormat, which it reads in place. Grouping defaults to Western everywhere a format is
+// declared: `12,34` is Malformed under every policy.
 class NumFormat {
 public:
   // What NumFormat::declare reads. Every field after styles declares nothing when empty,
@@ -847,17 +882,18 @@ public:
   // is too long, holds an ASCII digit or is not UTF-8, equal separators, a sign, percent
   // symbol or decimal separator with white space in it, a currency symbol with white space
   // at either edge, a digit zero that starts no digit block, a policy that is not one of
-  // Grouping's, a style bit that is not NumStyles's, or styles carrying a grouping policy). The
-  // core itself is the judge, asked once here, so a door never meets a format it refuses. A
-  // strict grouping needs a core as new as this header (core_is_compatible()): against an older one
-  // the declaration is refused, since that core would read the policy as legacy.
+  // Grouping's, a style bit that is not NumStyles's, or styles carrying a grouping policy, 351
+  // and 863 included). The core itself is the judge, asked once here, so a door never meets a
+  // format it refuses. A format needs a core as new as this header (core_is_compatible()):
+  // against an older one the declaration is refused, since that core reads by 1.0's rule.
   static std::optional<NumFormat> declare(const Fields &fields) noexcept {
     NumFormat format;
     HyperCastNumFormat &f = format.raw_.format;
     const std::uint32_t styles = static_cast<std::uint32_t>(fields.styles);
     const std::uint32_t policy = static_cast<std::uint32_t>(fields.grouping);
     if ((styles & HyperCastNumFormat_GROUPING_POLICY) != 0 ||
-        (policy & ~static_cast<std::uint32_t>(HyperCastNumFormat_GROUPING_POLICY)) != 0) {
+        (policy != HyperCastNumFormat_GROUPING_WESTERN &&
+         policy != HyperCastNumFormat_GROUPING_INDIAN)) {
       return std::nullopt;
     }
     f.flags = styles | policy;
@@ -871,16 +907,9 @@ public:
         !detail::store(f.percent, fields.percent) || !detail::store(f.currency, fields.currency)) {
       return std::nullopt;
     }
-    // Empty text with a format the core reads is Empty; one it refuses is -1. A format with no
-    // bits past the 1.0 flags is judged by the 1.0 rules, which any core has; a policy or a bit
-    // only a newer core knows needs the detailed judge, and so a core of the header's version.
+    // Empty text with a format the core reads is Empty; one it refuses is -1. The detailed judge
+    // reads every flag bit, where the 1.0 exports see only the styles.
     std::int32_t ignored = 0;
-    if (f.flags >> 8 == 0) {
-      if (::cast_i32(nullptr, 0, &format.raw_, &ignored, nullptr) < 0) {
-        return std::nullopt;
-      }
-      return format;
-    }
     if (!core_is_compatible() ||
         ::cast_detailed(detail::door_i32, 0, &format.raw_, nullptr, nullptr, nullptr, 0, nullptr, 0,
                         &ignored, nullptr) < 0) {
@@ -889,16 +918,16 @@ public:
     return format;
   }
 
-  // `.` decimal and `,` group separators, NumStyles::all and strict Western grouping: what a
-  // caller of this header reads by default. `12,34` is Malformed; Grouping::legacy
-  // (invariant().with_grouping(Grouping::legacy)) is the 1.0 reading, 1234.
+  // `.` decimal and `,` group separators, NumStyles::all and Western grouping: what a caller of
+  // this header reads by default. `12,34` and `1,23,456` are Malformed;
+  // invariant().with_grouping(Grouping::indian) reads the second as 123456.
   static constexpr NumFormat invariant() noexcept {
     return NumFormat(".", ",", NumStyles::all, Grouping::western);
   }
 
   // The ./, roles resolved per input from structure (NumStyles::separator_detect, beside
-  // all), where only unambiguous text resolves: `1,000` is Malformed, never guessed. Strict
-  // Western grouping, as invariant(); the policy never settles an ambiguous separator.
+  // all), where only unambiguous text resolves: `1,000` is Malformed, never guessed. Western
+  // grouping, as invariant(); the policy never settles an ambiguous separator.
   static constexpr NumFormat detect() noexcept {
     return NumFormat(".", ",", NumStyles::all | NumStyles::separator_detect, Grouping::western);
   }
@@ -912,12 +941,12 @@ public:
     return static_cast<Grouping>(raw_.format.flags & HyperCastNumFormat_GROUPING_POLICY);
   }
   // This format with another grouping policy, replacing the current one (never combined with
-  // it), the styles and every symbol kept. One of Grouping's three values; any other is a
-  // contract violation and ends the program with std::abort(), as an undefined date order does.
+  // it), the styles and every symbol kept. One of Grouping's two values; any other, 256 and 768
+  // included, is a contract violation and ends the program with std::abort(), as an undefined
+  // date order does.
   constexpr NumFormat with_grouping(Grouping policy) const noexcept {
     const std::uint32_t bits = static_cast<std::uint32_t>(policy);
-    if (bits != HyperCastNumFormat_GROUPING_LEGACY && bits != HyperCastNumFormat_GROUPING_WESTERN &&
-        bits != HyperCastNumFormat_GROUPING_INDIAN) {
+    if (bits != HyperCastNumFormat_GROUPING_WESTERN && bits != HyperCastNumFormat_GROUPING_INDIAN) {
       detail::contract_violation();
     }
     NumFormat copy = *this;
@@ -1234,44 +1263,6 @@ private:
 };
 
 namespace detail {
-template <class Raw> constexpr bool same_bytes(const Raw &a, const Raw &b) noexcept {
-  // Field by field, so padding never counts; constexpr, so no memcmp.
-  if constexpr (std::is_same_v<Raw, HyperCastRawNumFormat>) {
-    const HyperCastNumFormat &x = a.format;
-    const HyperCastNumFormat &y = b.format;
-    auto same = [](const auto &s, const auto &t) {
-      if (s.len != t.len) {
-        return false;
-      }
-      for (std::size_t i = 0; i < s.len; ++i) {
-        if (s.bytes[i] != t.bytes[i]) {
-          return false;
-        }
-      }
-      return true;
-    };
-    return a.size == b.size && x.flags == y.flags && x.digits == y.digits &&
-           same(x.decimal_sep, y.decimal_sep) && same(x.group_sep, y.group_sep) &&
-           same(x.currency_decimal_sep, y.currency_decimal_sep) &&
-           same(x.currency_group_sep, y.currency_group_sep) && same(x.minus_sign, y.minus_sign) &&
-           same(x.plus_sign, y.plus_sign) && same(x.percent, y.percent) &&
-           same(x.currency, y.currency);
-  } else {
-    auto same = [](const auto &s, const auto &t) {
-      if (s.len != t.len) {
-        return false;
-      }
-      for (std::size_t i = 0; i < s.len; ++i) {
-        if (s.bytes[i] != t.bytes[i]) {
-          return false;
-        }
-      }
-      return true;
-    };
-    return a.size == b.size && same(a.periods.am, b.periods.am) && same(a.periods.pm, b.periods.pm);
-  }
-}
-
 // The verdict a door's return code names: 0 the value, 1 to 3 a fault, -1 a contract
 // violation (unreachable from well-typed arguments).
 template <class T>
@@ -1298,8 +1289,8 @@ inline HyperCastRawFault plain(const HyperCastRawFaultDetail &fault) noexcept {
 }
 
 // cast_detailed, once the core is known to have it: a core older than this header may have no such
-// export and reads no grouping policy, so nothing past this point may run against one, and the
-// program ends rather than parse a strict request as legacy. -1, a contract violation, cannot come
+// export and reads by 1.0's rule, so nothing past this point may run against one, and the
+// program ends rather than read a numeral by that rule. -1, a contract violation, cannot come
 // from a format or option the types declared; it ends the program too.
 template <class Out>
 inline std::int32_t detailed_text(std::uint32_t door, std::uint32_t param,
@@ -1322,12 +1313,16 @@ template <class T, class Door>
 inline Verdict<T> numeric(Door door, std::uint32_t code, Text text,
                           const NumFormat &format) noexcept {
   T out{};
-  if (format.grouping() == Grouping::legacy) {
+  // A 1.0 core's export reads `1,23,456` as 123456, so every format is asked about first. This
+  // core's reads Western, whatever the policy says: Indian goes through the detailed export, and
+  // its detail is dropped.
+  if (!core_is_compatible()) {
+    stale_core();
+  }
+  if (format.grouping() == Grouping::western) {
     HyperCastRawFault fault{};
     return finish(door(text.data(), text.size(), &format.raw(), &out, &fault), out, fault);
   }
-  // The 1.0 exports read a format as legacy whatever its policy says: strict goes through the
-  // detailed export, and its detail is dropped.
   HyperCastRawFaultDetail fault = new_fault();
   const std::int32_t result =
       detailed_text(code, 0, &format.raw(), nullptr, nullptr, MonthNames(), text, &out, &fault);
@@ -1418,7 +1413,10 @@ inline Verdict<double> cast_f64(Text text, const NumFormat &format) noexcept {
 // or more than 28 significant places is OutOfRange.
 inline Verdict<Decimal> cast_decimal(Text text, const NumFormat &format) noexcept {
   HyperCastDecimal out{};
-  if (format.grouping() == Grouping::legacy) {
+  if (!core_is_compatible()) {
+    detail::stale_core();
+  }
+  if (format.grouping() == Grouping::western) {
     HyperCastRawFault fault{};
     return detail::converted<Decimal>(
         ::cast_decimal(text.data(), text.size(), &format.raw(), &out, &fault), out, fault,
@@ -2435,13 +2433,12 @@ inline Checked<T> checked(const Constraints<T> &constraints, const NumFormat *fo
                           Convert convert) noexcept {
   Raw out{};
   HyperCastRawCheck check{};
-  if (format != nullptr && format->grouping() != Grouping::legacy) {
-    // The 1.0 export reads a format as legacy whatever its policy says: strict goes through the
-    // detailed export, and its detail is dropped.
+  // As numeric(): a null format is a door that reads no numeral, and any core has it.
+  if (format != nullptr && !core_is_compatible()) {
+    stale_core();
+  }
+  if (format != nullptr && format->grouping() != Grouping::western) {
     HyperCastRawFaultDetail fault = new_fault();
-    if (!core_is_compatible()) {
-      stale_core();
-    }
     const std::int32_t code = ::cast_checked_detailed(
         Constraints<T>::door, 0, &format->raw(), &constraints.raw(), constraints.enum_data(),
         constraints.enum_size(), text.data(), text.size(), &out, &fault, &check);
@@ -2627,7 +2624,7 @@ cast_text(Text text, const Constraints<std::string_view> &constraints) noexcept 
 // policy, and the date doors take a DateOptions and a MonthNames; a door without a
 // declaration reads exactly the shapes its plain twin does, and a Failure's fault() is the
 // plain door's Fault. All of it needs a core as new as this header (core_is_compatible()): against
-// an older one a detailed door ends the program, as a strict format does at a plain door.
+// an older one a detailed door ends the program, as a format does at a numeric plain door.
 
 // The failure case of a detailed checked door: the door's own Failure (it did not parse), or a
 // Violation (it parsed and broke a declared rule; a Violation has no detail). Exactly one; no

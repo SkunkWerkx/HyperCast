@@ -252,12 +252,10 @@ violation is a rule the value broke, not a failure to read it, so it has no deta
 
 Every numeric door takes an optional `NumFormat`; left out (or `null`), it is
 `NumFormat.invariant()`: `.` and `,` with every lenience in `NumStyles.All` on and nothing else
-declared, and strict Western grouping. `NumFormat.detect()` adds `NumStyles.SeparatorDetect`, so
+declared, and Western grouping. `NumFormat.detect()` adds `NumStyles.SeparatorDetect`, so
 the `.`/`,` roles are resolved per input from its structure and an undecidable one is a
 `malformed` fault, never a guess (a grouping policy never settles one). Anything else is declared
 from a spec:
-
-Anything else is declared from a spec:
 
 ```js
 const { castI32, castDecimal, castF64, NumFormat, NumStyles } = require('@skunkwerkx/hypercast')
@@ -283,27 +281,25 @@ NumFormat.declare({ decimalSep: ',', groupSep: ',', flags: NumStyles.All })
 
 ### Grouping
 
-A format declares how strictly it reads groups of digits, apart from its styles, as a
+A format declares how it reads groups of digits, apart from its styles, as a
 `Grouping`, in `grouping`:
 
-- **`Grouping.Western`**, the default (a declaration with no `grouping`, `invariant()` and
+- **`Grouping.Western`** (0), the default (a declaration with no `grouping`, `invariant()` and
   `detect()`): groups of exactly three digits counted from the decimal separator, the leftmost
-  of one to three. `1,234,567` reads; `12,34` and `1234,567` are `malformed` (`groupSize`).
-- **`Grouping.Indian`**: three beside the decimal separator and twos beyond it, the leftmost of
-  one or two (`12,34,567`).
-- **`Grouping.Legacy`**: a group separator anywhere between two digits, as every 1.0 format
-  read (`12,34` is 1234). This is the way back for data that grouped loosely.
+  of one to three, not starting with a zero. `1,234,567` reads; `1,23,456`, `12,34`, `1234,567` and `0,125`
+  are `malformed` (`groupSize`).
+- **`Grouping.Indian`** (512): three beside the decimal separator and twos beyond it, the leftmost of
+  one or two, not starting with a zero (`1,23,456`, `12,34,567`). It refuses `1,234,567`.
 
-Ungrouped numerals stay valid under all three, and once a numeral groups every group must
+`format.withGrouping(Grouping.Indian)` chooses either on a format already made, and answers with
+a `Declaration`, as `declare` does: anything else, 256 and 768 included, is refused. Bit 8 is
+retired permanently and never reused. Ungrouped numerals stay valid under both, and once a numeral groups every group must
 conform. A policy does not turn grouping on: with `NumStyles.Grouping` off a group separator is
-refused under every policy. Digits are counted as digits, native ones included, whatever
+refused under both. Digits are counted as digits, native ones included, whatever
 separator sits between the groups. A style mask holds no policy: `flags` with bit 8 or 9 set is
 refused, naming `grouping`, and `NumFormat.flags` reads back the styles alone, with
-`NumFormat.grouping` beside it. `packed` carries the policy in bits 8 and 9 of its flags word.
-
-**This changed in 1.1:** a 1.0 declaration with no `grouping` now reads `12,34` as `malformed`
-where 1.0 read 1234. Declare `grouping: Grouping.Legacy` for the old reading. A door given no
-format reads `NumFormat.invariant()`, so it is strict too.
+`NumFormat.grouping` beside it. A door given no format reads `NumFormat.invariant()`. A shape
+neither policy reads is `malformed` under a declared format or `invariant()`, never misread, while `detect()` infers by the delimiter rule, so `1,2345` is 1.2345 there: [docs/grouping.md](https://github.com/SkunkWerkx/HyperCast/blob/master/docs/grouping.md#parked).
 
 A spec (`NumFormatSpec`) has `decimalSep`, `groupSep` and `flags`, and optionally `grouping`, `currency`,
 `currencyDecimalSep`, `currencyGroupSep`, `minusSign`, `plusSign`, `percent` and `digitZero`.
@@ -329,7 +325,9 @@ and `packed` is the 92-byte little-endian `RawNumFormat` the core reads in place
 that hands it to a C ABI of its own. `DateFormat.declare({ order, am?, pm? })` follows the same
 pattern. Neither class has a public constructor: `new NumFormat()` throws napi's "Class
 contains no `constructor`" error, the one way to call this package wrongly that the types do
-not stop; use `declare`, `invariant()` or `detect()`.
+not stop; use `declare`, `invariant()` or `detect()`. JavaScript has no value equality to hook,
+so `===` is identity; `a.equals(b)` is true when `b` declares the same thing, however each was
+made, and `NumFormat`, `DateFormat`, `DateOptions` and `MonthNames` all have it.
 
 ## Date options
 
@@ -474,11 +472,11 @@ Constraints.declare({ door: Door.I32, minLength: 1 })
 ## Versions
 
 The addon (and the WebAssembly fallback) is the core compiled in, not a library found at load
-time, so a core older than 1.1 cannot be loaded under it: the detailed exports and the strict
+time, so a core older than 1.1 cannot be loaded under it: the detailed exports and the
 grouping policy it calls are linked, and a build against a 1.0 core fails to compile. The plain
 numeric doors call the core's Rust doors, which honour a format's policy; the checked doors and
 the four detailed doors call the core's detailed exports, which do too. The 1.0 checked exports
-ignore the policy and would read every group legacy, so none is called. `index.js` also pairs
+mask the policy away and would read every format Western, so none is called. `index.js` also pairs
 the addon with the package when it loads: unless `nativeVersion()` equals the package's version
 and the addon has `castDetailed`, it is treated as not loaded (`isAvailable()` is `false`, every
 door throws `ERR_HYPERCAST_UNAVAILABLE` with the mismatch as its `cause`), which catches a stale

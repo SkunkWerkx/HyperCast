@@ -100,7 +100,7 @@ public sealed class InteropTests
 		var bytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(in raw, 1));
 		bytes.Length.ShouldBe(92);
 		MemoryMarshal.Read<uint>(bytes).ShouldBe(92u);
-		MemoryMarshal.Read<uint>(bytes[4..]).ShouldBe(223u | 1u << 8); // the styles, and strict Western in bits 8 and 9
+		MemoryMarshal.Read<uint>(bytes[4..]).ShouldBe(223u); // the styles; Western sets no bit
 		MemoryMarshal.Read<uint>(bytes[8..]).ShouldBe(0x0660u);
 		Symbol(bytes, 12, 9).ShouldBe(",");
 		Symbol(bytes, 21, 9).ShouldBe(". ");

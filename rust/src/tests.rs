@@ -142,8 +142,8 @@ fn int_group_separator_must_sit_between_digits() {
     assert_eq!(reason(cast_i32(b",1", &INVARIANT)), Reason::Malformed);
     assert_eq!(reason(cast_i32(b"1,", &INVARIANT)), Reason::Malformed);
     assert_eq!(reason(cast_i32(b"1,,2", &INVARIANT)), Reason::Malformed);
-    // Group sizes are not validated — the separator just has to sit between digits.
-    assert_eq!(cast_i32(b"12,34", &INVARIANT), Ok(1234));
+    // An Indian shape never reads without a declared policy.
+    assert_eq!(reason(cast_i32(b"1,23,456", &INVARIANT)), Reason::Malformed);
 }
 
 #[test]
@@ -2621,12 +2621,11 @@ fn a_format_validates_as_check_judges_it() {
     assert!(!DeclarationError::NumFormat.to_string().is_empty());
 }
 
-// --- strict grouping ---
+// --- grouping policies ---
 
 #[test]
-fn the_grouping_constants_are_bits_eight_and_nine() {
-    assert_eq!(NumFormat::GROUPING_LEGACY, 0);
-    assert_eq!(NumFormat::GROUPING_WESTERN, 1 << 8);
+fn the_grouping_constants_are_zero_and_bit_nine() {
+    assert_eq!(NumFormat::GROUPING_WESTERN, 0);
     assert_eq!(NumFormat::GROUPING_INDIAN, 2 << 8);
     assert_eq!(NumFormat::GROUPING_POLICY, 3 << 8);
     // `ALL` is a leniency mask and never carries a policy.
@@ -2635,36 +2634,93 @@ fn the_grouping_constants_are_bits_eight_and_nine() {
 
 #[test]
 fn with_grouping_replaces_the_policy_never_ors_it() {
-    let western = INVARIANT.with_grouping(NumFormat::GROUPING_WESTERN);
-    assert_eq!(western.flags, NumFormat::ALL | NumFormat::GROUPING_WESTERN);
-    let indian = western.with_grouping(NumFormat::GROUPING_INDIAN);
-    assert_eq!(indian.flags, NumFormat::ALL | NumFormat::GROUPING_INDIAN, "replaced, not 11");
+    let indian = INVARIANT.with_grouping(Grouping::Indian);
+    assert_eq!(indian.flags, NumFormat::ALL | NumFormat::GROUPING_INDIAN);
     assert!(indian.check());
-    assert_eq!(indian.with_grouping(NumFormat::GROUPING_LEGACY), INVARIANT);
-    // Only the policy field is written; any other bit in the argument is ignored.
-    let stray = INVARIANT.with_grouping(NumFormat::GROUPING_WESTERN | NumFormat::TRAILING_SIGN);
-    assert_eq!(stray.flags, NumFormat::ALL | NumFormat::GROUPING_WESTERN);
+    assert_eq!(indian.with_grouping(Grouping::Western), INVARIANT);
+    // Choosing a policy replaces a stale field, whatever it held, and keeps the styles.
+    for stale in [351, 863] {
+        let format = NumFormat::new('.', ',', stale);
+        assert!(!format.check());
+        assert_eq!(format.with_grouping(Grouping::Western), INVARIANT);
+        assert_eq!(format.with_grouping(Grouping::Indian), indian);
+    }
     // Everything else is kept.
     let euro = NumFormat::new(',', '.', NumFormat::PARENS)
         .with_currency(CurrencySymbol::new("€").unwrap())
-        .with_grouping(NumFormat::GROUPING_INDIAN);
+        .with_grouping(Grouping::Indian);
     assert_eq!(euro.flags, NumFormat::PARENS | NumFormat::GROUPING_INDIAN);
     assert_eq!(euro.decimal_sep.as_bytes(), b",");
     assert_eq!(euro.currency.as_bytes(), "€".as_bytes());
 }
 
+/// `Grouping` holds the two policies and nothing else, each its bits in `flags`, and the only way
+/// from a number to it refuses every other value. Each `with_grouping` therefore validates.
 #[test]
-fn strict_is_invariant_with_western_grouping_and_invariant_stays_legacy() {
-    assert_eq!(
-        NumFormat::STRICT,
-        NumFormat { flags: NumFormat::ALL | NumFormat::GROUPING_WESTERN, ..INVARIANT }
-    );
-    assert!(NumFormat::STRICT.check());
-    assert_eq!(INVARIANT.flags & NumFormat::GROUPING_POLICY, NumFormat::GROUPING_LEGACY);
-    assert_eq!(NumFormat::DETECT.flags & NumFormat::GROUPING_POLICY, NumFormat::GROUPING_LEGACY);
+fn a_bad_policy_cannot_reach_with_grouping() {
+    assert_eq!(Grouping::Western as u32, NumFormat::GROUPING_WESTERN);
+    assert_eq!(Grouping::Indian as u32, NumFormat::GROUPING_INDIAN);
+    assert_eq!(Grouping::from_code(0), Some(Grouping::Western));
+    assert_eq!(Grouping::from_code(512), Some(Grouping::Indian));
+    for code in (0..=4096).chain([u32::MAX]) {
+        let named = Grouping::from_code(code);
+        assert_eq!(named.is_some(), code == 0 || code == 512, "{code}");
+        if let Some(policy) = named {
+            assert!(INVARIANT.with_grouping(policy).validate().is_ok());
+        }
+    }
+    assert_eq!(Grouping::from_code(256), None);
+    assert_eq!(Grouping::from_code(768), None);
+    assert_eq!(Grouping::from_code(351), None);
+    assert_eq!(Grouping::from_code(863), None);
+}
+
+/// 1.0's constructors take a plain `u32`, so they can hold a stale bit. They can't refuse, so
+/// `check` and `validate` do, and a plain door reads the format Western, never Indian.
+#[test]
+fn the_constructors_that_cannot_refuse_are_judged_by_validate_and_read_western() {
+    let wide = |c: &str| Symbol::<8>::new(c).unwrap();
+    for stale in [NumFormat::ALL | 256, NumFormat::ALL | 768] {
+        for format in [
+            NumFormat::new('.', ',', stale),
+            NumFormat::with_separators(wide("."), wide(","), stale),
+        ] {
+            assert!(!format.check());
+            assert_eq!(format.validate().err(), Some(DeclarationError::GroupingPolicy));
+            assert_eq!(cast_i64(b"1,234,567", &format), Ok(1234567));
+            assert_eq!(reason(cast_i64(b"1,23,456", &format)), Reason::Malformed);
+        }
+    }
+}
+
+/// Western is what records no policy, so each way to say nothing is Western with no special
+/// handling, and an Indian shape only reads once Indian is declared.
+#[test]
+fn no_policy_recorded_is_western() {
+    assert_eq!(INVARIANT.flags & NumFormat::GROUPING_POLICY, NumFormat::GROUPING_WESTERN);
+    assert_eq!(NumFormat::DETECT.flags & NumFormat::GROUPING_POLICY, NumFormat::GROUPING_WESTERN);
     assert_eq!(NumFormat::default(), INVARIANT);
-    assert_eq!(cast_i32(b"12,34", &INVARIANT), Ok(1234));
-    assert_eq!(reason(cast_i32(b"12,34", &NumFormat::STRICT)), Reason::Malformed);
+    let unset = NumFormat::new('.', ',', NumFormat::ALL);
+    for format in [INVARIANT, NumFormat::DETECT, unset] {
+        assert_eq!(reason(cast_i32(b"1,23,456", &format)), Reason::Malformed);
+        assert_eq!(cast_i32(b"1,234,567", &format), Ok(1234567));
+    }
+    let indian = INVARIANT.with_grouping(Grouping::Indian);
+    assert_eq!(cast_i32(b"1,23,456", &indian), Ok(123456));
+    assert_eq!(reason(cast_i32(b"1,234,567", &indian)), Reason::Malformed);
+}
+
+/// Bit 8 was strict Western while 1.1 was in development and no version released it. It is
+/// retired and never reused: a stale `351` is refused, and even a door that wasn't asked to judge
+/// the format doesn't read it as Indian.
+#[test]
+fn a_stale_policy_bit_is_refused_and_never_reads_as_indian() {
+    for flags in [351, 0x100, 0x300, NumFormat::ALL | NumFormat::GROUPING_POLICY] {
+        let stale = NumFormat { flags, ..INVARIANT };
+        assert!(!stale.check(), "{flags:#x}");
+        assert_eq!(stale.validate(), Err(DeclarationError::GroupingPolicy), "{flags:#x}");
+        assert_eq!(reason(cast_i32(b"1,23,456", &stale)), Reason::Malformed, "{flags:#x}");
+    }
 }
 
 #[test]
@@ -2677,24 +2733,22 @@ fn a_refused_policy_and_undefined_flags_fail_validation() {
         assert!(!unknown.check(), "bit {bit}");
         assert_eq!(unknown.validate(), Err(DeclarationError::UnknownFlag), "bit {bit}");
     }
-    // Every defined bit, with each valid policy, is accepted.
-    for policy in
-        [NumFormat::GROUPING_LEGACY, NumFormat::GROUPING_WESTERN, NumFormat::GROUPING_INDIAN]
-    {
+    // Every defined bit, with each policy, is accepted.
+    for policy in [Grouping::Western, Grouping::Indian] {
         let every = NumFormat::ALL | NumFormat::SEPARATOR_DETECT | NumFormat::TRAILING_SIGN;
-        assert!(NumFormat { flags: every | policy, ..INVARIANT }.check());
-        assert!(NumFormat { flags: policy, ..INVARIANT }.validate().is_ok());
+        assert!(NumFormat { flags: every | policy as u32, ..INVARIANT }.check());
+        assert!(NumFormat { flags: policy as u32, ..INVARIANT }.validate().is_ok());
     }
     for error in [DeclarationError::GroupingPolicy, DeclarationError::UnknownFlag] {
         assert!(!error.to_string().is_empty());
     }
 }
 
-/// A strict policy enables nothing: with `GROUPING` cleared from `STRICT`, a group separator
+/// A policy enables nothing: with `GROUPING` cleared, a group separator
 /// stays forbidden (plan Review Focus 5).
 #[test]
-fn a_strict_format_with_grouping_off_refuses_group_separators() {
-    let format = NumFormat { flags: NumFormat::STRICT.flags & !NumFormat::GROUPING, ..INVARIANT };
+fn a_format_with_grouping_off_refuses_group_separators() {
+    let format = NumFormat { flags: NumFormat::ALL & !NumFormat::GROUPING, ..INVARIANT };
     let format = format.validate().unwrap();
     let refused = |failure: Failure| (failure.reason, failure.detail, failure.offset, failure.len);
     let expected = Err((Reason::Malformed, Detail::UnexpectedCharacter, 1, 1));
@@ -2704,11 +2758,11 @@ fn a_strict_format_with_grouping_off_refuses_group_separators() {
     assert_eq!(detailed::cast_i32("1234", &format), Ok(1234));
 }
 
-/// Native digits with a space-like group separator under strict Western: groups are counted
+/// Native digits with a space-like group separator under Western: groups are counted
 /// in digits, never bytes (plan Review Focus 1).
 #[test]
 fn native_digits_with_a_space_like_separator_are_counted_as_digits() {
-    let format = NumFormat { group_sep: Symbol::new("\u{202f}").unwrap(), ..NumFormat::STRICT }
+    let format = NumFormat { group_sep: Symbol::new("\u{202f}").unwrap(), ..INVARIANT }
         .with_digits(NativeDigits::new('\u{660}').unwrap())
         .validate()
         .unwrap();
@@ -2732,15 +2786,114 @@ fn native_digits_with_a_space_like_separator_are_counted_as_digits() {
     }
 }
 
-/// The lenient lane validates strict groups itself, so a grouped token under the bindings'
-/// default policy stays on the fast path; whatever it can't validate falls through to the
+/// No policy reads a first group that starts with a zero: `0,125` reading as 125 is a silent
+/// error when the text meant an eighth. It is a group fault on the first group, ahead of
+/// anything further right, at each door the engines share.
+#[test]
+fn no_policy_reads_a_zero_led_first_group() {
+    for policy in [Grouping::Western, Grouping::Indian] {
+        let format = INVARIANT.with_grouping(policy);
+        for (input, offset, len) in [
+            ("0,125", 0, 1),
+            ("00,125", 0, 2),
+            ("-0,125", 1, 1),
+            ("+0,125", 1, 1),
+            ("(0,125)", 1, 1),
+            ("0,000", 0, 1),
+            ("0,1", 0, 1),
+            ("0,", 0, 1),
+        ] {
+            let bytes = input.as_bytes();
+            let valid = format.validate().unwrap();
+            for failure in [
+                detailed::cast_i32(bytes, &valid).unwrap_err(),
+                detailed::cast_f64(bytes, &valid).unwrap_err(),
+                detailed::cast_decimal(bytes, &valid).unwrap_err(),
+            ] {
+                assert_eq!(
+                    (failure.reason, failure.detail, failure.offset, failure.len),
+                    (Reason::Malformed, Detail::GroupSize, offset, len),
+                    "{input:?} under {policy:?}"
+                );
+            }
+            assert_eq!(span(cast_i32(bytes, &format)), (Reason::Malformed, offset, len));
+        }
+        // A numeral with no group separator has no groups to judge, and one whose first group
+        // starts with another digit is as before.
+        assert_eq!(cast_i32(b"0", &format), Ok(0));
+        assert_eq!(cast_i32(b"0125", &format), Ok(125));
+        assert_eq!(cast_f64(b"0.5", &format), Ok(0.5));
+        assert_eq!(cast_i32(b"1,000", &format), Ok(1000));
+        assert_eq!(cast_i32(b"10,000", &format), Ok(10000));
+        // Under a comma decimal the comma is no group separator, and the dot is.
+        let euro = NumFormat::new(',', '.', NumFormat::ALL).with_grouping(policy);
+        assert_eq!(cast_f64(b"0,5", &euro), Ok(0.5));
+        assert_eq!(cast_f64(b"0,125", &euro), Ok(0.125));
+        assert_eq!(span(cast_f64(b"0.125", &euro)), (Reason::Malformed, 0, 1));
+    }
+    // Detection still takes a lone zero as a decimal.
+    let detect = NumFormat::DETECT.with_grouping(Grouping::Western);
+    assert_eq!(cast_f64(b"0,785", &detect), Ok(0.785));
+    assert_eq!(span(cast_f64(b"0,785,000", &detect)), (Reason::Malformed, 0, 1));
+}
+
+/// Every shape 1.0 read that isn't groups of three is `Malformed`/`group_size` under no policy:
+/// the group that doesn't fit, read leftward to right. What the other grouped doors read they
+/// read, and an ungrouped numeral has no groups to judge.
+#[test]
+fn western_refuses_every_shape_but_groups_of_three() {
+    let valid = INVARIANT.validate().unwrap();
+    for (input, offset, len) in [
+        ("0,125", 0, 1),
+        ("12,34", 2, 3),
+        ("1,2", 1, 2),
+        ("1,2345", 1, 5),
+        ("1,234,56", 5, 3),
+        ("1,23,4567", 1, 3),
+        ("1234,567", 0, 4),
+        ("1234,56", 0, 4),
+        ("12345,678", 0, 5),
+        ("12,34.5", 2, 3),
+        ("12,34e3", 2, 3),
+        ("1,2,345", 1, 2),
+        ("1,2345,678", 1, 5),
+        ("1234,567,890", 0, 4),
+        ("1,23,456", 1, 3),
+        ("12,34,567", 2, 3),
+        ("1,23,45,678", 1, 3),
+        ("1,234,56,789", 5, 3),
+    ] {
+        for failure in [
+            detailed::cast_i64(input, &valid).unwrap_err(),
+            detailed::cast_f64(input, &valid).unwrap_err(),
+            detailed::cast_decimal(input, &valid).unwrap_err(),
+        ] {
+            assert_eq!(
+                (failure.reason, failure.detail, failure.offset, failure.len),
+                (Reason::Malformed, Detail::GroupSize, offset, len),
+                "{input:?}"
+            );
+        }
+    }
+    for (input, value) in [
+        ("1,000", 1000),
+        ("10,000", 10000),
+        ("123,456", 123456),
+        ("1,234,567", 1234567),
+        ("0125", 125),
+    ] {
+        assert_eq!(cast_i64(input.as_bytes(), &INVARIANT), Ok(value), "{input:?}");
+        assert_eq!(cast_f64(input.as_bytes(), &INVARIANT), Ok(value as f64), "{input:?}");
+    }
+}
+
+/// The lenient lane validates groups itself, so a grouped token stays on the fast path; whatever it can't validate falls through to the
 /// engine, which is authoritative. Both give the same verdict, detail and span.
 #[test]
 fn lane_and_engine_agree_on_grouping() {
     let symbol = |text| CurrencySymbol::new(text).unwrap();
     let wide = |text| Symbol::<8>::new(text).unwrap();
-    let policies =
-        [NumFormat::GROUPING_LEGACY, NumFormat::GROUPING_WESTERN, NumFormat::GROUPING_INDIAN];
+    let policies = [Grouping::Western, Grouping::Indian];
     let inputs = [
         "1,234,567",
         "12,34,567",
@@ -2785,6 +2938,35 @@ fn lane_and_engine_agree_on_grouping() {
         "1.23.456",
         "1.234,56",
         "12.34,5",
+        "0,125",
+        "00,125",
+        "0,125,000",
+        "007,000",
+        "-0,125",
+        "+0,125",
+        "(0,125)",
+        "$0,125",
+        "0,125$",
+        "0,125.5",
+        "0,125e3",
+        "0,125%",
+        "0,12,345",
+        "01,23,456",
+        "0,000",
+        "0,12",
+        "0,",
+        "0",
+        "0.5",
+        "0125",
+        "1,000",
+        "10,000",
+        "1,025",
+        "0 125",
+        "0\u{a0}125",
+        "0.125",
+        "0,5",
+        "\u{660},\u{661}\u{662}\u{663}",
+        "\u{660}\u{202f}\u{661}\u{662}\u{663}",
     ];
     for policy in policies {
         let formats = [
@@ -2805,29 +2987,43 @@ fn lane_and_engine_agree_on_grouping() {
         }
     }
 
-    // The lane itself accepts strict input only when it validated the groups.
-    let lane = |input: &str, policy: u32| {
+    // The lane itself accepts grouped input only when it validated the groups.
+    let lane = |input: &str, policy: Grouping| {
         let format = INVARIANT.with_currency(symbol("$")).with_grouping(policy);
         lane::scan(input.as_bytes(), &format, true, &mut lane::Exact::default()).is_some()
     };
     let western_valid =
         ["1,234,567", "1,234", "1234567", "$1,234", "(1,234)", "1,234.5", "-1,234,567.25"];
-    let western_refused = ["12,34,567", "1234,567", "12,34", "1,23,456", "1,2345", "12,34.5"];
+    let western_refused = ["12,34,567", "1,23,456"];
+    let every_policy_refuses =
+        ["12,34", "1,2345", "12,34.5", "0,125", "007,000", "1234,567", "1,2", "$12,34"];
     let indian_valid = ["12,34,567", "1,23,45,678", "1,234", "12,345", "$12,34,567.5", "1234567"];
-    let indian_refused = ["1,234,567", "123,456", "12,34", "1,2,345", "12,345,678", "1,23,4567"];
+    let indian_refused = [
+        "1,234,567",
+        "123,456",
+        "12,34",
+        "1,2,345",
+        "12,345,678",
+        "1,23,4567",
+        "0,125",
+        "01,23,456",
+    ];
     for input in western_valid {
-        assert!(lane(input, NumFormat::GROUPING_WESTERN), "western lane reads {input}");
-        assert!(lane(input, NumFormat::GROUPING_LEGACY), "legacy lane reads {input}");
+        assert!(lane(input, Grouping::Western), "western lane reads {input}");
     }
     for input in western_refused {
-        assert!(!lane(input, NumFormat::GROUPING_WESTERN), "western lane refuses {input}");
-        assert!(lane(input, NumFormat::GROUPING_LEGACY), "legacy lane reads {input}");
+        assert!(!lane(input, Grouping::Western), "western lane refuses {input}");
+    }
+    for input in every_policy_refuses {
+        for policy in policies {
+            assert!(!lane(input, policy), "{input} under {policy:?}");
+        }
     }
     for input in indian_valid {
-        assert!(lane(input, NumFormat::GROUPING_INDIAN), "indian lane reads {input}");
+        assert!(lane(input, Grouping::Indian), "indian lane reads {input}");
     }
     for input in indian_refused {
-        assert!(!lane(input, NumFormat::GROUPING_INDIAN), "indian lane refuses {input}");
+        assert!(!lane(input, Grouping::Indian), "indian lane refuses {input}");
     }
 }
 
@@ -3406,10 +3602,12 @@ mod sites {
         .with_percent(symbol("percent"))
         .with_digits(digits)
         .with_grouping(match format.get("grouping").and_then(Value::as_str) {
-            Some("western") => NumFormat::GROUPING_WESTERN,
-            Some("indian") => NumFormat::GROUPING_INDIAN,
-            Some("legacy") => NumFormat::GROUPING_LEGACY,
-            _ => format["flags"].as_u64().unwrap() as u32 & NumFormat::GROUPING_POLICY,
+            Some("western") => Grouping::Western,
+            Some("indian") => Grouping::Indian,
+            _ => {
+                let flags = format["flags"].as_u64().unwrap() as u32;
+                Grouping::from_code(flags & NumFormat::GROUPING_POLICY).unwrap()
+            }
         })
     }
 
@@ -3906,4 +4104,186 @@ mod sites {
         let current = std::fs::read_to_string(&path).unwrap_or_default();
         assert!(current == doc, "docs/fault-sites.md is stale: run with HYPERCAST_BLESS=1");
     }
+}
+
+// Every Unicode decimal digit's zero, Unicode 17.
+const NATIVE_ZEROS: [char; 76] = [
+    '\u{660}',
+    '\u{6f0}',
+    '\u{7c0}',
+    '\u{966}',
+    '\u{9e6}',
+    '\u{a66}',
+    '\u{ae6}',
+    '\u{b66}',
+    '\u{be6}',
+    '\u{c66}',
+    '\u{ce6}',
+    '\u{d66}',
+    '\u{de6}',
+    '\u{e50}',
+    '\u{ed0}',
+    '\u{f20}',
+    '\u{1040}',
+    '\u{1090}',
+    '\u{17e0}',
+    '\u{1810}',
+    '\u{1946}',
+    '\u{19d0}',
+    '\u{1a80}',
+    '\u{1a90}',
+    '\u{1b50}',
+    '\u{1bb0}',
+    '\u{1c40}',
+    '\u{1c50}',
+    '\u{a620}',
+    '\u{a8d0}',
+    '\u{a900}',
+    '\u{a9d0}',
+    '\u{a9f0}',
+    '\u{aa50}',
+    '\u{abf0}',
+    '\u{ff10}',
+    '\u{104a0}',
+    '\u{10d30}',
+    '\u{10d40}',
+    '\u{11066}',
+    '\u{110f0}',
+    '\u{11136}',
+    '\u{111d0}',
+    '\u{112f0}',
+    '\u{11450}',
+    '\u{114d0}',
+    '\u{11650}',
+    '\u{116c0}',
+    '\u{116d0}',
+    '\u{116da}',
+    '\u{11730}',
+    '\u{118e0}',
+    '\u{11950}',
+    '\u{11bf0}',
+    '\u{11c50}',
+    '\u{11d50}',
+    '\u{11da0}',
+    '\u{11de0}',
+    '\u{11f50}',
+    '\u{16130}',
+    '\u{16a60}',
+    '\u{16ac0}',
+    '\u{16b50}',
+    '\u{16d70}',
+    '\u{1ccf0}',
+    '\u{1d7ce}',
+    '\u{1d7d8}',
+    '\u{1d7e2}',
+    '\u{1d7ec}',
+    '\u{1d7f6}',
+    '\u{1e140}',
+    '\u{1e2f0}',
+    '\u{1e4f0}',
+    '\u{1e5f1}',
+    '\u{1e950}',
+    '\u{1fbf0}',
+];
+
+/// `text` with its ASCII digits written in the script starting at `zero`.
+fn in_script(text: &str, zero: char) -> String {
+    text.chars()
+        .map(|c| match c.to_digit(10) {
+            Some(d) => char::from_u32(zero as u32 + d).unwrap(),
+            None => c,
+        })
+        .collect()
+}
+
+#[test]
+fn detection_counts_native_digits_in_every_script() {
+    for zero in NATIVE_ZEROS {
+        let format = NumFormat::DETECT.with_digits(NativeDigits::new(zero).unwrap());
+        let width = zero.len_utf8();
+        for ascii in ["1,234", "1.234", "12,345", "123.456"] {
+            let text = in_script(ascii, zero);
+            let at = ascii.find(['.', ',']).unwrap() * width;
+            let want = cast_f64(ascii.as_bytes(), &NumFormat::DETECT).unwrap_err();
+            assert_eq!(want.reason, Reason::Malformed);
+            for fault in [
+                cast_f64(text.as_bytes(), &format).unwrap_err(),
+                cast_decimal(text.as_bytes(), &format).unwrap_err(),
+            ] {
+                assert_eq!(
+                    (fault.reason, fault.offset, fault.len),
+                    (want.reason, at as u32, 1),
+                    "{text}"
+                );
+            }
+            let fault = cast_i64(text.as_bytes(), &format).unwrap_err();
+            assert_eq!(
+                (fault.reason, fault.offset, fault.len),
+                (want.reason, at as u32, 1),
+                "{text}"
+            );
+        }
+        for (ascii, want) in [
+            ("1,234,567", 1_234_567.0),
+            ("0,123", 0.123),
+            ("0.123", 0.123),
+            ("1,23", 1.23),
+            ("1.234,5", 1234.5),
+        ] {
+            assert_eq!(cast_f64(in_script(ascii, zero).as_bytes(), &format), Ok(want), "{ascii}");
+        }
+    }
+}
+
+#[test]
+fn detection_does_not_count_a_symbols_separator() {
+    let rs = NumFormat::DETECT.with_currency(CurrencySymbol::new("Rs.").unwrap());
+    let kr = NumFormat::DETECT.with_currency(CurrencySymbol::new("kr.").unwrap());
+    let pct = NumFormat::DETECT.with_percent(Symbol::<8>::new("pct.").unwrap());
+    for (text, format, at) in [
+        ("Rs.1,234", &rs, 4),
+        ("Rs.1.234", &rs, 4),
+        ("-Rs.1,234", &rs, 5),
+        ("(Rs.1.234)", &rs, 5),
+        ("1,234 kr.", &kr, 1),
+        ("1.234 kr.", &kr, 1),
+        ("1,234 pct.", &pct, 1),
+    ] {
+        let fault = cast_f64(text.as_bytes(), format).unwrap_err();
+        assert_eq!((fault.reason, fault.offset, fault.len), (Reason::Malformed, at, 1), "{text}");
+    }
+    assert_eq!(cast_f64(b"Rs.1,5", &rs), Ok(1.5));
+    assert_eq!(cast_f64(b"1,5 kr.", &kr), Ok(1.5));
+    assert_eq!(cast_f64(b"Rs.1,234.5", &rs), Ok(1234.5));
+    assert_eq!(cast_f64(b"1.234,5 kr.", &kr), Ok(1234.5));
+    assert_eq!(cast_i64(b"Rs.1,234,567", &rs), Ok(1_234_567));
+    // A frame that doesn't read keeps its fault: the unbalanced parenthesis, or the separator.
+    assert_eq!(cast_f64(b"(Rs.1,5", &rs).unwrap_err().reason, Reason::Malformed);
+}
+
+// --- value equality ---
+
+#[test]
+fn a_format_is_equal_to_one_declaring_the_same_thing() {
+    // A format is its declared bytes: what a layout holds past a symbol's length is no part of
+    // it. Junk after the decimal separator's one byte (offset 12) and after the currency
+    // symbol's none (offset 75); the bindings that hash a format hash its normalized layout.
+    let mut bytes = RawNumFormat::from(INVARIANT).to_le_bytes();
+    bytes[12 + 5] = 0x7F;
+    bytes[75 + 15] = 0x7F;
+    let padded = *RawNumFormat::from_le_bytes(bytes).resolve().unwrap();
+    assert_eq!(padded.decimal_sep, INVARIANT.decimal_sep);
+    assert_eq!(padded.currency, INVARIANT.currency);
+    assert_eq!(padded, INVARIANT);
+    assert_eq!(
+        RawNumFormat::from(padded).to_le_bytes(),
+        RawNumFormat::from(INVARIANT).to_le_bytes()
+    );
+
+    // However it was built, a format declaring the same thing is equal; another declaration is not.
+    assert_eq!(NumFormat::new('.', ',', NumFormat::ALL), INVARIANT);
+    let indian = INVARIANT.with_grouping(Grouping::Indian);
+    assert_eq!(indian.with_grouping(Grouping::Western), INVARIANT);
+    assert_ne!(indian, INVARIANT);
+    assert_ne!(INVARIANT.with_currency(CurrencySymbol::new("$").unwrap()), INVARIANT);
 }

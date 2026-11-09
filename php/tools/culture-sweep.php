@@ -10,9 +10,9 @@
  * The sweep walks every ICU locale in the decimal, currency and percent styles, and every
  * system locale `locale -a` lists. A locale is a finding when a build throws where the base did
  * not or loses a symbol. What the grouping rule moves is not a finding: the policy a locale
- * declares (strict Western, strict Indian, or legacy where its number and currency patterns
- * disagree or group another way) and whether `GROUPING` stays on (cleared only where neither
- * groups). The compare mode counts those and lists the legacy and the cleared locales.
+ * declares (Western, or Indian where its number pattern is) and whether `GROUPING` stays on
+ * (cleared only where neither groups). The compare mode counts those and lists the cleared
+ * locales.
  */
 
 declare(strict_types=1);
@@ -66,21 +66,16 @@ function compare(string $basePath, string $changePath): int
         }
     }
     $declared = [];
-    $legacy = [];
     $cleared = [];
     foreach ($change as $kind => $entries) {
         foreach ($entries as $key => $now) {
             $policy = match ($now['grouping'] ?? null) {
-                256 => 'strict Western',
-                512 => 'strict Indian',
-                0 => 'legacy',
+                0 => 'Western',
+                512 => 'Indian',
                 default => 'none',
             };
             $on = ($now['grouping_on'] ?? true) ? 'GROUPING on' : 'GROUPING cleared';
             $declared["{$kind}: {$policy}, {$on}"] = ($declared["{$kind}: {$policy}, {$on}"] ?? 0) + 1;
-            if ($policy === 'legacy') {
-                $legacy[] = $kind === 'icu' ? explode(' ', $key)[0] : $key;
-            }
             if (!($now['grouping_on'] ?? true)) {
                 $cleared[] = "{$kind} {$key}";
             }
@@ -92,8 +87,6 @@ function compare(string $basePath, string $changePath): int
     foreach ($declared as $what => $count) {
         echo "  {$count}  {$what}\n";
     }
-    $legacy = array_values(array_unique($legacy));
-    echo 'legacy: ' . \count($legacy) . ' locales: ' . implode(', ', $legacy) . "\n";
     echo 'GROUPING cleared: ' . implode(', ', $cleared) . "\n";
     return $findings === 0 ? 0 : 1;
 }

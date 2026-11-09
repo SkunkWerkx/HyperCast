@@ -138,7 +138,7 @@ pub(crate) fn text(input: &[u8]) -> Result<&str, Failure> {
     if input.is_empty() {
         return Err(Failure::spanless(Site::TextEmpty));
     }
-    core::str::from_utf8(input).map_err(|e| {
+    crate::utf8::from_utf8(input).map_err(|e| {
         let offset = e.valid_up_to();
         let len = match e.error_len() {
             Some(len) => len,

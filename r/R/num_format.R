@@ -92,8 +92,9 @@ pack_symbol <- function(bytes, limit) {
 
 u32_le <- function(value) writeBin(as.integer(value), raw(), size = 4L, endian = "little")
 
-# The grouping policies, by the core's values in bits 8 and 9 of the flags word.
-grouping_policies <- c(legacy = 0L, western = 256L, indian = 512L)
+# The grouping policies, by the core's values in the flags word. Bit 8 is retired permanently and
+# never reused; a future policy takes a new bit from bit 10 up.
+grouping_policies <- c(western = 0L, indian = 512L)
 
 grouping_bits <- function(grouping) {
   grouping_policies[[declared(grouping, names(grouping_policies), "grouping")]]
@@ -135,21 +136,24 @@ style_bits <- function(flags) {
 #' instead of it.
 #'
 #' `num_format()` with no arguments is the invariant format, `.` decimal and `,` group
-#' separators with every lenience in `num_styles[["all"]]`, and strict Western grouping.
+#' separators with every lenience in `num_styles[["all"]]`, and Western grouping.
 #'
-#' Grouping is strict unless the caller says otherwise. `grouping = "western"`, the default,
+#' Grouping is Western unless the caller says otherwise. `grouping = "western"`, the default,
 #' reads a group separator only between groups of exactly three digits counted from the
 #' decimal separator (or the end of the numeral), the leftmost one to three: `1,234,567` is
-#' read, `12,34` is `malformed` (`group_size`, over `,34`) and `1234,567` is too (over
-#' `1234`). `"indian"` reads the group beside the decimal separator as three digits and every
-#' group to its left as two (`12,34,567`). `"legacy"` reads a group separator anywhere
-#' between two digits, as every HyperCast release before 1.1 did (`12,34` is `1234`); it is
-#' the escape hatch for data written that way. Ungrouped numerals (`1234567`) are read under
-#' all three; once a numeral uses a group separator every group must conform; grouping is
-#' never read after the decimal separator or in an exponent. The rules apply to the
-#' number and the currency group separator alike, to native digits, and to the white space
-#' group separators that stand for each other (`" "`, U+00A0, U+202F). A policy does not turn
-#' grouping on: with the `grouping` style off a group separator is `malformed` under all three.
+#' read, `1,23,456` and `12,34` are `malformed` (`group_size`, over `,23` and `,34`) and
+#' `1234,567` is too (over `1234`). `"indian"` reads the group beside the decimal separator as
+#' three digits and every group to its left as two (`12,34,567`), and refuses `1,234,567`.
+#' Under both the leftmost group can't start with a zero: `0,125` is `malformed` (`group_size`,
+#' over `0`). Ungrouped numerals (`1234567`) are read under both; once a numeral uses a group
+#' separator every group must conform; grouping is never read after the decimal separator or
+#' in an exponent. The rules apply to the number and the currency group separator alike, to
+#' native digits, and to the white space group separators that stand for each other (`" "`,
+#' U+00A0, U+202F). A policy does not turn grouping on: with the `grouping` style off a group
+#' separator is `malformed` under both. `num_format_with_grouping()` chooses either on a format
+#' already made. Shapes neither policy reads are refused under a declared format, while
+#' separator detection infers them and can read `1,2345` as 1.2345: HyperCast's
+#' `docs/grouping.md` has them and what adding one takes.
 #' Separator detection stays independent of the policy: no policy resolves an ambiguous
 #' `1,234`. `num_format_detect()` resolves
 #' the `.`/`,` roles from each input's structure instead: a repeated separator is grouping
@@ -169,18 +173,18 @@ style_bits <- function(flags) {
 #' lenience in `num_styles[["all"]]` is on, except as the grouping rule below says.
 #'
 #' The grouping rule reads the locale's own `grouping` and `mon_grouping` patterns, never its
-#' name and never the input, and never rejects what the platform itself writes. Each is C's
-#' localeconv string: a byte per group size from the right, the last size repeating, `CHAR_MAX`
-#' ending the pattern (an empty string, or `CHAR_MAX` first, groups nothing). A format has one
-#' policy and one `grouping` style for numbers and currency amounts alike, so only the patterns
-#' that group count. All of them groups of three (`3`, `3;3`): strict Western. All of them three
-#' then twos (`3;2`): strict Indian. Any other shape (groups of two, a pattern that ends) or
-#' patterns that group and disagree (`3;2` beside `3`): `"legacy"`, a group separator anywhere
-#' between two digits. The `grouping` style is cleared only when neither pattern groups; when
-#' just one does not, the style stays for the other (a numeral without a group separator is
-#' valid anyway), and a format cannot forbid currency grouping on its own. A vector that carries
-#' neither field declares nothing, and the format keeps the default. (R holds `LC_NUMERIC` at
-#' `"C"`, so a locale's number pattern is usually empty and its currency pattern decides.)
+#' name and never the input. Each is C's localeconv string: a byte per group size from the
+#' right, the last size repeating, `CHAR_MAX` ending the pattern (an empty string, or `CHAR_MAX`
+#' first, groups nothing). A format has one policy and one `grouping` style for numbers and
+#' currency amounts alike. The policy follows the number pattern: three then twos (`3;2`) is
+#' `"indian"`, anything else `"western"`. The `grouping` style is cleared only when neither
+#' pattern groups; when just one does not, the style stays for the other (a numeral without a
+#' group separator is valid anyway), and a format cannot forbid currency grouping on its own. A
+#' vector that carries neither field declares nothing, and the format keeps the default. R holds
+#' `LC_NUMERIC` at `"C"`, so `Sys.localeconv()`'s number pattern is usually empty and the default
+#' `conv` reads `"western"` in an Indian locale: declare `"indian"` with
+#' `num_format_with_grouping()`. A shape no policy names (Toki Pona's groups of two, glibc's
+#' `cmn_TW` fours) is `"western"`, and its own grouped output is refused, never misread.
 #'
 #' A format that cannot be is an error when it is declared, never when it is read: a
 #' separator that is not 1 to 8 UTF-8 bytes or holds an ASCII digit, two equal separators
@@ -188,7 +192,8 @@ style_bits <- function(flags) {
 #' sign or percent symbol with white space in it, a currency symbol that is not 1 to 16 such
 #' bytes or has white space at either end, a digit zero that starts no Unicode digit block,
 #' or `flags` that carry a bit that is no style (a grouping policy, which `grouping` declares,
-#' or an undefined bit).
+#' 351 included, or an undefined bit). A `packed` holding the retired bit 8, which only a format
+#' altered or restored from elsewhere can, is refused by the first door: `readRDS()` has no hook.
 #' White space is the 25 code points with the Unicode `White_Space` property; a group
 #' separator may be or contain it, and a currency symbol may hold it inside (`"F CFA"`). These
 #' are the core's own contract rules, raised in R so that every format that exists is one the
@@ -208,8 +213,7 @@ style_bits <- function(flags) {
 #'   none.
 #' @param digit_zero The zero of a block of native digits read beside ASCII `0`-`9`
 #'   (`"\\u0660"` for Arabic-Indic); `""` declares none.
-#' @param grouping The grouping policy: `"western"` (the default), `"indian"` or
-#'   `"legacy"`, the escape hatch for 1.0 behaviour.
+#' @param grouping The grouping policy: `"western"` (the default) or `"indian"`.
 #' @param conv A named character vector shaped like [Sys.localeconv()]'s.
 #' @return A `hypercast_num_format`: a list of the declared fields, `grouping` and `packed`,
 #'   the 92 bytes the format crosses the C ABI as (the core's size-tagged layout: the size,
@@ -226,8 +230,8 @@ style_bits <- function(flags) {
 #' cast_decimal("1.234,50 kr.", num_format(",", ".", currency = "kr."))$value
 #' num_format(flags = c("grouping", "parentheses"))
 #' cast_i32(c("1,234,567", "12,34"), num_format())
-#' cast_i32(c("12,34", "12,34,567"), num_format(grouping = "legacy"))$value
-#' cast_i32("12,34,567", num_format(grouping = "indian"))$value
+#' cast_i32(c("1,23,456", "12,34,567"), num_format(grouping = "indian"))$value
+#' cast_i32("1,234,567", num_format_with_grouping(num_format(grouping = "indian"), "western"))$value
 num_format <- function(decimal_sep = ".", group_sep = ",", flags = num_styles[["all"]],
                        currency = "", currency_decimal_sep = "", currency_group_sep = "",
                        minus_sign = "", plus_sign = "", percent = "", digit_zero = "",
@@ -295,6 +299,17 @@ num_format_detect <- function(grouping = "western") {
 }
 
 #' @rdname num_format
+#' @param format A `hypercast_num_format`.
+#' @export
+num_format_with_grouping <- function(format, grouping) {
+  check_format(format)
+  policy <- grouping_bits(grouping)
+  format$packed[5:8] <- u32_le(bitwOr(format$flags, policy))
+  format$grouping <- grouping
+  format
+}
+
+#' @rdname num_format
 #' @export
 num_format_from_localeconv <- function(conv = Sys.localeconv()) {
   if (!is.character(conv) || is.null(names(conv))) {
@@ -358,25 +373,18 @@ group_shape <- function(conv, name) {
 
 # What a locale's own patterns declare, never read from its name or from input: the policy, and
 # whether the format groups at all. One format has one policy and one GROUPING flag for number
-# and currency alike, so only the patterns that group count: all Western is strict Western, all
-# Indian strict Indian, and any other shape, or enabled patterns that disagree, is legacy (a
-# bridge never rejects its platform's own output). GROUPING is cleared only when neither pattern
-# groups; if one of them does not, the flag stays for the other and a format cannot forbid
-# currency grouping alone. A vector that carries neither field says nothing: the default.
+# and currency alike. The policy follows the number pattern: all Indian is Indian, anything else
+# Western. GROUPING is cleared only when neither pattern groups; if one of them does not, the flag
+# stays for the other and a format cannot forbid currency grouping alone. A vector that carries
+# neither field says nothing: the default.
 locale_grouping <- function(conv) {
-  shapes <- c(group_shape(conv, "grouping"), group_shape(conv, "mon_grouping"))
+  number <- group_shape(conv, "grouping")
+  shapes <- c(number, group_shape(conv, "mon_grouping"))
   if (!length(shapes)) {
     return(list(policy = "western", grouped = TRUE))
   }
-  enabled <- unique(shapes[shapes != "none"])
-  policy <- if (!length(enabled) || identical(enabled, "western")) {
-    "western"
-  } else if (identical(enabled, "indian")) {
-    "indian"
-  } else {
-    "legacy"
-  }
-  list(policy = policy, grouped = length(enabled) > 0L)
+  list(policy = if (identical(number, "indian")) "indian" else "western",
+       grouped = any(shapes != "none"))
 }
 
 # A locale's separator pair: a field the locale leaves empty takes its default unless the
@@ -406,8 +414,8 @@ print.hypercast_num_format <- function(x, ...) {
                  "plus_sign", "percent", "digit_zero")) {
     if (nzchar(x[[name]])) call <- paste0(call, ", ", name, " = ", quote(x[[name]]))
   }
-  # A format made before the policy existed has no `grouping` field, and read legacy.
-  grouping <- if (is.null(x$grouping)) "legacy" else x$grouping
+  # A format made before the policy existed has no `grouping` field, and is Western.
+  grouping <- if (is.null(x$grouping)) "western" else x$grouping
   if (!identical(grouping, "western")) {
     call <- paste0(call, ", grouping = ", quote(grouping))
   }
@@ -419,6 +427,20 @@ check_format <- function(format) {
   if (!inherits(format, "hypercast_num_format") || !is.raw(format$packed) ||
         length(format$packed) != 92L) {
     stop("format must be a hypercast_num_format, as num_format() returns", call. = FALSE)
+  }
+  # A stale word (restored, or altered) holding the retired bit 8 stops here.
+  if (bitwAnd(as.integer(format$packed[[6L]]), 1L) != 0L) {
+    stop("format's flags hold bit 8, which names no grouping policy", call. = FALSE)
+  }
+  # The word is what is read, so a `grouping` field set by hand can't quietly disagree with it. A
+  # format restored from 1.0 has no field, and its word holds no policy.
+  word <- if (bitwAnd(as.integer(format$packed[[6L]]), 2L) != 0L) "indian" else "western"
+  if (!is.null(format$grouping) && !identical(format$grouping, word)) {
+    stop(
+      "format's grouping says \"", format$grouping, "\" and its flags say \"", word,
+      "\": choose a policy with num_format_with_grouping()",
+      call. = FALSE
+    )
   }
   format$packed
 }

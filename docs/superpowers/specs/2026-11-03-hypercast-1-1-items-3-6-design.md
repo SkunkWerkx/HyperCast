@@ -30,6 +30,35 @@ plus the release review's cleanup list and the backlog of deferred minors from i
 
 ---
 
+## Amendment, 2026-11-06
+
+The owner reversed this design's grouping policy before any release carried it. Where this spec
+says otherwise below, this amendment wins; the text below stays as the record of what was
+first decided.
+
+- **Legacy is gone.** There are exactly two policies. `GROUPING_LEGACY`, its lane and code path,
+  every binding's legacy option and `NumFormat::STRICT` are removed. None of them was in 1.0.
+- **Western is 0.** It holds no bits, so a null format, a 1.0 layout, a 1.0 C export (flags masked
+  to 8 bits), a 1.0 serialized payload, `NumFormat::new` with no policy, `INVARIANT` and `DETECT` are
+  all Western with no special handling. Indian is declared, `2 << 8` (512). This differs from the
+  design first told to the owner, which had `01` as Indian: with bit 9, a stale value can't change
+  meaning silently.
+- **Value 256 (bit 8) is retired permanently and never reused.** A future policy, such as
+  four-digit grouping, takes a new bit from bit 10 up. A bad policy (256, 768; 351 and 863 at
+  default styles) fails at the first entry point, deserializers included, and
+  `docs/grouping.md` names each entry point that can't refuse and why.
+- **What moves from 1.0.** Western refuses every grouped shape that isn't groups of three, with
+  `Malformed` and `group_size`: `1,23,456`, `1,2,345`, `1,234,56,789`, `1234,567,890`, on top of
+  `0,125`, `12,34` and `1234,567`. Those were read by 1.0. `1,000`, `1,234,567` and `0125` still read,
+  and Indian is how a caller reads `1,23,456`.
+- **Bridges follow the number pattern.** All Indian is Indian, anything else Western. "Legacy
+  otherwise" is gone, so the bridges for `ml`, `mr` and `or` are Indian, and `tok`, `[4, 0]` and
+  `unm_US` Western. A bridge may now refuse a Western amount its platform writes, and
+  `docs/grouping.md`, "Parked", gives the cost and the measurements.
+- **Corpus rows that declare no policy are Western.** `corpus/grouping.json` holds every shape
+  under both policies, and every binding replays it.
+- **The downgrade guard** covers every numeric door, since Western has no bits to key a guard on.
+
 ## Item 3: strict grouping
 
 ### Policy and versioning (owner's decisions)

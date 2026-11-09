@@ -52,7 +52,7 @@ public enum FaultDetail : byte
 	/// <summary>A group separator not between digits, or an empty group.</summary>
 	GroupMisplaced = 10,
 
-	/// <summary>A group with the wrong digit count for the declared <see cref="NumGrouping"/>.</summary>
+	/// <summary>A group with the wrong digit count for the declared <see cref="NumGrouping"/>, or a first group that starts with a zero.</summary>
 	GroupSize = 11,
 
 	/// <summary>Grouping after the decimal separator or in an exponent.</summary>

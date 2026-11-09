@@ -1,6 +1,5 @@
-// Strict grouping: a `NumFormat` declares its policy apart from its styles, strict Western by
-// default, and every door that takes a format honours it, the checked doors included (the 1.0
-// checked export would read every group legacy, and the binding no longer calls it).
+// Grouping: a `NumFormat` declares its policy apart from its styles, Western by default, and
+// every door that takes a format honours it, the checked doors included.
 const assert: typeof import('node:assert/strict') = require('node:assert/strict')
 const { test }: typeof import('node:test') = require('node:test')
 const api = require('../index.js') as typeof import('../index.js')
@@ -25,15 +24,14 @@ const detailed = (
   door: import('../index.js').Door = Door.I32,
 ) => api.castDetailed(door, text, format)
 
-test('the policy constants are the core bits 8 and 9', () => {
-  assert.deepEqual({ ...Grouping }, { Legacy: 0, Western: 256, Indian: 512 })
+test('the policy constants: Western sets no bit, Indian is bit 9', () => {
+  assert.deepEqual({ ...Grouping }, { Western: 0, Indian: 512 })
 })
 
-test('a declaration with no grouping is strict Western; so are invariant() and detect()', () => {
+test('a declaration with no grouping is Western; so are invariant() and detect()', () => {
   assert.equal(declare().grouping, Grouping.Western)
   assert.equal(NumFormat.invariant().grouping, Grouping.Western)
   assert.equal(NumFormat.detect().grouping, Grouping.Western)
-  assert.equal(declare({ grouping: Grouping.Legacy }).grouping, Grouping.Legacy)
   assert.equal(declare({ grouping: Grouping.Indian }).grouping, Grouping.Indian)
   // The style mask never carries the policy.
   assert.equal(declare().flags, NumStyles.All)
@@ -56,7 +54,7 @@ test('a door given no format reads NumFormat.invariant()', () => {
   assert.ok(!api.castI32('12,34').ok)
 })
 
-test('strict Western: groups of three counted from the decimal separator', () => {
+test('Western: groups of three counted from the decimal separator', () => {
   const western = declare()
   for (const [text, value] of [
     ['1,234,567', 1234567],
@@ -93,7 +91,7 @@ test('the spans of an invalid group, and the leftmost winner', () => {
   assert.deepEqual(at(',123'), ['groupMisplaced', 0, 1])
 })
 
-test('strict Indian: three beside the decimal separator and twos beyond it', () => {
+test('Indian: three beside the decimal separator and twos beyond it', () => {
   const indian = declare({ grouping: Grouping.Indian })
   assert.deepEqual(api.castI32('12,34,567', indian), { ok: true, value: 1234567 })
   assert.deepEqual(api.castI32('1,23,456', indian), { ok: true, value: 123456 })
@@ -104,17 +102,31 @@ test('strict Indian: three beside the decimal separator and twos beyond it', () 
   assert.equal(refused.fault.detail, 'groupSize')
 })
 
-test('legacy: a group separator anywhere between two digits', () => {
-  const legacy = declare({ grouping: Grouping.Legacy })
-  assert.deepEqual(api.castI32('12,34', legacy), { ok: true, value: 1234 })
-  assert.deepEqual(api.castI32('1,2,3', legacy), { ok: true, value: 123 })
-  assert.deepEqual(api.castDetailed(Door.I32, '12,34', legacy), { ok: true, value: 1234 })
+test('withGrouping chooses a policy in both directions, and refuses what is not one', () => {
+  const indian = NumFormat.invariant().withGrouping(Grouping.Indian)
+  assert.ok(indian.ok)
+  assert.equal(indian.value.grouping, Grouping.Indian)
+  assert.deepEqual(api.castI32('1,23,456', indian.value), { ok: true, value: 123456 })
+  assert.ok(!api.castI32('1,234,567', indian.value).ok)
+  const western = indian.value.withGrouping(Grouping.Western)
+  assert.ok(western.ok)
+  assert.equal(western.value.grouping, Grouping.Western)
+  assert.deepEqual(api.castI32('1,234,567', western.value), { ok: true, value: 1234567 })
+  assert.deepEqual(api.castI32('1,23,456', western.value), {
+    ok: false,
+    fault: { reason: 'malformed', offset: 1, length: 3 },
+  })
+  for (const grouping of [256, 768, 1, 255, 1024, -1, 1.5, '512', null, undefined]) {
+    const refused = indian.value.withGrouping(grouping as never)
+    assert.ok(!refused.ok, `${grouping}`)
+    assert.match(refused.message, /grouping must be a Grouping/)
+  }
 })
 
-test('a strict policy does not turn grouping on', () => {
+test('a policy does not turn grouping on', () => {
   // Review focus 5: with the Grouping style off, a group separator stays forbidden.
   const off = declare({ flags: 0 })
-  for (const grouping of [Grouping.Western, Grouping.Indian, Grouping.Legacy]) {
+  for (const grouping of [Grouping.Western, Grouping.Indian]) {
     const format = declare({ flags: 0, grouping })
     const verdict = detailed('1,234', format)
     assert.ok(!verdict.ok)
@@ -125,7 +137,7 @@ test('a strict policy does not turn grouping on', () => {
 })
 
 test('separator detection does not let a policy settle an ambiguous 1,234', () => {
-  for (const grouping of [Grouping.Western, Grouping.Indian, Grouping.Legacy]) {
+  for (const grouping of [Grouping.Western, Grouping.Indian]) {
     const format = declare({ flags: NumStyles.All | NumStyles.SeparatorDetect, grouping })
     const verdict = detailed('1,234', format, Door.F64)
     assert.ok(!verdict.ok, `${grouping}`)
@@ -158,31 +170,37 @@ test('currency group separators are judged by the policy too', () => {
   })
   assert.deepEqual(api.castI32('$1\u00a0234', format), { ok: true, value: 1234 })
   assert.ok(!api.castI32('$12\u00a034', format).ok)
-  const legacy = declare({
+  const indian = declare({
     flags: NumStyles.All,
     currency: '$',
     currencyGroupSep: '\u00a0',
     currencyDecimalSep: ',',
-    grouping: Grouping.Legacy,
+    grouping: Grouping.Indian,
   })
-  assert.deepEqual(api.castI32('$12\u00a034', legacy), { ok: true, value: 1234 })
+  assert.ok(!api.castI32('$12\u00a034', indian).ok)
+  assert.deepEqual(api.castI32('$1\u00a023\u00a0456', indian), { ok: true, value: 123456 })
+  assert.ok(!api.castI32('$1\u00a023\u00a0456', format).ok)
 })
 
 test('the checked doors honour the policy, as the 1.0 export would not', () => {
   const constraints = Constraints.declare({ door: Door.I32, maximum: '100000' })
   assert.ok(constraints.ok)
-  const strict = declare()
-  const legacy = declare({ grouping: Grouping.Legacy })
-  const refused = api.castChecked('12,34', constraints.value, strict)
+  const western = declare()
+  const indian = declare({ grouping: Grouping.Indian })
+  const refused = api.castChecked('12,34', constraints.value, western)
   assert.deepEqual(refused, { ok: false, fault: { reason: 'malformed', offset: 2, length: 3 } })
-  assert.deepEqual(api.castChecked('12,34', constraints.value, legacy), {
+  assert.deepEqual(api.castChecked('1,23,456', constraints.value, indian), {
+    ok: false,
+    violation: { keyword: 'maximum', offset: 0, length: 8 },
+  })
+  assert.deepEqual(api.castChecked('12,345', constraints.value, western), {
     ok: true,
-    value: 1234,
+    value: 12345,
     adjusted: false,
     enumIndex: null,
   })
-  // Never read legacy: not through the plain checked door, not through the detailed one.
-  const twin = api.castCheckedDetailed('12,34', constraints.value, strict)
+  // Refused through the plain checked door and the detailed one alike.
+  const twin = api.castCheckedDetailed('12,34', constraints.value, western)
   assert.ok(!twin.ok && 'fault' in twin)
   assert.equal(twin.fault.detail, 'groupSize')
   assert.deepEqual(api.castChecked('12,34', constraints.value), refused)
@@ -201,7 +219,7 @@ test('declarations: the policy is a Grouping, and flags hold styles only', () =>
   assert.match(refusal({ flags: 768 }), /flags must not carry a grouping policy/)
   assert.match(refusal({ flags: 1024 }), /flags holds a bit no NumStyles member names/)
   assert.match(refusal({ flags: 2 ** 31 }), /flags holds a bit no NumStyles member names/)
-  for (const grouping of [768, 1, 255, 257, -1, 1.5, '256', null, true]) {
+  for (const grouping of [256, 768, 1, 255, 257, -1, 1.5, '512', null, true]) {
     assert.match(
       refusal({ grouping: grouping as never }),
       /grouping must be a Grouping/,
@@ -216,18 +234,37 @@ test('packed carries the policy in the flags word, for the C ABI to read', () =>
   const word = (format: Format) =>
     new DataView(format.packed.buffer, format.packed.byteOffset).getUint32(4, true)
   assert.equal(NumFormat.invariant().packed.length, 92)
-  assert.equal(word(declare()), NumStyles.All | Grouping.Western)
+  assert.equal(word(declare()), NumStyles.All)
   assert.equal(word(declare({ grouping: Grouping.Indian })), NumStyles.All | Grouping.Indian)
-  assert.equal(word(declare({ grouping: Grouping.Legacy })), NumStyles.All)
+  assert.equal(word(declare({ grouping: Grouping.Western })), NumStyles.All)
 })
 
-test('a strict request is judged by a 1.1 core: it is refused, never read as legacy', () => {
+test('a declared policy is judged by a 1.1 core', () => {
   // The addon links the core it was built against, so a 1.0 core cannot be loaded under it,
   // and a build against one fails to compile (README, "Versions"). What a load-time check
-  // would prove is asserted by behaviour: the strict policy is read, here, by the core.
+  // would prove is asserted by behaviour: the Indian policy is read, here, by the core.
   assert.match(api.nativeVersion(), /^\d+\.\d+\.\d+$/)
+  assert.deepEqual(api.castDetailed(Door.I32, '1,23,456', declare({ grouping: Grouping.Indian })), {
+    ok: true,
+    value: 123456,
+  })
   const verdict = api.castDetailed(Door.I32, '12,34', declare({ grouping: Grouping.Western }))
   assert.ok(!verdict.ok)
   assert.equal(verdict.fault.detail, 'groupSize')
   assert.ok(!api.castI32('12,34', declare({ grouping: Grouping.Indian })).ok)
+})
+
+test("the enum index.js hands out without an addon is the addon's, with the same values", () => {
+  const { readFileSync }: typeof import('node:fs') = require('node:fs')
+  const source = readFileSync(require.resolve('../index.js'), 'utf8')
+  const fallback =
+    /const Grouping = native \? native\.Grouping : Object\.freeze\(\{ (.*?) \}\)/.exec(source)
+  assert.ok(fallback, 'index.js spells the fallback on one line')
+  const named = Object.fromEntries(
+    (fallback[1] ?? '').split(', ').map((pair) => {
+      const [key, value] = pair.split(': ')
+      return [key, Number(value)]
+    }),
+  )
+  assert.deepEqual(named, { Western: Grouping.Western, Indian: Grouping.Indian })
 })

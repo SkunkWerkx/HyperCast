@@ -120,7 +120,7 @@ func TestTheLayoutsAreTheHeadersSizes(t *testing.T) {
 		// The grouping policy bits and the date shapes, which the header spells as shifts or
 		// not at all, are pinned to the core's values here (rust/src/verdict.rs,
 		// rust/src/date_options.rs).
-		"GROUPING_WESTERN": {uint32(GroupingWestern), 1 << 8},
+		"GROUPING_WESTERN": {uint32(GroupingWestern), 0},
 		"GROUPING_INDIAN":  {uint32(GroupingIndian), 2 << 8},
 		"GROUPING_POLICY":  {uint32(GroupingPolicyMask), 3 << 8},
 		"COMPACT_DATE":     {uint32(CompactDate), 1},
@@ -169,7 +169,7 @@ func TestTheLayoutsAreTheHeadersSizes(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"#define HyperCastNumFormat_GROUPING_WESTERN (1 << 8)\n",
+		"#define HyperCastNumFormat_GROUPING_WESTERN 0\n",
 		"#define HyperCastNumFormat_GROUPING_INDIAN (2 << 8)\n",
 		"#define HyperCastNumFormat_GROUPING_POLICY (3 << 8)\n",
 	} {

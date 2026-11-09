@@ -99,7 +99,7 @@ the same exception on every backend:
   than 16 bytes or starting or ending in white space (inside it white space is fine, as in
   `F CFA`), or a digit zero that is ASCII or starts no digit block, `flags:` that is not an
   `Integer` of bits 0 to 7 (a grouping policy belongs in `grouping:`, not in the mask) and a
-  `grouping:` that is not `:western`, `:indian` or `:legacy`. And from `DateOptions.new` for
+  `grouping:` that is not `:western` or `:indian`. And from `DateOptions.new` for
   flags this version does not define or a pivot outside 100 to 9999, and from `MonthNames` for
   a vocabulary that breaks a rule. And from `datetime` for
   a day-period designator that is empty, longer than 16 bytes, carries an ASCII digit or
@@ -204,26 +204,25 @@ HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",", flags: HyperCast::ALL
 `:western`, reads a numeral that uses the group separator as groups of exactly three digits
 counted from the decimal separator (or the numeral's end), the leftmost one to three:
 `1,234,567` reads, and `12,34` is a `:malformed` `Fault` spanning the bad group with its
-separator (`,34`) and the detail `Detail::GROUP_SIZE`. `:indian` reads lakh and crore (`12,34,567`:
+separator (`,34`) and the detail `Detail::GROUP_SIZE`. Under every policy a first group
+can't start with a zero: `0,125` is the same fault, spanning `0`. `:indian` reads lakh and crore (`12,34,567`:
 three beside the decimal separator, two in each group to its left, the leftmost one or two),
-and `:legacy` is 1.0's reading, a group separator anywhere between two digits. An ungrouped
-numeral reads under every policy, grouping never follows the decimal separator or an exponent,
+and refuses `1,234,567`, where Western refuses `1,23,456`. An ungrouped
+numeral reads under both, grouping never follows the decimal separator or an exponent,
 digits count as digits (native ones included), and a policy only judges groups: without the
-`GROUPING` flag a group separator stays refused. `INVARIANT` and `DETECT` are strict Western,
+`GROUPING` flag a group separator stays refused. `INVARIANT` and `DETECT` are Western,
 `#with(grouping: …)` and `#override` keep the policy of the format they start from, and
 `from_i18n` takes `grouping:` too (a Rails locale Hash says nothing about it). The policy is
 not a member of `NumFormat`, as `detail` is not of `Fault`: the ten members, `to_h`, `inspect`,
 the constructors, and array and hash patterns are 1.0's, `grouping` is a reader that a pattern
 can name (`in { grouping: :indian }`), and it counts in `==`, `eql?` and `hash`. A `NumFormat`
-loaded from a 1.0 Marshal payload carries none and keeps 1.0's meaning, `:legacy` (stored data does not
-change with the constants). Because it is not a member, `grouping:` is keyword-only: `NumFormat.new` takes the ten
+loaded from a 1.0 Marshal payload carries none and is `:western`. Marshal restores such a payload with no call this class can hook, so a flags word holding the retired bit 8 (`351`) is refused with `ArgumentError` on its first use. Because it is not a member, `grouping:` is keyword-only: `NumFormat.new` takes the ten
 members positionally or by keyword, but `Data.new` cannot mix positional members with keywords, so the policy is
-never the eleventh positional argument. `12,34` moving
-from a value to a `Fault` is the change from 1.0; `grouping: :legacy` is the way back.
-Across the ABI the policy rides in bits 8 and 9 of the flags word (`GROUPING_LEGACY`,
-`GROUPING_WESTERN`, `GROUPING_INDIAN`; both bits set is refused), which is why the Fiddle
-backend refuses a core older than 1.1 as it loads, naming it: a 1.0 core would read the same
-bits as legacy grouping without a word.
+never the eleventh positional argument.
+Across the ABI the policy rides in the flags word (`GROUPING_WESTERN` is 0, `GROUPING_INDIAN` is 512; bit 8, 256, is
+retired permanently and never reused, so 256 and 768 are refused), and the Fiddle
+backend refuses a core older than 1.1 as it loads, naming it: a 1.0 core would read `1,23,456` as 123456
+without a word. A shape neither policy reads is a `Fault` under a declared format, `INVARIANT` or a bridge, never misread, while `NumFormat::DETECT` infers by the delimiter rule, so `1,2345` is 1.2345 there: [docs/grouping.md](https://github.com/SkunkWerkx/HyperCast/blob/master/docs/grouping.md#parked).
 
 The flags are `GROUPING`, `PARENTHESES`, `EXPONENT`, `RADIX_PREFIXES`, `PERCENT` and
 `CURRENCY` (`ALL_STYLES` is all six), plus `TRAILING_SIGN` — deliberately not in

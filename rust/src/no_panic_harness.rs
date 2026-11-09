@@ -24,8 +24,9 @@
 //! | the Rust-only detailed typed doors (the eight integers, `f32`, `bool`, Unix) | [`hypercast_harness_typed_doors`] |
 //! | every detailed text door at `&str`, `detailed::cast_datetime`, `optional` | [`hypercast_harness_str_doors`] |
 //! | `detailed::cast_checked` and `checked_from_f64` at every numeric type, `cast_text_checked`, `optional_checked` | [`hypercast_harness_detailed_checked_i8`] and the rest below |
-//! | `NumFormat::with_grouping`, `NumFormat::validate` | [`hypercast_harness_num_format`] |
+//! | `Grouping::from_code`, `NumFormat::with_grouping`, `NumFormat::validate` | [`hypercast_harness_num_format`] |
 //! | `Detail::from_code`, `Failure::new`, `Failure::fault` | [`hypercast_harness_detail`] |
+//! | the text door's UTF-8 validation (simdutf8's check, core's on failure), named on its own | [`hypercast_harness_utf8`] |
 //!
 //! Compiled only under the `no-panic` feature, into the throwaway no-panic build: never into a
 //! shipped library, so the export list and the symbol checks don't see it. The canary at the
@@ -40,7 +41,7 @@ use crate::date_options::{DateOptions, MonthNames};
 use crate::detail::{Detail, Failure};
 use crate::detailed;
 use crate::temporal::{DateOrder, DayPeriods, UnixPrecision};
-use crate::verdict::{Decimal, DeclarationError, NumFormat, Reason, ValidNumFormat};
+use crate::verdict::{Decimal, DeclarationError, Grouping, NumFormat, Reason, ValidNumFormat};
 
 /// What a refused declaration, or a list too long to size, answers.
 const REFUSED: usize = usize::MAX;
@@ -524,9 +525,25 @@ pub unsafe extern "C" fn hypercast_harness_detailed_checked_text(
     rejected(detailed::cast_text_checked(text, &constraints))
 }
 
-/// `NumFormat::with_grouping` then `NumFormat::validate` on the format at `format`: `0` for a
-/// valid format, else which rule refused it (`1` policy, `2` an undefined flag, `3` the 1.0
-/// rules), `u32::MAX` for a null pointer.
+/// The text door's UTF-8 validation (simdutf8 where the target has it, core otherwise), at
+/// every length and both answers: the text's length, or the error's position and length folded
+/// into one word.
+///
+/// # Safety
+/// `text` points to `len` live bytes when `len > 0`.
+#[unsafe(no_mangle)]
+#[no_panic::no_panic]
+pub unsafe extern "C" fn hypercast_harness_utf8(text: *const u8, len: usize) -> usize {
+    // SAFETY: per the function contract.
+    match crate::utf8::from_utf8(unsafe { items(text, len) }) {
+        Ok(text) => text.len(),
+        Err(e) => e.valid_up_to() ^ !e.error_len().map_or(0, usize::from),
+    }
+}
+
+/// `Grouping::from_code`, `NumFormat::with_grouping` then `NumFormat::validate` on the format at
+/// `format`: `0` for a valid format, else which rule refused it (`1` policy, `2` an undefined
+/// flag, `3` the 1.0 rules), `u32::MAX` for a null pointer.
 ///
 /// # Safety
 /// `format` is null or points to a readable `RawNumFormat`.
@@ -538,6 +555,7 @@ pub unsafe extern "C" fn hypercast_harness_num_format(
 ) -> u32 {
     // SAFETY: per the function contract; the layout is plain data.
     let Some(raw) = (unsafe { format.as_ref() }) else { return u32::MAX };
+    let Some(policy) = Grouping::from_code(policy) else { return 1 };
     let format: NumFormat = raw.format.with_grouping(policy);
     match format.validate() {
         Ok(_) => 0,

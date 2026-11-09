@@ -19,8 +19,8 @@ missing.}
 }
 \value{
 A \link{hypercast_verdict}. Its \code{value} is logical for \code{cast_bool()}; a
-one-character string for \code{cast_char()}; the lowercase hyphenated form for
-\code{cast_uuid()}.
+one-character string for \code{cast_char()}, followed by an integer \code{code_point} column; the
+lowercase hyphenated form for \code{cast_uuid()}.
 }
 \description{
 \code{cast_bool()} reads \code{true}/\code{false} and the conventions untrusted sources send: \code{t}/\code{f},
@@ -32,9 +32,12 @@ one-character string for \code{cast_char()}; the lowercase hyphenated form for
 verbatim, before any trimming (\code{" "} is a space, \code{"6"} the digit six); anything else is
 one declared code point, \code{65}, \code{U+0041}, \code{0x41}, \verb{&H41}, or an HTML entity \verb{&#65;} or
 \verb{&#x41;} (the \verb{;} required), ASCII case-insensitive on the prefix, with optional white
-space around it. A surrogate or anything past \verb{U+10FFFF} is \code{out_of_range}. \code{U+0000}, the
-NUL character, is a valid value an R string cannot hold, so it is \code{ok} with \code{NA} as its
-\code{value}: a missing input has \code{ok} \code{NA} and a fault has \code{ok} \code{FALSE}, so nothing else reads so.
+space around it. A surrogate or anything past \verb{U+10FFFF} is \code{out_of_range}. The
+\code{code_point} column holds the character's code point exactly. \code{U+0000}, the NUL character,
+is a valid value an R string cannot hold, so it is \code{ok} with \code{NA} as its \code{value} and \code{0} as
+its \code{code_point}. \code{ok} describes the core's acceptance and \code{value = NA} means R can't
+represent it, so checking \code{ok} alone doesn't guarantee a usable character value. A missing
+input has \code{ok} \code{NA} and a fault has \code{ok} \code{FALSE}, and both have \code{code_point} \code{NA}.
 
 \code{cast_uuid()} reads every .NET \code{Guid} text form (\code{D}, \code{N}, \code{B}, \code{P} and \code{X}) and the
 \verb{urn:uuid:}, \verb{GUID:} and \verb{UUID:} prefixes.
@@ -42,6 +45,7 @@ NUL character, is a valid value an R string cannot hold, so it is \code{ok} with
 \examples{
 cast_bool(c("yes", "Off", "maybe", NA))
 cast_char(c("A", "U+00E9", "&#x1F600;", "U+D800"))$value
+cast_char(c("A", "U+0000"))
 cast_uuid("{6BA7B810-9DAD-11D1-80B4-00C04FD430C8}")$value
 }
 \seealso{

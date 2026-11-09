@@ -46,6 +46,11 @@ tell you.
   `python3 ../HyperForge/.github/scripts/no_panic_canary.py --name hypercast_canary --root rust
   -- cargo no-panic`.
 - `rust/tests/allocation_free.rs` demands zero allocations.
+- The core's one dependency is simdutf8, for the text door's UTF-8 check (`rust/src/utf8.rs`).
+  Its `std` feature is never forwarded, x86_64 detection stays in `core::arch`, and only
+  `simdutf8::basic` is called: `compat`'s error path fails the no-panic proof. A new dependency
+  of the core moves HyperTabular's `rust/check-core.sh` allow-list, both R packages' `Authors@R`
+  and `inst/AUTHORS`, and every lockfile that resolves this crate.
 
 ## Downstream: HyperTabular
 

@@ -400,7 +400,7 @@ func (f NumFormat) digitZeroOK() bool {
 // valid is the check every numeric door runs on its format, decided without naming the
 // fault — the fast path, since it runs on every cast; fault names what it refused.
 func (f NumFormat) valid() bool {
-	if f.Styles&^definedStyles != 0 || f.Styles&GroupingPolicyMask == GroupingPolicyMask {
+	if f.Styles&^definedStyles != 0 {
 		return false
 	}
 	if f.DecimalSep == "" || f.GroupSep == "" || f.DecimalSep == f.GroupSep {
@@ -428,8 +428,8 @@ func (f NumFormat) valid() bool {
 // The rules apply in the core's order: the Styles bits (the grouping policy, then undefined
 // bits), each symbol's length, UTF-8 and digit, then equal separators, then white space.
 func (f NumFormat) fault() error {
-	if f.Styles&GroupingPolicyMask == GroupingPolicyMask {
-		return fmt.Errorf("Styles %#x names no grouping policy: bits 8 and 9 are both set", uint32(f.Styles))
+	if f.Styles&retiredPolicyBit != 0 {
+		return fmt.Errorf("Styles %#x names no grouping policy: bit 8 is retired", uint32(f.Styles))
 	}
 	if extra := f.Styles &^ definedStyles; extra != 0 {
 		return fmt.Errorf("Styles %#x set bits HyperCast does not define: %#x", uint32(f.Styles), uint32(extra))
@@ -511,9 +511,8 @@ func (f NumFormat) layout(raw *RawNumFormat) {
 // digit, no white space at either edge (inside is fine: "F CFA"); the digit zero 0, or a
 // code point outside ASCII that starts a run of ten digits sharing its UTF-8 prefix (every
 // Unicode digit block does; one whose value modulo 64 exceeds 54 does not). Before them, the
-// Styles: no bit but a lenience flag or a grouping policy, and not both policy bits. Flags
-// carries the policy in bits 8 and 9, which only the core's detailed exports read: the 1.0
-// exports ignore bit 8 and up and parse with legacy grouping.
+// Styles: no bit but a lenience flag or GroupingIndian's. Flags carries the policy, which only the
+// core's detailed exports read: the 1.0 exports ignore bit 8 and up and read Western.
 func (f NumFormat) Raw() (raw RawNumFormat, err error) {
 	if !f.valid() {
 		return RawNumFormat{}, f.fault()

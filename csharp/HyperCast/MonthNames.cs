@@ -29,7 +29,7 @@ namespace HyperCast;
 /// <see cref="DllNotFoundException"/> or <see cref="EntryPointNotFoundException"/>, not at the first cast.
 /// </para>
 /// </remarks>
-public sealed class MonthNames
+public sealed class MonthNames : IEquatable<MonthNames>
 {
 	/// <summary>The most UTF-8 bytes one name may occupy.</summary>
 	public const int MaxNameBytes = 64;
@@ -68,6 +68,28 @@ public sealed class MonthNames
 	/// <see cref="uint"/> byte length, then that many UTF-8 bytes, with no padding.
 	/// </summary>
 	public ReadOnlySpan<byte> Packed => _packed;
+
+	/// <summary>
+	/// Equal when both hold the same entries in the same order: the same <see cref="Packed"/>
+	/// bytes, as Java's, Python's, Go's and Swift's vocabularies compare. A
+	/// <see cref="DateOptions"/> compares its <see cref="DateOptions.Months"/> this way.
+	/// </summary>
+	/// <param name="other">The vocabulary to compare with.</param>
+	/// <returns><see langword="true"/> when the packed layouts are the same bytes.</returns>
+	public bool Equals(MonthNames? other) =>
+		other is not null && (ReferenceEquals(this, other) || _packed.AsSpan().SequenceEqual(other._packed));
+
+	/// <inheritdoc/>
+	public override bool Equals(object? obj) => Equals(obj as MonthNames);
+
+	/// <summary>A hash over the packed bytes, what <see cref="Equals(MonthNames)"/> compares.</summary>
+	/// <returns>The hash code.</returns>
+	public override int GetHashCode()
+	{
+		var hash = new HashCode();
+		hash.AddBytes(_packed);
+		return hash.ToHashCode();
+	}
 
 	/// <summary>
 	/// Reads a vocabulary from its packed layout (see <see cref="Packed"/>) — for a library that carries

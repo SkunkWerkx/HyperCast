@@ -11,7 +11,7 @@
 
 use hypercast::{
     CurrencySymbol, DateOptions, DateOrder, DayPeriods, DeclarationError, Detail, ExcelEpoch,
-    Failure, Fault, MonthNames, MonthNamesFault, NativeDigits, NumFormat, Reason, Symbol,
+    Failure, Fault, Grouping, MonthNames, MonthNamesFault, NativeDigits, NumFormat, Reason, Symbol,
     UnixPrecision, ValidDateOptions, ValidNumFormat, detailed,
 };
 use serde_json::Value;
@@ -251,13 +251,12 @@ fn assert_verdict<T: PartialEq + core::fmt::Debug>(
     }
 }
 
-/// The grouping policy a format declares: `"grouping"` is `"legacy"`, `"western"` or
-/// `"indian"`, and absent means legacy (the policy bits a row's `flags` carry are kept, so a
-/// `formats.json` row can declare a policy no name spells).
+/// The grouping policy a format declares: `"grouping"` is `"western"` or `"indian"`, and absent
+/// means Western unless the row's `flags` carry policy bits (kept, so a `formats.json` row can
+/// declare a policy no name spells).
 fn grouping_of(format: &Value) -> u32 {
     match format.get("grouping").and_then(Value::as_str) {
         None => format["flags"].as_u64().expect("flags") as u32 & NumFormat::GROUPING_POLICY,
-        Some("legacy") => NumFormat::GROUPING_LEGACY,
         Some("western") => NumFormat::GROUPING_WESTERN,
         Some("indian") => NumFormat::GROUPING_INDIAN,
         Some(other) => panic!("unknown grouping {other}"),
@@ -299,7 +298,7 @@ fn format_of(vector: &Value) -> NumFormat {
     .with_signs(symbol("minus_sign"), symbol("plus_sign"))
     .with_percent(symbol("percent"))
     .with_digits(digits)
-    .with_grouping(grouping_of(format))
+    .with_grouping(Grouping::from_code(grouping_of(format)).expect("a policy"))
 }
 
 /// The day-period designators a datetime vector declares (`am` and `pm`, together or not
@@ -316,6 +315,77 @@ fn periods_of(vector: &Value) -> DayPeriods {
 
 /// A decimal vector pins the raw triple (`magnitude` as a decimal string, `scale`,
 /// `negative`) and the canonical `value` text; both must agree with the door.
+/// `grouping.json`: each shape under every way to say a policy. No policy recorded, however it
+/// is said, is Western; Indian only reads when declared, and either declaration replaces the
+/// other. The flags rows hold what `validate` and the C ABI refuse.
+#[test]
+fn grouping_corpus() {
+    use hypercast::detailed;
+    fn holds(label: &str, want: &Value, input: &str, format: &NumFormat) {
+        let (i, f, d) = (
+            hypercast::cast_i64(input, format),
+            hypercast::cast_f64(input, format),
+            hypercast::cast_decimal(input, format),
+        );
+        if let Some(value) = want.get("value") {
+            let value = value.as_i64().expect("value");
+            assert_eq!(i, Ok(value), "{label} {input:?}");
+            assert_eq!(f, Ok(value as f64), "{label} {input:?}");
+            assert_eq!(d.map(|d| (d.lo, d.scale)), Ok((value as u64, 0)), "{label} {input:?}");
+        } else {
+            let span = want["fault"].as_array().expect("a shape holds a value or a fault");
+            let span = (span[0].as_u64().unwrap() as u32, span[1].as_u64().unwrap() as u32);
+            let valid = format.validate().unwrap();
+            for failure in [
+                detailed::cast_i64(input, &valid).unwrap_err(),
+                detailed::cast_f64(input, &valid).unwrap_err(),
+                detailed::cast_decimal(input, &valid).unwrap_err(),
+            ] {
+                assert_eq!(
+                    (failure.reason, failure.detail, failure.offset, failure.len),
+                    (Reason::Malformed, hypercast::Detail::GroupSize, span.0, span.1),
+                    "{label} {input:?}"
+                );
+            }
+        }
+    }
+    let indian = NumFormat::INVARIANT.with_grouping(Grouping::Indian);
+    let mut shapes = 0;
+    for row in corpus("grouping.json") {
+        match row["kind"].as_str().unwrap() {
+            "shape" => {
+                shapes += 1;
+                let text = input(&row);
+                for (label, format) in [
+                    ("no policy", NumFormat::new('.', ',', NumFormat::ALL)),
+                    ("invariant", NumFormat::INVARIANT),
+                    ("default", NumFormat::default()),
+                    ("declared western", NumFormat::INVARIANT.with_grouping(Grouping::Western)),
+                    ("indian then western", indian.with_grouping(Grouping::Western)),
+                ] {
+                    holds(label, &row["western"], text, &format);
+                }
+                holds("declared indian", &row["indian"], text, &indian);
+            }
+            "detect" => holds("detect", &row, input(&row), &NumFormat::DETECT),
+            kind @ ("refused_flags" | "accepted_flags") => {
+                let format = NumFormat::new('.', ',', row["flags"].as_u64().unwrap() as u32);
+                let raw = hypercast::RawNumFormat::from(format);
+                let refused = kind == "refused_flags";
+                assert_eq!(format.check(), !refused, "{row}");
+                assert_eq!(raw.resolve().is_none(), refused, "{row}");
+                assert_eq!(
+                    format.validate().err(),
+                    refused.then_some(DeclarationError::GroupingPolicy),
+                    "{row}"
+                );
+            }
+            other => panic!("unknown kind {other}"),
+        }
+    }
+    assert!(shapes >= 18, "{shapes} shapes");
+}
+
 #[test]
 fn decimal_corpus() {
     for vector in corpus("decimal.json") {
@@ -926,12 +996,12 @@ unsafe extern "C" {
     ) -> i32;
 }
 
-/// The 1.0 exports read only bits 0-7 of `flags` and always parse with legacy grouping,
+/// The 1.0 exports read only bits 0-7 of `flags` and always parse with Western grouping,
 /// whatever policy, refused policy or undefined bit the caller's layout carries; the Rust
 /// door given the same format honours a valid policy.
 #[test]
-fn old_exports_parse_with_legacy_grouping_whatever_the_flags_say() {
-    let input = b"12,34";
+fn old_exports_parse_with_western_grouping_whatever_the_flags_say() {
+    let input = b"1,234,567";
     for flags in [
         NumFormat::ALL | NumFormat::GROUPING_WESTERN,
         NumFormat::ALL | NumFormat::GROUPING_INDIAN,
@@ -958,7 +1028,7 @@ fn old_exports_parse_with_legacy_grouping_whatever_the_flags_say() {
         assert_eq!(codes, [0, 0, 0], "flags {flags:#x}");
         assert_eq!(
             (int, real, decimal.lo, decimal.scale),
-            (1234, 1234.0, 1234, 0),
+            (1234567, 1234567.0, 1234567, 0),
             "flags {flags:#x}"
         );
 
@@ -981,13 +1051,13 @@ fn old_exports_parse_with_legacy_grouping_whatever_the_flags_say() {
                 &mut check,
             )
         };
-        assert_eq!((code, out), (0, 1234), "cast_checked, flags {flags:#x}");
+        assert_eq!((code, out), (0, 1234567), "cast_checked, flags {flags:#x}");
         // The layout the caller built is left as it was.
         assert_eq!(raw.format.flags, flags);
     }
-    // The Rust door honours the strict policy the export ignores.
-    let western = NumFormat::INVARIANT.with_grouping(NumFormat::GROUPING_WESTERN);
-    assert_eq!(hypercast::cast_i32(input, &western).map_err(|f| f.reason), Err(Reason::Malformed));
+    // The Rust door honours the declared policy the export ignores.
+    let indian = NumFormat::INVARIANT.with_grouping(Grouping::Indian);
+    assert_eq!(hypercast::cast_i32(input, &indian).map_err(|f| f.reason), Err(Reason::Malformed));
 }
 
 /// A symbol as the ABI lays it out: `capacity` bytes of UTF-8 and then one length byte. A

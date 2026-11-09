@@ -7,8 +7,8 @@ package hypercast
 // and TestRegenerationCarriesTheCrateVersion holds the version the translation carries to the
 // crate's. Every door crosses through the core's detailed exports, the only ones that read a
 // grouping policy, so the one way to pair this binding with a 1.0 core is to put a 1.0
-// translation in its place, and then the package does not build: no strict request can reach a
-// core that would parse it legacy. This test proves it with a real 1.0 core: the generator
+// translation in its place, and then the package does not build: no request can reach a core
+// that would parse it by 1.0's rule. This test proves it with a real 1.0 core: the generator
 // translates the Rust tree HYPERCAST_DOWNGRADE_ROOT names (a checkout of tag v1.0.0, holding
 // rust/) into a copy of this package, whose build must fail on the missing detailed export;
 // the same copy with the current core, the control, must build. Skipped without the variable,

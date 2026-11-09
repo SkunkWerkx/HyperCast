@@ -21,12 +21,12 @@ extension Cast {
     static var headerRawFaultDetailSize: Int { Int(HyperCastRawFaultDetail_SIZE) }
     static var headerRawDateOptionsSize: Int { Int(HyperCastRawDateOptions_SIZE) }
     static var headerRawDateOptionsMinSize: Int { Int(HyperCastRawDateOptions_MIN_SIZE) }
-    // The header's grouping policy bits — legacy, Western, Indian and the mask — and its
+    // The header's grouping policy bits — Western, Indian and the mask — and its
     // date-option bits, in the order Grouping and DateOptions restate them, which the suite pins.
     static var headerGroupingBits: [UInt32] {
         [
-            HyperCastNumFormat_GROUPING_LEGACY, HyperCastNumFormat_GROUPING_WESTERN,
-            HyperCastNumFormat_GROUPING_INDIAN, HyperCastNumFormat_GROUPING_POLICY,
+            HyperCastNumFormat_GROUPING_WESTERN, HyperCastNumFormat_GROUPING_INDIAN,
+            HyperCastNumFormat_GROUPING_POLICY,
         ].map { UInt32($0) }
     }
     // The header's flag bits, in the order Constraints restates them, which the suite pins.

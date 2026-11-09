@@ -1,8 +1,8 @@
 // 1.1 adds a grouping policy, a detailed fault and date options without changing what 1.0 code
 // sees. This file is 1.0 code, written as 1.0 wrote it: the same declarations, the same calls
 // with the same arities, the same shapes read back, the same comparisons. The one behaviour
-// that moved on purpose is `NumFormat`'s default grouping (strict Western), and its escape
-// hatch is held here too.
+// that moved on purpose is what grouped numerals read: Western unless Indian is declared, and
+// that declaration is held here too.
 const assert: typeof import('node:assert/strict') = require('node:assert/strict')
 const { test }: typeof import('node:test') = require('node:test')
 const api = require('../index.js') as typeof import('../index.js')
@@ -162,23 +162,28 @@ test('a fault compares equal as it did: structurally, by reason, offset and leng
   assert.deepEqual([reason, offset, length], ['malformed', 1, 1])
 })
 
-test('the one moved default: a 1.0 declaration reads groups strictly, and Legacy is the way back', () => {
-  const strict = NumFormat.declare({ decimalSep: '.', groupSep: ',', flags: NumStyles.All })
-  const legacy = NumFormat.declare({
+test('the moved default: a 1.0 declaration reads groups of three, and Indian is declared', () => {
+  const western = NumFormat.declare({ decimalSep: '.', groupSep: ',', flags: NumStyles.All })
+  const indian = NumFormat.declare({
     decimalSep: '.',
     groupSep: ',',
     flags: NumStyles.All,
-    grouping: Grouping.Legacy,
+    grouping: Grouping.Indian,
   })
-  assert.ok(strict.ok && legacy.ok)
-  assert.equal(strict.value.grouping, Grouping.Western)
-  assert.equal(legacy.value.grouping, Grouping.Legacy)
-  assert.deepEqual(api.castI32('12,34', legacy.value), { ok: true, value: 1234 })
-  assert.deepEqual(api.castI32('12,34', strict.value), {
+  assert.ok(western.ok && indian.ok)
+  assert.equal(western.value.grouping, Grouping.Western)
+  assert.equal(indian.value.grouping, Grouping.Indian)
+  assert.deepEqual(api.castI32('1,23,456', indian.value), { ok: true, value: 123456 })
+  assert.deepEqual(api.castI32('1,23,456', western.value), {
+    ok: false,
+    fault: { reason: 'malformed', offset: 1, length: 3 },
+  })
+  assert.ok(!api.castI32('12,34', indian.value).ok)
+  assert.deepEqual(api.castI32('12,34', western.value), {
     ok: false,
     fault: { reason: 'malformed', offset: 2, length: 3 },
   })
-  // A door given no format reads NumFormat.invariant(), strict too; 1,234 is fine either way.
+  // A door given no format reads NumFormat.invariant(); 1,234 is fine either way.
   assert.deepEqual(api.castI32('12,34'), api.castI32('12,34', NumFormat.invariant()))
   assert.deepEqual(api.castI32('1,234'), { ok: true, value: 1234 })
 })

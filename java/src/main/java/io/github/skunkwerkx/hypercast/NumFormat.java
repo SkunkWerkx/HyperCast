@@ -27,14 +27,14 @@ import java.util.concurrent.ConcurrentHashMap;
  * any real locale declares ({@code .}, {@code ,}, U+00A0, U+202F, an apostrophe and a space).
  *
  * <p>How digit groups are judged is the {@link Grouping}, declared apart from the styles and
- * {@link Grouping#WESTERN strict Western} unless declared otherwise: {@code 1,234,567} reads,
- * {@code 12,34} is {@link CastFailure#MALFORMED}. 1.0 read a group separator anywhere between
- * two digits; {@code withGrouping(Grouping.LEGACY)} keeps that. Every constructor and
+ * {@link Grouping#WESTERN Western} unless declared otherwise: {@code 1,234,567} reads, {@code
+ * 1,23,456} and {@code 12,34} are {@link CastFailure#MALFORMED}. {@code withGrouping(Grouping.INDIAN)}
+ * and {@code withGrouping(Grouping.WESTERN)} choose either on any format. Every constructor and
  * {@link #INVARIANT} default to Western; {@link #from(Locale)} declares what the platform's own
- * number and currency patterns say, so as never to reject the platform's own output:
- * {@link Grouping#WESTERN} or {@link Grouping#INDIAN} when every pattern that groups does,
- * {@link Grouping#LEGACY} for any other shape or patterns that disagree, and
- * {@link #STYLE_GROUPING} cleared only when neither groups.
+ * number pattern says: {@link Grouping#INDIAN} when it is three, then twos, anything else
+ * {@link Grouping#WESTERN}, with {@link #STYLE_GROUPING} cleared only when neither the number nor
+ * the currency pattern groups. A shape no policy names is refused, never misread: {@code
+ * docs/grouping.md}.
  *
  * <p><b>The one deviation from the record copy rule.</b> A record is normally copied by handing
  * its components back to the canonical constructor ({@code new NumFormat(f.decimalSeparator(),
@@ -43,12 +43,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * ten components are the ones this record keeps (an eleventh would break 1.0's ten-binder record
  * pattern), so the copy does not carry the {@link Grouping} and takes the default,
  * {@link Grouping#WESTERN}. A copy of a Western format is equal to it; a copy of a
- * {@link Grouping#LEGACY} or {@link Grouping#INDIAN} one (and a {@link #from(Locale) bridged}
- * format may be legacy) is Western, so copy with {@link #withGrouping(Grouping)}, the
+ * {@link Grouping#INDIAN} one is Western, so copy with {@link #withGrouping(Grouping)}, the
  * {@code with*} methods (every component has one) or {@code format.withGrouping(copy.grouping())}.
  * The policy lives inside the {@code styles} component of the canonical constructor, in bits 16
  * and 17, as an internal encoding that callers must not set: the constructor accepts only the
- * values a format of this class holds (0 Western, 1 legacy, 2 Indian) and refuses the rest.
+ * values a format of this class holds (0 Western, 2 Indian) and refuses the rest.
  *
  * <p>The boolean door's lexicon is not here, and stays English by decision: no platform
  * carries culture data for its yes/no words, so no bridge could fill one. A caller maps its
@@ -63,8 +62,8 @@ import java.util.concurrent.ConcurrentHashMap;
  *     not a style: declare it beside the mask ({@link #NumFormat(String, String, int, Grouping)},
  *     {@link #withGrouping(Grouping)}), where it defaults to {@link Grouping#WESTERN}. As a
  *     component of this record the mask is the stored word, which also holds the policy in bits
- *     16 and 17 (0 Western, 1 legacy, 2 Indian; an internal encoding callers must not set, and 3
- *     is refused), so {@link #styles()} answers the {@code STYLE_*} bits alone and
+ *     16 and 17 (0 Western, 2 Indian; an internal encoding callers must not set, and 1 and 3
+ *     are refused, as is any other bit, so a stale ABI word such as 351 is refused here), so {@link #styles()} answers the {@code STYLE_*} bits alone and
  *     {@link #grouping()} the policy; a record rebuilt through the canonical constructor from
  *     {@code styles()} keeps every style and takes the default policy (see the class
  *     description's copy rule)
@@ -102,7 +101,7 @@ public record NumFormat(
     /**
      * Permit the declared group separator between digits. How the groups are judged is the
      * {@link Grouping}: under the default {@link Grouping#WESTERN} every group must be three
-     * digits, under {@link Grouping#LEGACY} a separator must simply sit between two digits.
+     * digits, under {@link Grouping#INDIAN} three beside the decimal separator and twos beyond.
      * Without this style a group separator is refused under every policy.
      */
     public static final int STYLE_GROUPING = 1;
@@ -166,15 +165,15 @@ public record NumFormat(
 
     /**
      * The invariant profile — {@code .} decimal, {@code ,} grouping, every default lenience
-     * on, strict {@link Grouping#WESTERN} grouping, nothing else declared. As of 1.1 this
-     * rejects {@code 12,34}, which 1.0 read as 1234:
-     * {@code INVARIANT.withGrouping(Grouping.LEGACY)} is the 1.0 profile.
+     * on, {@link Grouping#WESTERN} grouping, nothing else declared. As of 1.1 this rejects
+     * {@code 12,34} and {@code 1,23,456}, which 1.0 read as 1234 and 123456:
+     * {@code INVARIANT.withGrouping(Grouping.INDIAN)} refuses the first too, and reads the second.
      */
     public static final NumFormat INVARIANT = new NumFormat(".", ",", STYLE_ALL);
 
     /**
      * The detection profile — every default lenience on, {@code .}/{@code ,} roles resolved
-     * per input by {@link #STYLE_SEPARATOR_DETECT}'s structural rules, strict
+     * per input by {@link #STYLE_SEPARATOR_DETECT}'s structural rules,
      * {@link Grouping#WESTERN} grouping (no policy resolves an ambiguous {@code 1,234}).
      */
     public static final NumFormat DETECT = new NumFormat(".", ",", STYLE_ALL | STYLE_SEPARATOR_DETECT);
@@ -362,15 +361,14 @@ public record NumFormat(
      */
     public Grouping grouping() {
         return switch (styles >>> POLICY_SHIFT) {
-            case LEGACY_FIELD -> Grouping.LEGACY;
             case INDIAN_FIELD -> Grouping.INDIAN;
             default -> Grouping.WESTERN;
         };
     }
 
     /**
-     * The {@code flags} word as the native core reads it: the {@code STYLE_*} bits and, in bits
-     * 8 and 9, the {@link Grouping#code() policy}. For a library that carries a format across
+     * The {@code flags} word as the native core reads it: the {@code STYLE_*} bits and the
+     * {@link Grouping#code() policy}, Indian's bit 9 or nothing for Western. For a library that carries a format across
      * the C ABI of its own, with {@link io.github.skunkwerkx.hypercast.interop.NativeValues}.
      *
      * @return the ABI flags
@@ -381,7 +379,7 @@ public record NumFormat(
 
     /**
      * The same format under another grouping policy, which replaces this one's.
-     * {@code INVARIANT.withGrouping(Grouping.LEGACY)} reads as 1.0 did.
+     * {@code INVARIANT.withGrouping(Grouping.INDIAN)} reads {@code 1,23,456}.
      *
      * @param grouping how digit groups are judged
      * @return the format with {@code grouping} in place of this one's
@@ -562,29 +560,31 @@ public record NumFormat(
      * {@code -5}. Narrow the styles, or declare a {@code NumFormat} outright, for anything
      * stricter.
      *
-     * <p><b>The grouping rule.</b> A bridge never knowingly rejects its platform's own output,
-     * and one format has one {@link Grouping} and one {@link #STYLE_GROUPING} flag, shared by
-     * number and currency values. So both patterns are read, the platform's own
-     * ({@link NumberFormat#getInstance(Locale)} and
-     * {@link NumberFormat#getCurrencyInstance(Locale)}), never the locale's name and never the
-     * input, and only the ones that group count:
+     * <p><b>The grouping rule.</b> One format has one {@link Grouping} and one
+     * {@link #STYLE_GROUPING} flag, shared by number and currency values. The policy follows the
+     * platform's number pattern ({@link NumberFormat#getInstance(Locale)}), never the locale's name
+     * and never the input:
      *
      * <ul>
-     *   <li>every grouping pattern Western (groups of three) is {@link Grouping#WESTERN};
-     *   <li>every grouping pattern Indian (three, then twos) is {@link Grouping#INDIAN};
-     *   <li>any grouping pattern of another shape (Toki Pona's groups of two, {@code #,#0.###}),
-     *       or grouping patterns that disagree, is {@link Grouping#LEGACY}, which reads whatever
-     *       grouping the platform writes;
-     *   <li>{@link #STYLE_GROUPING} is cleared only when neither pattern groups. When just one
-     *       does not, the style stays for the other and an ungrouped value stays valid; the
-     *       format cannot prohibit grouping of currency amounts alone.
+     *   <li>a number pattern of three, then twos is {@link Grouping#INDIAN};
+     *   <li>anything else is {@link Grouping#WESTERN}: groups of three, no grouping, or another
+     *       shape (Toki Pona's groups of two, {@code #,#0.###}), whose own grouped output is then
+     *       refused, never misread ({@code docs/grouping.md});
+     *   <li>{@link #STYLE_GROUPING} is cleared only when neither the number nor the currency
+     *       pattern ({@link NumberFormat#getCurrencyInstance(Locale)}) groups. When just one does
+     *       not, the style stays for the other and an ungrouped value stays valid; the format
+     *       cannot prohibit grouping of currency amounts alone.
      * </ul>
+     *
+     * A currency pattern that differs from the number's is refused through the bridge's format
+     * until the column declares its own policy with {@link #withGrouping(Grouping)}.
      *
      * The rule is deterministic: the same patterns give the same format. {@link DecimalFormat}
      * keeps one grouping size, the last interval, with no secondary size, so the JDK's own pattern
      * for an Indian locale reads {@code #,##0.###}, the JDK writes {@code 12,345,678} for it, and
-     * strict Western is right for what the platform produces. Text in CLDR's Indian grouping
-     * ({@code 12,34,567}) is read with {@code from(locale).withGrouping(Grouping.INDIAN)}.
+     * Western is right for what the platform produces. Text in CLDR's Indian grouping
+     * ({@code 12,34,567}) is read with {@code from(locale).withGrouping(Grouping.INDIAN)}. The
+     * data is the JDK's own CLDR tables, never ICU.
      *
      * @param locale the locale to derive from, never null
      * @return the locale's notation, every field filled, with every default lenience style enabled
@@ -620,9 +620,12 @@ public record NumFormat(
      * {@link DecimalFormat#getNegativeSuffix() negative suffix} with no
      * {@link DecimalFormat#getNegativePrefix() negative prefix} sets
      * {@link #STYLE_TRAILING_SIGN}, and {@link DecimalFormat#toPattern() its pattern} declares
-     * the grouping by {@link #from(Locale)}'s rule, with this one pattern the only one read:
-     * Western, Indian or, for another shape, legacy; and {@link #STYLE_GROUPING} cleared when
-     * the pattern does not group. Derived on every call, never cached.
+     * the grouping by {@link #from(Locale)}'s rule, with this one pattern the only one read, and
+     * {@link #STYLE_GROUPING} cleared when the pattern does not group. {@link DecimalFormat} keeps
+     * one grouping size, so {@code new DecimalFormat("#,##,##0.###")} has already lost the
+     * secondary size and its pattern reads {@code #,##0.###}: this is Western for every format the
+     * JDK can hold. Declare Indian with {@link #withGrouping(Grouping)}. Derived on every call,
+     * never cached.
      *
      * @param format the format to derive from, never null
      * @return the format's notation, every field filled, with every default lenience style enabled
@@ -634,8 +637,8 @@ public record NumFormat(
 
     /**
      * Derives a format from a number {@link DecimalFormat} and a currency one, as
-     * {@link #from(Locale)} does with a locale's two: the symbols and trailing sign are the
-     * number format's, and the grouping is {@link #from(Locale)}'s rule over both patterns.
+     * {@link #from(Locale)} does with a locale's two: the symbols, trailing sign and
+     * policy are the number format's, and {@link #STYLE_GROUPING} goes only when neither groups.
      * Derived on every call, never cached.
      *
      * @param number the number format, never null
@@ -649,13 +652,11 @@ public record NumFormat(
         if (!number.getNegativeSuffix().isEmpty() && number.getNegativePrefix().isEmpty()) {
             styles |= STYLE_TRAILING_SIGN;
         }
-        Shape[] shapes = currency == null
-                ? new Shape[] {shapeOf(number.toPattern())}
-                : new Shape[] {shapeOf(number.toPattern()), shapeOf(currency.toPattern())};
-        if (java.util.Arrays.stream(shapes).allMatch(shape -> shape == Shape.NONE)) {
+        Shape shape = shapeOf(number.toPattern());
+        if (shape == Shape.NONE && (currency == null || shapeOf(currency.toPattern()) == Shape.NONE)) {
             styles &= ~STYLE_GROUPING;
         }
-        return derive(number.getDecimalFormatSymbols(), styles, groupingOf(shapes));
+        return derive(number.getDecimalFormatSymbols(), styles, groupingOf(shape));
     }
 
     /** How one {@link DecimalFormat} pattern groups the integer part of its positive subpattern. */
@@ -713,31 +714,9 @@ public record NumFormat(
         return primary == 3 && secondary == 2 ? Shape.INDIAN : Shape.OTHER;
     }
 
-    /**
-     * The one {@link Grouping} for the shapes of a format's patterns, ignoring the ones that do
-     * not group: all Western is Western, all Indian is Indian, any other shape or a mix is
-     * legacy, and no pattern that groups at all is the default Western (with
-     * {@link #STYLE_GROUPING} cleared, the policy never applies).
-     */
-    static Grouping groupingOf(Shape... shapes) {
-        Grouping grouping = null;
-        for (Shape shape : shapes) {
-            Grouping own = switch (shape) {
-                case NONE -> null;
-                case WESTERN -> Grouping.WESTERN;
-                case INDIAN -> Grouping.INDIAN;
-                case OTHER -> Grouping.LEGACY;
-            };
-            if (own == null) {
-                continue;
-            }
-            if (grouping == null) {
-                grouping = own;
-            } else if (grouping != own) {
-                return Grouping.LEGACY;
-            }
-        }
-        return grouping == null ? Grouping.WESTERN : grouping;
+    /** The {@link Grouping} a number pattern's shape declares: Indian for Indian, else Western. */
+    static Grouping groupingOf(Shape number) {
+        return number == Shape.INDIAN ? Grouping.INDIAN : Grouping.WESTERN;
     }
 
     private static NumFormat derive(DecimalFormatSymbols symbols, int styles, Grouping grouping) {
@@ -764,15 +743,14 @@ public record NumFormat(
     }
 
     // The styles component is the stored word: the STYLE_* bits (0 to 7) and, in bits 16 and 17,
-    // the policy as a field: 0 Western, 1 legacy, 2 Indian, and 3 never. Western is 0, so a 1.0
+    // the policy as a field: 0 Western, 2 Indian, and 1 and 3 never. Western is 0, so a 1.0
     // constructor call, which carries no policy, means Western and its word is 1.0's own. The
-    // ABI's encoding (bits 8 and 9, where 0 is legacy) cannot be the stored one, which is why
-    // legacy has a field of its own. The ABI word is flags().
+    // ABI word is flags(), and bits 8 and 9 are never stored, so a stale ABI 351 or 863 here is an
+    // undefined bit.
     private static final int STYLE_BITS = 0xFF;
     private static final int POLICY_SHIFT = 16;
     private static final int POLICY_FIELD = 3 << POLICY_SHIFT;
     private static final int WESTERN_FIELD = 0;
-    private static final int LEGACY_FIELD = 1;
     private static final int INDIAN_FIELD = 2;
 
     // The canonical constructor's word: styles and a stored policy that a format of this class
@@ -781,9 +759,10 @@ public record NumFormat(
         if ((styles & ~(STYLE_BITS | POLICY_FIELD)) != 0) {
             throw undefinedStyles(styles);
         }
-        if ((styles & POLICY_FIELD) >>> POLICY_SHIFT == 3) {
+        int field = (styles & POLICY_FIELD) >>> POLICY_SHIFT;
+        if (field != WESTERN_FIELD && field != INDIAN_FIELD) {
             throw new IllegalArgumentException("The stored policy (bits 16 and 17 of the styles component, an "
-                    + "internal encoding) is 0 Western, 1 legacy or 2 Indian; 3 names no grouping policy");
+                    + "internal encoding) is 0 Western or 2 Indian; " + field + " names no grouping policy");
         }
         return styles;
     }
@@ -795,7 +774,6 @@ public record NumFormat(
             throw undefinedStyles(styles);
         }
         int field = switch (grouping) {
-            case LEGACY -> LEGACY_FIELD;
             case WESTERN -> WESTERN_FIELD;
             case INDIAN -> INDIAN_FIELD;
         };

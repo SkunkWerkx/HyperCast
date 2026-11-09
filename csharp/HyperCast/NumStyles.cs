@@ -2,7 +2,7 @@ namespace HyperCast;
 
 /// <summary>
 /// The lenience flags of <see cref="NumFormat"/> — bit-for-bit the native core's flags 0 to 7. The
-/// grouping policy (core bits 8 and 9) is <see cref="NumFormat.Grouping"/>, never a style.
+/// grouping policy is <see cref="NumFormat.Grouping"/>, never a style.
 /// </summary>
 [Flags]
 public enum NumStyles : uint
@@ -12,9 +12,8 @@ public enum NumStyles : uint
 
 	/// <summary>
 	/// Permit the declared group separator between digits, judged by the format's
-	/// <see cref="NumFormat.Grouping"/>: strict Western by default (<c>1,234,567</c>; <c>12,34</c> is
-	/// <see cref="CastFailure.Malformed"/>), Indian where declared, or, as <see cref="NumGrouping.Legacy"/>,
-	/// 1.0's rule that a separator simply sit between two digits. With this flag off a group
+	/// <see cref="NumFormat.Grouping"/>: Western by default (<c>1,234,567</c>; <c>1,23,456</c> and <c>12,34</c> are
+	/// <see cref="CastFailure.Malformed"/>), Indian where declared. With this flag off a group
 	/// separator is forbidden under every policy.
 	/// </summary>
 	Grouping = 1,

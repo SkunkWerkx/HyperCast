@@ -1,6 +1,7 @@
 package io.github.skunkwerkx.hypercast;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -12,16 +13,15 @@ import java.util.Locale;
 import org.junit.jupiter.api.Test;
 
 /**
- * Strict grouping: the policy a {@link NumFormat} declares apart from its styles, what the
+ * Grouping: the policy a {@link NumFormat} declares apart from its styles, what the
  * bridge reads from the platform's own pattern, and the core's rules at the doors.
  */
 final class GroupingTest {
     @Test
-    void theDefaultIsStrictWesternAndLegacyAndIndianAreExplicit() {
+    void theDefaultIsWesternAndIndianIsExplicit() {
         assertEquals(Grouping.WESTERN, NumFormat.INVARIANT.grouping());
         assertEquals(Grouping.WESTERN, NumFormat.DETECT.grouping());
         assertEquals(Grouping.WESTERN, new NumFormat(".", ",", NumFormat.STYLE_ALL, Grouping.WESTERN).grouping());
-        assertEquals(Grouping.LEGACY, new NumFormat(".", ",", NumFormat.STYLE_ALL, Grouping.LEGACY).grouping());
         assertEquals(Grouping.INDIAN, new NumFormat('.', ',', NumFormat.STYLE_ALL, Grouping.INDIAN).grouping());
         assertEquals(
                 Grouping.INDIAN, new NumFormat(".", ",", NumFormat.STYLE_ALL, "\u20b9", Grouping.INDIAN).grouping());
@@ -35,13 +35,8 @@ final class GroupingTest {
         NumFormat format = NumFormat.INVARIANT;
         assertEquals(Grouping.INDIAN, format.withGrouping(Grouping.INDIAN).grouping());
         assertEquals(
-                Grouping.LEGACY,
-                format.withGrouping(Grouping.INDIAN)
-                        .withGrouping(Grouping.LEGACY)
-                        .grouping());
-        assertEquals(
                 Grouping.WESTERN,
-                format.withGrouping(Grouping.LEGACY)
+                format.withGrouping(Grouping.INDIAN)
                         .withGrouping(Grouping.WESTERN)
                         .grouping());
         for (Grouping grouping : Grouping.values()) {
@@ -63,14 +58,21 @@ final class GroupingTest {
         assertThrows(IllegalArgumentException.class, () -> NumFormat.INVARIANT.withStyles(1 << 8));
         assertThrows(NullPointerException.class, () -> NumFormat.INVARIANT.withGrouping(null));
         assertThrows(NullPointerException.class, () -> new NumFormat(".", ",", 0, (Grouping) null));
-        // Policy 3 names none; every defined policy round-trips through its ABI bits.
+        // Bit 8 is retired, a stale word holding it is refused wherever it is declared, and every
+        // defined policy round-trips through its ABI bits.
+        assertThrows(IllegalArgumentException.class, () -> Grouping.of(1 << 8));
         assertThrows(IllegalArgumentException.class, () -> Grouping.of(3 << 8));
+        for (int stale : new int[] {351, 863, 1 << 8, 3 << 8}) {
+            assertThrows(IllegalArgumentException.class, () -> new NumFormat(".", ",", stale));
+            assertThrows(IllegalArgumentException.class, () -> NumFormat.INVARIANT.withStyles(stale));
+            assertThrows(
+                    IllegalArgumentException.class, () -> new NumFormat(".", ",", stale, "", "", "", "", "", "", 0));
+        }
         assertThrows(IllegalArgumentException.class, () -> Grouping.of(1));
         for (Grouping grouping : Grouping.values()) {
             assertEquals(grouping, Grouping.of(grouping.code()));
         }
-        assertEquals(0, Grouping.LEGACY.code());
-        assertEquals(1 << 8, Grouping.WESTERN.code());
+        assertEquals(0, Grouping.WESTERN.code());
         assertEquals(2 << 8, Grouping.INDIAN.code());
         assertEquals(NumFormat.STYLE_ALL, NumFormat.INVARIANT.styles());
         assertTrue(NumFormat.INVARIANT.toString().endsWith("grouping=WESTERN]"));
@@ -99,33 +101,32 @@ final class GroupingTest {
         NumFormat western = NumFormat.INVARIANT.withSigns("\u2212", "").withCurrencySymbol("$");
         assertEquals(western, copy(western));
         assertEquals(western.hashCode(), copy(western).hashCode());
-        for (Grouping grouping : List.of(Grouping.LEGACY, Grouping.INDIAN)) {
-            NumFormat original = western.withGrouping(grouping);
-            NumFormat copy = copy(original);
-            assertEquals(Grouping.WESTERN, copy.grouping(), "a " + grouping + " format copies as Western");
-            assertEquals(western, copy);
-            // Every other component survives, and the policy is restored the documented way.
-            assertEquals(original, copy.withGrouping(original.grouping()));
-        }
-        // A bridged format can be legacy (Toki Pona's groups of two), so it copies as Western too.
-        NumFormat bridged = NumFormat.from(new Patterned("#,#0.###"), new Patterned("\u00a4#,#0.00"));
-        assertEquals(Grouping.LEGACY, bridged.grouping());
+        NumFormat original = western.withGrouping(Grouping.INDIAN);
+        NumFormat copied = copy(original);
+        assertEquals(Grouping.WESTERN, copied.grouping(), "an Indian format copies as Western");
+        assertEquals(western, copied);
+        // Every other component survives, and the policy is restored the documented way.
+        assertEquals(original, copied.withGrouping(original.grouping()));
+        // A bridged format can be Indian, so it copies as Western too.
+        NumFormat bridged = NumFormat.from(new Patterned("#,##,##0.###"), new Patterned("\u00a4#,##,##0.00"));
+        assertEquals(Grouping.INDIAN, bridged.grouping());
         assertEquals(Grouping.WESTERN, copy(bridged).grouping());
         assertEquals(bridged, copy(bridged).withGrouping(bridged.grouping()));
     }
 
     @Test
     void theStoredPolicyAcceptsOnlyWhatAFormatOfTheClassCouldHold() {
-        // Bits 16 and 17 of the canonical constructor's styles: 0 Western, 1 legacy, 2 Indian.
+        // Bits 16 and 17 of the canonical constructor's styles: 0 Western, 2 Indian.
         int all = NumFormat.STYLE_ALL;
         assertEquals(Grouping.WESTERN, new NumFormat(".", ",", all, "", "", "", "", "", "", 0).grouping());
-        assertEquals(Grouping.LEGACY, new NumFormat(".", ",", all | 1 << 16, "", "", "", "", "", "", 0).grouping());
         assertEquals(Grouping.INDIAN, new NumFormat(".", ",", all | 2 << 16, "", "", "", "", "", "", 0).grouping());
-        // 3 names no policy; any other bit that is no style is refused, as it always was.
-        IllegalArgumentException three = assertThrows(
-                IllegalArgumentException.class,
-                () -> new NumFormat(".", ",", all | 3 << 16, "", "", "", "", "", "", 0));
-        assertTrue(three.getMessage().contains("names no grouping policy"), three.getMessage());
+        // 1 and 3 name no policy; any other bit that is no style is refused, as it always was.
+        for (int field : new int[] {1, 3}) {
+            IllegalArgumentException refused = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> new NumFormat(".", ",", all | field << 16, "", "", "", "", "", "", 0));
+            assertTrue(refused.getMessage().contains("names no grouping policy"), refused.getMessage());
+        }
         assertThrows(
                 IllegalArgumentException.class,
                 () -> new NumFormat(".", ",", all | 1 << 18, "", "", "", "", "", "", 0));
@@ -137,11 +138,11 @@ final class GroupingTest {
 
     @Test
     void everyComponentHasAWitherIncludingTheSeparators() {
-        NumFormat base = NumFormat.INVARIANT.withGrouping(Grouping.LEGACY).withCurrencySymbol("$");
+        NumFormat base = NumFormat.INVARIANT.withGrouping(Grouping.INDIAN).withCurrencySymbol("$");
         NumFormat swapped = base.withSeparators(",", ".");
         assertEquals(",", swapped.decimalSeparator());
         assertEquals(".", swapped.groupSeparator());
-        assertEquals(Grouping.LEGACY, swapped.grouping());
+        assertEquals(Grouping.INDIAN, swapped.grouping());
         assertEquals("$", swapped.currencySymbol());
         assertEquals(base, swapped.withSeparators(".", ","));
         assertEquals(new Success<>(1234.5), Cast.f64("1.234,5", swapped));
@@ -151,10 +152,9 @@ final class GroupingTest {
     }
 
     @Test
-    void theStrictRulesAtTheDoors() {
+    void theRulesAtTheDoors() {
         NumFormat western = NumFormat.INVARIANT;
         NumFormat indian = western.withGrouping(Grouping.INDIAN);
-        NumFormat legacy = western.withGrouping(Grouping.LEGACY);
         // Western: three digits, counted leftward from the decimal separator; ungrouped is valid.
         assertEquals(new Success<>(1234567L), Cast.i64("1,234,567", western));
         assertEquals(new Success<>(1234567L), Cast.i64("1234567", western));
@@ -172,9 +172,11 @@ final class GroupingTest {
         assertEquals(new Success<>(1234L), Cast.i64("1,234", indian));
         assertEquals(CastFailure.MALFORMED, ((Fault<Long>) Cast.i64("123,456", indian)).reason());
         assertEquals(new Success<>(12345678.9), Cast.f64("1,23,45,678.9", indian));
-        // Legacy: a separator anywhere between two digits.
-        assertEquals(new Success<>(1234L), Cast.i64("12,34", legacy));
-        assertEquals(new Success<>(1234567L), Cast.i64("1234,567", legacy));
+        // Each policy refuses the other's shapes, and no shape is open.
+        assertEquals(new Fault<Long>(CastFailure.MALFORMED, 1, 3), Cast.i64("1,23,456", western));
+        assertEquals(new Fault<Long>(CastFailure.MALFORMED, 0, 4), Cast.i64("1234,567,890", western));
+        assertEquals(new Fault<Long>(CastFailure.MALFORMED, 0, 1), Cast.i64("0,125", western));
+        assertEquals(new Fault<Long>(CastFailure.MALFORMED, 1, 4), Cast.i64("1,234,567", indian));
         // The decimal door and a currency amount, with the currency symbol's own separators.
         assertEquals(
                 new Success<>(new java.math.BigDecimal("1234567.5")),
@@ -195,7 +197,7 @@ final class GroupingTest {
         assertEquals(FaultDetail.GROUP_SIZE, fault.detail());
         assertEquals(2, fault.offset());
         assertEquals(3, fault.length());
-        // The interchangeable space-like separators stand for each other under the strict rules.
+        // The interchangeable space-like separators stand for each other under both policies.
         NumFormat space = new NumFormat(",", " ", NumFormat.STYLE_ALL);
         assertEquals(new Success<>(1234567), Cast.i32("1\u00a0234\u202f567", space));
     }
@@ -253,25 +255,25 @@ final class GroupingTest {
     @Test
     void theGroupingPatternsThatGroupDecideTheOnePolicyAndTheOneFlag() {
         int all = NumFormat.STYLE_ALL;
-        // Both Western: strict Western. Both Indian: strict Indian.
+        // The number pattern decides: Indian is Indian, anything else Western.
         assertEquals(Grouping.WESTERN, bridge("#,##0.###", "\u00a4#,##0.00").grouping());
         assertEquals(
                 Grouping.INDIAN, bridge("#,##,##0.###", "\u00a4#,##,##0.00").grouping());
-        // Western and Indian disagree: legacy, which reads both.
-        assertEquals(Grouping.LEGACY, bridge("#,##,##0.###", "\u00a4#,##0.00").grouping());
-        assertEquals(Grouping.LEGACY, bridge("#,##0.###", "\u00a4#,##,##0.00").grouping());
-        // Any pattern of another shape: legacy, and either order.
-        assertEquals(Grouping.LEGACY, bridge("#,#0.###", "\u00a4#,#0.00").grouping());
-        assertEquals(Grouping.LEGACY, bridge("#,##0.###", "\u00a4#,#0.00").grouping());
-        assertEquals(Grouping.LEGACY, bridge("#,#0.###", "\u00a4#,##0.00").grouping());
-        // Only one groups: its shape decides, and the flag stays for it (ungrouped values stay valid).
+        assertEquals(Grouping.INDIAN, bridge("#,##,##0.###", "\u00a4#,##0.00").grouping());
+        assertEquals(Grouping.WESTERN, bridge("#,##0.###", "\u00a4#,##,##0.00").grouping());
+        // Another shape is Western, in either order.
+        assertEquals(Grouping.WESTERN, bridge("#,#0.###", "\u00a4#,#0.00").grouping());
+        assertEquals(Grouping.WESTERN, bridge("#,##0.###", "\u00a4#,#0.00").grouping());
+        assertEquals(Grouping.WESTERN, bridge("#,#0.###", "\u00a4#,##0.00").grouping());
+        assertEquals(Grouping.INDIAN, bridge("#,##,##0.###", "\u00a4#,#0.00").grouping());
+        // Only one groups: the number pattern still decides, and the flag stays (ungrouped values stay valid).
         NumFormat indianAndNone = bridge("#,##,##0.###", "\u00a40.00");
         assertEquals(Grouping.INDIAN, indianAndNone.grouping());
         assertEquals(all, indianAndNone.styles());
-        NumFormat noneAndWestern = bridge("0.###", "\u00a4#,##0.00");
-        assertEquals(Grouping.WESTERN, noneAndWestern.grouping());
-        assertEquals(all, noneAndWestern.styles());
-        assertEquals(Grouping.LEGACY, bridge("#,#0.###", "0.00").grouping());
+        NumFormat noneAndIndian = bridge("0.###", "\u00a4#,##,##0.00");
+        assertEquals(Grouping.WESTERN, noneAndIndian.grouping());
+        assertEquals(all, noneAndIndian.styles());
+        assertEquals(Grouping.WESTERN, bridge("#,#0.###", "0.00").grouping());
         assertEquals(all, bridge("#,#0.###", "0.00").styles());
         // Neither groups: GROUPING is cleared, and a separator is then refused.
         NumFormat none = bridge("#0.######", "\u00a4#0.00");
@@ -281,7 +283,7 @@ final class GroupingTest {
         // A format of one pattern reads that pattern alone.
         assertEquals(
                 Grouping.INDIAN, NumFormat.from(new Patterned("#,##,##0.###")).grouping());
-        assertEquals(Grouping.LEGACY, NumFormat.from(new Patterned("#,#0.###")).grouping());
+        assertEquals(Grouping.WESTERN, NumFormat.from(new Patterned("#,#0.###")).grouping());
         assertEquals(
                 all & ~NumFormat.STYLE_GROUPING,
                 NumFormat.from(new Patterned("0.###")).styles());
@@ -311,15 +313,15 @@ final class GroupingTest {
         NumFormat western = NumFormat.from(new DecimalFormat("#,##0.###", DecimalFormatSymbols.getInstance(Locale.US)));
         assertEquals(Grouping.WESTERN, western.grouping());
         assertEquals(new Success<>(12345678L), Cast.i64("12,345,678", western));
-        // Toki Pona groups by two with a no-break space; legacy reads that, and strict Western cannot.
+        // Toki Pona groups by two; the bridge declares Western, and that shape is refused, never misread.
         NumFormat twos = NumFormat.from(new Patterned("#,#0.###"));
-        assertEquals(new Success<>(12345678L), Cast.i64("12,34,56,78", twos));
+        assertEquals(new Fault<Long>(CastFailure.MALFORMED, 2, 3), Cast.i64("12,34,56,78", twos));
     }
 
     @Test
     void theJdksOwnPatternForAnIndianLocaleIsWesternSoThatIsWhatTheBridgeDeclares() {
         // DecimalFormat keeps one grouping size, the last interval: the JDK formats en-IN as
-        // 12,345,678 and its pattern says #,##0.###, so strict Western is right for what the
+        // 12,345,678 and its pattern says #,##0.###, so Western is right for what the
         // platform writes. CLDR-style Indian output is read by declaring it.
         Locale india = Locale.forLanguageTag("en-IN");
         DecimalFormat pattern = (DecimalFormat) NumberFormat.getInstance(india);
@@ -336,22 +338,14 @@ final class GroupingTest {
     private static void assertTheRule(Locale locale) {
         DecimalFormat number = (DecimalFormat) NumberFormat.getInstance(locale);
         DecimalFormat currency = (DecimalFormat) NumberFormat.getCurrencyInstance(locale);
-        java.util.Set<NumFormat.Shape> grouping = new java.util.TreeSet<>();
-        for (DecimalFormat format : List.of(number, currency)) {
-            NumFormat.Shape shape = NumFormat.shapeOf(format.toPattern());
-            if (shape != NumFormat.Shape.NONE) {
-                grouping.add(shape);
-            }
-        }
+        NumFormat.Shape numberShape = NumFormat.shapeOf(number.toPattern());
+        boolean groups =
+                numberShape != NumFormat.Shape.NONE || NumFormat.shapeOf(currency.toPattern()) != NumFormat.Shape.NONE;
         NumFormat format = NumFormat.from(locale);
         String why = locale.toLanguageTag() + ": " + number.toPattern() + " / " + currency.toPattern();
-        Grouping expected = grouping.isEmpty()
-                ? Grouping.WESTERN
-                : grouping.equals(java.util.Set.of(NumFormat.Shape.WESTERN))
-                        ? Grouping.WESTERN
-                        : grouping.equals(java.util.Set.of(NumFormat.Shape.INDIAN)) ? Grouping.INDIAN : Grouping.LEGACY;
-        assertEquals(expected, format.grouping(), why);
-        assertEquals(grouping.isEmpty(), (format.styles() & NumFormat.STYLE_GROUPING) == 0, why);
+        assertEquals(
+                numberShape == NumFormat.Shape.INDIAN ? Grouping.INDIAN : Grouping.WESTERN, format.grouping(), why);
+        assertEquals(!groups, (format.styles() & NumFormat.STYLE_GROUPING) == 0, why);
     }
 
     /**
@@ -402,11 +396,11 @@ final class GroupingTest {
                 Locale.forLanguageTag("or-IN"))) {
             assertTheRule(locale);
         }
-        // Where the platform really writes groups of two, the bridge is legacy and reads them.
+        // Where the platform really writes groups of two, the bridge is Western.
         DecimalFormat tok = (DecimalFormat) NumberFormat.getInstance(Locale.forLanguageTag("tok"));
         if (NumFormat.shapeOf(tok.toPattern()) == NumFormat.Shape.OTHER) {
             assertEquals(
-                    Grouping.LEGACY,
+                    Grouping.WESTERN,
                     NumFormat.from(Locale.forLanguageTag("tok")).grouping());
         }
         // Where it writes no grouping at all, GROUPING is cleared.
@@ -419,50 +413,38 @@ final class GroupingTest {
     @Test
     void representativeLocalesReadTheirOwnNumberAndCurrencyOutput() {
         for (String tag : List.of(
-                "en-US",
-                "en-GB",
-                "de-DE",
-                "de-CH",
-                "fr-FR",
-                "fr-CH",
-                "es-ES",
-                "pt-BR",
-                "ja-JP",
-                "ko-KR",
-                "hi-IN",
-                "en-IN",
-                "mr-IN",
-                "ml-IN",
-                "ta-IN",
-                "en-BG",
-                "tok",
-                "tok-001",
-                "tok-Latn-001")) {
+                "en-US", "en-GB", "de-DE", "de-CH", "fr-FR", "fr-CH", "es-ES", "pt-BR", "ja-JP", "ko-KR", "hi-IN",
+                "en-IN", "mr-IN", "ml-IN", "ta-IN", "en-BG")) {
             assertReadsItsOwnOutput(Locale.forLanguageTag(tag));
         }
         assertReadsItsOwnOutput(Locale.of("en", "US", "POSIX"));
     }
 
     @Test
-    void everyLocalesBridgeFollowsTheRuleAndNeverRejectsWhatLegacyGroupingWouldRead() {
+    void everyLocalesBridgeFollowsTheRuleAndReadsThePatternsOfItsPolicy() {
         int seen = 0;
         double[] values = {0, 1234.5, -1234.5, 1234567.891, 12345678.9, 1e9};
         for (Locale locale : Locale.getAvailableLocales()) {
             assertTheRule(locale);
-            // The invariant: whatever the platform wrote that legacy grouping (the 1.0 rule, with
-            // GROUPING on) reads, the bridge's own format reads too.
+            // Whatever the platform wrote in a pattern of the bridge's own policy is never refused
+            // for its groups; a pattern of another shape is refused, never misread.
             NumFormat bridge = NumFormat.from(locale);
-            NumFormat legacy =
-                    bridge.withGrouping(Grouping.LEGACY).withStyles(bridge.styles() | NumFormat.STYLE_GROUPING);
-            NumberFormat number = NumberFormat.getInstance(locale);
+            NumFormat.Shape policy =
+                    bridge.grouping() == Grouping.INDIAN ? NumFormat.Shape.INDIAN : NumFormat.Shape.WESTERN;
+            DecimalFormat number = (DecimalFormat) NumberFormat.getInstance(locale);
             number.setMaximumFractionDigits(3);
-            NumberFormat currency = NumberFormat.getCurrencyInstance(locale);
+            DecimalFormat currency = (DecimalFormat) NumberFormat.getCurrencyInstance(locale);
             for (double value : values) {
-                for (String shown : List.of(number.format(value), currency.format(value))) {
-                    if (Cast.decimal(shown, legacy) instanceof Success<java.math.BigDecimal> ok) {
-                        assertEquals(
-                                ok,
-                                Cast.decimal(shown, bridge),
+                for (DecimalFormat writer : List.of(number, currency)) {
+                    NumFormat.Shape shape = NumFormat.shapeOf(writer.toPattern());
+                    if (shape != policy && shape != NumFormat.Shape.NONE) {
+                        continue;
+                    }
+                    String shown = writer.format(value);
+                    if (DetailedCast.decimal(shown, bridge) instanceof DetailedFault<?> fault) {
+                        assertNotEquals(
+                                FaultDetail.GROUP_SIZE,
+                                fault.detail(),
                                 locale.toLanguageTag() + " '" + shown + "' under " + bridge.grouping());
                     }
                 }

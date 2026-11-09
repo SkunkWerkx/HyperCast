@@ -55,6 +55,23 @@ public readonly record struct DateFormat(DateOrder Order)
 	public string PMDesignator { get => field ?? ""; init; } = "";
 
 	/// <summary>
+	/// Equal when both declare the same thing: the order and each designator as it reads back,
+	/// so a <see langword="null"/> designator and an empty one are one declaration, as
+	/// <see cref="NumFormat"/>'s strings are. Designators compare ordinally.
+	/// </summary>
+	/// <param name="other">The format to compare with.</param>
+	/// <returns><see langword="true"/> when the order and both designators are equal.</returns>
+	public bool Equals(DateFormat other) =>
+		Order == other.Order
+		&& string.Equals(AMDesignator, other.AMDesignator, StringComparison.Ordinal)
+		&& string.Equals(PMDesignator, other.PMDesignator, StringComparison.Ordinal);
+
+	/// <summary>A hash over what <see cref="Equals(DateFormat)"/> compares.</summary>
+	/// <returns>The hash code.</returns>
+	public override int GetHashCode() =>
+		HashCode.Combine(Order, StringComparer.Ordinal.GetHashCode(AMDesignator), StringComparer.Ordinal.GetHashCode(PMDesignator));
+
+	/// <summary>
 	/// <see langword="true"/> when a designator is declared beside the English pair — what
 	/// the door hands the core; with neither declared it passes nothing, and the cast is
 	/// exactly the bare <see cref="DateOrder"/> one.

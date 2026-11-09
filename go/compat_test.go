@@ -4,7 +4,7 @@ package hypercast_test
 // equality, the sealed Rejection switched on with no default arm, and the 1.0 doors' (value,
 // *Fault) pair. 1.1 adds no field to any of these types (the detail travels on the separate
 // *Failure path), so all of it compiles and behaves as before; the one behaviour that moves
-// is the strict default of Invariant and Detect, pinned at the end.
+// is that every format reads Western unless it declares Indian, pinned at the end.
 
 import (
 	"bytes"
@@ -17,8 +17,8 @@ import (
 )
 
 func TestOneDotZeroLiteralsStillCompileAndCompare(t *testing.T) {
-	legacy := hypercast.NumFormat{".", ",", hypercast.AllStyles, "", "", "", "", "", "", 0}
-	if legacy != (hypercast.NumFormat{DecimalSep: ".", GroupSep: ",", Styles: hypercast.AllStyles}) {
+	literal := hypercast.NumFormat{".", ",", hypercast.AllStyles, "", "", "", "", "", "", 0}
+	if literal != (hypercast.NumFormat{DecimalSep: ".", GroupSep: ",", Styles: hypercast.AllStyles}) {
 		t.Fatal("an unkeyed NumFormat differs from its keyed twin")
 	}
 	fault := hypercast.Fault{hypercast.Malformed, 2, 3}
@@ -46,24 +46,30 @@ func TestOneDotZeroLiteralsStillCompileAndCompare(t *testing.T) {
 }
 
 func TestOneDotZeroDoorsKeepTheirVerdicts(t *testing.T) {
-	// A format written as a 1.0 literal declares no policy: legacy, as 1.0 parsed it.
-	legacy := hypercast.NumFormat{".", ",", hypercast.AllStyles, "", "", "", "", "", "", 0}
-	if v, fault := hypercast.I32("12,34", legacy); fault != nil || v != 1234 {
-		t.Fatalf("legacy literal: %v %v, want 1234", v, fault)
+	// A format written as a 1.0 literal declares no policy: Western, like Invariant.
+	literal := hypercast.NumFormat{".", ",", hypercast.AllStyles, "", "", "", "", "", "", 0}
+	if literal != hypercast.Invariant {
+		t.Fatalf("a 1.0 literal is %+v, want Invariant", literal)
 	}
-	if _, fault := hypercast.I32("12x4", legacy); fault == nil || *fault != (hypercast.Fault{hypercast.Malformed, 2, 1}) {
+	if _, fault := hypercast.I32("1,23,456", literal); fault == nil || *fault != (hypercast.Fault{hypercast.Malformed, 1, 3}) {
+		t.Fatalf("literal 1,23,456: %v, want malformed at 1..4", fault)
+	}
+	if _, fault := hypercast.I32("12x4", literal); fault == nil || *fault != (hypercast.Fault{hypercast.Malformed, 2, 1}) {
 		t.Fatalf("12x4: %v, want malformed at 2..3", fault)
 	}
-	// The zero value's Styles is policy 00.
+	// The zero value's Styles sets no policy.
 	var zero hypercast.NumFormat
 	zero.DecimalSep, zero.GroupSep = ".", ","
 	zero.Styles = hypercast.Grouping
-	if v, fault := hypercast.I32("1,2,3,4", zero); fault != nil || v != 1234 {
-		t.Fatalf("zero-value styles: %v %v, want 1234", v, fault)
+	if v, fault := hypercast.I32("1,234,567", zero); fault != nil || v != 1234567 {
+		t.Fatalf("zero-value styles: %v %v, want 1234567", v, fault)
+	}
+	if _, fault := hypercast.I32("1,2,345", zero); fault == nil || *fault != (hypercast.Fault{hypercast.Malformed, 1, 2}) {
+		t.Fatalf("zero-value styles 1,2,345: %v, want malformed at 1..3", fault)
 	}
 
 	cents := hypercast.MustConstraints[int32](hypercast.Maximum(100))
-	_, rejection := hypercast.Check("101", legacy, cents)
+	_, rejection := hypercast.Check("101", literal, cents)
 	switch r := rejection.(type) {
 	case nil:
 		t.Fatal("101 passed a maximum of 100")
@@ -76,9 +82,9 @@ func TestOneDotZeroDoorsKeepTheirVerdicts(t *testing.T) {
 	}
 }
 
-// A NumFormat stored by 1.0 code (encoding/json and encoding/gob carry its exported fields)
-// keeps 1.0's meaning when it is read back: its Styles carry no policy bits, so it is legacy.
-func TestOneDotZeroStoredFormatsStayLegacy(t *testing.T) {
+// A NumFormat stored by 1.0 code (encoding/json and encoding/gob carry its exported fields) reads
+// back with what its Styles say: no policy bits, so Western.
+func TestOneDotZeroStoredFormatsAreWestern(t *testing.T) {
 	// What json.Marshal(hypercast.Invariant) wrote under 1.0, where AllStyles was 95.
 	payload := `{"DecimalSep":".","GroupSep":",","Styles":95,"Currency":"","CurrencyDecimalSep":"",` +
 		`"CurrencyGroupSep":"","MinusSign":"","PlusSign":"","Percent":"","DigitZero":0}`
@@ -86,11 +92,32 @@ func TestOneDotZeroStoredFormatsStayLegacy(t *testing.T) {
 	if err := json.Unmarshal([]byte(payload), &stored); err != nil {
 		t.Fatal(err)
 	}
-	if stored.GroupingPolicy() != hypercast.GroupingLegacy {
-		t.Fatalf("a 1.0 JSON payload reads as %v, want legacy", stored.GroupingPolicy())
+	if stored != hypercast.Invariant {
+		t.Fatalf("a 1.0 JSON payload reads as %+v, want Invariant", stored)
 	}
-	if v, fault := hypercast.I32("12,34", stored); fault != nil || v != 1234 {
-		t.Fatalf("a 1.0 JSON payload: %v %v, want 1234", v, fault)
+	// JSON refuses a stale policy where it is decoded, and a payload with no Styles stays as it was.
+	for _, stale := range []string{"351", "863", "256", "768", "1024", "1119"} {
+		var bad hypercast.NumFormat
+		if err := json.Unmarshal([]byte(`{"DecimalSep":".","GroupSep":",","Styles":`+stale+`}`), &bad); err == nil {
+			t.Fatalf("a JSON Styles of %s decoded", stale)
+		}
+	}
+	// Bit 9 is Go's own encoding of Indian, so a stored 607 is an Indian format.
+	var indian hypercast.NumFormat
+	if err := json.Unmarshal([]byte(`{"DecimalSep":".","GroupSep":",","Styles":607}`), &indian); err != nil {
+		t.Fatal(err)
+	} else if indian.GroupingPolicy() != hypercast.GroupingIndian {
+		t.Fatalf("a JSON Styles of 607 reads as %v", indian.Styles)
+	}
+	for _, malformed := range []string{`"95"`, "-1", "1.5", "4294967296", "true"} {
+		var bad hypercast.NumFormat
+		if err := json.Unmarshal([]byte(`{"DecimalSep":".","GroupSep":",","Styles":`+malformed+`}`), &bad); err == nil {
+			t.Fatalf("a JSON Styles of %s decoded", malformed)
+		}
+	}
+	var none hypercast.NumFormat
+	if err := json.Unmarshal([]byte(`{"DecimalSep":".","GroupSep":",","Styles":null}`), &none); err != nil || none.Styles != 0 {
+		t.Fatalf("a null Styles: %+v %v", none, err)
 	}
 
 	var buf bytes.Buffer
@@ -102,14 +129,14 @@ func TestOneDotZeroStoredFormatsStayLegacy(t *testing.T) {
 	if err := gob.NewDecoder(&buf).Decode(&back); err != nil {
 		t.Fatal(err)
 	}
-	if back != old || back.GroupingPolicy() != hypercast.GroupingLegacy {
-		t.Fatalf("gob round trip %+v, want %+v (legacy)", back, old)
+	if back != hypercast.Invariant {
+		t.Fatalf("gob round trip %+v, want Invariant", back)
 	}
 }
 
-// The one deliberate change: Invariant and Detect select strict Western grouping, so 12,34
-// moves from 1234 to Malformed, spanning the short group with its separator.
-func TestInvariantIsStrictWestern(t *testing.T) {
+// The one deliberate change: every format reads Western unless it declares Indian, so 12,34 and
+// 1,23,456 move to Malformed, spanning the short group with its separator.
+func TestInvariantIsWestern(t *testing.T) {
 	if _, fault := hypercast.I32("12,34", hypercast.Invariant); fault == nil || *fault != (hypercast.Fault{hypercast.Malformed, 2, 3}) {
 		t.Fatalf("Invariant 12,34: %v, want malformed at 2..5", fault)
 	}
@@ -119,8 +146,13 @@ func TestInvariantIsStrictWestern(t *testing.T) {
 	if hypercast.Detect.GroupingPolicy() != hypercast.GroupingWestern {
 		t.Fatalf("Detect is %v, want western", hypercast.Detect.GroupingPolicy())
 	}
-	legacy := hypercast.Invariant.WithGrouping(hypercast.GroupingLegacy)
-	if v, fault := hypercast.I32("12,34", legacy); fault != nil || v != 1234 {
-		t.Fatalf("Invariant.WithGrouping(GroupingLegacy) 12,34: %v %v, want 1234", v, fault)
+	indian := hypercast.Invariant.WithGrouping(hypercast.GroupingIndian)
+	if v, fault := hypercast.I32("1,23,456", indian); fault != nil || v != 123456 {
+		t.Fatalf("Invariant.WithGrouping(GroupingIndian) 1,23,456: %v %v, want 123456", v, fault)
+	}
+	for _, text := range []string{"12,34", "1,2", "0,125", "1234,567", "1,234,567"} {
+		if _, fault := hypercast.I32(text, indian); fault == nil {
+			t.Fatalf("Invariant.WithGrouping(GroupingIndian) reads %s", text)
+		}
 	}
 }

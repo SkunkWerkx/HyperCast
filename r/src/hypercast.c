@@ -12,18 +12,18 @@
 /*
  * The doors, vectorised. Every element of `x` is one call into the core's detailed exports
  * (cast_detailed, cast_detailed_from_f64 and the checked pair), and its verdict becomes one
- * row of the columns this file returns: the value (NA where the element faulted), ok, the
- * reason code (1 empty, 2 malformed, 3 out of range), the fault's offset and length in the
- * caller's units, and its detail code (the core's, 1 or more; R names it). An NA element is
- * no call at all: every column is NA in its row. Nothing here raises an R error for any element of
- * `x`; the only errors are caller bugs R validated before the call (and the core's
- * contract-violation code, which that validation makes unreachable), and an interrupt.
+ * row of the columns this file returns: the value (NA where the element faulted, or where the
+ * core accepted a value R cannot hold, as text_row says), ok, the reason code (1 empty, 2
+ * malformed, 3 out of range), the fault's offset and length in the caller's units, and its detail
+ * code (the core's, 1 or more; R names it). An NA element is no call at all: every column is NA
+ * in its row. Nothing here raises an R error for any element of `x`; the only errors are caller
+ * bugs R validated before the call (and the core's contract-violation code, which that validation
+ * makes unreachable), and an interrupt.
  *
  * The checked doors (cast_checked_detailed, cast_checked_detailed_from_f64, and cast_text with
- * constraints) add
- * three columns, adjusted, enum_index and keyword, and one more outcome: a violation (code 4),
- * a value that parsed and broke a declared rule, whose keyword and span fill their columns
- * while reason stays NA.
+ * constraints) add three columns, adjusted, enum_index and keyword, and one more outcome: a
+ * violation (code 4), a value that parsed and broke a declared rule, whose keyword and span fill
+ * their columns while reason stays NA.
  *
  * Every loop lets the user interrupt once per 2^20 elements. R_CheckUserInterrupt can
  * longjmp out: that is safe because the only allocations are PROTECTed R vectors, which R
@@ -75,6 +75,8 @@ enum kind {
   INTEGER_KIND,  /* value: integer */
   DOUBLE_KIND,   /* value: double */
   STRING_KIND,   /* value: character */
+  CHAR_KIND,     /* value: character; code_point (integer) */
+  RAW_TEXT_KIND, /* value: a list of raw vectors, NULL where there is no value */
   INSTANT_KIND,  /* value: double seconds (POSIXct in R); seconds, nanos */
   DATE_KIND,     /* value: double days (Date in R) */
   CIVIL_KIND,    /* value: character wall clock; date (days), nanos_of_day */
@@ -87,7 +89,7 @@ static const struct {
   enum kind kind;
 } DOORS[DOOR_COUNT] = {
     [BOOL_DOOR] = {"bool", LOGICAL_KIND},
-    [CHAR_DOOR] = {"char", STRING_KIND},
+    [CHAR_DOOR] = {"char", CHAR_KIND},
     [I8_DOOR] = {"i8", INTEGER_KIND},
     [I16_DOOR] = {"i16", INTEGER_KIND},
     [I32_DOOR] = {"i32", DOUBLE_KIND},
@@ -337,6 +339,7 @@ static void declared_arg(SEXP format, SEXP periods, SEXP code, SEXP options, SEX
 
 struct columns {
   SEXP list;
+  SEXP names;
   int count;
   int extras;
   enum kind kind;
@@ -345,6 +348,7 @@ struct columns {
   int *integer;
   double *real;
   SEXP strings;
+  SEXP raws;
   double *extra_real[2];
   int *extra_int;
   int *ok;
@@ -358,20 +362,23 @@ struct columns {
   int *keyword;
 };
 
+/* The next column of c->list, named: the name first, so the new vector is in the list before
+ * anything else allocates. */
 static SEXP column(struct columns *c, const char *name, SEXPTYPE type, R_xlen_t n) {
+  SET_STRING_ELT(c->names, c->count, mkChar(name));
   SEXP v = allocVector(type, n);
   SET_VECTOR_ELT(c->list, c->count, v);
-  SET_STRING_ELT(getAttrib(c->list, R_NamesSymbol), c->count, mkChar(name));
   c->count++;
   return v;
 }
 
 /*
- * Allocates every column; the result is PROTECTed once, as c->list. A checked verdict adds
+ * Allocates every column and returns c->list, unprotected: the caller protects it before
+ * anything else allocates, and the protect stack is as it was on entry. A checked verdict adds
  * adjusted and enum_index after the value's columns and keyword after reason. The detail
  * column ends every verdict: after the 1.0 columns, so none of them moves.
  */
-static void columns_alloc(struct columns *c, enum kind kind, R_xlen_t n, int checked) {
+static SEXP columns_alloc(struct columns *c, enum kind kind, R_xlen_t n, int checked) {
   memset(c, 0, sizeof *c);
   c->kind = kind;
   int total = checked ? 9 : 6;
@@ -382,15 +389,17 @@ static void columns_alloc(struct columns *c, enum kind kind, R_xlen_t n, int che
     total += 2;
     break;
   case TIME_KIND:
+  case CHAR_KIND:
     total += 1;
     break;
   default:
     break;
   }
   c->list = PROTECT(allocVector(VECSXP, total));
-  SEXP names = PROTECT(allocVector(STRSXP, total));
-  setAttrib(c->list, R_NamesSymbol, names);
+  setAttrib(c->list, R_NamesSymbol, PROTECT(allocVector(STRSXP, total)));
   UNPROTECT(1);
+  /* The names as the list holds them, which column() fills in place. */
+  c->names = getAttrib(c->list, R_NamesSymbol);
   switch (kind) {
   case LOGICAL_KIND:
     c->lgl = LOGICAL(column(c, "value", LGLSXP, n));
@@ -400,6 +409,13 @@ static void columns_alloc(struct columns *c, enum kind kind, R_xlen_t n, int che
     break;
   case STRING_KIND:
     c->strings = column(c, "value", STRSXP, n);
+    break;
+  case CHAR_KIND:
+    c->strings = column(c, "value", STRSXP, n);
+    c->extra_int = INTEGER(column(c, "code_point", INTSXP, n));
+    break;
+  case RAW_TEXT_KIND:
+    c->raws = column(c, "value", VECSXP, n); /* allocVector fills it with NULL */
     break;
   case CIVIL_KIND:
     c->strings = column(c, "value", STRSXP, n);
@@ -431,6 +447,8 @@ static void columns_alloc(struct columns *c, enum kind kind, R_xlen_t n, int che
   c->offset = INTEGER(column(c, "offset", INTSXP, n));
   c->length = INTEGER(column(c, "length", INTSXP, n));
   c->detail = INTEGER(column(c, "detail", INTSXP, n));
+  UNPROTECT(1);
+  return c->list;
 }
 
 /* The value columns of row i as missing. */
@@ -668,8 +686,9 @@ static void row_ok(struct columns *c, R_xlen_t i, enum door door, const union va
     c->lgl[i] = v->boolean != 0;
     break;
   case CHAR_DOOR:
-    /* U+0000 is a success an R string cannot hold: `ok`, with NA, the one NA an `ok` row has. */
+    /* U+0000 is a success an R string cannot hold: `ok` with NA, and code_point says which. */
     SET_STRING_ELT(c->strings, i, v->scalar ? scalar_string(v->scalar) : NA_STRING);
+    c->extra_int[i] = (int)v->scalar;
     break;
   case I8_DOOR:
     c->integer[i] = v->i8;
@@ -809,10 +828,6 @@ static const uint8_t *string_bytes(SEXP s, int native, uintptr_t *n, int *chars)
   return (const uint8_t *)c;
 }
 
-/* The core's detail codes this file assigns itself (rust/src/detail.rs). */
-#define DETAIL_UNEXPECTED_CHARACTER 2
-#define DETAIL_TOO_LONG 21
-
 /*
  * Element i of x, a character vector or (is_list) a list of raw vectors: the bytes the core
  * reads, whether its spans count characters, and the string itself (R_NilValue for a raw
@@ -839,26 +854,36 @@ static int element(SEXP x, int is_list, R_xlen_t i, int native, const uint8_t **
   return 1;
 }
 
+/* n bytes at p as row i's raw vector, for cast_text(raw = TRUE). */
+static void raw_value(struct columns *c, R_xlen_t i, const uint8_t *p, size_t n) {
+  SEXP bytes = allocVector(RAWSXP, (R_xlen_t)n);
+  SET_VECTOR_ELT(c->raws, i, bytes);
+  if (n > 0)
+    memcpy(RAW(bytes), p, n);
+}
+
 /*
- * The text door's value, the span `span` of the input: the caller's own string when the span
- * is all of it, otherwise the span's bytes in the encoding they were read in ("bytes" for a
- * string marked so, native for an unmarked one in an ASCII session, UTF-8 otherwise and for a
- * raw vector). U+0000 is valid UTF-8 a raw vector can carry and an R string cannot hold, so a
- * value holding it is out of range over the value: text with a NUL inside it is not absent.
+ * The text door's value, the span `span` of the input. With raw = TRUE, the span's bytes.
+ * Otherwise the caller's own string when the span is all of it, or the span's bytes in the
+ * encoding they were read in ("bytes" for a string marked so, native for an unmarked one in an
+ * ASCII session, UTF-8 otherwise and for a raw vector). The core accepted the value either way,
+ * so the row is `ok`: a value no R string can hold, one with U+0000 inside it (which a raw vector
+ * can carry) or over INT_MAX bytes, is `ok` with NA, and raw = TRUE is its exact output.
  */
 static void text_row(struct columns *c, R_xlen_t i, SEXP s, const uint8_t *p, uintptr_t n,
                      int chars, const HyperCastRawSpan *span) {
   if (span->offset > n || span->len > n - span->offset)
     Rf_error("hypercast: the core wrote a span outside the input (please report it)");
   const uint8_t *start = p + span->offset;
-  int too_long = span->len > (uint32_t)INT_MAX;
-  if (too_long || memchr(start, 0, span->len)) {
-    HyperCastRawFault f = {span->offset, span->len};
-    present(p, n, chars, &f);
-    row_fault(c, i, 3, f.offset, f.len, too_long ? DETAIL_TOO_LONG : DETAIL_UNEXPECTED_CHARACTER);
+  row_ok(c, i, TEXT_DOOR, NULL);
+  if (c->raws) {
+    raw_value(c, i, start, span->len);
     return;
   }
-  row_ok(c, i, TEXT_DOOR, NULL);
+  if (span->len > (uint32_t)INT_MAX || memchr(start, 0, span->len)) {
+    SET_STRING_ELT(c->strings, i, NA_STRING);
+    return;
+  }
   if (s != R_NilValue && span->offset == 0 && span->len == n) {
     SET_STRING_ELT(c->strings, i, s);
     return;
@@ -871,6 +896,15 @@ static void text_row(struct columns *c, R_xlen_t i, SEXP s, const uint8_t *p, ui
   SET_STRING_ELT(c->strings, i, mkCharLenCE((const char *)start, (int)span->len, ce));
 }
 
+/* The value column a door's verdict takes: only the text door has the raw = TRUE form. */
+static enum kind verdict_kind(enum door door, SEXP raw) {
+  if (asLogical(raw) != TRUE)
+    return DOORS[door].kind;
+  if (door != TEXT_DOOR)
+    Rf_error("hypercast: only the text door takes raw = TRUE");
+  return RAW_TEXT_KIND;
+}
+
 static void contract_violation(void) {
   Rf_error("hypercast: the core refused a declared format, order, precision, epoch or day "
            "period (a contract violation this package checks for first; please report it)");
@@ -878,10 +912,11 @@ static void contract_violation(void) {
 
 /*
  * x: a character vector, or a list whose elements are raw vectors or NULL (NULL is
- * missing). native: string_bytes()'s session code.
+ * missing). native: string_bytes()'s session code. raw: TRUE for the text door's value as a
+ * list of raw vectors.
  */
 SEXP C_cast_text(SEXP x, SEXP door_name, SEXP format, SEXP periods, SEXP code, SEXP native_mode,
-                 SEXP options, SEXP vocab) {
+                 SEXP options, SEXP vocab, SEXP raw) {
   enum door door = door_arg(door_name);
   if (door >= DECIMAL_FROM_DOUBLE_DOOR)
     Rf_error("hypercast: %s takes numbers", DOORS[door].name);
@@ -893,7 +928,7 @@ SEXP C_cast_text(SEXP x, SEXP door_name, SEXP format, SEXP periods, SEXP code, S
   int native = asInteger(native_mode);
   R_xlen_t n = XLENGTH(x);
   struct columns c;
-  columns_alloc(&c, DOORS[door].kind, n, 0);
+  SEXP list = PROTECT(columns_alloc(&c, verdict_kind(door, raw), n, 0));
   for (R_xlen_t i = 0; i < n; i++) {
     interrupt_point(i);
     const void *vmax = vmaxget();
@@ -922,7 +957,7 @@ SEXP C_cast_text(SEXP x, SEXP door_name, SEXP format, SEXP periods, SEXP code, S
     vmaxset(vmax);
   }
   UNPROTECT(1);
-  return c.list;
+  return list;
 }
 
 /* x: a double vector; NA_real_ is missing, while NaN is a number the core reads. */
@@ -936,7 +971,7 @@ SEXP C_cast_double(SEXP x, SEXP door_name, SEXP code) {
     Rf_error("hypercast: x must be a double vector");
   R_xlen_t n = XLENGTH(x);
   struct columns c;
-  columns_alloc(&c, DOORS[door].kind, n, 0);
+  SEXP list = PROTECT(columns_alloc(&c, DOORS[door].kind, n, 0));
   const double *xs = REAL(x);
   for (R_xlen_t i = 0; i < n; i++) {
     interrupt_point(i);
@@ -956,7 +991,7 @@ SEXP C_cast_double(SEXP x, SEXP door_name, SEXP code) {
     }
   }
   UNPROTECT(1);
-  return c.list;
+  return list;
 }
 
 /* ---- validation constraints ---- */
@@ -1203,19 +1238,26 @@ static void checked_contract_violation(void) {
 
 /* Row i passed: the value, with the text door's own rules for it, adjusted and enum_index. */
 static void checked_ok(struct columns *c, R_xlen_t i, const struct declaration *d, SEXP s,
-                       const uint8_t *p, uintptr_t n, int chars, const union value *v,
+                       const uint8_t *p, uintptr_t n, int chars, int native, const union value *v,
                        const HyperCastRawCheck *check) {
   if (d->door == TEXT_DOOR && check->enum_index != UINT32_MAX) {
     /* The caller's own declared entry, not a copy decoded from the input. */
     if (d->entries == R_NilValue || check->enum_index >= (uint64_t)XLENGTH(d->entries))
       Rf_error("hypercast: the core matched an enum entry that was not declared (please "
                "report it)");
+    SEXP entry = STRING_ELT(d->entries, check->enum_index);
     row_ok(c, i, TEXT_DOOR, NULL);
-    SET_STRING_ELT(c->strings, i, STRING_ELT(d->entries, check->enum_index));
+    if (c->raws) {
+      /* The bytes pack_text_enum laid out, the ones the core matched. */
+      uintptr_t len;
+      int entry_chars;
+      const uint8_t *bytes = string_bytes(entry, native, &len, &entry_chars);
+      raw_value(c, i, bytes, len);
+    } else {
+      SET_STRING_ELT(c->strings, i, entry);
+    }
   } else if (d->door == TEXT_DOOR) {
     text_row(c, i, s, p, n, chars, &v->span);
-    if (c->ok[i] != TRUE)
-      return;
   } else {
     row_ok(c, i, d->door, v);
   }
@@ -1228,8 +1270,9 @@ static void checked_ok(struct columns *c, R_xlen_t i, const struct declaration *
 /*
  * x: a character vector, or a list whose elements are raw vectors or NULL. layout:
  * constraints_layout()'s list. format: a packed num_format for a numeric door, NULL for text.
+ * raw: TRUE for the text door's value as a list of raw vectors.
  */
-SEXP C_cast_checked(SEXP x, SEXP layout, SEXP format, SEXP native_mode) {
+SEXP C_cast_checked(SEXP x, SEXP layout, SEXP format, SEXP native_mode, SEXP raw) {
   int native = asInteger(native_mode);
   struct declaration d;
   declaration_at_cast(layout, native, &d);
@@ -1248,7 +1291,7 @@ SEXP C_cast_checked(SEXP x, SEXP layout, SEXP format, SEXP native_mode) {
   uint32_t door = core_door(d.door);
   R_xlen_t n = XLENGTH(x);
   struct columns c;
-  columns_alloc(&c, DOORS[d.door].kind, n, 1);
+  SEXP list = PROTECT(columns_alloc(&c, verdict_kind(d.door, raw), n, 1));
   for (R_xlen_t i = 0; i < n; i++) {
     interrupt_point(i);
     const void *vmax = vmaxget();
@@ -1266,7 +1309,7 @@ SEXP C_cast_checked(SEXP x, SEXP layout, SEXP format, SEXP native_mode) {
     int32_t rc = cast_checked_detailed(door, 0, d.door == TEXT_DOOR ? NULL : &fmt, &d.raw,
                                        d.enum_ptr, d.enum_len, p, len, &v, &f, &check);
     if (rc == 0) {
-      checked_ok(&c, i, &d, s, p, len, chars, &v, &check);
+      checked_ok(&c, i, &d, s, p, len, chars, native, &v, &check);
     } else if (rc >= 1 && rc <= 3) {
       HyperCastRawFault span = span_of(&f);
       present(p, len, chars, &span);
@@ -1281,7 +1324,7 @@ SEXP C_cast_checked(SEXP x, SEXP layout, SEXP format, SEXP native_mode) {
     vmaxset(vmax);
   }
   UNPROTECT(1);
-  return c.list;
+  return list;
 }
 
 /* x: a double vector; NA_real_ is missing, while NaN is a number the core reads. */
@@ -1295,7 +1338,7 @@ SEXP C_cast_checked_double(SEXP x, SEXP layout, SEXP native_mode) {
   uint32_t door = core_door(d.door);
   R_xlen_t n = XLENGTH(x);
   struct columns c;
-  columns_alloc(&c, DOORS[d.door].kind, n, 1);
+  SEXP list = PROTECT(columns_alloc(&c, DOORS[d.door].kind, n, 1));
   const double *xs = REAL(x);
   for (R_xlen_t i = 0; i < n; i++) {
     interrupt_point(i);
@@ -1309,7 +1352,7 @@ SEXP C_cast_checked_double(SEXP x, SEXP layout, SEXP native_mode) {
     int32_t rc = cast_checked_detailed_from_f64(door, 0, &d.raw, d.enum_ptr, d.enum_len, xs[i], &v,
                                                 &f, &check);
     if (rc == 0) {
-      checked_ok(&c, i, &d, R_NilValue, NULL, 0, 0, &v, &check);
+      checked_ok(&c, i, &d, R_NilValue, NULL, 0, 0, asInteger(native_mode), &v, &check);
     } else if (rc >= 1 && rc <= 3) {
       row_fault(&c, i, rc, f.offset, f.len, f.detail);
     } else if (rc == 4) {
@@ -1319,7 +1362,7 @@ SEXP C_cast_checked_double(SEXP x, SEXP layout, SEXP native_mode) {
     }
   }
   UNPROTECT(1);
-  return c.list;
+  return list;
 }
 
 /*
@@ -1373,10 +1416,9 @@ void rust_eh_personality(void);
 void rust_eh_personality(void) {}
 
 /*
- * Whether the core this shared object is linked with enforces a strict grouping policy: a
- * strict Western format must refuse "12,34" as a group of the wrong size (code 2, detail 11,
- * group_size). A core that ignores the policy bits, as a 1.0 core does, reads it legacy and
- * returns 0 (1234), so a strict request would silently be parsed legacy; the package refuses
+ * Whether the core this shared object is linked with enforces a grouping policy: a Western
+ * format must refuse "12,34" as a group of the wrong size (code 2, detail 11, group_size). A
+ * core that does not, as 1.0's reads it, returns 0 (1234); the package refuses
  * to load against one (R_init_hypercast). It is a capability probe, not a version number
  * compare: a 1.1 core under development still names itself 1.0.0 until prepare-release
  * moves the version, and the policy is what the package depends on. A 1.0 core has no

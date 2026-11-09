@@ -8,7 +8,7 @@
 // It is also the checked example for a direct C caller of the detailed exports and the grouping
 // policy: ask hypercast_version() first, and refuse a core older than the headers the program
 // was built against (see `core_is_current` below), because a core without the detailed exports
-// ignores the policy bits in a format's flags, so a strict format would silently read as legacy.
+// reads a format by 1.0's rule, where `1,23,456` is 123456 whatever its flags say.
 
 #include <math.h>
 #include <stdio.h>
@@ -29,7 +29,7 @@
 
 // The version of the headers this program was built against, packed as hypercast_version() packs
 // it (major << 16 | minor << 8 | patch): the archive's own, which CMake and run.sh pass in.
-// A direct C caller checks the library's version against it before it declares a strict policy
+// A direct C caller checks the library's version against it before it reads a grouped numeral
 // or calls cast_detailed and its three siblings: nothing in a format's flags can ask a core that
 // predates them for the new behaviour, since it ignores the bits. 1.1.0, from release 1.1, is
 // 0x010100.
@@ -264,43 +264,57 @@ int main(void) {
   CHECK(cast_declared_decimal(UTF8("1"), NULL) == -1);
 
   // The detailed exports reach every door by its code and write a HyperCastRawFaultDetail: the
-  // span, and `detail`, which names what failed. A null format is the invariant one with
-  // legacy grouping; a declared one carries its grouping policy in flag bits 8 and 9.
+  // span, and `detail`, which names what failed. A null format is the invariant one, Western;
+  // a declared one is Western unless its flags carry GROUPING_INDIAN.
   HyperCastRawFaultDetail detail = {HyperCastRawFaultDetail_SIZE, 0, 0, 0};
-  HyperCastRawNumFormat strict;
-  memset(&strict, 0, sizeof strict);
-  strict.size = HyperCastRawNumFormat_SIZE;
-  strict.format.flags = HyperCastNumFormat_ALL | HyperCastNumFormat_GROUPING_WESTERN;
-  declare(strict.format.decimal_sep.bytes, &strict.format.decimal_sep.len, ".");
-  declare(strict.format.group_sep.bytes, &strict.format.group_sep.len, ",");
+  HyperCastRawNumFormat western;
+  memset(&western, 0, sizeof western);
+  western.size = HyperCastRawNumFormat_SIZE;
+  western.format.flags = HyperCastNumFormat_ALL;
+  declare(western.format.decimal_sep.bytes, &western.format.decimal_sep.len, ".");
+  declare(western.format.group_sep.bytes, &western.format.group_sep.len, ",");
 
-  // The 1.0 exports ignore flag bits 8 and up and always read legacy grouping, so the strict
-  // format they were handed still reads `12,34` as 1234; the detailed export judges it.
+  // Every door reads Western unless the detailed export is told otherwise: the 1.0 exports see
+  // only flag bits 0 to 7, a null format is the invariant one, and the bits are 0 either way.
   i32 = 0;
-  CHECK(cast_i32(UTF8("12,34"), &strict, &i32, &fault) == 0 && i32 == 1234);
-  i32 = 0;
-  CHECK(cast_detailed(4, 0, NULL, NULL, NULL, NULL, 0, UTF8("12,34"), &i32, &detail) == 0 &&
-        i32 == 1234);
-  i32 = 0;
-  CHECK(cast_detailed(4, 0, &strict, NULL, NULL, NULL, 0, UTF8("12,34"), &i32, &detail) == 2);
-  CHECK(i32 == 0 && detail.offset == 2 && detail.len == 3 && detail.detail == 11); /* group_size */
+  CHECK(cast_i32(UTF8("1,23,456"), &western, &i32, &fault) == 2);
+  CHECK(cast_i32(UTF8("1,23,456"), NULL, &i32, &fault) == 2);
+  CHECK(fault.offset == 1 && fault.len == 3);
+  CHECK(cast_detailed(4, 0, NULL, NULL, NULL, NULL, 0, UTF8("1,23,456"), &i32, &detail) == 2);
+  CHECK(i32 == 0 && detail.offset == 1 && detail.len == 3 && detail.detail == 11); /* group_size */
+  CHECK(cast_detailed(4, 0, &western, NULL, NULL, NULL, 0, UTF8("1,23,456"), &i32, &detail) == 2);
+  CHECK(i32 == 0 && detail.offset == 1 && detail.len == 3 && detail.detail == 11); /* group_size */
   CHECK(detail.size == HyperCastRawFaultDetail_SIZE);
-  CHECK(cast_detailed(4, 0, &strict, NULL, NULL, NULL, 0, UTF8("1,234"), &i32, &detail) == 0 &&
+  CHECK(cast_detailed(4, 0, &western, NULL, NULL, NULL, 0, UTF8("1,234"), &i32, &detail) == 0 &&
         i32 == 1234);
-  /* Indian grouping, the policy in bits 8 and 9 replaced, never combined. */
-  HyperCastRawNumFormat indian = strict;
-  indian.format.flags = (strict.format.flags & ~(uint32_t)HyperCastNumFormat_GROUPING_POLICY) |
-                        HyperCastNumFormat_GROUPING_INDIAN;
+  /* Indian grouping: declared in the flags, and read by the detailed exports alone. */
+  HyperCastRawNumFormat indian = western;
+  indian.format.flags = western.format.flags | HyperCastNumFormat_GROUPING_INDIAN;
   CHECK(cast_detailed(4, 0, &indian, NULL, NULL, NULL, 0, UTF8("12,34,567"), &i32, &detail) == 0 &&
         i32 == 1234567);
-  /* Policy 3 and a flag bit nobody defined are contract violations, and write nothing. */
-  HyperCastRawNumFormat bad = strict;
-  bad.format.flags |= HyperCastNumFormat_GROUPING_POLICY;
+  CHECK(cast_detailed(4, 0, &indian, NULL, NULL, NULL, 0, UTF8("1,234,567"), &i32, &detail) == 2);
+  /* Back to Western, the bit cleared. */
+  indian.format.flags &= ~(uint32_t)HyperCastNumFormat_GROUPING_POLICY;
+  CHECK(cast_detailed(4, 0, &indian, NULL, NULL, NULL, 0, UTF8("1,234,567"), &i32, &detail) == 0 &&
+        i32 == 1234567);
+  indian.format.flags |= HyperCastNumFormat_GROUPING_INDIAN;
+  /* Bit 8 is retired: 351 (95 and bit 8), 863 (95 and both policy bits) and a flag bit nobody
+     defined are contract violations, and write nothing. */
+  HyperCastRawNumFormat bad = western;
+  bad.format.flags = 351;
   i32 = 77;
   detail.offset = detail.len = detail.detail = 7;
   CHECK(cast_detailed(4, 0, &bad, NULL, NULL, NULL, 0, UTF8("1"), &i32, &detail) == -1);
   CHECK(i32 == 77 && detail.offset == 7 && detail.len == 7 && detail.detail == 7);
-  bad = strict;
+  bad.format.flags = 863;
+  CHECK(cast_detailed(4, 0, &bad, NULL, NULL, NULL, 0, UTF8("1"), &i32, &detail) == -1);
+  CHECK(i32 == 77 && detail.offset == 7 && detail.len == 7 && detail.detail == 7);
+  /* A 1.0 export masks to bits 0 to 7, so it cannot see them: 351 and Indian alike read Western. */
+  bad.format.flags = 351;
+  CHECK(cast_i32(UTF8("1,23,456"), &bad, &i32, &fault) == 2);
+  CHECK(cast_i32(UTF8("1,23,456"), &indian, &i32, &fault) == 2);
+  CHECK(i32 == 77);
+  bad = western;
   bad.format.flags |= 1u << 10;
   CHECK(cast_detailed(4, 0, &bad, NULL, NULL, NULL, 0, UTF8("1"), &i32, &detail) == -1);
   CHECK(i32 == 77 && detail.detail == 7);
@@ -319,15 +333,15 @@ int main(void) {
      and its tail never written, and a null fault is allowed. */
   uint32_t big[6] = {24, 7, 7, 7, 0xaaaaaaaau, 0xbbbbbbbbu};
   HyperCastRawFaultDetail *as_fault = (HyperCastRawFaultDetail *)(void *)big;
-  CHECK(cast_detailed(4, 0, &strict, NULL, NULL, NULL, 0, UTF8("12,34"), &i32, as_fault) == 2);
+  CHECK(cast_detailed(4, 0, &western, NULL, NULL, NULL, 0, UTF8("12,34"), &i32, as_fault) == 2);
   CHECK(big[0] == 24 && big[1] == 2 && big[2] == 3 && big[3] == 11);
   CHECK(big[4] == 0xaaaaaaaau && big[5] == 0xbbbbbbbbu);
   detail.size = 12;
-  CHECK(cast_detailed(4, 0, &strict, NULL, NULL, NULL, 0, UTF8("12,34"), &i32, &detail) == -1);
+  CHECK(cast_detailed(4, 0, &western, NULL, NULL, NULL, 0, UTF8("12,34"), &i32, &detail) == -1);
   detail.size = 18;
-  CHECK(cast_detailed(4, 0, &strict, NULL, NULL, NULL, 0, UTF8("12,34"), &i32, &detail) == -1);
+  CHECK(cast_detailed(4, 0, &western, NULL, NULL, NULL, 0, UTF8("12,34"), &i32, &detail) == -1);
   detail.size = HyperCastRawFaultDetail_SIZE;
-  CHECK(cast_detailed(4, 0, &strict, NULL, NULL, NULL, 0, UTF8("12,34"), &i32, NULL) == 2);
+  CHECK(cast_detailed(4, 0, &western, NULL, NULL, NULL, 0, UTF8("12,34"), &i32, NULL) == 2);
   /* `out` need not be aligned. */
   uint8_t unaligned[sizeof(int32_t) + 1] = {0};
   CHECK(cast_detailed(4, 0, NULL, NULL, NULL, NULL, 0, UTF8("(1,234)"), unaligned + 1, &detail) ==
@@ -433,14 +447,16 @@ int main(void) {
   cap.size = HyperCastRawConstraints_SIZE;
   cap.flags = HyperCastRawConstraints_HAS_MAXIMUM;
   cap.upper.lo = 1000;
-  CHECK(cast_checked_detailed(4, 0, &strict, &cap, NULL, 0, UTF8("12,34"), &i32, &detail,
+  CHECK(cast_checked_detailed(4, 0, &western, &cap, NULL, 0, UTF8("12,34"), &i32, &detail,
                               &report) == 2 &&
         detail.detail == 11);
-  CHECK(cast_checked_detailed(4, 0, &strict, &cap, NULL, 0, UTF8("1,234"), &i32, &detail,
+  CHECK(cast_checked_detailed(4, 0, &western, &cap, NULL, 0, UTF8("1,234"), &i32, &detail,
                               &report) == 4 &&
         report.keyword == 3);
-  /* The 1.0 export reads legacy whatever the flags say: 1234, past the maximum of 1000. */
-  CHECK(cast_checked(4, 0, &strict, &cap, NULL, 0, UTF8("12,34"), &i32, &fault, &report) == 4 &&
+  /* The 1.0 export reads Western whatever the flags say, and refuses this before the maximum. */
+  CHECK(cast_checked(4, 0, &indian, &cap, NULL, 0, UTF8("1,23,456"), &i32, &fault, &report) == 2);
+  CHECK(cast_checked_detailed(4, 0, &indian, &cap, NULL, 0, UTF8("1,23,456"), &i32, &detail,
+                              &report) == 4 &&
         report.keyword == 3);
   CHECK(cast_checked_detailed_from_f64(11, 0, &latitude, NULL, 0, -90.5, &f64, &detail, &report) ==
             4 &&

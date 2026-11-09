@@ -14,7 +14,7 @@ import org.junit.jupiter.api.Test;
 /**
  * 1.0's surface, written exactly as 1.0 code writes it: constructors, record patterns and
  * deconstruction, equality and hash, and exhaustive switches with no {@code default}. Nothing
- * here may need an edit for the detailed path, strict grouping or the date options: this file
+ * here may need an edit for the detailed path, grouping policies or the date options: this file
  * compiling is half the proof, and the assertions are the other half.
  */
 final class CompatibilityTest {
@@ -32,7 +32,7 @@ final class CompatibilityTest {
         assertEquals("$", all.currencySymbol());
         assertEquals("\u2212", all.minusSign());
         assertEquals(0x0660, all.digitZero());
-        // Every one of them declares strict Western grouping now, not 1.0's rule.
+        // Every one of them declares Western grouping now, not 1.0's rule.
         for (NumFormat format :
                 List.of(three, four, chars, charsAndCurrency, all, NumFormat.INVARIANT, NumFormat.DETECT)) {
             assertEquals(Grouping.WESTERN, format.grouping(), format.toString());
@@ -83,10 +83,9 @@ final class CompatibilityTest {
         NumFormat western = new NumFormat(".", ",", NumFormat.STYLE_ALL);
         assertEquals(western, new NumFormat('.', ',', NumFormat.STYLE_ALL));
         assertEquals(western.hashCode(), new NumFormat('.', ',', NumFormat.STYLE_ALL).hashCode());
-        // The policy is part of what a format is: legacy and Indian are other formats.
-        assertNotEquals(western, western.withGrouping(Grouping.LEGACY));
+        // The policy is part of what a format is: Indian is another format.
         assertNotEquals(western, western.withGrouping(Grouping.INDIAN));
-        assertEquals(western, western.withGrouping(Grouping.LEGACY).withGrouping(Grouping.WESTERN));
+        assertEquals(western, western.withGrouping(Grouping.INDIAN).withGrouping(Grouping.WESTERN));
         assertNotEquals(western, new NumFormat(".", ",", NumFormat.STYLE_ALL & ~NumFormat.STYLE_PERCENT));
         assertEquals(
                 western,
@@ -173,8 +172,8 @@ final class CompatibilityTest {
 
     /**
      * NumFormat was never Serializable in 1.0 (its tag v1.0.0 declares a plain record), so no 1.0 stream
-     * of one exists to read as legacy; it stays so, and a change that makes it Serializable must
-     * decide what a stream without a policy means (1.0's: legacy) and add that test.
+     * of one exists; it stays so, and a change that makes it Serializable must refuse a stream
+     * holding a retired policy and read one without a policy as Western, and add that test.
      */
     @Test
     void numFormatIsNotSerializableAsIn10() throws Exception {
@@ -229,9 +228,10 @@ final class CompatibilityTest {
         assertEquals(new Success<>(1234), Cast.i32("1234", NumFormat.INVARIANT));
         assertEquals(new Success<>(1234567), Cast.i32("1,234,567", NumFormat.INVARIANT));
         assertEquals(new Success<>(1234.5), Cast.f64("1.234,5", NumFormat.from(Locale.GERMANY)));
-        // The one deliberate change: 12,34 was 1234 and is Malformed under the default, and is
-        // 1234 again under the explicit legacy option.
+        // The deliberate change: 12,34 was 1234 and is Malformed under every policy, and 1,23,456
+        // was 123456 and is Malformed until Indian is declared.
         assertEquals(new Fault<Integer>(CastFailure.MALFORMED, 2, 3), Cast.i32("12,34", NumFormat.INVARIANT));
-        assertEquals(new Success<>(1234), Cast.i32("12,34", NumFormat.INVARIANT.withGrouping(Grouping.LEGACY)));
+        assertEquals(new Fault<Integer>(CastFailure.MALFORMED, 1, 3), Cast.i32("1,23,456", NumFormat.INVARIANT));
+        assertEquals(new Success<>(123456), Cast.i32("1,23,456", NumFormat.INVARIANT.withGrouping(Grouping.INDIAN)));
     }
 }

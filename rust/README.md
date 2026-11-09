@@ -47,7 +47,8 @@ detailed exports that reach every door by its `Door` code and report each failur
 C#, Java, Swift, Ruby, Python and C/C++ bindings, linked into the PHP extension, the
 TypeScript addon and the R package, and translated into Go source, all held to byte-identical verdicts by the
 shared `corpus/*.json` conformance vectors — and an ordinary `rlib` for plain Rust use.
-Zero runtime dependencies either way.
+One runtime dependency either way, [simdutf8](https://crates.io/crates/simdutf8), for the
+text door's UTF-8 check (see [UTF-8 validation](#utf-8-validation)).
 
 ## What a culture declares
 
@@ -58,7 +59,7 @@ reads exactly as the invariant culture and a culture whose minus is U+2212 still
 hyphen its users type:
 
 ```rust
-use hypercast::{CurrencySymbol, NativeDigits, NumFormat, Symbol, cast_f64, cast_i32};
+use hypercast::{CurrencySymbol, Grouping, NativeDigits, NumFormat, Symbol, cast_f64, cast_i32};
 
 let symbol = |text| Symbol::<8>::new(text).unwrap();
 
@@ -86,6 +87,11 @@ cast_f64("\u{665}\u{660}\u{66A}", &ar); // Ok(0.5)
 let trailing =
     NumFormat { flags: NumFormat::ALL | NumFormat::TRAILING_SIGN, ..NumFormat::INVARIANT };
 cast_i32("5 -", &trailing); // Ok(-5)
+
+// Grouping is Western unless declared. `Grouping` holds the two policies and nothing else.
+let indian = NumFormat::INVARIANT.with_grouping(Grouping::Indian);
+cast_i32("12,34,567", &indian); // Ok(1234567)
+cast_i32("12,34,567", &NumFormat::INVARIANT).is_err(); // true: `Malformed`
 ```
 
 Separators are `Symbol<8>`s — 1 to 8 UTF-8 bytes with no ASCII digit, so a culture
@@ -449,6 +455,35 @@ delivers a negative zero, whether it reads `-0`, `(0)` or an underflow like `-1e
 The doors whose grammar *is* the lenience (grouping, currency, separator detection, the separated
 temporal forms, durations) are pinned by the shared corpus instead.
 
+## UTF-8 validation
+
+The text door (`cast_text`, its detailed and checked twins) checks its input with
+[simdutf8](https://crates.io/crates/simdutf8)'s SIMD validator from 64 bytes up, and with
+`core::str::from_utf8` below that and on every failure, so a fault's span is always core's,
+byte for byte. simdutf8 is taken with its `std` feature off, so it adds no std, no allocation
+and no panic path; only its `basic` check is used, since `compat`'s error path can panic.
+
+- **aarch64:** NEON, on every hosted target this crate ships.
+- **x86_64:** AVX2 or SSE 4.2, whichever the CPU has, found at run time with `cpuid` and
+  `xgetbv` from `core::arch` and cached in one atomic byte; core's check on a CPU with
+  neither. A build with `+avx2` takes AVX2 directly.
+- **wasm32:** simd128 when built with it. The shipped wasm builds (the Go core, Blazor) are
+  not, so they take core's check, unchanged.
+- **Bare metal and UEFI** (`target_os = "none"` or `"uefi"`, x86_64 and aarch64 included):
+  core's check alone. These are soft-float targets: x86_64-unknown-none can't compile the
+  vector code at all, and in kernel or firmware context it would use registers nobody saves.
+- **Everything else** (s390x, 32-bit Arm and x86): core's check alone.
+
+`src/utf8.rs` holds the dispatch and the tests that hold it to core: every two-byte value,
+and three- and four-byte sequences from a set of edge bytes, across the 64-byte boundary;
+inputs of 63, 64 and 65 bytes; a bad last byte at every length from 64 to 200; and random
+mixes of valid and invalid sequences, each under every x86_64 level the CPU has; and the
+level choice itself, a pure function of the cpuid and xgetbv answers, on made-up registers.
+The no-panic proof names the validator on its own (`hypercast_harness_utf8`). Speed, with
+its loss (a failing input is read whole by the SIMD check, then by core up to the fault),
+is in
+[`docs/benchmarks.md`](../docs/benchmarks.md#the-text-doors-utf-8-check-on-an-apple-m6).
+
 ## WebAssembly
 
 The full test suite — unit tests, the allocation proof, and every corpus replay —
@@ -517,6 +552,9 @@ several times as much — under a declared `$` and `,`:
 | grouped (`12,345.67`) | 12.8 ns | 21.5 ns | 21.6 ns |
 | grouped, with the symbol (`$12,345.67`) | 12.8 ns | 19.0 ns | 20.4 ns |
 | the same in parentheses (`($12,345.67)`) | 13.0 ns | 18.7 ns | 21.0 ns |
+
+The grouped rows predate the lane's judging of groups under the default format; the move at each door is in
+[docs/benchmarks.md](../docs/benchmarks.md#judging-every-grouping-policy-on-an-apple-m6).
 
 (The integer door reads the same four shapes of `1234567`.)
 
@@ -619,8 +657,9 @@ Requires Rust 1.89 or later (`rust-version` in the manifest), the floor the Hype
 share; the parsers themselves need 1.88, for `let` chains. CI checks the library and the
 `no_std` shared library on exactly that toolchain on every pull request that touches the core or `.github/`.
 
-Zero runtime dependencies. `default-features = false` gives the `#![no_std]` rlib described
-above. The `cdylib` the loading bindings open is built from this repository with
+One runtime dependency, simdutf8 (MIT OR Apache-2.0), taken with its own `std` feature off
+whatever this crate's features are. `default-features = false` gives the `#![no_std]` rlib
+described above. The `cdylib` the loading bindings open is built from this repository with
 `cargo cdylib`, and is never part of a consumer's build.
 
 See [the repo root README](../README.md) for the full door table, the receipts, and the

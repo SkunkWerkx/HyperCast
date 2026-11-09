@@ -8,9 +8,10 @@
 //
 // Every row goes through the plain door and its detailed twin, which must agree on the reason
 // and span, and every failure row's `detail` is held against the Failure's, by name and by
-// code. A row's `grouping` declares its policy (absent is legacy, the core's meaning: a format
-// the C++ header would otherwise default to strict Western), and its `options` (flags, pivot,
-// month names) go through the detailed date doors alone, which are the only ones to take them.
+// code. A row's `grouping` declares its policy (absent is Western), and its `options` (flags,
+// pivot, month names) go through the detailed date doors alone, which are the only ones to take
+// them. grouping.json holds every shape to both policies and to detect(), and the retired value
+// refused where it would first be declared.
 // formats.json declares the formats, options and vocabularies and holds each to its verdict.
 //
 // usage: smoke_corpus <corpus directory>; prints the library's version when every vector
@@ -441,17 +442,14 @@ bool same_civil(const Json &vector, const hc::CivilDateTime &value) {
   return same_date(vector, value.date) && value.nanos_of_day == vector.find("nanos_of_day")->u64();
 }
 
-// The grouping policy bits a format declares: `grouping` is "legacy", "western" or "indian",
-// and absent means the policy bits its `flags` carry (none: legacy, the core's meaning for a
-// format that declares no policy), so a `formats.json` row can declare a policy no name spells.
+// The grouping policy bits a format declares: `grouping` is "western" or "indian", and absent
+// means the policy bits its `flags` carry (none: Western), so a `formats.json` row can declare a
+// policy no name spells.
 std::uint32_t grouping_of(const Json &format) {
   const Json *named = format.find("grouping");
   if (named == nullptr) {
     return static_cast<std::uint32_t>(format.find("flags")->u64()) &
            HyperCastNumFormat_GROUPING_POLICY;
-  }
-  if (named->text == "legacy") {
-    return HyperCastNumFormat_GROUPING_LEGACY;
   }
   if (named->text == "western") {
     return HyperCastNumFormat_GROUPING_WESTERN;
@@ -461,7 +459,7 @@ std::uint32_t grouping_of(const Json &format) {
   }
   ++failures;
   std::fprintf(stderr, "corpus: unknown grouping \"%s\"\n", named->text.c_str());
-  return HyperCastNumFormat_GROUPING_LEGACY;
+  return HyperCastNumFormat_GROUPING_WESTERN;
 }
 
 // What a row's `format` declares, field for field: the styles are `flags` without its policy
@@ -494,11 +492,11 @@ hc::NumFormat::Fields fields_of(const Json &format) {
 }
 
 // The format a row declares. Without a `format` the row reads as the core's null format does:
-// the invariant separators with legacy grouping, not the strict Western the header defaults to.
+// the invariant one.
 hc::NumFormat format_of(const char *file, const Json &vector) {
   const Json *format = vector.find("format");
   if (format == nullptr) {
-    return hc::NumFormat::invariant().with_grouping(hc::Grouping::legacy);
+    return hc::NumFormat::invariant();
   }
   if (auto declared = hc::NumFormat::declare(fields_of(*format))) {
     return *declared;
@@ -1183,6 +1181,86 @@ void format_declaration(const char *file, const Json &vector) {
   ++declarations[kind];
 }
 
+// A grouping.json row: `western` and `indian` hold a shape to each policy at the plain door and its
+// detailed twin, under each way this header makes a format; the flags rows hold the declaration.
+void grouping_expect(const char *name, const Json &vector, const Json &want,
+                     const hc::NumFormat &format, const char *how) {
+  const std::string &input = vector.find("input")->text;
+  const auto plain = hc::cast_f64(input, format);
+  const auto named = hc::detailed::cast_i64(input, format);
+  const auto whole = hc::cast_i64(input, format);
+  std::string where = std::string(how) + ": ";
+  if (const Json *fault = want.find("fault")) {
+    const auto offset = static_cast<std::uint32_t>(fault->items[0].u64());
+    const auto length = static_cast<std::uint32_t>(fault->items[1].u64());
+    const hc::Fault expected{hc::CastFailure::malformed, offset, length};
+    if (plain.ok() || !(plain.fault() == expected) || whole.ok() || !(whole.fault() == expected)) {
+      fail(name, vector, (where + "the plain door did not refuse the span").c_str());
+    }
+    if (named.ok() || !(named.failure() == hc::Failure{hc::CastFailure::malformed,
+                                                       hc::Detail::group_size, offset, length})) {
+      fail(name, vector, (where + "the detailed door is not group_size on the span").c_str());
+    }
+    return;
+  }
+  const double value = want.find("value")->f64();
+  if (!plain.ok() || plain.value() != value) {
+    fail(name, vector, (where + "the plain door did not read the value").c_str());
+  }
+  if (!named.ok() || static_cast<double>(named.value()) != value) {
+    fail(name, vector, (where + "the detailed door did not read the value").c_str());
+  }
+}
+
+void grouping_row(const char *name, const Json &vector) {
+  const std::string &kind = vector.find("kind")->text;
+  ++vectors;
+  hc::NumFormat::Fields fields;
+  fields.decimal_sep = ".";
+  fields.group_sep = ",";
+  const auto invariant = hc::NumFormat::invariant();
+  const auto indian = invariant.with_grouping(hc::Grouping::indian);
+  if (kind == "shape") {
+    grouping_expect(name, vector, *vector.find("western"), invariant, "invariant");
+    grouping_expect(name, vector, *vector.find("western"), *hc::NumFormat::declare(fields),
+                    "declared without a policy");
+    grouping_expect(name, vector, *vector.find("western"),
+                    indian.with_grouping(hc::Grouping::western), "with_grouping to Western");
+    grouping_expect(name, vector, *vector.find("indian"), indian, "with_grouping to Indian");
+    fields.grouping = hc::Grouping::indian;
+    grouping_expect(name, vector, *vector.find("indian"), *hc::NumFormat::declare(fields),
+                    "declared Indian");
+  } else if (kind == "detect") {
+    grouping_expect(name, vector, vector, hc::NumFormat::detect(), "detect");
+  } else if (kind == "refused_flags" || kind == "accepted_flags") {
+    const auto flags = static_cast<std::uint32_t>(vector.find("flags")->u64());
+    // Whole in the styles, as a stale mask arrives, and split as the fields name them.
+    fields.styles = static_cast<hc::NumStyles>(flags);
+    const bool whole = hc::NumFormat::declare(fields).has_value();
+    fields.styles = static_cast<hc::NumStyles>(flags & 0xFFu);
+    fields.grouping = static_cast<hc::Grouping>(flags & ~0xFFu);
+    const auto split = hc::NumFormat::declare(fields);
+    if (kind == "refused_flags" && (whole || split.has_value())) {
+      fail(name, vector, "a retired policy was declared");
+    }
+    if (kind == "accepted_flags" && (!split.has_value() || split->raw().format.flags != flags ||
+                                     whole != ((flags & ~0xFFu) == 0))) {
+      fail(name, vector, "a policy was refused, or stored as something else");
+    }
+    // The core's own judge, reached with a layout no declaration can make.
+    HyperCastRawNumFormat raw = invariant.raw();
+    raw.format.flags = flags;
+    std::int32_t out = 77;
+    const std::int32_t code =
+        ::cast_detailed(4, 0, &raw, nullptr, nullptr, nullptr, 0, nullptr, 0, &out, nullptr);
+    if ((code < 0) != (kind == "refused_flags") || out != 77) {
+      fail(name, vector, "cast_detailed answered the flags wrongly");
+    }
+  } else {
+    fail(name, vector, "unknown grouping row");
+  }
+}
+
 void replay(const char *name, const Json &vector) {
   const std::string &input = vector.find("input") ? vector.find("input")->text : std::string();
   const std::string_view file(name);
@@ -1347,6 +1425,8 @@ void replay(const char *name, const Json &vector) {
     declaration(name, vector);
   } else if (file == "formats.json") {
     format_declaration(name, vector);
+  } else if (file == "grouping.json") {
+    grouping_row(name, vector);
   } else {
     fail(name, vector, "no replay for this file");
   }

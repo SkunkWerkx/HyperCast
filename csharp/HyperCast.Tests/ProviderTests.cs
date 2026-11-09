@@ -82,9 +82,9 @@ public sealed class ProviderTests
 			bcl.ShouldBe(1.5);
 
 			CultureInfo.CurrentCulture = English;
-			// 1.0 read "1,5" as 15; a group of one digit is now Malformed (strict Western), spanning ",5".
+			// 1.0 read "1,5" as 15; a last group of one digit is now Malformed, spanning ",5".
 			(Cast.Double("1,5", null) is Fault { Reason: CastFailure.Malformed, Offset: 1, Length: 2, Detail: FaultDetail.GroupSize }).ShouldBeTrue();
-			(Cast.Double("1,5", NumFormat.From(English) with { Grouping = NumGrouping.Legacy }) is Success<double> { Value: 15 }).ShouldBeTrue();
+			(Cast.Double("1,5", NumFormat.From(English) with { Grouping = NumGrouping.Indian }) is Fault { Offset: 1, Length: 2, Detail: FaultDetail.GroupSize }).ShouldBeTrue();
 			(Cast.Double("1.5", null) is Success<double> { Value: 1.5 }).ShouldBeTrue();
 		}
 		finally

@@ -1,5 +1,5 @@
 // The 1.1 surface of the C++ header (what main.cpp predates) against an unpacked release archive:
-// the version macros and the run-time guard, detail codes and Failure, strict grouping, the
+// the version macros and the run-time guard, detail codes and Failure, grouping policies, the
 // detailed doors (and the plain ones that route through them), date options and month names, and
 // what a Fault still is to code written before any of it. main.cpp is that older code, unchanged:
 // the same file compiled against this header is the compatibility test, and this one holds the
@@ -181,12 +181,11 @@ int main() {
   CHECK(hc::cast_i32("12,34", hc::NumFormat::invariant()).fault() ==
         hc::detailed::cast_i32("12,34", hc::NumFormat::invariant()).failure().fault());
 
-  // Grouping. A format declares it beside its styles, strict Western by default: `12,34` is
+  // Grouping. A format declares it beside its styles, Western by default: `12,34` is
   // Malformed, spanning the group with its separator, and the detail says why.
   const auto invariant = hc::NumFormat::invariant();
   CHECK(invariant.grouping() == hc::Grouping::western && invariant.styles() == hc::NumStyles::all);
-  CHECK((invariant.raw().format.flags & HyperCastNumFormat_GROUPING_POLICY) ==
-        HyperCastNumFormat_GROUPING_WESTERN);
+  CHECK(invariant.raw().format.flags == HyperCastNumFormat_ALL);
   const auto grouped = hc::detailed::cast_i32("12,34", invariant);
   CHECK(
       (grouped.failure() == hc::Failure{hc::CastFailure::malformed, hc::Detail::group_size, 2, 3}));
@@ -196,13 +195,14 @@ int main() {
   CHECK(hc::cast_i32("1,234,567", invariant).value() == 1234567);
   CHECK(hc::cast_i32("1234567", invariant).value() == 1234567);
 
-  // The legacy policy is explicit, and reads a separator anywhere between two digits.
-  const auto legacy = invariant.with_grouping(hc::Grouping::legacy);
-  CHECK(legacy.grouping() == hc::Grouping::legacy && legacy.styles() == hc::NumStyles::all);
-  CHECK(legacy != invariant && legacy.raw().format.flags == HyperCastNumFormat_ALL);
-  CHECK(hc::cast_i32("12,34", legacy).value() == 1234);
-  CHECK(hc::detailed::cast_i32("12,34", legacy).value() == 1234);
-  CHECK(hc::cast_i32("1234,567", legacy).value() == 1234567);
+  // Western reads groups of three alone: every shape 1.0 let through is refused.
+  CHECK((hc::detailed::cast_i32("1,23,456", invariant).failure() ==
+         hc::Failure{hc::CastFailure::malformed, hc::Detail::group_size, 1, 3}));
+  CHECK(
+      (hc::cast_i32("1,23,456", invariant).fault() == hc::Fault{hc::CastFailure::malformed, 1, 3}));
+  CHECK((hc::detailed::cast_i32("0,125", invariant).failure() ==
+         hc::Failure{hc::CastFailure::malformed, hc::Detail::group_size, 0, 1}));
+  CHECK(hc::cast_i32("1234,567,890", invariant).fault().reason == hc::CastFailure::malformed);
 
   // Indian: the last group three, every group before it two. Setting a policy replaces the one
   // there, never combining two, and keeps the styles.
@@ -215,8 +215,15 @@ int main() {
   const auto replaced =
       indian.with_grouping(hc::Grouping::western).with_grouping(hc::Grouping::indian);
   CHECK(replaced == indian && replaced.styles() == hc::NumStyles::all);
-  CHECK((replaced.raw().format.flags & HyperCastNumFormat_GROUPING_POLICY) ==
-        HyperCastNumFormat_GROUPING_INDIAN);
+  CHECK(replaced.raw().format.flags ==
+        (HyperCastNumFormat_ALL | static_cast<std::uint32_t>(HyperCastNumFormat_GROUPING_INDIAN)));
+  // Both directions, the plain door and the detailed one alike.
+  CHECK(hc::cast_i32("1,23,456", indian).value() == 123456);
+  CHECK(hc::cast_i32("1,234,567", indian).fault().reason == hc::CastFailure::malformed);
+  const auto back = indian.with_grouping(hc::Grouping::western);
+  CHECK(back == invariant);
+  CHECK(hc::cast_i32("1,234,567", back).value() == 1234567);
+  CHECK(hc::cast_i32("1,23,456", back).fault().reason == hc::CastFailure::malformed);
 
   // A policy only judges groups: with the grouping style off a separator stays forbidden.
   hc::NumFormat::Fields plain;
@@ -229,41 +236,45 @@ int main() {
          hc::Failure{hc::CastFailure::malformed, hc::Detail::unexpected_character, 1, 1}));
   CHECK(hc::cast_i32("1,234", *ungrouped).fault().reason == hc::CastFailure::malformed);
 
-  // Declaring: the default is strict Western, and the core judges the rest. A policy that is
+  // Declaring: the default is Western, and the core judges the rest. A policy that is
   // none of Grouping's, a style bit nobody defined and styles carrying a policy are refused.
   hc::NumFormat::Fields fields;
   fields.decimal_sep = ",";
   fields.group_sep = ".";
   CHECK(hc::NumFormat::declare(fields).has_value() &&
         hc::NumFormat::declare(fields)->grouping() == hc::Grouping::western);
-  fields.grouping = hc::Grouping::legacy;
-  const auto old_euro = hc::NumFormat::declare(fields);
-  CHECK(old_euro.has_value() && old_euro->grouping() == hc::Grouping::legacy &&
-        hc::cast_i32("12.34", *old_euro).value() == 1234);
   fields.grouping = hc::Grouping::indian;
   CHECK(hc::NumFormat::declare(fields).has_value());
   fields.grouping = static_cast<hc::Grouping>(3 << 8);
+  CHECK(!hc::NumFormat::declare(fields).has_value());
+  fields.grouping = static_cast<hc::Grouping>(1 << 8);
   CHECK(!hc::NumFormat::declare(fields).has_value());
   fields.grouping = static_cast<hc::Grouping>(1);
   CHECK(!hc::NumFormat::declare(fields).has_value());
   fields.grouping = hc::Grouping::western;
   fields.styles = static_cast<hc::NumStyles>(1 << 10);
   CHECK(!hc::NumFormat::declare(fields).has_value());
+  fields.styles = static_cast<hc::NumStyles>(HyperCastNumFormat_ALL | (1 << 8)); // 351
+  CHECK(!hc::NumFormat::declare(fields).has_value());
+  fields.styles = static_cast<hc::NumStyles>(HyperCastNumFormat_ALL | (3 << 8)); // 863
+  CHECK(!hc::NumFormat::declare(fields).has_value());
   fields.styles =
-      static_cast<hc::NumStyles>(HyperCastNumFormat_ALL | HyperCastNumFormat_GROUPING_WESTERN);
+      static_cast<hc::NumStyles>(HyperCastNumFormat_ALL | HyperCastNumFormat_GROUPING_INDIAN);
   CHECK(!hc::NumFormat::declare(fields).has_value());
   fields.styles = hc::NumStyles::all;
   CHECK(hc::NumFormat::declare(fields).has_value());
-  // The positional form a 1.0 caller wrote still declares: strict Western, now.
+  // The positional form a 1.0 caller wrote still declares: Western, now.
   CHECK(hc::NumFormat::declare({".", ",", hc::NumStyles::all, {}, {}, {}, {}, {}, {}, 0}) ==
         invariant);
   CHECK(hc::NumFormat::detect().grouping() == hc::Grouping::western);
 
-  // The plain doors honour the policy too: they go through the detailed export for a strict
-  // format, and the 1.0 export for a legacy one, whatever the core's version.
+  // The plain doors honour the policy too: they go through the detailed export for Indian, and
+  // the 1.0 export, Western on any core that drives this header, for Western.
   CHECK(hc::cast_f64("1,234.5", invariant).value() == 1234.5);
   CHECK(hc::cast_f64("12,34.5", invariant).fault().reason == hc::CastFailure::malformed);
-  CHECK(hc::cast_f64("12,34.5", legacy).value() == 1234.5);
+  CHECK(hc::cast_f64("1,23,456.5", indian).value() == 123456.5);
+  CHECK(hc::cast_f64("1,23,456.5", invariant).fault().reason == hc::CastFailure::malformed);
+  CHECK(hc::cast_f64("12,34.5", indian).fault().reason == hc::CastFailure::malformed);
   CHECK(text(hc::cast_decimal("1,234.50", invariant).value()) == "1234.5");
   CHECK(hc::cast_decimal("12,34.50", invariant).fault().reason == hc::CastFailure::malformed);
   CHECK(hc::cast_u8("1,000", invariant).fault().reason == hc::CastFailure::out_of_range);
@@ -274,8 +285,10 @@ int main() {
          hc::Violation{hc::Keyword::maximum, 0, 5}));
   CHECK((hc::cast_i32("12,34", invariant, cap.value()).rejection().fault() ==
          hc::Fault{hc::CastFailure::malformed, 2, 3}));
-  CHECK(hc::cast_i32("12,34", legacy, cap.value()).rejection().violation().keyword ==
+  CHECK(hc::cast_i32("1,23,456", indian, cap.value()).rejection().violation().keyword ==
         hc::Keyword::maximum);
+  CHECK((hc::cast_i32("1,23,456", invariant, cap.value()).rejection().fault() ==
+         hc::Fault{hc::CastFailure::malformed, 1, 3}));
 
   // The detailed doors: the value, or a Failure; to_verdict() is the plain door's answer.
   const auto fine = hc::detailed::cast_i32("1,234", invariant);

@@ -5,7 +5,7 @@
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use hypercast::{
-    Constraints, DateOrder, Decimal, NumFormat, NumericRules, Rounding, Text, TextRules,
+    Constraints, DateOrder, Decimal, Grouping, NumFormat, NumericRules, Rounding, Text, TextRules,
     decimal_for_declaration,
 };
 use std::hint::black_box;
@@ -77,6 +77,24 @@ fn benchmarks(c: &mut Criterion) {
     }
     group.finish();
 
+    // Both policies on grouped numerals; the groups above are judged as Western, the default.
+    let format = NumFormat::INVARIANT;
+    let mut group = c.benchmark_group("grouping-policy");
+    group.bench_function("i64 western", |b| {
+        b.iter(|| hypercast::cast_i64(black_box(b"1,234,567"), &format).unwrap())
+    });
+    group.bench_function("f64 western", |b| {
+        b.iter(|| hypercast::cast_f64(black_box(b"12,345.67"), &format).unwrap())
+    });
+    group.bench_function("decimal western", |b| {
+        b.iter(|| hypercast::cast_decimal(black_box(b"12,345.67"), &format).unwrap())
+    });
+    let indian = NumFormat::INVARIANT.with_grouping(Grouping::Indian);
+    group.bench_function("i64 indian", |b| {
+        b.iter(|| hypercast::cast_i64(black_box(b"12,34,567"), &indian).unwrap())
+    });
+    group.finish();
+
     // What declaring a currency symbol costs text that does not carry one: the same grouped
     // integer under the invariant format and under one that declares `$`.
     let mut group = c.benchmark_group("i32-declared-currency");
@@ -105,6 +123,45 @@ fn benchmarks(c: &mut Criterion) {
     group.bench_function("hypercast grouped currency", |b| {
         b.iter(|| hypercast::cast_decimal(black_box(b"$12,345.67"), &usd).unwrap())
     });
+    group.finish();
+
+    // The text door's UTF-8 validation, against core's `str::from_utf8` on the same bytes:
+    // under 64 bytes (core alone), at 64 (one SIMD chunk) and at about 4 KiB, ASCII and
+    // multi-byte; then the 4 KiB inputs with one bad byte first, second, midway and last. A
+    // failure costs a whole SIMD pass wherever the bad byte is, then core's check up to it.
+    let ascii = "a".repeat(4096);
+    let multi = "aé€𝄞".repeat(410);
+    let euros = format!("{}a", "€".repeat(21));
+    let bad = |text: &str, at: usize, byte: u8| {
+        let mut bytes = text.as_bytes().to_vec();
+        bytes[at] = byte;
+        bytes
+    };
+    let bad_ascii = [0, 1, 2048, 4095].map(|at| bad(&ascii, at, 0x80));
+    let bad_multi = [0, 1, 2050, 4099].map(|at| bad(&multi, at, 0xff));
+    let cases: [(&str, &[u8]); 14] = [
+        ("63 B ascii", &ascii.as_bytes()[..63]),
+        ("64 B ascii", &ascii.as_bytes()[..64]),
+        ("63 B multi-byte", &euros.as_bytes()[..63]),
+        ("64 B multi-byte", euros.as_bytes()),
+        ("4 KiB ascii", ascii.as_bytes()),
+        ("4,100 B multi-byte", multi.as_bytes()),
+        ("4 KiB ascii bad at 0", &bad_ascii[0]),
+        ("4 KiB ascii bad at 1", &bad_ascii[1]),
+        ("4 KiB ascii bad at 2048", &bad_ascii[2]),
+        ("4 KiB ascii bad at 4095", &bad_ascii[3]),
+        ("4,100 B multi-byte bad at 0", &bad_multi[0]),
+        ("4,100 B multi-byte bad at 1", &bad_multi[1]),
+        ("4,100 B multi-byte bad at 2050", &bad_multi[2]),
+        ("4,100 B multi-byte bad at 4099", &bad_multi[3]),
+    ];
+    let mut group = c.benchmark_group("text");
+    for (name, bytes) in cases {
+        group.bench_function(name, |b| b.iter(|| hypercast::cast_text(black_box(bytes)).is_ok()));
+        group.bench_function(format!("{name} stdlib"), |b| {
+            b.iter(|| core::str::from_utf8(black_box(bytes)).is_ok())
+        });
+    }
     group.finish();
 
     let mut group = c.benchmark_group("uuid");

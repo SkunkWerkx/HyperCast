@@ -1,14 +1,14 @@
 require "open3"
 require "spec_helper"
 
-# HyperCast 1.1 on the Ruby surface: strict grouping, fault detail and the opt-in date shapes.
+# HyperCast 1.1 on the Ruby surface: grouping policies, fault detail and the opt-in date shapes.
 # Run under both backends, like the rest of the suite.
 RSpec.describe "HyperCast 1.1" do
   invariant = HyperCast::NumFormat::INVARIANT
   fault = ->(text, format = invariant) { HyperCast.i32(text, format) }
 
-  describe "strict grouping" do
-    it "defaults every constructor and the profiles to strict Western" do
+  describe "grouping policies" do
+    it "defaults every constructor and the profiles to Western" do
       expect(invariant.grouping).to eq(:western)
       expect(HyperCast::NumFormat::DETECT.grouping).to eq(:western)
       expect(HyperCast::NumFormat.new(decimal_sep: ",", group_sep: ".", flags: HyperCast::ALL_STYLES).grouping)
@@ -27,12 +27,12 @@ RSpec.describe "HyperCast 1.1" do
       expect(HyperCast.decimal("12,34", invariant).detail).to eq(HyperCast::Detail::GROUP_SIZE)
     end
 
-    it "reads lakh and crore only when Indian is declared, and 1.0's reading when legacy is" do
+    it "reads lakh and crore only when Indian is declared" do
       indian = invariant.with(grouping: :indian)
-      legacy = invariant.with(grouping: :legacy)
       expect(fault.call("12,34,567", indian)).to eq(HyperCast::Success.new(value: 1_234_567))
       expect(fault.call("1,234,567", indian).detail).to eq(HyperCast::Detail::GROUP_SIZE)
-      expect(fault.call("12,34", legacy)).to eq(HyperCast::Success.new(value: 1234))
+      expect(fault.call("1,23,456", indian)).to eq(HyperCast::Success.new(value: 123_456))
+      expect(fault.call("1,23,456", invariant).detail).to eq(HyperCast::Detail::GROUP_SIZE)
       expect(fault.call("12,34,567", invariant).detail).to eq(HyperCast::Detail::GROUP_SIZE)
     end
 
@@ -40,11 +40,11 @@ RSpec.describe "HyperCast 1.1" do
       indian = invariant.with(grouping: :indian)
       expect(indian.with(flags: HyperCast::GROUPING).grouping).to eq(:indian)
       expect(indian.override(separator: ",", delimiter: ".").grouping).to eq(:indian)
-      expect(indian.with(grouping: :legacy).raw_flags & HyperCast::GROUPING_POLICY).to eq(0)
-      expect(indian.with(grouping: :western).raw_flags & HyperCast::GROUPING_POLICY).to eq(HyperCast::GROUPING_WESTERN)
+      expect(indian.with(grouping: :western).raw_flags & HyperCast::GROUPING_POLICY).to eq(0)
+      expect(indian.with(grouping: :western)).to eq(invariant)
     end
 
-    it "judges a strict format with GROUPING off as forbidding the group separator" do
+    it "judges a format with GROUPING off as forbidding the group separator" do
       ungrouped = invariant.with(flags: HyperCast::ALL_STYLES & ~HyperCast::GROUPING)
       expect(fault.call("1,234", ungrouped)).to be_a(HyperCast::Fault)
       expect(fault.call("1234", ungrouped)).to eq(HyperCast::Success.new(value: 1234))
@@ -62,14 +62,14 @@ RSpec.describe "HyperCast 1.1" do
     it "takes grouping: from_i18n, and refuses a policy that is not one" do
       expect(HyperCast::NumFormat.from_i18n({ delimiter: "," }, grouping: :indian).grouping).to eq(:indian)
       expect { HyperCast::NumFormat.from_i18n({}, grouping: :lakh) }
-        .to raise_error(ArgumentError, /grouping must be one of \[:legacy, :western, :indian\]/)
+        .to raise_error(ArgumentError, /grouping must be one of \[:western, :indian\]/)
       expect { HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",", flags: 0, grouping: 1 << 8) }
         .to raise_error(ArgumentError, /grouping must be one of/)
     end
 
     it "keeps the style mask apart from the policy: bits 8 and 9, and undefined bits, are refused" do
       refused = ->(flags) { HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",", flags: flags) }
-      [HyperCast::GROUPING_WESTERN, HyperCast::GROUPING_INDIAN, HyperCast::GROUPING_POLICY,
+      [256, 351, 863, HyperCast::GROUPING_INDIAN, HyperCast::GROUPING_POLICY,
        HyperCast::ALL_STYLES | HyperCast::GROUPING_POLICY].each do |flags|
         expect { refused.call(flags) }.to raise_error(ArgumentError, /must not carry a grouping policy/), flags.to_s
       end
@@ -80,7 +80,7 @@ RSpec.describe "HyperCast 1.1" do
       expect(refused.call(0xFF).flags).to eq(0xFF)
     end
 
-    it "hands a strict request to a 1.1 core and nothing else" do
+    it "hands a request to a 1.1 core and nothing else" do
       expect(HyperCast::NumFormat::INVARIANT.packed[4, 4].unpack1("L<") & HyperCast::GROUPING_POLICY)
         .to eq(HyperCast::GROUPING_WESTERN)
     end
@@ -202,55 +202,57 @@ RSpec.describe "HyperCast 1.1" do
 
     it "keeps the policy in equality, eql?, hash and a pattern that names it" do
       western = invariant
-      legacy = invariant.with(grouping: :legacy)
       indian = invariant.with(grouping: :indian)
-      expect(western).not_to eq(legacy)
-      expect(western).not_to eql(legacy)
-      expect(legacy).not_to eq(indian)
-      expect([western, legacy, indian].map(&:hash).uniq.size).to eq(3)
-      expect(legacy).to eq(invariant.with(grouping: :legacy)).and eql(invariant.with(grouping: :legacy))
-      expect(legacy.hash).to eq(invariant.with(grouping: :legacy).hash)
-      expect({ western => 1, legacy => 2 }.size).to eq(2)
-      expect(legacy.to_h).to eq(western.to_h)
-      expect((legacy in { grouping: :legacy, flags: 95 })).to be(true)
-      expect((western in { grouping: :legacy })).to be(false)
-      expect(legacy.deconstruct_keys(%i[flags])).to eq(flags: 95)
-      expect(legacy.with(flags: 0).grouping).to eq(:legacy)
-      expect(legacy.with).to equal(legacy)
-      expect(legacy.override(separator: ",", delimiter: ".").grouping).to eq(:legacy)
-      expect(legacy.dup.grouping).to eq(:legacy)
-      # Each policy reads differently through a door: the memo can never hand one's bytes to another.
-      expect(HyperCast.i32("12,34", legacy)).to be_a(HyperCast::Success)
-      expect(HyperCast.i32("12,34", western)).to be_a(HyperCast::Fault)
-      expect(HyperCast.i32("12,34", legacy)).to be_a(HyperCast::Success)
+      expect(western).not_to eq(indian)
+      expect(western).not_to eql(indian)
+      expect([western, indian].map(&:hash).uniq.size).to eq(2)
+      expect(indian).to eq(invariant.with(grouping: :indian)).and eql(invariant.with(grouping: :indian))
+      expect(indian.hash).to eq(invariant.with(grouping: :indian).hash)
+      expect({ western => 1, indian => 2 }.size).to eq(2)
+      expect(indian.to_h).to eq(western.to_h)
+      expect((indian in { grouping: :indian, flags: 95 })).to be(true)
+      expect((western in { grouping: :indian })).to be(false)
+      expect(indian.deconstruct_keys(%i[flags])).to eq(flags: 95)
+      expect(indian.with(flags: 0).grouping).to eq(:indian)
+      expect(indian.with).to equal(indian)
+      expect(indian.override(separator: ",", delimiter: ".").grouping).to eq(:indian)
+      expect(indian.dup.grouping).to eq(:indian)
+      # A second cast through the memo answers for the policy it was given.
+      expect(HyperCast.i32("1,23,456", indian)).to be_a(HyperCast::Success)
+      expect(HyperCast.i32("1,23,456", western)).to be_a(HyperCast::Fault)
+      expect(HyperCast.i32("1,23,456", indian)).to be_a(HyperCast::Success)
     end
 
-    it "round-trips a NumFormat through Marshal with its policy, and loads a 1.0 payload as legacy" do
+    it "round-trips a NumFormat through Marshal with its policy, loads 1.0 as Western, refuses a bad one" do
       indian = invariant.with(grouping: :indian, currency: "₹")
       expect(Marshal.load(Marshal.dump(indian))).to eq(indian)
       expect(Marshal.load(Marshal.dump(indian)).grouping).to eq(:indian)
       expect(Marshal.load(Marshal.dump(invariant))).to eql(invariant)
       # Marshal.dump of 1.0's NumFormat (ten members, ",", ".", flags 95, the rest empty): the
-      # struct form. It carries no policy, so it keeps 1.0's meaning, :legacy (it was legacy when
-      # 1.0 created it; stored data does not change with the constants), where a NumFormat.new that
-      # declares none is :western.
+      # struct form. It carries no policy, so it is Western, like everything that records none.
       payload = "\x04\bS:\x19HyperCast::NumFormat\x0F:\x10decimal_sepI\"\x06,\x06:\x06ET:\x0Egroup_sepI\"\x06.\x06;" \
                 "\aT:\nflagsid:\rcurrencyI\"\x00\x06;\aT:\x19currency_decimal_sepI\"\x00\x06;\aT:\x17currency_" \
                 "group_sepI\"\x00\x06;\aT:\x0Fminus_signI\"\x00\x06;\aT:\x0Eplus_signI\"\x00\x06;\aT:\fpercentI" \
                 "\"\x00\x06;\aT:\x0Fdigit_zeroI\"\x00\x06;\aT".b
       old = Marshal.load(payload)
       current = HyperCast::NumFormat.new(decimal_sep: ",", group_sep: ".", flags: 95)
-      expect(old.grouping).to eq(:legacy)
-      expect(old).to eq(current.with(grouping: :legacy))
-      expect(old).not_to eq(current)
+      expect(old.grouping).to eq(:western)
+      expect(old).to eq(current)
       expect(old.to_h).to eq(current.to_h)
       expect(old.packed[4, 4].unpack1("L<")).to eq(95)
-      expect(old.packed).to eq(current.with(grouping: :legacy).packed)
+      expect(old.packed).to eq(current.packed)
       expect(HyperCast.f64("1.234,5", old)).to eq(HyperCast::Success.new(value: 1234.5))
-      expect(HyperCast.i32("12.34", old)).to eq(HyperCast::Success.new(value: 1234))
-      expect(HyperCast.i32("12.34", current)).to be_a(HyperCast::Fault)
-      # Dumped again, it is a 1.1 payload that keeps the policy it read as.
-      expect(Marshal.load(Marshal.dump(old)).grouping).to eq(:legacy)
+      expect(HyperCast.i32("1.23.456", old)).to be_a(HyperCast::Fault)
+      expect(Marshal.load(Marshal.dump(old)).grouping).to eq(:western)
+      # The same struct form holding 351 (flags are `i\x02_\x01` in Marshal's integer form): Ruby
+      # restores it with no call the class can hook, so it is refused on its first use.
+      stale = Marshal.load(payload.sub("flagsid:".b, "flagsi\x02_\x01:".b))
+      expect(stale.flags).to eq(351)
+      expect { stale.raw_flags }.to raise_error(ArgumentError, /grouping policy/)
+      expect { HyperCast.i32("1", stale) }.to raise_error(ArgumentError, /grouping policy/)
+      # A 1.1 form with a stored policy that isn't one is refused as it loads.
+      expect { HyperCast::NumFormat.allocate.marshal_load(invariant.to_h.merge(grouping: :legacy)) }
+        .to raise_error(ArgumentError, /grouping must be/)
     end
   end
 
@@ -368,13 +370,40 @@ RSpec.describe "HyperCast 1.1" do
     end
   end
 
+  # A declaration equals one that declares the same thing, however it was built, as the core's ==
+  # holds, and hashes alike, so either is the same Hash key.
+  describe "value equality" do
+    it "makes a format equal to one declaring the same thing" do
+      built = [HyperCast::NumFormat.new(".", ",", HyperCast::ALL_STYLES),
+               invariant.with(grouping: :indian).with(grouping: :western),
+               HyperCast::NumFormat.new(decimal_sep: ".".encode("ISO-8859-1"), group_sep: ",".encode("UTF-16LE"),
+                                        flags: HyperCast::ALL_STYLES)]
+      built.each { |format| expect(format).to eq(invariant).and eql(invariant) }
+      expect((built + [invariant]).to_h { |format| [format, true] }.size).to eq(1)
+      expect(invariant).not_to eq(invariant.with(currency: "$"))
+      expect(invariant).not_to eq(invariant.with(digit_zero: "\u0660"))
+    end
+
+    it "makes date options and a vocabulary equal to ones declaring the same thing" do
+      expect(HyperCast::DateOptions.new(pivot: 2050)).to eql(HyperCast::DateOptions.new(flags: 0, pivot: 2050))
+      expect(HyperCast::DateOptions.new(pivot: 2050).hash).to eq(HyperCast::DateOptions.new(pivot: 2050).hash)
+      expect(HyperCast::DateOptions.new(pivot: 2050)).not_to eq(HyperCast::DateOptions.new(pivot: 2049))
+      expect(HyperCast::DateOptions.new(pivot: 0)).to eql(HyperCast::DateOptions.new)
+      vocabulary = ->(first) { HyperCast::MonthNames.new([[1, first]] + (2..12).map { |month| [month, "m#{(96 + month).chr}"] }) }
+      months = vocabulary.call("janvier")
+      expect(HyperCast::MonthNames.from_packed(months.packed)).to eql(months)
+      expect(HyperCast::MonthNames.from_packed(months.packed).hash).to eq(months.hash)
+      expect(months).not_to eq(vocabulary.call("january"))
+    end
+  end
+
   # The 1.0 library (tag v1.0.0, built apart: HYPERCAST_CORE_1_0 names it) has none of the four
-  # detailed exports. The Fiddle backend refuses it as it loads — and so a strict request is
-  # never answered in legacy mode — and `available?` says so quietly.
+  # detailed exports. The Fiddle backend refuses it as it loads — and so no format is ever
+  # read by 1.0's rules — and `available?` says so quietly.
   describe "the downgrade guard" do
     old_core = ENV.fetch("HYPERCAST_CORE_1_0", nil)
 
-    it "refuses a 1.0 core rather than read a strict request as legacy" do
+    it "refuses a 1.0 core rather than read a format by 1.0's rules" do
       skip "HYPERCAST_CORE_1_0 names no 1.0 libhypercast to load" unless old_core && File.exist?(old_core)
       script = <<~RUBY
         HyperCast::Runtime.define_singleton_method(:library_path) { #{old_core.inspect} }

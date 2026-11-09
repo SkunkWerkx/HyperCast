@@ -16,12 +16,12 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
- * A policy is bits in a flags word, and a 1.0 core silently ignores them, so a strict request
- * against one would be parsed in legacy mode and answer wrongly instead of loudly. The guard is
+ * A policy is bits in a flags word, and a 1.0 core silently ignores them, so a request against
+ * one would be parsed by 1.0's rule and answer wrongly instead of loudly. The guard is
  * structural: this binding resolves the four detailed exports (FFM) or the natives that wrap them
  * (JNI) as it loads, and a library without them fails the load. This runs a child JVM whose
  * classpath puts a real 1.0 library in front of the jar's own, and shows that {@link
- * Cast#isAvailable()} says no, that a strict request is a load failure and never a verdict, and,
+ * Cast#isAvailable()} says no, that a request is a load failure and never a verdict, and,
  * as the control, that the same child with the jar's own libraries answers.
  *
  * <p>Tagged {@code downgrade}: the 1.0 libraries are not in the jar. {@code ./gradlew
@@ -34,7 +34,7 @@ import org.junit.jupiter.api.Test;
 class DowngradeTest {
     /** The v1.0.0 core, which predates even the checked exports: refused at the first export it lacks. */
     @Test
-    void aStrictRequestAgainstTheV10CoreIsRejectedNeverParsedLegacy() throws Exception {
+    void aRequestAgainstTheV10CoreIsRejectedNeverParsedByItsRule() throws Exception {
         String older = runAgainst("hypercast.v1Core");
         if (Runtime.version().feature() >= 25) {
             assertTrue(older.contains("no export cast_"), older);
@@ -83,7 +83,7 @@ class DowngradeTest {
             // core nothing may answer. The reason is named by the root cause, asserted by the caller.
             assertFalse(older.contains("=returned "), older);
 
-            // The control: the same child, the jar's own libraries, answers the strict request.
+            // The control: the same child, the jar's own libraries, answers the request.
             String current = run(null);
             assertTrue(current.contains("available=true"), current);
             assertTrue(current.contains("plain=returned Fault[reason=MALFORMED, offset=2, length=3]"), current);
@@ -121,7 +121,7 @@ class DowngradeTest {
         }
     }
 
-    /** The strict request, as a caller makes it, and what became of it. */
+    /** The numeric request, as a caller makes it, and what became of it. */
     static final class Child {
         public static void main(String[] args) {
             System.out.println("available=" + Cast.isAvailable());

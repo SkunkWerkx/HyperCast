@@ -37,8 +37,7 @@ const ALL: i64 = GROUPING | PARENTHESES | EXPONENT | RADIX_PREFIXES | PERCENT | 
 /// Every style bit the core defines (bits 0 to 7): what `flags` may hold. The grouping policy
 /// (bits 8 and 9) is the `grouping` property's, never a style.
 const STYLES: i64 = 0xFF;
-const GROUPING_LEGACY: i64 = 0;
-const GROUPING_WESTERN: i64 = 1 << 8;
+const GROUPING_WESTERN: i64 = 0;
 const GROUPING_INDIAN: i64 = 2 << 8;
 const GROUPING_POLICY: i64 = 3 << 8;
 const SYMBOL_MAX_BYTES: usize = 8;
@@ -85,7 +84,6 @@ const NUM_FORMAT: Declaration = Declaration {
         ("CURRENCY", CURRENCY),
         ("TRAILING_SIGN", TRAILING_SIGN),
         ("ALL", ALL),
-        ("GROUPING_LEGACY", GROUPING_LEGACY),
         ("GROUPING_WESTERN", GROUPING_WESTERN),
         ("GROUPING_INDIAN", GROUPING_INDIAN),
         ("GROUPING_POLICY", GROUPING_POLICY),
@@ -127,7 +125,7 @@ struct Fields {
 }
 
 impl Fields {
-    /// The separators and flags alone, with 1.1's default policy: strict Western.
+    /// The separators and flags alone, with 1.1's default policy: Western.
     fn plain(decimal_sep: &[u8], group_sep: &[u8], flags: i64) -> Fields {
         Fields {
             decimal_sep: decimal_sep.to_vec(),
@@ -280,7 +278,7 @@ zend_fastcall! {
 }
 
 /// `new NumFormat(...)` from PHP: the promoted assignments in order (the omitted ones their
-/// default: `''`, and strict Western for the policy), then the checks.
+/// default: `''`, and Western for the policy), then the checks.
 fn construct(ex: &mut ExecuteData) -> PhpResult<Zval> {
     let object = this(ex)?;
     let Some(args) = checked_args(ex, 3, 11) else {
@@ -320,15 +318,15 @@ fn new_format(fields: Fields) -> PhpResult<Zval> {
     build(Value::NumFormat, fields.into_zvals())
 }
 
-/// The refusal of a grouping policy that is none of the three: the constructor's, and an
-/// unserialized object's.
+/// The refusal of a grouping policy that is neither of the two (256, the retired bit, and 768
+/// among them): the constructor's, `withGrouping`'s and an unserialized object's.
 fn check_policy(grouping: i64) -> PhpResult<()> {
-    if matches!(grouping, GROUPING_LEGACY | GROUPING_WESTERN | GROUPING_INDIAN) {
+    if matches!(grouping, GROUPING_WESTERN | GROUPING_INDIAN) {
         return Ok(());
     }
     Err(invalid_argument(format!(
-        "Grouping policy must be NumFormat::GROUPING_LEGACY, NumFormat::GROUPING_WESTERN or \
-         NumFormat::GROUPING_INDIAN; got {grouping}"
+        "Grouping policy must be NumFormat::GROUPING_WESTERN or NumFormat::GROUPING_INDIAN; got \
+         {grouping}"
     )))
 }
 
@@ -479,14 +477,14 @@ fn code_point(c: &[u8]) -> Option<i64> {
 }
 
 /// The policy a `NumFormat` object holds. An object unserialized from 1.0 has no `grouping`
-/// property and reads as 1.0 parsed it: legacy.
+/// property and is Western, like everything that records none.
 fn grouping_of(object: *mut zend_object) -> PhpResult<i64> {
     let grouping = read_if_set(Value::NumFormat, object, "grouping")?
         .and_then(|zv| zv.long())
-        .unwrap_or(GROUPING_LEGACY);
+        .unwrap_or(GROUPING_WESTERN);
     // Only a policy goes in the policy bits (a value set around `unserialize`, through
     // reflection say, is a contract violation, never ORed into the styles).
-    if !matches!(grouping, GROUPING_LEGACY | GROUPING_WESTERN | GROUPING_INDIAN) {
+    if !matches!(grouping, GROUPING_WESTERN | GROUPING_INDIAN) {
         return Err(contract_violation());
     }
     Ok(grouping)
@@ -512,14 +510,16 @@ pub(crate) fn packed(object: *mut zend_object) -> PhpResult<Vec<u8>> {
         }
     };
     let flags = read_int(Value::NumFormat, object, "flags")?;
+    // Past `unserialize` (reflection writes a readonly property's slot), a bit outside the styles
+    // is refused here too, never masked away.
+    if flags & !STYLES != 0 {
+        return Err(contract_violation());
+    }
     let grouping = grouping_of(object)?;
     let mut out = Vec::with_capacity(PACKED_BYTES);
     out.extend_from_slice(&(PACKED_BYTES as u32).to_le_bytes());
-    // The styles are bits 0 to 7 whatever `flags` holds (an object unserialized from 1.0 may
-    // hold bits 1.0 ignored); the policy is the property's alone.
-    out.extend_from_slice(
-        &(((flags & STYLES) | (grouping & GROUPING_POLICY)) as u32).to_le_bytes(),
-    );
+    // `flags` holds styles alone; the policy is the property's.
+    out.extend_from_slice(&((flags | (grouping & GROUPING_POLICY)) as u32).to_le_bytes());
     out.extend_from_slice(&(zero as u32).to_le_bytes());
     for name in [
         "decimalSep",
@@ -545,15 +545,32 @@ fn packed_call(ex: &mut ExecuteData) -> PhpResult<Zval> {
 }
 
 /// `unserialize()`'s call once an object's properties are set: a `NumFormat` serialized under
-/// 1.0 carries no `grouping`, and keeps 1.0's meaning, `GROUPING_LEGACY`. A `grouping` the
-/// payload holds (1.1's) must be one of the three policies, as the constructor takes.
+/// 1.0 carries no `grouping`, and is `GROUPING_WESTERN`. A `grouping` the payload holds (1.1's)
+/// must be one of the two policies, as the constructor takes, and a `flags` holding anything but
+/// styles is refused here too, where the payload arrives: the retired bit 8 (`351`, `863`), which
+/// is never reused, the Indian bit that belongs in `grouping` (`607`), and any bit past them
+/// (`1119`). 1.0 ignored those bits, so a payload it stored with them stops here, loudly.
 fn wakeup(ex: &mut ExecuteData) -> PhpResult<Zval> {
     let object = this(ex)?;
     if checked_args(ex, 0, 0).is_none() {
         return Err(pending("argument check"));
     }
+    if let Some(flags) = read_if_set(Value::NumFormat, object, "flags")?.and_then(|zv| zv.long())
+        && flags & !STYLES != 0
+    {
+        let hint = if flags & (1 << 8) != 0 {
+            "bit 8 is retired and names no grouping policy"
+        } else if flags & GROUPING_POLICY != 0 {
+            "a grouping policy belongs in the grouping property"
+        } else {
+            "only bits 0 to 7 are defined"
+        };
+        return Err(invalid_argument(format!(
+            "Flags hold bits that are not styles: {hint}; got {flags}"
+        )));
+    }
     match read_if_set(Value::NumFormat, object, "grouping")? {
-        None => assign(Value::NumFormat, object, "grouping", int_zval(GROUPING_LEGACY))?,
+        None => assign(Value::NumFormat, object, "grouping", int_zval(GROUPING_WESTERN))?,
         // A crafted payload's policy is judged as the constructor judges one.
         Some(zv) => check_policy(zv.long().unwrap_or_default())?,
     }
@@ -695,30 +712,18 @@ struct Declared {
     enabled: bool,
 }
 
-/// The one policy and `GROUPING` flag a platform's patterns share, by the owner's rule: a bridge
-/// never knowingly rejects its platform's own output. Only the patterns that group vote: all
-/// Western is strict Western, all Indian strict Indian, and any other shape, or patterns that
-/// disagree (ICU's `ml`: number `#,##,##0.###`, currency `¤#,##0.00`), is legacy. `GROUPING` is
-/// cleared only when no pattern groups; if just one pattern does not group the flag stays, and
-/// the values that pattern formats stay valid ungrouped (a format cannot forbid currency
-/// grouping on its own). Nothing known of any pattern is legacy too. Deterministic: never
+/// The one policy and `GROUPING` flag a platform's patterns declare. The policy follows the
+/// number pattern: all Indian is Indian, anything else Western, so `ml`'s Indian numbers and
+/// Western currency are Indian, and a Western currency amount through that bridge is refused
+/// until the column declares Western. `GROUPING` is cleared only when every pattern known is
+/// ungrouped; if just one does not group the flag stays (a format cannot forbid currency grouping
+/// on its own). Nothing known of any pattern is Western with the flag on. Deterministic: never
 /// inferred from the input.
-fn declare_grouping(votes: &[Grouped]) -> Declared {
-    let enabled: Vec<Grouped> = votes.iter().copied().filter(|v| *v != Grouped::None).collect();
-    let legacy = Declared { grouping: GROUPING_LEGACY, enabled: true };
-    if votes.is_empty() || enabled.contains(&Grouped::Unknown) {
-        return legacy;
-    }
-    match enabled.first() {
-        None => Declared { grouping: GROUPING_WESTERN, enabled: false },
-        Some(Grouped::Western) if enabled.iter().all(|v| *v == Grouped::Western) => {
-            Declared { grouping: GROUPING_WESTERN, enabled: true }
-        }
-        Some(Grouped::Indian) if enabled.iter().all(|v| *v == Grouped::Indian) => {
-            Declared { grouping: GROUPING_INDIAN, enabled: true }
-        }
-        _ => legacy,
-    }
+fn declare_grouping(number: Option<Grouped>, others: &[Grouped]) -> Declared {
+    let grouping = if number == Some(Grouped::Indian) { GROUPING_INDIAN } else { GROUPING_WESTERN };
+    let known = number.is_some() || !others.is_empty();
+    let grouped = number.iter().chain(others).any(|vote| *vote != Grouped::None);
+    Declared { grouping, enabled: grouped || !known }
 }
 
 /// What kind of value an ICU pattern formats: a currency (`¤`, U+00A4, outside quotes), a
@@ -878,12 +883,10 @@ fn from_localeconv(ex: &mut ExecuteData) -> PhpResult<Zval> {
         entry(key).and_then(|zv| zv.zend_str().map(|s| s.as_bytes().to_vec())).unwrap_or_default()
     };
     let sign_position = entry("n_sign_posn").and_then(|zv| zv.long());
-    // The number's and the currency's grouping; a key the array lacks has no vote.
-    let votes: Vec<Grouped> = ["grouping", "mon_grouping"]
-        .iter()
-        .filter_map(|key| entry(key))
-        .map(|zv| sizes_grouped(&zv))
-        .collect();
+    // The number's and the currency's grouping; a key the array lacks says nothing.
+    let number = entry("grouping").map(|zv| sizes_grouped(&zv));
+    let currency: Vec<Grouped> =
+        entry("mon_grouping").map(|zv| sizes_grouped(&zv)).into_iter().collect();
     from_symbols(
         text("decimal_point"),
         text("thousands_sep"),
@@ -895,7 +898,7 @@ fn from_localeconv(ex: &mut ExecuteData) -> PhpResult<Zval> {
         Vec::new(),
         Vec::new(),
         matches!(sign_position, Some(2 | 4)),
-        declare_grouping(&votes),
+        declare_grouping(number, &currency),
     )
 }
 
@@ -929,7 +932,8 @@ fn from_number_formatter(formatter: &Zval) -> PhpResult<Zval> {
     let percent = symbol(PERCENT_SYMBOL)?;
     let digit_zero = symbol(ZERO_DIGIT_SYMBOL)?;
     // Asked last, so a formatter that fails earlier fails as it always did.
-    let declared = declare_grouping(&formatter_votes(formatter)?);
+    let (number, others) = formatter_votes(formatter)?;
+    let declared = declare_grouping(number, &others);
     from_symbols(
         decimal_sep,
         group_sep,
@@ -952,7 +956,7 @@ fn from_number_formatter(formatter: &Zval) -> PhpResult<Zval> {
 /// pattern is outside the rule (a format has no percent grouping of its own), so both siblings
 /// are read. A sibling the platform will not give does not vote; a pattern it gives that is not
 /// text is an unknown shape.
-fn formatter_votes(formatter: &Zval) -> PhpResult<Vec<Grouped>> {
+fn formatter_votes(formatter: &Zval) -> PhpResult<(Option<Grouped>, Vec<Grouped>)> {
     let own = call(Some(formatter), "getPattern", &mut [])?;
     let (own, kind) =
         match own.zend_str().and_then(|text| std::str::from_utf8(text.as_bytes()).ok()) {
@@ -962,8 +966,9 @@ fn formatter_votes(formatter: &Zval) -> PhpResult<Vec<Grouped>> {
             }
             None => (Grouped::Unknown, None),
         };
+    let mut number = (kind == Some(Kind::Number)).then_some(own);
     let mut votes = Vec::new();
-    if kind != Some(Kind::Percent) {
+    if kind == Some(Kind::Currency) {
         votes.push(own);
     }
     let locale = quietly(call(Some(formatter), "getLocale", &mut []));
@@ -977,7 +982,11 @@ fn formatter_votes(formatter: &Zval) -> PhpResult<Vec<Grouped>> {
             continue;
         };
         if let Some(known) = cached_sibling(key, style) {
-            votes.push(known);
+            if style == DECIMAL_STYLE {
+                number = Some(known);
+            } else {
+                votes.push(known);
+            }
             continue;
         }
         let created = quietly(call(
@@ -991,16 +1000,19 @@ fn formatter_votes(formatter: &Zval) -> PhpResult<Vec<Grouped>> {
         let Some(pattern) = quietly(call(Some(&created), "getPattern", &mut [])) else {
             continue;
         };
-        let Some(text) = pattern.zend_str().and_then(|t| std::str::from_utf8(t.as_bytes()).ok())
-        else {
-            votes.push(Grouped::Unknown);
-            continue;
-        };
-        let grouped = pattern_grouped(&pattern_parts(text).0);
-        remember_sibling(key, style, grouped);
-        votes.push(grouped);
+        let text = pattern.zend_str().and_then(|t| std::str::from_utf8(t.as_bytes()).ok());
+        let grouped = text.map_or(Grouped::Unknown, |text| {
+            let grouped = pattern_grouped(&pattern_parts(text).0);
+            remember_sibling(key, style, grouped);
+            grouped
+        });
+        if style == DECIMAL_STYLE {
+            number = Some(grouped);
+        } else {
+            votes.push(grouped);
+        }
     }
-    Ok(votes)
+    Ok((number, votes))
 }
 
 thread_local! {

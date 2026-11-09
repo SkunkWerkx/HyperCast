@@ -20,8 +20,14 @@ categories = ["parsing", "no-std", "no-std::no-alloc"]
 crate-type = ["rlib"]
 
 [dependencies]
-# Deliberately none for the plain build — the core is pure parsing over caller-supplied
-# bytes. The extension backends below are additive and off by default.
+# The plain build's one dependency: SIMD UTF-8 validation for the text door (src/utf8.rs),
+# no_std and allocation-free. Its `std` feature stays off even when ours is on: with std it
+# would pick the x86_64 check at run time through std, so builds would differ by feature;
+# src/utf8.rs detects the CPU itself, in core. `public_imp` exposes the x86 checks it calls.
+# Only `simdutf8::basic` is used: `compat`'s error path can panic, and the no-panic proof
+# refuses it.
+simdutf8 = { version = "0.1.5", default-features = false, features = ["public_imp"] }
+# The extension backends below are additive and off by default.
 pyo3 = { version = "0.30", features = ["extension-module", "abi3-py311", "abi3t-py315"], optional = true }
 magnus = { version = "0.9", features = ["rb-sys"], optional = true }
 rb-sys = { version = "0.9", optional = true }
@@ -113,7 +119,7 @@ serde_json = "1"
 uuid = "1"
 time = { version = "0.3", features = ["parsing"] }
 # src/exact.rs: the reference the exact judgement is checked against. Test-only, never
-# shipped; the core itself stays free of dependencies and of any allocation.
+# shipped; the core itself stays free of any allocation.
 bigdecimal = "0.4"
 
 [[bench]]

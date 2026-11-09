@@ -32,9 +32,9 @@
 //! the core's detailed C exports, so a `NumFormat`'s grouping policy and a `DateOptions` are
 //! honoured at every door that takes them.
 //!
-//! A `NumFormat` declares its grouping policy apart from its styles: strict Western unless
-//! the caller says `Grouping.Indian` or `Grouping.Legacy`, and a door given no format reads
-//! `NumFormat.invariant()`, which is strict Western too.
+//! A `NumFormat` declares its grouping policy apart from its styles: Western unless the caller
+//! says `Grouping.Indian`, and a door given no format reads `NumFormat.invariant()`, which is
+//! Western too.
 
 use hypercast as hc;
 use napi::bindgen_prelude::{
@@ -137,7 +137,8 @@ pub enum Detail {
     /// A group separator not between digits, or an empty group.
     #[napi(value = "groupMisplaced")]
     GroupMisplaced,
-    /// A group with the wrong number of digits for the grouping policy.
+    /// A group with the wrong number of digits for the grouping policy, or a first group that
+    /// starts with a zero.
     #[napi(value = "groupSize")]
     GroupSize,
     /// Grouping after the decimal separator or in an exponent.
@@ -360,12 +361,10 @@ pub enum NumStyles {
 /// under every policy.
 #[napi]
 pub enum Grouping {
-    /// A group separator anywhere between two digits (`12,34` is 1234), as every 1.0 format
-    /// read.
-    Legacy = 0,
     /// Groups of exactly three digits counted from the decimal separator, the leftmost of one
-    /// to three (`1,234,567`; `12,34` is `malformed`). The default.
-    Western = 256,
+    /// to three and not starting with a zero (`1,234,567`; `12,34` and `0,125` are `malformed`).
+    /// The default.
+    Western = 0,
     /// A group of three beside the decimal separator and twos beyond it, the leftmost of one
     /// or two (`12,34,567`; `1,234,567` is `malformed`).
     Indian = 512,
@@ -547,11 +546,10 @@ fn number(value: &Unknown<'_>) -> Option<f64> {
 }
 
 /// A `format` argument: absent is `NumFormat.invariant()`, the invariant separators under
-/// strict Western grouping. (A null format at the C ABI is the legacy one; this binding never
-/// passes one.)
+/// Western grouping, as a null format at the C ABI is.
 fn num_format(value: &Unknown<'_>) -> Option<hc::NumFormat> {
     match value.get_type() {
-        Ok(ValueType::Undefined | ValueType::Null) => Some(hc::NumFormat::STRICT),
+        Ok(ValueType::Undefined | ValueType::Null) => Some(hc::NumFormat::INVARIANT),
         Ok(ValueType::Object) => unsafe { value.cast::<ClassInstance<NumFormat>>() }
             .ok()
             .map(|format| format.resolved),
@@ -1021,16 +1019,9 @@ fn declare_num_format(env: &Env, spec: &Object<'_>) -> std::result::Result<hc::N
     }
     let grouping = match spec_field(env, spec, "grouping")? {
         Some(value) if !matches!(value.get_type(), Ok(ValueType::Undefined)) => code(&value)
-            .filter(|&code| {
-                [
-                    hc::NumFormat::GROUPING_LEGACY,
-                    hc::NumFormat::GROUPING_WESTERN,
-                    hc::NumFormat::GROUPING_INDIAN,
-                ]
-                .contains(&code)
-            })
+            .and_then(hc::Grouping::from_code)
             .ok_or_else(|| "grouping must be a Grouping".to_string())?,
-        _ => hc::NumFormat::GROUPING_WESTERN,
+        _ => hc::Grouping::Western,
     };
     let currency = spec_text(env, spec, "currency")?;
     let currency_decimal = spec_text(env, spec, "currencyDecimalSep")?;
@@ -1145,22 +1136,43 @@ impl NumFormat {
         }
     }
 
-    /// The invariant format: `.` decimal, `,` grouping, `NumStyles.All`, strict Western
+    /// The invariant format: `.` decimal, `,` grouping, `NumStyles.All`, Western
     /// grouping (`Grouping.Western`). What a door reads with when its format is left out.
     #[napi(factory, catch_unwind)]
     pub fn invariant() -> Self {
         NumFormat {
-            resolved: hc::NumFormat::STRICT,
+            resolved: hc::NumFormat::INVARIANT,
         }
     }
 
     /// The detection format: `NumStyles.All | NumStyles.SeparatorDetect`, the `.`/`,` roles
-    /// resolved per input from structure, under strict Western grouping. A grouping policy
+    /// resolved per input from structure, under Western grouping. A grouping policy
     /// never resolves an ambiguous separator.
     #[napi(factory, catch_unwind)]
     pub fn detect() -> Self {
         NumFormat {
-            resolved: hc::NumFormat::DETECT.with_grouping(hc::NumFormat::GROUPING_WESTERN),
+            resolved: hc::NumFormat::DETECT,
+        }
+    }
+
+    /// The same format under another policy, which replaces the old one. A value that is not a
+    /// `Grouping` is refused, by the same rule `declare` holds; it never throws.
+    #[napi(
+        catch_unwind,
+        ts_args_type = "grouping: Grouping",
+        ts_return_type = "Declaration<NumFormat>"
+    )]
+    pub fn with_grouping<'env>(
+        &self,
+        env: &'env Env,
+        grouping: Unknown<'env>,
+    ) -> Result<Object<'env>> {
+        match code(&grouping).and_then(hc::Grouping::from_code) {
+            Some(policy) => {
+                let resolved = self.resolved.with_grouping(policy);
+                declared(env, Ok(NumFormat { resolved }.into_instance(env)?))
+            }
+            None => declared::<bool>(env, Err("grouping must be a Grouping".to_string())),
         }
     }
 
@@ -1236,11 +1248,20 @@ impl NumFormat {
 
     /// The 92 bytes this format crosses a C ABI as (the core's size-tagged layout), for a
     /// library that declares numeric columns across a C ABI of its own. The `flags` word
-    /// carries the grouping policy in bits 8 and 9, which only the core's detailed exports
-    /// read (the 1.0 exports ignore them and parse every group legacy).
+    /// carries the grouping policy: `Grouping.Indian` in bit 9, nothing for Western. Only the
+    /// core's detailed exports read it (the 1.0 exports ignore it and read Western).
     #[napi(getter, catch_unwind)]
     pub fn packed(&self) -> Uint8Array {
         Uint8Array::from(hc::RawNumFormat::from(self.resolved).to_le_bytes().to_vec())
+    }
+
+    /// `true` when `other` is a `NumFormat` declaring the same thing, however each was made: the
+    /// core's own equality, every field and the grouping policy. `===` compares identity.
+    #[napi(catch_unwind, ts_args_type = "other: unknown")]
+    pub fn equals<'env>(&self, other: Unknown<'env>) -> bool {
+        matches!(other.get_type(), Ok(ValueType::Object))
+            && unsafe { other.cast::<ClassInstance<NumFormat>>() }
+                .is_ok_and(|other| other.resolved == self.resolved)
     }
 }
 
@@ -1322,6 +1343,15 @@ impl DateFormat {
     pub fn pm(&self) -> String {
         self.periods.pm.to_string()
     }
+
+    /// `true` when `other` is a `DateFormat` declaring the same order and designators. `===`
+    /// compares identity.
+    #[napi(catch_unwind, ts_args_type = "other: unknown")]
+    pub fn equals<'env>(&self, other: Unknown<'env>) -> bool {
+        matches!(other.get_type(), Ok(ValueType::Object))
+            && unsafe { other.cast::<ClassInstance<DateFormat>>() }
+                .is_ok_and(|other| other.order == self.order && other.periods == self.periods)
+    }
 }
 
 /// The refusal of a month vocabulary, one message for each rule it can break.
@@ -1399,7 +1429,7 @@ fn pack_month_entries(env: &Env, value: &Unknown<'_>) -> std::result::Result<Vec
 /// bytes with no ASCII digit, `/`, `-` or white space, and two that fold alike are refused.
 /// Made by `MonthNames.declare` or `MonthNames.fromPacked`, never by `new`.
 #[napi]
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct MonthNames {
     packed: Vec<u8>,
 }
@@ -1446,6 +1476,15 @@ impl MonthNames {
     #[napi(getter, catch_unwind)]
     pub fn packed(&self) -> Uint8Array {
         Uint8Array::from(self.packed.clone())
+    }
+
+    /// `true` when `other` is a `MonthNames` holding the same entries in the same order: the
+    /// same `packed` bytes. `===` compares identity.
+    #[napi(catch_unwind, ts_args_type = "other: unknown")]
+    pub fn equals<'env>(&self, other: Unknown<'env>) -> bool {
+        matches!(other.get_type(), Ok(ValueType::Object))
+            && unsafe { other.cast::<ClassInstance<MonthNames>>() }
+                .is_ok_and(|other| *other == *self)
     }
 }
 
@@ -1573,6 +1612,18 @@ impl DateOptions {
             bytes.extend_from_slice(&word.to_le_bytes());
         }
         Uint8Array::from(bytes)
+    }
+
+    /// `true` when `other` is a `DateOptions` declaring the same shapes and pivot, and month names
+    /// with the same entries in the same order, or none on both. `===` compares identity.
+    #[napi(catch_unwind, ts_args_type = "other: unknown")]
+    pub fn equals<'env>(&self, other: Unknown<'env>) -> bool {
+        matches!(other.get_type(), Ok(ValueType::Object))
+            && unsafe { other.cast::<ClassInstance<DateOptions>>() }.is_ok_and(|other| {
+                other.flags == self.flags
+                    && other.pivot == self.pivot
+                    && other.months == self.months
+            })
     }
 }
 
@@ -1990,7 +2041,7 @@ const _: () = {
 
 /// The core's exports this file calls, as include/hypercast.h declares them. The detailed ones
 /// read a `NumFormat`'s grouping policy and report a failure's detail; the 1.0 checked exports
-/// ignore the policy bits and always parse legacy, so no door here calls them.
+/// ignore the policy and always read Western, so no door here calls them.
 mod abi {
     use super::{RawFault, hc};
 

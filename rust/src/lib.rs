@@ -276,6 +276,7 @@ mod site;
 mod temporal;
 mod text;
 mod typed;
+mod utf8;
 mod uuid;
 mod verdict;
 
@@ -326,8 +327,8 @@ pub use typed::{
 };
 pub use uuid::cast_uuid;
 pub use verdict::{
-    CivilDateTime, CurrencySymbol, Date, Decimal, DeclarationError, Duration, Fault, NativeDigits,
-    NumFormat, Reason, Symbol, Timestamp, ValidNumFormat,
+    CivilDateTime, CurrencySymbol, Date, Decimal, DeclarationError, Duration, Fault, Grouping,
+    NativeDigits, NumFormat, Reason, Symbol, Timestamp, ValidNumFormat,
 };
 
 // `hypercast_version` is the C symbol itself when `exports` is on, as in 1.0.0, so the Rust

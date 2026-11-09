@@ -110,7 +110,7 @@ Every door reads `len` bytes of UTF-8 and returns its verdict as the return code
 value written to `out`, or 1 empty, 2 malformed, 3 out of range with the offending span written
 to `fault` (when it is not null), which indexes the caller's own bytes. -1 is a contract
 violation: an undefined precision, epoch or date-order code, or a numeric format or day-period
-layout the core refuses. A null format is the invariant one (`.` and `,`, every lenience, legacy
+layout the core refuses. A null format is the invariant one (`.` and `,`, every lenience, Western
 grouping); a declared one is a `HyperCastRawNumFormat` the caller fills in, `size` first, and the core reads
 in place. The header documents every function, type and layout. `hypercast_version()` is the
 one way to read the version at run time. A minor release may add functions; only a major
@@ -162,20 +162,23 @@ before anything is written, and -1 writes nothing: an unknown door, a door outsi
 set, a `param` the door does not take, a `fault` under 16 bytes or not a multiple of 4, or a layout
 the core refuses.
 
-They also take what the 1.0 exports cannot. A format's grouping policy sits in bits 8 and 9 of its
-`flags`: `HyperCastNumFormat_GROUPING_LEGACY` (0, a group separator anywhere between two digits),
-`_GROUPING_WESTERN` (groups of three counted from the right, `12,34` malformed) and
-`_GROUPING_INDIAN` (the last group three digits, the others two). Policy 3 and any flag bit the core
-does not define are -1 there; a null format is the invariant one with legacy grouping, and every
-other export ignores bits 8 and up and always reads legacy. `cast_detailed` also takes a
+They also take what the 1.0 exports cannot. A format is Western unless its `flags` hold
+`HyperCastNumFormat_GROUPING_INDIAN` (512): `HyperCastNumFormat_GROUPING_WESTERN` is 0, groups of three
+counted from the right, `1,23,456` and `12,34` malformed, and Indian is the last group three digits, the others two,
+`1,23,456` read and `1,234,567` malformed. Under both, a first group that
+starts with a zero is malformed (`0,125`). Bit 8 (256) is retired permanently and never reused, so 256 and 768
+(351 and 863 at the default styles), and any flag bit the core
+does not define, are -1 there; a null format is the invariant one, Western, and every
+other export masks flags to 8 bits, so it can't see the policy and always reads Western. A shape neither policy reads is malformed under a declared format or `invariant()`, never misread, while `detect()` infers by the delimiter rule, so `1,2345` is 1.2345 there: [docs/grouping.md](https://github.com/SkunkWerkx/HyperCast/blob/master/docs/grouping.md#parked).
+`cast_detailed` also takes a
 `HyperCastRawDateOptions` (`size` 8 or 12, then `flags`: `1` compact `yyyyMMdd` at door 15, `2` a
 space for the `T` and `4` `+hh` offsets at door 13; and `pivot`, 0 or 100 to 9999, the last year of
 the window a two-digit year is read in at doors 20 and 21) and a month vocabulary at 20 and 21,
 packed as each entry's month byte, a little-endian `uint32_t` length, and the UTF-8, which the core
 judges in full on every call.
 
-**A 1.0 core has none of this**: no detailed export, and a policy it reads as legacy. Check
-`hypercast_version()` before declaring a strict policy or calling the exports, and refuse a core
+**A 1.0 core has none of this**: no detailed export, and it reads `1,23,456` as 123456 under any
+format. Check `hypercast_version()` before reading a grouped numeral or calling the exports, and refuse a core
 that cannot drive the headers you built against: another major version, or a minor older than
 theirs (1.1.0 is `0x010100`; the patch never matters). `c/smoke/main.c` is the example:
 
@@ -263,13 +266,12 @@ program with `std::abort()`. `native_version()` is the linked library's version,
 ### Grouping, detail and date shapes
 
 A `NumFormat` declares how its group separators are judged, beside its styles: `Grouping::western`
-by default (`NumFormat::invariant()` is strict Western, and so is `detect()` and a `Fields` that
-says nothing), `Grouping::indian`, or `Grouping::legacy`, a separator anywhere between two digits.
-`12,34` is `Malformed` under the first two, spanning `,34`, and 1234 under legacy
-(`invariant().with_grouping(Grouping::legacy)`); an ungrouped numeral stays valid, and with
-`NumStyles::grouping` off a group separator stays forbidden under every policy. `with_grouping`
-replaces the policy and keeps the styles; `styles()` never carries one, and `declare` refuses styles
-that do, a policy that is not one of the three, and a style bit that is not `NumStyles`'s. The
+by default (`NumFormat::invariant()` is Western, and so is `detect()` and a `Fields` that
+says nothing), or `Grouping::indian` (`invariant().with_grouping(Grouping::indian)` reads `1,23,456`).
+`12,34` is `Malformed` under both, spanning `,34`; an ungrouped numeral stays valid, and with
+`NumStyles::grouping` off a group separator stays forbidden under both. `with_grouping`
+replaces the policy and keeps the styles, and ends the program on any other value, 256 and 768 included; `styles()` never carries one, and `declare` refuses styles
+that do (351 and 863), a policy that is not one of the two, and a style bit that is not `NumStyles`'s. The
 plain doors honour the policy.
 
 ```cpp
@@ -321,11 +323,10 @@ library's): the crate's version, which a release moves with everything else. A l
 when its major version is the header's and its minor at least the header's, whatever the patch (a
 patch release adds no export); `core_is_compatible()` asks, once. **Call it at startup** and read
 `false` as a deployment error: a library older than the header (1.0 under the 1.1 header) has no
-detailed export and ignores a format's grouping policy, so nothing strict may reach it. A strict
-`declare`, `DateOptions::declare` and `MonthNames::declare` return `std::nullopt` against one, and
-a door handed a strict format, or a detailed door, writes one line naming both versions to stderr
-and ends the program with `std::abort()` instead of parsing it as legacy. A legacy format and the
-plain doors keep working against any core, as far as the library's own exports go. A program
+detailed export and reads a numeral by 1.0's rule, so no format may reach it. `declare`, `DateOptions::declare` and `MonthNames::declare` return `std::nullopt` against one, and
+a numeric door handed a format, or a detailed door, writes one line naming both versions to stderr
+and ends the program with `std::abort()` instead of reading by that rule, where `0,125` is 125 and `1,23,456` is 123456.
+The doors that read no numeral keep working against any core, as far as the library's own exports go. A program
 built from this header also names the detailed exports, so how a library without them is met
 depends on the platform: with lazy binding (Linux) the program loads and the guard is what
 fires, while on macOS every symbol is bound at load and the dynamic loader refuses the program

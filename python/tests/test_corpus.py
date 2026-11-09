@@ -63,7 +63,6 @@ _EXPECTED_REASON = {
 
 
 _GROUPINGS = {
-    "legacy": NumFormat.GROUPING_LEGACY,
     "western": NumFormat.GROUPING_WESTERN,
     "indian": NumFormat.GROUPING_INDIAN,
 }
@@ -72,8 +71,7 @@ _GROUPINGS = {
 def _lenience_and_grouping(fmt: dict) -> tuple[int, int]:
     """A row's flags split the way the constructor takes them: the lenience flags, and the
     grouping policy, which a row names in ``grouping`` or, where it names none, is whatever
-    policy bits its raw flags carry: none, which is legacy, for every row older than strict
-    grouping."""
+    policy bits its raw flags carry: none, which is Western."""
     flags, named = fmt["flags"], fmt.get("grouping")
     policy_bits = NumFormat.GROUPING_POLICY
     if named is not None:
@@ -85,9 +83,8 @@ def _lenience_and_grouping(fmt: dict) -> tuple[int, int]:
 def _format_of(vector: dict) -> NumFormat:
     fmt = vector.get("format")
     if fmt is None:
-        # No declaration at all is the core's own invariant format, which parses legacy: a row
-        # declaring no policy keeps the meaning it had before strict grouping.
-        return NumFormat(".", ",", NumFormat.ALL, grouping=NumFormat.GROUPING_LEGACY)
+        # No declaration at all is the invariant format, which is Western.
+        return NumFormat.INVARIANT
     lenience, grouping = _lenience_and_grouping(fmt)
     # A key the vector leaves out declares nothing — the constructor's own default.
     return NumFormat(
@@ -806,3 +803,91 @@ def _declared_month_names(vector: dict) -> MonthNames:
     assert built.packed == packed
     assert MonthNames.from_packed(packed) == built
     return built
+
+
+def _holds(want: dict, text: str, fmt: NumFormat, label: str) -> None:
+    """One shape at the i64, f64 and decimal doors under one format."""
+    verdicts = (
+        hypercast.cast_i64(text, fmt),
+        hypercast.cast_f64(text, fmt),
+        hypercast.cast_decimal(text, fmt),
+    )
+    for verdict in verdicts:
+        if "value" in want:
+            assert isinstance(verdict, hypercast.Success), (label, text, verdict)
+            assert verdict.value == want["value"], (label, text, verdict)
+        else:
+            offset, length = want["fault"]
+            assert verdict == hypercast.Fault(CastFailure.MALFORMED, offset, length), (
+                label,
+                text,
+                verdict,
+            )
+            assert isinstance(verdict, hypercast.Fault), (label, text, verdict)
+            assert verdict.detail is hypercast.Detail.GROUP_SIZE, (label, text)
+
+
+def test_grouping_corpus():
+    """Every shape under each way to say a policy: nothing said, or Western said, reads Western;
+    Indian reads only when declared, and either declaration replaces the other; the locale bridge
+    follows the number pattern. Grouping bits in flags are refused at the constructor."""
+    rows = json.loads((_corpus_dir() / "grouping.json").read_text(encoding="utf-8"))
+    western = NumFormat.GROUPING_WESTERN
+    indian = NumFormat.GROUPING_INDIAN
+    base = {"decimal_point": ".", "thousands_sep": ","}
+    shapes = 0
+    for row in rows:
+        kind = row["kind"]
+        if kind == "shape":
+            shapes += 1
+            text = row["input"]
+            for label, fmt in (
+                ("invariant", NumFormat.INVARIANT),
+                ("constructor", NumFormat(".", ",", NumFormat.ALL)),
+                ("declared western", NumFormat(".", ",", NumFormat.ALL, grouping=western)),
+                (
+                    "indian to western",
+                    NumFormat.INVARIANT.with_grouping(indian).with_grouping(western),
+                ),
+                ("bridge threes", NumFormat.from_localeconv({**base, "grouping": [3, 0]})),
+                ("bridge fours", NumFormat.from_localeconv({**base, "grouping": [4, 0]})),
+                (
+                    "bridge indian currency",
+                    NumFormat.from_localeconv(
+                        {**base, "grouping": [3, 0], "mon_grouping": [3, 2, 0]}
+                    ),
+                ),
+            ):
+                _holds(row["western"], text, fmt, label)
+            for label, fmt in (
+                ("declared indian", NumFormat(".", ",", NumFormat.ALL, grouping=indian)),
+                ("western to indian", NumFormat.INVARIANT.with_grouping(indian)),
+                ("bridge indian", NumFormat.from_localeconv({**base, "grouping": [3, 2, 0]})),
+                (
+                    "bridge ml",
+                    NumFormat.from_localeconv(
+                        {**base, "grouping": [3, 2, 0], "mon_grouping": [3, 0]}
+                    ),
+                ),
+            ):
+                _holds(row["indian"], text, fmt, label)
+        elif kind == "detect":
+            _holds(row, row["input"], NumFormat.DETECT, "detect")
+        elif kind == "refused_flags":
+            flags = row["flags"]
+            with pytest.raises(ValueError, match="grouping bits"):
+                NumFormat(".", ",", flags)
+            policy = flags & NumFormat.GROUPING_POLICY
+            with pytest.raises(ValueError, match="Grouping must be"):
+                NumFormat(".", ",", NumFormat.ALL, grouping=policy)
+            with pytest.raises(ValueError, match="Grouping must be"):
+                NumFormat.INVARIANT.with_grouping(policy)
+        elif kind == "accepted_flags":
+            flags = row["flags"]
+            policy = flags & NumFormat.GROUPING_POLICY
+            made = NumFormat(".", ",", flags & ~NumFormat.GROUPING_POLICY, grouping=policy)
+            assert made.grouping == policy
+            assert NumFormat.INVARIANT.with_grouping(policy).grouping == policy
+        else:
+            pytest.fail(f"unknown kind {kind}")
+    assert shapes >= 18

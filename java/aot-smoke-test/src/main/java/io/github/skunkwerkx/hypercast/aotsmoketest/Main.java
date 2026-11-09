@@ -243,10 +243,10 @@ public final class Main {
         // The strict default, and the detailed path's four downcall shapes: a text door with
         // date options and a month vocabulary, a typed door, and the checked pair.
         report(
-                "i32 (strict Western)",
+                "i32 (Western)",
                 String.valueOf(Cast.i32("12,34", NumFormat.INVARIANT)),
                 "Fault[reason=MALFORMED, offset=2, length=3]");
-        check("i32 (legacy)", Cast.i32("12,34", NumFormat.INVARIANT.withGrouping(Grouping.LEGACY)), 1234);
+        check("i32 (Indian)", Cast.i32("1,23,456", NumFormat.INVARIANT.withGrouping(Grouping.INDIAN)), 123456);
         detailed("i32 detailed", DetailedCast.i32("12,34", NumFormat.INVARIANT), "fault MALFORMED group_size @ 2+3");
         detailed("date (common forms)", DetailedCast.date("20260107", DateOptions.COMMON_FORMS), "ok 2026-01-07");
         MonthNames english = MonthNames.builder()

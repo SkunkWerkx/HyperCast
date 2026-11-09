@@ -48,10 +48,11 @@ const (
 	DetailMarkRepeated
 	// DetailGroupMisplaced is a group separator not between digits, or an empty group.
 	DetailGroupMisplaced
-	// DetailGroupSize is a group with the wrong digit count under a strict GroupingPolicy.
+	// DetailGroupSize is a group its GroupingPolicy refuses: the wrong digit count, or a
+	// first group that starts with a zero.
 	DetailGroupSize
 	// DetailGroupInFraction is grouping after the decimal separator or in an exponent, under
-	// a strict GroupingPolicy.
+	// every GroupingPolicy.
 	DetailGroupInFraction
 	// DetailAmbiguousSeparator is SeparatorDetect unable to tell '.' from ','.
 	DetailAmbiguousSeparator

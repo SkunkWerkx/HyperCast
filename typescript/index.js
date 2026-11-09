@@ -95,7 +95,7 @@ const NumStyles = native
       TrailingSign: 128,
       All: 95,
     })
-const Grouping = native ? native.Grouping : Object.freeze({ Legacy: 0, Western: 256, Indian: 512 })
+const Grouping = native ? native.Grouping : Object.freeze({ Western: 0, Indian: 512 })
 const DateStyles = native
   ? native.DateStyles
   : Object.freeze({ None: 0, CompactDate: 1, SpaceSeparator: 2, HourOffset: 4, CommonForms: 7 })

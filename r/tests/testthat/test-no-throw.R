@@ -11,7 +11,7 @@ corpus_inputs <- function() {
   dir <- testthat::test_path("corpus")
   if (!dir.exists(dir)) dir <- file.path(testthat::test_path(), "..", "..", "..", "corpus")
   files <- list.files(dir, pattern = "\\.json$", full.names = TRUE)
-  stopifnot(length(files) == 18L)
+  stopifnot(length(files) == 19L)
   inputs <- unlist(lapply(files, function(path) {
     json <- paste(readLines(path, encoding = "UTF-8", warn = FALSE), collapse = "\n")
     json <- gsub("\\u0000", "\\uE000", json, fixed = TRUE)
@@ -79,7 +79,7 @@ text_doors <- function() {
       cast_datetime(x, "year_month_day", am = "\uc624\uc804", pm = "a. m.")
     },
     decimal_indian = function(x) cast_decimal(x, num_format(grouping = "indian")),
-    decimal_legacy = function(x) cast_decimal(x, num_format(grouping = "legacy")),
+    decimal_indian = function(x) cast_decimal(x, num_format(grouping = "indian")),
     timestamp_common = function(x) cast_timestamp(x, date_options("common_forms")),
     date_compact = function(x) cast_date(x, options = date_options("common_forms")),
     date_months = function(x) {
@@ -90,6 +90,10 @@ text_doors <- function() {
                     months = english_months)
     },
     text = cast_text,
+    text_raw = function(x) cast_text(x, raw = TRUE),
+    checked_text_raw = function(x) {
+      cast_text(x, hypercast_constraints("text", max_length = 4, trim = TRUE), raw = TRUE)
+    },
     checked_text = function(x) {
       cast_text(x, hypercast_constraints("text", min_length = 1, max_length = 4, trim = TRUE,
                                          enum = c("Male", "\u00e9t\u00e9", "\u0131")))
@@ -158,7 +162,10 @@ expect_quiet_verdict <- function(door, x, label) {
     testthat::expect_true(all(is.na(v$keyword[!ok %in% FALSE])), label = label)
     testthat::expect_true(all(!is.na(v$adjusted[ok %in% TRUE])), label = label)
   }
-  testthat::expect_true(all(is.na(v$value[!ok %in% TRUE])), label = label)
+  # raw = TRUE holds its value in a list, where a row with none is NULL rather than NA.
+  absent <- v$value[!ok %in% TRUE]
+  testthat::expect_true(all(if (is.list(absent)) lengths(absent) == 0L else is.na(absent)),
+                        label = label)
   testthat::expect_true(all(is.na(v$offset[!ok %in% FALSE])), label = label)
   # A fault names its detail (a published one, here); a violation, a success and a missing
   # row have none.

@@ -45,11 +45,11 @@ Every place a door fails, with the reason and detail it reports. A detailed door
 | `IntLaneTooSmall` | `integer.rs` | `out_of_range` | `too_small` | The lenient lane reads a value below a signed type's minimum. |
 | `IntDecimalPoint` | `integer.rs` | `malformed` | `fraction_not_allowed` | A decimal separator at an integer door. |
 | `IntGroupMisplaced` | `integer.rs` | `malformed` | `group_misplaced` | A group separator not between two digits. |
-| `IntGroupSize` | `integer.rs` | `malformed` | `group_size` | Under a strict grouping policy, a group with the wrong number of digits: the span is the group, with the separator before it unless it is the leftmost. |
+| `IntGroupSize` | `integer.rs` | `malformed` | `group_size` | A group its grouping policy refuses: the wrong number of digits, or a first group that starts with a zero. The span is the group, with the separator before it unless it is the leftmost. |
 | `IntNegativeExponent` | `integer.rs` | `malformed` | `fraction_not_allowed` | A negative exponent at an integer door; the span is its `-`. |
 | `IntExponentDigitExpected` | `integer.rs` | `malformed` | `digit_expected` | An `e` (and its sign) with no exponent digit after it; the span is the `e`. |
 | `IntAfterExponentSign` | `integer.rs` | `malformed` | `sign_misplaced` | A sign after the exponent's digits. |
-| `IntGroupInExponent` | `integer.rs` | `malformed` | `group_in_fraction` | Under a strict grouping policy, a group separator after the exponent's digits. |
+| `IntGroupInExponent` | `integer.rs` | `malformed` | `group_in_fraction` | A group separator after the exponent's digits. |
 | `IntAfterExponent` | `integer.rs` | `malformed` | `unexpected_character` | Another character after the exponent's digits. |
 | `IntSignMisplaced` | `integer.rs` | `malformed` | `sign_misplaced` | A second leading sign, or a sign inside the numeral. |
 | `IntNotFinite` | `integer.rs` | `malformed` | `not_finite` | The token, less its frame, is `nan`, `inf` or `infinity` (ASCII case-insensitive); the span is its first letter. |
@@ -71,10 +71,10 @@ Every place a door fails, with the reason and detail it reports. A detailed door
 | `RealMarkRepeated` | `real.rs` | `malformed` | `mark_repeated` | A second decimal separator. |
 | `RealGroupInFraction` | `real.rs` | `malformed` | `group_in_fraction` | A group separator after the decimal separator. |
 | `RealGroupMisplaced` | `real.rs` | `malformed` | `group_misplaced` | A group separator not between two digits. |
-| `RealGroupSize` | `real.rs` | `malformed` | `group_size` | Under a strict grouping policy, a group with the wrong number of digits: the span is the group, with the separator before it unless it is the leftmost. |
+| `RealGroupSize` | `real.rs` | `malformed` | `group_size` | A group its grouping policy refuses: the wrong number of digits, or a first group that starts with a zero. The span is the group, with the separator before it unless it is the leftmost. |
 | `RealExponentDigitExpected` | `real.rs` | `malformed` | `digit_expected` | An `e` (and its sign) with no exponent digit after it; the span is the `e`. |
 | `RealAfterExponentSign` | `real.rs` | `malformed` | `sign_misplaced` | A sign after the exponent's digits. |
-| `RealGroupInExponent` | `real.rs` | `malformed` | `group_in_fraction` | Under a strict grouping policy, a group separator after the exponent's digits. |
+| `RealGroupInExponent` | `real.rs` | `malformed` | `group_in_fraction` | A group separator after the exponent's digits. |
 | `RealAfterExponent` | `real.rs` | `malformed` | `unexpected_character` | Another character after the exponent's digits. |
 | `RealSignMisplaced` | `real.rs` | `malformed` | `sign_misplaced` | A second leading sign, or a sign inside the numeral. |
 | `RealNotFinite` | `real.rs` | `malformed` | `not_finite` | The token, less its frame, is `nan`, `inf` or `infinity` (ASCII case-insensitive); the span is its first letter. |

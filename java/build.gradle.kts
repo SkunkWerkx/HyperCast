@@ -388,8 +388,8 @@ val testFloor = tasks.register<Test>("testFloor") {
     }
 }
 
-// The downgrade test: a strict request against a real 1.0 core is rejected, never parsed in
-// legacy mode. It is handed the older libraries (-Phypercast.v1Core=<libhypercast.so/.dylib/.dll of a
+// The downgrade test: a request against a real 1.0 core is rejected, never parsed by 1.0's
+// rule. It is handed the older libraries (-Phypercast.v1Core=<libhypercast.so/.dylib/.dll of a
 // build of tag v1.0.0>, -Phypercast.preDetailedCore=<a core with every 1.0-era export and none of
 // the detailed ones>, -Phypercast.v1Jni=<a libhypercast_jni of a core without the detailed
 // exports>) and runs its child JVMs on the JDK of whichever task runs it: `testDowngrade` on

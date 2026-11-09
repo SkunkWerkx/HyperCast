@@ -1,7 +1,7 @@
 // The downgrade test: the C++ header against a core that cannot drive it, which lacks the detailed
-// exports or reads no grouping policy. A core drives a header when its major version is the
-// header's and its minor at least the header's, whatever the patch. A strict request against one
-// that cannot must be refused, never parsed as legacy, and a core that can must accept it.
+// exports and reads grouped numerals by 1.0's rule. A core drives a header when its major version
+// is the header's and its minor at least the header's, whatever the patch. A request against one
+// that cannot must be refused, never read by that rule, and a core that can must accept it.
 //
 // run.sh builds it with the archive's header rewritten to other versions (downgrade_leg there): a
 // patch ahead of the archive's library (accept), a major version ahead (refuse) and, when
@@ -11,14 +11,18 @@
 // its version guard. Nothing here may call a symbol such a core lacks except through the guard.
 //
 // usage: smoke_downgrade accept|refuse     the declarations, and the plain doors
-//        smoke_downgrade door              a strict plain door: parses nothing as legacy
+//        smoke_downgrade door              a plain door, Western: reads nothing by 1.0's rule
+//        smoke_downgrade indian            a plain door, Indian: likewise
+//        smoke_downgrade retired <policy>  with_grouping with 256 or 768: ends the program
 //
-// `door` prints `malformed` for `12,34` under strict grouping on a core that drives the header, and
-// on one that cannot the header writes a line naming both versions to stderr and ends the program
-// (std::abort) before it parses anything: it prints `parsed` only for the failure the guard exists
-// to prevent, the legacy reading, 1234.
+// `door` prints `malformed` for `1,23,456` on a core that drives the header, and `indian` prints
+// `read 123456`. On one that cannot, the header writes a line naming both versions to stderr and
+// ends the program (std::abort) before it parses anything: `door` prints `parsed` only for the
+// failure the guard exists to prevent, 1.0's reading of 123456.
 
+#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string_view>
 
@@ -35,19 +39,37 @@
 namespace hc = hypercast;
 
 int main(int argc, char **argv) {
-  if (argc != 2) {
-    std::fprintf(stderr, "usage: %s accept|refuse|door\n", argv[0]);
+  if (argc != 2 && !(argc == 3 && std::string_view(argv[1]) == "retired")) {
+    std::fprintf(stderr, "usage: %s accept|refuse|door|indian|retired <policy>\n", argv[0]);
     return 2;
   }
   const std::string_view mode = argv[1];
   if (mode == "door") {
-    // The strict default, at a plain door. On a core that cannot drive the header this aborts.
-    const auto verdict = hc::cast_i32("12,34", hc::NumFormat::invariant());
+    // The default, at a plain door. On a core that cannot drive the header this aborts.
+    const auto verdict = hc::cast_i32("1,23,456", hc::NumFormat::invariant());
     if (verdict.ok()) {
       std::printf("parsed %d\n", verdict.value());
     } else {
       std::printf("malformed\n");
     }
+    return 0;
+  }
+  if (mode == "indian") {
+    const auto indian = hc::NumFormat::invariant().with_grouping(hc::Grouping::indian);
+    const auto verdict = hc::cast_i32("1,23,456", indian);
+    if (verdict.ok()) {
+      std::printf("read %d\n", verdict.value());
+    } else {
+      std::printf("malformed\n");
+    }
+    return 0;
+  }
+  if (mode == "retired") {
+    // The contract violation with_grouping answers a bad policy with: the program ends here, on
+    // any core, and nothing is printed.
+    const auto policy = static_cast<std::uint32_t>(std::strtoul(argv[2], nullptr, 10));
+    const auto stale = hc::NumFormat::invariant().with_grouping(static_cast<hc::Grouping>(policy));
+    std::printf("accepted %u\n", static_cast<unsigned>(stale.raw().format.flags));
     return 0;
   }
   const bool current = mode == "accept";
@@ -58,11 +80,11 @@ int main(int argc, char **argv) {
   CHECK(hc::core_is_compatible() == current);
   CHECK(hc::detail::version_accepts(version, HYPERCAST_VERSION) == current);
 
-  // A strict grouping is declared, or refused: against a core that would ignore it, it never is.
+  // A format is declared, or refused: against a core that reads by 1.0's rule, it never is.
   hc::NumFormat::Fields fields;
   fields.decimal_sep = ".";
   fields.group_sep = ",";
-  CHECK(hc::NumFormat::declare(fields).has_value() == current); // strict Western, the default
+  CHECK(hc::NumFormat::declare(fields).has_value() == current); // Western, the default
   fields.grouping = hc::Grouping::western;
   CHECK(hc::NumFormat::declare(fields).has_value() == current);
   fields.grouping = hc::Grouping::indian;
@@ -71,18 +93,18 @@ int main(int argc, char **argv) {
   // plain check never saw them, so the header asks the detailed judge, which an older core lacks.
   fields.grouping = static_cast<hc::Grouping>(3 << 8);
   CHECK(!hc::NumFormat::declare(fields).has_value());
+  fields.grouping = static_cast<hc::Grouping>(1 << 8);
+  CHECK(!hc::NumFormat::declare(fields).has_value());
   fields.grouping = hc::Grouping::western;
   fields.styles = static_cast<hc::NumStyles>(1 << 10);
   CHECK(!hc::NumFormat::declare(fields).has_value());
+  fields.styles = static_cast<hc::NumStyles>(351); // 95 and the retired bit, at any core
+  CHECK(!hc::NumFormat::declare(fields).has_value());
+  fields.styles = static_cast<hc::NumStyles>(863);
+  CHECK(!hc::NumFormat::declare(fields).has_value());
   fields.styles = hc::NumStyles::all;
 
-  // Legacy grouping is the 1.0 behaviour, and any core serves it through the 1.0 exports.
-  fields.grouping = hc::Grouping::legacy;
-  const auto legacy = hc::NumFormat::declare(fields);
-  CHECK(legacy.has_value());
-  CHECK(hc::cast_i32("12,34", *legacy).value() == 1234);
-  CHECK(hc::cast_f64("1,2,3.5", *legacy).value() == 123.5);
-  CHECK(hc::cast_decimal("12,34", *legacy).ok());
+  // A door that reads no numeral reaches any core through the 1.0 exports.
   CHECK(hc::cast_bool("yes").value());
   CHECK(hc::cast_date("2026-01-07").ok());
 

@@ -1,7 +1,7 @@
 // Stands in for the export a 1.0 core lacks, for the downgrade test (run.sh, SMOKE_CORE_10).
 // hypercast.hpp may name cast_detailed only behind its version guard, so on a 1.0 core nothing
-// reaches this function; if the header's guard ever let a strict request through, it would land
-// here, and the test ends with status 99 rather than reading the request as legacy.
+// reaches this function; if the header's guard ever let a request through, it would land here,
+// and the test ends with status 99 rather than reading it by that core's rule.
 
 #include <stdio.h>
 #include <stdlib.h>

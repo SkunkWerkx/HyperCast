@@ -155,8 +155,8 @@ class NativeValuesTest {
 
             byte[] expected = new byte[92];
             word(expected, 0, 92);
-            // The flags word is the styles and, in bits 8 and 9, the default strict Western policy.
-            word(expected, 4, NumFormat.STYLE_ALL | NumFormat.STYLE_TRAILING_SIGN | (1 << 8));
+            // The flags word is the styles; the default Western policy sets no bit.
+            word(expected, 4, NumFormat.STYLE_ALL | NumFormat.STYLE_TRAILING_SIGN);
             word(expected, 8, 0);
             symbol(expected, 12, 8, ",");
             symbol(expected, 21, 8, ".");
@@ -171,7 +171,7 @@ class NativeValuesTest {
             assertEquals(3, segment.get(ValueLayout.JAVA_BYTE, 4 + 56));
             assertEquals(3, segment.get(ValueLayout.JAVA_BYTE, 4 + 91));
 
-            // The policy bits are the grouping's: legacy 0, Western 1 << 8, Indian 2 << 8.
+            // The policy bits are the grouping's: Western 0, Indian 2 << 8.
             for (Grouping grouping : Grouping.values()) {
                 NativeValues.writeFormat(format.withGrouping(grouping), segment, 4);
                 assertEquals(

@@ -33,7 +33,7 @@ namespace HyperCast;
 /// </remarks>
 /// <param name="DecimalSeparator">The declared decimal separator: one to <see cref="MaxSymbolBytes"/> bytes of UTF-8, no ASCII digit or white space.</param>
 /// <param name="GroupSeparator">The declared digit-group separator, likewise but for white space, which it may be or hold. Must differ from <paramref name="DecimalSeparator"/>.</param>
-/// <param name="Styles">The lenience flags.</param>
+/// <param name="Styles">The lenience flags: bits 0 to 7, any other refused here.</param>
 public readonly record struct NumFormat(string DecimalSeparator, string GroupSeparator, NumStyles Styles)
 {
 	/// <summary>
@@ -50,7 +50,7 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 	const string DoorParameter = "format";
 
 	/// <summary>
-	/// The invariant profile — <c>.</c> decimal, <c>,</c> grouping (strict <see cref="NumGrouping.Western"/>),
+	/// The invariant profile — <c>.</c> decimal, <c>,</c> grouping (<see cref="NumGrouping.Western"/>),
 	/// every lenience on, nothing else declared.
 	/// </summary>
 	public static readonly NumFormat Invariant = new(".", ",", NumStyles.All);
@@ -61,6 +61,12 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 	/// are resolved, are judged as <see cref="NumGrouping.Western"/> ones.
 	/// </summary>
 	public static readonly NumFormat Detect = new(".", ",", NumStyles.All | NumStyles.SeparatorDetect);
+
+	/// <summary>
+	/// The lenience flags, bits 0 to 7. Any other bit, the retired grouping bit 8 included, is refused here:
+	/// an <see cref="ArgumentException"/> from the constructor or the <c>with</c>, never a later door.
+	/// </summary>
+	public NumStyles Styles { get; init => field = ValidStyles(value); } = ValidStyles(Styles);
 
 	/// <summary>Declares single-character separators and the flags — the common case, spelled as characters.</summary>
 	/// <param name="decimalSeparator">The declared decimal separator.</param>
@@ -75,7 +81,7 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 	/// <param name="decimalSeparator">The declared decimal separator.</param>
 	/// <param name="groupSeparator">The declared digit-group separator. Must differ from <paramref name="decimalSeparator"/>.</param>
 	/// <param name="styles">The lenience flags.</param>
-	/// <param name="grouping">How strictly digit groups are judged.</param>
+	/// <param name="grouping">How digit groups are judged.</param>
 	public NumFormat(string decimalSeparator, string groupSeparator, NumStyles styles, NumGrouping grouping)
 		: this(decimalSeparator, groupSeparator, styles) =>
 		Grouping = grouping;
@@ -84,7 +90,7 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 	/// <param name="decimalSeparator">The declared decimal separator.</param>
 	/// <param name="groupSeparator">The declared digit-group separator. Must differ from <paramref name="decimalSeparator"/>.</param>
 	/// <param name="styles">The lenience flags.</param>
-	/// <param name="grouping">How strictly digit groups are judged.</param>
+	/// <param name="grouping">How digit groups are judged.</param>
 	public NumFormat(char decimalSeparator, char groupSeparator, NumStyles styles, NumGrouping grouping)
 		: this(decimalSeparator.ToString(), groupSeparator.ToString(), styles) =>
 		Grouping = grouping;
@@ -108,12 +114,13 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 		CurrencySymbol = currencySymbol;
 
 	/// <summary>
-	/// How strictly digit groups are judged, beside the <see cref="Styles"/> and never part of them:
+	/// How digit groups are judged, beside the <see cref="Styles"/> and never part of them:
 	/// <see cref="NumGrouping.Western"/> unless declared otherwise, so a style mask handed to the
-	/// constructor never carries a policy, and <c>with { Styles = … }</c> keeps this one. An
-	/// undefined value is a caller bug the doors reject with an <see cref="ArgumentException"/>.
+	/// constructor never carries a policy, and <c>with { Styles = … }</c> keeps this one. Choose either
+	/// policy with <c>with { Grouping = … }</c>. Any other value, 256 and 768 included, is refused here:
+	/// an <see cref="ArgumentException"/> from the constructor or the <c>with</c>, never a later door.
 	/// </summary>
-	public NumGrouping Grouping { get; init; }
+	public NumGrouping Grouping { get; init => field = ValidGrouping(value); }
 
 	/// <summary>
 	/// The declared decimal separator. One to <see cref="MaxSymbolBytes"/> bytes of UTF-8
@@ -198,6 +205,44 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 	public Rune? DigitZero { get; init; }
 
 	/// <summary>
+	/// Equal when both declare the same thing, as the core compares formats: every field as it
+	/// reads back, so a <see langword="null"/> string handed to the constructor or an
+	/// initializer, the unset field of a <c>default(NumFormat)</c> and an empty string are one
+	/// declaration. Strings compare ordinally.
+	/// </summary>
+	/// <param name="other">The format to compare with.</param>
+	/// <returns><see langword="true"/> when every field and the grouping policy are equal.</returns>
+	public bool Equals(NumFormat other) =>
+		Styles == other.Styles && Grouping == other.Grouping && DigitZero == other.DigitZero
+		&& string.Equals(DecimalSeparator, other.DecimalSeparator, StringComparison.Ordinal)
+		&& string.Equals(GroupSeparator, other.GroupSeparator, StringComparison.Ordinal)
+		&& string.Equals(CurrencySymbol, other.CurrencySymbol, StringComparison.Ordinal)
+		&& string.Equals(CurrencyDecimalSeparator, other.CurrencyDecimalSeparator, StringComparison.Ordinal)
+		&& string.Equals(CurrencyGroupSeparator, other.CurrencyGroupSeparator, StringComparison.Ordinal)
+		&& string.Equals(MinusSign, other.MinusSign, StringComparison.Ordinal)
+		&& string.Equals(PlusSign, other.PlusSign, StringComparison.Ordinal)
+		&& string.Equals(PercentSymbol, other.PercentSymbol, StringComparison.Ordinal);
+
+	/// <summary>A hash over what <see cref="Equals(NumFormat)"/> compares.</summary>
+	/// <returns>The hash code.</returns>
+	public override int GetHashCode()
+	{
+		var hash = new HashCode();
+		hash.Add(Styles);
+		hash.Add(Grouping);
+		hash.Add(DigitZero);
+		hash.Add(DecimalSeparator, StringComparer.Ordinal);
+		hash.Add(GroupSeparator, StringComparer.Ordinal);
+		hash.Add(CurrencySymbol, StringComparer.Ordinal);
+		hash.Add(CurrencyDecimalSeparator, StringComparer.Ordinal);
+		hash.Add(CurrencyGroupSeparator, StringComparer.Ordinal);
+		hash.Add(MinusSign, StringComparer.Ordinal);
+		hash.Add(PlusSign, StringComparer.Ordinal);
+		hash.Add(PercentSymbol, StringComparer.Ordinal);
+		return hash.ToHashCode();
+	}
+
+	/// <summary>
 	/// Derives a format from a culture's number formatting — every field
 	/// <see cref="From(NumberFormatInfo)"/> fills, from the culture's
 	/// <see cref="CultureInfo.NumberFormat"/>.
@@ -232,19 +277,20 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 	/// </summary>
 	/// <remarks>
 	/// <list type="bullet">
-	/// <item><description>The grouping the culture's own patterns write, so the bridge never rejects what the
-	/// platform itself formats. Both <see cref="NumberFormatInfo.NumberGroupSizes"/> and
-	/// <see cref="NumberFormatInfo.CurrencyGroupSizes"/> are read, whole, with .NET's meaning: the sizes run
-	/// from the decimal separator leftward, the last nonzero size repeats, a trailing <c>0</c> ends grouping
-	/// after the sizes before it, and <c>[0]</c> is no grouping at all. Only a pattern that groups is
-	/// counted. If every one is <c>3</c> (<c>[3]</c>) the policy is <see cref="NumGrouping.Western"/>; if every one is
-	/// three and then twos without end (<c>[3, 2]</c>: en-IN, hi-IN) it is <see cref="NumGrouping.Indian"/>;
-	/// if any is another shape (Toki Pona's twos, <c>[3, 0]</c>) or the two disagree (ICU's ml, ta, mr and or:
-	/// Indian numbers, Western currency) it is <see cref="NumGrouping.Legacy"/>, a deterministic fallback read
-	/// from the sizes alone, never from the culture's name or from any input. <see cref="NumStyles.Grouping"/>
-	/// is cleared only when neither pattern groups (en-US-POSIX); when just one does (en-BG writes no currency
-	/// grouping) it stays set, ungrouped values stay valid, and the format cannot prohibit grouping in the one
-	/// amount alone, since one policy and one flag serve both.</description></item>
+	/// <item><description>The grouping the culture's number pattern writes, read from
+	/// <see cref="NumberFormatInfo.NumberGroupSizes"/> whole, with .NET's meaning: the sizes run from the decimal
+	/// separator leftward, the last nonzero size repeats, a trailing <c>0</c> ends grouping after the sizes
+	/// before it, and <c>[0]</c> is no grouping at all. Three and then twos without end (<c>[3, 2]</c>: en-IN, hi-IN)
+	/// is <see cref="NumGrouping.Indian"/>; anything else is <see cref="NumGrouping.Western"/>. So a culture with
+	/// Indian numbers and Western currency (ml, mr and or on ICU 78) is Indian, and a Western amount through it is
+	/// refused until the column declares <c>with { Grouping = NumGrouping.Western }</c>; a culture of another
+	/// shape (Toki Pona's twos) is Western, and its grouped output is refused, never misread: docs/grouping.md.
+	/// The policy is read from the sizes alone, never from the culture's name or from any input.
+	/// <see cref="NumStyles.Grouping"/> is cleared only when neither
+	/// <see cref="NumberFormatInfo.NumberGroupSizes"/> nor <see cref="NumberFormatInfo.CurrencyGroupSizes"/> groups
+	/// (en-US-POSIX); when just one does (en-BG writes no currency grouping) it stays set, ungrouped values stay
+	/// valid, and the format cannot prohibit grouping in the one amount alone, since one flag serves
+	/// both.</description></item>
 	/// <item><description><see cref="NumberFormatInfo.NumberDecimalSeparator"/> and
 	/// <see cref="NumberFormatInfo.NumberGroupSeparator"/> whole, however many characters
 	/// each is (<c>,</c> for a culture that declares no group separator), and
@@ -424,41 +470,19 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 	[UnsafeAccessor(UnsafeAccessorKind.Field, Name = "currencyGroupSizes")]
 	static extern ref int[] CurrencyGroupSizesField(NumberFormatInfo numberFormat);
 
-	enum Shape { None, Western, Indian, Other }
+	// A pattern groups unless its sizes are empty or start with 0, by .NET's meaning: they run from the
+	// decimal separator leftward, a last size that is nonzero repeats without end, a trailing 0 stops grouping
+	// after the sizes before it, and a leading 0 (`[0]`) is no grouping at all.
+	static bool Groups(int[] sizes) => sizes.Length != 0 && sizes[0] != 0;
 
-	// A pattern's shape, by .NET's meaning of its sizes: they run from the decimal separator leftward, a
-	// last size that is nonzero repeats without end, a trailing 0 stops grouping after the sizes before it,
-	// and a leading 0 (`[0]`) is no grouping at all. `[3]` is Western and `[3, 2]` Indian; a finite pattern
-	// (`[3, 0]` writes 1234,567) or any other size is no policy the core has a name for.
-	static Shape ShapeOf(int[] sizes)
-	{
-		if (sizes.Length == 0 || sizes[0] == 0)
-			return Shape.None;
-		if (sizes[^1] == 0)
-			return Shape.Other;
-		if (sizes.All(static size => size == 3))
-			return Shape.Western;
-		if (sizes.Length >= 2 && sizes[0] == 3 && sizes.Skip(1).All(static size => size == 2))
-			return Shape.Indian;
-		return Shape.Other;
-	}
+	// `[3, 2]` and its spellings: a three and then twos, with no trailing 0.
+	static bool IsIndian(int[] sizes) =>
+		sizes.Length >= 2 && sizes[0] == 3 && sizes.Skip(1).All(static size => size == 2);
 
-	// The one policy and the one Grouping flag a number pattern and a currency pattern share: counting
-	// only the patterns that group, both Western is Western, both Indian is Indian, and anything else
-	// (another shape, or two that disagree) is the legacy rule, which reads every one. Neither grouping
-	// clears the flag.
-	static (NumGrouping Grouping, bool Groups) GroupingOf(int[] number, int[] currency)
-	{
-		Shape first = ShapeOf(number), second = ShapeOf(currency);
-		if (first == Shape.None)
-			first = second;
-		if (second == Shape.None)
-			second = first;
-		return first == Shape.None ? (NumGrouping.Western, false)
-			: first == second && first == Shape.Western ? (NumGrouping.Western, true)
-			: first == second && first == Shape.Indian ? (NumGrouping.Indian, true)
-			: (NumGrouping.Legacy, true);
-	}
+	// The policy follows the number pattern: all Indian is Indian, anything else Western. One flag serves both
+	// patterns, cleared only when neither groups.
+	static (NumGrouping Grouping, bool Groups) GroupingOf(int[] number, int[] currency) =>
+		(IsIndian(number) ? NumGrouping.Indian : NumGrouping.Western, Groups(number) || Groups(currency));
 
 	[UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_nativeDigits")]
 	static extern ref string[] NativeDigits(NumberFormatInfo numberFormat);
@@ -466,14 +490,12 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 	/// <summary>
 	/// Validates and converts to the native core's 92-byte layout — what every numeric door
 	/// does with its format argument, public for a library that declares numeric columns
-	/// across a C ABI of its own. The grouping policy it writes (bits 8 and 9 of the flags word) takes
-	/// effect only through the four detailed exports, which every door of this binding calls; an old
-	/// 1.0 export ignores those bits and silently parses with legacy grouping, so a library passing
-	/// this layout to one must not rely on a strict policy.
+	/// across a C ABI of its own. The grouping policy it writes (<see cref="NumGrouping.Indian"/> in bit 9 of
+	/// the flags word; Western sets no bit) takes effect only through the four detailed exports, which every
+	/// door of this binding calls; an old 1.0 export ignores that bit and reads Western.
 	/// </summary>
 	/// <exception cref="ArgumentException">
-	/// A contract violation — a caller bug, not a data verdict: an undefined <see cref="Grouping"/>
-	/// policy or a <see cref="Styles"/> bit no flag defines (the core's own 1.1 refusals); a number separator missing
+	/// A contract violation — a caller bug, not a data verdict: a number separator missing
 	/// or past <see cref="MaxSymbolBytes"/> bytes, the two equal, or the currency pair in
 	/// force equal; any symbol past its buffer, carrying an ASCII digit, or not whole code
 	/// points (a lone UTF-16 surrogate); white space (any of the Unicode set) in a sign, the
@@ -558,39 +580,40 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 		return raw;
 	}
 
-	// The core's flags word: the styles in bits 0 to 7 and the policy in bits 8 and 9, judged as
-	// the core judges a 1.1 format, so an undefined policy or style bit is an ArgumentException here
-	// and never a -1 from the core.
+	// The core's flags word: the styles in bits 0 to 7 and the policy, which is the enum's own value. A value that
+	// reached a field past both declarations (reflection, a reinterpreted struct) is refused here too, as the
+	// core would refuse it.
 	[MethodImpl(MethodImplOptions.AggressiveInlining)]
-	uint RawFlags()
-	{
-		var styles = (uint)Styles;
-		var policy = Grouping switch
-		{
-			NumGrouping.Western => 1u << 8,
-			NumGrouping.Indian => 2u << 8,
-			NumGrouping.Legacy => 0u,
-			_ => uint.MaxValue,
-		};
-		if (policy == uint.MaxValue)
-			ThrowGrouping(Grouping);
-		if ((styles & ~StyleBits) != 0)
-			ThrowStyles(styles);
-		return styles | policy;
-	}
+	uint RawFlags() => (uint)ValidStyles(Styles, DoorParameter) | (uint)ValidGrouping(Grouping, DoorParameter);
 
-	// Every bit NumStyles defines: bits 0 to 7. The policy lives in bits 8 and 9, never in the styles.
+	// Every bit NumStyles defines: bits 0 to 7. The policy lives apart, never in the styles.
 	const uint StyleBits = 0xFF;
 
-	[MethodImpl(MethodImplOptions.NoInlining)]
-	static void ThrowGrouping(NumGrouping grouping) =>
-		throw new ArgumentException(
-			$"Grouping {(int)grouping} is not a defined grouping policy; use Western, Indian or Legacy.", DoorParameter);
+	[MethodImpl(MethodImplOptions.AggressiveInlining)]
+	static NumGrouping ValidGrouping(NumGrouping grouping, string parameter = nameof(Grouping))
+	{
+		if (grouping is not (NumGrouping.Western or NumGrouping.Indian))
+			ThrowGrouping(grouping, parameter);
+		return grouping;
+	}
+
+	[MethodImpl(MethodImplOptions.AggressiveInlining)]
+	static NumStyles ValidStyles(NumStyles styles, string parameter = nameof(Styles))
+	{
+		if (((uint)styles & ~StyleBits) != 0)
+			ThrowStyles((uint)styles, parameter);
+		return styles;
+	}
 
 	[MethodImpl(MethodImplOptions.NoInlining)]
-	static void ThrowStyles(uint styles) =>
+	static void ThrowGrouping(NumGrouping grouping, string parameter) =>
 		throw new ArgumentException(
-			$"Styles 0x{styles:X} carry undefined flag bits; only the bits NumStyles defines (0 to 7) are flags.", DoorParameter);
+			$"Grouping {(int)grouping} is not a defined grouping policy; use Western or Indian.", parameter);
+
+	[MethodImpl(MethodImplOptions.NoInlining)]
+	static void ThrowStyles(uint styles, string parameter) =>
+		throw new ArgumentException(
+			$"Styles 0x{styles:X} carry undefined flag bits; only the bits NumStyles defines (0 to 7) are flags.", parameter);
 
 	// Encodes one declared symbol into its buffer and returns its length, validating as the
 	// core's own check does so a contract violation is an ArgumentException here and never

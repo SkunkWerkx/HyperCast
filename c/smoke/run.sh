@@ -98,7 +98,7 @@ run_program() {
   esac
   output="$(${run_as[@]+"${run_as[@]}"} "$program" ${args[@]+"${args[@]}"})" || fail "$program ($how) failed"
   check_version "hypercast_version() ($how)" "$(printf '%s' "$output" | tr -d '\r')"
-  # A strict plain door on a core of this version reads `12,34` as malformed.
+  # A plain door on a core of this version reads `1,23,456` as malformed.
   case "$program" in
     *smoke_downgrade*)
       output="$(${run_as[@]+"${run_as[@]}"} "$program" door | tr -d '\r')" || fail "$program door ($how) failed"
@@ -173,17 +173,18 @@ if [ "$os" != windows ]; then
   fi
 fi
 
-# The header against a core that cannot drive it: a strict request is refused, never read as
-# legacy. A core drives a header when its major version is the header's and its minor at least the
+# The header against a core that cannot drive it: a numeric request is refused, never read by that
+# core's rule. A core drives a header when its major version is the header's and its minor at least the
 # header's, whatever the patch; each leg below rewrites the header's version macros to say so.
 #
 # downgrade_leg <name> <header version> <library dir> <stubs: yes|no> <verdict: drives|refuses>
 # builds downgrade.cpp from the archive's header as that version, against the shared library in
 # the directory (the stand-in for cast_detailed linked too, for a core that has none), and runs it:
-# a core that drives the header passes `accept` and a strict door reads `12,34` as malformed; one
-# that cannot passes `refuse`, and a strict door writes the header's line naming both versions to
-# stderr and aborts (SIGABRT, 128 + 6 under a shell), printing nothing and never reaching the stand-in
-# for the missing export (status 99).
+# a core that drives the header passes `accept`, a door reads `1,23,456` as malformed and an Indian
+# one as 123456; one that cannot passes `refuse`, and both doors write the header's line naming both
+# versions to stderr and abort (SIGABRT, 128 + 6 under a shell), printing nothing and never reaching
+# the stand-in for the missing export (status 99). On either, with_grouping ends the program on the
+# retired 256 and on 768.
 downgrade_leg() {
   local name="$1" header="$2" lib="$3" stubs="$4" verdict="$5" dir="$work/$1" major minor patch
   IFS=. read -r major minor patch <<<"$header"
@@ -206,11 +207,21 @@ downgrade_leg() {
   LEG_CORE="$(${run_as[@]+"${run_as[@]}"} "$dir/downgrade" "$mode" | tr -d '\r')" || fail "$name: downgrade $mode failed"
   output="$(${run_as[@]+"${run_as[@]}"} "$dir/downgrade" door 2>"$dir/door.err" | tr -d '\r')" || status=$?
   [ "$status" -ne 99 ] || fail "$name: the header called cast_detailed on a core without it: $(cat "$dir/door.err")"
+  local indian indian_status=0 policy retired retired_status
+  indian="$(${run_as[@]+"${run_as[@]}"} "$dir/downgrade" indian 2>"$dir/indian.err" | tr -d '\r')" || indian_status=$?
+  [ "$indian_status" -ne 99 ] || fail "$name: the header called cast_detailed on a core without it: $(cat "$dir/indian.err")"
+  for policy in 256 768; do
+    retired_status=0
+    retired="$(${run_as[@]+"${run_as[@]}"} "$dir/downgrade" retired "$policy" 2>/dev/null | tr -d '\r')" || retired_status=$?
+    [ "$retired_status" -eq 134 ] && [ -z "$retired" ] || fail "$name: with_grouping($policy) printed '$retired' (status $retired_status), expected the abort (134)"
+  done
   if [ "$verdict" = drives ]; then
-    [ "$status" -eq 0 ] && [ "$output" = malformed ] || fail "$name: a strict door printed '$output' (status $status), expected malformed"
+    [ "$status" -eq 0 ] && [ "$output" = malformed ] || fail "$name: a door printed '$output' (status $status), expected malformed"
+    [ "$indian_status" -eq 0 ] && [ "$indian" = "read 123456" ] || fail "$name: an Indian door printed '$indian' (status $indian_status), expected read 123456"
   else
-    [ "$status" -eq 134 ] || fail "$name: a strict door exited $status, expected the header's abort (134)"
-    [ -z "$output" ] || fail "$name: a strict door printed '$output': parsed, not refused"
+    [ "$status" -eq 134 ] || fail "$name: a door exited $status, expected the header's abort (134)"
+    [ -z "$output" ] || fail "$name: a door printed '$output': parsed, not refused"
+    [ "$indian_status" -eq 134 ] && [ -z "$indian" ] || fail "$name: an Indian door printed '$indian' (status $indian_status), expected the header's abort (134)"
     grep -q "the linked library is $LEG_CORE, which cannot drive this header ($header:" "$dir/door.err" ||
       fail "$name: the abort does not name both versions: $(cat "$dir/door.err")"
   fi
@@ -245,7 +256,7 @@ if [ -n "${SMOKE_CORE_10:-}" ]; then
     1.0.*) ;;
     *) fail "SMOKE_CORE_10 holds a core reporting $LEG_CORE, expected 1.0.x" ;;
   esac
-  echo "  a $LEG_CORE core: strict grouping refused at declaration, a strict door aborts naming both versions, legacy still reads"
+  echo "  a $LEG_CORE core: every format refused at declaration, a numeric door aborts naming both versions, the other doors still read"
 fi
 
 echo "smoke: every build of $pkg reports $expected"

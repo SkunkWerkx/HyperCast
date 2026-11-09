@@ -1,9 +1,8 @@
 import Foundation
 
 /// The lenience flags of ``NumFormat`` — bit-for-bit the native core's flags, bits 0 to 7.
-/// A style mask never carries the grouping policy (bits 8 and 9 of the native `flags`): that
-/// is ``Grouping``, declared beside it.
-public struct NumStyles: OptionSet, Sendable {
+/// A style mask never carries the grouping policy: that is ``Grouping``, declared beside it.
+public struct NumStyles: OptionSet, Hashable, Sendable {
     /// The flag bits, exactly as the native format's `flags` field carries them.
     public let rawValue: UInt32
 
@@ -58,20 +57,22 @@ public struct NumStyles: OptionSet, Sendable {
     ]
 }
 
-/// How strictly a ``NumFormat`` reads group separators: the grouping policy, bits 8 and 9 of
-/// the native format's `flags`. It judges the groups of a numeral that uses the declared group
+/// How a ``NumFormat`` reads group separators: the grouping policy, the core's own values in the
+/// native format's `flags`. It judges the groups of a numeral that uses the declared group
 /// separator, and only while ``NumStyles/grouping`` is on: with it off, a group separator stays
 /// forbidden under every policy. Separator detection (``NumStyles/separatorDetect``) is
 /// independent of it, and no policy resolves an ambiguous `1,234`.
+///
+/// `flags`' value 256 (bit 8) is retired permanently and never reused, so no case holds it and a
+/// stale `351` is refused; a future policy takes a new bit from bit 10 up. Shapes neither policy
+/// reads are malformed under a declared format; separator detection infers them instead, and can
+/// read `1,2345` as 1.2345: `docs/grouping.md`.
 public enum Grouping: UInt32, Sendable, CaseIterable {
-    /// A group separator anywhere between two digits, whatever the group sizes (`12,34` and
-    /// `1,2,3` are read): how every format behaved before 1.1, and the escape hatch from the
-    /// strict default.
-    case legacy = 0
     /// Groups of exactly three digits counted leftward from the decimal separator, the
-    /// leftmost of one to three digits: `1,234,567` is read, `12,34` and `1234,567` are
-    /// malformed at the group. A numeral with no separator stays valid. The default.
-    case western = 0x100
+    /// leftmost of one to three digits and not starting with a zero: `1,234,567` is read,
+    /// `1,23,456`, `12,34`, `1234,567` and `0,125` are malformed at the group. A numeral with no separator stays valid. The
+    /// default.
+    case western = 0
     /// Indian grouping, declared only when it is meant: the group next to the decimal
     /// separator has three digits, every group left of it has two, the leftmost one or two
     /// (`12,34,567`).
@@ -79,6 +80,8 @@ public enum Grouping: UInt32, Sendable, CaseIterable {
 
     /// The mask of the two policy bits in the native `flags`.
     static let mask: UInt32 = 0x300
+    /// The retired bit, refused wherever a word is judged.
+    static let retired: UInt32 = 0x100
 }
 
 /// Caller-declared numeric notation for the integer, real and decimal doors. The native
@@ -93,7 +96,7 @@ public enum Grouping: UInt32, Sendable, CaseIterable {
 /// core always reads: a declared minus sign does not stop `-` being read, a declared percent
 /// symbol does not stop `%`, native digits do not stop `0`–`9`. A format that declares none
 /// of them reads exactly what it did before they existed.
-public struct NumFormat: Equatable, Sendable {
+public struct NumFormat: Hashable, Sendable {
     /// The text between the integer and fraction digits (`.` in ``invariant``, `,` in
     /// eurozone text): 1 to 8 UTF-8 bytes, with no ASCII digit or white space in it.
     public var decimalSeparator: String { symbol(at: 12, capacity: Self.maxSymbolBytes) }
@@ -106,9 +109,8 @@ public struct NumFormat: Equatable, Sendable {
     /// The leniences this format permits. Never carries the grouping policy: that is
     /// ``grouping``.
     public var styles: NumStyles { NumStyles(rawValue: raw.1 & NumStyles.definedBits) }
-    /// How strictly this format reads group separators. Strict Western unless declared
-    /// otherwise.
-    public var grouping: Grouping { Grouping(rawValue: raw.1 & Grouping.mask) ?? .legacy }
+    /// How this format reads group separators. Western unless declared otherwise.
+    public var grouping: Grouping { Grouping(rawValue: raw.1 & Grouping.mask) ?? .western }
     /// The declared currency symbol (`$`, `€`, `kr.`, `CHF`), honored only while
     /// ``NumStyles/currency`` is in ``styles``; empty declares none. At most
     /// 16 UTF-8 bytes, with no ASCII digit in it and no white space at either end — those
@@ -170,10 +172,9 @@ public struct NumFormat: Equatable, Sendable {
     static let maxSymbolBytes = Interop.symbolMaxBytes
 
     /// Declares a format from its separators and leniences, and whatever else the culture
-    /// spells differently from ASCII. `grouping` is how strictly group separators are read and
-    /// defaults to ``Grouping/western``: `12,34` is malformed at the group, where before 1.1
-    /// it read as 1234 (declare ``Grouping/legacy`` for that, ``Grouping/indian`` for
-    /// `12,34,567`). Every field after `grouping` defaults to nothing declared, which reads
+    /// spells differently from ASCII. `grouping` is how group separators are read and defaults to
+    /// ``Grouping/western``: `12,34` and `1,23,456` are malformed at the group, where before 1.1
+    /// they read as 1234 and 123456 (declare ``Grouping/indian`` for `1,23,456`). Every field after `grouping` defaults to nothing declared, which reads
     /// exactly the ASCII default.
     ///
     /// - Precondition: `styles` sets no bit the core doesn't define (a grouping policy is
@@ -195,6 +196,8 @@ public struct NumFormat: Equatable, Sendable {
     ) {
         let flags = styles.rawValue | grouping.rawValue
         precondition(Self.refusal(ofFlags: flags) == nil, Self.refusal(ofFlags: flags) ?? "")
+        precondition(
+            styles.rawValue & Grouping.mask == 0, "A grouping policy is declared with Grouping, never in the styles.")
         precondition(
             Self.isDeclarable(separator: decimalSeparator),
             "Decimal separator '\(decimalSeparator)' must be 1 to \(Self.maxSymbolBytes) UTF-8 bytes "
@@ -283,6 +286,8 @@ public struct NumFormat: Equatable, Sendable {
     public func withStyles(_ styles: NumStyles) -> NumFormat {
         let refusal = Self.refusal(ofFlags: styles.rawValue)
         precondition(refusal == nil, refusal ?? "")
+        precondition(
+            styles.rawValue & Grouping.mask == 0, "A grouping policy is declared with Grouping, never in the styles.")
         return replacingFlags(styles.rawValue | grouping.rawValue)
     }
 
@@ -308,13 +313,18 @@ public struct NumFormat: Equatable, Sendable {
         withUnsafeBytes(of: lhs.raw) { left in withUnsafeBytes(of: rhs.raw) { right in left.elementsEqual(right) } }
     }
 
+    /// Hashes what ``==`` compares: the layout's bytes.
+    public func hash(into hasher: inout Hasher) {
+        withUnsafeBytes(of: raw) { hasher.combine(bytes: $0) }
+    }
+
     /// The core's rule for the `flags` word, which the 1.1 check applies to every declaration:
-    /// the grouping policy `3` (both policy bits) names no policy, and a bit no flag or policy
-    /// defines (bit 10 and up) is refused. `nil` when the word is declarable, else the message
+    /// the retired bit 8 names no policy, and a bit no flag or policy defines (bit 10 and up) is
+    /// refused. `nil` when the word is declarable, else the message
     /// the constructor traps with.
     static func refusal(ofFlags flags: UInt32) -> String? {
-        if flags & Grouping.mask == Grouping.mask {
-            return "Grouping policy 3 names no policy; declare Grouping.legacy, .western or .indian."
+        if flags & Grouping.retired != 0 {
+            return "Bit 8 names no grouping policy; declare Grouping.western or .indian."
         }
         if flags & ~(NumStyles.definedBits | Grouping.mask) != 0 {
             return
@@ -383,13 +393,14 @@ public struct NumFormat: Equatable, Sendable {
         text.unicodeScalars.contains(where: isWhiteSpace)
     }
 
-    /// The invariant profile — `.` decimal, `,` grouping, every lenience on, strict Western
+    /// The invariant profile — `.` decimal, `,` grouping, every lenience on, Western
     /// grouping, nothing else declared. (Before 1.1 it read a group separator anywhere between
-    /// two digits; ``withGrouping(_:)`` with ``Grouping/legacy`` gives that back.)
+    /// two digits, `12,34` and `1,23,456` included: Western refuses both, and Indian reads the
+    /// second.)
     public static let invariant = NumFormat(decimalSeparator: ".", groupSeparator: ",", styles: .all)
 
     /// The detection profile — every lenience on, `.`/`,` roles resolved per input by
-    /// ``NumStyles/separatorDetect``'s structural rules, and strict Western grouping.
+    /// ``NumStyles/separatorDetect``'s structural rules, and Western grouping.
     public static let detect = NumFormat(
         decimalSeparator: ".", groupSeparator: ",", styles: [.all, .separatorDetect])
 
@@ -410,10 +421,10 @@ public struct NumFormat: Equatable, Sendable {
     /// what its own formatter writes), so a locale's own formatted output parses under its
     /// format, and so does the plain ASCII spelling.
     ///
-    /// The grouping is what the locale's own patterns say, number and currency alike (see
-    /// ``from(formatter:)``): strict Western or Indian when every pattern that groups is, ``Grouping/legacy``
-    /// when one is of another shape or they disagree, and ``NumStyles/grouping`` cleared only when
-    /// neither groups. The patterns are read, never the locale's name.
+    /// The grouping policy follows the locale's number pattern (see ``from(formatter:)``): all
+    /// Indian is Indian, anything else Western, with ``NumStyles/grouping`` cleared only when
+    /// neither the number nor the currency pattern groups. The patterns are read, never the
+    /// locale's name.
     ///
     /// Every lenience is on, radix prefixes and percent included; narrow the styles, or
     /// declare a `NumFormat` outright, for anything stricter. Deriving builds a
@@ -438,27 +449,27 @@ public struct NumFormat: Equatable, Sendable {
     /// and the Indic scripts declare their block, anything else declares none. Meant for a
     /// decimal-style formatter: in the currency style the suffixes are the symbol, not a sign.
     ///
-    /// **Grouping.** A bridge never rejects its platform's own output, and one format has one
-    /// policy and one ``NumStyles/grouping`` flag for number and currency values alike, so both
-    /// patterns are read in full: this formatter's own `groupingSize`, `secondaryGroupingSize`
-    /// and `usesGroupingSeparator`, and the currency pattern of its locale. A pattern groups when
-    /// `usesGroupingSeparator` is on and the primary size is above 0; a secondary size of 0
-    /// repeats the primary one (`NumberFormatter`'s own meaning), so (3, 0) groups by threes and
-    /// Toki Pona's (2, 0) by twos. Of the patterns that group:
+    /// **Grouping.** One format has one policy and one ``NumStyles/grouping`` flag for number and
+    /// currency values alike. The policy follows this formatter's own number pattern
+    /// (`groupingSize`, `secondaryGroupingSize` and `usesGroupingSeparator`). A pattern groups when
+    /// `usesGroupingSeparator` is on and the primary size is above 0; a secondary size of 0 repeats
+    /// the primary one (`NumberFormatter`'s own meaning), so (3, 0) groups by threes and Toki Pona's
+    /// (2, 0) by twos.
     ///
-    /// - all of groups of three: ``Grouping/western``;
-    /// - all a group of three then twos (`#,##,##0`): ``Grouping/indian``;
-    /// - one of any other shape, or two that disagree (some ICU versions write `ml`, `ta`, `mr` and
-    ///   `or` with an Indian number and a Western currency pattern; Apple's data here has both
-    ///   Indian): ``Grouping/legacy``, which reads any grouping and so reads what the platform wrote;
-    /// - none (`en_US_POSIX`): ``NumStyles/grouping`` is cleared, and a group separator is
+    /// - a group of three then twos (`#,##,##0`): ``Grouping/indian``;
+    /// - anything else: ``Grouping/western``, so `tok`'s grouped output is refused, never misread
+    ///   (`docs/grouping.md`), and a locale with a Western number and an Indian currency pattern
+    ///   is Western;
+    /// - ``NumStyles/grouping`` is cleared only when neither the number pattern nor the currency
+    ///   pattern of the formatter's locale groups (`en_US_POSIX`), and then a group separator is
     ///   malformed.
     ///
     /// When only one of the two patterns groups (`en_BG`'s currency doesn't), the flag stays for
     /// the other: the format can't prohibit grouping in a currency amount alone, so an ungrouped
-    /// value stays valid and a grouped one the platform never writes is read. The fallback is a
-    /// fixed function of the two patterns, never of the input. The currency pattern comes from a
-    /// second `NumberFormatter` on the formatter's locale, so deriving costs two.
+    /// value stays valid and a grouped one the platform never writes is read. A currency pattern
+    /// of the other policy is refused until the column says ``withGrouping(_:)``. The currency
+    /// pattern comes from a second `NumberFormatter` on the formatter's locale, so deriving costs
+    /// two.
     public static func from(formatter: NumberFormatter) -> NumFormat {
         func separator(_ symbol: String?, accepting: (String) -> Bool, orInvariant fallback: String) -> String {
             symbol.flatMap { accepting($0) ? $0 : nil } ?? fallback
@@ -539,18 +550,10 @@ public struct NumFormat: Equatable, Sendable {
     }
 
     /// The one policy and the one `grouping` flag a number pattern and a currency pattern share:
-    /// every pattern that groups Western is Western, every one Indian is Indian, any other shape
-    /// or a disagreement is legacy, and the flag is cleared only when neither groups. The
-    /// policy of a format with the flag cleared judges nothing, and is Western.
+    /// the number pattern's all-Indian is Indian, anything else Western, and the flag is cleared
+    /// only when neither groups.
     static func grouping(number: GroupingShape, currency: GroupingShape) -> (grouping: Grouping, groups: Bool) {
-        let grouping = [number, currency].filter { $0 != .none }
-        guard let first = grouping.first else { return (.western, false) }
-        guard grouping.allSatisfy({ $0 == first }) else { return (.legacy, true) }
-        switch first {
-        case .western: return (.western, true)
-        case .indian: return (.indian, true)
-        default: return (.legacy, true)
-        }
+        (number == .indian ? .indian : .western, number != .none || currency != .none)
     }
 
     /// The zero digit of a numbering system, by ICU's identifier, for the systems whose ten
@@ -636,7 +639,7 @@ public enum DateOrder: UInt32, Sendable {
 /// bytes; the English pair matches ASCII case-insensitively. Declared, never looked up, the
 /// way ``NumFormat`` is: ``from(locale:)`` fills it from the locale's own data, and
 /// ``Cast/dateTime(_:order:)-swift.type.method`` is this with nothing declared.
-public struct DateFormat: Equatable, Sendable {
+public struct DateFormat: Hashable, Sendable {
     /// The field order of the date part.
     public let order: DateOrder
     /// The designator of the first half of the day; empty declares none beside `AM`. 1 to 16
@@ -698,6 +701,12 @@ public struct DateFormat: Equatable, Sendable {
             && withUnsafeBytes(of: lhs.raw) { left in
                 withUnsafeBytes(of: rhs.raw) { right in left.elementsEqual(right) }
             }
+    }
+
+    /// Hashes what ``==`` compares: the order and the layout's bytes.
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(order)
+        withUnsafeBytes(of: raw) { hasher.combine(bytes: $0) }
     }
 
     /// The native rule for a designator: 1 to 16 UTF-8 bytes, no ASCII digit, and no white
