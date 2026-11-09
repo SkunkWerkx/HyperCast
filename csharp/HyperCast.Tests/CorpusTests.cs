@@ -53,14 +53,13 @@ public sealed class CorpusTests
 		Encoding.UTF8.GetBytes(vector.GetProperty("input").GetString()!);
 
 	// Every key a vector's format may carry; one it does not carry declares nothing. `flags` is the
-	// core's word: the styles in bits 0 to 7 and a grouping policy in bits 8 and 9. A row's
-	// `grouping` names the policy outright; without one, the word's own policy bits decide, and a
-	// row that declares none is legacy, as the core reads it. A policy the binding has no name for
-	// (3, which the core refuses) and the bits past 9 are carried as they are, for the declaration to refuse.
+	// core's word: the styles in bits 0 to 7 and a policy in bits 8 and 9. A row's `grouping` names the
+	// policy outright; without one, the word's own policy bits are the value the declaration judges,
+	// so 256 and 768 are refused there and the bits past 9 are carried as they are.
 	static NumFormat FormatOf(JsonElement vector)
 	{
 		if (!vector.TryGetProperty("format", out var format))
-			return NumFormat.Invariant with { Grouping = NumGrouping.Legacy };
+			return NumFormat.Invariant;
 		string Symbol(string key) => format.TryGetProperty(key, out var symbol) ? symbol.GetString()! : "";
 		var flags = format.GetProperty("flags").GetUInt32();
 		var grouping = format.TryGetProperty("grouping", out var named)
@@ -68,16 +67,9 @@ public sealed class CorpusTests
 			{
 				"western" => NumGrouping.Western,
 				"indian" => NumGrouping.Indian,
-				"legacy" => NumGrouping.Legacy,
 				var other => throw new InvalidOperationException($"unknown grouping '{other}'"),
 			}
-			: ((flags >> 8) & 3) switch
-			{
-				0 => NumGrouping.Legacy,
-				1 => NumGrouping.Western,
-				2 => NumGrouping.Indian,
-				_ => (NumGrouping)3,
-			};
+			: (NumGrouping)(flags & (3u << 8));
 		return new(
 			format.GetProperty("decimal_sep").GetString()!,
 			format.GetProperty("group_sep").GetString()!,
@@ -344,13 +336,13 @@ public sealed class CorpusTests
 					WhiteSpaceRow(vector);
 					break;
 				case "num_format":
-					var format = FormatOf(vector);
 					var label = $"num_format {vector.GetProperty("format").GetRawText()}";
 					if (vector.GetProperty("expect").GetString() == "refused")
 					{
-						AssertRefusal(label, vector, () => format.ToRaw());
+						AssertRefusal(label, vector, () => FormatOf(vector).ToRaw());
 						break;
 					}
+					var format = FormatOf(vector);
 					Should.NotThrow(() => format.ToRaw(), label);
 					Should.NotThrow(() => Cast.Int32("1", format), label);
 					break;
@@ -1117,4 +1109,98 @@ public sealed class CorpusTests
 		"Property Int32 Length",
 		"Property Int32 Offset",
 	];
+
+	/// <summary>
+	/// <c>corpus/grouping.json</c>: every shape under both policies, through every way a format is had, and the
+	/// retired policy bit refused at every declaration.
+	/// </summary>
+	[Fact]
+	void Grouping_corpus()
+	{
+		static void Holds(string label, JsonElement want, string text, NumFormat format)
+		{
+			var ctx = $"{label} '{text}'";
+			if (want.TryGetProperty("fault", out var fault))
+			{
+				var (offset, length) = (fault[0].GetInt32(), fault[1].GetInt32());
+				bool Is(Fault f) => f is { Reason: CastFailure.Malformed, Detail: FaultDetail.GroupSize } && f.Offset == offset && f.Length == length;
+				(Cast.Int64(text, format).TryGetValue(out Fault integer) && Is(integer)).ShouldBeTrue(ctx);
+				(Cast.Double(text, format).TryGetValue(out Fault real) && Is(real)).ShouldBeTrue(ctx);
+				(Cast.Decimal(text, format).TryGetValue(out Fault exact) && Is(exact)).ShouldBeTrue(ctx);
+			}
+			else
+			{
+				var value = want.GetProperty("value").GetInt64();
+				(Cast.Int64(text, format) is Success<long> s1 && s1.Value == value).ShouldBeTrue(ctx);
+				(Cast.Double(text, format) is Success<double> s2 && s2.Value == value).ShouldBeTrue(ctx);
+				(Cast.Decimal(text, format) is Success<decimal> s3 && s3.Value == value).ShouldBeTrue(ctx);
+			}
+		}
+		static NumFormat Bridge(int[] number, int[] currency)
+		{
+			var data = (NumberFormatInfo)CultureInfo.InvariantCulture.NumberFormat.Clone();
+			data.NumberGroupSizes = number;
+			data.CurrencyGroupSizes = currency;
+			return NumFormat.From(data);
+		}
+		var indian = NumFormat.Invariant with { Grouping = NumGrouping.Indian };
+		var saved = CultureInfo.CurrentCulture;
+		var shapes = 0;
+		foreach (var row in Corpus("grouping.json"))
+			switch (row.GetProperty("kind").GetString())
+			{
+				case "shape":
+					shapes++;
+					var text = row.GetProperty("input").GetString()!;
+					var (west, east) = (row.GetProperty("western"), row.GetProperty("indian"));
+					Holds("invariant", west, text, NumFormat.Invariant);
+					Holds("constructor", west, text, new NumFormat(".", ",", NumStyles.All));
+					Holds("declared", west, text, new NumFormat(".", ",", NumStyles.All, NumGrouping.Western));
+					Holds("indian to western", west, text, indian with { Grouping = NumGrouping.Western });
+					Holds("bridge threes", west, text, Bridge([3], [3]));
+					Holds("bridge fours", west, text, Bridge([4], [4]));
+					Holds("bridge indian currency", west, text, Bridge([3], [3, 2]));
+					Holds("the default struct's policy", west, text, NumFormat.Invariant with { Grouping = default });
+					Holds("declared indian", east, text, new NumFormat('.', ',', NumStyles.All, NumGrouping.Indian));
+					Holds("western to indian", east, text, indian);
+					Holds("bridge indian", east, text, Bridge([3, 2], [3, 2]));
+					Holds("bridge ml", east, text, Bridge([3, 2], [3]));
+					// The current culture's door is the bridge, by the same rule.
+					try
+					{
+						CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("en-US");
+						Verdict(Cast.Int64(text, (IFormatProvider?)null), west).ShouldBeTrue($"current en-US '{text}'");
+						CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("en-IN");
+						Verdict(Cast.Int64(text, (IFormatProvider?)null), east).ShouldBeTrue($"current en-IN '{text}'");
+					}
+					finally
+					{
+						CultureInfo.CurrentCulture = saved;
+					}
+					break;
+				case "detect":
+					Holds("detect", row, row.GetProperty("input").GetString()!, NumFormat.Detect);
+					break;
+				case "refused_flags":
+					var flags = row.GetProperty("flags").GetUInt32();
+					var policy = (NumGrouping)(flags & (3u << 8));
+					Should.Throw<ArgumentException>(() => new NumFormat(".", ",", (NumStyles)flags), $"flags {flags}");
+					Should.Throw<ArgumentException>(() => NumFormat.Invariant with { Styles = (NumStyles)flags }, $"flags {flags}");
+					Should.Throw<ArgumentException>(() => NumFormat.Invariant with { Grouping = policy }, $"policy {policy}");
+					Should.Throw<ArgumentException>(() => new NumFormat('.', ',', NumStyles.All, policy), $"policy {policy}");
+					break;
+				case "accepted_flags":
+					var word = row.GetProperty("flags").GetUInt32();
+					new NumFormat(".", ",", (NumStyles)(word & 0xFF), (NumGrouping)(word & (3u << 8))).ToRaw().Flags.ShouldBe(word);
+					break;
+				case var other:
+					throw new InvalidOperationException($"unknown kind '{other}'");
+			}
+		shapes.ShouldBeGreaterThanOrEqualTo(18);
+	}
+
+	static bool Verdict(Verdict<long> verdict, JsonElement want) =>
+		want.TryGetProperty("fault", out var fault)
+			? verdict is Fault { Reason: CastFailure.Malformed, Detail: FaultDetail.GroupSize } f && f.Offset == fault[0].GetInt32() && f.Length == fault[1].GetInt32()
+			: verdict is Success<long> s && s.Value == want.GetProperty("value").GetInt64();
 }

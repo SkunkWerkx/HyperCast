@@ -82,6 +82,11 @@ export declare class DateFormat {
   get am(): string
   /** The second-half designator, `""` when none is declared. */
   get pm(): string
+  /**
+   * `true` when `other` is a `DateFormat` declaring the same order and designators. `===`
+   * compares identity.
+   */
+  equals(other: unknown): boolean
 }
 
 /**
@@ -113,6 +118,11 @@ export declare class DateOptions {
    * the flags and the pivot, each a little-endian `u32`), with `months.packed` beside it.
    */
   get packed(): Uint8Array
+  /**
+   * `true` when `other` is a `DateOptions` declaring the same shapes and pivot, and month names
+   * with the same entries in the same order, or none on both. `===` compares identity.
+   */
+  equals(other: unknown): boolean
 }
 
 /**
@@ -143,6 +153,11 @@ export declare class MonthNames {
    * `u32` byte length, then the UTF-8, in the order declared.
    */
   get packed(): Uint8Array
+  /**
+   * `true` when `other` is a `MonthNames` holding the same entries in the same order: the
+   * same `packed` bytes. `===` compares identity.
+   */
+  equals(other: unknown): boolean
 }
 
 /**
@@ -160,16 +175,21 @@ export declare class NumFormat {
    */
   static declare(spec: NumFormatSpec): Declaration<NumFormat>
   /**
-   * The invariant format: `.` decimal, `,` grouping, `NumStyles.All`, strict Western
+   * The invariant format: `.` decimal, `,` grouping, `NumStyles.All`, Western
    * grouping (`Grouping.Western`). What a door reads with when its format is left out.
    */
   static invariant(): NumFormat
   /**
    * The detection format: `NumStyles.All | NumStyles.SeparatorDetect`, the `.`/`,` roles
-   * resolved per input from structure, under strict Western grouping. A grouping policy
+   * resolved per input from structure, under Western grouping. A grouping policy
    * never resolves an ambiguous separator.
    */
   static detect(): NumFormat
+  /**
+   * The same format under another policy, which replaces the old one. A value that is not a
+   * `Grouping` is refused, by the same rule `declare` holds; it never throws.
+   */
+  withGrouping(grouping: Grouping): Declaration<NumFormat>
   /** The decimal separator. */
   get decimalSep(): string
   /** The group separator. */
@@ -195,10 +215,15 @@ export declare class NumFormat {
   /**
    * The 92 bytes this format crosses a C ABI as (the core's size-tagged layout), for a
    * library that declares numeric columns across a C ABI of its own. The `flags` word
-   * carries the grouping policy in bits 8 and 9, which only the core's detailed exports
-   * read (the 1.0 exports ignore them and parse every group legacy).
+   * carries the grouping policy: `Grouping.Indian` in bit 9, nothing for Western. Only the
+   * core's detailed exports read it (the 1.0 exports ignore it and read Western).
    */
   get packed(): Uint8Array
+  /**
+   * `true` when `other` is a `NumFormat` declaring the same thing, however each was made: the
+   * core's own equality, every field and the grouping policy. `===` compares identity.
+   */
+  equals(other: unknown): boolean
 }
 
 /** A calendar date with no time and no zone. */
@@ -673,15 +698,11 @@ export interface Fault {
  */
 export declare enum Grouping {
   /**
-   * A group separator anywhere between two digits (`12,34` is 1234), as every 1.0 format
-   * read.
-   */
-  Legacy = 0,
-  /**
    * Groups of exactly three digits counted from the decimal separator, the leftmost of one
-   * to three (`1,234,567`; `12,34` is `malformed`). The default.
+   * to three and not starting with a zero (`1,234,567`; `12,34` and `0,125` are `malformed`).
+   * The default.
    */
-  Western = 256,
+  Western = 0,
   /**
    * A group of three beside the decimal separator and twos beyond it, the leftmost of one
    * or two (`12,34,567`; `1,234,567` is `malformed`).

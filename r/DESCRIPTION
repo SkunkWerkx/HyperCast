@@ -7,7 +7,13 @@ Authors@R: c(
            role = c("aut", "cre")),
     person("Skunk Werkx", role = "cph"),
     person("Unicode, Inc.", role = "cph",
-           comment = "case folding data in the vendored core; see inst/AUTHORS")
+           comment = "case folding data in the vendored core; see inst/AUTHORS"),
+    person("Hans", "Kratz", role = "cph",
+           comment = "the vendored simdutf8 crate; see inst/AUTHORS"),
+    person("The simd-json.rs developers", role = "cph",
+           comment = "the first Rust port of simdutf8's algorithm; see inst/AUTHORS"),
+    person("The simdjson authors", role = "cph",
+           comment = "the UTF-8 algorithm simdutf8 is based on; see inst/AUTHORS")
   )
 Description: Parses booleans, characters, integers, reals, exact decimals, UUIDs,
     dates, times, date-times, durations, Unix and spreadsheet serial instants from text,

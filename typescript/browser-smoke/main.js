@@ -18,6 +18,7 @@ import declarationsText from '../../corpus/declarations.json?raw'
 import durationText from '../../corpus/duration.json?raw'
 import excelSerialText from '../../corpus/excel_serial.json?raw'
 import formatsText from '../../corpus/formats.json?raw'
+import groupingText from '../../corpus/grouping.json?raw'
 import integerText from '../../corpus/integer.json?raw'
 import realText from '../../corpus/real.json?raw'
 import timeText from '../../corpus/time.json?raw'
@@ -177,19 +178,16 @@ try {
   } = api
   log(`loaded: target=${api.__napiBindingTarget}`)
 
-  // A row that declares no `grouping` is legacy (the core's meaning); a policy a row's own
-  // `flags` carry is declared by name, except the one no name spells, which stays in `flags`
-  // to be refused.
-  const groupings = { legacy: Grouping.Legacy, western: Grouping.Western, indian: Grouping.Indian }
+  // A row that declares no `grouping` is Western; a row's flags carrying Indian's bit are declared
+  // by name, and any other policy bits stay in `flags`, to be refused.
+  const groupings = { western: Grouping.Western, indian: Grouping.Indian }
   const formatSpec = (f) => {
     let flags = f.flags
     let grouping
     if (f.grouping !== undefined) {
       grouping = groupings[f.grouping]
-    } else if ((flags & 0x300) === 0) {
-      grouping = Grouping.Legacy
-    } else if ((flags & 0x300) !== 0x300) {
-      grouping = flags & 0x300
+    } else if ((flags & 0x300) === Grouping.Indian) {
+      grouping = Grouping.Indian
       flags &= ~0x300
     }
     return {
@@ -206,15 +204,9 @@ try {
       digitZero: f.digit_zero,
     }
   }
-  const legacyInvariant = NumFormat.declare({
-    decimalSep: '.',
-    groupSep: ',',
-    flags: NumStyles.All,
-    grouping: Grouping.Legacy,
-  }).value
   const formats = new Map()
   const formatOf = (v) => {
-    if (v.format === undefined) return legacyInvariant
+    if (v.format === undefined) return NumFormat.invariant()
     const key = JSON.stringify(v.format)
     if (!formats.has(key)) {
       const declared = NumFormat.declare(formatSpec(v.format))
@@ -710,6 +702,51 @@ try {
     ['constraints.json', constraintsText, constrained],
     ['declarations.json', declarationsText, declaredDecimal],
     ['formats.json', formatsText, declaredFormat],
+    [
+      'grouping.json',
+      groupingText,
+      (row) => {
+        const declare = (spec) =>
+          NumFormat.declare({ decimalSep: '.', groupSep: ',', flags: NumStyles.All, ...spec })
+        const holds = (want, text, format) => {
+          const verdict = api.castI64(text, format)
+          // A verdict's value is a BigInt, which JSON can't write.
+          const ctx = `grouping.json ${text}: ${verdict.ok ? verdict.value : JSON.stringify(verdict)}`
+          if (want.fault) {
+            check(
+              !verdict.ok &&
+                verdict.fault.reason === 'malformed' &&
+                verdict.fault.offset === want.fault[0] &&
+                verdict.fault.length === want.fault[1],
+              ctx,
+            )
+          } else {
+            check(verdict.ok && verdict.value === BigInt(want.value), ctx)
+          }
+        }
+        if (row.kind === 'shape') {
+          holds(row.western, row.input, undefined)
+          holds(row.western, row.input, NumFormat.invariant())
+          holds(row.western, row.input, declare({}).value)
+          const indian = NumFormat.invariant().withGrouping(Grouping.Indian).value
+          holds(row.indian, row.input, indian)
+          holds(row.indian, row.input, declare({ grouping: Grouping.Indian }).value)
+          holds(row.western, row.input, indian.withGrouping(Grouping.Western).value)
+        } else if (row.kind === 'detect') {
+          holds(row, row.input, NumFormat.detect())
+        } else if (row.kind === 'refused_flags') {
+          const policy = row.flags & 0x300
+          check(!declare({ flags: row.flags }).ok, `flags ${row.flags}`)
+          check(!declare({ flags: 0, grouping: policy }).ok, `grouping ${policy}`)
+          check(!NumFormat.invariant().withGrouping(policy).ok, `withGrouping ${policy}`)
+        } else if (row.kind === 'accepted_flags') {
+          const made = declare({ flags: row.flags & 0xff, grouping: row.flags & 0x300 })
+          check(made.ok, `flags ${row.flags}`)
+        } else {
+          check(false, `grouping.json: unknown kind ${row.kind}`)
+        }
+      },
+    ],
   ]
   for (const [name, text, run] of files) {
     const vectors = parse(text)

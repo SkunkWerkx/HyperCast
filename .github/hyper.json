@@ -11,5 +11,5 @@
   "swift_remote": true,
   "c_assets": true,
   "big_endian_control": {"file": "uuid.json", "find": "\"value\": \"0102030405060708090a0b0c0d0e0f10\"", "replace": "\"value\": \"0102030405060708090a0b0c0d0e0f11\"", "test": "conformance", "fails": "uuid_corpus"},
-  "r_corpus": ["boolean.json", "char.json", "constraints.json", "date.json", "date_order.json", "datetime.json", "decimal.json", "declarations.json", "duration.json", "excel_serial.json", "formats.json", "integer.json", "real.json", "time.json", "timestamp.json", "typed.json", "unix.json", "uuid.json"]
+  "r_corpus": ["boolean.json", "char.json", "constraints.json", "date.json", "date_order.json", "datetime.json", "decimal.json", "declarations.json", "duration.json", "excel_serial.json", "formats.json", "grouping.json", "integer.json", "real.json", "time.json", "timestamp.json", "typed.json", "unix.json", "uuid.json"]
 }

@@ -132,16 +132,13 @@ fn build_cache(ruby: &Ruby, hypercast: RModule) -> Result<Cached, Error> {
         details: details.into_iter().map(Opaque::from).collect(),
         invariant_raw: invariant.as_raw(),
         detect_raw: detect.as_raw(),
-        // The two profiles hypercast.rb declares: `.`/`,` with strict Western grouping.
-        invariant: core::NumFormat::STRICT.validate().map_err(|refusal| {
+        // The two profiles hypercast.rb declares: `.`/`,` with Western grouping.
+        invariant: core::NumFormat::INVARIANT.validate().map_err(|refusal| {
             Error::new(ruby.exception_runtime_error(), format!("INVARIANT: {refusal}"))
         })?,
-        detect: core::NumFormat::DETECT
-            .with_grouping(core::NumFormat::GROUPING_WESTERN)
-            .validate()
-            .map_err(|refusal| {
-                Error::new(ruby.exception_runtime_error(), format!("DETECT: {refusal}"))
-            })?,
+        detect: core::NumFormat::DETECT.validate().map_err(|refusal| {
+            Error::new(ruby.exception_runtime_error(), format!("DETECT: {refusal}"))
+        })?,
         empty: Opaque::from(ruby.to_symbol("empty")),
         malformed: Opaque::from(ruby.to_symbol("malformed")),
         out_of_range: Opaque::from(ruby.to_symbol("out_of_range")),

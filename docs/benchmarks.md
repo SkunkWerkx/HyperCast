@@ -414,6 +414,99 @@ while the comparators stood still. The rework returns at once when an input's fi
 bytes are visible ASCII and inlines the scanners, and the runs above are after it. Every other table in this file, each binding's included,
 predates the white-space change and has not been re-run.
 
+## The text door's UTF-8 check, on an Apple M6
+
+The text door checks UTF-8 with simdutf8's NEON validator from 64 bytes up, and with
+`core::str::from_utf8` below that and on every failure (`rust/README.md`, "UTF-8
+validation"). Apple M6 (aarch64), macOS 27.2, rustc 1.99.1, 2026-11-08:
+`cargo bench --bench cast_benchmarks -- '^text/'`, Criterion point estimates. "Before" is the
+same tree with the fast path compiled off, so the door is core's check alone; the two builds
+ran alternately, two rounds each, and each cell is the mean of the two. The `stdlib` rows
+(core's `str::from_utf8` on the same bytes, unchanged by this) moved 0 to 10% between the
+builds, which is this table's noise.
+
+| Input | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| 63 B ASCII | 5.60 ns | 5.64 ns | +1% (core's check either way) |
+| 63 B multi-byte | 20.2 ns | 17.7 ns | noise (core's check either way) |
+| 64 B ASCII | 2.38 ns | 1.13 ns | 2.1x faster |
+| 64 B multi-byte | 19.5 ns | 4.08 ns | 4.8x faster |
+| 4 KiB ASCII | 60.4 ns | 19.8 ns | 3.0x faster |
+| 4,100 B multi-byte | 1,188 ns | 247 ns | 4.8x faster |
+| 4 KiB ASCII, bad at byte 0 | 1.16 ns | 31.8 ns | **27x slower, a loss** |
+| 4 KiB ASCII, bad at byte 1 | 1.97 ns | 32.6 ns | **17x slower, a loss** |
+| 4 KiB ASCII, bad at byte 2,048 | 30.3 ns | 56.5 ns | **+86%, a loss** |
+| 4 KiB ASCII, bad last byte | 66.0 ns | 87.5 ns | **+33%, a loss** |
+| 4,100 B multi-byte, bad at byte 0 | 1.23 ns | 244 ns | **199x slower, a loss** |
+| 4,100 B multi-byte, bad at byte 1 | 1.97 ns | 244 ns | **124x slower, a loss** |
+| 4,100 B multi-byte, bad at byte 2,050 | 529 ns | 776 ns | **+47%, a loss** |
+| 4,100 B multi-byte, bad last byte | 1,048 ns | 1,274 ns | **+22%, a loss** |
+
+The losses are the price of taking the span from core: simdutf8's `basic` check stops at no
+fault, so input that fails is read once whole by the SIMD check and then by core up to the
+fault. Before, a fault at the first byte cost core nothing; now it costs the SIMD pass over
+the whole input (32 ns for 4 KiB of ASCII, 244 ns for 4,100 bytes of multi-byte text). The
+worst ratio is that early fault, 199x; in absolute time, the worst is a fault at the end,
+which against core's check of the same length of *valid* text is +45% for ASCII (87.5 ns
+against 60.5 ns) and +10% for multi-byte (1,274 ns against 1,160 ns). So a failing input can
+cost more than core spends on a valid one of the same length; it is bounded by one SIMD pass
+over the input plus core's check of it. Under 64 bytes the door adds only a length test,
+inside this table's noise. x86_64 (AVX2 or SSE 4.2, detected at run time) has not been
+measured: Rosetta's timings mean nothing, and the receipt waits for a real x86_64 machine.
+
+## Judging every grouping policy, on an Apple M6
+
+A numeral with group separators is judged group by group, under Western by default and under Indian
+when declared. The lane counts the groups as it reads, in a second loop an ungrouped numeral never
+enters. `1.0` here is a build of tag `v1.0.0`, whose default read straight through, and `now` is the
+tree with the two policies. Measured on the Apple M6 above under macOS 27.2 on 2026-11-06, with rustc
+1.99.1: `cargo bench --bench cast_benchmarks -- 'shapes|separator-detection|decimal/hypercast|grouping-policy'`
+from `rust/` on each tree, each run twice, alternating. Medians are Criterion's point estimates from each
+tree's second run, at a load average of 1.2 to 3.7. Read a difference under about 3% as noise.
+
+The losses are real: the integer door's grouped numeral costs 18 to 22% more than 1.0, separator
+detection 14% and a declared eurozone format 17%. The move isn't all grouping: this compares releases,
+so it also holds everything else since 1.0, such as the white-space change above, and `i64-shapes/plain`,
+which never enters the group loop, lost 25% too (2.54 to 3.17 ns). The real door's grouped numeral
+moved 3 to 4%, and the decimal door's gained 6 to 13%, as its plain and currency rows did.
+
+The plain `i64` loss arrived at merge `cb32632` (pull request 43, which holds `ee6997c`: Unicode white
+space, strict grouping and fault detail), and it hasn't been won back. A walk of the first-parent merges
+reads 2.62 to 2.91 ns at `446b4f7` and 3.08 to 3.16 ns at `cb32632`. That walk is three runs of a separate
+loop with no LTO, under a load of 2.5, so compare it only within itself. The merge wasn't split further,
+and `f64` got faster at the same step, so some of the move may be code layout. The two policies didn't
+add to it: the same loop reads 3.12 to 3.20 ns before them and 3.14 to 3.17 ns after.
+
+The `*-shapes` and `separator-detection` rows use `NumFormat::INVARIANT`, or `NumFormat::new` with no
+policy, which is Western. `grouping-policy` has no 1.0 figure, because 1.0 had no policy. Those rows in
+"The plain doors and Unicode white space" above, the grouped table in `rust/README.md`, and the
+grouped figures in the binding tables and "Separator detection" predate this change and weren't re-run.
+
+| Case | 1.0 | now | diff |
+| --- | ---: | ---: | ---: |
+| f64-shapes/plain | 5.53 ns | 6.18 ns | +11.6% |
+| f64-shapes/grouped | 10.13 ns | 10.39 ns | +2.6% |
+| f64-shapes/currency | 9.74 ns | 9.70 ns | -0.3% |
+| f64-shapes/grouped currency | 10.27 ns | 10.72 ns | +4.4% |
+| f64-shapes/grouped currency in parens | 10.77 ns | 11.13 ns | +3.3% |
+| decimal-shapes/plain | 4.75 ns | 4.59 ns | -3.4% |
+| decimal-shapes/grouped | 11.25 ns | 9.84 ns | -12.6% |
+| decimal-shapes/currency | 9.29 ns | 7.93 ns | -14.6% |
+| decimal-shapes/grouped currency | 9.61 ns | 8.94 ns | -7.0% |
+| decimal-shapes/grouped currency in parens | 9.84 ns | 9.27 ns | -5.8% |
+| i64-shapes/plain | 2.54 ns | 3.17 ns | +24.7% |
+| i64-shapes/grouped | 6.27 ns | 7.43 ns | +18.4% |
+| i64-shapes/grouped currency | 6.55 ns | 7.86 ns | +20.0% |
+| i64-shapes/grouped currency in parens | 6.62 ns | 8.08 ns | +22.0% |
+| grouping-policy/i64 western | | 6.80 ns | |
+| grouping-policy/f64 western | | 9.28 ns | |
+| grouping-policy/decimal western | | 9.28 ns | |
+| grouping-policy/i64 indian | | 7.09 ns | |
+| decimal/hypercast | 5.68 ns | 5.90 ns | +3.8% |
+| decimal/hypercast grouped currency | 9.87 ns | 9.41 ns | -4.6% |
+| separator-detection/hypercast-detect | 16.57 ns | 18.84 ns | +13.7% |
+| separator-detection/hypercast-declared | 8.69 ns | 10.14 ns | +16.6% |
+
 ## TypeScript
 
 No figures are published yet. `bun run bench` (and `bun run bench:bun`, and either under

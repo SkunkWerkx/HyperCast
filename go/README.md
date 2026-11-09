@@ -249,11 +249,11 @@ Every numeric door takes a `NumFormat` — the caller's declared notation, never
 Go's standard library carries no culture data, so there is no `From(culture)` bridge here
 as the C#, Java and Swift bindings have; the struct literal is the whole API, and an
 application fills it from whatever culture data it holds. `Invariant` is `"."`/`","` with
-`AllStyles`, strict Western grouping and nothing else declared; `Detect` adds
+`AllStyles`, Western grouping and nothing else declared; `Detect` adds
 `SeparatorDetect`. `AllStyles` is every lenience including `CurrencySymbol` (and excluding
 `SeparatorDetect` and `TrailingSign`), so keyed literals that predate a field keep compiling
 and keep their meaning. `NewNumFormat(decimalSep, groupSep, styles)` builds a format under
-strict Western grouping, and the further fields are the result's to fill.
+Western grouping, and the further fields are the result's to fill.
 
 | Field | Declares | Read |
 | --- | --- | --- |
@@ -277,27 +277,26 @@ the clock by any run of white space (`3:04\u202fPM`).
 
 **Grouping policy.** `Grouping` permits a group separator between digits, and the format's
 `GroupingPolicy` judges the groups. `GroupingWestern` wants groups of exactly three digits
-counted from the decimal separator, the leftmost one to three (`1,234,567`; `12,34` is
-`Malformed`, spanning `,34`); `GroupingIndian` wants three next to the decimal separator and
-twos to the left (`12,34,567`); `GroupingLegacy` takes a separator anywhere between two digits,
-as 1.0 did. Under a strict policy, once a numeral uses a group separator every group must
-conform, no group may follow the decimal separator or sit in an exponent, digits are counted
+counted from the decimal separator, the leftmost one to three (`1,234,567`; `1,23,456` is
+`Malformed`, spanning `,23`); `GroupingIndian` wants three next to the decimal separator and
+twos to the left (`12,34,567`). Under both a first group can't start with a zero (`0,125` is `Malformed`,
+spanning `0`) and the last group is three digits (`12,34` is `Malformed`), and a lone separator
+can't follow more than three digits (`1234,567`). Once a numeral uses a
+group separator every group must conform; no group may follow the decimal separator or sit in an exponent, digits are counted
 as digits (native ones included) and the space-like separators and the currency group
 separator follow the same rule; an ungrouped numeral is always fine, and with `Grouping` off a
-separator stays `Malformed` under every policy. The policy lives in `Styles` (the
-`GroupingPolicyMask` bits): `NewNumFormat`, `Invariant` and `Detect` are strict Western,
-`WithGrouping` replaces the policy (it never combines two) and `WithStyles` replaces the
-leniences, each keeping the other. A literal that sets no policy bits, the zero value
-included, is `GroupingLegacy`, which is what every 1.0 format meant, and so is a format 1.0
-code stored with `encoding/json` or `encoding/gob`.
+separator stays `Malformed` under both. Western is no bits, so a literal that sets no policy, the zero value and a format
+1.0 code stored with `encoding/json` or `encoding/gob` are Western, as `NewNumFormat`, `Invariant` and `Detect` are. Indian lives in `Styles` (the
+`GroupingPolicyMask` bits): `WithGrouping` replaces the policy (it never combines two) and `WithStyles` replaces the
+leniences, each keeping the other. Bit 8 (256) is retired permanently and never reused. `WithGrouping` and JSON
+decoding refuse it, and JSON any bit past the policy; a struct literal or another decoder (`gob`, `encoding/xml`) can't, so `Raw()` returns an error and the first door panics on it, never reading a cell. A shape neither policy
+reads is `Malformed` under a declared format or `Invariant`, never misread, while `Detect` infers by the delimiter rule, so `1,2345` is 1.2345 there: [docs/grouping.md](https://github.com/SkunkWerkx/HyperCast/blob/master/docs/grouping.md#parked).
 
 ```go
-_, fault := hypercast.I32("12,34", hypercast.Invariant)
-fmt.Println(fault) // hypercast: malformed at byte 2..5
-v, _ := hypercast.I32("12,34,567", hypercast.Invariant.WithGrouping(hypercast.GroupingIndian))
-fmt.Println(v) // 1234567
-v, _ = hypercast.I32("12,34", hypercast.Invariant.WithGrouping(hypercast.GroupingLegacy))
-fmt.Println(v) // 1234
+_, fault := hypercast.I32("1,23,456", hypercast.Invariant)
+fmt.Println(fault) // hypercast: malformed at byte 1..4
+v, _ := hypercast.I32("1,23,456", hypercast.Invariant.WithGrouping(hypercast.GroupingIndian))
+fmt.Println(v) // 123456
 ```
 
 The rule for every field past the separators: **the ASCII spelling is always read, and a
@@ -565,7 +564,7 @@ points.
 Nor can a binding meet an older core. The core is part of this package, regenerated with the
 crate (`TestCoreIsCurrent`, and `TestRegenerationCarriesTheCrateVersion` for the version it
 carries), and every door crosses through the core's detailed exports, the only ones that read a
-grouping policy: a 1.0 core, which would read a strict format as legacy, put in its place
+grouping policy: a 1.0 core, which would read `1,23,456` as 123456 under any format, put in its place
 doesn't build. `HYPERCAST_DOWNGRADE_ROOT=<a v1.0.0 checkout> go test -run
 TestADowngradedCoreDoesNotBuild .` translates the 1.0 crate and shows the build failing on the
 missing detailed exports.
@@ -612,8 +611,8 @@ same name would have returned.
 - `RawDateOptions` (12 bytes: a size word, the `DateShapes` bits, the pivot) — what a
   `DateOptions` crosses as; `DateOptions.Raw()` builds one, and `MonthNames.Packed()` is the
   vocabulary beside it (each entry a month byte, a little-endian `uint32` length, the name's
-  bytes). `NumFormat.Raw()`'s `Flags` carry the grouping policy in bits 8 and 9, which only
-  the core's detailed exports read: the 1.0 exports ignore bit 8 and up and parse legacy.
+  bytes). `NumFormat.Raw()`'s `Flags` carry `GroupingIndian`, which only
+  the core's detailed exports read: the 1.0 exports mask flags to 8 bits and read Western.
 - `FormatVersion(packed)` — a `*_version()` export's `major<<16 | minor<<8 | patch` word as
   `"major.minor.patch"`.
 

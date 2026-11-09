@@ -96,13 +96,13 @@
             Check("excel time", Cast.ExcelTime(0.75), new TimeOnly(18, 0));
             Check("excel duration", Cast.ExcelDuration(1.5), new TimeSpan(1, 12, 0, 0));
 
-            // What 1.1 adds, through the same doors: a strict grouping policy, the detail a fault names, and date options.
+            // What 1.1 adds, through the same doors: a grouping policy, the detail a fault names, and date options.
             Check("indian grouping", Cast.Int32("12,34,567", NumFormat.Invariant with { Grouping = NumGrouping.Indian }), 1_234_567);
-            Check("legacy grouping", Cast.Int32("12,34", NumFormat.Invariant with { Grouping = NumGrouping.Legacy }), 1234);
+            Check("western after indian", Cast.Int32("1,234,567", NumFormat.Invariant with { Grouping = NumGrouping.Indian } with { Grouping = NumGrouping.Western }), 1_234_567);
             if (Cast.Int32("12,34", NumFormat.Invariant) is Fault { Reason: CastFailure.Malformed, Offset: 2, Length: 3, Detail: FaultDetail.GroupSize })
-                lines.Add("ok   strict grouping: group_size @ 2+3");
+                lines.Add("ok   grouping: group_size @ 2+3");
             else
-                Fail("strict grouping: 12,34 is not a group_size fault");
+                Fail("grouping: 12,34 is not a group_size fault");
             Check("compact date", Cast.Date("20260107", DateOptions.CommonForms), new DateOnly(2026, 1, 7));
 
             // The checked doors: cast_constraints_check and cast_declared_decimal when a declaration is built, then

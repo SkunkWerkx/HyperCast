@@ -88,18 +88,19 @@ public sealed class BridgeTests
 		return NumFormat.From(data);
 	}
 
-	// The rule, restated from the owner's text: only a pattern that groups counts (a leading 0 is none); all of them
-	// [3] is Western, all [3, 2] Indian, anything else legacy; the flag goes only when neither groups.
-	static (NumGrouping, bool) ExpectedGrouping(int[] number, int[] currency)
+	// The rule, restated: the number pattern's all-Indian is Indian, anything else Western; the flag goes only
+	// when neither pattern groups (a leading 0 is none).
+	static (NumGrouping, bool) ExpectedGrouping(int[] number, int[] currency) =>
+		(number is [3, 2] or [3, 2, 2] ? NumGrouping.Indian : NumGrouping.Western,
+			new[] { number, currency }.Any(static p => p.Length != 0 && p[0] != 0));
+
+	// Whether a currency amount's shape is one the culture's declared policy reads: a Western amount through
+	// `ml`'s Indian numbers is refused, which The_bridge_refuses_the_pattern_its_policy_does_not_name pins.
+	static bool CurrencyFollowsTheNumberPattern(NumberFormatInfo numbers)
 	{
-		var patterns = new[] { number, currency }.Where(static p => p.Length != 0 && p[0] != 0).ToArray();
-		if (patterns.Length == 0)
-			return (NumGrouping.Western, false);
-		if (patterns.All(static p => p is [3] or [3, 3]))
-			return (NumGrouping.Western, true);
-		if (patterns.All(static p => p is [3, 2] or [3, 2, 2]))
-			return (NumGrouping.Indian, true);
-		return (NumGrouping.Legacy, true);
+		static bool Indian(int[] sizes) => sizes is [3, 2] or [3, 2, 2];
+		static bool None(int[] sizes) => sizes.Length == 0 || sizes[0] == 0;
+		return None(numbers.CurrencyGroupSizes) || Indian(numbers.CurrencyGroupSizes) == Indian(numbers.NumberGroupSizes);
 	}
 
 	[Fact]
@@ -124,11 +125,11 @@ public sealed class BridgeTests
 			sized.CurrencyGroupSizes = currency;
 			return sized;
 		}
-		// Toki Pona groups by twos, which no policy names: legacy, which reads them.
-		NumFormat.From(Sized([2], [2])).Grouping.ShouldBe(NumGrouping.Legacy);
+		// Toki Pona groups by twos, which no policy names: Western, and its grouped output is refused.
+		NumFormat.From(Sized([2], [2])).Grouping.ShouldBe(NumGrouping.Western);
 		foreach (var name in new[] { "tok", "tok-001" })
 			if (Culture(name).NumberFormat is { NumberGroupSizes: [2], CurrencyGroupSizes: [2] })
-				NumFormat.From(Culture(name)).Grouping.ShouldBe(NumGrouping.Legacy, name);
+				NumFormat.From(Culture(name)).Grouping.ShouldBe(NumGrouping.Western, name);
 		// en-US-POSIX writes no grouping anywhere ([0]): the flag goes, since nothing is grouped.
 		NumFormat.From(Sized([0], [0])).Styles.HasFlag(NumStyles.Grouping).ShouldBeFalse();
 		if (Culture("en-US-POSIX").NumberFormat is { NumberGroupSizes: [0], CurrencyGroupSizes: [0] })
@@ -140,14 +141,12 @@ public sealed class BridgeTests
 			bulgaria.Grouping.ShouldBe(NumGrouping.Western);
 			bulgaria.Styles.HasFlag(NumStyles.Grouping).ShouldBeTrue();
 		}
-		// ICU's ml, ta, mr and or write Indian numbers and Western currency: they disagree, so legacy.
-		foreach (var name in new[] { "ml-IN", "ta-IN", "mr-IN", "or-IN" })
-			if (Culture(name).NumberFormat.NumberGroupSizes is [3, 2] && Culture(name).NumberFormat.CurrencyGroupSizes is [3])
-				NumFormat.From(Culture(name)).Grouping.ShouldBe(NumGrouping.Legacy, name);
+		// Indian numbers and Western currency (ICU's ml, mr and or, as of ICU 78) are Indian: the number pattern
+		// decides. Whichever cultures this runtime's ICU has that disagree, each follows its number sizes.
 		var disagreeing = CultureInfo.GetCultures(CultureTypes.AllCultures)
 			.Where(static c => c.NumberFormat.NumberGroupSizes is [3, 2] != c.NumberFormat.CurrencyGroupSizes is [3, 2]).ToArray();
 		foreach (var culture in disagreeing)
-			NumFormat.From(culture).Grouping.ShouldBe(NumGrouping.Legacy, culture.Name);
+			NumFormat.From(culture).Grouping.ShouldBe(culture.NumberFormat.NumberGroupSizes is [3, 2] ? NumGrouping.Indian : NumGrouping.Western, culture.Name);
 
 		// The policy is read from the sizes, not the name: an English locale given the Indian sizes is Indian,
 		// an Indian one given the Western sizes is Western.
@@ -169,26 +168,26 @@ public sealed class BridgeTests
 		[
 			([3], [3], NumGrouping.Western, true),
 			([3, 2], [3, 2], NumGrouping.Indian, true),
-			([3], [3, 2], NumGrouping.Legacy, true),        // Western + Indian disagree
-			([3, 2], [3], NumGrouping.Legacy, true),
+			([3], [3, 2], NumGrouping.Western, true),       // the number pattern decides
+			([3, 2], [3], NumGrouping.Indian, true),
 			([3, 2], [0], NumGrouping.Indian, true),        // Indian + none
-			([0], [3, 2], NumGrouping.Indian, true),
+			([0], [3, 2], NumGrouping.Western, true),
 			([3], [0], NumGrouping.Western, true),          // Western + none
 			([0], [3], NumGrouping.Western, true),
-			([3], [2], NumGrouping.Legacy, true),           // Western + other
-			([2], [3], NumGrouping.Legacy, true),
-			([3, 2], [2], NumGrouping.Legacy, true),        // Indian + other
-			([2], [2], NumGrouping.Legacy, true),           // Toki Pona
-			([0], [2], NumGrouping.Legacy, true),           // none + other
+			([3], [2], NumGrouping.Western, true),
+			([2], [3], NumGrouping.Western, true),
+			([3, 2], [2], NumGrouping.Indian, true),
+			([2], [2], NumGrouping.Western, true),          // Toki Pona
+			([0], [2], NumGrouping.Western, true),
 			([0], [0], NumGrouping.Western, false),         // none + none: the flag is cleared
 			([], [], NumGrouping.Western, false),
 			// .NET's meaning of the sizes: the last nonzero size repeats, a trailing 0 ends grouping.
 			([3, 3], [3], NumGrouping.Western, true),
 			([3, 2, 2], [3, 2], NumGrouping.Indian, true),
-			([3, 0], [3], NumGrouping.Legacy, true),        // 1234,567: finite, no policy
-			([3, 2, 0], [3, 2, 0], NumGrouping.Legacy, true),
-			([2, 3], [3], NumGrouping.Legacy, true),
-			([4], [4], NumGrouping.Legacy, true),
+			([3, 0], [3], NumGrouping.Western, true),       // 1234,567: finite, no policy
+			([3, 2, 0], [3, 2, 0], NumGrouping.Western, true),
+			([2, 3], [3], NumGrouping.Western, true),
+			([4], [4], NumGrouping.Western, true),
 		];
 		foreach (var (number, currency, policy, groups) in cases)
 		{
@@ -197,10 +196,10 @@ public sealed class BridgeTests
 			format.Grouping.ShouldBe(policy, label);
 			format.Styles.HasFlag(NumStyles.Grouping).ShouldBe(groups, label);
 		}
-		// The caller-built number [3] with currency [3, 2]: legacy, so each reads its own amounts.
+		// The caller-built number [3] with currency [3, 2]: Western, whose reads the number's and refuses the rest.
 		var mixed = WithSizes([3], [3, 2]);
 		(Cast.Int32("1,234,567", mixed) is Success<int> { Value: 1_234_567 }).ShouldBeTrue();
-		(Cast.Int32("12,34,567", mixed) is Success<int> { Value: 1_234_567 }).ShouldBeTrue();
+		(Cast.Int32("12,34,567", mixed) is Fault { Detail: FaultDetail.GroupSize }).ShouldBeTrue();
 		// Cleared grouping forbids a group separator, which no pattern of this culture writes.
 		(Cast.Int32("1,234", WithSizes([0], [0])) is Fault).ShouldBeTrue();
 		(Cast.Int32("1234", WithSizes([0], [0])) is Success<int> { Value: 1234 }).ShouldBeTrue();
@@ -217,6 +216,8 @@ public sealed class BridgeTests
 		foreach (var value in _values)
 			foreach (var specifier in new[] { "N2", "C2", "N0" })
 			{
+				if (specifier == "C2" && !CurrencyFollowsTheNumberPattern(culture.NumberFormat))
+					continue;
 				var text = value.ToString(specifier, culture);
 				var expected = decimal.Round(value, specifier == "N0" ? 0 : 2, MidpointRounding.AwayFromZero);
 				var verdict = Cast.Decimal(text, format);
@@ -228,24 +229,38 @@ public sealed class BridgeTests
 	[Fact]
 	void The_bridge_reads_what_representative_cultures_write()
 	{
-		foreach (var name in new[] { "tok", "en-IN", "hi-IN", "en-US", "en-BG", "en-US-POSIX", "de-DE", "fr-FR", "ml-IN", "ta-IN", "mr-IN", "or-IN", "de-CH", "ar-SA", "" })
+		foreach (var name in new[] { "en-IN", "hi-IN", "en-US", "en-BG", "en-US-POSIX", "de-DE", "fr-FR", "ml-IN", "ta-IN", "mr-IN", "or-IN", "de-CH", "ar-SA", "" })
 			ReadsItsOwnOutput(Culture(name));
-		// tok writes twos (1 23 45 67), which the legacy fallback reads; it could not before.
+		// tok writes twos (1 23 45 67): the bridge declares Western, which refuses them rather than misreading.
 		var tok = Culture("tok");
-		(Cast.Decimal(1234567.89m.ToString("N2", tok), NumFormat.From(tok)) is Success<decimal> { Value: 1234567.89m }).ShouldBeTrue();
+		NumFormat.From(tok).Grouping.ShouldBe(NumGrouping.Western);
+		(Cast.Decimal(1234567.89m.ToString("N2", tok), NumFormat.From(tok)) is Fault { Detail: FaultDetail.GroupSize }).ShouldBeTrue();
+	}
+
+	[Fact]
+	void The_bridge_refuses_the_pattern_its_policy_does_not_name()
+	{
+		var data = (NumberFormatInfo)CultureInfo.InvariantCulture.NumberFormat.Clone();
+		data.NumberGroupSizes = [3, 2];
+		data.CurrencyGroupSizes = [3];
+		data.CurrencySymbol = "₹";
+		var format = NumFormat.From(data);
+		format.Grouping.ShouldBe(NumGrouping.Indian);
+		(Cast.Decimal("₹1,234,567.50", format) is Fault { Offset: 2, Length: 4, Detail: FaultDetail.GroupSize }).ShouldBeTrue();
+		(Cast.Decimal("₹1,234,567.50", format with { Grouping = NumGrouping.Western }) is Success<decimal> { Value: 1_234_567.5m }).ShouldBeTrue();
 	}
 
 	/// <summary>
 	/// The rule held on every culture this runtime ships, as far as the data goes: the bridge's format reads the
-	/// culture's own formatted numbers and amounts. A culture is skipped only where its formatter and the
-	/// bridge differ for a reason that is not grouping (a symbol the core cannot read, left undeclared), which
-	/// is checked to be so.
+	/// culture's own formatted numbers, and amounts whose shape is the policy's.
 	/// </summary>
 	[Fact]
 	void The_bridge_reads_every_shipped_cultures_own_grouped_output()
 	{
 		var failures = new List<string>();
-		foreach (var culture in CultureInfo.GetCultures(CultureTypes.AllCultures))
+		// Toki Pona's twos are refused: see The_bridge_reads_what_representative_cultures_write.
+		bool Twos(CultureInfo culture) => culture.NumberFormat.NumberGroupSizes is [2, ..];
+		foreach (var culture in CultureInfo.GetCultures(CultureTypes.AllCultures).Where(culture => !Twos(culture)))
 		{
 			var format = NumFormat.From(culture);
 			foreach (var value in new[] { 1234567.89m, 12345678.5m, 1234m })
@@ -256,6 +271,8 @@ public sealed class BridgeTests
 					var numbers = culture.NumberFormat;
 					if (specifier == "N2" ? numbers.NumberDecimalSeparator == numbers.NumberGroupSeparator : numbers.CurrencyDecimalSeparator == numbers.CurrencyGroupSeparator)
 						continue;
+					if (specifier == "C2" && !CurrencyFollowsTheNumberPattern(numbers))
+						continue;
 					var text = value.ToString(specifier, culture);
 					if (Cast.Decimal(text, format) is Success<decimal> { Value: var read } && read == decimal.Round(value, 2, MidpointRounding.AwayFromZero))
 						continue;
@@ -263,7 +280,7 @@ public sealed class BridgeTests
 				}
 		}
 		// Anything this misses must be a symbol, never the digit groups: the same text with the groups taken out fares no better.
-		foreach (var culture in CultureInfo.GetCultures(CultureTypes.AllCultures))
+		foreach (var culture in CultureInfo.GetCultures(CultureTypes.AllCultures).Where(culture => !Twos(culture)))
 		{
 			var format = NumFormat.From(culture);
 			var text = 1234567.89m.ToString("N2", culture);

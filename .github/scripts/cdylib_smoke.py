@@ -97,7 +97,7 @@ class CivilDateTime(ctypes.Structure):
 
 GROUPING, PARENS, EXPONENT, RADIX_PREFIX, PERCENT, _, CURRENCY, TRAILING_SIGN = (1 << i for i in range(8))
 ALL = GROUPING | PARENS | EXPONENT | RADIX_PREFIX | PERCENT | CURRENCY
-GROUPING_WESTERN, GROUPING_INDIAN = 1 << 8, 2 << 8
+GROUPING_INDIAN = 2 << 8
 
 
 def symbol(field, text):
@@ -468,7 +468,8 @@ check(lib.cast_declared_decimal(b"1", 1, None) == -1, "cast_declared_decimal nul
 
 # The four detailed exports reach the doors by Door's code (rust/src/door.rs) and write a
 # RawFaultDetail: the span and `detail`, which names what failed. A declared format is judged
-# by 1.1's rules, so its grouping policy (flag bits 8 and 9) holds there and nowhere else.
+# by 1.1's rules there, so GROUPING_INDIAN and the refusal of the retired bit 8 hold there and
+# nowhere else; the 1.0 exports mask flags to 8 bits and read every format Western.
 for shape, size_ in ((FaultDetail, 16), (DateOptions, 12)):
     check(ctypes.sizeof(shape) == size_,
           f"{shape.__name__} is {ctypes.sizeof(shape)} bytes; rust/src/abi.rs pins {size_}")
@@ -487,17 +488,23 @@ def detailed(door, param, text, out, fmt=None, options=None, vocab=b""):
     return status, out, (fault.offset, fault.len, fault.detail)
 
 
-strict = num_format(".", ",", ALL | GROUPING_WESTERN)
-status, value, fault = detailed(I32_DOOR, 0, "12,34", ctypes.c_int32(), ctypes.byref(strict))
-check(status == MALFORMED and value.value == 0 and fault == (2, 3, 11), "cast_detailed strict grouping (group_size)")
-check(ok("cast_i32", "12,34", ctypes.byref(strict)).value == 1234, "cast_i32 ignores the grouping policy")
-status, value, _ = detailed(I32_DOOR, 0, "1,234", ctypes.c_int32(), ctypes.byref(strict))
-check(status == OK and value.value == 1234, "cast_detailed strict grouping value")
+western = num_format(".", ",", ALL)
+status, value, fault = detailed(I32_DOOR, 0, "12,34", ctypes.c_int32(), ctypes.byref(western))
+check(status == MALFORMED and value.value == 0 and fault == (2, 3, 11), "cast_detailed Western grouping (group_size)")
+status, value, _ = detailed(I32_DOOR, 0, "1,234", ctypes.c_int32(), ctypes.byref(western))
+check(status == OK and value.value == 1234, "cast_detailed Western grouping value")
 indian = num_format(".", ",", ALL | GROUPING_INDIAN)
 check(detailed(I32_DOOR, 0, "12,34,567", ctypes.c_int32(), ctypes.byref(indian))[1].value == 1234567,
       "cast_detailed Indian grouping")
-status, value, fault = detailed(I32_DOOR, 0, "1", ctypes.c_int32(77), ctypes.byref(num_format(".", ",", ALL | (3 << 8))))
-check(status == CONTRACT_VIOLATION and value.value == 77 and fault == (7, 7, 7), "cast_detailed policy 3 writes nothing")
+called.add("cast_i32")
+for shape, flags in (("Western", ALL), ("Indian", ALL | GROUPING_INDIAN), ("retired", ALL | (1 << 8))):
+    raw = b"1,23,456"
+    check(lib.cast_i32(raw, len(raw), ctypes.byref(num_format(".", ",", flags)), ctypes.byref(ctypes.c_int32()), None)
+          == MALFORMED, f"cast_i32 masks the flags: {shape} reads Western")
+for retired in (351, 863):
+    status, value, fault = detailed(I32_DOOR, 0, "1", ctypes.c_int32(77), ctypes.byref(num_format(".", ",", retired)))
+    check(status == CONTRACT_VIOLATION and value.value == 77 and fault == (7, 7, 7),
+          f"cast_detailed refuses {retired} and writes nothing")
 check(detailed(24, 0, "1", ctypes.c_int32())[0] == CONTRACT_VIOLATION, "cast_detailed unknown door")
 check(detailed(I32_DOOR, 1, "1", ctypes.c_int32())[0] == CONTRACT_VIOLATION, "cast_detailed stray param")
 status, value, _ = detailed(UUID_DOOR, 0, "01020304-0506-0708-090a-0b0c0d0e0f10", (ctypes.c_uint8 * 16)())
@@ -549,9 +556,9 @@ status = lib.cast_checked_detailed(F64, 0, None, ctypes.byref(latitude), None, 0
 check(status == VIOLATION and (fault.offset, fault.len, fault.detail) == (0, 2, 0)
       and (report.keyword, report.adjusted, report.enum_index) == (3, 0, NO_INDEX), "cast_checked_detailed violation")
 cap = constraints(4, upper=decimal(1000))
-status = lib.cast_checked_detailed(I32, 0, ctypes.byref(strict), ctypes.byref(cap), None, 0, b"12,34", 5,
+status = lib.cast_checked_detailed(I32, 0, ctypes.byref(western), ctypes.byref(cap), None, 0, b"12,34", 5,
                                    ctypes.byref(ctypes.c_int32()), ctypes.byref(fault), ctypes.byref(report))
-check(status == MALFORMED and fault.detail == 11, "cast_checked_detailed strict grouping")
+check(status == MALFORMED and fault.detail == 11, "cast_checked_detailed Western grouping")
 check(lib.cast_checked_detailed(F64, 1, None, ctypes.byref(latitude), None, 0, b"1", 1, ctypes.byref(out),
                                 ctypes.byref(fault), None) == CONTRACT_VIOLATION, "cast_checked_detailed stray param")
 

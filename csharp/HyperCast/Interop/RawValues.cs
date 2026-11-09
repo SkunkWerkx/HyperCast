@@ -13,7 +13,7 @@ namespace HyperCast.Interop;
 /// <summary>
 /// The native core's numeric-format layout — the Rust crate's <c>RawNumFormat</c>, 92
 /// bytes with 4-byte alignment: a size word, the <see cref="NumStyles"/> bits and the grouping
-/// policy (bits 8 and 9 of the same word), the native
+/// policy (<see cref="NumGrouping.Indian"/> in bit 9 of the same word; Western sets no bit), the native
 /// digits' zero, then every declared symbol in place as its UTF-8 bytes followed by its
 /// length, with nothing between one field and the next. The core reads it where it stands,
 /// so a cast pays for a check of it and no copy. Built by <see cref="NumFormat.ToRaw"/>,
@@ -45,7 +45,7 @@ public struct RawNumFormat
 	/// <summary>The layout's size as the caller built it: 92.</summary>
 	public uint Size;
 
-	/// <summary>The <see cref="NumStyles"/> bits in bits 0 to 7, and the grouping policy in bits 8 and 9: 0 legacy, 256 strict Western, 512 strict Indian.</summary>
+	/// <summary>The <see cref="NumStyles"/> bits in bits 0 to 7, and the grouping policy: 0 Western, 512 Indian. Bit 8 is retired and the core's detailed exports refuse it.</summary>
 	public uint Flags;
 
 	/// <summary>The native digits' zero code point; 0 declares none.</summary>

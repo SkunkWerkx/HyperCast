@@ -11,9 +11,8 @@
 //! declared currency symbol at either edge, grouped digits and a fraction, read in one
 //! pass with no scratch buffer for the integer and decimal doors. It reads success shapes
 //! only. Anything it does not recognise — whitespace inside the token, an exponent, a
-//! percent, a multi-byte separator, a misplaced separator, a group a strict grouping policy
-//! refuses, more digits than the door's
-//! accumulator holds — returns `None`, and the door runs the engine it always ran, which
+//! percent, a multi-byte separator, a misplaced separator, a group its grouping policy
+//! refuses, more digits than the door's accumulator holds — returns `None`, and the door runs the engine it always ran, which
 //! rescans from the top and owns every fault span. So the lane can make a cast faster and
 //! cannot change a verdict: `lib.rs`'s differential test holds every door to the engine's
 //! answer over an enumerated grammar of token sequences, with the lane on and off.
@@ -123,23 +122,15 @@ pub(crate) fn scan<S: Sink>(
         }
     }
 
-    // A strict policy's group sizes, judged here so that a grouped token under the bindings'
-    // default policy stays in the lane; one that breaks them is the engine's. Judged ahead of
-    // the reading rather than in it: carried through the loop below, the group count cost a
-    // grouped token under legacy grouping about a fifth of its time.
-    if let Some(sizes) = format.strict_groups()
-        && !groups_fit(body.get(i..).unwrap_or_default(), decimal, group, sizes)
-    {
-        return None;
-    }
-
-    // Two loops rather than one with a flag: the integer part, where a group separator may
-    // sit between two digits, then the fraction, where nothing but digits may follow. A
-    // digit is a digit before it is anything else, and the decimal separator is tried
-    // before the group separator — the engine's order, which is what decides a format
-    // whose separators are digits or each other.
+    // Three loops rather than one with flags: the digits up to the first group separator, the
+    // groups after it, then the fraction. An ungrouped token never pays for counting groups, and
+    // a grouped one counts them as it reads, with no second scan. A digit is a digit before it
+    // is anything else, and the decimal separator is tried before the group separator: the
+    // engine's order, which is what decides a format whose separators are digits or each other.
+    let numeral = i;
     let mut any_digit = false;
     let mut after_digit = false;
+    let mut separated = false;
     while let Some(&byte) = body.get(i) {
         let digit = byte.wrapping_sub(b'0');
         if digit <= 9 {
@@ -151,11 +142,47 @@ pub(crate) fn scan<S: Sink>(
         } else if byte == decimal {
             break;
         } else if grouping && byte == group && after_digit && is_digit_at(body, i + 1) {
-            after_digit = false;
+            separated = true;
+            break;
         } else {
             return None;
         }
         i += 1;
+    }
+    if separated {
+        // The policy gives `(leftmost, inner)`: the leftmost holds `1..=leftmost` digits and
+        // doesn't start with a zero, any other holds `inner`, and the last three. A group that
+        // doesn't fit is the engine's to fault.
+        let (leftmost, inner) = format.group_sizes();
+        if i - numeral > leftmost as usize || body.get(numeral) == Some(&b'0') {
+            return None;
+        }
+        let mut last_sep = i;
+        after_digit = false;
+        i += 1;
+        while let Some(&byte) = body.get(i) {
+            let digit = byte.wrapping_sub(b'0');
+            if digit <= 9 {
+                if !sink.digit(digit) {
+                    return None;
+                }
+                after_digit = true;
+            } else if byte == decimal {
+                break;
+            } else if byte == group && after_digit && is_digit_at(body, i + 1) {
+                if i - last_sep - 1 != inner as usize {
+                    return None;
+                }
+                last_sep = i;
+                after_digit = false;
+            } else {
+                return None;
+            }
+            i += 1;
+        }
+        if i - last_sep - 1 != 3 {
+            return None;
+        }
     }
     if i < body.len() {
         if !sink.point() {
@@ -172,38 +199,6 @@ pub(crate) fn scan<S: Sink>(
         }
     }
     if any_digit { Some(negative) } else { None }
-}
-
-/// Whether the integer part at the head of `rest` has the group sizes a strict policy gives
-/// as `(leftmost, inner)`: the leftmost `1..=leftmost` digits, any other `inner`, and the
-/// last three; an ungrouped part fits whatever its length. Bytes are told apart in the
-/// lane's order (a digit, then `decimal`, then `group`), and the part runs to the first that
-/// is neither a digit nor a group separator. Where the lane reads the token at all, that is
-/// the decimal separator or the end, and the part is the integer part it reads, with each
-/// group separator between two digits; on any other token the answer goes unused. Out of
-/// line, to keep the lane's own loop as legacy grouping has it.
-#[inline(never)]
-fn groups_fit(rest: &[u8], decimal: u8, group: u8, (leftmost, inner): (u32, u32)) -> bool {
-    // A group separator that is a digit or the decimal separator is never read as one.
-    if group.is_ascii_digit() || group == decimal {
-        return true;
-    }
-    let (leftmost, inner) = (leftmost as usize, inner as usize);
-    let (mut digits, mut separated) = (0usize, false);
-    for &byte in rest {
-        if byte.is_ascii_digit() {
-            digits += 1;
-        } else if byte == group {
-            // The group this separator closes.
-            if if separated { digits != inner } else { digits > leftmost } {
-                return false;
-            }
-            (digits, separated) = (0, true);
-        } else {
-            break;
-        }
-    }
-    !separated || digits == 3
 }
 
 /// The integer doors' sink: up to nineteen digits, which cannot overflow a `u64`, and no

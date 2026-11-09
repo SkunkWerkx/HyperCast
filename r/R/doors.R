@@ -28,9 +28,9 @@ as_number <- function(x) {
 }
 
 text_door <- function(x, door, format = NULL, periods = NULL, code = 0L, options = NULL,
-                      months = NULL) {
+                      months = NULL, raw = FALSE) {
   cols <- .Call(C_cast_text, as_text(x), door, format, periods, code, session_native(),
-                check_date_options(options), check_months(months))
+                check_date_options(options), check_months(months), raw)
   new_verdict(cols, door)
 }
 
@@ -78,9 +78,12 @@ epoch_code <- function(epoch) declared(epoch, c("y1900", "y1904"), "epoch")
 #' verbatim, before any trimming (`" "` is a space, `"6"` the digit six); anything else is
 #' one declared code point, `65`, `U+0041`, `0x41`, `&H41`, or an HTML entity `&#65;` or
 #' `&#x41;` (the `;` required), ASCII case-insensitive on the prefix, with optional white
-#' space around it. A surrogate or anything past `U+10FFFF` is `out_of_range`. `U+0000`, the
-#' NUL character, is a valid value an R string cannot hold, so it is `ok` with `NA` as its
-#' `value`: a missing input has `ok` `NA` and a fault has `ok` `FALSE`, so nothing else reads so.
+#' space around it. A surrogate or anything past `U+10FFFF` is `out_of_range`. The
+#' `code_point` column holds the character's code point exactly. `U+0000`, the NUL character,
+#' is a valid value an R string cannot hold, so it is `ok` with `NA` as its `value` and `0` as
+#' its `code_point`. `ok` describes the core's acceptance and `value = NA` means R can't
+#' represent it, so checking `ok` alone doesn't guarantee a usable character value. A missing
+#' input has `ok` `NA` and a fault has `ok` `FALSE`, and both have `code_point` `NA`.
 #'
 #' `cast_uuid()` reads every .NET `Guid` text form (`D`, `N`, `B`, `P` and `X`) and the
 #' `urn:uuid:`, `GUID:` and `UUID:` prefixes.
@@ -89,13 +92,14 @@ epoch_code <- function(epoch) declared(epoch, c("y1900", "y1904"), "epoch")
 #'   holding UTF-8 bytes (a bare raw vector is one input). `NA` and `NULL` elements are
 #'   missing.
 #' @return A [hypercast_verdict]. Its `value` is logical for `cast_bool()`; a
-#'   one-character string for `cast_char()`; the lowercase hyphenated form for
-#'   `cast_uuid()`.
+#'   one-character string for `cast_char()`, followed by an integer `code_point` column; the
+#'   lowercase hyphenated form for `cast_uuid()`.
 #' @family doors
 #' @export
 #' @examples
 #' cast_bool(c("yes", "Off", "maybe", NA))
 #' cast_char(c("A", "U+00E9", "&#x1F600;", "U+D800"))$value
+#' cast_char(c("A", "U+0000"))
 #' cast_uuid("{6BA7B810-9DAD-11D1-80B4-00C04FD430C8}")$value
 cast_bool <- function(x) text_door(x, "bool")
 

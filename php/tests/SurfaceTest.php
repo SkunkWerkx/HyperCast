@@ -118,7 +118,7 @@ final class SurfaceTest extends TestCase
             $options,
             $months,
         ];
-        // 1.1: the FFI handle writeFormat() checks a strict policy against, the downgrade guard,
+        // 1.1: the FFI handle writeFormat() checks a format against, the downgrade guard,
         // and the version rule it applies.
         $surface['Interop\\NativeValues']['methods']['writeFormat']['params'][] = $nullable('core', '?FFI');
         $surface['Interop\\NativeValues']['methods']['compatible'] = [
@@ -132,8 +132,7 @@ final class SurfaceTest extends TestCase
         // policy constants, and withGrouping().
         $format = &$surface['NumFormat'];
         $format['constants'] += [
-            'GROUPING_LEGACY' => 0,
-            'GROUPING_WESTERN' => 256,
+            'GROUPING_WESTERN' => 0,
             'GROUPING_INDIAN' => 512,
             'GROUPING_POLICY' => 768,
         ];

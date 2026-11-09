@@ -120,6 +120,66 @@ test_that("U+0000 is a success with NA as its value, since an R string cannot ho
   expect_identical(cast_char("0")$value, "0")
 })
 
+test_that("U+0000 has an exact output", {
+  v <- cast_char("U+0000")
+  expect_identical(c(v$ok, is.na(v$value), v$code_point), c(TRUE, TRUE, 0L))
+  expect_identical(cast_char("A")$code_point, 65L)
+  # The top of the range, a fault and a missing input.
+  rows <- cast_char(c("U+10FFFF", "ab", NA))
+  expect_identical(rows$code_point, c(0x10FFFFL, NA, NA))
+  expect_identical(rows$value[[1]], "\U10FFFF")
+})
+
+test_that("text R can't hold is ok with NA, and raw gives the bytes", {
+  bytes <- as.raw(c(0x61, 0x00, 0x62))
+  v <- cast_text(list(bytes))
+  expect_true(v$ok)
+  expect_true(is.na(v$value))
+  expect_identical(nrow(faults(v)), 0L)
+  expect_identical(cast_text(list(bytes), raw = TRUE)$value[[1]], bytes)
+  expect_true(is.na(cast_text(NA_character_)$ok)) # missing input stays distinct
+})
+
+test_that("cast_text(raw = TRUE) holds every row's exact output, or NULL where there is none", {
+  latin1 <- "\xe9"
+  Encoding(latin1) <- "latin1"
+  native <- cast_text(c("plain", latin1, NA), raw = TRUE)
+  expect_s3_class(native, "hypercast_verdict")
+  expect_type(native$value, "list")
+  expect_identical(native$value[1:2], list(charToRaw("plain"), as.raw(c(0xc3, 0xa9))))
+  expect_null(native$value[[3]])
+  expect_identical(native$ok, c(TRUE, TRUE, NA))
+  # A fault has no output; it is the same fault the character value reports.
+  bad <- list(as.raw(c(0x61, 0xff)), NULL, as.raw(0L))
+  v <- cast_text(bad, raw = TRUE)
+  expect_identical(v$ok, c(FALSE, NA, TRUE))
+  expect_null(v$value[[1]])
+  expect_null(v$value[[2]])
+  expect_identical(v$value[[3]], as.raw(0L))
+  plain <- cast_text(bad)
+  expect_identical(plain[names(plain) != "value"], v[names(v) != "value"])
+  # A verdict, list column included: it subsets, faults and prints as any other does.
+  expect_identical(faults(v), faults(plain))
+  expect_identical(v[3, ]$value[[1]], as.raw(0L))
+  expect_output(print(v), "1 ok, 1 faulted, 1 missing")
+  expect_identical(optional(v)$value, v$value)
+  expect_identical(cast_text(character(), raw = TRUE)$value, list())
+})
+
+test_that("cast_text(raw =) takes one TRUE or FALSE, and leaves the constraints to the caller", {
+  for (bad in list(NA, NULL, "TRUE", 1L, c(TRUE, FALSE))) {
+    expect_error(cast_text("x", raw = bad), "raw must be TRUE or FALSE")
+    expect_error(cast_text("x", hypercast_constraints("text"), raw = bad),
+                 "raw must be TRUE or FALSE")
+  }
+  # raw alone is the plain door, and an explicit `constraints` still has to be a declaration.
+  expect_s3_class(cast_text("x", raw = TRUE), "hypercast_verdict")
+  expect_identical(cast_text("x", raw = FALSE), cast_text("x"))
+  expect_error(cast_text("x", NULL, raw = TRUE), "must be a hypercast_constraints")
+  forward <- function(x, constraints, ...) cast_text(x, constraints, ...)
+  expect_error(forward("x", raw = TRUE), "\"constraints\" is missing")
+})
+
 test_that("inputs are read in their own units: characters, or bytes for raw and \"bytes\"", {
   latin1 <- "\xe9\xe912x"
   Encoding(latin1) <- "latin1"
@@ -277,7 +337,7 @@ test_that("the plain verdict keeps exactly its columns, in order, for every kind
   f <- num_format()
   verdict <- c("ok", "reason", "offset", "length")
   shapes <- list(
-    list(cast_bool("t"), "value"), list(cast_char("A"), "value"),
+    list(cast_bool("t"), "value"), list(cast_char("A"), c("value", "code_point")),
     list(cast_i8("1", f), "value"), list(cast_i32("1", f), "value"),
     list(cast_i64("1", f), "value"), list(cast_f64("1", f), "value"),
     list(cast_decimal("1", f), "value"), list(cast_uuid("x"), "value"),
@@ -325,9 +385,9 @@ test_that("the checked verdict is its own class, with its own columns, in order"
   expect_identical(names(violations(v)), c("row", "keyword", "offset", "length"))
 })
 
-# ---- strict grouping ----
+# ---- grouping ----
 
-test_that("a format reads grouping strictly Western unless the caller says otherwise", {
+test_that("a format reads grouping Western unless the caller says otherwise", {
   f <- num_format()
   expect_identical(f$grouping, "western")
   v <- cast_i32(c("1,234,567", "12,34", "1234,567", "1234567", ",123", "123,", "1,,234"), f)
@@ -337,24 +397,48 @@ test_that("a format reads grouping strictly Western unless the caller says other
   # An invalid group spans its separator: ",34"; an oversized leftmost one has none: "1234".
   expect_identical(c(v$offset[2], v$length[2]), c(2L, 3L))
   expect_identical(c(v$offset[3], v$length[3]), c(0L, 4L))
-  # Strict policies do not turn grouping on: the style stays the switch.
+  # A policy does not turn grouping on: the style stays the switch.
   off <- num_format(flags = 0L)
   expect_identical(as.character(cast_i32("1,234", off)$reason), "malformed")
   expect_identical(as.character(cast_i32("1,234", off)$detail), "unexpected_character")
 })
 
-test_that("legacy and Indian grouping are explicit options", {
-  legacy <- num_format(grouping = "legacy")
-  expect_identical(cast_i32(c("12,34", "1,2,3"), legacy)$value, c(1234, 123))
+test_that("Indian is an explicit option, chosen in both directions", {
+  refused <- cast_i32(c("1,23,456", "1,2,345", "12,34", "0,125", "1234,567"), num_format())
+  expect_identical(as.character(refused$detail), rep("group_size", 5L))
+  expect_identical(refused$offset, c(1L, 1L, 2L, 0L, 0L))
   indian <- num_format(grouping = "indian")
   v <- cast_i32(c("12,34,567", "12,345", "123,456", "1,23,456"), indian)
   expect_identical(v$ok, c(TRUE, TRUE, FALSE, TRUE))
   expect_identical(as.character(v$detail[3]), "group_size")
-  expect_identical(num_format_detect(grouping = "legacy")$grouping, "legacy")
+  expect_identical(num_format_detect(grouping = "indian")$grouping, "indian")
   expect_error(num_format(grouping = "european"), "grouping must be one of")
-  expect_identical(capture.output(print(legacy)),
-                   "num_format(\".\", \",\", 95, grouping = \"legacy\")")
+  expect_error(num_format(grouping = "legacy"), "grouping must be one of")
+  expect_identical(capture.output(print(indian)),
+                   "num_format(\".\", \",\", 95, grouping = \"indian\")")
+  # The word is what a door reads, so a field set by hand can't quietly disagree with it.
+  mislabelled <- indian
+  mislabelled$grouping <- "western"
+  expect_error(cast_i32("12,34,567", mislabelled), "its flags say \"indian\"")
+  expect_error(num_format_with_grouping(mislabelled, "western"), "its flags say \"indian\"")
+  western <- num_format()
+  western$grouping <- "indian"
+  expect_error(cast_i32("1,234", western), "its flags say \"western\"")
+  # The way to change it, and a 1.0 format, which has no field, both pass.
+  expect_identical(num_format_with_grouping(indian, "western")$grouping, "western")
+  stored <- western
+  stored$grouping <- NULL
+  expect_equal(cast_i32("1,234", stored)$value, 1234)
   expect_identical(capture.output(print(num_format())), "num_format(\".\", \",\", 95)")
+  # num_format_with_grouping() replaces the policy and nothing else.
+  back <- num_format_with_grouping(indian, "western")
+  expect_identical(back, num_format())
+  expect_identical(num_format_with_grouping(num_format(), "indian"), indian)
+  expect_error(num_format_with_grouping(indian, "legacy"), "grouping must be one of")
+  expect_error(num_format_with_grouping(list(), "indian"), "must be a hypercast_num_format")
+  euro <- num_format(",", ".", currency = "\u20ac")
+  expect_identical(num_format_with_grouping(euro, "indian"),
+                   num_format(",", ".", currency = "\u20ac", grouping = "indian"))
 })
 
 test_that("a style mask never carries a policy", {
@@ -364,12 +448,11 @@ test_that("a style mask never carries a policy", {
   expect_error(num_format(flags = 2147483743), "holds only the styles of num_styles")
   # The policy sits beside the styles in the packed flags word, replaced and never OR-ed.
   flags <- function(f) sum(as.integer(f$packed[5:8]) * 256^(0:3))
-  expect_identical(flags(num_format()), 95 + 256)
+  expect_identical(flags(num_format()), 95)
   expect_identical(flags(num_format(grouping = "indian")), 95 + 512)
-  expect_identical(flags(num_format(grouping = "legacy")), 95)
 })
 
-test_that("native digits with a space-like group separator read strictly, in digits", {
+test_that("native digits with a space-like group separator are counted in digits", {
   f <- num_format(",", "\u202f", digit_zero = "\u0660")
   v <- cast_i32(c("\u0661\u202f\u0662\u0663\u0664", "\u0661\u0662\u202f\u0663\u0664"), f)
   expect_identical(v$ok, c(TRUE, FALSE))
@@ -412,24 +495,24 @@ test_that("num_format_from_localeconv() declares the policy from the locale's ow
   expect_identical(policy_of(grouping = sizes(3, 3)), "western")
   expect_identical(policy_of(grouping = sizes(3, 2), mon_grouping = sizes(3, 2)), "indian")
   expect_identical(policy_of(grouping = sizes(3, 2, 2)), "indian")
-  expect_identical(policy_of(grouping = sizes(2), mon_grouping = sizes(2)), "legacy")
-  expect_identical(policy_of(grouping = sizes(2, 3)), "legacy")
-  expect_identical(policy_of(grouping = sizes(3, 2, 3)), "legacy")
+  expect_identical(policy_of(grouping = sizes(2), mon_grouping = sizes(2)), "western")
+  expect_identical(policy_of(grouping = sizes(2, 3)), "western")
+  expect_identical(policy_of(grouping = sizes(3, 2, 3)), "western")
   # CHAR_MAX ends a pattern: a pattern that ends is another shape, and one that starts with it
   # groups nothing.
-  expect_identical(policy_of(grouping = sizes(3, 127)), "legacy")
+  expect_identical(policy_of(grouping = sizes(3, 127)), "western")
   expect_false(groups(bridge(grouping = sizes(127), mon_grouping = "")))
   expect_identical(policy_of(grouping = sizes(3), mon_grouping = sizes(127)), "western")
   expect_true(groups(bridge(grouping = sizes(3), mon_grouping = sizes(127))))
-  # Several patterns: only the ones that group count.
+  # The number pattern decides, whatever the currency's says.
   expect_identical(policy_of(grouping = sizes(3), mon_grouping = ""), "western")
   expect_identical(policy_of(grouping = sizes(3, 2), mon_grouping = ""), "indian")
-  expect_identical(policy_of(grouping = "", mon_grouping = sizes(3, 2)), "indian")
+  expect_identical(policy_of(grouping = "", mon_grouping = sizes(3, 2)), "western")
   expect_identical(policy_of(grouping = sizes(3, 2), mon_grouping = sizes(127)), "indian")
-  expect_identical(policy_of(grouping = sizes(3, 2), mon_grouping = sizes(3)), "legacy")
-  expect_identical(policy_of(grouping = sizes(3), mon_grouping = sizes(3, 2)), "legacy")
-  expect_identical(policy_of(grouping = sizes(3), mon_grouping = sizes(2)), "legacy")
-  expect_identical(policy_of(grouping = sizes(2), mon_grouping = sizes(3, 2)), "legacy")
+  expect_identical(policy_of(grouping = sizes(3, 2), mon_grouping = sizes(3)), "indian")
+  expect_identical(policy_of(grouping = sizes(3), mon_grouping = sizes(3, 2)), "western")
+  expect_identical(policy_of(grouping = sizes(3), mon_grouping = sizes(2)), "western")
+  expect_identical(policy_of(grouping = sizes(2), mon_grouping = sizes(3, 2)), "western")
   expect_true(groups(bridge(grouping = sizes(3, 2), mon_grouping = sizes(3))))
   # Neither groups: the style is cleared (a group separator is then malformed); one that does
   # keeps it.
@@ -446,18 +529,17 @@ test_that("num_format_from_localeconv() declares the policy from the locale's ow
   expect_identical(bitwAnd(trailing$flags, num_styles[["trailing_sign"]]), 128L)
 })
 
-test_that("the bridge's format reads what its platform writes, number and currency", {
+test_that("the bridge's format reads what its platform writes in the pattern of its policy", {
   money <- c(currency_symbol = "\u20b9", mon_decimal_point = ".", mon_thousands_sep = ",")
   platforms <- list(
     en_US = list(number = 3L, currency = 3L), posix = list(number = 3L, currency = 3L),
     en_IN = list(number = c(3L, 2L), currency = c(3L, 2L)),
-    tok = list(number = 2L, currency = 2L),
     en_BG = list(number = 3L, currency = 127L),
     ml = list(number = c(3L, 2L), currency = 3L),
     ta = list(number = c(3L, 2L), currency = 3L)
   )
-  want <- c(en_US = "western", posix = "western", en_IN = "indian", tok = "legacy",
-            en_BG = "western", ml = "legacy", ta = "legacy")
+  want <- c(en_US = "western", posix = "western", en_IN = "indian",
+            en_BG = "western", ml = "indian", ta = "indian")
   for (name in names(platforms)) {
     p <- platforms[[name]]
     conv <- c(grouping = do.call(sizes, as.list(p$number)),
@@ -468,13 +550,29 @@ test_that("the bridge's format reads what its platform writes, number and curren
       number <- platform_grouped(digits, ",", p$number)
       expect_identical(cast_decimal(number, f)$value, digits, info = paste(name, number))
       amount <- paste0("\u20b9", platform_grouped(digits, ",", p$currency), ".50")
-      expect_identical(cast_decimal(amount, f)$value, paste0(digits, ".5"),
+      # A Western amount through ml's Indian numbers is refused until the column declares Western.
+      reader <- if (name %in% c("ml", "ta")) num_format_with_grouping(f, "western") else f
+      expect_identical(cast_decimal(amount, reader)$value, paste0(digits, ".5"),
                        info = paste(name, amount))
     }
   }
-  # tok's groups of two read only because the bridge declared legacy, not strict Western.
+  ml <- bridge(c(grouping = sizes(3, 2), mon_grouping = sizes(3), money))
+  refused <- cast_decimal("\u20b91,234,567.50", ml)
+  expect_identical(as.character(refused$detail), "group_size")
+  expect_identical(c(refused$offset, refused$length), c(2L, 4L))
+  # glibc's cmn_TW family groups in fours and its unm_US ends in twos: refused, not misread.
+  fours <- bridge(grouping = sizes(4), mon_grouping = sizes(4))
+  expect_identical(fours$grouping, "western")
+  expect_identical(cast_f64("1,2345.00", fours)$offset, 1L)
+  expect_identical(as.character(cast_f64("1,2345.00", fours)$detail), "group_size")
+  expect_identical(cast_f64("2345.00", fours)$value, 2345)
+  unm <- bridge(grouping = sizes(2, 2, 2, 3), mon_grouping = sizes(2, 2, 2, 3))
+  expect_identical(unm$grouping, "western")
+  expect_false(cast_f64("9,99.00", unm)$ok)
+  # tok's groups of two: the bridge declares Western, which refuses them.
   tok <- bridge(grouping = sizes(2), mon_grouping = sizes(2))
-  expect_identical(cast_i64("12,34,56,78", tok)$value, "12345678")
+  expect_identical(tok$grouping, "western")
+  expect_identical(as.character(cast_i64("12,34,56,78", tok)$detail), "group_size")
   expect_false(cast_i64("12,34,56,78", num_format())$ok)
   # Platform values with no currency grouping, beside grouped numbers.
   bg <- bridge(grouping = sizes(3), mon_grouping = sizes(127), money)
@@ -482,11 +580,11 @@ test_that("the bridge's format reads what its platform writes, number and curren
   expect_identical(cast_decimal("1,234,567.5", bg)$value, "1234567.5")
 })
 
-test_that("a format made before the policy existed prints as the legacy it read", {
+test_that("a format made before the policy existed is Western, and prints so", {
   old <- num_format()
   old$grouping <- NULL
-  expect_identical(capture.output(print(old)),
-                   "num_format(\".\", \",\", 95, grouping = \"legacy\")")
+  expect_identical(capture.output(print(old)), "num_format(\".\", \",\", 95)")
+  expect_false(cast_i32("1,23,456", old)$ok)
 })
 
 test_that("the linked core enforces grouping policies, and the package says so on load", {

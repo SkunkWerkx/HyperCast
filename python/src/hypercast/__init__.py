@@ -230,7 +230,7 @@ class Detail(IntEnum):
     GROUP_MISPLACED = 10
     """A group separator not between digits, or an empty group."""
     GROUP_SIZE = 11
-    """A group with the wrong digit count for the declared grouping."""
+    """A group with the wrong digit count for the declared grouping, or a first group that starts with a zero."""
     GROUP_IN_FRACTION = 12
     """Grouping after the decimal separator or in an exponent."""
     AMBIGUOUS_SEPARATOR = 13
@@ -296,8 +296,8 @@ def _require_core_1_1(native: ModuleType) -> None:
     """Refuses a native core below 1.1, before anything is bound to it.
 
     A 1.0 core reads a format's grouping-policy bits as nothing and parses ``12,34`` as 1234
-    whatever was declared, so a request for strict grouping against it would silently be a
-    legacy parse. The package is built for the 1.1 core's surface (strict grouping, detail, date
+    whatever was declared, so a Western or Indian request against it would silently read otherwise.
+    The package is built for the 1.1 core's surface (grouping policies, detail, date
     options), and a core that lacks it is a mismatched install, never a degraded mode.
 
     A capability check, not a numeric floor: the extension is the core, built from one crate,

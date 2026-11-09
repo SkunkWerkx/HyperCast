@@ -59,7 +59,6 @@ class NumFormat:
     TRAILING_SIGN: ClassVar[int]
     ALL: ClassVar[int]
     SEPARATOR_DETECT: ClassVar[int]
-    GROUPING_LEGACY: ClassVar[int]
     GROUPING_WESTERN: ClassVar[int]
     GROUPING_INDIAN: ClassVar[int]
     GROUPING_POLICY: ClassVar[int]
@@ -88,6 +87,7 @@ class NumFormat:
     def flags(self) -> int: ...
     @property
     def grouping(self) -> int: ...
+    def with_grouping(self, grouping: int) -> NumFormat: ...
     @property
     def currency(self) -> str: ...
     @property
@@ -105,6 +105,8 @@ class NumFormat:
     @property
     def packed(self) -> bytes:
         """The 92 bytes this format crosses a C ABI as, for a library with one of its own."""
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
     @staticmethod
     def from_localeconv(conv: dict[str, Any] | None = None) -> NumFormat: ...
 

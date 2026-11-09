@@ -5,6 +5,7 @@
 //! caller's own input buffer as a byte span.
 
 use crate::detail::Failure;
+use crate::integer::read_digit;
 use crate::site::Site;
 use crate::text::{
     contains_white_space, space_like_len, space_like_len_back, white_space_len,
@@ -615,7 +616,7 @@ impl NativeDigits {
 pub struct NumFormat {
     /// Bitwise OR of the `GROUPING`/`PARENS`/`EXPONENT`/`RADIX_PREFIX`/`PERCENT`/`CURRENCY`/
     /// `TRAILING_SIGN` flags, plus the `SEPARATOR_DETECT` policy and, in bits 8 and 9, the
-    /// grouping policy (`GROUPING_LEGACY`, `GROUPING_WESTERN` or `GROUPING_INDIAN`).
+    /// grouping policy: no bits for `GROUPING_WESTERN`, `GROUPING_INDIAN` when declared.
     pub flags: u32,
     /// Native digits read beside ASCII `0`–`9`. [`NativeDigits::NONE`] declares none.
     pub digits: NativeDigits,
@@ -649,12 +650,35 @@ pub struct NumFormat {
     pub currency: CurrencySymbol,
 }
 
+/// A numeral's grouping policy: [`NumFormat::with_grouping`]'s argument. Exactly two exist, so a
+/// bad one can't be asked for. Each value is its bits in [`NumFormat::flags`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u32)]
+pub enum Grouping {
+    /// [`NumFormat::GROUPING_WESTERN`]: groups of three, and what a format with no policy reads.
+    Western = NumFormat::GROUPING_WESTERN,
+    /// [`NumFormat::GROUPING_INDIAN`]: three beside the decimal separator, then twos.
+    Indian = NumFormat::GROUPING_INDIAN,
+}
+
+impl Grouping {
+    /// The policy a flags value names, or `None` for any other value, the retired 256 and 768
+    /// among them. For a caller holding a number: a binding's argument, or a stored one.
+    #[inline]
+    pub const fn from_code(code: u32) -> Option<Grouping> {
+        match code {
+            NumFormat::GROUPING_WESTERN => Some(Grouping::Western),
+            NumFormat::GROUPING_INDIAN => Some(Grouping::Indian),
+            _ => None,
+        }
+    }
+}
+
 impl NumFormat {
-    /// Permit `group_sep` between digits. Under the legacy grouping policy group sizes are not
-    /// validated — a separator must simply sit between two digits, HyperCast's own
-    /// deterministic rule where .NET's `AllowThousands` deferred to per-culture quirks; a
-    /// strict policy ([`GROUPING_WESTERN`](Self::GROUPING_WESTERN),
-    /// [`GROUPING_INDIAN`](Self::GROUPING_INDIAN)) judges every group.
+    /// Permit `group_sep` between digits. The grouping policy
+    /// ([`GROUPING_WESTERN`](Self::GROUPING_WESTERN), the default, or
+    /// [`GROUPING_INDIAN`](Self::GROUPING_INDIAN)) judges every group, HyperCast's own
+    /// deterministic rule where .NET's `AllowThousands` deferred to per-culture quirks.
     pub const GROUPING: u32 = 1 << 0;
     /// Permit accounting parentheses as negation: `(1,234)` is -1234.
     pub const PARENS: u32 = 1 << 1;
@@ -676,8 +700,10 @@ impl NumFormat {
     /// exactly 3 digits right is the decimal only when the integer part is exactly `0`
     /// (`0,785` is 0.785 — `0785` would be no number at all). Everything else — `12.185`,
     /// `1,000` — is genuinely ambiguous between dialects and comes back `Malformed` at the
-    /// undecidable separator, never guessed. Covers the `.`/`,` pair only; space/NBSP
-    /// grouping still needs a declared format.
+    /// undecidable separator, never guessed. Only the numeral counts: a declared symbol's
+    /// separator is no separator (`Rs.1,234` is as ambiguous as `1,234`), and declared native
+    /// digits are digits (`١,٢٣٤` too). Covers the `.`/`,` pair only; space/NBSP grouping still
+    /// needs a declared format.
     pub const SEPARATOR_DETECT: u32 = 1 << 5;
     /// Permit the declared [`currency`](Self::currency) symbol at either edge of the
     /// numeric body — leading (`$5`, `-$5`, `$ -5`) or trailing (`5 €`, `1.234,50 kr.`),
@@ -702,43 +728,40 @@ impl NumFormat {
         | Self::PERCENT
         | Self::CURRENCY;
 
-    /// Grouping policy `00`, legacy: a group separator anywhere between two digits, whatever
-    /// the group sizes (`12,34` is 1234). What a format declaring no policy has: the C ABI's
-    /// null format, a 1.0 layout, [`new`](Self::new) with no policy bits, and
-    /// [`INVARIANT`](Self::INVARIANT).
-    pub const GROUPING_LEGACY: u32 = 0;
-    /// Grouping policy `01`, strict Western: once a numeral uses a group separator, its
-    /// integer part is groups of exactly three digits counted leftward from the decimal
-    /// separator (or the numeral's end), the leftmost group one to three. An ungrouped
-    /// numeral stays valid; grouping after the decimal separator or in an exponent never is.
-    /// Digits are counted as digits, native ones included, never bytes, and the rule holds for
-    /// the currency group separator and each space-like separator alike. A policy only
-    /// judges groups: with [`GROUPING`](Self::GROUPING) off, a group separator stays forbidden.
-    pub const GROUPING_WESTERN: u32 = 1 << 8;
-    /// Grouping policy `10`, strict Indian (lakh and crore): as
+    /// Grouping policy `00`, Western, what a format that records no policy has: the C ABI's
+    /// null format, a 1.0 layout, a 1.0 serialized payload, [`new`](Self::new) with no policy
+    /// bits, [`INVARIANT`](Self::INVARIANT) and [`DETECT`](Self::DETECT). Once a numeral uses a
+    /// group separator, its integer part is groups of exactly three digits counted leftward from
+    /// the decimal separator (or the numeral's end), the leftmost group one to three and not
+    /// starting with a zero (`0,125` and `007,000` are `Malformed`). An ungrouped numeral stays
+    /// valid (`0125`); grouping after the decimal separator or in an exponent never is. Digits
+    /// are counted as digits, native ones included, never bytes, and the rule holds for the
+    /// currency group separator and each space-like separator alike. A policy only judges
+    /// groups: with [`GROUPING`](Self::GROUPING) off, a group separator stays forbidden.
+    pub const GROUPING_WESTERN: u32 = 0;
+    /// Grouping policy `10`, Indian (lakh and crore), only when declared: as
     /// [`GROUPING_WESTERN`](Self::GROUPING_WESTERN), but the group next to the decimal
     /// separator has three digits, every group to its left two, and the leftmost one or two
     /// (`12,34,567`).
     pub const GROUPING_INDIAN: u32 = 2 << 8;
-    /// The two policy bits, 8 and 9, within `flags`. Policy `11` is refused by
-    /// [`check`](Self::check). Set a policy with [`with_grouping`](Self::with_grouping), which
-    /// replaces the field.
+    /// The policy field, bits 8 and 9, within `flags`. Only `00` and `10` are policies. Value 256
+    /// (bit 8) is retired permanently and never reused, so an old `351` can never gain a meaning:
+    /// [`check`](Self::check) and [`validate`](Self::validate) refuse `01` and `11`, and a future
+    /// policy, such as four-digit grouping, takes a new bit from bit 10 up. Set a policy with
+    /// [`with_grouping`](Self::with_grouping), which can't name a bad one. [`new`](Self::new),
+    /// [`with_separators`](Self::with_separators) and the public fields can, because 1.0 gave them
+    /// a plain `u32`: a plain door reads such a format Western, and
+    /// [`check`](Self::check) and [`validate`](Self::validate) are what refuse it.
     pub const GROUPING_POLICY: u32 = 3 << 8;
 
     /// Every `flags` bit 1.1 defines; [`check`](Self::check) refuses a format with any other.
     const DEFINED: u32 =
-        Self::ALL | Self::SEPARATOR_DETECT | Self::TRAILING_SIGN | Self::GROUPING_POLICY;
+        Self::ALL | Self::SEPARATOR_DETECT | Self::TRAILING_SIGN | Self::GROUPING_INDIAN;
 
     /// The invariant profile — `.` decimal, `,` grouping, every default lenience on, nothing
-    /// else declared, and legacy grouping. This is what the FFI doors use when the caller
-    /// passes a null format.
+    /// else declared, and Western grouping, so `1,234` is 1234 and `12,34` and `1,23,456` are
+    /// `Malformed`. This is what the FFI doors use when the caller passes a null format.
     pub const INVARIANT: NumFormat = NumFormat::new('.', ',', Self::ALL);
-
-    /// The invariant profile with strict Western grouping: `.` decimal, `,` grouping, every
-    /// default lenience on ([`ALL`](Self::ALL)) and
-    /// [`GROUPING_WESTERN`](Self::GROUPING_WESTERN), so `1,234` is 1234 and `12,34` is
-    /// `Malformed`.
-    pub const STRICT: NumFormat = NumFormat::new('.', ',', Self::ALL | Self::GROUPING_WESTERN);
 
     /// Every field empty, the number separators included — not a format on its own (an
     /// empty separator matches nothing, and the ABI refuses it), but the bytes a layout
@@ -828,29 +851,32 @@ impl NumFormat {
         NumFormat { digits, ..self }
     }
 
-    /// The same format with the grouping policy `policy`
-    /// ([`GROUPING_LEGACY`](Self::GROUPING_LEGACY),
-    /// [`GROUPING_WESTERN`](Self::GROUPING_WESTERN) or
-    /// [`GROUPING_INDIAN`](Self::GROUPING_INDIAN)). The policy field is replaced, never ORed
-    /// into, so a second call changes the policy rather than combining two; only the
-    /// [`GROUPING_POLICY`](Self::GROUPING_POLICY) bits of `policy` are read, and every other
-    /// flag is kept.
-    pub const fn with_grouping(self, policy: u32) -> NumFormat {
-        let flags = (self.flags & !Self::GROUPING_POLICY) | (policy & Self::GROUPING_POLICY);
+    /// The same format with the grouping policy `policy`. The policy field is replaced, never
+    /// ORed into, so a second call changes the policy rather than combining two, and every other
+    /// flag is kept. [`Grouping`] has two values, so a bad policy can't be asked for: a caller
+    /// holding a number goes through [`Grouping::from_code`], which refuses it.
+    ///
+    /// ```
+    /// use hypercast::{Grouping, NumFormat};
+    /// let indian = NumFormat::INVARIANT.with_grouping(Grouping::Indian);
+    /// assert_eq!(hypercast::cast_i32(b"1,23,456", &indian), Ok(123456));
+    /// ```
+    ///
+    /// ```compile_fail
+    /// let retired = hypercast::NumFormat::INVARIANT.with_grouping(256);
+    /// ```
+    pub const fn with_grouping(self, policy: Grouping) -> NumFormat {
+        let flags = (self.flags & !Self::GROUPING_POLICY) | policy as u32;
         NumFormat { flags, ..self }
     }
 
-    /// The group sizes a strict policy demands, as `(leftmost, inner)`: the leftmost group
-    /// holds one to `leftmost` digits and every group after it `inner`, but the last, which
-    /// holds three. `None` for legacy (and for the refused policy `11`, which no validated
-    /// format carries).
+    /// The group sizes the policy demands, as `(leftmost, inner)`: the leftmost group holds one
+    /// to `leftmost` digits, the first not a zero, and every group after it `inner`, but the
+    /// last, which holds three. Only a declared [`GROUPING_INDIAN`](Self::GROUPING_INDIAN) is
+    /// Indian; a policy field [`check`](Self::check) refuses never reads as it.
     #[inline(always)]
-    pub(crate) fn strict_groups(&self) -> Option<(u32, u32)> {
-        match self.flags & Self::GROUPING_POLICY {
-            Self::GROUPING_WESTERN => Some((3, 3)),
-            Self::GROUPING_INDIAN => Some((2, 2)),
-            _ => None,
-        }
+    pub(crate) fn group_sizes(&self) -> (u32, u32) {
+        if self.flags & Self::GROUPING_POLICY == Self::GROUPING_INDIAN { (2, 2) } else { (3, 3) }
     }
 
     pub(crate) fn allows(&self, flag: u32) -> bool {
@@ -858,7 +884,8 @@ impl NumFormat {
     }
 
     /// Whether a format read across the ABI is one this API would declare: `flags` sets only
-    /// bits this version defines (0 to 9) and names a grouping policy (never `11`); each
+    /// bits this version defines (0 to 7, and 9 for [`GROUPING_INDIAN`](Self::GROUPING_INDIAN);
+    /// bit 8 is retired permanently and never reused, so `01` and `11` are refused); each
     /// number separator one to eight bytes with no ASCII digit, the two different; each
     /// currency separator the same or empty, and the pair in force different; each decimal
     /// separator, plain and currency, free of white space (a numeral admits white space only
@@ -869,13 +896,11 @@ impl NumFormat {
     /// equal separators, white space.
     ///
     /// The `flags` rules are 1.1's: 1.0 ignored undefined bits. The 1.0 C exports still do,
-    /// reading only bits 0 to 7 (so they always parse with legacy grouping) before judging
+    /// reading only bits 0 to 7 (so they always parse with Western grouping) before judging
     /// the rest; [`validate`](Self::validate) and every newer interface apply them.
     #[inline]
     pub fn check(&self) -> bool {
-        if self.flags & !Self::DEFINED != 0
-            || self.flags & Self::GROUPING_POLICY == Self::GROUPING_POLICY
-        {
+        if self.flags & !Self::DEFINED != 0 {
             return false;
         }
         if !self.decimal_sep.check(false) || !self.group_sep.check(false) {
@@ -959,13 +984,25 @@ impl NumFormat {
     /// caller's input) under [`SEPARATOR_DETECT`](Self::SEPARATOR_DETECT)'s rules,
     /// returning a concrete declared-separator format for the ordinary engines to run
     /// with. The currency separators are resolved along with the number ones: detection
-    /// governs the whole token. The one fault detection itself can produce: `Malformed` at
-    /// a structurally undecidable separator.
+    /// governs the whole token. Only the numeral counts: a declared currency or percent symbol
+    /// holding a separator (`Rs.`, `kr.`) is no separator, and declared native digits are
+    /// digits. The one fault detection itself can produce: `Malformed` at a structurally
+    /// undecidable separator.
     pub(crate) fn resolve_detected(&self, text: &[u8], start: usize) -> Result<NumFormat, Failure> {
         let flags = self.flags & !Self::SEPARATOR_DETECT;
+        // A token whose frame doesn't read keeps its whole text here, so that its fault is the
+        // one the frame reports past this point, or the undecidable separator ahead of it.
+        let (numeral, base) = if self.currency.is_empty() && self.percent.is_empty() {
+            (text, start)
+        } else {
+            match crate::integer::frame(text, start, self, true) {
+                Ok(frame) => (frame.body, frame.base),
+                Err(_) => (text, start),
+            }
+        };
         let (mut dots, mut commas) = (0usize, 0usize);
         let (mut last_dot, mut last_comma) = (0usize, 0usize);
-        for (i, &byte) in text.iter().enumerate() {
+        for (i, &byte) in numeral.iter().enumerate() {
             match byte {
                 b'.' => (dots, last_dot) = (dots + 1, i),
                 b',' => (commas, last_comma) = (commas + 1, i),
@@ -974,8 +1011,8 @@ impl NumFormat {
         }
         let (decimal_sep, group_sep) = match (dots, commas) {
             (0, 0) => ('.', ','),
-            (_, 0) => resolve_single_sep(text, start, last_dot, dots, '.', ',')?,
-            (0, _) => resolve_single_sep(text, start, last_comma, commas, ',', '.')?,
+            (_, 0) => resolve_single_sep(numeral, base, last_dot, dots, '.', ',', self)?,
+            (0, _) => resolve_single_sep(numeral, base, last_comma, commas, ',', '.', self)?,
             _ if last_dot > last_comma => ('.', ','),
             _ => (',', '.'),
         };
@@ -1080,20 +1117,36 @@ fn resolve_single_sep(
     count: usize,
     sep: char,
     other: char,
+    format: &NumFormat,
 ) -> Result<(char, char), Failure> {
     if count >= 2 {
         return Ok((other, sep));
     }
     // `at` always indexes the separator; were it ever past the end, the declared roles stand.
-    let Some((before, [_, after @ ..])) = text.split_at_checked(at) else {
-        return Ok((sep, other));
-    };
-    let right = after.iter().take_while(|byte| byte.is_ascii_digit()).count();
+    let (mut right, mut i) = (0usize, at + 1);
+    while let Some((_, len)) = read_digit(text, i, format) {
+        right += 1;
+        i += len;
+    }
     if right != 3 {
         return Ok((sep, other));
     }
-    let left = before.iter().rev().take_while(|byte| byte.is_ascii_digit()).count();
-    if left == 1 && before.last() == Some(&b'0') {
+    // Native digits are several bytes wide, so the run ahead of the separator is read forward.
+    let (mut left, mut zero, mut i) = (0usize, false, 0usize);
+    while i < at {
+        match read_digit(text, i, format) {
+            Some((digit, len)) => {
+                left += 1;
+                zero = digit == 0;
+                i += len;
+            }
+            None => {
+                left = 0;
+                i += 1;
+            }
+        }
+    }
+    if left == 1 && zero {
         return Ok((sep, other));
     }
     Err(Failure::at(Site::DetectAmbiguous, start + at, 1))
@@ -1108,12 +1161,13 @@ impl Default for NumFormat {
 impl NumFormat {
     /// The format, validated for the [`detailed`](crate::detailed) doors: what
     /// [`check`](Self::check) accepts, or the [`DeclarationError`] saying why not, the
-    /// `flags` rules first (policy `11` is [`GroupingPolicy`](DeclarationError::GroupingPolicy),
-    /// then an undefined bit [`UnknownFlag`](DeclarationError::UnknownFlag)). A refusal is a
+    /// `flags` rules first (bit 8, in policies `01` and `11`, is
+    /// [`GroupingPolicy`](DeclarationError::GroupingPolicy), then an undefined bit
+    /// [`UnknownFlag`](DeclarationError::UnknownFlag)). A refusal is a
     /// caller's mistake in declaring the format, never a verdict on data, so it is kept apart
     /// from a [`Failure`].
     pub fn validate(self) -> Result<ValidNumFormat, DeclarationError> {
-        if self.flags & Self::GROUPING_POLICY == Self::GROUPING_POLICY {
+        if self.flags & Self::GROUPING_POLICY & !Self::GROUPING_INDIAN != 0 {
             Err(DeclarationError::GroupingPolicy)
         } else if self.flags & !Self::DEFINED != 0 {
             Err(DeclarationError::UnknownFlag)
@@ -1170,8 +1224,8 @@ pub enum DeclarationError {
     /// A [`NumFormat`] breaks [`NumFormat::check`]'s rules: a separator, sign, percent or
     /// currency symbol, or the native digits, that the format's constructors would not declare.
     NumFormat,
-    /// A [`NumFormat`] declares grouping policy `11`
-    /// ([`GROUPING_POLICY`](NumFormat::GROUPING_POLICY) all set), which names no policy.
+    /// A [`NumFormat`] sets bit 8 of its [`GROUPING_POLICY`](NumFormat::GROUPING_POLICY) field
+    /// (policy `01` or `11`), which names no policy.
     GroupingPolicy,
     /// A [`NumFormat`] sets a `flags` bit this version doesn't define (bit 10 or above).
     UnknownFlag,
@@ -1187,7 +1241,9 @@ impl core::fmt::Display for DeclarationError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(match self {
             DeclarationError::NumFormat => "the number format declares a symbol it may not",
-            DeclarationError::GroupingPolicy => "the number format declares grouping policy 11",
+            DeclarationError::GroupingPolicy => {
+                "the number format sets bit 8, which names no grouping policy"
+            }
             DeclarationError::UnknownFlag => "the number format sets an undefined flag",
             DeclarationError::DateFlags => "the date options set a bit this core does not define",
             DeclarationError::DatePivot => "the date pivot is neither 0 nor 100 through 9999",

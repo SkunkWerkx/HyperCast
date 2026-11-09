@@ -494,14 +494,12 @@ mod detailed {
         });
         group.finish();
 
-        // Strict grouping beside legacy, at the same input.
-        let legacy = hypercast::RawNumFormat::from(hypercast::NumFormat::INVARIANT);
-        let strict = hypercast::RawNumFormat::from(hypercast::NumFormat::STRICT);
+        // Western grouping, a numeral it reads and one it refuses.
+        let western = hypercast::RawNumFormat::from(hypercast::NumFormat::INVARIANT);
         let mut group = c.benchmark_group("grouping");
         for (case, format, input) in [
-            ("legacy 1,234,567", &legacy, &b"1,234,567"[..]),
-            ("western 1,234,567", &strict, b"1,234,567"),
-            ("western 12,34 (group_size)", &strict, b"12,34"),
+            ("western 1,234,567", &western, &b"1,234,567"[..]),
+            ("western 12,34 (group_size)", &western, b"12,34"),
         ] {
             group.bench_function(case, |b| {
                 b.iter(|| unsafe {

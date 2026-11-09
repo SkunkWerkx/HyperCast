@@ -316,62 +316,57 @@ no-break space, the `, ` some feeds carry), a bitwise OR of the lenience flags (
 `TRAILING_SIGN` is opted into separately, from a culture's negative pattern, and
 `SEPARATOR_DETECT` is a separator *policy*, not a lenience, opted into separately too), an
 optional currency symbol, and then, as keyword arguments, the grouping policy (`grouping`,
-[below](#strict-grouping)) and what a culture spells differently:
+[below](#grouping)) and what a culture spells differently:
 `currency_decimal_sep` and `currency_group_sep`, the separators a currency amount is read
 with; `minus_sign`, `plus_sign` and `percent`, further spellings of the signs and the
 percent symbol; and `digit_zero`, the zero of a set of native digits. `NumFormat.INVARIANT`
-is `.`/`,` with every lenience on, strict Western grouping and nothing else declared;
+is `.`/`,` with every lenience on, Western grouping and nothing else declared;
 `NumFormat.DETECT` is the same
 with `SEPARATOR_DETECT` added, so the `.`/`,` roles are resolved per input from its
 structure (`1.234.567,89` and `1,234,567.89` both read) and an undecidable one is a
 `MALFORMED` fault, never a guess; `NumFormat.from_localeconv()` bridges
-`locale.localeconv()` ([below](#the-locale-bridge)). A format is immutable and reads back
+`locale.localeconv()` ([below](#the-locale-bridge)). A format is immutable and hashable, equal
+to any format that declares the same thing however it was made (every field and the policy, as
+the core compares them), and reads back
 through `decimal_sep`, `group_sep`, `flags` (the lenience flags alone), `grouping`,
 `currency` and the keyword fields by their own names, each `""` when it declares nothing. Rebuilding
 a format from its getters therefore needs the policy passed back, `grouping=f.grouping`: `flags`
-does not carry it, and a constructor call without it declares strict Western, so a legacy or
+does not carry it, and a constructor call without it declares Western, so an
 Indian format copied without it would quietly change. Unlike the C#, Java, Swift and PHP doors,
 these take no platform format object (Ruby's take Rails' words as keywords instead): Python's `locale` is process-global, and
 `from_localeconv()` already reads it.
 
-### Strict grouping
+### Grouping
 
 A group separator is judged by a grouping policy the format declares, as the keyword `grouping`
 beside the lenience flags (a `flags` mask never carries one; passing one in `flags` is a
-`ValueError`). **The default is strict Western**, `NumFormat.GROUPING_WESTERN`: once a numeral
+`ValueError`). **The default is Western**, `NumFormat.GROUPING_WESTERN`: once a numeral
 uses a group separator, its integer part is groups of exactly three digits counted leftward from
-the decimal separator, the leftmost one to three, so `1,234,567` reads and `12,34` is `MALFORMED`
-(a `GROUP_SIZE` detail, spanning `,34`), as is `1234,567` (spanning `1234`). An ungrouped
+the decimal separator, the leftmost one to three, so `1,234,567` reads and `1,23,456` is `MALFORMED`
+(a `GROUP_SIZE` detail, spanning `,23`), as is `1234,567` (spanning `1234`). A first group can't
+start with a zero: `0,125` is `MALFORMED` too (spanning `0`), under both policies. An ungrouped
 numeral stays valid, there is no grouping after the decimal separator or in an exponent, and a
-strict policy does not turn grouping on: with `GROUPING` off a group separator stays forbidden.
+policy does not turn grouping on: with `GROUPING` off a group separator stays forbidden.
 The rules count digits, never bytes, so native digits and a space-like group separator follow
 them, and a currency amount's group separator is judged the same way.
-`NumFormat.GROUPING_INDIAN` is the other strict policy, the group beside the decimal separator
-three digits and every group left of it two (`12,34,567`), and `NumFormat.GROUPING_LEGACY` keeps
-the reading before strict grouping, a group separator anywhere between two digits:
+`NumFormat.GROUPING_INDIAN` is the other policy, the group beside the decimal separator
+three digits and every group left of it two (`12,34,567`). It refuses `1,234,567`:
 
 ```python
-western = hypercast.NumFormat(".", ",", hypercast.NumFormat.ALL)  # strict Western
+western = hypercast.NumFormat(".", ",", hypercast.NumFormat.ALL)  # Western
 hypercast.cast_i32("1,234", western)  # Success(value=1234)
-hypercast.cast_i32("12,34", western)  # a MALFORMED Fault, GROUP_SIZE, at 2+3
+hypercast.cast_i32("1,23,456", western)  # a MALFORMED Fault, GROUP_SIZE, at 1+3
 
-legacy = hypercast.NumFormat(
-    ".", ",", hypercast.NumFormat.ALL, grouping=hypercast.NumFormat.GROUPING_LEGACY
-)
-hypercast.cast_i32("12,34", legacy)  # Success(value=1234)
-
-indian = hypercast.NumFormat(
-    ".", ",", hypercast.NumFormat.ALL, grouping=hypercast.NumFormat.GROUPING_INDIAN
-)
-hypercast.cast_i64("12,34,567", indian)  # Success(value=1234567)
+indian = western.with_grouping(hypercast.NumFormat.GROUPING_INDIAN)
+hypercast.cast_i32("1,23,456", indian)  # Success(value=123456)
 ```
 
-`grouping` is the policy and nothing else, so it replaces rather than combines; `3 << 8`
-(`GROUPING_POLICY`, the mask of the two bits) names no policy and is a `ValueError`, as is a bit of
-`flags` this version does not define. `NumFormat.INVARIANT` and `NumFormat.DETECT` are strict
-Western too, so a format nobody declared a policy for reads strictly. A package that
-loads a native core below 1.1 refuses to import (`ImportError`): such a core ignores the policy
-and would read `12,34` as 1234 whatever was declared.
+`with_grouping` and the `grouping` keyword take one of the two and nothing else. Bit 8 (256) is
+retired permanently and never reused, so 256 and 768 (`GROUPING_POLICY`, the mask of the field)
+are a `ValueError`, as is a bit of `flags` this version does not define. `NumFormat.INVARIANT` and
+`NumFormat.DETECT` are Western too. A shape neither policy reads is `MALFORMED` under a declared format, `INVARIANT` or a bridge, never misread, while `NumFormat.DETECT` infers by the delimiter rule, so `1,2345` is 1.2345 there:
+[docs/grouping.md](https://github.com/SkunkWerkx/HyperCast/blob/master/docs/grouping.md#parked). A package that loads a native core below 1.1 refuses to import (`ImportError`): such a core
+would read `1,23,456` as 123456 whatever was declared.
 
 A currency symbol is declared, never guessed. With `CURRENCY` set and a symbol declared, the
 symbol is accepted once, leading (before or after the sign: `$5`, `-$5`, `$ -5`) or trailing
@@ -480,14 +475,17 @@ The grouping is read from the locale's own digit-group patterns, `grouping` for 
 pattern is read as C defines it: sizes from the decimal separator outward, a trailing `0`
 repeating the last size, `CHAR_MAX` (127) ending grouping, and a pattern with no size (`[]`,
 `[127]`) not grouping at all. One format has one policy and one `GROUPING` flag for both kinds
-of value, so, over the patterns that do group: all Western (`[3, 0]`, `[3, 3, 0]`) is strict
-Western, all Indian (`[3, 2, 0]`, `en_IN`) is strict Indian, and a pattern of any other shape
-(groups of two, as Toki Pona writes them) or patterns that disagree (`ml`, `ta`: Indian numbers,
-Western currency) is `GROUPING_LEGACY`, which reads a group separator between any two digits —
-the bridge never rejects what its platform writes. `GROUPING` is cleared only when neither
+of value. The policy follows the number pattern: all Indian (`[3, 2, 0]`, `en_IN`) is Indian, and
+anything else Western, so a locale whose numbers are Indian and whose currency is Western is Indian,
+and its Western amount is `MALFORMED` until the column says `.with_grouping(NumFormat.GROUPING_WESTERN)`.
+The reverse is `mr_IN` on glibc: `[3, 0]` for numbers and `[3, 2, 0]` for currency, so its bridge is
+Western and its own `₹12,34,567.50` is `MALFORMED` until the column says
+`.with_grouping(NumFormat.GROUPING_INDIAN)`. These patterns are the C library's, and they vary by
+platform and version. Shapes neither policy reads (`cmn_TW` and `unm_US` on glibc) are Western, and
+their own grouped output is `MALFORMED` under the bridge, never misread: [docs/grouping.md](https://github.com/SkunkWerkx/HyperCast/blob/master/docs/grouping.md#parked). The `GROUPING` flag is cleared only when neither
 pattern groups (the C locale); when just one does not, the flag stays for the other, so an
 ungrouped currency amount and a grouped one both read (the format cannot forbid grouping for
-one kind of value alone). A dict that carries neither key declares nothing: strict Western with
+one kind of value alone). A dict that carries neither key declares nothing: Western with
 `GROUPING` on, as the constructor does.
 
 A separator the locale leaves empty takes its default (`.`/`,`
@@ -616,8 +614,8 @@ immutable and hashable, and its `repr` is the call that builds it again.
 For a library that carries HyperCast's verdicts across a C ABI of its own — HyperTabular's,
 for one — and has to hand its native layer a format in the core's own layout
 rather than a copy of it. `NumFormat.packed` is those 92 bytes, the size-tagged layout the
-core reads in place: the size (`92`), the flags (the grouping policy in bits 8 and 9 among
-them: `351` for `ALL` under strict Western) and the native digits' zero code point (`0`
+core reads in place: the size (`92`), the flags (`95` for `ALL` under Western, plus 512
+under Indian) and the native digits' zero code point (`0`
 for none) as little-endian `u32`s at offsets 0, 4 and 8; then each symbol as its UTF-8
 zero-padded to its field, followed by its byte length — 8 + 1 bytes each for the decimal
 separator (offset 12), group separator (21), currency decimal separator (30), currency group
@@ -631,7 +629,7 @@ can be logged and restored:
 fmt = hypercast.NumFormat(".", ",", hypercast.NumFormat.ALL, "$")
 fmt  # NumFormat('.', ',', 95, '$')
 fmt.packed  # the 92 bytes:
-# b'\\\x00\x00\x00' + b'_\x01\x00\x00' + bytes(4)         size 92, flags 95 + strict Western, no digits
+# b'\\\x00\x00\x00' + b'_\x00\x00\x00' + bytes(4)         size 92, flags 95, Western, no digits
 #   + b'.' + bytes(7) + b'\x01' + b',' + bytes(7) + b'\x01'  the separators, each its UTF-8 then its length
 #   + bytes(45)                                            five symbols declared empty
 #   + b'$' + bytes(15) + b'\x01'                           the currency symbol

@@ -10,7 +10,7 @@ cast_checked(x, format, constraints)
 
 cast_checked_from_double(x, constraints)
 
-cast_text(x, constraints)
+cast_text(x, constraints, raw = FALSE)
 }
 \arguments{
 \item{x}{A character vector (a factor is read as its levels) or a list of raw vectors
@@ -20,6 +20,8 @@ numeric vector, where \code{NA} is missing and \code{NaN} is a number, and \code
 \item{format}{A \code{\link[=num_format]{num_format()}}: the declared separators and styles.}
 
 \item{constraints}{A \code{\link[=hypercast_constraints]{hypercast_constraints()}} declaration for the door.}
+
+\item{raw}{\code{FALSE} (the default) for a character \code{value}, \code{TRUE} for a list of raw vectors.}
 }
 \value{
 A \link{hypercast_checked_verdict}; \code{cast_text(x)} alone a \link{hypercast_verdict}.
@@ -37,16 +39,21 @@ measures and matches it.
 }
 \details{
 Each returns a \link{hypercast_checked_verdict}, whose \code{value} is in the plain door's R type
-(text is character). A text \code{enum} match is the entry exactly as declared, and its
-\code{enum_index} is the entry's position in \code{enum}, counted from 1 as R counts.
+(text is character, or a list of raw vectors with \code{raw = TRUE}). A text \code{enum} match is the
+entry exactly as declared, and its \code{enum_index} is the entry's position in \code{enum}, counted from
+1 as R counts.
 
 \code{cast_text(x)} with no \code{constraints} is the plain text door; an explicit \code{NULL}, or
 anything that is not a \code{hypercast_constraints}, is an error rather than a cast without
 rules. A declaration for another door is an error too.
 
-The text door's value is the input's own string when nothing was trimmed. U+0000, which
-a raw vector can carry and an R string cannot hold, makes the value \code{out_of_range} over
-the value: text with a NUL inside it is not absent, unlike \code{\link[=cast_char]{cast_char()}}'s lone \code{U+0000}.
+The text door's value is the input's own string when nothing was trimmed. Text no R string
+can hold, with U+0000 inside it (a raw vector can carry that) or over \code{INT_MAX} bytes, is \code{ok}
+with \code{NA} as its \code{value}, as \code{\link[=cast_char]{cast_char()}}'s \code{U+0000} is. \code{ok} describes the core's acceptance
+and \code{value = NA} means R can't represent it, so checking \code{ok} alone doesn't guarantee a usable
+character value. \code{raw = TRUE} gives the exact output: \code{value} is a list holding each value's
+UTF-8 bytes as a raw vector, trimmed as the character value is, with \code{NULL} where a row has no
+value. A missing input still has \code{ok} \code{NA} and a fault \code{ok} \code{FALSE}.
 }
 \examples{
 latitude <- hypercast_constraints("f64", minimum = "-90", maximum = "90",
@@ -60,6 +67,10 @@ cast_checked(c("12.35", "12.37"), num_format(), cash)
 sex <- hypercast_constraints("text", enum = c("Female", "Male", "Other"), trim = TRUE)
 cast_text(c(" male ", "OTHER", "x"), sex)
 cast_text(c("plain", ""))
+
+nul <- list(as.raw(c(0x61, 0x00, 0x62)))
+cast_text(nul)
+cast_text(nul, raw = TRUE)$value[[1]]
 }
 \seealso{
 Other constraints:

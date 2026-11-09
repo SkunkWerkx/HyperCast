@@ -432,10 +432,9 @@ RSpec.describe HyperCast do
       packed = everything.packed
       expect(packed.bytesize).to eq(92)
       expect(packed.encoding).to eq(Encoding::ASCII_8BIT)
-      # The policy rides in bits 8 and 9 of the flags word: strict Western by default.
-      expect(packed[0, 12].unpack("L<L<L<")).to eq([92, 223 | HyperCast::GROUPING_WESTERN, 0x660])
+      # The policy rides in the flags word: no bits for Western, the default, bit 9 for Indian.
+      expect(packed[0, 12].unpack("L<L<L<")).to eq([92, 223, 0x660])
       expect(everything.with(grouping: :indian).packed[4, 4].unpack1("L<")).to eq(223 | HyperCast::GROUPING_INDIAN)
-      expect(everything.with(grouping: :legacy).packed[4, 4].unpack1("L<")).to eq(223)
       symbol = ->(at, width) { [packed[at, width].delete("\0"), packed[at + width].ord] }
       expect(symbol.call(12, 8)).to eq([",", 1])
       expect(symbol.call(21, 8)).to eq([". ", 2])
@@ -515,17 +514,17 @@ RSpec.describe HyperCast do
     eurozone = { separator: ",", delimiter: "." }
 
     it "replaces the named fields of the declared format on every numeric door" do
-      # Legacy grouping, where "1.00" is a group of two digits and still reads (strict Western,
-      # the default, refuses it: see the grouping specs).
-      legacy = invariant.with(grouping: :legacy)
+      # "1.00" ends in a group of two digits, which no policy reads.
+      indian = invariant.with(grouping: :indian)
       expect(described_class.i8("1.00", invariant, **eurozone))
         .to eq(HyperCast::Fault.new(reason: :malformed, offset: 1, length: 3))
-      expect(described_class.i8("1.00", legacy, **eurozone)).to eq(HyperCast::Success.new(value: 100))
+      expect(described_class.i8("1.00", indian, **eurozone))
+        .to eq(HyperCast::Fault.new(reason: :malformed, offset: 1, length: 3))
       %i[i16 i32 i64 u16 u32 u64].each do |door|
         expect(described_class.public_send(door, "1.234", invariant, **eurozone))
           .to eq(HyperCast::Success.new(value: 1234)), door.to_s
       end
-      expect(described_class.u8("2.50", legacy, **eurozone)).to eq(HyperCast::Success.new(value: 250))
+      expect(described_class.u32("1.23.456", indian, **eurozone)).to eq(HyperCast::Success.new(value: 123_456))
       expect(described_class.f32("1.234,5", invariant, **eurozone)).to eq(HyperCast::Success.new(value: 1234.5))
       expect(described_class.f64("1.234,5", invariant, **eurozone)).to eq(HyperCast::Success.new(value: 1234.5))
       expect(described_class.decimal("€1.234,50", invariant, **eurozone, unit: "€"))

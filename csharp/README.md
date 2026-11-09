@@ -93,7 +93,9 @@ culture's AM/PM designators. Every numeric door, `Numeric<T>`, `Scalar<T>` and t
 [A culture, the way the BCL takes one](#a-culture-the-way-the-bcl-takes-one)). Or spell
 the format directly — `new NumFormat(',', '\u00A0', NumStyles.All, "€")` declares an
 arbitrary pair, `NumFormat.Invariant with { MinusSign = "−" }` a further sign, and
-`NumStyles.None` turns every lenience off. .NET-flavored
+`NumStyles.None` turns every lenience off. A `NumFormat` or `DateFormat` equals, and hashes
+like, any that declares the same thing, a `null` string counting as the empty one it reads back
+as. .NET-flavored
 fidelity, stated honestly: `DateTimeOffset`/`TimeOnly`/`TimeSpan` resolve to 100 ns
 ticks, so sub-tick nanoseconds truncate (the core carries full nanosecond fidelity; .NET's
 clock types don't). `Cast.Decimal` is exact and canonical — sign, 96-bit magnitude, trailing
@@ -206,28 +208,25 @@ writes U+00A0, ICU's `fr` U+202F, an older system a space), a space-like separat
 digit after it is just white space, and any other separator stays exact. Input of nothing
 but white space is `Empty`.
 
-**Grouping is strict by default.** A `NumFormat`'s `Grouping` says how digit groups are judged
+**Grouping is Western by default.** A `NumFormat`'s `Grouping` says how digit groups are judged
 where `NumStyles.Grouping` is set, beside the styles and never in them: `NumGrouping.Western`
 (the default, and what `NumFormat.Invariant` and `Detect` are) wants groups of exactly three
-digits counted from the decimal separator, the leftmost one to three; `Indian` wants three by the point, twos
-beyond, the leftmost one or two; and `Legacy` is 1.0's rule, a separator anywhere between two digits.
-So `Cast.Int32("12,34", NumFormat.Invariant)` is `Malformed` with `GroupSize`, spanning `,34`, where 1.0 read
-1234; `NumFormat.Invariant with { Grouping = NumGrouping.Legacy }` reads it as before. An ungrouped numeral stays
-valid under every policy, once a numeral groups every group must conform, grouping in the
+digits counted from the decimal separator, the leftmost one to three, and `Indian` wants three by the point, twos
+beyond, the leftmost one or two. So `Cast.Int32("1,23,456", NumFormat.Invariant)` is `Malformed` with `GroupSize`, spanning `,23`,
+and `Cast.Int32("1,23,456", NumFormat.Invariant with { Grouping = NumGrouping.Indian })` is 123456. An ungrouped numeral stays
+valid under both, once a numeral groups every group must conform, the first
+group can't start with a zero (`0,125` is `Malformed` with `GroupSize`, spanning `0`), grouping in the
 fraction or an exponent is `GroupInFraction`, native digits and the space-like separators are
-counted as digits like the rest, and with `Grouping` off a group separator is forbidden under every
-policy. `with { Styles = … }` keeps the policy, and the constructors take it as their own last argument
-(`new NumFormat('.', ',', NumStyles.All, NumGrouping.Indian)`), never as a style bit: an undefined policy,
-or a `NumStyles` value past the eight flags, is an `ArgumentException` like any other caller bug.
-`NumFormat.From` declares what the platform's own patterns write, so it never rejects the platform's
-output: both `NumberGroupSizes` and `CurrencyGroupSizes` are read with .NET's meaning (the last nonzero size
-repeats, a trailing `0` ends grouping, `[0]` is none), and only a pattern that groups counts. All
-`[3]` is `Western`; all `[3, 2]` is `Indian` (en-IN, hi-IN and sixty-one more on ICU); any other shape (Toki Pona's
-twos) or enabled patterns that disagree (ICU's ml, ta, mr and or: Indian numbers, Western currency)
-is `Legacy`, a deterministic fallback read from the sizes alone, never from a name or an input.
-`NumStyles.Grouping` is cleared only when neither pattern groups (en-US-POSIX); when just one does
+counted as digits like the rest, and with `Grouping` off a group separator is forbidden under both.
+`with { Styles = … }` keeps the policy, `with { Grouping = … }` replaces it, and the constructors take it as their own last argument
+(`new NumFormat('.', ',', NumStyles.All, NumGrouping.Indian)`), never as a style bit. Any other policy,
+or a `NumStyles` value past the eight flags, is an `ArgumentException` where it is set: that includes 256, which is retired and never reused, and 768. `NumGrouping.Western` is 0 and `Indian` is 512.
+`NumFormat.From` follows the platform's number pattern: `NumberGroupSizes` read with .NET's meaning (the last nonzero size
+repeats, a trailing `0` ends grouping, `[0]` is none), all `[3, 2]` is `Indian` (en-IN, hi-IN), and anything else is `Western`. The sizes are .NET's globalization data, `libicu` on Linux and the system's ICU on macOS, so they vary: ml, mr and or are `[3, 2]` for numbers and `[3]` for currency on Ubuntu 24.04's ICU 74.2, and `[3, 2]` for both on macOS 27.2, and `ta`'s currency turns Western on ICU 79.1. A Western `₹1,234,567` through a format whose numbers are Indian is `Malformed` until the column says `with { Grouping = NumGrouping.Western }`.
+`NumStyles.Grouping` is cleared only when neither `NumberGroupSizes` nor `CurrencyGroupSizes` groups (en-US-POSIX); when just one does
 (en-BG writes no currency grouping) it stays set, ungrouped values stay valid, and the format cannot
 prohibit grouping in that one amount alone.
+A shape neither policy reads, such as Toki Pona's groups of two, is `Malformed` under a declared format, `Invariant` or a bridge, never misread, and its ungrouped numerals read. `NumFormat.Detect` infers by the delimiter rule, so `1,2345` is 1.2345 there: [docs/grouping.md](https://github.com/SkunkWerkx/HyperCast/blob/master/docs/grouping.md#parked).
 
 The provider maps through `NumFormat.From(IFormatProvider)`: every field the core reads,
 from the culture's own data — its decimal and group separators, whole, however many
@@ -360,7 +359,8 @@ Every date door keeps its strict shapes unless asked, and a `DateOptions` asks. 
 three) open `20260107` at `Cast.Date`, and a space for `T` or `±hh` offsets at `Cast.Timestamp`; its
 `Pivot` (100 to 9999, the last year of a 100-year window) reads a two-digit year at the ordered
 date and civil date-time doors; its `Months`, a `MonthNames` you build (`new MonthNames((1, "Jan"), …)`,
-or `MonthNames.FromPacked` for the core's own bytes), reads those names in the month field, in the
+or `MonthNames.FromPacked` for the core's own bytes, and equal to any with the same entries in
+the same order), reads those names in the month field, in the
 position the declared order selects — `07-Jan-26` with a pivot, `7-Jan-2026` without — matching
 simple-folded names, longest first, with punctuation part of the name. No option is a default: a
 strict RFC 3339 caller may rely on a space or `+00` being refused. Each door takes the options as its
@@ -898,10 +898,9 @@ doors themselves use, so a value read that way is the value the door would have 
   detailed exports write (a size word the caller states, the span, and the `Detail` code), and
   `RawDateOptions` — the 12-byte date options they read (a size word, the `DateShapes` bits, the
   pivot). `DateOptions.TryToRaw` builds the latter, and `MonthNames.Packed` is the vocabulary's bytes.
-- `RawNumFormat` — the core's 92-byte numeric format (its policy bits take effect only through
-  the four detailed exports; an old 1.0 export ignores them and silently parses legacy): a size word, the `NumStyles` bits
-  (bits 0 to 7) with the grouping policy (bits 8 and 9: 256 strict Western, 512 strict Indian, 0
-  legacy) and the native digits' zero, then every declared symbol in place, each its UTF-8 bytes
+- `RawNumFormat` — the core's 92-byte numeric format (Indian takes effect only through
+  the four detailed exports; a 1.0 export masks flags to 8 bits and reads Western): a size word, the `NumStyles` bits
+  (bits 0 to 7) with the grouping policy (0 Western, 512 Indian; the core's detailed exports refuse the retired bit 8) and the native digits' zero, then every declared symbol in place, each its UTF-8 bytes
   and then its length (`RawSymbol`, nine bytes, for the separators, the signs and the
   percent symbol; `RawWideSymbol`, seventeen, for the currency symbol). The core reads it
   where it stands. `NumFormat.ToRaw()` builds it, validating as every numeric door does

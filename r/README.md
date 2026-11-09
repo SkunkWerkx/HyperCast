@@ -144,7 +144,8 @@ their own.
 | Door | `value` | Exact columns |
 | --- | --- | --- |
 | `cast_bool()` | logical | |
-| `cast_char()` | one-character string | |
+| `cast_char()` | one-character string, `NA` for U+0000 | `code_point` (integer) |
+| `cast_text()` | character; with `raw = TRUE`, a list of raw vectors | |
 | `cast_i8()`, `cast_i16()`, `cast_u8()`, `cast_u16()` | integer | |
 | `cast_i32()`, `cast_u32()` | double (R's integer has no `-2^31`) | |
 | `cast_i64()`, `cast_u64()` | character, the exact decimal integer | |
@@ -160,9 +161,33 @@ their own.
 A civil date-time names no instant until the caller names a zone:
 `as.POSIXct(v$value, tz = "America/Chicago")`. A `POSIXct` or `difftime` `value` is cut to the
 millisecond, never rounded, so it cannot carry into the next second, day or year; the exact
-columns hold every nanosecond ([Temporal precision](../docs/bindings.md#temporal-precision)). `cast_char()` reads U+0000, the NUL character, as `ok` with `NA` as
-its `value`, since an R string cannot hold it; a missing input has `ok` `NA` and a fault has
-`ok` `FALSE`, so nothing else reads that way.
+columns hold every nanosecond ([Temporal precision](../docs/bindings.md#temporal-precision)).
+
+`ok` describes the core's acceptance, and `value = NA` on an `ok` row means R can't represent the
+value, so checking `ok` alone doesn't guarantee a usable character value. Two doors have such
+values, and each has an exact output beside it:
+
+- `cast_char()` reads U+0000, the NUL character, as `ok` with `NA` as its `value`, and its
+  `code_point` column holds `0`. That column holds every character's code point.
+- `cast_text()` reads text with U+0000 inside it, which a raw vector can carry, or over `INT_MAX`
+  bytes, as `ok` with `NA` as its `value`. `raw = TRUE` gives the exact output: `value` is a list
+  holding each value's UTF-8 bytes as a raw vector, with `NULL` where a row has no value.
+
+A missing input has `ok` `NA` and a fault has `ok` `FALSE`, so neither reads as one of these.
+
+```r
+cast_char(c("A", "U+0000"))[c("value", "code_point", "ok")]
+#>   value code_point   ok
+#> 1     A         65 TRUE
+#> 2  <NA>          0 TRUE
+
+nul <- list(as.raw(c(0x61, 0x00, 0x62)))
+cast_text(nul)[c("value", "ok")]
+#>   value   ok
+#> 1  <NA> TRUE
+cast_text(nul, raw = TRUE)$value[[1]]
+#> [1] 61 00 62
+```
 
 ### Declarations
 
@@ -170,26 +195,29 @@ Nothing is guessed. The number doors take a `num_format()`: decimal and group se
 style flags (`num_styles`: grouping, parentheses, exponent, radix prefixes, percent,
 separator detection, currency, trailing sign), currency, sign and percent spellings and a
 native digit zero, and the grouping policy. `num_format()` with no arguments is the invariant
-format with every style but detection and strict Western grouping; `num_format_detect()` adds
+format with every style but detection and Western grouping; `num_format_detect()` adds
 detection; `num_format_from_localeconv()` bridges `Sys.localeconv()` (or any named vector of
 its fields). `cast_date()` and `cast_datetime()`
 take a field `order` (`"year_month_day"`, `"month_day_year"`, `"day_month_year"`), with
 `NULL` for ISO 8601 only; `cast_datetime()` takes `am` and `pm` day periods; `cast_unix()`
 takes its `precision` and the Excel doors their `epoch` (`"y1900"`, `"y1904"`).
 
-Grouping is strict by default: `grouping = "western"` reads a group separator only between
+Grouping is Western by default: `grouping = "western"` reads a group separator only between
 groups of exactly three digits counted from the decimal separator, so `1,234,567` reads and
-`12,34` is `malformed` (`group_size`, spanning `,34`). `grouping = "indian"` reads `12,34,567`
-(three digits beside the decimal separator, two to the left of them), and `grouping =
-"legacy"` is the escape hatch for 1.0's rule, a group separator anywhere between two digits
-(`12,34` is `1234`). A numeral without a group separator reads under all three, a policy
-never turns the `grouping` style on, and `flags` carries styles only (a policy there is an
-error). `num_format_from_localeconv()` reads the locale's own `grouping` and `mon_grouping`
-patterns (never its name): strict Western when every pattern that groups is groups of three,
-`"indian"` when every one is three then two, `"legacy"` for any other shape or when the number
-and currency patterns disagree (a bridge never rejects what its platform writes), and the
-`grouping` style is cleared only when neither pattern groups. R keeps `LC_NUMERIC` at `"C"`, so
-the currency pattern usually decides.
+`1,23,456` is `malformed` (`group_size`, spanning `,23`), and so is `0,125` (spanning `0`), since
+a first group can't start with a zero under either policy. `grouping = "indian"` reads `1,23,456`
+and `12,34,567` (three digits beside the decimal separator, two to the left of them) and refuses
+`1,234,567`. `num_format_with_grouping(format, "indian")` chooses either on a format already made; setting
+`$grouping` by hand changes nothing that is read, so the first door refuses a format whose field
+and flags disagree.
+A numeral without a group separator reads under both, a policy never turns the `grouping` style
+on, and `flags` carries styles only (a policy there is an error, 351 included: bit 8 is retired
+permanently and never reused). A shape neither policy reads is `malformed` under a declared format or a bridge, never misread, while `num_format_detect()` infers by the delimiter rule, so `1,2345` is 1.2345 there
+([docs/grouping.md](../docs/grouping.md#parked)). `num_format_from_localeconv()` follows the
+locale's number pattern (never its name): three then twos is `"indian"`, anything else
+`"western"`, and the `grouping` style is cleared only when neither the number nor the currency
+pattern groups. R keeps `LC_NUMERIC` at `"C"`, so the default `conv` usually reads `"western"`,
+even in an Indian locale: declare `"indian"` with `num_format_with_grouping()`.
 
 The date doors keep today's shape rules unless asked. `date_options()` opts in to
 `"compact_date"` (`20260107` at `cast_date()`), `"space_separator"` and `"hour_offset"`
@@ -217,8 +245,8 @@ any run of white space may sit between a designator and the clock (`3:04\u202fPM
 
 `hypercast_native_version()` is the version of the loaded core, which equals the package
 version. The package links its core statically and, on load, proves the core enforces grouping
-policies (a strict Western `12,34` must come back `group_size`); it refuses to load against a
-core that does not, so a strict request is never read as a legacy one.
+policies (a Western `12,34` must come back `group_size`); it refuses to load against a
+core that does not, so a numeral is never read by 1.0's rule.
 
 ## Validation constraints
 

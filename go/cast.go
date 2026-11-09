@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"math/big"
 	"math/bits"
+	"strconv"
 	"time"
 	"unsafe"
 
@@ -202,47 +203,48 @@ const (
 	// negative pattern rather than assumed. It never carries a grouping policy.
 	AllStyles = Grouping | Parentheses | Exponent | RadixPrefixes | Percent | CurrencySymbol
 
-	// GroupingPolicyMask is the two bits of Styles, 8 and 9, that hold the GroupingPolicy
-	// rather than a lenience: NumFormat.GroupingPolicy reads them, and NewNumFormat,
-	// WithGrouping and WithStyles keep the two apart. Both bits set names no policy and is a
-	// caller bug, as is any bit above them.
+	// GroupingPolicyMask is the two bits of Styles, 8 and 9, that hold the GroupingPolicy rather
+	// than a lenience: NumFormat.GroupingPolicy reads them, and NewNumFormat, WithGrouping and
+	// WithStyles keep the two apart. Bit 8 is retired permanently and never reused, so a Styles
+	// holding it names no policy, an old 351 included, and a future policy takes a new bit from
+	// bit 10 up. Any bit above them is a caller bug too.
 	GroupingPolicyMask NumStyles = 3 << 8
 
 	// definedStyles is every bit a NumFormat's Styles may carry.
-	definedStyles = AllStyles | SeparatorDetect | TrailingSign | GroupingPolicyMask
+	definedStyles = AllStyles | SeparatorDetect | TrailingSign | NumStyles(GroupingIndian)
 )
 
 // GroupingPolicy is how the Grouping lenience judges the groups between a numeral's group
-// separators — the native core's policy bits, verbatim, held in bits 8 and 9 of a
-// NumFormat's Styles (GroupingPolicyMask). A policy never enables grouping: with Grouping
-// off, a group separator stays Malformed under every policy, and an ungrouped numeral is
-// valid under every policy. No policy resolves an ambiguous "1,234" under SeparatorDetect.
+// separators — the native core's policy value, verbatim, held in a NumFormat's Styles
+// (GroupingPolicyMask). A policy never enables grouping: with Grouping off, a group separator
+// stays Malformed under every policy, and an ungrouped numeral is valid under every policy. No
+// policy resolves an ambiguous "1,234" under SeparatorDetect.
+//
+// Shapes neither policy reads ("1,2345,678", "1 23 45 67 89") are Malformed under a declared format,
+// and SeparatorDetect infers them instead (it can read "1,2345" as 1.2345): docs/grouping.md
+// says why and what adding one takes.
 type GroupingPolicy uint32
 
 const (
-	// GroupingLegacy accepts a group separator anywhere between two digits ("12,34" is
-	// 1234), as every 1.0 door did. It is policy 00, so a NumFormat literal that declares no
-	// policy, the zero value included, keeps it; Invariant and NewNumFormat do not.
-	GroupingLegacy GroupingPolicy = 0
 	// GroupingWestern requires groups of exactly three digits counted leftward from the
-	// decimal separator (or the numeral's end), the leftmost group one to three: "1,234,567"
-	// reads and "12,34" is Malformed. Once a numeral uses a group separator every group must
-	// conform, and no group separator may follow the decimal separator or sit in an
-	// exponent. Native digits and the space-like separators count as digits and separators;
-	// a currency amount's group separator follows the same rule.
-	GroupingWestern GroupingPolicy = 1 << 8
+	// decimal separator (or the numeral's end), the leftmost group one to three and not
+	// starting with a zero: "1,234,567" reads, and "1,23,456", "12,34" and "0,125" are
+	// Malformed. Once a numeral uses a group separator every group must conform, and no group
+	// separator may follow the decimal separator or sit in an exponent. Native digits and the
+	// space-like separators count as digits and separators; a currency amount's group
+	// separator follows the same rule. It sets no bit, so a NumFormat literal that declares no
+	// policy, the zero value included, and every format stored by 1.0 code is Western.
+	GroupingWestern GroupingPolicy = 0
 	// GroupingIndian requires the group next to the decimal separator to hold three digits
 	// and every group left of it two, the leftmost one or two: "12,34,567" reads and
 	// "1,234,567" is Malformed. Only when declared; the rest as GroupingWestern.
 	GroupingIndian GroupingPolicy = 2 << 8
 )
 
-// String names the policy in lower case — "legacy", "western", "indian" — and
-// "GroupingPolicy(N)" for bits that name none.
+// String names the policy in lower case — "western", "indian" — and "GroupingPolicy(N)" for
+// bits that name none.
 func (p GroupingPolicy) String() string {
 	switch p {
-	case GroupingLegacy:
-		return "legacy"
 	case GroupingWestern:
 		return "western"
 	case GroupingIndian:
@@ -252,10 +254,36 @@ func (p GroupingPolicy) String() string {
 	}
 }
 
-// valid reports whether p is one of the three policies.
+// valid reports whether p is one of the two policies.
 func (p GroupingPolicy) valid() bool {
-	return p == GroupingLegacy || p == GroupingWestern || p == GroupingIndian
+	return p == GroupingWestern || p == GroupingIndian
 }
+
+// UnmarshalJSON reads a Styles number as encoding/json would, and refuses what no NumFormat may
+// hold where it is decoded: the retired bit 8 (a stored 351 or 863) and any bit past the defined
+// ones (1119). Bit 9 is Indian, this binding's own encoding of the policy. encoding/gob has no such
+// hook for a stream written without one, which every 1.0 stream is, and no other decoder calls this
+// one: a bad Styles read from those is refused by the first door (a panic) or by Raw.
+func (s *NumStyles) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		return nil
+	}
+	bits, err := strconv.ParseUint(string(data), 10, 32)
+	if err != nil {
+		return fmt.Errorf("hypercast: Styles %s is not a uint32", data)
+	}
+	if NumStyles(bits)&retiredPolicyBit != 0 {
+		return fmt.Errorf("hypercast: Styles %#x names no grouping policy: bit 8 is retired", bits)
+	}
+	if NumStyles(bits)&^definedStyles != 0 {
+		return fmt.Errorf("hypercast: Styles %#x holds a bit that is not defined", bits)
+	}
+	*s = NumStyles(bits)
+	return nil
+}
+
+// retiredPolicyBit is bit 8, refused wherever a Styles is judged.
+const retiredPolicyBit NumStyles = 1 << 8
 
 // NumFormat is the caller-declared numeric notation for the integer, real and decimal
 // doors. The core carries no culture data, and neither does Go's standard library, so
@@ -267,16 +295,13 @@ func (p GroupingPolicy) valid() bool {
 // declares nothing else reads exactly what Invariant reads, and nothing that parsed
 // before a symbol was declared stops parsing once it is.
 //
-// Styles carries the lenience flags and, in bits 8 and 9, the GroupingPolicy. NewNumFormat
-// builds a format with strict Western grouping, as Invariant and Detect declare it;
-// WithGrouping replaces the policy and WithStyles the flags, each keeping the other. A
-// literal that sets no policy bits, the zero value included, is GroupingLegacy, which is what
-// every 1.0 format meant, and a format stored by 1.0 code (encoding/json, encoding/gob) reads
-// back with that meaning.
+// Styles carries the lenience flags and the GroupingPolicy. A literal that sets no policy, the
+// zero value included, NewNumFormat, Invariant, Detect and a format stored by 1.0 code
+// (encoding/json, encoding/gob) are all GroupingWestern; WithGrouping replaces the policy and
+// WithStyles the flags, each keeping the other.
 //
 // A format the core would refuse is a caller bug and panics, never a verdict: Styles naming
-// no grouping policy (both bits of GroupingPolicyMask set) or setting a bit no style or policy
-// defines, a number separator that is empty or longer than SymbolMaxBytes, equal number
+// no grouping policy (holding the retired bit 8) or setting a bit no style or policy defines, a number separator that is empty or longer than SymbolMaxBytes, equal number
 // separators (or
 // equal separators in force for a currency amount), any symbol that is not valid UTF-8 or
 // carries an ASCII digit, a sign, percent symbol or decimal separator (plain or currency)
@@ -327,35 +352,36 @@ type NumFormat struct {
 	DigitZero rune
 }
 
-// Invariant is the invariant profile — '.' decimal, ',' grouping, every lenience on, strict
-// Western grouping, no currency symbol or other spelling declared: NewNumFormat(".", ",",
-// AllStyles). Invariant.WithGrouping(GroupingLegacy) reads "12,34" as 1.0's Invariant did.
+// Invariant is the invariant profile — '.' decimal, ',' grouping, every lenience on, Western
+// grouping, no currency symbol or other spelling declared: NewNumFormat(".", ",", AllStyles),
+// and the literal NumFormat{DecimalSep: ".", GroupSep: ",", Styles: AllStyles}.
+// Invariant.WithGrouping(GroupingIndian) reads "1,23,456".
 var Invariant = NewNumFormat(".", ",", AllStyles)
 
 // Detect is the detection profile — every lenience on, './,' roles resolved per input by
-// SeparatorDetect's structural rules, strict Western grouping.
+// SeparatorDetect's structural rules, Western grouping.
 var Detect = NewNumFormat(".", ",", AllStyles|SeparatorDetect)
 
-// NewNumFormat is a format with the two number separators and the lenience flags, under strict
-// Western grouping (GroupingWestern); WithGrouping declares GroupingIndian or GroupingLegacy
-// instead, and the further spellings are the result's fields to fill. styles carrying a bit of
-// GroupingPolicyMask is a caller bug and panics: the policy is declared apart from the flags.
+// NewNumFormat is a format with the two number separators and the lenience flags, under Western
+// grouping; WithGrouping declares GroupingIndian instead, and the further spellings are the
+// result's fields to fill. styles carrying a bit of GroupingPolicyMask is a caller bug and panics:
+// the policy is declared apart from the flags.
 func NewNumFormat(decimalSep, groupSep string, styles NumStyles) NumFormat {
 	if styles&GroupingPolicyMask != 0 {
 		panic(fmt.Sprintf("hypercast: NewNumFormat styles %#x carry grouping policy bits; declare the policy with WithGrouping", uint32(styles)))
 	}
-	return NumFormat{DecimalSep: decimalSep, GroupSep: groupSep, Styles: styles | NumStyles(GroupingWestern)}
+	return NumFormat{DecimalSep: decimalSep, GroupSep: groupSep, Styles: styles}
 }
 
 // GroupingPolicy is the format's grouping policy: the bits of Styles under
-// GroupingPolicyMask. GroupingLegacy for a format that sets none.
+// GroupingPolicyMask. GroupingWestern for a format that sets none.
 func (f NumFormat) GroupingPolicy() GroupingPolicy {
 	return GroupingPolicy(f.Styles & GroupingPolicyMask)
 }
 
 // WithGrouping is the format under policy, which replaces the current one (never combines
-// with it); every lenience flag and symbol is kept. A value other than GroupingLegacy,
-// GroupingWestern and GroupingIndian is a caller bug and panics.
+// with it); every lenience flag and symbol is kept. A value other than GroupingWestern and
+// GroupingIndian, 256 and 768 included, is a caller bug and panics.
 func (f NumFormat) WithGrouping(policy GroupingPolicy) NumFormat {
 	if !policy.valid() {
 		panic(fmt.Sprintf("hypercast: undefined %v", policy))

@@ -183,8 +183,7 @@ const VALUE_CLASSES = <<<'PHP'
             public const CURRENCY = 64;
             public const TRAILING_SIGN = 128;
             public const ALL = 95;
-            public const GROUPING_LEGACY = 0;
-            public const GROUPING_WESTERN = 256;
+            public const GROUPING_WESTERN = 0;
             public const GROUPING_INDIAN = 512;
             public const GROUPING_POLICY = 768;
             public const SYMBOL_MAX_BYTES = 8;
@@ -206,7 +205,7 @@ const VALUE_CLASSES = <<<'PHP'
             ) {}
 
             /**
-             * `.` and `,` with every notation and strict Western grouping: one instance per request.
+             * `.` and `,` with every notation and Western grouping: one instance per request.
              */
             public static function invariant(): \HyperCast\NumFormat {}
 
@@ -231,8 +230,8 @@ const VALUE_CLASSES = <<<'PHP'
             public function withGrouping(int $grouping): \HyperCast\NumFormat {}
 
             /**
-             * Called by `unserialize()`: a format serialized under 1.0 has no `grouping` and keeps
-             * 1.0's meaning, `GROUPING_LEGACY`.
+             * Called by `unserialize()`: a format serialized under 1.0 has no `grouping` and is
+             * `GROUPING_WESTERN`. A `flags` or `grouping` holding bit 8 is refused here.
              */
             public function __wakeup(): void {}
 

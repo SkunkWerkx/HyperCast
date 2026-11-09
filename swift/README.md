@@ -240,13 +240,15 @@ delimited line) casts a slice of it without copying anything out first.
 ## Declared formats and currency
 
 The numeric doors take a `NumFormat` — declared separators plus `NumStyles` lenience flags
-— with no default argument: `.invariant` (`.` decimal, `,` grouping, every lenience on, strict
+— with no default argument: `.invariant` (`.` decimal, `,` grouping, every lenience on,
 Western grouping) or `NumFormat.from(locale:)`, which reads the locale's own symbols. The core carries no culture
 table, so everything a culture spells differently is declared, never looked up — and every
 declared spelling is read *beside* the ASCII one, which the core reads whatever is declared.
 A declared minus sign does not stop `-` being read, a declared percent symbol does not stop
 `%`, native digits do not stop `0`–`9`: nothing that parsed before stops parsing, and a
-format that declares nothing reads exactly what it always did.
+format that declares nothing reads exactly what it always did. `NumFormat`, `NumStyles`,
+`DateFormat`, `DateOptions` and `MonthNames` are `Hashable` values, equal when they declare the
+same thing.
 
 White space is Unicode's `White_Space`, the 25 code points (ASCII, U+0085, U+00A0, U+2000 to
 U+200A, U+202F, U+3000 among them). Every door but plain `Cast.text` ignores it at both ends (`Cast.char` given exactly one character keeps it), and the
@@ -260,25 +262,26 @@ separator stays exact. Input of nothing but white space is `.empty`.
 
 - **Grouping.** `NumFormat` takes the policy beside the styles, `grouping:`, and it defaults
   to `.western`: groups of exactly three digits counted from the decimal separator (the
-  leftmost one to three), so `1,234,567` reads and `12,34` and `1234,567` are `malformed`
-  at the group (`.groupSize`, spanning the group and its separator: `,34`). `.indian`
-  reads `12,34,567`, and `.legacy` a separator anywhere between two digits, as every format
-  did before 1.1 (`12,34` was 1234). A numeral that uses no separator is valid under all of
-  them, grouping after the decimal separator or in an exponent is never allowed
+  leftmost one to three, not starting with a zero), so `1,234,567` reads and `1,23,456` and
+  `1234,567` are `malformed` at the group (`.groupSize`, spanning the group and its
+  separator: `,23`), as is `0,125` (spanning `0`). `.indian`
+  reads `1,23,456` and `12,34,567` and refuses `1,234,567`. A numeral that uses no separator is valid under both,
+  grouping after the decimal separator or in an exponent is never allowed
   (`.groupInFraction`), and the policy only judges groups: with `.grouping` off a group
   separator stays forbidden, and `.separatorDetect` resolves its own `1,234`. The policy
   is separate from the styles (a `NumStyles` never carries it, and one that sets a bit the
-  core doesn't define is a precondition failure); `withStyles(_:)` keeps the policy,
-  `withGrouping(_:)` replaces it. `NumFormat.from(locale:)` and `from(formatter:)` never
-  reject what the platform writes, so they read its number and currency patterns in full
-  (`groupingSize`, `secondaryGroupingSize` where 0 repeats the primary size, and
-  `usesGroupingSeparator`) and give the one policy and one `.grouping` flag the format has for
-  both: every pattern that groups Western (groups of three) is `.western`, every one Indian
-  (three, then twos: `en_IN`, `hi`) is `.indian`, and any other shape (Toki Pona's groups of
-  two) or two that disagree is `.legacy`, which reads any grouping. `.grouping` is cleared only
-  when neither pattern groups (`en_US_POSIX`); if just one does not (`en_BG`'s currency) the
+  core doesn't define is a precondition failure; bit 8, 256, is retired permanently and never reused); `withStyles(_:)` keeps the policy,
+  `withGrouping(_:)` replaces it. `NumFormat.from(locale:)` and `from(formatter:)` follow the
+  number pattern (`groupingSize`, `secondaryGroupingSize` where 0 repeats the primary size):
+  three then twos is `.indian`, anything else `.western`. The patterns are Foundation's, and they vary:
+  on macOS 27.2 `en_IN`, `hi_IN`, `ml`, `mr`, `or` and `ta` are three then twos for numbers and currency
+  both, and on Linux (swift-foundation, Swift 6.4.2) all of them are threes, so declare
+  `.withGrouping(.indian)` there. A Western amount through a format whose numbers are Indian is `malformed`
+  until the column says `.withGrouping(.western)`.
+  A shape neither policy reads (Toki Pona's groups of two) is `malformed` under a declared format, `.invariant` or a bridge, never misread, while `.detect` infers by the delimiter rule, so `1,2345` is 1.2345 there: [docs/grouping.md](https://github.com/SkunkWerkx/HyperCast/blob/master/docs/grouping.md#parked). `.grouping` is cleared only
+  when neither the number nor the currency pattern groups (`en_US_POSIX`); if just one does not (`en_BG`'s currency) the
   flag stays, so an ungrouped value stays valid — a format can't forbid grouping in a
-  currency amount alone. The rule depends on the two patterns only, never on the input.
+  currency amount alone. The rule depends on the patterns only, never on the input.
 - **Separators** (`decimalSeparator`, `groupSeparator`) are short strings: one or two
   characters, up to 8 UTF-8 bytes, no ASCII digit — a comma and a space, a narrow no-break
   space — and never equal to each other. The group separator may be white space (Unicode
@@ -497,7 +500,7 @@ probe every binding carries.
 
 The package needs the 1.1 core, and a 1.0 one can't be linked by mistake: the doors call the
 core's detailed exports directly, a 1.0 core doesn't have them, so the build fails (to
-compile, and to link) instead of a strict request being read as legacy. There is no run-time
+compile, and to link) instead of a numeral being read by 1.0's rule. There is no run-time
 version check to forget.
 
 iOS, the iOS simulator and Mac Catalyst get the same archives from a second binary target,

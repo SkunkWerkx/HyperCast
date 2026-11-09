@@ -233,7 +233,7 @@ pub(crate) fn walk(
         if let Some((digit, len)) = read_digit(body, i, format) {
             any_digit = true;
             after_digit = true;
-            groups.digit(i);
+            groups.digit(i, digit);
             if !emit(Token::Digit(digit)) {
                 return Ok(());
             }
@@ -288,9 +288,7 @@ pub(crate) fn walk(
                 i += len;
             }
             if i != body.len() {
-                if let width @ 1.. = grouping(format, body, i, currency)
-                    && Groups::strict(format)
-                {
+                if let width @ 1.. = grouping(format, body, i, currency) {
                     return Err(Failure::at(Site::RealGroupInExponent, base + i, width));
                 }
                 let site = stray(

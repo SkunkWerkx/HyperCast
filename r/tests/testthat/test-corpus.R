@@ -15,8 +15,9 @@ testthat::skip_if_not_installed("jsonlite")
 
 corpus_files <- c("boolean.json", "char.json", "constraints.json", "date.json",
                   "date_order.json", "datetime.json", "decimal.json", "declarations.json",
-                  "duration.json", "excel_serial.json", "formats.json", "integer.json", "real.json",
-                  "time.json", "timestamp.json", "typed.json", "unix.json", "uuid.json")
+                  "duration.json", "excel_serial.json", "formats.json", "grouping.json",
+                  "integer.json", "real.json", "time.json", "timestamp.json", "typed.json",
+                  "unix.json", "uuid.json")
 
 corpus_dir <- function() {
   staged <- testthat::test_path("corpus")
@@ -91,20 +92,18 @@ chars_in <- function(bytes, n) {
 
 has_nul <- function(row) grepl(nul_standin, row$input, fixed = TRUE)
 
-# A row's format. A row that declares no `grouping` keeps legacy semantics (the core's and the
-# C ABI's meaning), never the constructor's strict default. A formats.json row may carry a
-# policy in its `flags` (bits 8 and 9), which this binding declares beside the styles; a
-# policy no name spells (3) and a bit no style is reach the constructor as given, to be refused.
+# A row's format. A row that declares no format reads the invariant one; one that declares no
+# `grouping` is Western. A formats.json row may carry a policy in its `flags`: Indian's is
+# declared beside the styles, and any other reaches the constructor as given, to be refused.
 format_of <- function(spec) {
   if (is.null(spec)) {
-    return(num_format(grouping = "legacy"))
+    return(num_format())
   }
   opt <- function(name) if (is.null(spec[[name]])) "" else spec[[name]]
   flags <- spec$flags
-  grouping <- if (is.null(spec$grouping)) "legacy" else spec$grouping
-  policy <- flags %/% 256 %% 4
-  if (is.null(spec$grouping) && flags >= 256 && flags < 1024 && policy != 3) {
-    grouping <- c("legacy", "western", "indian")[[policy + 1]]
+  grouping <- if (is.null(spec$grouping)) "western" else spec$grouping
+  if (is.null(spec$grouping) && flags >= 512 && flags < 768) {
+    grouping <- "indian"
     flags <- flags %% 256
   }
   num_format(spec$decimal_sep, spec$group_sep, flags, currency = opt("currency"),
@@ -174,7 +173,8 @@ expect_row <- function(v, i, row, units, check_ok, label) {
   }
 }
 
-# Replays text rows through `door` both ways, under one declaration.
+# Replays text rows through `door` both ways, under one declaration. A row whose input holds
+# NUL has no character vector to be, so it goes through the bytes alone.
 replay_text <- function(rows, door, check_ok, label) {
   bytes <- lapply(rows, function(row) utf8_bytes(row$input))
   v <- door(bytes)
@@ -239,19 +239,20 @@ test_that("boolean.json", {
   }, "bool")
 })
 
-# The vector pins the code point; the door returns the one-character string, and U+0000, which
-# no R string holds, as out_of_range over the input less its white space edges.
+# The vector pins the code point: the `code_point` column is it, always, and the value is its
+# one-character string, or NA for U+0000, which no R string holds. So no row is set aside here.
 test_that("char.json", {
   rows <- read_vectors("char.json")
   nul <- vapply(rows, function(row) identical(row$value, 0L), FALSE)
-  replay_text(rows[!nul], cast_char, function(v, i, row, info) {
-    expect_identical(utf8ToInt(v$value[[i]]), row$value, info = info)
-  }, "char")
   expect_gt(sum(nul), 0)
-  # U+0000 is a success an R string cannot hold: `ok`, with NA as its value.
-  replay_text(rows[nul], cast_char, function(v, i, row, info) {
-    expect_identical(v$value[[i]], NA_character_, info = info)
-  }, "char U+0000")
+  replay_text(rows, cast_char, function(v, i, row, info) {
+    expect_identical(v$code_point[[i]], row$value, info = info)
+    if (identical(row$value, 0L)) {
+      expect_identical(v$value[[i]], NA_character_, info = info)
+    } else {
+      expect_identical(utf8ToInt(v$value[[i]]), row$value, info = info)
+    }
+  }, "char")
 })
 
 test_that("integer.json", {
@@ -466,7 +467,13 @@ expect_checked_row <- function(v, i, row, units, label) {
     testthat::expect_true(v$ok[[i]],
                           info = paste(info, "should pass; got", v$reason[[i]], v$keyword[[i]]))
     if (!isTRUE(v$ok[[i]])) return(invisible())
-    expect_checked_value(row$door, v$value[[i]], row$value, info)
+    # A value holding NUL is one no R string holds: `ok` with NA. raw = TRUE has its bytes.
+    want <- if (row$door == "text" && grepl(nul_standin, row$value, fixed = TRUE)) {
+      NA_character_
+    } else {
+      row$value
+    }
+    expect_checked_value(row$door, v$value[[i]], want, info)
     testthat::expect_identical(v$adjusted[[i]], row$adjusted, info = info)
     want_index <- if (is.null(row$enum_index)) NA_integer_ else as.integer(row$enum_index) + 1L
     testthat::expect_identical(v$enum_index[[i]], want_index, info = info)
@@ -501,6 +508,18 @@ expect_checked_rows <- function(v, rows, units, label) {
   testthat::expect_s3_class(v, "hypercast_checked_verdict")
   testthat::expect_identical(nrow(v), length(rows))
   for (i in seq_along(rows)) expect_checked_row(v, i, rows[[i]], units, label)
+}
+
+# raw = TRUE is the same verdict with each value's exact bytes: the row's value, as UTF-8, or
+# NULL for a rejected row.
+expect_raw_rows <- function(x, constraints, rows, label) {
+  plain <- cast_text(x, constraints)
+  v <- cast_text(x, constraints, raw = TRUE)
+  testthat::expect_identical(v[names(v) != "value"], plain[names(plain) != "value"], info = label)
+  for (i in seq_along(rows)) {
+    want <- if (rows[[i]]$expect == "ok") utf8_bytes(rows[[i]]$value)
+    testthat::expect_identical(v$value[[i]], want, info = label)
+  }
 }
 
 test_that("constraints.json", {
@@ -549,12 +568,17 @@ test_that("constraints.json", {
       kinds[["input_bytes"]] <- kinds[["input_bytes"]] + length(group)
       bytes <- lapply(group, function(row) as.raw(unlist(row$input_bytes)))
       expect_checked_rows(door(bytes), group, "bytes", paste(label, "input_bytes"))
-      marked <- vapply(bytes, function(b) {
+      if (first$door == "text") {
+        expect_raw_rows(bytes, constraints, group, paste(label, "input_bytes raw"))
+      }
+      # A row holding NUL has no string to be.
+      stringy <- vapply(bytes, function(b) !any(b == as.raw(0L)), FALSE)
+      marked <- vapply(bytes[stringy], function(b) {
         s <- rawToChar(b)
         Encoding(s) <- "bytes"
         s
       }, "")
-      expect_checked_rows(door(marked), group, "bytes", paste(label, "input_bytes marked"))
+      expect_checked_rows(door(marked), group[stringy], "bytes", paste(label, "input_bytes marked"))
       next
     }
     kinds[["input"]] <- kinds[["input"]] + length(group)
@@ -562,6 +586,10 @@ test_that("constraints.json", {
                         "bytes", label)
     expect_checked_rows(door(vapply(group, function(row) row$input, "")), group, "chars",
                         label)
+    if (first$door == "text") {
+      expect_raw_rows(lapply(group, function(row) utf8_bytes(row$input)), constraints, group,
+                      paste(label, "raw"))
+    }
   }
   # Every row was replayed, of every kind.
   expect_identical(sum(kinds), length(rows))
@@ -686,4 +714,78 @@ test_that("formats.json: num_format() and cast_datetime() refuse what the core r
   # Every row was replayed, of every kind.
   expect_identical(sum(counts), length(rows))
   expect_true(all(counts > 0L))
+})
+
+# Every shape under both policies, through every way a format is had, and the retired bit refused
+# at every entry point that can refuse it.
+test_that("grouping.json", {
+  rows <- read_vectors("grouping.json")
+  holds <- function(want, text, format, label) {
+    context <- paste(label, text)
+    for (door in list(cast_i64, cast_f64, cast_decimal)) {
+      got <- door(text, format)
+      if (is.null(want$fault)) {
+        expect_true(got$ok, info = context)
+      } else {
+        expect_false(got$ok, info = context)
+        expect_identical(as.character(got$reason), "malformed", info = context)
+        expect_identical(as.character(got$detail), "group_size", info = context)
+        expect_identical(c(got$offset, got$length), as.integer(unlist(want$fault)), info = context)
+      }
+    }
+    if (is.null(want$fault)) {
+      expect_equal(cast_f64(text, format)$value, as.numeric(want$value), info = context)
+    }
+  }
+  byte <- function(...) rawToChar(as.raw(c(...)))
+  bridge <- function(number, currency) {
+    num_format_from_localeconv(c(decimal_point = ".", thousands_sep = ",",
+                                 grouping = number, mon_grouping = currency))
+  }
+  indian <- num_format(grouping = "indian")
+  shapes <- 0L
+  for (row in rows) {
+    if (row$kind == "shape") {
+      shapes <- shapes + 1L
+      for (case in list(
+        list("default", num_format()),
+        list("declared", num_format(grouping = "western")),
+        list("indian to western", num_format_with_grouping(indian, "western")),
+        list("bridge threes", bridge(byte(3), byte(3))),
+        list("bridge fours", bridge(byte(4), byte(4))),
+        list("bridge indian currency", bridge(byte(3), byte(3, 2))),
+        list("bridge number silent", bridge("", byte(3, 2))),
+        list("no conv fields", num_format_from_localeconv(c(decimal_point = ".")))
+      )) {
+        holds(row$western, row$input, case[[2]], case[[1]])
+      }
+      for (case in list(
+        list("declared indian", indian),
+        list("western to indian", num_format_with_grouping(num_format(), "indian")),
+        list("bridge indian", bridge(byte(3, 2), byte(3, 2))),
+        list("bridge ml", bridge(byte(3, 2), byte(3)))
+      )) {
+        holds(row$indian, row$input, case[[2]], case[[1]])
+      }
+    } else if (row$kind == "detect") {
+      holds(row, row$input, num_format_detect(), "detect")
+    } else if (row$kind == "refused_flags") {
+      expect_error(num_format(flags = row$flags), "grouping policy")
+      expect_error(num_format(grouping = row$flags %/% 256 * 256), "grouping must be one of")
+      expect_error(num_format_with_grouping(num_format(), row$flags), "grouping must be one of")
+      # A restored or altered format has no load hook: the first door refuses its word.
+      stale <- num_format()
+      stale$packed[5:8] <- writeBin(as.integer(row$flags), raw(), size = 4L, endian = "little")
+      expect_error(cast_i64("1", stale), "bit 8")
+      expect_error(num_format_with_grouping(stale, "western"), "bit 8")
+    } else if (row$kind == "accepted_flags") {
+      policy <- if (row$flags >= 512) "indian" else "western"
+      made <- num_format(flags = row$flags %% 256, grouping = policy)
+      expect_identical(sum(as.integer(made$packed[5:8]) * 256^(0:3)), as.numeric(row$flags))
+      expect_identical(unserialize(serialize(made, NULL)), made)
+    } else {
+      stop("unknown kind ", row$kind)
+    }
+  }
+  expect_gte(shapes, 18L)
 })

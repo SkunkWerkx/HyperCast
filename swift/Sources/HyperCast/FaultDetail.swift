@@ -57,7 +57,8 @@ public struct FaultDetail: RawRepresentable, Hashable, Sendable, CustomStringCon
     public static let markRepeated = FaultDetail(rawValue: 9)
     /// `group_misplaced`: a group separator not between digits, or an empty group.
     public static let groupMisplaced = FaultDetail(rawValue: 10)
-    /// `group_size`: a group with the wrong digit count under a strict grouping policy.
+    /// `group_size`: a group its grouping policy refuses: the wrong digit count, or a first
+    /// group that starts with a zero.
     public static let groupSize = FaultDetail(rawValue: 11)
     /// `group_in_fraction`: grouping after the decimal separator or in an exponent.
     public static let groupInFraction = FaultDetail(rawValue: 12)

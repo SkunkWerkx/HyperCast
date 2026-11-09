@@ -77,17 +77,17 @@ final class DetailedCastTest {
     }
 
     @Test
-    void theGroupingPolicyDecidesAndLegacyKeepsTheOldRule() {
+    void theGroupingPolicyDecides() {
         assertEquals(new DetailedSuccess<>(1234), DetailedCast.i32("1,234", NumFormat.INVARIANT));
         assertEquals(
-                new DetailedSuccess<>(1234),
-                DetailedCast.i32("12,34", NumFormat.INVARIANT.withGrouping(Grouping.LEGACY)));
+                new DetailedFault<Integer>(CastFailure.MALFORMED, FaultDetail.GROUP_SIZE, 1, 3),
+                DetailedCast.i32("1,23,456", NumFormat.INVARIANT));
         NumFormat indian = NumFormat.INVARIANT.withGrouping(Grouping.INDIAN);
         assertEquals(new DetailedSuccess<>(1234567), DetailedCast.i32("12,34,567", indian));
         assertEquals(
                 new DetailedFault<Integer>(CastFailure.MALFORMED, FaultDetail.GROUP_SIZE, 1, 4),
                 DetailedCast.i32("1,234,567", indian));
-        // A strict policy does not enable grouping: with the style off a separator is forbidden.
+        // A policy does not enable grouping: with the style off a separator is forbidden.
         NumFormat off = NumFormat.INVARIANT.withStyles(NumFormat.STYLE_ALL & ~NumFormat.STYLE_GROUPING);
         assertEquals(FaultDetail.UNEXPECTED_CHARACTER, ((DetailedFault<?>) DetailedCast.i32("1,234", off)).detail());
     }

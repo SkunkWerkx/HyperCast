@@ -44,6 +44,20 @@ static_assert(!std::is_constructible_v<hc::ConstraintValue, double>, "never a bi
 static_assert(hc::name(hc::Keyword::multiple_of) == "multipleOf" &&
                   hc::name(static_cast<hc::Keyword>(10)) == "keyword 10",
               "keywords are named the OpenAPI way, and stay open");
+// A declaration equals one that declares the same thing, however it was built, as the core's ==
+// holds. MonthNames has no ==: a view over the caller's storage, as the core's borrowed one.
+static_assert(hc::NumFormat::invariant()
+                          .with_grouping(hc::Grouping::indian)
+                          .with_grouping(hc::Grouping::western) == hc::NumFormat::invariant() &&
+                  hc::NumFormat::invariant().with_grouping(hc::Grouping::indian) !=
+                      hc::NumFormat::invariant() &&
+                  hc::NumFormat::detect() != hc::NumFormat::invariant() &&
+                  hc::DateFormat(hc::DateOrder::day_month_year) ==
+                      hc::DateFormat(hc::DateOrder::day_month_year) &&
+                  hc::DateFormat(hc::DateOrder::day_month_year) !=
+                      hc::DateFormat(hc::DateOrder::month_day_year) &&
+                  hc::DateOptions::common_forms() != hc::DateOptions::none(),
+              "declarations compare by what they declare");
 
 // What a decimal displays as, through to_chars.
 static std::string text(const hc::Decimal &decimal) {

@@ -68,12 +68,12 @@ public enum Cast {
 
     // The 1.0 exports as one table. The doors below reach the core through the detailed exports
     // (`cast_detailed` and its three siblings), which carry the fault's detail and the 1.1
-    // grouping policy; this table is the exports a 1.0 core had, which parse legacy and name no
+    // grouping policy; this table is the exports a 1.0 core had, which read Western and name no
     // detail, kept so the suite can hold the two to each other (the doors agree with them on a
-    // legacy format) and so the export check finds every symbol this package links. A class: a
+    // Western format) and so the export check finds every symbol this package links. A class: a
     // reference is one retain where a struct of function pointers would be copied. Immutable
     // once built, and C function pointers carry no state of their own.
-    final class LegacyExports: Sendable {
+    final class OneDotZeroExports: Sendable {
         let bool: PlainFn
         let char: PlainFn
         let i8: NumericFn
@@ -139,7 +139,7 @@ public enum Cast {
     // HyperCastRawFault, ...), while the doors here fill and read them as raw bytes through
     // the shapes above, so each entry passes its raw pointers on as the typed ones, which
     // are the same pointers in the C ABI. Each is a C function of its own that calls the door.
-    static let legacy = LegacyExports(
+    static let oneDotZero = OneDotZeroExports(
         bool: { cast_bool($0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3))) },
         char: { cast_char($0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3))) },
         i8: { cast_i8($0, $1, .init(OpaquePointer($2)), .init(OpaquePointer($3)), .init(OpaquePointer($4))) },
@@ -1023,7 +1023,7 @@ public enum Cast {
     /// package's tag — so a caller can prove the two agree before the first cast and name
     /// the mismatch when they don't.
     public static func nativeVersion() -> String {
-        Interop.version(legacy.version())
+        Interop.version(oneDotZero.version())
     }
 }
 

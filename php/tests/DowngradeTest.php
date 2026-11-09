@@ -13,7 +13,7 @@ use PHPUnit\Framework\TestCase;
 
 /**
  * The downgrade guard (spec, item 3). Policy bits select behaviour; they cannot negotiate a
- * library version, and a 1.0 core ignores them and parses every format as legacy. The extension
+ * library version, and a 1.0 core ignores them and reads every format by 1.0's rules. The extension
  * links its own core, so only code that loads a C library itself (`Interop\NativeValues`, which
  * HyperTabular's PHP binding uses) can meet an old one. Its guard is two checks, neither a
  * hard-coded version: the FFI handle must declare the detailed exports a core that reads the
@@ -66,13 +66,13 @@ final class DowngradeTest extends TestCase
         return $code === 0 ? $out->cdata : [$fault->offset, $fault->len];
     }
 
-    public function testAStrictRequestAgainstAOneOhCoreIsRefusedNotParsedLegacy(): void
+    public function testAFormatAgainstAOneOhCoreIsRefusedNotParsedByOneOhsRules(): void
     {
         $core = self::oldCore();
         self::assertSame('1.0.0', NativeValues::version($core->hypercast_version()));
 
-        // The hazard the guard exists for: written unguarded, the strict format is read by the
-        // 1.0 core as legacy, and `12,34` is a value.
+        // The hazard the guard exists for: written unguarded, the format is read by the 1.0 core by
+        // 1.0's rules, and `12,34` is a value.
         $unguarded = $core->new('format');
         NativeValues::writeFormat(NumFormat::invariant(), $unguarded);
         self::assertSame(1234, self::parse($core, $unguarded, '12,34'));
@@ -83,7 +83,7 @@ final class DowngradeTest extends TestCase
         $target = $core->new('format');
         try {
             NativeValues::writeFormat(NumFormat::invariant(), $target, $core);
-            self::fail('a strict format was written for a 1.0 core');
+            self::fail('a format was written for a 1.0 core');
         } catch (\RuntimeException $e) {
             self::assertStringContainsString('does not declare cast_detailed', $e->getMessage());
         }
@@ -96,28 +96,25 @@ final class DowngradeTest extends TestCase
                 self::assertSame(0, $target->size);
             }
         }
-
-        // Legacy is what a 1.0 core reads, so it is written, and parses as 1.0 did.
-        NativeValues::writeFormat(NumFormat::invariant()->withGrouping(NumFormat::GROUPING_LEGACY), $target, $core);
-        self::assertSame(92, $target->size);
-        self::assertSame(1234, self::parse($core, $target, '12,34'));
     }
 
     /**
      * A format serialized under 1.0 means what the real 1.0 core made of it: the extension's
-     * answers match the 1.0 core's, over the same inputs, for the flags 1.0 stored (the core read
-     * their low 32 bits, ignoring all but the styles).
+     * answers match the 1.0 core's, over the same inputs, for the flags that hold styles alone. A
+     * stored `flags` holding anything else is refused at `unserialize` (GroupingTest).
      */
     public function testAFormatSerializedUnderOnePointZeroReadsAsTheOnePointZeroCoreReadsIt(): void
     {
         $core = self::oldCore();
-        $inputs = ['12,34', '1,234', '1,2,3,4', '1234', '(1,234)', '1,234-', '0xFF', '1e3', '$5', '5%', '', 'x', '١٢'];
-        foreach ([95, -1, 351, 0, 0x1FF, 1 << 40] as $flags) {
+        $inputs = [
+            '1,234', '1234', '(1,234)', '1,234-', '0xFF', '1e3', '$5', '5%', '', 'x', '١٢',
+        ];
+        foreach ([95, 0] as $flags) {
             $payload = 'O:19:"HyperCast\NumFormat":10:{s:10:"decimalSep";s:1:".";s:8:"groupSep";s:1:",";s:5:"flags";i:'
                 . $flags . ';s:8:"currency";s:0:"";s:18:"currencyDecimalSep";s:0:"";s:16:"currencyGroupSep";s:0:"";'
                 . 's:9:"minusSign";s:0:"";s:8:"plusSign";s:0:"";s:7:"percent";s:0:"";s:9:"digitZero";s:0:"";}';
             $format = unserialize($payload);
-            // What 1.0 handed the core: the layout with the integer's low 32 bits as the flags.
+            // What 1.0 handed the core: the layout with the integer as the flags.
             $raw = $core->new('format');
             $packed = $format->packed();
             FFI::memcpy($raw, substr($packed, 0, 4) . pack('V', $flags & 0xFFFFFFFF) . substr($packed, 8), 92);
@@ -127,6 +124,22 @@ final class DowngradeTest extends TestCase
                 $label = "flags {$flags}, " . json_encode($input);
                 self::assertSame($want, $got instanceof Success ? $got->value : [$got->offset, $got->length], $label);
             }
+        }
+    }
+
+    /**
+     * The shapes 1.0 read and this extension refuses, the same format at each: a real 1.0 core
+     * reads them, including an Indian shape with no policy declared.
+     */
+    public function testRefusalsAreThisCoresNotOnePointZeros(): void
+    {
+        $core = self::oldCore();
+        $western = NumFormat::invariant();
+        $raw = $core->new('format');
+        FFI::memcpy($raw, $western->packed(), 92);
+        foreach (['0,125' => 125, '12,34' => 1234, '1234,567' => 1234567, '1,23,456' => 123456] as $input => $was) {
+            self::assertSame($was, self::parseWith($core, $raw, (string) $input), (string) $input);
+            self::assertSame(\HyperCast\CastFailure::Malformed, Cast::i32((string) $input, $western)->reason);
         }
     }
 
@@ -178,7 +191,6 @@ final class DowngradeTest extends TestCase
         try {
             $layouts = FFI::cdef(self::DECLARATIONS);
             $target = $layouts->new('format');
-            $legacy = NumFormat::invariant()->withGrouping(NumFormat::GROUPING_LEGACY);
             $cases = [
                 'the same version' => [$own, true],
                 'a newer patch' => [$major << 16 | $minor << 8 | $patch + 1, true],
@@ -200,7 +212,7 @@ final class DowngradeTest extends TestCase
                 $target->size = 0;
                 try {
                     NativeValues::writeFormat(NumFormat::invariant(), $target, $core);
-                    self::assertTrue($accepted, "{$label}: a strict format was written");
+                    self::assertTrue($accepted, "{$label}: a format was written");
                     self::assertSame(92, $target->size, $label);
                 } catch (\RuntimeException $e) {
                     self::assertFalse($accepted, "{$label}: {$e->getMessage()}");
@@ -211,9 +223,6 @@ final class DowngradeTest extends TestCase
                     );
                     self::assertSame(0, $target->size, $label);
                 }
-                // Legacy needs no version.
-                NativeValues::writeFormat($legacy, $target, $core);
-                self::assertSame(92, $target->size, $label);
             }
         } finally {
             array_map('unlink', glob($dir . '/*') ?: []);
@@ -253,7 +262,7 @@ final class DowngradeTest extends TestCase
             $target = $layouts->new('format');
             try {
                 NativeValues::writeFormat(NumFormat::invariant(), $target, $core);
-                self::fail('a strict format was written for a core of unknown version');
+                self::fail('a format was written for a core of unknown version');
             } catch (\RuntimeException $e) {
                 // The guard's own refusal, not the engine's FFI\Exception left pending.
                 self::assertSame(\RuntimeException::class, $e::class);
@@ -262,8 +271,7 @@ final class DowngradeTest extends TestCase
             }
             self::assertSame(0, $target->size);
             // Nothing is left pending: the next call runs clean.
-            NativeValues::writeFormat(NumFormat::invariant()->withGrouping(NumFormat::GROUPING_LEGACY), $target, $core);
-            self::assertSame(92, $target->size);
+            self::assertFalse(FFI::isNull(FFI::addr($target)));
         } finally {
             array_map('unlink', glob($dir . '/*') ?: []);
             rmdir($dir);
@@ -278,6 +286,6 @@ final class DowngradeTest extends TestCase
         $layouts = FFI::cdef(self::DECLARATIONS);
         $target = $layouts->new('format');
         NativeValues::writeFormat(NumFormat::invariant(), $target);
-        self::assertSame(NumFormat::ALL | NumFormat::GROUPING_WESTERN, $target->flags);
+        self::assertSame(NumFormat::ALL, $target->flags);
     }
 }

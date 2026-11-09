@@ -14,9 +14,9 @@ import Foundation
 /// | ``months`` | the order doors | declared month names in the month field |
 ///
 /// A known option a door doesn't read is ignored by it.
-public struct DateOptions: Equatable, Sendable {
+public struct DateOptions: Hashable, Sendable {
     /// The option bits, as the native `RawDateOptions` carries them.
-    public struct Flags: OptionSet, Sendable {
+    public struct Flags: OptionSet, Hashable, Sendable {
         /// The bits, exactly as the native options' `flags` word carries them.
         public let rawValue: UInt32
 
@@ -107,7 +107,7 @@ public struct DateOptions: Equatable, Sendable {
 /// anywhere), every month has at least one name, and no two names fold to the same spelling.
 /// The vocabulary is packed once, as the core reads it: each entry a month byte, a
 /// little-endian `UInt32` byte length, then the UTF-8 bytes, with no padding.
-public struct MonthNames: Equatable, Sendable {
+public struct MonthNames: Hashable, Sendable {
     /// The vocabulary in the native packed layout, which a door hands the core as it is.
     public let packed: [UInt8]
 

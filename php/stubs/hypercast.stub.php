@@ -804,10 +804,10 @@ namespace HyperCast\Interop {
 
         /**
          * Writes a format's packed layout into an `hc_format` (ext-ffi). A core that predates the
-         * grouping policy ignores its bits and parses every format as legacy, so a caller passes
-         * the `FFI` handle it loaded the core with: a strict policy is then refused for a core that
-         * lacks the detailed exports or is older than this extension, never written to be parsed
-         * as legacy. Without a handle, the caller owns that check.
+         * grouping policy ignores its bits and reads every format by 1.0's rules, so a caller passes
+         * the `FFI` handle it loaded the core with: a format is then refused for a core that lacks
+         * the detailed exports or is older than this extension, never written to be read that way.
+         * Without a handle, the caller owns that check.
          *
          * @param \HyperCast\NumFormat $format
          * @param \FFI\CData $target
@@ -903,8 +903,7 @@ namespace HyperCast {
         public const CURRENCY = 64;
         public const TRAILING_SIGN = 128;
         public const ALL = 95;
-        public const GROUPING_LEGACY = 0;
-        public const GROUPING_WESTERN = 256;
+        public const GROUPING_WESTERN = 0;
         public const GROUPING_INDIAN = 512;
         public const GROUPING_POLICY = 768;
         public const SYMBOL_MAX_BYTES = 8;
@@ -926,7 +925,7 @@ namespace HyperCast {
         ) {}
 
         /**
-         * `.` and `,` with every notation and strict Western grouping: one instance per request.
+         * `.` and `,` with every notation and Western grouping: one instance per request.
          */
         public static function invariant(): \HyperCast\NumFormat {}
 
@@ -951,8 +950,8 @@ namespace HyperCast {
         public function withGrouping(int $grouping): \HyperCast\NumFormat {}
 
         /**
-         * Called by `unserialize()`: a format serialized under 1.0 has no `grouping` and keeps
-         * 1.0's meaning, `GROUPING_LEGACY`.
+         * Called by `unserialize()`: a format serialized under 1.0 has no `grouping` and is
+         * `GROUPING_WESTERN`. A `flags` or `grouping` holding bit 8 is refused here.
          */
         public function __wakeup(): void {}
 

@@ -4,12 +4,12 @@
 //! they dispatch to.
 //!
 //! - **Differential:** every corpus row at its own door, and every corpus input at every
-//!   door, through the old export and through `cast_detailed` with legacy grouping and no
+//!   door, through the old export and through `cast_detailed` with Western grouping and no
 //!   date options, which must agree; the four typed exports against `cast_detailed_from_f64`;
 //!   `cast_checked`/`cast_checked_from_f64` against their detailed pair. Values are compared
 //!   field by field (never padding; floats by bits; byte arrays as bytes), faults and checks
 //!   only on the codes that write them, and every other byte must be left as it was.
-//! - **Declarations:** every row with its own format (strict grouping included), day periods
+//! - **Declarations:** every row with its own format (Indian grouping included), day periods
 //!   and date options through `cast_detailed`, against the Rust `detailed` door and the row.
 //! - **Sentinels:** fault capacities, a null fault, an unaligned `out`, poisoned pointers a
 //!   door ignores, unknown doors and parameters, refused layouts and vocabularies.
@@ -19,9 +19,9 @@
 
 use core::ffi::c_void;
 use hypercast::{
-    CurrencySymbol, DateOptions, DayPeriods, Detail, Door, Failure, MonthNames, NativeDigits,
-    NumFormat, RawCheck, RawConstraints, RawDateOptions, RawDayPeriods, RawFaultDetail,
-    RawNumFormat, RawSpan, Symbol, ValidDateOptions, ValidNumFormat, detailed,
+    CurrencySymbol, DateOptions, DayPeriods, Detail, Door, Failure, Grouping, MonthNames,
+    NativeDigits, NumFormat, RawCheck, RawConstraints, RawDateOptions, RawDayPeriods,
+    RawFaultDetail, RawNumFormat, RawSpan, Symbol, ValidDateOptions, ValidNumFormat, detailed,
 };
 use serde_json::Value;
 use std::path::PathBuf;
@@ -731,7 +731,6 @@ fn named_door(name: &str) -> u32 {
 fn grouping_of(format: &Value) -> u32 {
     match format.get("grouping").and_then(Value::as_str) {
         None => format["flags"].as_u64().unwrap() as u32 & NumFormat::GROUPING_POLICY,
-        Some("legacy") => NumFormat::GROUPING_LEGACY,
         Some("western") => NumFormat::GROUPING_WESTERN,
         Some("indian") => NumFormat::GROUPING_INDIAN,
         Some(other) => panic!("grouping {other}"),
@@ -763,7 +762,7 @@ fn format_of(row: &Value) -> Option<NumFormat> {
         .with_signs(symbol("minus_sign"), symbol("plus_sign"))
         .with_percent(symbol("percent"))
         .with_digits(digits)
-        .with_grouping(grouping_of(format)),
+        .with_grouping(Grouping::from_code(grouping_of(format)).expect("a policy")),
     )
 }
 
@@ -849,7 +848,7 @@ fn assert_row(row: &Value, got: &Outcome, label: &str) {
 // The differential.
 
 /// Every row of every door file at its own door, through the 1.0 export and `cast_detailed`
-/// with the row's format at legacy grouping, its day periods and no date options, and then
+/// with the row's format at Western grouping, its day periods and no date options, and then
 /// every corpus input at every door with nothing declared. The detailed outcome must be the
 /// old one with a detail. Where the row declares nothing the old export ignores (no grouping
 /// policy, no options), its own detail and span are asserted too.
@@ -871,18 +870,19 @@ fn every_old_text_export_agrees_with_cast_detailed() {
             let door = Door::from_code(code, param).unwrap();
             let label = format!("{file} {row}");
             let declared_format = format_of(&row);
-            let legacy = declared_format
-                .map(|f| RawNumFormat::from(f.with_grouping(NumFormat::GROUPING_LEGACY)));
-            let format = legacy.as_ref().map_or(core::ptr::null(), |f| f as *const _);
+            let western =
+                declared_format.map(|f| RawNumFormat::from(f.with_grouping(Grouping::Western)));
+            let format = western.as_ref().map_or(core::ptr::null(), |f| f as *const _);
             let periods = periods_of(&row).map(RawDayPeriods::from);
             let periods = periods.as_ref().map_or(core::ptr::null(), |p| p as *const _);
             let before = old_text(door, param, format, periods, &input, &label);
             let declared = Declared { format, periods, ..Declared::NONE };
             let after = new_text(text_kind(door), code, param, declared, &input, &label);
             assert_eq!(with_detail(&before, &after), after, "{label}");
-            let only_legacy = declared_format
-                .is_none_or(|f| f.flags & NumFormat::GROUPING_POLICY == NumFormat::GROUPING_LEGACY);
-            if only_legacy && row.get("options").is_none() {
+            let western_row = declared_format.is_none_or(|f| {
+                f.flags & NumFormat::GROUPING_POLICY == NumFormat::GROUPING_WESTERN
+            });
+            if western_row && row.get("options").is_none() {
                 assert_row(&row, &after, &label);
             }
             rows += 1;
@@ -917,7 +917,7 @@ fn every_old_text_export_agrees_with_cast_detailed() {
 /// travels without a `RawDateOptions` (the two are independent).
 #[test]
 fn cast_detailed_reads_every_declaration_as_the_rust_doors_do() {
-    let mut strict = 0;
+    let mut indian = 0;
     let mut optioned = 0;
     for file in DOOR_FILES {
         if file == "constraints.json" {
@@ -960,11 +960,11 @@ fn cast_detailed_reads_every_declaration_as_the_rust_doors_do() {
             ));
             assert_eq!(got, want, "{label}");
             assert_row(&row, &got, &label);
-            strict += usize::from(format.flags & NumFormat::GROUPING_POLICY != 0);
+            indian += usize::from(format.flags & NumFormat::GROUPING_POLICY != 0);
             optioned += usize::from(options.is_some());
         }
     }
-    assert!(strict > 50 && optioned > 150, "strict {strict}, optioned {optioned}");
+    assert!(indian > 50 && optioned > 150, "indian {indian}, optioned {optioned}");
 }
 
 /// The doubles `cast_detailed_from_f64` is tried with: every `typed.json` row's, and edges.
@@ -1140,10 +1140,9 @@ fn the_checked_exports_agree_with_their_detailed_pair() {
         let label = format!("constraints {row}");
         let kind = text_kind(Door::from_code(door, 0).unwrap());
         let declared = format_of(&row);
-        let legacy =
-            declared.map(|f| RawNumFormat::from(f.with_grouping(NumFormat::GROUPING_LEGACY)));
-        let format = legacy.as_ref().map_or(core::ptr::null(), |f| f as *const _);
-        let strict = declared.filter(|f| f.flags & NumFormat::GROUPING_POLICY != 0);
+        let western = declared.map(|f| RawNumFormat::from(f.with_grouping(Grouping::Western)));
+        let format = western.as_ref().map_or(core::ptr::null(), |f| f as *const _);
+        let indian = declared.filter(|f| f.flags & NumFormat::GROUPING_POLICY != 0);
         let (e, n) = (entries.as_ptr(), entries.len());
         let refused = row["expect"] == "refused";
         let value = from_f64_of(&row).or(refused.then_some(0.0));
@@ -1169,11 +1168,11 @@ fn the_checked_exports_agree_with_their_detailed_pair() {
                 cast_checked_detailed(door, 0, format, &raw, e, n, p, l, out, fault, check)
             });
             assert_checked_pair(&before, &after, &label);
-            match strict.map(RawNumFormat::from) {
-                // The strict rows, tested apart: the detailed pair under the row's own policy.
-                Some(strict) => {
+            match indian.map(RawNumFormat::from) {
+                // The Indian rows, tested apart: the detailed pair under the row's own policy.
+                Some(indian) => {
                     let after = new_checked(kind, &label, |out, fault, check| unsafe {
-                        cast_checked_detailed(door, 0, &strict, &raw, e, n, p, l, out, fault, check)
+                        cast_checked_detailed(door, 0, &indian, &raw, e, n, p, l, out, fault, check)
                     });
                     assert_row(&row, &after, &label);
                 }
@@ -1621,22 +1620,33 @@ fn the_detailed_exports_judge_a_format_by_the_1_1_rules() {
     // A layout size the core doesn't read.
     let short = RawNumFormat { size: 29, format: NumFormat::INVARIANT };
     assert_refused(4, 0, Declared { format: &short, ..Declared::NONE }, b"1", "size 29");
-    // A strict policy is honoured: `12,34` is a group of the wrong size.
-    let western = RawNumFormat::from(NumFormat::STRICT);
+    // A stale bit 8 is refused, with or without the rest of `ALL`.
+    for flags in [NumFormat::ALL | 1 << 8, 1 << 8] {
+        let stale = RawNumFormat::from(NumFormat { flags, ..NumFormat::INVARIANT });
+        assert_refused(4, 0, Declared { format: &stale, ..Declared::NONE }, b"1", "stale bit 8");
+    }
+    // The policy is honoured: `12,34` is a group of the wrong size.
+    let western = RawNumFormat::from(NumFormat::INVARIANT);
     let (rc, _, fault) =
         raw_call(4, 0, Declared { format: &western, ..Declared::NONE }, b"12,34", 16);
     assert_eq!((rc, fault[1], fault[2], fault[3]), (2, 2, 3, Detail::GroupSize.code()));
+    // So is a first group that starts with a zero, at an integer and a real door alike.
+    for code in [4, 11] {
+        let (rc, _, fault) =
+            raw_call(code, 0, Declared { format: &western, ..Declared::NONE }, b"-0,125", 16);
+        assert_eq!((rc, fault[1], fault[2], fault[3]), (2, 1, 1, Detail::GroupSize.code()));
+    }
 }
 
 /// Review Focus 4: an old export given a 1.1 flag ignores it.
 #[test]
 fn an_old_export_ignores_a_1_1_flag() {
-    let raw = RawNumFormat::from(NumFormat::INVARIANT.with_grouping(NumFormat::GROUPING_WESTERN));
+    let raw = RawNumFormat::from(NumFormat::INVARIANT.with_grouping(Grouping::Indian));
     let mut out = 0i32;
     let mut fault = RawFault { offset: 9, len: 9 };
     // SAFETY: every pointer is live for the call.
-    let rc = unsafe { cast_i32(b"12,34".as_ptr(), 5, &raw, &mut out, &mut fault) };
-    assert_eq!((rc, out), (0, 1234));
+    let rc = unsafe { cast_i32(b"1,234,567".as_ptr(), 9, &raw, &mut out, &mut fault) };
+    assert_eq!((rc, out), (0, 1234567));
     assert_eq!(fault, RawFault { offset: 9, len: 9 });
 }
 

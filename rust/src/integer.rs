@@ -482,7 +482,7 @@ fn parse_int(
         if let Some((digit, len)) = read_digit(body, i, format) {
             any_digit = true;
             after_digit = true;
-            groups.digit(i);
+            groups.digit(i, digit);
             acc = match acc.checked_mul(10).and_then(|shifted| shifted.checked_add(digit as i128)) {
                 Some(next) => next,
                 None => {
@@ -534,9 +534,7 @@ fn parse_int(
                 i += len;
             }
             if i != body.len() {
-                if let width @ 1.. = grouping(format, body, i, currency)
-                    && Groups::strict(format)
-                {
+                if let width @ 1.. = grouping(format, body, i, currency) {
                     return Err(Failure::at(Site::IntGroupInExponent, base + i, width));
                 }
                 let site = stray(
@@ -648,17 +646,19 @@ pub(crate) fn grouping(format: &NumFormat, text: &[u8], at: usize, currency: boo
     if format.allows(NumFormat::GROUPING) { format.group_at(text, at, currency) } else { 0 }
 }
 
-/// A strict grouping policy's judge ([`NumFormat::GROUPING_WESTERN`],
-/// [`NumFormat::GROUPING_INDIAN`]), fed a numeral's integer part as the engine reads it. Each
-/// group is judged as soon as it closes, at the next group separator or at whatever ends the
-/// integer part, so the leftmost invalid group in reading order is the one reported. Under
-/// legacy it judges nothing.
+/// A grouping policy's judge, fed a numeral's integer part as the engine reads it. Each group
+/// is judged as soon as it closes, at the next group separator or at whatever ends the integer
+/// part, so the leftmost invalid group in reading order is the one reported. A grouped numeral's
+/// first group holds one to `leftmost` digits and can't start with a zero (`0,125`), its last
+/// holds three (`12,34`), and every group between holds `inner` ([`NumFormat::group_sizes`]).
 pub(crate) struct Groups {
-    /// `(leftmost, inner)` from [`NumFormat::strict_groups`]; `None` once nothing is left to
-    /// judge (legacy, or the integer part has ended).
+    /// `(leftmost, inner)` from [`NumFormat::group_sizes`]; `None` once the integer part has
+    /// ended and nothing is left to judge.
     sizes: Option<(u32, u32)>,
     /// Digits in the group being read.
     digits: u32,
+    /// Whether the leftmost group's first digit is a zero.
+    zero_led: bool,
     /// Where that group's span starts in the body: its first digit for the leftmost group,
     /// its separator for every other.
     start: usize,
@@ -672,30 +672,42 @@ pub(crate) struct Groups {
 impl Groups {
     #[inline]
     pub(crate) fn new(format: &NumFormat, base: usize, site: Site) -> Groups {
-        Groups { sizes: format.strict_groups(), digits: 0, start: 0, separated: false, base, site }
+        Groups {
+            sizes: Some(format.group_sizes()),
+            digits: 0,
+            zero_led: false,
+            start: 0,
+            separated: false,
+            base,
+            site,
+        }
     }
 
-    /// One digit at `at` in the body.
+    /// One digit, of value `digit`, at `at` in the body.
     #[inline(always)]
-    pub(crate) fn digit(&mut self, at: usize) {
-        // Nothing is counted where nothing will be judged: legacy keeps the digit loop bare.
-        if self.sizes.is_none() {
-            return;
-        }
+    pub(crate) fn digit(&mut self, at: usize, digit: u8) {
         if self.digits == 0 && !self.separated {
             self.start = at;
+            self.zero_led = digit == 0;
         }
-        self.digits += 1;
+        // A numeral can be longer than a `u32` counts; past three digits the count only has to
+        // stay past three.
+        self.digits = self.digits.saturating_add(1);
     }
 
     /// A group separator at `at`, right after a digit: the group it closes is judged, the
-    /// leftmost against `1..=leftmost`, any other against `inner`.
+    /// leftmost against `1..=leftmost` and for a leading zero, any other against `inner`.
+    /// After the integer part has ended, nothing is judged.
     #[inline(always)]
     pub(crate) fn separator(&mut self, at: usize) -> Result<(), Failure> {
         let Some((leftmost, inner)) = self.sizes else {
             return Ok(());
         };
-        let fits = if self.separated { self.digits == inner } else { self.digits <= leftmost };
+        let fits = if self.separated {
+            self.digits == inner
+        } else {
+            self.digits <= leftmost && !self.zero_led
+        };
         if !fits {
             return Err(self.wrong(at));
         }
@@ -714,13 +726,6 @@ impl Groups {
             return Err(self.wrong(at));
         }
         Ok(())
-    }
-
-    /// Whether `format` declares a strict policy, under which a group separator after an
-    /// exponent's digits is grouping in the exponent rather than a stray character.
-    #[inline]
-    pub(crate) fn strict(format: &NumFormat) -> bool {
-        format.strict_groups().is_some()
     }
 
     #[cold]
@@ -773,6 +778,15 @@ macro_rules! integers {
 }
 
 integers!(i8, i16, i32, i64, u8, u16, u32, u64);
+
+#[cfg(test)]
+#[test]
+fn a_group_longer_than_the_count_holds_stays_too_long() {
+    let mut groups = Groups::new(&NumFormat::INVARIANT, 0, Site::IntGroupSize);
+    groups.digits = u32::MAX;
+    groups.digit(0, 1);
+    assert_eq!(groups.digits, u32::MAX);
+}
 
 /// The engine's answer with the lenient lane switched off — what `lib.rs`'s differential
 /// test compares every integer door against.

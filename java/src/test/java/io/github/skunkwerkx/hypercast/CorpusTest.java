@@ -64,15 +64,13 @@ final class CorpusTest {
     }
 
     /**
-     * The grouping policy a format declares: {@code "grouping"} is {@code "legacy"},
-     * {@code "western"} or {@code "indian"}, and absent means the policy bits the row's raw
-     * {@code flags} carry, which for every older row is legacy: the core's and the C ABI's
-     * meaning, not the constructors' new default.
+     * The grouping policy a format declares: {@code "grouping"} is {@code "western"} or
+     * {@code "indian"}, and absent means the policy bits the row's raw {@code flags} carry,
+     * which {@link Grouping#of} judges, so the bits no policy names are refused there.
      */
     private static Grouping groupingOf(JsonObject format) {
         if (format.has("grouping")) {
             return switch (format.get("grouping").getAsString()) {
-                case "legacy" -> Grouping.LEGACY;
                 case "western" -> Grouping.WESTERN;
                 case "indian" -> Grouping.INDIAN;
                 default -> throw new AssertionError("unknown grouping " + format.get("grouping"));
@@ -84,13 +82,13 @@ final class CorpusTest {
     /**
      * The format a vector declares: the two separators and the flags always, every other
      * field only where the vector names it — absent is not declared, exactly as the core's
-     * own replay reads it. The policy is {@link #groupingOf} (legacy for a row declaring none);
+     * own replay reads it. The policy is {@link #groupingOf} (Western for a row declaring none);
      * the styles are the flags without it, and a flag bit that is no style is the
      * constructor's refusal.
      */
     private static NumFormat formatOf(JsonObject vector) {
         if (!vector.has("format")) {
-            return NumFormat.INVARIANT.withGrouping(Grouping.LEGACY);
+            return NumFormat.INVARIANT;
         }
         JsonObject format = vector.getAsJsonObject("format");
         String digitZero = symbolOf(format, "digit_zero");
@@ -1627,5 +1625,118 @@ final class CorpusTest {
         }
         // 1.0.0's 109 plain doors, plus the three text doors.
         assertEquals(112, plain);
+    }
+
+    private static void groupingHolds(String label, JsonObject want, String text, NumFormat format) {
+        String ctx = label + " '" + text + "'";
+        if (want.has("fault")) {
+            int offset = want.getAsJsonArray("fault").get(0).getAsInt();
+            int length = want.getAsJsonArray("fault").get(1).getAsInt();
+            assertEquals(new Fault<Long>(CastFailure.MALFORMED, offset, length), Cast.i64(text, format), ctx);
+            assertEquals(new Fault<Double>(CastFailure.MALFORMED, offset, length), Cast.f64(text, format), ctx);
+            assertEquals(new Fault<BigDecimal>(CastFailure.MALFORMED, offset, length), Cast.decimal(text, format), ctx);
+            assertEquals(
+                    new DetailedFault<Long>(CastFailure.MALFORMED, FaultDetail.GROUP_SIZE, offset, length),
+                    DetailedCast.i64(text, format),
+                    ctx);
+        } else {
+            long value = want.get("value").getAsLong();
+            assertEquals(new Success<>(value), Cast.i64(text, format), ctx);
+            assertEquals(new Success<>((double) value), Cast.f64(text, format), ctx);
+            assertEquals(new Success<>(new BigDecimal(value)), Cast.decimal(text, format), ctx);
+        }
+    }
+
+    private static NumFormat groupingBridge(String number, String currency) {
+        java.text.DecimalFormatSymbols symbols = java.text.DecimalFormatSymbols.getInstance(java.util.Locale.ROOT);
+        return NumFormat.from(
+                        new java.text.DecimalFormat(number, symbols) {
+                            private static final long serialVersionUID = 1L;
+
+                            @Override
+                            public String toPattern() {
+                                return number;
+                            }
+                        },
+                        new java.text.DecimalFormat("#,##0.00", symbols) {
+                            private static final long serialVersionUID = 1L;
+
+                            @Override
+                            public String toPattern() {
+                                return currency;
+                            }
+                        })
+                .withCurrencySymbol("");
+    }
+
+    /**
+     * {@code corpus/grouping.json}: every shape under both policies, through every way a format is
+     * had, and the retired policy bit refused at every declaration.
+     */
+    @Test
+    void groupingCorpus() {
+        NumFormat invariant = NumFormat.INVARIANT;
+        NumFormat indian = invariant.withGrouping(Grouping.INDIAN);
+        int shapes = 0;
+        for (JsonElement element : corpus("grouping.json")) {
+            JsonObject row = element.getAsJsonObject();
+            switch (row.get("kind").getAsString()) {
+                case "shape" -> {
+                    shapes++;
+                    String text = row.get("input").getAsString();
+                    JsonObject west = row.getAsJsonObject("western");
+                    JsonObject east = row.getAsJsonObject("indian");
+                    groupingHolds("invariant", west, text, invariant);
+                    groupingHolds("constructor", west, text, new NumFormat(".", ",", NumFormat.STYLE_ALL));
+                    groupingHolds("chars", west, text, new NumFormat('.', ',', NumFormat.STYLE_ALL));
+                    groupingHolds(
+                            "declared", west, text, new NumFormat(".", ",", NumFormat.STYLE_ALL, Grouping.WESTERN));
+                    groupingHolds("indian to western", west, text, indian.withGrouping(Grouping.WESTERN));
+                    groupingHolds("bridge threes", west, text, groupingBridge("#,##0.###", "#,##0.00"));
+                    groupingHolds("bridge fours", west, text, groupingBridge("#,###0.###", "#,###0.00"));
+                    groupingHolds("bridge indian currency", west, text, groupingBridge("#,##0.###", "#,##,##0.00"));
+                    groupingHolds(
+                            "declared indian",
+                            east,
+                            text,
+                            new NumFormat('.', ',', NumFormat.STYLE_ALL, Grouping.INDIAN));
+                    groupingHolds("western to indian", east, text, indian);
+                    groupingHolds("bridge indian", east, text, groupingBridge("#,##,##0.###", "#,##,##0.00"));
+                    groupingHolds("bridge ml", east, text, groupingBridge("#,##,##0.###", "#,##0.00"));
+                }
+                case "detect" -> groupingHolds("detect", row, row.get("input").getAsString(), NumFormat.DETECT);
+                case "refused_flags" -> {
+                    int flags = row.get("flags").getAsInt();
+                    assertThrows(
+                            IllegalArgumentException.class, () -> new NumFormat(".", ",", flags), "flags " + flags);
+                    assertThrows(
+                            IllegalArgumentException.class,
+                            () -> new NumFormat('.', ',', flags, Grouping.WESTERN),
+                            "flags " + flags);
+                    assertThrows(IllegalArgumentException.class, () -> invariant.withStyles(flags), "flags " + flags);
+                    assertThrows(
+                            IllegalArgumentException.class,
+                            () -> Grouping.of(flags & Grouping.POLICY_MASK),
+                            "flags " + flags);
+                    assertThrows(
+                            IllegalArgumentException.class,
+                            () -> new NumFormat(".", ",", flags, "", "", "", "", "", "", 0),
+                            "flags " + flags);
+                }
+                case "accepted_flags" -> {
+                    int flags = row.get("flags").getAsInt();
+                    assertEquals(
+                            flags,
+                            new NumFormat(
+                                            ".",
+                                            ",",
+                                            flags & ~Grouping.POLICY_MASK,
+                                            Grouping.of(flags & Grouping.POLICY_MASK))
+                                    .flags());
+                }
+                default -> fail("unknown kind " + row.get("kind"));
+            }
+        }
+        assertTrue(shapes >= 18);
     }
 }

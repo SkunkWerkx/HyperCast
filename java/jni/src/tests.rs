@@ -1197,8 +1197,8 @@ fn a_declared_decimal_is_the_cores_conversion() {
 
 // --- the detailed exports ---
 
-/// `NumFormat::INVARIANT` under a strict grouping policy, in the 92-byte layout.
-fn strict(policy: u32) -> [u8; 92] {
+/// `NumFormat::INVARIANT` under a grouping policy, in the 92-byte layout.
+fn under(policy: hypercast::Grouping) -> [u8; 92] {
     packed(NumFormat::INVARIANT.with_grouping(policy))
 }
 
@@ -1379,24 +1379,30 @@ fn a_detailed_fault_writes_its_span_and_its_detail_to_the_last_word() {
 fn the_declared_grouping_policy_decides_the_verdict_and_the_detail() {
     for (policy, text, rc, span, detail) in [
         (
-            NumFormat::GROUPING_LEGACY,
-            &b"12,34"[..],
-            0,
-            [UNTOUCHED, UNTOUCHED],
-            UNTOUCHED,
+            hypercast::Grouping::Western,
+            &b"1,23,456"[..],
+            2,
+            [1, 3],
+            11,
         ),
         // group_size is detail 11, spanning the group with its preceding separator.
-        (NumFormat::GROUPING_WESTERN, &b"12,34"[..], 2, [2, 3], 11),
+        (hypercast::Grouping::Western, &b"12,34"[..], 2, [2, 3], 11),
         (
-            NumFormat::GROUPING_INDIAN,
+            hypercast::Grouping::Indian,
             &b"1,23,456"[..],
             0,
             [UNTOUCHED, UNTOUCHED],
             UNTOUCHED,
         ),
-        (NumFormat::GROUPING_INDIAN, &b"1,234,567"[..], 2, [1, 4], 11),
+        (
+            hypercast::Grouping::Indian,
+            &b"1,234,567"[..],
+            2,
+            [1, 4],
+            11,
+        ),
     ] {
-        let f = strict(policy);
+        let f = under(policy);
         let declared = Declared {
             format: Some(&f),
             ..Declared::default()
@@ -1405,7 +1411,7 @@ fn the_declared_grouping_policy_decides_the_verdict_and_the_detail() {
         assert_eq!(
             (got, [o[2], o[3]], o[7]),
             (rc, span, detail),
-            "{policy:#x} {text:?}"
+            "{policy:?} {text:?}"
         );
     }
 }
@@ -1424,10 +1430,11 @@ fn a_format_the_detailed_door_refuses_is_a_contract_violation_and_writes_nothing
         assert_eq!((rc, o), (-1, checked_out()), "{flags:#x}");
         with(|s| assert!(s.long_writes.is_empty()));
     }
-    // The 1.0 native still ignores them, and parses legacy.
+    // The 1.0 native still ignores them, and reads Western.
     let mut stray = invariant();
     stray[4..8].copy_from_slice(&(3u32 << 8 | NumFormat::ALL).to_ne_bytes());
-    assert_eq!(call_numeric(native_cast_i32, b"12,34", &stray).0, 0);
+    assert_eq!(call_numeric(native_cast_i32, b"1,234,567", &stray).0, 0);
+    assert_eq!(call_numeric(native_cast_i32, b"1,23,456", &stray).0, 2);
 }
 
 #[test]
@@ -1649,8 +1656,8 @@ fn call_checked_detailed(
 #[test]
 fn a_checked_detailed_door_writes_the_value_the_span_the_check_and_the_detail() {
     let i32_door = Door::I32.code();
-    let f = strict(NumFormat::GROUPING_WESTERN);
-    // Strict Western: a one-digit group after a separator is group_size (11), spanning ",2".
+    let f = under(hypercast::Grouping::Western);
+    // Western: a one-digit group after a separator is group_size (11), spanning ",2".
     let (rc, o) = call_checked_detailed(i32_door, Some(&f), &ten_by_five(1), b"1,2");
     assert_eq!((rc, o[2], o[3], o[7]), (2, 1, 2, 11));
     // A value: its words and the check, and no fault.
@@ -1682,15 +1689,23 @@ fn a_checked_detailed_door_judges_the_format_by_1_1_and_refuses_before_writing()
     let (rc, o) = call_checked_detailed(Door::I32.code(), Some(&bad), &ten_by_five(0), b"12");
     assert_eq!((rc, o), (-1, checked_out()));
     with(|s| assert!(s.long_writes.is_empty()));
-    // The 1.0 checked native still parses it legacy.
+    // The 1.0 checked native still reads it, Western.
     let (rc, _) = call_checked(
         Door::I32.code(),
         Some(&bad),
         &ten_by_five(0),
         None,
-        b"12,34",
+        b"1,234,565",
     );
-    assert_eq!(rc, 4);
+    assert_eq!(rc, 0);
+    let (rc, _) = call_checked(
+        Door::I32.code(),
+        Some(&bad),
+        &ten_by_five(0),
+        None,
+        b"1,23,456",
+    );
+    assert_eq!(rc, 2);
 }
 
 #[test]

@@ -44,7 +44,8 @@ pub enum Detail {
     MarkRepeated = 9,
     /// A group separator not between digits, or an empty group.
     GroupMisplaced = 10,
-    /// A group with the wrong digit count for the declared grouping.
+    /// A group with the wrong digit count for the declared grouping, or a first group that
+    /// starts with a zero.
     GroupSize = 11,
     /// Grouping after the decimal separator or in an exponent.
     GroupInFraction = 12,

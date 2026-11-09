@@ -148,8 +148,8 @@ func TestCheckedDetailed(t *testing.T) {
 	if v, ok := r.(*Violation); !ok || *v != (Violation{KeywordMaximum, 0, 3}) {
 		t.Fatalf("101: %v", r)
 	}
-	if got, r := CheckDetailed("12,34", Invariant.WithGrouping(GroupingLegacy), c); r == nil || got.EnumIndex != -1 {
-		t.Fatalf("legacy 1234 against 100: %v %v", got, r)
+	if got, r := CheckDetailed("1,234", Invariant.WithGrouping(GroupingIndian), c); r == nil || got.EnumIndex != -1 {
+		t.Fatalf("Indian 1234 against 100: %v %v", got, r)
 	}
 	if got, r := CheckFromFloat64Detailed(math.Inf(1), c); r == nil || got.EnumIndex != -1 {
 		t.Fatalf("Inf: %v", r)
@@ -167,7 +167,7 @@ func TestCheckedDetailed(t *testing.T) {
 
 func TestGroupingPolicy(t *testing.T) {
 	f := NewNumFormat(".", ",", AllStyles)
-	if f.GroupingPolicy() != GroupingWestern || f.Styles&^GroupingPolicyMask != AllStyles {
+	if f.GroupingPolicy() != GroupingWestern || f.Styles != AllStyles {
 		t.Fatalf("NewNumFormat: %+v", f)
 	}
 	if f != Invariant {
@@ -177,7 +177,7 @@ func TestGroupingPolicy(t *testing.T) {
 	if indian.GroupingPolicy() != GroupingIndian {
 		t.Fatalf("WithGrouping(Indian) = %v", indian.GroupingPolicy())
 	}
-	// The policy is replaced, never OR'ed: Indian then Western is Western, not policy 3.
+	// The policy is replaced, never OR'ed: Indian then Western is Western.
 	if back := indian.WithGrouping(GroupingWestern); back != f {
 		t.Fatalf("Indian then Western: %+v", back)
 	}
@@ -192,7 +192,7 @@ func TestGroupingPolicy(t *testing.T) {
 	if styled.GroupingPolicy() != GroupingIndian || styled.Styles&^GroupingPolicyMask != Grouping|Parentheses {
 		t.Fatalf("WithStyles: %+v", styled)
 	}
-	for _, p := range []GroupingPolicy{GroupingLegacy, GroupingWestern, GroupingIndian} {
+	for _, p := range []GroupingPolicy{GroupingWestern, GroupingIndian} {
 		if p.String() == "" || strings.HasPrefix(p.String(), "GroupingPolicy(") {
 			t.Errorf("%d has no name", uint32(p))
 		}
@@ -201,6 +201,9 @@ func TestGroupingPolicy(t *testing.T) {
 		"NewNumFormat with a policy in styles": func() { NewNumFormat(".", ",", AllStyles|NumStyles(GroupingIndian)) },
 		"WithStyles with a policy":             func() { f.WithStyles(GroupingPolicyMask) },
 		"WithGrouping(3 << 8)":                 func() { f.WithGrouping(GroupingPolicy(3 << 8)) },
+		"WithGrouping(1 << 8)":                 func() { f.WithGrouping(GroupingPolicy(1 << 8)) },
+		"NewNumFormat(351)":                    func() { NewNumFormat(".", ",", 351) },
+		"WithStyles(351)":                      func() { f.WithStyles(351) },
 		"WithGrouping(1)":                      func() { f.WithGrouping(GroupingPolicy(1)) },
 	} {
 		if panics(call) == "" {
@@ -209,9 +212,8 @@ func TestGroupingPolicy(t *testing.T) {
 	}
 }
 
-// Review focus 1 and 5: native digits with a space-like group separator under strict Western,
-// and a strict format with grouping off.
-func TestStrictGroupingReviewFocus(t *testing.T) {
+// Native digits with a space-like group separator under Western, and a format with grouping off.
+func TestGroupingNativeDigitsAndGroupingOff(t *testing.T) {
 	arabic := NewNumFormat(".", "\u202f", AllStyles)
 	arabic.DigitZero = '٠'
 	if v, f := I32Detailed("١\u202f٢٣٤", arabic); f != nil || v != 1234 {
@@ -224,16 +226,20 @@ func TestStrictGroupingReviewFocus(t *testing.T) {
 	}
 	ungrouped := Invariant.WithStyles(AllStyles &^ Grouping)
 	if _, f := I32Detailed("1,234", ungrouped); f == nil || f.Reason != Malformed {
-		t.Fatalf("strict without Grouping read 1,234: %+v", f)
+		t.Fatalf("no Grouping read 1,234: %+v", f)
 	}
 }
 
-func TestNumFormatRefusesPolicyThreeAndUndefinedBits(t *testing.T) {
+func TestNumFormatRefusesTheRetiredBitAndUndefinedBits(t *testing.T) {
 	for _, c := range []struct {
 		styles NumStyles
 		want   string
 	}{
 		{AllStyles | GroupingPolicyMask, "names no grouping policy"},
+		{AllStyles | 1<<8, "names no grouping policy"},
+		{1 << 8, "names no grouping policy"},
+		{351, "names no grouping policy"},
+		{863, "names no grouping policy"},
 		{AllStyles | 1<<10, "does not define"},
 		{1 << 31, "does not define"},
 	} {

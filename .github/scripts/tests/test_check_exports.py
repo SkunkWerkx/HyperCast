@@ -427,7 +427,7 @@ class SwiftSiteTests(unittest.TestCase):
 
     def test_the_site_is_the_swift_sources_and_reads_every_export(self):
         self.assertEqual(self.site[1:], ([('swift/Sources/HyperCast/*.swift', self.mod.swift_calls)], 'all', ()))
-        # Swift still calls every 1.0 export (its legacy table), so nothing is superseded here.
+        # Swift still calls every 1.0 export (its 1.0 table), so nothing is superseded here.
         self.assertEqual(self.mod.declared(self.site[1]), self.mod.core_exports())
 
     def test_a_call_or_a_function_passed_counts(self):

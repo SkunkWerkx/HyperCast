@@ -1,5 +1,5 @@
 """The downgrade guard: a native core below 1.1 reads the grouping-policy bits of a format as
-nothing and parses ``12,34`` as 1234, so a strict request against it would silently be a legacy
+nothing and parses ``12,34`` as 1234, so a request against it would silently be a 1.0
 parse. The package refuses to load against one.
 
 A real 1.0 core is the extension of the 1.0.0 wheel; the test that uses it runs when
@@ -94,12 +94,12 @@ def _run(path: Path, code: str) -> subprocess.CompletedProcess[str]:
 
 
 @pytest.mark.skipif(CORE_1_0 is None, reason="HYPERCAST_CORE_1_0 names no 1.0 package")
-def test_a_strict_request_against_a_real_1_0_core_is_rejected_never_parsed_legacy(tmp_path):
+def test_a_real_1_0_core_is_rejected_at_import_never_parsed_as_1_0(tmp_path):
     """A 1.0 core really does ignore the policy (the hazard); this package, over that same
     extension, refuses to import; over its own extension it imports and refuses ``12,34``."""
     old_package = Path(CORE_1_0 or "")
     old_extension = _extension_of(old_package)
-    # 1. The hazard: 1.0's own package, a format with the strict-Western bit set.
+    # 1. The hazard: 1.0's own package reads this by 1.0's rule, the retired bit ignored.
     hazard = _run(
         old_package.parent,
         "import hypercast as h; f = h.NumFormat('.', ',', h.NumFormat.ALL | (1 << 8)); "
@@ -107,8 +107,8 @@ def test_a_strict_request_against_a_real_1_0_core_is_rejected_never_parsed_legac
     )
     assert hazard.returncode == 0, hazard.stderr
     assert hazard.stdout.split(maxsplit=1)[0] == "1.0.0"
-    assert "Success(value=1234)" in hazard.stdout, "a 1.0 core parses 12,34 as legacy"
-    # 2. This package against that extension: refused at import, never a legacy parse.
+    assert "Success(value=1234)" in hazard.stdout, "a 1.0 core parses 12,34 as 1234"
+    # 2. This package against that extension: refused at import, never a 1.0 parse.
     mismatched = tmp_path / "mismatched"
     mismatched.mkdir()
     shutil.copy(old_extension, _copy_package(mismatched) / old_extension.name)

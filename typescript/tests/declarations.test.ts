@@ -111,7 +111,7 @@ test('the invariant and detection formats, and the packed layout', () => {
   assert.equal(packed.length, 92)
   const view = new DataView(packed.buffer, packed.byteOffset, packed.byteLength)
   assert.equal(view.getUint32(0, true), 92)
-  // The flags word carries the grouping policy in bits 8 and 9: invariant() is strict Western.
+  // The flags word carries the grouping policy, and Western is no bits: invariant() is 95.
   assert.equal(view.getUint32(4, true), NumStyles.All | Grouping.Western)
   assert.equal(view.getUint32(8, true), 0)
   assert.deepEqual([packed[12], packed[20]], [0x2e, 1])

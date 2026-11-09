@@ -172,7 +172,7 @@ impl RawNumFormat {
 
     /// The [`NumFormat`] this declares, in place, or `None` for a contract violation — a
     /// caller bug, not a data verdict: a `size` the core does not read, or a format
-    /// [`NumFormat::check`] refuses (an undefined `flags` bit or grouping policy `11`, which
+    /// [`NumFormat::check`] refuses (an undefined `flags` bit or the retired bit 8, which
     /// the 1.0 exports cut away before asking; a missing or over-long separator, equal separators, a
     /// symbol with an ASCII digit in it or that is not UTF-8, white space in a sign, the
     /// percent or the currency symbol or in either decimal separator, a digit zero that

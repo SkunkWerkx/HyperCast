@@ -173,14 +173,12 @@ public sealed class DetailTests
 		RawFaultDetail.Empty.Size.ShouldBe(16u);
 		((uint)Unsafe.SizeOf<RawDateOptions>()).ShouldBe(Define("HyperCastRawDateOptions_SIZE", 12));
 		new[] { "Size", "Flags", "Pivot" }.Select(static f => (int)Marshal.OffsetOf<RawDateOptions>(f)).ShouldBe([0, 4, 8]);
-		// The grouping policy: the styles in the low byte, the policy in bits 8 and 9.
-		((uint)NumGrouping.Western).ShouldBe(0u); // the binding's own numbering, mapped below
-		var flags = (NumFormat.Invariant).ToRaw().Flags;
-		flags.ShouldBe((uint)NumStyles.All | Define("HyperCastNumFormat_GROUPING_WESTERN", 1u << 8));
+		// The grouping policy: the styles in the low byte, Indian in bit 9, Western setting no bit.
+		((uint)NumGrouping.Western).ShouldBe(Define("HyperCastNumFormat_GROUPING_WESTERN", 0));
+		((uint)NumGrouping.Indian).ShouldBe(Define("HyperCastNumFormat_GROUPING_INDIAN", 2u << 8));
+		NumFormat.Invariant.ToRaw().Flags.ShouldBe((uint)NumStyles.All);
 		(NumFormat.Invariant with { Grouping = NumGrouping.Indian }).ToRaw().Flags
-			.ShouldBe((uint)NumStyles.All | Define("HyperCastNumFormat_GROUPING_INDIAN", 2u << 8));
-		(NumFormat.Invariant with { Grouping = NumGrouping.Legacy }).ToRaw().Flags
-			.ShouldBe((uint)NumStyles.All | Define("HyperCastNumFormat_GROUPING_LEGACY", 0));
+			.ShouldBe((uint)NumStyles.All | 2u << 8);
 		Define("HyperCastNumFormat_GROUPING_POLICY", 3u << 8).ShouldBe(3u << 8);
 	}
 

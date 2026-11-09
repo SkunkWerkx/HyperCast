@@ -30,7 +30,12 @@ import java.util.function.IntUnaryOperator;
  * {@link DetailedVerdict} whose failure also names what failed ({@link FaultDetail}), and the one
  * place the opt-in date shapes ({@link DateOptions}, {@link MonthNames}) are accepted: {@code Verdict}
  * is sealed, so neither lives here. A numeric door's {@link NumFormat} carries a {@link Grouping},
- * strict Western by default.
+ * Western by default.
+ *
+ * <p>A {@link java.util.Locale} door takes its notation from {@link NumFormat#from(Locale)}, and
+ * the JDK gives an Indian locale threes, so it reads Western: {@code i64("12,34,567",
+ * Locale.forLanguageTag("hi-IN"))} is a {@code MALFORMED} {@link Fault}. Declare the policy on the
+ * format to read it: {@code i64("12,34,567", NumFormat.from(locale).withGrouping(Grouping.INDIAN))}.
  *
  * <p>Door names mirror the native ABI ({@code i32}, {@code f64}, {@code timestamp}, …) so
  * the polyglot surface reads identically across bindings. Each door takes a {@link String}

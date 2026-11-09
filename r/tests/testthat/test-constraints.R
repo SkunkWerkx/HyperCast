@@ -161,11 +161,22 @@ test_that("the text door's value is the caller's string, or the trimmed span of 
   expect_identical(v$ok, c(FALSE, NA))
   r <- cast_text(list(charToRaw(" \u00e9\u00e9 ")), long)
   expect_identical(c(r$offset, r$length), c(1L, 4L))
-  # U+0000 comes through a raw vector and no R string can hold it: out of range over the value.
-  nul <- cast_text(list(as.raw(c(0x20, 0x61, 0x00, 0x20))), trim)
-  expect_identical(as.character(nul$reason), "out_of_range")
-  expect_identical(c(nul$offset, nul$length), c(1L, 2L))
-  expect_identical(as.character(cast_text(list(as.raw(0L)))$reason), "out_of_range")
+  # U+0000 comes through a raw vector and no R string can hold it: the core accepted the value,
+  # so it is `ok` with NA, and raw = TRUE gives the trimmed span's bytes.
+  spaced <- list(as.raw(c(0x20, 0x61, 0x00, 0x20)))
+  nul <- cast_text(spaced, trim)
+  expect_identical(c(nul$ok, is.na(nul$value)), c(TRUE, TRUE))
+  expect_identical(nul$adjusted, FALSE)
+  expect_true(is.na(nul$reason))
+  expect_true(is.na(nul$keyword))
+  expect_identical(c(nul$offset, nul$length), c(NA_integer_, NA_integer_))
+  expect_identical(cast_text(spaced, trim, raw = TRUE)$value[[1]], as.raw(c(0x61, 0x00)))
+  lone <- cast_text(list(as.raw(0L)))
+  expect_identical(c(lone$ok, is.na(lone$value)), c(TRUE, TRUE))
+  # The rules still judge the value R can't hold: the core rejects it, and that's a violation.
+  short <- cast_text(list(as.raw(c(0x61, 0x00, 0x62))),
+                     hypercast_constraints("text", max_length = 2))
+  expect_identical(c(short$ok, short$keyword), c(FALSE, "maxLength"))
   # Invalid UTF-8 is malformed at its own bytes.
   bad <- cast_text(list(as.raw(c(0x61, 0xff))))
   expect_identical(c(as.character(bad$reason), bad$offset, bad$length), c("malformed", "1", "1"))
@@ -260,4 +271,64 @@ test_that("a declaration prints as the call that declares it", {
                    "hypercast_constraints(\"text\", trim = TRUE, enum = c(\"Female\", \"Male\"))")
   expect_identical(capture.output(print(hypercast_constraints("i32", minimum = 1L))),
                    "hypercast_constraints(\"i32\", minimum = 1L)")
+})
+
+test_that("cast_text(raw = TRUE) is the same verdict, with the bytes, through constraints", {
+  rules <- hypercast_constraints("text", trim = TRUE, max_length = 3,
+                                 enum = c("\u00e9t\u00e9", "ab"))
+  x <- list(charToRaw(" \u00c9T\u00c9 "), charToRaw("toolong"), charToRaw("c"), NULL,
+            as.raw(c(0x61, 0xff)))
+  plain <- cast_text(x, rules)
+  v <- cast_text(x, rules, raw = TRUE)
+  expect_s3_class(v, "hypercast_checked_verdict")
+  expect_identical(plain[names(plain) != "value"], v[names(v) != "value"])
+  # An enum match is the entry as declared, in UTF-8.
+  expect_identical(v$value[[1]], charToRaw("\u00e9t\u00e9"))
+  for (row in 2:5) expect_null(v$value[[row]])
+})
+
+test_that("text past INT_MAX bytes is ok with NA, and raw gives the bytes", {
+  # Allocates over 6 GiB, so it runs only when asked for: HYPERCAST_TEST_LARGE=1.
+  skip_if_not(nzchar(Sys.getenv("HYPERCAST_TEST_LARGE")), "HYPERCAST_TEST_LARGE is not set")
+  over <- rep(as.raw(0x61), 2^31)
+  v <- cast_text(list(over))
+  expect_identical(c(v$ok, is.na(v$value)), c(TRUE, TRUE))
+  expect_true(is.na(v$reason))
+  exact <- cast_text(list(over), raw = TRUE)$value[[1]]
+  expect_identical(length(exact), 2^31)
+  expect_identical(exact[c(1, 2^31)], as.raw(c(0x61, 0x61)))
+  rm(exact)
+  rules <- hypercast_constraints("text", trim = TRUE)
+  checked <- cast_text(list(c(as.raw(0x20), over)), rules)
+  expect_identical(c(checked$ok, is.na(checked$value)), c(TRUE, TRUE))
+  # INT_MAX itself is the longest text R can hold, and it holds it.
+  rm(over)
+  most <- rep(as.raw(0x61), .Machine$integer.max)
+  at <- cast_text(list(most))
+  expect_identical(at$ok, TRUE)
+  expect_identical(nchar(at$value, type = "bytes"), .Machine$integer.max)
+})
+
+test_that("cast_text(raw = TRUE) gives a bytes-marked enum entry's bytes, as the core matched", {
+  marked <- "\xc3\xa9"
+  Encoding(marked) <- "bytes"
+  rules <- hypercast_constraints("text", enum = marked)
+  input <- list(as.raw(c(0xc3, 0xa9)))
+  expect_identical(cast_text(input, rules)$ok, TRUE)
+  v <- cast_text(input, rules, raw = TRUE)
+  expect_identical(c(v$ok, v$enum_index), c(1L, 1L))
+  expect_identical(v$value[[1]], as.raw(c(0xc3, 0xa9)))
+})
+
+test_that("cast_text(raw = TRUE) in a C session reads an unmarked enum entry as its bytes", {
+  old <- Sys.getlocale("LC_CTYPE")
+  on.exit(Sys.setlocale("LC_CTYPE", old), add = TRUE)
+  skip_if(suppressWarnings(Sys.setlocale("LC_CTYPE", "C")) == "", "no C locale")
+  skip_if(isTRUE(l10n_info()[["UTF-8"]]), "the C locale is UTF-8 here")
+  expect_identical(getFromNamespace("session_native", "hypercast")(), 1L)
+  # Translated, this entry would read as the text "<c3><a9>".
+  rules <- hypercast_constraints("text", enum = rawToChar(as.raw(c(0xc3, 0xa9))))
+  v <- cast_text(list(as.raw(c(0xc3, 0xa9))), rules, raw = TRUE)
+  expect_identical(c(v$ok, v$enum_index), c(1L, 1L))
+  expect_identical(v$value[[1]], as.raw(c(0xc3, 0xa9)))
 })

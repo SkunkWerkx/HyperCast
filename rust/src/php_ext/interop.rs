@@ -47,13 +47,13 @@ fn ffi_member(core: &Zval, name: &str) -> Option<Zval> {
     unsafe { found.as_ref() }.map(Zval::shallow_clone)
 }
 
-/// Why a strict grouping policy may not be written for `core`, an `FFI` handle on the C
-/// library, or `None` when it may. A core that predates the policy ignores its bits and parses
-/// every format as legacy, so two checks, neither a hard-coded version: the library must
+/// Why a format may not be written for `core`, an `FFI` handle on the C library, or `None` when
+/// it may. A core that predates the policies ignores their bits and reads every format by 1.0's
+/// rules, so two checks, neither a hard-coded version: the library must
 /// declare the detailed exports (`cast_detailed`, which a 1.0 library does not have, and which
 /// an `FFI` handle only reads when its declarations name it and the library has it), and its
 /// `hypercast_version()` must have this extension's major version and a minor version no older.
-fn strict_refused(core: &Zval) -> Option<String> {
+fn core_refused(core: &Zval) -> Option<String> {
     if ffi_member(core, "cast_detailed").is_none() {
         return Some(
             "the core's FFI handle does not declare cast_detailed, which a core that reads a \
@@ -231,10 +231,10 @@ impl NativeValues {
     }
 
     /// Writes a format's packed layout into an `hc_format` (ext-ffi). A core that predates the
-    /// grouping policy ignores its bits and parses every format as legacy, so a caller passes
-    /// the `FFI` handle it loaded the core with: a strict policy is then refused for a core that
-    /// lacks the detailed exports or is older than this extension, never written to be parsed
-    /// as legacy. Without a handle, the caller owns that check.
+    /// grouping policy ignores its bits and reads every format by 1.0's rules, so a caller passes
+    /// the `FFI` handle it loaded the core with: a format is then refused for a core that lacks
+    /// the detailed exports or is older than this extension, never written to be read that way.
+    /// Without a handle, the caller owns that check.
     pub fn write_format(
         format: NumFormatArg<'_>,
         target: CDataArg<'_>,
@@ -243,14 +243,10 @@ impl NativeValues {
         guard(|| {
             let object = object_of(format.0).ok_or_else(|| pending("format"))?;
             let packed = super::num_format::packed(object)?;
-            let flags = u32::from_le_bytes([packed[4], packed[5], packed[6], packed[7]]);
             if let Some(core) = core.0
-                && flags & crate::NumFormat::GROUPING_POLICY != 0
-                && let Some(why) = strict_refused(core)
+                && let Some(why) = core_refused(core)
             {
-                return Err(runtime(format!(
-                    "hypercast: a strict grouping policy is refused: {why}; declare GROUPING_LEGACY for it"
-                )));
+                return Err(runtime(format!("hypercast: a format is refused: {why}")));
             }
             memcpy(target.0, &packed, 92)
         })

@@ -29,6 +29,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Swift's and TypeScript's declarations compare by value.** Swift's `NumFormat`,
+  `NumStyles`, `DateFormat`, `DateOptions` and `MonthNames` are `Hashable`, hashing what `==`
+  compares, so they key a `Set` or a `Dictionary`. TypeScript's `NumFormat`, `DateFormat`,
+  `DateOptions` and `MonthNames` gain `equals(other)`, true for a value declaring the same
+  thing as the core's `Eq` has it; `===` is still identity, since JavaScript has no value
+  equality to hook. *(Swift, TypeScript)*
+
 - **A TypeScript binding for Node and Bun, on npm as `@skunkwerkx/hypercast`.** A Node-API
   addon built with napi-rs, the core linked into the `.node` file, published as eight platform
   packages (`@skunkwerkx/hypercast-<platform>`, one per RID) that the root package picks
@@ -58,7 +65,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   impossible declaration or argument of the wrong type, as in Python, C# and Java. Spans
   count in what `substr()` counts in: code points for a character vector, bytes for raw
   vectors and bytes-marked strings. `is_ok()`, `faults()` and `optional()` read a verdict.
-  R 4.2 or newer. *(R)*
+  `ok` describes the core's acceptance, and `value = NA` on an `ok` row means R can't represent
+  the value: `cast_char()`'s U+0000, with a `code_point` column as its exact output, and
+  `cast_text()`'s text with an embedded NUL or over `INT_MAX` bytes, with `raw = TRUE` giving the
+  exact bytes as a list of raw vectors. R 4.2 or newer. *(R)*
 - **Release plumbing for npm and CRAN.** The tag run packs, attests and preserves ten npm
   tarballs (the root package, its `optionalDependencies` injected at pack time, the eight
   platform packages and the WebAssembly package, whose runtime dependencies are pinned from
@@ -169,6 +179,83 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   rejection)` for a checked one, each `(nil, nil)` when absent. *(Rust, C#, Java, Swift, Go, PHP)*
 
 ### Changed
+
+- **The text door checks UTF-8 with SIMD.** `cast_text`, its detailed and checked twins, and
+  the text door of every binding built natively validate 64 bytes and more with simdutf8
+  0.1.5: NEON on aarch64, AVX2 or SSE 4.2 on x86_64 (detected at run time in `core::arch`,
+  cached in one atomic byte), simd128 on a wasm32 build that has it. Go (its core is the
+  wasm32 build, translated), the Blazor archive and the other shipped wasm builds are built
+  without simd128, so they keep `core::str::from_utf8`, as do bare metal, UEFI and every other
+  target. Shorter input and every failure take core's check too, so verdicts and fault spans
+  are unchanged, byte for byte. simdutf8 is the core's first dependency, taken with its `std`
+  feature off: the core stays `no_std`, allocation-free and panic-free (only its `basic` check
+  is used, since `compat`'s error path can panic), and the no-panic proof names the check on
+  its own. On an Apple M6 on 2026-11-08 (`docs/benchmarks.md`): 4 KiB of ASCII validates in
+  19.8 ns against 60.4 ns, 4,100 bytes of multi-byte text in 247 ns against 1,188 ns, and 64
+  bytes 2.1x (ASCII) to 4.8x (multi-byte) faster. Failing input is slower, since the SIMD check
+  reads it whole before core finds the span: worst by ratio is a bad first byte, 1.2 ns before
+  and 244 ns now on 4,100 bytes of multi-byte text (32 ns on 4 KiB of ASCII); worst in time is
+  a bad last byte, 87.5 ns on 4 KiB of ASCII, 45% over core's check of valid text of that
+  length. Under 64 bytes the door is within noise. x86_64 is not yet measured. R's
+  `inst/AUTHORS` names simdutf8 and the work it builds on, and its author, the simd-json.rs
+  developers and the simdjson authors are copyright holders in `Authors@R`. *(all)*
+- **`NumFormat::DETECT` no longer reads a thousandfold value through a symbol's dot or native
+  digits.** Both read wrong silently; exactly three digits after a lone separator is ambiguous, as
+  bare `1,234` is. Behaviour change for every 1.x user of detection. A declared currency or percent
+  symbol's separator isn't counted: `Rs.1,234` under `Rs.` read 1.234, `1,234 kr.` and `1.234 kr.`
+  under `kr.` read 1234, and `Rs.1.234` read 1234; all are `Malformed` with the detail
+  `ambiguous_separator` at the separator now, while `Rs.1,5` is 1.5 and `Rs.1,234,567` 1234567.
+  Declared native digits count as digits, in every script: `١,٢٣٤` and `١.٢٣٤` read 1.234 and are
+  `ambiguous_separator` now, `١٢,٣٤٥` likewise, and `٠,١٢٣` is 0.123 as `0,123` is. `corpus/` pins
+  both in Arabic-Indic, Devanagari, Thai, fullwidth and mathematical digits. *(all)*
+- **Two grouping policies: Western, the default, and Indian, declared.** Behaviour change for
+  every 1.0 user: by the owner's decision the 1.0 C exports' and bindings' 1.0 doors' answers change
+  on these inputs, which 1.0 read as numbers. All of them are now `Malformed` with the detail
+  `group_size`, at the integer, real and decimal doors, checked and detailed, under any group
+  separator and the currency one, native digits counted as digits, with no format, under
+  `INVARIANT` and through every constructor:
+  - `1,23,456` (123456 in 1.0), and every other shape that isn't groups of three: `1,2,345`,
+    `1,2345,678`, `1,234,56,789`, `1234,567,890`, `1 2 345`.
+  - A last group that isn't three digits: `12,34` (1234 in 1.0), `1,2` (12), `1,2345`, `1,234,56`.
+  - A lone separator after more than three digits: `1234,567` (1234567 in 1.0), `1234 567`.
+  - A first group that starts with a zero: `0,125` (125 in 1.0), `00,125`, `007,000`, `0,125,000`,
+    `-0,125`, `0,125.5`, `0,000`, `-0,000`.
+
+  `1,000`, `1,234,567`, `10,000` and ungrouped `0125` and `0` read as before, as does `0,5` under
+  a comma decimal, and detection still takes `0,785` as a decimal. To read `1,23,456`, declare
+  Indian: `NumFormat::INVARIANT.with_grouping(Grouping::Indian)` in Rust, or the
+  binding's `with_grouping` equivalent, which every binding has, as it has the policy on its
+  constructor. Indian (`2 << 8`, 512) reads `1,23,456`, `12,34,567` and `1,23,45,678`, and refuses
+  `1,234,567`. Western is 0, so a null format, a 1.0 layout and a 1.0 stored format are Western with
+  no special handling. Every binding's `Invariant` and default are Western. Bit 8 (256) is retired
+  permanently and never reused, and a future policy takes a new bit from bit 10 up: 256 and 768
+  (351 and 863 at default styles) are refused at the first entry point, deserializers included,
+  and `docs/grouping.md` names the few that can't refuse and what stops the value there. PHP's
+  `unserialize` refuses a stored `flags` holding anything but styles (`351`, `607`, `1119`, and `-1`,
+  which 1.0 read as every style), the one place the rule reaches stored 1.0 data, and Go's JSON refuses
+  bit 8 and any bit past the policy where it is decoded. Rust's `with_grouping` takes a `Grouping` enum,
+  so it can't name a bad policy; `NumFormat::new` and `with_separators` are 1.0 API and can, and there
+  `check` and `validate` refuse. The 1.0 exports mask flags to 8 bits, so they can't see these bits,
+  and they read Western.
+
+  A numeral already refused can report differently: `0,12` now spans `0` rather than `,12`, `0,`
+  is `group_size` rather than `group_misplaced`, and `12,34x` is `group_size` rather than
+  `unexpected`, as `12,34.5` at an integer door is rather than `fraction_not_allowed`.
+
+  A locale bridge follows the locale's number pattern, never its name: all Indian is Indian,
+  anything else Western. `ml`, `mr` and `or` on ICU are Indian, and `ta` too on every version measured, with a Western
+  currency pattern from ICU 79.1, so a Western `₹1,234,567` through them is refused until the column
+  declares Western. C#'s current-culture path follows the same
+  rule. A locale whose last group isn't three digits can't read its own grouped output, because
+  no reading tells it from a misplaced decimal: Toki Pona (`tok`) on ICU, and on glibc `cmn_TW`,
+  `hak_TW`, `lzh_TW` and `nan_TW` (`[4, 0]`) and `unm_US` (`[2, 2, 2, 3, 0]`). Those are Western and
+  refused under a declared format, `Invariant` or a bridge, never misread. `Detect` infers by the
+  delimiter rule, so a `[4, 0]` locale's `1,2345` reads there as 1.2345, and the corpus pins it.
+  `docs/grouping.md`, "Parked", has them, what adding one takes, and the measured locale tables.
+
+  `corpus/grouping.json` holds these shapes under both policies, and every binding replays it. These `corpus/`
+  rows moved: `12,34`, `1234,567` and `12,34.5` with no format, `1,23,456` with no format, `-0,000` with
+  no format and `-0.000,00` under a comma decimal. From 1.0 on an Apple M6, an integer door's grouped numeral costs 18% more (`i64` `1,234,567` 6.27 to 7.43 ns) and separator detection 14%, a comparison that also holds everything else since 1.0; the real door's grouped numeral moved 2.6% and the decimal door's gained 12.6% (`docs/benchmarks.md`). *(all)*
 
 - **The core credits Unicode.** Its case folding is generated from the Unicode Character
   Database, so every package names `MIT AND Unicode-3.0` and carries `LICENSE-UNICODE` where its
@@ -395,6 +482,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A declaration equals one that declares the same thing, in every binding**, as the core's
+  `Eq` has it, where a symbol is its declared bytes, whatever a layout holds past its length.
+  Python's `NumFormat` compared by identity, so a format made twice was unequal to itself; it
+  now has `==` by the core's equality and a `hash()` of its layout to match. C#'s `NumFormat`
+  and `DateFormat` compared their backing fields, so a `null` string, which reads back as empty,
+  made an equal declaration unequal; they now compare what they read back. C#'s `MonthNames`
+  compares its packed entries, as Java's, Python's, Go's and Swift's do, so `DateOptions`
+  holding equal vocabularies are equal. Java's records, Go's comparable structs, Ruby's `Data`
+  values, PHP's `==` over the properties, C++'s `operator==` and R's `identical()` already
+  compared by value. C++'s `NumFormat` and `DateFormat` `operator==` were declared `constexpr`
+  but could not be used in a constant expression, since the comparison they call was defined
+  after them; now they can. *(Python, C#, C++)*
 - **The float doors read a percent correctly rounded.** `cast_f32` and `cast_f64` parsed the
   number and then divided by 100, rounding twice: `1.1%` was `0.011000000000000001`, and about
   a quarter of the percents with one to three decimals came back one ulp off at either width.

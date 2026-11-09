@@ -4,7 +4,7 @@ using System.Runtime.InteropServices;
 namespace HyperCast.Tests;
 
 /// <summary>
-/// The downgrade guard: a strict grouping policy against a 1.0 core is rejected, never parsed with
+/// The downgrade guard: a grouping policy against a 1.0 core is rejected, never parsed with
 /// 1.0's rules. A 1.0 core ignores the policy bits of a format and has no detailed export, and every
 /// door of this binding calls one, so a door on it throws and <see cref="Cast.IsAvailable"/> says no.
 /// </summary>
@@ -16,7 +16,7 @@ namespace HyperCast.Tests;
 public sealed class DowngradeTests
 {
 	[Fact]
-	void A_1_0_core_is_rejected_and_never_parses_a_strict_request_as_legacy()
+	void A_1_0_core_is_rejected_and_never_parses_a_request_as_1_0_did()
 	{
 		var path = Environment.GetEnvironmentVariable("HYPERCAST_V10_LIBRARY");
 		Assert.SkipUnless(!string.IsNullOrEmpty(path), "HYPERCAST_V10_LIBRARY names no 1.0 core.");
@@ -33,7 +33,7 @@ public sealed class DowngradeTests
 		// ...and the guard turns it away.
 		Cast.IsAvailable.ShouldBeFalse();
 
-		// A strict request (the default) is refused: no door answers, least of all with 1.0's reading of "12,34" as 1234.
+		// A request is refused: no door answers, least of all with 1.0's reading of "12,34" as 1234.
 		Should.Throw<EntryPointNotFoundException>(() => Cast.Int32("12,34"u8, NumFormat.Invariant));
 		Should.Throw<EntryPointNotFoundException>(() => Cast.Int32("12,34", NumFormat.Invariant));
 		Should.Throw<EntryPointNotFoundException>(() => Cast.Double("12,34", new NumFormat('.', ',', NumStyles.All, NumGrouping.Indian)));

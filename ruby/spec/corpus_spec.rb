@@ -21,29 +21,25 @@ RSpec.describe "conformance corpus" do
     raise "corpus directory not found"
   end
 
-  # The invariant profile as a row that declares no policy reads it: legacy grouping, the core's
-  # and the C ABI's meaning (the binding's own INVARIANT is strict Western).
-  LEGACY_INVARIANT = HyperCast::NumFormat::INVARIANT.with(grouping: :legacy)
-
   # A row's flags and grouping policy as this binding's constructor takes them apart. A row
   # that names `grouping` declares that policy. One that doesn't declares the policy bits its raw
   # `flags` carry, so a valid policy there moves out of the mask into `grouping:`, and none is
-  # legacy; a bit no policy or flag names stays in `flags`, to be refused as it is.
+  # Western; a bit no policy or flag names stays in `flags`, to be refused as it is.
   def grouping_of(spec)
     flags = spec["flags"]
     return [flags, spec["grouping"].to_sym] if spec.key?("grouping")
 
     policy = HyperCast::GROUPING_POLICIES.key(flags & HyperCast::GROUPING_POLICY)
-    policy ? [flags & ~HyperCast::GROUPING_POLICY, policy] : [flags, :legacy]
+    policy ? [flags & ~HyperCast::GROUPING_POLICY, policy] : [flags, :western]
   end
 
   # Every key past the separators and flags is optional in the corpus: absent means nothing
   # declared for that field, which is the Data class's own default. A row with no `grouping`
-  # keeps legacy semantics; `flags` is the row's raw word, so a row can carry a policy no
+  # is Western; `flags` is the row's raw word, so a row can carry a policy no
   # name spells (a refusal).
   def format_of(vector)
     spec = vector["format"]
-    return LEGACY_INVARIANT unless spec
+    return HyperCast::NumFormat::INVARIANT unless spec
 
     flags, grouping = grouping_of(spec)
     HyperCast::NumFormat.new(
@@ -604,5 +600,63 @@ RSpec.describe "conformance corpus" do
     expect(HyperCast.i32("x", HyperCast::NumFormat::INVARIANT)).to be_an_instance_of(HyperCast::Fault)
     expect(HyperCast.text("x")).to eq(HyperCast::Success.new(value: "x"))
     expect(HyperCast.text("\xFF".b)).to eq(HyperCast::Fault.new(reason: :malformed, offset: 0, length: 1))
+  end
+
+  it "reads every grouping shape as each way to say a policy declares it, and refuses a bad policy" do
+    holds = lambda do |want, text, format, label|
+      [HyperCast.i64(text, format), HyperCast.f64(text, format), HyperCast.decimal(text, format)].each do |verdict|
+        if want.key?("value")
+          expect(verdict).to be_a(HyperCast::Success), "#{label} #{text}"
+          expect(verdict.value.to_r).to eq(want["value"]), "#{label} #{text}"
+        else
+          expect(verdict).to be_a(HyperCast::Fault), "#{label} #{text}"
+          expect([verdict.reason, verdict.offset, verdict.length])
+            .to eq([:malformed, *want["fault"]]), "#{label} #{text}"
+          expect(verdict.detail).to eq(HyperCast::Detail::GROUP_SIZE), "#{label} #{text}"
+        end
+      end
+    end
+    invariant = HyperCast::NumFormat::INVARIANT
+    new_format = ->(flags, **rest) { HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",", flags: flags, **rest) }
+    shapes = 0
+    corpus("grouping.json").each do |row|
+      case row["kind"]
+      when "shape"
+        shapes += 1
+        text = row["input"]
+        i18n = { delimiter: ",", separator: "." }
+        { "invariant" => invariant, "constructor" => new_format.call(95),
+          "declared" => new_format.call(95, grouping: :western),
+          "indian to western" => invariant.with(grouping: :indian).with(grouping: :western),
+          "from_i18n" => HyperCast::NumFormat.from_i18n(i18n) }.each do |label, format|
+          holds.call(row["western"], text, format, label)
+        end
+        { "declared indian" => new_format.call(95, grouping: :indian),
+          "western to indian" => invariant.with(grouping: :indian),
+          "from_i18n indian" => HyperCast::NumFormat.from_i18n(i18n, grouping: :indian) }.each do |label, format|
+          holds.call(row["indian"], text, format, label)
+        end
+      when "detect"
+        holds.call(row, row["input"], HyperCast::NumFormat::DETECT, "detect")
+      when "refused_flags"
+        flags = row["flags"]
+        expect { new_format.call(flags) }.to raise_error(ArgumentError, /grouping policy/)
+        expect { invariant.with(flags: flags) }.to raise_error(ArgumentError, /grouping policy/)
+        expect { new_format.call(95, grouping: flags) }.to raise_error(ArgumentError, /grouping must be/)
+        expect { invariant.with(grouping: flags) }.to raise_error(ArgumentError, /grouping must be/)
+        # Marshal's own form, as a payload holding the bits would restore it.
+        members = invariant.to_h.merge(flags: flags)
+        expect { HyperCast::NumFormat.allocate.marshal_load(members) }.to raise_error(ArgumentError, /grouping policy/)
+      when "accepted_flags"
+        flags = row["flags"]
+        policy = HyperCast::GROUPING_POLICIES.key(flags & HyperCast::GROUPING_POLICY)
+        made = new_format.call(flags & ~HyperCast::GROUPING_POLICY, grouping: policy)
+        expect(made.raw_flags).to eq(flags)
+        expect(Marshal.load(Marshal.dump(made))).to eq(made)
+      else
+        raise "unknown kind #{row["kind"]}"
+      end
+    end
+    expect(shapes).to be >= 18
   end
 end

@@ -433,7 +433,7 @@ public static partial class Cast
 	/// <c>hypercast_version</c> export, or the detailed exports every door of this binding
 	/// calls (the core's 1.1) — a stale binary beside a newer binding is the
 	/// mismatch this probe exists to name. A 1.0 core is such a binary: it would ignore a
-	/// strict grouping policy, so no door ever reaches it (a door on one throws
+	/// grouping policy, so no door ever reaches it (a door on one throws
 	/// <see cref="EntryPointNotFoundException"/>) and nothing is parsed with 1.0's rules. It says nothing about <em>which</em> version
 	/// answered, and compares nothing; that is <see cref="NativeVersion"/>, and the
 	/// comparison is the caller's.

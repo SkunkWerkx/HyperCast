@@ -28,8 +28,8 @@ import java.util.UUID;
  * <p>Every door crosses through one of the four detailed exports ({@code cast_detailed} and its
  * three siblings), which alone take the grouping policy a {@link NumFormat} declares, date
  * options and a month vocabulary, and report what failed. Every export is looked up in
- * {@link Core}, the four detailed ones included, so a 1.0 core, which would ignore a strict
- * grouping policy, fails the load rather than parse in legacy mode; the 1.0 exports are looked up
+ * {@link Core}, the four detailed ones included, so a 1.0 core, which would ignore a declared
+ * grouping policy, fails the load rather than parse by 1.0's rule; the 1.0 exports are looked up
  * too, and nothing calls them.
  *
  * <p>The input crosses without a copy: every text downcall is linked

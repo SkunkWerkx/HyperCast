@@ -2,8 +2,8 @@ import Foundation
 import XCTest
 @testable import HyperCast
 
-/// What 1.1 adds beside the corpus: strict grouping (the constructor's default, its explicit
-/// options, the locale bridge), the fault detail and its unknown codes, the opt-in date
+/// What 1.1 adds beside the corpus: grouping (the constructor's default, its explicit
+/// option, the locale bridge), the fault detail and its unknown codes, the opt-in date
 /// options, the version guard, and the 1.0 surface exactly as 1.0 code uses it.
 final class DetailedTests: XCTestCase {
     // MARK: - the 1.0 surface beside the 1.1 detail
@@ -84,7 +84,7 @@ final class DetailedTests: XCTestCase {
         XCTAssertEqual(Cast.headerRawDateOptionsMinSize, 8)
         XCTAssertEqual(
             Cast.headerGroupingBits,
-            [Grouping.legacy.rawValue, Grouping.western.rawValue, Grouping.indian.rawValue, 0x300])
+            [Grouping.western.rawValue, Grouping.indian.rawValue, 0x300])
         XCTAssertEqual(Interop.freshRawFaultDetail.0, 16)
         let options = DateOptions(flags: .commonForms, pivot: 2029)
         XCTAssertEqual(options.raw.0, 12)
@@ -92,9 +92,9 @@ final class DetailedTests: XCTestCase {
         XCTAssertEqual(options.raw.2, 2029)
     }
 
-    // MARK: - strict grouping
+    // MARK: - grouping
 
-    func testTheDefaultAndTheInvariantProfileAreStrictWestern() {
+    func testTheDefaultAndTheInvariantProfileAreWestern() {
         XCTAssertEqual(NumFormat.invariant.grouping, .western)
         XCTAssertEqual(NumFormat.detect.grouping, .western)
         XCTAssertEqual(NumFormat(decimalSeparator: ".", groupSeparator: ",", styles: .all).grouping, .western)
@@ -111,17 +111,19 @@ final class DetailedTests: XCTestCase {
         XCTAssertEqual(leftmost, Fault(reason: .malformed, offset: 0, length: 4))
     }
 
-    func testLegacyAndIndianAreExplicitAndReplaceThePolicy() {
-        let legacy = NumFormat.invariant.withGrouping(.legacy)
-        XCTAssertEqual(legacy.grouping, .legacy)
-        XCTAssertEqual(Cast.i32("12,34", format: legacy), .success(1234))
+    func testIndianIsExplicitAndReplacesThePolicy() {
+        XCTAssertEqual(
+            Cast.i32("1,23,456", format: .invariant), .fault(Fault(reason: .malformed, offset: 1, length: 3)))
+        XCTAssertEqual(Cast.i32("0,125", format: .invariant), .fault(Fault(reason: .malformed, offset: 0, length: 1)))
+        XCTAssertEqual(
+            Cast.i32("1234,567", format: .invariant), .fault(Fault(reason: .malformed, offset: 0, length: 4)))
         let indian = NumFormat(decimalSeparator: ".", groupSeparator: ",", styles: .all, grouping: .indian)
         XCTAssertEqual(indian.grouping, .indian)
         XCTAssertEqual(Cast.i32("12,34,567", format: indian), .success(1234567))
         XCTAssertEqual(
             Cast.i32("1,234,567", format: indian),
             .fault(Fault(reason: .malformed, offset: 1, length: 4)))
-        // Replaced, never combined: Indian after Western is Indian (not the refused 11).
+        // Replaced, never combined: Indian after Western is Indian.
         XCTAssertEqual(NumFormat.invariant.withGrouping(.indian).grouping, .indian)
         XCTAssertEqual(NumFormat.invariant.withGrouping(.indian).withGrouping(.western).grouping, .western)
         XCTAssertEqual(NumFormat.invariant.withGrouping(.indian).raw.1 & 0x300, 0x200)
@@ -142,16 +144,16 @@ final class DetailedTests: XCTestCase {
 
     func testTheFlagsWordIsRefusedWhereTheCoreRefusesIt() {
         XCTAssertNil(NumFormat.refusal(ofFlags: 0))
-        XCTAssertNil(NumFormat.refusal(ofFlags: 0xFF | 0x100))
         XCTAssertNil(NumFormat.refusal(ofFlags: 0xFF | 0x200))
-        XCTAssertNotNil(NumFormat.refusal(ofFlags: 0x300), "policy 3 names no policy")
+        XCTAssertNotNil(NumFormat.refusal(ofFlags: 0xFF | 0x100), "bit 8 is retired")
+        XCTAssertNotNil(NumFormat.refusal(ofFlags: 0x300), "bit 8 is retired")
         XCTAssertNotNil(NumFormat.refusal(ofFlags: 0x400), "bit 10 is undefined")
         XCTAssertNotNil(NumFormat.refusal(ofFlags: 1 << 31))
         // A style mask carrying the policy is refused, not silently merged.
         XCTAssertNotNil(NumFormat.refusal(ofFlags: NumStyles(rawValue: 0x1FF).rawValue | 0x300))
     }
 
-    /// Review focus 1: native digits with a space-like group separator under strict Western.
+    /// Review focus 1: native digits with a space-like group separator under Western.
     func testNativeDigitsWithASpaceLikeSeparatorAreCountedInDigitsNotBytes() {
         let arabic = NumFormat(
             decimalSeparator: ".", groupSeparator: "\u{202F}", styles: .all, digitZero: "\u{0660}")
@@ -168,39 +170,40 @@ final class DetailedTests: XCTestCase {
         XCTAssertEqual(fault.length, 7)
     }
 
-    /// Review focus 5: a strict policy does not turn grouping on.
-    func testAStrictPolicyWithGroupingOffStillForbidsTheGroupSeparator() {
-        let strictNoGrouping = NumFormat.invariant.withStyles(NumStyles.all.subtracting(.grouping))
-        XCTAssertEqual(strictNoGrouping.grouping, .western)
-        guard case .fault(let fault) = Cast.i32("1,234", format: strictNoGrouping) else {
+    /// A policy does not turn grouping on.
+    func testAPolicyWithGroupingOffStillForbidsTheGroupSeparator() {
+        let noGrouping = NumFormat.invariant.withStyles(NumStyles.all.subtracting(.grouping))
+        XCTAssertEqual(noGrouping.grouping, .western)
+        guard case .fault(let fault) = Cast.i32("1,234", format: noGrouping) else {
             return XCTFail("1,234 reads with grouping off")
         }
         XCTAssertEqual(fault.reason, .malformed)
         XCTAssertEqual(fault.offset, 1)
-        XCTAssertEqual(Cast.i32("1234", format: strictNoGrouping), .success(1234))
+        XCTAssertEqual(Cast.i32("1234", format: noGrouping), .success(1234))
     }
 
-    /// Review focus 4: an old export, handed a 1.1 policy bit, ignores it and parses legacy.
+    /// An old export, handed a 1.1 policy bit, ignores it and reads Western.
     func testAnOldExportIgnoresAPolicyBitAndTheDoorDoesNot() {
-        let strict = NumFormat.invariant
-        var raw = strict.raw
+        let indian = NumFormat.invariant.withGrouping(.indian)
+        var raw = indian.raw
         var out: Cast.OutScratch = (0, 0)
         var fault: Cast.FaultScratch = (0, 0)
-        let text = Array("12,34".utf8)
+        let text = Array("1,23,456".utf8)
         let code = text.withUnsafeBytes { input in
             withUnsafeMutableBytes(of: &out) { outRaw in
                 withUnsafeMutableBytes(of: &fault) { faultRaw in
                     withUnsafeBytes(of: &raw) { formatRaw in
-                        Cast.legacy.i32(
+                        Cast.oneDotZero.i32(
                             Cast.inputPointer(input), UInt(input.count), formatRaw.baseAddress, outRaw.baseAddress,
                             faultRaw.baseAddress)
                     }
                 }
             }
         }
-        XCTAssertEqual(code, 0, "the 1.0 export reads 12,34")
-        XCTAssertEqual(withUnsafeBytes(of: &out) { $0.load(as: Int32.self) }, 1234)
-        XCTAssertEqual(Cast.i32(text, format: strict), .fault(Fault(reason: .malformed, offset: 2, length: 3)))
+        XCTAssertEqual(code, CastFailure.malformed.rawValue, "the 1.0 export refuses 1,23,456")
+        XCTAssertEqual(fault.0, 1)
+        XCTAssertEqual(fault.1, 3)
+        XCTAssertEqual(Cast.i32(text, format: indian), .success(123456))
     }
 
     // MARK: - the locale bridge reads the platform's patterns
@@ -240,13 +243,13 @@ final class DetailedTests: XCTestCase {
                 XCTAssertEqual(pair.number.secondaryGroupingSize, 2, identifier)
                 XCTAssertTrue(declared(identifier) == (.indian, true), identifier)
             }
-            // Toki Pona groups by twos, secondary 0 meaning "repeat the primary": neither Western
-            // nor Indian, so legacy, which reads it.
+            // Toki Pona groups by twos, secondary 0 meaning "repeat the primary": no policy names
+            // that, so Western, which refuses it rather than misreading it.
             for identifier in ["tok", "tok_001"] {
                 let pair = formatters(identifier)
                 XCTAssertEqual(pair.number.groupingSize, 2)
                 XCTAssertEqual(pair.number.secondaryGroupingSize, 0)
-                XCTAssertTrue(declared(identifier) == (.legacy, true), identifier)
+                XCTAssertTrue(declared(identifier) == (.western, true), identifier)
             }
             // en_US_POSIX groups in neither pattern (size 0): the flag is cleared.
             XCTAssertTrue(declared("en_US_POSIX").1 == false)
@@ -278,18 +281,18 @@ final class DetailedTests: XCTestCase {
         }
         XCTAssertEqual(resolve(.western, .western), "western")
         XCTAssertEqual(resolve(.indian, .indian), "indian")
-        XCTAssertEqual(resolve(.western, .indian), "legacy")
-        XCTAssertEqual(resolve(.indian, .western), "legacy")
+        XCTAssertEqual(resolve(.western, .indian), "western")
+        XCTAssertEqual(resolve(.indian, .western), "indian")
         XCTAssertEqual(resolve(.indian, .none), "indian")
-        XCTAssertEqual(resolve(.none, .indian), "indian")
+        XCTAssertEqual(resolve(.none, .indian), "western")
         XCTAssertEqual(resolve(.western, .none), "western")
         XCTAssertEqual(resolve(.none, .western), "western")
-        XCTAssertEqual(resolve(.western, .other), "legacy")
-        XCTAssertEqual(resolve(.other, .western), "legacy")
-        XCTAssertEqual(resolve(.indian, .other), "legacy")
-        XCTAssertEqual(resolve(.other, .other), "legacy")
-        XCTAssertEqual(resolve(.other, .none), "legacy")
-        XCTAssertEqual(resolve(.none, .other), "legacy")
+        XCTAssertEqual(resolve(.western, .other), "western")
+        XCTAssertEqual(resolve(.other, .western), "western")
+        XCTAssertEqual(resolve(.indian, .other), "indian")
+        XCTAssertEqual(resolve(.other, .other), "western")
+        XCTAssertEqual(resolve(.other, .none), "western")
+        XCTAssertEqual(resolve(.none, .other), "western")
         XCTAssertEqual(resolve(.none, .none), "cleared")
     }
 
@@ -316,38 +319,33 @@ final class DetailedTests: XCTestCase {
         XCTAssertEqual(shape(primary: 0, secondary: 0), .none)
         XCTAssertEqual(shape(primary: 3, secondary: 2, uses: false), .none)
 
-        // en_US's currency pattern is Western, so an Indian number formatter beside it disagrees: legacy.
+        // The number pattern decides: an Indian number formatter beside en_US's Western currency is Indian.
         let formatter = NumberFormatter()
         formatter.locale = Locale(identifier: "en_US")
         formatter.numberStyle = .decimal
         formatter.groupingSize = 3
         formatter.secondaryGroupingSize = 2
-        XCTAssertEqual(NumFormat.from(formatter: formatter).grouping, .legacy)
+        XCTAssertEqual(NumFormat.from(formatter: formatter).grouping, .indian)
         // A caller who turns the number grouping off leaves the currency's: Western, the flag stays.
         formatter.usesGroupingSeparator = false
         let numberOff = NumFormat.from(formatter: formatter)
         XCTAssertEqual(numberOff.grouping, .western)
         XCTAssertTrue(numberOff.styles.contains(.grouping))
-        // en_IN with its number pattern overridden to Western: disagrees with the Indian currency.
+        // en_IN with its number pattern overridden to Western is Western, whatever its currency says.
         let overridden = NumberFormatter()
         overridden.locale = Locale(identifier: "en_IN")
         overridden.numberStyle = .decimal
         overridden.groupingSize = 3
         overridden.secondaryGroupingSize = 3
-        #if canImport(Darwin)
-            XCTAssertEqual(NumFormat.from(formatter: overridden).grouping, .legacy)
-        #else
-            // swift-corelibs-foundation's en_IN currency pattern is Western too, so they agree.
-            XCTAssertEqual(NumFormat.from(formatter: overridden).grouping, .western)
-        #endif
+        XCTAssertEqual(NumFormat.from(formatter: overridden).grouping, .western)
     }
 
-    /// The bridge reads what the platform writes, for number and currency values alike: the
-    /// patterns the rule names (`tok` included, which a strict Western policy would refuse).
+    /// The bridge reads what the platform writes, for number and currency values alike, where the
+    /// pattern is the policy's. Not `tok`, whose twos end in a last group no policy reads.
     func testTheBridgeReadsThePlatformsOwnNumberAndCurrencyValues() {
         let identifiers = [
             "en_US", "en_GB", "de_DE", "fr_FR", "de_CH", "ja_JP", "en_IN", "hi_IN", "ml_IN", "ta_IN", "mr_IN", "or_IN",
-            "bn_IN", "tok", "tok_001", "en_BG", "en_US_POSIX", "ar_EG", "es_ES", "pt_BR", "ru_RU", "sv_SE",
+            "bn_IN", "en_BG", "en_US_POSIX", "ar_EG", "es_ES", "pt_BR", "ru_RU", "sv_SE",
         ]
         for identifier in identifiers {
             let locale = Locale(identifier: identifier)
@@ -355,8 +353,11 @@ final class DetailedTests: XCTestCase {
             for number in [1234567.891, 12345.5, 999.0, 1000.0, 12345678.0, -98765.25] {
                 // ar_EG's currency spelling (`ج.م.` between bidi marks) is read by neither the base
                 // nor this change, for a reason that has nothing to do with grouping.
+                let numberShape = NumFormat.GroupingShape(of: pair.number)
+                let currencyShape = NumFormat.GroupingShape(of: pair.currency)
                 let kinds = [("number", pair.number), ("currency", pair.currency)].filter {
-                    !($0.0 == "currency" && identifier == "ar_EG")
+                    !($0.0 == "currency"
+                        && (identifier == "ar_EG" || (numberShape == .indian) != (currencyShape == .indian)))
                 }
                 for (kind, formatter) in kinds {
                     guard let text = formatter.string(from: NSNumber(value: number)) else { continue }
@@ -392,22 +393,18 @@ final class DetailedTests: XCTestCase {
             XCTAssertEqual(format.styles.rawValue & ~NumStyles.definedBits, 0, identifier)
             if groups { counts[grouping, default: 0] += 1 } else { cleared += 1 }
             if (number == .none) != (currency == .none) { oneSided.append(identifier) }
-            if number == .indian || currency == .indian {
-                XCTAssertNotEqual(grouping, .western, identifier)
-            }
+            XCTAssertEqual(grouping, number == .indian ? .indian : .western, identifier)
         }
         XCTAssertGreaterThan(counts[.western] ?? 0, 900)
         #if canImport(Darwin)
             XCTAssertGreaterThan(counts[.indian] ?? 0, 10)
             XCTAssertEqual(oneSided, ["en_BG"])
             XCTAssertEqual(cleared, 1, "en_US_POSIX alone groups in neither")
-            XCTAssertEqual(counts[.legacy], 2, "tok and tok_001")
         #else
             // swift-corelibs-foundation's patterns are all Western.
             XCTAssertEqual(counts[.indian], nil)
             XCTAssertEqual(oneSided, [])
             XCTAssertEqual(cleared, 0)
-            XCTAssertEqual(counts[.legacy], nil)
         #endif
     }
 
@@ -513,10 +510,10 @@ final class DetailedTests: XCTestCase {
         XCTAssertEqual(try MonthNames.declare(full).packed.first, 1)
     }
 
-    // MARK: - the old exports and the detailed doors agree on a legacy format
+    // MARK: - the old exports and the detailed doors agree on a Western format
 
-    func testTheDetailedDoorsAgreeWithTheOldExportsOnLegacyGrouping() {
-        let legacy = NumFormat.invariant.withGrouping(.legacy)
+    func testTheDetailedDoorsAgreeWithTheOldExportsOnWesternGrouping() {
+        let western = NumFormat.invariant
         let inputs = [
             "", " ", "1", "-1", "(1,234)", "1,234", "12,34", "1,2,3", ",1", "1,", "1,,2", "0x1F", "1e3", "1e", "abc",
             "12a", "99999999999", "-99999999999", "1.5", "NaN", "inf", "$5", "5%", "١٢٣",
@@ -525,13 +522,13 @@ final class DetailedTests: XCTestCase {
             let bytes = Array(text.utf8)
             for door in 0..<3 {
                 let (code, offset, length) = bytes.withUnsafeBytes { input -> (Int32, UInt32, UInt32) in
-                    var raw = legacy.raw
+                    var raw = western.raw
                     var out: Cast.OutScratch = (0, 0)
                     var fault: Cast.FaultScratch = (0, 0)
                     let code = withUnsafeMutableBytes(of: &out) { outRaw in
                         withUnsafeMutableBytes(of: &fault) { faultRaw in
                             withUnsafeBytes(of: &raw) { formatRaw in
-                                let call = [Cast.legacy.i32, Cast.legacy.f64, Cast.legacy.decimal][door]
+                                let call = [Cast.oneDotZero.i32, Cast.oneDotZero.f64, Cast.oneDotZero.decimal][door]
                                 return call(
                                     Cast.inputPointer(input), UInt(input.count), formatRaw.baseAddress,
                                     outRaw.baseAddress, faultRaw.baseAddress)
@@ -542,9 +539,9 @@ final class DetailedTests: XCTestCase {
                 }
                 let verdictFault: Fault? =
                     switch door {
-                    case 0: Cast.i32(bytes, format: legacy).fault
-                    case 1: Cast.f64(bytes, format: legacy).fault
-                    default: Cast.decimal(bytes, format: legacy).fault
+                    case 0: Cast.i32(bytes, format: western).fault
+                    case 1: Cast.f64(bytes, format: western).fault
+                    default: Cast.decimal(bytes, format: western).fault
                     }
                 if code == 0 {
                     XCTAssertNil(verdictFault, "'\(text)' door \(door)")
@@ -565,7 +562,7 @@ final class DetailedTests: XCTestCase {
             let code = bytes.withUnsafeBytes { input in
                 withUnsafeMutableBytes(of: &span) { spanRaw in
                     withUnsafeMutableBytes(of: &fault) { faultRaw in
-                        Cast.legacy.text(
+                        Cast.oneDotZero.text(
                             Cast.inputPointer(input), UInt(input.count), spanRaw.baseAddress, faultRaw.baseAddress)
                     }
                 }

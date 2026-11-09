@@ -344,9 +344,8 @@ contract violation. `RawDayPeriods` (40 bytes) has the same shape. Measured thro
 on one machine, a grouped `cast_i32` under a declared `$` went from 21.9 ns on the 0.8.0 core
 to 19.6 ns, and under `¤` from 22.2 to 20.9 ns; the sweep costs nothing at the crossing.
 
-Still open, for the record: a percent symbol ahead of the number (`%50`); separator
-detection, which counts ASCII digits only, so a token in native digits needs a declared
-format; and Indian lakh grouping was never a gap (`12,34,567` is accepted). Python's and
+Still open, for the record: a percent symbol ahead of the number (`%50`); and Indian lakh
+grouping is declared (`12,34,567` reads under `GROUPING_INDIAN`, [docs/grouping.md](grouping.md)). Python's and
 Go's standard libraries have no per-object locale to take, and Java's Native Image includes
 only the locales named at build time (`-H:IncludeLocales`), which is the consumer's choice.
 

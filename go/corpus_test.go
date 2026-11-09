@@ -8,6 +8,8 @@ package hypercast
 // alone, the only one that takes them.
 
 import (
+	"bytes"
+	"encoding/gob"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -142,7 +144,7 @@ type formatSpec struct {
 }
 
 // The corpus spells each grouping policy by name; this is the binding's own constant for it.
-var corpusGrouping = map[string]GroupingPolicy{"legacy": GroupingLegacy, "western": GroupingWestern, "indian": GroupingIndian}
+var corpusGrouping = map[string]GroupingPolicy{"western": GroupingWestern, "indian": GroupingIndian}
 
 // corpus decodes corpus/<name> as the shape most files share.
 func corpus(t *testing.T, name string) []vector {
@@ -203,12 +205,12 @@ func decodeVectors(t *testing.T, path string, data []byte) []vector {
 	return vectors
 }
 
-// format is the row's NumFormat. A row declaring none means the core's invariant format,
-// legacy grouping (the C ABI's null format), which is Invariant under GroupingLegacy; a row
-// declaring no policy keeps the policy bits of its flags, none being legacy.
+// format is the row's NumFormat. A row declaring none means the core's invariant format (the C
+// ABI's null format), which is Invariant; a row declaring no policy keeps the policy bits of
+// its flags, none being Western.
 func (v *vector) format() NumFormat {
 	if v.Format == nil {
-		return Invariant.WithGrouping(GroupingLegacy)
+		return Invariant
 	}
 	var zero rune
 	if v.Format.DigitZero != "" {
@@ -1292,5 +1294,139 @@ func TestCorpusFormats(t *testing.T) {
 	if whiteSpace < 30 || numFormats == 0 || dayPeriods == 0 || dateOptions == 0 || monthNames == 0 {
 		t.Errorf("formats: replayed %d white_space, %d num_format, %d day_periods, %d date_options and %d month_names rows",
 			whiteSpace, numFormats, dayPeriods, dateOptions, monthNames)
+	}
+}
+
+// corpus/grouping.json: every shape under both policies, through every way a format is had, and
+// the retired policy bit refused at every entry point that can refuse it.
+func TestCorpusGrouping(t *testing.T) {
+	_, data := corpusFile(t, "grouping.json")
+	var rows []struct {
+		Kind    string          `json:"kind"`
+		Input   string          `json:"input"`
+		Flags   uint32          `json:"flags"`
+		Western groupingOutcome `json:"western"`
+		Indian  groupingOutcome `json:"indian"`
+		groupingOutcome
+	}
+	if err := json.Unmarshal(data, &rows); err != nil {
+		t.Fatal(err)
+	}
+	indian := Invariant.WithGrouping(GroupingIndian)
+	shapes := 0
+	for _, row := range rows {
+		switch row.Kind {
+		case "shape":
+			shapes++
+			var zero NumFormat
+			zero.DecimalSep, zero.GroupSep, zero.Styles = ".", ",", AllStyles
+			for name, format := range map[string]NumFormat{
+				"Invariant":         Invariant,
+				"NewNumFormat":      NewNumFormat(".", ",", AllStyles),
+				"keyed literal":     {DecimalSep: ".", GroupSep: ",", Styles: AllStyles},
+				"unkeyed literal":   {".", ",", AllStyles, "", "", "", "", "", "", 0},
+				"zero value filled": zero,
+				"declared":          Invariant.WithGrouping(GroupingWestern),
+				"indian to western": indian.WithGrouping(GroupingWestern),
+			} {
+				row.Western.holds(t, name, row.Input, format)
+			}
+			for name, format := range map[string]NumFormat{
+				"declared indian":   indian,
+				"literal indian":    {DecimalSep: ".", GroupSep: ",", Styles: AllStyles | NumStyles(GroupingIndian)},
+				"western to indian": NewNumFormat(".", ",", AllStyles).WithGrouping(GroupingIndian),
+			} {
+				row.Indian.holds(t, name, row.Input, format)
+			}
+		case "detect":
+			row.groupingOutcome.holds(t, "Detect", row.Input, Detect)
+		case "refused_flags":
+			styles, policy := NumStyles(row.Flags), GroupingPolicy(row.Flags)&GroupingPolicy(GroupingPolicyMask)
+			for name, call := range map[string]func(){
+				"NewNumFormat": func() { NewNumFormat(".", ",", styles) },
+				"WithStyles":   func() { Invariant.WithStyles(styles) },
+				"WithGrouping": func() { Invariant.WithGrouping(policy) },
+			} {
+				if panics(call) == "" {
+					t.Errorf("%s accepted %d", name, row.Flags)
+				}
+			}
+			payload := fmt.Sprintf(`{"DecimalSep":".","GroupSep":",","Styles":%d}`, row.Flags)
+			var stored NumFormat
+			if err := json.Unmarshal([]byte(payload), &stored); err == nil {
+				t.Errorf("JSON accepted %d", row.Flags)
+			}
+			// A literal and a gob stream have no hook to refuse at: Raw and the first door do.
+			literal := NumFormat{DecimalSep: ".", GroupSep: ",", Styles: styles}
+			var buf bytes.Buffer
+			if err := gob.NewEncoder(&buf).Encode(literal); err != nil {
+				t.Fatal(err)
+			}
+			var back NumFormat
+			if err := gob.NewDecoder(&buf).Decode(&back); err != nil {
+				t.Fatal(err)
+			}
+			for name, format := range map[string]NumFormat{"literal": literal, "gob": back} {
+				if _, err := format.Raw(); err == nil || !strings.Contains(err.Error(), "names no grouping policy") {
+					t.Errorf("%s Raw of %d: %v", name, row.Flags, err)
+				}
+				if panics(func() { I64("1", format) }) == "" {
+					t.Errorf("%s door read %d", name, row.Flags)
+				}
+			}
+		case "accepted_flags":
+			format := NumFormat{DecimalSep: ".", GroupSep: ",", Styles: NumStyles(row.Flags)}
+			raw, err := format.Raw()
+			if err != nil || raw.Flags != row.Flags {
+				t.Errorf("flags %d: %+v %v", row.Flags, raw, err)
+			}
+			encoded, err := json.Marshal(format)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var back NumFormat
+			if err := json.Unmarshal(encoded, &back); err != nil || back != format {
+				t.Errorf("JSON round trip of %d: %+v %v", row.Flags, back, err)
+			}
+		default:
+			t.Errorf("unknown kind %q", row.Kind)
+		}
+	}
+	if shapes < 18 {
+		t.Fatalf("%d shapes", shapes)
+	}
+}
+
+type groupingOutcome struct {
+	Value *int64 `json:"value"`
+	Fault []int  `json:"fault"`
+}
+
+func (want groupingOutcome) holds(t *testing.T, label, text string, format NumFormat) {
+	t.Helper()
+	got, fault := I64(text, format)
+	real, realFault := F64(text, format)
+	exact, exactFault := Exact(text, format)
+	_, detail := I64Detailed(text, format)
+	if want.Fault != nil {
+		expected := Fault{Malformed, want.Fault[0], want.Fault[1]}
+		for _, f := range []*Fault{fault, realFault, exactFault} {
+			if f == nil || *f != expected {
+				t.Errorf("%s %q: %v, want %v", label, text, f, expected)
+			}
+		}
+		if detail == nil || detail.Detail != DetailGroupSize {
+			t.Errorf("%s %q: detail %+v", label, text, detail)
+		}
+		return
+	}
+	if fault != nil || got != *want.Value {
+		t.Errorf("%s %q: %v %v, want %d", label, text, got, fault, *want.Value)
+	}
+	if realFault != nil || real != float64(*want.Value) {
+		t.Errorf("%s %q: %v %v", label, text, real, realFault)
+	}
+	if exactFault != nil || exact.Scale != 0 {
+		t.Errorf("%s %q: %+v %v", label, text, exact, exactFault)
 	}
 }

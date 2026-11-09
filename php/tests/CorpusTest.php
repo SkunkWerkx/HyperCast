@@ -68,16 +68,14 @@ final class CorpusTest extends TestCase
     private static function formatOf(array $vector): NumFormat
     {
         if (!isset($vector['format'])) {
-            // A row that declares nothing is the core's INVARIANT, which reads legacy grouping;
-            // the binding's own `invariant()` is strict Western.
-            return NumFormat::invariant()->withGrouping(NumFormat::GROUPING_LEGACY);
+            // A row that declares nothing is INVARIANT, which is Western.
+            return NumFormat::invariant();
         }
         $format = $vector['format'];
-        // A row that declares no policy keeps legacy grouping (the core's meaning); a refusal row
+        // A row that declares no policy is Western; a refusal row
         // spells a policy inside `flags`, which the constructor takes apart: the style bits,
         // and the policy field beside them.
-        $policy = match ($format['grouping'] ?? 'legacy') {
-            'legacy' => NumFormat::GROUPING_LEGACY,
+        $policy = match ($format['grouping'] ?? 'western') {
             'western' => NumFormat::GROUPING_WESTERN,
             'indian' => NumFormat::GROUPING_INDIAN,
         } | ($format['flags'] & NumFormat::GROUPING_POLICY);
@@ -902,7 +900,7 @@ final class CorpusTest extends TestCase
             case 'currency_edge':
                 return "Currency symbol must not start or end with white space; got '{$declared('currency')}'";
             case 'grouping_policy':
-                return 'Grouping policy must be NumFormat::GROUPING_LEGACY, NumFormat::GROUPING_WESTERN or '
+                return 'Grouping policy must be NumFormat::GROUPING_WESTERN or '
                     . 'NumFormat::GROUPING_INDIAN; got ' . ($format['flags'] & NumFormat::GROUPING_POLICY);
             case 'unknown_flag':
                 return 'Flags must hold only the styles NumFormat declares, 0 through 255; got '
@@ -1118,5 +1116,108 @@ final class CorpusTest extends TestCase
         self::assertSame(Fault::class, Cast::i32('x', NumFormat::invariant())::class);
         self::assertSame(Success::class, Cast::text('x')::class);
         self::assertSame(Fault::class, Cast::text("\xff")::class);
+    }
+
+    public function testGroupingCorpus(): void
+    {
+        $holds = static function (array $want, string $text, NumFormat $format, string $label): void {
+            $verdicts = [Cast::i64($text, $format), Cast::f64($text, $format), Cast::decimal($text, $format)];
+            foreach ($verdicts as $verdict) {
+                if (isset($want['value'])) {
+                    self::assertInstanceOf(Success::class, $verdict, "{$label} {$text}");
+                    $value = is_object($verdict->value) ? (string) $verdict->value : $verdict->value;
+                    self::assertEquals($want['value'], $value, "{$label} {$text}");
+                } else {
+                    self::assertInstanceOf(Fault::class, $verdict, "{$label} {$text}");
+                    self::assertSame(
+                        [CastFailure::Malformed, $want['fault'][0], $want['fault'][1]],
+                        [$verdict->reason, $verdict->offset, $verdict->length],
+                        "{$label} {$text}"
+                    );
+                }
+            }
+            if (!isset($want['value'])) {
+                $detailed = DetailedCast::i64($text, $format);
+                self::assertSame(FaultDetail::GroupSize, $detailed->detail, "{$label} {$text}");
+            }
+        };
+        $invariant = NumFormat::invariant();
+        $conv = ['decimal_point' => '.', 'thousands_sep' => ','];
+        $shapes = 0;
+        foreach (self::corpus('grouping.json') as $row) {
+            switch ($row['kind']) {
+                case 'shape':
+                    $shapes++;
+                    foreach (
+                        [
+                            'invariant' => $invariant,
+                            'constructor' => new NumFormat('.', ',', NumFormat::ALL),
+                            'declared' => $invariant->withGrouping(NumFormat::GROUPING_WESTERN),
+                            'indian to western' => $invariant->withGrouping(NumFormat::GROUPING_INDIAN)
+                                ->withGrouping(NumFormat::GROUPING_WESTERN),
+                            'bridge threes' => NumFormat::fromLocaleconv($conv + ['grouping' => [3, 0]]),
+                            'bridge fours' => NumFormat::fromLocaleconv($conv + ['grouping' => [4, 0]]),
+                            'bridge indian currency' => NumFormat::fromLocaleconv(
+                                $conv + ['grouping' => [3, 0], 'mon_grouping' => [3, 2, 0]]
+                            ),
+                            'a 1.0 payload' => unserialize(serialize($invariant)),
+                        ] as $label => $format
+                    ) {
+                        $holds($row['western'], $row['input'], $format, $label);
+                    }
+                    foreach (
+                        [
+                            'declared indian' => new NumFormat(
+                                '.',
+                                ',',
+                                NumFormat::ALL,
+                                grouping: NumFormat::GROUPING_INDIAN
+                            ),
+                            'western to indian' => $invariant->withGrouping(NumFormat::GROUPING_INDIAN),
+                            'bridge indian' => NumFormat::fromLocaleconv($conv + ['grouping' => [3, 2, 0]]),
+                            'bridge ml' => NumFormat::fromLocaleconv(
+                                $conv + ['grouping' => [3, 2, 0], 'mon_grouping' => [3, 0]]
+                            ),
+                        ] as $label => $format
+                    ) {
+                        $holds($row['indian'], $row['input'], $format, $label);
+                    }
+                    break;
+                case 'detect':
+                    $holds($row, $row['input'], NumFormat::detect(), 'detect');
+                    break;
+                case 'refused_flags':
+                    $flags = $row['flags'];
+                    $policy = $flags & NumFormat::GROUPING_POLICY;
+                    foreach (
+                        [
+                            static fn () => new NumFormat('.', ',', $flags),
+                            static fn () => new NumFormat('.', ',', NumFormat::ALL, grouping: $policy),
+                            static fn () => $invariant->withGrouping($policy),
+                            static fn () => unserialize(
+                                str_replace('s:5:"flags";i:95;', "s:5:\"flags\";i:{$flags};", serialize($invariant))
+                            ),
+                        ] as $entry => $build
+                    ) {
+                        try {
+                            $build();
+                            self::fail("flags {$flags}, entry point {$entry}");
+                        } catch (\InvalidArgumentException) {
+                            self::addToAssertionCount(1);
+                        }
+                    }
+                    break;
+                case 'accepted_flags':
+                    $flags = $row['flags'];
+                    $policy = $flags & NumFormat::GROUPING_POLICY;
+                    $made = new NumFormat('.', ',', $flags & ~NumFormat::GROUPING_POLICY, grouping: $policy);
+                    self::assertSame($flags, unpack('V', substr($made->packed(), 4, 4))[1]);
+                    self::assertEquals($made, unserialize(serialize($made)));
+                    break;
+                default:
+                    self::fail("unknown kind {$row['kind']}");
+            }
+        }
+        self::assertGreaterThanOrEqual(18, $shapes);
     }
 }

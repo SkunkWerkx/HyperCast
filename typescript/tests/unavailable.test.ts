@@ -59,7 +59,7 @@ assert.equal(api.NumStyles.All, 95)
 assert.equal(api.DateOrder.DayMonthYear, 3)
 assert.equal(api.Door.Text, 18)
 assert.equal(api.Door.Char, 23)
-assert.equal(api.Grouping.Western, 256)
+assert.equal(api.Grouping.Western, 0)
 assert.equal(api.DateStyles.CommonForms, 7)
 assert.equal(api.Detail.GroupSize, 'groupSize')
 assert.equal(api.Rounding.Midpoint, 1)
@@ -118,7 +118,7 @@ if (!want.available) {
   try { api.castI32('1') } catch (error) { thrown = error }
   assert.ok(api.isHyperCastError(thrown), String(thrown))
   assert.match(thrown.cause.message, new RegExp(want.cause))
-  assert.equal(api.Grouping.Western, 256)
+  assert.equal(api.Grouping.Western, 0)
 } else {
   assert.equal(api.nativeVersion(), want.version)
 }

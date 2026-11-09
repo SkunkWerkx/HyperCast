@@ -308,13 +308,14 @@ func ExampleNumFormat_WithGrouping() {
 	// Invariant judges every group: three digits, counted from the decimal separator.
 	_, fault := hypercast.I32("12,34", hypercast.Invariant)
 	fmt.Println(fault)
-	// Indian grouping is declared, never inferred, and legacy reads 1.0's way.
-	indian, _ := hypercast.I32("12,34,567", hypercast.Invariant.WithGrouping(hypercast.GroupingIndian))
-	legacy, _ := hypercast.I32("12,34", hypercast.Invariant.WithGrouping(hypercast.GroupingLegacy))
-	fmt.Println(indian, legacy)
+	// Indian grouping is declared, never inferred, and refuses Western's groups; Western takes it back.
+	indian := hypercast.Invariant.WithGrouping(hypercast.GroupingIndian)
+	first, _ := hypercast.I32("1,23,456", indian)
+	second, _ := hypercast.I32("1,234,567", indian.WithGrouping(hypercast.GroupingWestern))
+	fmt.Println(first, second)
 	// Output:
 	// hypercast: malformed at byte 2..5
-	// 1234567 1234
+	// 123456 1234567
 }
 
 func ExampleI32Detailed() {

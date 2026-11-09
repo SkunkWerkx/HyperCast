@@ -234,22 +234,28 @@ checked_layout <- function(constraints, text) {
 #' measures and matches it.
 #'
 #' Each returns a [hypercast_checked_verdict], whose `value` is in the plain door's R type
-#' (text is character). A text `enum` match is the entry exactly as declared, and its
-#' `enum_index` is the entry's position in `enum`, counted from 1 as R counts.
+#' (text is character, or a list of raw vectors with `raw = TRUE`). A text `enum` match is the
+#' entry exactly as declared, and its `enum_index` is the entry's position in `enum`, counted from
+#' 1 as R counts.
 #'
 #' `cast_text(x)` with no `constraints` is the plain text door; an explicit `NULL`, or
 #' anything that is not a `hypercast_constraints`, is an error rather than a cast without
 #' rules. A declaration for another door is an error too.
 #'
-#' The text door's value is the input's own string when nothing was trimmed. U+0000, which
-#' a raw vector can carry and an R string cannot hold, makes the value `out_of_range` over
-#' the value: text with a NUL inside it is not absent, unlike [cast_char()]'s lone `U+0000`.
+#' The text door's value is the input's own string when nothing was trimmed. Text no R string
+#' can hold, with U+0000 inside it (a raw vector can carry that) or over `INT_MAX` bytes, is `ok`
+#' with `NA` as its `value`, as [cast_char()]'s `U+0000` is. `ok` describes the core's acceptance
+#' and `value = NA` means R can't represent it, so checking `ok` alone doesn't guarantee a usable
+#' character value. `raw = TRUE` gives the exact output: `value` is a list holding each value's
+#' UTF-8 bytes as a raw vector, trimmed as the character value is, with `NULL` where a row has no
+#' value. A missing input still has `ok` `NA` and a fault `ok` `FALSE`.
 #'
 #' @param x A character vector (a factor is read as its levels) or a list of raw vectors
 #'   holding UTF-8 bytes, as the text doors take; for `cast_checked_from_double()`, a
 #'   numeric vector, where `NA` is missing and `NaN` is a number, and `malformed`.
 #' @inheritParams cast_i8
 #' @param constraints A [hypercast_constraints()] declaration for the door.
+#' @param raw `FALSE` (the default) for a character `value`, `TRUE` for a list of raw vectors.
 #' @return A [hypercast_checked_verdict]; `cast_text(x)` alone a [hypercast_verdict].
 #' @family constraints
 #' @export
@@ -265,9 +271,14 @@ checked_layout <- function(constraints, text) {
 #' sex <- hypercast_constraints("text", enum = c("Female", "Male", "Other"), trim = TRUE)
 #' cast_text(c(" male ", "OTHER", "x"), sex)
 #' cast_text(c("plain", ""))
+#'
+#' nul <- list(as.raw(c(0x61, 0x00, 0x62)))
+#' cast_text(nul)
+#' cast_text(nul, raw = TRUE)$value[[1]]
 cast_checked <- function(x, format, constraints) {
   layout <- checked_layout(constraints, text = FALSE)
-  cols <- .Call(C_cast_checked, as_text(x), layout, check_format(format), session_native())
+  cols <- .Call(C_cast_checked, as_text(x), layout, check_format(format), session_native(),
+                FALSE)
   new_checked_verdict(cols, layout[[1]])
 }
 
@@ -281,14 +292,17 @@ cast_checked_from_double <- function(x, constraints) {
 
 #' @rdname cast_checked
 #' @export
-cast_text <- function(x, constraints) {
-  # The call's own argument count, not missing(): a wrapper forwarding its own missing
-  # `constraints` still passes two arguments, and must fail rather than drop the rules.
-  if (nargs() < 2L) {
-    return(text_door(x, "text"))
+cast_text <- function(x, constraints, raw = FALSE) {
+  if (!isTRUE(raw) && !isFALSE(raw)) {
+    stop("raw must be TRUE or FALSE", call. = FALSE)
+  }
+  # The call's own arguments, not missing(): a wrapper forwarding its own missing `constraints`
+  # still passes it, and must fail rather than drop the rules.
+  if (!"constraints" %in% names(match.call())) {
+    return(text_door(x, "text", raw = raw))
   }
   layout <- checked_layout(constraints, text = TRUE)
-  cols <- .Call(C_cast_checked, as_text(x), layout, NULL, session_native())
+  cols <- .Call(C_cast_checked, as_text(x), layout, NULL, session_native(), raw)
   new_checked_verdict(cols, "text")
 }
 
