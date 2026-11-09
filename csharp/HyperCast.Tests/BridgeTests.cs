@@ -231,10 +231,17 @@ public sealed class BridgeTests
 	{
 		foreach (var name in new[] { "en-IN", "hi-IN", "en-US", "en-BG", "en-US-POSIX", "de-DE", "fr-FR", "ml-IN", "ta-IN", "mr-IN", "or-IN", "de-CH", "ar-SA", "" })
 			ReadsItsOwnOutput(Culture(name));
-		// tok writes twos (1 23 45 67): the bridge declares Western, which refuses them rather than misreading.
+		// tok's grouping is the platform's data: ICU writes twos (1 23 45 67), Windows' copy need not.
+		// The bridge declares Western either way, which reads threes and refuses anything else, never
+		// misreading.
 		var tok = Culture("tok");
 		NumFormat.From(tok).Grouping.ShouldBe(NumGrouping.Western);
-		(Cast.Decimal(1234567.89m.ToString("N2", tok), NumFormat.From(tok)) is Fault { Detail: FaultDetail.GroupSize }).ShouldBeTrue();
+		var written = 1234567.89m.ToString("N2", tok);
+		var read = Cast.Decimal(written, NumFormat.From(tok));
+		if (tok.NumberFormat.NumberGroupSizes is [3] or [3, 0])
+			(read.TryGetValue(out Success<decimal> ok) && ok.Value == 1234567.89m).ShouldBeTrue($"tok wrote '{written}', read as {read}");
+		else
+			(read is Fault { Detail: FaultDetail.GroupSize }).ShouldBeTrue($"tok wrote '{written}', read as {read}");
 	}
 
 	[Fact]

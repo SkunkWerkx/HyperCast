@@ -233,6 +233,11 @@ final class GroupingTest extends TestCase
             self::assertStringContainsString($why, $e->getMessage());
         }
         // Past `unserialize` (reflection writes the readonly property's slot), packed() refuses it.
+        // PHP 8.3 has no way to write an internal class's readonly slot from outside, so there the
+        // refusal at `unserialize` above is the whole proof.
+        if (!method_exists(\ReflectionProperty::class, 'setRawValueWithoutLazyInitialization')) {
+            return;
+        }
         $format = new NumFormat('.', ',', NumFormat::ALL);
         $clone = (new \ReflectionClass(NumFormat::class))->newInstanceWithoutConstructor();
         foreach (
