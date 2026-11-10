@@ -386,8 +386,12 @@ fn parse_radix(
     Ok(value)
 }
 
-/// The shared decimal engine: every width funnels through one i128 accumulator, so the
-/// range check is the target's own `[min, max]` and nothing else. `lenient_lane` is `true`
+/// How many decimal digits a `u64` always holds: `10^19 - 1 < 2^64`.
+const SMALL_DIGITS: u32 = 19;
+
+/// The shared decimal engine: every width funnels through one i128 value (gathered in a `u64`
+/// while the numeral is short enough to fit one), so the range check is the target's own
+/// `[min, max]` and nothing else. `lenient_lane` is `true`
 /// for every door; the differential test passes `false` to get the engine's own answer.
 #[inline(always)]
 fn parse_int(
@@ -471,7 +475,11 @@ fn parse_int(
     let mut groups = Groups::new(format, base, Site::IntGroupSize);
 
     let mut i = 0;
+    // The numeral's value: its first `SMALL_DIGITS` digits in `small`, and in `acc` once it has
+    // more (`count` is the digits read, stopping one past `SMALL_DIGITS`).
     let mut acc: i128 = 0;
+    let mut small: u64 = 0;
+    let mut count: u32 = 0;
     let mut over = false;
     let mut any_digit = false;
     // Whether the byte before `i` was a digit — what a group separator must sit after.
@@ -483,13 +491,27 @@ fn parse_int(
             any_digit = true;
             after_digit = true;
             groups.digit(i, digit);
-            acc = match acc.checked_mul(10).and_then(|shifted| shifted.checked_add(digit as i128)) {
-                Some(next) => next,
-                None => {
-                    over = true;
-                    acc
+            // Nineteen digits can't overflow a `u64`, so only a longer numeral pays for the wide,
+            // checked accumulator.
+            if count < SMALL_DIGITS {
+                count += 1;
+                small = small * 10 + u64::from(digit);
+            } else {
+                if count == SMALL_DIGITS {
+                    count += 1;
+                    acc = i128::from(small);
                 }
-            };
+                acc = match acc
+                    .checked_mul(10)
+                    .and_then(|shifted| shifted.checked_add(digit as i128))
+                {
+                    Some(next) => next,
+                    None => {
+                        over = true;
+                        acc
+                    }
+                };
+            }
             i += len;
         } else if decimal.matches(body, i) {
             groups.end(i)?;
@@ -560,6 +582,9 @@ fn parse_int(
     groups.end(body.len())?;
     if !any_digit {
         return Err(Failure::at(Site::IntNoDigits, start, text.len()));
+    }
+    if count <= SMALL_DIGITS {
+        acc = i128::from(small);
     }
     if over || (exp_over && acc != 0) {
         return Err(out_of_range(
