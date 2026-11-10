@@ -89,6 +89,72 @@ fn int_parses_the_svartalfheim_notation_set() {
     assert_eq!(cast_i32(b"0b1010", &INVARIANT), Ok(10));
 }
 
+/// The engine gathers a numeral's first nineteen digits in a `u64` and the rest in an `i128`.
+/// Numerals of one to forty digits, leading zeros among them, read to the same value or the
+/// same fault through the engine alone as through the door, and to the value Rust reads:
+/// every length around the switch, at every width's edge and one past it.
+#[test]
+fn int_reads_the_same_across_the_engine_s_narrow_and_wide_accumulators() {
+    let format = NumFormat::INVARIANT;
+    let mut numerals: Vec<String> = Vec::new();
+    for digits in 1..=40usize {
+        for lead in ["9", "1", "0"] {
+            for fill in ["9", "0", "7"] {
+                numerals.push(format!("{lead}{}", fill.repeat(digits - 1)));
+            }
+        }
+    }
+    for edge in [
+        i128::from(u64::MAX),
+        i128::from(i64::MAX),
+        i128::from(i64::MIN),
+        9_999_999_999_999_999_999,
+        10_000_000_000_000_000_000,
+        999_999_999_999_999_999,
+    ] {
+        for step in -1..=1 {
+            numerals.push((edge + step).unsigned_abs().to_string());
+            numerals.push(format!("000{}", (edge + step).unsigned_abs()));
+        }
+    }
+    for numeral in &numerals {
+        for sign in ["", "-", "+"] {
+            // `e0` is nothing the fast path or the lane reads, so the door's answer for it is
+            // the engine's too.
+            for tail in ["", "e0"] {
+                let text = format!("{sign}{numeral}{tail}");
+                let wide: Option<i128> = format!("{sign}{numeral}").parse().ok();
+                macro_rules! width {
+                    ($door:ident, $ty:ty) => {{
+                        let door = $door(&text, &format);
+                        let engine = integer::engine_only::<$ty>(
+                            text.as_bytes(),
+                            &format,
+                            <$ty>::MIN as i128,
+                            <$ty>::MAX as i128,
+                            <$ty>::BITS,
+                        )
+                        .map_err(Failure::fault);
+                        assert_eq!(door, engine, "{text} at {}", stringify!($ty));
+                        let expected = wide.and_then(|value| <$ty>::try_from(value).ok());
+                        match (door, expected) {
+                            (Ok(value), Some(expected)) => assert_eq!(value, expected, "{text}"),
+                            (Err(fault), None) => {
+                                assert_eq!(fault.reason, Reason::OutOfRange, "{text}");
+                            }
+                            (door, expected) => panic!("{text}: {door:?}, not {expected:?}"),
+                        }
+                    }};
+                }
+                width!(cast_i64, i64);
+                width!(cast_u64, u64);
+                width!(cast_i32, i32);
+                width!(cast_u8, u8);
+            }
+        }
+    }
+}
+
 #[test]
 fn int_honors_declared_eurozone_grouping() {
     let eurozone = NumFormat::new(',', '.', NumFormat::ALL);
@@ -650,6 +716,14 @@ fn a_declared_percent_is_read_beside_the_ascii_one() {
     assert_eq!(cast_f64(b"50%", &arabic), Ok(0.5));
     assert_eq!(cast_f64("(2.5)\u{66A}".as_bytes(), &arabic), Ok(-0.025));
     assert_eq!(cast_f64("50 \u{66A}".as_bytes(), &arabic), Ok(0.5));
+    // A character that only shares a declared symbol's last byte is not that symbol: U+06AA
+    // ends in U+066A's `AA`, and U+2012 in U+2212's `92`.
+    assert!(cast_f64("50\u{6AA}".as_bytes(), &arabic).is_err());
+    assert!(cast_decimal("50\u{6AA}".as_bytes(), &arabic).is_err());
+    let trailing = NumFormat { flags: NumFormat::ALL | NumFormat::TRAILING_SIGN, ..INVARIANT }
+        .with_signs(symbol("\u{2212}"), symbol("\u{FF0B}"));
+    assert_eq!(cast_i32("5\u{2212}".as_bytes(), &trailing), Ok(-5));
+    assert!(cast_i32("5\u{2012}".as_bytes(), &trailing).is_err());
     assert_eq!(
         cast_decimal("50\u{66A}".as_bytes(), &arabic).map(|d| d.to_string()),
         Ok("0.5".into())

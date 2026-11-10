@@ -116,6 +116,23 @@ fn benchmarks(c: &mut Criterion) {
         .bench_function("stdlib", |b| b.iter(|| black_box("1234x567").parse::<i32>().unwrap_err()));
     group.finish();
 
+    // The cells a column of bad data is made of, as HyperTabular's `faulty` scope feeds them: a
+    // numeral with a stray character after it or ahead of it, and no text at all.
+    let mut group = c.benchmark_group("refused");
+    group.bench_function("i32 123x", |b| {
+        b.iter(|| hypercast::cast_i32(black_box(b"123x"), &format).unwrap_err())
+    });
+    group.bench_function("i32 y123", |b| {
+        b.iter(|| hypercast::cast_i32(black_box(b"y123"), &format).unwrap_err())
+    });
+    group.bench_function("i32 empty", |b| {
+        b.iter(|| hypercast::cast_i32(black_box(b""), &format).unwrap_err())
+    });
+    group.bench_function("f64 123z", |b| {
+        b.iter(|| hypercast::cast_f64(black_box(b"123z"), &format).unwrap_err())
+    });
+    group.finish();
+
     let mut group = c.benchmark_group("decimal");
     group.bench_function("hypercast", |b| {
         b.iter(|| hypercast::cast_decimal(black_box(b"12345.6789"), &format).unwrap())

@@ -480,6 +480,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   carries the format flags and layout sizes (`HyperCastNumFormat_ALL`,
   `HyperCastRawNumFormat_SIZE`). The ABI is unchanged. *(repository only)*
 
+- **A refused cell costs less than it did in 1.0.** A cell a numeric door refuses is read by the
+  engine, which owns every fault span, and the engine had grown slower since 1.0. Three changes
+  take that back: the integer engine gathers a numeral's first nineteen digits in a `u64` and
+  widens to its checked `i128` only for a longer one, a declared symbol is tried against its
+  first byte before slices are compared, and a cell with no text returns before the white-space
+  scan is called. No verdict or fault span changed. On an Apple M6 on 2026-11-10
+  (`docs/benchmarks.md`, "Refused cells"), against the tree before: `123x` at `i32` 13.1 ns
+  from 17.3 (1.0: 14.2), `y123` 10.0 ns from 12.4 (10.1), an empty cell 0.31 ns from 0.98
+  (0.52), and `123z` at `f64` 17.7 ns from 19.9, still 6% slower than 1.0's 16.7. Two numerals
+  that read got slower: a grouped `i32` 3.2% (6.77 to 6.99 ns) and the decimal door's
+  `$12,345.67` 4.2% (9.44 to 9.83 ns). *(every package)*
+
 ### Fixed
 
 - **A declaration equals one that declares the same thing, in every binding**, as the core's

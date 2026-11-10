@@ -280,13 +280,20 @@ impl<const N: usize> Symbol<N> {
     /// Whether the symbol sits at `text[at..]`. Never true for [`NONE`](Self::NONE).
     #[inline]
     pub(crate) fn matches(&self, text: &[u8], at: usize) -> bool {
-        self.len != 0 && text.get(at..).is_some_and(|rest| rest.starts_with(self.as_bytes()))
+        // The first byte settles nearly every miss, and a one-byte symbol whole, without
+        // comparing slices.
+        self.len != 0
+            && text.get(at) == self.bytes.first()
+            && (self.len == 1
+                || text.get(at..).is_some_and(|rest| rest.starts_with(self.as_bytes())))
     }
 
     /// Whether the symbol ends `text`. Never true for [`NONE`](Self::NONE).
     #[inline]
     pub(crate) fn ends(&self, text: &[u8]) -> bool {
-        self.len != 0 && text.ends_with(self.as_bytes())
+        self.len != 0
+            && text.last() == self.as_bytes().last()
+            && (self.len == 1 || text.ends_with(self.as_bytes()))
     }
 }
 
@@ -1322,6 +1329,10 @@ pub(crate) fn trim(input: &[u8]) -> (&[u8], usize) {
         && matches!(first, 0x21..=0x7F)
         && matches!(last, 0x21..=0x7F)
     {
+        return (input, 0);
+    }
+    // No text has nothing to trim, and an empty cell is too common to pay for the scan's call.
+    if input.is_empty() {
         return (input, 0);
     }
     trim_scan(input)

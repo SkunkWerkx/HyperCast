@@ -404,8 +404,8 @@ on the base's 7.9 ns (the layout shift above), and the losses were `i32-malforme
 the losses they may be. `duration/hypercast-iso`, the first run's +8.1%, did not repeat:
 -2.4% in the whole-bench run and -11% in the two filtered runs (10.5 ns against 11.9), so
 that loss is within what this machine moves from run to run. One case is slower in both
-sessions: `i32-malformed/hypercast`, +4.5% and +9.4% (a rejected input; its cause
-was not investigated), so it stays printed as a loss.
+sessions: `i32-malformed/hypercast`, +4.5% and +9.4% (a rejected input; "Refused cells"
+below has its cause and its recovery), so it stays printed here as the loss it was.
 
 History, since a first measurement of this change was worse: the same pair of runs taken
 before the trim was reworked (its scanners were out-of-line loops run at every call) showed
@@ -413,6 +413,91 @@ every `hypercast` door +16% to +34% on unpadded input and `bool` +172% (1.10 to 
 while the comparators stood still. The rework returns at once when an input's first and last
 bytes are visible ASCII and inlines the scanners, and the runs above are after it. Every other table in this file, each binding's included,
 predates the white-space change and has not been re-run.
+
+## Refused cells, on an Apple M6
+
+A cell the door refuses falls out of the fast lanes into the engine, which owns every fault span,
+so a column of bad data is read at the engine's price. That price had risen since 1.0 (the engine
+counts groups as it reads and chooses a more exact fault), and three changes took it back: the
+integer engine gathers a numeral's first nineteen digits in a `u64` and widens to its checked
+`i128` only for a longer one, a declared symbol is tried against its first byte before any slices
+are compared (a one-byte symbol, which nearly every one is, is that comparison alone), and a cell
+with no text returns before the white-space scan is called. No verdict or span changed.
+
+`1.0` is a build of tag `v1.0.0`, `before` is `f558c7e` and `after` is the change, each with the
+same benchmark file's `refused` group (1.0's own file with that group copied in, since it lacks
+the later groups, so those rows have no 1.0 figure). Measured on the Apple M6 above under macOS
+27.2 on 2026-11-10, with rustc 1.99.1: each tree's `cargo bench --bench cast_benchmarks` binary
+was saved, and the three were run one after another for five rounds, the order rotated each
+round, with `--warm-up-time 1 --measurement-time 3`, at a load average of 1.3 to 1.6. Each
+figure is the median of the five rounds' Criterion medians. A figure moves in steps of about
+0.2 ns here (one cycle), and the rows the change cannot reach (`i32-malformed/stdlib`,
+`f64/stdlib`, `i64/stdlib`, the padded rows) moved from -2.6% to +9.0% between `before` and
+`after`, `i64/stdlib` the most, so read a difference under about 3% as noise.
+
+The refused rows are the gain: a numeral with a stray character after it is 24% faster than
+before and 8% faster than 1.0, one with the character first 20% and level with 1.0, an empty
+cell 68% and 40%, and the `i32-malformed` row, a loss in every earlier table of this file, is
+29% faster than before and 9% faster than 1.0. The real door's refusal recovered 11%, and is
+still **6% slower than 1.0**.
+
+**What it cost, and what it didn't recover.** Two numerals that read are slower than before, in
+every run that measured them: a grouped `i32` under the invariant format, **+3.2%** (one step,
+6.77 to 6.99 ns), and the decimal door's `$12,345.67`, **+4.2%** (9.44 to 9.83 ns, which puts
+it level with 1.0). The other grouped rows moved by 3% or less either way. The losses against 1.0 that "Judging
+every grouping policy" prints are all still here, since this change wasn't aimed at them: the
+integer door's plain numeral +27%, its grouped ones +23 to 26%, the grouped `i32` +10 to 14%,
+`i64/hypercast` +8%, `f64/hypercast` +7%, `f64-shapes/plain` +11%, and separator detection +12%.
+
+| Case | 1.0 | before | after | after vs before | after vs 1.0 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| refused/i32 123x | 14.22 ns | 17.26 ns | 13.09 ns | -24.1% | -7.9% |
+| refused/i32 y123 | 10.06 ns | 12.45 ns | 9.99 ns | -19.8% | -0.7% |
+| refused/i32 empty | 0.52 ns | 0.98 ns | 0.31 ns | -68.1% | -40.0% |
+| refused/f64 123z | 16.66 ns | 19.94 ns | 17.66 ns | -11.4% | +6.1% |
+| i32-malformed/hypercast | 19.02 ns | 24.24 ns | 17.29 ns | -28.7% | -9.1% |
+| i32-malformed/stdlib | 2.10 ns | 2.10 ns | 2.10 ns | +0.0% | -0.1% |
+| i64/hypercast | 4.37 ns | 4.80 ns | 4.73 ns | -1.5% | +8.2% |
+| i64/stdlib | 3.46 ns | 3.33 ns | 3.63 ns | +9.0% | +4.9% |
+| f64/hypercast | 6.05 ns | 6.47 ns | 6.46 ns | -0.2% | +6.7% |
+| f64/stdlib | 4.40 ns | 4.39 ns | 4.38 ns | -0.1% | -0.3% |
+| i64-shapes/plain | 2.52 ns | 3.17 ns | 3.21 ns | +1.4% | +27.2% |
+| i64-shapes/grouped | 6.23 ns | 7.43 ns | 7.65 ns | +2.9% | +22.8% |
+| i64-shapes/grouped currency | 6.25 ns | 7.87 ns | 7.87 ns | -0.0% | +25.9% |
+| i64-shapes/grouped currency in parens | 6.44 ns | 8.08 ns | 8.08 ns | -0.0% | +25.6% |
+| i32-declared-currency/invariant | 6.16 ns | 6.77 ns | 6.99 ns | +3.2% | +13.5% |
+| i32-declared-currency/declared $ | 6.64 ns | 7.21 ns | 7.32 ns | +1.5% | +10.2% |
+| f64-shapes/plain | 5.49 ns | 6.10 ns | 6.08 ns | -0.4% | +10.7% |
+| f64-shapes/grouped | 9.84 ns | 10.55 ns | 10.74 ns | +1.8% | +9.2% |
+| f64-shapes/currency | 9.69 ns | 9.61 ns | 9.81 ns | +2.0% | +1.2% |
+| f64-shapes/grouped currency | 10.11 ns | 10.71 ns | 10.71 ns | +0.0% | +5.9% |
+| f64-shapes/grouped currency in parens | 10.61 ns | 11.04 ns | 11.10 ns | +0.6% | +4.6% |
+| decimal-shapes/plain | 5.02 ns | 4.59 ns | 4.59 ns | +0.0% | -8.7% |
+| decimal-shapes/grouped | 10.61 ns | 9.30 ns | 9.41 ns | +1.2% | -11.3% |
+| decimal-shapes/currency | 9.18 ns | 7.88 ns | 7.98 ns | +1.3% | -13.0% |
+| decimal-shapes/grouped currency | 9.83 ns | 8.98 ns | 9.00 ns | +0.2% | -8.5% |
+| decimal-shapes/grouped currency in parens | 9.96 ns | 9.33 ns | 9.39 ns | +0.7% | -5.7% |
+| decimal/hypercast | 5.82 ns | 5.90 ns | 5.90 ns | -0.0% | +1.4% |
+| decimal/hypercast grouped currency | 9.83 ns | 9.44 ns | 9.83 ns | +4.2% | -0.0% |
+| grouping-policy/i64 western |  | 6.88 ns | 6.99 ns | +1.6% |  |
+| grouping-policy/f64 western |  | 9.14 ns | 9.21 ns | +0.8% |  |
+| grouping-policy/decimal western |  | 8.95 ns | 9.05 ns | +1.2% |  |
+| grouping-policy/i64 indian |  | 7.21 ns | 7.32 ns | +1.6% |  |
+| separator-detection/hypercast-detect | 16.60 ns | 18.35 ns | 18.52 ns | +0.9% | +11.6% |
+| separator-detection/hypercast-declared | 8.77 ns | 9.95 ns | 9.78 ns | -1.6% | +11.5% |
+| padded/bool/plain |  | 1.40 ns | 1.40 ns | +0.0% |  |
+| padded/bool/ascii-padded |  | 3.27 ns | 3.23 ns | -1.2% |  |
+| padded/i64/plain |  | 4.70 ns | 4.80 ns | +2.2% |  |
+| padded/i64/ascii-padded |  | 7.01 ns | 7.01 ns | -0.0% |  |
+| padded/f64/plain |  | 6.46 ns | 6.46 ns | -0.1% |  |
+| padded/f64/ascii-padded |  | 8.43 ns | 8.46 ns | +0.4% |  |
+| padded/uuid/plain |  | 4.85 ns | 4.86 ns | +0.2% |  |
+| padded/uuid/ascii-padded |  | 7.21 ns | 7.17 ns | -0.6% |  |
+| padded-nbsp/bool |  | 3.81 ns | 3.71 ns | -2.6% |  |
+| padded-nbsp/i64 |  | 7.53 ns | 7.49 ns | -0.5% |  |
+| padded-nbsp/f64 |  | 9.24 ns | 9.20 ns | -0.5% |  |
+
+The same rows in the earlier tables of this file predate this change and weren't re-run.
 
 ## The text door's UTF-8 check, on an Apple M6
 
