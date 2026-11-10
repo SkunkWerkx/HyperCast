@@ -2,7 +2,7 @@
 # 1.15 is the first maturin that builds PyO3 0.30's abi3t extension correctly (its
 # PyModExport entry point; abi3t support itself came in 1.14), and it reads PEP 639's SPDX
 # `license` string and top-level `license-files` below, which needed 1.9.
-requires = ["maturin>=1.15,<2.0"]
+requires = ["maturin>=1.16.0,<2.0"]
 build-backend = "maturin"
 
 [project]
