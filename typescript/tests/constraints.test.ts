@@ -98,6 +98,43 @@ test('the README example: latitude, euro cash and a sex code', () => {
   })
 })
 
+// A view of shared memory is read once, into a copy: another thread may write it while a door
+// runs, and a door judges one text.
+test('a view of a SharedArrayBuffer reads as its bytes did', () => {
+  const shared = (text: string) => {
+    const bytes = new TextEncoder().encode(text)
+    const view = new Uint8Array(new SharedArrayBuffer(bytes.length + 2), 1, bytes.length)
+    view.set(bytes)
+    return view
+  }
+  assert.deepEqual(api.castI32(shared('(1,234)')), { ok: true, value: -1234 })
+  assert.deepEqual(api.castI32(shared('12x')), {
+    ok: false,
+    fault: { reason: 'malformed', offset: 2, length: 1 },
+  })
+  const sex = declare({ door: Door.Text, trim: true, enum: ['Female', 'Male', 'Other'] })
+  assert.deepEqual(castText(shared(' MALE '), sex), {
+    ok: true,
+    value: 'Male',
+    adjusted: false,
+    enumIndex: 1,
+  })
+  assert.deepEqual(castText(shared('Mail'), sex), {
+    ok: false,
+    violation: { keyword: 'enum', offset: 0, length: 4 },
+  })
+  const entries: [number, string][] = Array.from({ length: 12 }, (_, i) => [
+    i + 1,
+    `m${String.fromCharCode(98 + i)}`,
+  ])
+  const names = api.MonthNames.declare(entries)
+  assert.ok(names.ok)
+  const packed = new Uint8Array(new SharedArrayBuffer(names.value.packed.length))
+  packed.set(names.value.packed)
+  const read = api.MonthNames.fromPacked(packed)
+  assert.ok(read.ok && read.value.equals(names.value))
+})
+
 test('narrowing reaches the value, the fault or the violation', () => {
   const small = declare({ door: Door.I32, minimum: '10' })
   const verdict: CheckedVerdict<number | bigint | string> = castChecked('9', small)

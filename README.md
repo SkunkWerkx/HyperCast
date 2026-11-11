@@ -111,7 +111,7 @@ Each binding carries its ecosystem's own harness, HyperUuid-style: Criterion, Be
 | Binding | HyperCast | Platform parser | Verdict |
 | --- | ---: | ---: | --- |
 | Swift | **37 ns** | 627 ns `Date.ISO8601FormatStyle` | **17x faster** — uuid too: 31 vs 479 ns, zero mallocs on every door |
-| Java | **50.4 ns** (`String`), 41.8 ns (`byte[]`) | 554 ns `Instant.parse` | **11.0x faster** (the FFM path, JDK 25) |
+| Java § | **50.4 ns** (`String`), 41.8 ns (`byte[]`) | 554 ns `Instant.parse` | **11.0x faster** (the FFM path, JDK 25) |
 | Ruby (Magnus backend) | **404 ns** | 2.70 µs `Time.iso8601` | **6.7x faster** |
 | C# † | 57.0 ns (`string`), **40.7 ns** (UTF-8) | 126 ns `DateTimeOffset.TryParse` | **2.2x / 3.1x faster** |
 | PHP ‡ | 538 ns | 560 ns `DateTimeImmutable` | level |
@@ -121,7 +121,7 @@ Each binding carries its ecosystem's own harness, HyperUuid-style: Criterion, Be
 | R, on an Apple M6 | **27.14 µs** per 1000 strings | 3.83 ms `as.POSIXct` | **141x faster** |
 | TypeScript | not measured yet | | |
 
-Every row but Go's and R's was measured on linux-x64 on an Intel Core i9-11900H; Go's and R's on an Apple M6 (Mac18,5) under macOS, Go on 2026-11-05 and R on 2026-11-01, so the two groups are not comparable with each other. † Measured on .NET 11 RC 1 with BenchmarkDotNet's in-process toolchain, before the harness moved to running each benchmark in its own process; the figures stand until it is run again. ‡ Predates the extension: it measured 1.0's FFI package.
+Every row but Go's and R's was measured on linux-x64 on an Intel Core i9-11900H; Go's and R's on an Apple M6 (Mac18,5) under macOS, Go on 2026-11-05 and R on 2026-11-01, so the two groups are not comparable with each other. † Measured on .NET 11 RC 1 with BenchmarkDotNet's in-process toolchain, before the harness moved to running each benchmark in its own process; the figures stand until it is run again. ‡ Predates the extension: it measured 1.0's FFI package, recorded on 2026-10-01. § The `String` figure predates the `String` doors' lone-surrogate fix, which [java/README.md](java/README.md#why-not-integerparseint--instantparse--the-formatter-zoo) measures on its own; the `byte[]` door is unchanged.
 
 The honest reading: **the doors win wherever the platform's own parser is culture machinery, and draw or lose wherever it is a C builtin for the one shape being timed.** Swift, Java, Ruby and C# beat their platform's timestamp parser by 2.2-17x, and R's vectorised door beats `as.POSIXct` by two orders; PHP tied its, measured before the extension; Go and Python lose to theirs. What the interpreted tier pays for is the FFI *mechanism*, not the language, which is why Python, Ruby, PHP and TypeScript link the core into an extension instead of crossing a generic FFI ([why](docs/benchmarks.md#where-the-wins-come-from)), and why Go compiles it as Go source and crosses nothing at all.
 
@@ -198,7 +198,7 @@ Stated the way this project states things: each of these becomes a measured tabl
 
 ```
 corpus/     the shared conformance vectors — the cross-language contract
-rust/       the core: 31 cast_* exports plus hypercast_version, one runtime dependency (simdutf8); a cdylib (and two for Android),
+rust/       the core: 35 cast_* exports plus hypercast_version, one runtime dependency (simdutf8); a cdylib (and two for Android),
             fifteen static archives (four for iOS and Mac Catalyst, two for Android) and the Blazor archive;
             the Python, Ruby and PHP extensions are its features
 csharp/     the .NET 10 and 11 binding: Verdict<T> union, LibraryImport, corpus replay, AOT smoke test, Blazor wasm

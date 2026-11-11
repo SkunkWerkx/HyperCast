@@ -43,7 +43,8 @@ public struct DateOptions: Hashable, Sendable {
     public let flags: Flags
     /// The last year of the 100-year window a two-digit year is read in (`26` is 2026 under
     /// 2029, and `30` is 1930), 100 through 9999; `nil` for none, where a two-digit year is
-    /// malformed. Four-digit years are unaffected.
+    /// malformed. A declared `0` is none too, so this is `nil` for it. Four-digit years are
+    /// unaffected.
     public let pivot: Int?
     /// Declared month names read in the month field of the order doors (`07-Jan-26`), or `nil`
     /// for none. Independent of ``flags``: it may accompany no flag at all.
@@ -51,12 +52,13 @@ public struct DateOptions: Hashable, Sendable {
 
     /// Declares options. Every field defaults to nothing declared: today's shape rules.
     ///
-    /// - Precondition: `flags` sets no bit the core doesn't define, and `pivot` is `nil` or
-    ///   100 through 9999 — a caller bug, not a data verdict, as the core refuses the same
+    /// - Precondition: `flags` sets no bit the core doesn't define, and `pivot` is `nil`, 0
+    ///   (none, as every binding reads it) or 100 through 9999 — a caller bug, not a data verdict, as the core refuses the same
     ///   declarations.
     public init(flags: Flags = [], pivot: Int? = nil, months: MonthNames? = nil) {
-        // Under 100 or past the ABI's u32 is refused as the core would: the sentinel 1 stands
-        // for any such value, and `nil`, not 0, is how none is declared.
+        // 0 is none, as the ABI and every other binding read it. Otherwise under 100 or past the
+        // ABI's u32 is refused as the core would: the sentinel 1 stands for any such value.
+        let pivot = pivot == 0 ? nil : pivot
         let word = pivot.map { (100...9999).contains($0) ? UInt32($0) : 1 } ?? 0
         let refusal = Self.refusal(flags: flags.rawValue, pivot: word)
         precondition(refusal == nil, refusal ?? "")
@@ -82,7 +84,7 @@ public struct DateOptions: Hashable, Sendable {
                 + "the options are compactDate, spaceSeparator and hourOffset."
         }
         if pivot != 0 && !(100...9999).contains(pivot) {
-            return "The pivot \(pivot) must be 100 through 9999 (the last year of the window), or nil for none."
+            return "The pivot \(pivot) must be 100 through 9999 (the last year of the window), or nil (or 0) for none."
         }
         return nil
     }

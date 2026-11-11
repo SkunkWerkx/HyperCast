@@ -37,11 +37,14 @@
 // chooses either. Every numeric door and everything detailed needs a core of this header's major
 // version and a minor version at least as new (the patch never matters: a patch release adds no
 // export), which the header checks at run time before it is used: core_is_compatible() asks, and a
-// program should ask it once at startup. A core that fails it lacks the detailed exports or reads
-// grouped numerals by 1.0's rule, where `1,23,456` is 123456 and `0,125` is 125: a declaration
-// against one is refused (std::nullopt), and a numeric door handed a format by other means writes
-// one line naming both versions to stderr and ends the program with std::abort(), never reading a
-// numeral by that rule.
+// program should ask it once at startup. So do the text door, the checked doors and Constraints,
+// whose exports are as new as the header. A core that fails it lacks those exports or reads
+// grouped numerals by 1.0's rule, where `1,23,456` is 123456 and `0,125` is 125: a format, date
+// options or month names declared against one are refused (std::nullopt), and anything else that
+// would reach it (a numeric door handed a format by other means, the text door, a checked door, a
+// Constraints declaration or conversion) writes one line naming both versions to stderr and ends
+// the program with std::abort(), never calling an export that core lacks or reading a numeral by
+// that rule.
 
 #ifndef HYPERCAST_HPP
 #define HYPERCAST_HPP
@@ -757,15 +760,16 @@ namespace detail {
   std::abort();
 }
 
-// A numeric or detailed cast reached a core that cannot drive this header (core_is_compatible()
-// is false): one line on stderr naming both versions, then the end of the program, rather than
-// read a numeral by that core's rule. A deployment error, not a caller bug, so it says so.
+// A call that needs a core as new as this header reached one that cannot drive it
+// (core_is_compatible() is false): one line on stderr naming both versions, then the end of the
+// program, rather than call an export that core lacks or read a numeral by its rule. A
+// deployment error, not a caller bug, so it says so.
 [[noreturn]] inline void stale_core() noexcept {
   const std::uint32_t core = ::hypercast_version();
   std::fprintf(stderr,
                "hypercast: the linked library is %u.%u.%u, which cannot drive this header "
                "(%d.%d.%d: the same major version and at least its minor are needed); "
-               "refusing a numeric or detailed cast\n",
+               "refusing a call that core cannot serve\n",
                core >> 16, (core >> 8) & 0xFFu, core & 0xFFu, HYPERCAST_VERSION_MAJOR,
                HYPERCAST_VERSION_MINOR, HYPERCAST_VERSION_PATCH);
   std::abort();
@@ -2059,8 +2063,12 @@ constexpr bool is_whole_number_v =
     ;
 
 // The core's conversion of a declaration's decimal text, the one conversion every binding
-// calls: 0 with `out` written, or 8 for text no door can hold.
+// calls: 0 with `out` written, or 8 for text no door can hold. Its export is as new as this
+// header.
 inline std::int32_t declared_decimal(std::string_view text, HyperCastDecimal &out) noexcept {
+  if (!core_is_compatible()) {
+    stale_core();
+  }
   const std::int32_t code = ::cast_declared_decimal(
       reinterpret_cast<const std::uint8_t *>(text.data()), text.size(), &out);
   if (code != 0 && code != 8) {
@@ -2316,6 +2324,10 @@ private:
   // `listed` is the enum list, or null for none declared.
   static Declared<Constraints> build(const Fields &fields, const List *listed,
                                      EnumStorage storage) noexcept {
+    // The core's judge of a declaration is as new as this header.
+    if (!core_is_compatible()) {
+      detail::stale_core();
+    }
     const List entries = listed != nullptr ? *listed : List{nullptr, 0};
     Constraints declared;
     HyperCastRawConstraints &raw = declared.raw_;
@@ -2433,8 +2445,8 @@ inline Checked<T> checked(const Constraints<T> &constraints, const NumFormat *fo
                           Convert convert) noexcept {
   Raw out{};
   HyperCastRawCheck check{};
-  // As numeric(): a null format is a door that reads no numeral, and any core has it.
-  if (format != nullptr && !core_is_compatible()) {
+  // The checked exports are as new as this header, whatever the format.
+  if (!core_is_compatible()) {
     stale_core();
   }
   if (format != nullptr && format->grouping() != Grouping::western) {
@@ -2455,6 +2467,9 @@ inline Checked<T> checked(const Constraints<T> &constraints, const NumFormat *fo
 template <class T, class Raw = T, class Convert>
 inline Checked<T> checked_from_double(const Constraints<T> &constraints, double value,
                                       Convert convert) noexcept {
+  if (!core_is_compatible()) {
+    stale_core();
+  }
   Raw out{};
   HyperCastRawFault fault{};
   HyperCastRawCheck check{};
@@ -2589,8 +2604,12 @@ inline Checked<Decimal> cast_decimal_from_double(double value,
 }
 
 // The text door: the caller's input, once it is valid UTF-8, as a view of it. Invalid UTF-8
-// is Malformed, spanning the first invalid sequence; empty input is Empty. Untrimmed.
+// is Malformed, spanning the first invalid sequence; empty input is Empty; valid text past
+// 4,294,967,295 bytes is OutOfRange. Untrimmed. Its export is as new as this header.
 inline Verdict<std::string_view> cast_text(Text text) noexcept {
+  if (!core_is_compatible()) {
+    detail::stale_core();
+  }
   HyperCastRawSpan out{};
   HyperCastRawFault fault{};
   const std::int32_t code = ::cast_text(text.data(), text.size(), &out, &fault);

@@ -154,6 +154,9 @@ RSpec.describe "native backend" do
       "HyperCast.i32([0x31, 0xD800].pack('v*').force_encoding(Encoding::UTF_16LE), #{inv})",
       "HyperCast.checked([0x31, 0xD800].pack('v*').force_encoding(Encoding::UTF_16LE), #{inv}, #{c}.new(door: :i32))",
       "#{c}.new(door: :text, enum: [[0xD800].pack('v*').force_encoding(Encoding::UTF_16LE)])",
+      # US-ASCII past 0x7F: transcoded, malformed at the byte, never read as UTF-8.
+      "HyperCast.text(\"a\\xC3\\xA9\".b.force_encoding(Encoding::US_ASCII))",
+      "HyperCast.i32(\"4\\xD9\\xA2\".b.force_encoding(Encoding::US_ASCII), #{inv})",
       # Text in a dummy encoding: transcoded whole, malformed at each conversion error.
       "HyperCast.i32(\"\\xFE\\xFF\\x00\\x35\\xD8\\x00\".b.force_encoding(Encoding::UTF_16), #{inv})",
       "HyperCast.text(\"\\e$B\\x24\\x22\\e(B5\\xFF\".b.force_encoding(Encoding::ISO_2022_JP))",

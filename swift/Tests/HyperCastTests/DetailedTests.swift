@@ -500,6 +500,9 @@ final class DetailedTests: XCTestCase {
         XCTAssertNotNil(DateOptions.refusal(flags: 0, pivot: 99))
         XCTAssertNotNil(DateOptions.refusal(flags: 0, pivot: 10000))
         XCTAssertNotNil(DateOptions.refusal(flags: 0, pivot: 65536 + 2029), "never truncated to a u16")
+        // 0 declares none, as C#, Java, C++ and the ABI read it.
+        XCTAssertNil(DateOptions(pivot: 0).pivot)
+        XCTAssertEqual(DateOptions(pivot: 0), DateOptions())
         XCTAssertThrowsError(try MonthNames.declare([]))
         XCTAssertThrowsError(try MonthNames.declare([(13, "x")]))
         let full = (1...12).map {

@@ -244,4 +244,24 @@ public sealed class ProviderTests
 		(Cast.DateTime("2026-01-07", DateOrder.YearMonthDay) is Success<DateTime>).ShouldBeTrue();
 		(Cast.DateTime("2026-01-07", new DateFormat(DateOrder.YearMonthDay)) is Success<DateTime>).ShouldBeTrue();
 	}
+
+	// The bridge reads the culture's group sizes in place, as it reads its digits: the public
+	// getters clone their arrays on every read, and the provider doors bridge on every call.
+	[Fact]
+	public void TheBridgeAllocatesNothing()
+	{
+		static void Round()
+		{
+			_ = Cast.Int32("1,234", English);
+			_ = Cast.Decimal("1.234,5", German);
+			_ = Cast.Double("1 234,5", French);
+			_ = Cast.Int32("1_234", Custom);
+		}
+		for (var i = 0; i < 100; i++)
+			Round();
+		var before = GC.GetAllocatedBytesForCurrentThread();
+		for (var i = 0; i < 1000; i++)
+			Round();
+		(GC.GetAllocatedBytesForCurrentThread() - before).ShouldBe(0);
+	}
 }

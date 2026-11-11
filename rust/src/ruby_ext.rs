@@ -286,8 +286,9 @@ fn character_span(text: RString, offset: u32, len: u32) -> (i64, i64) {
 }
 
 /// Presents the input as the UTF-8 the core reads — hypercast.rb's `utf8` rule: UTF-8,
-/// US-ASCII and binary cross as-is (one encoding-index read); any other encoding pays a
-/// transcode. Character offsets survive the transcode, so a fault span mapped on the
+/// binary and ASCII-only US-ASCII cross as-is (an encoding-index read, and for US-ASCII the
+/// String's cached coderange); any other text pays a transcode, a US-ASCII String holding a
+/// byte past 0x7F included, so that byte is malformed rather than read as UTF-8. Character offsets survive the transcode, so a fault span mapped on the
 /// UTF-8 form still indexes the caller's own String; a dummy encoding's String counts bytes,
 /// and its span counts the characters of the UTF-8 form (hypercast.rb's `kept`).
 ///
@@ -300,8 +301,9 @@ fn character_span(text: RString, offset: u32, len: u32) -> (i64, i64) {
 fn utf8(ruby: &Ruby, text: RString) -> Result<RString, Error> {
     let index = text.enc_get();
     if index == ruby.utf8_encindex()
-        || index == ruby.usascii_encindex()
         || index == ruby.ascii8bit_encindex()
+        || (index == ruby.usascii_encindex()
+            && text.enc_coderange_scan() == magnus::encoding::Coderange::SevenBit)
     {
         Ok(text)
     } else {
@@ -1124,6 +1126,7 @@ fn text_door(ruby: &Ruby, args: &[Value]) -> Result<Value, Error> {
     let text = utf8(ruby, text)?;
     let Some(constraints) = constraints.filter(|given| !given.is_nil()) else {
         return match with_bytes(text, |bytes| {
+            // The door refuses text past `u32::MAX` bytes, so the length narrows exactly.
             detailed::cast_text(bytes).map(|valid| valid.len() as u32)
         }) {
             Ok(len) => success(ruby, text_value(ruby, text, (0, len))?),

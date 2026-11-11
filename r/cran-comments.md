@@ -128,8 +128,9 @@ to the binding and to R:
 * No panics. No input makes the core panic; every outcome is a return code over the C ABI,
   which the shim turns into one row of the verdict data frame each cast returns. No cast
   signals an error for its data; R errors are reserved for malformed arguments. The crate
-  proves it at link time: `cargo no-panic` links all 75 C exports under `#[no_panic]` in a
-  release build, `simdutf8` included, and fails when one export that can panic is added on
+  proves it at link time: `cargo no-panic` links 75 functions under `#[no_panic]` in a
+  release build (all 36 C exports, and 39 that instantiate the public API no export
+  reaches), `simdutf8` included, and fails when one export that can panic is added on
   purpose (rustc 1.99.1, on this release's crate sources). The proof covers the Rust core,
   not the C shim, which calls only those exports and R's API. The archive is built with
   `panic = "abort"` behind a panic handler nothing reaches: the built `hypercast.so` exports

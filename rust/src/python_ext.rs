@@ -2365,6 +2365,7 @@ fn cast_text(
     let Some(constraints) = constraints else {
         return match core::detailed::cast_text(bytes) {
             Ok(valid) => {
+                // The door refuses text past `u32::MAX` bytes, so the length narrows exactly.
                 let value = input.text_at(py, (0, valid.len() as u32))?;
                 Ok(Py::new(py, Success { value })?.into_any())
             }

@@ -4041,8 +4041,11 @@ mod sites {
         /// A unit test's body: the failure its input gets.
         type Reach = fn() -> Option<Failure>;
 
-        pub(super) const ALL: &[(&str, Reach)] =
-            &[("iso_overflow", iso_overflow), ("checked_span_too_long", checked_span_too_long)];
+        pub(super) const ALL: &[(&str, Reach)] = &[
+            ("iso_overflow", iso_overflow),
+            ("checked_span_too_long", checked_span_too_long),
+            ("text_too_long", text_too_long),
+        ];
 
         /// An ISO duration of 300,000 maximal week components: 5.7 MB, past 128 bits of
         /// nanoseconds.
@@ -4059,6 +4062,13 @@ mod sites {
         pub(super) fn checked_span_too_long() -> Option<Failure> {
             let past = usize::try_from(u64::from(u32::MAX) + 1).ok()?;
             crate::checked::exact_span(0, past).err()
+        }
+
+        /// A text door success longer than `u32::MAX` bytes, decided where the door decides
+        /// it, without 4 GiB of input.
+        pub(super) fn text_too_long() -> Option<Failure> {
+            let past = usize::try_from(u64::from(u32::MAX) + 1).ok()?;
+            crate::text::spannable(past).err()
         }
     }
 
@@ -4083,6 +4093,23 @@ mod sites {
     fn checked_span_too_long() {
         assert_eq!(reach::checked_span_too_long(), None);
         assert!(crate::checked::exact_span(usize::MAX, usize::MAX).is_ok());
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn text_too_long() {
+        let failure = reach::text_too_long().unwrap();
+        assert_eq!((failure.reason, failure.detail), (Reason::OutOfRange, Detail::TooLong));
+        assert_eq!((failure.offset, failure.len), (0, u32::MAX));
+        assert!(crate::text::spannable(u32::MAX as usize).is_ok());
+    }
+
+    /// With a 32-bit `usize` no text is longer than a span carries: the site can't fire.
+    #[cfg(not(target_pointer_width = "64"))]
+    #[test]
+    fn text_too_long() {
+        assert_eq!(reach::text_too_long(), None);
+        assert!(crate::text::spannable(usize::MAX).is_ok());
     }
 
     /// The table names every site once, in declaration order, with the reason and detail the

@@ -6,19 +6,25 @@
 // run.sh builds it with the archive's header rewritten to other versions (downgrade_leg there): a
 // patch ahead of the archive's library (accept), a major version ahead (refuse) and, when
 // SMOKE_CORE_10 names a directory holding a real 1.0 core (a build of the v1.0.0 tag), the header
-// as the release after it has it, 1.1.0 (refuse), with the export that core lacks, cast_detailed,
-// stood in for by a function that ends the run with status 99: the header may reach it only behind
-// its version guard. Nothing here may call a symbol such a core lacks except through the guard.
+// as the release after it has it, 1.1.0 (refuse), with the exports that core lacks (cast_detailed,
+// cast_text, the checked doors' and the Constraints judge and conversion) stood in for by functions
+// that end the run with status 99: the header may reach them only behind its version guard.
+// Nothing here may call a symbol such a core lacks except through the guard.
 //
 // usage: smoke_downgrade accept|refuse     the declarations, and the plain doors
 //        smoke_downgrade door              a plain door, Western: reads nothing by 1.0's rule
 //        smoke_downgrade indian            a plain door, Indian: likewise
 //        smoke_downgrade retired <policy>  with_grouping with 256 or 768: ends the program
+//        smoke_downgrade text              the text door, an export as new as the header
+//        smoke_downgrade constraints       a Constraints declaration, likewise
 //
 // `door` prints `malformed` for `1,23,456` on a core that drives the header, and `indian` prints
 // `read 123456`. On one that cannot, the header writes a line naming both versions to stderr and
 // ends the program (std::abort) before it parses anything: `door` prints `parsed` only for the
-// failure the guard exists to prevent, 1.0's reading of 123456.
+// failure the guard exists to prevent, 1.0's reading of 123456. `text` prints `read`, and
+// `constraints` `declared`; on a core that cannot drive the header each ends the program before it
+// calls the missing export. A checked door is reached only through a declared Constraints (its
+// default constructor is private), so `constraints` stands for them too.
 
 #include <cstdint>
 #include <cstdio>
@@ -40,7 +46,8 @@ namespace hc = hypercast;
 
 int main(int argc, char **argv) {
   if (argc != 2 && !(argc == 3 && std::string_view(argv[1]) == "retired")) {
-    std::fprintf(stderr, "usage: %s accept|refuse|door|indian|retired <policy>\n", argv[0]);
+    std::fprintf(stderr, "usage: %s accept|refuse|door|indian|text|constraints|retired <policy>\n",
+                 argv[0]);
     return 2;
   }
   const std::string_view mode = argv[1];
@@ -62,6 +69,16 @@ int main(int argc, char **argv) {
     } else {
       std::printf("malformed\n");
     }
+    return 0;
+  }
+  if (mode == "text") {
+    std::printf(hc::cast_text("abc").ok() ? "read\n" : "refused\n");
+    return 0;
+  }
+  if (mode == "constraints") {
+    hc::Constraints<std::int32_t>::Fields fields;
+    fields.maximum = 10;
+    std::printf(hc::Constraints<std::int32_t>::declare(fields).ok() ? "declared\n" : "refused\n");
     return 0;
   }
   if (mode == "retired") {

@@ -294,6 +294,9 @@ final class NativeCore {
     }
 
     static int plain(Scratch s, int door, MemorySegment in) {
+        if (tooLong(in)) {
+            return tooLong(s);
+        }
         return plain(s, door, bytes(in));
     }
 
@@ -304,6 +307,9 @@ final class NativeCore {
     }
 
     static int numeric(Scratch s, int door, MemorySegment in, NumFormat format) {
+        if (tooLong(in)) {
+            return tooLong(s);
+        }
         return numeric(s, door, bytes(in), format);
     }
 
@@ -313,6 +319,9 @@ final class NativeCore {
     }
 
     static int declared(Scratch s, int door, MemorySegment in, int code) {
+        if (tooLong(in)) {
+            return tooLong(s);
+        }
         return declared(s, door, bytes(in), code);
     }
 
@@ -323,6 +332,9 @@ final class NativeCore {
     }
 
     static int civil(Scratch s, MemorySegment in, int order, DateTimeFormat format) {
+        if (tooLong(in)) {
+            return tooLong(s);
+        }
         return civil(s, bytes(in), order, format);
     }
 
@@ -353,6 +365,9 @@ final class NativeCore {
             DateTimeFormat format,
             DateOptions options,
             MonthNames months) {
+        if (tooLong(in)) {
+            return tooLong(s);
+        }
         return dated(s, door, param, bytes(in), format, options, months);
     }
 
@@ -380,6 +395,9 @@ final class NativeCore {
     }
 
     static int checked(Scratch s, int door, MemorySegment in, NumFormat format, Constraints<?> constraints) {
+        if (tooLong(in)) {
+            return tooLong(s);
+        }
         return checked(s, door, bytes(in), format, constraints);
     }
 
@@ -411,6 +429,9 @@ final class NativeCore {
     }
 
     static int text(Scratch s, MemorySegment in) {
+        if (tooLong(in)) {
+            return tooLong(s);
+        }
         return text(s, bytes(in));
     }
 
@@ -419,6 +440,23 @@ final class NativeCore {
         Library.ensure();
         return castDeclaredDecimal(utf8, s.out);
     }
+
+    // Java's spans are ints, so a segment longer than Integer.MAX_VALUE bytes is out_of_range
+    // (too_long) at every door, spanning the most a span holds, before the core is asked: no
+    // value or fault it could report past there would fit, and nothing past there is read.
+    private static boolean tooLong(MemorySegment in) {
+        return in.byteSize() > Integer.MAX_VALUE;
+    }
+
+    private static int tooLong(Scratch s) {
+        s.out[2] = 0;
+        s.out[3] = Integer.MAX_VALUE;
+        s.out[7] = TOO_LONG;
+        return OUT_OF_RANGE;
+    }
+
+    private static final int OUT_OF_RANGE = 3;
+    private static final int TOO_LONG = 21;
 
     // JNI reaches no segment, so its bytes cross as a heap copy.
     private static byte[] bytes(MemorySegment in) {

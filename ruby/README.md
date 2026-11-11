@@ -62,7 +62,7 @@ midnight, durations come back as exact `Rational` seconds across the core's whol
 | `excel_serial_from_float(value, epoch)` | zone-less `DateTime`, as `datetime` | `:y1900` / `:y1904` |
 | `excel_time(value)` | `Integer` nanoseconds since midnight | — |
 | `excel_duration(value)` | exact `Rational` seconds | — |
-| `text(text)` | the text itself as a `String`, once it is valid UTF-8 (the `String` passed when it is UTF-8 or US-ASCII, else a UTF-8 copy) | — |
+| `text(text)` | the text itself as a `String`, once it is valid UTF-8 (the `String` passed when it is UTF-8, or US-ASCII holding only ASCII, else a UTF-8 copy) | — |
 | `text(text, constraints)` | a checked verdict over the text — see [Validation constraints](#validation-constraints) | a `Constraints` for `:text` |
 | `checked(text, format, constraints)` [^overrides] | a checked verdict over the value the constraints' door reads — see [Validation constraints](#validation-constraints) | a `NumFormat` and a `Constraints` |
 | `checked_from_float(value, constraints)` | a checked verdict over a number already held | a `Constraints` |
@@ -120,13 +120,13 @@ the same exception on every backend:
   for constraints that are not a `Constraints`.
 
 Text in another encoding that cannot be transcoded to UTF-8 (a lone UTF-16 surrogate, bytes
-its encoding does not allow, a character with no Unicode counterpart, any character past ASCII
-in an encoding Ruby has no converter to UTF-8 for, such as EUC-TW) is data, not an
-exception: every door, plain or checked, judges it `:malformed` at that character, on both
-backends, never with a replacement standing for it; as an `enum` entry it is refused as an
-entry that is not UTF-8 (code 9); and as a `NumFormat` symbol or a day-period designator it is
-the caller's bug, an `ArgumentError` naming the field ("currency symbol ... must be whole
-characters with a UTF-8 form"), on both backends.
+its encoding does not allow, such as a byte past 0x7F in a US-ASCII `String`, a character
+with no Unicode counterpart, any character past ASCII in an encoding Ruby has no converter to
+UTF-8 for, such as EUC-TW) is data, not an exception: every door, plain or checked, judges
+it `:malformed` at that character, on both backends, never with a replacement standing for it;
+as an `enum` entry it is refused as an entry that is not UTF-8 (code 9); and as a `NumFormat`
+symbol or a day-period designator it is the caller's bug, an `ArgumentError` naming the field
+("currency symbol ... must be whole characters with a UTF-8 form"), on both backends.
 
 A dummy encoding (`UTF-16` and `UTF-32` with their byte-order mark, `ISO-2022-JP`, `UTF-7`)
 is held to the same rule. Ruby cannot split its text into characters (its `String` counts

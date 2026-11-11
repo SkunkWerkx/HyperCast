@@ -135,44 +135,6 @@ parameters:
         - stubs/hypercast.stub.php
 ```
 
-## Differences from 1.0
-
-1.0 was a Composer package over PHP's FFI extension. The API, defaults, verdicts, exceptions
-and messages are the same in this extension, except:
-
-- `Cast::isAvailable()` is gone; use `extension_loaded('hypercast')`.
-- PHP 8.3 is the floor (1.0: 8.2), and Intel macOS has no build (1.0 bundled `osx-x64`).
-- ext-ffi is no longer required, nor `ffi.enable` or preloading under a web SAPI.
-- A call with more arguments than the method declares is an `ArgumentCountError`; 1.0, as
-  userland PHP, ignored the extras. A call with too few is an `ArgumentCountError` as before,
-  worded as for a built-in function (`HyperCast\Cast::bool() expects exactly 1 argument, 0
-  given`).
-- The classes are internal (`ReflectionClass::isInternal()` is `true`, with no file or line),
-  and exceptions, warnings and deprecations are reported at the caller's file and line; 1.0's
-  came from inside its own source files. A `TypeError`'s `called in` names the caller, as it
-  did.
-- A `\NumberFormatter` given to a door is converted on every call, each of its symbols and
-  attributes asked once; 1.0 asked them all on every call to compare with the conversion it
-  remembered per formatter, and again to convert when they had changed. Only a subclass that
-  overrides `getSymbol()` or `getTextAttribute()` can tell. From 1.1 the conversion also asks
-  `getPattern()` and `getLocale()` and makes the locale's other number-or-currency formatter
-  with `NumberFormatter::create()`, to read the grouping rule (above).
-- `NativePlatform::ridAndLibraryName()` reads `/proc/self/maps` itself to tell musl from
-  glibc, so `open_basedir` no longer applies to that read.
-- `Cast::f32('-0', ...)` and `Cast::f64('-0', ...)` are `0.0`; 1.0 returned `-0.0`. Zero has
-  one form: the core never returns a negative zero.
-
-Arguments are taken as 1.0 took them. A caller without `declare(strict_types=1)` gets PHP's
-weak-mode coercion of each declared type, with its deprecations, and a strict caller gets the
-same `TypeError`s, worded the same; the suite compares both modes, on every supported minor,
-with 1.0's recordings (`tests/CoercionTest.php`). One trace of the extension shows on a debug
-(`ZEND_DEBUG`) build of PHP 8.5, which checks a built-in method's arguments before the call: a
-`NAN` given to a `bool` parameter in weak mode raises PHP 8.5's "unexpected NAN value was
-coerced to bool" warning twice. The same check means a debug build's engine coerces a weak-mode
-scalar before the extension sees it, so there `new Constraints(...)` gets a `float` bound
-already made a string and a `bool` length already made an `int`, which a release build refuses
-as a `TypeError` ([Validation constraints](#validation-constraints)).
-
 ## 1.1: grouping policies, fault detail, date options
 
 Three changes in 1.1, each additive in its API and one of them deliberate in its answers.
@@ -557,7 +519,7 @@ invariant notation (`'1e-6'` is `0.000001`) or a `Decimal`, each converted exact
 and kept as the `Decimal` it read; never a `float`, so `0.1` cannot be declared inexactly. The
 constructor checks its arguments exactly, in weak mode too: a `float` bound is a `TypeError`
 rather than a string PHP made of it, as is a `bool` length (on a release build of PHP; a debug
-build coerces first, [above](#differences-from-10)). `Cast::checked($text, $format,
+build coerces first). `Cast::checked($text, $format,
 $constraints)` is every numeric door's checked form, and `Cast::checkedFromFloat($value,
 $constraints)` judges a number a source already decoded on the shortest decimal that names it
 (`0.1 + 0.2` breaks `multipleOf: '0.1'` under `Strict`, and rounds to `0.3` under `Midpoint`),
@@ -622,8 +584,9 @@ ABI's 36 exports (1.1's four detailed ones included).
 3. **One engine across a polyglot system** — bit-for-bit verdicts with every other binding,
    held by the shared corpus (every corpus file replayed by phpunit, with byte-exact fault
    spans).
-4. **Level with the platform's own parser on a timestamp** — and behind it on the shapes
-   PHP has a dedicated function for; both are printed under [Benchmarks](#benchmarks) below.
+4. **Measured, not promised** — 1.0's FFI package was level with the platform's own parser on
+   a timestamp and behind it on the shapes PHP has a dedicated function for; the extension
+   has not been measured yet, and [Benchmarks](#benchmarks) below says what those figures are.
 
 **The honest trade-off:** an extension to install, one build per PHP minor, and a native
 call per door — for plain invariant integers, `(int)` casts and `ctype_digit` are the
@@ -631,7 +594,8 @@ reasonable choice.
 
 ## Benchmarks
 
-**These figures predate the extension.** They measured 1.0's FFI package, and are kept until
+**These figures predate the extension.** They measured 1.0's FFI package (recorded on
+2026-10-01), and are kept until
 the extension is measured on the same machine; the benchmarks in `php/bench/` now run against
 the extension. phpbench (`XDEBUG_MODE=off vendor/bin/phpbench run --report=aggregate --retry-threshold=5`,
 linux-x64 on an Intel Core i9-11900H, PHP 8.5; the threshold repeats a case until its

@@ -116,6 +116,9 @@ offending text with no mapping:
 - a `Uint8Array` (a `Buffer` too) gets bytes, verbatim from the core (the same `'😀x'` as its
   UTF-8 is offset 0, length 4).
 
+A `Uint8Array` over a `SharedArrayBuffer` is read once, into a copy, before the door judges it:
+another thread writing that memory meanwhile changes nothing the verdict holds.
+
 Every span satisfies `offset + length <= text.length` in those units. Text is read as given,
 and surrounding white space is trimmed before it is judged, so the span still indexes what
 was passed (`castI32('  12x  ')` is malformed at offset 4). A string with a lone surrogate

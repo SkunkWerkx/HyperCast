@@ -1,5 +1,7 @@
 #include <R.h>
+#include <R_ext/Riconv.h>
 #include <Rinternals.h>
+#include <errno.h>
 #include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -803,7 +805,9 @@ static HyperCastRawFault span_of(const HyperCastRawFaultDetail *f) {
  * string marked UTF-8 or ASCII, or native in a UTF-8 session, is read as it is; one marked
  * latin1, or native in any other session, is translated to UTF-8 (each latin1 byte is one
  * character either way); one marked "bytes" is read as it is, and counted in bytes, as substr()
- * counts it.
+ * counts it. A native byte the session's encoding can't convert crosses as 0xFF, never valid
+ * UTF-8 and one character, so the core reports it malformed where it stands rather than read
+ * the "<xx>" escape translateCharUTF8() would write in its place.
  */
 /*
  * native: how this session holds an unmarked string, from session_native() in R. 0, UTF-8: its
@@ -812,6 +816,42 @@ static HyperCastRawFault span_of(const HyperCastRawFaultDetail *f) {
  * counts them as bytes, so they are read as they are, in bytes. 2, any other single- or
  * multi-byte locale: translated to UTF-8, counted in characters.
  */
+/*
+ * The native string c (len bytes) as UTF-8 in R_alloc memory, each byte iconv can't convert as
+ * 0xFF; NULL when the session's encoding has no converter, and translateCharUTF8() is the
+ * fallback. A UTF-8 character is at most 4 bytes, and no encoding R runs in spends fewer
+ * bytes on a character than its UTF-8 needs past that ratio, so 4 * len + 4 always holds it.
+ */
+static const char *native_utf8(const char *c, size_t len, size_t *n) {
+  void *cd = Riconv_open("UTF-8", "");
+  if (cd == (void *)-1)
+    return NULL;
+  size_t cap = 4 * len + 4;
+  char *out = R_alloc(cap, 1);
+  const char *in = c;
+  size_t in_left = len;
+  char *to = out;
+  size_t to_left = cap;
+  while (in_left > 0) {
+    if (Riconv(cd, &in, &in_left, &to, &to_left) != (size_t)-1)
+      break;
+    if ((errno != EILSEQ && errno != EINVAL) || to_left == 0) {
+      Riconv_close(cd);
+      return NULL;
+    }
+    /* Not convertible, or cut short at the end: one 0xFF for the byte, then on from the next. */
+    *to++ = (char)0xFF;
+    to_left--;
+    in++;
+    in_left--;
+    Riconv(cd, NULL, NULL, NULL, NULL);
+  }
+  Riconv(cd, NULL, NULL, &to, &to_left); /* a stateful encoding's closing shift */
+  Riconv_close(cd);
+  *n = (size_t)(to - out);
+  return out;
+}
+
 static const uint8_t *string_bytes(SEXP s, int native, uintptr_t *n, int *chars) {
   const char *c = CHAR(s);
   cetype_t ce = getCharCE(s);
@@ -821,8 +861,15 @@ static const uint8_t *string_bytes(SEXP s, int native, uintptr_t *n, int *chars)
     const char *k = c;
     while (*k && (unsigned char)*k < 0x80)
       k++;
-    if (*k)
+    if (*k) {
+      size_t len;
+      const char *utf8 = ce == CE_NATIVE ? native_utf8(c, (size_t)LENGTH(s), &len) : NULL;
+      if (utf8 != NULL) {
+        *n = (uintptr_t)len;
+        return (const uint8_t *)utf8;
+      }
       c = translateCharUTF8(s);
+    }
   }
   *n = (uintptr_t)strlen(c);
   return (const uint8_t *)c;

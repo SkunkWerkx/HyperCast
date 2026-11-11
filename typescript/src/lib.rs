@@ -452,7 +452,7 @@ enum Input {
     /// accepts (three bytes for its one code unit, so spans still map back exactly).
     Str(Vec<u8>),
     /// The bytes of a `Uint8Array`, read as they are.
-    Bytes(Uint8Array),
+    Bytes(Bytes),
     /// `null` or `undefined`.
     Absent,
     /// Anything else.
@@ -471,11 +471,7 @@ impl Input {
                 Err(_) => Input::Invalid,
             },
             Ok(ValueType::Undefined | ValueType::Null) => Input::Absent,
-            // `cast` checks the typed array's kind and fails for every other one.
-            Ok(ValueType::Object) => match unsafe { value.cast::<Uint8Array>() } {
-                Ok(bytes) => Input::Bytes(bytes),
-                Err(_) => Input::Invalid,
-            },
+            Ok(ValueType::Object) => Bytes::read(env, value).map_or(Input::Invalid, Input::Bytes),
             _ => Input::Invalid,
         }
     }
@@ -1460,9 +1456,9 @@ impl MonthNames {
     )]
     pub fn from_packed<'env>(env: &'env Env, bytes: Unknown<'env>) -> Result<Object<'env>> {
         let packed = match bytes.get_type() {
-            Ok(ValueType::Object) => unsafe { bytes.cast::<Uint8Array>() }
+            Ok(ValueType::Object) => Bytes::read(env, &bytes)
                 .map(|bytes| bytes.to_vec())
-                .map_err(|_| "Month names bytes must be a Uint8Array".to_string()),
+                .ok_or_else(|| "Month names bytes must be a Uint8Array".to_string()),
             _ => Err("Month names bytes must be a Uint8Array".to_string()),
         };
         match packed.and_then(judge_month_names) {
@@ -2347,6 +2343,85 @@ fn wtf8(units: &[u16]) -> Vec<u8> {
     out
 }
 
+/// A `Uint8Array` argument's bytes. A view of a `SharedArrayBuffer` is read once, into a copy:
+/// another thread may write that memory while the door runs, and a door judges one text, so a
+/// success's span always holds what was judged.
+enum Bytes {
+    /// A view of an `ArrayBuffer`, read in place.
+    View(Uint8Array),
+    /// A view of a `SharedArrayBuffer`, copied.
+    Copied(Vec<u8>),
+}
+
+impl std::ops::Deref for Bytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match self {
+            Bytes::View(bytes) => bytes,
+            Bytes::Copied(bytes) => bytes,
+        }
+    }
+}
+
+impl Bytes {
+    /// The bytes of `value`, or `None` when it is no `Uint8Array`.
+    fn read(env: &Env, value: &Unknown<'_>) -> Option<Bytes> {
+        // `cast` checks the typed array's kind and fails for every other one.
+        let view = unsafe { value.cast::<Uint8Array>() }.ok()?;
+        Some(shared_copy(env, value).map_or(Bytes::View(view), Bytes::Copied))
+    }
+}
+
+/// A copy of a `Uint8Array` that views a `SharedArrayBuffer`, or `None` for any other. Each byte
+/// is read as an atomic, the one sound read of memory another thread may be writing.
+fn shared_copy(env: &Env, value: &Unknown<'_>) -> Option<Vec<u8>> {
+    let ok = napi::sys::Status::napi_ok;
+    let mut kind = 0;
+    let mut length = 0usize;
+    let mut data = std::ptr::null_mut();
+    let mut buffer = std::ptr::null_mut();
+    let mut offset = 0usize;
+    // SAFETY: `env` and `value` are the live call's, and `value` is a typed array.
+    let status = unsafe {
+        napi::sys::napi_get_typedarray_info(
+            env.raw(),
+            value.raw(),
+            &mut kind,
+            &mut length,
+            &mut data,
+            &mut buffer,
+            &mut offset,
+        )
+    };
+    if status != ok || buffer.is_null() {
+        return None;
+    }
+    let mut plain = true;
+    // SAFETY: `buffer` is the live call's. `napi_is_arraybuffer` is false for a shared one.
+    let status = unsafe { napi::sys::napi_is_arraybuffer(env.raw(), buffer, &mut plain) };
+    if status != ok || plain {
+        return None;
+    }
+    if data.is_null() || length == 0 {
+        return Some(Vec::new());
+    }
+    // SAFETY: napi reports `length` bytes at `data`, live for the call; `AtomicU8` has `u8`'s
+    // layout, and only atomic loads touch them.
+    let cells = unsafe {
+        std::slice::from_raw_parts(
+            data.cast::<std::sync::atomic::AtomicU8>().cast_const(),
+            length,
+        )
+    };
+    Some(
+        cells
+            .iter()
+            .map(|cell| cell.load(std::sync::atomic::Ordering::Relaxed))
+            .collect(),
+    )
+}
+
 /// A string argument's WTF-8, or `None` when it is no string. Its UTF-16 is read as it is:
 /// napi's own UTF-8 read would have replaced a lone surrogate already.
 fn string_wtf8(env: &Env, value: &Unknown<'_>) -> Option<Vec<u8>> {
@@ -2385,7 +2460,7 @@ fn string_wtf8(env: &Env, value: &Unknown<'_>) -> Option<Vec<u8>> {
 /// all of it hands back), the bytes of a `Uint8Array` as they are, or `null`/`undefined`.
 enum CheckedInput<'env> {
     Str(Vec<u8>, JsString<'env>),
-    Bytes(Uint8Array),
+    Bytes(Bytes),
     Absent,
     Invalid,
 }
@@ -2400,10 +2475,9 @@ impl<'env> CheckedInput<'env> {
                 }
             }
             Ok(ValueType::Undefined | ValueType::Null) => CheckedInput::Absent,
-            Ok(ValueType::Object) => match unsafe { value.cast::<Uint8Array>() } {
-                Ok(bytes) => CheckedInput::Bytes(bytes),
-                Err(_) => CheckedInput::Invalid,
-            },
+            Ok(ValueType::Object) => {
+                Bytes::read(env, value).map_or(CheckedInput::Invalid, CheckedInput::Bytes)
+            }
             _ => CheckedInput::Invalid,
         }
     }
