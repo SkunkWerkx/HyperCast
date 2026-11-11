@@ -323,10 +323,13 @@ library's): the crate's version, which a release moves with everything else. A l
 when its major version is the header's and its minor at least the header's, whatever the patch (a
 patch release adds no export); `core_is_compatible()` asks, once. **Call it at startup** and read
 `false` as a deployment error: a library older than the header (1.0 under the 1.1 header) has no
-detailed export and reads a numeral by 1.0's rule, so no format may reach it. `declare`, `DateOptions::declare` and `MonthNames::declare` return `std::nullopt` against one, and
-a numeric door handed a format, or a detailed door, writes one line naming both versions to stderr
-and ends the program with `std::abort()` instead of reading by that rule, where `0,125` is 125 and `1,23,456` is 123456.
-The doors that read no numeral keep working against any core, as far as the library's own exports go. A program
+detailed, text, checked or `Constraints` export and reads a numeral by 1.0's rule, so no format may
+reach it. `declare`, `DateOptions::declare` and `MonthNames::declare` return `std::nullopt` against
+one, and a numeric door handed a format, a detailed door, the text door, a `Constraints` declaration
+or conversion, or a checked door writes one line naming both versions to stderr and ends the
+program with `std::abort()` instead of calling an export that library lacks or reading by that rule,
+where `0,125` is 125 and `1,23,456` is 123456. The other doors that read no numeral keep working
+against any core. A program
 built from this header also names the detailed exports, so how a library without them is met
 depends on the platform: with lazy binding (Linux) the program loads and the guard is what
 fires, while on macOS every symbol is bound at load and the dynamic loader refuses the program

@@ -20,9 +20,8 @@
        resolves them against the archive (with the archive missing, wasm-ld fails with an
        undefined symbol per door) and LibraryImport("*") reaches each one
        through that table. No @(EmccExportedFunction) list is needed, because "*" resolution
-       does not need the Emscripten export: HyperCast.WasmSmokeTest calls all thirty-two
-       entry points without one on .NET SDK 11.0.100-rc.2, and fails at the link with the
-       archive unlinked.
+       does not need the Emscripten export: HyperCast.WasmSmokeTest calls all thirty-six
+       entry points without one, and fails at the link with the archive unlinked.
 
        nativeassets/net11.0/ is the forge's spelling for the staticlib directory, shared with
        HyperUuid's package, and .NET 10 and 11 link it alike. It is only a folder name: the

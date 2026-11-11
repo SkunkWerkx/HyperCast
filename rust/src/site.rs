@@ -175,6 +175,9 @@ sites! {
     TextEmpty = "text.rs", Empty, Blank;
     /// The input is not UTF-8; the span is the first invalid sequence.
     TextInvalidUtf8 = "text.rs", Malformed, InvalidUtf8;
+    /// Valid text longer than `u32::MAX` bytes, which no span carries.
+    TextTooLong = "text.rs", OutOfRange, TooLong,
+        impractical_on_64bit "text_too_long" "only an input past 4 GiB reaches it";
 
     // --- verdict.rs ---
     /// Separator detection finds a single `.` or `,` with exactly three digits after it and an

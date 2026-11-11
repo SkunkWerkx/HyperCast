@@ -7,13 +7,15 @@ wins, and every figure here is a dated, machine-specific receipt from its bindin
 (regenerate with the commands in each binding's README on your own hardware). Every HyperCast
 figure includes the binding's crossing and any transcode.
 
-Two machines. Every table is linux-x64 on an Intel Core i9-11900H unless it says otherwise; Go's
-current figures and R's were measured on an Apple M6 (Mac18,5) under macOS on 2026-11-01
-([below](#go-and-r-on-an-apple-m6)), as were the checked doors
-([below](#the-checked-doors-on-an-apple-m6)), and the Rust core's plain doors before and after the
-Unicode white-space change on 2026-11-03
-([below](#the-plain-doors-and-unicode-white-space-on-an-apple-m6)); the two groups are not
-comparable with each other. Two
+Two machines. Every table is linux-x64 on an Intel Core i9-11900H unless it says otherwise; these
+were measured on an Apple M6 (Mac18,5) under macOS, each section dated: Go's current figures on
+2026-11-05 and R's on 2026-11-01 ([below](#go-and-r-on-an-apple-m6)), the checked doors from
+2026-11-01 ([below](#the-checked-doors-on-an-apple-m6)), the Rust core's plain doors before and
+after the Unicode white-space change on 2026-11-03
+([below](#the-plain-doors-and-unicode-white-space-on-an-apple-m6)), the grouping policies on
+2026-11-06 ([below](#judging-every-grouping-policy-on-an-apple-m6)), the text door's UTF-8 check on
+2026-11-08 ([below](#the-text-doors-utf-8-check-on-an-apple-m6)) and refused cells on 2026-11-10
+([below](#refused-cells-on-an-apple-m6)). The two machines are not comparable with each other. Two
 labels mark figures whose implementation has since been replaced, kept until they are run again:
 
 - **C# †**: measured on .NET 11 RC 1 with BenchmarkDotNet's in-process toolchain, before the
@@ -163,7 +165,7 @@ loss. The full table is in [the Python README](../python/README.md#benchmarks).
 
 ## PHP ‡
 
-Every door cost 270-680 ns on 1.0's FFI package, nearly all of it the `ext-ffi` call and the PHP
+Every door cost 270-680 ns on 1.0's FFI package (recorded on 2026-10-01), nearly all of it the `ext-ffi` call and the PHP
 around it rather than the parse: `Cast::timestamp` 538 ns against `new DateTimeImmutable`'s
 560 ns, level. The table, and why it is kept until the extension is measured, are in
 [the PHP README](../php/README.md#benchmarks).

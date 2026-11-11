@@ -38,7 +38,8 @@ module HyperCast
       decimal: 16, uuid: 16, timestamp: 16, unix: 16, excel_serial: 16, datetime: 16, duration: 16
     }.freeze
 
-    # Encodings whose bytes already are the UTF-8 (or byte-identical) form the core reads.
+    # Encodings whose bytes already are the UTF-8 (or byte-identical) form the core reads. A
+    # US-ASCII String is one only while it is ASCII: see HyperCast.utf8.
     BYTE_COMPATIBLE = [Encoding::UTF_8, Encoding::US_ASCII, Encoding::ASCII_8BIT].freeze
 
     module_function

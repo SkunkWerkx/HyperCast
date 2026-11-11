@@ -57,7 +57,7 @@ each folding the verdict code + fault span into its platform's discriminated-uni
 (a `Result`-shaped type, never an exception) and each replaying the shared corpus in its
 own test suite before it ships. TypeScript (a napi-rs addon on npm, with a WebAssembly
 fallback), R (a source package for CRAN) and one C and C++ archive per platform on the GitHub
-Release have joined them since (CHANGELOG, Unreleased), on the same contract. C# first — shortest path to a headline benchmark against
+Release have joined them since, on the same contract. C# first — shortest path to a headline benchmark against
 `DateTime.TryParse`/`TimeSpan.Parse` culture machinery, and the deepest muscle memory from
 SequentialGuid/HyperUuid.
 
@@ -344,15 +344,16 @@ contract violation. `RawDayPeriods` (40 bytes) has the same shape. Measured thro
 on one machine, a grouped `cast_i32` under a declared `$` went from 21.9 ns on the 0.8.0 core
 to 19.6 ns, and under `¤` from 22.2 to 20.9 ns; the sweep costs nothing at the crossing.
 
-Still open, for the record: a percent symbol ahead of the number (`%50`); and Indian lakh
-grouping is declared (`12,34,567` reads under `GROUPING_INDIAN`, [docs/grouping.md](grouping.md)). Python's and
+Still open, for the record: a percent symbol ahead of the number (`%50`). Indian lakh grouping
+is declared (`12,34,567` reads under the Indian policy, [docs/grouping.md](grouping.md)). Python's and
 Go's standard libraries have no per-object locale to take, and Java's Native Image includes
 only the locales named at build time (`-H:IncludeLocales`), which is the consumer's choice.
 
 ## Open follow-ups (as of 2026-11-01)
 
-- Benchmark tables were measured on the WSL2 i9-11900H box, except Go's current figures and
-  R's, taken on an Apple M6 (2026-11-01). Re-measure every harness on one machine before
+- Benchmark tables were measured on the WSL2 i9-11900H box, except those taken on an Apple M6
+  (Go's current figures on 2026-11-05, R's on 2026-11-01, and the core sessions
+  [docs/benchmarks.md](benchmarks.md) dates). Re-measure every harness on one machine before
   relabelling a table; never mix machines, and say which tables predate a change
   ([docs/benchmarks.md](benchmarks.md) labels them: the C# tables were measured in-process, PHP's
   on the FFI package, Go's linux-x64 ones on the cgo binding). TypeScript has no figures yet.

@@ -184,7 +184,10 @@ fi
 # one as 123456; one that cannot passes `refuse`, and both doors write the header's line naming both
 # versions to stderr and abort (SIGABRT, 128 + 6 under a shell), printing nothing and never reaching
 # the stand-in for the missing export (status 99). On either, with_grouping ends the program on the
-# retired 256 and on 768.
+# retired 256 and on 768. The exports as new as the header (the text door, and Constraints, which every
+# checked door needs) take the same guard: on a core that drives the header the text door reads
+# and a declaration is made; on one that cannot, each aborts naming both versions before the
+# missing export.
 downgrade_leg() {
   local name="$1" header="$2" lib="$3" stubs="$4" verdict="$5" dir="$work/$1" major minor patch
   IFS=. read -r major minor patch <<<"$header"
@@ -214,6 +217,21 @@ downgrade_leg() {
     retired_status=0
     retired="$(${run_as[@]+"${run_as[@]}"} "$dir/downgrade" retired "$policy" 2>/dev/null | tr -d '\r')" || retired_status=$?
     [ "$retired_status" -eq 134 ] && [ -z "$retired" ] || fail "$name: with_grouping($policy) printed '$retired' (status $retired_status), expected the abort (134)"
+  done
+  local gated gated_status gated_out
+  for gated in text constraints; do
+    gated_status=0
+    gated_out="$(${run_as[@]+"${run_as[@]}"} "$dir/downgrade" "$gated" 2>"$dir/$gated.err" | tr -d '\r')" || gated_status=$?
+    [ "$gated_status" -ne 99 ] || fail "$name: $gated called an export on a core without it: $(cat "$dir/$gated.err")"
+    if [ "$verdict" = drives ]; then
+      local want=read
+      [ "$gated" = text ] || want=declared
+      [ "$gated_status" -eq 0 ] && [ "$gated_out" = "$want" ] || fail "$name: $gated printed '$gated_out' (status $gated_status), expected $want"
+    else
+      [ "$gated_status" -eq 134 ] && [ -z "$gated_out" ] || fail "$name: $gated printed '$gated_out' (status $gated_status), expected the header's abort (134)"
+      grep -q "the linked library is $LEG_CORE, which cannot drive this header ($header:" "$dir/$gated.err" ||
+        fail "$name: $gated's abort does not name both versions: $(cat "$dir/$gated.err")"
+    fi
   done
   if [ "$verdict" = drives ]; then
     [ "$status" -eq 0 ] && [ "$output" = malformed ] || fail "$name: a door printed '$output' (status $status), expected malformed"
@@ -256,7 +274,7 @@ if [ -n "${SMOKE_CORE_10:-}" ]; then
     1.0.*) ;;
     *) fail "SMOKE_CORE_10 holds a core reporting $LEG_CORE, expected 1.0.x" ;;
   esac
-  echo "  a $LEG_CORE core: every format refused at declaration, a numeric door aborts naming both versions, the other doors still read"
+  echo "  a $LEG_CORE core: every format refused at declaration, a numeric or text door and a Constraints declaration abort naming both versions, the other doors still read"
 fi
 
 echo "smoke: every build of $pkg reports $expected"

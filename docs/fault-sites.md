@@ -21,6 +21,7 @@ Every place a door fails, with the reason and detail it reports. A detailed door
 | `CharNotAScalar` | `character.rs` | `out_of_range` | `not_a_scalar` | The spelling names a code point above U+10FFFF or a surrogate. |
 | `TextEmpty` | `text.rs` | `empty` | `blank` | The input is empty. |
 | `TextInvalidUtf8` | `text.rs` | `malformed` | `invalid_utf8` | The input is not UTF-8; the span is the first invalid sequence. |
+| `TextTooLong` | `text.rs` | `out_of_range` | `too_long` | Valid text longer than `u32::MAX` bytes, which no span carries. **Impractical:** only an input past 4 GiB reaches it; reached by the unit test `text_too_long`. Where `usize` is 32 bits (wasm32) no length can pass `u32::MAX`, so the site is structurally unreachable there, which the coverage test asserts. |
 | `DetectAmbiguous` | `verdict.rs` | `malformed` | `ambiguous_separator` | Separator detection finds a single `.` or `,` with exactly three digits after it and an integer part other than `0`. |
 | `FramePercentOnly` | `integer.rs` | `malformed` | `no_digits` | Only a percent symbol (and a trailing sign) at a real or decimal door. |
 | `FrameParensUnclosed` | `integer.rs` | `malformed` | `parentheses_unbalanced` | `(` without a closing `)`. |
@@ -239,4 +240,4 @@ Every place a door fails, with the reason and detail it reports. A detailed door
 | `ProtobufTrailing` | `temporal.rs` | `malformed` | `trailing_text` | An `s` ends a complete duration and more text follows. |
 | `ProtobufUnexpected` | `temporal.rs` | `malformed` | `unexpected_character` | Any other character after the seconds. |
 
-232 sites: 11 unreachable, 2 impractical.
+233 sites: 11 unreachable, 3 impractical.

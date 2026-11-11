@@ -220,10 +220,11 @@ pub fn cast_duration(input: impl AsRef<[u8]>) -> Result<Duration, Failure> {
     crate::temporal::duration(input).map_err(|failure| failure.classified(input))
 }
 
-/// [`crate::cast_text`], detailed: its one failure that isn't empty input is
-/// [`Detail::InvalidUtf8`](crate::Detail::InvalidUtf8).
+/// [`crate::cast_text`], detailed: invalid UTF-8 is
+/// [`Detail::InvalidUtf8`](crate::Detail::InvalidUtf8), and text past `u32::MAX` bytes
+/// [`Detail::TooLong`](crate::Detail::TooLong).
 pub fn cast_text(input: &[u8]) -> Result<&str, Failure> {
-    crate::text::text(input)
+    crate::text::door(input)
 }
 
 /// [`crate::excel_serial`], detailed. A typed door's failure has an empty span.

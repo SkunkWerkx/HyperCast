@@ -670,3 +670,27 @@ test_that("1.0 code reads a verdict exactly as it always did", {
   expect_identical(is_ok(v), v$ok)
   expect_identical(faults(v)[c("row", "reason", "offset", "length")]$row, 3:4)
 })
+
+test_that("a native byte the session's encoding can't convert is malformed where it stands", {
+  old <- Sys.getlocale("LC_CTYPE")
+  on.exit(Sys.setlocale("LC_CTYPE", old), add = TRUE)
+  set <- vapply(c("ja_JP.eucJP", "ja_JP.EUC-JP", "ja_JP.eucjp"), function(locale) {
+    suppressWarnings(Sys.setlocale("LC_CTYPE", locale)) != ""
+  }, logical(1))
+  skip_if(!any(set), "no EUC-JP locale here")
+  expect_identical(getFromNamespace("session_native", "hypercast")(), 2L)
+  # 0xA4 leads a two-byte EUC-JP character, so before `z`, or at the end, it converts to
+  # nothing: translated, it would read as the text "<a4>".
+  cut <- rawToChar(as.raw(c(0x61, 0xa4, 0x7a)))
+  short <- rawToChar(as.raw(c(0xa4, 0xa2, 0x31, 0xa4)))
+  v <- cast_text(c(cut, short))
+  expect_identical(v$ok, c(FALSE, FALSE))
+  expect_identical(as.character(v$reason), c("malformed", "malformed"))
+  expect_identical(v$offset, c(1L, 2L))
+  expect_identical(v$length, c(1L, 1L))
+  expect_identical(cast_i32(rawToChar(as.raw(c(0x31, 0xa4))), num_format())$offset, 1L)
+  # A whole EUC-JP character (U+3042) still converts and reads.
+  whole <- cast_text(rawToChar(as.raw(c(0x31, 0xa4, 0xa2))))
+  expect_identical(whole$ok, TRUE)
+  expect_identical(charToRaw(enc2utf8(whole$value)), as.raw(c(0x31, 0xe3, 0x81, 0x82)))
+})

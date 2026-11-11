@@ -733,6 +733,21 @@ RSpec.describe HyperCast do
       expect(HyperCast.constraints_check(door: :text, enum: [utf16.call(0xD800)])).to eq(9)
     end
 
+    # US-ASCII crosses as-is only while it is ASCII: a byte past 0x7F is no US-ASCII character,
+    # so it is malformed at that character, never read as the UTF-8 it happens to spell.
+    it "reads a US-ASCII String with a byte past 0x7F as malformed at that byte" do
+      malformed = ->(offset, length = 1) { HyperCast::Fault.new(reason: :malformed, offset: offset, length: length) }
+      spelled = "a\xC3\xA9".dup.force_encoding(Encoding::US_ASCII) # "aé" as UTF-8
+      expect(spelled.valid_encoding?).to be(false)
+      expect(described_class.text(spelled)).to eq(malformed.call(1))
+      expect(described_class.i32("4\xD9\xA2".dup.force_encoding(Encoding::US_ASCII), invariant))
+        .to eq(malformed.call(1))
+      expect(described_class.text(spelled, HyperCast::Constraints.new(door: :text))).to eq(malformed.call(1))
+      # ASCII in US-ASCII, and the same bytes as binary, read as before.
+      expect(described_class.text("42".dup.force_encoding(Encoding::US_ASCII)).value).to eq("42")
+      expect(described_class.text(spelled.b).value).to eq("aé")
+    end
+
     # A dummy encoding (UTF-16 or UTF-32 with a byte-order mark, ISO-2022-JP, UTF-7) has no
     # characters Ruby can split: its String counts bytes. Such text is transcoded whole, each
     # conversion error standing as one character no UTF-8 decoder accepts, so a span counts

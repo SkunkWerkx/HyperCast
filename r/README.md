@@ -125,7 +125,9 @@ violation, and what Python, for one, raises `ValueError` and `TypeError` for.
 `substr(x, offset + 1, offset + length)` gives back the offending text:
 
 - characters (code points) for a character vector, whatever its encoding mark; a `latin1`
-  string is read as UTF-8 after R translates it;
+  string, or an unmarked one in a session whose locale isn't UTF-8 or ASCII, is read as UTF-8
+  after R translates it, and a byte that locale's encoding can't convert is `malformed` where it
+  stands, one character long;
 - bytes for a list of raw vectors (`NULL` elements are missing), which reaches the core
   exactly as given, invalid UTF-8 included;
 - bytes for a string marked `"bytes"`, and for an unmarked string in a session whose locale

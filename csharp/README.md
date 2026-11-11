@@ -627,7 +627,7 @@ symbol, so the link resolves them against the archive and `LibraryImport("*")` r
 through that table. Without the file a Blazor publish dies at `wasm-ld` with
 `undefined symbol: cast_i32`, which is exactly the failure the smoke test below reproduces with
 the archive unlinked. The file lists no `EmccExportedFunction`: `"*"` resolution does not need
-the Emscripten export, and the smoke test passes without it on .NET SDK 11.0.100-rc.2.
+the Emscripten export, and the smoke test passes without it.
 
 **Target frameworks.** The package builds `net10.0` and `net11.0` from one source, and package validation holds their public APIs identical. Its targets file sits under `build/net10.0/` (and `buildTransitive/net10.0/`); NuGet hands that one file to .NET 11 projects too. A project older than .NET 10 is refused at restore with NU1202. Blazor WebAssembly works on both frameworks (see [Platform support](#platform-support)). HyperUuid's package is laid out the same way.
 

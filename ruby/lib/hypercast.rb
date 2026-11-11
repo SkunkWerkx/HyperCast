@@ -1464,7 +1464,11 @@ module HyperCast
           raise TypeError, "no implicit conversion of #{text.class} into String"
         text = converted
       end
-      return text if Interop::BYTE_COMPATIBLE.include?(text.encoding)
+      encoding = text.encoding
+      # A US-ASCII String with a byte past 0x7F is not ASCII: it transcodes, and that byte is
+      # malformed (#kept), never read as the UTF-8 it might spell.
+      return text if Interop::BYTE_COMPATIBLE.include?(encoding) &&
+                     (encoding != Encoding::US_ASCII || text.ascii_only?)
 
       begin
         text.encode(Encoding::UTF_8)

@@ -345,6 +345,23 @@ final class NativeCore {
         return utf8.byteSize() == 0 ? MemorySegment.NULL : utf8;
     }
 
+    // Java's spans are ints, so a segment longer than Integer.MAX_VALUE bytes is out_of_range
+    // (too_long) at every door, spanning the most a span holds, before the core is asked: no
+    // value or fault it could report past there would fit, and nothing past there is read.
+    private static boolean tooLong(MemorySegment in) {
+        return in.byteSize() > Integer.MAX_VALUE;
+    }
+
+    private static int tooLong(Scratch s) {
+        s.fault.set(ValueLayout.JAVA_INT, 4, 0);
+        s.fault.set(ValueLayout.JAVA_INT, 8, Integer.MAX_VALUE);
+        s.fault.set(ValueLayout.JAVA_INT, 12, TOO_LONG);
+        return OUT_OF_RANGE;
+    }
+
+    private static final int OUT_OF_RANGE = 3;
+    private static final int TOO_LONG = 21;
+
     // --- calls: each returns the core's code raw ---
 
     // Every text door is cast_detailed: `door` is the core's code and `param` what it declares.
@@ -398,6 +415,9 @@ final class NativeCore {
     }
 
     static int plain(Scratch s, int door, MemorySegment in) {
+        if (tooLong(in)) {
+            return tooLong(s);
+        }
         return detailed(
                 s,
                 door,
@@ -425,6 +445,9 @@ final class NativeCore {
     }
 
     static int numeric(Scratch s, int door, MemorySegment in, NumFormat format) {
+        if (tooLong(in)) {
+            return tooLong(s);
+        }
         return detailed(
                 s,
                 door,
@@ -452,6 +475,9 @@ final class NativeCore {
     }
 
     static int declared(Scratch s, int door, MemorySegment in, int code) {
+        if (tooLong(in)) {
+            return tooLong(s);
+        }
         return detailed(
                 s,
                 door,
@@ -479,6 +505,9 @@ final class NativeCore {
     }
 
     static int civil(Scratch s, MemorySegment in, int order, DateTimeFormat format) {
+        if (tooLong(in)) {
+            return tooLong(s);
+        }
         return detailed(
                 s,
                 Door.DATETIME,
@@ -518,6 +547,9 @@ final class NativeCore {
             DateTimeFormat format,
             DateOptions options,
             MonthNames months) {
+        if (tooLong(in)) {
+            return tooLong(s);
+        }
         return detailed(
                 s,
                 door,
@@ -560,6 +592,9 @@ final class NativeCore {
     }
 
     static int checked(Scratch s, int door, MemorySegment in, NumFormat format, Constraints<?> constraints) {
+        if (tooLong(in)) {
+            return tooLong(s);
+        }
         return checked(s, door, input(in), in.byteSize(), format, constraints);
     }
 
@@ -628,6 +663,9 @@ final class NativeCore {
     }
 
     static int text(Scratch s, MemorySegment in) {
+        if (tooLong(in)) {
+            return tooLong(s);
+        }
         return plain(s, Door.TEXT, in);
     }
 

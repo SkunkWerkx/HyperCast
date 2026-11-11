@@ -464,10 +464,10 @@ public readonly record struct NumFormat(string DecimalSeparator, string GroupSep
 
 	static volatile bool _cloneGroupSizes;
 
-	[UnsafeAccessor(UnsafeAccessorKind.Field, Name = "numberGroupSizes")]
+	[UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_numberGroupSizes")]
 	static extern ref int[] NumberGroupSizesField(NumberFormatInfo numberFormat);
 
-	[UnsafeAccessor(UnsafeAccessorKind.Field, Name = "currencyGroupSizes")]
+	[UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_currencyGroupSizes")]
 	static extern ref int[] CurrencyGroupSizesField(NumberFormatInfo numberFormat);
 
 	// A pattern groups unless its sizes are empty or start with 0, by .NET's meaning: they run from the

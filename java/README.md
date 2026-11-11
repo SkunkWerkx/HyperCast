@@ -439,7 +439,9 @@ A `Fault`'s `offset`/`length` count in the input's own unit. Through a `byte[]` 
 `String` door they are UTF-16 code units — the byte span rebased, so
 `text.substring(f.offset(), f.offset() + f.length())` is the offending text even when the
 input is not ASCII: `Cast.i32("1€", …)` faults at `(1, 1)` as a `String` and `(1, 3)` as
-bytes. ASCII input is identical either way and is never touched.
+bytes. ASCII input is identical either way and is never touched. The spans are `int`s, so a `MemorySegment`
+longer than `Integer.MAX_VALUE` bytes is `OUT_OF_RANGE` (`TOO_LONG`) at every door, spanning `(0,
+Integer.MAX_VALUE)`, on every JDK, and none of it is read.
 
 ## Native access
 

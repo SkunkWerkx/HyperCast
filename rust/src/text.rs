@@ -128,12 +128,29 @@ pub(crate) const fn contains_white_space(bytes: &[u8]) -> bool {
 
 /// The text door: the input as `&str`, untrimmed. Invalid UTF-8 is `Malformed`, spanning
 /// the first invalid sequence (to the end of the input when it is cut short); empty input
-/// is `Empty`.
+/// is `Empty`; valid text past `u32::MAX` bytes, which no span carries, is `OutOfRange`.
 pub fn cast_text(input: &[u8]) -> Result<&str, Fault> {
-    text(input).map_err(Failure::fault)
+    door(input).map_err(Failure::fault)
 }
 
-/// The text door's one parse, for both entry points.
+/// The text door, for both entry points: [`text`], then the length every binding's span
+/// must carry, so none of them narrows a success's length on its own.
+pub(crate) fn door(input: &[u8]) -> Result<&str, Failure> {
+    let valid = text(input)?;
+    spannable(valid.len())?;
+    Ok(valid)
+}
+
+/// Refuses a whole-input success longer than a span carries (`u32::MAX` bytes).
+pub(crate) fn spannable(len: usize) -> Result<(), Failure> {
+    match u32::try_from(len) {
+        Ok(_) => Ok(()),
+        Err(_) => Err(Failure::at(Site::TextTooLong, 0, len)),
+    }
+}
+
+/// The input as UTF-8, empty input refused, whatever its length: the text door's parse, and
+/// the checked text door's, which judges the length of what it delivers after trimming.
 pub(crate) fn text(input: &[u8]) -> Result<&str, Failure> {
     if input.is_empty() {
         return Err(Failure::spanless(Site::TextEmpty));

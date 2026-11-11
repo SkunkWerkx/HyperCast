@@ -89,6 +89,41 @@ final class CastTest {
     }
 
     @Test
+    void aSegmentPastWhatASpanHoldsIsOutOfRange() {
+        // Java's spans are ints, so a segment past Integer.MAX_VALUE bytes is out_of_range
+        // (too_long) at every door, on both backends, before the core reads it. Nothing backs
+        // this one: a door that read it would fail on the null address, never pass.
+        MemorySegment huge = MemorySegment.NULL.reinterpret(Integer.MAX_VALUE + 1L);
+        int most = Integer.MAX_VALUE;
+        assertEquals(new Fault<Boolean>(CastFailure.OUT_OF_RANGE, 0, most), Cast.bool(huge));
+        assertEquals(new Fault<Character>(CastFailure.OUT_OF_RANGE, 0, most), Cast.character(huge));
+        assertEquals(new Fault<Integer>(CastFailure.OUT_OF_RANGE, 0, most), Cast.i32(huge, NumFormat.INVARIANT));
+        assertEquals(new Fault<UUID>(CastFailure.OUT_OF_RANGE, 0, most), Cast.uuid(huge));
+        assertEquals(new Fault<Instant>(CastFailure.OUT_OF_RANGE, 0, most), Cast.unix(huge, UnixPrecision.SECONDS));
+        assertEquals(
+                new Fault<LocalDate>(CastFailure.OUT_OF_RANGE, 0, most), Cast.date(huge, DateOrder.YEAR_MONTH_DAY));
+        assertEquals(
+                new Fault<LocalDateTime>(CastFailure.OUT_OF_RANGE, 0, most),
+                Cast.dateTime(huge, DateOrder.YEAR_MONTH_DAY));
+        assertEquals(new Fault<String>(CastFailure.OUT_OF_RANGE, 0, most), Cast.text(huge));
+        assertEquals(
+                new Fault<Integer>(CastFailure.OUT_OF_RANGE, 0, most),
+                Cast.i32(
+                        huge,
+                        NumFormat.INVARIANT,
+                        Constraints.i32().maximum("10").build()));
+        assertEquals(
+                new Fault<String>(CastFailure.OUT_OF_RANGE, 0, most),
+                Cast.text(huge, Constraints.text().trim(true).build()));
+        assertEquals(
+                new DetailedFault<String>(CastFailure.OUT_OF_RANGE, FaultDetail.TOO_LONG, 0, most),
+                DetailedCast.text(huge));
+        assertEquals(
+                new DetailedFault<Integer>(CastFailure.OUT_OF_RANGE, FaultDetail.TOO_LONG, 0, most),
+                DetailedCast.i32(huge, NumFormat.INVARIANT));
+    }
+
+    @Test
     void characterSpanExcludesEveryWhiteSpaceEdge() {
         // The token the core read is the input less its white-space edges, U+00A0 and U+3000
         // included; the span counts a supplementary scalar whole, in the caller's own units.

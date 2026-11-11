@@ -136,11 +136,39 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   or a rejection, which is the door's own fault or a `Violation` naming the keyword and the
   span; zero is delivered without a sign. `checked_from_f64` judges a number a parser already
   holds as a double on its shortest round-trip digits, and a plain text door (`cast_text`)
-  joins the others. Five C exports (`cast_checked`, `cast_checked_from_f64`,
-  `cast_constraints_check`, `cast_text`, `cast_declared_decimal`), 32 in all, and every
-  binding spells the API in its own idiom (`docs/bindings.md`, "Constraints") and replays the
-  same constraint and declaration corpora. *(Rust, C#, Java, Swift, Go, Python, Ruby, PHP,
+  joins the others: the input once it is valid UTF-8, untrimmed, and `OutOfRange`
+  (`too_long`) past 4 GiB, which a span can't carry, in the core itself so that no binding
+  narrows it. Five C exports (`cast_checked`, `cast_checked_from_f64`,
+  `cast_constraints_check`, `cast_text`, `cast_declared_decimal`), which with 1.0's 27 and the
+  four detailed exports below make 36, and every binding spells the API in its own idiom
+  (`docs/bindings.md`, "Constraints") and replays the same constraint and declaration corpora.
+  *(Rust, C#, Java, Swift, Go, Python, Ruby, PHP, TypeScript, R, C, C++)*
+- **Fault detail: what exactly failed, beside the reason.** Every failure can now say which
+  rule it broke, from a fixed vocabulary of 32 codes (`group_size`, `digit_expected`,
+  `invalid_utf8`, `not_finite`, `too_long`, `date_field_out_of_range`, …; the list and every
+  place a door reports each is `docs/fault-sites.md`). The reason and span are the plain
+  door's, unchanged; the detail refines them and has no "other" bucket. Published codes keep
+  their numbers and meanings, a minor release may add codes, and every binding keeps an unknown
+  code as a value rather than an error. Four C exports reach every door by its `Door` code
+  (`Char` is 23) and report the detail: `cast_detailed`, `cast_detailed_from_f64`,
+  `cast_checked_detailed` and `cast_checked_detailed_from_f64`, through the new
+  `RawFaultDetail` layout. Rust has `detailed::` doors returning a `Failure`; each binding has
+  its detailed doors and detail type in its own idiom (C#'s `FaultDetail`, Java's
+  `DetailedCast` and `FaultDetail`, Go's `…Detailed` doors, TypeScript's `castDetailed`, R's
+  `detail` column and `fault_details()`, C++'s `hypercast::detailed`, and so on). A checked
+  door's `Violation` carries no detail. *(Rust, C#, Java, Swift, Go, Python, Ruby, PHP,
   TypeScript, R, C, C++)*
+- **Date options and month names, all opt-in.** A `DateOptions` declares shapes the date doors
+  refuse by default: `COMPACT_DATE` (`20260107` at the date door), `SPACE_SEPARATOR` (a space
+  for the timestamp's `T`), `HOUR_OFFSET` (`+00`, `-05`), all three as `COMMON_FORMS`, and a
+  two-digit-year pivot (100 to 9999, the last year of the window; 0 is none) for the ordered
+  date and date-time doors. A `MonthNames` vocabulary lets those two doors read a declared
+  month name in the month's field (`07-Jan-26` with a pivot, `7-Jan-2026` without), matched
+  under simple case folding, longest entry first; every month needs an entry, and an entry with
+  a digit, `/`, `-`, white space or a folded duplicate is refused at declaration. Only the
+  detailed doors take them, through the new `RawDateOptions` layout and a packed vocabulary,
+  and both are checked on every call; with neither declared every door reads exactly the shapes
+  it read in 1.0. *(Rust, C#, Java, Swift, Go, Python, Ruby, PHP, TypeScript, R, C, C++)*
 - **Rust: a declaration to and from its C ABI form.** `Constraints::from_raw` reads a
   `RawConstraints` and its packed `enum` list, refused exactly where `check_constraints`
   refuses, and `Constraints::pack_enum` writes the packed list for a declaration built in Rust,
@@ -253,9 +281,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   delimiter rule, so a `[4, 0]` locale's `1,2345` reads there as 1.2345, and the corpus pins it.
   `docs/grouping.md`, "Parked", has them, what adding one takes, and the measured locale tables.
 
-  `corpus/grouping.json` holds these shapes under both policies, and every binding replays it. These `corpus/`
-  rows moved: `12,34`, `1234,567` and `12,34.5` with no format, `1,23,456` with no format, `-0,000` with
-  no format and `-0.000,00` under a comma decimal. From 1.0 on an Apple M6, an integer door's grouped numeral costs 18% more (`i64` `1,234,567` 6.27 to 7.43 ns) and separator detection 14%, a comparison that also holds everything else since 1.0; the real door's grouped numeral moved 2.6% and the decimal door's gained 12.6% (`docs/benchmarks.md`). *(all)*
+  `corpus/grouping.json` holds these shapes under both policies, and every binding replays it.
+  Of 1.0's `corpus/` rows one moved, `{"i32", "12,34"}`, from 1234 to `Malformed`; `1234,567`,
+  `12,34.5` and `1,23,456` with no format, `-0,000` with no format and `-0.000,00` under a comma
+  decimal, rows added during 1.1 under 1.0's rule, moved with it. From 1.0 on an Apple M6, an
+  integer door's grouped numeral costs 18% more (`i64` `1,234,567` 6.27 to 7.43 ns) and
+  separator detection 14%, a comparison that also holds everything else since 1.0; the real
+  door's grouped numeral moved 2.6% and the decimal door's gained 12.6% (`docs/benchmarks.md`).
+  *(all)*
 
 - **The core credits Unicode.** Its case folding is generated from the Unicode Character
   Database, so every package names `MIT AND Unicode-3.0` and carries `LICENSE-UNICODE` where its
@@ -423,10 +456,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   userland methods took them: weak-mode callers get PHP's coercion, strict callers the same
   `TypeError`s. What does differ: a call with too many arguments is an `ArgumentCountError`
   (1.0 ignored the extras), one with too few is worded as for a built-in function, the classes
-  are internal, and errors name the caller's file and line; `php/README.md` lists them under
-  "Differences from 1.0". Stubs for IDEs and PHPStan are in `php/stubs/`. No PHP binary is
-  left in git: `php/src/` is gone. After every publish, `release.yml` has PIE install the
-  release on every platform, minor and thread safety. *(PHP)*
+  are internal (`ReflectionClass::isInternal()` is `true`), and exceptions, warnings and
+  deprecations name the caller's file and line; a `\NumberFormatter` given to a door is
+  converted on every call, each symbol and attribute asked once (1.0 asked them all to compare
+  with a per-formatter memo), which only a subclass overriding `getSymbol()` or
+  `getTextAttribute()` can tell; `NativePlatform::ridAndLibraryName()` reads `/proc/self/maps`
+  itself, so `open_basedir` no longer applies to it; and `-0` is `0.0`, as above. Stubs for
+  IDEs and PHPStan are in `php/stubs/`. No PHP binary is left in git: `php/src/` is gone.
+  After every publish, `release.yml` has PIE install the release on every platform, minor and
+  thread safety. *(PHP)*
 
 - **Go — one backend: the core translated to Go source, no cgo, no binary in git.** The Rust
   core built for `wasm32-wasip1` (the module imports nothing) is translated to one Go file by
@@ -606,6 +644,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   build's `rust_eh_personality` stub ended in `ret`, which those assemblers do not have, so
   `cargo cdylib` and `cargo staticlib` stopped there; each architecture now gets its own
   return instruction. *(Rust)*
+- **Java — a `MemorySegment` past `Integer.MAX_VALUE` bytes is `OUT_OF_RANGE`.** The doors
+  handed it to the core and read its spans back as signed `int`s, negative past 2 GiB. Every
+  door now answers `OUT_OF_RANGE` with `TOO_LONG` over `(0, Integer.MAX_VALUE)` before the core
+  reads a byte, the JNI path on JDK 21 to 24 included. *(Java)*
+- **Ruby — a US-ASCII `String` with a byte past 0x7F is `:malformed` at that byte.** It crossed
+  as-is, so the core read whatever UTF-8 its bytes spelled (`"a\xC3\xA9"` tagged US-ASCII was
+  the text `"aé"`). US-ASCII now crosses as-is only while it is ASCII; past that it transcodes
+  like any other encoding, and a byte US-ASCII does not allow is malformed at its character,
+  on both backends. Binary (`ASCII-8BIT`) strings still cross as their bytes. *(Ruby)*
 
 ## [1.0.0] — 2026-10-25
 
