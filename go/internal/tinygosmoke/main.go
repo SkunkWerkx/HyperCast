@@ -138,24 +138,30 @@ func main() {
 	lat, rejection := hypercast.Check("45.1234567", hypercast.Invariant, latitude)
 	check(rejection == nil && lat.Value == 45.123457 && lat.Adjusted, "Check rounds to multipleOf")
 	_, rejection = hypercast.Check("-90.5", hypercast.Invariant, latitude)
-	violation, ok := rejection.(*hypercast.Violation)
-	check(ok && violation.Keyword == hypercast.KeywordMinimum && violation.Offset == 0 && violation.Length == 5,
-		"Check violation keyword and span")
+	violation, ok := rejection.(*hypercast.Violation[float64])
+	check(ok && violation.Keyword == hypercast.KeywordMinimum && violation.Value == -90.5 &&
+		violation.Offset == 0 && violation.Length == 5, "Check violation keyword, value and span")
 	lat, rejection = hypercast.CheckFromFloat64(tenth+fifth, hypercast.MustConstraints[float64](
 		hypercast.MultipleOf("0.1"), hypercast.WithRounding(hypercast.Midpoint)))
 	check(rejection == nil && lat.Value == 0.3 && lat.Adjusted, "CheckFromFloat64")
 
 	codes := hypercast.MustConstraints[int32](hypercast.Enum(10, 20))
 	_, rejection = hypercast.Check("30", hypercast.Invariant, codes)
-	violation, ok = rejection.(*hypercast.Violation)
-	check(ok && violation.Keyword == hypercast.KeywordEnum, "Check integer enum")
+	enumViolation, ok := rejection.(*hypercast.Violation[int32])
+	check(ok && enumViolation.Keyword == hypercast.KeywordEnum && enumViolation.Value == 30, "Check integer enum")
 
 	sex := hypercast.MustConstraints[string](hypercast.Trim(), hypercast.Enum("Female", "Male", "Other"))
 	code, rejection := hypercast.CheckString(" MALE ", sex)
 	check(rejection == nil && code.Value == "Male" && code.EnumIndex == 1, "CheckString text enum")
 
-	_, err := hypercast.NewConstraints[uint8](hypercast.Minimum(-1))
-	check(err != nil && err.Error() == "hypercast: Constraints refused (code 8): a bound, step or enum entry the door cannot hold.",
+	units := hypercast.MustConstraints[string](hypercast.Trim(), hypercast.CaseSensitive(), hypercast.Enum("mm", "Mm"))
+	_, rejection = hypercast.CheckString(" MM ", units)
+	textViolation, ok := rejection.(*hypercast.Violation[string])
+	check(ok && textViolation.Keyword == hypercast.KeywordEnum && textViolation.Value == "MM" &&
+		textViolation.Offset == 1 && textViolation.Length == 2, "CheckString case-sensitive enum violation")
+
+	_, err := hypercast.NewConstraints[int32](hypercast.MultipleOf(0))
+	check(err != nil && err.Error() == "hypercast: Constraints refused (code 5): multipleOf is not positive.",
 		"NewConstraints refusal")
 
 	fmt.Println("DONE")

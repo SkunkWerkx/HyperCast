@@ -304,7 +304,7 @@ pub use checked::{
     optional_checked,
 };
 pub use constraints::{
-    Bound, Constraints, Keyword, Numeric, NumericRules, Refusal, Rounding, Text, TextRules,
+    Constraints, Keyword, Numeric, NumericRules, Refusal, Rounding, Text, TextRules,
     check_constraints, decimal_for_declaration,
 };
 pub use date_options::{DateOptions, MonthNames, MonthNamesFault, ValidDateOptions};

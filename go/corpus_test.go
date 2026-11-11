@@ -705,6 +705,7 @@ type constraintsVector struct {
 		MinLength        *int     `json:"minLength,omitempty"`
 		MaxLength        *int     `json:"maxLength,omitempty"`
 		Trim             bool     `json:"trim,omitempty"`
+		CaseSensitive    bool     `json:"caseSensitive,omitempty"`
 		Enum             []string `json:"enum,omitempty"`
 	} `json:"constraints"`
 	Expect    string          `json:"expect"`
@@ -753,6 +754,9 @@ func (v *constraintsVector) rules(t *testing.T) []Rule {
 	}
 	if c.Trim {
 		rules = append(rules, Trim())
+	}
+	if c.CaseSensitive {
+		rules = append(rules, CaseSensitive())
 	}
 	if c.Enum != nil {
 		rules = append(rules, Enum(c.Enum...))
@@ -828,7 +832,7 @@ func assertRefused[V CheckedTarget](t *testing.T, v *constraintsVector) {
 }
 
 // assertChecked checks one checked verdict against the vector; same reports how a delivered
-// value differs from the expected one ("" when it does not).
+// value, a success's or a violation's, differs from the expected one ("" when it does not).
 func assertChecked[V any](t *testing.T, v *constraintsVector, how string, got Checked[V], rejection error, same func(V) string) {
 	t.Helper()
 	switch v.Expect {
@@ -852,7 +856,7 @@ func assertChecked[V any](t *testing.T, v *constraintsVector, how string, got Ch
 		}
 		return
 	case "violation":
-		violation, ok := rejection.(*Violation)
+		violation, ok := rejection.(*Violation[V])
 		if !ok {
 			t.Errorf("constraints: %v (%s) -> %v %v, want a %s violation", v, how, got, rejection, v.Keyword)
 			return
@@ -863,6 +867,12 @@ func assertChecked[V any](t *testing.T, v *constraintsVector, how string, got Ch
 		if violation.Offset != v.Fault[0] || violation.Length != v.Fault[1] {
 			t.Errorf("constraints: %v (%s) violation span (%d,%d), want (%d,%d)",
 				v, how, violation.Offset, violation.Length, v.Fault[0], v.Fault[1])
+		}
+		if v.Value == nil {
+			t.Fatalf("constraints: %v a violation row carries no value", v)
+		}
+		if diff := same(violation.Value); diff != "" {
+			t.Errorf("constraints: %v (%s) violation value %s", v, how, diff)
 		}
 	default:
 		reason, known := expectedReason[v.Expect]
@@ -946,7 +956,7 @@ func replayText(t *testing.T, v *constraintsVector) {
 		return
 	}
 	var want string
-	if v.Expect == "ok" {
+	if v.Expect == "ok" || v.Expect == "violation" {
 		if err := json.Unmarshal(v.Value, &want); err != nil {
 			t.Fatalf("constraints: %v bad value: %v", v, err)
 		}

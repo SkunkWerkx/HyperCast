@@ -36,6 +36,7 @@ extension Cast {
             HyperCastRawConstraints_HAS_MAXIMUM, HyperCastRawConstraints_HAS_EXCLUSIVE_MAXIMUM,
             HyperCastRawConstraints_HAS_MULTIPLE_OF, HyperCastRawConstraints_HAS_MIN_LENGTH,
             HyperCastRawConstraints_HAS_MAX_LENGTH, HyperCastRawConstraints_TRIM, HyperCastRawConstraints_HAS_ENUM,
+            HyperCastRawConstraints_CASE_SENSITIVE,
         ].map { UInt32($0) }
     }
 
@@ -89,8 +90,7 @@ extension Cast {
         var faultOut = Interop.freshRawFaultDetail
         var check = noCheck
         let code = checked(utf8, format, constraints, &out, &faultOut, &check)
-        guard code == 0 else { return .rejection(rejection(code, faultOut, check)) }
-        return .success(found(withUnsafeBytes(of: &out, read), check))
+        return verdict(code, faultOut, check) { withUnsafeBytes(of: &out, read) }
     }
 
     private static func checkedFromDouble<T>(
@@ -114,27 +114,34 @@ extension Cast {
                 }
             }
         }
-        guard code == 0 else { return .rejection(rejection(code, faultOut, check)) }
-        return .success(found(withUnsafeBytes(of: &out, read), check))
+        return verdict(code, faultOut, check) { withUnsafeBytes(of: &out, read) }
     }
 
     /// A success: the value, whether rounding changed it, and the matched text entry's index.
-    /// An integer `enum` has no index; the value is the answer.
+    /// A numeric `enum` has no index; the value is the answer.
     private static func found<T>(_ value: T, _ check: CheckScratch) -> Checked<T> {
         Checked(value: value, adjusted: check.1 != 0, enumIndex: check.2 == UInt32.max ? nil : Int(check.2))
     }
 
-    /// The rejection a nonzero code names: 4 a violation of the keyword the check carries,
-    /// 1 to 3 the door's own fault, both spanning UTF-8 bytes of the input.
-    private static func rejection(_ code: Int32, _ span: DetailScratch, _ check: CheckScratch) -> Rejection {
+    /// The verdict a code names: 0 a success, 4 a violation of the keyword the check carries,
+    /// 1 to 3 the door's own fault, both rejections spanning UTF-8 bytes of the input. The
+    /// core writes `out` on 0 and on 4 (the value as cast), so `value` is read on those alone.
+    private static func verdict<T>(
+        _ code: Int32, _ span: DetailScratch, _ check: CheckScratch, value: () -> T
+    ) -> CheckedVerdict<T> {
         precondition(code != -1, "libhypercast reported a contract violation — a binding bug, please report it")
-        guard code == 4 else {
-            return .fault(Interop.fault(code: code, offset: span.1, length: span.2, detail: span.3))
+        switch code {
+        case 0:
+            return .success(found(value(), check))
+        case 4:
+            guard let keyword = Keyword(rawValue: check.0) else {
+                preconditionFailure("libhypercast reported a violation of no keyword — a binding bug, please report it")
+            }
+            return .rejection(
+                .violation(Violation(keyword: keyword, value: value(), offset: Int(span.1), length: Int(span.2))))
+        default:
+            return .rejection(.fault(Interop.fault(code: code, offset: span.1, length: span.2, detail: span.3)))
         }
-        guard let keyword = Keyword(rawValue: check.0) else {
-            preconditionFailure("libhypercast reported a violation of no keyword — a binding bug, please report it")
-        }
-        return .violation(Violation(keyword: keyword, offset: Int(span.1), length: Int(span.2)))
     }
 
     // MARK: - checked i8
@@ -546,8 +553,9 @@ extension Cast {
 
     /// Casts text as text, then judges it by `constraints`: trimmed of Unicode `White_Space`
     /// when `trim` says so, its length counted in code points, and an `enum` matched under
-    /// Unicode simple case folding — a match delivers the caller's own declared entry, and its
-    /// index. Spans are UTF-8 bytes into the input, as a fault's are.
+    /// Unicode simple case folding, or byte for byte when `caseSensitive` says so — a match
+    /// delivers the caller's own declared entry, and its index; a violation carries the judged
+    /// text. Spans are UTF-8 bytes into the input, as a fault's are.
     public static func text(_ text: String, constraints: Constraints<String>) -> CheckedVerdict<String> {
         withUTF8(text) { checkedText($0, whole: text, constraints) }
     }
@@ -585,12 +593,13 @@ extension Cast {
         var faultOut = Interop.freshRawFaultDetail
         var check = noCheck
         let code = checked(utf8, nil, constraints, &out, &faultOut, &check)
-        guard code == 0 else { return .rejection(rejection(code, faultOut, check)) }
-        if check.2 != UInt32.max {
+        if code == 0, check.2 != UInt32.max {
             return .success(found(constraints.entry(check.2), check))
         }
-        let span = withUnsafeBytes(of: &out) { $0.load(as: SpanScratch.self) }
-        return .success(found(slice(utf8, span, whole: whole), check))
+        // The judged text, as a success without an `enum` or as a violation's value.
+        return verdict(code, faultOut, check) {
+            slice(utf8, withUnsafeBytes(of: &out) { $0.load(as: SpanScratch.self) }, whole: whole)
+        }
     }
 
     /// The span of the input the core judged to be the text: the caller's own string when it

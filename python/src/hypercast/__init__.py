@@ -371,11 +371,12 @@ Verdict = Union[Success[_T], Fault]
 value a success carries — ``Verdict[int]`` is what :func:`cast_i32` returns."""
 
 
-Rejection = Union[Fault, Violation]
-"""Why a checked door gave no value: exactly one of :class:`Fault` (it did not parse — the very
-type every plain door returns) or :class:`Violation` (it parsed and broke a declared rule)."""
+Rejection = Union[Fault, Violation[_T]]
+"""Why a checked door gave no value: exactly one of :class:`Fault` (it did not cast — the very
+type every plain door returns) or :class:`Violation` (it cast and broke a declared rule; the
+violation carries the value as cast). Generic in that value, as :data:`CheckedVerdict` is."""
 
-CheckedVerdict = Union[Checked[_T], Fault, Violation]
+CheckedVerdict = Union[Checked[_T], Fault, Violation[_T]]
 """The outcome of a checked door: :class:`Checked`, or a :data:`Rejection`. Generic in the
 value a success carries — ``CheckedVerdict[float]`` is what :func:`cast_checked` returns for
 ``Constraints`` bound to ``Door.F64``."""
@@ -385,11 +386,11 @@ value a success carries — ``CheckedVerdict[float]`` is what :func:`cast_checke
 def optional(verdict: Success[_T] | Fault) -> Success[_T] | Fault | None: ...
 @overload
 def optional(
-    verdict: Checked[_T] | Fault | Violation,
-) -> Checked[_T] | Fault | Violation | None: ...
+    verdict: Checked[_T] | Fault | Violation[_T],
+) -> Checked[_T] | Fault | Violation[_T] | None: ...
 def optional(
-    verdict: Success[_T] | Checked[_T] | Fault | Violation,
-) -> Success[_T] | Checked[_T] | Fault | Violation | None:
+    verdict: Success[_T] | Checked[_T] | Fault | Violation[_T],
+) -> Success[_T] | Checked[_T] | Fault | Violation[_T] | None:
     """Presents a verdict, plain or checked, optionally: a :data:`CastFailure.EMPTY` fault
     becomes ``None`` (Python's absent), everything else flows through untouched.
     """

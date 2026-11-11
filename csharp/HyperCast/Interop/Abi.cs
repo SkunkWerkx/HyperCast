@@ -82,20 +82,24 @@ public static class Abi
 	public static FaultDetail DetailFrom(uint code) =>
 		code <= (uint)FaultDetail.NotAScalar ? (FaultDetail)code : FaultDetail.Unknown;
 
-	/// <summary>The violation a checked detailed door's code 4, its keyword and its span name.</summary>
+	/// <summary>The violation a checked detailed door's code 4, its keyword, the value it wrote and its span name.</summary>
+	/// <typeparam name="T">The door's type.</typeparam>
 	/// <param name="keyword">The keyword code the door wrote: 1 <c>minimum</c> … 8 <c>enum</c>.</param>
+	/// <param name="value">The value the door wrote to <c>out</c>, exactly as cast, presented in the door's type.</param>
 	/// <param name="fault">The fault the door wrote: the span of the value, with a detail of 0.</param>
 	/// <exception cref="InvalidOperationException"><paramref name="keyword"/> is 0, which names no rule — a binding bug, not data.</exception>
-	public static Violation ToViolation(uint keyword, in RawFaultDetail fault) =>
-		ToViolation(keyword, new RawFault(fault.Offset, fault.Length));
+	public static Violation<T> ToViolation<T>(uint keyword, T value, in RawFaultDetail fault) where T : notnull =>
+		ToViolation(keyword, value, new RawFault(fault.Offset, fault.Length));
 
-	/// <summary>The violation a checked door's code 4, its keyword and its span name.</summary>
+	/// <summary>The violation a checked door's code 4, its keyword, the value it wrote and its span name.</summary>
+	/// <typeparam name="T">The door's type.</typeparam>
 	/// <param name="keyword">The keyword code the door wrote: 1 <c>minimum</c> … 8 <c>enum</c>.</param>
+	/// <param name="value">The value the door wrote to <c>out</c>, exactly as cast, presented in the door's type.</param>
 	/// <param name="span">The span of the value, in bytes of the input.</param>
 	/// <exception cref="InvalidOperationException"><paramref name="keyword"/> is 0, which names no rule — a binding bug, not data.</exception>
-	public static Violation ToViolation(uint keyword, RawFault span) =>
+	public static Violation<T> ToViolation<T>(uint keyword, T value, RawFault span) where T : notnull =>
 		Keyword.FromCode(keyword) is { } named
-			? new Violation(named, (int)span.Offset, (int)span.Length)
+			? new Violation<T>(named, value, (int)span.Offset, (int)span.Length)
 			: throw new InvalidOperationException("A violation named no keyword — a binding bug, please report it.");
 
 	/// <summary>A time of day, as the core writes it (nanoseconds since midnight), sub-tick nanoseconds truncated.</summary>

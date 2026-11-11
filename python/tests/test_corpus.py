@@ -439,23 +439,16 @@ _ROUNDINGS = {
     "ceiling": Rounding.CEILING,
 }
 
-#: The core's Refusal as Rust displays it: the wording every binding's message carries.
-_REFUSALS = [
-    "",
-    "a constraint the door does not take",
-    "minimum together with exclusiveMinimum",
-    "maximum together with exclusiveMaximum",
-    "the lower bound is not below the upper bound",
-    "multipleOf is not positive",
-    "a rounding without multipleOf",
-    "minLength is above maxLength",
-    "a bound, step or enum entry the door cannot hold",
-    "an enum entry that is not UTF-8",
-    "a duplicate enum entry",
-    "a malformed constraints layout",
-    "an enum with no entries",
-    "a text enum entry no input can match",
-]
+#: The core's Refusal as Rust displays it, by code: the wording every binding's message
+#: carries. The codes between are retired and never reused.
+_REFUSALS = {
+    1: "a constraint the door does not take",
+    5: "multipleOf is not positive",
+    6: "a rounding without multipleOf",
+    8: "a bound, step or enum entry the door cannot hold",
+    9: "an enum entry that is not UTF-8",
+    11: "a malformed constraints layout",
+}
 
 
 def refusal_message(code: int) -> str:
@@ -476,6 +469,7 @@ def _keywords(c: dict) -> dict:
         "min_length": c.get("minLength"),
         "max_length": c.get("maxLength"),
         "trim": c.get("trim", False),
+        "case_sensitive": c.get("caseSensitive", False),
         "enum": c.get("enum"),
     }
 
@@ -497,28 +491,35 @@ def _code_points(text: str, byte_offset: int) -> int:
     return len(text.encode("utf-8")[:byte_offset].decode("utf-8", errors="ignore"))
 
 
+def _assert_value(label: str, vector: dict, value) -> None:
+    """A checked or violating value against its row: by bits (a float), by its exact (sign,
+    digits, exponent) (a decimal), or as it is (an int, a str)."""
+    want = vector["value"]
+    door = vector["door"]
+    if door in ("f32", "f64"):
+        assert type(value) is float, label
+        assert _bits(value) == _bits(_real(door, want)), f"{label}: {value!r} bits"
+    elif door == "decimal":
+        assert value.as_tuple() == Decimal(want).as_tuple(), f"{label}: {value!r}"
+    else:
+        assert type(value) is type(want) and value == want, f"{label}: {value!r}"
+
+
 def _assert_checked(label: str, vector: dict, verdict, span) -> None:
-    """One checked verdict against its row: the value by bits (a float), by its exact
-    (sign, digits, exponent) (a decimal), or as it is; ``adjusted`` and ``enum_index``; or the
-    reason or keyword and the span, which ``span`` re-expresses in the input's own units."""
+    """One checked verdict against its row: the value (a success's or a violation's, see
+    :func:`_assert_value`); ``adjusted`` and ``enum_index``; or the reason or keyword and the
+    span, which ``span`` re-expresses in the input's own units."""
     expect = vector["expect"]
     match verdict:
         case Checked(value, adjusted, enum_index):
             assert expect == "ok", f"{label}: unexpectedly passed as {verdict!r}"
-            want = vector["value"]
-            door = vector["door"]
-            if door in ("f32", "f64"):
-                assert type(value) is float, label
-                assert _bits(value) == _bits(_real(door, want)), f"{label}: {value!r} bits"
-            elif door == "decimal":
-                assert value.as_tuple() == Decimal(want).as_tuple(), f"{label}: {value!r}"
-            else:
-                assert type(value) is type(want) and value == want, f"{label}: {value!r}"
+            _assert_value(label, vector, value)
             assert adjusted is vector["adjusted"], f"{label}: adjusted"
             assert enum_index == vector.get("enum_index"), f"{label}: enum_index"
-        case Violation(keyword, offset, length):
+        case Violation(keyword, value, offset, length):
             assert expect == "violation", f"{label}: {verdict!r}"
             assert keyword.name == vector["keyword"], f"{label}: keyword"
+            _assert_value(f"{label}: violation", vector, value)
             assert (offset, length) == span(*vector["fault"]), f"{label}: violation span"
         case Fault(reason, offset, length):
             assert expect in _EXPECTED_REASON, f"{label}: expected {expect} but {verdict!r}"

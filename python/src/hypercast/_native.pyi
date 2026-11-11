@@ -17,7 +17,7 @@ _T_co = TypeVar("_T_co", covariant=True)
 _T = TypeVar("_T")
 #: What a numeric door's Constraints deliver.
 _N = TypeVar("_N", int, float, decimal.Decimal)
-#: A bound, step or integer enum entry: exact, never a float.
+#: A bound, step or numeric enum entry: exact, never a float.
 _Exact = decimal.Decimal | int | str
 
 @final
@@ -154,6 +154,7 @@ class Constraints(Generic[_T]):
         min_length: int | None = None,
         max_length: int | None = None,
         trim: bool = False,
+        case_sensitive: bool = False,
         enum: Iterable[_Exact] | None = None,
     ) -> Constraints[int]: ...
     @overload
@@ -170,6 +171,7 @@ class Constraints(Generic[_T]):
         min_length: int | None = None,
         max_length: int | None = None,
         trim: bool = False,
+        case_sensitive: bool = False,
         enum: Iterable[_Exact] | None = None,
     ) -> Constraints[float]: ...
     @overload
@@ -186,6 +188,7 @@ class Constraints(Generic[_T]):
         min_length: int | None = None,
         max_length: int | None = None,
         trim: bool = False,
+        case_sensitive: bool = False,
         enum: Iterable[_Exact] | None = None,
     ) -> Constraints[decimal.Decimal]: ...
     @overload
@@ -202,7 +205,8 @@ class Constraints(Generic[_T]):
         min_length: int | None = None,
         max_length: int | None = None,
         trim: bool = False,
-        enum: Iterable[str] | None = None,
+        case_sensitive: bool = False,
+        enum: Iterable[str | int | decimal.Decimal] | None = None,
     ) -> Constraints[str]: ...
     @overload
     def __new__(
@@ -218,6 +222,7 @@ class Constraints(Generic[_T]):
         min_length: int | None = None,
         max_length: int | None = None,
         trim: bool = False,
+        case_sensitive: bool = False,
         enum: Iterable[_Exact] | None = None,
     ) -> Constraints[Any]: ...
     @property
@@ -241,10 +246,12 @@ class Constraints(Generic[_T]):
     @property
     def trim(self) -> bool: ...
     @property
+    def case_sensitive(self) -> bool: ...
+    @property
     def enum(self) -> tuple[Any, ...] | None: ...
     @property
     def packed(self) -> bytes:
-        """The 72 bytes this declaration crosses a C ABI as, native byte order."""
+        """The 104 bytes this declaration crosses a C ABI as, native byte order."""
     @property
     def packed_enum(self) -> bytes:
         """The enum list as the core reads it beside ``packed``."""
@@ -285,12 +292,16 @@ class Checked(Generic[_T_co]):
     def __eq__(self, other: object) -> bool: ...
 
 @final
-class Violation:
-    __match_args__: Final = ("keyword", "offset", "length")
+class Violation(Generic[_T_co]):
+    __match_args__: Final = ("keyword", "value", "offset", "length")
     __hash__: ClassVar[None]  # type: ignore[assignment]
-    def __new__(cls, keyword: Keyword, offset: int, length: int) -> Violation: ...
+    def __new__(
+        cls, keyword: Keyword, value: _T_co, offset: int, length: int
+    ) -> Violation[_T_co]: ...
     @property
     def keyword(self) -> Keyword: ...
+    @property
+    def value(self) -> _T_co: ...
     @property
     def offset(self) -> int: ...
     @property
@@ -349,13 +360,13 @@ def cast_text(text: str | bytes, constraints: None = None) -> Success[str] | Fau
 @overload
 def cast_text(
     text: str | bytes, constraints: Constraints[str]
-) -> Checked[str] | Fault | Violation: ...
+) -> Checked[str] | Fault | Violation[str]: ...
 def cast_checked(
     text: str | bytes, fmt: NumFormat, constraints: Constraints[_N]
-) -> Checked[_N] | Fault | Violation: ...
+) -> Checked[_N] | Fault | Violation[_N]: ...
 def cast_checked_from_float(
     value: float, constraints: Constraints[_N]
-) -> Checked[_N] | Fault | Violation: ...
+) -> Checked[_N] | Fault | Violation[_N]: ...
 def cast_constraints_check(
     door: Door,
     *,
@@ -368,6 +379,7 @@ def cast_constraints_check(
     min_length: int | None = None,
     max_length: int | None = None,
     trim: bool = False,
+    case_sensitive: bool = False,
     enum: Iterable[_Exact] | None = None,
 ) -> int: ...
 def cast_declared_decimal(text: str | bytes) -> decimal.Decimal: ...

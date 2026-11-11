@@ -1,7 +1,7 @@
 namespace HyperCast;
 
 /// <summary>
-/// The rule a <see cref="Violation"/> broke, spelled the OpenAPI way (<see cref="Name"/> is
+/// The rule a <see cref="Violation{T}"/> broke, spelled the OpenAPI way (<see cref="Name"/> is
 /// <c>exclusiveMinimum</c>, not <c>ExclusiveMinimum</c>), with the native core's code.
 /// </summary>
 /// <remarks>

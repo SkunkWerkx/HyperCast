@@ -70,21 +70,15 @@ def test_bounds_are_exact_never_a_float():
 @pytest.mark.parametrize(
     "door, keywords, code",
     [
-        (Door.I32, {"min_length": 1}, 1),
-        (Door.F64, {"minimum": 1, "exclusive_minimum": 0}, 2),
-        (Door.F64, {"maximum": 1, "exclusive_maximum": 2}, 3),
-        (Door.I8, {"minimum": 5, "maximum": 5}, 4),
+        (Door.I32, {"trim": True}, 1),
+        (Door.F64, {"case_sensitive": True}, 1),
+        (Door.TEXT, {"multiple_of": 1, "rounding": Rounding.MIDPOINT}, 1),
         (Door.DECIMAL, {"multiple_of": "-0.05"}, 5),
         (Door.F64, {"rounding": Rounding.MIDPOINT}, 6),
-        (Door.TEXT, {"min_length": 3, "max_length": 2}, 7),
-        (Door.U8, {"minimum": "-1"}, 8),
+        (Door.DECIMAL, {"maximum": "1e-29"}, 8),
+        (Door.I32, {"multiple_of": "0.5", "rounding": Rounding.MIDPOINT}, 8),
         (Door.TEXT, {"enum": ["ok", "\ud800"]}, 9),
-        (Door.TEXT, {"enum": ["Straße", "STRASSE", "straße"]}, 10),
         (Door.F64, {"multiple_of": 1, "rounding": 7}, 11),
-        (Door.I32, {"enum": []}, 12),
-        (Door.TEXT, {"enum": ()}, 12),
-        (Door.TEXT, {"enum": ["Male", ""]}, 13),
-        (Door.TEXT, {"trim": True, "enum": [" Male "]}, 13),
     ],
 )
 def test_every_refusal_raises_its_own_message(door, keywords, code):
@@ -95,9 +89,106 @@ def test_every_refusal_raises_its_own_message(door, keywords, code):
     assert hypercast.cast_constraints_check(door, **keywords) == code
 
 
+@pytest.mark.parametrize(
+    "door, keywords",
+    [
+        (Door.I32, {"min_length": 1}),
+        (Door.TEXT, {"minimum": 1}),
+        (Door.F64, {"minimum": 1, "exclusive_minimum": 0}),
+        (Door.F64, {"maximum": 1, "exclusive_maximum": 2}),
+        (Door.I8, {"minimum": 5, "maximum": 5}),
+        (Door.I8, {"minimum": 6, "maximum": 5}),
+        (Door.TEXT, {"min_length": 3, "max_length": 2}),
+        (Door.U8, {"minimum": "-1", "maximum": 300}),
+        (Door.I32, {"minimum": "0.5"}),
+        (Door.I32, {"multiple_of": "0.5"}),
+        (Door.TEXT, {"enum": ["Straße", "STRASSE", "straße"]}),
+        (Door.I32, {"enum": []}),
+        (Door.TEXT, {"enum": ()}),
+        (Door.F64, {"enum": []}),
+        (Door.I32, {"enum": ["7.5", 300, 7]}),
+        (Door.TEXT, {"enum": ["Male", "", " "]}),
+        (Door.TEXT, {"trim": True, "enum": [" Male "]}),
+        (Door.TEXT, {"case_sensitive": True, "enum": ["Male", "Male"]}),
+    ],
+)
+def test_every_declaration_openapi_allows_is_accepted(door, keywords):
+    """OpenAPI 3.2 allows each of these, so the core accepts it: a keyword for another type is
+    ignored, every bound applies on its own, and an enum may hold anything, even nothing."""
+    assert hypercast.cast_constraints_check(door, **keywords) == 0
+    Constraints(door, **keywords)
+
+
+def test_bounds_and_enums_are_judged_as_openapi_says():
+    """Four independent bounds, an ignored keyword, an empty enum no value is in, and entries
+    no value can equal, each judged on the value as the door cast it."""
+    both = Constraints(Door.F64, minimum=1, exclusive_minimum=0)
+    assert hypercast.cast_checked("0.5", INVARIANT, both) == Violation(Keyword.MINIMUM, 0.5, 0, 3)
+    assert hypercast.cast_checked("0", INVARIANT, both) == Violation(Keyword.MINIMUM, 0.0, 0, 1)
+    assert hypercast.cast_checked("1", INVARIANT, both) == Checked(1.0)
+    upper = Constraints(Door.I32, maximum=10, exclusive_maximum=10)
+    assert hypercast.cast_checked("10", INVARIANT, upper) == Violation(
+        Keyword.EXCLUSIVE_MAXIMUM, 10, 0, 2
+    )
+    crossed = Constraints(Door.I8, minimum=6, maximum=5)
+    assert hypercast.cast_checked("5", INVARIANT, crossed) == Violation(Keyword.MINIMUM, 5, 0, 1)
+    assert hypercast.cast_checked("7", INVARIANT, Constraints(Door.I32, min_length=9)) == Checked(7)
+    nothing = Constraints(Door.I32, enum=[])
+    assert hypercast.cast_checked("0", INVARIANT, nothing) == Violation(Keyword.ENUM, 0, 0, 1)
+    assert hypercast.cast_text("x", Constraints(Door.TEXT, enum=[])) == Violation(
+        Keyword.ENUM, "x", 0, 1
+    )
+    halves = Constraints(Door.I32, enum=["7.5", 8])
+    assert hypercast.cast_checked("8", INVARIANT, halves) == Checked(8)
+    assert hypercast.cast_checked("7", INVARIANT, halves) == Violation(Keyword.ENUM, 7, 0, 1)
+    prices = Constraints(Door.DECIMAL, enum=["1.5", "2.25"])
+    assert hypercast.cast_checked("2.250", INVARIANT, prices) == Checked(Decimal("2.25"))
+    assert hypercast.cast_checked("2.5", INVARIANT, prices) == Violation(
+        Keyword.ENUM, Decimal("2.5"), 0, 3
+    )
+
+
+def test_a_violation_carries_the_value_as_cast_never_rounded():
+    """The value a violation carries is the door's, as it cast it: a rounding past what the
+    type holds is a multiple_of violation of the parsed value, and at Door.TEXT the value is
+    the judged text, after trim, never an entry."""
+    ceiling = Constraints(Door.I8, multiple_of=5, rounding=Rounding.CEILING)
+    assert hypercast.cast_checked("127", INVARIANT, ceiling) == Violation(
+        Keyword.MULTIPLE_OF, 127, 0, 3
+    )
+    capped = Constraints(Door.I32, multiple_of=10, rounding=Rounding.MIDPOINT, maximum=100)
+    # 106 rounds to 110, past the maximum: the violation carries 106, as cast.
+    assert hypercast.cast_checked("106", INVARIANT, capped) == Violation(Keyword.MAXIMUM, 106, 0, 3)
+    assert hypercast.cast_checked("104", INVARIANT, capped) == Checked(100, True)
+    sex = Constraints(Door.TEXT, trim=True, enum=["Female", "Male"])
+    verdict = hypercast.cast_text(" Femal ", sex)
+    assert verdict == Violation(Keyword.ENUM, "Femal", 1, 5)
+    assert isinstance(verdict, Violation) and type(verdict.value) is str
+    assert hypercast.cast_text(b" Femal ", sex) == Violation(Keyword.ENUM, "Femal", 1, 5)
+    assert hypercast.cast_checked_from_float(-0.5, Constraints(Door.F32, minimum=0)) == Violation(
+        Keyword.MINIMUM, -0.5, 0, 0
+    )
+
+
+def test_case_sensitive_matches_an_enum_byte_for_byte():
+    """A text enum folds case by default; case_sensitive compares byte for byte, and is a text
+    extension, refused at a numeric door as trim is."""
+    folded = Constraints(Door.TEXT, enum=["Male"])
+    exact = Constraints(Door.TEXT, case_sensitive=True, enum=["Male"])
+    assert folded.case_sensitive is False and exact.case_sensitive is True
+    assert hypercast.cast_text("male", folded) == Checked("Male", False, 0)
+    assert hypercast.cast_text("male", exact) == Violation(Keyword.ENUM, "male", 0, 4)
+    assert hypercast.cast_text("Male", exact) == Checked("Male", False, 0)
+    assert repr(exact) == "Constraints(Door.TEXT, case_sensitive=True, enum=('Male',))"
+    assert exact != folded and hash(exact) != hash(folded)
+    assert struct.unpack("=I", exact.packed[4:8])[0] == 256 | 512
+    with pytest.raises(ValueError, match=re.escape(refusal_message(1))):
+        Constraints(Door.I32, case_sensitive=True)
+
+
 def test_a_declaration_reads_back_what_it_declares():
     """The getters, the repr (the call that builds it again), equality and hashing, and the
-    72-byte layout the core reads, which a library with a C ABI of its own passes on."""
+    104-byte layout the core reads, which a library with a C ABI of its own passes on."""
     latitude = Constraints(
         Door.F64, minimum="-90", maximum=90, multiple_of="1e-6", rounding=Rounding.MIDPOINT
     )
@@ -121,7 +212,15 @@ def test_a_declaration_reads_back_what_it_declares():
     assert latitude == same and hash(latitude) == hash(same)
     assert latitude != Constraints(Door.F32, minimum=-90, maximum=90, multiple_of="1e-6")
     size, flags, rounding, *_ = struct.unpack("=6I", latitude.packed[:24])
-    assert (len(latitude.packed), size, flags, rounding) == (72, 72, 1 | 4 | 16, 1)
+    assert (len(latitude.packed), size, flags, rounding) == (104, 104, 1 | 4 | 16, 1)
+    # Each bound in its own slot: minimum 24, maximum 40, multiple_of 56, exclusive_minimum 72,
+    # exclusive_maximum 88, each a 16-byte decimal.
+    four = Constraints(
+        Door.I32, minimum=1, maximum=2, multiple_of=3, exclusive_minimum=4, exclusive_maximum=5
+    )
+    slots = [struct.unpack("=QIBB2x", four.packed[at : at + 16]) for at in range(24, 104, 16)]
+    assert [lo for lo, *_ in slots] == [1, 2, 3, 4, 5]
+    assert four.exclusive_minimum == 4 and four.exclusive_maximum == 5
     sex = Constraints(Door.TEXT, trim=True, min_length=1, max_length=6, enum=("Female", "Male"))
     assert sex.enum == ("Female", "Male")
     assert sex.packed_enum == b"\x06\x00\x00\x00Female\x04\x00\x00\x00Male"
@@ -149,29 +248,43 @@ def test_a_length_is_an_int_never_a_bool():
             Constraints(Door.TEXT, **{keyword: -1})
 
 
+def test_a_number_in_a_text_enum_never_matches():
+    """A number is a valid text entry that no string equals (JSON Schema's enum is exact
+    equality across types): declared, packed empty, and every other entry keeps its index."""
+    sex = Constraints(Door.TEXT, enum=[1, "One", Decimal("2.5"), "Two"])
+    assert sex.packed_enum[:4] == b"\0\0\0\0"
+    assert hypercast.cast_text("1", sex) == Violation(Keyword.ENUM, "1", 0, 1)
+    assert hypercast.cast_text("2.5", sex) == Violation(Keyword.ENUM, "2.5", 0, 3)
+    assert hypercast.cast_text("one", sex) == Checked("One", False, 1)
+    assert hypercast.cast_text("TWO", sex) == Checked("Two", False, 3)
+    assert hypercast.cast_text("x", Constraints(Door.TEXT, enum=[7])) == Violation(
+        Keyword.ENUM, "x", 0, 1
+    )
+
+
 def test_an_enum_is_a_list_of_entries():
-    """A text door's entries are str; a single str is not a list of its characters; an
-    integer door's entries are exact numbers, whole at any scale, and packed as decimals."""
+    """A text door's entries are str; a single str is not a list of its characters; a
+    numeric door's entries are exact numbers, at any scale, and packed as decimals."""
     with pytest.raises(TypeError, match="not a single str or bytes"):
         Constraints(Door.TEXT, enum="abc")
-    with pytest.raises(TypeError, match="entry 1 is int"):
-        Constraints(Door.TEXT, enum=["a", 1])  # type: ignore[list-item]
+    with pytest.raises(TypeError, match="entry 1 is float"):
+        Constraints(Door.TEXT, enum=["a", 1.0])  # type: ignore[list-item]
+    with pytest.raises(TypeError, match="entry 0 is bool"):
+        Constraints(Door.TEXT, enum=[True])  # type: ignore[list-item]
     with pytest.raises(TypeError):
         Constraints(Door.I32, enum=[1.0])  # type: ignore[list-item]
     ints = Constraints(Door.I32, enum=[10, "20", Decimal("3E+1"), "40.0"])
     assert len(ints.packed_enum) == 4 * 16
     assert hypercast.cast_checked("40", INVARIANT, ints) == Checked(40)
-    assert hypercast.cast_checked("41", INVARIANT, ints) == Violation(Keyword.ENUM, 0, 2)
+    assert hypercast.cast_checked("41", INVARIANT, ints) == Violation(Keyword.ENUM, 41, 0, 2)
     with pytest.raises(ValueError, match=re.escape(refusal_message(8))):
-        Constraints(Door.I32, enum=["7.5"])
-    # None declares no enum; an empty list declares one no value could match, which the core
-    # refuses (12), as it refuses an enum at a door that takes none (1) first.
+        Constraints(Door.I32, enum=["1e-29"])
+    reals = Constraints(Door.F64, enum=["0.5", 2])
+    assert len(reals.packed_enum) == 2 * 16
+    assert hypercast.cast_checked("0.50", INVARIANT, reals) == Checked(0.5)
+    # None declares no enum; an empty list declares one no value is in.
     assert Constraints(Door.TEXT, enum=None) == Constraints(Door.TEXT)
-    for door in (Door.TEXT, Door.I32):
-        with pytest.raises(ValueError, match=re.escape(refusal_message(12))):
-            Constraints(door, enum=[])
-    with pytest.raises(ValueError, match=re.escape(refusal_message(1))):
-        Constraints(Door.F64, enum=[])
+    assert Constraints(Door.TEXT, enum=[]) != Constraints(Door.TEXT)
     # Without trim, an entry with edge white space is matchable, and declared as given.
     spaced = Constraints(Door.TEXT, enum=[" Male "])
     assert hypercast.cast_text(" MALE ", spaced) == Checked(" Male ", False, 0)
@@ -199,16 +312,19 @@ def test_a_declaration_goes_to_its_own_door():
 def test_the_checked_types_hold_their_shape():
     """Checked and Violation match, compare and refuse mutation as Success and Fault do."""
     checked = Checked(42)
-    violation = Violation(Keyword.MAXIMUM, 0, 3)
+    violation = Violation(Keyword.MAXIMUM, 100, 0, 3)
     assert Checked.__match_args__ == ("value", "adjusted", "enum_index")
-    assert Violation.__match_args__ == ("keyword", "offset", "length")
+    assert Violation.__match_args__ == ("keyword", "value", "offset", "length")
     assert repr(checked) == "Checked(value=42, adjusted=False, enum_index=None)"
     assert repr(Checked("Male", False, 1)) == "Checked(value='Male', adjusted=False, enum_index=1)"
-    assert repr(violation) == "Violation(keyword=Keyword.MAXIMUM, offset=0, length=3)"
-    assert checked == Checked(42, False, None) and checked != Checked(42, True)
-    assert violation == Violation(Keyword(3), 0, 3) and violation != Violation(
-        Keyword.MINIMUM, 0, 3
+    assert repr(violation) == "Violation(keyword=Keyword.MAXIMUM, value=100, offset=0, length=3)"
+    assert repr(Violation(Keyword.ENUM, "x", 0, 1)) == (
+        "Violation(keyword=Keyword.ENUM, value='x', offset=0, length=1)"
     )
+    assert checked == Checked(42, False, None) and checked != Checked(42, True)
+    assert violation == Violation(Keyword(3), 100, 0, 3)
+    assert violation != Violation(Keyword.MINIMUM, 100, 0, 3)
+    assert violation != Violation(Keyword.MAXIMUM, 101, 0, 3)
     assert checked != Success(42) and violation != Fault(CastFailure.MALFORMED, 0, 3)
     # Each declared field refuses assignment. An undeclared name proves nothing: PyPy's cpyext
     # lets one be set on a native class.
@@ -218,9 +334,9 @@ def test_the_checked_types_hold_their_shape():
                 setattr(verdict, field, 1)
         with pytest.raises(TypeError):
             hash(verdict)
-    assert Checked[int].__origin__ is Checked
-    assert hypercast.Rejection.__args__ == (Fault, Violation)
-    assert hypercast.CheckedVerdict[int].__args__ == (Checked[int], Fault, Violation)
+    assert Checked[int].__origin__ is Checked and Violation[int].__origin__ is Violation
+    assert hypercast.Rejection[int].__args__ == (Fault, Violation[int])
+    assert hypercast.CheckedVerdict[int].__args__ == (Checked[int], Fault, Violation[int])
 
 
 def describe(keyword: Keyword) -> str:
@@ -279,13 +395,19 @@ def test_the_readme_examples():
     sex = Constraints(Door.TEXT, trim=True, enum=["Female", "Male", "Other"])
     cases = [
         (hypercast.cast_checked("45.1234567", INVARIANT, latitude), Checked(45.123457, True)),
-        (hypercast.cast_checked("-90.5", INVARIANT, latitude), Violation(Keyword.MINIMUM, 0, 5)),
+        (
+            hypercast.cast_checked("-90.5", INVARIANT, latitude),
+            Violation(Keyword.MINIMUM, -90.5, 0, 5),
+        ),
         (hypercast.cast_checked_from_float(45.1234567, latitude), Checked(45.123457, True)),
         (hypercast.cast_checked("€1.234,55", EURO, euro_cash), Checked(Decimal("1234.55"))),
-        (hypercast.cast_checked("€12,37", EURO, euro_cash), Violation(Keyword.MULTIPLE_OF, 0, 6)),
+        (
+            hypercast.cast_checked("€12,37", EURO, euro_cash),
+            Violation(Keyword.MULTIPLE_OF, Decimal("12.37"), 0, 6),
+        ),
         (hypercast.cast_checked("12,3x", EURO, euro_cash), Fault(CastFailure.MALFORMED, 4, 1)),
         (hypercast.cast_text(" MALE ", sex), Checked("Male", False, 1)),
-        (hypercast.cast_text("Femal", sex), Violation(Keyword.ENUM, 0, 5)),
+        (hypercast.cast_text("Femal", sex), Violation(Keyword.ENUM, "Femal", 0, 5)),
         (hypercast.cast_text("   ", sex), Fault(CastFailure.EMPTY, 0, 0)),
         (hypercast.cast_text(b" MALE "), Success(" MALE ")),
     ]
@@ -312,13 +434,20 @@ def test_spans_count_code_points_for_str_and_bytes_for_bytes():
     """A violation's span is in the caller's own units, exactly as a fault's: the euro sign is
     one code point and three bytes, and a supplementary character one code point and four."""
     euro_cash = Constraints(Door.DECIMAL, multiple_of="0.05")
-    assert hypercast.cast_checked("€12,37", EURO, euro_cash) == Violation(Keyword.MULTIPLE_OF, 0, 6)
+    cents = Decimal("12.37")
+    assert hypercast.cast_checked("€12,37", EURO, euro_cash) == Violation(
+        Keyword.MULTIPLE_OF, cents, 0, 6
+    )
     assert hypercast.cast_checked("€12,37".encode(), EURO, euro_cash) == Violation(
-        Keyword.MULTIPLE_OF, 0, 8
+        Keyword.MULTIPLE_OF, cents, 0, 8
     )
     short = Constraints(Door.TEXT, trim=True, max_length=1)
-    assert hypercast.cast_text(" 👍🏽 ", short) == Violation(Keyword.MAX_LENGTH, 1, 2)
-    assert hypercast.cast_text(" 👍🏽 ".encode(), short) == Violation(Keyword.MAX_LENGTH, 2, 8)
+    # A thumbs-up and its skin-tone modifier, between a no-break space and a space.
+    thumb = "\U0001f44d\U0001f3fd"
+    assert hypercast.cast_text(" 👍🏽 ", short) == Violation(Keyword.MAX_LENGTH, thumb, 1, 2)
+    assert hypercast.cast_text(" 👍🏽 ".encode(), short) == Violation(
+        Keyword.MAX_LENGTH, thumb, 2, 8
+    )
     assert hypercast.cast_checked("€12,3x", EURO, euro_cash) == Fault(CastFailure.MALFORMED, 5, 1)
 
 
@@ -373,7 +502,7 @@ def test_optional_lets_a_violation_through():
     """optional folds only an EMPTY fault to None; a violation and any other fault pass."""
     sex = Constraints(Door.TEXT, trim=True, enum=["Female", "Male"])
     assert hypercast.optional(hypercast.cast_text("   ", sex)) is None
-    assert hypercast.optional(hypercast.cast_text("x", sex)) == Violation(Keyword.ENUM, 0, 1)
+    assert hypercast.optional(hypercast.cast_text("x", sex)) == Violation(Keyword.ENUM, "x", 0, 1)
     assert hypercast.optional(hypercast.cast_text("\ud800", sex)) == Fault(
         CastFailure.MALFORMED, 0, 1
     )

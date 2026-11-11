@@ -4,25 +4,27 @@ namespace HyperCast;
 
 /// <summary>
 /// The failure case of <see cref="CheckedVerdict{T}"/>: exactly one of <see cref="Fault"/>
-/// (it did not parse — the type every plain door already returns, unchanged) or
-/// <see cref="Violation"/> (it parsed and broke a declared rule), as a native C# union. The
-/// two are the only kinds of failure: parsing keeps its own lexicon, and a rule is never a
-/// fifth <see cref="CastFailure"/>.
+/// (the input is not the type: it did not cast — the type every plain door already returns,
+/// unchanged) or <see cref="Violation{T}"/> (it cast, and the value, which the violation
+/// carries, broke a declared rule), as a native C# union. The two are the only kinds of
+/// failure: casting keeps its own lexicon, and a rule is never a fifth
+/// <see cref="CastFailure"/>.
 /// </summary>
 /// <remarks>
 /// <para>
-/// A two-arm switch over <see cref="Fault"/> and <see cref="Violation"/> is exhaustive. Without
-/// C# 15, use <see cref="Match{TResult}"/>, <see cref="Switch"/> or the
-/// <see cref="TryGetValue(out Fault)"/> / <see cref="TryGetValue(out Violation)"/> pair, as on
+/// A two-arm switch over <see cref="Fault"/> and <see cref="Violation{T}"/> is exhaustive.
+/// Without C# 15, use <see cref="Match{TResult}"/>, <see cref="Switch"/> or the
+/// <see cref="TryGetValue(out Fault)"/> / <see cref="TryGetValue(out Violation{T})"/> pair, as on
 /// <see cref="Verdict{T}"/>.
 /// </para>
 /// <para>
-/// <b>Do not use <c>default(Rejection)</c>.</b> As with <see cref="Verdict{T}"/>, a defaulted
-/// value is neither case.
+/// <b>Do not use <c>default(Rejection&lt;T&gt;)</c>.</b> As with <see cref="Verdict{T}"/>, a
+/// defaulted value is neither case.
 /// </para>
 /// </remarks>
+/// <typeparam name="T">The door's type, which a violation's value is: a number, or <see cref="string"/> for the text door.</typeparam>
 [Union]
-public readonly record struct Rejection : IUnion
+public readonly record struct Rejection<T> : IUnion where T : notnull
 {
 	enum State : byte
 	{
@@ -32,7 +34,7 @@ public readonly record struct Rejection : IUnion
 	}
 
 	readonly Fault _fault;
-	readonly Violation _violation;
+	readonly Violation<T> _violation;
 	readonly State _state;
 
 	/// <summary>Creates a parse failure. Also reachable as an implicit union conversion.</summary>
@@ -49,12 +51,12 @@ public readonly record struct Rejection : IUnion
 
 	/// <summary>Creates a rule failure. Also reachable as an implicit union conversion.</summary>
 	/// <param name="value">The violation.</param>
-	/// <exception cref="ArgumentOutOfRangeException"><paramref name="value"/> names no keyword (code 0, a <c>default(Violation)</c>).</exception>
-	public Rejection(Violation value)
+	/// <exception cref="ArgumentOutOfRangeException"><paramref name="value"/> names no keyword (code 0, a <c>default(Violation&lt;T&gt;)</c>).</exception>
+	public Rejection(Violation<T> value)
 	{
 		if (value.Keyword.Code == 0)
 			throw new ArgumentOutOfRangeException(nameof(value), value.Keyword.Code,
-				"Violation must name a keyword; default(Violation) is not a valid case value.");
+				"Violation must name a keyword; default(Violation<T>) is not a valid case value.");
 		_violation = value;
 		_state = State.Violation;
 	}
@@ -86,7 +88,7 @@ public readonly record struct Rejection : IUnion
 	/// <summary>Retrieves the rule failure without boxing.</summary>
 	/// <param name="value">The violation when present; default otherwise.</param>
 	/// <returns><see langword="true"/> if this rejection is a violation.</returns>
-	public bool TryGetValue(out Violation value)
+	public bool TryGetValue(out Violation<T> value)
 	{
 		value = _violation;
 		return _state == State.Violation;
@@ -98,8 +100,8 @@ public readonly record struct Rejection : IUnion
 	/// <param name="violation">Called with a rule failure.</param>
 	/// <returns>The return value of the delegate that ran.</returns>
 	/// <exception cref="ArgumentNullException"><paramref name="fault"/> or <paramref name="violation"/> is <see langword="null"/>.</exception>
-	/// <exception cref="InvalidOperationException">This is <c>default(Rejection)</c>, which is neither case.</exception>
-	public TResult Match<TResult>(Func<Fault, TResult> fault, Func<Violation, TResult> violation)
+	/// <exception cref="InvalidOperationException">This is <c>default(Rejection&lt;T&gt;)</c>, which is neither case.</exception>
+	public TResult Match<TResult>(Func<Fault, TResult> fault, Func<Violation<T>, TResult> violation)
 	{
 		ArgumentNullException.ThrowIfNull(fault);
 		ArgumentNullException.ThrowIfNull(violation);
@@ -115,8 +117,8 @@ public readonly record struct Rejection : IUnion
 	/// <param name="fault">Run with a parse failure.</param>
 	/// <param name="violation">Run with a rule failure.</param>
 	/// <exception cref="ArgumentNullException"><paramref name="fault"/> or <paramref name="violation"/> is <see langword="null"/>.</exception>
-	/// <exception cref="InvalidOperationException">This is <c>default(Rejection)</c>, which is neither case.</exception>
-	public void Switch(Action<Fault> fault, Action<Violation> violation)
+	/// <exception cref="InvalidOperationException">This is <c>default(Rejection&lt;T&gt;)</c>, which is neither case.</exception>
+	public void Switch(Action<Fault> fault, Action<Violation<T>> violation)
 	{
 		ArgumentNullException.ThrowIfNull(fault);
 		ArgumentNullException.ThrowIfNull(violation);
@@ -134,14 +136,14 @@ public readonly record struct Rejection : IUnion
 	}
 
 	static InvalidOperationException Defaulted() =>
-		new("default(Rejection) is neither a fault nor a violation; construct a rejection instead.");
+		new("default(Rejection<T>) is neither a fault nor a violation; construct a rejection instead.");
 
-	/// <summary>Renders "Fault(Reason @ offset+length)", "Violation(keyword @ offset+length)", or "Default(invalid)".</summary>
+	/// <summary>Renders "Fault(Reason @ offset+length)", "Violation(keyword, value @ offset+length)", or "Default(invalid)".</summary>
 	public override string ToString() =>
 		_state switch
 		{
 			State.Fault => $"Fault({_fault.Reason} @ {_fault.Offset}+{_fault.Length})",
-			State.Violation => $"Violation({_violation.Keyword} @ {_violation.Offset}+{_violation.Length})",
+			State.Violation => $"Violation({_violation.Keyword}, {_violation.Value} @ {_violation.Offset}+{_violation.Length})",
 			_ => "Default(invalid)",
 		};
 }

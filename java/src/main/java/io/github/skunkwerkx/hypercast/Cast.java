@@ -1846,13 +1846,17 @@ public final class Cast {
 
     // --- the checked doors: a door judged by declared validation constraints ---
 
-    /** The core's verdict on a checked door: the value and its check, a violation, or a fault. */
+    /**
+     * The core's verdict on a checked door: the value and its check, a violation carrying the
+     * value as cast (the core writes it on 4 as on 0), or a fault.
+     */
     private static <T> CheckedVerdict<T> judged(int code, NativeCore.Scratch scratch, Reader<T> reader) {
         return switch (code) {
             case 0 -> new Checked<>(reader.read(scratch), NativeCore.checkAdjusted(scratch), index(scratch));
             case 4 ->
                 new Violation<>(
                         new Keyword(NativeCore.checkKeyword(scratch)),
+                        reader.read(scratch),
                         NativeCore.faultOffset(scratch),
                         NativeCore.faultLength(scratch));
             default -> fault(code, scratch);
@@ -1913,7 +1917,7 @@ public final class Cast {
             case Violation<T> violation -> {
                 int start = charIndex(utf8, violation.offset());
                 int end = charIndex(utf8, violation.offset() + violation.length());
-                yield new Violation<>(violation.keyword(), start, end - start);
+                yield new Violation<>(violation.keyword(), violation.value(), start, end - start);
             }
         };
     }
@@ -1976,8 +1980,8 @@ public final class Cast {
      * Casts integer text to a signed 8-bit value under the declared {@code format}, as
      * {@link #i8(String, NumFormat)} does, then judges the value by {@code constraints}: a
      * {@link Checked}, or a {@link Rejection}, the plain door's own {@link Fault} or the
-     * {@link Violation} of a declared rule, spanning the value in chars. Every checked door
-     * has this shape, over a {@link String}, raw UTF-8 {@code byte[]} (spans in bytes) or a
+     * {@link Violation} of a declared rule, carrying the value as cast (never rounded) and
+     * spanning it in chars. Every checked door has this shape, over a {@link String}, raw UTF-8 {@code byte[]} (spans in bytes) or a
      * {@link MemorySegment}, and a {@code ...FromDouble} twin for a number a source already
      * decoded. A lone surrogate in the text is {@link CastFailure#MALFORMED}, never replaced.
      *
@@ -2650,11 +2654,12 @@ public final class Cast {
      * Casts text through the text door, then judges it by {@code constraints}: trimmed of
      * Unicode {@code White_Space} when declared (trimmed to nothing is
      * {@link CastFailure#EMPTY}), its length counted in code points, and with an {@code enum}
-     * matched under Unicode simple case folding. A match delivers the caller's own declared
-     * string and its index, so {@code "MALE"} against {@code ["Female", "Male", "Other"]} is
+     * matched under Unicode simple case folding, or byte for byte when {@code caseSensitive} is
+     * declared. A match delivers the caller's own declared string and its index (the first
+     * entry that matches), so {@code "MALE"} against {@code ["Female", "Male", "Other"]} is
      * {@code "Male"} and 1; otherwise the value is the (trimmed) text, the input itself when
-     * nothing was trimmed. A violation spans the (trimmed) text, in chars. A lone surrogate is
-     * {@link CastFailure#MALFORMED}, never replaced.
+     * nothing was trimmed. A violation carries the (trimmed) text, never an entry, and spans
+     * it, in chars. A lone surrogate is {@link CastFailure#MALFORMED}, never replaced.
      *
      * @param text the text to cast
      * @param constraints the declaration, built by {@link Constraints#text()}

@@ -13,8 +13,8 @@
 // A value that parsed can still break a business rule. The checked doors — Check,
 // CheckFromFloat64 and CheckString — judge it, in the core, by a door-bound Constraints[V]
 // declared with the OpenAPI Schema Object's keywords, and return (Checked[V], Rejection): a
-// nil Rejection is success, otherwise it is the door's own *Fault or a *Violation, the keyword
-// broken and its byte span.
+// nil Rejection is success, otherwise it is the door's own *Fault or a *Violation[V], the
+// keyword broken, the value as cast and its byte span.
 //
 // Door names follow the native ABI's (cast_i32 is I32, cast_timestamp is Timestamp) so the
 // polyglot surface reads the same across bindings, except where Go already owns the word:

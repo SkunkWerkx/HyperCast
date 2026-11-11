@@ -20,7 +20,7 @@ final class DetailedTests: XCTestCase {
         XCTAssertEqual(
             Fault(reason: .malformed, offset: 4, length: 1, detailCode: 999), handBuilt, "equality ignores the detail")
         XCTAssertEqual(Interop.fault(code: 2, offset: 4, length: 1).detailCode, 0)
-        XCTAssertEqual(Rejection.fault(handBuilt), Rejection.fault(fromDoor.fault!))
+        XCTAssertEqual(Rejection<Int32>.fault(handBuilt), Rejection<Int32>.fault(fromDoor.fault!))
     }
 
     // MARK: - the detail vocabulary
@@ -583,7 +583,7 @@ final class DetailedTests: XCTestCase {
         let constraints = Constraints<Int32>(maximum: 10)
         guard case .rejection(.violation(let violation)) = Cast.i32("11", format: .invariant, constraints: constraints)
         else { return XCTFail("11 breaks the maximum") }
-        XCTAssertEqual(violation, Violation(keyword: .maximum, offset: 0, length: 2))
+        XCTAssertEqual(violation, Violation(keyword: .maximum, value: 11, offset: 0, length: 2))
     }
 
     func testEveryFailureOfAChar_Uuid_Time_AndDurationDoorNamesItsDetail() {

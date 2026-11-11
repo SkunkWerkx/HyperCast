@@ -77,12 +77,13 @@ def judge(verdict: CheckedVerdict[float]) -> str:
             assert_type(adjusted, bool)
             assert_type(enum_index, int | None)
             return f"got {value}"
-        case Violation(keyword, offset, length):
+        case Violation(keyword, value, offset, length):
             assert_type(keyword, Keyword)
+            assert_type(value, float)
             assert_type(offset, int)
             match keyword:
                 case Keyword.MINIMUM | Keyword.MAXIMUM:
-                    return "out of bounds"
+                    return f"{value} is out of bounds"
                 case _:
                     return f"breaks {keyword.name} at {offset}+{length}"
         case Fault(reason, offset, length):
@@ -173,14 +174,17 @@ assert_type(sex, Constraints[str])
 assert_type(latitude.minimum, decimal.Decimal | None)
 assert_type(latitude.rounding, Rounding)
 assert_type(latitude.packed, bytes)
-assert_type(hypercast.cast_checked("1", fmt, latitude), Checked[float] | Fault | Violation)
-assert_type(hypercast.cast_checked_from_float(1.0, latitude), Checked[float] | Fault | Violation)
+assert_type(hypercast.cast_checked("1", fmt, latitude), Checked[float] | Fault | Violation[float])
+assert_type(
+    hypercast.cast_checked_from_float(1.0, latitude), Checked[float] | Fault | Violation[float]
+)
 assert_type(hypercast.cast_text("x"), Success[str] | Fault)
-assert_type(hypercast.cast_text("x", sex), Checked[str] | Fault | Violation)
+assert_type(hypercast.cast_text("x", sex), Checked[str] | Fault | Violation[str])
+assert_type(Constraints(Door.TEXT, case_sensitive=True, enum=["Male"]).case_sensitive, bool)
 assert_type(hypercast.cast_constraints_check(Door.U8, minimum="-1"), int)
 assert_type(hypercast.cast_declared_decimal("1e-6"), decimal.Decimal)
 assert_type(
-    hypercast.optional(hypercast.cast_text(" ", sex)), Checked[str] | Fault | Violation | None
+    hypercast.optional(hypercast.cast_text(" ", sex)), Checked[str] | Fault | Violation[str] | None
 )
 assert_type(judge(hypercast.cast_checked("42", fmt, latitude)), str)
 assert_type(Keyword.ENUM.name, str)

@@ -469,9 +469,10 @@ fn outcome(
     let outside_untouched = out
         .iter()
         .enumerate()
-        .all(|(i, &byte)| byte == fill || (code == 0 && value_at.contains(&i)));
+        .all(|(i, &byte)| byte == fill || (matches!(code, 0 | 4) && value_at.contains(&i)));
     assert!(outside_untouched, "{label}: code {code} wrote `out` where it must not: {out:?}");
-    let value = (code == 0).then(|| kind.fields(&out[value_at]));
+    // A success and a violation both write the value as cast.
+    let value = matches!(code, 0 | 4).then(|| kind.fields(&out[value_at]));
     match code {
         0 => assert_eq!(span, None, "{label}: success wrote `fault`"),
         1..=4 => assert!(span.is_some(), "{label}: code {code} wrote no fault"),
@@ -1065,15 +1066,20 @@ fn declaration(door: u32, c: &Value) -> Option<(RawConstraints, Vec<u8>)> {
     let dec =
         |field: &str| c.get(field).map(|v| hypercast::decimal_for_declaration(v.as_str().unwrap()));
     let mut raw = Raw::ZERO;
-    for (field, flag, upper) in [
-        ("minimum", Raw::HAS_MINIMUM, false),
-        ("exclusiveMinimum", Raw::HAS_EXCLUSIVE_MINIMUM, false),
-        ("maximum", Raw::HAS_MAXIMUM, true),
-        ("exclusiveMaximum", Raw::HAS_EXCLUSIVE_MAXIMUM, true),
+    for (field, flag, slot) in [
+        ("minimum", Raw::HAS_MINIMUM, 0),
+        ("exclusiveMinimum", Raw::HAS_EXCLUSIVE_MINIMUM, 1),
+        ("maximum", Raw::HAS_MAXIMUM, 2),
+        ("exclusiveMaximum", Raw::HAS_EXCLUSIVE_MAXIMUM, 3),
     ] {
         if let Some(value) = dec(field) {
             raw.flags |= flag;
-            *(if upper { &mut raw.upper } else { &mut raw.lower }) = value.ok()?;
+            *(match slot {
+                0 => &mut raw.lower,
+                1 => &mut raw.exclusive_lower,
+                2 => &mut raw.upper,
+                _ => &mut raw.exclusive_upper,
+            }) = value.ok()?;
         }
     }
     if let Some(value) = dec("multipleOf") {
@@ -1096,6 +1102,9 @@ fn declaration(door: u32, c: &Value) -> Option<(RawConstraints, Vec<u8>)> {
     }
     if c.get("trim").and_then(Value::as_bool) == Some(true) {
         raw.flags |= Raw::TRIM;
+    }
+    if c.get("caseSensitive").and_then(Value::as_bool) == Some(true) {
+        raw.flags |= Raw::CASE_SENSITIVE;
     }
     let mut entries = Vec::new();
     if c.get("enum").is_some() {
@@ -1823,7 +1832,9 @@ fn a_violation_writes_detail_0_and_a_check_with_no_index() {
         )
     };
     assert_eq!(rc, 4);
-    assert_eq!(out, [0xA5; 16]);
+    // The value as cast, written beside the keyword; nothing past it.
+    assert_eq!(i32::from_ne_bytes(out[..4].try_into().unwrap()), 42);
+    assert_eq!(out[4..], [0xA5; 12]);
     assert_eq!(fault, RawFaultDetail { size: 16, offset: 2, len: 2, detail: 0 });
     let maximum = hypercast::Keyword::Maximum.code();
     assert_eq!(check, RawCheck { keyword: maximum, adjusted: 0, enum_index: u32::MAX });

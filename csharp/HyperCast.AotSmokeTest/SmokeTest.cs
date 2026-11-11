@@ -129,10 +129,10 @@ internal static class SmokeTest
 			var rendered = verdict switch
 			{
 				Checked<T> ok => $"{ok.Value}{(ok.Adjusted ? " adjusted" : "")}{(ok.EnumIndex is { } i ? $" #{i}" : "")}",
-				Rejection rejection => rejection switch
+				Rejection<T> rejection => rejection switch
 				{
 					Fault f => $"fault {f.Reason} @ {f.Offset}+{f.Length}",
-					Violation v => $"violation {v.Keyword} @ {v.Offset}+{v.Length}",
+					Violation<T> v => $"violation {v.Keyword} {v.Value} @ {v.Offset}+{v.Length}",
 				},
 			};
 			if (rendered == expected)
@@ -146,9 +146,9 @@ internal static class SmokeTest
 
 		var latitude = new Constraints<double>(minimum: -90, maximum: 90, multipleOf: 0.000001m, rounding: Rounding.Midpoint);
 		Judged("checked f64", Cast.Double("45.1234567", NumFormat.Invariant, latitude), "45.123457 adjusted");
-		Judged("checked violation", Cast.Double("-90.5", NumFormat.Invariant, latitude), "violation minimum @ 0+5");
+		Judged("checked violation", Cast.Double("-90.5", NumFormat.Invariant, latitude), "violation minimum -90.5 @ 0+5");
 		Judged("checked from double", Cast.DoubleFromDouble(0.1 + 0.2, new Constraints<double>(multipleOf: "0.1")),
-			"violation multipleOf @ 0+0");
+			"violation multipleOf 0.30000000000000004 @ 0+0");
 		Judged("checked decimal", Cast.Decimal("12.35", NumFormat.Invariant, new Constraints<decimal>(multipleOf: 0.05m)), "12.35");
 		Judged("checked generic", Cast.Numeric<short>("19", NumFormat.Invariant, new Constraints<short>(multipleOf: 10, rounding: Rounding.Midpoint)),
 			"20 adjusted");
@@ -156,7 +156,7 @@ internal static class SmokeTest
 		Judged("text", Cast.Text("a\uD800"), "fault Malformed @ 1+1");
 		try
 		{
-			_ = new Constraints<int>(minimum: 5, maximum: 5);
+			_ = new Constraints<int>(multipleOf: 0);
 			Console.WriteLine("FAIL refused declaration: not refused");
 			failures++;
 		}

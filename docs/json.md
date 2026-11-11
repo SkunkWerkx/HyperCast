@@ -24,8 +24,7 @@ project's world in two separate ways.
 
 So the division of labor is: **structure parsing from a JSON library, scalar semantics from
 the one engine that's byte-identical in every binding.** The same split HyperTabular's
-workbook reader already ships for XLSX and ODS, with Apple Numbers on its master for the
-next release.
+workbook reader already ships for XLSX, ODS and Apple Numbers.
 
 ## What we need from the structure parser
 
@@ -49,8 +48,8 @@ out to be 10% of chunk time, the boring parser wins on maintenance forever.
 The concern that motivated this: "one crossing per scalar would eat the win." It doesn't
 apply, because of *where the layer lives*.
 
-The JSON provider is **its own crate** (the core stays zero-runtime-deps — that's an
-advertised receipt), depending on `hypercast` **as an rlib**. Inside that crate the doors
+The JSON provider is **its own crate** (the core keeps its one runtime dependency, simdutf8,
+and takes no more), depending on `hypercast` **as an rlib**. Inside that crate the doors
 aren't FFI at all — they're ordinary inlined Rust calls. The per-scalar crossing cost isn't
 amortized; **it doesn't exist**.
 
@@ -139,8 +138,7 @@ numbers (serde already parsed them), but as an ergonomic on-ramp it's nearly fre
 ## Sequencing
 
 1. Round-three tabular layer — done. HyperTabular 0.7.0 (2026-10-07) is the columnar verdict
-   contract, serving delimited text, XLSX and ODS (Apple Numbers on its master for the next
-   release); JSON would ride the same contract, though nothing schedules it yet.
+   contract, serving delimited text, XLSX, ODS and, since its 1.0.0, Apple Numbers; JSON would ride the same contract, though nothing schedules it yet.
 2. JSON provider on the boring structure tier, tier-1 hand-written glue, proving the schema
    descriptor end to end.
 3. Benchmark a SIMD structure parser against it, with receipts, before adopting one.

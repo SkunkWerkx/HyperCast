@@ -1067,6 +1067,23 @@ impl Decimal {
     }
 }
 
+/// A whole number as a canonical [`Decimal`] at scale 0, exactly: every integer a door
+/// delivers fits the 96-bit magnitude. For an integer `enum` entry or bound:
+/// `Decimal::from(5)`.
+macro_rules! decimal_from_integer {
+    ($($ty:ty),+) => {$(
+        impl From<$ty> for Decimal {
+            #[allow(clippy::cast_lossless, clippy::cast_sign_loss, clippy::cast_possible_wrap)]
+            fn from(value: $ty) -> Decimal {
+                let magnitude = (value as i128).unsigned_abs() as u64;
+                Decimal { lo: magnitude, hi: 0, scale: 0, negative: (value as i128) < 0 }
+            }
+        }
+    )+};
+}
+
+decimal_from_integer!(i8, i16, i32, i64, u8, u16, u32, u64);
+
 /// Renders the exact value without allocation. Cast results are canonical —
 /// `-1234.5`, no trailing fraction zeros — as pinned by the conformance corpus.
 /// Directly constructed values retain their declared scale and sign, including

@@ -131,19 +131,20 @@ func (r RawCivil) CivilDateTime() CivilDateTime {
 }
 
 // RawConstraints is a declaration of validation constraints as it crosses the ABI, which the
-// checked doors read in place: 72 bytes, 8-aligned, pointer-free, so the layout is the same
+// checked doors read in place: 104 bytes, 8-aligned, pointer-free, so the layout is the same
 // on 32-bit and 64-bit targets. Byte offsets: Size 0, Flags 4, Rounding 8, MinLength 12,
-// MaxLength 16, Reserved 20, Lower 24, Upper 40, MultipleOf 56, each decimal in Decimal's
-// own layout. An enum list travels beside it (Constraints.PackedEnum). A Size other than
-// RawConstraintsSize, an unknown flag bit, an unknown rounding code, a nonzero Reserved, a
-// decimal sign byte other than 0 or 1, or a non-empty enum list without RawConstraintsHasEnum
-// is a malformed layout. Constraints.Raw hands one over, from a declaration the core has
-// already judged.
+// MaxLength 16, Reserved 20, Lower 24, Upper 40, MultipleOf 56, ExclusiveLower 72,
+// ExclusiveUpper 88, each decimal in Decimal's own layout. Each bound has a field of its own,
+// so all four may be declared together, as OpenAPI allows. An enum list travels beside it
+// (Constraints.PackedEnum). A Size other than RawConstraintsSize, an unknown flag bit, an
+// unknown rounding code, a nonzero Reserved, a decimal sign byte other than 0 or 1, or a
+// non-empty enum list without RawConstraintsHasEnum is a malformed layout. Constraints.Raw
+// hands one over, from a declaration the core has already judged.
 type RawConstraints struct {
 	// Size is the layout's size as the caller built it: RawConstraintsSize.
 	Size uint32
 	// Flags says which constraints are declared: the RawConstraintsHas* bits,
-	// RawConstraintsHasEnum among them, and RawConstraintsTrim.
+	// RawConstraintsHasEnum among them, RawConstraintsTrim and RawConstraintsCaseSensitive.
 	Flags uint32
 	// Rounding is the Rounding code: 0 strict, 1 midpoint, 2 floor, 3 ceiling.
 	Rounding uint32
@@ -153,26 +154,30 @@ type RawConstraints struct {
 	MaxLength uint32
 	// Reserved is always 0.
 	Reserved uint32
-	// Lower is the minimum, or the exclusive minimum.
+	// Lower is minimum: the value may equal it.
 	Lower Decimal
-	// Upper is the maximum, or the exclusive maximum.
+	// Upper is maximum: the value may equal it.
 	Upper Decimal
 	// MultipleOf is the step every value must be a multiple of.
 	MultipleOf Decimal
+	// ExclusiveLower is exclusiveMinimum: the value must exceed it.
+	ExclusiveLower Decimal
+	// ExclusiveUpper is exclusiveMaximum: the value must be below it.
+	ExclusiveUpper Decimal
 }
 
-// RawConstraintsSize is the size word a RawConstraints carries: its own 72 bytes.
+// RawConstraintsSize is the size word a RawConstraints carries: its own 104 bytes.
 const RawConstraintsSize = uint32(unsafe.Sizeof(RawConstraints{}))
 
 // The flags of RawConstraints: which of its fields are read.
 const (
-	// RawConstraintsHasMinimum means Lower is the inclusive minimum.
+	// RawConstraintsHasMinimum means Lower, the minimum, is read.
 	RawConstraintsHasMinimum uint32 = 1 << iota
-	// RawConstraintsHasExclusiveMinimum means Lower is the exclusiveMinimum.
+	// RawConstraintsHasExclusiveMinimum means ExclusiveLower, the exclusiveMinimum, is read.
 	RawConstraintsHasExclusiveMinimum
-	// RawConstraintsHasMaximum means Upper is the inclusive maximum.
+	// RawConstraintsHasMaximum means Upper, the maximum, is read.
 	RawConstraintsHasMaximum
-	// RawConstraintsHasExclusiveMaximum means Upper is the exclusiveMaximum.
+	// RawConstraintsHasExclusiveMaximum means ExclusiveUpper, the exclusiveMaximum, is read.
 	RawConstraintsHasExclusiveMaximum
 	// RawConstraintsHasMultipleOf means MultipleOf and Rounding are read.
 	RawConstraintsHasMultipleOf
@@ -183,8 +188,11 @@ const (
 	// RawConstraintsTrim means text is trimmed of Unicode White_Space before it is judged.
 	RawConstraintsTrim
 	// RawConstraintsHasEnum means an enum is declared: the list beside the layout is read,
-	// and an empty one is refused.
+	// and an empty one is an enum no value matches.
 	RawConstraintsHasEnum
+	// RawConstraintsCaseSensitive means a text enum matches byte for byte instead of under
+	// Unicode simple case folding. The text door only.
+	RawConstraintsCaseSensitive
 )
 
 // RawCheck is what a checked door reports beside its value, as the core writes it: 12 bytes,
@@ -646,42 +654,44 @@ func FormatVersion(packed uint32) string {
 // Duration at the core's layout, field by field: an array of any other length is another
 // type, so a drift on this side fails the build.
 var (
-	_ [9]byte  = [unsafe.Sizeof(RawSymbol8{})]byte{}
-	_ [17]byte = [unsafe.Sizeof(RawSymbol16{})]byte{}
-	_ [92]byte = [unsafe.Sizeof(RawNumFormat{})]byte{}
-	_ [0]byte  = [unsafe.Offsetof(RawNumFormat{}.Size)]byte{}
-	_ [4]byte  = [unsafe.Offsetof(RawNumFormat{}.Flags)]byte{}
-	_ [8]byte  = [unsafe.Offsetof(RawNumFormat{}.DigitZero)]byte{}
-	_ [12]byte = [unsafe.Offsetof(RawNumFormat{}.DecimalSep)]byte{}
-	_ [21]byte = [unsafe.Offsetof(RawNumFormat{}.GroupSep)]byte{}
-	_ [30]byte = [unsafe.Offsetof(RawNumFormat{}.CurrencyDecimalSep)]byte{}
-	_ [39]byte = [unsafe.Offsetof(RawNumFormat{}.CurrencyGroupSep)]byte{}
-	_ [48]byte = [unsafe.Offsetof(RawNumFormat{}.MinusSign)]byte{}
-	_ [57]byte = [unsafe.Offsetof(RawNumFormat{}.PlusSign)]byte{}
-	_ [66]byte = [unsafe.Offsetof(RawNumFormat{}.Percent)]byte{}
-	_ [75]byte = [unsafe.Offsetof(RawNumFormat{}.Currency)]byte{}
-	_ [40]byte = [unsafe.Sizeof(RawDayPeriods{})]byte{}
-	_ [4]byte  = [unsafe.Offsetof(RawDayPeriods{}.AM)]byte{}
-	_ [21]byte = [unsafe.Offsetof(RawDayPeriods{}.PM)]byte{}
-	_ [16]byte = [unsafe.Sizeof(RawTimestamp{})]byte{}
-	_ [4]byte  = [unsafe.Sizeof(RawDate{})]byte{}
-	_ [16]byte = [unsafe.Sizeof(RawCivil{})]byte{}
-	_ [8]byte  = [unsafe.Offsetof(RawCivil{}.Nanos)]byte{}
-	_ [72]byte = [unsafe.Sizeof(RawConstraints{})]byte{}
-	_ [4]byte  = [unsafe.Offsetof(RawConstraints{}.Flags)]byte{}
-	_ [8]byte  = [unsafe.Offsetof(RawConstraints{}.Rounding)]byte{}
-	_ [12]byte = [unsafe.Offsetof(RawConstraints{}.MinLength)]byte{}
-	_ [16]byte = [unsafe.Offsetof(RawConstraints{}.MaxLength)]byte{}
-	_ [20]byte = [unsafe.Offsetof(RawConstraints{}.Reserved)]byte{}
-	_ [24]byte = [unsafe.Offsetof(RawConstraints{}.Lower)]byte{}
-	_ [40]byte = [unsafe.Offsetof(RawConstraints{}.Upper)]byte{}
-	_ [56]byte = [unsafe.Offsetof(RawConstraints{}.MultipleOf)]byte{}
-	_ [12]byte = [unsafe.Sizeof(RawCheck{})]byte{}
-	_ [8]byte  = [unsafe.Sizeof(RawSpan{})]byte{}
-	_ [16]byte = [unsafe.Sizeof(RawFaultDetail{})]byte{}
-	_ [12]byte = [unsafe.Offsetof(RawFaultDetail{}.Detail)]byte{}
-	_ [12]byte = [unsafe.Sizeof(RawDateOptions{})]byte{}
-	_ [8]byte  = [unsafe.Offsetof(RawDateOptions{}.Pivot)]byte{}
+	_ [9]byte   = [unsafe.Sizeof(RawSymbol8{})]byte{}
+	_ [17]byte  = [unsafe.Sizeof(RawSymbol16{})]byte{}
+	_ [92]byte  = [unsafe.Sizeof(RawNumFormat{})]byte{}
+	_ [0]byte   = [unsafe.Offsetof(RawNumFormat{}.Size)]byte{}
+	_ [4]byte   = [unsafe.Offsetof(RawNumFormat{}.Flags)]byte{}
+	_ [8]byte   = [unsafe.Offsetof(RawNumFormat{}.DigitZero)]byte{}
+	_ [12]byte  = [unsafe.Offsetof(RawNumFormat{}.DecimalSep)]byte{}
+	_ [21]byte  = [unsafe.Offsetof(RawNumFormat{}.GroupSep)]byte{}
+	_ [30]byte  = [unsafe.Offsetof(RawNumFormat{}.CurrencyDecimalSep)]byte{}
+	_ [39]byte  = [unsafe.Offsetof(RawNumFormat{}.CurrencyGroupSep)]byte{}
+	_ [48]byte  = [unsafe.Offsetof(RawNumFormat{}.MinusSign)]byte{}
+	_ [57]byte  = [unsafe.Offsetof(RawNumFormat{}.PlusSign)]byte{}
+	_ [66]byte  = [unsafe.Offsetof(RawNumFormat{}.Percent)]byte{}
+	_ [75]byte  = [unsafe.Offsetof(RawNumFormat{}.Currency)]byte{}
+	_ [40]byte  = [unsafe.Sizeof(RawDayPeriods{})]byte{}
+	_ [4]byte   = [unsafe.Offsetof(RawDayPeriods{}.AM)]byte{}
+	_ [21]byte  = [unsafe.Offsetof(RawDayPeriods{}.PM)]byte{}
+	_ [16]byte  = [unsafe.Sizeof(RawTimestamp{})]byte{}
+	_ [4]byte   = [unsafe.Sizeof(RawDate{})]byte{}
+	_ [16]byte  = [unsafe.Sizeof(RawCivil{})]byte{}
+	_ [8]byte   = [unsafe.Offsetof(RawCivil{}.Nanos)]byte{}
+	_ [104]byte = [unsafe.Sizeof(RawConstraints{})]byte{}
+	_ [4]byte   = [unsafe.Offsetof(RawConstraints{}.Flags)]byte{}
+	_ [8]byte   = [unsafe.Offsetof(RawConstraints{}.Rounding)]byte{}
+	_ [12]byte  = [unsafe.Offsetof(RawConstraints{}.MinLength)]byte{}
+	_ [16]byte  = [unsafe.Offsetof(RawConstraints{}.MaxLength)]byte{}
+	_ [20]byte  = [unsafe.Offsetof(RawConstraints{}.Reserved)]byte{}
+	_ [24]byte  = [unsafe.Offsetof(RawConstraints{}.Lower)]byte{}
+	_ [40]byte  = [unsafe.Offsetof(RawConstraints{}.Upper)]byte{}
+	_ [56]byte  = [unsafe.Offsetof(RawConstraints{}.MultipleOf)]byte{}
+	_ [72]byte  = [unsafe.Offsetof(RawConstraints{}.ExclusiveLower)]byte{}
+	_ [88]byte  = [unsafe.Offsetof(RawConstraints{}.ExclusiveUpper)]byte{}
+	_ [12]byte  = [unsafe.Sizeof(RawCheck{})]byte{}
+	_ [8]byte   = [unsafe.Sizeof(RawSpan{})]byte{}
+	_ [16]byte  = [unsafe.Sizeof(RawFaultDetail{})]byte{}
+	_ [12]byte  = [unsafe.Offsetof(RawFaultDetail{}.Detail)]byte{}
+	_ [12]byte  = [unsafe.Sizeof(RawDateOptions{})]byte{}
+	_ [8]byte   = [unsafe.Offsetof(RawDateOptions{}.Pivot)]byte{}
 
 	_ [16]byte = [unsafe.Sizeof(Decimal{})]byte{}
 	_ [0]byte  = [unsafe.Offsetof(Decimal{}.Lo)]byte{}

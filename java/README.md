@@ -70,8 +70,9 @@ digits the file holds — `0.1` is one tenth, not what `new BigDecimal(0.1)` spe
 
 ## Validation constraints
 
-A value that parsed can still break a business rule. `Constraints` declares the rule with the
-OpenAPI Schema Object's keywords, built for one door (`Constraints.f64()`,
+Untrusted input is judged at two levels: first it is cast to the type (a `Fault` says it is not
+the type), then the value is validated against a business rule. `Constraints` declares the rule
+with the OpenAPI 3.2 Schema Object's keywords, built for one door (`Constraints.f64()`,
 `Constraints.decimal()`, `Constraints.text()`, …), and the checked overload of that door judges
 the value by it, in the core and in exact decimal arithmetic:
 
@@ -91,17 +92,17 @@ Constraints<String> sex = Constraints.text().trim(true).enumOf("Female", "Male",
 
 NumFormat euro = new NumFormat(',', '.', NumFormat.STYLE_ALL, "€");
 System.out.println(Cast.f64("45.1234567", NumFormat.INVARIANT, latitude)); // Checked[value=45.123457, adjusted=true, …]
-System.out.println(Cast.f64("-90.5", NumFormat.INVARIANT, latitude));      // Violation[keyword=minimum, offset=0, length=5]
+System.out.println(Cast.f64("-90.5", NumFormat.INVARIANT, latitude));      // Violation[keyword=minimum, value=-90.5, offset=0, length=5]
 System.out.println(Cast.f64FromDouble(45.1234567, latitude));              // Checked[value=45.123457, adjusted=true, …]
 System.out.println(Cast.decimal("€1.234,55", euro, euroCash));             // Checked[value=1234.55, adjusted=false, …]
-System.out.println(Cast.decimal("€12,37", euro, euroCash));                // Violation[keyword=multipleOf, offset=0, length=6]
+System.out.println(Cast.decimal("€12,37", euro, euroCash));                // Violation[keyword=multipleOf, value=12.37, offset=0, length=6]
 System.out.println(Cast.decimal("12,3x", euro, euroCash));                 // Fault[reason=MALFORMED, offset=4, length=1]
 
 String message = switch (Cast.text(" MALE ", sex)) {
     case Checked<String> ok -> ok.value() + ", entry " + ok.enumIndex().getAsInt(); // Male, entry 1
     case Fault<String> f -> f.reason() + " at char " + f.offset();                  // EMPTY at char 0, for "   "
     case Violation<String> v -> switch (v.keyword().name()) {
-        case "enum" -> "not a sex code: chars " + v.offset() + "+" + v.length();     // for "Femal": chars 0+5
+        case "enum" -> "not a sex code: " + v.value();                                // for " Femal ": Femal
         default -> "breaks " + v.keyword(); // keywords are open
     };
 };
@@ -111,22 +112,33 @@ System.out.println(message);
 A checked door answers in a `CheckedVerdict<T>`, a sealed interface beside `Verdict<T>` (which
 every plain door keeps returning, unchanged): `Checked<T>`, the `value`, `adjusted` (true only
 when rounding changed it) and, at the text door with an `enum`, the matched `enumIndex`; or a
-`Rejection<T>`, itself sealed over the plain doors' own `Fault<T>` (it did not parse: the very
-record, so a parse failure reads the same at either door) and a `Violation<T>` (it parsed and
-broke a rule: its `keyword` and the value's span, in the same units as a fault's). A switch over
+`Rejection<T>`, itself sealed over the plain doors' own `Fault<T>` (the input is not the type:
+the very record, so a parse failure reads the same at either door) and a `Violation<T>` (it was
+cast and the value broke a rule: its `keyword`, the `value` exactly as the door cast it, never
+rounded, which at the text door is the trimmed input rather than an `enum` entry, and the
+value's span, in the same units as a fault's). A switch over
 the three records is exhaustive with no `default`. `Keyword` is a record with constants
 (`Keyword.MINIMUM` … `Keyword.ENUM`), not an enum: `format` and `pattern` may join in a minor
 release, so a branch over keywords needs its default arm (a `switch` on `name()`, the OpenAPI
 spelling such as `exclusiveMinimum`, demands one).
 
-The integer doors take `minimum`, `exclusiveMinimum`, `maximum`, `exclusiveMaximum`,
+The numeric doors take `minimum`, `exclusiveMinimum`, `maximum`, `exclusiveMaximum`,
 `multipleOf` with a `Rounding` (`STRICT`, the default, then `MIDPOINT`, half to even, `FLOOR`
-and `CEILING`) and `enumOf`; `f32`, `f64` and `decimal` the same without `enumOf`; the text door
-takes `minLength`, `maxLength` (in code points), `trim` (Unicode `White_Space`, U+00A0 included)
-and `enumOf`, matched under Unicode simple case folding and delivering the caller's own declared
-string and its index. Every builder offers every keyword, and the core alone refuses one its
-door does not take. The first failure wins: the door parses, the text is trimmed, `multipleOf`
-rounds or refuses, then the bounds, the lengths and `enum` judge the result. A float door also
+and `CEILING`) and `enumOf`, whose entries are decimals compared exactly to the value (`"7"` and
+`"7.0"` are one value; at an integer door a fractional or out-of-range entry matches nothing).
+The text door takes `minLength`, `maxLength` (in code points) and `enumOf`, with two extensions
+of HyperCast's own: `trim` (Unicode `White_Space`, U+00A0 included) and `caseSensitive`. A text
+`enum` matches under Unicode simple case folding unless `caseSensitive(true)` says byte for byte
+(for a vocabulary whose case carries meaning, `mm` and `Mm`), and a match delivers the caller's
+own declared string and its index, the first entry that matches; `enumOf(BigDecimal...)` there
+declares numbers, valid entries no string equals. The four bounds are four
+independent keywords, as in OpenAPI: `minimum("0").exclusiveMinimum("0")` declares both, and a
+value is held to each. Every builder offers every keyword, and as JSON Schema does, a door
+ignores an OpenAPI keyword for another type (`minLength` at a number, `minimum` at text). The
+first broken rule wins: the door casts, the text is trimmed, `multipleOf` rounds or is broken (a
+rounding past what the type holds, `127` rounded up to a multiple of 5 at `i8`, breaks
+`multipleOf`), then `minimum`, `exclusiveMinimum`, `maximum`, `exclusiveMaximum`, the lengths
+and `enum` judge the result. A float door also
 judges the float it delivers against each bound read as the door reads it: `"1e-400"` at
 `Constraints.f64()` reads as `0`, so it breaks `.exclusiveMinimum("0")`. Bounds and steps are a
 `BigDecimal` or its text in invariant notation, both converted exactly by the core (`"1e-6"` is
@@ -137,16 +149,19 @@ and `i32FromDouble`, `f64FromDouble`, `decimalFromDouble` and the rest for a num
 already decoded, judged on the shortest decimal that names it (`0.1 + 0.2` breaks
 `multipleOf("0.1")` under `STRICT`, and rounds to `0.3` under `MIDPOINT`), with an empty span.
 
-A declaration is judged once, by the core, when it is built, and a declaration that cannot mean
-anything at its door is the caller's bug: `build()` throws `IllegalArgumentException`, its
-message the rule (`Constraints.u8().minimum("-1").build()` throws "Constraints refused (code 8):
-a bound, step or enum entry the door cannot hold."). So does handing a declaration to another
-door: `u8`, `u16` and `i32` all deliver an `Integer`, so the compiler cannot tell their
-`Constraints<Integer>` apart, and the door does. Leaving `enumOf` out declares no `enum`, while
-`enumOf(new String[0])` declares one with no entries, which no value could match: refused (code
-12), as is a text entry no input can match (code 13: an empty one, or under `trim` one with
-leading or trailing white space). After that a checked cast judges only data and throws nothing
-for it. `Cast.text` without constraints is the plain text door, a
+A declaration is judged once, by the core, when it is built. Every declaration OpenAPI allows is
+accepted, those no value can meet included: crossed or equal bounds, `minLength` above
+`maxLength`, duplicate entries (the first match wins), and `enumOf(new String[0])`, an `enum`
+with no entries, which every value then violates (leaving `enumOf` out declares no `enum`). What
+the core cannot read is the caller's bug: `build()` throws `IllegalArgumentException`, its
+message the rule. That is `trim` or `caseSensitive` at a numeric door, or a rounding with
+`multipleOf` at the text door (code 1); a `multipleOf` not positive (5); a rounding without
+`multipleOf` (6); a bound, step or entry no door can hold, or a rounding with a fractional
+`multipleOf` at an integer door (8: `Constraints.decimal().multipleOf("1e-29").build()` throws
+"Constraints refused (code 8): a bound, step or enum entry the door cannot hold."); and an entry
+that is not UTF-8 (9). So does handing a declaration to another door: `u8`, `u16` and `i32` all
+deliver an `Integer`, so the compiler cannot tell their `Constraints<Integer>` apart, and the
+door does. After that a checked cast judges only data and throws nothing for it. `Cast.text` without constraints is the plain text door, a
 `Verdict<String>`: the input itself when it is valid text. Through a `String`, a lone surrogate
 is `MALFORMED` at its char at every door, plain or checked, never replaced (Java's own encoder
 would make it `?`), and in an `enum` entry it is refused as an entry that is not UTF-8. On the
@@ -289,8 +304,8 @@ serialization library) is exact for every component but the policy: `NumFormat` 
 components, so that the ten-binder record pattern still compiles, and `styles()` answers the
 `STYLE_*` bits alone. A copy of a Western format equals it; a copy of an Indian format
 comes out Western. Copy with
-`withGrouping(original.grouping())` or the `with*` methods, of which every component now has one
-(`withSeparators` joined them). The policy sits in bits 16 and 17 of the canonical constructor's
+`withGrouping(original.grouping())` or the `with*` methods, of which every component has one
+(`withSeparators` sets the pair). The policy sits in bits 16 and 17 of the canonical constructor's
 `styles` component (0 Western, 2 Indian; 1 and 3 are refused): an internal encoding that
 callers must not set.
 
@@ -342,10 +357,10 @@ String why = switch (DetailedCast.i32("12,34", NumFormat.INVARIANT)) {
 
 It is a separate class with its own result types because `Verdict` and `Rejection` are sealed:
 a detail on `Fault`, or a third case, would break the exhaustive switches written against them.
-`Cast`, `Verdict`, `Fault`, `Checked`, `Violation` and the rest are exactly what 1.0 shipped, and
-a detailed failure is the same reason and span: `DetailedFault.toFault()` is the `Fault` the
+`Verdict`, `Fault`, `Success`, `CheckedVerdict`, `Rejection`, `Checked` and `Violation` carry no
+detail, and a detailed failure is the same reason and span: `DetailedFault.toFault()` is the `Fault` the
 plain door returns. A violation has no detail (nothing about the text was wrong), only its
-keyword. `FaultDetail` is a record with constants, as `Keyword` is: a published code keeps its
+keyword, value and span. `FaultDetail` is a record with constants, as `Keyword` is: a published code keeps its
 number and meaning, new codes may arrive in a minor release, and a code this binding does not
 name is a `FaultDetail` that keeps it (`isKnown()` is false, `name()` is `detail 999`) beside a
 reason and span that stay usable.
@@ -415,8 +430,8 @@ Nothing loads until the first door is called. A consumer with a managed fallback
 `Cast.isAvailable()` first: probed once, cached, never throws — `false` when the platform
 library will not open, the jar carries no core for this OS/arch, or an older core lacks an
 export this binding was built against. That last guard is what keeps a 1.0 core from reading
-a numeral by 1.0's rule: a 1.0 library has no detailed exports (the JNI one implements 33 natives
-of the 37), so its load fails and the policy bits it would ignore are never sent. The doors do
+a numeral by 1.0's rule: a 1.0 library has no detailed exports (and a `libhypercast_jni` built
+from a core without them registers 33 natives of the 37), so its load fails and the policy bits it would ignore are never sent. The doors do
 not fall back. The first one to need a core that failed to load throws
 `ExceptionInInitializerError`, and every later one `NoClassDefFoundError`; either way the
 original failure is in its cause chain.
@@ -692,12 +707,12 @@ caller's own code ([above](#the-memorysegment-doors-on-jdk-21)).
   `version(packed)` for a `*_version()` word; and the `*_BYTES` constants, each layout's
   size and so the stride of an array of them (`FORMAT_BYTES` is 92, `DAY_PERIODS_BYTES` 40,
   `FAULT_BYTES` 8, `FAULT_DETAIL_BYTES` 16 for the detailed exports' size-tagged fault and
-  `DATE_OPTIONS_BYTES` 12, and for the validation constraints `CONSTRAINTS_BYTES` 72, `CHECK_BYTES` 12
+  `DATE_OPTIONS_BYTES` 12, and for the validation constraints `CONSTRAINTS_BYTES` 104, `CHECK_BYTES` 12
   and `SPAN_BYTES` 8); `writeDateOptions` and `detailedFault(code, segment, at)`, which reads
   a detailed fault and keeps a detail code it does not name. A format's flags word, with the
   grouping policy in bits 8 and 9, is `NumFormat.flags()`.
-- `Constraints.toRaw()` and `packedEnum()` — a declaration in the core's 72-byte layout and its
-  `enum` list as the core reads it beside that layout (integer entries in this platform's byte
+- `Constraints.toRaw()` and `packedEnum()` — a declaration in the core's 104-byte layout (one
+  slot per bound) and its `enum` list as the core reads it beside that layout (numeric entries in this platform's byte
   order, text entries behind little-endian length prefixes), so a
   library judging values through `cast_checked` hands the core exactly what `Cast` does.
 - `NativePlatform` — the platform table and the jar loader, parameterized by library base

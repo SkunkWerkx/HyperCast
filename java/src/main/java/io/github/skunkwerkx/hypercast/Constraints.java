@@ -12,11 +12,12 @@ import java.util.Optional;
 import java.util.OptionalInt;
 
 /**
- * A declaration of validation constraints, the OpenAPI Schema Object's keywords, bound to one
+ * A declaration of validation constraints, the OpenAPI 3.2 Schema Object's keywords, bound to one
  * door: {@code Constraints.f64()} builds one for {@link Cast#f64(String, NumFormat, Constraints)},
  * {@code Constraints.text()} one for {@link Cast#text(String, Constraints)}. Immutable, and
- * judged once, by the native core, when it is built: a declaration that cannot mean anything at
- * its door is refused there as a caller bug, and every checked cast after that only judges data.
+ * judged once, by the native core, when it is built: every declaration OpenAPI allows is
+ * accepted, and only one the core cannot read is refused there, as a caller bug; every checked
+ * cast after that only judges data.
  *
  * {@snippet :
  * // Latitude: a multiple of 0.000001 between -90 and 90, finer input rounded half to even.
@@ -26,21 +27,30 @@ import java.util.OptionalInt;
  *         .build();
  * }
  *
- * <p>The integer doors ({@link #i8()} to {@link #u64()}) take {@code minimum},
- * {@code exclusiveMinimum}, {@code maximum}, {@code exclusiveMaximum}, {@code multipleOf} with a
- * {@link Rounding}, and {@code enum}; {@link #f32()}, {@link #f64()} and {@link #decimal()} the
- * same but {@code enum}; {@link #text()} {@code minLength}, {@code maxLength}, {@code trim} and
- * {@code enum}. Every builder offers every keyword, and the core alone refuses one its door does
- * not take. Bounds and steps are a {@link BigDecimal} or its text in invariant notation
- * ({@code "0.000001"}, {@code "-90"}, {@code "1e-6"}), converted exactly by the core's own
- * conversion, never a {@code double}, so {@code 0.1} cannot be declared inexactly.
+ * <p>The numeric doors ({@link #i8()} to {@link #u64()}, {@link #f32()}, {@link #f64()} and
+ * {@link #decimal()}) take {@code minimum}, {@code exclusiveMinimum}, {@code maximum},
+ * {@code exclusiveMaximum}, {@code multipleOf} with a {@link Rounding}, and {@code enum};
+ * {@link #text()} takes {@code minLength}, {@code maxLength} and {@code enum}, with HyperCast's
+ * own {@code trim} and {@code caseSensitive}. The four bounds are independent keywords, as in
+ * OpenAPI: {@code minimum} and {@code exclusiveMinimum} may both be declared, and a value is held
+ * to each. Every builder offers every keyword; as JSON Schema does, a door ignores an OpenAPI
+ * keyword for another type ({@code minLength} at a number, {@code minimum} at text), and the core
+ * refuses only {@code trim} or {@code caseSensitive} at a numeric door and a rounding with
+ * {@code multipleOf} at the text door. Declarations no value can meet (crossed bounds, an empty {@code enum}) are accepted, and
+ * every value then violates them. Bounds, steps and numeric {@code enum} entries are a
+ * {@link BigDecimal} or its text in invariant notation ({@code "0.000001"}, {@code "-90"},
+ * {@code "1e-6"}), converted exactly by the core's own conversion, never a {@code double}, so
+ * {@code 0.1} cannot be declared inexactly.
  *
- * <p>The value is judged in the core, in this order, the first failure winning: the door parses
- * (a {@link Fault}, exactly as the plain door's); text is trimmed of Unicode
- * {@code White_Space} when {@code trim} says so; {@code multipleOf}, on the exact decimal,
- * rounding when declared; the bounds, on the rounded value; the lengths, in code points;
- * {@code enum} (text under Unicode simple case folding, delivering the declared entry). A broken
- * rule is a {@link Violation}.
+ * <p>The input is first cast to the door's type (a {@link Fault}, exactly as the plain door's,
+ * says it is not the type), then the value is judged in the core, in this order, the first
+ * broken rule winning: text is trimmed of Unicode {@code White_Space} when {@code trim} says so;
+ * {@code multipleOf}, on the exact decimal, rounding when declared (a rounding past what the type
+ * holds breaks {@code multipleOf}); {@code minimum}, {@code exclusiveMinimum}, {@code maximum} and
+ * {@code exclusiveMaximum}, on the rounded value; the lengths, in code points; {@code enum}
+ * (numbers compared exactly, text under Unicode simple case folding unless
+ * {@code caseSensitive}, a match delivering the first matching declared entry). A broken rule is a
+ * {@link Violation} carrying the value as cast.
  *
  * <p>A declaration is bound to the door it was built for. The type parameter catches most
  * mismatches at compile time; doors that share a Java type ({@code u8}, {@code u16} and
@@ -78,6 +88,7 @@ public final class Constraints<T> {
     static final int HAS_MAX_LENGTH = 64;
     static final int TRIM = 128;
     static final int HAS_ENUM = 256;
+    static final int CASE_SENSITIVE = 512;
 
     private final int door;
     private final String doorName;
@@ -94,6 +105,7 @@ public final class Constraints<T> {
     private final Integer minLength;
     private final Integer maxLength;
     private final boolean trim;
+    private final boolean caseSensitive;
 
     private Constraints(Builder<T> builder) {
         door = builder.door;
@@ -102,6 +114,7 @@ public final class Constraints<T> {
         minLength = builder.minLength;
         maxLength = builder.maxLength;
         trim = builder.trim;
+        caseSensitive = builder.caseSensitive;
         minimum = declared(builder.minimum);
         exclusiveMinimum = declared(builder.exclusiveMinimum);
         maximum = declared(builder.maximum);
@@ -115,6 +128,7 @@ public final class Constraints<T> {
                 | (minLength != null ? HAS_MIN_LENGTH : 0)
                 | (maxLength != null ? HAS_MAX_LENGTH : 0)
                 | (trim ? TRIM : 0)
+                | (caseSensitive ? CASE_SENSITIVE : 0)
                 | (builder.entries != null ? HAS_ENUM : 0);
         raw = new byte[RAW_BYTES];
         ByteBuffer layout = ByteBuffer.wrap(raw).order(ByteOrder.nativeOrder());
@@ -124,9 +138,13 @@ public final class Constraints<T> {
                 .putInt(minLength != null ? minLength : 0)
                 .putInt(maxLength != null ? maxLength : 0)
                 .putInt(0);
-        pack(minimum != null ? minimum : exclusiveMinimum, layout);
-        pack(maximum != null ? maximum : exclusiveMaximum, layout);
+        // One slot per keyword, in the layout's order: minimum, maximum, multipleOf,
+        // exclusiveMinimum, exclusiveMaximum.
+        pack(minimum, layout);
+        pack(maximum, layout);
         pack(multipleOf, layout);
+        pack(exclusiveMinimum, layout);
+        pack(exclusiveMaximum, layout);
         if (builder.entries == null) {
             packed = new byte[0];
             texts = null;
@@ -135,10 +153,10 @@ public final class Constraints<T> {
             List<byte[]> encoded = new ArrayList<>(texts.length);
             int size = 0;
             for (int i = 0; i < texts.length; i++) {
-                if (!(builder.entries.get(i) instanceof String entry)) {
-                    throw new IllegalArgumentException("Text enum entries are strings; entry " + i + " is the number "
-                            + builder.entries.get(i) + ".");
-                }
+                // A number is a valid entry that no string equals (JSON Schema's enum is exact
+                // equality across types): packed as an empty entry, which no input matches
+                // (empty input is the door's Empty fault), so every other entry keeps its index.
+                String entry = builder.entries.get(i) instanceof String text ? text : "";
                 texts[i] = entry;
                 byte[] utf8 = Cast.wtf8(entry);
                 encoded.add(utf8);
@@ -359,7 +377,17 @@ public final class Constraints<T> {
     }
 
     /**
-     * The declaration in the native core's 72-byte {@code RawConstraints} layout, in this
+     * Whether a text {@code enum} matches byte for byte rather than under Unicode simple case
+     * folding.
+     *
+     * @return {@code true} when {@code caseSensitive} was declared
+     */
+    public boolean caseSensitive() {
+        return caseSensitive;
+    }
+
+    /**
+     * The declaration in the native core's 104-byte {@code RawConstraints} layout, in this
      * platform's byte order, for a library that judges values across a C ABI of its own; the
      * {@code enum} list travels beside it, as {@link #packedEnum()}.
      *
@@ -372,7 +400,7 @@ public final class Constraints<T> {
     /**
      * The {@code enum} list as the native core reads it beside {@link #toRaw()} (whose flag
      * {@code 256} says whether one was declared), empty for none:
-     * at an integer door, 16-byte {@code Decimal}s in this platform's byte order; at the text
+     * at a numeric door, 16-byte {@code Decimal}s in this platform's byte order; at the text
      * door, each entry a little-endian 32-bit byte length followed by its UTF-8 bytes.
      *
      * @return a copy of the list's bytes
@@ -412,7 +440,7 @@ public final class Constraints<T> {
         return texts[index];
     }
 
-    // A bound, step or integer entry's text through the core's own conversion
+    // A bound, step or numeric entry's text through the core's own conversion
     // (cast_declared_decimal): the exact decimal, or the core's refusal 8.
     private static BigDecimal declared(String text) {
         if (text == null) {
@@ -448,18 +476,11 @@ public final class Constraints<T> {
     static String refusal(int code) {
         String rule = switch (code) {
             case 1 -> "a constraint the door does not take";
-            case 2 -> "minimum together with exclusiveMinimum";
-            case 3 -> "maximum together with exclusiveMaximum";
-            case 4 -> "the lower bound is not below the upper bound";
             case 5 -> "multipleOf is not positive";
             case 6 -> "a rounding without multipleOf";
-            case 7 -> "minLength is above maxLength";
             case 8 -> "a bound, step or enum entry the door cannot hold";
             case 9 -> "an enum entry that is not UTF-8";
-            case 10 -> "a duplicate enum entry";
             case 11 -> "a malformed constraints layout";
-            case 12 -> "an enum with no entries";
-            case 13 -> "a text enum entry no input can match";
             default -> "a rule this binding does not name";
         };
         return "Constraints refused (code " + code + "): " + rule + ".";
@@ -467,8 +488,9 @@ public final class Constraints<T> {
 
     /**
      * Collects one door's keywords; {@link #build()} has the core judge them. Every keyword is
-     * offered at every door, so the core alone decides which a door takes. Setting a keyword
-     * twice keeps the last value. Not thread-safe; the {@link Constraints} it builds is
+     * offered at every door, so the core alone decides what a door takes (an OpenAPI keyword for
+     * another type is ignored, as JSON Schema ignores it). Setting a keyword twice keeps the last
+     * value; the four bounds are four keywords. Not thread-safe; the {@link Constraints} it builds is
      * immutable and safe to share.
      *
      * @param <T> the door's value type
@@ -485,6 +507,7 @@ public final class Constraints<T> {
         private Integer minLength;
         private Integer maxLength;
         private boolean trim;
+        private boolean caseSensitive;
         private List<Object> entries;
 
         private Builder(int door, String doorName) {
@@ -651,11 +674,27 @@ public final class Constraints<T> {
         }
 
         /**
-         * The values allowed, distinct: at the text door, the strings themselves, matched under
-         * Unicode simple case folding, a match delivering the entry as declared; at an integer
-         * door, whole numbers in invariant notation. Not calling it declares no {@code enum};
-         * calling it with no entries ({@code enumOf(new String[0])}) declares one that no value
-         * could match, which the core refuses.
+         * Whether a text {@code enum} matches exactly, byte for byte, rather than under Unicode
+         * simple case folding (the default): for a vocabulary whose case carries meaning
+         * ({@code "mm"} and {@code "Mm"}). The text door only; a numeric door refuses it.
+         *
+         * @param value {@code true} to match case-sensitively
+         * @return this builder
+         */
+        public Builder<T> caseSensitive(boolean value) {
+            caseSensitive = value;
+            return this;
+        }
+
+        /**
+         * The values allowed: at the text door, the strings themselves, matched under Unicode
+         * simple case folding (byte for byte under {@link #caseSensitive(boolean)}), a match
+         * delivering the first matching entry as declared; at a numeric door, decimals in
+         * invariant notation, each matching a value equal to it exactly ({@code "7"} and
+         * {@code "7.0"} are one value; at an integer door a fractional or out-of-range entry
+         * matches nothing). Not calling it declares no {@code enum}; calling it with no entries
+         * ({@code enumOf(new String[0])}) declares one that no value matches, so every value
+         * violates it. Duplicates are allowed, the first winning.
          *
          * @param values the entries
          * @return this builder
@@ -666,8 +705,9 @@ public final class Constraints<T> {
         }
 
         /**
-         * The values allowed at an integer door, distinct whole numbers. The text door takes
-         * strings only.
+         * The values allowed at a numeric door, compared exactly to the value. At the text door
+         * a number is a valid entry that no string equals, as JSON Schema's exact equality
+         * says: every value then violates the {@code enum}.
          *
          * @param values the entries
          * @return this builder
@@ -682,16 +722,14 @@ public final class Constraints<T> {
          *
          * @return the immutable declaration
          * @throws IllegalArgumentException the core refused it, a contract violation rather than
-         *     a data verdict, the message naming the rule: a keyword the door does not take;
-         *     {@code minimum} with {@code exclusiveMinimum}, or {@code maximum} with
-         *     {@code exclusiveMaximum}; a lower bound not below the upper; a {@code multipleOf}
-         *     not positive; a rounding without {@code multipleOf}; {@code minLength} above
-         *     {@code maxLength}; a bound, step or entry the door cannot hold (a fraction or out
-         *     of range at an integer door, or text that is no decimal or does not fit one); an
-         *     entry that is not UTF-8 (a lone surrogate); duplicate entries; an {@code enum}
-         *     with no entries; a text entry no input can match (an empty one, or under
-         *     {@code trim} one with leading or trailing white space). Also a
-         *     {@link BigDecimal} entry at the text door
+         *     a data verdict, the message naming the rule: a constraint the door does not take
+         *     ({@code trim} or {@code caseSensitive} at a numeric door, a rounding with
+         *     {@code multipleOf} at the text door); a {@code multipleOf} not positive; a rounding without {@code multipleOf}; a
+         *     bound, step or entry the door cannot hold (text that is no decimal or does not fit
+         *     one, past 96 bits or a scale of 28; a rounding with a fractional
+         *     {@code multipleOf} at an integer door, whose rounded value it could not deliver);
+         *     an entry that is not UTF-8 (a lone surrogate). Also a {@link BigDecimal} entry at
+         *     the text door
          */
         public Constraints<T> build() {
             return new Constraints<>(this);

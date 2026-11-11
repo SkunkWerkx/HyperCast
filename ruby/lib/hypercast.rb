@@ -805,14 +805,18 @@ module HyperCast
   # The success case of a checked door: the value (rounded to multiple_of when the declaration
   # rounds; at the :text door with an enum, the very String the declaration was given),
   # adjusted (true only when rounding changed the value) and, at the :text door with an enum,
-  # the index of the entry matched — nil otherwise, an integer enum included, where the value
+  # the index of the entry matched — nil otherwise, a numeric enum included, where the value
   # is the answer.
   Checked = Data.define(:value, :adjusted, :enum_index)
 
-  # A value that parsed and broke a declared rule: the Keyword broken and the value's span, in
-  # the units a Fault's span is in (characters for text, bytes for a binary String). A number
-  # the caller already held has no text, and an empty span.
-  Violation = Data.define(:keyword, :offset, :length)
+  # A value that cast and broke a declared rule: the Keyword broken, the value exactly as the
+  # door cast it (in the door's own type, as a Checked's value is, and never rounded: a
+  # rounding is part of the judgement, not of the value; at :text the judged String, after
+  # trim, never an enum entry) and the value's span, in the units a Fault's span is in
+  # (characters for text, bytes for a binary String). A number the caller already held has no
+  # text, and an empty span. A Fault means the input is not the door's type at all; a
+  # Violation means it is, and breaks a rule.
+  Violation = Data.define(:keyword, :value, :offset, :length)
 
   # The rule a Violation broke: the native core's code, named the OpenAPI way by #name
   # ("exclusiveMinimum"). Open to additions — format and pattern may join in a minor release —
@@ -865,60 +869,65 @@ module HyperCast
   # `enum`, broken by a value that is none of the entries.
   Keyword::ENUM = Keyword.new(code: 8)
 
-  # Validation constraints — the OpenAPI Schema Object's keywords — bound to one door and
-  # judged once, by the native core, when built: a declaration that cannot mean anything at
-  # its door is an ArgumentError here, its message the rule it breaks ("Constraints refused
-  # (code 4): the lower bound is not below the upper bound."), and every checked cast after
-  # that judges only data. The door is required: no declaration ever silently means "no
-  # rules", and `Constraints.new(door: :f64)` is an explicit, empty one.
+  # Validation constraints — the OpenAPI 3.2 Schema Object's keywords — bound to one door and
+  # judged once, by the native core, when built: every declaration OpenAPI allows is accepted,
+  # an unsatisfiable one included (crossed bounds, an empty enum: every value then violates
+  # it), and a keyword for another type is ignored, as JSON Schema ignores it. What the core
+  # refuses is an ArgumentError here, its message the rule it breaks ("Constraints refused
+  # (code 5): multipleOf is not positive."), and every checked cast after that judges only
+  # data. The door is required: no declaration ever silently means "no rules", and
+  # `Constraints.new(door: :f64)` is an explicit, empty one.
   #
-  # The integer doors take minimum, exclusive_minimum, maximum, exclusive_maximum,
-  # multiple_of with a rounding (a ROUNDINGS Symbol), and enum; :f32, :f64 and :decimal the
-  # same but enum; :text min_length, max_length (in code points), trim (of Unicode
-  # White_Space) and enum (matched under simple case folding). Every keyword is accepted at
-  # every door, and the core alone refuses one its door does not take.
+  # The numeric doors take minimum, exclusive_minimum, maximum and exclusive_maximum (four
+  # independent keywords, all four together if declared so), multiple_of with a rounding (a
+  # ROUNDINGS Symbol), and enum, matched exactly against the value; :text min_length,
+  # max_length (in code points), enum (matched under simple case folding unless
+  # case_sensitive: true, which compares byte for byte), and HyperCast's own extensions trim
+  # (of Unicode White_Space) and case_sensitive. Every keyword is accepted at every door; the
+  # core alone refuses trim, case_sensitive or a rounding where they mean nothing.
   #
-  # A bound, step or integer enum entry is an Integer, a BigDecimal, a String in invariant
+  # A bound, step or numeric enum entry is an Integer, a BigDecimal, a String in invariant
   # notation ("0.000001", "-90", "1e-6") or this gem's own Decimal, and crosses the core's own
   # conversion (HyperCast.declared_decimal): never a Float, since 0.1 has no exact binary form
   # and a Float could only declare a neighbour of the value meant. Bounds are kept as the exact
   # Decimal declared. A text enum entry is a String, kept as the very object given when it is
   # frozen and as a frozen copy when it is not, so a match delivers what the core judged. An
-  # enum left nil declares none, while `enum: []` declares one no value could match and is
-  # refused (code 12), as is a text entry no input can match (code 13: an empty one, or under
-  # trim one with leading or trailing white space).
+  # enum left nil declares none, while `enum: []` declares one no value matches. With
+  # duplicate entries, the first match wins.
   #
   #   latitude = HyperCast::Constraints.new(door: :f64, minimum: "-90", maximum: "90")
   #   HyperCast.checked("91", HyperCast::NumFormat::INVARIANT, latitude)
-  #   # => #<data HyperCast::Violation keyword=HyperCast::Keyword::MAXIMUM, offset=0, length=2>
+  #   # => #<data HyperCast::Violation keyword=HyperCast::Keyword::MAXIMUM, value=91.0, offset=0, length=2>
   Constraints = Data.define(:door, :minimum, :exclusive_minimum, :maximum, :exclusive_maximum, :multiple_of,
-                            :rounding, :min_length, :max_length, :trim, :enum) do
-    # Validates every keyword's type, converts the bounds, steps and integer entries through
+                            :rounding, :min_length, :max_length, :trim, :case_sensitive, :enum) do
+    # Validates every keyword's type, converts the bounds, steps and numeric entries through
     # the core, and has the core judge the declaration; a refusal is an ArgumentError worded
     # from its code. A wrong type is an ArgumentError, an unknown door or rounding a KeyError.
     def initialize(door:, minimum: nil, exclusive_minimum: nil, maximum: nil, exclusive_maximum: nil,
-                   multiple_of: nil, rounding: :strict, min_length: nil, max_length: nil, trim: false, enum: nil)
+                   multiple_of: nil, rounding: :strict, min_length: nil, max_length: nil, trim: false,
+                   case_sensitive: false, enum: nil)
       keywords = { door: door, minimum: minimum, exclusive_minimum: exclusive_minimum, maximum: maximum,
                    exclusive_maximum: exclusive_maximum, multiple_of: multiple_of, rounding: rounding,
-                   min_length: min_length, max_length: max_length, trim: trim, enum: enum }
+                   min_length: min_length, max_length: max_length, trim: trim, case_sensitive: case_sensitive,
+                   enum: enum }
       code = HyperCast.constraints_check(**keywords)
       raise ArgumentError, self.class.send(:refusal, code) unless code.zero?
 
       super(**self.class.send(:members_of, **keywords))
     end
 
-    # The 72 bytes this declaration crosses a C ABI as, in the native byte order the core
-    # reads in place: the size (72), the flags, the rounding code, min_length, max_length and
-    # a reserved zero as u32s, then the lower bound, the upper bound and multiple_of as 16-byte
-    # decimals (the low 64 and high 32 bits of the magnitude, the scale, the sign, two zero
-    # bytes) — for a gem that judges values across a C ABI of its own, with #packed_enum
-    # beside it.
+    # The 104 bytes this declaration crosses a C ABI as, in the native byte order the core
+    # reads in place: the size (104), the flags, the rounding code, min_length, max_length and
+    # a reserved zero as u32s, then minimum, maximum, multiple_of, exclusive_minimum and
+    # exclusive_maximum as 16-byte decimals (the low 64 and high 32 bits of the magnitude, the
+    # scale, the sign, two zero bytes) — for a gem that judges values across a C ABI of its
+    # own, with #packed_enum beside it.
     def packed
       self.class.send(:pack_raw, to_h)
     end
 
     # The enum list as the core reads it beside #packed, "" for none (read only when the
-    # flags in #packed carry HAS_ENUM, 256, set whenever an enum is declared): at an integer
+    # flags in #packed carry HAS_ENUM, 256, set whenever an enum is declared): at a numeric
     # door 16-byte decimals in native byte order, at :text each entry a little-endian u32 byte
     # length followed by its UTF-8.
     def packed_enum
@@ -972,10 +981,13 @@ module HyperCast
     # Every keyword validated and converted — a declaration's members — or the code 8 a
     # conversion was refused with.
     def self.members_of(door:, minimum: nil, exclusive_minimum: nil, maximum: nil, exclusive_maximum: nil,
-                        multiple_of: nil, rounding: :strict, min_length: nil, max_length: nil, trim: false, enum: nil)
+                        multiple_of: nil, rounding: :strict, min_length: nil, max_length: nil, trim: false,
+                        case_sensitive: false, enum: nil)
       CHECKED_DOORS.fetch(door)
       ROUNDINGS.fetch(rounding)
       raise ArgumentError, "trim must be true or false; got #{trim.inspect}" unless [true, false].include?(trim)
+      raise ArgumentError, "case_sensitive must be true or false; got #{case_sensitive.inspect}" unless
+        [true, false].include?(case_sensitive)
 
       bounds = { minimum: minimum, exclusive_minimum: exclusive_minimum, maximum: maximum,
                  exclusive_maximum: exclusive_maximum, multiple_of: multiple_of }
@@ -989,10 +1001,10 @@ module HyperCast
       return entries if entries.is_a?(Integer)
 
       { door: door, **bounds, rounding: rounding, min_length: length("min_length", min_length),
-        max_length: length("max_length", max_length), trim: trim, enum: entries }
+        max_length: length("max_length", max_length), trim: trim, case_sensitive: case_sensitive, enum: entries }
     end
 
-    # A bound, step or integer enum entry as the core converts it: an Integer, a BigDecimal,
+    # A bound, step or numeric enum entry as the core converts it: an Integer, a BigDecimal,
     # a String or a Decimal, each through its text and HyperCast.declared_decimal — the exact
     # Decimal, or the code 8 it was refused with. Never a Float, nor true or false.
     def self.exact(name, value)
@@ -1031,7 +1043,7 @@ module HyperCast
 
     # The enum entries, frozen, as a declaration keeps them: at :text the caller's own
     # Strings, elsewhere each entry's exact Decimal (or the code 8 one was refused with); nil
-    # for none. An empty list is declared, for the core to refuse (code 12).
+    # for none. An empty list is declared: one no value matches.
     def self.entries_of(door, enum)
       return nil if enum.nil?
       raise ArgumentError, "enum must be an Array of entries; got #{enum.inspect}" unless
@@ -1040,7 +1052,12 @@ module HyperCast
       entries = enum.to_a
       if door == :text
         entries = entries.each_with_index.map do |entry, index|
-          raise ArgumentError, "enum entries at :text must be Strings; entry #{index} is #{entry.inspect}" unless
+          # A number is a valid entry that no String equals (JSON Schema's enum is exact
+          # equality across types): kept as given, and packed empty by pack_enum.
+          next entry if number_entry?(entry)
+
+          raise ArgumentError, "enum entries at :text must be Strings, or numbers (an Integer, a BigDecimal or a " \
+                               "HyperCast::Decimal), which never match; entry #{index} is #{entry.inspect}" unless
             entry.is_a?(String)
 
           # A Hash key's rule: a frozen String is kept as itself, a mutable one as a frozen
@@ -1058,14 +1075,15 @@ module HyperCast
       entries.freeze
     end
 
-    # A declaration's members as the 72-byte native layout #packed describes.
+    # A declaration's members as the 104-byte native layout #packed describes: each bound in
+    # a slot of its own.
     def self.pack_raw(members)
       flags = self::FLAGS.sum { |member, flag| members[member].nil? ? 0 : flag }
       flags |= 128 if members[:trim]
-      decimals = [members[:minimum] || members[:exclusive_minimum], members[:maximum] || members[:exclusive_maximum],
-                  members[:multiple_of]]
-      [72, flags, ROUNDINGS.fetch(members[:rounding]), members[:min_length] || 0, members[:max_length] || 0, 0]
-        .pack("L6") + decimals.map { |decimal| pack_decimal(decimal) }.join
+      flags |= 512 if members[:case_sensitive]
+      decimals = members.values_at(:minimum, :maximum, :multiple_of, :exclusive_minimum, :exclusive_maximum)
+      [self::PACKED_BYTES, flags, ROUNDINGS.fetch(members[:rounding]), members[:min_length] || 0,
+       members[:max_length] || 0, 0].pack("L6") + decimals.map { |decimal| pack_decimal(decimal) }.join
     end
 
     # One Decimal in the core's native 16-byte layout; zero for nil.
@@ -1076,6 +1094,11 @@ module HyperCast
       [magnitude & 0xFFFF_FFFF_FFFF_FFFF, magnitude >> 64, decimal.scale, decimal.negative ? 1 : 0].pack("QLCCx2")
     end
 
+    # Whether a text enum entry is a number: valid, and never matched.
+    def self.number_entry?(entry)
+      entry.is_a?(Integer) || entry.is_a?(Decimal) || (defined?(BigDecimal) && entry.is_a?(BigDecimal))
+    end
+
     # A declaration's enum as #packed_enum describes it, a binary String.
     def self.pack_enum(members)
       entries = members[:enum] or return "".b
@@ -1084,35 +1107,36 @@ module HyperCast
       # Each entry as input text crosses (HyperCast.utf8): one with no UTF-8 form is then
       # refused as an entry that is not UTF-8 (9), never transcoded with a guess.
       entries.map do |entry|
+        # A number packs as an empty entry, which no input matches (empty input is the door's
+        # Empty fault), so every other entry keeps its index.
+        next [0].pack("L<") unless entry.is_a?(String)
+
         text = HyperCast.send(:utf8, entry)
         [text.bytesize].pack("L<") + text.b
       end.join.b
     end
 
-    private_class_method :refusal, :layout, :members_of, :exact, :hint, :length, :entries_of, :pack_raw, :pack_decimal,
-                         :pack_enum
+    private_class_method :refusal, :layout, :members_of, :exact, :hint, :length, :entries_of, :number_entry?, :pack_raw,
+                         :pack_decimal, :pack_enum
   end
 
   # The flag each declared member sets in the packed layout, HAS_ENUM (256) by an enum even
-  # with no entries; TRIM (128) is set by trim.
+  # with no entries; TRIM (128) is set by trim and CASE_SENSITIVE (512) by case_sensitive.
   Constraints::FLAGS = { minimum: 1, exclusive_minimum: 2, maximum: 4, exclusive_maximum: 8, multiple_of: 16,
                          min_length: 32, max_length: 64, enum: 256 }.freeze
 
-  # The words a refused declaration's message gives, one per code: the native core's own.
+  # The size of Constraints#packed, the native RawConstraints layout, in bytes.
+  Constraints::PACKED_BYTES = 104
+
+  # The words a refused declaration's message gives, one per code: the native core's own. The
+  # codes between belonged to refusals of declarations OpenAPI allows; they are retired.
   Constraints::REFUSALS = {
     1 => "a constraint the door does not take",
-    2 => "minimum together with exclusiveMinimum",
-    3 => "maximum together with exclusiveMaximum",
-    4 => "the lower bound is not below the upper bound",
     5 => "multipleOf is not positive",
     6 => "a rounding without multipleOf",
-    7 => "minLength is above maxLength",
     8 => "a bound, step or enum entry the door cannot hold",
     9 => "an enum entry that is not UTF-8",
-    10 => "a duplicate enum entry",
-    11 => "a malformed constraints layout",
-    12 => "an enum with no entries",
-    13 => "a text enum entry no input can match"
+    11 => "a malformed constraints layout"
   }.freeze
 
   class << self
@@ -1350,9 +1374,10 @@ module HyperCast
     #
     # With Constraints for :text it is judged by them, a Checked, a Fault or a Violation:
     # trimmed of Unicode White_Space when they say so (trimmed to nothing is :empty), lengths
-    # counted in code points, and an enum matched under simple case folding, a match
-    # delivering the very String declared and its index. Constraints for another door are an
-    # ArgumentError (they go to checked).
+    # counted in code points, and an enum matched under simple case folding (byte for byte
+    # with case_sensitive), a match delivering the very String declared and its index; a
+    # Violation's value is the judged text. Constraints for another door are an ArgumentError
+    # (they go to checked).
     def text(text, constraints = nil)
       if constraints.nil?
         return crossing(18, 0, text, 8) { |out, bytes| text_value(bytes, *out.unpack("LL")) }
@@ -1363,14 +1388,14 @@ module HyperCast
       rc = checked_call(CHECKED_DOORS.fetch(:text), nil, raw, entries, bytes)
       checked_verdict(rc, bytes) do |out, check|
         offset, length = out[0, 8].unpack("LL")
-        index = check[8, 4].unpack1("L")
-        index == 0xFFFF_FFFF ? text_value(bytes, offset, length) : constraints.enum.fetch(index)
+        index = check && check[8, 4].unpack1("L")
+        index.nil? || index == 0xFFFF_FFFF ? text_value(bytes, offset, length) : constraints.enum.fetch(index)
       end
     end
 
     # Casts numeric text through the door its Constraints are bound to, under the declared
     # format, then judges the value by them: a Checked, or the door's own Fault, or a
-    # Violation of the first rule it breaks. The value is judged exactly, on the decimal the
+    # Violation of the first rule it breaks, carrying the value as cast. The value is judged exactly, on the decimal the
     # door read, never on a float. Spans are in the units a Fault's are. separator:,
     # delimiter: and unit: override those fields of format for this call
     # (NumFormat#override). Constraints for :text are an ArgumentError (they go to text).
@@ -1413,7 +1438,7 @@ module HyperCast
       Runtime.function(:cast_constraints_check).call(door, 0, pointer, input_ptr(entries), entries.bytesize)
     end
 
-    # Converts a bound, step or integer enum entry written in invariant notation — an
+    # Converts a bound, step or numeric enum entry written in invariant notation — an
     # optional sign, digits with an optional "." and fraction, an optional exponent:
     # "0.000001", "-90", "1e-6" — to the exact Decimal the core declares it as, trailing zeros
     # dropped: the conversion every bound a Constraints is given crosses. A value past 96 bits
@@ -1688,7 +1713,7 @@ module HyperCast
     # oldest: packed_cache's bound, for the same reason.
     CONSTRAINTS_CACHE_LIMIT = 64
 
-    # Identity-keyed memo of each Constraints as the core reads it: its door, its 72-byte
+    # Identity-keyed memo of each Constraints as the core reads it: its door, its 104-byte
     # layout copied once into native memory (which a String's bytes are not guaranteed to be
     # aligned for) and its packed enum, frozen. Bounded and evicted as packed_cache is.
     def constraints_cache
@@ -1701,13 +1726,13 @@ module HyperCast
       end.compare_by_identity
     end
 
-    # One 96-byte scratch allocation per thread for the checked doors, beside #scratch: a
-    # packed layout constraints_check judges at 0 (72 bytes, 8-aligned by malloc), and the
-    # check a checked door writes at 72 (12 bytes).
+    # One 120-byte scratch allocation per thread for the checked doors, beside #scratch: a
+    # packed layout constraints_check judges at 0 (104 bytes, 8-aligned by malloc), and the
+    # check a checked door writes at 104 (12 bytes).
     def checked_scratch
       Thread.current[:hypercast_checked_scratch] ||= begin
-        base = Runtime.buffer(96)
-        [base, base + 72]
+        base = Runtime.buffer(Constraints::PACKED_BYTES + 16)
+        [base, base + Constraints::PACKED_BYTES]
       end
     end
 
@@ -1723,7 +1748,8 @@ module HyperCast
 
     # Presents a checked door's return code as its verdict: 0 a Checked of the value the
     # block reads from the out-value and check, 1 to 3 the door's Fault with its detail, 4 a
-    # Violation (which carries none) — each span over `bytes` (the UTF-8 the core read) as a
+    # Violation of the value the block reads from the out-value (handed no check: the value as
+    # cast, never an enum entry) — each span over `bytes` (the UTF-8 the core read) as a
     # Fault's is, or as written when there is no text — and -1 a binding bug that raises.
     def checked_verdict(rc, bytes)
       out, fault = scratch
@@ -1739,7 +1765,8 @@ module HyperCast
 
       offset, length = fault[4, 8].unpack("LL")
       offset, length = Interop.characters(bytes, offset, length) if bytes
-      Violation.new(keyword: Keyword.new(code: check[0, 4].unpack1("L")), offset: offset, length: length)
+      Violation.new(keyword: Keyword.new(code: check[0, 4].unpack1("L")), value: yield(out, nil), offset: offset,
+                    length: length)
     end
 
     # The loaded core's version word, major << 16 | minor << 8 | patch, straight from the

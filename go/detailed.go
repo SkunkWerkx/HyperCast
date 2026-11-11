@@ -146,16 +146,16 @@ func (f *Failure) Fault() *Fault {
 }
 
 // DetailedRejection is why a detailed checked door gave no value: a *Failure (it did not
-// parse) or a *Violation (it parsed and broke a declared rule), as Rejection is for the plain
-// checked doors. Nil is success. Sealed: nothing outside this package implements it, so a type
+// parse) or a *Violation[V] (it parsed and broke a declared rule, and carries the value), as
+// Rejection is for the plain checked doors. Nil is success. Sealed: nothing outside this package implements it, so a type
 // switch over the two needs no default arm.
 type DetailedRejection interface {
 	error
 	detailedRejection()
 }
 
-func (*Failure) detailedRejection()   {}
-func (*Violation) detailedRejection() {}
+func (*Failure) detailedRejection()      {}
+func (*Violation[V]) detailedRejection() {}
 
 func failedDetailed(code int32, fault *rawFault) *Failure {
 	if code == -1 {
@@ -533,12 +533,16 @@ func StringDetailed[T Text](text T) (string, *Failure) {
 	return slice(text, read[RawSpan](&r)), nil
 }
 
-// rejectedDetailed is the DetailedRejection a nonzero checked code names.
-func rejectedDetailed(r *result, c RawCheck) DetailedRejection {
-	if r.code != 4 {
-		return failedDetailed(r.code, &r.fault)
+// checkedNumberDetailed reads a numeric checked door's verdict, a failure with its detail.
+func checkedNumberDetailed[V Number](r *result, c RawCheck) (Checked[V], DetailedRejection) {
+	switch r.code {
+	case 0:
+		return checkedValue[V](r, c), nil
+	case 4:
+		return Checked[V]{EnumIndex: -1}, violated(r, c, numberOut[V](r))
+	default:
+		return Checked[V]{EnumIndex: -1}, failedDetailed(r.code, &r.fault)
 	}
-	return violated(r, c)
 }
 
 // CheckDetailed is Check, reporting a parse failure's detail.
@@ -547,19 +551,13 @@ func CheckDetailed[V Number, T Text](text T, format NumFormat, constraints Const
 	format.raw(&raw)
 	ptr, length := textPtr(text)
 	r, c := callChecked(doorOf[V](), ptr, length, &raw, constraints.declaration())
-	if r.code != 0 {
-		return Checked[V]{EnumIndex: -1}, rejectedDetailed(&r, c)
-	}
-	return checkedValue[V](&r, c), nil
+	return checkedNumberDetailed[V](&r, c)
 }
 
 // CheckFromFloat64Detailed is CheckFromFloat64, reporting a failure's detail.
 func CheckFromFloat64Detailed[V Number](value float64, constraints Constraints[V]) (Checked[V], DetailedRejection) {
 	r, c := callCheckedFromF64(doorOf[V](), value, constraints.declaration())
-	if r.code != 0 {
-		return Checked[V]{EnumIndex: -1}, rejectedDetailed(&r, c)
-	}
-	return checkedValue[V](&r, c), nil
+	return checkedNumberDetailed[V](&r, c)
 }
 
 // CheckStringDetailed is CheckString, reporting a parse failure's detail.
@@ -567,8 +565,12 @@ func CheckStringDetailed[T Text](text T, constraints Constraints[string]) (Check
 	ptr, length := textPtr(text)
 	d := constraints.declaration()
 	r, c := callChecked(doorText, ptr, length, nil, d)
-	if r.code != 0 {
-		return Checked[string]{EnumIndex: -1}, rejectedDetailed(&r, c)
+	switch r.code {
+	case 0:
+		return checkedText(text, d, &r, c), nil
+	case 4:
+		return Checked[string]{EnumIndex: -1}, violated(&r, c, slice(text, read[RawSpan](&r)))
+	default:
+		return Checked[string]{EnumIndex: -1}, failedDetailed(r.code, &r.fault)
 	}
-	return checkedText(text, d, &r, c), nil
 }

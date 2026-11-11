@@ -20,7 +20,7 @@ import org.junit.jupiter.api.Test;
 
 /**
  * The checked doors' binding-side contract, beside the corpus replay: the declaration's
- * builder and its refusals, the door binding, lone surrogates, the caller's own enum instance,
+ * builder, what it accepts and what it refuses, the value a violation carries, the door binding, lone surrogates, the caller's own enum instance,
  * the open keyword, and the README's examples as written.
  */
 class ConstraintsTest {
@@ -42,16 +42,19 @@ class ConstraintsTest {
         assertEquals(
                 new Checked<>(45.123457, true, OptionalInt.empty()),
                 Cast.f64("45.1234567", NumFormat.INVARIANT, latitude));
-        assertEquals(new Violation<Double>(Keyword.MINIMUM, 0, 5), Cast.f64("-90.5", NumFormat.INVARIANT, latitude));
+        assertEquals(
+                new Violation<Double>(Keyword.MINIMUM, -90.5, 0, 5), Cast.f64("-90.5", NumFormat.INVARIANT, latitude));
         assertEquals(new Checked<>(45.123457, true, OptionalInt.empty()), Cast.f64FromDouble(45.1234567, latitude));
         assertEquals(
                 new Checked<>(new BigDecimal("1234.55"), false, OptionalInt.empty()),
                 Cast.decimal("€1.234,55", euro, euroCash));
-        assertEquals(new Violation<BigDecimal>(Keyword.MULTIPLE_OF, 0, 6), Cast.decimal("€12,37", euro, euroCash));
+        assertEquals(
+                new Violation<BigDecimal>(Keyword.MULTIPLE_OF, new BigDecimal("12.37"), 0, 6),
+                Cast.decimal("€12,37", euro, euroCash));
         assertEquals(new Fault<BigDecimal>(CastFailure.MALFORMED, 4, 1), Cast.decimal("12,3x", euro, euroCash));
 
         assertEquals("Male, entry 1", describe(" MALE ", SEX));
-        assertEquals("not a sex code: chars 0+5", describe("Femal", SEX));
+        assertEquals("not a sex code: Femal", describe(" Femal ", SEX));
         assertEquals("EMPTY at char 0", describe("   ", SEX));
     }
 
@@ -62,7 +65,7 @@ class ConstraintsTest {
             case Fault<String> f -> f.reason() + " at char " + f.offset();
             case Violation<String> v ->
                 switch (v.keyword().name()) {
-                    case "enum" -> "not a sex code: chars " + v.offset() + "+" + v.length();
+                    case "enum" -> "not a sex code: " + v.value();
                     default -> "breaks " + v.keyword(); // keywords are open
                 };
         };
@@ -98,9 +101,9 @@ class ConstraintsTest {
         // A thumbs-up with a skin tone is two code points, four chars.
         assertTrue(Cast.text("👍🏽", two) instanceof Checked<String>);
         Constraints<String> one = Constraints.text().maxLength(1).build();
-        assertEquals(new Violation<String>(Keyword.MAX_LENGTH, 0, 4), Cast.text("👍🏽", one));
+        assertEquals(new Violation<String>(Keyword.MAX_LENGTH, "👍🏽", 0, 4), Cast.text("👍🏽", one));
         assertEquals(
-                new Violation<String>(Keyword.MAX_LENGTH, 0, 8),
+                new Violation<String>(Keyword.MAX_LENGTH, "👍🏽", 0, 8),
                 Cast.text("👍🏽".getBytes(StandardCharsets.UTF_8), one));
     }
 
@@ -148,69 +151,164 @@ class ConstraintsTest {
     }
 
     @Test
-    void aKeywordTheDoorDoesNotTakeIsTheCoresRefusal() {
+    void onlyAnExtensionWhereItMeansNothingIsRefused() {
+        // HyperCast's own text extensions at a numeric door, and a rounding at the text door.
         IllegalArgumentException e = assertThrows(
                 IllegalArgumentException.class,
-                () -> Constraints.i32().minLength(1).build());
+                () -> Constraints.i32().trim(true).build());
         assertEquals(CorpusTest.refusalMessage(1), e.getMessage());
         e = assertThrows(
                 IllegalArgumentException.class,
-                () -> Constraints.f64().enumOf("1").build());
+                () -> Constraints.f64().caseSensitive(true).build());
         assertEquals(CorpusTest.refusalMessage(1), e.getMessage());
         e = assertThrows(
                 IllegalArgumentException.class,
-                () -> Constraints.u8().minimum("-1").build());
+                () -> Constraints.text()
+                        .multipleOf("1")
+                        .rounding(Rounding.FLOOR)
+                        .build());
+        assertEquals(CorpusTest.refusalMessage(1), e.getMessage());
+        // A rounding with a fractional step at an integer door could not deliver its value.
+        e = assertThrows(
+                IllegalArgumentException.class,
+                () -> Constraints.i32()
+                        .multipleOf("0.5")
+                        .rounding(Rounding.MIDPOINT)
+                        .build());
         assertEquals("Constraints refused (code 8): a bound, step or enum entry the door cannot hold.", e.getMessage());
+        // The retired codes are never named.
+        for (int retired : new int[] {2, 3, 4, 7, 10, 12, 13}) {
+            assertEquals(
+                    "Constraints refused (code " + retired + "): a rule this binding does not name.",
+                    Constraints.refusal(retired));
+        }
+        assertEquals("Constraints refused (code 14): a rule this binding does not name.", Constraints.refusal(14));
     }
 
     @Test
-    void anEmptyEnumIsDeclaredAndRefused() {
-        // No enumOf is no enum; enumOf with no entries is one no value could match.
+    void everyDeclarationOpenApiAllowsIsAccepted() {
+        // A keyword for another type is ignored, as JSON Schema ignores it.
+        Constraints<Integer> lengthy =
+                Constraints.i32().minLength(3).maxLength(1).build();
+        assertEquals(new Checked<>(7, false, OptionalInt.empty()), Cast.i32("7", NumFormat.INVARIANT, lengthy));
+        Constraints<String> bounded = Constraints.text().minimum("0").build();
+        assertEquals(new Checked<>("-5", false, OptionalInt.empty()), Cast.text("-5", bounded));
+        // Bounds outside the door's range, fractional ones, and a strict fractional step.
+        Constraints<Integer> wide =
+                Constraints.u8().minimum("-1").maximum("2.5").build();
+        assertEquals(new Checked<>(2, false, OptionalInt.empty()), Cast.u8("2", NumFormat.INVARIANT, wide));
+        assertEquals(new Violation<Integer>(Keyword.MAXIMUM, 3, 0, 1), Cast.u8("3", NumFormat.INVARIANT, wide));
+        Constraints<Integer> halves = Constraints.i32().multipleOf("1.5").build();
+        assertEquals(new Checked<>(3, false, OptionalInt.empty()), Cast.i32("3", NumFormat.INVARIANT, halves));
+        assertEquals(new Violation<Integer>(Keyword.MULTIPLE_OF, 4, 0, 1), Cast.i32("4", NumFormat.INVARIANT, halves));
+        // Crossed bounds and minLength above maxLength declare; every value then violates them.
+        Constraints<Integer> crossed =
+                Constraints.i32().minimum("5").maximum("4").build();
+        assertEquals(new Violation<Integer>(Keyword.MAXIMUM, 5, 0, 1), Cast.i32("5", NumFormat.INVARIANT, crossed));
+        Constraints<String> impossible =
+                Constraints.text().minLength(3).maxLength(2).build();
+        assertEquals(new Violation<String>(Keyword.MAX_LENGTH, "abc", 0, 3), Cast.text("abc", impossible));
+        // An enum at a float or decimal door, compared exactly; duplicates, the first winning.
+        Constraints<Double> halfs = Constraints.f64().enumOf("1", "2.5", "2.50").build();
+        assertEquals(new Checked<>(2.5, false, OptionalInt.empty()), Cast.f64("2.50", NumFormat.INVARIANT, halfs));
+        assertEquals(new Violation<Double>(Keyword.ENUM, 2.0, 0, 1), Cast.f64("2", NumFormat.INVARIANT, halfs));
+        Constraints<BigDecimal> tenths =
+                Constraints.decimal().enumOf(new BigDecimal("0.1")).build();
+        assertEquals(
+                new Checked<>(new BigDecimal("0.1"), false, OptionalInt.empty()),
+                Cast.decimal("0.10", NumFormat.INVARIANT, tenths));
+        Constraints<String> twice = Constraints.text().enumOf("I", "i").build();
+        assertEquals(new Checked<>("I", false, OptionalInt.of(0)), Cast.text("i", twice));
+    }
+
+    @Test
+    void anEmptyEnumIsDeclaredAndEveryValueViolatesIt() {
+        // No enumOf is no enum; enumOf with no entries is one no value matches.
         assertEquals(
                 0,
                 ByteBuffer.wrap(Constraints.i32().build().toRaw())
                         .order(ByteOrder.nativeOrder())
                         .getInt(4));
-        assertEquals(
-                CorpusTest.refusalMessage(12),
-                assertThrows(
-                                IllegalArgumentException.class,
-                                () -> Constraints.i32()
-                                        .enumOf(new BigDecimal[0])
-                                        .build())
-                        .getMessage());
-        assertEquals(
-                CorpusTest.refusalMessage(12),
-                assertThrows(
-                                IllegalArgumentException.class,
-                                () -> Constraints.text().enumOf(new String[0]).build())
-                        .getMessage());
-        assertEquals(
-                CorpusTest.refusalMessage(1),
-                assertThrows(
-                                IllegalArgumentException.class,
-                                () -> Constraints.f64().enumOf(new String[0]).build())
-                        .getMessage());
-        assertEquals(
-                CorpusTest.refusalMessage(13),
-                assertThrows(
-                                IllegalArgumentException.class,
-                                () -> Constraints.text().enumOf("Male", "").build())
-                        .getMessage());
-        assertEquals(
-                CorpusTest.refusalMessage(13),
-                assertThrows(
-                                IllegalArgumentException.class,
-                                () -> Constraints.text()
-                                        .trim(true)
-                                        .enumOf(" Male ")
-                                        .build())
-                        .getMessage());
-        Constraints<String> spaced = Constraints.text().enumOf(" Male ").build();
+        Constraints<Integer> none = Constraints.i32().enumOf(new BigDecimal[0]).build();
         assertEquals(
                 Constraints.HAS_ENUM,
-                ByteBuffer.wrap(spaced.toRaw()).order(ByteOrder.nativeOrder()).getInt(4));
-        assertEquals("Constraints refused (code 14): a rule this binding does not name.", Constraints.refusal(14));
+                ByteBuffer.wrap(none.toRaw()).order(ByteOrder.nativeOrder()).getInt(4));
+        assertEquals(new Violation<Integer>(Keyword.ENUM, 1, 0, 1), Cast.i32("1", NumFormat.INVARIANT, none));
+        assertEquals(
+                new Violation<String>(Keyword.ENUM, "Male", 0, 4),
+                Cast.text("Male", Constraints.text().enumOf(new String[0]).build()));
+        assertEquals(
+                new Violation<Double>(Keyword.ENUM, 1.0, 0, 1),
+                Cast.f64(
+                        "1",
+                        NumFormat.INVARIANT,
+                        Constraints.f64().enumOf(new String[0]).build()));
+        // An empty entry, or under trim a padded one, is declared and simply never matches.
+        Constraints<String> blank = Constraints.text().enumOf("Male", "").build();
+        assertEquals(new Checked<>("Male", false, OptionalInt.of(0)), Cast.text("male", blank));
+        Constraints<String> padded =
+                Constraints.text().trim(true).enumOf(" Male ").build();
+        assertEquals(new Violation<String>(Keyword.ENUM, "Male", 1, 4), Cast.text(" Male ", padded));
+        Constraints<String> spaced = Constraints.text().enumOf(" Male ").build();
+        assertEquals(new Checked<>(" Male ", false, OptionalInt.of(0)), Cast.text(" male ", spaced));
+    }
+
+    @Test
+    void caseSensitiveMatchesByteForByte() {
+        Constraints<String> folded = Constraints.text().enumOf("mm", "Mm").build();
+        assertFalse(folded.caseSensitive());
+        assertEquals(new Checked<>("mm", false, OptionalInt.of(0)), Cast.text("Mm", folded));
+        Constraints<String> exact =
+                Constraints.text().caseSensitive(true).enumOf("mm", "Mm").build();
+        assertTrue(exact.caseSensitive());
+        assertEquals(
+                Constraints.HAS_ENUM | Constraints.CASE_SENSITIVE,
+                ByteBuffer.wrap(exact.toRaw()).order(ByteOrder.nativeOrder()).getInt(4));
+        assertEquals(new Checked<>("Mm", false, OptionalInt.of(1)), Cast.text("Mm", exact));
+        assertEquals(new Violation<String>(Keyword.ENUM, "MM", 0, 2), Cast.text("MM", exact));
+        assertEquals(new DetailedViolation<String>(Keyword.ENUM, "MM", 0, 2), DetailedCast.text("MM", exact));
+    }
+
+    @Test
+    void aViolationCarriesTheValueAsCastNeverRounded() {
+        // A rounding past what the type holds breaks multipleOf, carrying the value as parsed.
+        Constraints<Byte> fives =
+                Constraints.i8().multipleOf("5").rounding(Rounding.CEILING).build();
+        assertEquals(
+                new Violation<Byte>(Keyword.MULTIPLE_OF, (byte) 127, 0, 3), Cast.i8("127", NumFormat.INVARIANT, fives));
+        assertEquals(new Violation<Byte>(Keyword.MULTIPLE_OF, (byte) 127, 0, 0), Cast.i8FromDouble(127, fives));
+        assertEquals(new Checked<>((byte) 125, true, OptionalInt.empty()), Cast.i8("123", NumFormat.INVARIANT, fives));
+        // A bound judged on the rounded value: the violation still carries the value as cast.
+        Constraints<BigDecimal> cents = Constraints.decimal()
+                .maximum("10")
+                .multipleOf("0.01")
+                .rounding(Rounding.CEILING)
+                .build();
+        assertEquals(
+                new Violation<BigDecimal>(Keyword.MAXIMUM, new BigDecimal("10.001"), 0, 6),
+                Cast.decimal("10.001", NumFormat.INVARIANT, cents));
+        assertEquals(
+                new DetailedViolation<BigDecimal>(Keyword.MAXIMUM, new BigDecimal("10.001"), 0, 6),
+                DetailedCast.decimal("10.001", NumFormat.INVARIANT, cents));
+    }
+
+    @Test
+    void theFourBoundsAreIndependentKeywords() {
+        Constraints<Integer> all = Constraints.i32()
+                .minimum("0")
+                .exclusiveMinimum("10")
+                .maximum("100")
+                .exclusiveMaximum("50")
+                .build();
+        assertEquals(Optional.of(BigDecimal.ZERO), all.minimum());
+        assertEquals(Optional.of(BigDecimal.TEN), all.exclusiveMinimum());
+        assertEquals(new Violation<Integer>(Keyword.MINIMUM, -1, 0, 2), Cast.i32("-1", NumFormat.INVARIANT, all));
+        assertEquals(
+                new Violation<Integer>(Keyword.EXCLUSIVE_MINIMUM, 10, 0, 2), Cast.i32("10", NumFormat.INVARIANT, all));
+        assertEquals(
+                new Violation<Integer>(Keyword.EXCLUSIVE_MAXIMUM, 50, 0, 2), Cast.i32("50", NumFormat.INVARIANT, all));
+        assertEquals(new Checked<>(49, false, OptionalInt.empty()), Cast.i32("49", NumFormat.INVARIANT, all));
+        assertEquals(new Checked<>(11, false, OptionalInt.empty()), Cast.i32("11", NumFormat.INVARIANT, all));
     }
 
     /**
@@ -229,7 +327,8 @@ class ConstraintsTest {
                 "HAS_MIN_LENGTH", 32,
                 "HAS_MAX_LENGTH", 64,
                 "TRIM", 128,
-                "HAS_ENUM", 256);
+                "HAS_ENUM", 256,
+                "CASE_SENSITIVE", 512);
         java.util.Map<String, Integer> restated = java.util.Map.of(
                 "HAS_MINIMUM", Constraints.HAS_MINIMUM,
                 "HAS_EXCLUSIVE_MINIMUM", Constraints.HAS_EXCLUSIVE_MINIMUM,
@@ -239,8 +338,10 @@ class ConstraintsTest {
                 "HAS_MIN_LENGTH", Constraints.HAS_MIN_LENGTH,
                 "HAS_MAX_LENGTH", Constraints.HAS_MAX_LENGTH,
                 "TRIM", Constraints.TRIM,
-                "HAS_ENUM", Constraints.HAS_ENUM);
+                "HAS_ENUM", Constraints.HAS_ENUM,
+                "CASE_SENSITIVE", Constraints.CASE_SENSITIVE);
         assertEquals(flags, restated);
+        assertEquals(104, NativeValues.CONSTRAINTS_BYTES);
         java.nio.file.Path header = null;
         for (java.nio.file.Path dir = java.nio.file.Path.of("").toAbsolutePath(); dir != null; dir = dir.getParent()) {
             java.nio.file.Path candidate = dir.resolve("include/hypercast.h");
@@ -256,6 +357,9 @@ class ConstraintsTest {
         flags.forEach((name, value) -> assertTrue(
                 text.contains("#define HyperCastRawConstraints_" + name + " " + value + "\n"),
                 "the header does not carry " + name + " " + value));
+        assertTrue(
+                text.contains("#define HyperCastRawConstraints_SIZE " + NativeValues.CONSTRAINTS_BYTES + "\n"),
+                "the header does not carry SIZE " + NativeValues.CONSTRAINTS_BYTES);
     }
 
     @Test
@@ -286,12 +390,18 @@ class ConstraintsTest {
                 .enumOf(new BigDecimal("10"), new BigDecimal("2E+1"))
                 .build();
         assertEquals(new Checked<>(20, false, OptionalInt.empty()), Cast.i32("20", NumFormat.INVARIANT, codes));
-        assertEquals(new Violation<Integer>(Keyword.ENUM, 0, 2), Cast.i32("30", NumFormat.INVARIANT, codes));
+        assertEquals(new Violation<Integer>(Keyword.ENUM, 30, 0, 2), Cast.i32("30", NumFormat.INVARIANT, codes));
         assertEquals(32, codes.packedEnum().length);
-        IllegalArgumentException e = assertThrows(
-                IllegalArgumentException.class,
-                () -> Constraints.text().enumOf(BigDecimal.ONE).build());
-        assertEquals("Text enum entries are strings; entry 0 is the number 1.", e.getMessage());
+        // A number at the text door is a valid entry that no string equals.
+        Constraints<String> numbers =
+                Constraints.text().enumOf(BigDecimal.ONE, new BigDecimal("2.5")).build();
+        assertEquals(8, numbers.packedEnum().length);
+        assertEquals(new Violation<String>(Keyword.ENUM, "1", 0, 1), Cast.text("1", numbers));
+        assertEquals(new Violation<String>(Keyword.ENUM, "2.5", 0, 3), Cast.text("2.5", numbers));
+        // Control: the same entries as strings match.
+        assertEquals(
+                new Checked<>("2.5", false, OptionalInt.of(1)),
+                Cast.text("2.5", Constraints.text().enumOf("1", "2.5").build()));
         assertThrows(IllegalArgumentException.class, () -> Constraints.text().minLength(-1));
         assertThrows(NullPointerException.class, () -> Constraints.i32().minimum((String) null));
         assertThrows(NullPointerException.class, () -> Constraints.text().enumOf("a", null));
@@ -307,7 +417,7 @@ class ConstraintsTest {
                 .build();
         ByteBuffer raw = ByteBuffer.wrap(text.toRaw()).order(ByteOrder.nativeOrder());
         assertEquals(NativeValues.CONSTRAINTS_BYTES, text.toRaw().length);
-        assertEquals(72, raw.getInt(0));
+        assertEquals(104, raw.getInt(0));
         assertEquals(32 | 64 | 128 | 256, raw.getInt(4));
         assertEquals(List.of(0, 2, 3, 0), List.of(raw.getInt(8), raw.getInt(12), raw.getInt(16), raw.getInt(20)));
         assertArrayEquals(new byte[] {2, 0, 0, 0, 'a', 'b', 3, 0, 0, 0, 'c', 'd', 'e'}, text.packedEnum());
@@ -323,15 +433,32 @@ class ConstraintsTest {
         raw = ByteBuffer.wrap(step.toRaw()).order(ByteOrder.nativeOrder());
         assertEquals(2 | 16, raw.getInt(4));
         assertEquals(3, raw.getInt(8));
+        // exclusiveMinimum has its own slot at 72; minimum's, at 24, stays zero.
         assertEquals(
-                List.of(7L, 0, (byte) 0, (byte) 1), List.of(raw.getLong(24), raw.getInt(32), raw.get(36), raw.get(37)));
+                List.of(7L, 0, (byte) 0, (byte) 1), List.of(raw.getLong(72), raw.getInt(80), raw.get(84), raw.get(85)));
+        assertEquals(List.of(0L, 0L), List.of(raw.getLong(24), raw.getLong(32)));
         assertEquals(
                 List.of(50L, 0, (byte) 0, (byte) 0),
                 List.of(raw.getLong(56), raw.getInt(64), raw.get(68), raw.get(69)));
+        // One slot per bound: minimum 24, maximum 40, exclusiveMinimum 72, exclusiveMaximum 88.
+        Constraints<Long> bounds = Constraints.i64()
+                .minimum("1")
+                .maximum("2")
+                .exclusiveMinimum("3")
+                .exclusiveMaximum("-4")
+                .build();
+        raw = ByteBuffer.wrap(bounds.toRaw()).order(ByteOrder.nativeOrder());
+        assertEquals(1 | 2 | 4 | 8, raw.getInt(4));
+        assertEquals(
+                List.of(1L, 2L, 3L, 4L), List.of(raw.getLong(24), raw.getLong(40), raw.getLong(72), raw.getLong(88)));
+        assertEquals(
+                List.of((byte) 0, (byte) 0, (byte) 0, (byte) 1),
+                List.of(raw.get(37), raw.get(53), raw.get(85), raw.get(101)));
         // A copy each time: the declaration stays immutable.
         step.toRaw()[0] = 0;
         assertEquals(
-                72, ByteBuffer.wrap(step.toRaw()).order(ByteOrder.nativeOrder()).getInt(0));
+                104,
+                ByteBuffer.wrap(step.toRaw()).order(ByteOrder.nativeOrder()).getInt(0));
     }
 
     @Test
@@ -386,6 +513,7 @@ class ConstraintsTest {
     void aCheckedVerdictRefusesAnEmptyCase() {
         assertThrows(IllegalArgumentException.class, () -> new Checked<>(null, false, OptionalInt.empty()));
         assertThrows(IllegalArgumentException.class, () -> new Checked<>(1, false, null));
-        assertThrows(IllegalArgumentException.class, () -> new Violation<Integer>(null, 0, 0));
+        assertThrows(IllegalArgumentException.class, () -> new Violation<Integer>(null, 1, 0, 0));
+        assertThrows(IllegalArgumentException.class, () -> new Violation<Integer>(Keyword.MINIMUM, null, 0, 0));
     }
 }

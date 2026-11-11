@@ -37,7 +37,7 @@ pin_layout! {
     Date => (4, 2),
     CivilDateTime => (16, 8),
     Duration => (16, 8),
-    RawConstraints => (72, 8),
+    RawConstraints => (104, 8),
 }
 
 // Every target, not only where a u64 is 8-aligned: none of these layouts holds a u64.
@@ -93,7 +93,9 @@ const _: () = assert!(
             && core::mem::offset_of!(RawConstraints, _reserved) == 20
             && core::mem::offset_of!(RawConstraints, lower) == 24
             && core::mem::offset_of!(RawConstraints, upper) == 40
-            && core::mem::offset_of!(RawConstraints, multiple_of) == 56)
+            && core::mem::offset_of!(RawConstraints, multiple_of) == 56
+            && core::mem::offset_of!(RawConstraints, exclusive_lower) == 72
+            && core::mem::offset_of!(RawConstraints, exclusive_upper) == 88)
 );
 
 /// This library's version, packed `major << 16 | minor << 8 | patch` from the crate's own
@@ -316,7 +318,7 @@ impl From<DayPeriods> for RawDayPeriods {
 
 /// A declaration of validation constraints as it crosses the ABI, bound to a door by the
 /// call that takes it: a size word, the flags that say which fields are read, then the
-/// three decimals, 72 bytes with 8-byte alignment. Pointer-free, so the layout is the same
+/// five decimals, 104 bytes with 8-byte alignment. Pointer-free, so the layout is the same
 /// on 32-bit and 64-bit targets; an `enum` list travels beside it. Built from a
 /// [`Constraints`](crate::Constraints) by [`raw`](crate::Constraints::raw), and judged by
 /// [`check_constraints`](crate::check_constraints).
@@ -329,9 +331,14 @@ impl From<DayPeriods> for RawDayPeriods {
 /// | 12 | `min_length`, read under [`HAS_MIN_LENGTH`](Self::HAS_MIN_LENGTH) | 4 |
 /// | 16 | `max_length`, read under [`HAS_MAX_LENGTH`](Self::HAS_MAX_LENGTH) | 4 |
 /// | 20 | `_reserved`, always `0` | 4 |
-/// | 24 | `lower`: the minimum or exclusive minimum, per the flags | 16 |
-/// | 40 | `upper`: the maximum or exclusive maximum, per the flags | 16 |
+/// | 24 | `lower`: `minimum`, read under [`HAS_MINIMUM`](Self::HAS_MINIMUM) | 16 |
+/// | 40 | `upper`: `maximum`, read under [`HAS_MAXIMUM`](Self::HAS_MAXIMUM) | 16 |
 /// | 56 | `multiple_of`, read under [`HAS_MULTIPLE_OF`](Self::HAS_MULTIPLE_OF) | 16 |
+/// | 72 | `exclusive_lower`: `exclusiveMinimum`, read under [`HAS_EXCLUSIVE_MINIMUM`](Self::HAS_EXCLUSIVE_MINIMUM) | 16 |
+/// | 88 | `exclusive_upper`: `exclusiveMaximum`, read under [`HAS_EXCLUSIVE_MAXIMUM`](Self::HAS_EXCLUSIVE_MAXIMUM) | 16 |
+///
+/// Each keyword has a field of its own, so all four bounds may be declared together, as
+/// OpenAPI allows.
 ///
 /// A `size` other than [`SIZE`](Self::SIZE), an unknown flag bit, an unknown rounding code,
 /// a nonzero `_reserved`, or (read from a caller's memory across the C ABI) a decimal's sign
@@ -342,7 +349,8 @@ impl From<DayPeriods> for RawDayPeriods {
 pub struct RawConstraints {
     /// `size_of::<RawConstraints>()` as the caller built it: [`RawConstraints::SIZE`].
     pub size: u32,
-    /// Which constraints are declared: the `HAS_*` bits and [`TRIM`](Self::TRIM).
+    /// Which constraints are declared: the `HAS_*` bits, [`TRIM`](Self::TRIM) and
+    /// [`CASE_SENSITIVE`](Self::CASE_SENSITIVE).
     pub flags: u32,
     /// How a value that is not a multiple of `multiple_of` is treated: `0` strict, `1`
     /// midpoint (ties to even), `2` floor, `3` ceiling.
@@ -353,25 +361,29 @@ pub struct RawConstraints {
     pub max_length: u32,
     /// Always `0`.
     pub _reserved: u32,
-    /// The minimum, or the exclusive minimum.
+    /// `minimum`: the value may equal it.
     pub lower: Decimal,
-    /// The maximum, or the exclusive maximum.
+    /// `maximum`: the value may equal it.
     pub upper: Decimal,
     /// The step every value must be a multiple of.
     pub multiple_of: Decimal,
+    /// `exclusiveMinimum`: the value must exceed it.
+    pub exclusive_lower: Decimal,
+    /// `exclusiveMaximum`: the value must be below it.
+    pub exclusive_upper: Decimal,
 }
 
 impl RawConstraints {
     /// The layout's size in bytes, which `size` carries.
-    pub const SIZE: u32 = 72;
+    pub const SIZE: u32 = 104;
 
-    /// `lower` is the inclusive `minimum`.
+    /// `lower`, the `minimum`, is read.
     pub const HAS_MINIMUM: u32 = 1;
-    /// `lower` is the `exclusiveMinimum`.
+    /// `exclusive_lower`, the `exclusiveMinimum`, is read.
     pub const HAS_EXCLUSIVE_MINIMUM: u32 = 2;
-    /// `upper` is the inclusive `maximum`.
+    /// `upper`, the `maximum`, is read.
     pub const HAS_MAXIMUM: u32 = 4;
-    /// `upper` is the `exclusiveMaximum`.
+    /// `exclusive_upper`, the `exclusiveMaximum`, is read.
     pub const HAS_EXCLUSIVE_MAXIMUM: u32 = 8;
     /// `multiple_of` and `rounding` are read.
     pub const HAS_MULTIPLE_OF: u32 = 16;
@@ -385,6 +397,9 @@ impl RawConstraints {
     /// (a declaration [`check_constraints`](crate::check_constraints) refuses). Clear, no
     /// list is read, and one passed anyway is a malformed layout.
     pub const HAS_ENUM: u32 = 256;
+    /// A text `enum` matches exactly, byte for byte, instead of under simple case folding,
+    /// for a vocabulary whose case carries meaning (`mm` and `Mm`). The text door only.
+    pub const CASE_SENSITIVE: u32 = 512;
 
     /// Nothing declared: the size, and every other byte zero.
     pub const ZERO: RawConstraints = {
@@ -399,6 +414,8 @@ impl RawConstraints {
             lower: ZERO,
             upper: ZERO,
             multiple_of: ZERO,
+            exclusive_lower: ZERO,
+            exclusive_upper: ZERO,
         }
     };
 }

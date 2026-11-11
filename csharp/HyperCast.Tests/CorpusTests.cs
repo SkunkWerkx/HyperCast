@@ -773,8 +773,9 @@ public sealed class CorpusTests
 	/// the door's UTF-8 overload and, by the generic <c>Numeric&lt;T&gt;</c>, its UTF-16 one
 	/// (spans re-expressed in chars), or through its <c>FromDouble</c> overload; text rows
 	/// through all three text overloads (the byte rows, which no string can carry, through the
-	/// UTF-8 one alone). Values compare by bits, the value, <c>adjusted</c> and
-	/// <c>enum_index</c> on success, and the reason or keyword and the span on every failure.
+	/// UTF-8 one alone). Values compare by bits: the value, <c>adjusted</c> and
+	/// <c>enum_index</c> on success; the keyword, the value as cast and the span on a violation;
+	/// the reason and the span on a fault.
 	/// </summary>
 	[Fact]
 	void Constraints_corpus()
@@ -849,23 +850,16 @@ public sealed class CorpusTests
 	}
 
 	// The core's Refusal, as Rust displays it: the wording every binding's message carries.
-	static readonly string[] _refusals =
-	[
-		"",
-		"a constraint the door does not take",
-		"minimum together with exclusiveMinimum",
-		"maximum together with exclusiveMaximum",
-		"the lower bound is not below the upper bound",
-		"multipleOf is not positive",
-		"a rounding without multipleOf",
-		"minLength is above maxLength",
-		"a bound, step or enum entry the door cannot hold",
-		"an enum entry that is not UTF-8",
-		"a duplicate enum entry",
-		"a malformed constraints layout",
-		"an enum with no entries",
-		"a text enum entry no input can match",
-	];
+	// Codes 2, 3, 4, 7, 10, 12 and 13 are retired, and never returned.
+	static readonly Dictionary<int, string> _refusals = new()
+	{
+		[1] = "a constraint the door does not take",
+		[5] = "multipleOf is not positive",
+		[6] = "a rounding without multipleOf",
+		[8] = "a bound, step or enum entry the door cannot hold",
+		[9] = "an enum entry that is not UTF-8",
+		[11] = "a malformed constraints layout",
+	};
 
 	internal static string RefusalMessage(int code) => $"Constraints refused (code {code}): {_refusals[code]}.";
 
@@ -892,6 +886,7 @@ public sealed class CorpusTests
 			minLength: Length("minLength"),
 			maxLength: Length("maxLength"),
 			trim: c.TryGetProperty("trim", out var trim) && trim.GetBoolean(),
+			caseSensitive: c.TryGetProperty("caseSensitive", out var caseSensitive) && caseSensitive.GetBoolean(),
 			@enum: c.TryGetProperty("enum", out var entries)
 				? [.. entries.EnumerateArray().Select(static e => (ConstraintValue)e.GetString()!)]
 				: null);
@@ -981,14 +976,15 @@ public sealed class CorpusTests
 			ok.EnumIndex.ShouldBe(vector.TryGetProperty("enum_index", out var index) ? index.GetInt32() : null, $"{label}: enum_index");
 			return;
 		}
-		verdict.TryGetValue(out Rejection rejection).ShouldBeTrue($"{label}: produced no case");
+		verdict.TryGetValue(out Rejection<T> rejection).ShouldBeTrue($"{label}: produced no case");
 		var span = vector.GetProperty("fault");
 		var (offset, length) = (span[0].GetInt32(), span[1].GetInt32());
 		(int Offset, int Length) expectedSpan = (units(offset), units(offset + length) - units(offset));
-		if (rejection.TryGetValue(out Violation violation))
+		if (rejection.TryGetValue(out Violation<T> violation))
 		{
 			expect.ShouldBe("violation", $"{label}: {verdict}");
 			violation.Keyword.Name.ShouldBe(vector.GetProperty("keyword").GetString(), $"{label}: keyword");
+			Bits(violation.Value).ShouldBe(Bits(expected(vector.GetProperty("value"))), $"{label}: violation value");
 			(violation.Offset, violation.Length).ShouldBe(expectedSpan, $"{label}: violation span");
 			return;
 		}

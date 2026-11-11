@@ -217,6 +217,7 @@ impl<'a> Exact<'a> {
     }
 
     /// True for a negative value; zero never is.
+    #[cfg(test)]
     pub(crate) fn negative(&self) -> bool {
         self.negative
     }
@@ -327,6 +328,7 @@ pub(crate) fn compare(value: &Exact, bound: &Decimal) -> Ordering {
 }
 
 /// Orders two decimals exactly.
+#[cfg(test)]
 pub(crate) fn compare_decimals(a: &Decimal, b: &Decimal) -> Ordering {
     let mut buf = [0u8; 40];
     compare(&Exact::from_decimal(a, &mut buf), b)

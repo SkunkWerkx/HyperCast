@@ -65,8 +65,8 @@ dependency.
 
 ## What this binding is
 
-The Rust core is one `wasm32-wasip1` module of about 150 KB that imports nothing at all:
-parsing needs no clock, no randomness and no I/O. wasm2go translates it into about 1 MB of
+The Rust core is one `wasm32-wasip1` module of about 430 KB that imports nothing at all:
+parsing needs no clock, no randomness and no I/O. wasm2go translates it into about 3.4 MB of
 Go source with no dependencies beyond the standard library, and that file is committed and
 compiled with the rest of the package. The binding keeps an *instance* of it: the
 translated module and a scratch region in the module's linear memory, where a door's text,
@@ -175,7 +175,7 @@ and [Date options](#date-options-compact-dates-two-digit-years-and-month-names).
 hypercast.Optional(hypercast.I32(text, hypercast.Invariant))` is `nil, nil` for an `Empty`
 fault, a pointer to the value on success, and every other fault untouched. `OptionalChecked`
 does the same for a checked door's `(Checked[V], Rejection)`: only an `Empty` fault is absent,
-and a `*Violation` flows through.
+and a `*Violation[V]` flows through.
 
 Plus three entry points that are not doors — `Available()`, `LoadError()` and
 `NativeVersion()` — covered under
@@ -382,13 +382,13 @@ failed, from a small shared vocabulary of 32 codes (`DetailBlank`, `DetailGroupS
 `DetailNotFinite`, `DetailOutsideWindow`, …), whose `String()` is the core's snake-case name.
 `Fault()` projects it back to what the plain door returns. Go cannot give `Fault` a field
 without breaking unkeyed literals and equality, so the detail travels on this separate path
-and every 1.0 type is exactly as it was.
+and `Fault` keeps its three fields.
 
 The vocabulary is open: published codes keep their numbers and meanings, but a minor release
 may add one, so a `switch` over details needs a `default` arm. A code this binding doesn't name
 is kept, `Known()` false and `String()` `"detail N"`, and the reason and span stay usable.
 `CheckDetailed`, `CheckFromFloat64Detailed` and `CheckStringDetailed` return a
-`DetailedRejection`, a `*Failure` or a `*Violation` (sealed, as `Rejection` is), and
+`DetailedRejection`, a `*Failure` or a `*Violation[V]` (sealed, as `Rejection` is), and
 `OptionalDetailed` and `OptionalCheckedDetailed` present them as `Optional` does.
 
 ```go
@@ -473,24 +473,28 @@ case nil:
 	fmt.Printf("%s, entry %d\n", checked.Value, checked.EnumIndex) // Male, entry 1
 case *hypercast.Fault:
 	fmt.Printf("%s at byte %d\n", r.Reason, r.Offset) // empty at byte 0, for "   "
-case *hypercast.Violation:
+case *hypercast.Violation[string]:
 	switch r.Keyword {
 	case hypercast.KeywordEnum:
-		fmt.Printf("not a sex code: bytes %d+%d\n", r.Offset, r.Length) // for "Femal": bytes 0+5
+		fmt.Printf("not a sex code: %q, bytes %d+%d\n", r.Value, r.Offset, r.Length) // for "Femal": "Femal", bytes 0+5
 	default: // keywords are open
 		fmt.Println("breaks", r.Keyword)
 	}
 }
 ```
 
-A checked door returns `(Checked[V], Rejection)`, beside the plain doors' `(value, *Fault)`,
-which every plain door keeps, unchanged. `Checked[V]` is the `Value`, `Adjusted` (true only
+A checked door returns `(Checked[V], Rejection)`, beside the plain doors' `(value, *Fault)`.
+`Checked[V]` is the `Value`, `Adjusted` (true only
 when rounding changed it) and `EnumIndex`, the matched entry at the text door and `-1`
-otherwise (an integer `enum` has no index: the value is the answer). A nil `Rejection` is
+otherwise (a numeric `enum` has no index: the value is the answer). A nil `Rejection` is
 success; otherwise it is one of two pointer types, sealed so nothing else implements it: the
-plain doors' own `*Fault` (it did not parse: the very type, so a parse failure reads the same
-at either door) or a `*Violation` (it parsed and broke a rule: its `Keyword` and the value's
-span, in bytes like a fault's). Both implement `error`. `Keyword` is a code with the OpenAPI
+plain doors' own `*Fault` (the input is not the type: the very type a plain door returns, so
+a parse failure reads the same at either door) or a `*Violation[V]` (a value of the type
+that broke a rule: its `Keyword`, the `Value` exactly as the door cast it, and the value's
+span, in bytes like a fault's). The `Value` is never the rounded one, since `MultipleOf`'s
+rounding is part of the judgement; at the text door it is the text judged (trimmed under
+`Trim`), not an `Enum` entry. `V` is the door's type, so a type switch names it:
+`case *hypercast.Violation[int32]:`. Both implement `error`. `Keyword` is a code with the OpenAPI
 names as its `String` (`exclusiveMinimum`) and the constants `KeywordMinimum` …
 `KeywordEnum`; `format` and `pattern` may join in a minor release, so a switch over keywords
 needs its `default` arm, and a code this binding does not know yet is kept (`keyword 9`).
@@ -500,30 +504,43 @@ needs its `default` arm, and a code this binding does not know yet is kept (`key
 `[]byte` with a `NumFormat`; `CheckFromFloat64` judges a number a source already decoded on
 the shortest decimal that names it (`0.1 + 0.2` breaks `MultipleOf("0.1")` under `Strict`,
 and rounds to `0.3` under `Midpoint`), with an empty span; `CheckString` is the text door's.
-The integer doors take `Minimum`, `ExclusiveMinimum`, `Maximum`, `ExclusiveMaximum`,
-`MultipleOf` with `WithRounding` (`Strict`, the default, then `Midpoint`, half to even,
-`Floor` and `Ceiling`) and `Enum`; `float32`, `float64` and `Decimal` the same without
-`Enum`; the text door takes `MinLength`, `MaxLength` (in code points), `Trim` (Unicode
-`White_Space`, U+00A0 included) and `Enum`, matched under Unicode simple case folding and
-delivering the caller's own declared string and its index. `NewConstraints` takes any rule
-at any door, and the core alone refuses one its door does not take. The first failure wins:
-the door parses, the text is trimmed, `MultipleOf` rounds or refuses, then the bounds, the
-lengths and `Enum` judge the result. A float door also judges the float it delivers against
+The numeric doors take `Minimum`, `ExclusiveMinimum`, `Maximum`, `ExclusiveMaximum` (any of
+them together, each judged on its own, as OpenAPI 3.2 reads them), `MultipleOf` with
+`WithRounding` (`Strict`, the default, then `Midpoint`, half to even, `Floor` and `Ceiling`)
+and `Enum`, its entries compared exactly to the value; the text door takes `MinLength`,
+`MaxLength` (in code points), `Trim` (Unicode `White_Space`, U+00A0 included),
+`CaseSensitive` and `Enum`, matched under Unicode simple case folding (byte for byte under
+`CaseSensitive`, for a vocabulary like `mm` and `Mm`) and delivering the caller's own
+declared string and its index (`Enum` with numbers there declares valid entries no string
+equals). `NewConstraints` takes any rule at any door, and the core
+alone judges it: a keyword for another type (`MinLength` at a number, `Minimum` at text) is
+ignored, as OpenAPI ignores it. The first failure wins: the door parses, the text is
+trimmed, `MultipleOf` rounds or is broken (a multiple past what the type holds breaks it
+too: `127` at `int8` under `MultipleOf(5)` and `Ceiling` carries `127`), then `Minimum`,
+`ExclusiveMinimum`, `Maximum`, `ExclusiveMaximum`, the lengths and `Enum` judge the result. A float door also judges the float it delivers against
 each bound read as the door reads it: `"1e-400"` at `float64` reads as `0`, so it breaks
-`ExclusiveMinimum("0")`. Bounds, steps and integer entries are text in invariant notation, a
+`ExclusiveMinimum("0")`. Bounds, steps and numeric entries are text in invariant notation, a
 `Decimal` or a Go integer, all converted exactly by the core (`"1e-6"` is `0.000001`, and
 `"1e-29"`, past the 28 places a core decimal holds, is refused rather than rounded); a
 `float64` does not compile there, so `0.1` cannot be declared inexactly.
 
-A declaration is judged once, by the core, when it is built. `NewConstraints` returns a
-refusal as an `error` worded from the rule it broke, for a declaration read at run time;
-`MustConstraints`, for one written in code, panics with the same text, as a door does on a
-`NumFormat` the core would refuse (`MustConstraints[uint8](hypercast.Minimum(-1))` panics with
-"hypercast: Constraints refused (code 8): a bound, step or enum entry the door cannot hold.").
-A keyword declared twice is refused too. Leaving `Enum` out declares no `enum`, while `Enum()`
-with no entries declares one that no value could match: refused (code 12), as is a text entry
-no input can match (code 13: an empty one, or under `Trim` one with leading or trailing white
-space). After that a checked cast judges only data and
+A declaration is judged once, by the core, when it is built, and every valid OpenAPI
+declaration is accepted, one no value can satisfy included: crossed or equal bounds, an
+inclusive and an exclusive bound together, `MinLength` above `MaxLength`, repeated entries
+(the first match wins), entries or bounds the door's type cannot reach. `Enum()` with no
+entries declares an `enum` every value breaks; leaving `Enum` out declares none. What the
+core refuses is what it cannot read: `Trim` or `CaseSensitive` at a numeric door, or
+`WithRounding` beside `MultipleOf` at the text door (code 1); a `MultipleOf` not positive
+(5); a rounding without `MultipleOf` (6); text that is no decimal, a decimal past 96 bits or
+28 places, or a rounding at an integer door with a fractional step (8); an `Enum` entry that
+is not UTF-8 (9). `NewConstraints` returns a refusal as an `error` worded from the rule it
+broke, for a declaration read at run time; `MustConstraints`, for one written in code,
+panics with the same text, as a door does on a `NumFormat` the core would refuse
+(`MustConstraints[float64](hypercast.MultipleOf("-0.05"))` panics with "hypercast:
+Constraints refused (code 5): multipleOf is not positive."). A Go call can say a few things
+no OpenAPI declaration can, and this binding refuses those itself: a keyword declared twice,
+a zero `Rule`, a length below zero or past `math.MaxUint32`. Numbers as the text door's
+entries are valid and never match, as JSON Schema's exact equality says. After that a checked cast judges only data and
 panics on nothing for it. There is no default, as there is none for `NumFormat`: a zero
 `Constraints[V]` was never judged, so handing one to a checked door is a caller bug and
 panics; `MustConstraints[V]()` with no rules is the declaration of none.
@@ -537,7 +554,7 @@ surrogate: its UTF-8 encoding is just invalid bytes, judged as any others are. A
 input comes back as the caller's own string (a substring of it when trimmed) and an `Enum`
 match as the caller's own entry, so the checked doors make no allocation on success; a
 `[]byte` input to `String` or `CheckString` is copied into its result. `Constraints.Raw()`
-and `PackedEnum()` hand a declaration over in the core's own 72-byte layout and `enum` list,
+and `PackedEnum()` hand a declaration over in the core's own 104-byte layout and `enum` list,
 for a library judging values across a C ABI of its own.
 
 ## The core: `Available`, `LoadError`, `NativeVersion`
@@ -591,13 +608,16 @@ same name would have returned.
 - `RawDayPeriods` — the 40 bytes a `DateFormat`'s designators cross as beside the order: a
   size word and the AM and PM designators as `RawSymbol16`s (`DesignatorMaxBytes` is 16);
   a zero size is what crosses as null, nothing declared. `DateFormat.Raw()` builds one.
-- `RawConstraints` — the 72 bytes, 8-aligned, a `Constraints` crosses as
+- `RawConstraints` — the 104 bytes, 8-aligned, a `Constraints` crosses as
   (`RawConstraintsSize`): a size word, the flags (`RawConstraintsHasMinimum` …
-  `RawConstraintsTrim`), the rounding code, the two lengths, a reserved word, then the lower
-  bound, the upper bound and `MultipleOf` as `Decimal`s. `Constraints.Raw()` builds one, and
-  `Constraints.PackedEnum()` is its `enum` list beside it (16-byte `Decimal`s in the host's
-  byte order at an integer door, a little-endian `uint32` length then the bytes per entry at
-  the text door). `RawCheck` (12 bytes) is what a checked door reports beside its value, and
+  `RawConstraintsHasEnum`, `RawConstraintsTrim`, `RawConstraintsCaseSensitive`), the rounding
+  code, the two lengths, a reserved word, then `Lower` (`minimum`), `Upper` (`maximum`),
+  `MultipleOf`, `ExclusiveLower` (`exclusiveMinimum`) and `ExclusiveUpper`
+  (`exclusiveMaximum`) as `Decimal`s, each bound in a field of its own.
+  `Constraints.Raw()` builds one, and `Constraints.PackedEnum()` is its `enum` list beside it
+  (16-byte `Decimal`s in the host's byte order at a numeric door, a little-endian `uint32`
+  length then the bytes per entry at the text door). `RawCheck` (12 bytes) is what a checked
+  door reports beside its value (written on a violation as on a success), and
   `RawSpan` (8) what the text door writes; each layout is held to the generated header's
   size by the suite.
 - `Valid()` on `UnixPrecision`, `DateOrder` and `ExcelEpoch`; `UnixPrecisionFromCode`,
@@ -776,7 +796,7 @@ declared-order date door and the messy date-time door both beat `time.Parse` wit
 TinyGo, for any text of up to 65,360 bytes ([`MaxText`](#maxtext)), the checked doors
 included (a checked door's declaration shares that scratch with its text), except that a
 `[]byte` input to the text doors is copied into the `string` they return; a failed cast
-allocates exactly its `*Fault`, `*Failure` or `*Violation`, and `allocs_test.go` holds both counts as
+allocates exactly its `*Fault`, `*Failure` or `*Violation[V]` (and, at the text door, the copy of a `[]byte` input's text it carries), and `allocs_test.go` holds both counts as
 tests. In Go specifically,
 this binding earns its keep on the vocabulary, the closed error contract, and cross-language
 agreement — not per-call speed. The tabular layer,

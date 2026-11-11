@@ -42,8 +42,10 @@
 * Opt-in date shapes: `date_options()` (`date_flags`, a two-digit-year `pivot`) and
   `month_names()`, taken as `options` and `months` by `cast_date()`, `cast_datetime()` and
   (`options`) `cast_timestamp()`.
-* Validation constraints: `hypercast_constraints()` declares a door's rules (bounds,
-  `multiple_of` with a rounding, lengths, trimming and enumerations), judged once when
-  declared; `cast_checked()`, `cast_checked_from_double()` and `cast_text()` with
+* Validation constraints: `hypercast_constraints()` declares a door's rules with OpenAPI
+  3.2's keywords (bounds, `multiple_of` with a rounding, lengths and enumerations, plus
+  `trim` and `case_sensitive` for text), accepting every declaration OpenAPI allows, judged
+  once when declared; `cast_checked()`, `cast_checked_from_double()` and `cast_text()` with
   constraints judge each value by them and return a `hypercast_checked_verdict`, read with
-  `faults()`, `violations()` and `optional()`. `cast_text()` alone is the text door.
+  `faults()`, `violations()` and `optional()`. A violation carries the value as the door cast
+  it in the `value` column. `cast_text()` alone is the text door.

@@ -90,17 +90,18 @@ test('the plain verdicts keep their shapes, whatever the detailed doors add', ()
   assert.ok(!failed.ok)
   assert.deepEqual(Object.keys(failed.fault), ['reason', 'offset', 'length'])
   assert.deepEqual(api.castI32('12'), { ok: true, value: 12 })
-  // A checked door's fault and violation are 1.0's too.
+  // A checked door's fault is 1.0's too, and its violation is 1.0's with the value added.
   const step = Constraints.declare({ door: Door.I32, maximum: '10' })
   assert.ok(step.ok)
   assert.deepEqual(api.castChecked('12x', step.value), {
     ok: false,
     fault: { reason: 'malformed', offset: 2, length: 1 },
   })
-  assert.deepEqual(api.castChecked('12', step.value), {
-    ok: false,
-    violation: { keyword: 'maximum', offset: 0, length: 2 },
-  })
+  const broken = api.castChecked('12', step.value)
+  assert.ok(!broken.ok && 'violation' in broken)
+  const { keyword, offset, length } = broken.violation
+  assert.deepEqual({ keyword, offset, length }, { keyword: 'maximum', offset: 0, length: 2 })
+  assert.equal(broken.violation.value, 12)
   assert.deepEqual(api.castChecked('7', step.value), {
     ok: true,
     value: 7,

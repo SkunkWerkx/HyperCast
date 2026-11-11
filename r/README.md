@@ -97,8 +97,7 @@ vector as a data frame, one column per field, so every door returns a `hypercast
 | `detail` | `NA` | factor: what exactly failed (`fault_details`, or `unknown`) | `NA` |
 | `detail_code` | `NA` | the core's number for it | `NA` |
 
-`detail` and `detail_code` come last, after the five columns every earlier release had, so
-code that reads a verdict by name or by position keeps working. The detail is the core's
+`detail` and `detail_code` come last, after the five columns of the union itself. The detail is the core's
 shared vocabulary of 32 names (`fault_details`): `group_size`, `digit_expected`,
 `date_field_out_of_range`, and so on. It is for diagnosing rejected data, and it is a
 contract: published codes keep their numbers and meanings, new ones may appear in a minor
@@ -254,59 +253,79 @@ core that does not, so a numeral is never read by 1.0's rule.
 
 A value that parsed can still break a rule the data declares: a latitude past 90, a cash
 amount that is not a multiple of five cents, a code outside its list. `hypercast_constraints()`
-declares those rules for one door, with JSON Schema's and OpenAPI's keywords, and the checked
-doors judge each value by them in the core, on the exact value the door read:
+declares those rules for one door, with OpenAPI 3.2's (JSON Schema 2020-12's) keywords, and the
+checked doors judge each value by them in the core, on the exact value the door read. Input is
+first cast to the door's type (a fault means it is not that type), then validated (a violation
+is a value of the type that breaks a rule, and carries that value):
 
 ```r
 latitude <- hypercast_constraints("f64", minimum = "-90", maximum = "90",
                                   multiple_of = "0.000001", rounding = "midpoint")
 cast_checked(c("45.1234567", "91", "north"), num_format(), latitude)
 #> <hypercast_checked_verdict: f64> 1 ok, 1 faulted, 1 violated, 0 missing
-#>      value adjusted enum_index    ok    reason keyword offset length
-#> 1 45.12346     TRUE         NA  TRUE      <NA>    <NA>     NA     NA
-#> 2       NA       NA         NA FALSE      <NA> maximum      0      2
-#> 3       NA       NA         NA FALSE malformed    <NA>      0      1
+#>      value adjusted enum_index    ok    reason keyword offset length               detail
+#> 1 45.12346     TRUE         NA  TRUE      <NA>    <NA>     NA     NA                 <NA>
+#> 2 91.00000       NA         NA FALSE      <NA> maximum      0      2                 <NA>
+#> 3       NA       NA         NA FALSE malformed    <NA>      0      1 unexpected_character
+#>   detail_code
+#> 1          NA
+#> 2          NA
+#> 3           2
 
 cash <- hypercast_constraints("decimal", multiple_of = "0.05")
 euro <- num_format(",", ".", currency = "€")
 v <- cast_checked(c("12,35 €", "12,37 €", ""), euro, cash)
 violations(v)
-#>   row    keyword offset length
-#> 1   2 multipleOf      0      7
+#>   row    keyword value offset length
+#> 1   2 multipleOf 12.37      0      7
 faults(v)
-#>   row reason offset length
-#> 1   3  empty      0      0
+#>   row reason offset length detail detail_code
+#> 1   3  empty      0      0  blank           1
 
 sex <- hypercast_constraints("text", enum = c("Female", "Male", "Other"), trim = TRUE)
 cast_text(c(" male ", "OTHER", "Mail"), sex)
 #> <hypercast_checked_verdict: text> 2 ok, 0 faulted, 1 violated, 0 missing
-#>   value adjusted enum_index    ok reason keyword offset length
-#> 1  Male    FALSE          2  TRUE   <NA>    <NA>     NA     NA
-#> 2 Other    FALSE          3  TRUE   <NA>    <NA>     NA     NA
-#> 3  <NA>       NA         NA FALSE   <NA>    enum      0      4
+#>   value adjusted enum_index    ok reason keyword offset length detail detail_code
+#> 1  Male    FALSE          2  TRUE   <NA>    <NA>     NA     NA   <NA>          NA
+#> 2 Other    FALSE          3  TRUE   <NA>    <NA>     NA     NA   <NA>          NA
+#> 3  Mail       NA         NA FALSE   <NA>    enum      0      4   <NA>          NA
+
+unit <- hypercast_constraints("text", enum = c("mm", "Mm"), case_sensitive = TRUE)
+cast_text(c("Mm", "MM"), unit)$enum_index
+#> [1]  2 NA
 ```
 
-The keywords are `minimum`, `exclusive_minimum`, `maximum`, `exclusive_maximum` and
+The keywords are `minimum`, `exclusive_minimum`, `maximum`, `exclusive_maximum`,
 `multiple_of` (with `rounding`: `"strict"`, the default, `"midpoint"` to the nearest
-multiple with a tie to the even one, `"floor"` or `"ceiling"`) for the numeric doors, `enum`
-for the integer doors, and `min_length`, `max_length` (code points), `trim` (Unicode
-`White_Space`) and `enum` (matched under Unicode simple case folding) for the text door.
-Bounds and `multiple_of` are exact: a string (`"0.000001"`) or an R integer (`18L`), never
-a double, since `0.1` has no exact double; `maximum = 90` is an error, `maximum = "90"` or
-`90L` is not. Whole numbers past R's integer range are strings. A float door also judges the
-float it delivers against each bound read as the door reads it: `"1e-400"` at `"f64"` reads as
-`0`, so it breaks `exclusive_minimum = "0"`.
+multiple with a tie to the even one, `"floor"` or `"ceiling"`) and `enum` for the numeric
+doors (the integers, `"f32"`, `"f64"` and `"decimal"`), and `min_length`, `max_length` (code
+points) and `enum` for the text door, with HyperCast's own `trim` (Unicode `White_Space`) and
+`case_sensitive`: a text `enum` matches under Unicode simple case folding unless
+`case_sensitive = TRUE`, which matches byte for byte (an integer vector there is numbers, valid
+entries no text equals). Bounds, `multiple_of` and numeric `enum`
+entries are exact: a string (`"0.000001"`) or an R integer (`18L`), never a double, since
+`0.1` has no exact double; `maximum = 90` is an error, `maximum = "90"` or `90L` is not. Whole
+numbers past R's integer range are strings. A numeric `enum` entry is compared exactly to the
+value the door delivers, so one the type cannot hold never matches. A float door also judges
+the float it delivers against each bound read as the door reads it: `"1e-400"` at `"f64"` reads
+as `0`, so it breaks `exclusive_minimum = "0"`. Rounding happens on the exact decimal before the
+bounds judge the result and marks the row `adjusted`; a rounding past what the type holds is a
+`multipleOf` violation.
 
-A declaration is judged once, when it is declared, and the door is part of it. One that
-cannot be is an error worded from the code the core returns, such as
-`Constraints refused (code 4): the lower bound is not below the upper bound.` for
-`hypercast_constraints("i32", minimum = "5", maximum = "5")`. `enum = NULL` declares none,
-while an empty vector (`character(0)`) declares one no value could match and is refused (code
-12), as is a text entry no input can match (code 13: `""`, or with `trim` one with leading or
-trailing white space). A declaration handed to another
-door's cast is an error, and so is `cast_text(x, NULL)`: only `cast_text(x)`, with no
-constraints at all, is the plain text door, which validates UTF-8 and returns the text as a
-`hypercast_verdict`.
+Every declaration OpenAPI allows is accepted, and means what it means there: the four bounds
+are independent (`minimum` with `exclusive_minimum` holds a value to both), bounds no value
+meets and an empty `enum` (`character(0)`; `enum = NULL` declares none) make every value a
+violation, a duplicate `enum` entry is harmless (the first match wins), and a keyword for
+another type (`min_length` at a numeric door, `minimum` at the text door) is ignored. A
+declaration is judged once, when it is declared, and the door is part of it. One the core
+refuses is an error worded from the code it returns, such as
+`Constraints refused (code 5): multipleOf is not positive.` for
+`hypercast_constraints("i32", multiple_of = "0")`: a door that takes no constraints, `trim` or
+`case_sensitive` at a numeric door, a `rounding` at the text door (1), a step that is not
+positive (5), a rounding without `multiple_of` (6), a bound, step or entry the door cannot hold
+(8), an entry that is not UTF-8 (9). A declaration handed to another door's cast is an error,
+and so is `cast_text(x, NULL)`: only `cast_text(x)`, with no constraints at all, is the plain
+text door, which validates UTF-8 and returns the text as a `hypercast_verdict`.
 
 - `cast_checked(x, format, constraints)` reads text through a numeric door under a
   `num_format()`, so `"$12.37"`, `"(12.35)"`, `"1.234,55"` and `"5%"` are judged on the
@@ -323,23 +342,27 @@ Each returns a `hypercast_checked_verdict`, a data frame of its own class (the p
 
 | Column | Passed (`ok` `TRUE`) | Fault (`ok` `FALSE`) | Violation (`ok` `FALSE`) |
 | --- | --- | --- | --- |
-| `value` | the value, in the plain door's R type | `NA` | `NA` |
+| `value` | the value, in the plain door's R type | `NA` | the value as cast, in the same type |
 | `adjusted` | `TRUE` when rounding changed the value | `NA` | `NA` |
 | `enum_index` | the matched text `enum` entry, counted from 1; else `NA` | `NA` | `NA` |
 | `ok` | `TRUE` | `FALSE` | `FALSE` |
 | `reason` | `NA` | `empty`, `malformed`, `out_of_range` | `NA` |
 | `keyword` | `NA` | `NA` | the rule broken |
 | `offset`, `length` | `NA` | the offending text | the whole value |
+| `detail`, `detail_code` | `NA` | what failed | `NA` |
 
 A missing element is a missing row, `NA` throughout. A violation is never a reason: it is a
 value that parsed and broke a rule, named in `keyword` with OpenAPI's spelling (`"minimum"`,
 `"exclusiveMinimum"`, `"maximum"`, `"exclusiveMaximum"`, `"multipleOf"`, `"minLength"`,
-`"maxLength"`, `"enum"`). The list is open, since `format` and `pattern` may join it in a minor
-release, and a keyword this version does not know reads as `"keyword N"`, so a `switch()` on
-`keyword` needs a default. Spans count in the same units as a plain verdict's (a typed door's
-are empty). `faults()` lists the faulted rows, `violations()` the violated ones (`row`,
-`keyword`, `offset`, `length`), and `optional()` turns `empty` faults into missing rows and
-leaves violations as they are. An integer `enum` gives no index: the value is the answer.
+`"maxLength"`, `"enum"`). Its `value` is the value exactly as the door cast it, never rounded
+(`multiple_of`'s rounding is part of the judgement), and at the text door the judged text
+(trimmed under `trim`), not an entry. The keyword list is open, since `format` and `pattern` may
+join it in a minor release, and a keyword this version does not know reads as `"keyword N"`, so
+a `switch()` on `keyword` needs a default. Spans count in the same units as a plain verdict's (a
+typed door's are empty). `faults()` lists the faulted rows, `violations()` the violated ones
+(`row`, `keyword`, `value`, `offset`, `length`), and `optional()` turns `empty` faults into
+missing rows and leaves violations as they are. A numeric `enum` gives no index: the value is
+the answer.
 
 ## Benchmarks
 

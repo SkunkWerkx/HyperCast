@@ -19,7 +19,7 @@ Requirements that hold across every round, stated up front so no layer designs t
   the core in, Go under stock Go and TinyGo alike (its core is Go source), and TypeScript
   through its WebAssembly fallback package. HyperCast's
   core is strictly easier freight than HyperUuid's here — pure computation over caller
-  bytes, zero dependencies, no WASI clock or randomness imports at all — and every leg is
+  bytes, one `no_std` dependency (simdutf8), no WASI clock or randomness imports at all — and every leg is
   proven, not projected: the full test suite (unit tests, the counting-allocator proof,
   every corpus replay, both fault-span invariant sweeps) passes under `wasmtime` on
   `wasm32-wasip1`
@@ -39,7 +39,7 @@ Requirements that hold across every round, stated up front so no layer designs t
 ## Round one — the scalar core (done)
 
 One Rust `cdylib` (`rust/`, `libhypercast`), HyperUuid's proven FFI mechanics: 21 `cast_*`
-exports (25 since 0.7.0 added four typed doors, 26 since 0.8.0 added the char door) over UTF-8 bytes and caller-owned
+exports (25 since 0.7.0 added four typed doors, 26 since 0.8.0 added the char door, 35 since 1.1.0 added five checked-door exports and four detailed ones) over UTF-8 bytes and caller-owned
 out-buffers, verdict codes (`0` ok, `1` empty, `2` malformed, `3` out of range) with the
 offending byte span through a nullable fault out-param. Semantics ported from Svartalfheim's
 `Norse.Primitives` parser family; temporals land in protobuf's dual-integer forms
@@ -91,8 +91,7 @@ into one when the linker ruled on that shape: two provider archives each carried
 standard library and this crate's `cast_*` symbols, so no binding that links the core
 rather than loading it (Go, Swift, C# Native AOT) could take both. HyperTabular's
 `docs/design.md` ("One repository, one library") has the record. Apple Numbers documents
-have since joined XLSX and ODS on HyperTabular's master, for its next release, on the same
-scalar doors.
+joined XLSX and ODS in HyperTabular 1.0.0, on the same scalar doors.
 
 Design constraints round one already locked in on purpose:
 
@@ -349,7 +348,7 @@ is declared (`12,34,567` reads under the Indian policy, [docs/grouping.md](group
 Go's standard libraries have no per-object locale to take, and Java's Native Image includes
 only the locales named at build time (`-H:IncludeLocales`), which is the consumer's choice.
 
-## Open follow-ups (as of 2026-11-01)
+## Open follow-ups (as of 2026-11-05)
 
 - Benchmark tables were measured on the WSL2 i9-11900H box, except those taken on an Apple M6
   (Go's current figures on 2026-11-05, R's on 2026-11-01, and the core sessions

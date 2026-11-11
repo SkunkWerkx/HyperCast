@@ -246,7 +246,7 @@ final class NativeCore {
         private NumFormat formatKey;
         private final MemorySegment periodsSegment = fixed.allocate(NativeValues.DAY_PERIODS_BYTES, 4);
         private DateTimeFormat periodsKey;
-        // A checked door's report, and the declaration it was judged by: the 72-byte layout
+        // A checked door's report, and the declaration it was judged by: the 104-byte layout
         // copied into aligned memory and the enum list's segment, under the same identity memo
         // the format keeps.
         private final MemorySegment check = fixed.allocate(NativeValues.CHECK_BYTES, 4);

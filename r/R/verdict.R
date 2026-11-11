@@ -272,11 +272,13 @@ new_checked_verdict <- function(cols, door) {
 #' value passed, or it was rejected, and a rejection is either a fault (it did not parse:
 #' the same reasons a [hypercast_verdict] has) or a violation (it parsed and broke a declared
 #' rule, named by its keyword). A violation is never a fifth reason: `reason` stays `NA` and
-#' `keyword` names the rule.
+#' `keyword` names the rule. A fault means the input is not the door's type, so it has no value;
+#' a violation is a value of the type, and carries it, exactly as the door cast it (never
+#' rounded: `multiple_of`'s rounding is part of the judgement), in the column a pass uses.
 #'
 #' | Column | Passed (`ok` `TRUE`) | Fault (`ok` `FALSE`) | Violation (`ok` `FALSE`) | Missing |
 #' | --- | --- | --- | --- | --- |
-#' | `value` | the value, in the door's R type | `NA` | `NA` | `NA` |
+#' | `value` | the value, in the door's R type | `NA` | the value as cast | `NA` |
 #' | `adjusted` | `TRUE` when rounding changed the value | `NA` | `NA` | `NA` |
 #' | `enum_index` | the matched text `enum` entry, from 1; else `NA` | `NA` | `NA` | `NA` |
 #' | `ok` | `TRUE` | `FALSE` | `FALSE` | `NA` |
@@ -291,18 +293,18 @@ new_checked_verdict <- function(cols, door) {
 #' and a code this version does not know reads as `"keyword N"`: code that branches on it
 #' (`switch()`) needs a default. Spans count in the same units as a [hypercast_verdict]'s;
 #' a violation spans the whole value (after trimming, for text), and a typed door's spans are
-#' empty. An integer `enum` gives no index: the value is the answer.
+#' empty. A numeric `enum` gives no index: the value is the answer.
 #'
 #' `is_ok()` is the `ok` column, `faults()` the faulted rows (`row`, `reason`, `offset`,
 #' `length`, `detail`, `detail_code`), `violations()` the violated rows (`row`, `keyword`,
-#' `offset`, `length`), and
+#' `value`, `offset`, `length`), and
 #' [optional()] turns `empty` faults into missing rows. A checked verdict is a data frame of
 #' its own class, so binding it with a plain verdict is a binding of different columns.
 #'
 #' @param x A `hypercast_checked_verdict`, as a checked door returns.
 #' @param ... Passed on to the data frame's print method.
-#' @return `violations()` returns a data frame with columns `row`, `keyword`, `offset` and
-#'   `length`, one row per violated element. `print()` returns `x` invisibly.
+#' @return `violations()` returns a data frame with columns `row`, `keyword`, `value`, `offset`
+#'   and `length`, one row per violated element. `print()` returns `x` invisibly.
 #' @name hypercast_checked_verdict
 #' @family verdicts
 #' @family constraints
@@ -320,8 +322,12 @@ NULL
 violations <- function(x) {
   check_checked_verdict(x)
   rows <- which(!is.na(x$keyword))
-  data.frame(row = rows, keyword = x$keyword[rows], offset = x$offset[rows],
-             length = x$length[rows])
+  out <- data.frame(row = rows, keyword = x$keyword[rows])
+  # Assigned, not passed to data.frame(), so raw = TRUE's list of raw vectors stays one column.
+  out$value <- x$value[rows]
+  out$offset <- x$offset[rows]
+  out$length <- x$length[rows]
+  out
 }
 
 #' @export

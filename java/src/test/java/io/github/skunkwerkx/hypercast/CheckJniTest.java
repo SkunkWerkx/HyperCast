@@ -106,7 +106,7 @@ class CheckJniTest {
                         expect(new Success<>("42"), Cast.text("42"));
                     }
                     expect(
-                            new Violation<BigDecimal>(Keyword.MULTIPLE_OF, pad, 5),
+                            new Violation<BigDecimal>(Keyword.MULTIPLE_OF, new BigDecimal("42.01"), pad, 5),
                             Cast.decimal(
                                     (blank + "42.01").getBytes(StandardCharsets.UTF_8), NumFormat.INVARIANT, cash));
                     // A fault past the bound: its span is in the caller's bytes, whichever side.

@@ -3,6 +3,7 @@ package io.github.skunkwerkx.hypercast;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -936,26 +937,22 @@ final class CorpusTest {
 
     // --- the validation constraints ---
 
-    /** The core's Refusal, as Rust displays it: the wording every binding's message carries. */
-    private static final String[] REFUSALS = {
-        "",
-        "a constraint the door does not take",
-        "minimum together with exclusiveMinimum",
-        "maximum together with exclusiveMaximum",
-        "the lower bound is not below the upper bound",
-        "multipleOf is not positive",
-        "a rounding without multipleOf",
-        "minLength is above maxLength",
-        "a bound, step or enum entry the door cannot hold",
-        "an enum entry that is not UTF-8",
-        "a duplicate enum entry",
-        "a malformed constraints layout",
-        "an enum with no entries",
-        "a text enum entry no input can match",
-    };
+    /**
+     * The core's Refusal, as Rust displays it: the wording every binding's message carries. Codes
+     * 2, 3, 4, 7, 10, 12 and 13 are retired, never returned and never reused.
+     */
+    private static final Map<Integer, String> REFUSALS = Map.of(
+            1, "a constraint the door does not take",
+            5, "multipleOf is not positive",
+            6, "a rounding without multipleOf",
+            8, "a bound, step or enum entry the door cannot hold",
+            9, "an enum entry that is not UTF-8",
+            11, "a malformed constraints layout");
 
     static String refusalMessage(int code) {
-        return "Constraints refused (code " + code + "): " + REFUSALS[code] + ".";
+        String rule = REFUSALS.get(code);
+        assertNotNull(rule, "refusal code " + code + " is retired or unknown");
+        return "Constraints refused (code " + code + "): " + rule + ".";
     }
 
     /** Every keyword a vector names, whether or not its door takes it, through the public builder. */
@@ -993,6 +990,9 @@ final class CorpusTest {
         }
         if (c.has("trim")) {
             builder.trim(c.get("trim").getAsBoolean());
+        }
+        if (c.has("caseSensitive")) {
+            builder.caseSensitive(c.get("caseSensitive").getAsBoolean());
         }
         if (c.has("enum")) {
             JsonArray entries = c.getAsJsonArray("enum");
@@ -1235,6 +1235,8 @@ final class CorpusTest {
                 assertEquals("violation", expect, label + ": " + verdict);
                 assertEquals(
                         vector.get("keyword").getAsString(), violation.keyword().name(), label + ": keyword");
+                // The value as cast, compared as a success's is.
+                assertSame(expected.apply(vector.get("value")), violation.value(), label + ": violation value");
                 assertEquals(offset, violation.offset(), label + ": violation offset");
                 assertEquals(length, violation.length(), label + ": violation length");
             }

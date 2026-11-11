@@ -30,14 +30,24 @@ use crate::verdict::{CivilDateTime, Date, Decimal, Duration, Reason, Timestamp, 
 /// Why a detailed checked door refused a value: it did not parse, or it parsed and broke a
 /// rule. The plain checked door's [`Rejection`](crate::Rejection), with the failure detailed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Rejection {
-    /// The door's own failure.
+pub enum Rejection<T> {
+    /// The door's own failure: the input did not cast.
     Failure(Failure),
-    /// The value parsed and broke a declared constraint.
-    Violation(Violation),
+    /// The value cast and broke a declared constraint; the violation carries it.
+    Violation(Violation<T>),
 }
 
-impl fmt::Display for Rejection {
+impl<T> Rejection<T> {
+    /// The same rejection, a violation's value as `f(value)`; a failure passes through.
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Rejection<U> {
+        match self {
+            Rejection::Failure(failure) => Rejection::Failure(failure),
+            Rejection::Violation(violation) => Rejection::Violation(violation.map(f)),
+        }
+    }
+}
+
+impl<T> fmt::Display for Rejection<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Rejection::Failure(failure) => failure.fmt(f),
@@ -46,22 +56,22 @@ impl fmt::Display for Rejection {
     }
 }
 
-impl core::error::Error for Rejection {}
+impl<T: fmt::Debug> core::error::Error for Rejection<T> {}
 
-impl From<Failure> for Rejection {
-    fn from(failure: Failure) -> Rejection {
+impl<T> From<Failure> for Rejection<T> {
+    fn from(failure: Failure) -> Rejection<T> {
         Rejection::Failure(failure)
     }
 }
 
-impl From<Violation> for Rejection {
-    fn from(violation: Violation) -> Rejection {
+impl<T> From<Violation<T>> for Rejection<T> {
+    fn from(violation: Violation<T>) -> Rejection<T> {
         Rejection::Violation(violation)
     }
 }
 
 /// A rejection as a detailed door reports it for `input`: its failure classified at its span.
-pub(crate) fn classified(rejection: Rejection, input: &[u8]) -> Rejection {
+pub(crate) fn classified<T>(rejection: Rejection<T>, input: &[u8]) -> Rejection<T> {
     match rejection {
         Rejection::Failure(failure) => Rejection::Failure(failure.classified(input)),
         violation => violation,
@@ -80,8 +90,8 @@ pub fn optional<T>(verdict: Result<T, Failure>) -> Result<Option<T>, Failure> {
 /// [`crate::optional_checked`] for a detailed checked verdict: a [`Reason::Empty`] failure
 /// becomes `Ok(None)`; every other failure and every violation flows through.
 pub fn optional_checked<T>(
-    verdict: Result<Checked<T>, Rejection>,
-) -> Result<Option<Checked<T>>, Rejection> {
+    verdict: Result<Checked<T>, Rejection<T>>,
+) -> Result<Option<Checked<T>>, Rejection<T>> {
     match verdict {
         Ok(checked) => Ok(Some(checked)),
         Err(Rejection::Failure(failure)) if failure.reason == Reason::Empty => Ok(None),
@@ -281,7 +291,7 @@ pub fn cast_checked<T: Numeric>(
     input: impl AsRef<[u8]>,
     format: &ValidNumFormat,
     constraints: &Constraints<'_, T>,
-) -> Result<Checked<T>, Rejection> {
+) -> Result<Checked<T>, Rejection<T>> {
     let input = input.as_ref();
     crate::checked::checked(input, format.format(), constraints)
         .map_err(|rejection| classified(rejection, input))
@@ -291,7 +301,7 @@ pub fn cast_checked<T: Numeric>(
 pub fn checked_from_f64<T: Numeric>(
     value: f64,
     constraints: &Constraints<'_, T>,
-) -> Result<Checked<T>, Rejection> {
+) -> Result<Checked<T>, Rejection<T>> {
     crate::checked::checked_typed(value, constraints)
 }
 
@@ -299,6 +309,6 @@ pub fn checked_from_f64<T: Numeric>(
 pub fn cast_text_checked<'a>(
     input: &'a [u8],
     constraints: &Constraints<'a, Text>,
-) -> Result<Checked<&'a str>, Rejection> {
+) -> Result<Checked<&'a str>, Rejection<&'a str>> {
     crate::checked::text_checked(input, constraints)
 }

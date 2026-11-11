@@ -61,44 +61,54 @@ Culture never lives in the core: numeric doors take a caller-declared format —
 
 ## Validation: the checked doors
 
-A value that parses can still be wrong for the field it fills. The checked doors judge it
-against declared constraints in the same call, using the OpenAPI Schema Object's vocabulary:
-`minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum` and `multipleOf` for the integer,
-real and decimal doors, `minLength`, `maxLength` and `enum` for text, and an integer `enum`
-for the integer doors. The rules are declared in code (no schema is parsed), checked once by
-the core when they are built, and bound to one door: a declaration the core refuses, such as
-`minimum` beside `exclusiveMinimum`, a lower bound not below the upper, or an empty `enum`, is
-the caller's contract violation, and never means "no rules".
+Untrusted input is cast first and validated second. A value that casts can still be wrong for
+the field it fills, so the checked doors validate the cast value in the same call, in the
+vocabulary of the OpenAPI 3.2 Schema Object (JSON Schema 2020-12): `minimum`,
+`exclusiveMinimum`, `maximum`, `exclusiveMaximum`, `multipleOf` and `enum` for the integer,
+real and decimal doors, `minLength`, `maxLength` and `enum` for text. The rules are declared in
+code (no schema is parsed), checked once by the core when they are built, and bound to one
+door. Every valid OpenAPI 3.2 declaration is accepted: the four bounds are independent keywords
+(a longitude is `minimum: -180` with `exclusiveMaximum: 180`), a keyword for another type is
+ignored, as JSON Schema ignores it, and an unsatisfiable schema declares and then rejects every
+value. A declaration the spec forbids (a `multipleOf` not above zero) or the core cannot hold
+(a decimal past 28 digits) is the caller's contract violation, and never means "no rules".
 
-- **Exact judgement.** Bounds and steps are exact decimals, never floats, and a value is
-  judged by its exact text, so `0.1` is one tenth against a `multipleOf` of `0.05`. A real door
-  also judges the float it delivers against each bound read as the door reads it, so it never
-  hands back a float that breaks a bound: `1e-400` at `f64` reads as `0`, which breaks
-  `exclusiveMinimum: 0`, and is a violation.
+- **Two levels, never blurred.** A fault (`Empty`, `Malformed`, `OutOfRange`) says the input
+  is not the type: `W73.98` is no `f64`. A violation says it is one and breaks the schema, and
+  carries the value exactly as cast with the keyword and the span: `180` is the `f64` `180.0`,
+  which breaks `exclusiveMaximum: 180`.
+- **Exact judgement.** Bounds, steps and numeric `enum` entries are exact decimals, never
+  floats, and a value is judged by its exact text, so `0.1` is one tenth against a
+  `multipleOf` of `0.05`. A real door also judges the float it delivers against each bound
+  read as the door reads it, so an exclusive bound is never met, by rounding or by the float:
+  `179.99999999999999999` is the `f64` `180.0`, a violation of `exclusiveMaximum: 180`, while
+  the decimal door holds it exactly and accepts it.
 - **Rounding is declared.** `multipleOf` takes a rounding: `strict` (the default) rejects a
   value off the step, as euro cash at `0.05` should; `midpoint` (ties to even), `floor` and
   `ceiling` snap to it, as a latitude at `0.000001` may, and the verdict says the value was
-  adjusted.
+  adjusted. The rules judge the snapped value, and a violation still carries the value as
+  cast: `179.9999996` rounds to `180`, breaks `exclusiveMaximum: 180`, and is reported as
+  `179.9999996`.
 - **Text is forgiving where the world is messy.** `trim` strips Unicode white space before
-  judging, lengths count code points, and an `enum` matches under simple case folding,
-  returning the declared spelling and its index: `"male"` against `["Female", "Male"]` gives
-  `"Male"`, index 1.
+  judging, lengths count code points, and an `enum` matches under simple case folding unless
+  declared `caseSensitive`, returning the declared spelling and its index: `"male"` against
+  `["Female", "Male"]` gives `"Male"`, index 1. A number among a text `enum`'s entries is
+  valid and never matches, as JSON Schema's exact equality across types says.
 - **Two arms, never three.** The checked verdict is the value (with the adjusted flag and, for
-  a text enum, the index), or a rejection: the door's own fault, or a violation naming the
-  keyword and the span. Every binding spells it in its own idiom
-  ([docs/bindings.md](docs/bindings.md#constraints)), and every binding replays the same
-  constraint corpus.
+  a text enum, the index), or a rejection: the door's own fault, or a violation. Every binding
+  spells it in its own idiom ([docs/bindings.md](docs/bindings.md#constraints)), and every
+  binding replays the same constraint corpus.
 
 ## Receipts — proven on this repo's own tests
 
 - **Allocation-free is asserted by a counting allocator, not a doc comment** — `rust/tests/allocation_free.rs` wraps `#[global_allocator]` around 1000 calls to every door, success *and* failure paths, and demands zero. A fault is a byte span into the caller's input; nothing is ever captured or formatted on the error path.
-- **The corpus is the contract** — `corpus/*.json` (seeded from the [Svartalfheim](https://github.com/NorseArchitecture/Svartalfheim) `Norse.Primitives` test suites this project descends from) replays through the Rust core's suite *and* every binding's: all seventeen files, through C#'s real P/Invoke, Java's JNI on JDK 21 and FFM downcalls on 25, Go's translated core, Swift, Ruby's Magnus *and* Fiddle backends, PHP's extension, Python's, TypeScript's addon and its WebAssembly fallback, R's `.Call` shim, and the C++ header over the C ABI.
+- **The corpus is the contract** — `corpus/*.json` (seeded from the [Svartalfheim](https://github.com/NorseArchitecture/Svartalfheim) `Norse.Primitives` test suites this project descends from) replays through the Rust core's suite *and* every binding's: all nineteen files, through C#'s real P/Invoke, Java's JNI on JDK 21 and FFM downcalls on 25, Go's translated core, Swift, Ruby's Magnus *and* Fiddle backends, PHP's extension, Python's, TypeScript's addon and its WebAssembly fallback, R's `.Call` shim, and the C++ header over the C ABI.
 - **Fast paths pay for the lenience** — plain-shaped input takes allocation-free fast lanes; only text that actually uses the forgiveness pays for it. Measured with criterion against Rust's own best-in-class (linux-x64, an Intel Core i9-11900H): `cast_timestamp` 14.5 vs 17.1 ns `time`, `cast_uuid` 12.8 ns against the `uuid` crate's 11.1 ns, `cast_i64` 8.7 vs 7.1 ns `str::parse`. The timestamp door is the one ahead of its Rust counterpart; elsewhere, in-process against Rust's own parsers, these doors trade a few nanoseconds for what they *return* (a verdict with a span) and what they *accept*, and the speed story belongs to the bindings, where the competition is culture machinery ([the scoreboard](#the-scoreboard)).
 - **Fuzzed, with what it finds pinned as tests** — a `cargo-fuzz` target (`rust/fuzz/`) drives every door under every format profile and every declared order/precision/epoch, asserting two invariants every binding silently relies on: a door never panics on any byte sequence, and every fault span stays inside the caller's buffer (`offset + len <= input.len()`, which bindings slice with). The two classes of bug it has caught — truncation faults pointing one byte past the input, and `char_len` spans overrunning on text ending mid-UTF-8-character — are fixed structurally and pinned by `rust/tests/fault_span_invariant.rs` (every corpus input truncated at every byte boundary, through every door) so they fail plain `cargo test`.
-- **Published to every registry, and consumed from each** — crates.io, nuget.org, PyPI (17 wheels — `abi3` and free-threaded `abi3t` on each of eight platforms, two of them `musllinux`, and one for Pyodide in the browser — and the sdist), RubyGems (9 gems — one universal Fiddle, seven precompiled Magnus, each fat across Ruby 3.4 and 4.0 since a Magnus extension is tied to one Ruby minor, and `hypercast-wasm` for ruby.wasm in the browser), Maven Central and npm (ten packages: the root, eight platform addons and the WebAssembly fallback); R goes to CRAN as a source package, by hand, from the release's attested bytes; Go and Swift resolve from the tag itself (Go's prefixed `go/v<version>`), PHP through PIE from Packagist, and the C and C++ archives, PHP's extension zips and Swift's core zips are on the GitHub Release. Trusted Publishing/OIDC wherever the registry offers it — no long-lived tokens for crates.io, NuGet, RubyGems, PyPI or npm; Maven Central, which has no Trusted Publishing, takes a token. Each package 1.0.0 published was then installed from its real registry into a clean project and run, because "the publish succeeded" and "a consumer can use it" are different claims: identical verdicts across all of them, and Java AOT plus C# AOT and Blazor wasm verified against the published artifacts rather than the working tree. How each one is packaged: [docs/platforms.md](docs/platforms.md#publishing).
+- **Published to every registry, and consumed from each** — crates.io, nuget.org, PyPI (17 wheels — `abi3` and free-threaded `abi3t` on each of eight platforms, two of them `musllinux`, and one for Pyodide in the browser — and the sdist), RubyGems (9 gems — one universal Fiddle, seven precompiled Magnus, each fat across Ruby 3.4 and 4.0 since a Magnus extension is tied to one Ruby minor, and `hypercast-wasm` for ruby.wasm in the browser), Maven Central and npm (ten packages: the root, eight platform addons and the WebAssembly fallback); R goes to CRAN as a source package, by hand, from the release's attested bytes; Go and Swift resolve from the tag itself (Go's prefixed `go/v<version>`), PHP through PIE from Packagist, and the C and C++ archives, PHP's extension zips and Swift's core zips are on the GitHub Release. Trusted Publishing/OIDC wherever the registry offers it — no long-lived tokens for crates.io, NuGet, RubyGems, PyPI or npm; Maven Central, which has no Trusted Publishing, takes a token. Each package 1.0.0 published was then installed from its real registry into a clean project and run, because "the publish succeeded" and "a consumer can use it" are different claims: identical verdicts across all of them, and Java AOT plus C# AOT and Blazor wasm verified against the published artifacts rather than the working tree. npm, CRAN, the C archives, the PIE and Swift zips and the JNI jar first publish in 1.1.0 and get the same check then. How each one is packaged: [docs/platforms.md](docs/platforms.md#publishing).
 
   Several of the bugs this project has shipped were found in that gap, where no build in this repo could have failed on them; the CHANGELOG records each. The recovery protocol — a dispatch at the same tag from the preserved, attested packages, uploading only what a registry has not already accepted, which every release runs once as a no-op — is in [`.github/RELEASING.md`](.github/RELEASING.md), because a version is only ever burned where it was actually accepted.
-- **WASM, for the core and in the browser** — the full Rust test suite (unit tests, the allocation proof, every corpus replay, the fault-span invariant sweeps) passes under `wasmtime` on `wasm32-wasip1`. No clock, no randomness, and one dependency, simdutf8, which is `no_std` and takes the core's own SIMD path only when built with simd128: strictly easier freight than HyperUuid, whose wasm train this rides. Eight of these languages compile into a WebAssembly app with the core inside it: Rust (`wasm32-unknown-unknown` in the browser, `wasm32-wasip1`), C# under Blazor, Python under Pyodide, Ruby through ruby.wasm, Go under stock Go and TinyGo alike (its core is Go source), Swift through its WebAssembly SDK, TypeScript through its fallback package's browser entry, and C from the wasi-wasm32 archive; CI runs each browser target in headless Chrome. PHP's is proven for a raw build of the crate and unshipped, Java's is blocked on its compilers, and R's is not built. See [WebAssembly](#webassembly).
+- **WASM, for the core and in the browser** — the full Rust test suite (unit tests, the allocation proof, every corpus replay, the fault-span invariant sweeps) passes under `wasmtime` on `wasm32-wasip1`. No clock, no randomness, and one dependency, simdutf8, which is `no_std` and takes the core's own SIMD path only when built with simd128: strictly easier freight than HyperUuid, whose wasm train this rides. Eight of these languages compile into a WebAssembly app with the core inside it: Rust (`wasm32-unknown-unknown` in the browser, `wasm32-wasip1`), C# under Blazor, Python under Pyodide, Ruby through ruby.wasm, Go under stock Go and TinyGo alike (its core is Go source), Swift through its WebAssembly SDK, TypeScript through its fallback package's browser entry, and C from the wasi-wasm32 archive (packed and layout-checked, not run: the same library Swift's WebAssembly build links and tests); CI runs each browser target in headless Chrome. PHP's is proven for a raw build of the crate and unshipped, Java's is blocked on its compilers, and R's is not built. See [WebAssembly](#webassembly).
 - **C# binding on .NET 10 and 11, union-native** — `Verdict<T>` is a real discriminated union: two case arms, no default, and a missing disposition is a **compile error** (CS8509 as error); on C# 14, `Match` and `Switch` take both cases instead. The whole suite is green including the full corpus replay; source-generated `LibraryImport` only, and the AOT smoke test publishes under `PublishAot` into a genuine native binary that runs every door — proven, not configured.
 - **Java binding on JDK 21+, union-native the JVM way** — `Verdict<T>` is a `sealed interface` over two records, so a two-arm switch with no default is proven exhaustive by `javac`: an unhandled disposition is a compile failure, the same guarantee the C# binding gets from CS8509-as-error, in Java's own idiom. One multi-release jar reaches the core through JNI on JDK 21–24 and FFM downcalls on 25+, and the suite is green on both, including the full corpus replay with byte-exact fault spans; and **full nanosecond fidelity** — `Instant`/`LocalTime`/`Duration` keep all nine fractional digits.
 - **Java AOT, proven** — the GraalVM Native Image smoke test builds and runs every door plus the exhaustive union switch as a true native binary. Native Image needs the FFM downcall signatures *and* a resources glob registered, and the binding ships both in its `reachability-metadata.json` so a consumer inherits them with zero configuration — the non-negotiable, delivered on both managed platforms. The smoke test declares no glob of its own, so it proves the packaged metadata alone is sufficient.

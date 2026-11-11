@@ -329,8 +329,9 @@ public readonly struct RawDuration(long seconds, int nanos)
 
 /// <summary>
 /// The native core's validation-constraints layout — the Rust crate's <c>RawConstraints</c>,
-/// 72 bytes with 8-byte alignment: a size word, the flags saying which fields are read, the
-/// rounding code, the two lengths, a reserved word, then the three decimals. Pointer-free,
+/// 104 bytes with 8-byte alignment: a size word, the flags saying which fields are read, the
+/// rounding code, the two lengths, a reserved word, then the five decimals, one per keyword, so
+/// all four bounds may be declared together, as OpenAPI allows. Pointer-free,
 /// so it is the same on 32-bit and 64-bit targets; an <c>enum</c> list travels beside it.
 /// Built by <see cref="Constraints{T}.ToRaw"/>, from a declaration the core has already
 /// judged.
@@ -347,24 +348,26 @@ public readonly struct RawDuration(long seconds, int nanos)
 /// <item><term>24</term><description><see cref="Lower"/></description></item>
 /// <item><term>40</term><description><see cref="Upper"/></description></item>
 /// <item><term>56</term><description><see cref="MultipleOf"/></description></item>
+/// <item><term>72</term><description><see cref="ExclusiveLower"/></description></item>
+/// <item><term>88</term><description><see cref="ExclusiveUpper"/></description></item>
 /// </list>
-/// A <see cref="Size"/> other than 72, an unknown flag bit, an unknown rounding code, a
+/// A <see cref="Size"/> other than 104, an unknown flag bit, an unknown rounding code, a
 /// nonzero <see cref="Reserved"/>, a decimal sign byte other than 0 or 1, or a non-empty
 /// <c>enum</c> list without <see cref="HasEnum"/> is a malformed layout.
 /// </remarks>
 [StructLayout(LayoutKind.Sequential)]
 public struct RawConstraints
 {
-	/// <summary><see cref="Lower"/> is the inclusive <c>minimum</c>.</summary>
+	/// <summary><see cref="Lower"/>, the <c>minimum</c>, is read.</summary>
 	public const uint HasMinimum = 1;
 
-	/// <summary><see cref="Lower"/> is the <c>exclusiveMinimum</c>.</summary>
+	/// <summary><see cref="ExclusiveLower"/>, the <c>exclusiveMinimum</c>, is read.</summary>
 	public const uint HasExclusiveMinimum = 2;
 
-	/// <summary><see cref="Upper"/> is the inclusive <c>maximum</c>.</summary>
+	/// <summary><see cref="Upper"/>, the <c>maximum</c>, is read.</summary>
 	public const uint HasMaximum = 4;
 
-	/// <summary><see cref="Upper"/> is the <c>exclusiveMaximum</c>.</summary>
+	/// <summary><see cref="ExclusiveUpper"/>, the <c>exclusiveMaximum</c>, is read.</summary>
 	public const uint HasExclusiveMaximum = 8;
 
 	/// <summary><see cref="MultipleOf"/> and <see cref="Rounding"/> are read.</summary>
@@ -379,13 +382,19 @@ public struct RawConstraints
 	/// <summary>Text is trimmed of Unicode <c>White_Space</c> before it is judged.</summary>
 	public const uint Trim = 128;
 
-	/// <summary>An <c>enum</c> is declared: the list beside the layout is read, and an empty one is refused.</summary>
+	/// <summary>An <c>enum</c> is declared: the list beside the layout is read, and an empty one is an <c>enum</c> no value matches.</summary>
 	public const uint HasEnum = 256;
 
-	/// <summary>The layout's size as the caller built it: 72.</summary>
+	/// <summary>
+	/// A text <c>enum</c> matches exactly, byte for byte, instead of under simple case folding,
+	/// for a vocabulary whose case carries meaning (<c>mm</c> and <c>Mm</c>). The text door only.
+	/// </summary>
+	public const uint CaseSensitive = 512;
+
+	/// <summary>The layout's size as the caller built it: 104.</summary>
 	public uint Size;
 
-	/// <summary>Which constraints are declared: the <c>Has*</c> bits, <see cref="HasEnum"/> among them, and <see cref="Trim"/>.</summary>
+	/// <summary>Which constraints are declared: the <c>Has*</c> bits, <see cref="HasEnum"/> among them, <see cref="Trim"/> and <see cref="CaseSensitive"/>.</summary>
 	public uint Flags;
 
 	/// <summary>The <see cref="HyperCast.Rounding"/> code: 0 strict, 1 midpoint, 2 floor, 3 ceiling.</summary>
@@ -400,14 +409,20 @@ public struct RawConstraints
 	/// <summary>Always 0.</summary>
 	public uint Reserved;
 
-	/// <summary>The minimum, or the exclusive minimum.</summary>
+	/// <summary><c>minimum</c>: the value may equal it.</summary>
 	public RawDecimal Lower;
 
-	/// <summary>The maximum, or the exclusive maximum.</summary>
+	/// <summary><c>maximum</c>: the value may equal it.</summary>
 	public RawDecimal Upper;
 
 	/// <summary>The step every value must be a multiple of.</summary>
 	public RawDecimal MultipleOf;
+
+	/// <summary><c>exclusiveMinimum</c>: the value must exceed it.</summary>
+	public RawDecimal ExclusiveLower;
+
+	/// <summary><c>exclusiveMaximum</c>: the value must be below it.</summary>
+	public RawDecimal ExclusiveUpper;
 }
 
 /// <summary>
@@ -415,7 +430,7 @@ public struct RawConstraints
 /// <c>RawCheck</c>, 12 bytes with 4-byte alignment.
 /// </summary>
 /// <param name="keyword">On a violation, the <see cref="HyperCast.Keyword"/> code broken; 0 otherwise.</param>
-/// <param name="adjusted">On success, 1 when rounding changed the value, else 0.</param>
+/// <param name="adjusted">On success, 1 when rounding changed the value, else 0 (always 0 on a violation).</param>
 /// <param name="enumIndex">On a success at the text door that matched an <c>enum</c> entry, its index; <see cref="uint.MaxValue"/> otherwise.</param>
 [StructLayout(LayoutKind.Sequential)]
 public readonly struct RawCheck(uint keyword, uint adjusted, uint enumIndex)

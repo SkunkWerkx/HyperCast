@@ -80,8 +80,9 @@ typed door's `Fault` has no span: its offset and length are 0.
 
 ## Validation constraints
 
-A value that parsed can still break a business rule. `Constraints<T>` declares the rule with the
-OpenAPI Schema Object's keywords, bound by its type to one door (`Constraints<Double>` for `f64`,
+Untrusted input is judged in two steps: first it is cast to the type (a `Fault` when it is not
+one), then the value is validated by OpenAPI 3.2's rules. `Constraints<T>` declares the rules
+with the OpenAPI Schema Object's keywords, bound by its type to one door (`Constraints<Double>` for `f64`,
 `Constraints<Decimal>` for `decimal`, `Constraints<String>` for `text`, …), and the checked
 overload of that door judges the value by it, in the core and in exact decimal arithmetic:
 
@@ -98,10 +99,10 @@ let sex = Constraints<String>(trim: true, enum: ["Female", "Male", "Other"])
 
 let euro = NumFormat(decimalSeparator: ",", groupSeparator: ".", styles: .all, currencySymbol: "€")
 Cast.f64("45.1234567", format: .invariant, constraints: latitude)  // .success(Checked(value: 45.123457, adjusted: true, …))
-Cast.f64("-90.5", format: .invariant, constraints: latitude)  // .rejection(.violation(minimum, offset: 0, length: 5))
+Cast.f64("-90.5", format: .invariant, constraints: latitude)  // .rejection(.violation(minimum, value: -90.5, offset: 0, length: 5))
 Cast.f64FromDouble(45.1234567, constraints: latitude)  // .success(Checked(value: 45.123457, adjusted: true, …))
 Cast.decimal("€1.234,55", format: euro, constraints: euroCash)  // .success(Checked(value: 1234.55, adjusted: false, …))
-Cast.decimal("€12,37", format: euro, constraints: euroCash)  // .rejection(.violation(multipleOf, offset: 0, length: 8))
+Cast.decimal("€12,37", format: euro, constraints: euroCash)  // .rejection(.violation(multipleOf, value: 12.37, offset: 0, length: 8))
 Cast.decimal("12,3x", format: euro, constraints: euroCash)  // .rejection(.fault(malformed, offset: 4, length: 1))
 
 let message =
@@ -110,7 +111,7 @@ let message =
     case .rejection(.fault(let fault)): "\(fault.reason) at byte \(fault.offset)"  // empty at byte 0, for "   "
     case .rejection(.violation(let violation)):
         switch violation.keyword {
-        case .enum: "not a sex code: bytes \(violation.offset)+\(violation.length)"  // for "Femal": bytes 0+5
+        case .enum: "not a sex code: '\(violation.value)'"  // for " Femal ": not a sex code: 'Femal'
         default: "breaks \(violation.keyword)"  // keywords are open
         }
     }
@@ -119,23 +120,30 @@ let message =
 A checked door answers in a `CheckedVerdict<T>`, an enum beside `Verdict<T>` (which every plain
 door keeps returning, unchanged): `.success(Checked<T>)`, the `value`, `adjusted` (true only
 when rounding changed it) and, at the text door with an `enum`, the matched `enumIndex`; or
-`.rejection(Rejection)`, itself an enum of the plain doors' own `.fault(Fault)` (it did not
-parse: the very type, so a parse failure reads the same at either door) and `.violation(Violation)`
-(it parsed and broke a rule: its `keyword` and the value's span, in UTF-8 bytes like a fault's).
+`.rejection(Rejection<T>)`, itself an enum of the plain doors' own `.fault(Fault)` (the input is
+not the type: the very type, so a cast failure reads the same at either door) and
+`.violation(Violation<T>)` (a value of the type that broke a rule: its `keyword`, the `value`
+exactly as the door cast it, and the value's span, in UTF-8 bytes like a fault's). The violation's
+`value` is never the rounded one, since a `multipleOf` rounding is part of the judgement, and at
+the text door it is the judged text (trimmed under `trim`), never an `enum` entry.
 A switch over the three is exhaustive with no `default`. `Keyword` is a `RawRepresentable`
 struct with static members (`.minimum` … `.enum`, each with its OpenAPI `name`, such as
 `exclusiveMinimum`), not an enum: `format` and `pattern` may join in a minor release, so a
 switch over keywords needs its `default` arm, and a code this binding does not know yet is kept
 (`keyword 9`).
 
-The integer doors take `minimum`, `exclusiveMinimum`, `maximum`, `exclusiveMaximum`,
+The numeric doors (the integers, `f32`, `f64` and `decimal`) read `minimum`, `exclusiveMinimum`,
+`maximum` and `exclusiveMaximum` (four independent keywords, any of them together),
 `multipleOf` with a `Rounding` (`.strict`, the default, then `.midpoint`, half to even, `.floor`
-and `.ceiling`) and `enum`; `f32`, `f64` and `decimal` the same without `enum`; the text door
-takes `minLength`, `maxLength` (in code points), `trim` (Unicode `White_Space`, U+00A0 included)
-and `enum`, matched under Unicode simple case folding and delivering the caller's own declared
-string and its index. The initializer offers every keyword, and the core alone refuses one its
-door does not take. The first failure wins: the door parses, the text is trimmed, `multipleOf`
-rounds or refuses, then the bounds, the lengths and `enum` judge the result. A float door also
+and `.ceiling`) and `enum` (decimal entries compared exactly to the value); the text door reads
+`minLength`, `maxLength` (in code points) and `enum`, matched under Unicode simple case folding
+and delivering the caller's own declared string and its index (a number among its entries is
+valid and never matches, as JSON Schema's exact equality says), with two extensions of its own:
+`trim` (Unicode `White_Space`, U+00A0 included) and `caseSensitive` (an `enum` matched byte for
+byte, for a vocabulary such as `mm` and `Mm`). As in JSON Schema, a keyword for the other type is
+ignored. The first failure wins: the door casts, the text is trimmed, `multipleOf` rounds or
+refuses, then the bounds, the lengths and `enum` judge the result; a rounding past what the type
+holds (`127` at `Int8`, `multipleOf: 5`, `.ceiling`) breaks `multipleOf`. A float door also
 judges the float it delivers against each bound read as the door reads it: `"1e-400"` at
 `Double` reads as `0`, so it breaks `exclusiveMinimum: "0"`. Bounds and steps are
 `ConstraintValue`s: an integer literal, a `Decimal`, or text in invariant notation, all
@@ -148,13 +156,16 @@ a `String`, `[UInt8]` and `UnsafeRawBufferPointer` with a `NumFormat`, and `i32F
 on the shortest decimal that names it (`0.1 + 0.2` breaks `multipleOf: "0.1"` under `.strict`,
 and rounds to `0.3` under `.midpoint`), with an empty span.
 
-A declaration is judged once, by the core, when it is built, and a declaration that cannot mean
-anything at its door is the caller's bug: the initializer's precondition fails, as `NumFormat`'s
-does, with the rule as its message (`Constraints<UInt8>(minimum: -1)` traps with "Constraints
-refused (code 8): a bound, step or enum entry the door cannot hold."). An `enum` left `nil` is
-none, while `enum: []` declares one with no entries, which no value could match: refused (code
-12), as is a text entry no input can match (code 13: an empty one, or under `trim` one with
-leading or trailing white space). After that a checked cast judges only data and traps on
+A declaration is judged once, by the core, when it is built. Every valid OpenAPI 3.2 declaration
+is accepted, unsatisfiable ones included: crossed bounds, `minLength` above `maxLength`, a bound
+past the type's range, duplicate entries (the first match wins), and `enum: []`, which no value
+matches (an `enum` left `nil` is none). What the core refuses is the caller's bug, and the
+initializer's precondition fails, as `NumFormat`'s does, with the rule as its message
+(`Constraints<Decimal>(multipleOf: "1e-29")` traps with "Constraints refused (code 8): a bound,
+step or enum entry the door cannot hold."): `trim` or `caseSensitive` at a numeric door, a
+rounding with `multipleOf` at the text door (code 1), a `multipleOf` not positive (5), a rounding
+without `multipleOf` (6), a decimal past 96 bits or 28 places, or a rounding at an integer door
+with a fractional `multipleOf` (8). After that a checked cast judges only data and traps on
 nothing for it. `Cast.text` without constraints is the plain text
 door, a `Verdict<String>`: the input itself when it is valid text (`Cast.text("  Male ")` is
 `.success("  Male ")`, untrimmed); through `[UInt8]`, invalid UTF-8 is `.malformed` at its first
@@ -162,7 +173,7 @@ invalid sequence, as at every plain door, which hands its bytes to the core unch
 `String` cannot hold a lone surrogate, so none can reach the core from one. `Cast.optional` takes
 a checked verdict as it takes a plain one: an `.empty` fault is `nil`, and every other rejection,
 a violation included, flows through. `Interop.rawConstraints(_:)` and `Interop.packedEnum(_:)` hand a declaration over in the
-core's own 72-byte layout and `enum` list, for a library judging values across a C ABI of its
+core's own 104-byte layout and `enum` list, for a library judging values across a C ABI of its
 own.
 
 ## Why not `Int32("...")` / `ISO8601FormatStyle`?
@@ -364,7 +375,7 @@ The date doors keep their strict shapes unless the caller opens more, with a `Da
 and `UnsafeRawBufferPointer`): `.compactDate` (`20260107` at the date door),
 `.spaceSeparator` and `.hourOffset` (`2026-01-07 03:04:05+00` at the timestamp door),
 `DateOptions.commonForms` for all three (no pivot, no month names), a `pivot` (100 through
-9999, the last year of a 100-year window: `26` is 2026 under 2029, `30` is 1930) for
+9999, the last year of a 100-year window: `26` is 2026 under 2029, `30` is 1930; `nil` or 0 declares none) for
 two-digit years at the order doors, and `months`, a `MonthNames`. A door reads only the
 options that are its own. `MonthNames` is built by the caller from `(month, name)` entries
 (`Jan`, `Sept`, `janv.`): each name 1 to 64 bytes with no ASCII digit, `/`, `-` or white
@@ -439,11 +450,12 @@ takes an `UnsafeRawBufferPointer` starting at one value, aligned for its widest 
   sign or the percent symbol and `Interop.currencyMaxBytes` (16) for the currency symbol.
 - `Interop.rawDayPeriods(_:)` — a `DateFormat`'s designators as the core reads them, the
   40-byte `Interop.RawDayPeriods` tuple, each up to `Interop.designatorMaxBytes` (16).
-- `Interop.rawConstraints(_:)` — a `Constraints` as the core reads it in place, the 72-byte,
+- `Interop.rawConstraints(_:)` — a `Constraints` as the core reads it in place, the 104-byte,
   8-aligned `Interop.RawConstraints` tuple (`Interop.rawConstraintsSize`): a size word, the
-  flags, the rounding code, the two lengths, a reserved word, then the lower bound, the upper
-  bound and `multipleOf` in the layout `Interop.decimal` reads; `Interop.packedEnum(_:)` is its
-  `enum` list beside it (16-byte native-endian decimals at an integer door, a little-endian
+  flags, the rounding code, the two lengths, a reserved word, then `minimum`, `maximum`,
+  `multipleOf`, `exclusiveMinimum` and `exclusiveMaximum` in the layout `Interop.decimal` reads;
+  `Interop.packedEnum(_:)` is its `enum` list beside it (16-byte native-endian decimals at a
+  numeric door, a little-endian
   `UInt32` length then UTF-8 bytes per entry at the text door).
 - `Interop.fault(code:offset:length:)` — the `Fault` a nonzero verdict code and its byte
   span name; any code other than 1–3 is a precondition failure, a binding bug.

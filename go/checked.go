@@ -78,7 +78,8 @@ const (
 	KeywordMaximum
 	// KeywordExclusiveMaximum is exclusiveMaximum: the value is at or above it.
 	KeywordExclusiveMaximum
-	// KeywordMultipleOf is multipleOf: the value is not a multiple, under Strict.
+	// KeywordMultipleOf is multipleOf: the value is not a multiple, under Strict, or the
+	// multiple a rounding gives lies past what the door's type holds.
 	KeywordMultipleOf
 	// KeywordMinLength is minLength: the text has fewer code points.
 	KeywordMinLength
@@ -114,11 +115,16 @@ func (k Keyword) String() string {
 	}
 }
 
-// Violation is a value that parsed and broke a declared rule: the Keyword and the value's
-// span, as byte offsets into the input like a Fault's. A from-float64 door has no text to
-// point into, so its span is empty.
-type Violation struct {
+// Violation is a value that parsed and broke a declared rule: the Keyword, the Value as the
+// door cast it, and the value's span, as byte offsets into the input like a Fault's. The
+// input is first cast to the type (a *Fault when it is not one), then judged; a violation is
+// a value of the type, so it carries that value in V, exactly as cast — never rounded, since
+// MultipleOf's rounding is part of the judgement, not of the value. At the text door the
+// Value is the text judged (trimmed when Trim says so), not an enum entry. A from-float64
+// door has no text to point into, so its span is empty.
+type Violation[V any] struct {
 	Keyword Keyword
+	Value   V
 	Offset  int
 	Length  int
 }
@@ -126,7 +132,7 @@ type Violation struct {
 // Error renders the violation as "hypercast: breaks {keyword} at byte {start}..{end}", the
 // span as a half-open byte range into the input. A nil *Violation renders as "<nil>", as a
 // nil *Fault does.
-func (v *Violation) Error() string {
+func (v *Violation[V]) Error() string {
 	if v == nil {
 		return "<nil>"
 	}
@@ -134,8 +140,8 @@ func (v *Violation) Error() string {
 }
 
 // Rejection is why a checked door gave no value: closed, exactly one of two — a *Fault, the
-// very type every plain door returns (it did not parse), or a *Violation (it parsed and broke
-// a declared rule). A parse failure keeps its own closed lexicon, and a broken rule is a
+// very type every plain door returns (it did not parse), or a *Violation[V] of the door's
+// type V (it parsed and broke a declared rule, and carries the value). A parse failure keeps its own closed lexicon, and a broken rule is a
 // different type, not a fourth CastFailure. Nil is success. Sealed: nothing outside this
 // package implements it, so a type switch over the two needs no default arm.
 //
@@ -144,21 +150,21 @@ func (v *Violation) Error() string {
 //		// success
 //	case *hypercast.Fault:
 //		// r.Reason, r.Offset, r.Length
-//	case *hypercast.Violation:
-//		// r.Keyword, r.Offset, r.Length
+//	case *hypercast.Violation[int32]: // V, the door's type
+//		// r.Keyword, r.Value, r.Offset, r.Length
 //	}
 type Rejection interface {
 	error
 	rejection()
 }
 
-func (*Fault) rejection()     {}
-func (*Violation) rejection() {}
+func (*Fault) rejection()        {}
+func (*Violation[V]) rejection() {}
 
 // Checked is what a checked door delivers on success: the value (rounded to the declared
 // MultipleOf when the declaration rounds; at the text door with an enum, the caller's own
 // declared entry), whether rounding changed it, and at the text door the index of the enum
-// entry it matched — -1 otherwise, an integer enum included, where the value is the answer.
+// entry it matched — -1 otherwise, a numeric enum included, where the value is the answer.
 // Every Checked a door returns, a rejection's zero value included, carries -1 when no entry
 // matched.
 type Checked[V any] struct {
@@ -194,16 +200,17 @@ const (
 	ruleMaxLength
 	ruleTrim
 	ruleEnum
+	ruleCaseSensitive
 )
 
 func (k ruleKind) String() string {
 	return [...]string{"", "minimum", "exclusiveMinimum", "maximum", "exclusiveMaximum", "multipleOf",
-		"rounding", "minLength", "maxLength", "trim", "enum"}[k]
+		"rounding", "minLength", "maxLength", "trim", "enum", "caseSensitive"}[k]
 }
 
 // Rule is one keyword of a declaration, built by Minimum, ExclusiveMinimum, Maximum,
-// ExclusiveMaximum, MultipleOf, WithRounding, MinLength, MaxLength, Trim or Enum and handed
-// to NewConstraints. The zero Rule declares nothing and is refused.
+// ExclusiveMaximum, MultipleOf, WithRounding, MinLength, MaxLength, Trim, CaseSensitive or
+// Enum and handed to NewConstraints. The zero Rule declares nothing and is refused.
 type Rule struct {
 	kind     ruleKind
 	text     string   // a bound or step, as text
@@ -282,11 +289,18 @@ func MaxLength(n int) Rule { return Rule{kind: ruleMaxLength, length: n} }
 // included) before it is judged.
 func Trim() Rule { return Rule{kind: ruleTrim} }
 
-// Enum declares the values allowed, distinct: whole numbers at an integer door (as numbers
-// or their text), strings at the text door, matched under Unicode simple case folding — a
-// match delivers the entry as declared, and its index. Leaving Enum out declares no enum;
-// Enum with no entries declares one that no value could match, which the core refuses (code
-// 12).
+// CaseSensitive declares that a text Enum matches byte for byte instead of under Unicode
+// simple case folding, for a vocabulary whose case carries meaning ("mm" and "Mm"). A
+// HyperCast extension of the text door, like Trim.
+func CaseSensitive() Rule { return Rule{kind: ruleCaseSensitive} }
+
+// Enum declares the values allowed: numbers at a numeric door (as numbers or their text),
+// compared exactly to the value as cast, so an entry the door's type cannot hold (a fraction
+// at an integer door, say) never matches; strings at the text door, matched under Unicode
+// simple case folding unless CaseSensitive is declared — a match delivers the entry as
+// declared, and its index; numbers at the text door are valid entries no string equals. Entries may repeat, the first match winning. Leaving Enum out
+// declares no enum; Enum with no entries declares one that no value matches, so every value
+// breaks it.
 func Enum[E ConstraintValue](entries ...E) Rule {
 	r := Rule{kind: ruleEnum, entries: make([]string, len(entries))}
 	for i, entry := range entries {
@@ -296,7 +310,7 @@ func Enum[E ConstraintValue](entries ...E) Rule {
 }
 
 // declaration is a Constraints as the core reads it: the layout, and the enum list beside it
-// (integer entries as Decimals, text entries packed with the declared strings kept).
+// (numeric entries as Decimals, text entries packed with the declared strings kept).
 type declaration struct {
 	raw        RawConstraints
 	decimals   []Decimal
@@ -313,22 +327,26 @@ func (d *declaration) enumBytes() int {
 }
 
 // Constraints is a declaration of validation constraints — the OpenAPI Schema Object's
-// keywords — bound to the door its type names: Constraints[float64] for Check's F64 door,
-// Constraints[Decimal] for Exact's, Constraints[string] for CheckString. Immutable, and
-// judged once, by the native core, when NewConstraints or MustConstraints builds it: a
-// declaration that cannot mean anything at its door is refused there, and every checked cast
-// after that only judges data. There is no default: the zero Constraints was never judged,
+// keywords, as OpenAPI 3.2 (JSON Schema 2020-12) reads them — bound to the door its type
+// names: Constraints[float64] for Check's F64 door, Constraints[Decimal] for Exact's,
+// Constraints[string] for CheckString. Immutable, and judged once, by the native core, when
+// NewConstraints or MustConstraints builds it: every valid OpenAPI declaration is accepted,
+// one no value can satisfy included, and only one the core cannot read is refused there;
+// every checked cast after that only judges data. There is no default: the zero Constraints was never judged,
 // so handing one to a checked door (or asking it for Raw or PackedEnum) is a caller bug and
 // panics, as a zero NumFormat does. MustConstraints[V]() with no rules is the declaration of
 // none.
 //
-// The integer doors take Minimum, ExclusiveMinimum, Maximum, ExclusiveMaximum, MultipleOf
-// with WithRounding, and Enum; float32, float64 and Decimal the same but Enum; the text door
-// MinLength, MaxLength, Trim and Enum. The value is judged in the core, in this order, the
-// first failure winning: the door parses (a *Fault, exactly as the plain door's); text is
-// trimmed when Trim says so; MultipleOf, on the exact decimal, rounding when declared; the
-// bounds, on the rounded value; the lengths, in code points; Enum (text under Unicode simple
-// case folding, delivering the declared entry). A broken rule is a *Violation.
+// The numeric doors take Minimum, ExclusiveMinimum, Maximum, ExclusiveMaximum (any of them
+// together, each judged on its own), MultipleOf with WithRounding, and Enum; the text door
+// MinLength, MaxLength, Trim, CaseSensitive and Enum. A keyword for another type (MinLength
+// at a numeric door, Minimum at the text door) is ignored, as OpenAPI ignores it. The value is
+// judged in the core, in this order, the first failure winning: the door parses (a *Fault,
+// exactly as the plain door's); text is trimmed when Trim says so; MultipleOf, on the exact
+// decimal, rounding when declared (a multiple past what the type holds breaks MultipleOf);
+// Minimum, ExclusiveMinimum, Maximum, ExclusiveMaximum, on the rounded value; the lengths,
+// in code points; Enum (text under Unicode simple case folding unless CaseSensitive,
+// delivering the declared entry). A broken rule is a *Violation[V] carrying the value.
 type Constraints[V CheckedTarget] struct {
 	d declaration
 }
@@ -382,30 +400,16 @@ func refused(code int32) *refusal {
 	switch code {
 	case 1:
 		rule = "a constraint the door does not take"
-	case 2:
-		rule = "minimum together with exclusiveMinimum"
-	case 3:
-		rule = "maximum together with exclusiveMaximum"
-	case 4:
-		rule = "the lower bound is not below the upper bound"
 	case 5:
 		rule = "multipleOf is not positive"
 	case 6:
 		rule = "a rounding without multipleOf"
-	case 7:
-		rule = "minLength is above maxLength"
 	case 8:
 		rule = "a bound, step or enum entry the door cannot hold"
 	case 9:
 		rule = "an enum entry that is not UTF-8"
-	case 10:
-		rule = "a duplicate enum entry"
 	case 11:
 		rule = "a malformed constraints layout"
-	case 12:
-		rule = "an enum with no entries"
-	case 13:
-		rule = "a text enum entry no input can match"
 	default:
 		rule = "a rule this binding does not name"
 	}
@@ -414,15 +418,18 @@ func refused(code int32) *refusal {
 
 // NewConstraints declares the rules and has the native core judge them for V's door, once.
 // A refused declaration is an error, worded from the rule it broke ("hypercast: Constraints
-// refused (code 8): a bound, step or enum entry the door cannot hold."): a keyword the door
-// does not take; Minimum with ExclusiveMinimum, or Maximum with ExclusiveMaximum; a lower
-// bound not below the upper; a MultipleOf not positive; a rounding without MultipleOf;
-// MinLength above MaxLength; a bound, step or entry the door cannot hold (a fraction or out
-// of range at an integer door, or text that is no decimal or does not fit one); an enum entry
-// that is not UTF-8; duplicate entries; an Enum with no entries; a text entry no input can
-// match (an empty one, or under Trim one with leading or trailing white space). Also a keyword declared twice, a zero Rule, a number
-// among the text door's entries and a length below zero or past math.MaxUint32. Use it for a
-// declaration read at run time; MustConstraints is the form for one written in code.
+// refused (code 8): a bound, step or enum entry the door cannot hold."), from the core's
+// codes: 1 a keyword the door does not take (Trim or CaseSensitive at a numeric door, or
+// WithRounding beside MultipleOf at the text door); 5 a MultipleOf not positive; 6 a rounding
+// without MultipleOf; 8 a bound, step or entry no door can hold (text that is no decimal, or
+// a decimal past 96 bits or scale 28), or WithRounding at an integer door with a fractional
+// MultipleOf; 9 an enum entry that is not UTF-8. Everything else OpenAPI allows is accepted:
+// crossed or equal bounds, an inclusive and an exclusive bound together, MinLength above
+// MaxLength, repeated or no enum entries. This binding also refuses what a Go call can say
+// but no OpenAPI declaration can: a keyword declared twice, a zero Rule and a length below
+// zero or past math.MaxUint32. Numbers as the text door's entries are valid and never match,
+// as JSON Schema's exact equality says. Use it for a declaration read
+// at run time; MustConstraints is the form for one written in code.
 func NewConstraints[V CheckedTarget](rules ...Rule) (Constraints[V], error) {
 	door := doorOf[V]()
 	d := declaration{raw: RawConstraints{Size: RawConstraintsSize}}
@@ -441,13 +448,13 @@ func NewConstraints[V CheckedTarget](rules ...Rule) (Constraints[V], error) {
 			d.raw.Lower, err = declared(rule.text)
 			d.raw.Flags |= RawConstraintsHasMinimum
 		case ruleExclusiveMinimum:
-			d.raw.Lower, err = declared(rule.text)
+			d.raw.ExclusiveLower, err = declared(rule.text)
 			d.raw.Flags |= RawConstraintsHasExclusiveMinimum
 		case ruleMaximum:
 			d.raw.Upper, err = declared(rule.text)
 			d.raw.Flags |= RawConstraintsHasMaximum
 		case ruleExclusiveMaximum:
-			d.raw.Upper, err = declared(rule.text)
+			d.raw.ExclusiveUpper, err = declared(rule.text)
 			d.raw.Flags |= RawConstraintsHasExclusiveMaximum
 		case ruleMultipleOf:
 			d.raw.MultipleOf, err = declared(rule.text)
@@ -462,6 +469,8 @@ func NewConstraints[V CheckedTarget](rules ...Rule) (Constraints[V], error) {
 			d.raw.Flags |= RawConstraintsHasMaxLength
 		case ruleTrim:
 			d.raw.Flags |= RawConstraintsTrim
+		case ruleCaseSensitive:
+			d.raw.Flags |= RawConstraintsCaseSensitive
 		case ruleEnum:
 			err = d.pack(rule, door)
 			d.raw.Flags |= RawConstraintsHasEnum
@@ -487,7 +496,7 @@ func MustConstraints[V CheckedTarget](rules ...Rule) Constraints[V] {
 	return c
 }
 
-// declared is a bound, step or integer entry through the core's own conversion: the exact
+// declared is a bound, step or numeric entry through the core's own conversion: the exact
 // decimal, or the core's refusal 8.
 func declared(text string) (Decimal, *refusal) {
 	d, ok := declaredDecimal(text)
@@ -524,7 +533,7 @@ func length(n int, kind ruleKind) (uint32, *refusal) {
 // pack lays the enum list out for the door: at the text door each entry a little-endian
 // 32-bit byte length then its bytes, the declared strings kept; elsewhere Decimals, each
 // through the core's conversion. No entries crosses as an empty list, under
-// RawConstraintsHasEnum, for the core to refuse.
+// RawConstraintsHasEnum: an enum no value matches.
 func (d *declaration) pack(rule Rule, door uint32) *refusal {
 	if len(rule.entries) == 0 {
 		return nil
@@ -540,7 +549,12 @@ func (d *declaration) pack(rule Rule, door uint32) *refusal {
 		return nil
 	}
 	if rule.numbers {
-		return &refusal{message: fmt.Sprintf("Text enum entries are strings; entry 0 is the number %s.", rule.entries[0])}
+		// A number is a valid entry that no string equals (JSON Schema's enum is exact
+		// equality across types): each is packed as an empty entry, which no input matches
+		// (empty input is the door's Empty fault), so the list keeps its length and indexes.
+		d.packedText = make([]byte, 4*len(rule.entries))
+		d.texts = make([]string, len(rule.entries))
+		return nil
 	}
 	size := 0
 	for i, entry := range rule.entries {
@@ -582,7 +596,7 @@ func (c Constraints[V]) Minimum() (Decimal, bool) {
 
 // ExclusiveMinimum is the declared exclusiveMinimum, and whether one is declared.
 func (c Constraints[V]) ExclusiveMinimum() (Decimal, bool) {
-	return c.bound(RawConstraintsHasExclusiveMinimum, c.d.raw.Lower)
+	return c.bound(RawConstraintsHasExclusiveMinimum, c.d.raw.ExclusiveLower)
 }
 
 // Maximum is the declared maximum, and whether one is declared.
@@ -592,7 +606,7 @@ func (c Constraints[V]) Maximum() (Decimal, bool) {
 
 // ExclusiveMaximum is the declared exclusiveMaximum, and whether one is declared.
 func (c Constraints[V]) ExclusiveMaximum() (Decimal, bool) {
-	return c.bound(RawConstraintsHasExclusiveMaximum, c.d.raw.Upper)
+	return c.bound(RawConstraintsHasExclusiveMaximum, c.d.raw.ExclusiveUpper)
 }
 
 // MultipleOf is the declared multipleOf, and whether one is declared.
@@ -616,13 +630,17 @@ func (c Constraints[V]) MaxLength() (int, bool) {
 // Trim is whether text is trimmed of Unicode White_Space before it is judged.
 func (c Constraints[V]) Trim() bool { return c.d.raw.Flags&RawConstraintsTrim != 0 }
 
+// CaseSensitive is whether a text enum matches byte for byte rather than under Unicode
+// simple case folding.
+func (c Constraints[V]) CaseSensitive() bool { return c.d.raw.Flags&RawConstraintsCaseSensitive != 0 }
+
 // Raw is the declaration laid out as the core reads it — what every checked door hands the
 // core, beside PackedEnum — for a library judging values across a C ABI of its own. The core
 // judged it when it was declared. The zero Constraints panics, as a checked door does.
 func (c Constraints[V]) Raw() RawConstraints { return c.declaration().raw }
 
 // PackedEnum is the declaration's enum list as the core reads it beside Raw, a fresh copy, nil
-// for none: at an integer door 16-byte Decimals in the host's byte order, at the text door
+// for none: at a numeric door 16-byte Decimals in the host's byte order, at the text door
 // each entry a little-endian 32-bit byte length followed by its bytes. The zero Constraints
 // panics, as a checked door does.
 func (c Constraints[V]) PackedEnum() []byte {
@@ -648,33 +666,30 @@ func (c Constraints[V]) PackedEnum() []byte {
 
 // The checked doors.
 
-// rejected is the Rejection a nonzero code names: 4 a violation of the keyword the check
-// carries, 1 to 3 the door's own fault, both spanning UTF-8 bytes of the input.
-func rejected(r *result, c RawCheck) Rejection {
-	if r.code != 4 {
-		return failed(r.code, &r.fault)
-	}
-	return violated(r, c)
-}
-
-// violated is the *Violation a code 4 names, its span the value's.
-func violated(r *result, c RawCheck) *Violation {
+// violated is the *Violation a code 4 names: the keyword the check carries, the value as
+// cast, and its span, UTF-8 bytes of the input.
+func violated[V any](r *result, c RawCheck, value V) *Violation[V] {
 	if c.Keyword == 0 {
 		panic("hypercast: the core reported a violation of no keyword — a binding bug, please report it")
 	}
-	return &Violation{Keyword: Keyword(c.Keyword), Offset: int(r.fault.Offset), Length: int(r.fault.Length)}
+	return &Violation[V]{Keyword: Keyword(c.Keyword), Value: value, Offset: int(r.fault.Offset), Length: int(r.fault.Length)}
 }
 
-// checkedNumber reads a numeric checked door's verdict.
+// checkedNumber reads a numeric checked door's verdict: 4 a violation carrying the value as
+// cast, 1 to 3 the door's own fault, both spanning UTF-8 bytes of the input.
 func checkedNumber[V Number](r *result, c RawCheck) (Checked[V], Rejection) {
-	if r.code != 0 {
-		return Checked[V]{EnumIndex: -1}, rejected(r, c)
+	switch r.code {
+	case 0:
+		return checkedValue[V](r, c), nil
+	case 4:
+		return Checked[V]{EnumIndex: -1}, violated(r, c, numberOut[V](r))
+	default:
+		return Checked[V]{EnumIndex: -1}, failed(r.code, &r.fault)
 	}
-	return checkedValue[V](r, c), nil
 }
 
-// checkedValue is a numeric checked door's success.
-func checkedValue[V Number](r *result, c RawCheck) Checked[V] {
+// numberOut is the value a numeric checked door wrote to out, on a success or a violation.
+func numberOut[V Number](r *result) V {
 	var out V
 	if p, ok := any(&out).(*Decimal); ok {
 		raw := read[rawDecimal](r)
@@ -682,13 +697,18 @@ func checkedValue[V Number](r *result, c RawCheck) Checked[V] {
 	} else {
 		out = read[V](r)
 	}
-	return Checked[V]{Value: out, Adjusted: c.Adjusted != 0, EnumIndex: -1}
+	return out
+}
+
+// checkedValue is a numeric checked door's success.
+func checkedValue[V Number](r *result, c RawCheck) Checked[V] {
+	return Checked[V]{Value: numberOut[V](r), Adjusted: c.Adjusted != 0, EnumIndex: -1}
 }
 
 // Check casts numeric text to V under the declared format, as V's own door does (Check with
 // a Constraints[int32] is I32, with a Constraints[Decimal] Exact), then judges the value by
-// constraints. The Rejection is nil on success, else the door's own *Fault or a *Violation,
-// both spanning bytes of the input. V is inferred from constraints and T from text:
+// constraints. The Rejection is nil on success, else the door's own *Fault or a
+// *Violation[V] carrying the value as cast, both spanning bytes of the input. V is inferred from constraints and T from text:
 // hypercast.Check("45.5", hypercast.Invariant, latitude).
 func Check[V Number, T Text](text T, format NumFormat, constraints Constraints[V]) (Checked[V], Rejection) {
 	var raw RawNumFormat
@@ -753,17 +773,22 @@ func String[T Text](text T) (string, *Fault) {
 
 // CheckString casts text as String does, then judges it by constraints: trimmed of Unicode
 // White_Space when Trim says so, its length counted in code points, and an enum matched under
-// Unicode simple case folding — a match delivers the caller's own declared entry, and its
-// index. Otherwise the value is the input judged (trimmed when declared). Spans are bytes into
+// Unicode simple case folding (byte for byte under CaseSensitive) — a match delivers the
+// caller's own declared entry, and its index. Otherwise the value is the input judged
+// (trimmed when declared), and a *Violation[string] carries that text. Spans are bytes into
 // the input, as a fault's are.
 func CheckString[T Text](text T, constraints Constraints[string]) (Checked[string], Rejection) {
 	ptr, length := textPtr(text)
 	d := constraints.declaration()
 	r, c := callChecked(doorText, ptr, length, nil, d)
-	if r.code != 0 {
-		return Checked[string]{EnumIndex: -1}, rejected(&r, c)
+	switch r.code {
+	case 0:
+		return checkedText(text, d, &r, c), nil
+	case 4:
+		return Checked[string]{EnumIndex: -1}, violated(&r, c, slice(text, read[RawSpan](&r)))
+	default:
+		return Checked[string]{EnumIndex: -1}, failed(r.code, &r.fault)
 	}
-	return checkedText(text, d, &r, c), nil
 }
 
 // checkedText is the text checked door's success: the declared entry it matched, or the

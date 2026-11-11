@@ -111,8 +111,6 @@ Every place a door fails, with the reason and detail it reports. A detailed door
 | `CheckedF64Infinite` | `checked.rs` | `out_of_range` | `not_finite` | An infinity at the checked `f64` door. |
 | `CheckedSpanTooLong` | `checked.rs` | `out_of_range` | `too_long` | A success span that ends past `u32::MAX` bytes. **Impractical:** only an input past 4 GiB reaches it; reached by the unit test `checked_span_too_long`. Where `usize` is 32 bits (wasm32) no length can pass `u32::MAX`, so the site is structurally unreachable there, which the coverage test asserts. |
 | `CheckedMultipleTooLong` | `checked.rs` | `out_of_range` | `too_large` | `multipleOf` rounding yields a multiple too long to hold. **Unreachable:** a declared step is never zero, and a value a door accepts rounds to at most 337 digits (an `f64` near its maximum at a step of scale 28), within the 340 `Rounded` holds. |
-| `CheckedRoundedTooLarge` | `checked.rs` | `out_of_range` | `too_large` | `multipleOf` rounding yields a multiple past what the door's type holds. |
-| `CheckedRoundedTooSmall` | `checked.rs` | `out_of_range` | `too_small` | `multipleOf` rounding yields a multiple below a signed integer type's minimum. |
 | `CheckedTextBlank` | `checked.rs` | `empty` | `blank` | The text door's input is white space only, under `trim`. |
 | `UuidBlank` | `uuid.rs` | `empty` | `blank` | The trimmed input is empty. |
 | `UuidBarePrefix` | `uuid.rs` | `malformed` | `component_missing` | A prefix (`urn:uuid:`, `GUID:`, `UUID:`) with nothing after it. |
@@ -240,4 +238,4 @@ Every place a door fails, with the reason and detail it reports. A detailed door
 | `ProtobufTrailing` | `temporal.rs` | `malformed` | `trailing_text` | An `s` ends a complete duration and more text follows. |
 | `ProtobufUnexpected` | `temporal.rs` | `malformed` | `unexpected_character` | Any other character after the seconds. |
 
-233 sites: 11 unreachable, 3 impractical.
+231 sites: 11 unreachable, 3 impractical.

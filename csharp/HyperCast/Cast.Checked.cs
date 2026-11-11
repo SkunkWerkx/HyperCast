@@ -113,9 +113,10 @@ public static partial class Cast
 	/// <summary>
 	/// Casts integer text to <see cref="sbyte"/> under the declared <paramref name="format"/>, as
 	/// <see cref="SByte(ReadOnlySpan{byte}, NumFormat)"/> does, then judges the value by
-	/// <paramref name="constraints"/>: a <see cref="Checked{T}"/>, or a <see cref="Rejection"/>
-	/// holding the plain door's own <see cref="Fault"/> or the <see cref="Violation"/> of a
-	/// declared rule, spanning the value. Every door below has the same shape.
+	/// <paramref name="constraints"/>: a <see cref="Checked{T}"/>, or a <see cref="Rejection{T}"/>
+	/// holding the plain door's own <see cref="Fault"/> (the input is not the type) or the
+	/// <see cref="Violation{T}"/> of a declared rule, carrying the value exactly as cast and
+	/// spanning it. Every door below has the same shape.
 	/// </summary>
 	/// <param name="utf8">The raw scalar text as UTF-8 bytes.</param>
 	/// <param name="format">The declared numeric notation.</param>
@@ -493,7 +494,7 @@ public static partial class Cast
 		var code = JudgeText(utf8, null, out var span, out var fault, out var check);
 		return code == 0
 			? new Checked<string>(Encoding.UTF8.GetString(utf8.Slice((int)span.Offset, (int)span.Length)), false, null)
-			: Rejected<string>(code, fault, check);
+			: Rejected(code, "", fault, check);
 	}
 
 	/// <inheritdoc cref="Text(ReadOnlySpan{byte})"/>
@@ -516,9 +517,10 @@ public static partial class Cast
 	/// Casts text through the text door, then judges it by <paramref name="constraints"/>: trimmed
 	/// of Unicode <c>White_Space</c> when declared (trimmed to nothing is
 	/// <see cref="CastFailure.Empty"/>), its length counted in code points, and with an
-	/// <c>enum</c>, matched under Unicode simple case folding. A match delivers the caller's own
-	/// declared string and its index, so <c>"MALE"</c> against <c>["Female", "Male", "Other"]</c>
-	/// is <c>"Male"</c> and 1. A violation spans the (trimmed) text.
+	/// <c>enum</c>, matched under Unicode simple case folding (byte for byte when
+	/// <c>caseSensitive</c> is declared). A match delivers the caller's own declared string and
+	/// its index, so <c>"MALE"</c> against <c>["Female", "Male", "Other"]</c> is <c>"Male"</c>
+	/// and 1. A violation carries the (trimmed) text, the input's own, and spans it.
 	/// </summary>
 	/// <param name="utf8">The raw text as UTF-8 bytes.</param>
 	/// <param name="constraints">The declaration, bound to the text door.</param>
@@ -527,8 +529,10 @@ public static partial class Cast
 	{
 		ArgumentNullException.ThrowIfNull(constraints);
 		var code = JudgeText(utf8, constraints, out var span, out var fault, out var check);
+		if (code == 4)
+			return Rejected(code, Encoding.UTF8.GetString(utf8.Slice((int)span.Offset, (int)span.Length)), fault, check);
 		if (code != 0)
-			return Rejected<string>(code, fault, check);
+			return Rejected(code, "", fault, check);
 		var value = check.EnumIndex != uint.MaxValue
 			? constraints.Entry(check.EnumIndex)
 			: Encoding.UTF8.GetString(utf8.Slice((int)span.Offset, (int)span.Length));
@@ -576,7 +580,7 @@ public static partial class Cast
 			fixed (byte* list = entries)
 				code = cast_checked_detailed(constraints.Door, 0, &raw, &declared, list, (nuint)entries.Length,
 					ptr, (nuint)utf8.Length, &value, &fault, &check);
-			return code == 0 ? FoundDecimal<T>(value, check) : Rejected<T>(code, fault, check);
+			return Decided(code, AsT<T>(value), fault, check);
 		}
 		else
 		{
@@ -585,7 +589,7 @@ public static partial class Cast
 			fixed (byte* list = entries)
 				code = cast_checked_detailed(constraints.Door, 0, &raw, &declared, list, (nuint)entries.Length,
 					ptr, (nuint)utf8.Length, &value, &fault, &check);
-			return code == 0 ? Found(value, check) : Rejected<T>(code, fault, check);
+			return Decided(code, value, fault, check);
 		}
 	}
 
@@ -617,36 +621,43 @@ public static partial class Cast
 			RawDecimal value = default;
 			fixed (byte* list = entries)
 				code = cast_checked_detailed_from_f64(constraints.Door, 0, &declared, list, (nuint)entries.Length, number, &value, &fault, &check);
-			return code == 0 ? FoundDecimal<T>(value, check) : Rejected<T>(code, fault, check);
+			return Decided(code, AsT<T>(value), fault, check);
 		}
 		else
 		{
 			T value = default;
 			fixed (byte* list = entries)
 				code = cast_checked_detailed_from_f64(constraints.Door, 0, &declared, list, (nuint)entries.Length, number, &value, &fault, &check);
-			return code == 0 ? Found(value, check) : Rejected<T>(code, fault, check);
+			return Decided(code, value, fault, check);
 		}
 	}
 
-	// A success at a numeric door: the value, and whether rounding changed it. An integer enum
+	// A numeric door's verdict: the value the core wrote on 0 and on 4 (where it is the value
+	// as cast, the violation's), or the fault.
+	static CheckedVerdict<T> Decided<T>(int code, T value, in RawFaultDetail fault, in RawCheck check) where T : notnull =>
+		code == 0 ? Found(value, check) : Rejected(code, value, fault, check);
+
+	// A success at a numeric door: the value, and whether rounding changed it. A numeric enum
 	// has no index; the value is the answer.
 	static CheckedVerdict<T> Found<T>(T value, in RawCheck check) where T : notnull =>
 		new(new Checked<T>(value, check.Adjusted != 0, check.EnumIndex == uint.MaxValue ? null : (int)check.EnumIndex));
 
 	// The decimal door writes the core's triple; T is decimal here, proven by typeof.
-	static CheckedVerdict<T> FoundDecimal<T>(RawDecimal value, in RawCheck check) where T : notnull
+	static T AsT<T>(RawDecimal value)
 	{
 		var number = value.ToDecimal();
-		return Found(Unsafe.As<decimal, T>(ref number), check);
+		return Unsafe.As<decimal, T>(ref number);
 	}
 
-	static CheckedVerdict<T> Rejected<T>(int code, in RawFaultDetail fault, in RawCheck check) where T : notnull =>
+	// A failure: on 4 a violation carrying `value`, what the core wrote to `out`; otherwise the
+	// fault, `value` unread.
+	static CheckedVerdict<T> Rejected<T>(int code, T value, in RawFaultDetail fault, in RawCheck check) where T : notnull =>
 		code switch
 		{
-			4 => new(new Rejection(Abi.ToViolation(check.Keyword, fault))),
+			4 => new(new Rejection<T>(Abi.ToViolation(check.Keyword, value, fault))),
 			-1 => throw new InvalidOperationException(
 				"libhypercast reported a contract violation — a binding bug, please report it."),
-			_ => new(new Rejection(Abi.ToFault((uint)code, fault))),
+			_ => new(new Rejection<T>(Abi.ToFault((uint)code, fault))),
 		};
 
 	static unsafe int JudgeText(ReadOnlySpan<byte> utf8, Constraints<string>? constraints,
@@ -687,16 +698,18 @@ public static partial class Cast
 				: rented = ArrayPool<byte>.Shared.Rent(length);
 			var utf8 = target[..Wtf8(input, target)];
 			var code = JudgeText(utf8, constraints, out var span, out var fault, out var check);
-			if (code != 0)
-				return Remap(Rejected<string>(code, fault, check), utf8, input.Length);
-			if (check.EnumIndex != uint.MaxValue)
+			if (code is not 0 and not 4)
+				return Remap(Rejected(code, "", fault, check), utf8, input.Length);
+			if (code == 0 && check.EnumIndex != uint.MaxValue)
 				return Found(constraints!.Entry(check.EnumIndex), check);
+			// The judged text, sliced from the caller's own input: the value of a success, or the
+			// value a violation carries.
 			var offset = Units(utf8[..(int)span.Offset]);
 			var count = Units(utf8.Slice((int)span.Offset, (int)span.Length));
 			var value = whole is not null && offset == 0 && count == whole.Length
 				? whole
 				: new string(input.Slice(offset, count));
-			return Found(value, check);
+			return code == 0 ? Found(value, check) : Remap(Rejected(code, value, fault, check), utf8, input.Length);
 		}
 		finally
 		{
@@ -710,20 +723,20 @@ public static partial class Cast
 	/// </summary>
 	static CheckedVerdict<T> Remap<T>(CheckedVerdict<T> verdict, ReadOnlySpan<byte> utf8, int charCount) where T : notnull
 	{
-		if (utf8.Length == charCount || !verdict.TryGetValue(out Rejection rejection))
+		if (utf8.Length == charCount || !verdict.TryGetValue(out Rejection<T> rejection))
 			return verdict;
 		if (rejection.TryGetValue(out Fault fault))
 		{
 			if (fault.Offset == 0 && fault.Length == 0)
 				return verdict;
 			var (offset, length) = Units(utf8, fault.Offset, fault.Length);
-			return new(new Rejection(fault with { Offset = offset, Length = length }));
+			return new(new Rejection<T>(fault with { Offset = offset, Length = length }));
 		}
-		rejection.TryGetValue(out Violation violation);
+		rejection.TryGetValue(out Violation<T> violation);
 		if (violation.Offset == 0 && violation.Length == 0)
 			return verdict;
 		var (start, units) = Units(utf8, violation.Offset, violation.Length);
-		return new(new Rejection(violation with { Offset = start, Length = units }));
+		return new(new Rejection<T>(violation with { Offset = start, Length = units }));
 	}
 
 	static (int Offset, int Length) Units(ReadOnlySpan<byte> utf8, int offset, int length) =>

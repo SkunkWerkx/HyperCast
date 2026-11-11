@@ -3,7 +3,7 @@
 #
 #   smoke_c<std>                 main.c as C99, C11 and C23, each where the compiler has it
 #   smoke_cxx<std>               main.cpp through hypercast.hpp as C++17, C++20 and C++23: the
-#                                header's surface as code written before 1.1 uses it, unchanged
+#                                header's core surface, the checked doors and constraints included
 #   smoke_detailed<std>          detailed.cpp: the 1.1 surface (detail codes, grouping policies,
 #                                the detailed doors, date options, month names), the same standards
 #   smoke_cxx<std>_noexceptions  the same two with exceptions off (-fno-exceptions; /EHs-c- and

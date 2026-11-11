@@ -1,20 +1,23 @@
 package io.github.skunkwerkx.hypercast;
 
 /**
- * The other failure case of {@link DetailedRejection}: the value parsed and broke a declared
- * rule, as {@link Violation} says. The {@link Keyword} says which rule; a violation has no
- * {@link FaultDetail}, because nothing about the text was wrong.
+ * The other failure case of {@link DetailedRejection}: the input was cast to the door's type and
+ * the value broke a declared rule, as {@link Violation} says, carrying the value as cast. The
+ * {@link Keyword} says which rule; a violation has no {@link FaultDetail}, because nothing about
+ * the text was wrong.
  *
- * @param <T> the door's value type (phantom)
+ * @param <T> the door's value type: a number, or {@link String} at the text door
  * @param keyword the rule broken, never {@code null}
+ * @param value the value as cast (never rounded; at the text door the judged text), never
+ *     {@code null}
  * @param offset offset of the value in the input: bytes for byte input, chars for a {@link String}
  * @param length length of the value in the same unit
  */
-public record DetailedViolation<T>(Keyword keyword, int offset, int length) implements DetailedRejection<T> {
-    /** Refuses a {@code null} keyword up front: a violation that names no rule is a caller bug. */
+public record DetailedViolation<T>(Keyword keyword, T value, int offset, int length) implements DetailedRejection<T> {
+    /** Refuses a {@code null} keyword or value up front: a violation names its rule and its value. */
     public DetailedViolation {
-        if (keyword == null) {
-            throw new IllegalArgumentException("DetailedViolation must name a keyword");
+        if (keyword == null || value == null) {
+            throw new IllegalArgumentException("DetailedViolation must carry a keyword and a value");
         }
     }
 
@@ -24,6 +27,6 @@ public record DetailedViolation<T>(Keyword keyword, int offset, int length) impl
      * @return the {@link Violation}
      */
     public Violation<T> toViolation() {
-        return new Violation<>(keyword, offset, length);
+        return new Violation<>(keyword, value, offset, length);
     }
 }

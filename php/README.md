@@ -86,7 +86,7 @@ through the full suite there, before it is packed:
 
 On a thread-safe PHP the extension loads at startup only, from the `extension=hypercast` line PIE
 writes to php.ini (or `docker-php-ext-enable hypercast` in a Docker image): a `dl()` there stops the
-script with a warning naming that line. On an NTS PHP `dl()` loads it as before.
+script with a warning naming that line. On an NTS PHP `dl()` loads it too.
 
 glibc 2.34 means Debian 12, Ubuntu 22.04, RHEL 9, Amazon Linux 2023 or newer. An extension is
 tied to one PHP minor, so a zip built for 8.4 is refused by 8.5; PIE picks by the PHP it runs
@@ -135,9 +135,10 @@ parameters:
         - stubs/hypercast.stub.php
 ```
 
-## 1.1: grouping policies, fault detail, date options
+## Grouping policies, fault detail, date options
 
-Three changes in 1.1, each additive in its API and one of them deliberate in its answers.
+Grouping is a declared policy, a fault can name what exactly failed, and the date doors read
+further shapes only when asked.
 
 - **Grouping is Western by default.** `NumFormat::invariant()`, `detect()` and `new NumFormat(...)`
   declare Western grouping: groups of exactly three digits counted from the decimal
@@ -156,9 +157,8 @@ Three changes in 1.1, each additive in its API and one of them deliberate in its
   word, and `GROUPING_POLICY` (768) is the field's mask, not a policy. Bit 8 (256) is retired
   permanently and never reused: the constructor, `withGrouping()` and `unserialize()` refuse 256 and
   768. A `NumFormat` unserialized from 1.0 carries no policy and is Western. Its `flags` must hold
-  styles alone: `unserialize` refuses bit 8 (`351`, and `-1`, which 1.0 read as every style), the
-  Indian bit (`607`, since the policy is the `grouping` property) and anything past them (`1119`),
-  though 1.0 ignored those bits. A policy doesn't turn grouping on: with `GROUPING` off a group
+  styles alone: `unserialize` refuses bit 8 (`351`, and `-1`), the Indian bit (`607`, since the
+  policy is the `grouping` property) and anything past them (`1119`). A policy doesn't turn grouping on: with `GROUPING` off a group
   separator stays forbidden.
 
   The bridges follow the platform's number pattern: `fromNumberFormatter()` the ICU ext-intl links,
@@ -438,7 +438,7 @@ of more than 8 bytes, an over-long currency symbol) are an `InvalidArgumentExcep
 through the constructor.
 
 ext-intl is optional: the extension does not depend on it, and without it the doors take a
-`NumFormat` exactly as before. CI's Alpine suites run without it and cover that.
+`NumFormat`, and only a `\NumberFormatter` argument needs it. CI's Alpine suites run without it and cover that.
 
 The packed format the core reads is 92 bytes — a size word, the flags, the digit zero's
 code point, then each symbol as its bytes and its length; `NumFormat::packed()` is exactly
@@ -448,8 +448,8 @@ constructor validates every symbol.
 
 ## Validation constraints
 
-A value that parsed can still break a business rule. `Constraints` declares the rule with the
-OpenAPI Schema Object's keywords, bound to one `Door` (`Door::F64`, `Door::Decimal`,
+A value that cast can still break a business rule. `Constraints` declares the rule with the
+OpenAPI 3.2 Schema Object's keywords, bound to one `Door` (`Door::F64`, `Door::Decimal`,
 `Door::Text`, …), and a checked door judges the value by it, in the core and in exact decimal
 arithmetic:
 
@@ -465,10 +465,10 @@ $sex = new Constraints(Door::Text, trim: true, enum: ['Female', 'Male', 'Other']
 
 $euro = new NumFormat(',', '.', NumFormat::ALL, '€');
 Cast::checked('45.1234567', NumFormat::invariant(), $latitude);  // Checked(45.123457, adjusted: true)
-Cast::checked('-90.5', NumFormat::invariant(), $latitude);       // Violation(Keyword::Minimum, 0, 5)
+Cast::checked('-90.5', NumFormat::invariant(), $latitude);       // Violation(Keyword::Minimum, -90.5, 0, 5)
 Cast::checkedFromFloat(45.1234567, $latitude);                   // Checked(45.123457, adjusted: true)
 Cast::checked('€1.234,55', $euro, $euroCash);                    // Checked(Decimal 1234.55)
-Cast::checked('€12,37', $euro, $euroCash);                       // Violation(Keyword::MultipleOf, 0, 8)
+Cast::checked('€12,37', $euro, $euroCash);                       // Violation(Keyword::MultipleOf, Decimal 12.37, 0, 8)
 Cast::checked('12,3x', $euro, $euroCash);                        // Fault Malformed at byte 4
 
 function describe(Checked|Fault|Violation $verdict): string
@@ -477,7 +477,7 @@ function describe(Checked|Fault|Violation $verdict): string
         $verdict instanceof Checked => "{$verdict->value}, entry {$verdict->enumIndex}",  // ' MALE ': Male, entry 1
         $verdict instanceof Fault => "{$verdict->reason->name} at byte {$verdict->offset}", // '   ': Empty at byte 0
         $verdict instanceof Violation => match ($verdict->keyword) {
-            Keyword::Enum => "not a sex code: bytes {$verdict->offset}+{$verdict->length}", // 'Femal': bytes 0+5
+            Keyword::Enum => "not a sex code: {$verdict->value}",                          // 'Femal': not a sex code: Femal
             default => "breaks {$verdict->keywordName()}",                                 // keywords are open
         },
     };
@@ -488,9 +488,11 @@ echo describe(Cast::checkedText(' MALE ', $sex));               // Male, entry 1
 
 A checked door answers a `Checked` — `$value`, `$adjusted` (true only when rounding changed it)
 and, at `Door::Text` with an `enum`, `$enumIndex`, the index of the entry it matched (`null`
-otherwise, an integer `enum` included, where the value is the answer) — or one of two
-rejections: the plain doors' own `Fault` (it did not parse: the very class) or a `Violation` (it
-parsed and broke a rule: `$keyword` and the byte span, `$offset` and `$length`, as a fault's).
+otherwise, a numeric `enum` included, where the value is the answer) — or one of two
+rejections: the plain doors' own `Fault` (it did not cast: the very class) or a `Violation` (it
+cast and broke a rule: `$keyword`, `$value`, the value exactly as the door cast it, in the type a
+`Checked` carries and never rounded, at `Door::Text` the judged text after `trim` rather than an
+entry, and the byte span, `$offset` and `$length`, as a fault's).
 All three are `final readonly`, and every checked door declares `Checked|Fault|Violation`.
 `Cast::optional()` takes a checked verdict as it takes a plain one: an `Empty` fault is `null`,
 and a `Checked` or any other rejection, a `Violation` included, comes back as it was. A PHP
@@ -504,17 +506,21 @@ binding does not name yet as the bare `int` (`Violation::$keyword` is `Keyword|i
 spelling (`exclusiveMinimum`, the case's name with its first letter lowered), or `keyword 9`.
 The plain doors and their `Success|Fault` are unchanged.
 
-The integer doors take `minimum`, `exclusiveMinimum`, `maximum`, `exclusiveMaximum`,
-`multipleOf` with a `rounding` (`Rounding::Strict`, the default, then `Midpoint`, half to even,
-`Floor` and `Ceiling`) and `enum`; `Door::F32`, `Door::F64` and `Door::Decimal` the same without
-`enum`; `Door::Text` takes `minLength`, `maxLength` (in code points), `trim` (Unicode
-`White_Space`, U+00A0 included) and `enum`, matched under Unicode simple case folding and
-delivering the caller's own declared string and its index. The constructor takes every keyword at
-every door, by name, and the core alone refuses one its door does not take. The first failure
-wins: the door parses, the text is trimmed, `multipleOf` rounds or refuses, then the bounds, the
-lengths and `enum` judge the result. A float door also judges the float it delivers against each
+The numeric doors take `minimum`, `exclusiveMinimum`, `maximum`, `exclusiveMaximum` (four
+keywords, each its own: `minimum` and `exclusiveMinimum` may both be declared, and a value is
+held to each), `multipleOf` with a `rounding` (`Rounding::Strict`, the default, then `Midpoint`,
+half to even, `Floor` and `Ceiling`) and `enum`, its entries compared exactly to the value;
+`Door::Text` takes `minLength`, `maxLength` (in code points), `trim` (Unicode `White_Space`,
+U+00A0 included), `enum` (an `int` or `Decimal` among its entries is valid and never matches),
+matched under Unicode simple case folding and delivering the caller's
+own declared string and its index, and `caseSensitive`, which matches `enum` byte for byte
+instead, for a vocabulary whose case carries meaning (`mm` and `Mm`). The constructor takes every
+keyword at every door, by name, and as in OpenAPI a keyword for another type (`minLength` on a
+number, `minimum` on text) is ignored. The first failure wins: the door casts, the text is
+trimmed, `multipleOf` rounds or is broken (a rounding past what the type holds breaks it too),
+then the bounds, the lengths and `enum` judge the result. A float door also judges the float it delivers against each
 bound read as the door reads it: `'1e-400'` at `Door::F64` reads as `0`, so it breaks
-`exclusiveMinimum: '0'`. Bounds, `multipleOf` and integer entries are an `int`, a `string` in
+`exclusiveMinimum: '0'`. Bounds, `multipleOf` and numeric entries are an `int`, a `string` in
 invariant notation (`'1e-6'` is `0.000001`) or a `Decimal`, each converted exactly by the core
 and kept as the `Decimal` it read; never a `float`, so `0.1` cannot be declared inexactly. The
 constructor checks its arguments exactly, in weak mode too: a `float` bound is a `TypeError`
@@ -526,13 +532,18 @@ $constraints)` judges a number a source already decoded on the shortest decimal 
 with an empty span. `Cast::checkedText($text, $constraints)` is the text door's, and
 `Cast::text($text)` the plain one.
 
-A declaration is judged once, by the core, when it is built, and one that cannot mean anything
-at its door is the caller's bug: the constructor throws an `\InvalidArgumentException` whose code
-is the core's refusal code and whose message is the rule (`new Constraints(Door::U8, minimum:
-'-1')` throws code 8, "Constraints refused (code 8): a bound, step or enum entry the door cannot
-hold."). An `enum` left `null` is none, while `enum: []` declares one no value could match and
-is refused (code 12), as is a text entry no input can match (code 13: an empty one, or under
-`trim` one with leading or trailing white space). The door is the constructor's one required
+A declaration is judged once, by the core, when it is built. Every declaration OpenAPI allows is
+taken, even one no value meets (crossed bounds, `minLength` above `maxLength`, an entry no input
+can match), whose values are then violations; duplicate entries are allowed, the first match
+winning. One that cannot mean anything at its door is the caller's bug: the constructor throws an
+`\InvalidArgumentException` whose code is the core's refusal code and whose message is the rule
+(`new Constraints(Door::I32, trim: true)` throws code 1, "Constraints refused (code 1): a
+constraint the door does not take."). The codes are 1 (`trim` or `caseSensitive` off the text
+door, a rounding at it), 5 (`multipleOf` not positive), 6 (a rounding without `multipleOf`), 8
+(a bound, step or entry no door can hold, or a rounding to a fractional step at an integer door),
+9 (a text entry that is not UTF-8) and 11 (a malformed layout, which this binding never writes).
+An `enum` left `null` is none, while `enum: []` declares one no value matches. The door is the
+constructor's one required
 argument, so no `Constraints` means "no rules" by accident; `new Constraints(Door::F64)`
 declares none on purpose, and one whose properties were never written (`ReflectionClass::newInstanceWithoutConstructor()`) is the
 engine's `Error` at the first door that reads it. Handing a declaration to the other kind of
@@ -565,14 +576,14 @@ drift. Its two writers take an `FFI\CData`, so they need ext-ffi; nothing else d
   `$override` environment variable names, else the staged build, else the in-repo cargo
   build.
 
-A `Constraints` crosses the same way: `packed()` is the 72-byte `RawConstraints` layout
+A `Constraints` crosses the same way: `packed()` is the 104-byte `RawConstraints` layout
 (`Constraints::PACKED_BYTES`) and `packedEnum()` the `enum` list beside it, in the native byte
 order the core reads in place — the size, flags, rounding code, lengths and a reserved zero as
-`u32`s, then the lower bound, upper bound and `multipleOf` as 16-byte decimals; integer entries
-as such decimals, text entries a little-endian `u32` byte length followed by the bytes — what
+`u32`s, then `minimum`, `maximum`, `multipleOf`, `exclusiveMinimum` and `exclusiveMaximum` as
+16-byte decimals, each read only under its flag; numeric entries as such decimals, text entries a little-endian `u32` byte length followed by the bytes — what
 the core's checked C exports read, the list only when the flags carry `HAS_ENUM` (256), which
 any declared `enum` sets. The extension itself calls the core's Rust API, not the C
-ABI's 36 exports (1.1's four detailed ones included).
+ABI's 36 exports (the four detailed ones included).
 
 ## Why not `filter_var` / `DateTimeImmutable::createFromFormat`?
 

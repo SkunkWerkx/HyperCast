@@ -314,6 +314,10 @@ try {
       check(v.expect === 'violation', `${ctx}: violated ${failed.keyword}`)
       check(v.detail === undefined, `${ctx}: a violation names a detail`)
       check(failed.keyword === v.keyword, `${ctx}: keyword ${failed.keyword}`)
+      // The value as the door cast it, held as a success's is.
+      const expected = expectedOf(v)
+      const equal = v.door === 'f32' || v.door === 'f64' ? sameBits : (a, e) => a === e
+      check('value' in v && equal(failed.value, expected), `${ctx}: value ${String(failed.value)}`)
     } else {
       check(failed.reason === reasons[v.expect], `${ctx}: reason ${failed.reason}`)
       if (detailed) holdsDetail(ctx, v, failed)
@@ -773,7 +777,7 @@ try {
 
   // castText picks plain or constrained by its argument count, here as in the package: a
   // failed declaration's missing `.value` is a contract violation, never "no rules".
-  const missing = Constraints.declare({ door: Door.Text, minLength: 5, maxLength: 2 }).value
+  const missing = Constraints.declare({ door: Door.I32, trim: true }).value
   for (const [args, want] of [
     [['x', missing], 'malformed'],
     [['x', null], 'malformed'],

@@ -178,15 +178,15 @@ pub unsafe extern "C" fn hypercast_harness_pack_none(
     packed(Constraints::<f64>::from_raw(raw, &[]), out)
 }
 
-/// `pack_enum` over a list of `i128`s declared through `Constraints::numeric` at the `i64`
-/// door, as a Rust caller declares one.
+/// `pack_enum` over a list of [`Decimal`]s declared through `Constraints::numeric` at the
+/// `i64` door, as a Rust caller declares one.
 ///
 /// # Safety
-/// `entries` points to `count` live `i128`s when `count > 0`; `out` as above.
+/// `entries` points to `count` live `Decimal`s when `count > 0`; `out` as above.
 #[unsafe(no_mangle)]
 #[no_panic::no_panic]
-pub unsafe extern "C" fn hypercast_harness_pack_integers(
-    entries: *const i128,
+pub unsafe extern "C" fn hypercast_harness_pack_decimals(
+    entries: *const Decimal,
     count: usize,
     out_ptr: *mut u8,
     out_len: usize,
@@ -428,7 +428,7 @@ pub unsafe extern "C" fn hypercast_harness_str_doors(
 }
 
 /// The rejection's code: the failure's detail, `u32::MAX - 1` for a violation, `0` for a value.
-fn rejected<T>(verdict: Result<T, detailed::Rejection>) -> u32 {
+fn rejected<T, V>(verdict: Result<T, detailed::Rejection<V>>) -> u32 {
     match verdict {
         Ok(_) => 0,
         Err(detailed::Rejection::Failure(failure)) => failure.detail.code(),

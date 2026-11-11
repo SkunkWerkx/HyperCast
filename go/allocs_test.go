@@ -171,8 +171,13 @@ func TestEveryCheckedDoorIsAllocationFreeOnSuccess(t *testing.T) {
 		}
 		assertAllocs(t, door.name, 0, func() { door.call() })
 	}
-	// A rejection allocates exactly its *Violation, as a fault does its *Fault.
+	// A rejection allocates exactly its *Violation, as a fault does its *Fault: the value it
+	// carries is the cast value, or at the text door a slice of a string input (a []byte
+	// input's text is a copy, one allocation more).
 	assertAllocs(t, "Check (violation)", 1, func() { Check("91", Invariant, latitude) })
+	assertAllocs(t, "CheckString (violation)", 1, func() { CheckString(" Femal ", sex) })
+	femal := []byte(" Femal ")
+	assertAllocs(t, "CheckString ([]byte violation)", 2, func() { CheckString(femal, sex) })
 }
 
 // nilIfNone keeps a nil *Fault from becoming a non-nil Rejection.

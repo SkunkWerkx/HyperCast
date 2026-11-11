@@ -190,7 +190,7 @@ public sealed class CastTests
 		Cast.Optional(Cast.Int32("abc", NumFormat.Invariant, percent))!.Value.ToString()
 			.ShouldBe("Fault(Malformed @ 0+1)");
 		Cast.Optional(Cast.Int32("101", NumFormat.Invariant, percent))!.Value.ToString()
-			.ShouldBe("Violation(maximum @ 0+3)");
+			.ShouldBe("Violation(maximum, 101 @ 0+3)");
 		Cast.Optional(Cast.Text(" \t", new Constraints<string>(trim: true))).ShouldBeNull();
 		Cast.Optional(Cast.Text("x")).ShouldBe(Cast.Text("x"));
 	}

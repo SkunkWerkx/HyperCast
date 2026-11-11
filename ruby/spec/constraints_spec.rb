@@ -51,6 +51,8 @@ RSpec.describe HyperCast::Constraints do
     end
     expect(described_class.new(door: :text, min_length: 0, max_length: 2**32 - 1).max_length).to eq(2**32 - 1)
     expect { described_class.new(door: :text, trim: nil) }.to raise_error(ArgumentError, /trim must be true or false/)
+    expect { described_class.new(door: :text, case_sensitive: 1) }
+      .to raise_error(ArgumentError, /case_sensitive must be true or false/)
   end
 
   it "declares the rounding by Symbol" do
@@ -61,22 +63,40 @@ RSpec.describe HyperCast::Constraints do
     end
   end
 
-  it "takes an enum as a list, nil declaring none and an empty one refused" do
+  it "takes an enum as a list, nil declaring none and an empty one matching nothing" do
     expect(described_class.new(door: :text, enum: nil).enum).to be_nil
     expect(described_class.new(door: :text, enum: nil).packed_enum).to eq("".b)
     expect(described_class.new(door: :text).packed.unpack1("@4L")).to eq(0)
     expect(described_class.new(door: :text, enum: %w[a]).packed.unpack1("@4L")).to eq(256)
-    empty = "Constraints refused (code 12): an enum with no entries."
-    expect { described_class.new(door: :text, enum: []) }.to raise_error(ArgumentError, empty)
-    expect { described_class.new(door: :i32, enum: []) }.to raise_error(ArgumentError, empty)
-    expect(HyperCast.constraints_check(door: :text, trim: true, enum: [])).to eq(12)
-    # An enum at a door that takes none is refused for that first.
-    expect(HyperCast.constraints_check(door: :f64, enum: [])).to eq(1)
+    expect(described_class.new(door: :text, enum: []).packed.unpack1("@4L")).to eq(256)
+    expect(HyperCast.text("a", described_class.new(door: :text, enum: [])))
+      .to eq(HyperCast::Violation.new(keyword: HyperCast::Keyword::ENUM, value: "a", offset: 0, length: 1))
+    expect(HyperCast.checked("7", invariant, described_class.new(door: :i32, enum: [])))
+      .to eq(HyperCast::Violation.new(keyword: HyperCast::Keyword::ENUM, value: 7, offset: 0, length: 1))
+    # A float door takes an enum too, its entries compared exactly to the value.
+    expect(HyperCast.checked("0.5", invariant, described_class.new(door: :f64, enum: ["0.5", "1.5"])))
+      .to eq(HyperCast::Checked.new(value: 0.5, adjusted: false, enum_index: nil))
     expect { described_class.new(door: :text, enum: "Male") }.to raise_error(ArgumentError, /enum must be an Array/)
     expect { described_class.new(door: :text, enum: ["Male", :female]) }
-      .to raise_error(ArgumentError, /enum entries at :text must be Strings; entry 1 is :female/)
+      .to raise_error(ArgumentError, /enum entries at :text must be Strings, or numbers .*; entry 1 is :female/)
+    expect { described_class.new(door: :text, enum: [1.0]) }.to raise_error(ArgumentError, /entry 0 is 1.0/)
     expect(described_class.new(door: :i32, enum: [7, "8", BigDecimal("9")]).enum.map(&:to_s)).to eq(%w[7 8 9])
     expect(described_class.new(door: :text, enum: %w[a b]).enum).to be_frozen
+  end
+
+  it "takes a number in a text enum as a valid entry that never matches" do
+    sex = described_class.new(door: :text, enum: [1, "One", BigDecimal("2.5"), "Two"])
+    expect(sex.enum).to eq([1, "One", BigDecimal("2.5"), "Two"])
+    expect(sex.packed_enum.unpack1("L<")).to eq(0)
+    expect(HyperCast.text("1", sex))
+      .to eq(HyperCast::Violation.new(keyword: HyperCast::Keyword::ENUM, value: "1", offset: 0, length: 1))
+    expect(HyperCast.text("2.5", sex))
+      .to eq(HyperCast::Violation.new(keyword: HyperCast::Keyword::ENUM, value: "2.5", offset: 0, length: 3))
+    expect(HyperCast.text("one", sex)).to eq(HyperCast::Checked.new(value: "One", adjusted: false, enum_index: 1))
+    expect(HyperCast.text("TWO", sex)).to eq(HyperCast::Checked.new(value: "Two", adjusted: false, enum_index: 3))
+    # Control: the same entries as Strings match.
+    expect(HyperCast.text("1", described_class.new(door: :text, enum: %w[1 One])))
+      .to eq(HyperCast::Checked.new(value: "1", adjusted: false, enum_index: 0))
   end
 
   it "hands the core a text entry's bytes, so one that is not UTF-8 is the core's refusal" do
@@ -95,8 +115,9 @@ RSpec.describe HyperCast::Constraints do
     verdict = HyperCast.text("  female ", sex)
     expect(verdict).to eq(HyperCast::Checked.new(value: "Female", adjusted: false, enum_index: 1))
     expect(verdict.value).to equal(female)
-    expect(HyperCast.text("Femal", sex))
-      .to eq(HyperCast::Violation.new(keyword: HyperCast::Keyword::ENUM, offset: 0, length: 5))
+    # A violation carries the text judged (trimmed), never an entry.
+    expect(HyperCast.text(" Femal", sex))
+      .to eq(HyperCast::Violation.new(keyword: HyperCast::Keyword::ENUM, value: "Femal", offset: 1, length: 5))
     expect(HyperCast.text(" \t ", sex)).to eq(HyperCast::Fault.new(reason: :empty, offset: 0, length: 0))
     expect(HyperCast.optional(HyperCast.text(" \t ", sex))).to be_nil
   end
@@ -111,7 +132,7 @@ RSpec.describe HyperCast::Constraints do
     expect(verdict.value).to be_frozen
     expect(verdict.value).not_to equal(female)
     expect(HyperCast.text("Fem", sex))
-      .to eq(HyperCast::Violation.new(keyword: HyperCast::Keyword::ENUM, offset: 0, length: 3))
+      .to eq(HyperCast::Violation.new(keyword: HyperCast::Keyword::ENUM, value: "Fem", offset: 0, length: 3))
   end
 
   it "judges a declaration Marshal restores as Constraints.new does" do
@@ -119,9 +140,9 @@ RSpec.describe HyperCast::Constraints do
     restored = Marshal.load(Marshal.dump(latitude))
     expect(restored).to eq(latitude).and(be_frozen)
     expect(HyperCast.checked("91", invariant, restored).keyword).to eq(HyperCast::Keyword::MAXIMUM)
-    five = HyperCast::Decimal.new(magnitude: 5, scale: 0, negative: false)
-    forged = latitude.to_h.merge(door: :i32, minimum: five, maximum: five)
-    refusal = "Constraints refused (code 4): the lower bound is not below the upper bound."
+    step = HyperCast::Decimal.new(magnitude: 5, scale: 0, negative: true)
+    forged = latitude.to_h.merge(door: :i32, multiple_of: step)
+    refusal = "Constraints refused (code 5): multipleOf is not positive."
     # Payloads forged by dumping a stand-in class and renaming it (same length, so every
     # Marshal offset holds). Marshal's form for a Constraints is its members, loaded through
     # #initialize.
@@ -135,7 +156,7 @@ RSpec.describe HyperCast::Constraints do
     stub_const("HyperCast::Constraintz", struct)
     payload = rename.call(Marshal.dump(struct.new(**forged)))
     smuggled = Marshal.load(payload)
-    expect(smuggled.minimum).to eq(five)
+    expect(smuggled.multiple_of).to eq(step)
     expect { HyperCast.checked("5", invariant, smuggled) }.to raise_error(ArgumentError, refusal)
     expect { HyperCast.checked_from_float(5, smuggled) }.to raise_error(ArgumentError, refusal)
   end
@@ -155,11 +176,11 @@ RSpec.describe HyperCast::Constraints do
     expect(HyperCast.text("ab\xFFc".dup.force_encoding(Encoding::UTF_8)))
       .to eq(HyperCast::Fault.new(reason: :malformed, offset: 2, length: 1))
     expect(HyperCast.text("éé", described_class.new(door: :text, max_length: 1)))
-      .to eq(HyperCast::Violation.new(keyword: HyperCast::Keyword::MAX_LENGTH, offset: 0, length: 2))
+      .to eq(HyperCast::Violation.new(keyword: HyperCast::Keyword::MAX_LENGTH, value: "éé", offset: 0, length: 2))
     expect(HyperCast.checked("€5", HyperCast::NumFormat.new(decimal_sep: ".", group_sep: ",",
                                                             flags: HyperCast::ALL_STYLES, currency: "€"),
                              described_class.new(door: :i32, maximum: 4)))
-      .to eq(HyperCast::Violation.new(keyword: HyperCast::Keyword::MAXIMUM, offset: 0, length: 2))
+      .to eq(HyperCast::Violation.new(keyword: HyperCast::Keyword::MAXIMUM, value: 5, offset: 0, length: 2))
   end
 
   it "is judged only at the door it is bound to" do
@@ -195,7 +216,8 @@ RSpec.describe HyperCast::Constraints do
   it "judges a number already held on its shortest decimal, zero having one form" do
     step = described_class.new(door: :f64, multiple_of: "0.1")
     expect(HyperCast.checked_from_float(0.1 + 0.2, step))
-      .to eq(HyperCast::Violation.new(keyword: HyperCast::Keyword::MULTIPLE_OF, offset: 0, length: 0))
+      .to eq(HyperCast::Violation.new(keyword: HyperCast::Keyword::MULTIPLE_OF, value: 0.30000000000000004, offset: 0,
+                                      length: 0))
     rounded = HyperCast.checked_from_float(0.1 + 0.2, step.with(rounding: :midpoint))
     expect(rounded).to eq(HyperCast::Checked.new(value: 0.3, adjusted: true, enum_index: nil))
     zero = HyperCast.checked_from_float(-0.0, step)
@@ -211,32 +233,73 @@ RSpec.describe HyperCast::Constraints do
     expect(latitude).to be_frozen
     expect(latitude).to eq(described_class.new(door: :f64, minimum: -90, maximum: BigDecimal("90")))
     expect(latitude.with(maximum: "45").maximum.to_s).to eq("45")
-    expect { latitude.with(exclusive_maximum: "45") }
-      .to raise_error(ArgumentError, "Constraints refused (code 3): maximum together with exclusiveMaximum.")
-    expect(latitude.packed.bytesize).to eq(72)
-    expect(latitude.packed.unpack("L6")).to eq([72, 1 | 4, 0, 0, 0, 0])
+    expect(latitude.packed.bytesize).to eq(104)
+    expect(latitude.packed.unpack("L6")).to eq([104, 1 | 4, 0, 0, 0, 0])
   end
 
-  it "refuses a text entry no input can match" do
-    unmatchable = "Constraints refused (code 13): a text enum entry no input can match."
-    expect { described_class.new(door: :text, enum: ["Male", ""]) }.to raise_error(ArgumentError, unmatchable)
-    expect { described_class.new(door: :text, trim: true, enum: [" Male "]) }
-      .to raise_error(ArgumentError, unmatchable)
+  it "packs each bound in a slot of its own, so all four declare together" do
+    four = described_class.new(door: :i32, minimum: 1, exclusive_minimum: 2, maximum: 9, exclusive_maximum: 8)
+    packed = four.packed
+    expect(packed.unpack1("@4L")).to eq(1 | 2 | 4 | 8)
+    # minimum at 24, maximum at 40, exclusiveMinimum at 72, exclusiveMaximum at 88.
+    expect([24, 40, 56, 72, 88].map { |at| packed.unpack1("@#{at}Q") }).to eq([1, 9, 0, 2, 8])
+    expect(HyperCast.checked("2", invariant, four).keyword).to eq(HyperCast::Keyword::EXCLUSIVE_MINIMUM)
+    expect(HyperCast.checked("8", invariant, four).keyword).to eq(HyperCast::Keyword::EXCLUSIVE_MAXIMUM)
+    expect(HyperCast.checked("5", invariant, four).value).to eq(5)
+    # Crossed bounds are a declaration OpenAPI allows: every value then violates one.
+    crossed = described_class.new(door: :i32, minimum: 5, maximum: 1)
+    expect(HyperCast.checked("3", invariant, crossed))
+      .to eq(HyperCast::Violation.new(keyword: HyperCast::Keyword::MINIMUM, value: 3, offset: 0, length: 1))
+  end
+
+  it "accepts a text entry no input can match, which simply never matches" do
+    blank = described_class.new(door: :text, trim: true, enum: ["Male", "", " Male "])
+    expect(HyperCast.text("Male", blank))
+      .to eq(HyperCast::Checked.new(value: "Male", adjusted: false, enum_index: 0))
     # Untrimmed, edge white space is part of the entry, and matches as declared.
     spaced = described_class.new(door: :text, enum: [" Male "])
     expect(HyperCast.text(" MALE ", spaced))
       .to eq(HyperCast::Checked.new(value: " Male ", adjusted: false, enum_index: 0))
   end
 
+  it "folds case in a text enum unless case_sensitive" do
+    folded = described_class.new(door: :text, enum: %w[mm Mm])
+    expect(HyperCast.text("MM", folded)).to eq(HyperCast::Checked.new(value: "mm", adjusted: false, enum_index: 0))
+    exact = described_class.new(door: :text, case_sensitive: true, enum: %w[mm Mm])
+    expect(exact.packed.unpack1("@4L")).to eq(256 | 512)
+    expect(HyperCast.text("Mm", exact)).to eq(HyperCast::Checked.new(value: "Mm", adjusted: false, enum_index: 1))
+    expect(HyperCast.text("MM", exact))
+      .to eq(HyperCast::Violation.new(keyword: HyperCast::Keyword::ENUM, value: "MM", offset: 0, length: 2))
+    # A text extension, refused at a numeric door.
+    expect(HyperCast.constraints_check(door: :i32, case_sensitive: true)).to eq(1)
+  end
+
+  it "carries the value as cast on a violation, never the rounding" do
+    step = described_class.new(door: :i8, multiple_of: 5, rounding: :ceiling)
+    # 130 is past what an i8 holds: the rounding breaks multipleOf, on 127 as cast.
+    expect(HyperCast.checked("127", invariant, step))
+      .to eq(HyperCast::Violation.new(keyword: HyperCast::Keyword::MULTIPLE_OF, value: 127, offset: 0, length: 3))
+    expect(HyperCast.checked_from_float(127, step).value).to eq(127)
+    bounded = described_class.new(door: :decimal, multiple_of: "0.5", rounding: :floor, maximum: 2)
+    expect(HyperCast.checked("2.7", invariant, bounded))
+      .to eq(HyperCast::Violation.new(keyword: HyperCast::Keyword::MAXIMUM,
+                                      value: HyperCast::Decimal.new(magnitude: 27, scale: 1, negative: false),
+                                      offset: 0, length: 3))
+  end
+
   it "words a refusal code it does not name as every binding does, still an ArgumentError" do
     expect(described_class.send(:refusal, 14))
       .to eq("Constraints refused (code 14): a rule this binding does not name.")
-    expect(described_class.send(:refusal, 13))
-      .to eq("Constraints refused (code 13): a text enum entry no input can match.")
+    # A retired code is one this binding no longer names.
+    expect(described_class.send(:refusal, 4))
+      .to eq("Constraints refused (code 4): a rule this binding does not name.")
+    expect(described_class.send(:refusal, 11))
+      .to eq("Constraints refused (code 11): a malformed constraints layout.")
   end
 
   it "answers a refusal's code from constraints_check, never raising for one" do
-    expect(HyperCast.constraints_check(door: :i32, minimum: 5, maximum: 5)).to eq(4)
+    expect(HyperCast.constraints_check(door: :i32, multiple_of: 0)).to eq(5)
+    expect(HyperCast.constraints_check(door: :i32, minimum: 5, maximum: 5)).to eq(0)
     expect(HyperCast.constraints_check(door: :i32, minimum: 5)).to eq(0)
     expect(HyperCast.constraints_check(door: :i32, minimum: "x")).to eq(8)
     expect { HyperCast.constraints_check(door: :i32, minimum: 0.5) }.to raise_error(ArgumentError)
@@ -279,7 +342,8 @@ RSpec.describe HyperCast::Keyword do
     expect(describe.call(HyperCast.checked("-91", HyperCast::NumFormat::INVARIANT, latitude)))
       .to eq("breaks minimum")
     expect(describe.call(HyperCast.checked("x", HyperCast::NumFormat::INVARIANT, latitude))).to eq("malformed")
-    expect(describe.call(HyperCast::Violation.new(keyword: described_class.new(code: 9), offset: 0, length: 0)))
+    expect(describe.call(HyperCast::Violation.new(keyword: described_class.new(code: 9), value: 1, offset: 0,
+                                                  length: 0)))
       .to eq("breaks keyword 9")
   end
 end

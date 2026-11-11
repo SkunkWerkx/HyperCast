@@ -10,6 +10,6 @@ namespace HyperCast;
 /// <param name="Adjusted"><see langword="true"/> only when rounding changed the value. Trimming and case never set it.</param>
 /// <param name="EnumIndex">
 /// At the text door with an <c>enum</c>, the zero-based index of the entry matched;
-/// <see langword="null"/> otherwise, an integer <c>enum</c> included (the value is the answer).
+/// <see langword="null"/> otherwise, a numeric <c>enum</c> included (the value is the answer).
 /// </param>
 public readonly record struct Checked<T>(T Value, bool Adjusted, int? EnumIndex) where T : notnull;

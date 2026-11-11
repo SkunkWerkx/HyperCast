@@ -189,9 +189,10 @@ int main(void) {
   CHECK(cast_excel_time(0.75, &nanos, &fault) == 0 && nanos == 64800000000000ULL);
   CHECK(cast_excel_duration(1.5, &span, &fault) == 0 && span.seconds == 129600 && span.nanos == 0);
 
-  // The validation constraints. A declaration is a 72-byte layout, every field zero but the
-  // size declaring nothing; a checked door adds code 4, a violation, and reports through the
-  // nullable `check`.
+  // The validation constraints. A declaration is a 104-byte layout, every field zero but the
+  // size declaring nothing, each keyword in a field of its own; a checked door adds code 4, a
+  // violation, which writes `out` with the value as cast, and reports through the nullable
+  // `check`.
   HyperCastRawConstraints latitude;
   memset(&latitude, 0, sizeof latitude);
   latitude.size = HyperCastRawConstraints_SIZE;
@@ -210,19 +211,48 @@ int main(void) {
         0);
   CHECK(f64 == 45.123457 && report.adjusted == 1 && report.enum_index == UINT32_MAX);
   CHECK(cast_checked(11, 0, NULL, &latitude, NULL, 0, UTF8("91"), &f64, &fault, &report) == 4);
-  CHECK(report.keyword == 3 && fault.offset == 0 && fault.len == 2);
+  CHECK(f64 == 91 && report.keyword == 3 && report.adjusted == 0 && fault.offset == 0 &&
+        fault.len == 2);
   CHECK(cast_checked_from_f64(11, -90.5, &latitude, NULL, 0, &f64, &fault, &report) == 4);
-  CHECK(report.keyword == 1 && fault.offset == 0 && fault.len == 0);
+  CHECK(f64 == -90.5 && report.keyword == 1 && fault.offset == 0 && fault.len == 0);
+  // The value a violation carries is never rounded: 90.0000004 rounds to 90 within the
+  // maximum, so it passes adjusted; 90.0000006 rounds to 90.000001, past it, and carries
+  // 90.0000006.
+  CHECK(cast_checked(11, 0, NULL, &latitude, NULL, 0, UTF8("90.0000004"), &f64, &fault, &report) ==
+        0);
+  CHECK(f64 == 90 && report.adjusted == 1);
+  CHECK(cast_checked(11, 0, NULL, &latitude, NULL, 0, UTF8("90.0000006"), &f64, &fault, &report) ==
+        4);
+  CHECK(f64 == 90.0000006 && report.keyword == 3);
+  // minimum and exclusiveMinimum together, each judged on its own; a keyword for another type
+  // (minLength at a number) is ignored, and trim or caseSensitive at a numeric door refused (1).
+  HyperCastRawConstraints both;
+  memset(&both, 0, sizeof both);
+  both.size = HyperCastRawConstraints_SIZE;
+  both.flags = HyperCastRawConstraints_HAS_MINIMUM | HyperCastRawConstraints_HAS_EXCLUSIVE_MINIMUM |
+               HyperCastRawConstraints_HAS_MIN_LENGTH;
+  both.lower.lo = 0;
+  both.exclusive_lower.lo = 10;
+  both.min_length = 99;
+  CHECK(cast_constraints_check(4, 0, &both, NULL, 0) == 0);
+  CHECK(cast_checked(4, 0, NULL, &both, NULL, 0, UTF8("11"), &i32, &fault, &report) == 0 &&
+        i32 == 11);
+  CHECK(cast_checked(4, 0, NULL, &both, NULL, 0, UTF8("10"), &i32, &fault, &report) == 4 &&
+        i32 == 10 && report.keyword == 2);
+  both.flags |= HyperCastRawConstraints_CASE_SENSITIVE;
+  CHECK(cast_constraints_check(4, 0, &both, NULL, 0) == 1);
+  both.flags = HyperCastRawConstraints_TRIM;
+  CHECK(cast_constraints_check(4, 0, &both, NULL, 0) == 1);
   // A float door judges the float it delivers too: 0.99999999999 is 1.0 at f32, past
   // exclusiveMaximum 1.
   HyperCastRawConstraints below_one;
   memset(&below_one, 0, sizeof below_one);
   below_one.size = HyperCastRawConstraints_SIZE;
   below_one.flags = HyperCastRawConstraints_HAS_EXCLUSIVE_MAXIMUM;
-  below_one.upper.lo = 1;
+  below_one.exclusive_upper.lo = 1;
   CHECK(cast_checked(10, 0, NULL, &below_one, NULL, 0, UTF8("0.99999999999"), &f32, &fault,
                      &report) == 4);
-  CHECK(report.keyword == 4 && fault.offset == 0 && fault.len == 13);
+  CHECK(f32 == 1.0f && report.keyword == 4 && fault.offset == 0 && fault.len == 13);
 
   // A text `enum`, read under HAS_ENUM: each entry a little-endian uint32_t length, then its
   // UTF-8. The span is the matched input, and `enum_index` names the entry.
@@ -236,15 +266,31 @@ int main(void) {
   CHECK(cast_checked(18, 0, NULL, &trimmed, sexes, sizeof sexes, UTF8(" MALE "), &matched, &fault,
                      &report) == 0);
   CHECK(matched.offset == 1 && matched.len == 4 && report.enum_index == 1);
-  // A duplicate under case folding is refused, by code; a size the core does not know is a
-  // malformed layout here and a contract violation at a checked door.
+  // Under CASE_SENSITIVE the entries match byte for byte: a violation of `enum`, whose span
+  // `out` carries too, the judged (trimmed) text.
+  trimmed.flags |= HyperCastRawConstraints_CASE_SENSITIVE;
+  matched.offset = 0;
+  matched.len = 0;
+  CHECK(cast_checked(18, 0, NULL, &trimmed, sexes, sizeof sexes, UTF8(" MALE "), &matched, &fault,
+                     &report) == 4);
+  CHECK(matched.offset == 1 && matched.len == 4 && report.keyword == 8 && fault.offset == 1 &&
+        fault.len == 4);
+  trimmed.flags = HyperCastRawConstraints_TRIM | HyperCastRawConstraints_HAS_ENUM;
+  // Every valid declaration is accepted: duplicate entries (the first match wins), an entry no
+  // input can match, and an `enum` with no entries, which every value violates.
   static const uint8_t twice[] = {4, 0, 0, 0, 'M', 'a', 'l', 'e', 4, 0, 0, 0, 'M', 'A', 'L', 'E'};
-  CHECK(cast_constraints_check(18, 0, &trimmed, twice, sizeof twice) == 10);
-  // An `enum` with no entries, and under trim an entry with White_Space at an edge, which no
-  // input can match; a list passed without HAS_ENUM is a malformed layout.
-  CHECK(cast_constraints_check(18, 0, &trimmed, NULL, 0) == 12);
+  CHECK(cast_constraints_check(18, 0, &trimmed, twice, sizeof twice) == 0);
+  CHECK(cast_checked(18, 0, NULL, &trimmed, twice, sizeof twice, UTF8("male"), &matched, &fault,
+                     &report) == 0 &&
+        report.enum_index == 0);
   static const uint8_t padded[] = {5, 0, 0, 0, ' ', 'M', 'a', 'l', 'e'};
-  CHECK(cast_constraints_check(18, 0, &trimmed, padded, sizeof padded) == 13);
+  CHECK(cast_constraints_check(18, 0, &trimmed, padded, sizeof padded) == 0);
+  CHECK(cast_constraints_check(18, 0, &trimmed, NULL, 0) == 0);
+  CHECK(cast_checked(18, 0, NULL, &trimmed, NULL, 0, UTF8("Male"), &matched, &fault, &report) ==
+            4 &&
+        report.keyword == 8 && matched.offset == 0 && matched.len == 4);
+  // A list passed without HAS_ENUM is a malformed layout; so is a size the core does not know,
+  // here, and a contract violation at a checked door.
   trimmed.flags = HyperCastRawConstraints_TRIM;
   CHECK(cast_constraints_check(18, 0, &trimmed, sexes, sizeof sexes) == 11);
   trimmed.size = 0;
@@ -452,7 +498,7 @@ int main(void) {
         detail.detail == 11);
   CHECK(cast_checked_detailed(4, 0, &western, &cap, NULL, 0, UTF8("1,234"), &i32, &detail,
                               &report) == 4 &&
-        report.keyword == 3);
+        report.keyword == 3 && i32 == 1234);
   /* The 1.0 export reads Western whatever the flags say, and refuses this before the maximum. */
   CHECK(cast_checked(4, 0, &indian, &cap, NULL, 0, UTF8("1,23,456"), &i32, &fault, &report) == 2);
   CHECK(cast_checked_detailed(4, 0, &indian, &cap, NULL, 0, UTF8("1,23,456"), &i32, &detail,
@@ -460,7 +506,7 @@ int main(void) {
         report.keyword == 3);
   CHECK(cast_checked_detailed_from_f64(11, 0, &latitude, NULL, 0, -90.5, &f64, &detail, &report) ==
             4 &&
-        report.keyword == 1 && detail.len == 0 && detail.detail == 0);
+        f64 == -90.5 && report.keyword == 1 && detail.len == 0 && detail.detail == 0);
   CHECK(cast_checked_detailed_from_f64(11, 0, &latitude, NULL, 0, NAN, &f64, &detail, &report) ==
             2 &&
         detail.detail == 22);

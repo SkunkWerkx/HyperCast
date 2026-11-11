@@ -1424,14 +1424,15 @@ fn constraints() {
 
 /// What a checked door returned, with the value made comparable with the corpus, and the
 /// detail its detailed twin gave a failure.
-type CheckedRow = (Result<(CorpusValue, bool, Option<u32>), hypercast::Rejection>, Option<Detail>);
+type CheckedRow =
+    (Result<(CorpusValue, bool, Option<u32>), hypercast::Rejection<CorpusValue>>, Option<Detail>);
 
 /// The detail of a detailed checked door's failure, once its verdict is shown to be the plain
 /// door's with that detail.
 fn checked_twin<T>(
     label: &str,
-    plain: &Result<(CorpusValue, bool, Option<u32>), hypercast::Rejection>,
-    twin: Result<hypercast::Checked<T>, detailed::Rejection>,
+    plain: &Result<(CorpusValue, bool, Option<u32>), hypercast::Rejection<CorpusValue>>,
+    twin: Result<hypercast::Checked<T>, detailed::Rejection<T>>,
     value: impl Fn(T) -> CorpusValue,
 ) -> Option<Detail> {
     let detail = match &twin {
@@ -1440,7 +1441,7 @@ fn checked_twin<T>(
     };
     let projected = twin
         .map(|c| (value(c.value), c.adjusted, c.enum_index))
-        .map_err(hypercast::Rejection::from);
+        .map_err(|rejection| hypercast::Rejection::from(rejection.map(&value)));
     assert_eq!(&projected, plain, "{label}: the detailed checked door agrees");
     detail
 }
@@ -1540,21 +1541,22 @@ fn declaration(
 ) -> Result<(hypercast::RawConstraints, Vec<u8>), hypercast::Refusal> {
     use hypercast::RawConstraints as Raw;
     let mut raw = Raw::ZERO;
-    for (field, flag) in
-        [("minimum", Raw::HAS_MINIMUM), ("exclusiveMinimum", Raw::HAS_EXCLUSIVE_MINIMUM)]
-    {
-        if let Some(value) = decimal_field(c, field) {
-            raw.flags |= flag;
-            raw.lower = value?;
-        }
+    // Each of the four bounds is its own keyword, in its own slot.
+    if let Some(value) = decimal_field(c, "minimum") {
+        raw.flags |= Raw::HAS_MINIMUM;
+        raw.lower = value?;
     }
-    for (field, flag) in
-        [("maximum", Raw::HAS_MAXIMUM), ("exclusiveMaximum", Raw::HAS_EXCLUSIVE_MAXIMUM)]
-    {
-        if let Some(value) = decimal_field(c, field) {
-            raw.flags |= flag;
-            raw.upper = value?;
-        }
+    if let Some(value) = decimal_field(c, "exclusiveMinimum") {
+        raw.flags |= Raw::HAS_EXCLUSIVE_MINIMUM;
+        raw.exclusive_lower = value?;
+    }
+    if let Some(value) = decimal_field(c, "maximum") {
+        raw.flags |= Raw::HAS_MAXIMUM;
+        raw.upper = value?;
+    }
+    if let Some(value) = decimal_field(c, "exclusiveMaximum") {
+        raw.flags |= Raw::HAS_EXCLUSIVE_MAXIMUM;
+        raw.exclusive_upper = value?;
     }
     if let Some(value) = decimal_field(c, "multipleOf") {
         raw.flags |= Raw::HAS_MULTIPLE_OF;
@@ -1571,6 +1573,9 @@ fn declaration(
     }
     if c.get("trim").and_then(Value::as_bool) == Some(true) {
         raw.flags |= Raw::TRIM;
+    }
+    if c.get("caseSensitive").and_then(Value::as_bool) == Some(true) {
+        raw.flags |= Raw::CASE_SENSITIVE;
     }
     let mut entries = Vec::new();
     let listed = enum_texts(c);
@@ -1607,11 +1612,21 @@ fn numeric_row<T: CheckedDoor>(
         .maybe_maximum(decimal("maximum"))
         .maybe_exclusive_maximum(decimal("exclusiveMaximum"))
         .maybe_multiple_of(decimal("multipleOf").map(|step| (step, rounding_of(c))));
-    let entries: Option<Vec<i128>> = enum_texts(c)
-        .map(|entries| entries.iter().map(|e| e.parse().expect("an integer enum entry")).collect());
+    let entries: Option<Vec<hypercast::Decimal>> = enum_texts(c).map(|entries| {
+        entries.iter().map(|e| declared(e.as_bytes()).expect("a numeric enum entry")).collect()
+    });
     let constraints =
         hypercast::Constraints::<T>::numeric(rules, entries.as_deref()).expect("declared");
-    assert_eq!(constraints.raw(), raw, "the builder's layout");
+    // The ABI carries a text keyword a numeric declaration ignores; the builder has none.
+    let ignored = hypercast::RawConstraints {
+        flags: raw.flags
+            & !(hypercast::RawConstraints::HAS_MIN_LENGTH
+                | hypercast::RawConstraints::HAS_MAX_LENGTH),
+        min_length: 0,
+        max_length: 0,
+        ..raw
+    };
+    assert_eq!(constraints.raw(), ignored, "the builder's layout");
     let from_raw = hypercast::Constraints::<T>::from_raw(raw, packed).expect("from_raw declared");
     let from_f64 = vector.get("from_f64").map(|value| match value.as_str() {
         Some("-0") => -0.0,
@@ -1627,7 +1642,9 @@ fn numeric_row<T: CheckedDoor>(
             Some(value) => hypercast::checked_from_f64(value, constraints),
             None => hypercast::cast_checked(input(vector), &format, constraints),
         };
-        checked.map(|c| (c.value.corpus_value(), c.adjusted, c.enum_index))
+        checked
+            .map(|c| (c.value.corpus_value(), c.adjusted, c.enum_index))
+            .map_err(|rejection| rejection.map(T::corpus_value))
     };
     let checked = judge(&constraints);
     let twin = match from_f64 {
@@ -1666,11 +1683,28 @@ fn text_row(
     let length = |field: &str| c.get(field).map(|n| n.as_u64().expect(field) as u32);
     let rules = hypercast::TextRules::new()
         .trim(c.get("trim").and_then(Value::as_bool) == Some(true))
+        .case_sensitive(c.get("caseSensitive").and_then(Value::as_bool) == Some(true))
         .maybe_min_length(length("minLength"))
         .maybe_max_length(length("maxLength"));
     let entries = enum_texts(c);
     let constraints = hypercast::Constraints::text(rules, entries.as_deref()).expect("declared");
-    assert_eq!(constraints.raw(), raw, "the builder's layout");
+    // The ABI carries a numeric keyword a text declaration ignores; the builder has none.
+    use hypercast::RawConstraints as Raw;
+    let numeric = Raw::HAS_MINIMUM
+        | Raw::HAS_EXCLUSIVE_MINIMUM
+        | Raw::HAS_MAXIMUM
+        | Raw::HAS_EXCLUSIVE_MAXIMUM
+        | Raw::HAS_MULTIPLE_OF;
+    let ignored = Raw {
+        flags: raw.flags & !numeric,
+        lower: Raw::ZERO.lower,
+        exclusive_lower: Raw::ZERO.lower,
+        upper: Raw::ZERO.lower,
+        exclusive_upper: Raw::ZERO.lower,
+        multiple_of: Raw::ZERO.lower,
+        ..raw
+    };
+    assert_eq!(constraints.raw(), ignored, "the builder's layout");
     let bytes: Vec<u8> = match vector.get("input_bytes") {
         Some(bytes) => bytes
             .as_array()
@@ -1685,6 +1719,7 @@ fn text_row(
     let judge = |constraints: &hypercast::Constraints<'_, hypercast::Text>| {
         hypercast::cast_text_checked(&bytes, constraints)
             .map(|c| (CorpusValue::Text(c.value.to_owned()), c.adjusted, c.enum_index))
+            .map_err(|rejection| rejection.map(|value| CorpusValue::Text(value.to_owned())))
     };
     let checked = judge(&constraints);
     let twin = detailed::cast_text_checked(&bytes, &constraints);
@@ -1699,7 +1734,7 @@ fn text_row(
     (checked, detail)
 }
 
-/// `Constraints::from_raw` on `door`'s type, as HyperTabular's core calls it.
+/// `Constraints::from_raw` on `door`'s type, as a downstream core calls it.
 fn from_raw(
     door: hypercast::Door,
     raw: hypercast::RawConstraints,
@@ -1764,6 +1799,16 @@ fn assert_checked(label: &str, vector: &Value, (checked, detail): CheckedRow) {
             };
             assert_eq!(violation.keyword, keyword, "{label}: keyword");
             assert_eq!((violation.offset, violation.len), span(vector), "{label}: span");
+            // The second level carries the value as cast, never the raw text nor a rounding.
+            let expected = match &violation.value {
+                CorpusValue::Integer(_) => i64::expected(&vector["value"]),
+                CorpusValue::F32(_) => f32::expected(&vector["value"]),
+                CorpusValue::F64(_) => f64::expected(&vector["value"]),
+                CorpusValue::Text(_) => {
+                    CorpusValue::Text(vector["value"].as_str().expect("value").to_owned())
+                }
+            };
+            assert_eq!(violation.value, expected, "{label}: violation value");
         }
         (label_expect @ ("empty" | "malformed" | "out_of_range"), Err(Rejection::Fault(fault))) => {
             let reason = match label_expect {

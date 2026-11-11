@@ -380,8 +380,8 @@ impl Cast {
 
     /// Numeric text through the door its `Constraints` are bound to, under the declared format,
     /// then judged by them: `Checked`, or the door's own `Fault`, or a `Violation` of the first
-    /// rule it breaks, judged exactly on the decimal the door read. Constraints for
-    /// `Door::Text` go to `checkedText()`.
+    /// rule it breaks, judged exactly on the decimal the door read and carrying the value as
+    /// the door cast it, never rounded. Constraints for `Door::Text` go to `checkedText()`.
     pub fn checked(
         text: Str<'_>,
         format: FormatArg<'_>,
@@ -406,7 +406,8 @@ impl Cast {
 
     /// Text judged by `Constraints` for `Door::Text`: trimmed of Unicode `White_Space` when
     /// they say so (trimmed to nothing is `Empty`), lengths counted in code points, an `enum`
-    /// matched under simple case folding, a match delivering the caller's own declared entry.
+    /// matched under simple case folding (byte for byte when `caseSensitive`), a match
+    /// delivering the caller's own declared entry, a `Violation` carrying the judged text.
     pub fn checked_text(
         text: Str<'_>,
         constraints: ConstraintsArg<'_>,

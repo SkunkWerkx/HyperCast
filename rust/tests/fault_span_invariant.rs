@@ -85,8 +85,8 @@ fn assert_twin<T: PartialEq + core::fmt::Debug>(
 /// A checked door and its detailed twin, likewise.
 fn assert_checked_twin<T: PartialEq + core::fmt::Debug>(
     input: &[u8],
-    plain: Result<hypercast::Checked<T>, Rejection>,
-    twin: Result<hypercast::Checked<T>, detailed::Rejection>,
+    plain: Result<hypercast::Checked<T>, Rejection<T>>,
+    twin: Result<hypercast::Checked<T>, detailed::Rejection<T>>,
     door: &str,
 ) {
     assert_eq!(
@@ -98,7 +98,7 @@ fn assert_checked_twin<T: PartialEq + core::fmt::Debug>(
     assert_checked_span(input, plain, door);
 }
 
-fn assert_checked_span<T>(input: &[u8], verdict: Result<T, Rejection>, door: &str) {
+fn assert_checked_span<T, V>(input: &[u8], verdict: Result<T, Rejection<V>>, door: &str) {
     match verdict {
         Ok(_) => {}
         Err(Rejection::Fault(fault)) => assert_span::<()>(input, Err(fault), door),
@@ -144,8 +144,8 @@ fn declarations() -> Declarations {
 }
 
 fn every_checked_door(input: &[u8], formats: &[NumFormat], declared: &Declarations) {
-    let integers =
-        Constraints::<i8>::numeric(declared.integer, Some(&[0, 5, 125])).expect("declared");
+    let entries = [0, 5, 125].map(hypercast::Decimal::from);
+    let integers = Constraints::<i8>::numeric(declared.integer, Some(&entries)).expect("declared");
     let wide = Constraints::<u64>::numeric(declared.wide, None).expect("declared");
     for format in formats {
         let valid = format.validate().expect("valid");
@@ -408,15 +408,20 @@ fn exported_declaration(vector: &Value) -> Option<(u32, RawConstraints, Vec<u8>,
     let c = &vector["constraints"];
     let dec = |field: &str| c.get(field).map(|v| decimal_for_declaration(v.as_str().unwrap()));
     let mut raw = RawConstraints::ZERO;
-    for (field, flag, upper) in [
-        ("minimum", RawConstraints::HAS_MINIMUM, false),
-        ("exclusiveMinimum", RawConstraints::HAS_EXCLUSIVE_MINIMUM, false),
-        ("maximum", RawConstraints::HAS_MAXIMUM, true),
-        ("exclusiveMaximum", RawConstraints::HAS_EXCLUSIVE_MAXIMUM, true),
+    for (field, flag, slot) in [
+        ("minimum", RawConstraints::HAS_MINIMUM, 0),
+        ("exclusiveMinimum", RawConstraints::HAS_EXCLUSIVE_MINIMUM, 1),
+        ("maximum", RawConstraints::HAS_MAXIMUM, 2),
+        ("exclusiveMaximum", RawConstraints::HAS_EXCLUSIVE_MAXIMUM, 3),
     ] {
         if let Some(value) = dec(field) {
             raw.flags |= flag;
-            *(if upper { &mut raw.upper } else { &mut raw.lower }) = value.unwrap();
+            *(match slot {
+                0 => &mut raw.lower,
+                1 => &mut raw.exclusive_lower,
+                2 => &mut raw.upper,
+                _ => &mut raw.exclusive_upper,
+            }) = value.unwrap();
         }
     }
     if let Some(value) = dec("multipleOf") {
@@ -445,6 +450,9 @@ fn exported_declaration(vector: &Value) -> Option<(u32, RawConstraints, Vec<u8>,
     }
     if c.get("trim").and_then(Value::as_bool) == Some(true) {
         raw.flags |= RawConstraints::TRIM;
+    }
+    if c.get("caseSensitive").and_then(Value::as_bool) == Some(true) {
+        raw.flags |= RawConstraints::CASE_SENSITIVE;
     }
     let mut entries = Vec::new();
     if c.get("enum").is_some() {

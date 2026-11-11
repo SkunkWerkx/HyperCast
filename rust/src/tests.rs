@@ -2192,8 +2192,9 @@ mod constraint_exports {
     #[test]
     fn violation_is_code_4() {
         let raw = latitude();
+        // The value as cast is written beside the keyword: the second level reports it.
         let (code, value, fault, check) = checked(11, &raw, &[], b" 91 ", 0f64);
-        assert_eq!((code, value, fault), (4, 0.0, (1, 2)));
+        assert_eq!((code, value, fault), (4, 91.0, (1, 2)));
         assert_eq!(check, RawCheck { keyword: 3, adjusted: 0, enum_index: u32::MAX });
         let (code, _, fault, check) = checked(11, &raw, &[], b"-90.5", 0f64);
         assert_eq!((code, fault, check.keyword), (4, (0, 5), 1));
@@ -2250,10 +2251,13 @@ mod constraint_exports {
             u32::from_ne_bytes(written[4..].try_into().unwrap()),
         );
         assert_eq!((code, buffer[0], unaligned), (0, 0xAA, (2, 4)));
+        // A violation writes the judged text's span, as a success does.
         let (code, span, fault, check) = checked(18, &listed, &sexes, b" Mail ", blank);
-        assert_eq!((code, span, fault, check.keyword), (4, blank, (1, 4), 8));
+        let mail = RawSpan { offset: 1, len: 4 };
+        assert_eq!((code, span, fault, check.keyword), (4, mail, (1, 4), 8));
         let (code, span, fault, check) = checked(18, &raw, &[], b"Females", blank);
-        assert_eq!((code, span, fault, check.keyword), (4, blank, (0, 7), 7));
+        let females = RawSpan { offset: 0, len: 7 };
+        assert_eq!((code, span, fault, check.keyword), (4, females, (0, 7), 7));
         // No `enum`: the span, and no index.
         let (code, span, _, check) = checked(18, &raw, &[], b" abc ", blank);
         assert_eq!((code, span, check.enum_index), (0, RawSpan { offset: 1, len: 3 }, u32::MAX));
@@ -2319,7 +2323,10 @@ mod constraint_exports {
             flags: RawConstraints::HAS_ENUM | RawConstraints::TRIM,
             ..RawConstraints::ZERO
         };
-        let cases: [(u32, RawConstraints, Vec<u8>, i32); 18] = [
+        // Every valid OpenAPI 3.2 declaration is accepted, unsatisfiable ones included: a
+        // keyword for another type is ignored, bounds are independent, duplicate and empty
+        // enums declare, and every value then gets its violation.
+        let declared: [(u32, RawConstraints, Vec<u8>); 12] = [
             (
                 i32_door,
                 with(&|r| {
@@ -2327,7 +2334,6 @@ mod constraint_exports {
                     r.min_length = 1;
                 }),
                 Vec::new(),
-                1,
             ),
             (
                 i32_door,
@@ -2335,28 +2341,16 @@ mod constraint_exports {
                     r.flags = RawConstraints::HAS_MINIMUM | RawConstraints::HAS_EXCLUSIVE_MINIMUM
                 }),
                 Vec::new(),
-                2,
-            ),
-            (
-                i32_door,
-                with(&|r| {
-                    r.flags = RawConstraints::HAS_MAXIMUM | RawConstraints::HAS_EXCLUSIVE_MAXIMUM
-                }),
-                Vec::new(),
-                3,
             ),
             (
                 i32_door,
                 with(&|r| {
                     r.flags = RawConstraints::HAS_MINIMUM | RawConstraints::HAS_MAXIMUM;
-                    r.lower = dec("5");
+                    r.lower = dec("6");
                     r.upper = dec("5");
                 }),
                 Vec::new(),
-                4,
             ),
-            (i32_door, with(&|r| r.flags = RawConstraints::HAS_MULTIPLE_OF), Vec::new(), 5),
-            (i32_door, with(&|r| r.rounding = 1), Vec::new(), 6),
             (
                 text_door,
                 with(&|r| {
@@ -2365,7 +2359,6 @@ mod constraint_exports {
                     r.max_length = 4;
                 }),
                 Vec::new(),
-                7,
             ),
             (
                 u8_door,
@@ -2374,23 +2367,40 @@ mod constraint_exports {
                     r.lower = dec("-1");
                 }),
                 Vec::new(),
+            ),
+            (text_door, with(&|r| r.flags = RawConstraints::HAS_MINIMUM), Vec::new()),
+            (text_door, LISTED, packed_text(&["Male", "MALE"])),
+            (i32_door, LISTED, Vec::new()),
+            (text_door, LISTED, Vec::new()),
+            (text_door, LISTED, packed_text(&["Male", ""])),
+            (text_door, trimmed, packed_text(&[" Male "])),
+            (u8_door, LISTED, packed_integers(&["256", "1.5"])),
+        ];
+        for (door, raw, entries) in &declared {
+            assert_eq!(check(*door, raw, entries), 0, "{raw:?} {entries:?}");
+        }
+        let cases: [(u32, RawConstraints, Vec<u8>, i32); 9] = [
+            (i32_door, with(&|r| r.flags = RawConstraints::CASE_SENSITIVE), Vec::new(), 1),
+            (i32_door, with(&|r| r.flags = RawConstraints::TRIM), Vec::new(), 1),
+            (i32_door, with(&|r| r.flags = RawConstraints::HAS_MULTIPLE_OF), Vec::new(), 5),
+            (i32_door, with(&|r| r.rounding = 1), Vec::new(), 6),
+            (
+                i32_door,
+                with(&|r| {
+                    r.flags = RawConstraints::HAS_MULTIPLE_OF;
+                    r.multiple_of = dec("0.5");
+                    r.rounding = 1;
+                }),
+                Vec::new(),
                 8,
             ),
             // ABI-only: a binding's strings are always UTF-8.
             (text_door, LISTED, vec![1, 0, 0, 0, 0xFF], 9),
-            (text_door, LISTED, packed_text(&["Male", "MALE"]), 10),
             (i32_door, with(&|r| r.size = 71), Vec::new(), 11),
             // A list passed without `HAS_ENUM` is never read.
             (i32_door, RawConstraints::ZERO, packed_integers(&["1"]), 11),
             (text_door, RawConstraints::ZERO, packed_text(&["a"]), 11),
-            (i32_door, LISTED, Vec::new(), 12),
-            (text_door, LISTED, Vec::new(), 12),
-            (text_door, LISTED, packed_text(&["Male", ""]), 13),
-            (text_door, trimmed, packed_text(&[" Male "]), 13),
-            (text_door, trimmed, packed_text(&["   "]), 13),
         ];
-        // Without `trim`, an entry with White_Space at its edges is matched as given.
-        assert_eq!(check(text_door, &LISTED, &packed_text(&[" Male "])), 0);
         for (door, raw, entries, code) in &cases {
             assert_eq!(check(*door, raw, entries), *code, "{raw:?} {entries:?}");
         }
@@ -2398,7 +2408,7 @@ mod constraint_exports {
         for raw in [
             with(&|r| r.size = 0),
             with(&|r| r.size = 73),
-            with(&|r| r.flags = 512),
+            with(&|r| r.flags = 1024),
             with(&|r| r._reserved = 1),
             with(&|r| {
                 r.flags = RawConstraints::HAS_MULTIPLE_OF;
@@ -2423,13 +2433,15 @@ mod constraint_exports {
             (offset_of!(RawConstraints, lower), 0, 2u8),
             (offset_of!(RawConstraints, upper), RawConstraints::HAS_MAXIMUM, 255),
             (offset_of!(RawConstraints, multiple_of), 0, 2),
+            (offset_of!(RawConstraints, exclusive_lower), 0, 2),
+            (offset_of!(RawConstraints, exclusive_upper), 0, 2),
             (offset_of!(RawConstraints, lower), RawConstraints::HAS_MINIMUM, 1),
         ] {
-            let mut memory = [0u64; 9];
+            let mut memory = [0u64; 13];
             let bytes = memory.as_mut_ptr().cast::<u8>();
             let raw = RawConstraints { flags, ..RawConstraints::ZERO };
             unsafe {
-                bytes.copy_from_nonoverlapping((&raw const raw).cast::<u8>(), 72);
+                bytes.copy_from_nonoverlapping((&raw const raw).cast::<u8>(), 104);
                 bytes.add(field + offset_of!(Decimal, negative)).write(byte);
             }
             let layout = memory.as_ptr().cast::<RawConstraints>();
@@ -2641,7 +2653,7 @@ fn a_failure_projects_to_the_plain_fault() {
     assert_eq!(failure.fault(), Fault { reason: Reason::Malformed, offset: 2, len: 1 });
     assert_eq!(Fault::from(failure), failure.fault());
     assert_eq!(failure.to_string(), "malformed input at bytes 2..3 (digit_expected)");
-    let rejection = detailed::Rejection::from(failure);
+    let rejection = detailed::Rejection::<i32>::from(failure);
     assert_eq!(Rejection::from(rejection), Rejection::Fault(failure.fault()));
 }
 
@@ -3742,15 +3754,20 @@ mod sites {
             c.get(field).map(|v| decimal_for_declaration(v.as_str().unwrap()).unwrap())
         };
         let mut raw = RawConstraints::ZERO;
-        for (field, flag, upper) in [
-            ("minimum", RawConstraints::HAS_MINIMUM, false),
-            ("exclusiveMinimum", RawConstraints::HAS_EXCLUSIVE_MINIMUM, false),
-            ("maximum", RawConstraints::HAS_MAXIMUM, true),
-            ("exclusiveMaximum", RawConstraints::HAS_EXCLUSIVE_MAXIMUM, true),
+        for (field, flag, slot) in [
+            ("minimum", RawConstraints::HAS_MINIMUM, 0),
+            ("exclusiveMinimum", RawConstraints::HAS_EXCLUSIVE_MINIMUM, 1),
+            ("maximum", RawConstraints::HAS_MAXIMUM, 2),
+            ("exclusiveMaximum", RawConstraints::HAS_EXCLUSIVE_MAXIMUM, 3),
         ] {
             if let Some(value) = dec(field) {
                 raw.flags |= flag;
-                *(if upper { &mut raw.upper } else { &mut raw.lower }) = value;
+                *(match slot {
+                    0 => &mut raw.lower,
+                    1 => &mut raw.exclusive_lower,
+                    2 => &mut raw.upper,
+                    _ => &mut raw.exclusive_upper,
+                }) = value;
             }
         }
         if let Some(value) = dec("multipleOf") {
@@ -3778,7 +3795,7 @@ mod sites {
     }
 
     fn numeric_row<T: Numeric>(row: &Value) -> Option<Failure> {
-        let failure = |rejection: detailed::Rejection| match rejection {
+        let failure = |rejection: detailed::Rejection<T>| match rejection {
             detailed::Rejection::Failure(failure) => Some(failure),
             detailed::Rejection::Violation(_) => None,
         };

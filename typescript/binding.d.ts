@@ -43,22 +43,21 @@ export declare class Constraints {
   get maxLength(): number | null
   /** Whether text is trimmed of Unicode `White_Space` before it is judged. */
   get trim(): boolean
-  /**
-   * The declared `enum` entries as the caller gave them (strings, or `bigint`s at an
-   * integer door), or `null`.
-   */
+  /** Whether a text `enum` matches byte for byte rather than under simple case folding. */
+  get caseSensitive(): boolean
+  /** The declared `enum` entries as the caller gave them (strings and `bigint`s), or `null`. */
   get enum(): Array<string | bigint> | null
   /**
-   * The 72 bytes this declaration crosses a C ABI as, in the native byte order the core
-   * reads in place: the size (`72`), the flags, the rounding code, `minLength`, `maxLength`
-   * and a reserved zero as `u32`s, then the lower bound, the upper bound and `multipleOf` as
-   * 16-byte decimals (the low 64 and high 32 bits of the magnitude, the scale, the sign, two
-   * zero bytes): for a library that judges values across a C ABI of its own, with
-   * `packedEnum` beside it.
+   * The 104 bytes this declaration crosses a C ABI as, in the native byte order the core
+   * reads in place: the size (`104`), the flags, the rounding code, `minLength`,
+   * `maxLength` and a reserved zero as `u32`s, then `minimum`, `maximum`, `multipleOf`,
+   * `exclusiveMinimum` and `exclusiveMaximum` as 16-byte decimals (the low 64 and high 32
+   * bits of the magnitude, the scale, the sign, two zero bytes): for a library that judges
+   * values across a C ABI of its own, with `packedEnum` beside it.
    */
   get packed(): Uint8Array
   /**
-   * The `enum` list as the core reads it beside `packed`, empty for none: at an integer door
+   * The `enum` list as the core reads it beside `packed`, empty for none: at a numeric door
    * 16-byte decimals in native byte order, at `Door.Text` each entry a little-endian `u32`
    * byte length followed by its UTF-8.
    */
@@ -246,9 +245,9 @@ export declare function castChar(text: Text): Verdict<string>
 /**
  * Casts numeric text through the door its `Constraints` are bound to, under the declared
  * format (absent is the invariant one), then judges the value by them: `Checked<T>`, the
- * door's own `Failure`, or `Violated` naming the first rule it breaks. The value is judged
- * exactly, on the decimal the door read, never on a float. The value's type follows the
- * door: `number` for `I8` to `U32`, `F32` and `F64`; `bigint` for `I64` and `U64`; canonical
+ * door's own `Failure`, or `Violated<T>` naming the first rule it breaks and carrying the
+ * value as the door cast it, never rounded. The value is judged exactly, on the decimal the
+ * door read, never on a float. The value's type follows the door: `number` for `I8` to `U32`, `F32` and `F64`; `bigint` for `I64` and `U64`; canonical
  * decimal text for `Decimal`. Spans are in the caller's units, as a fault's are.
  * `Constraints` for `Door.Text`, or anything that is no `Constraints` (`undefined` and `null`
  * included: a failed declaration's missing `.value`), is a contract violation: `malformed`
@@ -259,9 +258,9 @@ export declare function castChecked(text: Text, constraints: Constraints, format
 /**
  * Casts text through the door its `Constraints` are bound to, `Door.Text` included, and
  * judges the value by them, saying what failed: a `DetailedCheckedVerdict`. A failure to read
- * is a `DetailedFault`; a value that broke a rule is `Violated`, as at `castChecked`, with no
- * detail (a violation names the rule, not a failure to read). `format` is read by the numeric
- * doors (absent is `NumFormat.invariant()`) and ignored at `Door.Text`.
+ * is a `DetailedFault`; a value that broke a rule is `Violated<T>`, as at `castChecked`, with
+ * no detail (a violation names the rule, not a failure to read). `format` is read by the
+ * numeric doors (absent is `NumFormat.invariant()`) and ignored at `Door.Text`.
  */
 export declare function castCheckedDetailed(text: Text, constraints: Constraints, format?: NumFormat | undefined | null): DetailedCheckedVerdict<number | bigint | string>
 
@@ -321,7 +320,7 @@ export declare function castDecimal(text: Text, format?: NumFormat | undefined |
 export declare function castDecimalFromNumber(value: number): Verdict<string>
 
 /**
- * Converts a bound, step or integer `enum` entry written in invariant notation (an optional
+ * Converts a bound, step or numeric `enum` entry written in invariant notation (an optional
  * sign, digits with an optional `.` and fraction, an optional exponent: `"0.000001"`, `"-90"`,
  * `"1e-6"`) to the exact decimal the core declares it as, as canonical text with its trailing
  * zeros dropped (`"1.50"` is `"1.5"`): the conversion every bound a `Constraints` is given
@@ -398,7 +397,8 @@ export declare function castI8(text: Text, format?: NumFormat | undefined | null
  * input is `empty`; nothing is trimmed. With `Constraints` for `Door.Text` it is judged by
  * them, a `CheckedVerdict<string>`: trimmed of Unicode `White_Space` when they say so
  * (trimmed to nothing is `empty`), lengths counted in code points, and an `enum` matched under
- * simple case folding, a match delivering the caller's own declared entry and its index.
+ * simple case folding (byte for byte under `caseSensitive`), a match delivering the caller's
+ * own declared entry and its index; a violation carries the judged text.
  * `Constraints` for another door, or anything that is no `Constraints`, is a contract
  * violation: `malformed` with an empty span at 0. Plain or constrained is chosen by the number
  * of arguments, not by the second one's value, so an explicit `undefined` or `null`
@@ -443,7 +443,7 @@ export declare function castUuid(text: Text): Verdict<string>
  * The success case of a checked door: `ok` is `true`; `value` is the value (rounded to
  * `multipleOf` when the declaration rounds; at `Door.Text` with an `enum`, the caller's own
  * declared entry); `adjusted` is true only when rounding changed it; `enumIndex` is the index
- * of the entry a text matched, `null` otherwise (an integer `enum` included: the value is the
+ * of the entry a text matched, `null` otherwise (a numeric `enum` included: the value is the
  * answer).
  */
 export interface Checked<T> {
@@ -454,10 +454,10 @@ export interface Checked<T> {
 }
 
 /**
- * The outcome of a checked door: exactly one of `Checked<T>`, `Failure` or `Violated`, told
- * apart by `ok` and then by `'fault' in verdict`.
+ * The outcome of a checked door: exactly one of `Checked<T>`, `Failure` or `Violated<T>`,
+ * told apart by `ok` and then by `'fault' in verdict`.
  */
-export type CheckedVerdict<T> = Checked<T> | Failure | Violated
+export type CheckedVerdict<T> = Checked<T> | Failure | Violated<T>
 
 /** A civil date and time with no zone, as zone-less text names one. */
 export interface CivilDateTime {
@@ -471,12 +471,16 @@ export interface CivilDateTime {
 }
 
 /**
- * The declared form of a `Constraints`: `Constraints.declare` reads it. The integer doors
- * take the bounds, `multipleOf` with a `rounding`, and `enum`; `Door.F32`, `Door.F64` and
- * `Door.Decimal` the same but `enum`; `Door.Text` `minLength`, `maxLength` (in code points),
- * `trim` and `enum`. A bound, step or integer entry is a decimal string in invariant
- * notation (`"0.000001"`, `"-90"`, `"1e-6"`) or a `bigint`, never a `number`: a number is a
- * binary float, which holds most decimals only approximately.
+ * The declared form of a `Constraints`: `Constraints.declare` reads it, as OpenAPI 3.2
+ * reads a Schema Object. The numeric doors take the four bounds (each its own keyword, so
+ * `minimum` and `exclusiveMinimum` may both be declared), `multipleOf` with a `rounding`, and
+ * `enum`; `Door.Text` takes `minLength`, `maxLength` (in code points), `enum`, and HyperCast's
+ * own `trim` and `caseSensitive`. A keyword for the other type is ignored, as JSON Schema
+ * ignores it; `trim` or `caseSensitive` at a numeric door, or a `rounding` at `Door.Text`, is
+ * refused. A declaration no value can satisfy (crossed bounds, an empty `enum`) is accepted,
+ * and every value then violates it. A bound, step or numeric entry is a decimal string in
+ * invariant notation (`"0.000001"`, `"-90"`, `"1e-6"`) or a `bigint`, never a `number`: a
+ * number is a binary float, which holds most decimals only approximately.
  */
 export interface ConstraintsSpec {
   /** The door the declaration is bound to: an integer, real or decimal door, or `Door.Text`. */
@@ -500,9 +504,15 @@ export interface ConstraintsSpec {
   /** Trim Unicode `White_Space` from both ends before judging. */
   trim?: boolean
   /**
-   * The values allowed: strings at `Door.Text` (matched under simple case folding), decimal
-   * strings or `bigint`s at an integer door. Left out declares none; an empty array declares
-   * one no value could match, which the core refuses (code 12).
+   * Match a text `enum` byte for byte rather than under simple case folding, for a
+   * vocabulary whose case carries meaning (`mm` and `Mm`); `false` when absent.
+   */
+  caseSensitive?: boolean
+  /**
+   * The values allowed: strings at `Door.Text` (matched under simple case folding unless
+   * `caseSensitive`; a `bigint` there is a valid entry that never matches), decimal strings or `bigint`s at a numeric door, compared exactly to
+   * the value (`"7.0"` is `7`). Left out declares none; an empty array declares one no
+   * value matches. With duplicates, the first matching entry wins.
    */
   enum?: ReadonlyArray<string | bigint>
 }
@@ -573,10 +583,10 @@ export type Detail = 'none' | 'blank' | 'unexpectedCharacter' | 'digitExpected' 
 
 /**
  * The outcome of a detailed checked door: exactly one of `Checked<T>`, `DetailedFailure` or
- * `Violated`, told apart by `ok` and then by `'fault' in verdict`. A violation names a rule
- * the value broke, not a failure to read it, so it carries no detail.
+ * `Violated<T>`, told apart by `ok` and then by `'fault' in verdict`. A violation names a
+ * rule the value broke, not a failure to read it, so it carries no detail.
  */
-export type DetailedCheckedVerdict<T> = Checked<T> | DetailedFailure | Violated
+export type DetailedCheckedVerdict<T> = Checked<T> | DetailedFailure | Violated<T>
 
 /** The failure case of a detailed verdict: `ok` is `false` and `fault` says why and what. */
 export interface DetailedFailure {
@@ -778,10 +788,10 @@ export interface Refusal {
 }
 
 /**
- * Why a checked door refused a value: it did not parse (`Failure`, today's fault), or it
- * parsed and broke a rule (`Violated`).
+ * Why a checked door refused a value: it is not the type (`Failure`, the door's fault), or
+ * it is and broke a rule (`Violated<T>`, carrying the value).
  */
-export type Rejection = Failure | Violated
+export type Rejection<T> = Failure | Violated<T>
 
 /**
  * What a value that is not a multiple of the declared `multipleOf` becomes, the core's codes
@@ -841,22 +851,28 @@ export declare enum UnixPrecision {
 export type Verdict<T> = Success<T> | Failure
 
 /**
- * The failure case of a checked door for a value that parsed and broke a declared rule:
- * `ok` is `false` and `violation` says which rule, and where.
+ * The failure case of a checked door for a value of the door's type that broke a declared
+ * rule: `ok` is `false` and `violation` says which rule, where, and the value.
  */
-export interface Violated {
+export interface Violated<T> {
   ok: false
-  violation: Violation
+  violation: Violation<T>
 }
 
 /**
- * A rule a value broke, in the OpenAPI spelling. Open to additions: `format` and `pattern`
- * may join in a minor release, so a `switch` over keywords needs a `default` arm, and a code
- * this binding does not name yet arrives as `"keyword N"`.
+ * A rule a value of the door's type broke, in the OpenAPI spelling, with that value: the
+ * input was cast (a fault, had it not been the type), then judged. `value` is the value
+ * exactly as the door cast it, never rounded to `multipleOf` (rounding is part of the
+ * judgement), in the type a success at the door would carry; at `Door.Text` it is the judged
+ * text (trimmed, under `trim`), never an `enum` entry. Keywords are open to additions:
+ * `format` and `pattern` may join in a minor release, so a `switch` over keywords needs a
+ * `default` arm, and a code this binding does not name yet arrives as `"keyword N"`.
  */
-export interface Violation {
+export interface Violation<T> {
   /** The keyword broken. */
   keyword: 'minimum' | 'exclusiveMinimum' | 'maximum' | 'exclusiveMaximum' | 'multipleOf' | 'minLength' | 'maxLength' | 'enum' | (string & {})
+  /** The value as the door cast it. */
+  value: T
   /** Where the value starts, in the caller's own units, as a fault's span is. */
   offset: number
   /** How long it runs; 0 for a number already decoded, which has no text. */

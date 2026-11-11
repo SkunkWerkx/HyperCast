@@ -304,14 +304,17 @@ const VALUE_CLASSES = <<<'PHP'
         }
 
         /**
-         * Validation constraints, the OpenAPI Schema Object's keywords, bound to one door and
-         * judged by the core when built: a declaration that cannot mean anything at its door is
-         * an `\InvalidArgumentException` whose code is the core's refusal code. Bounds and
-         * `multipleOf` are an int, a string in invariant notation or a `Decimal`, never a float
-         * (in weak mode too), and are kept as the exact `Decimal` the core read.
+         * Validation constraints, the OpenAPI 3.2 Schema Object's keywords, bound to one door
+         * and judged by the core when built. Every declaration OpenAPI allows is taken (a
+         * keyword for another type is ignored); one the core refuses (a constraint at a door
+         * that takes none, `trim` or `caseSensitive` off the text door, a `multipleOf` that is
+         * not positive, ...) is an `\InvalidArgumentException` whose code is the core's refusal
+         * code. Bounds, `multipleOf` and numeric `enum` entries are an int, a string in
+         * invariant notation or a `Decimal`, never a float (in weak mode too), and are kept as
+         * the exact `Decimal` the core read. A text `enum` folds case unless `caseSensitive`.
          */
         final readonly class Constraints {
-            public const PACKED_BYTES = 72;
+            public const PACKED_BYTES = 104;
 
             public \HyperCast\Door $door;
             public ?\HyperCast\Decimal $minimum;
@@ -323,6 +326,7 @@ const VALUE_CLASSES = <<<'PHP'
             public ?int $minLength;
             public ?int $maxLength;
             public bool $trim;
+            public bool $caseSensitive;
             public ?array $enum;
 
             public function __construct(
@@ -336,6 +340,7 @@ const VALUE_CLASSES = <<<'PHP'
                 ?int $minLength = null,
                 ?int $maxLength = null,
                 bool $trim = false,
+                bool $caseSensitive = false,
                 ?array $enum = null,
             ) {}
 
@@ -364,12 +369,14 @@ const VALUE_CLASSES = <<<'PHP'
         }
 
         /**
-         * A value that parsed and broke a declared rule: the keyword (the bare code for one this
-         * binding does not name yet) and the byte span of the input.
+         * A value that cast and broke a declared rule: the keyword (the bare code for one this
+         * binding does not name yet), the value exactly as the door cast it (never rounded; at
+         * the text door the judged text, after `trim`) and its byte span in the input.
          */
         final readonly class Violation {
             public function __construct(
                 public \HyperCast\Keyword|int $keyword,
+                public mixed $value,
                 public int $offset,
                 public int $length,
             ) {}

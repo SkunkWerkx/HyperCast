@@ -3,8 +3,8 @@
 //! `Constraints::pack_enum` writes the form both read.
 
 use hypercast::{
-    Constraints, Door, NumFormat, Numeric, NumericRules, RawConstraints, Refusal, Text, TextRules,
-    cast_checked, check_constraints,
+    Constraints, Decimal, Door, Keyword, NumFormat, Numeric, NumericRules, RawConstraints, Refusal,
+    Rejection, Text, TextRules, cast_checked, check_constraints,
 };
 
 /// `len` zeroed bytes as a `&'static str`. NUL is valid UTF-8 and not `White_Space`. Panics
@@ -87,11 +87,16 @@ fn same_as_check_text(raw: RawConstraints, entries: &[u8]) -> Result<(), Refusal
     from_raw
 }
 
+/// An empty `enum` is a valid declaration that no value satisfies (JSON Schema's "SHOULD
+/// have at least one element").
 #[test]
-fn from_raw_enum_flag_without_entries_is_empty() {
+fn from_raw_enum_flag_without_entries_declares() {
     let listed = raw(RawConstraints::HAS_ENUM);
-    assert_eq!(same_as_check::<i32>(listed, &[]), Err(Refusal::EmptyEnum));
-    assert_eq!(same_as_check_text(listed, &[]), Err(Refusal::EmptyEnum));
+    assert_eq!(same_as_check::<i32>(listed, &[]), Ok(()));
+    assert_eq!(same_as_check_text(listed, &[]), Ok(()));
+    let none = Constraints::<i32>::from_raw(listed, &[]).unwrap();
+    let rejected = cast_checked("7", &NumFormat::INVARIANT, &none);
+    assert!(matches!(rejected, Err(Rejection::Violation(v)) if v.keyword == Keyword::Enum));
 }
 
 #[test]
@@ -102,13 +107,29 @@ fn from_raw_entries_without_enum_flag_are_malformed() {
 }
 
 #[test]
-fn from_raw_refuses_the_other_doors_keywords() {
+fn from_raw_ignores_the_other_types_keywords_and_refuses_misplaced_extensions() {
+    // JSON Schema: a keyword for another type is ignored.
+    assert_eq!(same_as_check::<i32>(raw(RawConstraints::HAS_MIN_LENGTH), &[]), Ok(()));
+    assert_eq!(same_as_check_text(raw(RawConstraints::HAS_MINIMUM), &[]), Ok(()));
+    // HyperCast's own extensions belong to one door each.
     assert_eq!(
-        same_as_check::<i32>(raw(RawConstraints::HAS_MIN_LENGTH), &[]),
+        same_as_check::<i32>(raw(RawConstraints::CASE_SENSITIVE), &[]),
         Err(Refusal::KeywordNotForDoor)
     );
     assert_eq!(
-        same_as_check_text(raw(RawConstraints::HAS_MINIMUM), &[]),
+        same_as_check::<f64>(raw(RawConstraints::TRIM), &[]),
+        Err(Refusal::KeywordNotForDoor)
+    );
+    assert_eq!(
+        same_as_check_text(
+            RawConstraints {
+                flags: RawConstraints::HAS_MULTIPLE_OF,
+                rounding: 1,
+                multiple_of: Decimal::from(1),
+                ..RawConstraints::ZERO
+            },
+            &[]
+        ),
         Err(Refusal::KeywordNotForDoor)
     );
     // Packed text handed to an integer door is read as packed integers, never as text: the
@@ -146,7 +167,8 @@ fn listed() -> RawConstraints {
 
 #[test]
 fn pack_short_buffer_writes_nothing() {
-    let integers = Constraints::<i32>::numeric(NumericRules::new(), Some(&[10, -20, 30])).unwrap();
+    let entries = [10, -20, 30].map(Decimal::from);
+    let integers = Constraints::<i32>::numeric(NumericRules::new(), Some(&entries)).unwrap();
     let packed_integers = packed_with_short_buffers(&integers);
     assert_eq!(packed_integers.len(), 3 * 16);
     let entries = ["Female", "Male", "Other"];
@@ -184,7 +206,8 @@ fn decode(chunk: &[u8]) -> i128 {
 #[test]
 fn pack_integer_edges() {
     let signed = [i64::MIN as i128, -1, 0, i64::MAX as i128];
-    let i64s = Constraints::<i64>::numeric(NumericRules::new(), Some(&signed)).unwrap();
+    let entries = [i64::MIN, -1, 0, i64::MAX].map(Decimal::from);
+    let i64s = Constraints::<i64>::numeric(NumericRules::new(), Some(&entries)).unwrap();
     let packed = packed_with_short_buffers(&i64s);
     assert_eq!(packed.chunks(16).map(decode).collect::<Vec<_>>(), signed);
     let read = Constraints::<i64>::from_raw(i64s.raw(), &packed).unwrap();
@@ -193,7 +216,8 @@ fn pack_integer_edges() {
     assert!(cast_checked("-2", &format, &read).is_err(), "not a member");
 
     let unsigned = [u64::MAX as i128, 0];
-    let u64s = Constraints::<u64>::numeric(NumericRules::new(), Some(&unsigned)).unwrap();
+    let entries = [u64::MAX, 0].map(Decimal::from);
+    let u64s = Constraints::<u64>::numeric(NumericRules::new(), Some(&entries)).unwrap();
     let packed = packed_with_short_buffers(&u64s);
     assert_eq!(packed.chunks(16).map(decode).collect::<Vec<_>>(), unsigned);
     let read = Constraints::<u64>::from_raw(u64s.raw(), &packed).unwrap();

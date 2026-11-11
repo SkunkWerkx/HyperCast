@@ -191,7 +191,7 @@ test('the checked doors honour the policy, as the 1.0 export would not', () => {
   assert.deepEqual(refused, { ok: false, fault: { reason: 'malformed', offset: 2, length: 3 } })
   assert.deepEqual(api.castChecked('1,23,456', constraints.value, indian), {
     ok: false,
-    violation: { keyword: 'maximum', offset: 0, length: 8 },
+    violation: { keyword: 'maximum', value: 123456, offset: 0, length: 8 },
   })
   assert.deepEqual(api.castChecked('12,345', constraints.value, western), {
     ok: true,
