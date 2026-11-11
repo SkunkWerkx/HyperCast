@@ -1,10 +1,11 @@
 package hypercast_test
 
 // The 1.0 surface, written as 1.0 code wrote it: unkeyed literals of every exported struct,
-// equality, the sealed Rejection switched on with no default arm, and the 1.0 doors' (value,
-// *Fault) pair. 1.1 adds no field to any of these types (the detail travels on the separate
-// *Failure path), so all of it compiles and behaves as before; the one behaviour that moves
-// is that every format reads Western unless it declares Indian, pinned at the end.
+// equality, and the 1.0 doors' (value, *Fault) pair. 1.1 adds no field to any of these types
+// (the detail travels on the separate *Failure path), so all of it compiles and behaves as
+// before; the one behaviour that moves is that every format reads Western unless it declares
+// Indian, pinned at the end. Beside it, written the same way, the checked doors' types, new
+// in 1.1, and the sealed Rejection switched on with no default arm.
 
 import (
 	"bytes"
@@ -25,8 +26,8 @@ func TestOneDotZeroLiteralsStillCompileAndCompare(t *testing.T) {
 	if fault != (hypercast.Fault{Reason: hypercast.Malformed, Offset: 2, Length: 3}) {
 		t.Fatal("Fault equality moved")
 	}
-	violation := hypercast.Violation{hypercast.KeywordMaximum, 0, 2}
-	if violation != (hypercast.Violation{Keyword: hypercast.KeywordMaximum, Length: 2}) {
+	violation := hypercast.Violation[int32]{hypercast.KeywordMaximum, 101, 0, 2}
+	if violation != (hypercast.Violation[int32]{Keyword: hypercast.KeywordMaximum, Value: 101, Length: 2}) {
 		t.Fatal("Violation equality moved")
 	}
 	checked := hypercast.Checked[int32]{5, false, -1}
@@ -75,8 +76,8 @@ func TestOneDotZeroDoorsKeepTheirVerdicts(t *testing.T) {
 		t.Fatal("101 passed a maximum of 100")
 	case *hypercast.Fault:
 		t.Fatalf("101 faulted: %v", r)
-	case *hypercast.Violation:
-		if *r != (hypercast.Violation{hypercast.KeywordMaximum, 0, 3}) {
+	case *hypercast.Violation[int32]:
+		if *r != (hypercast.Violation[int32]{hypercast.KeywordMaximum, 101, 0, 3}) {
 			t.Fatalf("violation %v", r)
 		}
 	}

@@ -210,11 +210,15 @@ int main() {
   CHECK(north.ok() && north.value().value == 45.123457 && north.value().adjusted &&
         !north.value().enum_index.has_value());
   const auto beyond = hc::cast_f64("91", invariant, latitude.value());
-  CHECK((beyond.rejection().violation() == hc::Violation{hc::Keyword::maximum, 0, 2}));
+  // A violation carries the value as cast, never rounded.
+  CHECK((beyond.rejection().violation() == hc::Violation<double>{hc::Keyword::maximum, 91, 0, 2}));
   CHECK(beyond.rejection().visit(overloaded{[](const hc::Fault &) { return 0; },
-                                            [](const hc::Violation &) { return 1; }}) == 1);
-  CHECK(hc::cast_f64_from_double(-90.5, latitude.value()).rejection().violation().keyword ==
-        hc::Keyword::minimum);
+                                            [](const hc::Violation<double> &) { return 1; }}) == 1);
+  CHECK(hc::cast_f64("90.0000006", invariant, latitude.value()).rejection().violation().value ==
+        90.0000006);
+  CHECK((hc::cast_f64_from_double(-90.5, latitude.value()).rejection().violation() ==
+         hc::Violation<double>{hc::Keyword::minimum, -90.5, 0, 0}));
+  CHECK(beyond.rejection().map([](double v) { return v > 90; }).violation().value);
   CHECK(hc::cast_f64("x", invariant, latitude.value()).rejection().fault().reason ==
         hc::CastFailure::malformed);
 
@@ -222,8 +226,8 @@ int main() {
   cash.multiple_of = "0.05";
   const auto euros = hc::Constraints<hc::Decimal>::declare(cash);
   CHECK(text(hc::cast_decimal("12.35", invariant, euros.value()).value().value) == "12.35");
-  CHECK(hc::cast_decimal("12.37", invariant, euros.value()).rejection().violation().keyword ==
-        hc::Keyword::multiple_of);
+  const auto odd = hc::cast_decimal("12.37", invariant, euros.value()).rejection().violation();
+  CHECK(odd.keyword == hc::Keyword::multiple_of && text(odd.value) == "12.37");
 
   std::uint8_t storage[32];
   hc::Constraints<std::string_view>::Fields code;
@@ -232,28 +236,43 @@ int main() {
       hc::Constraints<std::string_view>::declare(code, {"Female", "Male", "Other"}, storage);
   const auto male = hc::cast_text(" MALE ", sex.value());
   CHECK(male.ok() && male.value().value == "Male" && male.value().enum_index == 1u);
-  CHECK(hc::cast_text("Mail", sex.value()).rejection().violation().keyword == hc::Keyword::enum_);
+  const auto mail = hc::cast_text(" Mail ", sex.value()).rejection().violation();
+  CHECK(mail.keyword == hc::Keyword::enum_ && mail.value == "Mail" && mail.offset == 1);
+  // case_sensitive matches the entries byte for byte instead of under case folding.
+  code.case_sensitive = true;
+  std::uint8_t exact_storage[32];
+  const auto exact =
+      hc::Constraints<std::string_view>::declare(code, {"Female", "Male", "Other"}, exact_storage);
+  CHECK(hc::cast_text(" Male ", exact.value()).value().enum_index == 1u);
+  CHECK(hc::cast_text(" MALE ", exact.value()).rejection().violation().value == "MALE");
+  code.case_sensitive = false;
   CHECK(hc::cast_text("ab").value() == "ab");
   CHECK(!hc::optional(hc::cast_text("  ", sex.value())).has_value());
 
-  // A refusal, worded from the core's code.
-  degrees.exclusive_minimum = -91;
+  // All four bounds may be declared together, each judged on its own.
+  degrees.exclusive_minimum = -89;
   const auto both = hc::Constraints<double>::declare(degrees);
-  CHECK(!both.ok() && both.refusal().code == 2 &&
-        both.refusal().message() ==
-            "Constraints refused (code 2): minimum together with exclusiveMinimum.");
+  CHECK((both.ok() && hc::cast_f64("-89.5", invariant, both.value()).rejection().violation() ==
+                          hc::Violation<double>{hc::Keyword::exclusive_minimum, -89.5, 0, 5}));
+  // A refusal, worded from the core's code.
+  degrees.trim = true;
+  const auto trimmed_number = hc::Constraints<double>::declare(degrees);
+  CHECK(!trimmed_number.ok() && trimmed_number.refusal().code == 1 &&
+        trimmed_number.refusal().message() ==
+            "Constraints refused (code 1): a constraint the door does not take.");
   std::uint8_t small_storage[4];
   CHECK(hc::Constraints<std::string_view>::declare({}, {"Male"}, small_storage).refusal().code ==
         0);
-  // An enum is declared by passing entries, an empty list included, which the core refuses;
+  // An enum is declared by passing entries, an empty list included, which every value violates;
   // declare(fields) declares none.
   CHECK((sex.value().raw().flags & HyperCastRawConstraints_HAS_ENUM) != 0);
   CHECK((euros.value().raw().flags & HyperCastRawConstraints_HAS_ENUM) == 0);
   const auto none = hc::Constraints<std::string_view>::declare(code, {}, small_storage);
-  CHECK(!none.ok() && none.refusal().code == 12 &&
-        none.refusal().message() == "Constraints refused (code 12): an enum with no entries.");
-  CHECK(hc::Constraints<std::int32_t>::declare({}, nullptr, 0, small_storage).refusal().code == 12);
-  CHECK(hc::Constraints<std::string_view>::declare(code, {" Male "}, storage).refusal().code == 13);
+  CHECK(none.ok() &&
+        hc::cast_text("Male", none.value()).rejection().violation().keyword == hc::Keyword::enum_);
+  const auto no_number = hc::Constraints<std::int32_t>::declare({}, nullptr, 0, small_storage);
+  CHECK((hc::cast_i32("7", invariant, no_number.value()).rejection().violation() ==
+         hc::Violation<std::int32_t>{hc::Keyword::enum_, 7, 0, 1}));
   // Invalid UTF-8 (here a lone surrogate's bytes) reaches the core unchanged at a plain door, as
   // at a checked one: the same fault, span included.
   const auto loose = hc::Constraints<std::int32_t>::declare({});
@@ -268,14 +287,14 @@ int main() {
         checked_bad.rejection().is_fault() && checked_bad.rejection().fault() == plain_bad.fault());
   // The message is a value: kept past the Declared temporary it came from, it is still whole.
   const auto kept = hc::Constraints<double>::declare(degrees).refusal().message();
-  CHECK(kept == "Constraints refused (code 2): minimum together with exclusiveMinimum.");
+  CHECK(kept == "Constraints refused (code 1): a constraint the door does not take.");
   CHECK(hc::Refusal{14}.message() ==
         "Constraints refused (code 14): a rule this binding does not name.");
   CHECK(hc::Refusal{-7}.message() ==
         "Constraints refused (code -7): a rule this binding does not name.");
 
 #ifdef HYPERCAST_HAS_EXPECTED
-  std::expected<hc::CheckedValue<double>, hc::Rejection> checked = north;
+  std::expected<hc::CheckedValue<double>, hc::Rejection<double>> checked = north;
   CHECK(checked.has_value() && checked->adjusted);
 #endif
 

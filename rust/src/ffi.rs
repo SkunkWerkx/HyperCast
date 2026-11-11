@@ -624,15 +624,15 @@ pub extern "C" fn cast_excel_duration(value: f64, out: *mut Duration, fault: *mu
     unsafe { finish(spanless(temporal::excel_duration(value)), out, fault) }
 }
 
-// The validation constraints. A declaration is a 72-byte `RawConstraints` beside an `enum`
+// The validation constraints. A declaration is a 104-byte `RawConstraints` beside an `enum`
 // list of `enum_len` bytes at `enum_ptr` (never dereferenced when `enum_len` is 0), read only
-// under `HAS_ENUM`, by the door: at an integer door, `Decimal`s holding whole numbers (at any
-// scale: `7.0` is `7`) in their native-endian 16-byte layout; at the text door, entries each a
+// under `HAS_ENUM`, by the door: at a numeric door, `Decimal`s in their native-endian 16-byte
+// layout, compared as exact values (`7.0` is `7`); at the text door, entries each a
 // little-endian `u32` byte length followed by that many UTF-8 bytes, with no padding.
 
 /// The declaration a caller passed, copied, or `None` when it is null, its `size` is not the
 /// layout's (nothing past the size word of a layout of unknown size can be read), or one of
-/// its three decimals has a sign byte other than `0` or `1`, which is no Rust `bool`: those
+/// its five decimals has a sign byte other than `0` or `1`, which is no Rust `bool`: those
 /// bytes are read as bytes before the layout is read as a `RawConstraints`.
 ///
 /// # Safety
@@ -654,6 +654,8 @@ unsafe fn resolve_constraints(constraints: *const RawConstraints) -> Option<RawC
         offset_of!(RawConstraints, lower),
         offset_of!(RawConstraints, upper),
         offset_of!(RawConstraints, multiple_of),
+        offset_of!(RawConstraints, exclusive_lower),
+        offset_of!(RawConstraints, exclusive_upper),
     ] {
         // SAFETY: the caller built the whole layout, and the offset lies inside it.
         let byte = unsafe { constraints.cast::<u8>().add(decimal + sign).read() };
@@ -674,14 +676,15 @@ fn door_1_0(code: u32, param: u32) -> Option<Door> {
 }
 
 /// A checked door's verdict as its return code, with `fault` handed the span and the detail
-/// (`0` for a violation) on codes 1 to 4, and the report written to `check` on 0 and 4.
+/// (`0` for a violation) on codes 1 to 4, and the report written to `check` on 0 and 4 (the
+/// value itself already written to `out` on both).
 /// `None` is a contract violation and writes nothing.
 ///
 /// # Safety
 /// Caller guarantees `check` is null or points to a live [`RawCheck`].
 #[inline(always)]
 unsafe fn finish_checked(
-    verdict: Option<Result<CheckOutcome, Rejection>>,
+    verdict: Option<Result<CheckOutcome, Rejection<()>>>,
     fault: impl FnOnce(u32, u32, u32),
     check: *mut RawCheck,
 ) -> i32 {
@@ -718,6 +721,22 @@ unsafe fn finish_checked(
     code
 }
 
+/// Writes the checked text door's `out`: the judged text's span, on a success and on a
+/// violation, which carries the text; nothing on a failure.
+///
+/// # Safety
+/// Caller guarantees `out` is valid for an unaligned write of a [`RawSpan`].
+#[inline(always)]
+unsafe fn write_checked_span(judged: &Result<CheckOutcome, Rejection<()>>, out: *mut c_void) {
+    let (offset, len) = match judged {
+        Ok(outcome) => outcome.span,
+        Err(Rejection::Violation(broken)) => (broken.offset, broken.len),
+        Err(Rejection::Failure(_)) => return,
+    };
+    // SAFETY: per the function contract; unaligned, as every checked door writes `out`.
+    unsafe { out.cast::<RawSpan>().write_unaligned(RawSpan { offset, len }) };
+}
+
 /// A 1.0 checked export's fault: the span, written when `fault` is not null.
 ///
 /// # Safety
@@ -739,17 +758,20 @@ unsafe fn plain_fault(fault: *mut RawFault) -> impl FnOnce(u32, u32, u32) {
 /// entries native-endian `Decimal`s, 16 bytes each; text entries a little-endian `u32` length
 /// followed by UTF-8 bytes). Returns 0 with the value written to `out`, the type the door
 /// writes (a `RawSpan` of the input for Text, which with an `enum` is the matched input, or 3
-/// when that span would end past `UINT32_MAX` bytes); 1, 2 or 3, the door's own fault; or 4,
-/// a violation of a declared rule, spanning the value. At a float door the float written is
+/// when that span would end past `UINT32_MAX` bytes); 1, 2 or 3, the door's own fault, the
+/// input not the type (`out` untouched); or 4, a value of the type that breaks a declared
+/// rule, written to `out` exactly as cast (never rounded: `multipleOf`'s rounding is part of
+/// the judgement; for Text, the span of the judged text), with `fault` spanning it. A
+/// rounding past what the type holds is 4, `multipleOf`. At a float door the float written is
 /// judged too, against each bound read as the door reads it (to the nearest float, ties to
 /// even), so a value inside a bound whose float lands on or past it is a violation of that
 /// bound.
-/// Codes 1 to 4 write `fault`; 0 and 4 write `check` when it is not null (`keyword` on 4,
-/// `adjusted` and `enum_index` on 0). -1 is a contract violation: a null `constraints`, a
-/// `size` other than `HyperCastRawConstraints_SIZE`, a door that is not numeric or Text, a
-/// format the core refuses, or a declaration `cast_constraints_check` refuses (every rule
-/// but duplicates, which this door does not look for: the first matching entry wins). `out`
-/// need not be aligned.
+/// Codes 1 to 4 write `fault`; 0 and 4 write `out`, and `check` when it is not null
+/// (`keyword` on 4, `adjusted` and `enum_index` on 0). -1 is a contract violation: a null
+/// `constraints`, a `size` other than `HyperCastRawConstraints_SIZE`, a door that is not
+/// numeric or Text, a format the core refuses, or a declaration `cast_constraints_check`
+/// refuses. With duplicate `enum` entries, the first matching entry wins. `out` need not be
+/// aligned.
 #[unsafe(no_mangle)]
 #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 pub extern "C" fn cast_checked(
@@ -777,13 +799,8 @@ pub extern "C" fn cast_checked(
         let entries = Entries::packed(door, text(enum_ptr, enum_len));
         let input = text(ptr, len);
         let verdict = if door == Door::Text {
-            judge_text_detailed(input, raw, &entries).map(|judged| {
-                judged.inspect(|outcome| {
-                    let (offset, len) = outcome.span;
-                    // Unaligned, as every checked door writes `out`.
-                    out.cast::<RawSpan>().write_unaligned(RawSpan { offset, len });
-                })
-            })
+            judge_text_detailed(input, raw, &entries)
+                .inspect(|judged| write_checked_span(judged, out))
         } else {
             let mut scratch = MaybeUninit::uninit();
             let Some(resolved) = resolve_format(format, &mut scratch) else {
@@ -834,25 +851,24 @@ pub extern "C" fn cast_checked_from_f64(
 }
 
 /// Judges a declaration, `constraints` and the `enum` list at `enum_ptr`/`enum_len` (read
-/// only under `HAS_ENUM`; integer entries native-endian `Decimal`s, 16 bytes each; text
+/// only under `HAS_ENUM`; numeric entries native-endian `Decimal`s, 16 bytes each; text
 /// entries a little-endian `u32` length followed by UTF-8 bytes), against door `door` with
 /// `param`, once, when a binding builds it. Returns 0 when every rule holds, otherwise the
-/// first rule it breaks, in code order: 1 a keyword the door does not take (an `enum` at a
-/// float door included, or a door code that names no door), 2 minimum with
-/// exclusiveMinimum, 3 maximum with exclusiveMaximum, 4 a lower bound not below the upper,
-/// 5 multipleOf not positive, 6 a rounding without multipleOf, 7 minLength above
-/// maxLength, 8 a bound, step or entry the door cannot hold, 9 an enum entry that is not
-/// UTF-8, 10 a duplicate enum entry (text under simple case folding), 11 a malformed
-/// layout, 12 an enum with no entries (`HAS_ENUM` with `enum_len` 0), 13 a text enum entry
-/// no input can match (an empty entry, or under `TRIM` one with leading or trailing Unicode
-/// White_Space). A malformed layout is any of: a null `constraints`; a `size` other than
-/// `HyperCastRawConstraints_SIZE` or a sign byte other than 0 or 1 in `lower`, `upper` or
-/// `multiple_of` (these two judged before everything else, since the layout cannot be read
-/// past them); an unknown flag bit, rounding code or nonzero `_reserved`; a sign byte other
-/// than 0 or 1 in an integer entry; a packed list cut short (a text entry's length
-/// word or bytes, or a 16-byte integer entry); or a non-empty list without `HAS_ENUM`. Never
-/// -1. Duplicates are found by comparing every pair, so the time grows with the square of
-/// the entry count: keep `enum` lists short. A long one is slow, never a fault.
+/// first rule it breaks, in code order. Every valid OpenAPI 3.2 declaration is accepted,
+/// unsatisfiable ones included (crossed bounds, duplicate or empty `enum`s), and a keyword
+/// for another type is ignored, as JSON Schema ignores it. The codes: 1 a door that takes no
+/// constraint (or a door code that names no door), `TRIM` or `CASE_SENSITIVE` at a numeric
+/// door, or a rounding with `multipleOf` at the text door; 5 multipleOf not positive; 6 a
+/// rounding without multipleOf; 8 a bound, step or numeric entry at a scale past 28, a text
+/// entry past `u32::MAX` bytes, or a rounding at an integer door with a fractional
+/// multipleOf; 9 an enum entry that is not UTF-8; 11 a malformed layout. Codes 2, 3, 4, 7,
+/// 10, 12 and 13 are retired and never returned. A malformed layout is any of: a null
+/// `constraints`; a `size` other than `HyperCastRawConstraints_SIZE` or a sign byte other
+/// than 0 or 1 in any of its five decimals (these two judged before everything else, since
+/// the layout cannot be read past them); an unknown flag bit, rounding code or nonzero
+/// `_reserved`; a sign byte other than 0 or 1 in a numeric entry; a packed list cut short (a
+/// text entry's length word or bytes, or a 16-byte numeric entry); or a non-empty list
+/// without `HAS_ENUM`. Never -1.
 #[unsafe(no_mangle)]
 #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 pub extern "C" fn cast_constraints_check(
@@ -1264,12 +1280,8 @@ pub extern "C" fn cast_checked_detailed(
         let entries = Entries::packed(door, text(enum_ptr, enum_len));
         let input = text(ptr, len);
         let verdict = if door == Door::Text {
-            judge_text_detailed(input, raw, &entries).map(|judged| {
-                judged.inspect(|outcome| {
-                    let (offset, len) = outcome.span;
-                    out.cast::<RawSpan>().write_unaligned(RawSpan { offset, len });
-                })
-            })
+            judge_text_detailed(input, raw, &entries)
+                .inspect(|judged| write_checked_span(judged, out))
         } else if door.is_numeric() {
             let mut scratch = MaybeUninit::uninit();
             let Some(format) = valid_format(format, &mut scratch) else {

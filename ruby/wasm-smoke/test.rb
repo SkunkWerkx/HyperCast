@@ -48,7 +48,7 @@ latitude = HyperCast::Constraints.new(door: :f64, minimum: "-90", maximum: "90",
 check.("checked, rounded", HyperCast.checked("45.1234567", inv, latitude),
        HyperCast::Checked.new(value: 45.123457, adjusted: true, enum_index: nil))
 check.("checked, violation", HyperCast.checked("-90.5", inv, latitude),
-       HyperCast::Violation.new(keyword: HyperCast::Keyword::MINIMUM, offset: 0, length: 5))
+       HyperCast::Violation.new(keyword: HyperCast::Keyword::MINIMUM, value: -90.5, offset: 0, length: 5))
 sex = HyperCast::Constraints.new(door: :text, trim: true, enum: %w[Female Male Other])
 check.("text enum", HyperCast.text(" MALE ", sex).enum_index, 1)
 checks.join("\n")

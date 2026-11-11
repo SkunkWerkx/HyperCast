@@ -282,7 +282,7 @@ int main() {
   below.maximum = 1000;
   const auto cap = hc::Constraints<std::int32_t>::declare(below);
   CHECK((hc::cast_i32("1,234", invariant, cap.value()).rejection().violation() ==
-         hc::Violation{hc::Keyword::maximum, 0, 5}));
+         hc::Violation<std::int32_t>{hc::Keyword::maximum, 1234, 0, 5}));
   CHECK((hc::cast_i32("12,34", invariant, cap.value()).rejection().fault() ==
          hc::Fault{hc::CastFailure::malformed, 2, 3}));
   CHECK(hc::cast_i32("1,23,456", indian, cap.value()).rejection().violation().keyword ==
@@ -393,18 +393,17 @@ int main() {
   CHECK(north.ok() && north.value().value == 45.5 && !north.value().adjusted);
   const auto beyond = hc::detailed::cast_f64("91", invariant, latitude.value());
   CHECK(!beyond.ok() && !beyond.rejection().is_failure());
-  CHECK((beyond.rejection().violation() == hc::Violation{hc::Keyword::maximum, 0, 2}));
+  CHECK((beyond.rejection().violation() == hc::Violation<double>{hc::Keyword::maximum, 91, 0, 2}));
   CHECK(beyond.to_checked() == hc::cast_f64("91", invariant, latitude.value()));
   const auto unreadable = hc::detailed::cast_f64("9,1", invariant, latitude.value());
   CHECK(unreadable.rejection().is_failure() &&
         unreadable.rejection().failure().detail == hc::Detail::group_size);
-  CHECK(
-      unreadable.rejection().visit(overloaded{[](const hc::Failure &f) { return f.detail_code(); },
-                                              [](const hc::Violation &) { return 0u; }}) == 11);
+  CHECK(unreadable.rejection().visit(
+            overloaded{[](const hc::Failure &f) { return f.detail_code(); },
+                       [](const hc::Violation<double> &) { return 0u; }}) == 11);
   CHECK(unreadable.to_checked() == hc::cast_f64("9,1", invariant, latitude.value()));
-  CHECK(
-      hc::detailed::cast_f64_from_double(-90.5, latitude.value()).rejection().violation().keyword ==
-      hc::Keyword::minimum);
+  CHECK((hc::detailed::cast_f64_from_double(-90.5, latitude.value()).rejection().violation() ==
+         hc::Violation<double>{hc::Keyword::minimum, -90.5, 0, 0}));
   CHECK((
       hc::detailed::cast_f64_from_double(std::numeric_limits<double>::quiet_NaN(), latitude.value())
           .rejection()

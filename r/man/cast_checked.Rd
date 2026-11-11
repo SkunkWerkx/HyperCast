@@ -41,7 +41,9 @@ measures and matches it.
 Each returns a \link{hypercast_checked_verdict}, whose \code{value} is in the plain door's R type
 (text is character, or a list of raw vectors with \code{raw = TRUE}). A text \code{enum} match is the
 entry exactly as declared, and its \code{enum_index} is the entry's position in \code{enum}, counted from
-1 as R counts.
+1 as R counts. A violation carries its value too, in the same column: the value exactly as the
+door cast it, never rounded, and at the text door the judged text (trimmed under \code{trim}), not
+an entry.
 
 \code{cast_text(x)} with no \code{constraints} is the plain text door; an explicit \code{NULL}, or
 anything that is not a \code{hypercast_constraints}, is an error rather than a cast without

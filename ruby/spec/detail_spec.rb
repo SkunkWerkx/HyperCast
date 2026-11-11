@@ -141,6 +141,7 @@ RSpec.describe "HyperCast 1.1" do
       violation = HyperCast.checked("11", invariant, positive)
       expect(violation).to be_a(HyperCast::Violation)
       expect(violation).not_to respond_to(:detail)
+      expect(violation.value).to eq(11)
       text = HyperCast::Constraints.new(door: :text, min_length: 3)
       expect(HyperCast.text("\xFF".b, text).detail).to eq(HyperCast::Detail::INVALID_UTF8)
     end

@@ -276,14 +276,18 @@ func put16(dst []byte, s *RawSymbol16) {
 }
 
 // result reads the verdict back out of the scratch: the out-value's 16 bytes as the core
-// wrote them on success, the fault's span and detail on a failure (and on a checked door's
-// violation, code 4, whose detail is 0).
+// wrote them on success, the fault's span and detail on a failure, and both on a checked
+// door's violation (code 4, whose detail is 0), which carries the value as cast.
 func (in *instance) result(code int32) (r result) {
 	r.code = code
 	mem := in.mem()[in.scratch : in.scratch+textOffset]
 	switch {
 	case code == 0:
 		copy((*[16]byte)(unsafe.Pointer(&r.out))[:], mem[outOffset:])
+	case code == 4:
+		// A checked door's violation: the value as cast, and the span beside it.
+		copy((*[16]byte)(unsafe.Pointer(&r.out))[:], mem[outOffset:])
+		fallthrough
 	case code > 0:
 		r.fault = rawFault{
 			Offset: binary.LittleEndian.Uint32(mem[faultOffset+4:]),
@@ -478,13 +482,13 @@ func (in *instance) loadOptions(options *RawDateOptions) {
 
 // ---- The checked doors' calls ------------------------------------------------------------
 //
-// A checked call lays its declaration out past the text, 8-aligned: the 72-byte
+// A checked call lays its declaration out past the text, 8-aligned: the 104-byte
 // RawConstraints, the 12-byte RawCheck the core reports into, then the enum list. Nothing
 // before the text moves, so the plain doors' layout and baseText are unchanged, and a
 // checked call's text and declaration together decide whether it fits the base scratch.
 
 const (
-	rawConstraintsBytes = 72
+	rawConstraintsBytes = 104
 	rawCheckBytes       = 12
 )
 
@@ -520,9 +524,11 @@ func (in *instance) loadDeclaration(at uint32, d *declaration) {
 	putDecimal(dst[24:], &d.raw.Lower)
 	putDecimal(dst[40:], &d.raw.Upper)
 	putDecimal(dst[56:], &d.raw.MultipleOf)
-	le.PutUint32(dst[72:], 0)
-	le.PutUint32(dst[76:], 0)
-	le.PutUint32(dst[80:], math.MaxUint32)
+	putDecimal(dst[72:], &d.raw.ExclusiveLower)
+	putDecimal(dst[88:], &d.raw.ExclusiveUpper)
+	le.PutUint32(dst[rawConstraintsBytes:], 0)
+	le.PutUint32(dst[rawConstraintsBytes+4:], 0)
+	le.PutUint32(dst[rawConstraintsBytes+8:], math.MaxUint32)
 	entries := in.mem()[base+rawConstraintsBytes+rawCheckBytes:]
 	if d.decimals != nil {
 		for i := range d.decimals {

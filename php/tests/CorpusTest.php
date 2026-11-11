@@ -601,18 +601,11 @@ final class CorpusTest extends TestCase
     /** The core's `Refusal` Display, by code: the words every binding's refusal carries. */
     private const REFUSALS = [
         1 => 'a constraint the door does not take',
-        2 => 'minimum together with exclusiveMinimum',
-        3 => 'maximum together with exclusiveMaximum',
-        4 => 'the lower bound is not below the upper bound',
         5 => 'multipleOf is not positive',
         6 => 'a rounding without multipleOf',
-        7 => 'minLength is above maxLength',
         8 => 'a bound, step or enum entry the door cannot hold',
         9 => 'an enum entry that is not UTF-8',
-        10 => 'a duplicate enum entry',
         11 => 'a malformed constraints layout',
-        12 => 'an enum with no entries',
-        13 => 'a text enum entry no input can match',
     ];
 
     /** The message a refused declaration throws with, one per code. */
@@ -638,6 +631,7 @@ final class CorpusTest extends TestCase
             minLength: $c['minLength'] ?? null,
             maxLength: $c['maxLength'] ?? null,
             trim: $c['trim'] ?? false,
+            caseSensitive: $c['caseSensitive'] ?? false,
             enum: $c['enum'] ?? null,
         );
     }
@@ -747,34 +741,10 @@ final class CorpusTest extends TestCase
             self::assertInstanceOf(Checked::class, $verdict, $label);
             self::assertSame($vector['adjusted'], $verdict->adjusted, "{$label}: adjusted");
             self::assertSame($vector['enum_index'] ?? null, $verdict->enumIndex, "{$label}: enum index");
-            $want = $vector['value'];
-            $value = $verdict->value;
-            switch ($vector['door']) {
-                case 'f32':
-                case 'f64':
-                    $want = (float) $want;
-                    if ($vector['door'] === 'f32') {
-                        $want = unpack('g', pack('g', $want))[1];
-                    }
-                    self::assertIsFloat($value, $label);
-                    self::assertSame(bin2hex(pack('e', $want)), bin2hex(pack('e', $value)), "{$label}: bits");
-                    break;
-                case 'decimal':
-                    self::assertInstanceOf(Decimal::class, $value, $label);
-                    self::assertSame($want, (string) $value, $label);
-                    break;
-                case 'text':
-                    self::assertSame($want, $value, $label);
-                    if ($verdict->enumIndex !== null) {
-                        // The caller's own declared entry, by index.
-                        self::assertSame($constraints->enum[$verdict->enumIndex], $value, "{$label}: declared entry");
-                    }
-                    break;
-                case 'u64':
-                    self::assertSame((string) $want, sprintf('%u', $value), $label);
-                    break;
-                default:
-                    self::assertSame($want, $value, $label);
+            self::assertValue($label, $vector, $verdict->value);
+            if ($vector['door'] === 'text' && $verdict->enumIndex !== null) {
+                // The caller's own declared entry, by index.
+                self::assertSame($constraints->enum[$verdict->enumIndex], $verdict->value, "{$label}: declared entry");
             }
             return;
         }
@@ -784,6 +754,8 @@ final class CorpusTest extends TestCase
             self::assertInstanceOf(Keyword::class, $verdict->keyword, $label);
             self::assertSame($vector['keyword'], lcfirst($verdict->keyword->name), $label);
             self::assertSame($vector['fault'], [$verdict->offset, $verdict->length], "{$label}: span");
+            // The value as the door cast it, asserted as a success's is.
+            self::assertValue("{$label}: violation", $vector, $verdict->value);
             return;
         }
         self::assertInstanceOf(Fault::class, $verdict, $label);
@@ -792,7 +764,37 @@ final class CorpusTest extends TestCase
     }
 
     /**
-     * Replays corpus/declarations.json through the conversion every bound, step and integer
+     * A row's `value` against the value a checked door delivered, a `Checked`'s or a
+     * `Violation`'s: a float by its bits (an f32 as the f32 the row names), a `Decimal` by its
+     * canonical text, a u64 by its unsigned spelling, anything else exactly.
+     */
+    private static function assertValue(string $label, array $vector, mixed $value): void
+    {
+        $want = $vector['value'];
+        switch ($vector['door']) {
+            case 'f32':
+            case 'f64':
+                $want = (float) $want;
+                if ($vector['door'] === 'f32') {
+                    $want = unpack('g', pack('g', $want))[1];
+                }
+                self::assertIsFloat($value, $label);
+                self::assertSame(bin2hex(pack('e', $want)), bin2hex(pack('e', $value)), "{$label}: bits");
+                break;
+            case 'decimal':
+                self::assertInstanceOf(Decimal::class, $value, $label);
+                self::assertSame($want, (string) $value, $label);
+                break;
+            case 'u64':
+                self::assertSame((string) $want, sprintf('%u', $value), $label);
+                break;
+            default:
+                self::assertSame($want, $value, $label);
+        }
+    }
+
+    /**
+     * Replays corpus/declarations.json through the conversion every bound, step and numeric
      * `enum` entry crosses: a `Constraints` maximum at the decimal door, read back as the
      * `Decimal` the constructor keeps and from `packed()`, whose bytes 40 to 56 are the raw
      * triple the core reads (scale included). A refused row is code 8.

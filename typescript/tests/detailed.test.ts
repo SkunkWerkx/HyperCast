@@ -184,7 +184,7 @@ test('the checked doors: a failure has its detail, a violation has none', () => 
   assert.deepEqual(api.castCheckedDetailed('7', step.value), api.castChecked('7', step.value))
   assert.deepEqual(api.castCheckedDetailed('12', step.value), {
     ok: false,
-    violation: { keyword: 'maximum', offset: 0, length: 2 },
+    violation: { keyword: 'maximum', value: 12, offset: 0, length: 2 },
   })
   assert.deepEqual(api.castCheckedDetailed('1x', step.value), {
     ok: false,
@@ -218,7 +218,7 @@ test('the checked doors: a failure has its detail, a violation has none', () => 
   )
   assert.deepEqual(api.castCheckedDetailedFromNumber(12, step.value), {
     ok: false,
-    violation: { keyword: 'maximum', offset: 0, length: 0 },
+    violation: { keyword: 'maximum', value: 12, offset: 0, length: 0 },
   })
   assert.deepEqual(api.castCheckedDetailedFromNumber(Number.NaN, step.value), {
     ok: false,
@@ -279,7 +279,7 @@ test('the packed layouts are untouched by the detailed doors', () => {
   assert.equal(NumFormat.invariant().packed.length, 92)
   const declared = Constraints.declare({ door: Door.I32, maximum: '10' })
   assert.ok(declared.ok)
-  assert.equal(declared.value.packed.length, 72)
+  assert.equal(declared.value.packed.length, 104)
 })
 
 test('Detail is open: a name this binding lacks still type-checks, and a switch needs a default', () => {

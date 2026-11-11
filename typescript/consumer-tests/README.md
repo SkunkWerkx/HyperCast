@@ -38,7 +38,7 @@ Then the host scenarios:
 
 ```sh
 typescript/consumer-tests/run.sh /tmp/npm-local negative-unpublished plain omit-optional \
-  absent-native forced-wasi negative-deleted-package negative-deleted-wasm mac-lockfile bundlers
+  absent-native forced-wasi negative-deleted-package negative-deleted-wasm mac-lockfile bundlers bun-install
 ```
 
 And the container scenarios, which need Docker (on Docker Desktop the containers reach the
@@ -59,7 +59,8 @@ Every scenario passed from a local pack of the darwin-arm64 addon and the WASI m
 both negative controls failed as stated (an empty `CORPUS_DIR` on the timestamp vector, the
 22.12.0 image with `EBADENGINE`). The floor scenario loaded `wasm32-wasip1` on
 `node:22.13.0-alpine` with engine-strict, `node:22-alpine` and `node:24-alpine`, since a local
-pack carries no musl addon.
+pack carries no musl addon. The floor moved to 22.14.0 on 2026-11-03, after these runs; the floor
+and `mac-lockfile` scenarios have not been re-run at it here, and CI runs them at 22.14.0.
 
 - **Bundlers.** Neither esbuild (`--bundle --platform=node`) nor webpack produces a working
   self-contained bundle: webpack fails the build on the loader's platform `require`s, and

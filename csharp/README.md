@@ -112,7 +112,7 @@ kept in `DetailCode`, and its reason and span stay as usable as any other's, so 
 tolerates one. The detail sits beside the fault's identity, not in it: `Fault`'s constructor,
 deconstruction and patterns are 1.0's, and two faults with the same reason and span are equal,
 and hash and print alike, whatever their details say. A `Fault` you construct names none
-(`FaultDetail.None`), and so does a `Violation`, which is not a fault.
+(`FaultDetail.None`), and so does a `Violation<T>`, which is not a fault.
 
 Before the first cast, `Cast.IsAvailable` says whether the native library resolved and
 `Cast.NativeVersion` names the core it loaded, as a `System.Version` (`null` when it did not
@@ -357,7 +357,7 @@ fraction as a `TimeOnly`) and `Cast.ExcelDuration` (days as a `TimeSpan`). A typ
 Every date door keeps its strict shapes unless asked, and a `DateOptions` asks. Its `Shapes`
 (`DateShapes.CompactDate`, `SpaceSeparator`, `HourOffset`, or `DateOptions.CommonForms` for the
 three) open `20260107` at `Cast.Date`, and a space for `T` or `±hh` offsets at `Cast.Timestamp`; its
-`Pivot` (100 to 9999, the last year of a 100-year window) reads a two-digit year at the ordered
+`Pivot` (0, the default, for none, or 100 to 9999, the last year of a 100-year window) reads a two-digit year at the ordered
 date and civil date-time doors; its `Months`, a `MonthNames` you build (`new MonthNames((1, "Jan"), …)`,
 or `MonthNames.FromPacked` for the core's own bytes, and equal to any with the same entries in
 the same order), reads those names in the month field, in the
@@ -372,9 +372,11 @@ library throws `DllNotFoundException` or `EntryPointNotFoundException` there, at
 
 ## Validation constraints
 
-A value that parsed can still break a business rule. `Constraints<T>` declares the rule with
-the OpenAPI Schema Object's keywords, bound to the door its type names, and the checked
-overload of that door judges the value by it, in the core and in exact decimal arithmetic:
+Untrusted input is judged at two levels. First it is cast to the type: input that is not the
+type is a `Fault`. Then the value is validated, and a value of the type can still break a
+business rule. `Constraints<T>` declares the rule with the OpenAPI 3.2 Schema Object's
+keywords, bound to the door its type names, and the checked overload of that door judges the
+value by it, in the core and in exact decimal arithmetic:
 
 ```csharp
 using HyperCast;
@@ -388,21 +390,21 @@ var sex = new Constraints<string>(trim: true, @enum: ["Female", "Male", "Other"]
 
 var euro = new NumFormat(',', '.', NumStyles.All, "€");
 Console.WriteLine(Cast.Double("45.1234567", NumFormat.Invariant, latitude)); // Checked(45.123457, adjusted)
-Console.WriteLine(Cast.Double("-90.5", NumFormat.Invariant, latitude));      // Violation(minimum @ 0+5)
+Console.WriteLine(Cast.Double("-90.5", NumFormat.Invariant, latitude));      // Violation(minimum, -90.5 @ 0+5)
 Console.WriteLine(Cast.DoubleFromDouble(45.1234567, latitude));              // Checked(45.123457, adjusted)
 Console.WriteLine(Cast.Decimal("€1.234,55", euro, euroCash));                // Checked(1234.55)
-Console.WriteLine(Cast.Decimal("€12,37", euro, euroCash));                   // Violation(multipleOf @ 0+6)
+Console.WriteLine(Cast.Decimal("€12,37", euro, euroCash));                   // Violation(multipleOf, 12.37 @ 0+6)
 Console.WriteLine(Cast.Decimal("12,3x", euro, euroCash));                    // Fault(Malformed @ 4+1)
 
 var message = Cast.Text(" MALE ", sex) switch
 {
     Checked<string> ok => $"{ok.Value}, entry {ok.EnumIndex}",       // Male, entry 1
-    Rejection rejection => rejection switch
+    Rejection<string> rejection => rejection switch
     {
         Fault f => $"{f.Reason} at char {f.Offset}",                 // Empty, for "   "
-        Violation v => v.Keyword.Name switch
+        Violation<string> v => v.Keyword.Name switch
         {
-            "enum" => $"not a sex code: chars {v.Offset}+{v.Length}",
+            "enum" => $"not a sex code: {v.Value}",                  // not a sex code: Mail, for " Mail"
             _ => $"breaks {v.Keyword}",                              // keywords are open
         },
     },
@@ -413,21 +415,31 @@ Console.WriteLine(message);
 A checked door answers in a `CheckedVerdict<T>`, a union beside `Verdict<T>` (which every
 plain door keeps returning, unchanged): `Checked<T>` — the `Value`, `Adjusted` (true only when
 rounding changed it) and, at the text door with an `enum`, the matched `EnumIndex` — or
-`Rejection`, itself a union of the plain doors' own `Fault` (it did not parse) and a
-`Violation` (it parsed and broke a rule: its `Keyword` and the value's span, in the same
-units as a fault's). Both switches are exhaustive, and both unions have `Match`, `Switch` and
+`Rejection<T>`, itself a union of the plain doors' own `Fault` (the input is not the type) and
+a `Violation<T>` (it cast, and the value broke a rule: its `Keyword`, the `Value` exactly as
+the door cast it, and its span, in the same units as a fault's). The violation's value is never
+rounded — `multipleOf`'s rounding is part of the judgement, not of the value, so `"127"` at
+`sbyte` with `multipleOf: 5` rounding to `Ceiling` breaks `multipleOf` with a `Value` of `127`,
+since 130 does not fit — and at the text door it is the judged text, after `trim`, the input's
+own rather than an entry. Both switches are exhaustive, and both unions have `Match`, `Switch` and
 `TryGetValue` for C# 14. `Keyword` is a value with static members (`Keyword.Minimum` …
 `Keyword.Enum`), not an enum: `format` and `pattern` may join in a minor release, so a branch
 over keywords needs its default arm. `Name` is the OpenAPI spelling (`exclusiveMinimum`).
 
-The integer doors take `minimum`, `exclusiveMinimum`, `maximum`, `exclusiveMaximum`,
-`multipleOf` with a `Rounding` (`Strict`, the default, then `Midpoint` — half to even —
-`Floor` and `Ceiling`) and `enum`; `float`, `double` and `decimal` the same without `enum`;
-the text door, `Constraints<string>`, takes `minLength`, `maxLength` (in code points), `trim`
-(Unicode `White_Space`, U+00A0 included) and `enum`, matched under Unicode simple case
-folding and delivering the caller's own declared string and its index. The first failure
-wins: the door parses, the text is trimmed, `multipleOf` rounds or refuses, then the bounds,
-the lengths and `enum` judge the result. A float door also judges the float it delivers against each
+The numeric doors (the integers, `float`, `double` and `decimal`) read `minimum`,
+`exclusiveMinimum`, `maximum` and `exclusiveMaximum` — four keywords, so `minimum` and
+`exclusiveMinimum` may both apply — `multipleOf` with a `Rounding` (`Strict`, the default, then
+`Midpoint` — half to even — `Floor` and `Ceiling`) and `enum`, its entries compared exactly to the
+value; the text door, `Constraints<string>`, reads `minLength`, `maxLength` (in code points) and
+`enum`, with two text-door extensions: `trim` (Unicode `White_Space`, U+00A0 included) and
+`caseSensitive`. A text `enum` matches under Unicode simple case folding, delivering the caller's
+own declared string and its index (a number among its entries is valid and never matches);
+`caseSensitive: true` matches byte for byte instead, for a
+vocabulary whose case carries meaning (`@enum: ["mm", "Mm"]`). A keyword for the other kind of
+door is ignored, as JSON Schema ignores it. The first failure wins: the door casts, the text is
+trimmed, `multipleOf` rounds or is broken (a rounding past what the type holds breaks it too),
+then `minimum`, `exclusiveMinimum`, `maximum`, `exclusiveMaximum`, the lengths and `enum` judge
+the result. A float door also judges the float it delivers against each
 bound read as the door reads it: `"1e-400"` at `double` reads as `0`, so it breaks
 `exclusiveMinimum: "0"`. Bounds and steps are a `ConstraintValue`: a `decimal` (an integer literal
 widens to one) or its text in invariant notation, converted exactly by the core (`"1e-6"` is
@@ -439,19 +451,23 @@ with a `NumFormat`, `Cast.Numeric<T>` for a generic caller, and `Int32FromDouble
 on the shortest decimal that names it (`0.1 + 0.2` breaks `multipleOf: 0.1m` under `Strict`, and
 rounds to `0.3` under `Midpoint`), with an empty span.
 
-A declaration is judged once, by the core, when it is built, and a declaration that cannot
-mean anything at its door is the caller's bug: `ArgumentException`, its message the rule
-(`new Constraints<byte>(minimum: -1)` throws "Constraints refused (code 8): a bound, step or
-enum entry the door cannot hold."). An `enum` left `null` is none, while `@enum: []` declares
-one with no entries, which no value could match: refused (code 12), as is a text entry no input
-can match (code 13: an empty one, or under `trim` one with leading or trailing white space).
-After that a checked cast judges only data and throws nothing for it. The text door's value is a `string`, and `Verdict<T>` holds only value types,
+A declaration is judged once, by the core, when it is built. Every valid OpenAPI 3.2
+declaration is accepted, an unsatisfiable one included — crossed bounds, `minLength` above
+`maxLength`, duplicate entries (the first match wins), bounds and entries the type cannot hold
+(an entry that never matches) — and an `enum` left `null` is none, while `@enum: []` declares
+one no value matches. Only a declaration the core cannot read is the caller's bug:
+`ArgumentException`, its message the rule (`new Constraints<int>(trim: true)` throws
+"Constraints refused (code 1): a constraint the door does not take."; `trim` or
+`caseSensitive` at a numeric door, a rounding with `multipleOf` at the text door, a
+`multipleOf` not positive, a rounding without one, a decimal past 96 bits or a scale of 28, a
+rounding at an integer door with a fractional `multipleOf`, and a text entry that is not UTF-8
+are the others). After that a checked cast judges only data and throws nothing for it. The text door's value is a `string`, and `Verdict<T>` holds only value types,
 so `Cast.Text` — with or without constraints — answers in a `CheckedVerdict<string>`: the
 declared entry on an `enum` match, the input string itself when nothing was trimmed, and a new
 string otherwise. A lone surrogate in UTF-16 input is `Malformed` at every door, plain or
 checked, never replaced by U+FFFD, and in an `enum` entry it is refused as an entry that is not
 UTF-8. `Cast.Optional` takes a checked verdict too: an `Empty` fault becomes `null`, and every
-other rejection, a `Violation` included, flows through. The numeric checked doors allocate
+other rejection, a `Violation<T>` included, flows through. The numeric checked doors allocate
 nothing per call.
 
 ## Why not the BCL's own `TryParse` family?
@@ -464,7 +480,7 @@ nothing per call.
    signs, digits and day periods read beside the ASCII ones — much of it grammar the BCL
    has no knob for at any price.
 3. **One engine across a polyglot system** — the same Rust core, bit-for-bit verdicts,
-   proven by the shared conformance corpus every binding replays: here, all fifteen files
+   proven by the shared conformance corpus every binding replays: here, all nineteen files
    through real P/Invoke, fault spans asserted byte for byte.
 4. **Not slower — mostly faster.** BenchmarkDotNet, `[MemoryDiagnoser]`, lenience matched
    where the BCL has the knob, FFI crossing and UTF-16→UTF-8 transcode *included* in every
@@ -543,9 +559,9 @@ nothing per call.
    | `(IFormatProvider)CultureInfo.InvariantCulture`, mapped per call | 83.6 ns |
 
    Mapping the provider on every call (`NumberFormatInfo.GetInstance`, then
-   `NumFormat.From` reading the culture's eleven fields) is about 12 ns and allocates nothing
-   — the one BCL getter that would, `NativeDigits`, clones its array on every read, so the
-   bridge reads the field it clones from. Hold the `NumFormat` in a field to keep it. The
+   `NumFormat.From` reading the culture's thirteen fields) is about 12 ns and allocates nothing
+   — the BCL getters that would, `NativeDigits`, `NumberGroupSizes` and `CurrencyGroupSizes`,
+   clone their arrays on every read, so the bridge reads the fields they clone from. Hold the `NumFormat` in a field to keep it. The
    gap under that is the currency symbol a culture carries and `NumFormat.Invariant` does not
    (the invariant culture's is `¤`): a format whose every symbol is one ASCII character is
    written to the layout without the encoder, and `¤` is not one, so that row pays the
@@ -908,15 +924,18 @@ doors themselves use, so a value read that way is the value the door would have 
 - `RawDayPeriods` — the core's 40-byte day-period layout: a size word, then the AM and PM
   designators as `RawWideSymbol`s. `DateFormat.ToRaw()` builds it; the civil date-time door
   passes null in its place when nothing is declared.
-- `RawConstraints` — the core's 72-byte validation-constraints layout: a size word, the
-  `Has*` and `Trim` flags, the rounding code, the two lengths and a reserved word, then the
-  lower bound, the upper bound and the step as `RawDecimal`s. `Constraints<T>.ToRaw()` returns
+- `RawConstraints` — the core's 104-byte validation-constraints layout: a size word, the
+  `Has*`, `Trim` and `CaseSensitive` flags, the rounding code, the two lengths and a reserved
+  word, then `minimum` (`Lower`), `maximum` (`Upper`), the step, `exclusiveMinimum`
+  (`ExclusiveLower`) and `exclusiveMaximum` (`ExclusiveUpper`) as `RawDecimal`s, each keyword in
+  its own slot. `Constraints<T>.ToRaw()` returns
   the declaration the core has judged, and `PackedEnum` the `enum` list that travels beside
-  it, read only under `HasEnum` (`RawDecimal`s in native byte order at an integer door; at the text door, each entry a
+  it, read only under `HasEnum` (`RawDecimal`s in native byte order at a numeric door; at the text door, each entry a
   little-endian 32-bit length and its UTF-8 bytes).
 - `RawCheck` and `RawSpan` — what a checked door writes beside its value (the keyword code,
-  `Adjusted`, `EnumIndex`), and the span the text door writes in place of a copy.
-  `Abi.ToViolation(keyword, RawFault)` and `Keyword.FromCode` read a violation back.
+  `Adjusted`, `EnumIndex`), and the span the text door writes in place of a copy. On a
+  violation (code 4) the door writes the value as cast to its `out` too, as on success.
+  `Abi.ToViolation(keyword, value, RawFault)` and `Keyword.FromCode` read a violation back.
 - `Abi` — `Code(UnixPrecision)`, `Code(DateOrder)` and `Code(ExcelEpoch)`, checked
   (`ArgumentOutOfRangeException` for an undefined value), and the way back as
   `UnixPrecisionFrom`, `DateOrderFrom`, `ExcelEpochFrom` and `ReasonFrom`, each `null` for a

@@ -140,6 +140,6 @@ def test_the_checker_catches_a_missing_violation_arm(monkeypatch, tmp_path):
     )
     out, err, status = api.run(["--strict", "--cache-dir", os.devnull, str(sample)])
     assert status != 0
-    assert '"Violation"; expected "Never"' in out, out + err
+    assert '"Violation[int]"; expected "Never"' in out, out + err
     assert "missing_violation.py:12: error" in out, out + err
     assert "missing_violation.py:13: error" in out, out + err

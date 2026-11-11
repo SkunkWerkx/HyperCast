@@ -2001,7 +2001,7 @@ pub fn cast_excel_duration<'env>(env: &'env Env, value: Unknown<'env>) -> Result
 // A declaration is laid out exactly as the C ABI carries it, a `RawConstraints` with the
 // packed `enum` list beside it, and judged by the core's own exports: `cast_constraints_check`
 // once, when a `Constraints` is declared, and `cast_checked`, `cast_checked_from_f64` and
-// `cast_text` on every cast. Bounds, steps and integer entries are converted by
+// `cast_text` on every cast. Bounds, steps and numeric entries are converted by
 // `cast_declared_decimal`. No rule is restated here: every refusal and every violation is the
 // core's.
 // ---------------------------------------------------------------------------------------
@@ -2015,12 +2015,12 @@ struct RawFault {
 }
 
 // The layouts this file passes to the core, pinned at the sizes the header carries
-// (`HyperCastRawConstraints_SIZE` 72, `HyperCastRawCheck_SIZE` 12, `HyperCastRawSpan_SIZE` 8,
+// (`HyperCastRawConstraints_SIZE` 104, `HyperCastRawCheck_SIZE` 12, `HyperCastRawSpan_SIZE` 8,
 // `HyperCastRawFaultDetail_SIZE` 16, `HyperCastRawDateOptions_SIZE` 12 and the plain fault's
 // two words); tests/constraints.test.ts holds the header to the same numbers. A value a door
 // writes is read from a 16-byte slot, so none may outgrow it.
 const _: () = {
-    assert!(size_of::<hc::RawConstraints>() == 72 && hc::RawConstraints::SIZE == 72);
+    assert!(size_of::<hc::RawConstraints>() == 104 && hc::RawConstraints::SIZE == 104);
     assert!(align_of::<hc::RawConstraints>() == 8);
     assert!(size_of::<hc::RawCheck>() == 12 && align_of::<hc::RawCheck>() == 4);
     assert!(size_of::<hc::RawSpan>() == 8 && align_of::<hc::RawSpan>() == 4);
@@ -2164,12 +2164,16 @@ pub enum Rounding {
     Ceiling = 3,
 }
 
-/// The declared form of a `Constraints`: `Constraints.declare` reads it. The integer doors
-/// take the bounds, `multipleOf` with a `rounding`, and `enum`; `Door.F32`, `Door.F64` and
-/// `Door.Decimal` the same but `enum`; `Door.Text` `minLength`, `maxLength` (in code points),
-/// `trim` and `enum`. A bound, step or integer entry is a decimal string in invariant
-/// notation (`"0.000001"`, `"-90"`, `"1e-6"`) or a `bigint`, never a `number`: a number is a
-/// binary float, which holds most decimals only approximately.
+/// The declared form of a `Constraints`: `Constraints.declare` reads it, as OpenAPI 3.2
+/// reads a Schema Object. The numeric doors take the four bounds (each its own keyword, so
+/// `minimum` and `exclusiveMinimum` may both be declared), `multipleOf` with a `rounding`, and
+/// `enum`; `Door.Text` takes `minLength`, `maxLength` (in code points), `enum`, and HyperCast's
+/// own `trim` and `caseSensitive`. A keyword for the other type is ignored, as JSON Schema
+/// ignores it; `trim` or `caseSensitive` at a numeric door, or a `rounding` at `Door.Text`, is
+/// refused. A declaration no value can satisfy (crossed bounds, an empty `enum`) is accepted,
+/// and every value then violates it. A bound, step or numeric entry is a decimal string in
+/// invariant notation (`"0.000001"`, `"-90"`, `"1e-6"`) or a `bigint`, never a `number`: a
+/// number is a binary float, which holds most decimals only approximately.
 #[napi(object, object_to_js = false, object_from_js = false)]
 pub struct ConstraintsSpec {
     /// The door the declaration is bound to: an integer, real or decimal door, or `Door.Text`.
@@ -2201,23 +2205,39 @@ pub struct ConstraintsSpec {
     pub max_length: Option<u32>,
     /// Trim Unicode `White_Space` from both ends before judging.
     pub trim: Option<bool>,
-    /// The values allowed: strings at `Door.Text` (matched under simple case folding), decimal
-    /// strings or `bigint`s at an integer door. Left out declares none; an empty array declares
-    /// one no value could match, which the core refuses (code 12).
+    /// Match a text `enum` byte for byte rather than under simple case folding, for a
+    /// vocabulary whose case carries meaning (`mm` and `Mm`); `false` when absent.
+    pub case_sensitive: Option<bool>,
+    /// The values allowed: strings at `Door.Text` (matched under simple case folding unless
+    /// `caseSensitive`; a `bigint` there is a valid entry that never matches), decimal strings or `bigint`s at a numeric door, compared exactly to
+    /// the value (`"7.0"` is `7`). Left out declares none; an empty array declares one no
+    /// value matches. With duplicates, the first matching entry wins.
     #[napi(js_name = "enum", ts_type = "ReadonlyArray<string | bigint>")]
     pub entries: Option<Vec<String>>,
 }
 
-/// A rule a value broke, in the OpenAPI spelling. Open to additions: `format` and `pattern`
-/// may join in a minor release, so a `switch` over keywords needs a `default` arm, and a code
-/// this binding does not name yet arrives as `"keyword N"`.
-#[napi(object, object_from_js = false)]
+/// A rule a value of the door's type broke, in the OpenAPI spelling, with that value: the
+/// input was cast (a fault, had it not been the type), then judged. `value` is the value
+/// exactly as the door cast it, never rounded to `multipleOf` (rounding is part of the
+/// judgement), in the type a success at the door would carry; at `Door.Text` it is the judged
+/// text (trimmed, under `trim`), never an `enum` entry. Keywords are open to additions:
+/// `format` and `pattern` may join in a minor release, so a `switch` over keywords needs a
+/// `default` arm, and a code this binding does not name yet arrives as `"keyword N"`.
+#[napi(
+    object,
+    object_to_js = false,
+    object_from_js = false,
+    js_name = "Violation<T>"
+)]
 pub struct Violation {
     /// The keyword broken.
     #[napi(
         ts_type = "'minimum' | 'exclusiveMinimum' | 'maximum' | 'exclusiveMaximum' | 'multipleOf' | 'minLength' | 'maxLength' | 'enum' | (string & {})"
     )]
     pub keyword: String,
+    /// The value as the door cast it.
+    #[napi(ts_type = "T")]
+    pub value: bool,
     /// Where the value starts, in the caller's own units, as a fault's span is.
     pub offset: u32,
     /// How long it runs; 0 for a number already decoded, which has no text.
@@ -2227,7 +2247,7 @@ pub struct Violation {
 /// The success case of a checked door: `ok` is `true`; `value` is the value (rounded to
 /// `multipleOf` when the declaration rounds; at `Door.Text` with an `enum`, the caller's own
 /// declared entry); `adjusted` is true only when rounding changed it; `enumIndex` is the index
-/// of the entry a text matched, `null` otherwise (an integer `enum` included: the value is the
+/// of the entry a text matched, `null` otherwise (a numeric `enum` included: the value is the
 /// answer).
 #[napi(
     object,
@@ -2245,46 +2265,45 @@ pub struct CheckedCase {
     pub enum_index: u32,
 }
 
-/// The failure case of a checked door for a value that parsed and broke a declared rule:
-/// `ok` is `false` and `violation` says which rule, and where.
-#[napi(object, object_to_js = false, object_from_js = false)]
+/// The failure case of a checked door for a value of the door's type that broke a declared
+/// rule: `ok` is `false` and `violation` says which rule, where, and the value.
+#[napi(
+    object,
+    object_to_js = false,
+    object_from_js = false,
+    js_name = "Violated<T>"
+)]
 pub struct Violated {
     #[napi(ts_type = "false")]
     pub ok: bool,
+    #[napi(ts_type = "Violation<T>")]
     pub violation: Violation,
 }
 
-/// Why a checked door refused a value: it did not parse (`Failure`, today's fault), or it
-/// parsed and broke a rule (`Violated`).
-#[napi(js_name = "Rejection")]
+/// Why a checked door refused a value: it is not the type (`Failure`, the door's fault), or
+/// it is and broke a rule (`Violated<T>`, carrying the value).
+#[napi(js_name = "Rejection<T>")]
 pub type RejectionType = Either<Failure, Violated>;
 
-/// The outcome of a checked door: exactly one of `Checked<T>`, `Failure` or `Violated`, told
-/// apart by `ok` and then by `'fault' in verdict`.
+/// The outcome of a checked door: exactly one of `Checked<T>`, `Failure` or `Violated<T>`,
+/// told apart by `ok` and then by `'fault' in verdict`.
 #[napi(js_name = "CheckedVerdict<T>")]
 pub type CheckedVerdictType = Either3<CheckedCase, Failure, Violated>;
 
 /// The outcome of a detailed checked door: exactly one of `Checked<T>`, `DetailedFailure` or
-/// `Violated`, told apart by `ok` and then by `'fault' in verdict`. A violation names a rule
-/// the value broke, not a failure to read it, so it carries no detail.
+/// `Violated<T>`, told apart by `ok` and then by `'fault' in verdict`. A violation names a
+/// rule the value broke, not a failure to read it, so it carries no detail.
 #[napi(js_name = "DetailedCheckedVerdict<T>")]
 pub type DetailedCheckedVerdictType = Either3<CheckedCase, DetailedFailure, Violated>;
 
 /// The refusals, in code order, for their wording.
-const REFUSALS: [hc::Refusal; 13] = [
+const REFUSALS: [hc::Refusal; 6] = [
     hc::Refusal::KeywordNotForDoor,
-    hc::Refusal::MinimumWithExclusive,
-    hc::Refusal::MaximumWithExclusive,
-    hc::Refusal::LowerNotBelowUpper,
     hc::Refusal::MultipleOfNotPositive,
     hc::Refusal::RoundingWithoutMultipleOf,
-    hc::Refusal::MinLengthAboveMax,
     hc::Refusal::NotHeldByDoor,
     hc::Refusal::EnumNotUtf8,
-    hc::Refusal::DuplicateEnum,
     hc::Refusal::MalformedLayout,
-    hc::Refusal::EmptyEnum,
-    hc::Refusal::UnmatchableEnumEntry,
 ];
 
 /// The keywords this binding names.
@@ -2529,7 +2548,7 @@ impl<'env> CheckedInput<'env> {
 /// A declared `enum` entry, as the caller gave it.
 enum Entry {
     Text(String),
-    Integer(String),
+    Number(String),
     Big(i128),
 }
 
@@ -2548,7 +2567,7 @@ struct Declared {
     entries: Vec<Entry>,
 }
 
-/// A bound, step or integer entry's text, through the core's conversion. A `bigint` crosses
+/// A bound, step or numeric entry's text, through the core's conversion. A `bigint` crosses
 /// as its decimal digits, which napi's `ToString` writes (no caller code runs for a primitive).
 fn declared_text(
     env: &Env,
@@ -2642,32 +2661,30 @@ fn declaration(env: &Env, spec: &Unknown<'_>) -> std::result::Result<Declared, P
             _ => Ok(None),
         }
     };
-    for (name, flag, upper) in [
-        ("minimum", hc::RawConstraints::HAS_MINIMUM, false),
+    // Each keyword has a slot of its own, so all four bounds may be declared together.
+    for (name, flag, slot) in [
+        ("minimum", hc::RawConstraints::HAS_MINIMUM, &mut raw.lower),
         (
             "exclusiveMinimum",
             hc::RawConstraints::HAS_EXCLUSIVE_MINIMUM,
-            false,
+            &mut raw.exclusive_lower,
         ),
-        ("maximum", hc::RawConstraints::HAS_MAXIMUM, true),
+        ("maximum", hc::RawConstraints::HAS_MAXIMUM, &mut raw.upper),
         (
             "exclusiveMaximum",
             hc::RawConstraints::HAS_EXCLUSIVE_MAXIMUM,
-            true,
+            &mut raw.exclusive_upper,
+        ),
+        (
+            "multipleOf",
+            hc::RawConstraints::HAS_MULTIPLE_OF,
+            &mut raw.multiple_of,
         ),
     ] {
         if let Some(value) = bound(name)? {
             raw.flags |= flag;
-            *(if upper {
-                &mut raw.upper
-            } else {
-                &mut raw.lower
-            }) = value;
+            *slot = value;
         }
-    }
-    if let Some(value) = bound("multipleOf")? {
-        raw.flags |= hc::RawConstraints::HAS_MULTIPLE_OF;
-        raw.multiple_of = value;
     }
     // Any whole code goes to the core as it is, which refuses one it does not know.
     raw.rounding = declared_code(env, &spec, "rounding", "a Rounding")?.unwrap_or(0);
@@ -2680,19 +2697,24 @@ fn declaration(env: &Env, spec: &Unknown<'_>) -> std::result::Result<Declared, P
         raw.flags |= hc::RawConstraints::HAS_MAX_LENGTH;
         raw.max_length = value;
     }
-    match spec_field(env, &spec, "trim").map_err(Problem::Contract)? {
-        None => {}
-        Some(value) => match value.get_type() {
-            Ok(ValueType::Undefined) => {}
-            Ok(ValueType::Boolean) => {
-                if unsafe { value.cast::<bool>() }
-                    .map_err(|_| Problem::Contract("trim could not be read".to_string()))?
-                {
-                    raw.flags |= hc::RawConstraints::TRIM;
+    for (name, flag) in [
+        ("trim", hc::RawConstraints::TRIM),
+        ("caseSensitive", hc::RawConstraints::CASE_SENSITIVE),
+    ] {
+        match spec_field(env, &spec, name).map_err(Problem::Contract)? {
+            None => {}
+            Some(value) => match value.get_type() {
+                Ok(ValueType::Undefined) => {}
+                Ok(ValueType::Boolean) => {
+                    if unsafe { value.cast::<bool>() }
+                        .map_err(|_| Problem::Contract(format!("{name} could not be read")))?
+                    {
+                        raw.flags |= flag;
+                    }
                 }
-            }
-            _ => return Err(Problem::Contract("trim must be a boolean".to_string())),
-        },
+                _ => return Err(Problem::Contract(format!("{name} must be a boolean"))),
+            },
+        }
     }
     let mut packed = Vec::new();
     let mut entries = Vec::new();
@@ -2714,16 +2736,35 @@ fn declaration(env: &Env, spec: &Unknown<'_>) -> std::result::Result<Declared, P
             clear_pending_exception(env);
             Problem::Contract("enum could not be read".to_string())
         })?;
-        // Declared, even with no entries: the core refuses an empty `enum` (12), never reads
-        // it as none.
+        // Declared, even with no entries: an empty `enum` is one no value matches, never
+        // none.
         raw.flags |= hc::RawConstraints::HAS_ENUM;
         for (i, entry) in list.iter().enumerate() {
             if door == hc::Door::Text {
                 // At the text door an entry is the text itself, packed as the ABI reads it: a
                 // little-endian u32 byte length, then the bytes, a lone surrogate's kept.
+                if matches!(entry.get_type(), Ok(ValueType::BigInt)) {
+                    // A number is a valid entry that no string equals (JSON Schema's `enum` is
+                    // exact equality across types): packed as an empty entry, which no input
+                    // matches (empty input is the door's Empty fault), so every other entry
+                    // keeps its index.
+                    let (value, lossless) = unsafe { entry.cast::<BigInt>() }
+                        .map(|big| big.get_i128())
+                        .map_err(|_| {
+                            Problem::Contract(format!("enum entry {i} could not be read"))
+                        })?;
+                    if !lossless {
+                        return Err(Problem::Contract(format!(
+                            "enum entry {i} is a bigint past 128 bits"
+                        )));
+                    }
+                    packed.extend_from_slice(&0u32.to_le_bytes());
+                    entries.push(Entry::Big(value));
+                    continue;
+                }
                 if !matches!(entry.get_type(), Ok(ValueType::String)) {
                     return Err(Problem::Contract(format!(
-                        "enum entries at Door.Text must be strings; entry {i} is not"
+                        "enum entries at Door.Text must be strings, or bigints, which never match; entry {i} is neither"
                     )));
                 }
                 let bytes = string_wtf8(env, entry).ok_or_else(|| {
@@ -2748,7 +2789,7 @@ fn declaration(env: &Env, spec: &Unknown<'_>) -> std::result::Result<Declared, P
                             .map(|big| big.get_i128().0)
                             .map_err(|_| Problem::Contract(format!("{what} could not be read")))?,
                     ),
-                    _ => Entry::Integer(String::from_utf8_lossy(&text).into_owned()),
+                    _ => Entry::Number(String::from_utf8_lossy(&text).into_owned()),
                 });
             }
         }
@@ -2833,7 +2874,10 @@ impl Constraints {
     /// The declared `exclusiveMinimum`, as canonical decimal text, or `null`.
     #[napi(getter, catch_unwind)]
     pub fn exclusive_minimum(&self) -> Option<String> {
-        self.bound(hc::RawConstraints::HAS_EXCLUSIVE_MINIMUM, self.raw.lower)
+        self.bound(
+            hc::RawConstraints::HAS_EXCLUSIVE_MINIMUM,
+            self.raw.exclusive_lower,
+        )
     }
 
     /// The declared `maximum`, as canonical decimal text, or `null`.
@@ -2845,7 +2889,10 @@ impl Constraints {
     /// The declared `exclusiveMaximum`, as canonical decimal text, or `null`.
     #[napi(getter, catch_unwind)]
     pub fn exclusive_maximum(&self) -> Option<String> {
-        self.bound(hc::RawConstraints::HAS_EXCLUSIVE_MAXIMUM, self.raw.upper)
+        self.bound(
+            hc::RawConstraints::HAS_EXCLUSIVE_MAXIMUM,
+            self.raw.exclusive_upper,
+        )
     }
 
     /// The declared `multipleOf`, as canonical decimal text, or `null`.
@@ -2878,8 +2925,13 @@ impl Constraints {
         self.raw.flags & hc::RawConstraints::TRIM != 0
     }
 
-    /// The declared `enum` entries as the caller gave them (strings, or `bigint`s at an
-    /// integer door), or `null`.
+    /// Whether a text `enum` matches byte for byte rather than under simple case folding.
+    #[napi(getter, catch_unwind)]
+    pub fn case_sensitive(&self) -> bool {
+        self.raw.flags & hc::RawConstraints::CASE_SENSITIVE != 0
+    }
+
+    /// The declared `enum` entries as the caller gave them (strings and `bigint`s), or `null`.
     #[napi(getter, catch_unwind, js_name = "enum")]
     pub fn entries(&self) -> Option<Vec<Either<String, BigInt>>> {
         if self.raw.flags & hc::RawConstraints::HAS_ENUM == 0 {
@@ -2889,19 +2941,19 @@ impl Constraints {
             self.entries
                 .iter()
                 .map(|entry| match entry {
-                    Entry::Text(text) | Entry::Integer(text) => Either::A(text.clone()),
+                    Entry::Text(text) | Entry::Number(text) => Either::A(text.clone()),
                     Entry::Big(value) => Either::B(BigInt::from(*value)),
                 })
                 .collect(),
         )
     }
 
-    /// The 72 bytes this declaration crosses a C ABI as, in the native byte order the core
-    /// reads in place: the size (`72`), the flags, the rounding code, `minLength`, `maxLength`
-    /// and a reserved zero as `u32`s, then the lower bound, the upper bound and `multipleOf` as
-    /// 16-byte decimals (the low 64 and high 32 bits of the magnitude, the scale, the sign, two
-    /// zero bytes): for a library that judges values across a C ABI of its own, with
-    /// `packedEnum` beside it.
+    /// The 104 bytes this declaration crosses a C ABI as, in the native byte order the core
+    /// reads in place: the size (`104`), the flags, the rounding code, `minLength`,
+    /// `maxLength` and a reserved zero as `u32`s, then `minimum`, `maximum`, `multipleOf`,
+    /// `exclusiveMinimum` and `exclusiveMaximum` as 16-byte decimals (the low 64 and high 32
+    /// bits of the magnitude, the scale, the sign, two zero bytes): for a library that judges
+    /// values across a C ABI of its own, with `packedEnum` beside it.
     #[napi(getter, catch_unwind)]
     pub fn packed(&self) -> Uint8Array {
         let raw = &self.raw;
@@ -2916,7 +2968,13 @@ impl Constraints {
         ] {
             bytes.extend_from_slice(&word.to_ne_bytes());
         }
-        for decimal in [raw.lower, raw.upper, raw.multiple_of] {
+        for decimal in [
+            raw.lower,
+            raw.upper,
+            raw.multiple_of,
+            raw.exclusive_lower,
+            raw.exclusive_upper,
+        ] {
             bytes.extend_from_slice(&decimal.lo.to_ne_bytes());
             bytes.extend_from_slice(&decimal.hi.to_ne_bytes());
             bytes.extend_from_slice(&[decimal.scale, u8::from(decimal.negative), 0, 0]);
@@ -2924,7 +2982,7 @@ impl Constraints {
         Uint8Array::from(bytes)
     }
 
-    /// The `enum` list as the core reads it beside `packed`, empty for none: at an integer door
+    /// The `enum` list as the core reads it beside `packed`, empty for none: at a numeric door
     /// 16-byte decimals in native byte order, at `Door.Text` each entry a little-endian `u32`
     /// byte length followed by its UTF-8.
     #[napi(getter, catch_unwind)]
@@ -2991,33 +3049,51 @@ fn checked_success<'env, V: ToNapiValue>(
     Ok(verdict)
 }
 
-fn violated(env: &Env, keyword: u32, (offset, length): (u32, u32)) -> Result<Object<'_>> {
+/// A violation's verdict: the keyword, the value as the door cast it, and its span.
+fn violated<'env, V: ToNapiValue>(
+    env: &'env Env,
+    keyword: u32,
+    value: V,
+    (offset, length): (u32, u32),
+) -> Result<Object<'env>> {
+    let mut violation = Object::new(env)?;
+    violation.set("keyword", keyword_name(keyword))?;
+    violation.set("value", value)?;
+    violation.set("offset", offset)?;
+    violation.set("length", length)?;
     let mut verdict = Object::new(env)?;
     verdict.set("ok", false)?;
-    verdict.set(
-        "violation",
-        Violation {
-            keyword: keyword_name(keyword),
-            offset,
-            length,
-        },
-    )?;
+    verdict.set("violation", violation)?;
     Ok(verdict)
 }
 
-/// A rejection from a checked export's return code, its span in the caller's units.
-fn rejected<'env>(
+/// A numeric checked door's violation: the value the door wrote, as JavaScript holds it.
+fn numeric_violation<'env>(
     env: &'env Env,
-    code: i32,
-    span: (u32, u32),
+    door: hc::Door,
+    slot: &[u64; 2],
     check: &hc::RawCheck,
+    span: (u32, u32),
 ) -> Result<Object<'env>> {
+    let keyword = check.keyword;
+    // SAFETY: the core reported a violation at `door`, which writes the value as on success.
+    match unsafe { delivered(door, slot) } {
+        Some(Delivered::Int(value)) => violated(env, keyword, value, span),
+        Some(Delivered::Uint(value)) => violated(env, keyword, value, span),
+        Some(Delivered::Big(value)) => violated(env, keyword, value, span),
+        Some(Delivered::Real(value)) => violated(env, keyword, value, span),
+        Some(Delivered::Text(value)) => violated(env, keyword, value, span),
+        None => Err(binding_bug("judged a door that is not numeric")),
+    }
+}
+
+/// A fault from the plain text export's return code, its span in the caller's units.
+fn rejected(env: &Env, code: i32, span: (u32, u32)) -> Result<Object<'_>> {
     let reason = match code {
         1 => hc::Reason::Empty,
         2 => hc::Reason::Malformed,
         3 => hc::Reason::OutOfRange,
-        4 => return violated(env, check.keyword, span),
-        _ => return Err(binding_bug("refused a declaration it had accepted")),
+        _ => return Err(binding_bug("answered a code the text door never returns")),
     };
     failure(
         env,
@@ -3127,8 +3203,15 @@ fn checked_text_verdict<'env>(
                 _ => Err(binding_bug("matched an enum entry never declared")),
             }
         }
+        4 if door == hc::Door::Text => {
+            // SAFETY: the core reported a violation at the text door, which writes the
+            // judged text's `RawSpan`.
+            let judged = unsafe { slot.as_ptr().cast::<hc::RawSpan>().read() };
+            let value = input.text_at(env, judged.offset, judged.len)?;
+            violated(env, check.keyword, value, span())
+        }
         0 => numeric_success(env, door, &slot, &check),
-        4 => violated(env, check.keyword, span()),
+        4 => numeric_violation(env, door, &slot, &check, span()),
         code => match reason_of(code) {
             Some(reason) => fault_verdict(env, detailed, reason, span(), fault.detail),
             None => Err(binding_bug("refused a declaration it had accepted")),
@@ -3201,7 +3284,7 @@ fn checked_number<'env>(
     let span = (fault.offset, fault.len);
     match code {
         0 => numeric_success(env, door, &slot, &check),
-        4 => violated(env, check.keyword, span),
+        4 => numeric_violation(env, door, &slot, &check, span),
         code => match reason_of(code) {
             Some(reason) => fault_verdict(env, detailed, reason, span, fault.detail),
             None => Err(binding_bug("refused a declaration it had accepted")),
@@ -3211,9 +3294,9 @@ fn checked_number<'env>(
 
 /// Casts numeric text through the door its `Constraints` are bound to, under the declared
 /// format (absent is the invariant one), then judges the value by them: `Checked<T>`, the
-/// door's own `Failure`, or `Violated` naming the first rule it breaks. The value is judged
-/// exactly, on the decimal the door read, never on a float. The value's type follows the
-/// door: `number` for `I8` to `U32`, `F32` and `F64`; `bigint` for `I64` and `U64`; canonical
+/// door's own `Failure`, or `Violated<T>` naming the first rule it breaks and carrying the
+/// value as the door cast it, never rounded. The value is judged exactly, on the decimal the
+/// door read, never on a float. The value's type follows the door: `number` for `I8` to `U32`, `F32` and `F64`; `bigint` for `I64` and `U64`; canonical
 /// decimal text for `Decimal`. Spans are in the caller's units, as a fault's are.
 /// `Constraints` for `Door.Text`, or anything that is no `Constraints` (`undefined` and `null`
 /// included: a failed declaration's missing `.value`), is a contract violation: `malformed`
@@ -3264,7 +3347,8 @@ pub fn cast_checked_from_number<'env>(
 /// input is `empty`; nothing is trimmed. With `Constraints` for `Door.Text` it is judged by
 /// them, a `CheckedVerdict<string>`: trimmed of Unicode `White_Space` when they say so
 /// (trimmed to nothing is `empty`), lengths counted in code points, and an `enum` matched under
-/// simple case folding, a match delivering the caller's own declared entry and its index.
+/// simple case folding (byte for byte under `caseSensitive`), a match delivering the caller's
+/// own declared entry and its index; a violation carries the judged text.
 /// `Constraints` for another door, or anything that is no `Constraints`, is a contract
 /// violation: `malformed` with an empty span at 0. Plain or constrained is chosen by the number
 /// of arguments, not by the second one's value, so an explicit `undefined` or `null`
@@ -3305,7 +3389,7 @@ pub fn cast_text<'env>(
     // SAFETY: every pointer is live for the call.
     match unsafe { abi::cast_text(bytes.as_ptr(), bytes.len(), &mut span, &mut fault) } {
         0 => success(env, input.text_at(env, span.offset, span.len)?),
-        code => rejected(env, code, input.span(fault.offset, fault.len), &NO_CHECK),
+        code => rejected(env, code, input.span(fault.offset, fault.len)),
     }
 }
 
@@ -3691,9 +3775,9 @@ pub fn cast_detailed_from_number<'env>(
 
 /// Casts text through the door its `Constraints` are bound to, `Door.Text` included, and
 /// judges the value by them, saying what failed: a `DetailedCheckedVerdict`. A failure to read
-/// is a `DetailedFault`; a value that broke a rule is `Violated`, as at `castChecked`, with no
-/// detail (a violation names the rule, not a failure to read). `format` is read by the numeric
-/// doors (absent is `NumFormat.invariant()`) and ignored at `Door.Text`.
+/// is a `DetailedFault`; a value that broke a rule is `Violated<T>`, as at `castChecked`, with
+/// no detail (a violation names the rule, not a failure to read). `format` is read by the
+/// numeric doors (absent is `NumFormat.invariant()`) and ignored at `Door.Text`.
 #[napi(
     catch_unwind,
     ts_args_type = "text: Text, constraints: Constraints, format?: NumFormat | undefined | null",
@@ -3749,7 +3833,7 @@ pub fn cast_constraints_check(env: &Env, spec: Unknown<'_>) -> i32 {
     }
 }
 
-/// Converts a bound, step or integer `enum` entry written in invariant notation (an optional
+/// Converts a bound, step or numeric `enum` entry written in invariant notation (an optional
 /// sign, digits with an optional `.` and fraction, an optional exponent: `"0.000001"`, `"-90"`,
 /// `"1e-6"`) to the exact decimal the core declares it as, as canonical text with its trailing
 /// zeros dropped (`"1.50"` is `"1.5"`): the conversion every bound a `Constraints` is given

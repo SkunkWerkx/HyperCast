@@ -263,13 +263,14 @@ public sealed class InteropTests
 	void The_constraint_layouts_are_the_headers()
 	{
 		// Each restated layout, against the size cbindgen carries from the core's offset_of! asserts.
-		((uint)Unsafe.SizeOf<RawConstraints>()).ShouldBe(Define("HyperCastRawConstraints_SIZE", 72));
+		((uint)Unsafe.SizeOf<RawConstraints>()).ShouldBe(Define("HyperCastRawConstraints_SIZE", 104));
 		((uint)Unsafe.SizeOf<RawCheck>()).ShouldBe(Define("HyperCastRawCheck_SIZE", 12));
 		((uint)Unsafe.SizeOf<RawSpan>()).ShouldBe(Define("HyperCastRawSpan_SIZE", 8));
 		((uint)Unsafe.SizeOf<RawNumFormat>()).ShouldBe(Define("HyperCastRawNumFormat_SIZE", 92));
 		((uint)Unsafe.SizeOf<RawDayPeriods>()).ShouldBe(Define("HyperCastRawDayPeriods_SIZE", 40));
-		string[] fields = ["Size", "Flags", "Rounding", "MinLength", "MaxLength", "Reserved", "Lower", "Upper", "MultipleOf"];
-		fields.Select(static f => (int)Marshal.OffsetOf<RawConstraints>(f)).ShouldBe([0, 4, 8, 12, 16, 20, 24, 40, 56]);
+		string[] fields = ["Size", "Flags", "Rounding", "MinLength", "MaxLength", "Reserved", "Lower", "Upper", "MultipleOf",
+			"ExclusiveLower", "ExclusiveUpper"];
+		fields.Select(static f => (int)Marshal.OffsetOf<RawConstraints>(f)).ShouldBe([0, 4, 8, 12, 16, 20, 24, 40, 56, 72, 88]);
 		new[] { "Keyword", "Adjusted", "EnumIndex" }.Select(static f => (int)Marshal.OffsetOf<RawCheck>(f)).ShouldBe([0, 4, 8]);
 		new[] { "Offset", "Length" }.Select(static f => (int)Marshal.OffsetOf<RawSpan>(f)).ShouldBe([0, 4]);
 		(RawConstraints.HasMinimum, RawConstraints.HasExclusiveMinimum, RawConstraints.HasMaximum, RawConstraints.HasExclusiveMaximum)
@@ -278,7 +279,8 @@ public sealed class InteropTests
 		(RawConstraints.HasMultipleOf, RawConstraints.HasMinLength, RawConstraints.HasMaxLength, RawConstraints.Trim)
 			.ShouldBe((Define("HyperCastRawConstraints_HAS_MULTIPLE_OF", 16), Define("HyperCastRawConstraints_HAS_MIN_LENGTH", 32),
 				Define("HyperCastRawConstraints_HAS_MAX_LENGTH", 64), Define("HyperCastRawConstraints_TRIM", 128)));
-		RawConstraints.HasEnum.ShouldBe(Define("HyperCastRawConstraints_HAS_ENUM", 256));
+		(RawConstraints.HasEnum, RawConstraints.CaseSensitive)
+			.ShouldBe((Define("HyperCastRawConstraints_HAS_ENUM", 256), Define("HyperCastRawConstraints_CASE_SENSITIVE", 512)));
 	}
 
 	[Fact]
@@ -287,28 +289,41 @@ public sealed class InteropTests
 		var raw = new Constraints<decimal>(exclusiveMinimum: -1.5m, maximum: "79228162514264337593543950335",
 			multipleOf: 0.25m, rounding: Rounding.Floor).ToRaw();
 		var bytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(in raw, 1));
-		bytes.Length.ShouldBe(72);
-		MemoryMarshal.Read<uint>(bytes).ShouldBe(72u);
+		bytes.Length.ShouldBe(104);
+		MemoryMarshal.Read<uint>(bytes).ShouldBe(104u);
 		MemoryMarshal.Read<uint>(bytes[4..]).ShouldBe(RawConstraints.HasExclusiveMinimum | RawConstraints.HasMaximum | RawConstraints.HasMultipleOf);
 		MemoryMarshal.Read<uint>(bytes[8..]).ShouldBe(2u);
 		bytes[12..24].ToArray().ShouldAllBe(static b => b == 0);
 		// Each decimal: the 64 low bits, the 32 high bits, the scale, the sign, two of padding.
-		MemoryMarshal.Read<ulong>(bytes[24..]).ShouldBe(15ul);
-		MemoryMarshal.Read<uint>(bytes[32..]).ShouldBe(0u);
-		(bytes[36], bytes[37]).ShouldBe(((byte)1, (byte)1));
+		// `minimum`'s slot stays zero: the exclusive bound has a slot of its own.
+		bytes[24..40].ToArray().ShouldAllBe(static b => b == 0);
 		MemoryMarshal.Read<ulong>(bytes[40..]).ShouldBe(ulong.MaxValue);
 		MemoryMarshal.Read<uint>(bytes[48..]).ShouldBe(uint.MaxValue);
 		(bytes[52], bytes[53]).ShouldBe(((byte)0, (byte)0));
 		MemoryMarshal.Read<ulong>(bytes[56..]).ShouldBe(25ul);
 		(bytes[68], bytes[69]).ShouldBe(((byte)2, (byte)0));
+		MemoryMarshal.Read<ulong>(bytes[72..]).ShouldBe(15ul);
+		MemoryMarshal.Read<uint>(bytes[80..]).ShouldBe(0u);
+		(bytes[84], bytes[85]).ShouldBe(((byte)1, (byte)1));
+		bytes[88..104].ToArray().ShouldAllBe(static b => b == 0);
+
+		// All four bounds at once, each in its own slot.
+		var four = new Constraints<int>(minimum: 1, exclusiveMinimum: 2, maximum: 3, exclusiveMaximum: 4).ToRaw();
+		(four.Lower.ToDecimal(), four.ExclusiveLower.ToDecimal(), four.Upper.ToDecimal(), four.ExclusiveUpper.ToDecimal())
+			.ShouldBe((1m, 2m, 3m, 4m));
+		four.Flags.ShouldBe(RawConstraints.HasMinimum | RawConstraints.HasExclusiveMinimum | RawConstraints.HasMaximum
+			| RawConstraints.HasExclusiveMaximum);
 
 		var integers = new Constraints<long>(@enum: [-3, 9]).PackedEnum;
 		integers.Length.ShouldBe(32);
 		MemoryMarshal.Read<RawDecimal>(integers).ToDecimal().ShouldBe(-3m);
 		MemoryMarshal.Read<RawDecimal>(integers[16..]).ToDecimal().ShouldBe(9m);
 
-		var text = new Constraints<string>(minLength: 1, maxLength: 4, trim: true, @enum: ["é", "ab"]);
-		text.ToRaw().Flags.ShouldBe(RawConstraints.HasMinLength | RawConstraints.HasMaxLength | RawConstraints.Trim | RawConstraints.HasEnum);
+		var text = new Constraints<string>(minLength: 1, maxLength: 4, trim: true, caseSensitive: true, @enum: ["é", "ab"]);
+		text.ToRaw().Flags.ShouldBe(RawConstraints.HasMinLength | RawConstraints.HasMaxLength | RawConstraints.Trim
+			| RawConstraints.CaseSensitive | RawConstraints.HasEnum);
+		text.CaseSensitive.ShouldBeTrue();
+		new Constraints<string>(@enum: ["ab"]).CaseSensitive.ShouldBeFalse();
 		(text.ToRaw().MinLength, text.ToRaw().MaxLength).ShouldBe((1u, 4u));
 		text.PackedEnum.ToArray().ShouldBe([2, 0, 0, 0, 0xC3, 0xA9, 2, 0, 0, 0, (byte)'a', (byte)'b']);
 		new Constraints<string>().PackedEnum.Length.ShouldBe(0);
@@ -317,7 +332,9 @@ public sealed class InteropTests
 	[Fact]
 	void A_violation_decodes_from_its_keyword_code()
 	{
-		Abi.ToViolation(4, new RawFault(2, 3)).ShouldBe(new Violation(Keyword.ExclusiveMaximum, 2, 3));
-		Should.Throw<InvalidOperationException>(() => Abi.ToViolation(0, default));
+		Abi.ToViolation(4, 250L, new RawFault(2, 3)).ShouldBe(new Violation<long>(Keyword.ExclusiveMaximum, 250, 2, 3));
+		Abi.ToViolation(8, "Mail", RawFaultDetail.Empty with { Offset = 1, Length = 4 })
+			.ShouldBe(new Violation<string>(Keyword.Enum, "Mail", 1, 4));
+		Should.Throw<InvalidOperationException>(() => Abi.ToViolation(0, 0, default(RawFault)));
 	}
 }

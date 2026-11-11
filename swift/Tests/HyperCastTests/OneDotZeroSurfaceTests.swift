@@ -60,7 +60,7 @@ final class OneDotZeroSurfaceTests: XCTestCase {
         case .success: XCTFail("11 breaks the maximum")
         case .rejection(.violation(let violation)):
             XCTAssertEqual(violation.keyword, .maximum)
-            XCTAssertEqual(violation, Violation(keyword: .maximum, offset: 0, length: 2))
+            XCTAssertEqual(violation, Violation(keyword: .maximum, value: 11, offset: 0, length: 2))
         case .rejection(.fault): XCTFail("11 parses")
         }
         switch Cast.i32("x", format: .invariant, constraints: constraints) {
@@ -68,9 +68,9 @@ final class OneDotZeroSurfaceTests: XCTestCase {
         case .rejection(.violation): XCTFail("x does not parse")
         case .rejection(.fault(let fault)): XCTAssertEqual(fault, Fault(reason: .malformed, offset: 0, length: 1))
         }
-        XCTAssertEqual(Rejection.fault(fault), Rejection.fault(Fault(reason: .malformed, offset: 4, length: 1)))
+        XCTAssertEqual(Rejection<Int32>.fault(fault), .fault(Fault(reason: .malformed, offset: 4, length: 1)))
         XCTAssertNotEqual(
-            Rejection.fault(fault), Rejection.violation(Violation(keyword: .maximum, offset: 4, length: 1)))
+            Rejection<Int32>.fault(fault), .violation(Violation(keyword: .maximum, value: 11, offset: 4, length: 1)))
         let verdict: Verdict<Int32> = .fault(fault)
         XCTAssertEqual(verdict, .fault(fault))
         XCTAssertNotEqual(verdict, .success(1))

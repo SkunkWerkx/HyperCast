@@ -390,10 +390,6 @@ sites! {
     /// `multipleOf` rounding yields a multiple too long to hold.
     CheckedMultipleTooLong = "checked.rs", OutOfRange, TooLarge,
         unreachable "a declared step is never zero, and a value a door accepts rounds to at most 337 digits (an `f64` near its maximum at a step of scale 28), within the 340 `Rounded` holds";
-    /// `multipleOf` rounding yields a multiple past what the door's type holds.
-    CheckedRoundedTooLarge = "checked.rs", OutOfRange, TooLarge;
-    /// `multipleOf` rounding yields a multiple below a signed integer type's minimum.
-    CheckedRoundedTooSmall = "checked.rs", OutOfRange, TooSmall;
     /// The text door's input is white space only, under `trim`.
     CheckedTextBlank = "checked.rs", Empty, Blank;
 

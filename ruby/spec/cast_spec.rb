@@ -799,7 +799,7 @@ RSpec.describe HyperCast do
       sex = HyperCast::Constraints.new(door: :text, trim: true, enum: %w[Female Male])
       expect(described_class.optional(described_class.text("   ", sex))).to be_nil
       expect(described_class.optional(described_class.text("x", sex)))
-        .to eq(HyperCast::Violation.new(keyword: HyperCast::Keyword::ENUM, offset: 0, length: 1))
+        .to eq(HyperCast::Violation.new(keyword: HyperCast::Keyword::ENUM, value: "x", offset: 0, length: 1))
       expect(described_class.optional(described_class.text("male", sex)))
         .to eq(HyperCast::Checked.new(value: "Male", adjusted: false, enum_index: 1))
     end

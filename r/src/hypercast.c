@@ -24,7 +24,8 @@
  *
  * The checked doors (cast_checked_detailed, cast_checked_detailed_from_f64, and cast_text with
  * constraints) add three columns, adjusted, enum_index and keyword, and one more outcome: a
- * violation (code 4), a value that parsed and broke a declared rule, whose keyword and span fill
+ * violation (code 4), a value that parsed and broke a declared rule. It carries that value, as
+ * the door cast it (never rounded), in the value column a pass uses; its keyword and span fill
  * their columns while reason stays NA.
  *
  * Every loop lets the user interrupt once per 2^20 elements. R_CheckUserInterrupt can
@@ -506,10 +507,15 @@ static void row_fault(struct columns *c, R_xlen_t i, int reason, uint32_t offset
   c->detail[i] = span_int(detail);
 }
 
-/* Row i parsed and broke the declared rule `keyword` over offset/length, in caller units. */
+/*
+ * Row i parsed and broke the declared rule `keyword` over offset/length, in caller units. The
+ * value columns already hold the value as the door cast it (row_ok or text_row wrote them);
+ * adjusted and enum_index describe a pass, so they are NA.
+ */
 static void row_violation(struct columns *c, R_xlen_t i, uint32_t keyword, uint32_t offset,
                           uint32_t length) {
-  value_na(c, i);
+  c->adjusted[i] = NA_LOGICAL;
+  c->enum_index[i] = NA_INTEGER;
   c->ok[i] = FALSE;
   c->reason[i] = NA_INTEGER;
   c->keyword[i] = span_int(keyword);
@@ -1045,17 +1051,19 @@ SEXP C_cast_double(SEXP x, SEXP door_name, SEXP code) {
 
 /*
  * The declaration a hypercast_constraints() value lays out as, built here from the fields R
- * checked: the bounds, step and integer enum entries through cast_declared_decimal (the one
+ * checked: the bounds, step and numeric enum entries through cast_declared_decimal (the one
  * conversion every binding calls), the rest copied into the core's own struct. It is built
  * again for every call, which costs a few conversions per vector, never per element, and
- * judged by cast_checked's own layout checks each time; cast_constraints_check judged it,
- * duplicates included, when it was declared.
+ * judged by cast_checked's own layout checks each time; cast_constraints_check judged it when
+ * it was declared.
  */
 _Static_assert(sizeof(HyperCastRawConstraints) == HyperCastRawConstraints_SIZE, "RawConstraints");
 _Static_assert(offsetof(HyperCastRawConstraints, rounding) == 8, "rounding");
 _Static_assert(offsetof(HyperCastRawConstraints, lower) == 24, "lower");
 _Static_assert(offsetof(HyperCastRawConstraints, upper) == 40, "upper");
 _Static_assert(offsetof(HyperCastRawConstraints, multiple_of) == 56, "multiple_of");
+_Static_assert(offsetof(HyperCastRawConstraints, exclusive_lower) == 72, "exclusive_lower");
+_Static_assert(offsetof(HyperCastRawConstraints, exclusive_upper) == 88, "exclusive_upper");
 _Static_assert(sizeof(HyperCastRawCheck) == HyperCastRawCheck_SIZE, "RawCheck");
 _Static_assert(sizeof(HyperCastRawSpan) == HyperCastRawSpan_SIZE, "RawSpan");
 _Static_assert(sizeof(HyperCastDecimal) == 16, "Decimal");
@@ -1104,6 +1112,7 @@ enum layout {
   L_MIN_LENGTH,
   L_MAX_LENGTH,
   L_TRIM,
+  L_CASE_SENSITIVE,
   L_ENUM,
   L_COUNT
 };
@@ -1117,7 +1126,7 @@ struct declaration {
 };
 
 /*
- * Element k of a bound, step or integer enum list through cast_declared_decimal: a string's
+ * Element k of a bound, step or numeric enum list through cast_declared_decimal: a string's
  * bytes as the doors read a string, or an R integer as its decimal digits. Returns its code,
  * 0 or 8.
  */
@@ -1204,10 +1213,10 @@ static int32_t declaration_arg(SEXP layout, int native, struct declaration *d) {
   } VALUES[] = {
       {L_MINIMUM, HyperCastRawConstraints_HAS_MINIMUM, offsetof(HyperCastRawConstraints, lower)},
       {L_EXCLUSIVE_MINIMUM, HyperCastRawConstraints_HAS_EXCLUSIVE_MINIMUM,
-       offsetof(HyperCastRawConstraints, lower)},
+       offsetof(HyperCastRawConstraints, exclusive_lower)},
       {L_MAXIMUM, HyperCastRawConstraints_HAS_MAXIMUM, offsetof(HyperCastRawConstraints, upper)},
       {L_EXCLUSIVE_MAXIMUM, HyperCastRawConstraints_HAS_EXCLUSIVE_MAXIMUM,
-       offsetof(HyperCastRawConstraints, upper)},
+       offsetof(HyperCastRawConstraints, exclusive_upper)},
       {L_MULTIPLE_OF, HyperCastRawConstraints_HAS_MULTIPLE_OF,
        offsetof(HyperCastRawConstraints, multiple_of)},
   };
@@ -1238,11 +1247,12 @@ static int32_t declaration_arg(SEXP layout, int native, struct declaration *d) {
   }
   if (asLogical(VECTOR_ELT(layout, L_TRIM)) == TRUE)
     r->flags |= HyperCastRawConstraints_TRIM;
+  if (asLogical(VECTOR_ELT(layout, L_CASE_SENSITIVE)) == TRUE)
+    r->flags |= HyperCastRawConstraints_CASE_SENSITIVE;
   SEXP e = VECTOR_ELT(layout, L_ENUM);
   if (e == R_NilValue)
     return 0;
-  /* Declared, even with no entries: the core refuses an empty enum (12), never reads it as
-   * none. */
+  /* Declared, even with no entries: an empty enum is one no value matches, never none. */
   r->flags |= HyperCastRawConstraints_HAS_ENUM;
   if (XLENGTH(e) == 0)
     return 0;
@@ -1362,6 +1372,12 @@ SEXP C_cast_checked(SEXP x, SEXP layout, SEXP format, SEXP native_mode, SEXP raw
       present(p, len, chars, &span);
       row_fault(&c, i, rc, span.offset, span.len, f.detail);
     } else if (rc == 4) {
+      /* The value as cast (for text the judged span, read in bytes before the fault's span is
+       * re-expressed in the caller's units). */
+      if (d.door == TEXT_DOOR)
+        text_row(&c, i, s, p, len, chars, &v.span);
+      else
+        row_ok(&c, i, d.door, &v);
       HyperCastRawFault span = span_of(&f);
       present(p, len, chars, &span);
       row_violation(&c, i, check.keyword, span.offset, span.len);
@@ -1403,6 +1419,7 @@ SEXP C_cast_checked_double(SEXP x, SEXP layout, SEXP native_mode) {
     } else if (rc >= 1 && rc <= 3) {
       row_fault(&c, i, rc, f.offset, f.len, f.detail);
     } else if (rc == 4) {
+      row_ok(&c, i, d.door, &v);
       row_violation(&c, i, check.keyword, f.offset, f.len);
     } else {
       checked_contract_violation();

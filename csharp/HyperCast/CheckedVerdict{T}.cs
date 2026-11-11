@@ -5,17 +5,17 @@ namespace HyperCast;
 /// <summary>
 /// The outcome of a checked cast — a door with declared <see cref="Constraints{T}"/>:
 /// exactly one of <see cref="Checked{T}"/> (the value obeys every rule) or
-/// <see cref="Rejection"/> (a <see cref="Fault"/> or a <see cref="Violation"/>), as a native
+/// <see cref="Rejection{T}"/> (a <see cref="Fault"/> or a <see cref="Violation{T}"/>), as a native
 /// C# union beside <see cref="Verdict{T}"/>, which the plain doors keep returning. Nothing is
 /// ever thrown for data.
 /// </summary>
 /// <remarks>
 /// <para>
-/// A two-arm switch over <see cref="Checked{T}"/> and <see cref="Rejection"/> is exhaustive,
+/// A two-arm switch over <see cref="Checked{T}"/> and <see cref="Rejection{T}"/> is exhaustive,
 /// and so is the nested one over the rejection's <see cref="Fault"/> and
-/// <see cref="Violation"/>. Without C# 15, use <see cref="Match{TResult}"/>,
+/// <see cref="Violation{T}"/>. Without C# 15, use <see cref="Match{TResult}"/>,
 /// <see cref="Switch"/> or the <see cref="TryGetValue(out Checked{T})"/> /
-/// <see cref="TryGetValue(out Rejection)"/> pair, as on <see cref="Verdict{T}"/>.
+/// <see cref="TryGetValue(out Rejection{T})"/> pair, as on <see cref="Verdict{T}"/>.
 /// </para>
 /// <para>
 /// <b>Do not use <c>default(CheckedVerdict&lt;T&gt;)</c>.</b> As with <see cref="Verdict{T}"/>, a
@@ -34,7 +34,7 @@ public readonly record struct CheckedVerdict<T> : IUnion where T : notnull
 	}
 
 	readonly Checked<T> _checked;
-	readonly Rejection _rejection;
+	readonly Rejection<T> _rejection;
 	readonly State _state;
 
 	/// <summary>Creates a successful verdict. Also reachable as an implicit union conversion.</summary>
@@ -47,11 +47,11 @@ public readonly record struct CheckedVerdict<T> : IUnion where T : notnull
 
 	/// <summary>Creates a failed verdict. Also reachable as an implicit union conversion.</summary>
 	/// <param name="value">The rejection.</param>
-	/// <exception cref="ArgumentOutOfRangeException"><paramref name="value"/> is a <c>default(Rejection)</c>.</exception>
-	public CheckedVerdict(Rejection value)
+	/// <exception cref="ArgumentOutOfRangeException"><paramref name="value"/> is a <c>default(Rejection&lt;T&gt;)</c>.</exception>
+	public CheckedVerdict(Rejection<T> value)
 	{
 		if (!value.HasValue)
-			throw new ArgumentOutOfRangeException(nameof(value), "default(Rejection) is not a valid case value.");
+			throw new ArgumentOutOfRangeException(nameof(value), "default(Rejection<T>) is not a valid case value.");
 		_rejection = value;
 		_state = State.Rejection;
 	}
@@ -83,7 +83,7 @@ public readonly record struct CheckedVerdict<T> : IUnion where T : notnull
 	/// <summary>Retrieves the failure case without boxing.</summary>
 	/// <param name="value">The rejection when present; default otherwise.</param>
 	/// <returns><see langword="true"/> if this verdict is the failure case.</returns>
-	public bool TryGetValue(out Rejection value)
+	public bool TryGetValue(out Rejection<T> value)
 	{
 		value = _rejection;
 		return _state == State.Rejection;
@@ -96,7 +96,7 @@ public readonly record struct CheckedVerdict<T> : IUnion where T : notnull
 	/// <returns>The return value of the delegate that ran.</returns>
 	/// <exception cref="ArgumentNullException"><paramref name="success"/> or <paramref name="rejection"/> is <see langword="null"/>.</exception>
 	/// <exception cref="InvalidOperationException">This is <c>default(CheckedVerdict&lt;T&gt;)</c>, which is neither case.</exception>
-	public TResult Match<TResult>(Func<Checked<T>, TResult> success, Func<Rejection, TResult> rejection)
+	public TResult Match<TResult>(Func<Checked<T>, TResult> success, Func<Rejection<T>, TResult> rejection)
 	{
 		ArgumentNullException.ThrowIfNull(success);
 		ArgumentNullException.ThrowIfNull(rejection);
@@ -113,7 +113,7 @@ public readonly record struct CheckedVerdict<T> : IUnion where T : notnull
 	/// <param name="rejection">Run with the failure case.</param>
 	/// <exception cref="ArgumentNullException"><paramref name="success"/> or <paramref name="rejection"/> is <see langword="null"/>.</exception>
 	/// <exception cref="InvalidOperationException">This is <c>default(CheckedVerdict&lt;T&gt;)</c>, which is neither case.</exception>
-	public void Switch(Action<Checked<T>> success, Action<Rejection> rejection)
+	public void Switch(Action<Checked<T>> success, Action<Rejection<T>> rejection)
 	{
 		ArgumentNullException.ThrowIfNull(success);
 		ArgumentNullException.ThrowIfNull(rejection);

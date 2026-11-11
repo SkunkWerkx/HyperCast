@@ -7,9 +7,10 @@
 //! A verdict crosses back through the caller's `long[]`: on success the value as two
 //! `long`s in `out[0..2]` ([`Words`] has each type's encoding), on a fault its span's offset
 //! and length in `out[2..4]`, and on a contract violation (`-1`) nothing at all — the same
-//! writes the C ABI makes to its `out` and `fault` pointers. The checked doors also write
-//! the C ABI's `check` to `out[4..7]` on every verdict (see [`check_words`]), and the four
-//! detailed natives write a fault's `detail` code to `out[7]` (on a violation, `0`), so
+//! writes the C ABI makes to its `out` and `fault` pointers. The checked doors write the value
+//! as cast to `out[0..2]` and the span to `out[2..4]` on a violation, as the C ABI writes
+//! both `out` and `fault` there, and the C ABI's `check` to `out[4..7]` on every verdict
+//! (see [`check_words`]); the four detailed natives write a fault's `detail` code to `out[7]` (on a violation, `0`), so
 //! Java hands every door a `long[8]`; the 1.0 natives read and write `out[0..4]` alone.
 //!
 //! The natives are `pub unsafe extern "system" fn`: as `pub` fns taking raw pointers they
@@ -1095,6 +1096,8 @@ struct WireConstraints {
     lower: WireDecimal,
     upper: WireDecimal,
     multiple_of: WireDecimal,
+    exclusive_lower: WireDecimal,
+    exclusive_upper: WireDecimal,
 }
 
 /// [`Decimal`]'s 16 bytes, its sign a byte.
@@ -1115,6 +1118,12 @@ const _: () = {
     assert!(offset_of!(WireConstraints, lower) == offset_of!(RawConstraints, lower));
     assert!(offset_of!(WireConstraints, upper) == offset_of!(RawConstraints, upper));
     assert!(offset_of!(WireConstraints, multiple_of) == offset_of!(RawConstraints, multiple_of));
+    assert!(
+        offset_of!(WireConstraints, exclusive_lower) == offset_of!(RawConstraints, exclusive_lower)
+    );
+    assert!(
+        offset_of!(WireConstraints, exclusive_upper) == offset_of!(RawConstraints, exclusive_upper)
+    );
     assert!(size_of::<WireDecimal>() == size_of::<Decimal>());
     assert!(offset_of!(WireDecimal, scale) == offset_of!(Decimal, scale));
     assert!(offset_of!(WireDecimal, negative) == offset_of!(Decimal, negative));
@@ -1139,6 +1148,8 @@ impl Layout for WireConstraints {
         lower: WIRE_DECIMAL_ZERO,
         upper: WIRE_DECIMAL_ZERO,
         multiple_of: WIRE_DECIMAL_ZERO,
+        exclusive_lower: WIRE_DECIMAL_ZERO,
+        exclusive_upper: WIRE_DECIMAL_ZERO,
     };
 }
 
@@ -1168,6 +1179,8 @@ impl WireConstraints {
             lower: self.lower.decimal(),
             upper: self.upper.decimal(),
             multiple_of: self.multiple_of.decimal(),
+            exclusive_lower: self.exclusive_lower.decimal(),
+            exclusive_upper: self.exclusive_upper.decimal(),
         }
     }
 }
@@ -1222,8 +1235,8 @@ const TEXT: u32 = Door::Text.code();
 const DECIMAL: u32 = Door::Decimal.code();
 
 /// The value a checked door wrote into `slot`, as the words its plain door's native hands
-/// back: one door, one type, so `NativeCore`'s readers serve both. Read only after a 0, which
-/// the core returns only for a door it knows.
+/// back: one door, one type, so `NativeCore`'s readers serve both. Read only after a 0 or a 4
+/// (a violation carries the value as cast), which the core returns only for a door it knows.
 #[inline(always)]
 unsafe fn checked_words(door: u32, slot: &[u64; 2]) -> [jlong; 2] {
     let p = slot.as_ptr();
@@ -1248,8 +1261,9 @@ unsafe fn checked_words(door: u32, slot: &[u64; 2]) -> [jlong; 2] {
     }
 }
 
-/// A checked verdict where Java reads it: [`finish`]'s writes, then the check to `out[4..7]`
-/// on every code the core returned but `-1`.
+/// A checked verdict where Java reads it: [`finish`]'s writes, the value as cast to
+/// `out[0..2]` on a violation too (the core writes it on 4 as on 0), then the check to
+/// `out[4..7]` on every code the core returned but `-1`.
 #[inline(always)]
 unsafe fn finish_checked(
     env: *mut JNIEnv,
@@ -1260,12 +1274,13 @@ unsafe fn finish_checked(
     fault: &RawFault,
     check: &RawCheck,
 ) -> jint {
-    if rc == 0 {
-        // SAFETY: the core wrote the value: it returns 0 only after it has.
+    if rc == 0 || rc == 4 {
+        // SAFETY: the core wrote the value: it returns 0 or 4 only after it has.
         let words = unsafe { checked_words(door, slot) };
         // SAFETY: the caller passes a live env and a `long[]` of at least seven elements.
         unsafe { ((**env).v1_2.SetLongArrayRegion)(env, out, 0, 2, words.as_ptr()) };
-    } else if rc > 0 {
+    }
+    if rc > 0 {
         let span = [jlong::from(fault.offset), jlong::from(fault.len)];
         // SAFETY: as above.
         unsafe { ((**env).v1_2.SetLongArrayRegion)(env, out, 2, 2, span.as_ptr()) };
@@ -1287,7 +1302,7 @@ const NO_CHECK: RawCheck = RawCheck {
 
 /// A checked door: `door` is the core's door code (an integer or float door, 18 Text, 19
 /// Decimal), `format` the 92-byte layout or null (the invariant one; Text ignores it),
-/// `constraints` the 72-byte layout and `entries` the `enum` list or null. Every layout is
+/// `constraints` the 104-byte layout and `entries` the `enum` list or null. Every layout is
 /// read before the input is pinned.
 #[cfg_attr(feature = "no-panic", no_panic::no_panic)]
 #[allow(clippy::too_many_arguments)]
@@ -1616,9 +1631,9 @@ pub unsafe extern "system" fn native_cast_detailed_from_f64(
     unsafe { finish_detailed(env, out, rc, typed_words, door, &slot, &fault) }
 }
 
-/// A checked detailed verdict where Java reads it: [`finish_detailed`]'s writes, then the
-/// check to `out[4..7]` on every code but `-1` (the detail is `out[7]`, written with the
-/// fault).
+/// A checked detailed verdict where Java reads it: [`finish_detailed`]'s writes, the value as
+/// cast to `out[0..2]` on a violation too (the core writes it on 4 as on 0), then the check to
+/// `out[4..7]` on every code but `-1` (the detail is `out[7]`, written with the fault).
 #[inline(always)]
 unsafe fn finish_checked_detailed(
     env: *mut JNIEnv,
@@ -1632,6 +1647,12 @@ unsafe fn finish_checked_detailed(
     // SAFETY: the caller passes a live env and a `long[8]`; a checked door's value is its
     // plain door's, which `checked_words` reads.
     unsafe { finish_detailed(env, out, rc, checked_words, door, slot, fault) };
+    if rc == 4 {
+        // SAFETY: the core wrote the value: it returns 4 only after it has.
+        let words = unsafe { checked_words(door, slot) };
+        // SAFETY: as above.
+        unsafe { ((**env).v1_2.SetLongArrayRegion)(env, out, 0, 2, words.as_ptr()) };
+    }
     if rc >= 0 {
         let words = check_words(check);
         // SAFETY: as above.

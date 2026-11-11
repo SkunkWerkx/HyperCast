@@ -3,7 +3,7 @@ import Foundation
 /// The native core's C ABI, for a package that carries HyperCast's verdicts across a C ABI of
 /// its own (HyperTabular does): the value layouts the core writes, read through exactly the
 /// conversions every ``Cast`` door applies, the 92-byte numeric format and the 40-byte day
-/// periods it reads in place, the 72-byte validation constraints and their `enum` list, the
+/// periods it reads in place, the 104-byte validation constraints and their `enum` list, the
 /// verdict code and span of a fault with its detail code, the 12-byte date options and the
 /// packed month vocabulary the date doors read, and the packed version word. A value read out
 /// of another library's buffer through these is the value the door of the same name would

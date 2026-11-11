@@ -109,10 +109,10 @@ the same exception on every backend:
   included). `date(text, nil)` is not one of these: an explicit `nil` order is the strict ISO
   door, exactly as if it were left off.
 - `ArgumentError` from `Constraints.new` (and `Constraints#with`) for a declaration the core
-  refuses, worded from its code — `Constraints refused (code 4): the lower bound is not
-  below the upper bound.` — and for a keyword of the wrong type: a `Float`, `true` or `false`
-  bound, a length that is not an `Integer` from 0 to 2³² − 1, a `trim` that is not `true` or
-  `false`, an `enum` that is not a list or a text entry that is not a `String`. Also from
+  refuses, worded from its code — `Constraints refused (code 5): multipleOf is not
+  positive.` — and for a keyword of the wrong type: a `Float`, `true` or `false` bound, a
+  length that is not an `Integer` from 0 to 2³² − 1, a `trim` or `case_sensitive` that is not
+  `true` or `false`, an `enum` that is not a list or a text entry that is not a `String`. Also from
   `checked`, `checked_from_float` and `text` for constraints bound to the other kind of door,
   and from `declared_decimal` for text it cannot convert (code 8). `KeyError` for a door or a
   rounding that names nothing.
@@ -214,7 +214,7 @@ digits count as digits (native ones included), and a policy only judges groups: 
 `#with(grouping: …)` and `#override` keep the policy of the format they start from, and
 `from_i18n` takes `grouping:` too (a Rails locale Hash says nothing about it). The policy is
 not a member of `NumFormat`, as `detail` is not of `Fault`: the ten members, `to_h`, `inspect`,
-the constructors, and array and hash patterns are 1.0's, `grouping` is a reader that a pattern
+the constructors, and array and hash patterns leave the policy out, `grouping` is a reader that a pattern
 can name (`in { grouping: :indian }`), and it counts in `==`, `eql?` and `hash`. A `NumFormat`
 loaded from a 1.0 Marshal payload carries none and is `:western`. Marshal restores such a payload with no call this class can hook, so a flags word holding the retired bit 8 (`351`) is refused with `ArgumentError` on its first use. Because it is not a member, `grouping:` is keyword-only: `NumFormat.new` takes the ten
 members positionally or by keyword, but `Data.new` cannot mix positional members with keywords, so the policy is
@@ -457,13 +457,13 @@ euro = HyperCast::NumFormat.new(decimal_sep: ",", group_sep: ".", flags: HyperCa
 HyperCast.checked("45.1234567", invariant, latitude)
 # => Checked(value: 45.123457, adjusted: true, enum_index: nil)
 HyperCast.checked("-90.5", invariant, latitude)
-# => Violation(keyword: HyperCast::Keyword::MINIMUM, offset: 0, length: 5)
+# => Violation(keyword: HyperCast::Keyword::MINIMUM, value: -90.5, offset: 0, length: 5)
 HyperCast.checked_from_float(45.1234567, latitude)
 # => Checked(value: 45.123457, adjusted: true, enum_index: nil)
 HyperCast.checked("€1.234,55", euro, euro_cash)
 # => Checked(value: Decimal(magnitude: 123455, scale: 2, negative: false), adjusted: false, enum_index: nil)
 HyperCast.checked("€12,37", euro, euro_cash)
-# => Violation(keyword: HyperCast::Keyword::MULTIPLE_OF, offset: 0, length: 6)
+# => Violation(keyword: HyperCast::Keyword::MULTIPLE_OF, value: Decimal(magnitude: 1237, scale: 2, negative: false), offset: 0, length: 6)
 HyperCast.checked("12,3x", euro, euro_cash)
 # => Fault(reason: :malformed, offset: 4, length: 1)
 
@@ -471,8 +471,8 @@ def describe(verdict)
   case verdict
   in HyperCast::Checked(value:, enum_index:) then "#{value}, entry #{enum_index}"  # " MALE " -> Male, entry 1
   in HyperCast::Fault(reason:, offset:) then "#{reason} at character #{offset}"    # "   " -> empty at character 0
-  in HyperCast::Violation(keyword: HyperCast::Keyword::ENUM, offset:, length:)
-    "not a sex code: characters #{offset}+#{length}"                                 # "Femal" -> characters 0+5
+  in HyperCast::Violation(keyword: HyperCast::Keyword::ENUM, value:, offset:)
+    "not a sex code: #{value} at character #{offset}"                                # " Femal" -> Femal at character 1
   in HyperCast::Violation(keyword:) then "breaks #{keyword.name}"                   # keywords are open
   end
 end
@@ -482,30 +482,40 @@ describe(HyperCast.text(" MALE ", sex)) # => "Male, entry 1"
 
 A checked door answers `Checked(value, adjusted, enum_index)` — the value, `adjusted` (true
 only when rounding changed it) and, at `:text` with an `enum`, the index of the entry matched
-(`nil` otherwise, an integer `enum` included, where the value is the answer) — or one of the
+(`nil` otherwise, a numeric `enum` included, where the value is the answer) — or one of the
 two rejections: the plain doors' own `Fault` (it did not parse: the very type, so a parse
-failure reads the same at either door) or a `Violation(keyword, offset, length)` (it parsed and
-broke a rule: the keyword and the value's span, in the units a fault's span is in, characters
-for text and bytes for a binary `String`). All three are `Data`, so they pattern-match.
+failure reads the same at either door: the input is not the type) or a
+`Violation(keyword, value, offset, length)` (it is the type, and broke a rule: the keyword,
+the value exactly as the door cast it, in the type a `Checked` would have carried and never
+rounded, since `multiple_of`'s rounding is part of the judgement, at `:text` the judged text
+after `trim` and never an entry, and the value's span, in the units a fault's span is in,
+characters for text and bytes for a binary `String`). All three are `Data`, so they
+pattern-match.
 `Keyword` is a `Data` with constants (`Keyword::MINIMUM` … `Keyword::ENUM`), not a closed set:
 its `name` is the OpenAPI spelling (`"exclusiveMinimum"`), and `format` and `pattern` may join
 in a minor release, a code this gem does not name yet arriving as `Keyword.new(code: 9)`, named
 `"keyword 9"`. So a `case` over keywords needs its catch-all branch (the last `Violation` one
 above). The plain doors and their `Success` or `Fault` are unchanged.
 
-The integer doors take `minimum:`, `exclusive_minimum:`, `maximum:`, `exclusive_maximum:`,
-`multiple_of:` with a `rounding:` (`:strict`, the default, then `:midpoint`, half to even,
-`:floor` and `:ceiling`, the keys of `HyperCast::ROUNDINGS`) and `enum:`; `:f32`, `:f64` and
-`:decimal` the same without `enum:`; `:text` takes `min_length:`, `max_length:` (in code
-points), `trim:` (Unicode `White_Space`, U+00A0 included) and `enum:`, matched under Unicode
-simple case folding and delivering the `String` declared and its index: the very object when it
-is frozen, and when it is not, the frozen copy the declaration took of it (a `Hash` key's rule),
-so mutating the original afterwards changes nothing. The constructor takes every keyword at every door, and the core
-alone refuses one its door does not take. The first failure wins: the door parses, the text is
-trimmed, `multiple_of` rounds or refuses, then the bounds, the lengths and `enum` judge the
-result. A float door also judges the float it delivers against each bound read as the door reads
+The numeric doors take `minimum:`, `exclusive_minimum:`, `maximum:`, `exclusive_maximum:`
+(four independent keywords: all four may be declared together, and each is judged on its
+own), `multiple_of:` with a `rounding:` (`:strict`, the default, then `:midpoint`, half to
+even, `:floor` and `:ceiling`, the keys of `HyperCast::ROUNDINGS`) and `enum:`, whose entries
+are compared exactly to the value; `:text` takes `min_length:`, `max_length:` (in code points)
+and `enum:` (an `Integer`, `BigDecimal` or `Decimal` among its entries is valid and never
+matches), matched under Unicode simple case folding and delivering the `String` declared and
+its index: the very object when it is frozen, and when it is not, the frozen copy the
+declaration took of it (a `Hash` key's rule), so mutating the original afterwards changes
+nothing. Two of HyperCast's own extensions go with them at `:text`: `trim:` (Unicode
+`White_Space`, U+00A0 included) and `case_sensitive:`, which matches `enum:` byte for byte
+instead, for a vocabulary whose case carries meaning (`mm` and `Mm`). The constructor takes
+every keyword at every door; a keyword for another type is ignored, as JSON Schema ignores it.
+The first failure wins: the door parses, the text is trimmed, `multiple_of` rounds or
+refuses (a rounding past what the type holds breaks `multiple_of`), then the bounds
+(`minimum`, `exclusive_minimum`, `maximum`, `exclusive_maximum`), the lengths and `enum` judge
+the result. A float door also judges the float it delivers against each bound read as the door reads
 it: `"1e-400"` at `:f64` reads as `0`, so it breaks `exclusive_minimum: "0"`. Bounds, steps and
-integer entries are an `Integer`, a `BigDecimal`, a `String` in invariant notation or a
+numeric entries are an `Integer`, a `BigDecimal`, a `String` in invariant notation or a
 `HyperCast::Decimal`, all converted exactly by the core (`"1e-6"` is `0.000001`, and `"1e-29"`,
 past the 28 places a core decimal holds, is refused rather than rounded) and kept as the exact
 `HyperCast::Decimal` declared; never a `Float`, so `0.1` cannot be declared inexactly: a `Float`
@@ -515,18 +525,23 @@ form, with the same `separator:`, `delimiter:` and `unit:` overrides, and
 decimal that names it (`0.1 + 0.2` breaks `multiple_of: "0.1"` under `:strict`, and rounds to `0.3`
 under `:midpoint`), with an empty span. `text(text, constraints)` is the text door's.
 
-A declaration is judged once, by the core, when it is built, and one that cannot mean anything
-at its door is the caller's bug: `Constraints.new` raises `ArgumentError`, its message the rule
-(`Constraints.new(door: :u8, minimum: "-1")` raises "Constraints refused (code 8): a bound,
-step or enum entry the door cannot hold."). An `enum:` left `nil` is none, while `enum: []`
-declares one no value could match and is refused (code 12), as is a text entry no input can
-match (code 13: an empty one, or under `trim:` one with leading or trailing white space). The
+A declaration is judged once, by the core, when it is built. Every declaration OpenAPI 3.2
+allows is accepted, an unsatisfiable one included: crossed or equal bounds, `min_length:` above
+`max_length:`, duplicate `enum:` entries (the first match wins), an empty or untrimmable text
+entry (it never matches), a numeric entry the type cannot hold, and `enum: []`, which every
+value violates (an `enum:` left `nil` is none). What the core refuses is the caller's bug:
+`Constraints.new` raises `ArgumentError`, its message the rule (`Constraints.new(door: :u8,
+multiple_of: "0")` raises "Constraints refused (code 5): multipleOf is not positive."). It
+refuses `trim:` or `case_sensitive:` at a numeric door and `multiple_of:` with a `rounding:` at `:text` (code 1), a
+`multiple_of:` that is not positive (5), a `rounding:` without `multiple_of:` (6), a bound, step
+or entry past the 28 places a core decimal holds or a rounding with a fractional
+`multiple_of:` at an integer door (8), and a text entry that is not UTF-8 (9). The
 door is a required keyword, so no
 `Constraints` means "no rules" by accident; `Constraints.new(door: :f64)` declares none on
 purpose. Handing a declaration to the other kind of door (`:text` constraints to `checked`,
 numeric ones to `text`) is an `ArgumentError` too, and after that a checked cast judges only
 data and raises nothing for it. `HyperCast.constraints_check(door:, **keywords)` answers the
-same refusal as its code, `0` to `13` (`Constraints::REFUSALS` words each; a code past them
+same refusal as its code, `0` or one of those above (`Constraints::REFUSALS` words each; any other
 reads "Constraints refused (code N): a rule this binding does not name."), without raising,
 and `HyperCast.declared_decimal(text)` is the conversion every bound crosses. A text `enum`
 entry crosses as its bytes, so one that is not UTF-8 (a binary `"\xFF".b`) is the core's
@@ -566,13 +581,15 @@ the two cannot drift. It is loaded on every backend.
   staged `native/{rid}/` build, else the in-repo cargo build, else `nil`.
 
 A `Constraints` crosses a C ABI as two Strings, the layouts the core reads in place:
-`#packed` is the 72-byte `RawConstraints` in native byte order (the size, the flags, the
-rounding code, `min_length`, `max_length` and a reserved zero as `u32`s, then the lower bound,
-the upper bound and `multiple_of` as 16-byte decimals: the low 64 and high 32 bits of the
-magnitude, the scale, the sign and two zero bytes), and `#packed_enum` the `enum` list beside
-it (`""` for none): at an integer door 16-byte decimals in native byte order, at `:text` each
-entry a little-endian `u32` byte length followed by its UTF-8, read only when the flags carry
-`HAS_ENUM` (256), which any declared `enum:` sets (`Constraints::FLAGS`).
+`#packed` is the 104-byte `RawConstraints` (`Constraints::PACKED_BYTES`) in native byte order
+(the size, the flags, the rounding code, `min_length`, `max_length` and a reserved zero as
+`u32`s, then `minimum`, `maximum`, `multiple_of`, `exclusive_minimum` and `exclusive_maximum`
+as 16-byte decimals at 24, 40, 56, 72 and 88: the low 64 and high 32 bits of the magnitude, the
+scale, the sign and two zero bytes), and `#packed_enum` the `enum` list beside it (`""` for
+none): at a numeric door 16-byte decimals in native byte order, at `:text` each entry a
+little-endian `u32` byte length followed by its UTF-8, read only when the flags carry
+`HAS_ENUM` (256), which any declared `enum:` sets (`Constraints::FLAGS`; `trim:` sets 128 and
+`case_sensitive:` 512).
 `HyperCast::CHECKED_DOORS` maps each door to the core's door code.
 
 `NativePlatform.rid_and_library_name(library: "hypertabular")` gives the `{rid}` directory

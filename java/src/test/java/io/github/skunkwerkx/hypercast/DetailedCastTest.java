@@ -97,9 +97,10 @@ final class DetailedCastTest {
         Constraints<Integer> percent =
                 Constraints.i32().minimum("0").maximum("100").build();
         DetailedCheckedVerdict<Integer> verdict = DetailedCast.i32(" 101 ", NumFormat.INVARIANT, percent);
-        assertEquals(new DetailedViolation<Integer>(Keyword.MAXIMUM, 1, 3), verdict);
+        assertEquals(new DetailedViolation<Integer>(Keyword.MAXIMUM, 101, 1, 3), verdict);
         assertEquals(
-                new Violation<Integer>(Keyword.MAXIMUM, 1, 3), ((DetailedViolation<Integer>) verdict).toViolation());
+                new Violation<Integer>(Keyword.MAXIMUM, 101, 1, 3),
+                ((DetailedViolation<Integer>) verdict).toViolation());
         assertEquals(
                 new DetailedChecked<>(7, false, OptionalInt.empty()),
                 DetailedCast.i32("7", NumFormat.INVARIANT, percent));
@@ -111,12 +112,14 @@ final class DetailedCastTest {
         assertEquals(
                 new DetailedFault<Integer>(CastFailure.MALFORMED, FaultDetail.NOT_FINITE, 0, 0),
                 DetailedCast.i32FromDouble(Double.NaN, percent));
-        assertEquals(new DetailedViolation<Integer>(Keyword.MAXIMUM, 0, 0), DetailedCast.i32FromDouble(101, percent));
+        assertEquals(
+                new DetailedViolation<Integer>(Keyword.MAXIMUM, 101, 0, 0), DetailedCast.i32FromDouble(101, percent));
         // The text door's enum hands back the caller's own entry.
         Constraints<String> sex =
                 Constraints.text().trim(true).enumOf("Female", "Male").build();
         assertEquals(new DetailedChecked<>("Male", false, OptionalInt.of(1)), DetailedCast.text("  MALE ", sex));
-        assertEquals(new DetailedViolation<String>(Keyword.ENUM, 2, 5), DetailedCast.text("  Other ", sex));
+        // A violation carries the judged (trimmed) text, never an entry.
+        assertEquals(new DetailedViolation<String>(Keyword.ENUM, "Other", 2, 5), DetailedCast.text("  Other ", sex));
     }
 
     @Test
@@ -281,7 +284,8 @@ final class DetailedCastTest {
                         .toList());
         assertThrows(IllegalArgumentException.class, () -> new DetailedFault<>(null, FaultDetail.BLANK, 0, 0));
         assertThrows(IllegalArgumentException.class, () -> new DetailedFault<>(CastFailure.EMPTY, null, 0, 0));
-        assertThrows(IllegalArgumentException.class, () -> new DetailedViolation<>(null, 0, 0));
+        assertThrows(IllegalArgumentException.class, () -> new DetailedViolation<>(null, 1, 0, 0));
+        assertThrows(IllegalArgumentException.class, () -> new DetailedViolation<>(Keyword.ENUM, null, 0, 0));
         assertThrows(IllegalArgumentException.class, () -> new DetailedChecked<>(null, false, OptionalInt.empty()));
     }
 

@@ -360,8 +360,8 @@ fn allocation_free() {
     assert_allocation_free("cast_checked violation", || {
         hypercast::cast_checked(b"($12.37)", &dollars, &cash).unwrap_err()
     });
-    let codes =
-        hypercast::Constraints::<i32>::numeric(Default::default(), Some(&[10, 20])).unwrap();
+    let entries = [10, 20].map(hypercast::Decimal::from);
+    let codes = hypercast::Constraints::<i32>::numeric(Default::default(), Some(&entries)).unwrap();
     assert_allocation_free("cast_checked enum", || {
         hypercast::cast_checked(b"20", &format, &codes).unwrap()
     });
@@ -455,11 +455,13 @@ fn allocation_free() {
     };
     let twice = packed_text(&["Male", "MALE", "Female"]);
     let malformed = RawConstraints { size: 71, ..RawConstraints::ZERO };
+    let no_step = RawConstraints { flags: RawConstraints::HAS_MULTIPLE_OF, ..RawConstraints::ZERO };
     for (door_name, door, raw, entries, code) in [
         ("cast_constraints_check", 18, &sexes_raw, &sexes_enum[..], 0),
-        ("cast_constraints_check duplicate", 18, &sexes_raw, &twice[..], 10),
+        ("cast_constraints_check duplicate", 18, &sexes_raw, &twice[..], 0),
         ("cast_constraints_check integers", 4, &codes_raw, &codes_enum[..], 0),
-        ("cast_constraints_check empty enum", 4, &codes_raw, &[][..], 12),
+        ("cast_constraints_check empty enum", 4, &codes_raw, &[][..], 0),
+        ("cast_constraints_check refused", 4, &no_step, &[][..], 5),
         ("cast_constraints_check malformed", 4, &malformed, &[][..], 11),
     ] {
         assert_eq!(judge(door, raw, entries), code, "{door_name}");

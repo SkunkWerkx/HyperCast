@@ -2018,13 +2018,17 @@ public final class DetailedCast {
 
     // --- the checked doors: a door judged by declared validation constraints ---
 
-    /** The core's verdict on a checked door: the value and its check, a violation, or a fault. */
+    /**
+     * The core's verdict on a checked door: the value and its check, a violation carrying the
+     * value as cast (the core writes it on 4 as on 0), or a fault.
+     */
     private static <T> DetailedCheckedVerdict<T> judged(int code, NativeCore.Scratch scratch, Reader<T> reader) {
         return switch (code) {
             case 0 -> new DetailedChecked<>(reader.read(scratch), NativeCore.checkAdjusted(scratch), index(scratch));
             case 4 ->
                 new DetailedViolation<>(
                         new Keyword(NativeCore.checkKeyword(scratch)),
+                        reader.read(scratch),
                         NativeCore.faultOffset(scratch),
                         NativeCore.faultLength(scratch));
             default -> fault(code, scratch);
@@ -2086,7 +2090,7 @@ public final class DetailedCast {
             case DetailedViolation<T> violation -> {
                 int start = Cast.charIndex(utf8, violation.offset());
                 int end = Cast.charIndex(utf8, violation.offset() + violation.length());
-                yield new DetailedViolation<>(violation.keyword(), start, end - start);
+                yield new DetailedViolation<>(violation.keyword(), violation.value(), start, end - start);
             }
         };
     }
@@ -2096,7 +2100,7 @@ public final class DetailedCast {
      * {@link Cast#i8(String, NumFormat, Constraints)} does, then judges it by {@code constraints}:
      * a {@link DetailedChecked}, or a {@link DetailedRejection}, the plain detailed door's own
      * {@link DetailedFault} (with its {@link FaultDetail}) or the {@link DetailedViolation} of a
-     * declared rule, spanning the value in chars.
+     * declared rule, carrying the value as cast and spanning it in chars.
      *
      * @param text the text to cast
      * @param format the caller-declared numeric notation
@@ -2152,7 +2156,7 @@ public final class DetailedCast {
      * {@link Cast#i16(String, NumFormat, Constraints)} does, then judges it by {@code constraints}:
      * a {@link DetailedChecked}, or a {@link DetailedRejection}, the plain detailed door's own
      * {@link DetailedFault} (with its {@link FaultDetail}) or the {@link DetailedViolation} of a
-     * declared rule, spanning the value in chars.
+     * declared rule, carrying the value as cast and spanning it in chars.
      *
      * @param text the text to cast
      * @param format the caller-declared numeric notation
@@ -2209,7 +2213,7 @@ public final class DetailedCast {
      * {@link Cast#i32(String, NumFormat, Constraints)} does, then judges it by {@code constraints}:
      * a {@link DetailedChecked}, or a {@link DetailedRejection}, the plain detailed door's own
      * {@link DetailedFault} (with its {@link FaultDetail}) or the {@link DetailedViolation} of a
-     * declared rule, spanning the value in chars.
+     * declared rule, carrying the value as cast and spanning it in chars.
      *
      * @param text the text to cast
      * @param format the caller-declared numeric notation
@@ -2266,7 +2270,7 @@ public final class DetailedCast {
      * {@link Cast#i64(String, NumFormat, Constraints)} does, then judges it by {@code constraints}:
      * a {@link DetailedChecked}, or a {@link DetailedRejection}, the plain detailed door's own
      * {@link DetailedFault} (with its {@link FaultDetail}) or the {@link DetailedViolation} of a
-     * declared rule, spanning the value in chars.
+     * declared rule, carrying the value as cast and spanning it in chars.
      *
      * @param text the text to cast
      * @param format the caller-declared numeric notation
@@ -2323,7 +2327,7 @@ public final class DetailedCast {
      * {@link Cast#u8(String, NumFormat, Constraints)} does, then judges it by {@code constraints}:
      * a {@link DetailedChecked}, or a {@link DetailedRejection}, the plain detailed door's own
      * {@link DetailedFault} (with its {@link FaultDetail}) or the {@link DetailedViolation} of a
-     * declared rule, spanning the value in chars.
+     * declared rule, carrying the value as cast and spanning it in chars.
      *
      * @param text the text to cast
      * @param format the caller-declared numeric notation
@@ -2380,7 +2384,7 @@ public final class DetailedCast {
      * {@link Cast#u16(String, NumFormat, Constraints)} does, then judges it by {@code constraints}:
      * a {@link DetailedChecked}, or a {@link DetailedRejection}, the plain detailed door's own
      * {@link DetailedFault} (with its {@link FaultDetail}) or the {@link DetailedViolation} of a
-     * declared rule, spanning the value in chars.
+     * declared rule, carrying the value as cast and spanning it in chars.
      *
      * @param text the text to cast
      * @param format the caller-declared numeric notation
@@ -2437,7 +2441,7 @@ public final class DetailedCast {
      * {@link Cast#u32(String, NumFormat, Constraints)} does, then judges it by {@code constraints}:
      * a {@link DetailedChecked}, or a {@link DetailedRejection}, the plain detailed door's own
      * {@link DetailedFault} (with its {@link FaultDetail}) or the {@link DetailedViolation} of a
-     * declared rule, spanning the value in chars.
+     * declared rule, carrying the value as cast and spanning it in chars.
      *
      * @param text the text to cast
      * @param format the caller-declared numeric notation
@@ -2494,7 +2498,7 @@ public final class DetailedCast {
      * {@link Cast#u64(String, NumFormat, Constraints)} does, then judges it by {@code constraints}:
      * a {@link DetailedChecked}, or a {@link DetailedRejection}, the plain detailed door's own
      * {@link DetailedFault} (with its {@link FaultDetail}) or the {@link DetailedViolation} of a
-     * declared rule, spanning the value in chars.
+     * declared rule, carrying the value as cast and spanning it in chars.
      *
      * @param text the text to cast
      * @param format the caller-declared numeric notation
@@ -2551,7 +2555,7 @@ public final class DetailedCast {
      * {@link Cast#f32(String, NumFormat, Constraints)} does, then judges it by {@code constraints}:
      * a {@link DetailedChecked}, or a {@link DetailedRejection}, the plain detailed door's own
      * {@link DetailedFault} (with its {@link FaultDetail}) or the {@link DetailedViolation} of a
-     * declared rule, spanning the value in chars.
+     * declared rule, carrying the value as cast and spanning it in chars.
      *
      * @param text the text to cast
      * @param format the caller-declared numeric notation
@@ -2608,7 +2612,7 @@ public final class DetailedCast {
      * {@link Cast#f64(String, NumFormat, Constraints)} does, then judges it by {@code constraints}:
      * a {@link DetailedChecked}, or a {@link DetailedRejection}, the plain detailed door's own
      * {@link DetailedFault} (with its {@link FaultDetail}) or the {@link DetailedViolation} of a
-     * declared rule, spanning the value in chars.
+     * declared rule, carrying the value as cast and spanning it in chars.
      *
      * @param text the text to cast
      * @param format the caller-declared numeric notation
@@ -2665,7 +2669,7 @@ public final class DetailedCast {
      * {@link Cast#decimal(String, NumFormat, Constraints)} does, then judges it by {@code constraints}:
      * a {@link DetailedChecked}, or a {@link DetailedRejection}, the plain detailed door's own
      * {@link DetailedFault} (with its {@link FaultDetail}) or the {@link DetailedViolation} of a
-     * declared rule, spanning the value in chars.
+     * declared rule, carrying the value as cast and spanning it in chars.
      *
      * @param text the text to cast
      * @param format the caller-declared numeric notation
@@ -2786,7 +2790,8 @@ public final class DetailedCast {
 
     /**
      * Casts text through the text door, then judges it by {@code constraints}, as
-     * {@link Cast#text(String, Constraints)} does. A violation spans the (trimmed) text, in chars.
+     * {@link Cast#text(String, Constraints)} does. A violation carries the (trimmed) text and
+     * spans it, in chars.
      *
      * @param text the text to cast
      * @param constraints the declaration, built by {@link Constraints#text()}

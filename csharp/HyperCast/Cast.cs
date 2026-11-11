@@ -461,13 +461,13 @@ public static partial class Cast
 
 	/// <summary>
 	/// Presents a checked verdict optionally: an <see cref="CastFailure.Empty"/> fault becomes
-	/// absent (<see langword="null"/>); every other outcome, a <see cref="Violation"/> included,
+	/// absent (<see langword="null"/>); every other outcome, a <see cref="Violation{T}"/> included,
 	/// flows through untouched.
 	/// </summary>
 	/// <typeparam name="T">The cast value's type.</typeparam>
 	/// <param name="verdict">The verdict from any checked door.</param>
 	public static CheckedVerdict<T>? Optional<T>(CheckedVerdict<T> verdict) where T : notnull =>
-		verdict.TryGetValue(out Rejection rejection) && rejection.TryGetValue(out Fault fault) && fault.Reason == CastFailure.Empty
+		verdict.TryGetValue(out Rejection<T> rejection) && rejection.TryGetValue(out Fault fault) && fault.Reason == CastFailure.Empty
 			? null
 			: verdict;
 

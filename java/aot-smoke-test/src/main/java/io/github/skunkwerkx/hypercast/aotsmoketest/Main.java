@@ -72,7 +72,7 @@ public final class Main {
     private static <T> void checked(String name, CheckedVerdict<T> verdict, String expected) {
         String actual = switch (verdict) {
             case Checked<T> c -> "checked " + c.value();
-            case Violation<T> v -> "violation " + v.keyword() + " @ " + v.offset() + "+" + v.length();
+            case Violation<T> v -> "violation " + v.keyword() + " " + v.value() + " @ " + v.offset() + "+" + v.length();
             case Fault<T> f -> "fault " + f.reason() + " @ " + f.offset() + "+" + f.length();
         };
         if (actual.equals(expected)) {
@@ -94,7 +94,8 @@ public final class Main {
     private static <T> void detailedChecked(String name, DetailedCheckedVerdict<T> verdict, String expected) {
         String actual = switch (verdict) {
             case DetailedChecked<T> c -> "checked " + c.value();
-            case DetailedViolation<T> v -> "violation " + v.keyword() + " @ " + v.offset() + "+" + v.length();
+            case DetailedViolation<T> v ->
+                "violation " + v.keyword() + " " + v.value() + " @ " + v.offset() + "+" + v.length();
             case DetailedFault<T> f -> "fault " + f.detail() + " @ " + f.offset() + "+" + f.length();
         };
         report(name, actual, expected);
@@ -234,8 +235,11 @@ public final class Main {
         Constraints<Double> latitude =
                 Constraints.f64().minimum("-90").maximum("90").build();
         checked("f64 checked", Cast.f64("45.5", NumFormat.INVARIANT, latitude), "checked 45.5");
-        checked("f64 checked (violation)", Cast.f64("91", NumFormat.INVARIANT, latitude), "violation maximum @ 0+2");
-        checked("f64FromDouble checked", Cast.f64FromDouble(-91.0, latitude), "violation minimum @ 0+0");
+        checked(
+                "f64 checked (violation)",
+                Cast.f64("91", NumFormat.INVARIANT, latitude),
+                "violation maximum 91.0 @ 0+2");
+        checked("f64FromDouble checked", Cast.f64FromDouble(-91.0, latitude), "violation minimum -91.0 @ 0+0");
         Constraints<String> sex =
                 Constraints.text().trim(true).enumOf("M", "F", "X").build();
         checked("text checked", Cast.text(" F ", sex), "checked F");
@@ -271,11 +275,11 @@ public final class Main {
         detailedChecked(
                 "f64 checked detailed",
                 DetailedCast.f64("91", NumFormat.INVARIANT, latitude),
-                "violation maximum @ 0+2");
+                "violation maximum 91.0 @ 0+2");
         detailedChecked(
                 "f64FromDouble checked detailed",
                 DetailedCast.f64FromDouble(-91.0, latitude),
-                "violation minimum @ 0+0");
+                "violation minimum -91.0 @ 0+0");
 
         System.out.println(failures == 0 ? "AOT smoke test passed." : "AOT smoke test FAILED (" + failures + ").");
         System.exit(failures == 0 ? 0 : 1);

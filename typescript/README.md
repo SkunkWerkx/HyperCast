@@ -220,8 +220,7 @@ separator is declared (below). Text that is only white space is `empty`.
 
 ### Saying what failed
 
-A fault says why (`reason`) and where (`offset`, `length`), and its shape is the 1.0 one: no
-existing door's fault gained a field. The four detailed doors answer the same verdicts with a
+A fault says why (`reason`) and where (`offset`, `length`), and has exactly those three fields. The four detailed doors answer the same verdicts with a
 `DetailedFault`, which adds what failed, by name and by the core's number:
 
 | Door | Reads | Like |
@@ -379,9 +378,12 @@ date door is a contract violation, and a door that does not read options ignores
 
 ## Validation constraints
 
-The OpenAPI Schema Object's keywords judge a value once its door has read it: `minimum`,
-`exclusiveMinimum`, `maximum`, `exclusiveMaximum`, `multipleOf` with a rounding, `minLength`,
-`maxLength`, `enum` and `trim`. A `Constraints` is declared for one door and judged once, by
+Untrusted input is judged in two steps. First it is cast to the door's type: a fault (`empty`,
+`malformed`, `outOfRange`) means it is not that type. Then the value is validated by the
+OpenAPI 3.2 Schema Object's keywords (JSON Schema 2020-12's): `minimum`, `exclusiveMinimum`,
+`maximum`, `exclusiveMaximum`, `multipleOf` with a rounding, `minLength`, `maxLength` and
+`enum`, with HyperCast's own `trim` and `caseSensitive` for text. A broken rule is a violation,
+which carries the value as cast. A `Constraints` is declared for one door and judged once, by
 the core, when declared; every checked cast after that judges only data.
 
 ```js
@@ -399,7 +401,7 @@ if (latitude.ok) {
   castChecked('45.12345678', latitude.value)
   // { ok: true, value: 45.123457, adjusted: true, enumIndex: null }
   castChecked('91', latitude.value)
-  // { ok: false, violation: { keyword: 'maximum', offset: 0, length: 2 } }
+  // { ok: false, violation: { keyword: 'maximum', value: 91, offset: 0, length: 2 } }
 }
 
 const euro = NumFormat.declare({ decimalSep: ',', groupSep: '.', flags: NumStyles.All })
@@ -408,69 +410,96 @@ if (euro.ok && cash.ok) {
   castChecked('12,35', cash.value, euro.value)
   // { ok: true, value: '12.35', adjusted: false, enumIndex: null }
   castChecked('12,37', cash.value, euro.value)
-  // { ok: false, violation: { keyword: 'multipleOf', offset: 0, length: 5 } }
+  // { ok: false, violation: { keyword: 'multipleOf', value: '12.37', offset: 0, length: 5 } }
 }
 
 const sex = Constraints.declare({ door: Door.Text, trim: true, enum: ['Female', 'Male', 'Other'] })
 if (sex.ok) {
   castText(' MALE ', sex.value)
   // { ok: true, value: 'Male', adjusted: false, enumIndex: 1 }
+  castText(' Mail ', sex.value)
+  // { ok: false, violation: { keyword: 'enum', value: 'Mail', offset: 1, length: 4 } }
 }
 
-Constraints.declare({ door: Door.I32, minLength: 1 })
+const units = Constraints.declare({ door: Door.Text, caseSensitive: true, enum: ['mm', 'Mm'] })
+if (units.ok) {
+  castText('Mm', units.value)
+  // { ok: true, value: 'Mm', adjusted: false, enumIndex: 1 }
+}
+
+Constraints.declare({ door: Door.I32, trim: true })
 // { ok: false, message: 'Constraints refused (code 1): a constraint the door does not take.' }
 ```
 
 - **The declaration.** A `ConstraintsSpec` has the `door` (a `Door`: `I8` to `U64`, `F32`,
-  `F64`, `Decimal`, `Text`) and the keywords that door takes: the bounds, `multipleOf` and
-  `rounding` (a `Rounding`: `Strict`, the default, `Midpoint`, half to even, `Floor`,
-  `Ceiling`) at the numeric doors, `enum` at the integer ones; `minLength`, `maxLength` (in
-  code points), `trim` (Unicode `White_Space`) and `enum` (matched under simple case folding)
-  at `Door.Text`. A bound, step or integer entry is a decimal string in invariant notation
+  `F64`, `Decimal`, `Text`) and its keywords: the four bounds, `multipleOf`, `rounding` (a
+  `Rounding`: `Strict`, the default, `Midpoint`, half to even, `Floor`, `Ceiling`) and `enum`
+  at the numeric doors; `minLength`, `maxLength` (in code points), `enum`, `trim` (Unicode
+  `White_Space`) and `caseSensitive` at `Door.Text`. A text `enum` matches under simple case
+  folding unless `caseSensitive: true`, which compares byte for byte, for a vocabulary whose
+  case carries meaning (a `bigint` among its entries is valid and never matches); a numeric `enum` is compared exactly to the value (`'2.50'` matches
+  `'2.5'`). A bound, step or numeric entry is a decimal string in invariant notation
   (`'0.000001'`, `'-90'`, `'1e-6'`) or a `bigint`, never a `number`: a `number` is a binary
   float, which holds most decimals only approximately, so `maximum: 0.1` is refused as a
   binding contract (and is a type error). A length is a whole `number`, never a `boolean`.
+- **Every OpenAPI declaration is accepted.** Each bound is its own keyword, so `minimum` and
+  `exclusiveMinimum` both apply when both are declared. A keyword for the other type
+  (`minLength` at `Door.I32`, `minimum` at `Door.Text`) is ignored, as JSON Schema ignores
+  it. A declaration no value satisfies (crossed bounds, `minLength` above `maxLength`,
+  `enum: []`) is accepted, and every value then violates it; leaving `enum` out declares none.
+  With duplicate entries the first match wins, and an entry no value can match (an empty
+  text, a fraction at an integer door) never matches.
 - **Refusals.** `Constraints.declare` answers a `Declaration<Constraints>`, never throws. A
   declaration the core refuses reads `Constraints refused (code N): <the rule>.`, `N` the code
-  `castConstraintsCheck(spec)` answers (`1` a keyword the door does not take, through `13`; `9`
-  is a text entry with no UTF-8 form, a lone surrogate, `11` a rounding code the core does not
-  know, `12` an `enum` with no entries and `13` a text entry no input can match: an empty one,
-  or under `trim` one with leading or trailing white space). Leaving `enum` out declares none,
-  while `enum: []` is declared and refused (12). A spec the binding cannot read (a `number` bound, a `door` that is no `Door`, an
-  `enum` that is no array) is refused with its own wording, and `castConstraintsCheck` answers
-  `-1` for it. `castDeclaredDecimal(text)` is the conversion every bound crosses, as a
-  `Declaration<string>` of its canonical text (`'1.50'` is `'1.5'`).
+  `castConstraintsCheck(spec)` answers: `1` a constraint the door does not take (`trim` or
+  `caseSensitive` at a numeric door, a `rounding` with `multipleOf` at `Door.Text`), `5` a
+  `multipleOf` not positive, `6` a rounding without `multipleOf`, `8` a bound, step or entry
+  no door holds (past 28 places or 96 bits, or a rounding with a fractional step at an integer
+  door), `9` a text entry with no UTF-8 form (a lone surrogate) and `11` a rounding code the
+  core does not know. A spec the binding cannot read (a `number` bound, a `door` that is no
+  `Door`, an `enum` that is no array, a `trim` that is no `boolean`) is refused with its own
+  wording, and `castConstraintsCheck` answers `-1` for it. `castDeclaredDecimal(text)` is the
+  conversion every bound crosses, as a `Declaration<string>` of its canonical text (`'1.50'`
+  is `'1.5'`).
 - **The checked doors.** `castChecked(text, constraints, format?)` reads numeric text through
   the door the declaration is bound to; `castCheckedFromNumber(value, constraints)` judges a
   `number` already decoded on the shortest decimal that names it (`0.1 + 0.2` breaks
   `multipleOf: '0.1'` unrounded, and rounds to `0.3` under `Midpoint`), every span empty;
   `castText(text, constraints)` judges text. Each answers a `CheckedVerdict<T>`: `{ ok: true,
   value, adjusted, enumIndex }`, or `{ ok: false, fault }` (the door's own `Failure`), or `{
-  ok: false, violation: { keyword, offset, length } }`. `value` follows the door (`number`,
-  `bigint` at `I64`/`U64`, canonical text at `Decimal`, a `string` at `Text`), `adjusted` is
+  ok: false, violation: { keyword, value, offset, length } }`. `value` follows the door
+  (`number`, `bigint` at `I64`/`U64`, canonical text at `Decimal`, a `string` at `Text`) in
+  both. A success's `value` is rounded to `multipleOf` when the declaration rounds, `adjusted`
   true only when rounding changed it, and `enumIndex` is the index of the entry a text matched
-  and `null` otherwise: an integer `enum` is answered by the value. A text match delivers your
-  own declared entry, so `' MALE '` is `'Male'`. Spans are in your units, as a fault's are.
-  Numbers are judged exactly, on the decimal the door read. A float door also judges the float
-  it delivers against each bound read as the door reads it: `'1e-400'` at `Door.F64` reads as
-  `0`, so it breaks `exclusiveMinimum: '0'`. Zero has one form: the core never delivers `-0`. Handing a declaration to another door's cast (a `Door.Text` one to
-  `castChecked`, a numeric one to `castText`) is a contract violation, `malformed` with an
-  empty span, as any wrong argument is.
+  and `null` otherwise: a numeric `enum` is answered by the value. A text match delivers your
+  own declared entry, so `' MALE '` is `'Male'`. A violation's `value` is the value exactly as
+  the door cast it, never rounded (rounding is part of the judgement), and at `Door.Text` the
+  judged text, trimmed under `trim`. A rounding past what the type holds is a `multipleOf`
+  violation: `'127'` at `Door.I8` with `multipleOf: '5'` and `Ceiling` carries `127`. Spans
+  are in your units, as a fault's are. Numbers are judged exactly, on the decimal the door
+  read. A float door also judges the float it delivers against each bound read as the door
+  reads it: `'1e-400'` at `Door.F64` reads as `0`, so it breaks `exclusiveMinimum: '0'`. Zero
+  has one form: the core never delivers `-0`. Handing a declaration to another door's cast (a
+  `Door.Text` one to `castChecked`, a numeric one to `castText`) is a contract violation,
+  `malformed` with an empty span, as any wrong argument is.
 - **Plain text.** `castText(text)` with no constraints is a plain door: the text itself once it
-  is valid text, a `Verdict<string>`, `empty` for empty input, nothing trimmed. Plain or
-  constrained is chosen by the number of arguments, not by the second one's value: a failed
-  declaration's missing `.value` (`castText(text, undefined)`, or `null`) is the contract
-  violation, never "no rules". The addon itself counts, so every entry, the WebAssembly
-  fallback's browser entry included, behaves the same.
+  is valid text, a `Verdict<string>`, `empty` for empty input, nothing trimmed; a `Uint8Array`
+  past 4,294,967,295 bytes is `outOfRange` (detail `tooLong`), since a span cannot carry it.
+  Plain or constrained is chosen by the number of arguments, not by the second one's value: a
+  failed declaration's missing `.value` (`castText(text, undefined)`, or `null`) is the
+  contract violation, never "no rules". The addon itself counts, so every entry, the
+  WebAssembly fallback's browser entry included, behaves the same.
 - **Keywords are open.** `violation.keyword` is the OpenAPI spelling (`Keyword.MultipleOf` is
   `'multipleOf'`), and `format` and `pattern` may join in a minor release, so a `switch` over
   keywords needs a `default` arm; a code this binding does not name yet arrives as
   `'keyword N'`.
 - `optional(verdict)` reads a checked verdict too: an `empty` fault is `null`, a violation is
   not absent and comes back as it is. A `Constraints` reads back through getters of its keyword
-  names, and `packed` and `packedEnum` are the 72-byte `RawConstraints` and the `enum` list in
-  the native byte order the core reads in place, the list read only when the flags carry
-  `HAS_ENUM` (256), which any declared `enum` sets.
+  names, and `packed` and `packedEnum` are the 104-byte `RawConstraints` (each bound in its own
+  slot: `minimum` at 24, `maximum` at 40, `multipleOf` at 56, `exclusiveMinimum` at 72,
+  `exclusiveMaximum` at 88) and the `enum` list in the native byte order the core reads in
+  place, the list read only when the flags carry `HAS_ENUM` (256), which any declared `enum`
+  sets, and a text `enum` matched byte for byte when they carry `CASE_SENSITIVE` (512).
 
 ## Versions
 
@@ -478,8 +507,7 @@ The addon (and the WebAssembly fallback) is the core compiled in, not a library 
 time, so a core older than 1.1 cannot be loaded under it: the detailed exports and the
 grouping policy it calls are linked, and a build against a 1.0 core fails to compile. The plain
 numeric doors call the core's Rust doors, which honour a format's policy; the checked doors and
-the four detailed doors call the core's detailed exports, which do too. The 1.0 checked exports
-mask the policy away and would read every format Western, so none is called. `index.js` also pairs
+the four detailed doors call the core's detailed exports, which do too. `index.js` also pairs
 the addon with the package when it loads: unless `nativeVersion()` equals the package's version
 and the addon has `castDetailed`, it is treated as not loaded (`isAvailable()` is `false`, every
 door throws `ERR_HYPERCAST_UNAVAILABLE` with the mismatch as its `cause`), which catches a stale
@@ -550,8 +578,8 @@ enforced (`engines`), not advisory.
 
 **Big-endian hosts** (s390x, tested in `node:24-alpine` for `linux/s390x` under QEMU) are a
 loss, printed here: the fallback loads and every check of the consumer smoke passes, but the
-process never exits on its own. The WebAssembly runtime (`@emnapi/runtime` 2.0.0-beta.2
-through `@napi-rs/wasm-runtime` 1.2.6) writes the module's threadsafe-function reference count
+process never exits on its own. The WebAssembly runtime (`@emnapi/runtime` 2.0.0-beta.3
+through `@napi-rs/wasm-runtime` 1.2.7) writes the module's threadsafe-function reference count
 little-endian and reads it back host-endian, so the `MessagePort` that keeps the event loop
 alive is never released. Nothing more is claimed for big-endian hosts than the smoke's checks.
 

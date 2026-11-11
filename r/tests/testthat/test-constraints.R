@@ -8,7 +8,7 @@ test_that("the README's examples: latitude, euro cash, a sex code", {
   latitude <- hypercast_constraints("f64", minimum = "-90", maximum = "90",
                                     multiple_of = "0.000001", rounding = "midpoint")
   v <- cast_checked(c("45.1234567", "91", "north", ""), num_format(), latitude)
-  expect_identical(v$value, c(45.123457, NA, NA, NA))
+  expect_identical(v$value, c(45.123457, 91, NA, NA))
   expect_identical(v$adjusted, c(TRUE, NA, NA, NA))
   expect_identical(v$keyword, c(NA, "maximum", NA, NA))
   expect_identical(as.character(v$reason), c(NA, NA, "malformed", "empty"))
@@ -17,13 +17,13 @@ test_that("the README's examples: latitude, euro cash, a sex code", {
   cash <- hypercast_constraints("decimal", multiple_of = "0.05")
   euro <- num_format(",", ".", currency = "\u20ac")
   v <- cast_checked(c("12,35 \u20ac", "12,37 \u20ac", "1.234,50"), euro, cash)
-  expect_identical(v$value, c("12.35", NA, "1234.5"))
+  expect_identical(v$value, c("12.35", "12.37", "1234.5"))
   expect_identical(v$keyword, c(NA, "multipleOf", NA))
   expect_identical(c(v$offset[[2]], v$length[[2]]), c(0L, 7L))
 
   sex <- hypercast_constraints("text", enum = c("Female", "Male", "Other"), trim = TRUE)
   v <- cast_text(c(" male ", "OTHER", "Mail", "   "), sex)
-  expect_identical(v$value, c("Male", "Other", NA, NA))
+  expect_identical(v$value, c("Male", "Other", "Mail", NA))
   expect_identical(v$enum_index, c(2L, 3L, NA, NA))
   expect_identical(v$keyword, c(NA, NA, "enum", NA))
   expect_identical(as.character(v$reason), c(NA, NA, NA, "empty"))
@@ -36,12 +36,17 @@ test_that("a refused declaration is an error worded from the core's code", {
       "no error"
     }, error = conditionMessage)
   }
+  not_taken <- "Constraints refused (code 1): a constraint the door does not take."
   held <- "a bound, step or enum entry the door cannot hold"
-  expect_identical(refused(hypercast_constraints("i32", min_length = 1)),
-                   "Constraints refused (code 1): a constraint the door does not take.")
-  expect_identical(refused(hypercast_constraints("i32", minimum = "5", maximum = "5")),
-                   "Constraints refused (code 4): the lower bound is not below the upper bound.")
-  expect_identical(refused(hypercast_constraints("u8", minimum = -1L)),
+  expect_identical(refused(hypercast_constraints("i32", trim = TRUE)), not_taken)
+  expect_identical(refused(hypercast_constraints("f64", case_sensitive = TRUE)), not_taken)
+  expect_identical(refused(hypercast_constraints("text", multiple_of = "1",
+                                                 rounding = "floor")), not_taken)
+  expect_identical(refused(hypercast_constraints("i32", multiple_of = "0")),
+                   "Constraints refused (code 5): multipleOf is not positive.")
+  expect_identical(refused(hypercast_constraints("i32", rounding = "floor")),
+                   "Constraints refused (code 6): a rounding without multipleOf.")
+  expect_identical(refused(hypercast_constraints("decimal", maximum = "1e-29")),
                    paste0("Constraints refused (code 8): ", held, "."))
   # An entry that is not UTF-8 reaches the core as its bytes, and the core refuses it.
   # Marked, or a Latin-1 session would read these bytes as "a" and "y with diaeresis".
@@ -49,30 +54,100 @@ test_that("a refused declaration is an error worded from the core's code", {
   Encoding(invalid) <- "UTF-8"
   expect_identical(refused(hypercast_constraints("text", enum = invalid)),
                    "Constraints refused (code 9): an enum entry that is not UTF-8.")
-  expect_identical(refused(hypercast_constraints("text", enum = c("Male", "MALE"))),
-                   "Constraints refused (code 10): a duplicate enum entry.")
   message <- getFromNamespace("refusal_message", "hypercast")
   expect_identical(message(11L), "Constraints refused (code 11): a malformed constraints layout.")
-  expect_identical(message(12L), "Constraints refused (code 12): an enum with no entries.")
-  expect_identical(message(14L),
-                   "Constraints refused (code 14): a rule this binding does not name.")
-  # NULL declares no enum; an empty one is declared, and refused, at every door that takes
-  # one (and one that takes none refuses the keyword first).
-  empty <- "Constraints refused (code 12): an enum with no entries."
-  expect_identical(refused(hypercast_constraints("text", enum = character(0))), empty)
-  expect_identical(refused(hypercast_constraints("i32", enum = integer(0))), empty)
-  expect_identical(refused(hypercast_constraints("i32", enum = character(0))), empty)
-  expect_identical(refused(hypercast_constraints("f64", enum = character(0))),
-                   "Constraints refused (code 1): a constraint the door does not take.")
+  # The retired codes name no rule.
+  for (code in c(2L, 3L, 4L, 7L, 10L, 12L, 13L, 14L)) {
+    want <- sprintf("Constraints refused (code %d): a rule this binding does not name.", code)
+    expect_identical(message(code), want)
+  }
+})
+
+test_that("every declaration OpenAPI allows is accepted, as it means there", {
+  # A keyword for another type is ignored.
+  ignored <- hypercast_constraints("i32", min_length = 1, max_length = 0)
+  expect_identical(cast_checked("12", num_format(), ignored)$value, 12)
+  expect_identical(cast_text("abc", hypercast_constraints("text", minimum = "5"))$ok, TRUE)
+  # The four bounds are independent, and unsatisfiable bounds make every value a violation.
+  both <- hypercast_constraints("i32", minimum = "0", exclusive_minimum = "5", maximum = "10",
+                                exclusive_maximum = "8")
+  v <- cast_checked(c("-1", "5", "6", "8", "11"), num_format(), both)
+  expect_identical(v$keyword, c("minimum", "exclusiveMinimum", NA, "exclusiveMaximum",
+                                "maximum"))
+  expect_identical(v$value, c(-1, 5, 6, 8, 11))
+  crossed <- hypercast_constraints("i32", minimum = "5", maximum = "5")
+  expect_identical(cast_checked(c("5", "6"), num_format(), crossed)$keyword, c(NA, "maximum"))
+  # NULL declares no enum; an empty one is declared, and no value matches it.
+  for (door in c("i32", "f64", "decimal")) {
+    v <- cast_checked("7", num_format(), hypercast_constraints(door, enum = character(0)))
+    expect_identical(v$keyword, "enum", info = door)
+  }
+  expect_identical(cast_checked("7", num_format(),
+                                hypercast_constraints("i32", enum = integer(0)))$keyword, "enum")
+  expect_identical(cast_text("Male", hypercast_constraints("text", enum = character(0)))$keyword,
+                   "enum")
   expect_s3_class(hypercast_constraints("text", enum = NULL), "hypercast_constraints")
-  unmatchable <- "Constraints refused (code 13): a text enum entry no input can match."
-  expect_identical(refused(hypercast_constraints("text", enum = c("Male", ""))), unmatchable)
-  expect_identical(refused(hypercast_constraints("text", enum = " Male ", trim = TRUE)),
-                   unmatchable)
+  # A duplicate entry is harmless (the first match wins), and an empty entry is an entry.
+  dup <- cast_text("MALE", hypercast_constraints("text", enum = c("Male", "MALE")))
+  expect_identical(c(dup$value, dup$enum_index), c("Male", "1"))
+  blank <- cast_text(c("", " Male "), hypercast_constraints("text", enum = c("Male", "")))
+  expect_identical(as.character(blank$reason), c("empty", NA))
   # Untrimmed, edge white space is part of the entry, and matches as declared.
   spaced <- cast_text(" MALE ", hypercast_constraints("text", enum = " Male "))
   expect_identical(spaced$value, " Male ")
   expect_identical(spaced$enum_index, 1L)
+  # A numeric enum at a float or decimal door compares exactly.
+  halves <- hypercast_constraints("f64", enum = c("1", "2.5"))
+  v <- cast_checked(c("2.50", "2"), num_format(), halves)
+  expect_identical(v$value, c(2.5, 2))
+  expect_identical(v$keyword, c(NA, "enum"))
+})
+
+test_that("a number in a text enum is a valid entry that never matches", {
+  numbers <- hypercast_constraints("text", enum = c(1L, 2L))
+  expect_identical(numbers$enum, c(1L, 2L))
+  v <- cast_text(c("1", "2", "x"), numbers)
+  expect_identical(v$keyword, rep("enum", 3))
+  expect_identical(v$value, c("1", "2", "x"))
+  # Control: the same entries as text match.
+  expect_identical(cast_text("2", hypercast_constraints("text", enum = c("1", "2")))$enum_index,
+                   2L)
+  expect_error(hypercast_constraints("text", enum = 1), "never match")
+})
+
+test_that("case_sensitive matches a text enum byte for byte", {
+  folded <- hypercast_constraints("text", enum = c("mm", "Mm"))
+  exact <- hypercast_constraints("text", enum = c("mm", "Mm"), case_sensitive = TRUE)
+  expect_identical(cast_text("Mm", folded)$enum_index, 1L)
+  v <- cast_text(c("Mm", "MM"), exact)
+  expect_identical(v$value, c("Mm", "MM"))
+  expect_identical(v$enum_index, c(2L, NA))
+  expect_identical(v$keyword, c(NA, "enum"))
+  expect_error(hypercast_constraints("text", case_sensitive = NA), "case_sensitive must be")
+  expect_error(hypercast_constraints("text", case_sensitive = "yes"), "case_sensitive must be")
+})
+
+test_that("a violation carries the value as cast, never rounded", {
+  # A rounding past what the type holds is a multipleOf violation carrying the parsed value.
+  v <- cast_checked("127", num_format(),
+                    hypercast_constraints("i8", multiple_of = "5", rounding = "ceiling"))
+  expect_identical(c(v$keyword, v$value), c("multipleOf", "127"))
+  expect_identical(v$value, 127L)
+  # Rounded to 20, which breaks the maximum: the violation carries 19, not 20.
+  v <- cast_checked("19", num_format(),
+                    hypercast_constraints("i32", multiple_of = "10", rounding = "midpoint",
+                                          maximum = "15"))
+  expect_identical(v$keyword, "maximum")
+  expect_identical(v$value, 19)
+  expect_identical(v$adjusted, NA)
+  # From a double, and at the text door the judged (trimmed) text, not an entry.
+  expect_identical(cast_checked_from_double(-10, hypercast_constraints("i32", minimum = "0"))$value,
+                   -10)
+  t <- cast_text(" Mail ", hypercast_constraints("text", enum = "Male", trim = TRUE))
+  expect_identical(c(t$value, t$offset, t$length), c("Mail", "1", "4"))
+  expect_identical(cast_text(list(charToRaw(" Mail ")),
+                             hypercast_constraints("text", enum = "Male", trim = TRUE),
+                             raw = TRUE)$value[[1]], charToRaw("Mail"))
 })
 
 test_that("bounds and steps are exact: strings or R integers, never doubles", {
@@ -91,18 +166,19 @@ test_that("bounds and steps are exact: strings or R integers, never doubles", {
                    "18446744073709551615")
   expect_error(hypercast_constraints("i32", enum = c(1, 2)), "never a double")
   expect_error(hypercast_constraints("i32", enum = c(1L, NA)), "no NA")
-  expect_error(hypercast_constraints("text", enum = 1:2), "character vector")
+  expect_error(hypercast_constraints("text", enum = c(1, 2)), "character vector")
   tens <- hypercast_constraints("u8", enum = c(10L, 20L))
   expect_identical(cast_checked("0x14", num_format(), tens)$value, 20L)
 })
 
-test_that("lengths are whole numbers, never logicals or strings; trim is TRUE or FALSE", {
+test_that("lengths are whole numbers, never logicals or strings; the flags TRUE or FALSE", {
   expect_error(hypercast_constraints("text", min_length = TRUE), "min_length must be")
   expect_error(hypercast_constraints("text", max_length = "2"), "max_length must be")
   expect_error(hypercast_constraints("text", max_length = -1), "max_length must be")
   expect_error(hypercast_constraints("text", max_length = 2.5), "max_length must be")
   expect_error(hypercast_constraints("text", max_length = 2^32), "max_length must be")
   expect_error(hypercast_constraints("text", trim = NA), "trim must be")
+  expect_error(hypercast_constraints("text", case_sensitive = 1L), "case_sensitive must be")
   expect_error(hypercast_constraints("text", rounding = "half_up"), "rounding must be one of")
   expect_error(hypercast_constraints("bool"), "door must be one of")
   two <- hypercast_constraints("text", min_length = 2, max_length = 2L)
@@ -140,7 +216,8 @@ test_that("a text enum match is the caller's own declared string", {
   expect_identical(v$keyword, c(NA, "enum"))
   # The Turkish dotless i folds to nothing else, and "I" folds to "i".
   v <- cast_text(c("i", "\u0131", "\u0130"), hypercast_constraints("text", enum = c("I", "\u0131")))
-  expect_identical(v$value, c("I", "\u0131", NA))
+  expect_identical(v$value, c("I", "\u0131", "\u0130"))
+  expect_identical(v$enum_index, c(1L, 2L, NA))
 })
 
 test_that("the text door's value is the caller's string, or the trimmed span of it", {
@@ -177,6 +254,7 @@ test_that("the text door's value is the caller's string, or the trimmed span of 
   short <- cast_text(list(as.raw(c(0x61, 0x00, 0x62))),
                      hypercast_constraints("text", max_length = 2))
   expect_identical(c(short$ok, short$keyword), c(FALSE, "maxLength"))
+  expect_true(is.na(short$value))
   # Invalid UTF-8 is malformed at its own bytes.
   bad <- cast_text(list(as.raw(c(0x61, 0xff))))
   expect_identical(c(as.character(bad$reason), bad$offset, bad$length), c("malformed", "1", "1"))
@@ -239,6 +317,8 @@ test_that("faults(), violations(), optional() and is_ok() keep the two kinds apa
   w <- violations(v)
   expect_identical(w$row, 2L)
   expect_identical(w$keyword, "minimum")
+  expect_identical(w$value, 17L)
+  expect_identical(names(w), c("row", "keyword", "value", "offset", "length"))
   expect_identical(c(w$offset, w$length), c(0L, 2L))
   o <- optional(v)
   expect_s3_class(o, "hypercast_checked_verdict")
@@ -271,6 +351,9 @@ test_that("a declaration prints as the call that declares it", {
                    "hypercast_constraints(\"text\", trim = TRUE, enum = c(\"Female\", \"Male\"))")
   expect_identical(capture.output(print(hypercast_constraints("i32", minimum = 1L))),
                    "hypercast_constraints(\"i32\", minimum = 1L)")
+  unit <- hypercast_constraints("text", case_sensitive = TRUE, enum = character(0))
+  expect_identical(capture.output(print(unit)),
+                   "hypercast_constraints(\"text\", case_sensitive = TRUE, enum = character(0))")
 })
 
 test_that("cast_text(raw = TRUE) is the same verdict, with the bytes, through constraints", {
@@ -282,9 +365,12 @@ test_that("cast_text(raw = TRUE) is the same verdict, with the bytes, through co
   v <- cast_text(x, rules, raw = TRUE)
   expect_s3_class(v, "hypercast_checked_verdict")
   expect_identical(plain[names(plain) != "value"], v[names(v) != "value"])
-  # An enum match is the entry as declared, in UTF-8.
+  # An enum match is the entry as declared, in UTF-8; a violation is the judged text's bytes.
   expect_identical(v$value[[1]], charToRaw("\u00e9t\u00e9"))
-  for (row in 2:5) expect_null(v$value[[row]])
+  expect_identical(v$value[2:3], list(charToRaw("toolong"), charToRaw("c")))
+  for (row in 4:5) expect_null(v$value[[row]])
+  w <- violations(v)
+  expect_identical(w$value, list(charToRaw("toolong"), charToRaw("c")))
 })
 
 test_that("text past INT_MAX bytes is ok with NA, and raw gives the bytes", {

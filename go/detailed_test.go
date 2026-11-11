@@ -145,7 +145,7 @@ func TestCheckedDetailed(t *testing.T) {
 		t.Fatalf("1x: %v, want a *Failure", r)
 	}
 	_, r = CheckDetailed("101", Invariant, c)
-	if v, ok := r.(*Violation); !ok || *v != (Violation{KeywordMaximum, 0, 3}) {
+	if v, ok := r.(*Violation[int32]); !ok || *v != (Violation[int32]{KeywordMaximum, 101, 0, 3}) {
 		t.Fatalf("101: %v", r)
 	}
 	if got, r := CheckDetailed("1,234", Invariant.WithGrouping(GroupingIndian), c); r == nil || got.EnumIndex != -1 {

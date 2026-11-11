@@ -111,7 +111,7 @@ func TestTheLayoutsAreTheHeadersSizes(t *testing.T) {
 	sizes := map[string][2]uint32{
 		"HyperCastRawNumFormat_SIZE":       {RawNumFormatSize, 92},
 		"HyperCastRawDayPeriods_SIZE":      {RawDayPeriodsSize, 40},
-		"HyperCastRawConstraints_SIZE":     {RawConstraintsSize, 72},
+		"HyperCastRawConstraints_SIZE":     {RawConstraintsSize, 104},
 		"HyperCastRawCheck_SIZE":           {RawCheckSize, 12},
 		"HyperCastRawSpan_SIZE":            {RawSpanSize, 8},
 		"HyperCastRawFaultDetail_SIZE":     {RawFaultDetailSize, 16},
@@ -132,7 +132,7 @@ func TestTheLayoutsAreTheHeadersSizes(t *testing.T) {
 		"HAS_MAXIMUM": {RawConstraintsHasMaximum, 4}, "HAS_EXCLUSIVE_MAXIMUM": {RawConstraintsHasExclusiveMaximum, 8},
 		"HAS_MULTIPLE_OF": {RawConstraintsHasMultipleOf, 16}, "HAS_MIN_LENGTH": {RawConstraintsHasMinLength, 32},
 		"HAS_MAX_LENGTH": {RawConstraintsHasMaxLength, 64}, "TRIM": {RawConstraintsTrim, 128},
-		"HAS_ENUM": {RawConstraintsHasEnum, 256},
+		"HAS_ENUM": {RawConstraintsHasEnum, 256}, "CASE_SENSITIVE": {RawConstraintsCaseSensitive, 512},
 	}
 	for name, size := range sizes {
 		if size[0] != size[1] {
@@ -188,23 +188,18 @@ func refusalOf(t *testing.T, err error) *refusal {
 	return r
 }
 
-// One message per core code, worded as the Rust core's Refusal displays it.
+// One message per core code, worded as the Rust core's Refusal displays it. The retired
+// codes (2, 3, 4, 7, 10, 12, 13) name no rule, as a code the core has yet to add does not.
 func TestEachRefusalCodeHasItsOwnMessage(t *testing.T) {
+	const unnamed = "a rule this binding does not name"
 	want := map[int32]string{
 		1:  "a constraint the door does not take",
-		2:  "minimum together with exclusiveMinimum",
-		3:  "maximum together with exclusiveMaximum",
-		4:  "the lower bound is not below the upper bound",
 		5:  "multipleOf is not positive",
 		6:  "a rounding without multipleOf",
-		7:  "minLength is above maxLength",
 		8:  "a bound, step or enum entry the door cannot hold",
 		9:  "an enum entry that is not UTF-8",
-		10: "a duplicate enum entry",
 		11: "a malformed constraints layout",
-		12: "an enum with no entries",
-		13: "a text enum entry no input can match",
-		14: "a rule this binding does not name",
+		2:  unnamed, 3: unnamed, 4: unnamed, 7: unnamed, 10: unnamed, 12: unnamed, 13: unnamed, 14: unnamed,
 	}
 	for code, rule := range want {
 		if got := refused(code).Error(); got != fmt.Sprintf("hypercast: Constraints refused (code %d): %s.", code, rule) {
@@ -213,10 +208,10 @@ func TestEachRefusalCodeHasItsOwnMessage(t *testing.T) {
 	}
 	defer func() {
 		if p := recover(); p != "hypercast: Constraints refused (code 8): a bound, step or enum entry the door cannot hold." {
-			t.Errorf("MustConstraints[uint8](Minimum(-1)) panicked with %v", p)
+			t.Errorf(`MustConstraints[uint8](Minimum("ten")) panicked with %v`, p)
 		}
 	}()
-	MustConstraints[uint8](Minimum(-1))
+	MustConstraints[uint8](Minimum("ten"))
 }
 
 // A Go string can hold any bytes, so a text entry that is not UTF-8 reaches the core, which
@@ -289,7 +284,7 @@ func TestOptionalPresentsEmptyAsAbsent(t *testing.T) {
 	}
 	if c, rejection := OptionalChecked(Check("101", Invariant, percent)); c != nil {
 		t.Errorf("OptionalChecked(101) -> %v, want no value", c)
-	} else if v, ok := rejection.(*Violation); !ok || *v != (Violation{Keyword: KeywordMaximum, Offset: 0, Length: 3}) {
+	} else if v, ok := rejection.(*Violation[int32]); !ok || *v != (Violation[int32]{Keyword: KeywordMaximum, Value: 101, Offset: 0, Length: 3}) {
 		t.Errorf("OptionalChecked(101) -> %v, want a maximum violation", rejection)
 	}
 	trimmed := MustConstraints[string](Trim())
@@ -308,7 +303,6 @@ func TestTheBindingsOwnRefusals(t *testing.T) {
 		{"zero Rule", second(NewConstraints[int32](Rule{})), "a zero Rule declares nothing"},
 		{"twice", second(NewConstraints[int32](Minimum(1), Minimum(2))), "minimum is declared twice."},
 		{"rounding twice", second(NewConstraints[int32](WithRounding(Floor), WithRounding(Floor))), "rounding is declared twice."},
-		{"number at text", second(NewConstraints[string](Enum(1, 2))), "Text enum entries are strings; entry 0 is the number 1."},
 		{"negative length", second(NewConstraints[string](MinLength(-1))), "minLength must be from 0 to 4294967295; it is -1."},
 	} {
 		r := refusalOf(t, c.err)
@@ -351,12 +345,19 @@ func TestBoundsTakeTextDecimalsAndIntegers(t *testing.T) {
 	if raw.Size != RawConstraintsSize || raw.Flags != RawConstraintsHasMinimum|RawConstraintsHasExclusiveMaximum|RawConstraintsHasMultipleOf || raw.Rounding != 1 {
 		t.Errorf("Raw() = %+v", raw)
 	}
+	// Each bound in its own field: the exclusive maximum is not in Upper, the maximum's.
+	if raw.Lower.String() != "-90" || raw.ExclusiveUpper.String() != "90" || raw.Upper != (Decimal{}) || raw.ExclusiveLower != (Decimal{}) {
+		t.Errorf("Raw() bounds = %+v", raw)
+	}
 	text := MustConstraints[string](MinLength(1), MaxLength(3), Trim(), Enum("ab", "c"))
 	if n, ok := text.MinLength(); !ok || n != 1 {
 		t.Errorf("MinLength() = %d %v", n, ok)
 	}
-	if n, ok := text.MaxLength(); !ok || n != 3 || !text.Trim() {
-		t.Errorf("MaxLength() = %d %v, Trim() %v", n, ok, text.Trim())
+	if n, ok := text.MaxLength(); !ok || n != 3 || !text.Trim() || text.CaseSensitive() {
+		t.Errorf("MaxLength() = %d %v, Trim() %v, CaseSensitive() %v", n, ok, text.Trim(), text.CaseSensitive())
+	}
+	if exact := MustConstraints[string](CaseSensitive(), Enum("mm")); !exact.CaseSensitive() || exact.Raw().Flags != RawConstraintsCaseSensitive|RawConstraintsHasEnum {
+		t.Errorf("CaseSensitive() %v, flags %d", exact.CaseSensitive(), exact.Raw().Flags)
 	}
 	if got := text.PackedEnum(); string(got) != "\x02\x00\x00\x00ab\x01\x00\x00\x00c" {
 		t.Errorf("PackedEnum() = %q", got)
@@ -412,7 +413,7 @@ func TestARejectionIsAFaultOrAViolation(t *testing.T) {
 		t.Errorf("success carries %#v", rejection)
 	}
 	got, rejection := Check("11", Invariant, small)
-	if v, ok := rejection.(*Violation); !ok || *v != (Violation{Keyword: KeywordMaximum, Offset: 0, Length: 2}) || got.EnumIndex != -1 {
+	if v, ok := rejection.(*Violation[int32]); !ok || *v != (Violation[int32]{Keyword: KeywordMaximum, Value: 11, Offset: 0, Length: 2}) || got.EnumIndex != -1 {
 		t.Errorf("Check(11) -> %v %#v", got, rejection)
 	}
 	if rejection.Error() != "hypercast: breaks maximum at byte 0..2" {
@@ -421,7 +422,7 @@ func TestARejectionIsAFaultOrAViolation(t *testing.T) {
 	if _, rejection := Check("1x", Invariant, small); rejection.Error() != "hypercast: malformed at byte 1..2" {
 		t.Errorf("Check(1x) -> %v", rejection)
 	}
-	if (*Violation)(nil).Error() != "<nil>" {
+	if (*Violation[int32])(nil).Error() != "<nil>" {
 		t.Error("a nil *Violation does not render as <nil>")
 	}
 }
@@ -470,7 +471,7 @@ func TestATextMatchIsTheCallersOwnString(t *testing.T) {
 		t.Errorf("String([]byte) -> %q %v", b, fault)
 	}
 	_, rejection = CheckString("Femal", sex)
-	if v, ok := rejection.(*Violation); !ok || *v != (Violation{Keyword: KeywordEnum, Offset: 0, Length: 5}) {
+	if v, ok := rejection.(*Violation[string]); !ok || *v != (Violation[string]{Keyword: KeywordEnum, Value: "Femal", Offset: 0, Length: 5}) {
 		t.Errorf(`CheckString("Femal") -> %v`, rejection)
 	}
 }
@@ -486,8 +487,7 @@ func TestALongTextOrEnumRunsOnAOneOffInstance(t *testing.T) {
 	if _, rejection := CheckString(long, MustConstraints[string](MaxLength(baseText))); rejection == nil {
 		t.Error("a long text over maxLength was not refused")
 	}
-	// Few long entries, distinct from their first byte on: the core's duplicate search
-	// compares every pair, which costs seconds under TinyGo for thousands of short ones.
+	// Long entries, so a few hundred pass the base scratch.
 	pad := strings.Repeat("x", 120)
 	entries := make([]string, 0, 600)
 	for i := range 600 {
@@ -527,7 +527,8 @@ func TestCheckFromFloat64JudgesTheShortestDecimal(t *testing.T) {
 	// Variables, so the sum is float64 arithmetic: Go folds the constant 0.1 + 0.2 exactly.
 	a, b := 0.1, 0.2
 	tenths := MustConstraints[float64](MultipleOf("0.1"))
-	if _, rejection := CheckFromFloat64(a+b, tenths); rejection == nil || rejection.(*Violation).Length != 0 {
+	if _, rejection := CheckFromFloat64(a+b, tenths); rejection == nil ||
+		*rejection.(*Violation[float64]) != (Violation[float64]{Keyword: KeywordMultipleOf, Value: a + b}) {
 		t.Errorf("0.1 + 0.2 under strict -> %v", rejection)
 	}
 	rounded := MustConstraints[float64](MultipleOf("0.1"), WithRounding(Midpoint))
@@ -541,3 +542,129 @@ func TestCheckFromFloat64JudgesTheShortestDecimal(t *testing.T) {
 		t.Errorf("NaN -> %v", rejection)
 	}
 }
+
+// The four bounds are four keywords in four fields, each judged on its own: an inclusive and
+// an exclusive bound together are both enforced, whichever is tighter.
+func TestTheFourBoundsAreIndependent(t *testing.T) {
+	c := MustConstraints[int32](Minimum(0), ExclusiveMinimum(5), Maximum(100), ExclusiveMaximum(50))
+	raw := c.Raw()
+	if raw.Lower.String() != "0" || raw.ExclusiveLower.String() != "5" || raw.Upper.String() != "100" || raw.ExclusiveUpper.String() != "50" {
+		t.Fatalf("Raw() = %+v", raw)
+	}
+	for input, want := range map[string]Keyword{"-1": KeywordMinimum, "5": KeywordExclusiveMinimum, "101": KeywordMaximum, "50": KeywordExclusiveMaximum, "6": 0, "49": 0} {
+		got, rejection := Check(input, Invariant, c)
+		if want == 0 {
+			if rejection != nil {
+				t.Errorf("%s -> %v", input, rejection)
+			}
+			continue
+		}
+		v, ok := rejection.(*Violation[int32])
+		if !ok || v.Keyword != want || fmt.Sprint(v.Value) != input || got.Value != 0 {
+			t.Errorf("%s -> %v %v, want %s carrying %s", input, got, rejection, want, input)
+		}
+	}
+}
+
+// Every declaration OpenAPI allows is accepted, one no value satisfies included, and a
+// keyword for another type is ignored.
+func TestEveryOpenAPIDeclarationIsAccepted(t *testing.T) {
+	for name, err := range map[string]error{
+		"crossed bounds":       second(NewConstraints[int32](Minimum(10), Maximum(1))),
+		"both minimums":        second(NewConstraints[float64](Minimum(1), ExclusiveMinimum(1))),
+		"minLength > max":      second(NewConstraints[string](MinLength(5), MaxLength(1))),
+		"duplicate entries":    second(NewConstraints[string](Enum("a", "A", "a"))),
+		"no entries":           second(NewConstraints[int32](Enum[int]())),
+		"empty text entry":     second(NewConstraints[string](Trim(), Enum("", " a "))),
+		"fractional int entry": second(NewConstraints[int8](Enum("1.5", "300"))),
+		"float enum":           second(NewConstraints[float64](Enum("0.5", "1"))),
+		"length at a number":   second(NewConstraints[int32](MinLength(3))),
+		"bound at text":        second(NewConstraints[string](Minimum(3))),
+		"bound past the type":  second(NewConstraints[uint8](Minimum(-1), Maximum(1000))),
+	} {
+		if err != nil {
+			t.Errorf("%s refused: %v", name, err)
+		}
+	}
+	if _, rejection := Check("0", Invariant, MustConstraints[int32](Enum[int]())); rejection.(*Violation[int32]).Keyword != KeywordEnum {
+		t.Errorf("an empty enum let 0 through: %v", rejection)
+	}
+	if got, rejection := Check("7", Invariant, MustConstraints[int32](MinLength(3))); rejection != nil || got.Value != 7 {
+		t.Errorf("minLength at a number -> %v %v", got, rejection)
+	}
+	if got, rejection := Check("0.5", Invariant, MustConstraints[float64](Enum("1", "0.50"))); rejection != nil || got.Value != 0.5 {
+		t.Errorf("a float enum -> %v %v", got, rejection)
+	}
+	// Control: what the core still refuses is still refused.
+	if r := refusalOf(t, second(NewConstraints[int32](Trim()))); r.code != 1 {
+		t.Errorf("trim at a number refused with %d, want 1", r.code)
+	}
+	if r := refusalOf(t, second(NewConstraints[int32](CaseSensitive()))); r.code != 1 {
+		t.Errorf("caseSensitive at a number refused with %d, want 1", r.code)
+	}
+}
+
+// A number in the text door's enum is a valid entry that no string equals (JSON Schema's enum
+// is exact equality across types): the declaration is accepted and "7" breaks enum.
+func TestANumberInATextEnumNeverMatches(t *testing.T) {
+	numbers := MustConstraints[string](Enum(7, 2))
+	for _, input := range []string{"7", "2", "x"} {
+		want := Violation[string]{Keyword: KeywordEnum, Value: input, Offset: 0, Length: 1}
+		if _, rejection := CheckString(input, numbers); rejection == nil || *rejection.(*Violation[string]) != want {
+			t.Errorf("%q against enum [7, 2] -> %v", input, rejection)
+		}
+		if _, rejection := CheckStringDetailed(input, numbers); rejection == nil || *rejection.(*Violation[string]) != want {
+			t.Errorf("%q against enum [7, 2], detailed -> %v", input, rejection)
+		}
+	}
+	// Control: the same entries as strings match.
+	if got, rejection := CheckString("2", MustConstraints[string](Enum("7", "2"))); rejection != nil || got.Value != "2" || got.EnumIndex != 1 {
+		t.Errorf(`"2" against enum ["7", "2"] -> %+v %v`, got, rejection)
+	}
+}
+
+// A text enum folds case unless CaseSensitive; a violation carries the judged text, trimmed,
+// whether the input was a string or bytes.
+func TestCaseSensitiveAndTheViolationsText(t *testing.T) {
+	folded := MustConstraints[string](Trim(), Enum("mm", "Mm"))
+	exact := MustConstraints[string](Trim(), CaseSensitive(), Enum("mm", "Mm"))
+	if got, rejection := CheckString(" MM ", folded); rejection != nil || got.Value != "mm" || got.EnumIndex != 0 {
+		t.Errorf("folded MM -> %+v %v", got, rejection)
+	}
+	if got, rejection := CheckString(" Mm ", exact); rejection != nil || got.Value != "Mm" || got.EnumIndex != 1 {
+		t.Errorf("exact Mm -> %+v %v", got, rejection)
+	}
+	want := Violation[string]{Keyword: KeywordEnum, Value: "MM", Offset: 1, Length: 2}
+	if _, rejection := CheckString(" MM ", exact); rejection == nil || *rejection.(*Violation[string]) != want {
+		t.Errorf("exact MM -> %v", rejection)
+	}
+	if _, rejection := CheckString([]byte(" MM "), exact); rejection == nil || *rejection.(*Violation[string]) != want {
+		t.Errorf("exact MM as bytes -> %v", rejection)
+	}
+	if _, rejection := CheckStringDetailed(" MM ", exact); rejection == nil || *rejection.(*Violation[string]) != want {
+		t.Errorf("exact MM, detailed -> %v", rejection)
+	}
+}
+
+// A violation carries the value as cast, never the rounded one, and a rounding past what the
+// type holds breaks multipleOf rather than faulting.
+func TestAViolationCarriesTheValueAsCast(t *testing.T) {
+	ceiling := MustConstraints[int8](MultipleOf(5), WithRounding(Ceiling))
+	for _, rejection := range []error{asRejection(Check("127", Invariant, ceiling)), asDetailed(CheckDetailed("127", Invariant, ceiling))} {
+		if v, ok := rejection.(*Violation[int8]); !ok || *v != (Violation[int8]{Keyword: KeywordMultipleOf, Value: 127, Offset: 0, Length: 3}) {
+			t.Errorf("127 ceiling to 5 -> %v", rejection)
+		}
+	}
+	// Rounded to 15 and then judged: the violation still carries 13.
+	capped := MustConstraints[int32](MultipleOf(5), WithRounding(Ceiling), Maximum(14))
+	if _, rejection := Check("13", Invariant, capped); rejection == nil || *rejection.(*Violation[int32]) != (Violation[int32]{Keyword: KeywordMaximum, Value: 13, Offset: 0, Length: 2}) {
+		t.Errorf("13 rounded past the maximum -> %v", rejection)
+	}
+	price := MustConstraints[Decimal](Maximum("9.99"))
+	if _, rejection := CheckFromFloat64Detailed(10.5, price); rejection == nil || rejection.(*Violation[Decimal]).Value.String() != "10.5" {
+		t.Errorf("10.5 over 9.99 -> %v", rejection)
+	}
+}
+
+func asRejection[V any](_ Checked[V], r Rejection) error        { return asError(r) }
+func asDetailed[V any](_ Checked[V], r DetailedRejection) error { return asError(r) }

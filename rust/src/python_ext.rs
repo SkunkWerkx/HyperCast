@@ -1594,7 +1594,7 @@ fn refused(refusal: core::Refusal) -> PyErr {
     PyValueError::new_err(format!("Constraints refused (code {}): {refusal}.", refusal.code()))
 }
 
-/// A bound, step or integer `enum` entry as the core converts it: a `decimal.Decimal`, an
+/// A bound, step or numeric `enum` entry as the core converts it: a `decimal.Decimal`, an
 /// `int` or a `str`, each through its text and `declared_decimal`. Never a `float` (nor a
 /// `bool`): `0.1` has no exact binary form, so a float could only declare a neighbour of the
 /// value meant. `Err` inside is the core's refusal; outside, a wrong type.
@@ -1650,6 +1650,7 @@ struct Keywords<'py> {
     min_length: Option<u32>,
     max_length: Option<u32>,
     trim: bool,
+    case_sensitive: bool,
     entries: Option<Bound<'py, PyAny>>,
 }
 
@@ -1694,7 +1695,7 @@ fn declaration(
         raw.flags |= core::RawConstraints::HAS_MINIMUM;
     }
     if let Some(value) = &keywords.exclusive_minimum {
-        raw.lower = decimal!("exclusive_minimum", value);
+        raw.exclusive_lower = decimal!("exclusive_minimum", value);
         raw.flags |= core::RawConstraints::HAS_EXCLUSIVE_MINIMUM;
     }
     if let Some(value) = &keywords.maximum {
@@ -1702,7 +1703,7 @@ fn declaration(
         raw.flags |= core::RawConstraints::HAS_MAXIMUM;
     }
     if let Some(value) = &keywords.exclusive_maximum {
-        raw.upper = decimal!("exclusive_maximum", value);
+        raw.exclusive_upper = decimal!("exclusive_maximum", value);
         raw.flags |= core::RawConstraints::HAS_EXCLUSIVE_MAXIMUM;
     }
     if let Some(value) = &keywords.multiple_of {
@@ -1720,6 +1721,9 @@ fn declaration(
     if keywords.trim {
         raw.flags |= core::RawConstraints::TRIM;
     }
+    if keywords.case_sensitive {
+        raw.flags |= core::RawConstraints::CASE_SENSITIVE;
+    }
     let mut packed = Vec::new();
     let mut entries = None;
     if let Some(list) = &keywords.entries {
@@ -1734,10 +1738,22 @@ fn declaration(
                 // At the text door an entry is the text itself, packed as the ABI reads it:
                 // a little-endian u32 byte length, then the bytes, surrogates kept.
                 let Ok(text) = entry.cast::<PyString>() else {
-                    return Err(PyTypeError::new_err(format!(
-                        "enum entries at Door.TEXT must be str; entry {i} is {}",
-                        entry.get_type().name()?
-                    )));
+                    // A number is a valid entry that no string equals (JSON Schema's `enum`
+                    // is exact equality across types): packed as an empty entry, which no
+                    // input matches (empty input is the door's Empty fault), so every other
+                    // entry keeps its index. Any number will do; the core never reads it.
+                    let number = !entry.is_instance_of::<PyBool>()
+                        && (entry.is_instance_of::<PyInt>()
+                            || entry.is_instance(cached(py, &DECIMAL)?)?);
+                    if !number {
+                        return Err(PyTypeError::new_err(format!(
+                            "enum entries at Door.TEXT must be str, or a number (an int or a \
+                             decimal.Decimal), which never matches; entry {i} is {}",
+                            entry.get_type().name()?
+                        )));
+                    }
+                    packed.extend_from_slice(&0u32.to_le_bytes());
+                    continue;
                 };
                 str_bytes(text, |bytes| {
                     let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
@@ -1753,8 +1769,7 @@ fn declaration(
                 packed.extend_from_slice(&[decimal.scale, u8::from(decimal.negative), 0, 0]);
             }
         }
-        // Declared, even with no entries: the core refuses an empty `enum` (12), never reads
-        // it as none.
+        // Declared, even with no entries: an empty `enum` is one no value is in, never none.
         raw.flags |= core::RawConstraints::HAS_ENUM;
         entries = Some(list.unbind());
     }
@@ -1766,17 +1781,21 @@ fn declaration(
     }))
 }
 
-/// Validation constraints, the OpenAPI Schema Object's keywords, bound to one door and judged
-/// once, by the native core, when built: a declaration that cannot mean anything at its door
-/// is a ``ValueError`` here, its message the rule it breaks, and every checked cast after that
-/// judges only data. Immutable.
+/// Validation constraints, the OpenAPI 3.2 Schema Object's keywords, bound to one door and
+/// judged once, by the native core, when built: a declaration that cannot mean anything at its
+/// door is a ``ValueError`` here, its message the rule it breaks, and every checked cast after
+/// that judges only data. Immutable.
 ///
-/// The integer doors take ``minimum``, ``exclusive_minimum``, ``maximum``,
-/// ``exclusive_maximum``, ``multiple_of`` with a ``rounding``, and ``enum``; ``Door.F32``,
-/// ``Door.F64`` and ``Door.DECIMAL`` the same but ``enum``; ``Door.TEXT`` ``min_length``,
-/// ``max_length`` (in code points), ``trim`` and ``enum`` (matched under simple case folding).
-/// Bounds and steps are a ``decimal.Decimal``, an ``int`` or a ``str`` in invariant notation,
-/// never a ``float``.
+/// The numeric doors take ``minimum``, ``exclusive_minimum``, ``maximum``,
+/// ``exclusive_maximum`` (four independent keywords, each applied on its own),
+/// ``multiple_of`` with a ``rounding``, and ``enum`` (entries compared exactly to the value);
+/// ``Door.TEXT`` takes ``min_length``, ``max_length`` (in code points), ``trim``, ``enum``
+/// (matched under simple case folding; an ``int`` or ``decimal.Decimal`` entry is valid and
+/// never matches) and ``case_sensitive`` (matched byte for byte). As in
+/// OpenAPI, a keyword for another type is ignored, and crossed bounds, duplicate entries or an
+/// empty ``enum`` are accepted (an empty ``enum`` admits no value). Bounds, steps and numeric
+/// entries are a ``decimal.Decimal``, an ``int`` or a ``str`` in invariant notation, never a
+/// ``float``.
 #[pyclass(frozen, generic, module = "hypercast")]
 struct Constraints {
     door: core::Door,
@@ -1798,7 +1817,7 @@ impl Constraints {
         decimal_value(py, value).map(Some)
     }
 
-    /// The 72-byte layout, native-endian as the core reads it in place.
+    /// The 104-byte layout, native-endian as the core reads it in place.
     fn layout(&self) -> Vec<u8> {
         let raw = &self.raw;
         let mut bytes = Vec::with_capacity(core::RawConstraints::SIZE as usize);
@@ -1807,7 +1826,9 @@ impl Constraints {
         {
             bytes.extend_from_slice(&word.to_ne_bytes());
         }
-        for decimal in [raw.lower, raw.upper, raw.multiple_of] {
+        for decimal in
+            [raw.lower, raw.upper, raw.multiple_of, raw.exclusive_lower, raw.exclusive_upper]
+        {
             bytes.extend_from_slice(&decimal.lo.to_ne_bytes());
             bytes.extend_from_slice(&decimal.hi.to_ne_bytes());
             bytes.extend_from_slice(&[decimal.scale, u8::from(decimal.negative), 0, 0]);
@@ -1822,7 +1843,7 @@ impl Constraints {
     #[pyo3(signature = (
         door, *, minimum = None, exclusive_minimum = None, maximum = None,
         exclusive_maximum = None, multiple_of = None, rounding = 0, min_length = None,
-        max_length = None, trim = false, r#enum = None
+        max_length = None, trim = false, case_sensitive = false, r#enum = None
     ))]
     #[allow(clippy::too_many_arguments)] // The constructor's signature is the API.
     fn new<'py>(
@@ -1837,6 +1858,7 @@ impl Constraints {
         min_length: Option<Length>,
         max_length: Option<Length>,
         trim: bool,
+        case_sensitive: bool,
         r#enum: Option<Bound<'py, PyAny>>,
     ) -> PyResult<Self> {
         let keywords = Keywords {
@@ -1850,6 +1872,7 @@ impl Constraints {
             min_length: min_length.map(|Length(length)| length),
             max_length: max_length.map(|Length(length)| length),
             trim,
+            case_sensitive,
             entries: r#enum,
         };
         let Declaration { door, raw, packed, entries } =
@@ -1872,7 +1895,7 @@ impl Constraints {
     /// The declared ``exclusive_minimum``, or ``None``.
     #[getter]
     fn exclusive_minimum(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        self.bound(py, core::RawConstraints::HAS_EXCLUSIVE_MINIMUM, self.raw.lower)
+        self.bound(py, core::RawConstraints::HAS_EXCLUSIVE_MINIMUM, self.raw.exclusive_lower)
     }
 
     /// The declared ``maximum``, or ``None``.
@@ -1884,7 +1907,7 @@ impl Constraints {
     /// The declared ``exclusive_maximum``, or ``None``.
     #[getter]
     fn exclusive_maximum(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        self.bound(py, core::RawConstraints::HAS_EXCLUSIVE_MAXIMUM, self.raw.upper)
+        self.bound(py, core::RawConstraints::HAS_EXCLUSIVE_MAXIMUM, self.raw.exclusive_upper)
     }
 
     /// The declared ``multiple_of``, or ``None``.
@@ -1917,18 +1940,25 @@ impl Constraints {
         self.raw.flags & core::RawConstraints::TRIM != 0
     }
 
+    /// Whether a text ``enum`` is matched byte for byte rather than under simple case folding.
+    #[getter]
+    fn case_sensitive(&self) -> bool {
+        self.raw.flags & core::RawConstraints::CASE_SENSITIVE != 0
+    }
+
     /// The declared ``enum`` entries as the caller gave them, in a tuple, or ``None``.
     #[getter]
     fn r#enum(&self, py: Python<'_>) -> Option<Py<PyTuple>> {
         self.entries.as_ref().map(|entries| entries.clone_ref(py))
     }
 
-    /// The 72 bytes this declaration crosses a C ABI as, in the native byte order the core
-    /// reads in place: the size (``72``), the flags, the rounding code, ``min_length``,
-    /// ``max_length`` and a reserved zero as ``u32``\ s, then the lower bound, the upper bound
-    /// and ``multiple_of`` as 16-byte decimals (the low 64 and high 32 bits of the magnitude,
-    /// the scale, the sign, two zero bytes) — for a library that judges values across a C ABI
-    /// of its own, with :attr:`packed_enum` beside it.
+    /// The 104 bytes this declaration crosses a C ABI as, in the native byte order the core
+    /// reads in place: the size (``104``), the flags, the rounding code, ``min_length``,
+    /// ``max_length`` and a reserved zero as ``u32``\ s, then ``minimum``, ``maximum``,
+    /// ``multiple_of``, ``exclusive_minimum`` and ``exclusive_maximum`` as 16-byte decimals
+    /// (the low 64 and high 32 bits of the magnitude, the scale, the sign, two zero bytes) —
+    /// for a library that judges values across a C ABI of its own, with :attr:`packed_enum`
+    /// beside it.
     #[getter]
     fn packed<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
         PyBytes::new(py, &self.layout())
@@ -1936,7 +1966,7 @@ impl Constraints {
 
     /// The ``enum`` list as the core reads it beside :attr:`packed`, empty for none (and read
     /// only when the flags in :attr:`packed` carry ``HAS_ENUM``, 256, set when one is declared):
-    /// at an integer door 16-byte decimals in native byte order, at ``Door.TEXT`` each entry a
+    /// at a numeric door 16-byte decimals in native byte order, at ``Door.TEXT`` each entry a
     /// little-endian ``u32`` byte length followed by its UTF-8.
     #[getter]
     fn packed_enum<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
@@ -1974,6 +2004,7 @@ impl Constraints {
             ("min_length", self.min_length().map(|length| length.to_string())),
             ("max_length", self.max_length().map(|length| length.to_string())),
             ("trim", self.trim().then(|| "True".to_string())),
+            ("case_sensitive", self.case_sensitive().then(|| "True".to_string())),
             ("enum", repr(self.r#enum(py).map(Py::into_any))?),
         ];
         let mut call = format!("Constraints({}", member(self.door(py)?)?);
@@ -2104,7 +2135,7 @@ impl Keyword {
 /// The success case of a checked door: the value (rounded to ``multiple_of`` when the
 /// declaration rounds; at ``Door.TEXT`` with an ``enum``, the caller's own declared entry),
 /// ``adjusted`` (true only when rounding changed it) and, at ``Door.TEXT`` with an ``enum``,
-/// the index of the entry it matched — ``None`` otherwise, an integer ``enum`` included, where
+/// the index of the entry it matched — ``None`` otherwise, a numeric ``enum`` included, where
 /// the value is the answer.
 #[pyclass(frozen, generic, module = "hypercast")]
 struct Checked {
@@ -2149,13 +2180,17 @@ impl Checked {
     }
 }
 
-/// A value that parsed and broke a declared rule: the :class:`Keyword` and the value's span,
-/// in the caller's own units as a :class:`Fault`'s is (byte offsets for ``bytes`` input,
-/// code-point offsets for ``str``). A number already decoded has no text, and an empty span.
-#[pyclass(frozen, module = "hypercast")]
+/// A value that cast and broke a declared rule: the :class:`Keyword`, the ``value`` as the door
+/// cast it (an ``int``, a ``float``, a ``decimal.Decimal``, or at ``Door.TEXT`` the judged
+/// ``str`` after ``trim``; never rounded) and its span, in the caller's own units as a
+/// :class:`Fault`'s is (byte offsets for ``bytes`` input, code-point offsets for ``str``). A
+/// number already decoded has no text, and an empty span.
+#[pyclass(frozen, generic, module = "hypercast")]
 struct Violation {
     #[pyo3(get)]
     keyword: Py<Keyword>,
+    #[pyo3(get)]
+    value: Py<PyAny>,
     #[pyo3(get)]
     offset: u32,
     #[pyo3(get)]
@@ -2166,51 +2201,84 @@ struct Violation {
 impl Violation {
     #[allow(non_upper_case_globals)]
     #[classattr]
-    const __match_args__: (&'static str, &'static str, &'static str) =
-        ("keyword", "offset", "length");
+    const __match_args__: (&'static str, &'static str, &'static str, &'static str) =
+        ("keyword", "value", "offset", "length");
 
     #[new]
-    fn new(keyword: Py<Keyword>, offset: u32, length: u32) -> Self {
-        Violation { keyword, offset, length }
+    fn new(keyword: Py<Keyword>, value: Py<PyAny>, offset: u32, length: u32) -> Self {
+        Violation { keyword, value, offset, length }
     }
 
-    fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
+    fn __eq__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<bool> {
         let Ok(other) = other.cast::<Violation>() else {
-            return false;
+            return Ok(false);
         };
         let other = other.get();
-        self.offset == other.offset
+        Ok(self.offset == other.offset
             && self.length == other.length
             && self.keyword.get().code == other.keyword.get().code
+            && self.value.bind(py).eq(other.value.bind(py))?)
     }
 
-    fn __repr__(&self) -> String {
-        format!(
-            "Violation(keyword={}, offset={}, length={})",
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        Ok(format!(
+            "Violation(keyword={}, value={}, offset={}, length={})",
             self.keyword.get().__repr__(),
+            self.value.bind(py).repr()?,
             self.offset,
             self.length
-        )
+        ))
     }
 }
 
-/// What a checked judge answers: the value and what was reported beside it, or a rejection.
-type Judgement<T> = Result<(T, CheckOutcome), core::detailed::Rejection>;
+/// What a checked judge answers: the value and what was reported beside it, or a rejection,
+/// a violation carrying the value as the door cast it.
+type Judgement<T> = Result<(T, CheckOutcome), core::detailed::Rejection<T>>;
+
+/// What a core judge answers: its value written to `out` on success and on a violation alike.
+type Judged = Option<Result<CheckOutcome, core::detailed::Rejection<()>>>;
 
 /// Runs a numeric judge, which writes the value to the pointer it is handed.
 ///
 /// # Safety
-/// `T` must be the type the judge writes on success.
-unsafe fn judged<T>(
-    judge: impl FnOnce(*mut u8) -> Option<Result<CheckOutcome, core::detailed::Rejection>>,
-) -> PyResult<Judgement<T>> {
+/// `T` must be the type the judge writes on a success and on a violation.
+unsafe fn judged<T>(judge: impl FnOnce(*mut u8) -> Judged) -> PyResult<Judgement<T>> {
     let mut out = MaybeUninit::<T>::uninit();
     match judge(out.as_mut_ptr().cast()) {
         // SAFETY: on success the judge wrote a `T`, per the function contract.
         Some(Ok(outcome)) => Ok(Ok((unsafe { out.assume_init() }, outcome))),
-        Some(Err(rejection)) => Ok(Err(rejection)),
+        Some(Err(core::detailed::Rejection::Violation(broken))) => {
+            // SAFETY: on a violation the judge wrote the value it judged, a `T` likewise.
+            let value = unsafe { out.assume_init() };
+            Ok(Err(core::detailed::Rejection::Violation(broken.map(|()| value))))
+        }
+        Some(Err(core::detailed::Rejection::Failure(failed))) => {
+            Ok(Err(core::detailed::Rejection::Failure(failed)))
+        }
         None => Err(binding_bug("refused a declaration it had accepted")),
     }
+}
+
+/// A judgement's value, on a success or a violation alike, as `present` delivers it.
+fn presented<T, U>(
+    judgement: Judgement<T>,
+    present: impl Fn(T) -> PyResult<U>,
+) -> PyResult<Judgement<U>> {
+    Ok(match judgement {
+        Ok((value, outcome)) => Ok((present(value)?, outcome)),
+        Err(core::detailed::Rejection::Violation(broken)) => {
+            let core::Violation { keyword, value, offset, len } = broken;
+            Err(core::detailed::Rejection::Violation(core::Violation {
+                keyword,
+                value: present(value)?,
+                offset,
+                len,
+            }))
+        }
+        Err(core::detailed::Rejection::Failure(failed)) => {
+            Err(core::detailed::Rejection::Failure(failed))
+        }
+    })
 }
 
 /// Judges at a numeric door through `judge`, which writes that door's own type, and presents
@@ -2219,17 +2287,13 @@ unsafe fn judged<T>(
 fn numeric(
     py: Python<'_>,
     door: core::Door,
-    judge: impl FnOnce(*mut u8) -> Option<Result<CheckOutcome, core::detailed::Rejection>>,
+    judge: impl FnOnce(*mut u8) -> Judged,
 ) -> PyResult<Judgement<Py<PyAny>>> {
     macro_rules! at {
         ($ty:ty) => {{
             // SAFETY: the door judged is `door`, which writes this type.
-            match unsafe { judged::<$ty>(judge) }? {
-                Ok((value, outcome)) => {
-                    Ok(Ok((value.into_pyobject(py)?.into_any().unbind(), outcome)))
-                }
-                Err(rejection) => Ok(Err(rejection)),
-            }
+            let judgement = unsafe { judged::<$ty>(judge) }?;
+            presented(judgement, |value| Ok(value.into_pyobject(py)?.into_any().unbind()))
         }};
     }
     match door {
@@ -2244,10 +2308,9 @@ fn numeric(
         core::Door::F32 => at!(f32),
         core::Door::F64 => at!(f64),
         // SAFETY: the decimal door writes a `Decimal`.
-        core::Door::Decimal => match unsafe { judged::<core::Decimal>(judge) }? {
-            Ok((value, outcome)) => Ok(Ok((decimal_value(py, value)?, outcome))),
-            Err(rejection) => Ok(Err(rejection)),
-        },
+        core::Door::Decimal => {
+            presented(unsafe { judged::<core::Decimal>(judge) }?, |value| decimal_value(py, value))
+        }
         _ => Err(binding_bug("was asked to judge a door that is not numeric")),
     }
 }
@@ -2275,7 +2338,8 @@ fn checked(
         Err(core::detailed::Rejection::Violation(broken)) => {
             let (offset, length) = span(broken.offset, broken.len)?;
             let keyword = Py::new(py, Keyword { code: broken.keyword.code() })?;
-            Ok(Py::new(py, Violation { keyword, offset, length })?.into_any())
+            let value = broken.value;
+            Ok(Py::new(py, Violation { keyword, value, offset, length })?.into_any())
         }
     }
 }
@@ -2350,7 +2414,8 @@ fn cast_checked_from_float(
 /// be UTF-8, and a ``str`` holding a lone surrogate is ``MALFORMED`` at it. Empty input is
 /// ``EMPTY``; nothing is trimmed. With ``Constraints`` for ``Door.TEXT`` it is judged by them:
 /// trimmed of Unicode ``White_Space`` when they say so (trimmed to nothing is ``EMPTY``),
-/// lengths counted in code points, and an ``enum`` matched under simple case folding, a match
+/// lengths counted in code points, and an ``enum`` matched under simple case folding (byte
+/// for byte under ``case_sensitive``), a match
 /// delivering the caller's own declared entry and its index — a :class:`Checked`, a
 /// :class:`Fault` or a :class:`Violation`.
 #[pyfunction]
@@ -2381,7 +2446,14 @@ fn cast_text(
     let entries = Entries::packed(core::Door::Text, &constraints.packed);
     let judgement = match judge_text_detailed(bytes, &constraints.raw, &entries) {
         None => return Err(binding_bug("refused a declaration it had accepted")),
-        Some(Err(rejection)) => Err(rejection),
+        Some(Err(core::detailed::Rejection::Failure(failed))) => {
+            Err(core::detailed::Rejection::Failure(failed))
+        }
+        // The violation spans the judged text (after `trim`), which is its value.
+        Some(Err(core::detailed::Rejection::Violation(broken))) => {
+            let value = input.text_at(py, (broken.offset, broken.len))?;
+            Err(core::detailed::Rejection::Violation(broken.map(|()| value)))
+        }
         Some(Ok(outcome)) => {
             let value = match (outcome.enum_index, &constraints.entries) {
                 (None, _) => input.text_at(py, outcome.span)?,
@@ -2396,19 +2468,19 @@ fn cast_text(
 
 /// Judges a declaration without building it, the way ``Constraints`` does when it is built:
 /// ``0`` when every rule holds, otherwise the code of the first rule it breaks — ``1`` a
-/// keyword the door does not take, ``2`` minimum with exclusive_minimum, ``3`` maximum with
-/// exclusive_maximum, ``4`` a lower bound not below the upper, ``5`` multiple_of not positive,
-/// ``6`` a rounding without multiple_of, ``7`` min_length above max_length, ``8`` a bound, step
-/// or entry the door cannot hold, ``9`` an entry that is not UTF-8 (a lone surrogate), ``10``
-/// a duplicate entry, ``11`` a rounding code the core does not know, ``12`` an ``enum`` with no
-/// entries (``enum=[]``; ``None`` declares none), ``13`` a text entry no input can match (an
-/// empty one, or under ``trim`` one with leading or trailing white space). A wrong argument
-/// type is still a ``TypeError``, and a door that is not a ``Door`` a ``ValueError``.
+/// keyword the door does not take (``trim`` or ``case_sensitive`` at a numeric door, a
+/// ``rounding`` with ``multiple_of`` at ``Door.TEXT``), ``5`` multiple_of not positive, ``6`` a
+/// rounding without multiple_of, ``8`` a bound, step or entry the door cannot hold (or a
+/// rounding with a fractional step at an integer door), ``9`` an entry that is not UTF-8 (a
+/// lone surrogate), ``11`` a rounding code the core does not know. Every other declaration
+/// OpenAPI 3.2 allows is ``0``: a keyword for another type (ignored), crossed bounds,
+/// duplicate or empty ``enum`` entries. A wrong argument type is still a ``TypeError``, and a
+/// door that is not a ``Door`` a ``ValueError``.
 #[pyfunction]
 #[pyo3(signature = (
     door, *, minimum = None, exclusive_minimum = None, maximum = None,
     exclusive_maximum = None, multiple_of = None, rounding = 0, min_length = None,
-    max_length = None, trim = false, r#enum = None
+    max_length = None, trim = false, case_sensitive = false, r#enum = None
 ))]
 #[allow(clippy::too_many_arguments)] // The signature is Constraints's, the API.
 fn cast_constraints_check<'py>(
@@ -2423,6 +2495,7 @@ fn cast_constraints_check<'py>(
     min_length: Option<Length>,
     max_length: Option<Length>,
     trim: bool,
+    case_sensitive: bool,
     r#enum: Option<Bound<'py, PyAny>>,
 ) -> PyResult<u32> {
     let keywords = Keywords {
@@ -2436,12 +2509,13 @@ fn cast_constraints_check<'py>(
         min_length: min_length.map(|Length(length)| length),
         max_length: max_length.map(|Length(length)| length),
         trim,
+        case_sensitive,
         entries: r#enum,
     };
     Ok(declaration(py, keywords)?.map_or_else(|refusal| refusal.code(), |_| 0))
 }
 
-/// Converts a bound, step or integer ``enum`` entry written in invariant notation (an
+/// Converts a bound, step or numeric ``enum`` entry written in invariant notation (an
 /// optional sign, digits with an optional ``.`` and fraction, an optional exponent:
 /// ``"0.000001"``, ``"-90"``, ``"1e-6"``) to the exact ``decimal.Decimal`` the core declares
 /// it as, trailing zeros dropped: the conversion every bound a ``Constraints`` is given

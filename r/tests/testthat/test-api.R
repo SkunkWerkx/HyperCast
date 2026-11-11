@@ -382,7 +382,7 @@ test_that("the checked verdict is its own class, with its own columns, in order"
   expect_identical(levels(v$reason), c("empty", "malformed", "out_of_range"))
   expect_identical(names(faults(v)),
                    c("row", "reason", "offset", "length", "detail", "detail_code"))
-  expect_identical(names(violations(v)), c("row", "keyword", "offset", "length"))
+  expect_identical(names(violations(v)), c("row", "keyword", "value", "offset", "length"))
 })
 
 # ---- grouping ----

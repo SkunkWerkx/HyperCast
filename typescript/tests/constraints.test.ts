@@ -12,7 +12,7 @@ const api = require('../index.js') as typeof import('../index.js')
 const { Constraints, Door, Keyword, NumFormat, NumStyles, Rounding, castChecked, castText } = api
 type CheckedVerdict<T> = import('../index.js').CheckedVerdict<T>
 type ConstraintsSpec = import('../index.js').ConstraintsSpec
-type Violation = import('../index.js').Violation
+type Violation = import('../index.js').Violation<unknown>
 type KeywordName = import('../index.js').Keyword
 
 function declare(spec: ConstraintsSpec): InstanceType<typeof Constraints> {
@@ -69,7 +69,7 @@ test('the README example: latitude, euro cash and a sex code', () => {
   })
   assert.deepEqual(castChecked('91', latitude), {
     ok: false,
-    violation: { keyword: 'maximum', offset: 0, length: 2 },
+    violation: { keyword: 'maximum', value: 91, offset: 0, length: 2 },
   })
 
   const euro = NumFormat.declare({ decimalSep: ',', groupSep: '.', flags: NumStyles.All })
@@ -84,6 +84,7 @@ test('the README example: latitude, euro cash and a sex code', () => {
   const coins = castChecked('12,37', cash, euro.value)
   assert.ok(!coins.ok && 'violation' in coins)
   assert.equal(describe(coins.violation), 'off the step')
+  assert.equal(coins.violation.value, '12.37')
 
   const sex = declare({ door: Door.Text, trim: true, enum: ['Female', 'Male', 'Other'] })
   assert.deepEqual(castText(' MALE ', sex), {
@@ -94,7 +95,7 @@ test('the README example: latitude, euro cash and a sex code', () => {
   })
   assert.deepEqual(castText('Mail', sex), {
     ok: false,
-    violation: { keyword: 'enum', offset: 0, length: 4 },
+    violation: { keyword: 'enum', value: 'Mail', offset: 0, length: 4 },
   })
 })
 
@@ -121,7 +122,7 @@ test('a view of a SharedArrayBuffer reads as its bytes did', () => {
   })
   assert.deepEqual(castText(shared('Mail'), sex), {
     ok: false,
-    violation: { keyword: 'enum', offset: 0, length: 4 },
+    violation: { keyword: 'enum', value: 'Mail', offset: 0, length: 4 },
   })
   const entries: [number, string][] = Array.from({ length: 12 }, (_, i) => [
     i + 1,
@@ -145,6 +146,12 @@ test('narrowing reaches the value, the fault or the violation', () => {
   } else if ('violation' in verdict) {
     const keyword: KeywordName = verdict.violation.keyword
     assert.equal(keyword, Keyword.Minimum)
+    // The violation carries the value, typed as a success's is.
+    const value: number | bigint | string = verdict.violation.value
+    assert.equal(value, 9)
+    // @ts-expect-error: the value is the door's type, never a boolean
+    const wrong: boolean = verdict.violation.value
+    assert.equal(wrong, 9)
     // @ts-expect-error: a violation carries no fault
     assert.equal(verdict.fault, undefined)
   } else {
@@ -180,39 +187,27 @@ test('the plain verdict and fault keep their shapes', () => {
   const broken = castChecked('3', step)
   assert.deepEqual(Object.keys(broken), ['ok', 'violation'])
   assert.ok(!broken.ok && 'violation' in broken)
-  assert.deepEqual(Object.keys(broken.violation), ['keyword', 'offset', 'length'])
+  assert.deepEqual(Object.keys(broken.violation), ['keyword', 'value', 'offset', 'length'])
 })
 
 test('a refused declaration names the code and the rule; a broken one, the binding contract', () => {
   assert.equal(
-    refusal({ door: Door.I32, minLength: 1 }),
+    refusal({ door: Door.I32, trim: true }),
     'Constraints refused (code 1): a constraint the door does not take.',
   )
   assert.equal(
-    refusal({ door: Door.Text, enum: ['Male', 'MALE'] }),
-    'Constraints refused (code 10): a duplicate enum entry.',
+    refusal({ door: Door.F64, caseSensitive: true }),
+    'Constraints refused (code 1): a constraint the door does not take.',
   )
   assert.equal(
     refusal({ door: Door.I32, multipleOf: '2', rounding: 9 }),
     'Constraints refused (code 11): a malformed constraints layout.',
   )
-  // Leaving enum out declares none; an empty one is declared, and refused.
-  for (const door of [Door.I32, Door.Text]) {
-    assert.equal(
-      refusal({ door, enum: [] }),
-      'Constraints refused (code 12): an enum with no entries.',
-    )
-  }
-  assert.equal(api.castConstraintsCheck({ door: Door.F64, enum: [] }), 1)
-  for (const spec of [
-    { door: Door.Text, enum: ['Male', ''] },
-    { door: Door.Text, trim: true, enum: [' Male '] },
-  ]) {
-    assert.equal(
-      refusal(spec),
-      'Constraints refused (code 13): a text enum entry no input can match.',
-    )
-  }
+  assert.match(refusal({ door: Door.I32, multipleOf: '0' }), /^Constraints refused \(code 5\)/)
+  assert.match(
+    refusal({ door: Door.I32, rounding: Rounding.Floor }),
+    /^Constraints refused \(code 6\)/,
+  )
   const spaced = declare({ door: Door.Text, enum: [' Male '] })
   assert.deepEqual(castText(' MALE ', spaced), {
     ok: true,
@@ -229,7 +224,7 @@ test('a refused declaration names the code and the rule; a broken one, the bindi
   assert.equal(flags(spaced.packed) & 256, 256)
   assert.equal(flags(declare({ door: Door.Text }).packed) & 256, 0)
   assert.equal(declare({ door: Door.Text }).enum, null)
-  assert.equal(api.castConstraintsCheck({ door: Door.I32, minLength: 1 }), 1)
+  assert.equal(api.castConstraintsCheck({ door: Door.I32, trim: true }), 1)
   assert.equal(api.castConstraintsCheck({ door: Door.I32, minimum: '1' }), 0)
   // What the binding cannot lay out is -1 to castConstraintsCheck, and worded by declare.
   for (const [spec, message] of [
@@ -239,8 +234,10 @@ test('a refused declaration names the code and the rule; a broken one, the bindi
     [{ door: Door.Text, maxLength: '3' }, /^maxLength must be a whole number/],
     [{ door: Door.Text, maxLength: 1.5 }, /^maxLength must be a whole number/],
     [{ door: Door.Text, trim: 1 }, /^trim must be a boolean/],
+    [{ door: Door.Text, caseSensitive: 'yes' }, /^caseSensitive must be a boolean/],
     [{ door: Door.Text, enum: 'Male' }, /^enum must be an array/],
-    [{ door: Door.Text, enum: [1] }, /^enum entries at Door.Text must be strings; entry 0/],
+    [{ door: Door.Text, enum: [1] }, /^enum entries at Door.Text must be strings, or bigints/],
+    [{ door: Door.Text, enum: [1n << 128n] }, /^enum entry 0 is a bigint past 128 bits$/],
     [{ door: Door.I32, enum: [7] }, /^enum entry 0 must be a string or a bigint, not a number/],
     [{ door: Door.I32, rounding: 'midpoint' }, /^rounding must be a Rounding/],
     [{ door: 1 }, /^door must be a Door/],
@@ -253,7 +250,204 @@ test('a refused declaration names the code and the rule; a broken one, the bindi
   }
 })
 
-test('bounds and integer entries are decimal strings or bigints, converted by the core', () => {
+test('every OpenAPI 3.2 declaration is accepted, and an unsatisfiable one judges every value', () => {
+  // A keyword for the other type is ignored, as JSON Schema ignores it.
+  const ignored = declare({ door: Door.I32, minLength: 5, maximum: '9' })
+  assert.deepEqual(castChecked('7', ignored), {
+    ok: true,
+    value: 7,
+    adjusted: false,
+    enumIndex: null,
+  })
+  assert.equal(declare({ door: Door.Text, minimum: '5', maxLength: 3 }).minimum, '5')
+  assert.deepEqual(castText('abc', declare({ door: Door.Text, minimum: '5' })), {
+    ok: true,
+    value: 'abc',
+    adjusted: false,
+    enumIndex: null,
+  })
+  // minimum and exclusiveMinimum both apply; crossed bounds and lengths are accepted.
+  const both = declare({ door: Door.I32, minimum: '5', exclusiveMinimum: '7' })
+  assert.equal(both.minimum, '5')
+  assert.equal(both.exclusiveMinimum, '7')
+  assert.deepEqual(castChecked('4', both), {
+    ok: false,
+    violation: { keyword: 'minimum', value: 4, offset: 0, length: 1 },
+  })
+  assert.deepEqual(castChecked('6', both), {
+    ok: false,
+    violation: { keyword: 'exclusiveMinimum', value: 6, offset: 0, length: 1 },
+  })
+  const crossed = declare({ door: Door.I32, minimum: '9', maximum: '1' })
+  assert.ok(!castChecked('5', crossed).ok)
+  const lengths = declare({ door: Door.Text, minLength: 5, maxLength: 2 })
+  assert.deepEqual(castText('abc', lengths), {
+    ok: false,
+    violation: { keyword: 'minLength', value: 'abc', offset: 0, length: 3 },
+  })
+  // An empty enum is declared, and every value violates it; never "no rules".
+  for (const [door, text, value] of [
+    [Door.I32, '7', 7],
+    [Door.F64, '1', 1],
+    [Door.Text, 'Male', 'Male'],
+  ] as const) {
+    const none = declare({ door, enum: [] })
+    assert.deepEqual(none.enum, [])
+    const verdict = door === Door.Text ? castText(text, none) : castChecked(text, none)
+    assert.deepEqual(verdict, {
+      ok: false,
+      violation: { keyword: 'enum', value, offset: 0, length: text.length },
+    })
+  }
+  // Duplicates are accepted, and the first matching entry wins.
+  const twice = declare({ door: Door.Text, enum: ['Male', 'MALE'] })
+  assert.deepEqual(castText('male', twice), {
+    ok: true,
+    value: 'Male',
+    adjusted: false,
+    enumIndex: 0,
+  })
+  // An empty entry, and a spaced one under trim, are accepted; nothing matches them.
+  assert.equal(api.castConstraintsCheck({ door: Door.Text, enum: ['Male', ''] }), 0)
+  const spaced = declare({ door: Door.Text, trim: true, enum: [' Male '] })
+  assert.deepEqual(castText(' Male ', spaced), {
+    ok: false,
+    violation: { keyword: 'enum', value: 'Male', offset: 1, length: 4 },
+  })
+  // A numeric enum at a float or decimal door, compared exactly.
+  const reals = declare({ door: Door.F64, enum: ['1', '2.5'] })
+  assert.deepEqual(castChecked('2.50', reals), {
+    ok: true,
+    value: 2.5,
+    adjusted: false,
+    enumIndex: null,
+  })
+  assert.deepEqual(castChecked('2', reals), {
+    ok: false,
+    violation: { keyword: 'enum', value: 2, offset: 0, length: 1 },
+  })
+  const cents = declare({ door: Door.Decimal, enum: ['0.1', '0.25'] })
+  assert.deepEqual(castChecked('0.10', cents), {
+    ok: true,
+    value: '0.1',
+    adjusted: false,
+    enumIndex: null,
+  })
+  // A fractional or out-of-range numeric entry is accepted, and never matches.
+  const odd = declare({ door: Door.U8, enum: ['1.5', '-1', '300', '2'] })
+  assert.ok(castChecked('2', odd).ok)
+  assert.ok(!castChecked('1', odd).ok)
+})
+
+test('a violation carries the value as the door cast it, never rounded', () => {
+  // A rounding past what the type holds is a multipleOf violation carrying the parsed value.
+  const step = declare({ door: Door.I8, multipleOf: '5', rounding: Rounding.Ceiling })
+  assert.deepEqual(castChecked('127', step), {
+    ok: false,
+    violation: { keyword: 'multipleOf', value: 127, offset: 0, length: 3 },
+  })
+  // A value rounded and then out of bounds carries the parsed value, not the rounded one.
+  const bounded = declare({
+    door: Door.I32,
+    maximum: '10',
+    multipleOf: '5',
+    rounding: Rounding.Ceiling,
+  })
+  assert.deepEqual(castChecked('9', bounded), {
+    ok: true,
+    value: 10,
+    adjusted: true,
+    enumIndex: null,
+  })
+  assert.deepEqual(castChecked('11', bounded), {
+    ok: false,
+    violation: { keyword: 'maximum', value: 11, offset: 0, length: 2 },
+  })
+  // The 64-bit doors carry a bigint, the decimal door its canonical text.
+  assert.deepEqual(castChecked('-5', declare({ door: Door.I64, minimum: '0' })), {
+    ok: false,
+    violation: { keyword: 'minimum', value: -5n, offset: 0, length: 2 },
+  })
+  assert.deepEqual(castChecked('1.50', declare({ door: Door.Decimal, maximum: '1' })), {
+    ok: false,
+    violation: { keyword: 'maximum', value: '1.5', offset: 0, length: 4 },
+  })
+  // From a number already decoded, with an empty span.
+  assert.deepEqual(api.castCheckedFromNumber(300, declare({ door: Door.U16, maximum: '255' })), {
+    ok: false,
+    violation: { keyword: 'maximum', value: 300, offset: 0, length: 0 },
+  })
+  // At the text door, the judged text: trimmed, and the caller's input, never an entry.
+  const sex = declare({ door: Door.Text, trim: true, enum: ['Female', 'Male'] })
+  assert.deepEqual(castText('  Mail ', sex), {
+    ok: false,
+    violation: { keyword: 'enum', value: 'Mail', offset: 2, length: 4 },
+  })
+  assert.deepEqual(
+    castText(
+      new TextEncoder().encode(' é '),
+      declare({ door: Door.Text, trim: true, maxLength: 0 }),
+    ),
+    {
+      ok: false,
+      violation: { keyword: 'maxLength', value: 'é', offset: 1, length: 2 },
+    },
+  )
+})
+
+test('a bigint in a text enum is a valid entry that never matches', () => {
+  const sex = declare({ door: Door.Text, enum: [1n, 'One', 2n, 'Two'] })
+  assert.deepEqual(sex.enum, [1n, 'One', 2n, 'Two'])
+  assert.deepEqual(castText('1', sex), {
+    ok: false,
+    violation: { keyword: 'enum', value: '1', offset: 0, length: 1 },
+  })
+  assert.deepEqual(castText('one', sex), { ok: true, value: 'One', adjusted: false, enumIndex: 1 })
+  assert.deepEqual(castText('TWO', sex), { ok: true, value: 'Two', adjusted: false, enumIndex: 3 })
+  // Control: the same entries as strings match.
+  assert.deepEqual(castText('2', declare({ door: Door.Text, enum: ['1', '2'] })), {
+    ok: true,
+    value: '2',
+    adjusted: false,
+    enumIndex: 1,
+  })
+})
+
+test('caseSensitive matches a text enum byte for byte', () => {
+  const units = declare({ door: Door.Text, trim: true, caseSensitive: true, enum: ['mm', 'Mm'] })
+  assert.equal(units.caseSensitive, true)
+  assert.equal(declare({ door: Door.Text }).caseSensitive, false)
+  assert.deepEqual(castText(' Mm ', units), {
+    ok: true,
+    value: 'Mm',
+    adjusted: false,
+    enumIndex: 1,
+  })
+  assert.deepEqual(castText('MM', units), {
+    ok: false,
+    violation: { keyword: 'enum', value: 'MM', offset: 0, length: 2 },
+  })
+  // Folded by default, so the first entry matches either spelling.
+  const folded = declare({ door: Door.Text, enum: ['mm', 'Mm'] })
+  assert.deepEqual(castText('MM', folded), {
+    ok: true,
+    value: 'mm',
+    adjusted: false,
+    enumIndex: 0,
+  })
+  // CASE_SENSITIVE (512) in the flags word.
+  const native = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1
+  const packed = units.packed
+  const flags = new DataView(packed.buffer, packed.byteOffset, packed.byteLength).getUint32(
+    4,
+    native,
+  )
+  assert.equal(flags & 512, 512)
+  assert.equal(api.castConstraintsCheck({ door: Door.Text, caseSensitive: false }), 0)
+  assert.equal(api.castConstraintsCheck({ door: Door.Decimal, caseSensitive: false }), 0)
+})
+
+test('bounds and numeric entries are decimal strings or bigints, converted by the core', () => {
   const wide = declare({ door: Door.U64, maximum: 18446744073709551615n, enum: [1n, '2', '3.0'] })
   assert.equal(wide.maximum, '18446744073709551615')
   assert.deepEqual(wide.enum, [1n, '2', '3.0'])
@@ -264,7 +458,12 @@ test('bounds and integer entries are decimal strings or bigints, converted by th
     adjusted: false,
     enumIndex: null,
   })
-  assert.match(refusal({ door: Door.U64, maximum: 18446744073709551616n }), /code 8/)
+  // A bound past the door's range is accepted (no value reaches it); one past 96 bits is not
+  // held by any door.
+  assert.equal(
+    declare({ door: Door.U64, maximum: 18446744073709551616n }).maximum,
+    '18446744073709551616',
+  )
   assert.match(refusal({ door: Door.I64, minimum: -(2n ** 200n) }), /code 8/)
   assert.match(refusal({ door: Door.F64, maximum: '0x10' }), /code 8/)
   assert.deepEqual(api.castDeclaredDecimal('1e-6'), { ok: true, value: '0.000001' })
@@ -282,19 +481,37 @@ test('a declaration reports what it declares, and its packed layout', () => {
   assert.equal(c.minimum, null)
   assert.equal(c.exclusiveMinimum, '0')
   assert.equal(c.maximum, '1.5')
+  assert.equal(c.exclusiveMaximum, null)
   assert.equal(c.multipleOf, null)
   assert.equal(c.rounding, Rounding.Strict)
   assert.equal(c.minLength, null)
   assert.equal(c.trim, false)
+  assert.equal(c.caseSensitive, false)
   assert.equal(c.enum, null)
   const packed = c.packed
-  assert.equal(packed.length, 72)
+  assert.equal(packed.length, 104)
   const view = new DataView(packed.buffer, packed.byteOffset, packed.byteLength)
   const native = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1
-  assert.equal(view.getUint32(0, native), 72)
+  assert.equal(view.getUint32(0, native), 104)
   assert.equal(view.getUint32(4, native), 2 | 4) // HAS_EXCLUSIVE_MINIMUM | HAS_MAXIMUM
-  assert.equal(view.getUint32(40, native), 15) // upper (after lower, at 24): magnitude 15
+  assert.equal(view.getUint32(40, native), 15) // maximum, at 40: magnitude 15
   assert.equal(packed[52], 1) // its scale
+  // Each bound in its own slot: minimum 24, maximum 40, multipleOf 56, exclusiveMinimum 72,
+  // exclusiveMaximum 88.
+  const all = declare({
+    door: Door.I32,
+    minimum: '1',
+    maximum: '2',
+    multipleOf: '3',
+    exclusiveMinimum: '4',
+    exclusiveMaximum: '5',
+  }).packed
+  const words = new DataView(all.buffer, all.byteOffset, all.byteLength)
+  assert.equal(words.getUint32(4, native), 1 | 2 | 4 | 8 | 16)
+  assert.deepEqual(
+    [24, 40, 56, 72, 88].map((at) => words.getUint32(at, native)),
+    [1, 2, 3, 4, 5],
+  )
   assert.equal(c.packedEnum.length, 0)
   const sex = declare({ door: Door.Text, minLength: 1, maxLength: 6, enum: ['Male', 'Ä'] })
   assert.deepEqual(sex.enum, ['Male', 'Ä'])
@@ -305,7 +522,7 @@ test('a declaration reports what it declares, and its packed layout', () => {
 test('the layouts are the sizes the C header carries', (t) => {
   // The binding's own sizes, asserted on every leg: the packed declaration this package lays
   // out, and the RawCheck and RawSpan src/lib.rs pins at these sizes at compile time.
-  const sizes = { HyperCastRawConstraints: 72, HyperCastRawCheck: 12, HyperCastRawSpan: 8 }
+  const sizes = { HyperCastRawConstraints: 104, HyperCastRawCheck: 12, HyperCastRawSpan: 8 }
   assert.equal(declare({ door: Door.I32 }).packed.length, sizes.HyperCastRawConstraints)
   // The header is compared only where it is reachable: an installed copy, or a suite run from
   // the package directory alone (the Forge's musl legs stage no include/), has none.
@@ -327,7 +544,7 @@ test('the layouts are the sizes the C header carries', (t) => {
 
 test('a failed declaration never means "no rules": a missing value is a contract violation', () => {
   // A refused declaration has no `.value`; handed on anyway, it must not cast unjudged.
-  const refused = Constraints.declare({ door: Door.Text, minLength: 5, maxLength: 2 })
+  const refused = Constraints.declare({ door: Door.I32, trim: true })
   assert.ok(!refused.ok)
   const missing = (refused as unknown as { value?: InstanceType<typeof Constraints> }).value
   const loose = castText as (...args: unknown[]) => unknown
@@ -403,11 +620,11 @@ test('text keeps the caller its own strings, spans in UTF-16 code units', () => 
   const one = declare({ door: Door.Text, maxLength: 1 })
   assert.deepEqual(castText('👍🏽', one), {
     ok: false,
-    violation: { keyword: 'maxLength', offset: 0, length: 4 },
+    violation: { keyword: 'maxLength', value: '👍🏽', offset: 0, length: 4 },
   })
   assert.deepEqual(castText(new TextEncoder().encode('👍🏽'), one), {
     ok: false,
-    violation: { keyword: 'maxLength', offset: 0, length: 8 },
+    violation: { keyword: 'maxLength', value: '👍🏽', offset: 0, length: 8 },
   })
   // Plain text, with no constraints, is the text itself.
   assert.deepEqual(castText('héllo'), { ok: true, value: 'héllo' })
@@ -492,7 +709,7 @@ test('a number already decoded keeps its sign, and zero has one form', () => {
   const strict = declare({ door: Door.F64, multipleOf: '0.1' })
   assert.deepEqual(api.castCheckedFromNumber(0.1 + 0.2, strict), {
     ok: false,
-    violation: { keyword: 'multipleOf', offset: 0, length: 0 },
+    violation: { keyword: 'multipleOf', value: 0.30000000000000004, offset: 0, length: 0 },
   })
   const zero = api.castCheckedFromNumber(-0, declare({ door: Door.F64, minimum: '0' }))
   assert.ok(zero.ok && Object.is(zero.value, 0))
@@ -522,5 +739,5 @@ test('the keyword names, and the fallback literals', () => {
       Enum: 'enum',
     },
   )
-  assert.equal(describe({ keyword: 'format', offset: 0, length: 0 }), 'breaks format')
+  assert.equal(describe({ keyword: 'format', value: '', offset: 0, length: 0 }), 'breaks format')
 })

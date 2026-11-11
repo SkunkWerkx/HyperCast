@@ -59,7 +59,8 @@ class Decimal(ctypes.Structure):
 class Constraints(ctypes.Structure):
     _fields_ = [("size", ctypes.c_uint32), ("flags", ctypes.c_uint32), ("rounding", ctypes.c_uint32),
                 ("min_length", ctypes.c_uint32), ("max_length", ctypes.c_uint32), ("reserved", ctypes.c_uint32),
-                ("lower", Decimal), ("upper", Decimal), ("multiple_of", Decimal)]
+                ("lower", Decimal), ("upper", Decimal), ("multiple_of", Decimal),
+                ("exclusive_lower", Decimal), ("exclusive_upper", Decimal)]
 
 
 class Check(ctypes.Structure):
@@ -355,9 +356,11 @@ check(typed("cast_excel_duration", 1e10)[0] == OUT_OF_RANGE, "cast_excel_duratio
 
 
 
-# The validation constraints. HAS_MINIMUM 1, HAS_MAXIMUM 4, HAS_MULTIPLE_OF 16,
-# HAS_MAX_LENGTH 64, TRIM 128, HAS_ENUM 256 (the `enum` list is read only under it);
-# rounding 1 is midpoint.
+# The validation constraints, each keyword in a field of its own. HAS_MINIMUM 1 (`lower`),
+# HAS_EXCLUSIVE_MINIMUM 2 (`exclusive_lower`), HAS_MAXIMUM 4 (`upper`), HAS_EXCLUSIVE_MAXIMUM 8
+# (`exclusive_upper`), HAS_MULTIPLE_OF 16, HAS_MAX_LENGTH 64, TRIM 128, HAS_ENUM 256 (the `enum`
+# list is read only under it), CASE_SENSITIVE 512; rounding 1 is midpoint. A violation (4) writes
+# `out` with the value as cast, as a value (0) does.
 F64, I32, TEXT = 11, 4, 18
 
 
@@ -365,9 +368,11 @@ def decimal(lo, scale=0, negative=False):
     return Decimal(lo, 0, scale, negative)
 
 
-def constraints(flags=0, rounding=0, lower=None, upper=None, multiple_of=None, max_length=0):
+def constraints(flags=0, rounding=0, lower=None, upper=None, multiple_of=None, max_length=0,
+                exclusive_lower=None, exclusive_upper=None):
     declared = Constraints(ctypes.sizeof(Constraints), flags, rounding, 0, max_length, 0)
-    for name, value in (("lower", lower), ("upper", upper), ("multiple_of", multiple_of)):
+    for name, value in (("lower", lower), ("upper", upper), ("multiple_of", multiple_of),
+                        ("exclusive_lower", exclusive_lower), ("exclusive_upper", exclusive_upper)):
         if value is not None:
             setattr(declared, name, value)
     return declared
@@ -387,7 +392,7 @@ def checked(door, declared, entries, text, out):
     return status, out, (fault.offset, fault.len), (report.keyword, report.adjusted, report.enum_index)
 
 
-for shape, size_ in ((Constraints, 72), (Check, 12), (Span, 8)):
+for shape, size_ in ((Constraints, 104), (Check, 12), (Span, 8)):
     check(ctypes.sizeof(shape) == size_,
           f"{shape.__name__} is {ctypes.sizeof(shape)} bytes; rust/src/abi.rs pins {size_}")
 NO_INDEX = 0xFFFFFFFF
@@ -395,21 +400,32 @@ latitude = constraints(1 | 4 | 16, 1, decimal(90, 0, True), decimal(90), decimal
 status, value, _, report = checked(F64, latitude, b"", "45.1234567", ctypes.c_double())
 check(status == OK and value.value == 45.123457 and report == (0, 1, NO_INDEX), "cast_checked rounds and reports")
 status, value, fault, report = checked(F64, latitude, b"", "91", ctypes.c_double())
-check(status == VIOLATION and fault == (0, 2) and report[0] == 3 and value.value == 0, "cast_checked violation")
+check(status == VIOLATION and fault == (0, 2) and report[0] == 3 and report[1] == 0 and value.value == 91,
+      "cast_checked violation, its value written")
 status, _, fault, report = checked(F64, latitude, b"", "9x", ctypes.c_double())
 check(status == MALFORMED and fault == (1, 1) and report == (7, 7, 7), "cast_checked fault leaves check alone")
 # A float door judges the float it delivers too: 0.99999999999 is 1.0 at f32, past exclusiveMaximum 1.
-below_one = constraints(8, upper=decimal(1))
-status, _, fault, report = checked(10, below_one, b"", "0.99999999999", ctypes.c_float())
-check(status == VIOLATION and fault == (0, 13) and report[0] == 4, "cast_checked delivered float")
+below_one = constraints(8, exclusive_upper=decimal(1))
+status, value, fault, report = checked(10, below_one, b"", "0.99999999999", ctypes.c_float())
+check(status == VIOLATION and fault == (0, 13) and report[0] == 4 and value.value == 1, "cast_checked delivered float")
 status, value, _, _ = checked(10, below_one, b"", "0.9999999", ctypes.c_float())
 check(status == OK and value.value < 1, "cast_checked delivered float below the bound")
 sexes = packed_text("Female", "Male", "Other")
 status, span, _, report = checked(TEXT, constraints(64 | 128 | 256, max_length=6), sexes, "\u00a0MALE ", Span())
 check(status == OK and (span.offset, span.len) == (2, 4) and report == (0, 0, 1), "cast_checked text enum")
-status, _, fault, report = checked(TEXT, constraints(64 | 128 | 256, max_length=6), sexes, " Mail ", Span())
-check(status == VIOLATION and fault == (1, 4) and report[0] == 8, "cast_checked text enum violation")
-for bad in (0, 71, 73):
+status, span, fault, report = checked(TEXT, constraints(64 | 128 | 256, max_length=6), sexes, " Mail ", Span())
+check(status == VIOLATION and fault == (1, 4) and report[0] == 8 and (span.offset, span.len) == (1, 4),
+      "cast_checked text enum violation, its judged text written")
+status, span, fault, report = checked(TEXT, constraints(128 | 256 | 512), sexes, " MALE ", Span())
+check(status == VIOLATION and fault == (1, 4) and report[0] == 8 and (span.offset, span.len) == (1, 4),
+      "cast_checked text enum, case-sensitive")
+# minimum and exclusiveMinimum together, each in its own field and judged on its own.
+floor = constraints(1 | 2, lower=decimal(0), exclusive_lower=decimal(10))
+status, value, _, report = checked(I32, floor, b"", "10", ctypes.c_int32())
+check(status == VIOLATION and report[0] == 2 and value.value == 10, "cast_checked exclusiveMinimum beside minimum")
+status, value, _, _ = checked(I32, floor, b"", "11", ctypes.c_int32())
+check(status == OK and value.value == 11, "cast_checked both lower bounds hold")
+for bad in (0, 72, 103, 105):
     unsized_ = constraints()
     unsized_.size = bad
     check(checked(I32, unsized_, b"", "1", ctypes.c_int32())[0] == CONTRACT_VIOLATION, f"cast_checked size {bad}")
@@ -422,22 +438,32 @@ status = lib.cast_checked_from_f64(F64, 0.1 + 0.2, ctypes.byref(constraints(16, 
 check(status == OK and out.value == 0.3 and report.adjusted == 1, "cast_checked_from_f64 rounds 0.1 + 0.2")
 status = lib.cast_checked_from_f64(F64, 91.0, ctypes.byref(latitude), None, 0, ctypes.byref(out),
                                    ctypes.byref(fault), ctypes.byref(report))
-check(status == VIOLATION and (fault.offset, fault.len) == (0, 0) and report.keyword == 3,
+check(status == VIOLATION and (fault.offset, fault.len) == (0, 0) and report.keyword == 3 and out.value == 91,
       "cast_checked_from_f64 violation, spanless")
 
 called.add("cast_constraints_check")
 judge = lib.cast_constraints_check
 check(judge(F64, 0, ctypes.byref(latitude), None, 0) == 0, "cast_constraints_check accepts")
 check(judge(TEXT, 0, ctypes.byref(constraints(256)), sexes, len(sexes)) == 0, "cast_constraints_check text enum")
+# Every valid OpenAPI declaration is accepted: duplicates, an empty enum, an entry no trimmed
+# input matches, crossed bounds, a bound past the door's range and a keyword for another type.
 twice = packed_text("Male", "MALE")
-check(judge(TEXT, 0, ctypes.byref(constraints(256)), twice, len(twice)) == 10, "cast_constraints_check duplicate")
+check(judge(TEXT, 0, ctypes.byref(constraints(256)), twice, len(twice)) == 0, "cast_constraints_check duplicate")
 check(judge(TEXT, 0, ctypes.byref(constraints()), sexes, len(sexes)) == 11, "cast_constraints_check enum without HAS_ENUM")
-check(judge(TEXT, 0, ctypes.byref(constraints(256)), None, 0) == 12, "cast_constraints_check empty enum")
+check(judge(TEXT, 0, ctypes.byref(constraints(256)), None, 0) == 0, "cast_constraints_check empty enum")
 padded = packed_text(" Male")
-check(judge(TEXT, 0, ctypes.byref(constraints(128 | 256)), padded, len(padded)) == 13,
+check(judge(TEXT, 0, ctypes.byref(constraints(128 | 256)), padded, len(padded)) == 0,
       "cast_constraints_check enum entry no trimmed input matches")
-check(judge(6, 0, ctypes.byref(constraints(1, lower=decimal(1, 0, True))), None, 0) == 8,
+check(judge(I32, 0, ctypes.byref(constraints(1 | 4, lower=decimal(10), upper=decimal(1))), None, 0) == 0,
+      "cast_constraints_check crossed bounds")
+check(judge(6, 0, ctypes.byref(constraints(1, lower=decimal(1, 0, True))), None, 0) == 0,
       "cast_constraints_check bound past the door")
+check(judge(TEXT, 0, ctypes.byref(constraints(1, lower=decimal(1))), None, 0) == 0,
+      "cast_constraints_check keyword for another type")
+check(judge(I32, 0, ctypes.byref(constraints(512)), None, 0) == 1, "cast_constraints_check caseSensitive at a number")
+check(judge(I32, 0, ctypes.byref(constraints(16, 1, multiple_of=decimal(5, 1))), None, 0) == 8,
+      "cast_constraints_check rounding to a fractional step at an integer door")
+check(judge(I32, 0, ctypes.byref(constraints(1024)), None, 0) == 11, "cast_constraints_check unknown flag")
 check(judge(TEXT, 0, ctypes.byref(constraints(256)), b"\x01\x00\x00\x00\xff", 5) == 9,
       "cast_constraints_check not UTF-8")
 check(judge(I32, 0, None, None, 0) == 11, "cast_constraints_check null declaration")
@@ -553,7 +579,7 @@ called.add("cast_checked_detailed")
 fault, report, out = fault_detail(), Check(7, 7, 7), ctypes.c_double()
 status = lib.cast_checked_detailed(F64, 0, None, ctypes.byref(latitude), None, 0, b"91", 2, ctypes.byref(out),
                                    ctypes.byref(fault), ctypes.byref(report))
-check(status == VIOLATION and (fault.offset, fault.len, fault.detail) == (0, 2, 0)
+check(status == VIOLATION and (fault.offset, fault.len, fault.detail) == (0, 2, 0) and out.value == 91
       and (report.keyword, report.adjusted, report.enum_index) == (3, 0, NO_INDEX), "cast_checked_detailed violation")
 cap = constraints(4, upper=decimal(1000))
 status = lib.cast_checked_detailed(I32, 0, ctypes.byref(western), ctypes.byref(cap), None, 0, b"12,34", 5,
@@ -565,7 +591,7 @@ check(lib.cast_checked_detailed(F64, 1, None, ctypes.byref(latitude), None, 0, b
 called.add("cast_checked_detailed_from_f64")
 status = lib.cast_checked_detailed_from_f64(F64, 0, ctypes.byref(latitude), None, 0, -90.5, ctypes.byref(out),
                                             ctypes.byref(fault), ctypes.byref(report))
-check(status == VIOLATION and report.keyword == 1 and (fault.len, fault.detail) == (0, 0),
+check(status == VIOLATION and report.keyword == 1 and (fault.len, fault.detail) == (0, 0) and out.value == -90.5,
       "cast_checked_detailed_from_f64 violation, spanless")
 status = lib.cast_checked_detailed_from_f64(F64, 0, ctypes.byref(latitude), None, 0, float("nan"), ctypes.byref(out),
                                             ctypes.byref(fault), ctypes.byref(report))

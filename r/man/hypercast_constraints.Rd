@@ -16,6 +16,7 @@ hypercast_constraints(
   min_length = NULL,
   max_length = NULL,
   trim = FALSE,
+  case_sensitive = FALSE,
   enum = NULL
 )
 
@@ -37,9 +38,12 @@ declares none.}
 
 \item{trim}{Whether text is trimmed of Unicode \code{White_Space} before it is judged.}
 
+\item{case_sensitive}{Whether a text \code{enum} matches byte for byte (\code{TRUE}) rather than
+under Unicode simple case folding (\code{FALSE}, the default), for a vocabulary whose case
+carries meaning (\code{"mm"} and \code{"Mm"}).}
+
 \item{enum}{The values allowed; \code{NULL} declares none. An empty vector (\code{character(0)})
-declares one no value could match and is refused (code 12), as is a text entry no input
-can match (code 13: \code{""}, or with \code{trim} one with leading or trailing white space).}
+declares one no value matches: every value is then an \code{enum} violation.}
 
 \item{x}{A \code{hypercast_constraints}.}
 
@@ -49,14 +53,18 @@ can match (code 13: \code{""}, or with \code{trim} one with leading or trailing 
 A \code{hypercast_constraints}: a list of the door and the declared keywords.
 }
 \description{
-\code{hypercast_constraints()} declares the rules a value must keep once it has parsed, bound
-to one door: JSON Schema's and OpenAPI's numeric and string keywords, judged by the core
-on the exact value the door read. The declaration is judged once, here: one that cannot
-be (a keyword the door does not take, \code{minimum} with \code{exclusive_minimum}, a lower bound
-not below the upper, a step that is not positive, a rounding without \code{multiple_of},
-\code{min_length} above \code{max_length}, a bound, step or entry the door cannot hold, an entry
-that is not UTF-8, a duplicate entry, an \code{enum} with no entries, a text entry no input can
-match) is an error, \verb{Constraints refused (code N): <the rule>.}, with the code the core
+\code{hypercast_constraints()} declares the rules a value must keep once it has been cast,
+bound to one door: OpenAPI 3.2's (JSON Schema 2020-12's) numeric and string keywords,
+judged by the core on the exact value the door read. Every declaration OpenAPI allows is
+accepted, as it means there: the four bounds are independent (\code{minimum} and
+\code{exclusive_minimum} may both be declared, and a value is held to each), bounds no value
+meets and an empty \code{enum} make every value a violation, a duplicate \code{enum} entry is
+harmless (the first match wins), and a keyword for another type (\code{min_length} at a numeric
+door, \code{minimum} at the text door) is ignored. The declaration is judged once, here: one
+the core refuses (a door that takes no constraints, \code{trim} or \code{case_sensitive} at a
+numeric door, a \code{rounding} at the text door, a step that is not positive, a rounding
+without \code{multiple_of}, a bound, step or entry the door cannot hold, an entry that is not
+UTF-8) is an error, \verb{Constraints refused (code N): <the rule>.}, with the code the core
 returned. Every rule is the core's; the package checks only the R types of the
 arguments.
 }
@@ -65,32 +73,40 @@ The door is an argument the declaration keeps: \code{\link[=cast_checked]{cast_c
 \code{\link[=cast_checked_from_double]{cast_checked_from_double()}} take the numeric doors' declarations and \code{\link[=cast_text]{cast_text()}} the
 text door's, and handing a declaration to another door's cast is an error.
 
-Bounds and \code{multiple_of} are exact: a string in invariant notation (\code{"0.05"}, \code{"-90"},
-\code{"1e-6"}) or an R integer (\code{5L}). A double is refused even when it is whole, since \code{0.1}
-has no exact double; write \code{"0.1"}. Whole numbers past R's integer range (\code{i64}, \code{u64})
-are strings. Integer \code{enum} entries are a character or an integer vector; the text door's
-are a character vector, matched under Unicode simple case folding, and a match comes back
-as the entry exactly as declared.
+Bounds, \code{multiple_of} and numeric \code{enum} entries are exact: a string in invariant notation
+(\code{"0.05"}, \code{"-90"}, \code{"1e-6"}) or an R integer (\code{5L}). A double is refused even when it is
+whole, since \code{0.1} has no exact double; write \code{"0.1"}. Whole numbers past R's integer
+range (\code{i64}, \code{u64}) are strings. A numeric \code{enum} is a character or an integer vector,
+each entry compared exactly to the value the door delivers; an entry the door's type
+cannot hold (a fraction at an integer door, \code{"256"} at \code{"u8"}) never matches. The text
+door's \code{enum} is a character vector, matched under Unicode simple case folding unless
+\code{case_sensitive} is \code{TRUE}, and a match comes back as the entry exactly as declared; an
+integer vector there is numbers, valid entries no text equals, so every value violates it.
 
 The keywords, by door:
 \itemize{
-\item The integer doors (\code{"i8"} to \code{"u64"}): \code{minimum}, \code{exclusive_minimum}, \code{maximum},
-\code{exclusive_maximum}, \code{multiple_of} (with \code{rounding}) and \code{enum}.
-\item \code{"f32"}, \code{"f64"} and \code{"decimal"}: the same but \code{enum}.
-\item \code{"text"}: \code{min_length} and \code{max_length} (in code points), \code{trim} (Unicode \code{White_Space}
-at either end, before anything is judged) and \code{enum}.
+\item The numeric doors (\code{"i8"} to \code{"u64"}, \code{"f32"}, \code{"f64"} and \code{"decimal"}): \code{minimum},
+\code{exclusive_minimum}, \code{maximum}, \code{exclusive_maximum}, \code{multiple_of} (with \code{rounding}) and
+\code{enum}.
+\item \code{"text"}: \code{min_length} and \code{max_length} (in code points), \code{enum}, and HyperCast's own
+\code{trim} (Unicode \code{White_Space} at either end, before anything is judged) and
+\code{case_sensitive} (an \code{enum} matched byte for byte).
 }
 
-\code{rounding} is what a value that is not a multiple of \code{multiple_of} becomes: \code{"strict"}
+\code{rounding} is how a value that is not a multiple of \code{multiple_of} is judged: \code{"strict"}
 (the default) is a \code{multipleOf} violation; \code{"midpoint"} the nearest multiple, a tie to the
 even one; \code{"floor"} down and \code{"ceiling"} up. Rounding happens on the exact decimal, before
-the bounds judge the result, and marks the row \code{adjusted}.
+the bounds judge the result, and marks the row \code{adjusted}; a rounding past what the door's
+type holds is a \code{multipleOf} violation. A violation's \code{value} is always the value as cast,
+never rounded.
 }
 \examples{
 latitude <- hypercast_constraints("f64", minimum = "-90", maximum = "90",
                                   multiple_of = "0.000001", rounding = "midpoint")
 latitude
-try(hypercast_constraints("i32", minimum = "5", maximum = "5"))
+unit <- hypercast_constraints("text", enum = c("mm", "Mm"), case_sensitive = TRUE)
+cast_text(c("Mm", "MM"), unit)
+try(hypercast_constraints("i32", multiple_of = "0"))
 try(hypercast_constraints("f64", maximum = 90))
 }
 \seealso{

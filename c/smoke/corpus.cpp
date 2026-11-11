@@ -3,8 +3,9 @@
 // byte for byte, since a span here indexes the same UTF-8 the vector holds. A vector that
 // fails is a break in the polyglot contract. Also holds every fault span inside its input.
 // constraints.json goes through Constraints<T>::declare and the checked doors (refusals and
-// the from_double doors included, floats compared by their bits), and declarations.json
-// through ConstraintValue::decimal, the core's conversion of a declaration's text.
+// the from_double doors included, floats compared by their bits, a violation's value held to
+// the vector as a success's is), and declarations.json through ConstraintValue::decimal, the
+// core's conversion of a declaration's text.
 //
 // Every row goes through the plain door and its detailed twin, which must agree on the reason
 // and span, and every failure row's `detail` is held against the Failure's, by name and by
@@ -633,41 +634,21 @@ static_assert(std::is_same_v<decltype(hc::cast_i32("1", hc::NumFormat::invariant
 static_assert(hc::Refusal{1}.message() ==
                   "Constraints refused (code 1): a constraint the door does not take.",
               "refusal 1's message");
-static_assert(hc::Refusal{2}.message() ==
-                  "Constraints refused (code 2): minimum together with exclusiveMinimum.",
-              "refusal 2's message");
-static_assert(hc::Refusal{3}.message() ==
-                  "Constraints refused (code 3): maximum together with exclusiveMaximum.",
-              "refusal 3's message");
-static_assert(hc::Refusal{4}.message() ==
-                  "Constraints refused (code 4): the lower bound is not below the upper bound.",
-              "refusal 4's message");
 static_assert(hc::Refusal{5}.message() ==
                   "Constraints refused (code 5): multipleOf is not positive.",
               "refusal 5's message");
 static_assert(hc::Refusal{6}.message() ==
                   "Constraints refused (code 6): a rounding without multipleOf.",
               "refusal 6's message");
-static_assert(hc::Refusal{7}.message() ==
-                  "Constraints refused (code 7): minLength is above maxLength.",
-              "refusal 7's message");
 static_assert(hc::Refusal{8}.message() ==
                   "Constraints refused (code 8): a bound, step or enum entry the door cannot hold.",
               "refusal 8's message");
 static_assert(hc::Refusal{9}.message() ==
                   "Constraints refused (code 9): an enum entry that is not UTF-8.",
               "refusal 9's message");
-static_assert(hc::Refusal{10}.message() == "Constraints refused (code 10): a duplicate enum entry.",
-              "refusal 10's message");
 static_assert(hc::Refusal{11}.message() ==
                   "Constraints refused (code 11): a malformed constraints layout.",
               "refusal 11's message");
-static_assert(hc::Refusal{12}.message() ==
-                  "Constraints refused (code 12): an enum with no entries.",
-              "refusal 12's message");
-static_assert(hc::Refusal{13}.message() ==
-                  "Constraints refused (code 13): a text enum entry no input can match.",
-              "refusal 13's message");
 static_assert(!std::is_convertible_v<std::int32_t, hc::Refusal>,
               "a Refusal is never made from a bare integer");
 static_assert(!std::is_constructible_v<hc::Declared<hc::Constraints<double>>, int>,
@@ -675,6 +656,9 @@ static_assert(!std::is_constructible_v<hc::Declared<hc::Constraints<double>>, in
 static_assert(hc::Refusal{14}.message() ==
                   "Constraints refused (code 14): a rule this binding does not name.",
               "a code this header does not name keeps its number");
+static_assert(hc::Refusal{2}.message() ==
+                  "Constraints refused (code 2): a rule this binding does not name.",
+              "a retired code is one this header does not name");
 static_assert(hc::Refusal{0}.message() ==
                   "The enum list does not fit: the EnumStorage is smaller than "
                   "storage_size(entries), or a text entry is longer than 4294967295 UTF-8 bytes.",
@@ -714,7 +698,7 @@ static_assert(sizeof(HyperCastRawConstraints) == HyperCastRawConstraints_SIZE &&
                   alignof(HyperCastRawConstraints) == 8 &&
                   sizeof(HyperCastRawCheck) == HyperCastRawCheck_SIZE &&
                   sizeof(HyperCastRawSpan) == HyperCastRawSpan_SIZE,
-              "RawConstraints 72, RawCheck 12, RawSpan 8");
+              "RawConstraints 104, RawCheck 12, RawSpan 8");
 
 // The double a constraints vector names: a number, or NaN, Infinity, -Infinity and -0, which
 // JSON cannot spell, as strings; strtod reads both.
@@ -904,6 +888,9 @@ template <class T> void constrained(const char *file, const Json &vector) {
   if (const Json *json = declared.find("trim")) {
     fields.trim = json->boolean;
   }
+  if (const Json *json = declared.find("caseSensitive")) {
+    fields.case_sensitive = json->boolean;
+  }
   std::vector<typename C::Entry> entries;
   std::uint8_t storage[1024];
   const Json *list = declared.find("enum");
@@ -997,7 +984,7 @@ template <class T> void constrained(const char *file, const Json &vector) {
     }
     return;
   }
-  const hc::Rejection &rejection = checked->rejection();
+  const hc::Rejection<T> &rejection = checked->rejection();
   if (const hc::Failure *failure = detailed->rejection().failure_if()) {
     check_detail(file, vector, *failure);
   } else if (vector.find("detail") != nullptr) {
@@ -1005,11 +992,22 @@ template <class T> void constrained(const char *file, const Json &vector) {
   }
   std::size_t offset = 0;
   std::size_t length = 0;
-  if (const hc::Violation *violation = rejection.violation_if()) {
+  if (const hc::Violation<T> *violation = rejection.violation_if()) {
     if (expect != "violation") {
       fail(file, vector, "a violation, expected otherwise");
     } else if (hc::name(violation->keyword) != vector.find("keyword")->text) {
       fail(file, vector, "wrong keyword");
+    } else if (const Json *value = vector.find("value");
+               value == nullptr || !same_checked_value(*value, violation->value)) {
+      // The value as the door cast it, held to the vector as a success's is.
+      fail(file, vector, "wrong violation value");
+    }
+    if constexpr (C::is_text) {
+      // The judged text, a view of the caller's input.
+      if (violation->value.data() < bytes.data() ||
+          violation->value.data() + violation->value.size() > bytes.data() + bytes.size()) {
+        fail(file, vector, "the violation's text is not a view of the caller's input");
+      }
     }
     offset = violation->offset;
     length = violation->length;

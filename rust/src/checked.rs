@@ -18,7 +18,7 @@ use core::cmp::Ordering;
 use core::fmt;
 
 use crate::abi::RawConstraints;
-use crate::constraints::{Constraints, Entries, Keyword, Numeric, Text, check_without_duplicates};
+use crate::constraints::{Constraints, Entries, Keyword, Numeric, Text, check};
 use crate::detail::Failure;
 use crate::detailed::Rejection as Detailed;
 use crate::door::Door;
@@ -53,51 +53,75 @@ impl<T> Checked<T> {
     }
 }
 
-/// Why a checked door refused a value: it did not parse, or it parsed and broke a rule.
+/// Why a checked door refused a value: it did not cast, or it cast and broke a rule. The two
+/// levels never blur: a [`Fault`] means the input is not a `T`, and a [`Violation`] means it
+/// is one, carried in it, that breaks the declared schema.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Rejection {
-    /// The door's own fault, unchanged.
+pub enum Rejection<T> {
+    /// The door's own fault, unchanged: the input did not cast.
     Fault(Fault),
-    /// The value parsed and broke a declared constraint.
-    Violation(Violation),
+    /// The value cast and broke a declared constraint; the violation carries it.
+    Violation(Violation<T>),
 }
 
-/// A declared constraint a value broke, and the byte span of that value in the caller's
-/// input (after the door's trim, and for text after `trim`). A number already decoded has no
-/// text, and its span is empty. Built by the checked doors, or by [`new`](Self::new) for a
-/// test double; more fields may join in a minor release.
+/// A declared constraint a value broke: the keyword, the value exactly as the door cast it
+/// (never rounded: `multipleOf`'s rounding is part of the judgement, not of the value; at the
+/// text door, the text after `trim`), and that value's byte span in the caller's input (after
+/// the door's trim). A number already decoded has no text, and its
+/// span is empty. Built by the checked doors, or by [`new`](Self::new) for a test double;
+/// more fields may join in a minor release.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct Violation {
+pub struct Violation<T> {
     /// The keyword broken.
     pub keyword: Keyword,
+    /// The value as the door cast it, in the door's own type, before any rounding.
+    pub value: T,
     /// Where the value starts, as a byte offset into the caller's input.
     pub offset: u32,
     /// How many bytes the value runs.
     pub len: u32,
 }
 
-impl Violation {
-    /// A violation of `keyword` spanning `len` bytes at `offset`, as a checked door would
-    /// report it: for a test double or a downstream adapter. A field that joins in a minor
-    /// release takes its neutral value here.
+impl<T> Violation<T> {
+    /// A violation of `keyword` by `value`, spanning `len` bytes at `offset`, as a checked
+    /// door would report it: for a test double or a downstream adapter. A field that joins
+    /// in a minor release takes its neutral value here.
     ///
     /// ```
     /// use hypercast::*;
     ///
     /// let rules = NumericRules::new().maximum(decimal_for_declaration("9")?);
     /// let digit = Constraints::<i32>::numeric(rules, None)?;
-    /// let broken = Violation::new(Keyword::Maximum, 1, 2);
+    /// let broken = Violation::new(Keyword::Maximum, 10, 1, 2);
     /// assert_eq!(cast_checked(" 10", &NumFormat::INVARIANT, &digit), Err(broken.into()));
     /// assert_eq!(cast_checked("7", &NumFormat::INVARIANT, &digit), Ok(Checked::new(7, false, None)));
     /// # Ok::<(), Refusal>(())
     /// ```
-    pub const fn new(keyword: Keyword, offset: u32, len: u32) -> Violation {
-        Violation { keyword, offset, len }
+    pub const fn new(keyword: Keyword, value: T, offset: u32, len: u32) -> Self {
+        Violation { keyword, value, offset, len }
+    }
+
+    /// The same violation carrying `f(value)`: for an adapter that delivers the value in a
+    /// type of its own.
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Violation<U> {
+        let Violation { keyword, value, offset, len } = self;
+        Violation { keyword, value: f(value), offset, len }
     }
 }
 
-impl fmt::Display for Violation {
+impl<T> Rejection<T> {
+    /// The same rejection, a violation's value as `f(value)`: for an adapter that delivers
+    /// the value in a type of its own. A fault carries no value and passes through.
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Rejection<U> {
+        match self {
+            Rejection::Fault(fault) => Rejection::Fault(fault),
+            Rejection::Violation(violation) => Rejection::Violation(violation.map(f)),
+        }
+    }
+}
+
+impl<T> fmt::Display for Violation<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -109,9 +133,9 @@ impl fmt::Display for Violation {
     }
 }
 
-impl core::error::Error for Violation {}
+impl<T: fmt::Debug> core::error::Error for Violation<T> {}
 
-impl fmt::Display for Rejection {
+impl<T> fmt::Display for Rejection<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Rejection::Fault(fault) => fault.fmt(f),
@@ -120,30 +144,30 @@ impl fmt::Display for Rejection {
     }
 }
 
-impl core::error::Error for Rejection {}
+impl<T: fmt::Debug> core::error::Error for Rejection<T> {}
 
-impl From<Fault> for Rejection {
-    fn from(fault: Fault) -> Rejection {
+impl<T> From<Fault> for Rejection<T> {
+    fn from(fault: Fault) -> Rejection<T> {
         Rejection::Fault(fault)
     }
 }
 
-impl From<Violation> for Rejection {
-    fn from(violation: Violation) -> Rejection {
+impl<T> From<Violation<T>> for Rejection<T> {
+    fn from(violation: Violation<T>) -> Rejection<T> {
         Rejection::Violation(violation)
     }
 }
 
 /// A failure is the door's fault, its detail left out.
-impl From<Failure> for Rejection {
-    fn from(failure: Failure) -> Rejection {
+impl<T> From<Failure> for Rejection<T> {
+    fn from(failure: Failure) -> Rejection<T> {
         Rejection::Fault(failure.fault())
     }
 }
 
 /// A detailed rejection, its detail left out: the plain checked door's.
-impl From<Detailed> for Rejection {
-    fn from(rejection: Detailed) -> Rejection {
+impl<T> From<Detailed<T>> for Rejection<T> {
+    fn from(rejection: Detailed<T>) -> Rejection<T> {
         match rejection {
             Detailed::Failure(failure) => Rejection::Fault(failure.fault()),
             Detailed::Violation(violation) => Rejection::Violation(violation),
@@ -373,8 +397,9 @@ pub(crate) fn exact_span(start: usize, len: usize) -> Result<(u32, u32), Failure
     }
 }
 
-fn violation(keyword: Keyword, span: (u32, u32)) -> Detailed {
-    Detailed::Violation(Violation::new(keyword, span.0, span.1))
+/// A violation of `keyword` by `value`, as the door cast it, at `span`.
+fn violation<T>(keyword: Keyword, value: T, span: (u32, u32)) -> Detailed<T> {
+    Detailed::Violation(Violation::new(keyword, value, span.0, span.1))
 }
 
 /// A delivered float's order against `bound` read as `T`'s door reads it: IEEE comparison of
@@ -407,39 +432,44 @@ fn read_bound_text<T: Real>(bound: &Decimal) -> Option<T> {
     crate::float::parse::<T>(text.get(..len).unwrap_or_default())
 }
 
-/// The first declared bound `order` (a value's order against a bound) says is broken.
+/// The first declared bound `order` (a value's order against a bound) says is broken, in
+/// keyword order: each bound is its own keyword, so all four may be declared together.
 fn broken_bound(raw: &RawConstraints, order: impl Fn(&Decimal) -> Ordering) -> Option<Keyword> {
     let has = |flag: u32| raw.flags & flag != 0;
     if has(RawConstraints::HAS_MINIMUM) && order(&raw.lower) == Ordering::Less {
         return Some(Keyword::Minimum);
     }
-    if has(RawConstraints::HAS_EXCLUSIVE_MINIMUM) && order(&raw.lower) != Ordering::Greater {
+    if has(RawConstraints::HAS_EXCLUSIVE_MINIMUM)
+        && order(&raw.exclusive_lower) != Ordering::Greater
+    {
         return Some(Keyword::ExclusiveMinimum);
     }
     if has(RawConstraints::HAS_MAXIMUM) && order(&raw.upper) == Ordering::Greater {
         return Some(Keyword::Maximum);
     }
-    if has(RawConstraints::HAS_EXCLUSIVE_MAXIMUM) && order(&raw.upper) != Ordering::Less {
+    if has(RawConstraints::HAS_EXCLUSIVE_MAXIMUM) && order(&raw.exclusive_upper) != Ordering::Less {
         return Some(Keyword::ExclusiveMaximum);
     }
     None
 }
 
-/// Judges `value`, which its door accepted, as `view` reads it: `multipleOf`, the bounds on
-/// the snapped value, an integer `enum`, then delivery, and at a float door the bounds again
-/// on the float delivered (not `multipleOf`: a float is no exact multiple of `0.1`). `span`
-/// is what a violation, or a rounding past the type, reports.
+/// Judges `value`, which its door accepted, as `view` reads it, in keyword order:
+/// `multipleOf` (snapping under the declared rounding), the bounds on the snapped value, a
+/// numeric `enum` on it, then delivery in the door's type, and at a float door the bounds
+/// again on the float delivered (not `multipleOf`: a float is no exact multiple of `0.1`).
+/// Every violation carries `value` as the door cast it, never the rounded value: rounding is
+/// part of the judgement. A rounding past what the type holds leaves `multipleOf` with no
+/// answer in the type, and is that keyword's violation, never a fault (a fault says the input
+/// is not a `T`). `span` is what a violation reports.
 fn judge<T: Judged>(
     value: T,
     view: &Exact<'_>,
     span: (u32, u32),
     raw: &RawConstraints,
     entries: &Entries<'_>,
-) -> Result<(T, bool), Detailed> {
+) -> Result<(T, bool), Detailed<T>> {
     let has = |flag: u32| raw.flags & flag != 0;
-    // `span` is already a span; this rebuilds the same one.
-    let out_of_range =
-        |site: Site| Detailed::Failure(Failure::at(site, span.0 as usize, span.1 as usize));
+    let broken = |keyword: Keyword| violation(keyword, value, span);
 
     // `multipleOf`. The door accepted the value, so `snap` sees nothing longer than a door
     // reads (its own doc says why that matters).
@@ -449,10 +479,16 @@ fn judge<T: Judged>(
         match snap(view, &raw.multiple_of, mode) {
             Snap::Exact => {}
             Snap::NotMultiple if mode == Rounding::Strict => {
-                return Err(violation(Keyword::MultipleOf, span));
+                return Err(broken(Keyword::MultipleOf));
             }
             // A multiple too long to hold is past every door's range.
-            Snap::NotMultiple => return Err(out_of_range(Site::CheckedMultipleTooLong)),
+            Snap::NotMultiple => {
+                return Err(Detailed::Failure(Failure::at(
+                    Site::CheckedMultipleTooLong,
+                    span.0 as usize,
+                    span.1 as usize,
+                )));
+            }
             Snap::Rounded(multiple) => rounded = Some(multiple),
         }
     }
@@ -461,35 +497,28 @@ fn judge<T: Judged>(
         None => view.clone(),
     };
 
-    // The bounds, on the snapped value.
+    // The bounds, on the snapped value, exactly.
     if let Some(keyword) = broken_bound(raw, |bound| compare(&judged, bound)) {
-        return Err(violation(keyword, span));
+        return Err(broken(keyword));
     }
 
-    // An integer `enum`, on the snapped value: the first entry equal to it.
+    // A numeric `enum`, on the snapped value: some entry equal to it, exactly.
     if has(RawConstraints::HAS_ENUM) {
-        let whole = match &rounded {
-            Some(multiple) => multiple.to_i128(),
-            None => value.whole(TOKEN),
-        };
-        let matched = whole
-            .is_some_and(|whole| (0..entries.len()).any(|i| entries.integer(i) == Some(whole)));
+        let matched = (0..entries.len()).any(|i| {
+            entries.number(i).is_some_and(|entry| compare(&judged, &entry) == Ordering::Equal)
+        });
         if !matched {
-            return Err(violation(Keyword::Enum, span));
+            return Err(broken(Keyword::Enum));
         }
     }
 
     // Delivery: the door's own value, or the rounded one in the door's type.
     let (delivered, adjusted) = match &rounded {
         None => (value, false),
-        Some(multiple) => {
-            // Below a signed integer type's minimum, or past what the type holds.
-            let past = || match T::integer(TOKEN) && multiple.as_exact().negative() {
-                true => out_of_range(Site::CheckedRoundedTooSmall),
-                false => out_of_range(Site::CheckedRoundedTooLarge),
-            };
-            (deliver::<T>(multiple).ok_or_else(past)?, true)
-        }
+        Some(multiple) => match deliver::<T>(multiple) {
+            Some(delivered) => (delivered, true),
+            None => return Err(broken(Keyword::MultipleOf)),
+        },
     };
 
     // A float door's delivered value, judged once more against each bound as the door reads
@@ -499,7 +528,7 @@ fn judge<T: Judged>(
     if let Some(float) = delivered.float(TOKEN)
         && let Some(keyword) = broken_bound(raw, |bound| float_order::<T>(float, bound))
     {
-        return Err(violation(keyword, span));
+        return Err(broken(keyword));
     }
     Ok((delivered, adjusted))
 }
@@ -513,12 +542,13 @@ struct JudgedText<'i, 'e> {
     matched: Option<(u32, &'e str)>,
 }
 
-/// The text door, then the text constraints: the trim, the lengths, and a folded `enum`.
+/// The text door, then the text constraints: the trim, the lengths, and an `enum`, folded
+/// unless declared case-sensitive.
 fn judge_text_value<'i, 'e>(
     input: &'i [u8],
     raw: &RawConstraints,
     entries: &Entries<'e>,
-) -> Result<JudgedText<'i, 'e>, Detailed> {
+) -> Result<JudgedText<'i, 'e>, Detailed<&'i str>> {
     let has = |flag: u32| raw.flags & flag != 0;
     let text = crate::text::text(input)?;
     let (text, start) = if has(RawConstraints::TRIM) { trim_white_space(text) } else { (text, 0) };
@@ -528,17 +558,21 @@ fn judge_text_value<'i, 'e>(
     let span = span_of(start, text.len());
     let length = code_points(text);
     if has(RawConstraints::HAS_MIN_LENGTH) && length < raw.min_length {
-        return Err(violation(Keyword::MinLength, span));
+        return Err(violation(Keyword::MinLength, text, span));
     }
     if has(RawConstraints::HAS_MAX_LENGTH) && length > raw.max_length {
-        return Err(violation(Keyword::MaxLength, span));
+        return Err(violation(Keyword::MaxLength, text, span));
     }
-    // The first entry equal under folding. The index is counted by hand, saturating: a
-    // `RangeFrom` would carry an overflow panic the no-panic proof cannot rule out.
+    // The first entry equal under folding, or byte for byte when declared case-sensitive.
+    // The index is counted by hand, saturating: a `RangeFrom` would carry an overflow panic
+    // the no-panic proof cannot rule out.
+    let exact = has(RawConstraints::CASE_SENSITIVE);
     let mut matched = None;
     let mut index: u32 = 0;
     for entry in entries.texts() {
-        if eq_folded(text.as_bytes(), entry) {
+        let equal =
+            if exact { text.as_bytes() == entry } else { eq_folded(text.as_bytes(), entry) };
+        if equal {
             // A judged declaration's entries are UTF-8; one that is not cannot have matched.
             matched = core::str::from_utf8(entry).ok().map(|entry| (index, entry));
             break;
@@ -546,7 +580,7 @@ fn judge_text_value<'i, 'e>(
         index = index.saturating_add(1);
     }
     if has(RawConstraints::HAS_ENUM) && matched.is_none() {
-        return Err(violation(Keyword::Enum, span));
+        return Err(violation(Keyword::Enum, text, span));
     }
     Ok(JudgedText { text, start, matched })
 }
@@ -557,7 +591,7 @@ fn checked_numeric<T: Judged>(
     format: &NumFormat,
     raw: &RawConstraints,
     entries: &Entries<'_>,
-) -> Result<(T, CheckOutcome), Detailed> {
+) -> Result<(T, CheckOutcome), Detailed<T>> {
     let value = T::read(TOKEN, input, format)?;
     let (text, start) = trim(input);
     let span = span_of(start, text.len());
@@ -573,7 +607,7 @@ fn checked_from_f64_numeric<T: Judged>(
     value: f64,
     raw: &RawConstraints,
     entries: &Entries<'_>,
-) -> Result<(T, CheckOutcome), Detailed> {
+) -> Result<(T, CheckOutcome), Detailed<T>> {
     let read = T::typed(TOKEN, value)?;
     let digits = shortest_digits(value);
     let view = Exact::from_shortest(value.is_sign_negative(), digits.as_ref());
@@ -595,7 +629,7 @@ pub fn cast_checked<T: Numeric>(
     input: impl AsRef<[u8]>,
     format: &NumFormat,
     constraints: &Constraints<'_, T>,
-) -> Result<Checked<T>, Rejection> {
+) -> Result<Checked<T>, Rejection<T>> {
     checked(input.as_ref(), format, constraints).map_err(Rejection::from)
 }
 
@@ -604,7 +638,7 @@ pub(crate) fn checked<T: Numeric>(
     input: &[u8],
     format: &NumFormat,
     constraints: &Constraints<'_, T>,
-) -> Result<Checked<T>, Detailed> {
+) -> Result<Checked<T>, Detailed<T>> {
     let raw = constraints.raw();
     let (value, outcome) = checked_numeric::<T>(input, format, &raw, constraints.entries())?;
     Ok(Checked { value, adjusted: outcome.adjusted, enum_index: None })
@@ -620,7 +654,7 @@ pub(crate) fn checked<T: Numeric>(
 pub fn checked_from_f64<T: Numeric>(
     value: f64,
     constraints: &Constraints<'_, T>,
-) -> Result<Checked<T>, Rejection> {
+) -> Result<Checked<T>, Rejection<T>> {
     checked_typed(value, constraints).map_err(Rejection::from)
 }
 
@@ -628,7 +662,7 @@ pub fn checked_from_f64<T: Numeric>(
 pub(crate) fn checked_typed<T: Numeric>(
     value: f64,
     constraints: &Constraints<'_, T>,
-) -> Result<Checked<T>, Detailed> {
+) -> Result<Checked<T>, Detailed<T>> {
     let raw = constraints.raw();
     let (value, outcome) = checked_from_f64_numeric::<T>(value, &raw, constraints.entries())?;
     Ok(Checked { value, adjusted: outcome.adjusted, enum_index: None })
@@ -642,7 +676,7 @@ pub(crate) fn checked_typed<T: Numeric>(
 pub fn cast_text_checked<'a>(
     input: &'a [u8],
     constraints: &Constraints<'a, Text>,
-) -> Result<Checked<&'a str>, Rejection> {
+) -> Result<Checked<&'a str>, Rejection<&'a str>> {
     text_checked(input, constraints).map_err(Rejection::from)
 }
 
@@ -650,7 +684,7 @@ pub fn cast_text_checked<'a>(
 pub(crate) fn text_checked<'a>(
     input: &'a [u8],
     constraints: &Constraints<'a, Text>,
-) -> Result<Checked<&'a str>, Detailed> {
+) -> Result<Checked<&'a str>, Detailed<&'a str>> {
     let raw = constraints.raw();
     let JudgedText { text, matched, .. } = judge_text_value(input, &raw, constraints.entries())?;
     Ok(match matched {
@@ -666,8 +700,8 @@ pub(crate) fn text_checked<'a>(
 /// value that breaks a rule is never mistaken for one that is missing. The same helper every
 /// binding's `optional` is for a checked verdict.
 pub fn optional_checked<T>(
-    verdict: Result<Checked<T>, Rejection>,
-) -> Result<Option<Checked<T>>, Rejection> {
+    verdict: Result<Checked<T>, Rejection<T>>,
+) -> Result<Option<Checked<T>>, Rejection<T>> {
     match verdict {
         Ok(checked) => Ok(Some(checked)),
         Err(Rejection::Fault(Fault { reason: Reason::Empty, .. })) => Ok(None),
@@ -702,16 +736,25 @@ macro_rules! by_door {
         }
     };
     (@one $ty:ty, $judge:ident ( $($arg:expr),* ), $out:expr) => {
-        Some($judge::<$ty>($($arg),*).map(|(value, outcome)| {
-            // SAFETY: the caller's contract: `out` holds the type this door writes.
-            unsafe { write($out, value) };
-            outcome
-        }))
+        // The value is written on a success and on a violation, which carries one; never on
+        // a failure, which has none.
+        // SAFETY (both writes): the caller's contract: `out` holds the type this door writes.
+        Some(match $judge::<$ty>($($arg),*) {
+            Ok((value, outcome)) => {
+                unsafe { write($out, value) };
+                Ok(outcome)
+            }
+            Err(Detailed::Violation(broken)) => {
+                unsafe { write($out, broken.value) };
+                Err(Detailed::Violation(broken.map(drop)))
+            }
+            Err(failure) => Err(failure.map(drop)),
+        })
     };
 }
 
-/// The C ABI's checked numeric door: re-judges the declaration (every rule but duplicates),
-/// then reads `input` through `door` and judges it, writing the value to `out` on success.
+/// The C ABI's checked numeric door: re-judges the declaration, then reads `input` through
+/// `door` and judges it, writing the value to `out` on a success and on a violation.
 /// `None` is a contract violation: a door that is not numeric, or a declaration
 /// [`check_constraints`](crate::check_constraints) refuses. A failure carries its detail, not
 /// yet classified at its span ([`Failure::classified`]).
@@ -728,8 +771,8 @@ pub(crate) unsafe fn judge_numeric_detailed(
     raw: &RawConstraints,
     entries: &Entries<'_>,
     out: *mut u8,
-) -> Option<Result<CheckOutcome, Detailed>> {
-    if !door.is_numeric() || check_without_duplicates(door, raw, entries).is_err() {
+) -> Option<Result<CheckOutcome, Detailed<()>>> {
+    if !door.is_numeric() || check(door, raw, entries).is_err() {
         return None;
     }
     by_door!(door, checked_numeric(input, format, raw, entries), out)
@@ -747,7 +790,7 @@ pub(crate) unsafe fn judge_numeric(
     raw: &RawConstraints,
     entries: &Entries<'_>,
     out: *mut u8,
-) -> Option<Result<CheckOutcome, Rejection>> {
+) -> Option<Result<CheckOutcome, Rejection<()>>> {
     // SAFETY: per the function contract.
     unsafe { judge_numeric_detailed(door, input, format, raw, entries, out) }
         .map(|verdict| verdict.map_err(Rejection::from))
@@ -765,8 +808,8 @@ pub(crate) unsafe fn judge_numeric_from_f64_detailed(
     raw: &RawConstraints,
     entries: &Entries<'_>,
     out: *mut u8,
-) -> Option<Result<CheckOutcome, Detailed>> {
-    if !door.is_numeric() || check_without_duplicates(door, raw, entries).is_err() {
+) -> Option<Result<CheckOutcome, Detailed<()>>> {
+    if !door.is_numeric() || check(door, raw, entries).is_err() {
         return None;
     }
     by_door!(door, checked_from_f64_numeric(value, raw, entries), out)
@@ -783,14 +826,13 @@ pub(crate) unsafe fn judge_numeric_from_f64(
     raw: &RawConstraints,
     entries: &Entries<'_>,
     out: *mut u8,
-) -> Option<Result<CheckOutcome, Rejection>> {
+) -> Option<Result<CheckOutcome, Rejection<()>>> {
     // SAFETY: per the function contract.
     unsafe { judge_numeric_from_f64_detailed(door, value, raw, entries, out) }
         .map(|verdict| verdict.map_err(Rejection::from))
 }
 
-/// The C ABI's checked text door: re-judges the declaration (every rule but duplicates),
-/// then judges `input`. The outcome's span is the judged text (after `trim`); with an `enum`,
+/// The C ABI's checked text door: re-judges the declaration, then judges `input`. The outcome's span is the judged text (after `trim`); with an `enum`,
 /// that is the matched input, and the index names the entry. A success whose span ends past
 /// `u32::MAX` bytes, which a span cannot carry, is `OutOfRange` instead. `None` is a refused
 /// declaration.
@@ -800,11 +842,11 @@ pub(crate) fn judge_text_detailed(
     input: &[u8],
     raw: &RawConstraints,
     entries: &Entries<'_>,
-) -> Option<Result<CheckOutcome, Detailed>> {
-    if check_without_duplicates(Door::Text, raw, entries).is_err() {
+) -> Option<Result<CheckOutcome, Detailed<()>>> {
+    if check(Door::Text, raw, entries).is_err() {
         return None;
     }
-    let judged = judge_text_value(input, raw, entries);
+    let judged = judge_text_value(input, raw, entries).map_err(|rejection| rejection.map(drop));
     Some(judged.and_then(|JudgedText { text, start, matched, .. }| {
         let span = exact_span(start, text.len())?;
         Ok(CheckOutcome { adjusted: false, enum_index: matched.map(|(index, _)| index), span })
@@ -817,7 +859,7 @@ pub(crate) fn judge_text(
     input: &[u8],
     raw: &RawConstraints,
     entries: &Entries<'_>,
-) -> Option<Result<CheckOutcome, Rejection>> {
+) -> Option<Result<CheckOutcome, Rejection<()>>> {
     judge_text_detailed(input, raw, entries).map(|verdict| verdict.map_err(Rejection::from))
 }
 
@@ -858,15 +900,20 @@ mod tests {
     fn packed(door: Door, c: &Value) -> (RawConstraints, Vec<u8>) {
         let dec = |field: &str| c.get(field).map(|v| decimal_for_declaration(v.as_str().unwrap()));
         let mut raw = RawConstraints::ZERO;
-        for (field, flag, upper) in [
-            ("minimum", RawConstraints::HAS_MINIMUM, false),
-            ("exclusiveMinimum", RawConstraints::HAS_EXCLUSIVE_MINIMUM, false),
-            ("maximum", RawConstraints::HAS_MAXIMUM, true),
-            ("exclusiveMaximum", RawConstraints::HAS_EXCLUSIVE_MAXIMUM, true),
+        for (field, flag, slot) in [
+            ("minimum", RawConstraints::HAS_MINIMUM, 0),
+            ("exclusiveMinimum", RawConstraints::HAS_EXCLUSIVE_MINIMUM, 1),
+            ("maximum", RawConstraints::HAS_MAXIMUM, 2),
+            ("exclusiveMaximum", RawConstraints::HAS_EXCLUSIVE_MAXIMUM, 3),
         ] {
             if let Some(value) = dec(field) {
                 raw.flags |= flag;
-                *(if upper { &mut raw.upper } else { &mut raw.lower }) = value.unwrap();
+                *(match slot {
+                    0 => &mut raw.lower,
+                    1 => &mut raw.exclusive_lower,
+                    2 => &mut raw.upper,
+                    _ => &mut raw.exclusive_upper,
+                }) = value.unwrap();
             }
         }
         if let Some(value) = dec("multipleOf") {
@@ -889,6 +936,9 @@ mod tests {
         }
         if c.get("trim").and_then(Value::as_bool) == Some(true) {
             raw.flags |= RawConstraints::TRIM;
+        }
+        if c.get("caseSensitive").and_then(Value::as_bool) == Some(true) {
+            raw.flags |= RawConstraints::CASE_SENSITIVE;
         }
         let mut entries = Vec::new();
         if c.get("enum").is_some() {
@@ -1035,6 +1085,14 @@ mod tests {
                             vector["keyword"].as_str().unwrap(),
                             "{label}"
                         );
+                        // A violation writes the value as cast, as a success writes its own.
+                        if door != Door::Text {
+                            assert_eq!(
+                                written(door, &out),
+                                expected(door, &vector["value"]),
+                                "{label}: the violation's value"
+                            );
+                        }
                     }
                 }
             }
@@ -1079,8 +1137,9 @@ mod tests {
             unsafe { judge_numeric_from_f64(Door::Date, 1.0, &raw, &none, out.as_mut_ptr()) }
                 .is_none()
         );
-        // A declaration the door refuses: minLength on a number, a minimum on text, a bad size.
-        let length = RawConstraints { flags: RawConstraints::HAS_MIN_LENGTH, ..raw };
+        // A declaration the door refuses: a text extension on a number, a rounding on text, a
+        // bad size. (A keyword for another type, `minLength` on a number, is ignored instead.)
+        let length = RawConstraints { flags: RawConstraints::CASE_SENSITIVE, ..raw };
         assert!(
             unsafe {
                 judge_numeric(
@@ -1094,15 +1153,21 @@ mod tests {
             }
             .is_none()
         );
-        let minimum = RawConstraints { flags: RawConstraints::HAS_MINIMUM, ..raw };
+        let minimum = RawConstraints { rounding: 1, ..raw };
         assert!(judge_text(b"a", &minimum, &none).is_none());
+        // A keyword for another type is ignored, as JSON Schema says.
+        let ignored = RawConstraints { flags: RawConstraints::HAS_MINIMUM, ..raw };
+        assert_eq!(
+            judge_text(b"-5", &ignored, &none),
+            Some(Ok(CheckOutcome { adjusted: false, enum_index: None, span: (0, 2) }))
+        );
         let short = RawConstraints { size: 71, ..raw };
         assert!(judge_text(b"a", &short, &none).is_none());
         assert!(
             unsafe { judge_numeric_from_f64(Door::F64, 1.0, &short, &none, out.as_mut_ptr()) }
                 .is_none()
         );
-        // Duplicates are judged only at declaration: here the first matching entry wins.
+        // Duplicates are declarable (JSON Schema's SHOULD): the first matching entry wins.
         let mut twice = Vec::new();
         for entry in ["Male", "MALE"] {
             twice.extend_from_slice(&(entry.len() as u32).to_le_bytes());
@@ -1210,14 +1275,16 @@ mod tests {
         let ten = decimal_for_declaration("10").unwrap();
         let rules =
             || crate::NumericRules::new().maximum(ten).multiple_of(ten, crate::Rounding::Midpoint);
-        let fault = |reason| Some(Rejection::Fault(Fault { reason, offset: 0, len: 0 }));
+        fn fault<T>(reason: Reason) -> Option<Rejection<T>> {
+            Some(Rejection::Fault(Fault { reason, offset: 0, len: 0 }))
+        }
         macro_rules! integer_doors {
             ($($ty:ty),+) => {$(
                 let constraints = Constraints::<$ty>::numeric(rules(), None).unwrap();
                 for value in [f64::INFINITY, f64::NEG_INFINITY] {
                     assert_eq!(
                         checked_from_f64(value, &constraints).err(),
-                        fault(Reason::Malformed),
+                        fault::<$ty>(Reason::Malformed),
                         "{} {value}",
                         stringify!($ty)
                     );
@@ -1237,10 +1304,10 @@ mod tests {
 
     #[test]
     fn rejections_display() {
-        let violation = Violation { keyword: Keyword::ExclusiveMinimum, offset: 2, len: 3 };
+        let violation = Violation::new(Keyword::ExclusiveMinimum, 0i32, 2, 3);
         assert_eq!(violation.to_string(), "breaks exclusiveMinimum at bytes 2..5");
         assert_eq!(Rejection::from(violation).to_string(), violation.to_string());
         let fault = Fault { reason: Reason::Malformed, offset: 0, len: 1 };
-        assert_eq!(Rejection::from(fault).to_string(), fault.to_string());
+        assert_eq!(Rejection::<i32>::from(fault).to_string(), fault.to_string());
     }
 }

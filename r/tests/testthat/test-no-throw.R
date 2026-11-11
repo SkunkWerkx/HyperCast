@@ -162,10 +162,19 @@ expect_quiet_verdict <- function(door, x, label) {
     testthat::expect_true(all(is.na(v$keyword[!ok %in% FALSE])), label = label)
     testthat::expect_true(all(!is.na(v$adjusted[ok %in% TRUE])), label = label)
   }
-  # raw = TRUE holds its value in a list, where a row with none is NULL rather than NA.
-  absent <- v$value[!ok %in% TRUE]
+  # raw = TRUE holds its value in a list, where a row with none is NULL rather than NA. A fault
+  # and a missing row have none; a violation carries the value as cast.
+  violated <- if (checked) !is.na(v$keyword) else rep(FALSE, length(ok))
+  absent <- v$value[!ok %in% TRUE & !violated]
   testthat::expect_true(all(if (is.list(absent)) lengths(absent) == 0L else is.na(absent)),
                         label = label)
+  carried <- v$value[violated]
+  if (is.list(carried)) {
+    testthat::expect_false(any(vapply(carried, is.null, FALSE)), label = label)
+  } else if (!is.character(carried)) {
+    # A character value can be NA where R can't hold the text (U+0000).
+    testthat::expect_false(anyNA(carried), label = label)
+  }
   testthat::expect_true(all(is.na(v$offset[!ok %in% FALSE])), label = label)
   # A fault names its detail (a published one, here); a violation, a success and a missing
   # row have none.

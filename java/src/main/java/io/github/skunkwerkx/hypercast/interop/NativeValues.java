@@ -91,13 +91,14 @@ public final class NativeValues {
     public static final long DATE_OPTIONS_BYTES = 12;
 
     /**
-     * A declaration of validation constraints, size-tagged: {@code u32 size} (72),
+     * A declaration of validation constraints, size-tagged: {@code u32 size} (104),
      * {@code u32 flags}, {@code u32 rounding}, {@code u32 min_length}, {@code u32 max_length}, a
-     * reserved {@code u32} (0), then three decimals ({@link #DECIMAL_BYTES} each): the lower
-     * bound, the upper bound and {@code multipleOf} (at 24, 40 and 56). 8-byte aligned.
+     * reserved {@code u32} (0), then five decimals ({@link #DECIMAL_BYTES} each), one per
+     * keyword: {@code minimum}, {@code maximum}, {@code multipleOf}, {@code exclusiveMinimum}
+     * and {@code exclusiveMaximum} (at 24, 40, 56, 72 and 88). 8-byte aligned.
      * {@link io.github.skunkwerkx.hypercast.Constraints#toRaw()} hands one out.
      */
-    public static final long CONSTRAINTS_BYTES = 72;
+    public static final long CONSTRAINTS_BYTES = 104;
 
     /**
      * What a checked door reports beside its value: {@code {u32 keyword, u32 adjusted, u32

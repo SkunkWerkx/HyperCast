@@ -57,7 +57,7 @@ public sealed class GroupingTests
 		(Cast.Double("1.5,000"u8, NumFormat.Invariant) is Fault { Detail: FaultDetail.GroupInFraction }).ShouldBeTrue();
 		// The checked doors judge it as the plain ones do.
 		var checkedDoor = Cast.Int32("12,34"u8, NumFormat.Invariant, new Constraints<int>(maximum: 100_000));
-		(checkedDoor.TryGetValue(out Rejection rejection) && rejection.TryGetValue(out Fault fault)
+		(checkedDoor.TryGetValue(out Rejection<int> rejection) && rejection.TryGetValue(out Fault fault)
 			&& fault is { Offset: 2, Length: 3, Detail: FaultDetail.GroupSize }).ShouldBeTrue();
 		(Cast.Int32("1,23,456"u8, NumFormat.Invariant with { Grouping = NumGrouping.Indian }, new Constraints<int>(maximum: 200_000))
 			.TryGetValue(out Checked<int> ok) && ok.Value == 123456).ShouldBeTrue();

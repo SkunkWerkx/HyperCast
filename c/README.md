@@ -34,7 +34,7 @@ lib/libhypercast.so | lib/libhypercast.dylib
                                          import library lib/hypercast.dll.lib)
 lib/pkgconfig/hypercast.pc
 lib/cmake/hypercast/
-LICENSE, README.md                       this file
+LICENSE, LICENSE-UNICODE, README.md      this file (README.md)
 ```
 
 The iOS, iOS simulator and Mac Catalyst archives have the static library only, linked into
@@ -45,7 +45,7 @@ the app, and so does wasi-wasm32, for wasi-sdk.
 CMake, with the unpacked directory on `CMAKE_PREFIX_PATH`:
 
 ```cmake
-find_package(hypercast 1.0 REQUIRED)
+find_package(hypercast 1.1 REQUIRED)
 target_link_libraries(app PRIVATE hypercast::hypercast)          # shared
 target_link_libraries(app PRIVATE hypercast::hypercast_static)   # or static
 ```
@@ -127,25 +127,38 @@ space in it, a currency symbol with white space at either edge, and a day-period
 with white space at either edge.
 
 Five of them carry validation constraints, the OpenAPI Schema Object's keywords judged after a
-door parses. `cast_constraints_check` judges a declaration once, a `HyperCastRawConstraints`
-(72 bytes, `size` first) and an `enum` list beside it, read only when `flags` has
-`HyperCastRawConstraints_HAS_ENUM` (256) beside the `HAS_*` bits of the other keywords and
-`TRIM`, and returns 0 or the refusal code of the rule it breaks: 1 a keyword the door does not
-take, 2 minimum with exclusiveMinimum, 3 maximum with exclusiveMaximum, 4 a lower bound not below
-the upper, 5 a multipleOf not positive, 6 a rounding without multipleOf, 7 minLength above
-maxLength, 8 a bound, step or entry the door cannot hold, 9 an enum entry that is not UTF-8, 10 a
-duplicate entry, 11 a malformed layout (among its causes a non-empty list without `HAS_ENUM`, or
-a decimal sign byte other than 0 or 1), 12 an enum with no entries (`HAS_ENUM` with an empty
-list), 13 a text enum entry no input can match (an empty one, or under `TRIM` one with leading or
-trailing white space).
+door parses: an input that does not cast is a fault (1 to 3, not the type), and a value of the
+type that breaks a declared rule is a violation (4). `cast_constraints_check` judges a
+declaration once, a `HyperCastRawConstraints` (104 bytes, `size` first, each keyword in a field
+of its own: `lower` the minimum, `exclusive_lower` the exclusiveMinimum, `upper` the maximum,
+`exclusive_upper` the exclusiveMaximum, and `multiple_of`) and an `enum` list beside it, read
+only when `flags` has `HyperCastRawConstraints_HAS_ENUM` (256) beside the `HAS_*` bits of the
+other keywords, `TRIM` and `CASE_SENSITIVE` (512: a text `enum` matched byte for byte instead of
+under simple case folding). Every valid OpenAPI 3.2 declaration is accepted: all four bounds
+together, each judged on its own; crossed bounds, minLength above maxLength, duplicate entries
+(the first match wins) and an empty `enum`, which no value satisfies; numeric `enum` entries at
+every numeric door, float and decimal included; and a keyword for another type, which is
+ignored. It returns 0 or the refusal code of the rule it breaks: 1 a constraint the door does not
+take (a door that takes none, `TRIM` or `CASE_SENSITIVE` at a numeric door, or a rounding with
+`multipleOf` at the text door), 5 a multipleOf not positive, 6 a rounding without multipleOf, 8 a
+bound, step or entry the door cannot hold (a scale past 28, a text entry past `UINT32_MAX` bytes,
+or a rounding at an integer door with a fractional multipleOf), 9 an enum entry that is not
+UTF-8, 11 a malformed layout (among its causes an unknown flag bit, a non-empty list without
+`HAS_ENUM`, or a decimal sign byte other than 0 or 1). Codes 2, 3, 4, 7, 10, 12 and 13 are
+retired and never returned.
 `cast_checked` (text) and `cast_checked_from_f64` (a double a source already decoded) cast
 through a numeric door or the text door and judge the value: they add return code 4, a
-violation, with the value's span in `fault` and the keyword broken in a `HyperCastRawCheck`
-(1 minimum, 2 exclusiveMinimum, 3 maximum, 4 exclusiveMaximum, 5 multipleOf, 6 minLength,
-7 maxLength, 8 enum; 9 and 10 are reserved for `format` and `pattern`, so a switch over them
-needs a default). The rounding codes are 0 strict, 1 midpoint (half to even), 2 floor and
-3 ceiling. `cast_text` is the text door, the span of valid UTF-8 input, and
-`cast_declared_decimal` converts a bound, step or integer entry written in invariant notation
+violation, which writes `out` with the value exactly as the door cast it (never rounded, and at
+the text door the span of the judged text, after `TRIM`), the value's span in `fault` and the
+keyword broken in a `HyperCastRawCheck` (1 minimum, 2 exclusiveMinimum, 3 maximum, 4
+exclusiveMaximum, 5 multipleOf, 6 minLength, 7 maxLength, 8 enum; 9 and 10 are reserved for
+`format` and `pattern`, so a switch over them needs a default). The keywords are judged in that
+order for a number (multipleOf first, then the bounds, then `enum`) and minLength, maxLength,
+`enum` for text, and the first broken is reported; a rounding past what the type holds is a
+violation of multipleOf. The rounding codes are 0 strict, 1 midpoint (half to even), 2 floor and
+3 ceiling. `cast_text` is the text door, the span of valid UTF-8 input (input past `UINT32_MAX` bytes,
+which a span cannot carry, is 3, out of range), and
+`cast_declared_decimal` converts a bound, step or numeric entry written in invariant notation
 into a `HyperCastDecimal`, exactly or not at all (8).
 
 Four more exports, 1.1's, reach the doors above by their door code (`cast_detailed`, with `param`
@@ -249,7 +262,8 @@ The doors are named as in the C ABI: `cast_bool`, `cast_char` (`char32_t`), `cas
 `cast_timestamp`, `cast_unix` (a `UnixPrecision`), `cast_excel_serial` (an `ExcelEpoch`),
 `cast_date` (strict, or with a `DateOrder`), `cast_datetime` (a `DateOrder` or a `DateFormat`
 with a culture's day periods), `cast_time` (`std::chrono::nanoseconds`), `cast_duration`,
-`cast_text` (a `std::string_view` of valid UTF-8 input), and the typed doors
+`cast_text` (a `std::string_view` of valid UTF-8 input; past 4,294,967,295 bytes it is
+`out_of_range`), and the typed doors
 `cast_decimal_from_double`, `cast_excel_serial_from_double`, `cast_excel_time` and
 `cast_excel_duration`. Text is anything that converts to `std::string_view`, a
 `std::u8string_view` under C++20, or a pointer and a size. The values are the core's own types:
@@ -287,8 +301,8 @@ const hypercast::Failure &failure = bad.failure();
 `Fault`'s `reason`, `offset` and `length` with a `Detail` beside them. `Fault` itself is as it was,
 its equality blind to any detail, and `failure.fault()` is the plain door's answer; a
 `DetailedVerdict` has the accessors of a `Verdict` (`failure_if()`, `failure()`, `to_verdict()`, ...),
-a `DetailedChecked` those of a `Checked` over a `DetailedRejection` (`is_failure()`,
-`failure_if()`, `violation_if()`, `to_checked()`, ...; a `Violation` has no detail).
+a `DetailedChecked<T>` those of a `Checked<T>` over a `DetailedRejection<T>` (`is_failure()`,
+`failure_if()`, `violation_if()`, `to_checked()`, ...; a `Violation<T>` has no detail).
 `Detail` is the vocabulary (`blank`, `unexpected_character`, `digit_expected`, ... `not_a_scalar`,
 numbered 1 to 32 as in the C section) and is open: any `std::uint32_t` is a value, `is_known` says
 whether this header names it, `name(detail)` spells it (`"group_size"`, or `"detail 999"` for a
@@ -361,9 +375,9 @@ int main() {
   auto north = hc::cast_f64("45.1234567", invariant, latitude.value());
   std::printf("%.6f adjusted=%d\n", north.value().value, north.value().adjusted); // 45.123457 1
   auto south = hc::cast_f64("-90.5", invariant, latitude.value());
-  const hc::Violation &broken = south.rejection().violation();
-  std::printf("%s at %zu+%zu\n", hc::name(broken.keyword).c_str(), broken.offset,
-              broken.length); // minimum at 0+5
+  const hc::Violation<double> &broken = south.rejection().violation();
+  std::printf("%s %.1f at %zu+%zu\n", hc::name(broken.keyword).c_str(), broken.value,
+              broken.offset, broken.length); // minimum -90.5 at 0+5
 
   // Euro cash: whole multiples of five cents, strict (the default), no rounding.
   hc::Constraints<hc::Decimal>::Fields cents;
@@ -385,11 +399,12 @@ int main() {
         std::printf("%.*s, entry %u\n", static_cast<int>(checked.value.size()),
                     checked.value.data(), *checked.enum_index); // Male, entry 1
       },
-      [](const hc::Rejection &rejection) {
-        if (const hc::Violation *violation = rejection.violation_if()) {
+      [](const hc::Rejection<std::string_view> &rejection) {
+        if (const hc::Violation<std::string_view> *violation = rejection.violation_if()) {
           switch (violation->keyword) {
-          case hc::Keyword::enum_:
-            std::printf("not a sex code\n");
+          case hc::Keyword::enum_: // the judged text, a view of the input
+            std::printf("%.*s is not a sex code\n", static_cast<int>(violation->value.size()),
+                        violation->value.data());
             break;
           default: // keywords are open: format and pattern may join
             std::printf("breaks %s\n", hc::name(violation->keyword).c_str());
@@ -403,10 +418,10 @@ int main() {
 A `Constraints<T>` is bound to the door its type names (`std::int8_t` through `std::uint64_t`,
 `float`, `double`, `hypercast::Decimal`, and `std::string_view` for the text door) and judged
 once, by the core, when it is declared. `declare` is the only way to build one: it returns a
-`Declared<Constraints<T>>`, the declaration or a `Refusal` with the core's code (1 to 13, as in
-the C section) and one fixed message per code (`Constraints refused (code 2): minimum together
-with exclusiveMinimum.`; a code this header does not name reads `Constraints refused (code 14):
-a rule this binding does not name.`). The message is a `RefusalMessage` held by value, as a
+`Declared<Constraints<T>>`, the declaration or a `Refusal` with the core's code (1, 5, 6, 8, 9
+or 11, as in the C section) and one fixed message per code (`Constraints refused (code 1): a
+constraint the door does not take.`; a code this header does not name, a retired one included,
+reads `Constraints refused (code 14): a rule this binding does not name.`). The message is a `RefusalMessage` held by value, as a
 `KeywordName` is, so it outlives the `Declared` it came from: compare it with a string, print
 `c_str()`, or take `view()` from a named one (on a temporary, `view()` does not compile, nor
 does a `NumFormat`'s or `DateFormat`'s symbol accessor, each a view into its object). A refused declaration is a caller bug, not data, and its
@@ -414,12 +429,17 @@ does a `NumFormat`'s or `DateFormat`'s symbol accessor, each a view into its obj
 program, as any contract violation does. Under C++20 a designated initializer names just the
 keywords wanted (`declare({.minimum = -90, .maximum = 90})`).
 
-Every keyword is in every door's `Fields`, so the core alone refuses one a door does not take:
-the integer doors take `minimum`, `exclusive_minimum`, `maximum`, `exclusive_maximum`,
-`multiple_of` with a `Rounding` (`strict`, the default, `midpoint`, half to even, `floor`,
-`ceiling`) and an `enum`; `float`, `double` and `Decimal` the same without `enum`; the text door
-`min_length`, `max_length` (in code points), `trim` (Unicode `White_Space`) and an `enum`,
-matched under Unicode simple case folding. Bounds, steps and integer entries are
+Every keyword is in every door's `Fields`, and every valid OpenAPI 3.2 declaration is accepted,
+as JSON Schema 2020-12 reads it: all four bounds together, each judged on its own; crossed
+bounds, `min_length` above `max_length`, duplicate entries (the first match wins) and an empty
+`enum`, which no value satisfies; and a keyword for another type (`minimum` at the text door),
+which is ignored. The numeric doors judge `minimum`, `exclusive_minimum`, `maximum`,
+`exclusive_maximum`, `multiple_of` with a `Rounding` (`strict`, the default, `midpoint`, half to
+even, `floor`, `ceiling`) and an `enum` of decimals compared exactly to the value (an entry the
+type cannot hold never matches); the text door `min_length`, `max_length` (in code points),
+`trim` (Unicode `White_Space`) and an `enum`, matched under Unicode simple case folding, or byte
+for byte with `case_sensitive`. `trim` or `case_sensitive` at a numeric door is refused (1).
+Bounds, steps and numeric entries are
 `ConstraintValue`s: an integer, a `Decimal`, or text in invariant notation, each converted
 exactly by the core (`"1e-29"`, past the 28 places a decimal holds, is refused rather than
 rounded). There is no constructor from a `double`, so `0.1` cannot be declared inexactly. A
@@ -431,7 +451,8 @@ hc::Constraints<double>::Fields positive;
 positive.exclusive_minimum = 0;
 const auto above_zero = hc::Constraints<double>::declare(positive);
 const auto tiny = hc::cast_f64("1e-400", hc::NumFormat::invariant(), above_zero.value());
-// tiny.rejection().violation() == hc::Violation{hc::Keyword::exclusive_minimum, 0, 6}
+// tiny.rejection().violation() ==
+//     hc::Violation<double>{hc::Keyword::exclusive_minimum, 0.0, 0, 6}
 ```
 
 Nothing allocates, so an `enum` list is packed into storage the caller owns:
@@ -439,17 +460,22 @@ Nothing allocates, so an `enum` list is packed into storage the caller owns:
 entry), an array or a pointer and a size. Too little, or a text entry past 4,294,967,295 bytes,
 is `Refusal` code 0, this header's own, with its own message rather than a core refusal's.
 `declare(fields)` declares no `enum`; every overload that takes entries declares one and sets
-`HAS_ENUM`, so an empty list (`declare(fields, {}, storage)`) is one no value could match, which
-the core refuses (12). The storage must outlive the declaration and every value read through it,
+`HAS_ENUM`, so an empty list (`declare(fields, {}, storage)`) is one no value matches: every
+value violates `enum`. The storage must outlive the declaration and every value read through it,
 and must not change after it; a copy of a `Constraints` refers to the same storage. The entries
 themselves are only read while `declare` runs.
 
 A checked door returns a `Checked<T>`: a `CheckedValue<T>` (`value`, `adjusted`, true only when
-rounding changed the value, and `enum_index`, set only on a text `enum` match) or a `Rejection`,
-which is the plain door's own `Fault` or a `Violation` (its `keyword` and the value's span, in
-bytes like a fault's). It is taken apart as a `Verdict` is (`ok()`, `value_if()`,
-`rejection_if()`, `match`, `visit`, `to_variant()`, `to_expected()` under C++23), and so is a
-`Rejection` (`is_fault()`, `fault_if()`, `violation_if()`, `match`, `visit`, `to_variant()`).
+rounding changed the value, and `enum_index`, set only on a text `enum` match) or a
+`Rejection<T>`, which is the plain door's own `Fault` (the input is not the type) or a
+`Violation<T>` (a value of the type that breaks a rule: its `keyword`, its `value` exactly as
+the door cast it, never rounded, at the text door the judged text as a view of the input, and
+the value's span, in bytes like a fault's). It is taken apart as a `Verdict` is (`ok()`,
+`value_if()`, `rejection_if()`, `match`, `visit`, `to_variant()`, `to_expected()` under C++23),
+and so is a `Rejection<T>` (`is_fault()`, `fault_if()`, `violation_if()`, `match`, `visit`,
+`to_variant()`, and `map(f)`, which converts a violation's value, as `Violation<T>::map` does).
+The keywords are judged in the core's order, `multiple_of` first, and the first broken is
+reported; a rounding past what the type holds is a violation of `multiple_of`.
 `hypercast::optional` reads an empty input as `std::nullopt` here too. `Keyword` is an enum
 class over the core's codes (`minimum` through `enum_`, as `enum` is reserved), and open:
 `format` and `pattern` may join in a minor release, so a switch over keywords needs its

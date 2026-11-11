@@ -629,6 +629,7 @@ function specOf(v: Vector): ConstraintsSpec {
     'minLength',
     'maxLength',
     'trim',
+    'caseSensitive',
     'enum',
   ]) {
     if (key in c) spec[key] = c[key]
@@ -637,8 +638,9 @@ function specOf(v: Vector): ConstraintsSpec {
   return spec as unknown as ConstraintsSpec
 }
 
-// What a checked success at the vector's door is: a bigint at the 64-bit doors, the single
-// widened at f32, the canonical text at decimal, the caller's entry (or text) at text.
+// What a checked value at the vector's door is, a success's or a violation's: a bigint at the
+// 64-bit doors, the single widened at f32, the canonical text at decimal, the caller's entry
+// (or the text) at text.
 function expectedValue(v: Vector): unknown {
   if (v.door === 'i64' || v.door === 'u64') return BigInt(v.value as string | number)
   if (v.door === 'f32') return Math.fround(v.value as number)
@@ -670,10 +672,18 @@ function judge(
   }
   if ('violation' in verdict) {
     assert.equal(v.expect, 'violation', `${ctx}: violated ${verdict.violation.keyword}`)
-    const { keyword, offset, length } = verdict.violation
+    const { keyword, value, offset, length } = verdict.violation
     // A violation names a rule the value broke, not a failure to read it: no detail.
     assert.equal(v.detail, undefined, `${ctx}: a violation names a detail`)
     assert.equal(keyword, v.keyword, ctx)
+    // The value as the door cast it, held as a success's is.
+    assert.ok('value' in v, `${ctx}: a violation row without its value`)
+    const expected = expectedValue(v)
+    assert.ok(
+      sameChecked(v.door as string)(value, expected),
+      `${ctx}: violation value ${String(value)} != ${String(expected)}`,
+    )
+    assert.deepEqual(Object.keys(verdict.violation), ['keyword', 'value', 'offset', 'length'], ctx)
     assert.ok(offset + length <= units, `${ctx}: span ${offset}+${length} past ${units}`)
     if (span !== undefined) assert.deepEqual([offset, length], span, `${ctx}: span`)
     return

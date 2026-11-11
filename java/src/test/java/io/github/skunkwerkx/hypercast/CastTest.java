@@ -320,7 +320,7 @@ final class CastTest {
                 new Fault<Integer>(CastFailure.MALFORMED, 0, 1),
                 Cast.optional(Cast.i32("abc", NumFormat.INVARIANT, percent)).orElseThrow());
         assertEquals(
-                new Violation<Integer>(Keyword.MAXIMUM, 0, 3),
+                new Violation<Integer>(Keyword.MAXIMUM, 101, 0, 3),
                 Cast.optional(Cast.i32("101", NumFormat.INVARIANT, percent)).orElseThrow());
         assertTrue(Cast.optional(Cast.text(" \t", Constraints.text().trim(true).build()))
                 .isEmpty());

@@ -117,32 +117,41 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   C linker); CI proves that build on x86-64 glibc 2.17 and musl. Attested like the wheels.
   *(PyPI)*
 
-- **Validation: the checked doors.** A value that parses can still be wrong for the field it
-  fills, so every integer, real, decimal and text door now has a checked twin that judges the
-  value against constraints in the same call, in the OpenAPI Schema Object's vocabulary:
-  `minimum`, `exclusiveMinimum`, `maximum`, `exclusiveMaximum` and `multipleOf` for numbers,
-  `minLength`, `maxLength` and `enum` for text, and an integer `enum` for the integer doors.
-  The rules are declared in code, never parsed from a schema, built once for one door and
-  checked by the core as they are built: `minimum` beside `exclusiveMinimum`, a lower bound not
-  below the upper, an empty `enum` or a text entry no input can match is refused with one of 13
-  codes, and a refused declaration is the caller's contract violation, never "no rules".
-  Bounds and steps are exact decimals and a value is judged on its exact text, never on a
-  float; a real door also judges the float it delivers against each bound as it reads that
-  bound. `multipleOf` takes a rounding, `strict` (the default, euro cash at `0.05`),
-  `midpoint` (ties to even), `floor` or `ceiling` (a latitude at `0.000001`), and a rounded
-  value comes back flagged `adjusted`. Text can be trimmed of Unicode white space first,
-  lengths count code points, and a text `enum` matches under Unicode 17's simple case folding,
-  answering the declared spelling and its index. The checked verdict has two arms: the value,
-  or a rejection, which is the door's own fault or a `Violation` naming the keyword and the
-  span; zero is delivered without a sign. `checked_from_f64` judges a number a parser already
-  holds as a double on its shortest round-trip digits, and a plain text door (`cast_text`)
-  joins the others: the input once it is valid UTF-8, untrimmed, and `OutOfRange`
-  (`too_long`) past 4 GiB, which a span can't carry, in the core itself so that no binding
-  narrows it. Five C exports (`cast_checked`, `cast_checked_from_f64`,
-  `cast_constraints_check`, `cast_text`, `cast_declared_decimal`), which with 1.0's 27 and the
-  four detailed exports below make 36, and every binding spells the API in its own idiom
-  (`docs/bindings.md`, "Constraints") and replays the same constraint and declaration corpora.
-  *(Rust, C#, Java, Swift, Go, Python, Ruby, PHP, TypeScript, R, C, C++)*
+- **Validation: the checked doors, OpenAPI 3.2.** A value that casts can still be wrong for the
+  field it fills, so every integer, real, decimal and text door now has a checked twin that
+  validates the cast value in the same call, in the vocabulary of the OpenAPI 3.2 Schema Object
+  (JSON Schema 2020-12): `minimum`, `exclusiveMinimum`, `maximum`, `exclusiveMaximum`,
+  `multipleOf` and `enum` for numbers, `minLength`, `maxLength` and `enum` for text. The rules
+  are declared in code, never parsed from a schema, built once for one door and checked by the
+  core as they are built. Every valid OpenAPI 3.2 declaration is accepted: the four bounds are
+  independent keywords (`minimum: -180` with `exclusiveMaximum: 180` is a longitude), a keyword
+  for another type is ignored, as JSON Schema ignores it, and an unsatisfiable schema (crossed
+  bounds, an empty `enum`) declares, so every value then violates it. Only what the spec forbids
+  or the core cannot hold is refused, with one of six codes: a `multipleOf` not above zero, a
+  rounding without `multipleOf`, an extension where it means nothing, a decimal past 96 bits
+  or scale 28, an entry that is not UTF-8, a malformed layout. A refused declaration is the
+  caller's contract violation, never "no rules". Bounds, steps and numeric `enum` entries are
+  exact decimals and a value is judged on its exact text, never on a float; a real door also
+  judges the float it delivers against each bound as it reads that bound, so an exclusive bound
+  is never met, by rounding or by the float. Three HyperCast extensions: `multipleOf` takes a
+  rounding, `strict` (the default: euro cash at `0.05`), `midpoint` (ties to even), `floor` or
+  `ceiling` (a latitude at `0.000001`), and a rounded value comes back flagged `adjusted`; text
+  can be trimmed of Unicode white space first; and a text `enum` matches under Unicode 17's
+  simple case folding unless declared `caseSensitive`, answering the declared spelling and its
+  index (a number among its entries is valid and never matches, in every binding whose types
+  can say one). Lengths count code points. The checked verdict has two arms and two levels: the value,
+  or a rejection, which is the door's own fault (the input is not the type) or a `Violation`
+  (it is, and breaks the schema) naming the keyword and the span and carrying the value exactly
+  as cast, never rounded; a rounding past what the type holds is a `multipleOf` violation. Zero
+  is delivered without a sign. `checked_from_f64` judges a number a parser already holds as a
+  double on its shortest round-trip digits, and a plain text door (`cast_text`) joins the
+  others: the input once it is valid UTF-8, untrimmed, and `OutOfRange` (`too_long`) past
+  4 GiB, which a span can't carry, in the core itself so that no binding narrows it. Five C
+  exports (`cast_checked`, `cast_checked_from_f64`, `cast_constraints_check`, `cast_text`,
+  `cast_declared_decimal`), which with 1.0's 27 and the four detailed exports below make 36;
+  a checked export writes `out` on a violation as on a success. Every binding spells the API
+  in its own idiom (`docs/bindings.md`, "Constraints") and replays the same constraint and
+  declaration corpora. *(Rust, C#, Java, Swift, Go, Python, Ruby, PHP, TypeScript, R, C, C++)*
 - **Fault detail: what exactly failed, beside the reason.** Every failure can now say which
   rule it broke, from a fixed vocabulary of 32 codes (`group_size`, `digit_expected`,
   `invalid_utf8`, `not_finite`, `too_long`, `date_field_out_of_range`, …; the list and every
@@ -174,7 +183,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   refuses, and `Constraints::pack_enum` writes the packed list for a declaration built in Rust,
   without allocating: it reports the length it needs, and `None` only for a list too long to
   size on a 32-bit target. They are for a parser that carries declarations across its own C ABI
-  and judges each value with the checked doors, as HyperTabular does. A text `enum` entry
+  and judges each value with the checked doors, as HyperTabular's will. A text `enum` entry
   longer than `u32::MAX` bytes, which the packed form cannot carry and no input can match, is
   now refused as `NotHeldByDoor`. *(Rust)*
 - **Rust: `hypercast::is_white_space(c: char) -> bool`.** True for exactly the 25 code points

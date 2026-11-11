@@ -94,7 +94,7 @@ native digits, and to the white space group separators that stand for each other
 U+00A0, U+202F). A policy does not turn grouping on: with the \code{grouping} style off a group
 separator is \code{malformed} under both. \code{num_format_with_grouping()} chooses either on a format
 already made. Shapes neither policy reads are refused under a declared format, while
-separator detection infers them and can read \code{1,2345} as 1.2345: HyperCast's
+separator detection infers them and can read \verb{1,2345} as 1.2345: HyperCast's
 \code{docs/grouping.md} has them and what adding one takes.
 Separator detection stays independent of the policy: no policy resolves an ambiguous
 \verb{1,234}. \code{num_format_detect()} resolves

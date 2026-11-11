@@ -35,7 +35,7 @@ public sealed class DetailTests
 		(verdict is Fault { Reason: CastFailure.Malformed }).ShouldBeTrue();
 		verdict.Match(static s => "ok", static f => $"{f.Reason}").ShouldBe("Malformed");
 		verdict.ToString().ShouldBe(new Verdict<int>(new Fault(CastFailure.Malformed, 1, 2)).ToString());
-		var rejection = new Rejection(fault);
+		var rejection = new Rejection<int>(fault);
 		(rejection.TryGetValue(out Fault inside) && inside == fault).ShouldBeTrue();
 		rejection.ToString().ShouldBe("Fault(Malformed @ 1+2)");
 
@@ -65,7 +65,7 @@ public sealed class DetailTests
 		named.ToString().ShouldBe(plain.ToString());
 		// And so are the verdicts that hold them.
 		new Verdict<int>(named).ShouldBe(new Verdict<int>(other));
-		new CheckedVerdict<int>(new Rejection(named)).ShouldBe(new CheckedVerdict<int>(new Rejection(other)));
+		new CheckedVerdict<int>(new Rejection<int>(named)).ShouldBe(new CheckedVerdict<int>(new Rejection<int>(other)));
 		// The real doors agree: one failure through the byte door, however it is named.
 		Cast.Int32("12a"u8, NumFormat.Invariant).ShouldBe(new Verdict<int>(new Fault(CastFailure.Malformed, 2, 1)));
 	}
@@ -78,11 +78,11 @@ public sealed class DetailTests
 		(Cast.Int32("€x", NumFormat.Invariant) is Fault { Offset: 0, Length: 1, Detail: FaultDetail.UnexpectedCharacter, DetailCode: 2 }).ShouldBeTrue();
 		(Cast.Date("2026-01-07T"u8) is Fault { Detail: FaultDetail.WrongLength }).ShouldBeTrue();
 		var checkedDoor = Cast.Int32("€x", NumFormat.Invariant, new Constraints<int>(maximum: 10));
-		(checkedDoor.TryGetValue(out Rejection rejection) && rejection.TryGetValue(out Fault fault)
+		(checkedDoor.TryGetValue(out Rejection<int> rejection) && rejection.TryGetValue(out Fault fault)
 			&& fault is { Offset: 0, Length: 1, Detail: FaultDetail.UnexpectedCharacter }).ShouldBeTrue();
-		// A violation is no fault, and has no detail to name.
+		// A violation is no fault, and has no detail to name: it carries the value as cast.
 		var violation = Cast.Int32("11"u8, NumFormat.Invariant, new Constraints<int>(maximum: 10));
-		(violation.TryGetValue(out Rejection broke) && broke.TryGetValue(out Violation _)).ShouldBeTrue();
+		(violation.TryGetValue(out Rejection<int> broke) && broke.TryGetValue(out Violation<int> value) && value.Value == 11).ShouldBeTrue();
 		// The typed doors name theirs too, with an empty span.
 		(Cast.DecimalFromDouble(double.NaN) is Fault { Reason: CastFailure.Malformed, Offset: 0, Length: 0, Detail: FaultDetail.NotFinite }).ShouldBeTrue();
 		(Cast.DecimalFromDouble(double.PositiveInfinity) is Fault { Reason: CastFailure.OutOfRange, Detail: FaultDetail.NotFinite }).ShouldBeTrue();
@@ -109,7 +109,7 @@ public sealed class DetailTests
 		Verdict<int> verdict = fault;
 		(verdict is Fault { Reason: CastFailure.Malformed, Offset: 5, Length: 3, Detail: FaultDetail.Unknown }).ShouldBeTrue();
 		(fault == new Fault(CastFailure.Malformed, 5, 3)).ShouldBeTrue();
-		new CheckedVerdict<int>(new Rejection(fault)).TryGetValue(out Rejection _).ShouldBeTrue();
+		new CheckedVerdict<int>(new Rejection<int>(fault)).TryGetValue(out Rejection<int> _).ShouldBeTrue();
 		// Every code past the vocabulary, the edges included.
 		foreach (var code in new uint[] { 33, 100, 255, 256, 999, 65_536, uint.MaxValue })
 		{

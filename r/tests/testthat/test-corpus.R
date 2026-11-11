@@ -406,20 +406,19 @@ test_that("typed.json", {
 # ---- validation constraints ----
 
 # The core's Refusal Display text, one per code, restated here so a change to the wording
-# the binding raises is a test failure.
+# the binding raises is a test failure. The codes between are retired.
 refusal_rules <- c(
-  "a constraint the door does not take", "minimum together with exclusiveMinimum",
-  "maximum together with exclusiveMaximum", "the lower bound is not below the upper bound",
-  "multipleOf is not positive", "a rounding without multipleOf", "minLength is above maxLength",
-  "a bound, step or enum entry the door cannot hold", "an enum entry that is not UTF-8",
-  "a duplicate enum entry", "a malformed constraints layout", "an enum with no entries",
-  "a text enum entry no input can match"
+  "1" = "a constraint the door does not take", "5" = "multipleOf is not positive",
+  "6" = "a rounding without multipleOf",
+  "8" = "a bound, step or enum entry the door cannot hold",
+  "9" = "an enum entry that is not UTF-8", "11" = "a malformed constraints layout"
 )
 
 constraint_args <- c(minimum = "minimum", exclusiveMinimum = "exclusive_minimum",
                      maximum = "maximum", exclusiveMaximum = "exclusive_maximum",
                      multipleOf = "multiple_of", rounding = "rounding", minLength = "min_length",
-                     maxLength = "max_length", trim = "trim", enum = "enum")
+                     maxLength = "max_length", trim = "trim",
+                     caseSensitive = "case_sensitive", enum = "enum")
 
 # A corpus row's declaration through the public constructor, its keywords as R arguments.
 constraints_of <- function(door, spec) {
@@ -455,9 +454,16 @@ expect_checked_value <- function(door, got, want, info) {
   )
 }
 
+# A row's value as the character column holds it: a value holding NUL is one no R string
+# holds, so NA there (raw = TRUE has its bytes).
+want_value <- function(row) {
+  if (row$door == "text" && grepl(nul_standin, row$value, fixed = TRUE)) NA_character_
+  else row$value
+}
+
 # Checks checked-verdict row i against corpus row `row`: the value, adjusted and enum index
-# on a success; the reason or the keyword, and the pinned span (re-expressed in characters
-# for "chars"), on a rejection.
+# on a success; the value as cast and the keyword on a violation; the reason on a fault; and
+# the pinned span (re-expressed in characters for "chars") on a rejection.
 expect_checked_row <- function(v, i, row, units, label) {
   input <- if (is.null(row$input)) "" else row$input
   info <- sprintf("%s [%s] %s %s", label, units, encodeString(input, quote = "\""),
@@ -467,13 +473,7 @@ expect_checked_row <- function(v, i, row, units, label) {
     testthat::expect_true(v$ok[[i]],
                           info = paste(info, "should pass; got", v$reason[[i]], v$keyword[[i]]))
     if (!isTRUE(v$ok[[i]])) return(invisible())
-    # A value holding NUL is one no R string holds: `ok` with NA. raw = TRUE has its bytes.
-    want <- if (row$door == "text" && grepl(nul_standin, row$value, fixed = TRUE)) {
-      NA_character_
-    } else {
-      row$value
-    }
-    expect_checked_value(row$door, v$value[[i]], want, info)
+    expect_checked_value(row$door, v$value[[i]], want_value(row), info)
     testthat::expect_identical(v$adjusted[[i]], row$adjusted, info = info)
     want_index <- if (is.null(row$enum_index)) NA_integer_ else as.integer(row$enum_index) + 1L
     testthat::expect_identical(v$enum_index[[i]], want_index, info = info)
@@ -482,15 +482,18 @@ expect_checked_row <- function(v, i, row, units, label) {
     return(invisible())
   }
   testthat::expect_false(v$ok[[i]], info = paste(info, "unexpectedly passed"))
-  testthat::expect_true(is.na(v$value[[i]]) && is.na(v$adjusted[[i]]) &&
-                          is.na(v$enum_index[[i]]), info = info)
+  testthat::expect_true(is.na(v$adjusted[[i]]) && is.na(v$enum_index[[i]]), info = info)
   if (row$expect == "violation") {
+    # The value as the door cast it, held to the corpus as a pass's is.
+    testthat::expect_false(is.null(row$value), info = paste(info, "pins no value"))
+    expect_checked_value(row$door, v$value[[i]], want_value(row), info)
     testthat::expect_true(is.na(v$reason[[i]]), info = info)
     testthat::expect_identical(v$keyword[[i]], row$keyword, info = info)
     # A violation carries no detail (the core writes 0).
     testthat::expect_null(row$detail, info = info)
     testthat::expect_true(is.na(v$detail[[i]]) && is.na(v$detail_code[[i]]), info = info)
   } else {
+    testthat::expect_true(is.na(v$value[[i]]), info = info)
     testthat::expect_identical(as.character(v$reason[[i]]), row$expect, info = info)
     testthat::expect_true(is.na(v$keyword[[i]]), info = info)
     expect_detail(v, i, row, info)
@@ -510,14 +513,15 @@ expect_checked_rows <- function(v, rows, units, label) {
   for (i in seq_along(rows)) expect_checked_row(v, i, rows[[i]], units, label)
 }
 
-# raw = TRUE is the same verdict with each value's exact bytes: the row's value, as UTF-8, or
-# NULL for a rejected row.
+# raw = TRUE is the same verdict with each value's exact bytes: the row's value, as UTF-8, a
+# violation's as cast included, or NULL for a fault.
 expect_raw_rows <- function(x, constraints, rows, label) {
   plain <- cast_text(x, constraints)
   v <- cast_text(x, constraints, raw = TRUE)
   testthat::expect_identical(v[names(v) != "value"], plain[names(plain) != "value"], info = label)
   for (i in seq_along(rows)) {
-    want <- if (rows[[i]]$expect == "ok") utf8_bytes(rows[[i]]$value)
+    want <- if (rows[[i]]$expect != "ok" && rows[[i]]$expect != "violation") NULL
+    else utf8_bytes(rows[[i]]$value)
     testthat::expect_identical(v$value[[i]], want, info = label)
   }
 }
@@ -542,7 +546,7 @@ test_that("constraints.json", {
           "no error"
         }, error = conditionMessage)
         want <- sprintf("Constraints refused (code %d): %s.", row$refusal,
-                        refusal_rules[[row$refusal]])
+                        refusal_rules[[as.character(row$refusal)]])
         expect_identical(message, want, info = paste(label, jsonlite::toJSON(row$constraints)))
       }
       next
@@ -596,7 +600,7 @@ test_that("constraints.json", {
   expect_true(all(kinds > 0L))
 })
 
-# Every bound, step and integer enum entry crosses through cast_declared_decimal, the one
+# Every bound, step and numeric enum entry crosses through cast_declared_decimal, the one
 # conversion; the internal accessor hands back the raw triple, scale included.
 test_that("declarations.json", {
   declared <- getFromNamespace("declared_decimal", "hypercast")

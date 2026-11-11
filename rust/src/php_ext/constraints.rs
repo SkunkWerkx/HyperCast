@@ -6,7 +6,7 @@
 //! A declaration is laid out exactly as the C ABI carries it, a `RawConstraints` with the packed
 //! `enum` list beside it, and judged by the core's own functions: `check_constraints` when a
 //! `Constraints` is built, and the `judge_*` functions the checked C exports call, on every
-//! cast. Bounds, steps and integer entries are converted by `declared_decimal`, the conversion
+//! cast. Bounds, steps and numeric entries are converted by `declared_decimal`, the conversion
 //! the C export `cast_declared_decimal` runs. No rule is restated here: every refusal and every
 //! violation is the core's.
 //!
@@ -17,6 +17,7 @@
 //! one whose properties were never written (`ReflectionClass::newInstanceWithoutConstructor`)
 //! is the engine's `Error` for the first property read, never a declaration of no rules.
 
+use std::convert::Infallible;
 use std::mem::MaybeUninit;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -60,6 +61,7 @@ const CONSTRAINTS: Declaration = Declaration {
         ("minLength", Type::NullableInt),
         ("maxLength", Type::NullableInt),
         ("trim", Type::Bool),
+        ("caseSensitive", Type::Bool),
         ("enum", Type::NullableArray),
     ],
     constants: &[("PACKED_BYTES", RawConstraints::SIZE as i64)],
@@ -81,6 +83,7 @@ const VIOLATION: Declaration = Declaration {
     name: "HyperCast\\Violation",
     properties: &[
         ("keyword", Type::ClassOrInt("HyperCast\\Keyword")),
+        ("value", Type::Mixed),
         ("offset", Type::Int),
         ("length", Type::Int),
     ],
@@ -157,6 +160,7 @@ pub(crate) fn register() -> ext_php_rs::error::Result<()> {
         .arg(Arg::new("minLength", int).allow_null().default("null"))
         .arg(Arg::new("maxLength", int).allow_null().default("null"))
         .arg(Arg::new("trim", DataType::Bool).default("false"))
+        .arg(Arg::new("caseSensitive", DataType::Bool).default("false"))
         .arg(Arg::new("enum", DataType::Array).allow_null().default("null"));
     register_class(
         &CONSTRAINTS,
@@ -192,6 +196,7 @@ pub(crate) fn register() -> ext_php_rs::error::Result<()> {
             (
                 FunctionBuilder::new("__construct", violation_construct)
                     .arg(Arg::new("keyword", DataType::object("HyperCast\\Keyword")))
+                    .arg(Arg::new("value", DataType::Mixed))
                     .arg(Arg::new("offset", int))
                     .arg(Arg::new("length", int)),
                 MethodFlags::Public,
@@ -263,7 +268,7 @@ fn argument(position: usize, name: &str, rest: &str) -> String {
     format!("HyperCast\\Constraints::__construct(): Argument #{} (${name}) {rest}", position + 1)
 }
 
-/// A bound, step or integer `enum` entry as the core converts it: an `int` or a `string`
+/// A bound, step or numeric `enum` entry as the core converts it: an `int` or a `string`
 /// through its text, a `Decimal` through its canonical text, each by `declared_decimal`.
 /// `None` for any other value, which the caller words.
 fn declared(value: &Zval) -> PhpResult<Option<Result<crate::Decimal, Refusal>>> {
@@ -302,17 +307,18 @@ struct Said<'a> {
     min_length: Option<&'a Zval>,
     max_length: Option<&'a Zval>,
     trim: bool,
+    case_sensitive: bool,
     entries: Option<&'a ZendHashTable>,
 }
 
 /// A declaration laid out as the C ABI carries it, and the core's values of its decimals and
-/// integer entries.
+/// numeric entries.
 struct Layout {
     door: crate::Door,
     raw: RawConstraints,
     packed: Vec<u8>,
     bounds: [Option<crate::Decimal>; 5],
-    integers: Vec<crate::Decimal>,
+    numbers: Vec<crate::Decimal>,
 }
 
 /// Why a declaration could not be laid out: the core refused one of its values (a bound, step
@@ -342,11 +348,11 @@ fn lay_out(said: &Said<'_>) -> PhpResult<Result<Layout, Unlaid>> {
             None => return Err(contract_violation()),
         };
         match *flag {
-            RawConstraints::HAS_MINIMUM | RawConstraints::HAS_EXCLUSIVE_MINIMUM => {
-                raw.lower = decimal;
-            }
-            RawConstraints::HAS_MULTIPLE_OF => raw.multiple_of = decimal,
-            _ => raw.upper = decimal,
+            RawConstraints::HAS_MINIMUM => raw.lower = decimal,
+            RawConstraints::HAS_EXCLUSIVE_MINIMUM => raw.exclusive_lower = decimal,
+            RawConstraints::HAS_MAXIMUM => raw.upper = decimal,
+            RawConstraints::HAS_EXCLUSIVE_MAXIMUM => raw.exclusive_upper = decimal,
+            _ => raw.multiple_of = decimal,
         }
         raw.flags |= flag;
         bounds[i] = Some(decimal);
@@ -371,13 +377,16 @@ fn lay_out(said: &Said<'_>) -> PhpResult<Result<Layout, Unlaid>> {
     if said.trim {
         raw.flags |= RawConstraints::TRIM;
     }
+    if said.case_sensitive {
+        raw.flags |= RawConstraints::CASE_SENSITIVE;
+    }
     if said.entries.is_some() {
-        // Declared, even with no entries: the core refuses an empty `enum` (12), never reads
-        // it as none.
+        // Declared, even with no entries: an empty `enum` is one no value matches, never
+        // none.
         raw.flags |= RawConstraints::HAS_ENUM;
     }
     let mut packed = Vec::new();
-    let mut integers = Vec::new();
+    let mut numbers = Vec::new();
     for (i, entry) in said.entries.into_iter().flat_map(ZendHashTable::values).enumerate() {
         // An element PHP holds by reference is the value it refers to.
         let entry = entry.dereference();
@@ -386,8 +395,16 @@ fn lay_out(said: &Said<'_>) -> PhpResult<Result<Layout, Unlaid>> {
             // little-endian u32 byte length, then the bytes, whatever they are (the core
             // refuses an entry that is not UTF-8).
             let Some(text) = entry.zend_str().filter(|_| entry.is_string()) else {
+                // A number is a valid entry that no string equals (JSON Schema's `enum` is
+                // exact equality across types): packed as an empty entry, which no input
+                // matches (empty input is the door's Empty fault), so every other entry keeps
+                // its index. Any int or Decimal will do; the core never reads it.
+                if declared(entry)?.is_some() {
+                    packed.extend_from_slice(&0u32.to_le_bytes());
+                    continue;
+                }
                 return Ok(Err(Unlaid::Entry(format!(
-                    "must hold only strings at HyperCast\\Door::Text; entry {i} is {}",
+                    "must hold only strings, or int or HyperCast\\Decimal entries, which never match, at HyperCast\\Door::Text; entry {i} is {}",
                     super::value_name(entry)
                 ))));
             };
@@ -411,19 +428,20 @@ fn lay_out(said: &Said<'_>) -> PhpResult<Result<Layout, Unlaid>> {
             packed.extend_from_slice(&decimal.lo.to_ne_bytes());
             packed.extend_from_slice(&decimal.hi.to_ne_bytes());
             packed.extend_from_slice(&[decimal.scale, u8::from(decimal.negative), 0, 0]);
-            integers.push(decimal);
+            numbers.push(decimal);
         }
     }
-    Ok(Ok(Layout { door, raw, packed, bounds, integers }))
+    Ok(Ok(Layout { door, raw, packed, bounds, numbers }))
 }
 
-/// The 72-byte layout, native-endian as the core reads it in place.
+/// The 104-byte layout, native-endian as the core reads it in place.
 fn layout_bytes(raw: &RawConstraints) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(RawConstraints::SIZE as usize);
     for word in [raw.size, raw.flags, raw.rounding, raw.min_length, raw.max_length, raw._reserved] {
         bytes.extend_from_slice(&word.to_ne_bytes());
     }
-    for decimal in [raw.lower, raw.upper, raw.multiple_of] {
+    for decimal in [raw.lower, raw.upper, raw.multiple_of, raw.exclusive_lower, raw.exclusive_upper]
+    {
         bytes.extend_from_slice(&decimal.lo.to_ne_bytes());
         bytes.extend_from_slice(&decimal.hi.to_ne_bytes());
         bytes.extend_from_slice(&[decimal.scale, u8::from(decimal.negative), 0, 0]);
@@ -436,7 +454,7 @@ fn layout_bytes(raw: &RawConstraints) -> Vec<u8> {
 /// out and judged by the core, then the properties written.
 fn constraints_new(ex: &mut ExecuteData) -> PhpResult<Zval> {
     let object = this(ex)?;
-    let Some(args) = frame_args(ex, 1, 11) else {
+    let Some(args) = frame_args(ex, 1, 12) else {
         return Err(pending("argument check"));
     };
     for arg in args.iter_mut() {
@@ -457,7 +475,8 @@ fn constraints_new(ex: &mut ExecuteData) -> PhpResult<Zval> {
         min_length: args.get(7),
         max_length: args.get(8),
         trim: args.get(9).and_then(Zval::bool).unwrap_or(false),
-        entries: args.get(10).and_then(Zval::array),
+        case_sensitive: args.get(10).and_then(Zval::bool).unwrap_or(false),
+        entries: args.get(11).and_then(Zval::array),
     };
     let layout = match lay_out(&said)? {
         Ok(layout) => layout,
@@ -470,14 +489,14 @@ fn constraints_new(ex: &mut ExecuteData) -> PhpResult<Zval> {
             ));
         }
         Err(Unlaid::Entry(rest)) => {
-            return Err(PhpException::new(argument(10, "enum", &rest), 0, ce::type_error()));
+            return Err(PhpException::new(argument(11, "enum", &rest), 0, ce::type_error()));
         }
     };
     crate::check_constraints(layout.door, &layout.raw, &layout.packed).map_err(refused)?;
 
     // The properties: the door, each decimal as the exact `Decimal` the core read, the
-    // rounding, the lengths, `trim`, and the `enum` entries as a list (the caller's own
-    // strings at the text door, `Decimal`s elsewhere), `null` for none.
+    // rounding, the lengths, `trim`, `caseSensitive`, and the `enum` entries as a list (the caller's own
+    // entries at the text door, `Decimal`s elsewhere), `null` for none.
     assign(Value::Constraints, object, "door", args[0].shallow_clone())?;
     for ((name, _), bound) in BOUNDS.iter().zip(layout.bounds) {
         let value = match bound {
@@ -493,6 +512,7 @@ fn constraints_new(ex: &mut ExecuteData) -> PhpResult<Zval> {
         assign(Value::Constraints, object, name, value)?;
     }
     assign(Value::Constraints, object, "trim", bool_zval(said.trim))?;
+    assign(Value::Constraints, object, "caseSensitive", bool_zval(said.case_sensitive))?;
     let mut list = ZendHashTable::new();
     if door == Door::Text {
         for entry in said.entries.into_iter().flat_map(ZendHashTable::values) {
@@ -501,7 +521,7 @@ fn constraints_new(ex: &mut ExecuteData) -> PhpResult<Zval> {
             list.push(entry.dereference().shallow_clone()).map_err(|_| pending("enum entry"))?;
         }
     } else {
-        for decimal in layout.integers {
+        for decimal in layout.numbers {
             list.push(decimal_value(decimal)?).map_err(|_| pending("enum entry"))?;
         }
     }
@@ -553,6 +573,7 @@ fn declaration(object: *mut zend_object) -> PhpResult<Declared> {
     let min_length = read("minLength")?;
     let max_length = read("maxLength")?;
     let trim = read("trim")?.bool().unwrap_or(false);
+    let case_sensitive = read("caseSensitive")?.bool().unwrap_or(false);
     let entries = read("enum")?;
     let said = Said {
         door,
@@ -567,6 +588,7 @@ fn declaration(object: *mut zend_object) -> PhpResult<Declared> {
         min_length: Some(&min_length),
         max_length: Some(&max_length),
         trim,
+        case_sensitive,
         entries: entries.array(),
     };
     let layout = match lay_out(&said)? {
@@ -609,15 +631,32 @@ fn refused_by_judge(layout: &Layout) -> PhpException {
 }
 
 /// Why a checked door refused: the plain door's fault, the detailed door's failure, or a
-/// violation of a declared rule (which carries no detail).
-enum Refused {
+/// violation of a declared rule (which carries no detail), carrying the value as `V`: `()` as
+/// the judges answer (they write a violation's value where they write a success's), a `Zval`
+/// once read.
+enum Refused<V> {
     Fault(Fault),
     Failure(Failure),
-    Violation(crate::Violation),
+    Violation(crate::Violation<V>),
 }
 
-impl From<Rejection> for Refused {
-    fn from(rejection: Rejection) -> Refused {
+impl<V> Refused<V> {
+    /// The same refusal, a violation's value presented by `f` (which runs for a violation
+    /// only).
+    fn present<U, X>(self, f: impl FnOnce(V) -> Result<U, X>) -> Result<Refused<U>, X> {
+        Ok(match self {
+            Refused::Fault(fault) => Refused::Fault(fault),
+            Refused::Failure(failure) => Refused::Failure(failure),
+            Refused::Violation(violation) => {
+                let crate::Violation { keyword, value, offset, len, .. } = violation;
+                Refused::Violation(crate::Violation::new(keyword, f(value)?, offset, len))
+            }
+        })
+    }
+}
+
+impl From<Rejection<()>> for Refused<()> {
+    fn from(rejection: Rejection<()>) -> Refused<()> {
         match rejection {
             Rejection::Fault(fault) => Refused::Fault(fault),
             Rejection::Violation(violation) => Refused::Violation(violation),
@@ -625,8 +664,8 @@ impl From<Rejection> for Refused {
     }
 }
 
-impl From<crate::detailed::Rejection> for Refused {
-    fn from(rejection: crate::detailed::Rejection) -> Refused {
+impl From<crate::detailed::Rejection<()>> for Refused<()> {
+    fn from(rejection: crate::detailed::Rejection<()>) -> Refused<()> {
         match rejection {
             crate::detailed::Rejection::Failure(failure) => Refused::Failure(failure),
             crate::detailed::Rejection::Violation(violation) => Refused::Violation(violation),
@@ -634,27 +673,39 @@ impl From<crate::detailed::Rejection> for Refused {
     }
 }
 
-/// What a checked judge answers: the value and what was reported beside it, or a rejection.
-type Judgement = Result<(Zval, CheckOutcome), Refused>;
+/// What a checked judge answers: the value and what was reported beside it, or a rejection,
+/// a violation carrying the value as the door cast it.
+type Judgement = Result<(Zval, CheckOutcome), Refused<Zval>>;
 
-/// Runs a numeric judge, which writes the value to the pointer it is handed.
+/// Runs a numeric judge, which writes the value to the pointer it is handed on a success and
+/// on a violation, and reads it back for either.
 ///
 /// # Safety
-/// `T` must be the type the judge writes on success.
-unsafe fn judged<T, E>(
+/// `T` must be the type the judge writes.
+unsafe fn judged<T, E: Into<Refused<()>>>(
     judge: impl FnOnce(*mut u8) -> Option<Result<CheckOutcome, E>>,
-) -> Option<Result<(T, CheckOutcome), E>> {
+) -> Option<Result<(T, CheckOutcome), Refused<T>>> {
     let mut out = MaybeUninit::<T>::uninit();
-    judge(out.as_mut_ptr().cast()).map(|judgement| {
+    judge(out.as_mut_ptr().cast()).map(|judgement| match judgement {
         // SAFETY: on success the judge wrote a `T`, per the function contract.
-        judgement.map(|outcome| (unsafe { out.assume_init() }, outcome))
+        Ok(outcome) => Ok((unsafe { out.assume_init() }, outcome)),
+        Err(rejection) => {
+            let refused: Refused<()> = rejection.into();
+            // SAFETY: on a violation the judge wrote a `T`, per the function contract, and the
+            // closure runs for a violation only.
+            match refused.present(|()| Ok::<T, Infallible>(unsafe { out.assume_init() })) {
+                Ok(refused) => Err(refused),
+                Err(never) => match never {},
+            }
+        }
     })
 }
 
 /// Judges at a numeric door through `judge`, which writes that door's own type, and presents
-/// the value as the plain door does: an `int` (u64 as its bit pattern), a `float` (an f32
-/// widened exactly) or a `Decimal`. `None` is a refused declaration.
-fn numeric<E: Into<Refused>>(
+/// the value (a success's, or a violation's as the door cast it) as the plain door does: an
+/// `int` (u64 as its bit pattern), a `float` (an f32 widened exactly) or a `Decimal`. `None`
+/// is a refused declaration.
+fn numeric<E: Into<Refused<()>>>(
     door: Door,
     judge: impl FnOnce(*mut u8) -> Option<Result<CheckOutcome, E>>,
 ) -> PhpResult<Option<Judgement>> {
@@ -663,7 +714,7 @@ fn numeric<E: Into<Refused>>(
             // SAFETY: the door judged is `door`, which writes this type.
             match unsafe { judged::<$ty, E>(judge) } {
                 None => Ok(None),
-                Some(Err(rejection)) => Ok(Some(Err(rejection.into()))),
+                Some(Err(rejection)) => Ok(Some(Err(rejection.present($present)?))),
                 Some(Ok((value, outcome))) => Ok(Some(Ok(($present(value)?, outcome)))),
             }
         }};
@@ -686,8 +737,8 @@ fn numeric<E: Into<Refused>>(
     }
 }
 
-/// A checked verdict: `Checked`, or the door's `Fault`, or a `Violation`, its span as the core
-/// reported it (bytes, as every fault's).
+/// A checked verdict: `Checked`, or the door's `Fault`, or a `Violation` carrying the value as
+/// the door cast it, its span as the core reported it (bytes, as every fault's).
 fn verdict(judgement: Judgement) -> PhpResult<Zval> {
     match judgement {
         Ok((value, outcome)) => build(
@@ -710,7 +761,12 @@ fn verdict(judgement: Judgement) -> PhpResult<Zval> {
             };
             build(
                 Value::Violation,
-                vec![keyword, int_zval(i64::from(broken.offset)), int_zval(i64::from(broken.len))],
+                vec![
+                    keyword,
+                    broken.value,
+                    int_zval(i64::from(broken.offset)),
+                    int_zval(i64::from(broken.len)),
+                ],
             )
         }
     }
@@ -745,7 +801,10 @@ pub(crate) fn checked_detailed(
 
 /// A detailed rejection as the detailed door reports it for `text`: its failure classified at
 /// its span, which the judges leave to the door.
-fn classified(rejection: crate::detailed::Rejection, text: &[u8]) -> crate::detailed::Rejection {
+fn classified(
+    rejection: crate::detailed::Rejection<()>,
+    text: &[u8],
+) -> crate::detailed::Rejection<()> {
     crate::detailed::classified(rejection, text)
 }
 
@@ -795,8 +854,21 @@ fn checked_text_as(text: &[u8], constraints: &Zval, detailed: bool) -> PhpResult
             .ok_or_else(|| refused_by_judge(&layout))?
             .map_err(Refused::from)
     };
+    // The judged text at a span the core reported (after `trim`): a violation's value, and a
+    // success's without an `enum` match.
+    let judged_text = |offset: u32, len: u32| -> PhpResult<Zval> {
+        let (offset, len) = (offset as usize, len as usize);
+        let span = text.get(offset..offset.saturating_add(len)).ok_or_else(contract_violation)?;
+        Ok(bytes_zval(span))
+    };
     let judgement = match judged {
-        Err(rejection) => Err(rejection),
+        Err(rejection) => {
+            let at = match &rejection {
+                Refused::Violation(broken) => (broken.offset, broken.len),
+                _ => (0, 0),
+            };
+            Err(rejection.present(|()| judged_text(at.0, at.1))?)
+        }
         Ok(outcome) => {
             let declared = outcome.enum_index.and_then(|index| {
                 entries
@@ -808,13 +880,7 @@ fn checked_text_as(text: &[u8], constraints: &Zval, detailed: bool) -> PhpResult
             let value = match (outcome.enum_index, declared) {
                 (Some(_), Some(entry)) => entry,
                 (Some(_), None) => return Err(contract_violation()),
-                (None, _) => {
-                    let (offset, len) = (outcome.span.0 as usize, outcome.span.1 as usize);
-                    let span = text
-                        .get(offset..offset.saturating_add(len))
-                        .ok_or_else(contract_violation)?;
-                    bytes_zval(span)
-                }
+                (None, _) => judged_text(outcome.span.0, outcome.span.1)?,
             };
             Ok((value, outcome))
         }
@@ -867,10 +933,10 @@ fn checked_new(ex: &mut ExecuteData) -> PhpResult<Zval> {
     Ok(Zval::new())
 }
 
-/// `new Violation($keyword, $offset, $length)` from PHP.
+/// `new Violation($keyword, $value, $offset, $length)` from PHP.
 fn violation_new(ex: &mut ExecuteData) -> PhpResult<Zval> {
     let object = this(ex)?;
-    let Some(args) = checked_args(ex, 3, 3) else {
+    let Some(args) = checked_args(ex, 4, 4) else {
         return Err(pending("argument check"));
     };
     for ((name, _), mut arg) in VIOLATION.properties.iter().zip(args) {

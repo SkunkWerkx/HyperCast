@@ -40,8 +40,9 @@ import java.util.UUID;
  * grouping policy, and the count check in {@link Library} fails its load.
  *
  * <p>A verdict comes back through the thread's {@link Scratch}: the value as two
- * {@code long}s in {@code out[0..2]} on success, the fault's span in {@code out[2..4]} on a
- * fault, from a checked door its check in {@code out[4..7]}, and a fault's detail code in
+ * {@code long}s in {@code out[0..2]} on success (and from a checked door on a violation, the
+ * value as cast), the fault's span in {@code out[2..4]} on a fault or a violation, from a
+ * checked door its check in {@code out[4..7]}, and a fault's detail code in
  * {@code out[7]} (java/jni/src/lib.rs's {@code Words} and {@code check_words} have each
  * encoding, and the readers below are their other half). A checked door's {@code enum} list crosses as the direct buffer its
  * {@link Constraints} holds, so it is neither pinned nor copied. A {@code byte[]} crosses pinned for the core call alone when it
@@ -209,8 +210,8 @@ final class NativeCore {
      * locking.
      */
     static final class Scratch {
-        // out[0..2] the value, out[2..4] a fault's span, out[4..7] a checked door's check, out[7]
-        // a fault's detail code.
+        // out[0..2] the value (a checked door's on a violation too), out[2..4] a fault's span,
+        // out[4..7] a checked door's check, out[7] a fault's detail code.
         final long[] out = new long[8];
         private final byte[] format = new byte[FORMAT_BYTES];
         private NumFormat formatKey;

@@ -275,10 +275,10 @@ func ExampleCheckString() {
 			fmt.Printf("%s, entry %d\n", checked.Value, checked.EnumIndex)
 		case *hypercast.Fault:
 			fmt.Printf("%s at byte %d\n", r.Reason, r.Offset)
-		case *hypercast.Violation:
+		case *hypercast.Violation[string]:
 			switch r.Keyword {
 			case hypercast.KeywordEnum:
-				fmt.Printf("not a sex code: bytes %d+%d\n", r.Offset, r.Length)
+				fmt.Printf("not a sex code: %q, bytes %d+%d\n", r.Value, r.Offset, r.Length)
 			default: // keywords are open
 				fmt.Println("breaks", r.Keyword)
 			}
@@ -287,14 +287,14 @@ func ExampleCheckString() {
 	// Output:
 	// Male, entry 1
 	// empty at byte 0
-	// not a sex code: bytes 0+5
+	// not a sex code: "Femal", bytes 0+5
 }
 
 func ExampleNewConstraints() {
 	// A declaration read at run time: a refusal is an error, worded from the rule it broke.
-	_, err := hypercast.NewConstraints[uint8](hypercast.Minimum(-1))
+	_, err := hypercast.NewConstraints[float64](hypercast.MultipleOf("-0.05"))
 	fmt.Println(err)
-	// Output: hypercast: Constraints refused (code 8): a bound, step or enum entry the door cannot hold.
+	// Output: hypercast: Constraints refused (code 5): multipleOf is not positive.
 }
 
 func ExampleString() {

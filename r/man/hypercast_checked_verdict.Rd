@@ -16,8 +16,8 @@ violations(x)
 \item{...}{Passed on to the data frame's print method.}
 }
 \value{
-\code{violations()} returns a data frame with columns \code{row}, \code{keyword}, \code{offset} and
-\code{length}, one row per violated element. \code{print()} returns \code{x} invisibly.
+\code{violations()} returns a data frame with columns \code{row}, \code{keyword}, \code{value}, \code{offset}
+and \code{length}, one row per violated element. \code{print()} returns \code{x} invisibly.
 }
 \description{
 Every checked door (\code{\link[=cast_checked]{cast_checked()}}, \code{\link[=cast_checked_from_double]{cast_checked_from_double()}}, and \code{\link[=cast_text]{cast_text()}}
@@ -26,12 +26,14 @@ element of its input, in order. A checked verdict has two outcomes besides missi
 value passed, or it was rejected, and a rejection is either a fault (it did not parse:
 the same reasons a \link{hypercast_verdict} has) or a violation (it parsed and broke a declared
 rule, named by its keyword). A violation is never a fifth reason: \code{reason} stays \code{NA} and
-\code{keyword} names the rule.
+\code{keyword} names the rule. A fault means the input is not the door's type, so it has no value;
+a violation is a value of the type, and carries it, exactly as the door cast it (never
+rounded: \code{multiple_of}'s rounding is part of the judgement), in the column a pass uses.
 }
 \details{
 \tabular{lllll}{
    Column \tab Passed (\code{ok} \code{TRUE}) \tab Fault (\code{ok} \code{FALSE}) \tab Violation (\code{ok} \code{FALSE}) \tab Missing \cr
-   \code{value} \tab the value, in the door's R type \tab \code{NA} \tab \code{NA} \tab \code{NA} \cr
+   \code{value} \tab the value, in the door's R type \tab \code{NA} \tab the value as cast \tab \code{NA} \cr
    \code{adjusted} \tab \code{TRUE} when rounding changed the value \tab \code{NA} \tab \code{NA} \tab \code{NA} \cr
    \code{enum_index} \tab the matched text \code{enum} entry, from 1; else \code{NA} \tab \code{NA} \tab \code{NA} \tab \code{NA} \cr
    \code{ok} \tab \code{TRUE} \tab \code{FALSE} \tab \code{FALSE} \tab \code{NA} \cr
@@ -48,11 +50,11 @@ rule, named by its keyword). A violation is never a fifth reason: \code{reason} 
 and a code this version does not know reads as \code{"keyword N"}: code that branches on it
 (\code{switch()}) needs a default. Spans count in the same units as a \link{hypercast_verdict}'s;
 a violation spans the whole value (after trimming, for text), and a typed door's spans are
-empty. An integer \code{enum} gives no index: the value is the answer.
+empty. A numeric \code{enum} gives no index: the value is the answer.
 
 \code{is_ok()} is the \code{ok} column, \code{faults()} the faulted rows (\code{row}, \code{reason}, \code{offset},
 \code{length}, \code{detail}, \code{detail_code}), \code{violations()} the violated rows (\code{row}, \code{keyword},
-\code{offset}, \code{length}), and
+\code{value}, \code{offset}, \code{length}), and
 \code{\link[=optional]{optional()}} turns \code{empty} faults into missing rows. A checked verdict is a data frame of
 its own class, so binding it with a plain verdict is a binding of different columns.
 }

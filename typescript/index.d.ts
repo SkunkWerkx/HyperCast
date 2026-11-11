@@ -133,7 +133,7 @@ export declare const Detail: {
   readonly Unknown: 'unknown'
 }
 /** A rule a violation names, in the OpenAPI spelling; open, so a switch needs a default arm. */
-export type Keyword = Violation['keyword']
+export type Keyword = Violation<unknown>['keyword']
 /** The eight keywords by name. A code this binding does not name yet arrives as "keyword N". */
 export declare const Keyword: {
   readonly Minimum: 'minimum'

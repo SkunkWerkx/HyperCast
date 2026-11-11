@@ -214,6 +214,9 @@ function wellFormed(name: string, args: unknown[], verdict: unknown): void {
     }
   } else {
     assert.equal(typeof (v.violation as { keyword: unknown }).keyword, 'string', ctx)
+    // A violation carries the value the door cast, never nothing.
+    assert.ok('value' in (v.violation as object), ctx)
+    assert.notEqual((v.violation as { value: unknown }).value, undefined, ctx)
   }
   assert.ok(Number.isInteger(fault.offset) && (fault.offset as number) >= 0, ctx)
   assert.ok(Number.isInteger(fault.length) && (fault.length as number) >= 0, ctx)
@@ -273,6 +276,7 @@ test('the declarations never throw either', () => {
     'rounding',
     'maxLength',
     'trim',
+    'caseSensitive',
     'enum',
     'grouping',
     'flags',

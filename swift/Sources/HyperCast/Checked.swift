@@ -36,7 +36,8 @@ public struct Keyword: RawRepresentable, Hashable, Sendable, CustomStringConvert
     public static let maximum = Keyword(code: 3)
     /// `exclusiveMaximum`: the value is at or above it.
     public static let exclusiveMaximum = Keyword(code: 4)
-    /// `multipleOf`: the value is not a multiple, under ``Rounding/strict``.
+    /// `multipleOf`: the value is not a multiple, under ``Rounding/strict``, or its rounding
+    /// lands past what the door's type holds.
     public static let multipleOf = Keyword(code: 5)
     /// `minLength`: the text has fewer code points.
     public static let minLength = Keyword(code: 6)
@@ -66,12 +67,20 @@ public struct Keyword: RawRepresentable, Hashable, Sendable, CustomStringConvert
     public var description: String { name }
 }
 
-/// A value that parsed and broke a declared rule: the ``Keyword`` and the value's span, in the
-/// same UTF-8 byte units as a ``Fault``'s. A from-double door has no text to point into, so
-/// its span is empty.
-public struct Violation: Equatable, Sendable {
+/// A value of the door's type that broke a declared rule: the ``Keyword``, the value exactly as
+/// the door cast it, and the value's span, in the same UTF-8 byte units as a ``Fault``'s.
+///
+/// The input was first cast to the type (a ``Fault`` when it is not one), then judged by the
+/// declaration: a violation is the second step failing, so it carries what the first step
+/// made. The ``value`` is never rounded — a declared ``Rounding`` is part of the judgement,
+/// not of the value — and at the text door it is the judged text (trimmed when `trim` says
+/// so), never an `enum` entry. A from-double door has no text to point into, so its span is
+/// empty.
+public struct Violation<T> {
     /// The rule the value broke.
     public let keyword: Keyword
+    /// The value as the door cast it, before any rounding.
+    public let value: T
     /// Where the value starts, in UTF-8 bytes from the start of the input.
     public let offset: Int
     /// How many UTF-8 bytes the value covers.
@@ -79,23 +88,30 @@ public struct Violation: Equatable, Sendable {
 
     /// Builds a violation from its parts — what a test asserting an expected verdict needs;
     /// the checked doors are what produce one otherwise.
-    public init(keyword: Keyword, offset: Int, length: Int) {
+    public init(keyword: Keyword, value: T, offset: Int, length: Int) {
         self.keyword = keyword
+        self.value = value
         self.offset = offset
         self.length = length
     }
 }
 
+extension Violation: Equatable where T: Equatable {}
+extension Violation: Sendable where T: Sendable {}
+
 /// Why a checked door gave no value: closed, exactly one of two. A ``Fault``, the very type
-/// every plain door returns (it did not parse), or a ``Violation`` (it parsed and broke a
-/// declared rule). A parse failure keeps its own closed lexicon, and a broken rule is a
-/// different type, not a fourth ``CastFailure``.
-public enum Rejection: Equatable, Sendable {
-    /// It did not parse: the plain door's own fault, unchanged.
+/// every plain door returns (the input is not the type), or a ``Violation`` (a value of the
+/// type that broke a declared rule, carrying that value). A parse failure keeps its own
+/// closed lexicon, and a broken rule is a different type, not a fourth ``CastFailure``.
+public enum Rejection<T> {
+    /// The input is not the type: the plain door's own fault, unchanged.
     case fault(Fault)
-    /// It parsed and broke a declared rule.
-    case violation(Violation)
+    /// A value of the type that broke a declared rule.
+    case violation(Violation<T>)
 }
+
+extension Rejection: Equatable where T: Equatable {}
+extension Rejection: Sendable where T: Sendable {}
 
 /// What a checked door delivers on success: the value, whether rounding changed it, and, at
 /// the text door with an `enum`, which entry it matched.
@@ -105,8 +121,8 @@ public struct Checked<T> {
     public let value: T
     /// `true` only when rounding changed the value.
     public let adjusted: Bool
-    /// At the text door, the index of the `enum` entry the value matched; `nil` otherwise. An
-    /// integer `enum` has no index: the value is the answer.
+    /// At the text door, the index of the `enum` entry the value matched; `nil` otherwise. A
+    /// numeric `enum` has no index: the value is the answer.
     public let enumIndex: Int?
 
     /// Builds a success from its parts — what a test asserting an expected verdict needs; the
@@ -129,7 +145,7 @@ extension Checked: Sendable where T: Sendable {}
 /// switch Cast.text(" MALE ", constraints: sex) {
 /// case .success(let checked): print(checked.value)  // Male, the declared entry
 /// case .rejection(.fault(let fault)): print("\(fault.reason) at byte \(fault.offset)")
-/// case .rejection(.violation(let violation)): print("breaks \(violation.keyword)")
+/// case .rejection(.violation(let violation)): print("'\(violation.value)' breaks \(violation.keyword)")
 /// }
 /// ```
 ///
@@ -137,8 +153,8 @@ extension Checked: Sendable where T: Sendable {}
 public enum CheckedVerdict<T> {
     /// The value, judged and found to keep every declared rule.
     case success(Checked<T>)
-    /// It did not parse, or it broke a declared rule.
-    case rejection(Rejection)
+    /// The input is not the type, or its value broke a declared rule.
+    case rejection(Rejection<T>)
 }
 
 extension CheckedVerdict: Equatable where T: Equatable {}
@@ -146,7 +162,9 @@ extension CheckedVerdict: Sendable where T: Sendable {}
 
 /// What a value that is not a multiple of the declared `multipleOf` becomes. Every mode but
 /// ``strict`` needs a `multipleOf`, and rounding happens on the exact decimal, before the
-/// bounds judge the result.
+/// bounds judge the result. A rounding that lands past what the door's type holds (`127` at
+/// the `Int8` door, `multipleOf: 5`, ``ceiling``) is a ``Keyword/multipleOf`` violation
+/// carrying the value as cast.
 public enum Rounding: Sendable, CaseIterable {
     /// Not a multiple is a ``Keyword/multipleOf`` violation. The default.
     case strict

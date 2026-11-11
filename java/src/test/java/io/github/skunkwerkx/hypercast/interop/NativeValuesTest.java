@@ -234,7 +234,7 @@ class NativeValuesTest {
         java.util.Map<String, Long> sizes = java.util.Map.of(
                 "HyperCastRawNumFormat", 92L,
                 "HyperCastRawDayPeriods", 40L,
-                "HyperCastRawConstraints", 72L,
+                "HyperCastRawConstraints", 104L,
                 "HyperCastRawCheck", 12L,
                 "HyperCastRawSpan", 8L);
         assertEquals(sizes.get("HyperCastRawNumFormat"), NativeValues.FORMAT_BYTES);

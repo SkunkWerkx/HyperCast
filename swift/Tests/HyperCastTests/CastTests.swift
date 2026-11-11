@@ -358,7 +358,7 @@ final class CastTests: XCTestCase {
             .rejection(.fault(Fault(reason: .malformed, offset: 0, length: 1))))
         XCTAssertEqual(
             Cast.optional(Cast.i32("101", format: .invariant, constraints: percent)),
-            .rejection(.violation(Violation(keyword: .maximum, offset: 0, length: 3))))
+            .rejection(.violation(Violation(keyword: .maximum, value: 101, offset: 0, length: 3))))
         XCTAssertNil(Cast.optional(Cast.text(" \t", constraints: Constraints<String>(trim: true))))
     }
 
@@ -905,10 +905,10 @@ final class CastTests: XCTestCase {
     // MARK: - validation constraints
 
     func testConstraintLayoutsAreTheHeadersOwn() {
-        // RawConstraints: a size word, flags, rounding, two lengths, a reserved word and three
-        // 16-byte decimals, 72 bytes, 8-aligned; RawCheck three u32s; RawSpan two. The header
+        // RawConstraints: a size word, flags, rounding, two lengths, a reserved word and five
+        // 16-byte decimals, 104 bytes, 8-aligned; RawCheck three u32s; RawSpan two. The header
         // carries each size as a *_SIZE constant, and rust/src/abi.rs pins the same.
-        XCTAssertEqual(MemoryLayout<Interop.RawConstraints>.size, 72)
+        XCTAssertEqual(MemoryLayout<Interop.RawConstraints>.size, 104)
         XCTAssertEqual(MemoryLayout<Interop.RawConstraints>.alignment, 8)
         XCTAssertEqual(MemoryLayout<Interop.RawConstraints>.size, Cast.headerRawConstraintsSize)
         XCTAssertEqual(Interop.rawConstraintsSize, Cast.headerRawConstraintsSize)
@@ -923,14 +923,14 @@ final class CastTests: XCTestCase {
             [
                 Declared.hasMinimum, Declared.hasExclusiveMinimum, Declared.hasMaximum, Declared.hasExclusiveMaximum,
                 Declared.hasMultipleOf, Declared.hasMinLength, Declared.hasMaxLength, Declared.trimFlag,
-                Declared.hasEnum,
+                Declared.hasEnum, Declared.caseSensitiveFlag,
             ], Cast.headerConstraintFlags)
     }
 
     func testConstraintsLayOutAsTheCoreReadsThem() {
         let latitude = Constraints<Double>(minimum: -90, maximum: 90, multipleOf: "0.000001", rounding: .midpoint)
         withUnsafeBytes(of: Interop.rawConstraints(latitude)) { bytes in
-            XCTAssertEqual(bytes.load(fromByteOffset: 0, as: UInt32.self), 72)
+            XCTAssertEqual(bytes.load(fromByteOffset: 0, as: UInt32.self), 104)
             XCTAssertEqual(bytes.load(fromByteOffset: 4, as: UInt32.self), 1 | 4 | 16)
             XCTAssertEqual(bytes.load(fromByteOffset: 8, as: UInt32.self), 1)
             XCTAssertEqual(bytes.load(fromByteOffset: 20, as: UInt32.self), 0)
@@ -951,6 +951,20 @@ final class CastTests: XCTestCase {
         }
         XCTAssertEqual(sex.minLength, 1)
         XCTAssertTrue(sex.trim)
+        XCTAssertFalse(sex.caseSensitive)
+        let unit = Constraints<String>(caseSensitive: true, enum: ["mm", "Mm"])
+        withUnsafeBytes(of: Interop.rawConstraints(unit)) { bytes in
+            XCTAssertEqual(bytes.load(fromByteOffset: 4, as: UInt32.self), 256 | 512)
+        }
+        XCTAssertTrue(unit.caseSensitive)
+        // The four bounds are four keywords in four fields: minimum at 24, maximum at 40,
+        // exclusiveMinimum at 72, exclusiveMaximum at 88, all declarable together.
+        let all = Constraints<Int32>(minimum: 1, exclusiveMinimum: 2, maximum: 4, exclusiveMaximum: 3)
+        withUnsafeBytes(of: Interop.rawConstraints(all)) { bytes in
+            XCTAssertEqual(bytes.load(fromByteOffset: 4, as: UInt32.self), 1 | 2 | 4 | 8)
+            XCTAssertEqual([24, 40, 72, 88].map { bytes[$0] }, [1, 4, 2, 3])
+        }
+        XCTAssertEqual([all.minimum, all.exclusiveMinimum, all.maximum, all.exclusiveMaximum], [1, 2, 4, 3])
         // An integer entry is the core's 16-byte decimal: 7 is lo 7, scale 0, not negative.
         let small = Constraints<Int32>(enum: [7, "-2"])
         let packed = Interop.packedEnum(small)
@@ -970,48 +984,69 @@ final class CastTests: XCTestCase {
             refusal { try Constraints<Decimal>.declare(multipleOf: ConstraintValue(Decimal(string: "1e-29")!)) }, 8)
         XCTAssertEqual(refusal { try Constraints<Decimal>.declare(multipleOf: "1e-29") }, 8)
         XCTAssertEqual(refusal { try Constraints<Decimal>.declare(maximum: ConstraintValue(Decimal.nan)) }, 8)
-        XCTAssertEqual(refusal { try Constraints<UInt8>.declare(minimum: -1) }, 8)
-        XCTAssertEqual(refusal { try Constraints<Int32>.declare(minLength: 1) }, 1)
-        // An empty enum is declared and refused; no enum is none.
-        XCTAssertEqual(refusal { try Constraints<Int32>.declare(enum: []) }, 12)
-        XCTAssertEqual(refusal { try Constraints<String>.declare(enum: []) }, 12)
-        XCTAssertEqual(refusal { try Constraints<Double>.declare(enum: []) }, 1)
-        XCTAssertEqual(refusal { try Constraints<String>.declare(enum: ["Male", ""]) }, 13)
-        XCTAssertEqual(refusal { try Constraints<String>.declare(trim: true, enum: [" Male "]) }, 13)
-        XCTAssertEqual(refusal { try Constraints<String>.declare(enum: [" Male "]) }, 0)
+        // Every valid OpenAPI declaration is accepted: a bound past the type's range, a keyword
+        // for the other type (ignored), an empty enum (nothing matches), an enum at a float door,
+        // empty or white-space entries, crossed bounds.
+        XCTAssertEqual(refusal { try Constraints<UInt8>.declare(minimum: -1) }, 0)
+        XCTAssertEqual(refusal { try Constraints<Int32>.declare(minLength: 1) }, 0)
+        XCTAssertEqual(refusal { try Constraints<String>.declare(minimum: 1) }, 0)
+        XCTAssertEqual(refusal { try Constraints<Int32>.declare(enum: []) }, 0)
+        XCTAssertEqual(refusal { try Constraints<String>.declare(enum: []) }, 0)
+        XCTAssertEqual(refusal { try Constraints<Double>.declare(enum: ["0.5"]) }, 0)
+        XCTAssertEqual(refusal { try Constraints<String>.declare(enum: ["Male", ""]) }, 0)
+        XCTAssertEqual(refusal { try Constraints<String>.declare(trim: true, enum: [" Male "]) }, 0)
+        XCTAssertEqual(refusal { try Constraints<Int32>.declare(minimum: 10, maximum: 1) }, 0)
+        // What remains refused: trim or caseSensitive at a numeric door.
+        XCTAssertEqual(refusal { try Constraints<Int32>.declare(trim: true) }, 1)
+        XCTAssertEqual(refusal { try Constraints<Double>.declare(caseSensitive: true) }, 1)
     }
 
     func testEveryRefusalHasOneMessage() {
-        let rules = [
-            "a constraint the door does not take", "minimum together with exclusiveMinimum",
-            "maximum together with exclusiveMaximum", "the lower bound is not below the upper bound",
-            "multipleOf is not positive", "a rounding without multipleOf", "minLength is above maxLength",
-            "a bound, step or enum entry the door cannot hold", "an enum entry that is not UTF-8",
-            "a duplicate enum entry", "a malformed constraints layout", "an enum with no entries",
-            "a text enum entry no input can match",
+        let rules: [Int32: String] = [
+            1: "a constraint the door does not take", 5: "multipleOf is not positive",
+            6: "a rounding without multipleOf", 8: "a bound, step or enum entry the door cannot hold",
+            9: "an enum entry that is not UTF-8", 11: "a malformed constraints layout",
         ]
-        for (index, rule) in rules.enumerated() {
-            XCTAssertEqual(
-                Constraints<Int32>.refusalMessage(Int32(index + 1)), "Constraints refused (code \(index + 1)): \(rule)."
-            )
+        for (code, rule) in rules {
+            XCTAssertEqual(Constraints<Int32>.refusalMessage(code), "Constraints refused (code \(code)): \(rule).")
         }
-        XCTAssertEqual(
-            Constraints<Int32>.refusalMessage(14), "Constraints refused (code 14): a rule this binding does not name.")
+        // The retired codes (2, 3, 4, 7, 10, 12, 13) are never returned, and named by none.
+        for code: Int32 in [2, 3, 4, 7, 10, 12, 13, 14] {
+            XCTAssertEqual(
+                Constraints<Int32>.refusalMessage(code),
+                "Constraints refused (code \(code)): a rule this binding does not name.")
+        }
         do {
-            _ = try Constraints<UInt8>.declare(minimum: -1)
-            XCTFail("u8 took a negative minimum")
+            _ = try Constraints<Decimal>.declare(multipleOf: "1e-29")
+            XCTFail("a step past 28 places was declared")
         } catch {
             XCTAssertEqual(
                 error.message, "Constraints refused (code 8): a bound, step or enum entry the door cannot hold.")
         }
     }
 
-    func testTheBindingRefusesWhatTheCoreCannotBeHanded() {
-        // Nothing the core sees: a number among text entries, a length no u32 holds, a type
-        // with no door. Each is a caller bug, trapped by the public initializer.
+    /// JSON Schema's `enum` is exact equality across types: a number is a valid text entry that
+    /// no string equals, so `"7"` never matches it, and the entries after it keep their indexes.
+    func testANumberInATextEnumNeverMatches() throws {
+        let codes = try Constraints<String>.declare(enum: [
+            7, "Male", ConstraintValue(Decimal(string: "2.5")!), "Female",
+        ])
         XCTAssertEqual(
-            message { try Constraints<String>.declare(enum: ["Male", 7]) },
-            "Text enum entries are strings; entry 1 is the number 7.")
+            Cast.text("7", constraints: codes),
+            .rejection(.violation(Violation(keyword: .enum, value: "7", offset: 0, length: 1))))
+        XCTAssertEqual(
+            Cast.text("2.5", constraints: codes),
+            .rejection(.violation(Violation(keyword: .enum, value: "2.5", offset: 0, length: 3))))
+        XCTAssertEqual(
+            Cast.text("male", constraints: codes), .success(Checked(value: "Male", adjusted: false, enumIndex: 1)))
+        XCTAssertEqual(
+            Cast.text("FEMALE", constraints: codes),
+            .success(Checked(value: "Female", adjusted: false, enumIndex: 3)))
+    }
+
+    func testTheBindingRefusesWhatTheCoreCannotBeHanded() {
+        // Nothing the core sees: a length no u32 holds, a type with no door. Each is a caller
+        // bug, trapped by the public initializer.
         XCTAssertEqual(
             message { try Constraints<String>.declare(minLength: -1) },
             "minLength must be from 0 to 4294967295; it is -1.")
@@ -1042,7 +1077,18 @@ final class CastTests: XCTestCase {
             Cast.text(" MALE ", constraints: sex), .success(Checked(value: "Male", adjusted: false, enumIndex: 1)))
         XCTAssertEqual(
             Cast.text("Femal", constraints: sex),
-            .rejection(.violation(Violation(keyword: .enum, offset: 0, length: 5))))
+            .rejection(.violation(Violation(keyword: .enum, value: "Femal", offset: 0, length: 5))))
+        // A violation carries the judged text, trimmed, never an entry.
+        XCTAssertEqual(
+            Cast.text("  Fem ", constraints: sex),
+            .rejection(.violation(Violation(keyword: .enum, value: "Fem", offset: 2, length: 3))))
+        // caseSensitive matches byte for byte.
+        let unit = Constraints<String>(caseSensitive: true, enum: ["mm", "Mm"])
+        XCTAssertEqual(
+            Cast.text("Mm", constraints: unit), .success(Checked(value: "Mm", adjusted: false, enumIndex: 1)))
+        XCTAssertEqual(
+            Cast.text("MM", constraints: unit),
+            .rejection(.violation(Violation(keyword: .enum, value: "MM", offset: 0, length: 2))))
         XCTAssertEqual(
             Cast.text("   ", constraints: sex), .rejection(.fault(Fault(reason: .empty, offset: 0, length: 0))))
         // Trimmed without an enum, the value is the trimmed span of the input.
@@ -1065,8 +1111,17 @@ final class CastTests: XCTestCase {
             .success(Checked(value: 45.123457, adjusted: true, enumIndex: nil)))
         XCTAssertEqual(
             Cast.f64("-90.5", format: .invariant, constraints: latitude),
-            .rejection(.violation(Violation(keyword: .minimum, offset: 0, length: 5))))
-        // An integer enum has no index: the value is the answer.
+            .rejection(.violation(Violation(keyword: .minimum, value: -90.5, offset: 0, length: 5))))
+        // The value is the one cast, never the rounded one: 90.0000006 rounds to 90.000001.
+        XCTAssertEqual(
+            Cast.f64("90.0000006", format: .invariant, constraints: latitude),
+            .rejection(.violation(Violation(keyword: .maximum, value: 90.0000006, offset: 0, length: 10))))
+        // A rounding past what the type holds is a multipleOf violation carrying the value.
+        let fives = Constraints<Int8>(multipleOf: 5, rounding: .ceiling)
+        XCTAssertEqual(
+            Cast.i8("127", format: .invariant, constraints: fives),
+            .rejection(.violation(Violation(keyword: .multipleOf, value: 127, offset: 0, length: 3))))
+        // A numeric enum has no index: the value is the answer.
         let codes = Constraints<Int32>(enum: [10, 20])
         XCTAssertEqual(
             Cast.i32("20", format: .invariant, constraints: codes),
@@ -1075,7 +1130,16 @@ final class CastTests: XCTestCase {
         let arabic = NumFormat(decimalSeparator: ".", groupSeparator: ",", styles: .all, digitZero: "\u{0660}")
         XCTAssertEqual(
             Cast.decimal("١٢.٣٧", format: arabic, constraints: Constraints<Decimal>(multipleOf: "0.05")),
-            .rejection(.violation(Violation(keyword: .multipleOf, offset: 0, length: 9))))
+            .rejection(
+                .violation(Violation(keyword: .multipleOf, value: Decimal(string: "12.37")!, offset: 0, length: 9))))
+        // An enum at a float door compares decimals exactly.
+        let halves = Constraints<Double>(enum: ["0.5", "1.5"])
+        XCTAssertEqual(
+            Cast.f64("1.5", format: .invariant, constraints: halves),
+            .success(Checked(value: 1.5, adjusted: false, enumIndex: nil)))
+        XCTAssertEqual(
+            Cast.f64("1", format: .invariant, constraints: halves),
+            .rejection(.violation(Violation(keyword: .enum, value: 1, offset: 0, length: 1))))
     }
 
     private func refused<T>(_ body: () throws -> Constraints<T>) -> Constraints<T>.Refused? {

@@ -662,6 +662,7 @@ final class CorpusTests: XCTestCase {
                 multipleOf: value("multipleOf"), rounding: rounding,
                 minLength: declared["minLength"] as? Int, maxLength: declared["maxLength"] as? Int,
                 trim: declared["trim"] as? Bool ?? false,
+                caseSensitive: declared["caseSensitive"] as? Bool ?? false,
                 enum: (declared["enum"] as? [String]).map { $0.map { ConstraintValue($0) } })
         }
     }
@@ -727,6 +728,12 @@ final class CorpusTests: XCTestCase {
         case .rejection(.violation(let violation)):
             XCTAssertEqual(expect, "violation", "\(label): unexpectedly \(violation)", file: file, line: line)
             XCTAssertEqual(violation.keyword.name, vector["keyword"] as? String, label, file: file, line: line)
+            guard expect == "violation" else { return }
+            // The value as the door cast it, held to the corpus exactly as a success's is.
+            let want = expected(vector["value"]!)
+            XCTAssertTrue(
+                same(violation.value, want), "\(label): violation value \(violation.value) != \(want)", file: file,
+                line: line)
             XCTAssertEqual(violation.offset, span?[0], "\(label): offset", file: file, line: line)
             XCTAssertEqual(violation.length, span?[1], "\(label): length", file: file, line: line)
             XCTAssertNil(vector["detail"], "\(label): a violation names no detail", file: file, line: line)

@@ -147,8 +147,9 @@ final class CompatibilityTest {
                 && !adjusted
                 && index.isEmpty());
         CheckedVerdict<Integer> over = Cast.i32("70", NumFormat.INVARIANT, rule);
-        assertTrue(over instanceof Violation<Integer>(Keyword keyword, int offset, int length)
+        assertTrue(over instanceof Violation<Integer>(Keyword keyword, Integer value, int offset, int length)
                 && keyword.equals(Keyword.MAXIMUM)
+                && value == 70
                 && offset == 0
                 && length == 2);
         // Three arms, no default, over both levels of the sealed hierarchy.
@@ -164,7 +165,7 @@ final class CompatibilityTest {
             case Violation<Integer> v -> "violation";
         };
         assertEquals("violation", level);
-        assertEquals(new Violation<Integer>(Keyword.MAXIMUM, 0, 2), over);
+        assertEquals(new Violation<Integer>(Keyword.MAXIMUM, 70, 0, 2), over);
         assertEquals(new Checked<>(7, false, OptionalInt.empty()), ok);
     }
 
@@ -217,6 +218,12 @@ final class CompatibilityTest {
         assertEquals(List.of(Rejection.class), List.of(Violation.class.getInterfaces()));
         assertEquals(List.of(CheckedVerdict.class), List.of(Checked.class.getInterfaces()));
         assertEquals(3, Fault.class.getRecordComponents().length);
+        // A violation carries the value as cast, typed as the door's.
+        assertEquals(
+                List.of("io.github.skunkwerkx.hypercast.Keyword keyword", "T value", "int offset", "int length"),
+                java.util.Arrays.stream(Violation.class.getRecordComponents())
+                        .map(c -> c.getGenericType().getTypeName() + " " + c.getName())
+                        .toList());
         assertEquals(
                 List.of(1, 2, 3),
                 List.of(CastFailure.EMPTY.code(), CastFailure.MALFORMED.code(), CastFailure.OUT_OF_RANGE.code()));

@@ -112,10 +112,10 @@
                 var rendered = verdict switch
                 {
                     Checked<T> ok => $"{ok.Value}{(ok.Adjusted ? " adjusted" : "")}{(ok.EnumIndex is { } i ? $" #{i}" : "")}",
-                    Rejection rejection => rejection switch
+                    Rejection<T> rejection => rejection switch
                     {
                         Fault f => $"fault {f.Reason} @ {f.Offset}+{f.Length}",
-                        Violation v => $"violation {v.Keyword} @ {v.Offset}+{v.Length}",
+                        Violation<T> v => $"violation {v.Keyword} {v.Value} @ {v.Offset}+{v.Length}",
                     },
                 };
                 if (rendered == expected)
@@ -126,7 +126,7 @@
             var latitude = new Constraints<double>(minimum: -90, maximum: 90, multipleOf: 0.000001m, rounding: Rounding.Midpoint);
             Judged("checked f64", Cast.Double("45.1234567", NumFormat.Invariant, latitude), "45.123457 adjusted");
             Judged("checked from double", Cast.DoubleFromDouble(0.1 + 0.2, new Constraints<double>(multipleOf: "0.1")),
-                "violation multipleOf @ 0+0");
+                "violation multipleOf 0.30000000000000004 @ 0+0");
             Judged("checked text", Cast.Text(" MALE ", new Constraints<string>(trim: true, @enum: ["Female", "Male", "Other"])), "Male #1");
             Judged("text", Cast.Text("a\uD800"), "fault Malformed @ 1+1");
 

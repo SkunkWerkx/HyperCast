@@ -782,11 +782,12 @@ fn a_core_fault_on_a_pinned_input_still_releases() {
 
 // --- the validation constraints ---
 
-/// The 72-byte constraints layout as `NativeCore` packs it, in the platform's order: the
-/// five words, the reserved word, then the three decimals, each `{lo, hi, scale, sign}` and
+/// The 104-byte constraints layout as `NativeCore` packs it, in the platform's order: the
+/// five words, the reserved word, then the five decimals (`minimum`, `maximum`,
+/// `multipleOf`, `exclusiveMinimum`, `exclusiveMaximum`), each `{lo, hi, scale, sign}` and
 /// two bytes of padding.
-fn wire(raw: &RawConstraints) -> [u8; 72] {
-    let mut bytes = [0u8; 72];
+fn wire(raw: &RawConstraints) -> [u8; 104] {
+    let mut bytes = [0u8; 104];
     let words = [
         raw.size,
         raw.flags,
@@ -798,7 +799,13 @@ fn wire(raw: &RawConstraints) -> [u8; 72] {
     for (i, word) in words.iter().enumerate() {
         bytes[i * 4..i * 4 + 4].copy_from_slice(&word.to_ne_bytes());
     }
-    for (at, d) in [(24, raw.lower), (40, raw.upper), (56, raw.multiple_of)] {
+    for (at, d) in [
+        (24, raw.lower),
+        (40, raw.upper),
+        (56, raw.multiple_of),
+        (72, raw.exclusive_lower),
+        (88, raw.exclusive_upper),
+    ] {
         bytes[at..at + 16].copy_from_slice(&packed_decimal(d));
     }
     bytes
@@ -833,11 +840,13 @@ fn declared(flags: u32) -> RawConstraints {
         lower: whole(0, false),
         upper: whole(0, false),
         multiple_of: whole(0, false),
+        exclusive_lower: whole(0, false),
+        exclusive_upper: whole(0, false),
     }
 }
 
 /// `minimum: 10, multipleOf: 5` under `rounding`.
-fn ten_by_five(rounding: u32) -> [u8; 72] {
+fn ten_by_five(rounding: u32) -> [u8; 104] {
     let mut raw = declared(RawConstraints::HAS_MINIMUM | RawConstraints::HAS_MULTIPLE_OF);
     raw.lower = whole(10, false);
     raw.multiple_of = whole(5, false);
@@ -871,7 +880,7 @@ fn checked_out() -> [jlong; 8] {
 fn call_checked(
     door: u32,
     format: Option<&[u8; 92]>,
-    constraints: &[u8; 72],
+    constraints: &[u8; 104],
     entries: Option<&[u8]>,
     input: &[u8],
 ) -> (jint, [jlong; 8]) {
@@ -938,13 +947,47 @@ fn a_checked_door_writes_the_words_of_its_plain_door() {
 }
 
 #[test]
-fn a_violation_writes_its_span_and_its_keyword() {
+fn a_violation_writes_its_value_its_span_and_its_keyword() {
     let (rc, o) = call_checked(Door::I32.code(), None, &ten_by_five(0), None, b"12");
     assert_eq!(rc, 4);
-    assert_eq!(o[..4], [UNTOUCHED, UNTOUCHED, 0, 2]);
+    assert_eq!(o[..4], [12, 0, 0, 2]);
     assert_eq!(o[4..7], [5, 0, NO_ENTRY]);
+    assert_eq!(o[7], UNTOUCHED);
     let (rc, o) = call_checked(Door::I32.code(), None, &ten_by_five(0), None, b"5");
-    assert_eq!((rc, &o[2..7]), (4, &[0, 1, 1, 0, NO_ENTRY][..]));
+    assert_eq!((rc, &o[..7]), (4, &[5, 0, 0, 1, 1, 0, NO_ENTRY][..]));
+    // A rounding past what the type holds is a multipleOf violation carrying the value as
+    // parsed, never rounded.
+    let mut raw = declared(RawConstraints::HAS_MULTIPLE_OF);
+    raw.multiple_of = whole(5, false);
+    raw.rounding = 3;
+    let (rc, o) = call_checked(Door::I8.code(), None, &wire(&raw), None, b"127");
+    assert_eq!((rc, &o[..7]), (4, &[127, 0, 0, 3, 5, 0, NO_ENTRY][..]));
+}
+
+#[test]
+fn each_bound_crosses_in_its_own_slot() {
+    // minimum 0 and exclusiveMinimum 10 together, as OpenAPI allows: 5 meets the first and
+    // breaks the second, which only its own slot can say.
+    let mut raw = declared(
+        RawConstraints::HAS_MINIMUM
+            | RawConstraints::HAS_EXCLUSIVE_MINIMUM
+            | RawConstraints::HAS_MAXIMUM
+            | RawConstraints::HAS_EXCLUSIVE_MAXIMUM,
+    );
+    raw.lower = whole(0, false);
+    raw.exclusive_lower = whole(10, false);
+    raw.upper = whole(100, false);
+    raw.exclusive_upper = whole(50, false);
+    let both = wire(&raw);
+    let door = Door::I32.code();
+    let (rc, o) = call_checked(door, None, &both, None, b"5");
+    assert_eq!((rc, o[0], o[4]), (4, 5, 2));
+    let (rc, o) = call_checked(door, None, &both, None, b"-1");
+    assert_eq!((rc, o[0], o[4]), (4, -1, 1));
+    let (rc, o) = call_checked(door, None, &both, None, b"50");
+    assert_eq!((rc, o[0], o[4]), (4, 50, 4));
+    let (rc, o) = call_checked(door, None, &both, None, b"49");
+    assert_eq!((rc, o[0]), (0, 49));
 }
 
 #[test]
@@ -995,7 +1038,23 @@ fn a_text_enum_crosses_as_a_direct_buffer_and_reports_its_index() {
         Some(&entries),
         b"Femal",
     );
-    assert_eq!((rc, &o[2..7]), (4, &[0, 5, 8, 0, NO_ENTRY][..]));
+    // A violation carries the judged text's span as its value.
+    assert_eq!((rc, &o[..7]), (4, &[0, 5, 0, 5, 8, 0, NO_ENTRY][..]));
+}
+
+#[test]
+fn a_case_sensitive_text_enum_matches_byte_for_byte() {
+    let folded = wire(&declared(RawConstraints::HAS_ENUM));
+    let exact = wire(&declared(
+        RawConstraints::HAS_ENUM | RawConstraints::CASE_SENSITIVE,
+    ));
+    let entries = text_entries(&["mm", "Mm"]);
+    let (rc, o) = call_checked(Door::Text.code(), None, &folded, Some(&entries), b"Mm");
+    assert_eq!((rc, o[6]), (0, 0));
+    let (rc, o) = call_checked(Door::Text.code(), None, &exact, Some(&entries), b"Mm");
+    assert_eq!((rc, o[6]), (0, 1));
+    let (rc, o) = call_checked(Door::Text.code(), None, &exact, Some(&entries), b"MM");
+    assert_eq!((rc, &o[..7]), (4, &[0, 2, 0, 2, 8, 0, NO_ENTRY][..]));
 }
 
 #[test]
@@ -1007,7 +1066,7 @@ fn an_integer_enum_crosses_in_native_order() {
     let (rc, o) = call_checked(Door::I32.code(), None, &listed, Some(&entries), b"-20");
     assert_eq!((rc, o[0], &o[4..7]), (0, -20, &[0, 0, NO_ENTRY][..]));
     let (rc, o) = call_checked(Door::I32.code(), None, &listed, Some(&entries), b"20");
-    assert_eq!((rc, o[4]), (4, 8));
+    assert_eq!((rc, o[0], o[4]), (4, 20, 8));
 }
 
 #[test]
@@ -1046,8 +1105,7 @@ fn an_enum_buffer_with_no_address_is_a_contract_violation_and_writes_nothing() {
 
 #[test]
 fn a_declaration_the_core_refuses_is_a_contract_violation_at_the_checked_door() {
-    let mut raw = declared(RawConstraints::HAS_MIN_LENGTH);
-    raw.min_length = 1;
+    let raw = declared(RawConstraints::TRIM);
     let (rc, o) = call_checked(Door::I32.code(), None, &wire(&raw), None, b"1");
     assert_eq!((rc, o), (-1, checked_out()));
 }
@@ -1133,7 +1191,14 @@ fn the_checked_door_over_a_double_writes_its_value_and_its_check() {
             o.as_mut_ptr().cast(),
         )
     };
-    assert_eq!((rc, &o[2..7]), (4, &[0, 0, 5, 0, NO_ENTRY][..]));
+    assert_eq!(
+        (rc, o[0], &o[2..7]),
+        (
+            4,
+            (0.1f64 + 0.2).to_bits() as jlong,
+            &[0, 0, 5, 0, NO_ENTRY][..]
+        )
+    );
 }
 
 #[test]
@@ -1150,21 +1215,41 @@ fn a_declaration_is_judged_by_the_core() {
         )
     };
     assert_eq!(check(Door::I32, &declared(0), None), 0);
+    // Every valid OpenAPI declaration is accepted: a bound outside the door's range,
+    // duplicate, empty or blank entries, an empty list, a keyword for another type.
     let mut raw = declared(RawConstraints::HAS_MINIMUM);
     raw.lower = whole(1, true);
-    assert_eq!(check(Door::U8, &raw, None), 8);
-    assert_eq!(check(Door::I8, &raw, None), 0);
+    assert_eq!(check(Door::U8, &raw, None), 0);
     let duplicates = text_entries(&["I", "i"]);
     let listed = declared(RawConstraints::HAS_ENUM);
-    assert_eq!(check(Door::Text, &listed, Some(&duplicates)), 10);
-    // A list is read only under HAS_ENUM: without it, malformed; with it and no entries, 12.
+    assert_eq!(check(Door::Text, &listed, Some(&duplicates)), 0);
+    assert_eq!(check(Door::Text, &listed, None), 0);
+    assert_eq!(check(Door::I32, &listed, Some(&[][..])), 0);
+    assert_eq!(check(Door::Text, &listed, Some(&text_entries(&[""]))), 0);
+    assert_eq!(check(Door::Text, &raw, None), 0);
+    // A list is read only under HAS_ENUM: without it, malformed.
     assert_eq!(check(Door::Text, &declared(0), Some(&duplicates)), 11);
-    assert_eq!(check(Door::Text, &listed, None), 12);
-    assert_eq!(check(Door::I32, &listed, Some(&[][..])), 12);
-    assert_eq!(check(Door::Text, &listed, Some(&text_entries(&[""]))), 13);
+    // The text door's extensions off it, and a rounding with a fractional step at an
+    // integer door.
+    assert_eq!(check(Door::I32, &declared(RawConstraints::TRIM), None), 1);
+    assert_eq!(
+        check(Door::F64, &declared(RawConstraints::CASE_SENSITIVE), None),
+        1
+    );
+    let mut halves = declared(RawConstraints::HAS_MULTIPLE_OF);
+    halves.multiple_of = Decimal {
+        lo: 5,
+        hi: 0,
+        scale: 1,
+        negative: false,
+    };
+    assert_eq!(check(Door::I32, &halves, None), 0);
+    halves.rounding = 1;
+    assert_eq!(check(Door::I32, &halves, None), 8);
     let mut malformed = declared(0);
     malformed.size = 71;
     assert_eq!(check(Door::I32, &malformed, None), 11);
+    assert_eq!(check(Door::Text, &declared(1024), None), 11);
 }
 
 #[test]
@@ -1632,7 +1717,7 @@ fn every_detailed_typed_door_writes_its_words_and_a_fault_has_no_span() {
 fn call_checked_detailed(
     door: u32,
     format: Option<&[u8; 92]>,
-    constraints: &[u8; 72],
+    constraints: &[u8; 104],
     input: &[u8],
 ) -> (jint, [jlong; 8]) {
     let mut stub = StubEnv::new();
@@ -1673,13 +1758,14 @@ fn a_checked_detailed_door_writes_the_value_the_span_the_check_and_the_detail() 
         (rc, o[2], o[3], &o[4..7], o[7]),
         (2, 1, 1, &[0, 0, NO_ENTRY][..], 2)
     );
-    // A violation spans the value, carries the keyword, and its detail is 0.
+    // A violation carries the value as cast, spans it, carries the keyword, and its detail
+    // is 0.
     let (rc, o) = call_checked_detailed(i32_door, Some(&f), &ten_by_five(0), b"12");
     assert_eq!(
-        (rc, o[2], o[3], &o[4..7], o[7]),
-        (4, 0, 2, &[5, 0, NO_ENTRY][..], 0)
+        (rc, &o[..4], &o[4..7], o[7]),
+        (4, &[12, 0, 0, 2][..], &[5, 0, NO_ENTRY][..], 0)
     );
-    with(|s| assert_eq!(s.long_writes, [(2, 2), (7, 1), (4, 3)]));
+    with(|s| assert_eq!(s.long_writes, [(2, 2), (7, 1), (0, 2), (4, 3)]));
 }
 
 #[test]
@@ -1756,5 +1842,5 @@ fn the_checked_detailed_door_over_a_double_writes_the_detail_of_a_fault() {
             o.as_mut_ptr().cast(),
         )
     };
-    assert_eq!((rc, o[2], o[3], o[7], o[4]), (4, 0, 0, 0, 1));
+    assert_eq!((rc, o[0], o[2], o[3], o[7], o[4]), (4, 7, 0, 0, 0, 1));
 }

@@ -141,7 +141,8 @@ write into buffers you already own; that is the same property the counting-alloc
 (`tests/allocation_free.rs`) asserts at runtime, stated here as a dependency fact rather than
 a benchmark result.
 
-Both halves are guarded in CI (`check-no-std`), not left to convention:
+Both halves are guarded in CI (`core-proofs`, on every pull request that builds the core), not
+left to convention:
 `cargo check --no-default-features --target thumbv7em-none-eabi` compiles the crate for a
 real Cortex-M target, a `default-features = false` consumer is built for the host and for
 `wasm32-unknown-unknown`, and the job additionally fails if `extern crate alloc` ever appears
@@ -155,9 +156,7 @@ shared library the loading bindings open (`cargo cdylib`, below) are all `#![no_
 bringing the abort-on-panic handler `std` would otherwise supply — which takes the linux-x64
 shared library from 425 KB to 160 KB with the same exports and the same code behind them
 (425,048 and 160,488 bytes, `cargo rustc --release --crate-type cdylib` against `cargo
-cdylib`, rustc 1.99.1 in `rust:latest`, at commit `0ee2caa` on 2026-10-25; the CI-built
-library 1.0 committed for PHP was 160,512 bytes, the difference being the C compiler's version
-string).
+cdylib`, rustc 1.99.1 in `rust:latest`, at commit `0ee2caa` on 2026-10-25).
 The shared library is not one of the manifest's crate types, so cargo never builds it for a
 consumer of the crate.
 
@@ -236,19 +235,23 @@ cast_char("U+D800"); // Err: OutOfRange, a surrogate
 
 ## Constraints: the checked doors
 
-A value that parses can still be wrong for the field it fills. Every integer, real, decimal
-and text door has a checked twin that judges the value against rules in the same call, in the
-OpenAPI vocabulary: `minimum`, `exclusiveMinimum`, `maximum`, `exclusiveMaximum` and
-`multipleOf` for numbers, an integer `enum` for the integer doors, and `minLength`,
-`maxLength`, `enum` and `trim` for text. A `Constraints` is built once for one door, and the
-core refuses a declaration that can't mean anything there (a `minimum` above the `maximum`, a
-text keyword on a number) with a `Refusal`, before any value is judged.
+Untrusted input is cast first and validated second. Every integer, real, decimal and text door
+has a checked twin that validates the cast value in the same call, in the OpenAPI 3.2 Schema
+Object's vocabulary: `minimum`, `exclusiveMinimum`, `maximum`, `exclusiveMaximum`,
+`multipleOf` and `enum` for numbers, `minLength`, `maxLength` and `enum` for text, with three
+extensions: a `Rounding` for `multipleOf`, `trim`, and `case_sensitive` for a text `enum`
+(folded by default). A `Constraints` is built once for one door. Every valid OpenAPI 3.2
+declaration builds, unsatisfiable ones included, and a keyword for another type is ignored;
+the core refuses only what the spec forbids or a door cannot hold (a `multipleOf` not above
+zero, a decimal past 28 digits, `trim` on a number) with a `Refusal`, before any value is
+judged.
 
-Bounds and steps are exact decimals, and a value is judged on its exact text, never on a
-float. `multipleOf` takes a `Rounding`: `Strict` rejects a value off the step, while
-`Midpoint` (ties to even), `Floor` and `Ceiling` round onto it and flag the result `adjusted`.
-A rejection is either the door's own `Fault`, unchanged, or a `Violation` naming the keyword
-and the span:
+Bounds, steps and numeric `enum` entries are exact decimals, and a value is judged on its
+exact text, never on a float. `multipleOf` takes a `Rounding`: `Strict` rejects a value off
+the step, while `Midpoint` (ties to even), `Floor` and `Ceiling` round onto it and flag the
+result `adjusted`. A rejection is either the door's own `Fault`, unchanged (the input is not
+the type), or a `Violation<T>` naming the keyword and the span and carrying the value exactly
+as the door cast it, never rounded:
 
 ```rust
 use hypercast::{
@@ -257,22 +260,27 @@ use hypercast::{
 };
 
 let degrees = |text| decimal_for_declaration(text).unwrap();
-let latitude = Constraints::<f64>::numeric(
+let longitude = Constraints::<f64>::numeric(
     NumericRules::new()
-        .minimum(degrees("-90"))
-        .maximum(degrees("90"))
+        .minimum(degrees("-180"))
+        .exclusive_maximum(degrees("180"))
         .multiple_of(degrees("0.000001"), Rounding::Midpoint),
     None,
 )?;
 let format = NumFormat::INVARIANT;
 
-let near = cast_checked("51.47784461", &format, &latitude).unwrap();
-assert_eq!((near.value, near.adjusted), (51.477845, true)); // rounded onto the step
+let near = cast_checked("-73.98571234", &format, &longitude).unwrap();
+assert_eq!((near.value, near.adjusted), (-73.985712, true)); // rounded onto the step
 
-match cast_checked("91.5", &format, &latitude) {
-    Err(Rejection::Violation(violation)) => assert_eq!(violation.keyword, Keyword::Maximum),
+// It casts, rounds to 180 and breaks the exclusive bound; the violation carries the cast value.
+match cast_checked("179.9999996", &format, &longitude) {
+    Err(Rejection::Violation(broken)) => {
+        assert_eq!((broken.keyword, broken.value), (Keyword::ExclusiveMaximum, 179.9999996));
+    }
     other => panic!("{other:?}"),
 }
+// It never casts: the door's own fault.
+assert!(matches!(cast_checked("W73.98", &format, &longitude), Err(Rejection::Fault(_))));
 
 let sexes = Constraints::text(TextRules::new().trim(true), Some(&["Female", "Male", "Other"]))?;
 let male = cast_text_checked(b" MALE ", &sexes).unwrap();
@@ -281,13 +289,14 @@ assert_eq!((male.value, male.enum_index), ("Male", Some(1))); // the declared sp
 
 `checked_from_f64` judges a number a parser already holds as a double, and
 `optional_checked` turns an `Empty` fault into `None` while every violation passes through.
+`Rejection::map` and `Violation::map` carry the value into an adapter's own type.
 
-A parser that carries declarations across its own C ABI, as HyperTabular does, holds them in
-that ABI's form: `Constraints::raw()` and the `enum` list packed beside it.
-`Constraints::from_raw` reads that form back for a door, refused exactly where
-`check_constraints` refuses, and `Constraints::pack_enum` packs a list declared in Rust into a
-caller's buffer without allocating, answering the length it needs so a short buffer can be
-grown and the call repeated:
+A parser that carries declarations across its own C ABI holds them in that ABI's form:
+`Constraints::raw()` and the `enum` list packed beside it. `Constraints::from_raw` reads that
+form back for a door, refused exactly where `check_constraints` refuses, and
+`Constraints::pack_enum` packs a list declared in Rust into a caller's buffer without
+allocating, answering the length it needs so a short buffer can be grown and the call
+repeated:
 
 ```rust
 use hypercast::{Constraints, Text, TextRules};
@@ -348,10 +357,8 @@ loop loads. The extension build still exports every `cast_*` symbol, but it also
 missing symbol. Nothing is broken; a plain `cargo cdylib` puts it back. Locally,
 the `cargo ruby-ext` and `cargo php-ext` aliases in `.cargo/config.toml` avoid it by building into
 `target/ruby/` and `target/php/`, and `python/.cargo/config.toml` does the same for maturin
-(`python/target/`). CI hits
-exactly this ordering — the forge's single per-platform job builds the PyO3 extension
-before it tests C# and Java — which is why both bindings' dev-loop staging yields whenever
-CI has already placed the library explicitly (`runtimes/<rid>/native/`,
+(`python/target/`). Both bindings' dev-loop staging
+yields whenever CI has already placed the library explicitly (`runtimes/<rid>/native/`,
 `src/main/resources/native/<rid>/`).
 
 ## Interop: building on HyperCast's C ABI
@@ -491,8 +498,9 @@ passes under `wasmtime` on `wasm32-wasip1`, in CI's `core-checks` on every pull 
 no clock, no randomness, no dependencies to stub. CI also builds the `wasm32-unknown-emscripten` staticlib the C# binding's
 browser-wasm packaging consumes on the same pull requests — `RUSTC_BOOTSTRAP=1 cargo wasm-staticlib`, which
 leaves Rust's standard library out of it (the `staticlib` feature supplies the panic handler in
-its place), so it can be linked into one Blazor app beside HyperUuid's. It is the one build
-that uses a nightly flag: `-Zbuild-std` rebuilds core and compiler_builtins from `rust-src` for
+its place), so it can be linked into one Blazor app beside HyperUuid's. It is one of the two
+builds that use an unstable feature on stable (the other is the Windows PHP extension, above):
+`-Zbuild-std` rebuilds core and compiler_builtins from `rust-src` for
 the plain wasm feature set both .NET 10 and .NET 11 load, without the prebuilt sysroot's legacy
 exception handling, and `RUSTC_BOOTSTRAP=1` lets stable cargo take it for that one command
 (`.cargo/config.toml` has the detail).

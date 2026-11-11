@@ -908,7 +908,7 @@ fn duration_value(ruby: &Ruby, span: core::Duration) -> Result<Value, Error> {
 // --- Validation constraints ----------------------------------------------------------------
 //
 // A declaration is the package's own `Constraints` Data: hypercast.rb validates its keywords,
-// converts its bounds, steps and integer entries through `declared_decimal` below (the
+// converts its bounds, steps and numeric entries through `declared_decimal` below (the
 // conversion `cast_declared_decimal` runs), and lays it out exactly as the C ABI carries it, a
 // `RawConstraints` with the packed `enum` list beside it — the same code on both backends. This
 // side judges that layout with the core's own functions: `check_constraints` for
@@ -940,7 +940,7 @@ fn binding_bug(ruby: &Ruby) -> Error {
     )
 }
 
-/// A `RawConstraints` from the 72 native-endian bytes `Constraints#packed` lays out, or `None`
+/// A `RawConstraints` from the 104 native-endian bytes `Constraints#packed` lays out, or `None`
 /// for any other length.
 fn raw_constraints(bytes: &[u8]) -> Option<core::RawConstraints> {
     let bytes: &[u8; core::RawConstraints::SIZE as usize] = bytes.try_into().ok()?;
@@ -966,6 +966,8 @@ fn raw_constraints(bytes: &[u8]) -> Option<core::RawConstraints> {
         lower: decimal(24),
         upper: decimal(40),
         multiple_of: decimal(56),
+        exclusive_lower: decimal(72),
+        exclusive_upper: decimal(88),
     })
 }
 
@@ -1013,8 +1015,9 @@ fn declaration(ruby: &Ruby, constraints: Value, text: bool) -> Result<Rc<Declara
     Ok(declared)
 }
 
-/// What a judge answers: `None` for a declaration the core refused.
-type Judgement = Option<Result<CheckOutcome, detailed::Rejection>>;
+/// What a judge answers: `None` for a declaration the core refused. The value itself (on a
+/// success and on a violation) is in the buffer the judge was handed.
+type Judgement = Option<Result<CheckOutcome, detailed::Rejection<()>>>;
 
 /// The success case: the package's own `Checked` Data.
 fn checked_value(ruby: &Ruby, value: Value, outcome: CheckOutcome) -> Result<Value, Error> {
@@ -1024,40 +1027,41 @@ fn checked_value(ruby: &Ruby, value: Value, outcome: CheckOutcome) -> Result<Val
     )
 }
 
-/// A rejection: the door's `Fault` with its detail, or a `Violation` of the keyword broken
-/// (which has none), each spanned over `text` (the UTF-8 the core read) as a fault is — or,
-/// with no text, as the core wrote it.
-fn rejected(
+/// A violation: the package's own `Violation` Data, the keyword broken and `value`, the value
+/// exactly as the door cast it, spanned over `text` (the UTF-8 the core read) as a fault is —
+/// or, with no text, as the core wrote it.
+fn violation(
     ruby: &Ruby,
     text: Option<RString>,
-    rejection: detailed::Rejection,
+    broken: core::Violation<()>,
+    value: Value,
 ) -> Result<Value, Error> {
-    match rejection {
-        detailed::Rejection::Failure(failed) => match text {
-            Some(text) => fault(ruby, text, failed),
-            None => typed_fault(ruby, failed),
-        },
-        detailed::Rejection::Violation(broken) => {
-            let (offset, length) = match text {
-                Some(text) => character_span(text, broken.offset, broken.len),
-                None => (i64::from(broken.offset), i64::from(broken.len)),
-            };
-            let cache = cached();
-            let keyword = data(
-                ruby.get_inner(cache.keyword_class),
-                [broken.keyword.code().into_value_with(ruby)],
-            )?;
-            data(
-                ruby.get_inner(cache.violation_class),
-                [keyword, offset.into_value_with(ruby), length.into_value_with(ruby)],
-            )
-        }
+    let (offset, length) = match text {
+        Some(text) => character_span(text, broken.offset, broken.len),
+        None => (i64::from(broken.offset), i64::from(broken.len)),
+    };
+    let cache = cached();
+    let keyword =
+        data(ruby.get_inner(cache.keyword_class), [broken.keyword.code().into_value_with(ruby)])?;
+    data(
+        ruby.get_inner(cache.violation_class),
+        [keyword, value, offset.into_value_with(ruby), length.into_value_with(ruby)],
+    )
+}
+
+/// A failure: the door's `Fault` with its detail, spanned over `text` as a fault is — or,
+/// with no text, as the core wrote it.
+fn failed(ruby: &Ruby, text: Option<RString>, failure: core::Failure) -> Result<Value, Error> {
+    match text {
+        Some(text) => fault(ruby, text, failure),
+        None => typed_fault(ruby, failure),
     }
 }
 
 /// Judges at a numeric door through `judge`, which writes that door's own type into the
-/// buffer it is handed, and presents the value as hypercast.rb's `Interop.decode` does: an
-/// Integer, a Float (an f32 widened losslessly) or the package's `Decimal`.
+/// buffer it is handed (on a success and on a violation), and presents the value as
+/// hypercast.rb's `Interop.decode` does: an Integer, a Float (an f32 widened losslessly) or
+/// the package's `Decimal` — the `Checked`'s value, or the `Violation`'s.
 fn numeric_verdict(
     ruby: &Ruby,
     door: core::Door,
@@ -1066,16 +1070,17 @@ fn numeric_verdict(
 ) -> Result<Value, Error> {
     // 16 bytes, 8-aligned: room for every numeric door's value, the decimal's included.
     let mut out = [0u64; 2];
-    let outcome = match judge(out.as_mut_ptr().cast()) {
+    let judged = match judge(out.as_mut_ptr().cast()) {
         None => return Err(binding_bug(ruby)),
-        Some(Err(rejection)) => return rejected(ruby, text, rejection),
-        Some(Ok(outcome)) => outcome,
+        Some(Err(detailed::Rejection::Failure(failure))) => return failed(ruby, text, failure),
+        Some(judged) => judged,
     };
     let at = out.as_ptr().cast::<u8>();
     macro_rules! read {
         ($ty:ty) => {
-            // SAFETY: the judge wrote this door's type at `at` on success; `out` holds 16
-            // bytes, enough for any of them, and the read is unaligned-safe.
+            // SAFETY: the judge wrote this door's type at `at` on a success and on a
+            // violation; `out` holds 16 bytes, enough for any of them, and the read is
+            // unaligned-safe.
             unsafe { std::ptr::read_unaligned(at.cast::<$ty>()) }.into_value_with(ruby)
         };
     }
@@ -1099,7 +1104,11 @@ fn numeric_verdict(
         }
         _ => return Err(binding_bug(ruby)),
     };
-    checked_value(ruby, value, outcome)
+    match judged {
+        Ok(outcome) => checked_value(ruby, value, outcome),
+        Err(detailed::Rejection::Violation(broken)) => violation(ruby, text, broken, value),
+        Err(detailed::Rejection::Failure(_)) => Err(binding_bug(ruby)),
+    }
 }
 
 /// The text door's value at the byte span the core judged valid — hypercast.rb's
@@ -1138,7 +1147,14 @@ fn text_door(ruby: &Ruby, args: &[Value]) -> Result<Value, Error> {
     let outcome =
         match with_bytes(text, |bytes| judge_text_detailed(bytes, &declared.raw, &entries)) {
             None => return Err(binding_bug(ruby)),
-            Some(Err(rejection)) => return rejected(ruby, Some(text), rejection),
+            Some(Err(detailed::Rejection::Failure(failure))) => {
+                return fault(ruby, text, failure);
+            }
+            // The violation's value is the judged text (after `trim`), at the span it carries.
+            Some(Err(detailed::Rejection::Violation(broken))) => {
+                let value = text_value(ruby, text, (broken.offset, broken.len))?;
+                return violation(ruby, Some(text), broken, value);
+            }
             Some(Ok(outcome)) => outcome,
         };
     let value = match outcome.enum_index {
@@ -1208,7 +1224,7 @@ fn constraints_check_door(ruby: &Ruby, args: &[Value]) -> Result<u32, Error> {
     Ok(judged.map_or_else(|refusal| refusal.code(), |()| 0))
 }
 
-/// `declared_decimal(text)`: the conversion every bound, step and integer entry crosses, the
+/// `declared_decimal(text)`: the conversion every bound, step and numeric entry crosses, the
 /// package's `Decimal`, or the ArgumentError a refused declaration raises (code 8), worded by
 /// the core's own `Refusal`.
 fn declared_decimal_door(ruby: &Ruby, text: RString) -> Result<Value, Error> {
