@@ -283,14 +283,13 @@ export declare function castCheckedFromNumber(value: number, constraints: Constr
 
 /**
  * Judges a declaration without building it, the way `Constraints.declare` does: `0` when every
- * rule holds, otherwise the code of the first rule it breaks (`1` a keyword the door does not
- * take, `2` minimum with exclusiveMinimum, `3` maximum with exclusiveMaximum, `4` a lower
- * bound not below the upper, `5` multipleOf not positive, `6` a rounding without multipleOf,
- * `7` minLength above maxLength, `8` a bound, step or entry the door cannot hold, `9` an entry
- * that is not UTF-8 (a lone surrogate), `10` a duplicate entry, `11` a rounding code the core
- * does not know, `12` an `enum` with no entries (`enum: []`; leaving `enum` out declares
- * none), `13` a text entry no input can match: an empty one, or under `trim` one with leading
- * or trailing white space). `-1` is a declaration this binding cannot read, whose wording
+ * rule holds, otherwise the code of the first rule it breaks (`1` an extension where it means
+ * nothing: `trim` or `caseSensitive` at a numeric door, a `rounding` with `multipleOf` at
+ * `Door.Text`; `5` multipleOf not positive; `6` a rounding without multipleOf; `8` a bound,
+ * step or entry the door cannot hold; `9` an entry that is not UTF-8, a lone surrogate
+ * included; `11` a malformed layout, a rounding code the core does not know among them).
+ * Every valid OpenAPI 3.2 declaration is `0`, unsatisfiable ones included (crossed bounds, an
+ * empty or duplicated `enum`). `-1` is a declaration this binding cannot read, whose wording
  * `Constraints.declare` gives.
  */
 export declare function castConstraintsCheck(spec: ConstraintsSpec): number
