@@ -997,8 +997,8 @@ template <class T> void constrained(const char *file, const Json &vector) {
       fail(file, vector, "a violation, expected otherwise");
     } else if (hc::name(violation->keyword) != vector.find("keyword")->text) {
       fail(file, vector, "wrong keyword");
-    } else if (const Json *value = vector.find("value");
-               value == nullptr || !same_checked_value(*value, violation->value)) {
+    } else if (const Json *want_value = vector.find("value");
+               want_value == nullptr || !same_checked_value(*want_value, violation->value)) {
       // The value as the door cast it, held to the vector as a success's is.
       fail(file, vector, "wrong violation value");
     }
