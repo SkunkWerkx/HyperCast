@@ -1067,6 +1067,8 @@ _Static_assert(offsetof(HyperCastRawConstraints, exclusive_maximum) == 88, "excl
 _Static_assert(sizeof(HyperCastRawCheck) == HyperCastRawCheck_SIZE, "RawCheck");
 _Static_assert(sizeof(HyperCastRawSpan) == HyperCastRawSpan_SIZE, "RawSpan");
 _Static_assert(sizeof(HyperCastDecimal) == 16, "Decimal");
+/* The sign byte last, at 13: put_decimal zeroes the two padding bytes after it. */
+_Static_assert(offsetof(HyperCastDecimal, negative) == 13, "Decimal negative");
 
 /* The core's door codes (rust/src/door.rs) for the doors a declaration binds to; 0 otherwise. */
 static uint32_t core_door(enum door door) {
@@ -1124,6 +1126,19 @@ struct declaration {
   uintptr_t enum_len;
   SEXP entries; /* the text door's entries as the caller declared them, or R_NilValue */
 };
+
+/*
+ * A decimal as the C ABI packs it, as the core's own packer does: lo, hi, the scale, the sign
+ * byte, then two zero bytes. Field by field, so the padding a struct copy carries never does.
+ */
+static void put_decimal(uint8_t *at, const HyperCastDecimal *v) {
+  memcpy(at + offsetof(HyperCastDecimal, lo), &v->lo, sizeof v->lo);
+  memcpy(at + offsetof(HyperCastDecimal, hi), &v->hi, sizeof v->hi);
+  at[offsetof(HyperCastDecimal, scale)] = v->scale;
+  at[offsetof(HyperCastDecimal, negative)] = v->negative ? 1 : 0;
+  at[14] = 0;
+  at[15] = 0;
+}
 
 /*
  * Element k of a bound, step or numeric enum list through cast_declared_decimal: a string's
@@ -1230,7 +1245,7 @@ static int32_t declaration_arg(SEXP layout, int native, struct declaration *d) {
     int32_t rc = declared_value(v, 0, native, &value);
     if (rc != 0)
       return rc;
-    memcpy((uint8_t *)r + VALUES[k].field, &value, sizeof value);
+    put_decimal((uint8_t *)r + VALUES[k].field, &value);
     r->flags |= VALUES[k].flag;
   }
   SEXP rounding = VECTOR_ELT(layout, L_ROUNDING);
@@ -1261,14 +1276,16 @@ static int32_t declaration_arg(SEXP layout, int native, struct declaration *d) {
     return 0;
   }
   R_xlen_t n = XLENGTH(e);
-  HyperCastDecimal *entries = (HyperCastDecimal *)R_alloc((size_t)n, sizeof *entries);
+  uint8_t *entries = (uint8_t *)R_alloc((size_t)n, sizeof(HyperCastDecimal));
   for (R_xlen_t k = 0; k < n; k++) {
-    int32_t rc = declared_value(e, k, native, &entries[k]);
+    HyperCastDecimal value;
+    int32_t rc = declared_value(e, k, native, &value);
     if (rc != 0)
       return rc;
+    put_decimal(entries + (size_t)k * sizeof value, &value);
   }
-  d->enum_ptr = (const uint8_t *)entries;
-  d->enum_len = (uintptr_t)n * sizeof *entries;
+  d->enum_ptr = entries;
+  d->enum_len = (uintptr_t)n * sizeof(HyperCastDecimal);
   return 0;
 }
 

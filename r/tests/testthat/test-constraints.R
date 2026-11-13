@@ -374,6 +374,18 @@ test_that("a declaration carries the bytes it crosses the C ABI as", {
   # carry equal bytes.
   expect_identical(hypercast_constraints("i32", maximum = "10")$packed,
                    hypercast_constraints("i32", maximum = 10L)$packed)
+
+  # Each decimal ends in two zero bytes, as the core packs one: no byte of either vector is
+  # left as memory had it.
+  every <- hypercast_constraints("decimal", minimum = "-1.5", exclusive_minimum = "-2",
+                                 maximum = "10", exclusive_maximum = "11", multiple_of = "0.5")
+  padding <- function(starts) as.vector(outer(c(14L, 15L), starts, `+`)) + 1L
+  expect_identical(every$packed[padding(24L + 16L * 0:4)], raw(10))
+  listed <- hypercast_constraints("decimal", enum = c("1", "-2.25", "3"))
+  expect_identical(length(listed$packed_enum), 48L)
+  expect_identical(listed$packed_enum[padding(16L * 0:2)], raw(6))
+  # The scale and the sign byte before them: 1 is scale 0, -2.25 scale 2 and negative.
+  expect_identical(c(listed$packed_enum[13:14], listed$packed_enum[29:30]), as.raw(c(0, 0, 2, 1)))
 })
 
 test_that("a declaration prints as the call that declares it", {
