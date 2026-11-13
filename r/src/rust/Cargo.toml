@@ -14,7 +14,7 @@ crate-type = ["staticlib"]
 # package builds offline from the published graph. `staticlib` is the core's no_std archive
 # feature: the 36 C exports and the panic handler, with no copy of Rust's standard library.
 [dependencies]
-hypercast = { version = "=1.0.0", default-features = false, features = ["staticlib"] }
+hypercast = { version = "=1.1.0", default-features = false, features = ["staticlib"] }
 
 [profile.release]
 lto = true

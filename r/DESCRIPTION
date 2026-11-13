@@ -1,7 +1,7 @@
 Package: hypercast
 Type: Package
 Title: Allocation-Free Casts of Scalars from Untrusted Text
-Version: 1.0.0
+Version: 1.1.0
 Authors@R: c(
     person("Brian", "Buvinghausen", email = "buvinghausen@gmail.com",
            role = c("aut", "cre")),

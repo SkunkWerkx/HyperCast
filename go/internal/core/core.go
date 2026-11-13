@@ -110520,7 +110520,7 @@ l1:
 	return v2
 }
 func fn162() int32 {
-	return i32(65536)
+	return i32(65792)
 }
 func (m *Module) fn163(v0, v1, v2 int32) int32 {
 	var v3, v4, v5 int32

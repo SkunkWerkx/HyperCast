@@ -56,7 +56,7 @@
 // header it is called from lacks what that header added, and a patch release adds nothing, so
 // core_is_compatible() ignores the patch.
 #define HYPERCAST_VERSION_MAJOR 1
-#define HYPERCAST_VERSION_MINOR 0
+#define HYPERCAST_VERSION_MINOR 1
 #define HYPERCAST_VERSION_PATCH 0
 #define HYPERCAST_VERSION                                                                          \
   ((HYPERCAST_VERSION_MAJOR << 16) | (HYPERCAST_VERSION_MINOR << 8) | HYPERCAST_VERSION_PATCH)
