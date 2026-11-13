@@ -2,9 +2,9 @@ package io.github.skunkwerkx.hypercast;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import io.github.skunkwerkx.hypercast.interop.NativeValues;
 import java.lang.foreign.Arena;
@@ -63,14 +63,12 @@ final class DetailedCastTest {
     void aStringDoorRebasesTheSpanAndKeepsTheDetail() {
         // Arabic-Indic digits are two UTF-8 bytes and one char each: the span is in chars.
         NumFormat arabic = NumFormat.INVARIANT.withDigitZero(0x0660);
-        DetailedFault<Integer> fault =
-                assertInstanceOf(DetailedFault.class, DetailedCast.i32("\u0661\u0662,\u0663\u0664", arabic));
+        DetailedFault<Integer> fault = faultOf(DetailedCast.i32("\u0661\u0662,\u0663\u0664", arabic));
         assertEquals(FaultDetail.GROUP_SIZE, fault.detail());
         assertEquals(2, fault.offset());
         assertEquals(3, fault.length());
-        DetailedFault<Integer> bytes = assertInstanceOf(
-                DetailedFault.class,
-                DetailedCast.i32("\u0661\u0662,\u0663\u0664".getBytes(StandardCharsets.UTF_8), arabic));
+        DetailedFault<Integer> bytes =
+                faultOf(DetailedCast.i32("\u0661\u0662,\u0663\u0664".getBytes(StandardCharsets.UTF_8), arabic));
         assertEquals(FaultDetail.GROUP_SIZE, bytes.detail());
         assertEquals(4, bytes.offset());
         assertEquals(5, bytes.length());
@@ -124,7 +122,7 @@ final class DetailedCastTest {
 
     @Test
     void theTextDoorNamesInvalidUtf8() {
-        DetailedFault<String> fault = assertInstanceOf(DetailedFault.class, DetailedCast.text("a\uD800b"));
+        DetailedFault<String> fault = faultOf(DetailedCast.text("a\uD800b"));
         assertEquals(CastFailure.MALFORMED, fault.reason());
         assertEquals(FaultDetail.INVALID_UTF8, fault.detail());
         assertEquals(1, fault.offset());
@@ -135,7 +133,7 @@ final class DetailedCastTest {
 
     @Test
     void aSupplementaryScalarIsTooLargeForAChar() {
-        DetailedFault<Character> fault = assertInstanceOf(DetailedFault.class, DetailedCast.character("  U+1F600 "));
+        DetailedFault<Character> fault = faultOf(DetailedCast.character("  U+1F600 "));
         assertEquals(CastFailure.OUT_OF_RANGE, fault.reason());
         assertEquals(FaultDetail.TOO_LARGE, fault.detail());
         assertEquals(2, fault.offset());
@@ -372,8 +370,8 @@ final class DetailedCastTest {
         assertEquals(
                 new DetailedSuccess<>(LocalDate.of(2026, 1, 7)),
                 DetailedCast.date("7.janv..26", DateOrder.DAY_MONTH_YEAR, pivot, french));
-        DetailedFault<LocalDate> fault = assertInstanceOf(
-                DetailedFault.class, DetailedCast.date("7.janv.26", DateOrder.DAY_MONTH_YEAR, pivot, french));
+        DetailedFault<LocalDate> fault =
+                faultOf(DetailedCast.date("7.janv.26", DateOrder.DAY_MONTH_YEAR, pivot, french));
         assertEquals(CastFailure.MALFORMED, fault.reason());
         assertEquals(FaultDetail.NOT_RECOGNIZED, fault.detail());
     }
@@ -395,6 +393,14 @@ final class DetailedCastTest {
                 NullPointerException.class,
                 () -> DetailedCast.date("1", DateOrder.YEAR_MONTH_DAY, DateOptions.NONE, null));
         assertThrows(IllegalArgumentException.class, () -> MonthNames.builder().build());
+    }
+
+    /** The fault a detailed door returned, at the door's own type; a success fails the test. */
+    private static <T> DetailedFault<T> faultOf(DetailedVerdict<T> verdict) {
+        if (verdict instanceof DetailedFault<T> fault) {
+            return fault;
+        }
+        return fail("expected a DetailedFault, got " + verdict);
     }
 
     private static MonthNames.Builder months(int upTo) {

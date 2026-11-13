@@ -135,7 +135,7 @@ final class CompatibilityTest {
         // The same input through the detailed path is equal as a plain fault, never as itself.
         DetailedFault<Integer> detailed = (DetailedFault<Integer>) DetailedCast.i32("4x", NumFormat.INVARIANT);
         assertEquals(fault, detailed.toFault());
-        assertFalse(fault.equals(detailed));
+        assertNotEquals(fault, detailed);
     }
 
     @Test
@@ -179,10 +179,11 @@ final class CompatibilityTest {
     @Test
     void numFormatIsNotSerializableAsIn10() throws Exception {
         assertFalse(java.io.Serializable.class.isAssignableFrom(NumFormat.class));
-        assertThrows(
-                java.io.NotSerializableException.class,
-                () -> new java.io.ObjectOutputStream(java.io.OutputStream.nullOutputStream())
-                        .writeObject(NumFormat.INVARIANT));
+        assertThrows(java.io.NotSerializableException.class, () -> {
+            try (var out = new java.io.ObjectOutputStream(java.io.OutputStream.nullOutputStream())) {
+                out.writeObject(NumFormat.INVARIANT);
+            }
+        });
     }
 
     /** Every public door of Cast has a detailed twin: same name, same parameters. */
