@@ -17,9 +17,9 @@ import Foundation
 // checksum before using it. Release staging (the Forge's stage-release action) writes the
 // three lines below for every release, from the zips the release then attaches; none resolves
 // before the first release that carries them.
-let coreRelease = "1.0.0"
-let coreChecksum = ""
-let appleCoreChecksum = ""
+let coreRelease = "1.1.0"
+let coreChecksum = "36947589e01cba905ec1e1782f2e1a8704cf03edd85c4c5f000f333c5b11ea29"
+let appleCoreChecksum = "a8622a414b5fd936133aaa49be72ffb6af731733c04ee2e711ccc45ea761f486"
 
 // In this repository, CI and .github/scripts/local-core.sh write the core into
 // swift/HyperCastCore.artifactbundle/ (gitignored), and then this file links that instead, the
