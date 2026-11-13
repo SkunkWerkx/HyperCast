@@ -109,6 +109,8 @@ public struct Constraints<T: CheckedCastTarget>: Sendable {
     let packed: [UInt8]
     /// At the text door, the declared entries, so a match hands back the caller's own string.
     let entries: [String]?
+    /// The `enum` as declared, for ``enum``.
+    let declaredEnum: [ConstraintValue]?
 
     /// Declares the constraints and has the native core judge them for `T`'s door.
     ///
@@ -164,11 +166,15 @@ public struct Constraints<T: CheckedCastTarget>: Sendable {
         }
     }
 
-    private init(door: UInt32, raw: Interop.RawConstraints, packed: [UInt8], entries: [String]?) {
+    private init(
+        door: UInt32, raw: Interop.RawConstraints, packed: [UInt8], entries: [String]?,
+        declaredEnum: [ConstraintValue]?
+    ) {
         self.door = door
         self.raw = raw
         self.packed = packed
         self.entries = entries
+        self.declaredEnum = declaredEnum
     }
 
     /// A declaration the binding or the core refused: the core's refusal code, or `nil` for a
@@ -247,7 +253,7 @@ public struct Constraints<T: CheckedCastTarget>: Sendable {
         }
         let code = Cast.checkConstraints(door: door, raw: raw, packed: packed)
         guard code == 0 else { throw Refused(code: code, message: refusalMessage(code)) }
-        return Self(door: door, raw: raw, packed: packed, entries: texts)
+        return Self(door: door, raw: raw, packed: packed, entries: texts, declaredEnum: entries)
     }
 
     /// The declared `minimum`, or `nil`.
@@ -275,6 +281,9 @@ public struct Constraints<T: CheckedCastTarget>: Sendable {
     public var trim: Bool { flags & Self.trimFlag != 0 }
     /// Whether a text `enum` matches byte for byte rather than under simple case folding.
     public var caseSensitive: Bool { flags & Self.caseSensitiveFlag != 0 }
+    /// The declared `enum`, each entry as it was passed, in order, duplicates kept; empty for an
+    /// empty `enum`, which every value violates, and `nil` when none is declared.
+    public var `enum`: [ConstraintValue]? { declaredEnum }
 
     /// The declared text entry at `index`, the caller's own string.
     func entry(_ index: UInt32) -> String {

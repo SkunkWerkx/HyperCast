@@ -651,11 +651,11 @@ unsafe fn resolve_constraints(constraints: *const RawConstraints) -> Option<RawC
     }
     let sign = offset_of!(Decimal, negative);
     for decimal in [
-        offset_of!(RawConstraints, lower),
-        offset_of!(RawConstraints, upper),
+        offset_of!(RawConstraints, minimum),
+        offset_of!(RawConstraints, maximum),
         offset_of!(RawConstraints, multiple_of),
-        offset_of!(RawConstraints, exclusive_lower),
-        offset_of!(RawConstraints, exclusive_upper),
+        offset_of!(RawConstraints, exclusive_minimum),
+        offset_of!(RawConstraints, exclusive_maximum),
     ] {
         // SAFETY: the caller built the whole layout, and the offset lies inside it.
         let byte = unsafe { constraints.cast::<u8>().add(decimal + sign).read() };

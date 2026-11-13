@@ -1691,19 +1691,19 @@ fn declaration(
     // Any code goes to the core as it is, which refuses one it does not know.
     raw.rounding = keywords.rounding;
     if let Some(value) = &keywords.minimum {
-        raw.lower = decimal!("minimum", value);
+        raw.minimum = decimal!("minimum", value);
         raw.flags |= core::RawConstraints::HAS_MINIMUM;
     }
     if let Some(value) = &keywords.exclusive_minimum {
-        raw.exclusive_lower = decimal!("exclusive_minimum", value);
+        raw.exclusive_minimum = decimal!("exclusive_minimum", value);
         raw.flags |= core::RawConstraints::HAS_EXCLUSIVE_MINIMUM;
     }
     if let Some(value) = &keywords.maximum {
-        raw.upper = decimal!("maximum", value);
+        raw.maximum = decimal!("maximum", value);
         raw.flags |= core::RawConstraints::HAS_MAXIMUM;
     }
     if let Some(value) = &keywords.exclusive_maximum {
-        raw.exclusive_upper = decimal!("exclusive_maximum", value);
+        raw.exclusive_maximum = decimal!("exclusive_maximum", value);
         raw.flags |= core::RawConstraints::HAS_EXCLUSIVE_MAXIMUM;
     }
     if let Some(value) = &keywords.multiple_of {
@@ -1826,9 +1826,13 @@ impl Constraints {
         {
             bytes.extend_from_slice(&word.to_ne_bytes());
         }
-        for decimal in
-            [raw.lower, raw.upper, raw.multiple_of, raw.exclusive_lower, raw.exclusive_upper]
-        {
+        for decimal in [
+            raw.minimum,
+            raw.maximum,
+            raw.multiple_of,
+            raw.exclusive_minimum,
+            raw.exclusive_maximum,
+        ] {
             bytes.extend_from_slice(&decimal.lo.to_ne_bytes());
             bytes.extend_from_slice(&decimal.hi.to_ne_bytes());
             bytes.extend_from_slice(&[decimal.scale, u8::from(decimal.negative), 0, 0]);
@@ -1889,25 +1893,25 @@ impl Constraints {
     /// The declared ``minimum``, or ``None``.
     #[getter]
     fn minimum(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        self.bound(py, core::RawConstraints::HAS_MINIMUM, self.raw.lower)
+        self.bound(py, core::RawConstraints::HAS_MINIMUM, self.raw.minimum)
     }
 
     /// The declared ``exclusive_minimum``, or ``None``.
     #[getter]
     fn exclusive_minimum(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        self.bound(py, core::RawConstraints::HAS_EXCLUSIVE_MINIMUM, self.raw.exclusive_lower)
+        self.bound(py, core::RawConstraints::HAS_EXCLUSIVE_MINIMUM, self.raw.exclusive_minimum)
     }
 
     /// The declared ``maximum``, or ``None``.
     #[getter]
     fn maximum(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        self.bound(py, core::RawConstraints::HAS_MAXIMUM, self.raw.upper)
+        self.bound(py, core::RawConstraints::HAS_MAXIMUM, self.raw.maximum)
     }
 
     /// The declared ``exclusive_maximum``, or ``None``.
     #[getter]
     fn exclusive_maximum(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        self.bound(py, core::RawConstraints::HAS_EXCLUSIVE_MAXIMUM, self.raw.exclusive_upper)
+        self.bound(py, core::RawConstraints::HAS_EXCLUSIVE_MAXIMUM, self.raw.exclusive_maximum)
     }
 
     /// The declared ``multiple_of``, or ``None``.

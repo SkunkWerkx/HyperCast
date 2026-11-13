@@ -59,8 +59,8 @@ class Decimal(ctypes.Structure):
 class Constraints(ctypes.Structure):
     _fields_ = [("size", ctypes.c_uint32), ("flags", ctypes.c_uint32), ("rounding", ctypes.c_uint32),
                 ("min_length", ctypes.c_uint32), ("max_length", ctypes.c_uint32), ("reserved", ctypes.c_uint32),
-                ("lower", Decimal), ("upper", Decimal), ("multiple_of", Decimal),
-                ("exclusive_lower", Decimal), ("exclusive_upper", Decimal)]
+                ("minimum", Decimal), ("maximum", Decimal), ("multiple_of", Decimal),
+                ("exclusive_minimum", Decimal), ("exclusive_maximum", Decimal)]
 
 
 class Check(ctypes.Structure):
@@ -356,9 +356,9 @@ check(typed("cast_excel_duration", 1e10)[0] == OUT_OF_RANGE, "cast_excel_duratio
 
 
 
-# The validation constraints, each keyword in a field of its own. HAS_MINIMUM 1 (`lower`),
-# HAS_EXCLUSIVE_MINIMUM 2 (`exclusive_lower`), HAS_MAXIMUM 4 (`upper`), HAS_EXCLUSIVE_MAXIMUM 8
-# (`exclusive_upper`), HAS_MULTIPLE_OF 16, HAS_MAX_LENGTH 64, TRIM 128, HAS_ENUM 256 (the `enum`
+# The validation constraints, each keyword in a field of its own. HAS_MINIMUM 1 (`minimum`),
+# HAS_EXCLUSIVE_MINIMUM 2 (`exclusive_minimum`), HAS_MAXIMUM 4 (`maximum`), HAS_EXCLUSIVE_MAXIMUM 8
+# (`exclusive_maximum`), HAS_MULTIPLE_OF 16, HAS_MAX_LENGTH 64, TRIM 128, HAS_ENUM 256 (the `enum`
 # list is read only under it), CASE_SENSITIVE 512; rounding 1 is midpoint. A violation (4) writes
 # `out` with the value as cast, as a value (0) does.
 F64, I32, TEXT = 11, 4, 18
@@ -368,11 +368,11 @@ def decimal(lo, scale=0, negative=False):
     return Decimal(lo, 0, scale, negative)
 
 
-def constraints(flags=0, rounding=0, lower=None, upper=None, multiple_of=None, max_length=0,
-                exclusive_lower=None, exclusive_upper=None):
+def constraints(flags=0, rounding=0, minimum=None, maximum=None, multiple_of=None, max_length=0,
+                exclusive_minimum=None, exclusive_maximum=None):
     declared = Constraints(ctypes.sizeof(Constraints), flags, rounding, 0, max_length, 0)
-    for name, value in (("lower", lower), ("upper", upper), ("multiple_of", multiple_of),
-                        ("exclusive_lower", exclusive_lower), ("exclusive_upper", exclusive_upper)):
+    for name, value in (("minimum", minimum), ("maximum", maximum), ("multiple_of", multiple_of),
+                        ("exclusive_minimum", exclusive_minimum), ("exclusive_maximum", exclusive_maximum)):
         if value is not None:
             setattr(declared, name, value)
     return declared
@@ -405,7 +405,7 @@ check(status == VIOLATION and fault == (0, 2) and report[0] == 3 and report[1] =
 status, _, fault, report = checked(F64, latitude, b"", "9x", ctypes.c_double())
 check(status == MALFORMED and fault == (1, 1) and report == (7, 7, 7), "cast_checked fault leaves check alone")
 # A float door judges the float it delivers too: 0.99999999999 is 1.0 at f32, past exclusiveMaximum 1.
-below_one = constraints(8, exclusive_upper=decimal(1))
+below_one = constraints(8, exclusive_maximum=decimal(1))
 status, value, fault, report = checked(10, below_one, b"", "0.99999999999", ctypes.c_float())
 check(status == VIOLATION and fault == (0, 13) and report[0] == 4 and value.value == 1, "cast_checked delivered float")
 status, value, _, _ = checked(10, below_one, b"", "0.9999999", ctypes.c_float())
@@ -420,7 +420,7 @@ status, span, fault, report = checked(TEXT, constraints(128 | 256 | 512), sexes,
 check(status == VIOLATION and fault == (1, 4) and report[0] == 8 and (span.offset, span.len) == (1, 4),
       "cast_checked text enum, case-sensitive")
 # minimum and exclusiveMinimum together, each in its own field and judged on its own.
-floor = constraints(1 | 2, lower=decimal(0), exclusive_lower=decimal(10))
+floor = constraints(1 | 2, minimum=decimal(0), exclusive_minimum=decimal(10))
 status, value, _, report = checked(I32, floor, b"", "10", ctypes.c_int32())
 check(status == VIOLATION and report[0] == 2 and value.value == 10, "cast_checked exclusiveMinimum beside minimum")
 status, value, _, _ = checked(I32, floor, b"", "11", ctypes.c_int32())
@@ -454,11 +454,11 @@ check(judge(TEXT, 0, ctypes.byref(constraints(256)), None, 0) == 0, "cast_constr
 padded = packed_text(" Male")
 check(judge(TEXT, 0, ctypes.byref(constraints(128 | 256)), padded, len(padded)) == 0,
       "cast_constraints_check enum entry no trimmed input matches")
-check(judge(I32, 0, ctypes.byref(constraints(1 | 4, lower=decimal(10), upper=decimal(1))), None, 0) == 0,
+check(judge(I32, 0, ctypes.byref(constraints(1 | 4, minimum=decimal(10), maximum=decimal(1))), None, 0) == 0,
       "cast_constraints_check crossed bounds")
-check(judge(6, 0, ctypes.byref(constraints(1, lower=decimal(1, 0, True))), None, 0) == 0,
+check(judge(6, 0, ctypes.byref(constraints(1, minimum=decimal(1, 0, True))), None, 0) == 0,
       "cast_constraints_check bound past the door")
-check(judge(TEXT, 0, ctypes.byref(constraints(1, lower=decimal(1))), None, 0) == 0,
+check(judge(TEXT, 0, ctypes.byref(constraints(1, minimum=decimal(1))), None, 0) == 0,
       "cast_constraints_check keyword for another type")
 check(judge(I32, 0, ctypes.byref(constraints(512)), None, 0) == 1, "cast_constraints_check caseSensitive at a number")
 check(judge(I32, 0, ctypes.byref(constraints(16, 1, multiple_of=decimal(5, 1))), None, 0) == 8,
@@ -581,7 +581,7 @@ status = lib.cast_checked_detailed(F64, 0, None, ctypes.byref(latitude), None, 0
                                    ctypes.byref(fault), ctypes.byref(report))
 check(status == VIOLATION and (fault.offset, fault.len, fault.detail) == (0, 2, 0) and out.value == 91
       and (report.keyword, report.adjusted, report.enum_index) == (3, 0, NO_INDEX), "cast_checked_detailed violation")
-cap = constraints(4, upper=decimal(1000))
+cap = constraints(4, maximum=decimal(1000))
 status = lib.cast_checked_detailed(I32, 0, ctypes.byref(western), ctypes.byref(cap), None, 0, b"12,34", 5,
                                    ctypes.byref(ctypes.c_int32()), ctypes.byref(fault), ctypes.byref(report))
 check(status == MALFORMED and fault.detail == 11, "cast_checked_detailed Western grouping")

@@ -455,7 +455,8 @@ A declaration is judged once, by the core, when it is built. Every valid OpenAPI
 declaration is accepted, an unsatisfiable one included — crossed bounds, `minLength` above
 `maxLength`, duplicate entries (the first match wins), bounds and entries the type cannot hold
 (an entry that never matches) — and an `enum` left `null` is none, while `@enum: []` declares
-one no value matches. Only a declaration the core cannot read is the caller's bug:
+one no value matches. A declaration reads back through properties of its keyword names, and
+`Enum` is the `enum` as passed, in order, duplicates kept (`null` for none, empty for `[]`). Only a declaration the core cannot read is the caller's bug:
 `ArgumentException`, its message the rule (`new Constraints<int>(trim: true)` throws
 "Constraints refused (code 1): a constraint the door does not take."; `trim` or
 `caseSensitive` at a numeric door, a rounding with `multipleOf` at the text door, a
@@ -926,9 +927,8 @@ doors themselves use, so a value read that way is the value the door would have 
   passes null in its place when nothing is declared.
 - `RawConstraints` — the core's 104-byte validation-constraints layout: a size word, the
   `Has*`, `Trim` and `CaseSensitive` flags, the rounding code, the two lengths and a reserved
-  word, then `minimum` (`Lower`), `maximum` (`Upper`), the step, `exclusiveMinimum`
-  (`ExclusiveLower`) and `exclusiveMaximum` (`ExclusiveUpper`) as `RawDecimal`s, each keyword in
-  its own slot. `Constraints<T>.ToRaw()` returns
+  word, then `Minimum`, `Maximum`, `MultipleOf`, `ExclusiveMinimum` and `ExclusiveMaximum` as
+  `RawDecimal`s, each keyword in its own slot. `Constraints<T>.ToRaw()` returns
   the declaration the core has judged, and `PackedEnum` the `enum` list that travels beside
   it, read only under `HasEnum` (`RawDecimal`s in native byte order at a numeric door; at the text door, each entry a
   little-endian 32-bit length and its UTF-8 bytes).

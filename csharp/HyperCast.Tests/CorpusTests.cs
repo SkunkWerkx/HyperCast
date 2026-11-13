@@ -838,7 +838,7 @@ public sealed class CorpusTests
 				refused++;
 				continue;
 			}
-			var raw = new Constraints<decimal>(maximum: input).ToRaw().Upper;
+			var raw = new Constraints<decimal>(maximum: input).ToRaw().Maximum;
 			var magnitude = UInt128.Parse(vector.GetProperty("magnitude").GetString()!, CultureInfo.InvariantCulture);
 			(raw.Lo, raw.Hi, raw.Scale, raw.Negative).ShouldBe(
 				((ulong)magnitude, (uint)(magnitude >> 64), vector.GetProperty("scale").GetByte(),

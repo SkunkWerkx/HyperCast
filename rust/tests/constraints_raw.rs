@@ -268,3 +268,69 @@ fn pack_total_overflows_on_32_bit() {
     assert_eq!(packed, Ok(None), "5 × (4 + 2³⁰) bytes overflow a 32-bit usize");
     assert_eq!(out, [0xAA; 8], "nothing written");
 }
+
+/// `enum_entries` reads a numeric `enum` back as declared: order and duplicates kept.
+#[test]
+fn enum_entries_read_back_as_declared() {
+    let entries = [20, 10, 20].map(Decimal::from);
+    let declared = Constraints::<i32>::numeric(NumericRules::new(), Some(&entries)).unwrap();
+    let read = declared.enum_entries().expect("an enum is declared");
+    assert_eq!(read.len(), 3);
+    assert_eq!(read.collect::<Vec<_>>(), entries);
+}
+
+/// `enum_entries` reads a text `enum` back as declared, bytes and case as written.
+#[test]
+fn text_enum_entries_read_back_as_declared() {
+    let entries = ["Male", "male", "Male"];
+    let declared = Constraints::text(TextRules::new(), Some(&entries)).unwrap();
+    let read = declared.enum_entries().expect("an enum is declared").collect::<Vec<_>>();
+    assert_eq!(read, [&b"Male"[..], b"male", b"Male"]);
+}
+
+/// A list read by `from_raw` reads back as it was packed. A number in a text `enum` is packed
+/// as an empty entry, and reads back as one.
+#[test]
+fn from_raw_packed_entries_read_back() {
+    let numbers = [7, -3, 7].map(Decimal::from);
+    let declared = Constraints::<i64>::numeric(NumericRules::new(), Some(&numbers)).unwrap();
+    let mut packed = vec![0; declared.pack_enum(&mut []).unwrap()];
+    declared.pack_enum(&mut packed).unwrap();
+    let read = Constraints::<i64>::from_raw(declared.raw(), &packed).unwrap();
+    assert_eq!(read.enum_entries().unwrap().collect::<Vec<_>>(), numbers);
+
+    let text = packed_text(&["a", "", "b"]);
+    let read = Constraints::<Text>::from_raw(raw(RawConstraints::HAS_ENUM), &text).unwrap();
+    let entries = read.enum_entries().unwrap();
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries.collect::<Vec<_>>(), [&b"a"[..], b"", b"b"]);
+}
+
+/// No `enum` declared reads as `None`, at either kind of door.
+#[test]
+fn no_enum_reads_none() {
+    assert!(
+        Constraints::<i32>::numeric(NumericRules::new(), None).unwrap().enum_entries().is_none()
+    );
+    assert!(Constraints::text(TextRules::new(), None).unwrap().enum_entries().is_none());
+    assert!(Constraints::<i32>::from_raw(raw(0), &[]).unwrap().enum_entries().is_none());
+    assert!(Constraints::<Text>::from_raw(raw(0), &[]).unwrap().enum_entries().is_none());
+}
+
+/// A declared empty `enum` reads back present and empty, never as none, however it was
+/// declared, and every value violates it.
+#[test]
+fn an_empty_enum_reads_back_empty() {
+    let listed = raw(RawConstraints::HAS_ENUM);
+    let from_raw = Constraints::<i32>::from_raw(listed, &[]).unwrap();
+    assert_eq!(from_raw.enum_entries().map(|entries| entries.len()), Some(0));
+    let rejected = cast_checked("7", &NumFormat::INVARIANT, &from_raw);
+    assert!(matches!(rejected, Err(Rejection::Violation(v)) if v.keyword == Keyword::Enum));
+    let numeric = Constraints::<i32>::numeric(NumericRules::new(), Some(&[])).unwrap();
+    assert_eq!(numeric.enum_entries().map(|entries| entries.len()), Some(0));
+    let text = Constraints::<Text>::from_raw(listed, &[]).unwrap();
+    assert_eq!(text.enum_entries().map(|entries| entries.len()), Some(0));
+    let empty: &[&str] = &[];
+    let text = Constraints::text(TextRules::new(), Some(empty)).unwrap();
+    assert_eq!(text.enum_entries().map(|entries| entries.len()), Some(0));
+}

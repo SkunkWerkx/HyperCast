@@ -1059,11 +1059,11 @@ SEXP C_cast_double(SEXP x, SEXP door_name, SEXP code) {
  */
 _Static_assert(sizeof(HyperCastRawConstraints) == HyperCastRawConstraints_SIZE, "RawConstraints");
 _Static_assert(offsetof(HyperCastRawConstraints, rounding) == 8, "rounding");
-_Static_assert(offsetof(HyperCastRawConstraints, lower) == 24, "lower");
-_Static_assert(offsetof(HyperCastRawConstraints, upper) == 40, "upper");
+_Static_assert(offsetof(HyperCastRawConstraints, minimum) == 24, "minimum");
+_Static_assert(offsetof(HyperCastRawConstraints, maximum) == 40, "maximum");
 _Static_assert(offsetof(HyperCastRawConstraints, multiple_of) == 56, "multiple_of");
-_Static_assert(offsetof(HyperCastRawConstraints, exclusive_lower) == 72, "exclusive_lower");
-_Static_assert(offsetof(HyperCastRawConstraints, exclusive_upper) == 88, "exclusive_upper");
+_Static_assert(offsetof(HyperCastRawConstraints, exclusive_minimum) == 72, "exclusive_minimum");
+_Static_assert(offsetof(HyperCastRawConstraints, exclusive_maximum) == 88, "exclusive_maximum");
 _Static_assert(sizeof(HyperCastRawCheck) == HyperCastRawCheck_SIZE, "RawCheck");
 _Static_assert(sizeof(HyperCastRawSpan) == HyperCastRawSpan_SIZE, "RawSpan");
 _Static_assert(sizeof(HyperCastDecimal) == 16, "Decimal");
@@ -1211,12 +1211,12 @@ static int32_t declaration_arg(SEXP layout, int native, struct declaration *d) {
     uint32_t flag;
     size_t field;
   } VALUES[] = {
-      {L_MINIMUM, HyperCastRawConstraints_HAS_MINIMUM, offsetof(HyperCastRawConstraints, lower)},
+      {L_MINIMUM, HyperCastRawConstraints_HAS_MINIMUM, offsetof(HyperCastRawConstraints, minimum)},
       {L_EXCLUSIVE_MINIMUM, HyperCastRawConstraints_HAS_EXCLUSIVE_MINIMUM,
-       offsetof(HyperCastRawConstraints, exclusive_lower)},
-      {L_MAXIMUM, HyperCastRawConstraints_HAS_MAXIMUM, offsetof(HyperCastRawConstraints, upper)},
+       offsetof(HyperCastRawConstraints, exclusive_minimum)},
+      {L_MAXIMUM, HyperCastRawConstraints_HAS_MAXIMUM, offsetof(HyperCastRawConstraints, maximum)},
       {L_EXCLUSIVE_MAXIMUM, HyperCastRawConstraints_HAS_EXCLUSIVE_MAXIMUM,
-       offsetof(HyperCastRawConstraints, exclusive_upper)},
+       offsetof(HyperCastRawConstraints, exclusive_maximum)},
       {L_MULTIPLE_OF, HyperCastRawConstraints_HAS_MULTIPLE_OF,
        offsetof(HyperCastRawConstraints, multiple_of)},
   };
@@ -1279,6 +1279,28 @@ SEXP C_constraints_check(SEXP layout, SEXP native_mode) {
   if (rc == 0)
     rc = cast_constraints_check(core_door(d.door), 0, &d.raw, d.enum_ptr, d.enum_len);
   return ScalarInteger(rc);
+}
+
+/*
+ * The declaration as it crosses the C ABI, for a package that hands it on (HyperTabular's
+ * plan columns): the RawConstraints bytes and the enum list in the core's packed format, each
+ * a raw vector, native-endian. Called once the core has judged it.
+ */
+SEXP C_constraints_packed(SEXP layout, SEXP native_mode) {
+  struct declaration d;
+  if (declaration_arg(layout, asInteger(native_mode), &d) != 0)
+    Rf_error("hypercast: these constraints no longer lay out (were they edited?); declare them "
+             "again");
+  SEXP out = PROTECT(Rf_allocVector(VECSXP, 2));
+  SEXP raw = Rf_allocVector(RAWSXP, (R_xlen_t)sizeof d.raw);
+  SET_VECTOR_ELT(out, 0, raw);
+  memcpy(RAW(raw), &d.raw, sizeof d.raw);
+  SEXP entries = Rf_allocVector(RAWSXP, (R_xlen_t)d.enum_len);
+  SET_VECTOR_ELT(out, 1, entries);
+  if (d.enum_len > 0)
+    memcpy(RAW(entries), d.enum_ptr, d.enum_len);
+  UNPROTECT(1);
+  return out;
 }
 
 /* A declaration hypercast_constraints() judged no longer lays out: it was edited since. */

@@ -2663,17 +2663,17 @@ fn declaration(env: &Env, spec: &Unknown<'_>) -> std::result::Result<Declared, P
     };
     // Each keyword has a slot of its own, so all four bounds may be declared together.
     for (name, flag, slot) in [
-        ("minimum", hc::RawConstraints::HAS_MINIMUM, &mut raw.lower),
+        ("minimum", hc::RawConstraints::HAS_MINIMUM, &mut raw.minimum),
         (
             "exclusiveMinimum",
             hc::RawConstraints::HAS_EXCLUSIVE_MINIMUM,
-            &mut raw.exclusive_lower,
+            &mut raw.exclusive_minimum,
         ),
-        ("maximum", hc::RawConstraints::HAS_MAXIMUM, &mut raw.upper),
+        ("maximum", hc::RawConstraints::HAS_MAXIMUM, &mut raw.maximum),
         (
             "exclusiveMaximum",
             hc::RawConstraints::HAS_EXCLUSIVE_MAXIMUM,
-            &mut raw.exclusive_upper,
+            &mut raw.exclusive_maximum,
         ),
         (
             "multipleOf",
@@ -2868,7 +2868,7 @@ impl Constraints {
     /// The declared `minimum`, as canonical decimal text, or `null`.
     #[napi(getter, catch_unwind)]
     pub fn minimum(&self) -> Option<String> {
-        self.bound(hc::RawConstraints::HAS_MINIMUM, self.raw.lower)
+        self.bound(hc::RawConstraints::HAS_MINIMUM, self.raw.minimum)
     }
 
     /// The declared `exclusiveMinimum`, as canonical decimal text, or `null`.
@@ -2876,14 +2876,14 @@ impl Constraints {
     pub fn exclusive_minimum(&self) -> Option<String> {
         self.bound(
             hc::RawConstraints::HAS_EXCLUSIVE_MINIMUM,
-            self.raw.exclusive_lower,
+            self.raw.exclusive_minimum,
         )
     }
 
     /// The declared `maximum`, as canonical decimal text, or `null`.
     #[napi(getter, catch_unwind)]
     pub fn maximum(&self) -> Option<String> {
-        self.bound(hc::RawConstraints::HAS_MAXIMUM, self.raw.upper)
+        self.bound(hc::RawConstraints::HAS_MAXIMUM, self.raw.maximum)
     }
 
     /// The declared `exclusiveMaximum`, as canonical decimal text, or `null`.
@@ -2891,7 +2891,7 @@ impl Constraints {
     pub fn exclusive_maximum(&self) -> Option<String> {
         self.bound(
             hc::RawConstraints::HAS_EXCLUSIVE_MAXIMUM,
-            self.raw.exclusive_upper,
+            self.raw.exclusive_maximum,
         )
     }
 
@@ -2969,11 +2969,11 @@ impl Constraints {
             bytes.extend_from_slice(&word.to_ne_bytes());
         }
         for decimal in [
-            raw.lower,
-            raw.upper,
+            raw.minimum,
+            raw.maximum,
             raw.multiple_of,
-            raw.exclusive_lower,
-            raw.exclusive_upper,
+            raw.exclusive_minimum,
+            raw.exclusive_maximum,
         ] {
             bytes.extend_from_slice(&decimal.lo.to_ne_bytes());
             bytes.extend_from_slice(&decimal.hi.to_ne_bytes());

@@ -152,7 +152,11 @@ already decoded, judged on the shortest decimal that names it (`0.1 + 0.2` break
 A declaration is judged once, by the core, when it is built. Every declaration OpenAPI allows is
 accepted, those no value can meet included: crossed or equal bounds, `minLength` above
 `maxLength`, duplicate entries (the first match wins), and `enumOf(new String[0])`, an `enum`
-with no entries, which every value then violates (leaving `enumOf` out declares no `enum`). What
+with no entries, which every value then violates (leaving `enumOf` out declares no `enum`). A
+declaration reads back through methods of its keyword names, and `enumValues()` is the `enum` as
+passed to `enumOf`, in order, duplicates kept (empty when none is declared, an empty list for
+`enumOf(new String[0])`). `door()` names the door the declaration is bound to, as the factory that
+built it (`"u8"`, `"text"`): `Constraints<Integer>` alone is `i32`'s, `u8`'s or `u16`'s. What
 the core cannot read is the caller's bug: `build()` throws `IllegalArgumentException`, its
 message the rule. That is `trim` or `caseSensitive` at a numeric door, or a rounding with
 `multipleOf` at the text door (code 1); a `multipleOf` not positive (5); a rounding without

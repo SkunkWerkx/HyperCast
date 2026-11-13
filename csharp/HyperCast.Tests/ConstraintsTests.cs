@@ -188,10 +188,10 @@ public sealed class ConstraintsTests
 		Step("1000000000000000000000000000000e-2").ShouldBe((UInt128.Parse("10000000000000000000000000000"), (byte)0, false));
 		// A decimal is taken as it is, its own scale kept; only the sign of zero is dropped.
 		Step(1.50m).ShouldBe(((UInt128)150, (byte)2, false));
-		var zero = new Constraints<int>(minimum: "-0").ToRaw().Lower;
+		var zero = new Constraints<int>(minimum: "-0").ToRaw().Minimum;
 		(zero.Lo, zero.Hi, zero.Scale, zero.Negative).ShouldBe((0ul, 0u, (byte)0, (byte)0));
-		new Constraints<double>(minimum: -0.0m).ToRaw().Lower.Negative.ShouldBe((byte)0);
-		var negative = new Constraints<double>(minimum: "-2.50").ToRaw().Lower;
+		new Constraints<double>(minimum: -0.0m).ToRaw().Minimum.Negative.ShouldBe((byte)0);
+		var negative = new Constraints<double>(minimum: "-2.50").ToRaw().Minimum;
 		(negative.Lo, negative.Scale, negative.Negative).ShouldBe((25ul, (byte)1, (byte)1));
 		// decimal.Parse would round each of these to something it holds; the core refuses. A lone
 		// surrogate reaches it as invalid UTF-8, never as U+FFFD.
@@ -352,5 +352,48 @@ public sealed class ConstraintsTests
 			_ => "default",
 		};
 		arm.ShouldBe("default");
+	}
+
+	[Fact]
+	public void EnumReadsBackAsDeclared()
+	{
+		var sizes = new Constraints<int>(@enum: [20, 10, 20]);
+		sizes.Enum.ShouldNotBeNull();
+		sizes.Enum.Select(static entry => entry.ToString()).ShouldBe(["20", "10", "20"]);
+	}
+
+	[Fact]
+	public void ANumberInATextEnumReadsBackAsDeclared()
+	{
+		var code = new Constraints<string>(@enum: ["a", 1m]);
+		code.Enum.ShouldNotBeNull();
+		code.Enum.Select(static entry => entry.ToString()).ShouldBe(["a", "1"]);
+		Describe(Cast.Text("1", code)).ShouldBe("violation enum 1 @ 0+1");
+	}
+
+	[Fact]
+	public void NoEnumReadsAbsent()
+	{
+		new Constraints<int>(minimum: 0).Enum.ShouldBeNull();
+		new Constraints<string>(trim: true).Enum.ShouldBeNull();
+	}
+
+	[Fact]
+	public void AnEmptyEnumReadsBackEmpty()
+	{
+		var none = new Constraints<int>(@enum: []);
+		none.Enum.ShouldNotBeNull();
+		none.Enum.ShouldBeEmpty();
+		Describe(Cast.Int32("7", NumFormat.Invariant, none)).ShouldBe("violation enum 7 @ 0+1");
+	}
+
+	[Fact]
+	public void TheEnumReaderCannotChangeTheDeclaration()
+	{
+		ConstraintValue[] entries = ["Female", "Male"];
+		var sex = new Constraints<string>(@enum: entries);
+		entries[0] = "Other";
+		sex.Enum!.Select(static entry => entry.ToString()).ShouldBe(["Female", "Male"]);
+		(sex.Enum is ConstraintValue[]).ShouldBeFalse();
 	}
 }

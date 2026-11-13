@@ -75,6 +75,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
+#include <iterator>
 #include <optional>
 #include <string_view>
 #include <system_error>
@@ -2313,6 +2314,93 @@ public:
     }
   }
 
+  // The declared enum, entries in the order declared, duplicates kept: a Decimal each at a
+  // numeric door, the text at the text door. It reads the storage the declaration was packed
+  // into, so it lives no longer than that storage (see EnumStorage). An empty list reads as
+  // present and empty; enum_entries() is std::nullopt only when no enum is declared.
+  class EnumView {
+  public:
+    using value_type = std::conditional_t<is_text, std::string_view, Decimal>;
+
+    class iterator {
+    public:
+      using iterator_category = std::forward_iterator_tag;
+      using value_type = EnumView::value_type;
+      using difference_type = std::ptrdiff_t;
+      using pointer = void;
+      using reference = value_type;
+
+      constexpr iterator() noexcept = default;
+
+      value_type operator*() const noexcept {
+        if constexpr (is_text) {
+          return std::string_view(reinterpret_cast<const char *>(data_ + at_ + 4), length());
+        } else {
+          HyperCastDecimal raw{};
+          std::memcpy(&raw, data_ + at_, sizeof raw); // native-endian, as packed
+          return Decimal{raw.lo, raw.hi, raw.scale, raw.negative};
+        }
+      }
+      iterator &operator++() noexcept {
+        at_ += is_text ? 4 + length() : sizeof(HyperCastDecimal);
+        return *this;
+      }
+      iterator operator++(int) noexcept {
+        iterator before = *this;
+        ++*this;
+        return before;
+      }
+      friend constexpr bool operator==(const iterator &a, const iterator &b) noexcept {
+        return a.data_ == b.data_ && a.at_ == b.at_;
+      }
+      friend constexpr bool operator!=(const iterator &a, const iterator &b) noexcept {
+        return !(a == b);
+      }
+
+    private:
+      friend class EnumView;
+      constexpr iterator(const std::uint8_t *data, std::size_t at) noexcept
+          : data_(data), at_(at) {}
+
+      // A text entry's byte length, its little-endian u32 word.
+      std::size_t length() const noexcept {
+        const std::uint8_t *word = data_ + at_;
+        return static_cast<std::size_t>(word[0]) | static_cast<std::size_t>(word[1]) << 8 |
+               static_cast<std::size_t>(word[2]) << 16 | static_cast<std::size_t>(word[3]) << 24;
+      }
+
+      const std::uint8_t *data_ = nullptr;
+      std::size_t at_ = 0;
+    };
+
+    iterator begin() const noexcept { return iterator(data_, 0); }
+    iterator end() const noexcept { return iterator(data_, size_); }
+    bool empty() const noexcept { return size_ == 0; }
+    // The number of entries.
+    std::size_t size() const noexcept {
+      std::size_t count = 0;
+      for (iterator it = begin(); it != end(); ++it) {
+        ++count;
+      }
+      return count;
+    }
+
+  private:
+    friend class Constraints;
+    constexpr EnumView(const std::uint8_t *data, std::size_t size) noexcept
+        : data_(data), size_(size) {}
+
+    const std::uint8_t *data_;
+    std::size_t size_;
+  };
+
+  std::optional<EnumView> enum_entries() const noexcept {
+    if ((raw_.flags & HyperCastRawConstraints_HAS_ENUM) == 0) {
+      return std::nullopt;
+    }
+    return EnumView(enum_, enum_size_);
+  }
+
 private:
   template <class> friend class Declared;
 
@@ -2351,12 +2439,12 @@ private:
       HyperCastDecimal &out;
     };
     const Slot slots[] = {
-        {fields.minimum, HyperCastRawConstraints_HAS_MINIMUM, raw.lower},
+        {fields.minimum, HyperCastRawConstraints_HAS_MINIMUM, raw.minimum},
         {fields.exclusive_minimum, HyperCastRawConstraints_HAS_EXCLUSIVE_MINIMUM,
-         raw.exclusive_lower},
-        {fields.maximum, HyperCastRawConstraints_HAS_MAXIMUM, raw.upper},
+         raw.exclusive_minimum},
+        {fields.maximum, HyperCastRawConstraints_HAS_MAXIMUM, raw.maximum},
         {fields.exclusive_maximum, HyperCastRawConstraints_HAS_EXCLUSIVE_MAXIMUM,
-         raw.exclusive_upper},
+         raw.exclusive_maximum},
         {fields.multiple_of, HyperCastRawConstraints_HAS_MULTIPLE_OF, raw.multiple_of},
     };
     for (const Slot &slot : slots) {

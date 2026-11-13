@@ -555,7 +555,10 @@ input comes back as the caller's own string (a substring of it when trimmed) and
 match as the caller's own entry, so the checked doors make no allocation on success; a
 `[]byte` input to `String` or `CheckString` is copied into its result. `Constraints.Raw()`
 and `PackedEnum()` hand a declaration over in the core's own 104-byte layout and `enum` list,
-for a library judging values across a C ABI of its own.
+for a library judging values across a C ABI of its own. `Constraints.Enum()` reads the
+declared `enum` back: each entry as `Enum` rendered it (a number as its decimal text), whether
+they were declared as numbers, and `ok` false when no `enum` is declared; an empty one, which
+every value violates, is `ok` with no entries.
 
 ## The core: `Available`, `LoadError`, `NativeVersion`
 
@@ -611,9 +614,8 @@ same name would have returned.
 - `RawConstraints` — the 104 bytes, 8-aligned, a `Constraints` crosses as
   (`RawConstraintsSize`): a size word, the flags (`RawConstraintsHasMinimum` …
   `RawConstraintsHasEnum`, `RawConstraintsTrim`, `RawConstraintsCaseSensitive`), the rounding
-  code, the two lengths, a reserved word, then `Lower` (`minimum`), `Upper` (`maximum`),
-  `MultipleOf`, `ExclusiveLower` (`exclusiveMinimum`) and `ExclusiveUpper`
-  (`exclusiveMaximum`) as `Decimal`s, each bound in a field of its own.
+  code, the two lengths, a reserved word, then `Minimum`, `Maximum`, `MultipleOf`,
+  `ExclusiveMinimum` and `ExclusiveMaximum` as `Decimal`s, each bound in a field of its own.
   `Constraints.Raw()` builds one, and `Constraints.PackedEnum()` is its `enum` list beside it
   (16-byte `Decimal`s in the host's byte order at a numeric door, a little-endian `uint32`
   length then the bytes per entry at the text door). `RawCheck` (12 bytes) is what a checked

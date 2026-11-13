@@ -316,6 +316,9 @@ type declaration struct {
 	decimals   []Decimal
 	packedText []byte
 	texts      []string
+	// The enum as declared, for Enum: each entry's text, and whether they were numbers.
+	enum        []string
+	enumNumbers bool
 }
 
 // enumBytes is the enum list's length in bytes as it crosses.
@@ -445,16 +448,16 @@ func NewConstraints[V CheckedTarget](rules ...Rule) (Constraints[V], error) {
 		var err *refusal
 		switch rule.kind {
 		case ruleMinimum:
-			d.raw.Lower, err = declared(rule.text)
+			d.raw.Minimum, err = declared(rule.text)
 			d.raw.Flags |= RawConstraintsHasMinimum
 		case ruleExclusiveMinimum:
-			d.raw.ExclusiveLower, err = declared(rule.text)
+			d.raw.ExclusiveMinimum, err = declared(rule.text)
 			d.raw.Flags |= RawConstraintsHasExclusiveMinimum
 		case ruleMaximum:
-			d.raw.Upper, err = declared(rule.text)
+			d.raw.Maximum, err = declared(rule.text)
 			d.raw.Flags |= RawConstraintsHasMaximum
 		case ruleExclusiveMaximum:
-			d.raw.ExclusiveUpper, err = declared(rule.text)
+			d.raw.ExclusiveMaximum, err = declared(rule.text)
 			d.raw.Flags |= RawConstraintsHasExclusiveMaximum
 		case ruleMultipleOf:
 			d.raw.MultipleOf, err = declared(rule.text)
@@ -474,6 +477,8 @@ func NewConstraints[V CheckedTarget](rules ...Rule) (Constraints[V], error) {
 		case ruleEnum:
 			err = d.pack(rule, door)
 			d.raw.Flags |= RawConstraintsHasEnum
+			d.enum = append(make([]string, 0, len(rule.entries)), rule.entries...)
+			d.enumNumbers = rule.numbers
 		}
 		if err != nil {
 			return Constraints[V]{}, err
@@ -589,24 +594,35 @@ func (c Constraints[V]) bound(flag uint32, value Decimal) (Decimal, bool) {
 	return value, true
 }
 
+// Enum is the declared enum: each entry as Enum rendered it (a number as its decimal text), in
+// order, duplicates kept; numbers reports that the entries were declared as numbers; and ok is
+// false when no enum is declared. An empty enum, which every value violates, is ok with no
+// entries. The slice is a fresh copy each call, so changing it changes nothing here.
+func (c Constraints[V]) Enum() (entries []string, numbers bool, ok bool) {
+	if c.d.raw.Flags&RawConstraintsHasEnum == 0 {
+		return nil, false, false
+	}
+	return append(make([]string, 0, len(c.d.enum)), c.d.enum...), c.d.enumNumbers, true
+}
+
 // Minimum is the declared minimum, and whether one is declared.
 func (c Constraints[V]) Minimum() (Decimal, bool) {
-	return c.bound(RawConstraintsHasMinimum, c.d.raw.Lower)
+	return c.bound(RawConstraintsHasMinimum, c.d.raw.Minimum)
 }
 
 // ExclusiveMinimum is the declared exclusiveMinimum, and whether one is declared.
 func (c Constraints[V]) ExclusiveMinimum() (Decimal, bool) {
-	return c.bound(RawConstraintsHasExclusiveMinimum, c.d.raw.ExclusiveLower)
+	return c.bound(RawConstraintsHasExclusiveMinimum, c.d.raw.ExclusiveMinimum)
 }
 
 // Maximum is the declared maximum, and whether one is declared.
 func (c Constraints[V]) Maximum() (Decimal, bool) {
-	return c.bound(RawConstraintsHasMaximum, c.d.raw.Upper)
+	return c.bound(RawConstraintsHasMaximum, c.d.raw.Maximum)
 }
 
 // ExclusiveMaximum is the declared exclusiveMaximum, and whether one is declared.
 func (c Constraints[V]) ExclusiveMaximum() (Decimal, bool) {
-	return c.bound(RawConstraintsHasExclusiveMaximum, c.d.raw.ExclusiveUpper)
+	return c.bound(RawConstraintsHasExclusiveMaximum, c.d.raw.ExclusiveMaximum)
 }
 
 // MultipleOf is the declared multipleOf, and whether one is declared.

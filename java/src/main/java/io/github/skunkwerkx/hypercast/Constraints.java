@@ -96,6 +96,7 @@ public final class Constraints<T> {
     private final byte[] packed;
     private final ByteBuffer entries;
     private final String[] texts;
+    private final List<Object> enumValues;
     private final BigDecimal minimum;
     private final BigDecimal exclusiveMinimum;
     private final BigDecimal maximum;
@@ -130,6 +131,7 @@ public final class Constraints<T> {
                 | (trim ? TRIM : 0)
                 | (caseSensitive ? CASE_SENSITIVE : 0)
                 | (builder.entries != null ? HAS_ENUM : 0);
+        enumValues = builder.entries == null ? null : List.copyOf(builder.entries);
         raw = new byte[RAW_BYTES];
         ByteBuffer layout = ByteBuffer.wrap(raw).order(ByteOrder.nativeOrder());
         layout.putInt(RAW_BYTES)
@@ -384,6 +386,30 @@ public final class Constraints<T> {
      */
     public boolean caseSensitive() {
         return caseSensitive;
+    }
+
+    /**
+     * The door this declaration is bound to, named as the factory that built it: {@code "i8"},
+     * {@code "i16"}, {@code "i32"}, {@code "i64"}, {@code "u8"}, {@code "u16"}, {@code "u32"},
+     * {@code "u64"}, {@code "f32"}, {@code "f64"}, {@code "decimal"} or {@code "text"}. The type
+     * parameter can't say it alone: {@code Constraints<Integer>} is {@code i32}'s, {@code u8}'s and
+     * {@code u16}'s. A library that hands the declaration to a door of its own checks it here.
+     *
+     * @return the door's name
+     */
+    public String door() {
+        return doorName;
+    }
+
+    /**
+     * The declared {@code enum}, each entry as it was passed to {@code enumOf} (a {@link String}
+     * or a {@link BigDecimal}), in order, duplicates kept; an empty list for an empty {@code enum},
+     * which every value violates.
+     *
+     * @return an unmodifiable list of the entries, or empty when no {@code enum} was declared
+     */
+    public Optional<List<Object>> enumValues() {
+        return Optional.ofNullable(enumValues);
     }
 
     /**
@@ -728,8 +754,7 @@ public final class Constraints<T> {
          *     bound, step or entry the door cannot hold (text that is no decimal or does not fit
          *     one, past 96 bits or a scale of 28; a rounding with a fractional
          *     {@code multipleOf} at an integer door, whose rounded value it could not deliver);
-         *     an entry that is not UTF-8 (a lone surrogate). Also a {@link BigDecimal} entry at
-         *     the text door
+         *     an entry that is not UTF-8 (a lone surrogate)
          */
         public Constraints<T> build() {
             return new Constraints<>(this);

@@ -436,18 +436,19 @@ fn read_bound_text<T: Real>(bound: &Decimal) -> Option<T> {
 /// keyword order: each bound is its own keyword, so all four may be declared together.
 fn broken_bound(raw: &RawConstraints, order: impl Fn(&Decimal) -> Ordering) -> Option<Keyword> {
     let has = |flag: u32| raw.flags & flag != 0;
-    if has(RawConstraints::HAS_MINIMUM) && order(&raw.lower) == Ordering::Less {
+    if has(RawConstraints::HAS_MINIMUM) && order(&raw.minimum) == Ordering::Less {
         return Some(Keyword::Minimum);
     }
     if has(RawConstraints::HAS_EXCLUSIVE_MINIMUM)
-        && order(&raw.exclusive_lower) != Ordering::Greater
+        && order(&raw.exclusive_minimum) != Ordering::Greater
     {
         return Some(Keyword::ExclusiveMinimum);
     }
-    if has(RawConstraints::HAS_MAXIMUM) && order(&raw.upper) == Ordering::Greater {
+    if has(RawConstraints::HAS_MAXIMUM) && order(&raw.maximum) == Ordering::Greater {
         return Some(Keyword::Maximum);
     }
-    if has(RawConstraints::HAS_EXCLUSIVE_MAXIMUM) && order(&raw.exclusive_upper) != Ordering::Less {
+    if has(RawConstraints::HAS_EXCLUSIVE_MAXIMUM) && order(&raw.exclusive_maximum) != Ordering::Less
+    {
         return Some(Keyword::ExclusiveMaximum);
     }
     None
@@ -909,10 +910,10 @@ mod tests {
             if let Some(value) = dec(field) {
                 raw.flags |= flag;
                 *(match slot {
-                    0 => &mut raw.lower,
-                    1 => &mut raw.exclusive_lower,
-                    2 => &mut raw.upper,
-                    _ => &mut raw.exclusive_upper,
+                    0 => &mut raw.minimum,
+                    1 => &mut raw.exclusive_minimum,
+                    2 => &mut raw.maximum,
+                    _ => &mut raw.exclusive_maximum,
                 }) = value.unwrap();
             }
         }

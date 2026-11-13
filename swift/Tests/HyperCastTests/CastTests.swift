@@ -1025,6 +1025,36 @@ final class CastTests: XCTestCase {
         }
     }
 
+    /// `enum` reads the declaration back: entries as passed, in order, duplicates kept.
+    func testEnumReadsBackAsDeclared() {
+        let sizes = Constraints<Int32>(enum: [20, 10, 20])
+        XCTAssertEqual(sizes.enum, [20, 10, 20])
+    }
+
+    /// A number among the text door's entries reads back as the number it was declared.
+    func testANumberInATextEnumReadsBackAsDeclared() {
+        let codes = Constraints<String>(enum: ["a", 1])
+        XCTAssertEqual(codes.enum, ["a", 1])
+        XCTAssertEqual(
+            Cast.text("1", constraints: codes),
+            .rejection(.violation(Violation(keyword: .enum, value: "1", offset: 0, length: 1))))
+    }
+
+    /// No `enum` declared reads as `nil`, at either kind of door.
+    func testNoEnumReadsAbsent() {
+        XCTAssertNil(Constraints<Int32>(minimum: 0).enum)
+        XCTAssertNil(Constraints<String>(trim: true).enum)
+    }
+
+    /// An empty `enum` reads back present and empty, and every value violates it.
+    func testAnEmptyEnumReadsBackEmpty() {
+        let none = Constraints<Int32>(enum: [])
+        XCTAssertEqual(none.enum, [])
+        XCTAssertEqual(
+            Cast.i32("7", format: .invariant, constraints: none),
+            .rejection(.violation(Violation(keyword: .enum, value: 7, offset: 0, length: 1))))
+    }
+
     /// JSON Schema's `enum` is exact equality across types: a number is a valid text entry that
     /// no string equals, so `"7"` never matches it, and the entries after it keep their indexes.
     func testANumberInATextEnumNeverMatches() throws {

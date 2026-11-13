@@ -273,6 +273,30 @@ int main() {
   const auto no_number = hc::Constraints<std::int32_t>::declare({}, nullptr, 0, small_storage);
   CHECK((hc::cast_i32("7", invariant, no_number.value()).rejection().violation() ==
          hc::Violation<std::int32_t>{hc::Keyword::enum_, 7, 0, 1}));
+  // enum_entries reads the declared enum back, order and duplicates kept; an empty one is present
+  // and empty, and no enum is nullopt.
+  {
+    std::uint8_t sizes_storage[48];
+    const auto sizes = hc::Constraints<std::int32_t>::declare({}, {20, 10, 20}, sizes_storage);
+    const auto read = sizes.value().enum_entries();
+    CHECK(read.has_value() && read->size() == 3u);
+    std::int64_t want[] = {20, 10, 20};
+    std::size_t at = 0;
+    for (const hc::Decimal entry : *read) {
+      CHECK(at < 3 && entry.lo == static_cast<std::uint64_t>(want[at]) && entry.hi == 0 &&
+            entry.scale == 0 && !entry.negative);
+      ++at;
+    }
+    CHECK(at == 3u);
+    const auto names = sex.value().enum_entries();
+    CHECK(names.has_value() && names->size() == 3u);
+    auto name = names->begin();
+    CHECK(*name++ == "Female" && *name++ == "Male" && *name++ == "Other" && name == names->end());
+    CHECK(none.value().enum_entries().has_value() && none.value().enum_entries()->empty());
+    CHECK(no_number.value().enum_entries().has_value() &&
+          no_number.value().enum_entries()->empty());
+    CHECK(!euros.value().enum_entries().has_value());
+  }
   // Invalid UTF-8 (here a lone surrogate's bytes) reaches the core unchanged at a plain door, as
   // at a checked one: the same fault, span included.
   const auto loose = hc::Constraints<std::int32_t>::declare({});

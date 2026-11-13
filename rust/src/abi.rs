@@ -91,11 +91,11 @@ const _: () = assert!(
             && core::mem::offset_of!(RawConstraints, min_length) == 12
             && core::mem::offset_of!(RawConstraints, max_length) == 16
             && core::mem::offset_of!(RawConstraints, _reserved) == 20
-            && core::mem::offset_of!(RawConstraints, lower) == 24
-            && core::mem::offset_of!(RawConstraints, upper) == 40
+            && core::mem::offset_of!(RawConstraints, minimum) == 24
+            && core::mem::offset_of!(RawConstraints, maximum) == 40
             && core::mem::offset_of!(RawConstraints, multiple_of) == 56
-            && core::mem::offset_of!(RawConstraints, exclusive_lower) == 72
-            && core::mem::offset_of!(RawConstraints, exclusive_upper) == 88)
+            && core::mem::offset_of!(RawConstraints, exclusive_minimum) == 72
+            && core::mem::offset_of!(RawConstraints, exclusive_maximum) == 88)
 );
 
 /// This library's version, packed `major << 16 | minor << 8 | patch` from the crate's own
@@ -331,11 +331,11 @@ impl From<DayPeriods> for RawDayPeriods {
 /// | 12 | `min_length`, read under [`HAS_MIN_LENGTH`](Self::HAS_MIN_LENGTH) | 4 |
 /// | 16 | `max_length`, read under [`HAS_MAX_LENGTH`](Self::HAS_MAX_LENGTH) | 4 |
 /// | 20 | `_reserved`, always `0` | 4 |
-/// | 24 | `lower`: `minimum`, read under [`HAS_MINIMUM`](Self::HAS_MINIMUM) | 16 |
-/// | 40 | `upper`: `maximum`, read under [`HAS_MAXIMUM`](Self::HAS_MAXIMUM) | 16 |
+/// | 24 | `minimum`, read under [`HAS_MINIMUM`](Self::HAS_MINIMUM) | 16 |
+/// | 40 | `maximum`, read under [`HAS_MAXIMUM`](Self::HAS_MAXIMUM) | 16 |
 /// | 56 | `multiple_of`, read under [`HAS_MULTIPLE_OF`](Self::HAS_MULTIPLE_OF) | 16 |
-/// | 72 | `exclusive_lower`: `exclusiveMinimum`, read under [`HAS_EXCLUSIVE_MINIMUM`](Self::HAS_EXCLUSIVE_MINIMUM) | 16 |
-/// | 88 | `exclusive_upper`: `exclusiveMaximum`, read under [`HAS_EXCLUSIVE_MAXIMUM`](Self::HAS_EXCLUSIVE_MAXIMUM) | 16 |
+/// | 72 | `exclusive_minimum`: `exclusiveMinimum`, read under [`HAS_EXCLUSIVE_MINIMUM`](Self::HAS_EXCLUSIVE_MINIMUM) | 16 |
+/// | 88 | `exclusive_maximum`: `exclusiveMaximum`, read under [`HAS_EXCLUSIVE_MAXIMUM`](Self::HAS_EXCLUSIVE_MAXIMUM) | 16 |
 ///
 /// Each keyword has a field of its own, so all four bounds may be declared together, as
 /// OpenAPI allows.
@@ -362,28 +362,28 @@ pub struct RawConstraints {
     /// Always `0`.
     pub _reserved: u32,
     /// `minimum`: the value may equal it.
-    pub lower: Decimal,
+    pub minimum: Decimal,
     /// `maximum`: the value may equal it.
-    pub upper: Decimal,
+    pub maximum: Decimal,
     /// The step every value must be a multiple of.
     pub multiple_of: Decimal,
     /// `exclusiveMinimum`: the value must exceed it.
-    pub exclusive_lower: Decimal,
+    pub exclusive_minimum: Decimal,
     /// `exclusiveMaximum`: the value must be below it.
-    pub exclusive_upper: Decimal,
+    pub exclusive_maximum: Decimal,
 }
 
 impl RawConstraints {
     /// The layout's size in bytes, which `size` carries.
     pub const SIZE: u32 = 104;
 
-    /// `lower`, the `minimum`, is read.
+    /// `minimum` is read.
     pub const HAS_MINIMUM: u32 = 1;
-    /// `exclusive_lower`, the `exclusiveMinimum`, is read.
+    /// `exclusive_minimum`, the `exclusiveMinimum`, is read.
     pub const HAS_EXCLUSIVE_MINIMUM: u32 = 2;
-    /// `upper`, the `maximum`, is read.
+    /// `maximum` is read.
     pub const HAS_MAXIMUM: u32 = 4;
-    /// `exclusive_upper`, the `exclusiveMaximum`, is read.
+    /// `exclusive_maximum`, the `exclusiveMaximum`, is read.
     pub const HAS_EXCLUSIVE_MAXIMUM: u32 = 8;
     /// `multiple_of` and `rounding` are read.
     pub const HAS_MULTIPLE_OF: u32 = 16;
@@ -393,9 +393,9 @@ impl RawConstraints {
     pub const HAS_MAX_LENGTH: u32 = 64;
     /// Text is trimmed of Unicode `White_Space` before it is judged.
     pub const TRIM: u32 = 128;
-    /// An `enum` list is declared and read: the list beside the layout, which may be empty
-    /// (a declaration [`check_constraints`](crate::check_constraints) refuses). Clear, no
-    /// list is read, and one passed anyway is a malformed layout.
+    /// An `enum` list is declared and read: the list beside the layout, which may be empty,
+    /// an `enum` every value violates, as OpenAPI allows. Clear, no list is read, and one
+    /// passed anyway is a malformed layout.
     pub const HAS_ENUM: u32 = 256;
     /// A text `enum` matches exactly, byte for byte, instead of under simple case folding,
     /// for a vocabulary whose case carries meaning (`mm` and `Mm`). The text door only.
@@ -411,11 +411,11 @@ impl RawConstraints {
             min_length: 0,
             max_length: 0,
             _reserved: 0,
-            lower: ZERO,
-            upper: ZERO,
+            minimum: ZERO,
+            maximum: ZERO,
             multiple_of: ZERO,
-            exclusive_lower: ZERO,
-            exclusive_upper: ZERO,
+            exclusive_minimum: ZERO,
+            exclusive_maximum: ZERO,
         }
     };
 }

@@ -2071,8 +2071,8 @@ mod constraint_exports {
         raw.flags = RawConstraints::HAS_MINIMUM
             | RawConstraints::HAS_MAXIMUM
             | RawConstraints::HAS_MULTIPLE_OF;
-        raw.lower = dec("-90");
-        raw.upper = dec("90");
+        raw.minimum = dec("-90");
+        raw.maximum = dec("90");
         raw.multiple_of = dec("0.000001");
         raw.rounding = 1;
         raw
@@ -2346,8 +2346,8 @@ mod constraint_exports {
                 i32_door,
                 with(&|r| {
                     r.flags = RawConstraints::HAS_MINIMUM | RawConstraints::HAS_MAXIMUM;
-                    r.lower = dec("6");
-                    r.upper = dec("5");
+                    r.minimum = dec("6");
+                    r.maximum = dec("5");
                 }),
                 Vec::new(),
             ),
@@ -2364,7 +2364,7 @@ mod constraint_exports {
                 u8_door,
                 with(&|r| {
                     r.flags = RawConstraints::HAS_MINIMUM;
-                    r.lower = dec("-1");
+                    r.minimum = dec("-1");
                 }),
                 Vec::new(),
             ),
@@ -2430,12 +2430,12 @@ mod constraint_exports {
         // as a byte (the layout as caller memory, never as a Rust value), is malformed; the
         // checked doors refuse it as a contract violation.
         for (field, flags, byte) in [
-            (offset_of!(RawConstraints, lower), 0, 2u8),
-            (offset_of!(RawConstraints, upper), RawConstraints::HAS_MAXIMUM, 255),
+            (offset_of!(RawConstraints, minimum), 0, 2u8),
+            (offset_of!(RawConstraints, maximum), RawConstraints::HAS_MAXIMUM, 255),
             (offset_of!(RawConstraints, multiple_of), 0, 2),
-            (offset_of!(RawConstraints, exclusive_lower), 0, 2),
-            (offset_of!(RawConstraints, exclusive_upper), 0, 2),
-            (offset_of!(RawConstraints, lower), RawConstraints::HAS_MINIMUM, 1),
+            (offset_of!(RawConstraints, exclusive_minimum), 0, 2),
+            (offset_of!(RawConstraints, exclusive_maximum), 0, 2),
+            (offset_of!(RawConstraints, minimum), RawConstraints::HAS_MINIMUM, 1),
         ] {
             let mut memory = [0u64; 13];
             let bytes = memory.as_mut_ptr().cast::<u8>();
@@ -3763,10 +3763,10 @@ mod sites {
             if let Some(value) = dec(field) {
                 raw.flags |= flag;
                 *(match slot {
-                    0 => &mut raw.lower,
-                    1 => &mut raw.exclusive_lower,
-                    2 => &mut raw.upper,
-                    _ => &mut raw.exclusive_upper,
+                    0 => &mut raw.minimum,
+                    1 => &mut raw.exclusive_minimum,
+                    2 => &mut raw.maximum,
+                    _ => &mut raw.exclusive_maximum,
                 }) = value;
             }
         }

@@ -1075,10 +1075,10 @@ fn declaration(door: u32, c: &Value) -> Option<(RawConstraints, Vec<u8>)> {
         if let Some(value) = dec(field) {
             raw.flags |= flag;
             *(match slot {
-                0 => &mut raw.lower,
-                1 => &mut raw.exclusive_lower,
-                2 => &mut raw.upper,
-                _ => &mut raw.exclusive_upper,
+                0 => &mut raw.minimum,
+                1 => &mut raw.exclusive_minimum,
+                2 => &mut raw.maximum,
+                _ => &mut raw.exclusive_maximum,
             }) = value.ok()?;
         }
     }
@@ -1810,7 +1810,7 @@ fn the_vocabulary_is_independent_of_the_options_and_judged_on_every_call() {
 fn a_violation_writes_detail_0_and_a_check_with_no_index() {
     let mut raw = RawConstraints::ZERO;
     raw.flags = RawConstraints::HAS_MAXIMUM;
-    raw.upper = hypercast::decimal_for_declaration("10").unwrap();
+    raw.maximum = hypercast::decimal_for_declaration("10").unwrap();
     let input = b"  42 ";
     let mut out = [0xA5u8; 16];
     let mut fault = RawFaultDetail { size: 16, offset: 9, len: 9, detail: 9 };

@@ -19,6 +19,7 @@
 //! | `DateOptions::validate`, `MonthNames::from_packed`, and the month reader under it | `cast_detailed` |
 //! | `Detail::code`, `Failure`'s fields | every detailed export |
 //! | `Constraints::from_raw`, `pack_enum` at every door | [`hypercast_harness_from_raw_i8`] and the rest below |
+//! | `Constraints::enum_entries` and its two iterators, over packed and built lists | [`hypercast_harness_enum_packed_numbers`], [`hypercast_harness_enum_packed_text`], [`hypercast_harness_enum_decimals`], [`hypercast_harness_enum_text`] |
 //! | `MonthNames::pack` (packed and built), `from_entries` + `validate` | [`hypercast_harness_month_names_pack_packed`], [`hypercast_harness_month_names_pack_entries`], [`hypercast_harness_month_names_entries_validate`] |
 //! | the detailed date doors under options built from raw parts | [`hypercast_harness_date_doors`] |
 //! | the Rust-only detailed typed doors (the eight integers, `f32`, `bool`, Unix) | [`hypercast_harness_typed_doors`] |
@@ -214,6 +215,87 @@ pub unsafe extern "C" fn hypercast_harness_pack_text(
     // SAFETY: per the function contract.
     let (entries, out) = unsafe { (items(entries, count), out(out_ptr, out_len)) };
     packed(Constraints::text(TextRules::new(), Some(entries)), out)
+}
+
+/// Walks a numeric `enum` as `enum_entries` reads it: the entries' low words summed, wrapping,
+/// or `u64::MAX` for no `enum` or a refused declaration.
+fn walked_numbers<T: crate::Numeric>(
+    constraints: Result<Constraints<'_, T>, crate::Refusal>,
+) -> u64 {
+    let Some(entries) = constraints.ok().and_then(|c| c.enum_entries()) else { return u64::MAX };
+    entries.fold(0u64, |sum, entry| sum.wrapping_add(entry.lo))
+}
+
+/// Walks a text `enum` as `enum_entries` reads it: the entries' byte lengths summed, wrapping,
+/// or `usize::MAX` for no `enum` or a refused declaration.
+fn walked_texts(constraints: Result<Constraints<'_, Text>, crate::Refusal>) -> usize {
+    let Some(entries) = constraints.ok().and_then(|c| c.enum_entries()) else { return REFUSED };
+    let count = entries.len();
+    entries.fold(count, |sum, entry| sum.wrapping_add(entry.len()))
+}
+
+/// `enum_entries` over a packed integer list read by `from_raw` at the `i64` door.
+///
+/// # Safety
+/// As the `from_raw` functions.
+#[unsafe(no_mangle)]
+#[no_panic::no_panic]
+pub unsafe extern "C" fn hypercast_harness_enum_packed_numbers(
+    raw: *const RawConstraints,
+    entries: *const u8,
+    len: usize,
+) -> u64 {
+    // SAFETY: per the function contract.
+    let Some(raw) = (unsafe { read(raw) }) else { return u64::MAX };
+    // SAFETY: per the function contract.
+    walked_numbers(Constraints::<i64>::from_raw(raw, unsafe { items(entries, len) }))
+}
+
+/// `enum_entries` over a packed text list read by `from_raw` at the text door.
+///
+/// # Safety
+/// As the `from_raw` functions.
+#[unsafe(no_mangle)]
+#[no_panic::no_panic]
+pub unsafe extern "C" fn hypercast_harness_enum_packed_text(
+    raw: *const RawConstraints,
+    entries: *const u8,
+    len: usize,
+) -> usize {
+    // SAFETY: per the function contract.
+    let Some(raw) = (unsafe { read(raw) }) else { return REFUSED };
+    // SAFETY: per the function contract.
+    walked_texts(Constraints::<Text>::from_raw(raw, unsafe { items(entries, len) }))
+}
+
+/// `enum_entries` over a list of [`Decimal`]s declared through `Constraints::numeric` at the
+/// `i64` door.
+///
+/// # Safety
+/// `entries` points to `count` live `Decimal`s when `count > 0`.
+#[unsafe(no_mangle)]
+#[no_panic::no_panic]
+pub unsafe extern "C" fn hypercast_harness_enum_decimals(
+    entries: *const Decimal,
+    count: usize,
+) -> u64 {
+    // SAFETY: per the function contract.
+    let entries = unsafe { items(entries, count) };
+    walked_numbers(Constraints::<i64>::numeric(NumericRules::new(), Some(entries)))
+}
+
+/// `enum_entries` over a list of `&str`s declared through `Constraints::text`.
+///
+/// # Safety
+/// `entries` points to `count` live `&str`s when `count > 0`.
+// A `&str` has no C layout, but nothing calls this from C: it exists to be linked and checked.
+#[allow(improper_ctypes_definitions)]
+#[unsafe(no_mangle)]
+#[no_panic::no_panic]
+pub unsafe extern "C" fn hypercast_harness_enum_text(entries: *const &str, count: usize) -> usize {
+    // SAFETY: per the function contract.
+    let entries = unsafe { items(entries, count) };
+    walked_texts(Constraints::text(TextRules::new(), Some(entries)))
 }
 
 /// `MonthNames::from_packed` and the validation of options around it: `0` for a vocabulary

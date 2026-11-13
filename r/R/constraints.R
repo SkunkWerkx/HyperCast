@@ -179,7 +179,12 @@ constraints_layout <- function(constraints) {
 #'   declares one no value matches: every value is then an `enum` violation.
 #' @param x A `hypercast_constraints`.
 #' @param ... Ignored.
-#' @return A `hypercast_constraints`: a list of the door and the declared keywords.
+#' @return A `hypercast_constraints`: a list of the door and the declared keywords, then
+#'   `packed`, the 104 bytes the declaration crosses the C ABI as (`RawConstraints`), and
+#'   `packed_enum`, its `enum` list in the core's packed format, each a raw vector in the
+#'   machine's byte order, for a package that hands the declaration on (as `num_format()`'s
+#'   `packed` is). They are what the keywords laid out as when declared: edit a keyword and
+#'   declare it again rather than edit the list.
 #' @family constraints
 #' @export
 #' @examples
@@ -207,6 +212,9 @@ hypercast_constraints <- function(door, minimum = NULL, exclusive_minimum = NULL
   if (code != 0L) {
     stop(refusal_message(code), call. = FALSE)
   }
+  packed <- .Call(C_constraints_packed, layout, session_native())
+  constraints$packed <- packed[[1L]]
+  constraints$packed_enum <- packed[[2L]]
   constraints
 }
 
