@@ -118,10 +118,13 @@ jobs:
           config-file: ./.github/codeql/codeql-config.yml
 
       # From the root Package.swift, the one consumers resolve; its HyperCast target is the
-      # same sources as swift/Package.swift's, now linking the core built above.
+      # same sources as swift/Package.swift's, now linking the core built above. The include path
+      # is spelled out because this image's SwiftPM (Xcode 26.6) declares the bundle and then
+      # leaves its module map off the compile ("no such module 'HyperCastCore'", 2026-11-13);
+      # Xcode 27's passes it itself. Compiling the target links nothing, so the path is enough.
       - name: Build the Swift library
         if: matrix.build-mode == 'manual'
-        run: swift build --target HyperCast
+        run: swift build --target HyperCast -Xswiftc -I"$PWD/swift/HyperCastCore.artifactbundle/include"
 
       # Builds the autobuild languages and uploads every language's SARIF, once each, under the
       # same `/language:<lang>` category default setup used.
