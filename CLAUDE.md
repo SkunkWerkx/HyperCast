@@ -270,6 +270,17 @@ promise, so every stable bump is re-proven by the legs that use it.
   (every release runs that once, as its no-op recovery proof). The finalizer writes the GitHub
   Release from the CHANGELOG's `## [X.Y.Z]` section; `prepare-release.yml` dates that heading,
   sets `r/NEWS.md`'s, and refuses a CHANGELOG without it or with a placeholder left in it.
+- Dismissing a code scanning alert from the CLI takes `-F create_request=true`: delegated alert
+  dismissal is on for this repo, so without it the API answers 400 ("The alert cannot be
+  dismissed when the create_request parameter is false"; `gh`'s `delete_repo` scope hint beside
+  it is wrong, never add that scope). The call files a request the owner then approves, and
+  the alert stays open until they do:
+
+  ```sh
+  gh api -X PATCH "repos/SkunkWerkx/HyperCast/code-scanning/alerts/<n>" \
+    -f state=dismissed -f dismissed_reason='false positive' \
+    -f dismissed_comment='<why>' -F create_request=true
+  ```
 - Third-party actions are pinned to a commit with the version in a trailing comment, and
   `.github/dependabot.yml` moves them with every other ecosystem in one monthly pull request.
   It ignores the Forge and `dtolnay/rust-toolchain` (branch heads, refreshed by hand).
