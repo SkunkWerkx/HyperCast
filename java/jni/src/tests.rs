@@ -800,11 +800,11 @@ fn wire(raw: &RawConstraints) -> [u8; 104] {
         bytes[i * 4..i * 4 + 4].copy_from_slice(&word.to_ne_bytes());
     }
     for (at, d) in [
-        (24, raw.lower),
-        (40, raw.upper),
+        (24, raw.minimum),
+        (40, raw.maximum),
         (56, raw.multiple_of),
-        (72, raw.exclusive_lower),
-        (88, raw.exclusive_upper),
+        (72, raw.exclusive_minimum),
+        (88, raw.exclusive_maximum),
     ] {
         bytes[at..at + 16].copy_from_slice(&packed_decimal(d));
     }
@@ -837,18 +837,18 @@ fn declared(flags: u32) -> RawConstraints {
         min_length: 0,
         max_length: 0,
         _reserved: 0,
-        lower: whole(0, false),
-        upper: whole(0, false),
+        minimum: whole(0, false),
+        maximum: whole(0, false),
         multiple_of: whole(0, false),
-        exclusive_lower: whole(0, false),
-        exclusive_upper: whole(0, false),
+        exclusive_minimum: whole(0, false),
+        exclusive_maximum: whole(0, false),
     }
 }
 
 /// `minimum: 10, multipleOf: 5` under `rounding`.
 fn ten_by_five(rounding: u32) -> [u8; 104] {
     let mut raw = declared(RawConstraints::HAS_MINIMUM | RawConstraints::HAS_MULTIPLE_OF);
-    raw.lower = whole(10, false);
+    raw.minimum = whole(10, false);
     raw.multiple_of = whole(5, false);
     raw.rounding = rounding;
     wire(&raw)
@@ -974,10 +974,10 @@ fn each_bound_crosses_in_its_own_slot() {
             | RawConstraints::HAS_MAXIMUM
             | RawConstraints::HAS_EXCLUSIVE_MAXIMUM,
     );
-    raw.lower = whole(0, false);
-    raw.exclusive_lower = whole(10, false);
-    raw.upper = whole(100, false);
-    raw.exclusive_upper = whole(50, false);
+    raw.minimum = whole(0, false);
+    raw.exclusive_minimum = whole(10, false);
+    raw.maximum = whole(100, false);
+    raw.exclusive_maximum = whole(50, false);
     let both = wire(&raw);
     let door = Door::I32.code();
     let (rc, o) = call_checked(door, None, &both, None, b"5");
@@ -1218,7 +1218,7 @@ fn a_declaration_is_judged_by_the_core() {
     // Every valid OpenAPI declaration is accepted: a bound outside the door's range,
     // duplicate, empty or blank entries, an empty list, a keyword for another type.
     let mut raw = declared(RawConstraints::HAS_MINIMUM);
-    raw.lower = whole(1, true);
+    raw.minimum = whole(1, true);
     assert_eq!(check(Door::U8, &raw, None), 0);
     let duplicates = text_entries(&["I", "i"]);
     let listed = declared(RawConstraints::HAS_ENUM);
@@ -1828,7 +1828,7 @@ fn the_checked_detailed_door_over_a_double_writes_the_detail_of_a_fault() {
     assert_eq!((rc, o[0], &o[4..7]), (0, 7, &[0, 0, NO_ENTRY][..]));
     // A violation from a double: its span is empty, its detail 0.
     let mut raw = declared(RawConstraints::HAS_MINIMUM);
-    raw.lower = whole(10, false);
+    raw.minimum = whole(10, false);
     let minimum = wire(&raw);
     let mut o = checked_out();
     let rc = unsafe {

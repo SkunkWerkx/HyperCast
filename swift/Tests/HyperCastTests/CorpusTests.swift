@@ -846,7 +846,7 @@ final class CorpusTests: XCTestCase {
     /// `corpus/declarations.json`: each input through this binding's conversion of a bound
     /// (the core's `cast_declared_decimal`, which nothing here restates), asserting the raw
     /// triple, scale included, and through the public initializer at the decimal door, which
-    /// holds any decimal: the layout's `upper` field is the same triple, and a refused input
+    /// holds any decimal: the layout's `maximum` field is the same triple, and a refused input
     /// is the core's refusal 8.
     /// `corpus/grouping.json`: every shape under both policies, through every way a format is had.
     /// A declaration traps on a bad word, which XCTest can't survive, so the rule the trap reads
@@ -953,10 +953,10 @@ final class CorpusTests: XCTestCase {
                 continue
             }
             let raw = Interop.rawConstraints(constraints)
-            let upper = withUnsafeBytes(of: raw) { bytes in
+            let maximum = withUnsafeBytes(of: raw) { bytes in
                 bytes.load(fromByteOffset: 40, as: Cast.OutScratch.self)
             }
-            XCTAssertEqual(triple(upper), want, "declarations: '\(input)' upper")
+            XCTAssertEqual(triple(maximum), want, "declarations: '\(input)' maximum")
             XCTAssertEqual(constraints.maximum, Decimal(string: vector["value"] as! String), "declarations: '\(input)'")
         }
         XCTAssertGreaterThan(vectors.count, 0)

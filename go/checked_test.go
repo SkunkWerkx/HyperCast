@@ -345,8 +345,8 @@ func TestBoundsTakeTextDecimalsAndIntegers(t *testing.T) {
 	if raw.Size != RawConstraintsSize || raw.Flags != RawConstraintsHasMinimum|RawConstraintsHasExclusiveMaximum|RawConstraintsHasMultipleOf || raw.Rounding != 1 {
 		t.Errorf("Raw() = %+v", raw)
 	}
-	// Each bound in its own field: the exclusive maximum is not in Upper, the maximum's.
-	if raw.Lower.String() != "-90" || raw.ExclusiveUpper.String() != "90" || raw.Upper != (Decimal{}) || raw.ExclusiveLower != (Decimal{}) {
+	// Each bound in its own field: the exclusive maximum is not in Maximum, the maximum's.
+	if raw.Minimum.String() != "-90" || raw.ExclusiveMaximum.String() != "90" || raw.Maximum != (Decimal{}) || raw.ExclusiveMinimum != (Decimal{}) {
 		t.Errorf("Raw() bounds = %+v", raw)
 	}
 	text := MustConstraints[string](MinLength(1), MaxLength(3), Trim(), Enum("ab", "c"))
@@ -548,7 +548,7 @@ func TestCheckFromFloat64JudgesTheShortestDecimal(t *testing.T) {
 func TestTheFourBoundsAreIndependent(t *testing.T) {
 	c := MustConstraints[int32](Minimum(0), ExclusiveMinimum(5), Maximum(100), ExclusiveMaximum(50))
 	raw := c.Raw()
-	if raw.Lower.String() != "0" || raw.ExclusiveLower.String() != "5" || raw.Upper.String() != "100" || raw.ExclusiveUpper.String() != "50" {
+	if raw.Minimum.String() != "0" || raw.ExclusiveMinimum.String() != "5" || raw.Maximum.String() != "100" || raw.ExclusiveMaximum.String() != "50" {
 		t.Fatalf("Raw() = %+v", raw)
 	}
 	for input, want := range map[string]Keyword{"-1": KeywordMinimum, "5": KeywordExclusiveMinimum, "101": KeywordMaximum, "50": KeywordExclusiveMaximum, "6": 0, "49": 0} {
@@ -668,3 +668,60 @@ func TestAViolationCarriesTheValueAsCast(t *testing.T) {
 
 func asRejection[V any](_ Checked[V], r Rejection) error        { return asError(r) }
 func asDetailed[V any](_ Checked[V], r DetailedRejection) error { return asError(r) }
+
+// Enum reads the declaration back: each entry as Enum rendered it, in order, duplicates kept,
+// with whether the entries were declared as numbers.
+func TestEnumReadsBackAsDeclared(t *testing.T) {
+	entries, numbers, ok := MustConstraints[int32](Enum(20, 10, 20)).Enum()
+	if !ok || !numbers || !reflect.DeepEqual(entries, []string{"20", "10", "20"}) {
+		t.Errorf("Enum(20, 10, 20) reads back %q numbers=%v ok=%v", entries, numbers, ok)
+	}
+	entries, numbers, ok = MustConstraints[float64](Enum("1", "2.5", "2.50")).Enum()
+	if !ok || numbers || !reflect.DeepEqual(entries, []string{"1", "2.5", "2.50"}) {
+		t.Errorf(`Enum("1", "2.5", "2.50") reads back %q numbers=%v ok=%v`, entries, numbers, ok)
+	}
+}
+
+// A number in a text enum reads back as the number it was declared, and never matches.
+func TestANumberInATextEnumReadsBackAsDeclared(t *testing.T) {
+	codes := MustConstraints[string](Enum(1))
+	entries, numbers, ok := codes.Enum()
+	if !ok || !numbers || !reflect.DeepEqual(entries, []string{"1"}) {
+		t.Errorf("Enum(1) at the text door reads back %q numbers=%v ok=%v", entries, numbers, ok)
+	}
+	if _, rejection := CheckString("1", codes); rejection == nil {
+		t.Error(`"1" matched a number in a text enum`)
+	}
+}
+
+// No enum declared reads as not ok, at either kind of door.
+func TestNoEnumReadsAbsent(t *testing.T) {
+	if entries, _, ok := MustConstraints[int32](Minimum(0)).Enum(); ok || entries != nil {
+		t.Errorf("no enum at a numeric door reads %q ok=%v", entries, ok)
+	}
+	if entries, _, ok := MustConstraints[string](Trim()).Enum(); ok || entries != nil {
+		t.Errorf("no enum at the text door reads %q ok=%v", entries, ok)
+	}
+}
+
+// An empty enum reads back present and empty, and every value violates it.
+func TestAnEmptyEnumReadsBackEmpty(t *testing.T) {
+	none := MustConstraints[int32](Enum[int]())
+	if entries, _, ok := none.Enum(); !ok || entries == nil || len(entries) != 0 {
+		t.Errorf("an empty enum reads %q ok=%v", entries, ok)
+	}
+	want := Violation[int32]{Keyword: KeywordEnum, Value: 7, Offset: 0, Length: 1}
+	if _, rejection := Check("7", Invariant, none); rejection == nil || *rejection.(*Violation[int32]) != want {
+		t.Errorf(`"7" against an empty enum -> %v`, rejection)
+	}
+}
+
+// The slice Enum returns is the caller's: changing it changes nothing in the declaration.
+func TestTheEnumReaderCannotChangeTheDeclaration(t *testing.T) {
+	sex := MustConstraints[string](Enum("Female", "Male"))
+	entries, _, _ := sex.Enum()
+	entries[0] = "Other"
+	if again, _, _ := sex.Enum(); !reflect.DeepEqual(again, []string{"Female", "Male"}) {
+		t.Errorf("the declaration changed through Enum: %q", again)
+	}
+}

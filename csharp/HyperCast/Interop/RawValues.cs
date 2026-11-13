@@ -345,11 +345,11 @@ public readonly struct RawDuration(long seconds, int nanos)
 /// <item><term>12</term><description><see cref="MinLength"/></description></item>
 /// <item><term>16</term><description><see cref="MaxLength"/></description></item>
 /// <item><term>20</term><description><see cref="Reserved"/></description></item>
-/// <item><term>24</term><description><see cref="Lower"/></description></item>
-/// <item><term>40</term><description><see cref="Upper"/></description></item>
+/// <item><term>24</term><description><see cref="Minimum"/></description></item>
+/// <item><term>40</term><description><see cref="Maximum"/></description></item>
 /// <item><term>56</term><description><see cref="MultipleOf"/></description></item>
-/// <item><term>72</term><description><see cref="ExclusiveLower"/></description></item>
-/// <item><term>88</term><description><see cref="ExclusiveUpper"/></description></item>
+/// <item><term>72</term><description><see cref="ExclusiveMinimum"/></description></item>
+/// <item><term>88</term><description><see cref="ExclusiveMaximum"/></description></item>
 /// </list>
 /// A <see cref="Size"/> other than 104, an unknown flag bit, an unknown rounding code, a
 /// nonzero <see cref="Reserved"/>, a decimal sign byte other than 0 or 1, or a non-empty
@@ -358,16 +358,16 @@ public readonly struct RawDuration(long seconds, int nanos)
 [StructLayout(LayoutKind.Sequential)]
 public struct RawConstraints
 {
-	/// <summary><see cref="Lower"/>, the <c>minimum</c>, is read.</summary>
+	/// <summary><see cref="Minimum"/>, the <c>minimum</c>, is read.</summary>
 	public const uint HasMinimum = 1;
 
-	/// <summary><see cref="ExclusiveLower"/>, the <c>exclusiveMinimum</c>, is read.</summary>
+	/// <summary><see cref="ExclusiveMinimum"/>, the <c>exclusiveMinimum</c>, is read.</summary>
 	public const uint HasExclusiveMinimum = 2;
 
-	/// <summary><see cref="Upper"/>, the <c>maximum</c>, is read.</summary>
+	/// <summary><see cref="Maximum"/>, the <c>maximum</c>, is read.</summary>
 	public const uint HasMaximum = 4;
 
-	/// <summary><see cref="ExclusiveUpper"/>, the <c>exclusiveMaximum</c>, is read.</summary>
+	/// <summary><see cref="ExclusiveMaximum"/>, the <c>exclusiveMaximum</c>, is read.</summary>
 	public const uint HasExclusiveMaximum = 8;
 
 	/// <summary><see cref="MultipleOf"/> and <see cref="Rounding"/> are read.</summary>
@@ -410,19 +410,19 @@ public struct RawConstraints
 	public uint Reserved;
 
 	/// <summary><c>minimum</c>: the value may equal it.</summary>
-	public RawDecimal Lower;
+	public RawDecimal Minimum;
 
 	/// <summary><c>maximum</c>: the value may equal it.</summary>
-	public RawDecimal Upper;
+	public RawDecimal Maximum;
 
 	/// <summary>The step every value must be a multiple of.</summary>
 	public RawDecimal MultipleOf;
 
 	/// <summary><c>exclusiveMinimum</c>: the value must exceed it.</summary>
-	public RawDecimal ExclusiveLower;
+	public RawDecimal ExclusiveMinimum;
 
 	/// <summary><c>exclusiveMaximum</c>: the value must be below it.</summary>
-	public RawDecimal ExclusiveUpper;
+	public RawDecimal ExclusiveMaximum;
 }
 
 /// <summary>

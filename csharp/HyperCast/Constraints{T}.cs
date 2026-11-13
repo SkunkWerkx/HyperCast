@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Collections.ObjectModel;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using HyperCast.Interop;
@@ -48,6 +49,7 @@ public sealed class Constraints<T> where T : notnull
 	readonly RawConstraints _raw;
 	readonly byte[] _packed;
 	readonly string[]? _entries;
+	readonly ReadOnlyCollection<ConstraintValue>? _enum;
 
 	/// <summary>Declares the constraints and has the native core judge them for <typeparamref name="T"/>'s door.</summary>
 	/// <param name="minimum">The smallest value allowed.</param>
@@ -99,13 +101,13 @@ public sealed class Constraints<T> where T : notnull
 		Door = DoorOf();
 		var raw = new RawConstraints { Size = (uint)Unsafe.SizeOf<RawConstraints>(), Rounding = Code(rounding) };
 		if (minimum is { } min)
-			Declare(ref raw.Lower, ref raw.Flags, RawConstraints.HasMinimum, min, nameof(minimum));
+			Declare(ref raw.Minimum, ref raw.Flags, RawConstraints.HasMinimum, min, nameof(minimum));
 		if (exclusiveMinimum is { } exclusiveMin)
-			Declare(ref raw.ExclusiveLower, ref raw.Flags, RawConstraints.HasExclusiveMinimum, exclusiveMin, nameof(exclusiveMinimum));
+			Declare(ref raw.ExclusiveMinimum, ref raw.Flags, RawConstraints.HasExclusiveMinimum, exclusiveMin, nameof(exclusiveMinimum));
 		if (maximum is { } max)
-			Declare(ref raw.Upper, ref raw.Flags, RawConstraints.HasMaximum, max, nameof(maximum));
+			Declare(ref raw.Maximum, ref raw.Flags, RawConstraints.HasMaximum, max, nameof(maximum));
 		if (exclusiveMaximum is { } exclusiveMax)
-			Declare(ref raw.ExclusiveUpper, ref raw.Flags, RawConstraints.HasExclusiveMaximum, exclusiveMax, nameof(exclusiveMaximum));
+			Declare(ref raw.ExclusiveMaximum, ref raw.Flags, RawConstraints.HasExclusiveMaximum, exclusiveMax, nameof(exclusiveMaximum));
 		if (multipleOf is { } step)
 			Declare(ref raw.MultipleOf, ref raw.Flags, RawConstraints.HasMultipleOf, step, nameof(multipleOf));
 		if (minLength is { } fewest)
@@ -124,9 +126,12 @@ public sealed class Constraints<T> where T : notnull
 			raw.Flags |= RawConstraints.Trim;
 		if (caseSensitive)
 			raw.Flags |= RawConstraints.CaseSensitive;
-		if (@enum is not null)
+		// Read once, so an enumerable that yields differently each time packs what is kept.
+		var declared = @enum?.ToArray();
+		if (declared is not null)
 			raw.Flags |= RawConstraints.HasEnum;
-		(_packed, _entries) = @enum is null ? ([], null) : Pack(Door, @enum);
+		(_packed, _entries) = declared is null ? ([], null) : Pack(Door, declared);
+		_enum = declared is null ? null : Array.AsReadOnly(declared);
 		var code = Cast.CheckConstraints(Door, raw, _packed);
 		if (code != 0)
 			throw new ArgumentException(Refusal(code));
@@ -137,16 +142,16 @@ public sealed class Constraints<T> where T : notnull
 	internal uint Door { get; }
 
 	/// <summary>The declared <c>minimum</c>, or <see langword="null"/>.</summary>
-	public decimal? Minimum => Bound(RawConstraints.HasMinimum, _raw.Lower);
+	public decimal? Minimum => Bound(RawConstraints.HasMinimum, _raw.Minimum);
 
 	/// <summary>The declared <c>exclusiveMinimum</c>, or <see langword="null"/>.</summary>
-	public decimal? ExclusiveMinimum => Bound(RawConstraints.HasExclusiveMinimum, _raw.ExclusiveLower);
+	public decimal? ExclusiveMinimum => Bound(RawConstraints.HasExclusiveMinimum, _raw.ExclusiveMinimum);
 
 	/// <summary>The declared <c>maximum</c>, or <see langword="null"/>.</summary>
-	public decimal? Maximum => Bound(RawConstraints.HasMaximum, _raw.Upper);
+	public decimal? Maximum => Bound(RawConstraints.HasMaximum, _raw.Maximum);
 
 	/// <summary>The declared <c>exclusiveMaximum</c>, or <see langword="null"/>.</summary>
-	public decimal? ExclusiveMaximum => Bound(RawConstraints.HasExclusiveMaximum, _raw.ExclusiveUpper);
+	public decimal? ExclusiveMaximum => Bound(RawConstraints.HasExclusiveMaximum, _raw.ExclusiveMaximum);
 
 	/// <summary>The declared <c>multipleOf</c>, or <see langword="null"/>.</summary>
 	public decimal? MultipleOf => Bound(RawConstraints.HasMultipleOf, _raw.MultipleOf);
@@ -165,6 +170,13 @@ public sealed class Constraints<T> where T : notnull
 
 	/// <summary>Whether a text <c>enum</c> matches byte for byte rather than under simple case folding.</summary>
 	public bool CaseSensitive => (_raw.Flags & RawConstraints.CaseSensitive) != 0;
+
+	/// <summary>
+	/// The declared <c>enum</c>, each entry as it was passed, in order, duplicates kept; empty
+	/// for an empty <c>enum</c>, which every value violates, and <see langword="null"/> when none
+	/// is declared. A read-only copy: changing the collection passed in changes nothing here.
+	/// </summary>
+	public IReadOnlyList<ConstraintValue>? Enum => _enum;
 
 	/// <summary>
 	/// The declaration in the native core's 104-byte layout, public for a library that judges

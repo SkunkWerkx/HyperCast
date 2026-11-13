@@ -160,12 +160,14 @@ if [ "$os" != windows ]; then
   cc ${arch_flags[@]+"${arch_flags[@]}"} "$min_version" -o "$work/pc-static" "$here/main.c" $(pkg-config --cflags hypercast) "$libdir/libhypercast.a"
   run_program "pkg-config, static" "$work/pc-static" static
   if command -v c++ >/dev/null; then
+    # pkg-config's route is -I, so a warning in hypercast.hpp fails here as it would a consumer's.
+    cxx_warnings=(-Wall -Wextra -Wpedantic -Wshadow -Werror)
     # shellcheck disable=SC2046
-    c++ ${arch_flags[@]+"${arch_flags[@]}"} -std=c++17 -o "$work/pc-cxx-shared" "$here/main.cpp" $(pkg-config --cflags --libs hypercast) \
+    c++ ${arch_flags[@]+"${arch_flags[@]}"} -std=c++17 "${cxx_warnings[@]}" -o "$work/pc-cxx-shared" "$here/main.cpp" $(pkg-config --cflags --libs hypercast) \
       -Wl,-rpath,"$libdir"
     run_program "pkg-config, C++, shared" "$work/pc-cxx-shared" shared
     # shellcheck disable=SC2046
-    c++ ${arch_flags[@]+"${arch_flags[@]}"} -std=c++17 -o "$work/pc-cxx-static" "$here/main.cpp" $(pkg-config --cflags hypercast) \
+    c++ ${arch_flags[@]+"${arch_flags[@]}"} -std=c++17 "${cxx_warnings[@]}" -o "$work/pc-cxx-static" "$here/main.cpp" $(pkg-config --cflags hypercast) \
       "$libdir/libhypercast.a"
     run_program "pkg-config, C++, static" "$work/pc-cxx-static" static
   elif [ "${SMOKE_CXX:-}" = 1 ]; then

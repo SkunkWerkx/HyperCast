@@ -409,19 +409,19 @@ impl<'e, T: Numeric> Constraints<'e, T> {
         let mut raw = RawConstraints::ZERO;
         if let Some(value) = rules.minimum {
             raw.flags |= RawConstraints::HAS_MINIMUM;
-            raw.lower = value;
+            raw.minimum = value;
         }
         if let Some(value) = rules.exclusive_minimum {
             raw.flags |= RawConstraints::HAS_EXCLUSIVE_MINIMUM;
-            raw.exclusive_lower = value;
+            raw.exclusive_minimum = value;
         }
         if let Some(value) = rules.maximum {
             raw.flags |= RawConstraints::HAS_MAXIMUM;
-            raw.upper = value;
+            raw.maximum = value;
         }
         if let Some(value) = rules.exclusive_maximum {
             raw.flags |= RawConstraints::HAS_EXCLUSIVE_MAXIMUM;
-            raw.exclusive_upper = value;
+            raw.exclusive_maximum = value;
         }
         if let Some((step, rounding)) = rules.multiple_of {
             raw.flags |= RawConstraints::HAS_MULTIPLE_OF;
@@ -531,6 +531,11 @@ impl<'e, T> Constraints<'e, T> {
     /// The `enum` entries.
     pub(crate) fn entries(&self) -> &Entries<'e> {
         &self.entries
+    }
+
+    /// Whether an `enum` is declared: the layout's flag, since an empty list declares one too.
+    fn has_enum(&self) -> bool {
+        self.raw.flags & RawConstraints::HAS_ENUM != 0
     }
 
     /// Packs the `enum` list into `out` as the C ABI passes it beside [`raw`](Self::raw), and
@@ -713,6 +718,103 @@ impl<'e> Entries<'e> {
     }
 }
 
+impl<'e, T: Numeric> Constraints<'e, T> {
+    /// The declared `enum`, entries in the order declared, duplicates kept; `None` when no
+    /// `enum` is declared, and present but empty for an empty one, which every value violates.
+    /// A list read by [`from_raw`](Self::from_raw) is read from its packed bytes. Never
+    /// allocates.
+    ///
+    /// ```
+    /// use hypercast::{Constraints, Decimal, NumericRules};
+    ///
+    /// let sizes = [Decimal::from(10), Decimal::from(20)];
+    /// let declared = Constraints::<i32>::numeric(NumericRules::new(), Some(&sizes)).unwrap();
+    /// assert_eq!(declared.enum_entries().unwrap().collect::<Vec<_>>(), sizes);
+    /// ```
+    pub fn enum_entries(&self) -> Option<EnumNumbers<'e>> {
+        self.has_enum().then(|| EnumNumbers {
+            entries: self.entries,
+            next: 0,
+            len: self.entries.len(),
+        })
+    }
+}
+
+impl<'e> Constraints<'e, Text> {
+    /// The declared `enum`, each entry's bytes in the order declared, duplicates kept; `None`
+    /// when no `enum` is declared, and present but empty for an empty one, which every value
+    /// violates. A list read by [`from_raw`](Self::from_raw) is read from its packed bytes, so
+    /// a number a binding packed into a text `enum` (an entry no text equals) reads back as an
+    /// empty entry. Never allocates.
+    ///
+    /// ```
+    /// use hypercast::{Constraints, TextRules};
+    ///
+    /// let declared = Constraints::text(TextRules::new(), Some(&["Female", "Male"])).unwrap();
+    /// let entries = declared.enum_entries().unwrap().collect::<Vec<_>>();
+    /// assert_eq!(entries, [&b"Female"[..], b"Male"]);
+    /// ```
+    pub fn enum_entries(&self) -> Option<EnumTexts<'e>> {
+        self.has_enum().then(|| EnumTexts { texts: self.entries.texts(), len: self.entries.len() })
+    }
+}
+
+/// A numeric declaration's `enum` entries, in order: [`Constraints::enum_entries`].
+#[derive(Clone, Debug)]
+pub struct EnumNumbers<'e> {
+    entries: Entries<'e>,
+    next: usize,
+    len: usize,
+}
+
+impl Iterator for EnumNumbers<'_> {
+    type Item = Decimal;
+
+    fn next(&mut self) -> Option<Decimal> {
+        if self.next >= self.len {
+            return None;
+        }
+        let entry = self.entries.number(self.next);
+        self.next += 1;
+        entry
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let left = self.len.saturating_sub(self.next);
+        (left, Some(left))
+    }
+}
+
+impl ExactSizeIterator for EnumNumbers<'_> {}
+
+impl core::iter::FusedIterator for EnumNumbers<'_> {}
+
+/// A text declaration's `enum` entries, each entry's bytes, in order:
+/// [`Constraints::enum_entries`].
+#[derive(Clone, Debug)]
+pub struct EnumTexts<'e> {
+    texts: Texts<'e>,
+    len: usize,
+}
+
+impl<'e> Iterator for EnumTexts<'e> {
+    type Item = &'e [u8];
+
+    fn next(&mut self) -> Option<&'e [u8]> {
+        let entry = self.texts.next()?;
+        self.len = self.len.saturating_sub(1);
+        Some(entry)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.len, Some(self.len))
+    }
+}
+
+impl ExactSizeIterator for EnumTexts<'_> {}
+
+impl core::iter::FusedIterator for EnumTexts<'_> {}
+
 /// The text entries of an [`Entries`], in order.
 #[derive(Clone, Debug)]
 pub(crate) enum Texts<'e> {
@@ -853,10 +955,10 @@ pub(crate) fn check(door: Door, raw: &RawConstraints, entries: &Entries) -> Resu
     // 8: every decimal at a scale a `Decimal` holds, every text entry short enough for the
     // packed form's `u32` length, and a rounding an integer door can deliver.
     let declared = |flag: u32, value: &Decimal| !has(flag) || value.scale <= MAX_SCALE;
-    if !declared(RawConstraints::HAS_MINIMUM, &raw.lower)
-        || !declared(RawConstraints::HAS_EXCLUSIVE_MINIMUM, &raw.exclusive_lower)
-        || !declared(RawConstraints::HAS_MAXIMUM, &raw.upper)
-        || !declared(RawConstraints::HAS_EXCLUSIVE_MAXIMUM, &raw.exclusive_upper)
+    if !declared(RawConstraints::HAS_MINIMUM, &raw.minimum)
+        || !declared(RawConstraints::HAS_EXCLUSIVE_MINIMUM, &raw.exclusive_minimum)
+        || !declared(RawConstraints::HAS_MAXIMUM, &raw.maximum)
+        || !declared(RawConstraints::HAS_EXCLUSIVE_MAXIMUM, &raw.exclusive_maximum)
         || !declared(RawConstraints::HAS_MULTIPLE_OF, &raw.multiple_of)
         || (0..entries.len())
             .any(|i| entries.number(i).is_some_and(|entry| entry.scale > MAX_SCALE))
@@ -1020,8 +1122,13 @@ mod tests {
         RawConstraints { flags, ..RawConstraints::ZERO }
     }
 
-    fn bounded(flags: u32, lower: &str, upper: &str) -> RawConstraints {
-        RawConstraints { flags, lower: dec(lower), upper: dec(upper), ..RawConstraints::ZERO }
+    fn bounded(flags: u32, minimum: &str, maximum: &str) -> RawConstraints {
+        RawConstraints {
+            flags,
+            minimum: dec(minimum),
+            maximum: dec(maximum),
+            ..RawConstraints::ZERO
+        }
     }
 
     fn stepped(step: &str) -> RawConstraints {
@@ -1067,11 +1174,11 @@ mod tests {
     fn layouts_are_pinned() {
         assert_eq!(size_of::<RawConstraints>(), 104);
         assert_eq!(align_of::<RawConstraints>(), 8);
-        assert_eq!(offset_of!(RawConstraints, lower), 24);
-        assert_eq!(offset_of!(RawConstraints, upper), 40);
+        assert_eq!(offset_of!(RawConstraints, minimum), 24);
+        assert_eq!(offset_of!(RawConstraints, maximum), 40);
         assert_eq!(offset_of!(RawConstraints, multiple_of), 56);
-        assert_eq!(offset_of!(RawConstraints, exclusive_lower), 72);
-        assert_eq!(offset_of!(RawConstraints, exclusive_upper), 88);
+        assert_eq!(offset_of!(RawConstraints, exclusive_minimum), 72);
+        assert_eq!(offset_of!(RawConstraints, exclusive_maximum), 88);
         assert_eq!(RawConstraints::SIZE as usize, size_of::<RawConstraints>());
         assert_eq!(size_of::<RawCheck>(), 12);
         assert_eq!(align_of::<RawCheck>(), 4);
@@ -1112,7 +1219,7 @@ mod tests {
             (Door::F64, RawConstraints { multiple_of: deep, ..stepped("1") }, none, NotHeldByDoor),
             (
                 Door::I32,
-                RawConstraints { flags: XMAX, exclusive_upper: deep, ..raw(0) },
+                RawConstraints { flags: XMAX, exclusive_maximum: deep, ..raw(0) },
                 none,
                 NotHeldByDoor,
             ),
@@ -1169,10 +1276,10 @@ mod tests {
         (lengths.min_length, lengths.max_length) = (3, 2);
         let both_lower = RawConstraints {
             flags: MIN | XMIN | MAX | XMAX,
-            lower: dec("5"),
-            exclusive_lower: dec("7"),
-            upper: dec("5"),
-            exclusive_upper: dec("5"),
+            minimum: dec("5"),
+            exclusive_minimum: dec("7"),
+            maximum: dec("5"),
+            exclusive_maximum: dec("5"),
             ..RawConstraints::ZERO
         };
         let cases: &[(Door, RawConstraints, &[u8])] = &[
@@ -1257,7 +1364,7 @@ mod tests {
         assert_eq!(raw.flags, XMIN | MAX | RawConstraints::HAS_MULTIPLE_OF);
         assert_eq!(raw.rounding, 1);
         assert_eq!(
-            (raw.exclusive_lower, raw.upper, raw.multiple_of),
+            (raw.exclusive_minimum, raw.maximum, raw.multiple_of),
             (dec("-90"), dec("90"), dec("0.000001"))
         );
         let entries = [Decimal::from(10), Decimal::from(20)];
@@ -1297,12 +1404,12 @@ mod tests {
         .unwrap();
         assert_eq!(raw.flags, MIN | XMIN | MAX | XMAX);
         assert_eq!(
-            (raw.lower, raw.exclusive_lower, raw.upper, raw.exclusive_upper),
+            (raw.minimum, raw.exclusive_minimum, raw.maximum, raw.exclusive_maximum),
             (zero, one, nine, five)
         );
         // The same keyword twice: the later value.
         let raw = numeric(NumericRules::new().minimum(nine).minimum(zero).maximum(nine)).unwrap();
-        assert_eq!((raw.flags, raw.lower), (MIN | MAX, zero));
+        assert_eq!((raw.flags, raw.minimum), (MIN | MAX, zero));
         // `None` declares nothing, and leaves what was declared.
         let rules = NumericRules::new()
             .minimum(zero)
@@ -1311,7 +1418,7 @@ mod tests {
             .maybe_maximum(None)
             .maybe_exclusive_maximum(Some(nine))
             .maybe_multiple_of(None);
-        assert_eq!(numeric(rules).map(|raw| (raw.flags, raw.lower)), Ok((MIN | XMAX, zero)));
+        assert_eq!(numeric(rules).map(|raw| (raw.flags, raw.minimum)), Ok((MIN | XMAX, zero)));
         assert_eq!(NumericRules::new().maybe_minimum(None), NumericRules::new());
         let text = TextRules::new().maybe_min_length(None).maybe_max_length(Some(3));
         assert_eq!((text.min_length, text.max_length), (None, Some(3)));

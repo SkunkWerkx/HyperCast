@@ -1544,19 +1544,19 @@ fn declaration(
     // Each of the four bounds is its own keyword, in its own slot.
     if let Some(value) = decimal_field(c, "minimum") {
         raw.flags |= Raw::HAS_MINIMUM;
-        raw.lower = value?;
+        raw.minimum = value?;
     }
     if let Some(value) = decimal_field(c, "exclusiveMinimum") {
         raw.flags |= Raw::HAS_EXCLUSIVE_MINIMUM;
-        raw.exclusive_lower = value?;
+        raw.exclusive_minimum = value?;
     }
     if let Some(value) = decimal_field(c, "maximum") {
         raw.flags |= Raw::HAS_MAXIMUM;
-        raw.upper = value?;
+        raw.maximum = value?;
     }
     if let Some(value) = decimal_field(c, "exclusiveMaximum") {
         raw.flags |= Raw::HAS_EXCLUSIVE_MAXIMUM;
-        raw.exclusive_upper = value?;
+        raw.exclusive_maximum = value?;
     }
     if let Some(value) = decimal_field(c, "multipleOf") {
         raw.flags |= Raw::HAS_MULTIPLE_OF;
@@ -1697,11 +1697,11 @@ fn text_row(
         | Raw::HAS_MULTIPLE_OF;
     let ignored = Raw {
         flags: raw.flags & !numeric,
-        lower: Raw::ZERO.lower,
-        exclusive_lower: Raw::ZERO.lower,
-        upper: Raw::ZERO.lower,
-        exclusive_upper: Raw::ZERO.lower,
-        multiple_of: Raw::ZERO.lower,
+        minimum: Raw::ZERO.minimum,
+        exclusive_minimum: Raw::ZERO.minimum,
+        maximum: Raw::ZERO.minimum,
+        exclusive_maximum: Raw::ZERO.minimum,
+        multiple_of: Raw::ZERO.minimum,
         ..raw
     };
     assert_eq!(constraints.raw(), ignored, "the builder's layout");

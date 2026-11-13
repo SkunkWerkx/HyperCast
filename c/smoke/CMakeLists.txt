@@ -13,7 +13,9 @@
 #   smoke_downgrade              downgrade.cpp: the header's guard against a core older than 1.1
 #                                (run.sh also builds it against a 1.0 core when it has one)
 #
-# Every one with warnings as errors (-Wall -Wextra -Wpedantic -Werror; /W4 /WX on MSVC).
+# Every one with warnings as errors (-Wall -Wextra -Wpedantic -Wshadow -Werror; /W4 /WX on MSVC),
+# which reach the headers too: an imported target's includes are system headers, whose warnings a
+# compiler keeps to itself, so NO_SYSTEM_FROM_IMPORTED takes that away.
 # programs.txt lists what was built, and <program>-path-<config>.txt where each landed (inside
 # an .app on iOS; under the configuration's folder in Visual Studio).
 cmake_minimum_required(VERSION 3.21)
@@ -28,7 +30,7 @@ find_package(hypercast REQUIRED CONFIG)
 if(MSVC)
   set(_warnings /W4 /WX)
 else()
-  set(_warnings -Wall -Wextra -Wpedantic -Werror)
+  set(_warnings -Wall -Wextra -Wpedantic -Wshadow -Werror)
 endif()
 
 set(_programs)
@@ -102,6 +104,7 @@ endif()
 
 foreach(program IN LISTS _programs)
   target_compile_options(${program} PRIVATE ${_warnings})
+  set_target_properties(${program} PROPERTIES NO_SYSTEM_FROM_IMPORTED ON)
   if(HYPERCAST_SMOKE_STATIC)
     target_link_libraries(${program} PRIVATE hypercast::hypercast_static)
   else()

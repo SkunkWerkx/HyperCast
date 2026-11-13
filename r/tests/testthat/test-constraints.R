@@ -345,6 +345,49 @@ test_that("a keyword this version does not know reads as its code", {
   expect_identical(describe(name(12L)), "other rule")
 })
 
+test_that("a declaration carries the bytes it crosses the C ABI as", {
+  word <- function(bytes, at) {
+    readBin(bytes[at + 1:4], "integer", size = 4L, endian = .Platform$endian)
+  }
+  pay <- hypercast_constraints("i32", maximum = 10L, multiple_of = "5", rounding = "floor")
+  expect_identical(length(pay$packed), 104L)
+  # The size word, then the flags (HAS_MAXIMUM 4, HAS_MULTIPLE_OF 16) and the rounding's code.
+  expect_identical(c(word(pay$packed, 0), word(pay$packed, 4), word(pay$packed, 8)),
+                   c(104L, 20L, 2L))
+  # maximum at 40 and multiple_of at 56, each a decimal whose low word is the value, scale 0.
+  expect_identical(c(word(pay$packed, 40), word(pay$packed, 56)), c(10L, 5L))
+  expect_identical(pay$packed_enum, raw())
+
+  sex <- hypercast_constraints("text", enum = c("Female", "Male"))
+  expect_identical(word(sex$packed, 4), 256L)
+  # Each text entry its little-endian u32 byte length, then its UTF-8 bytes.
+  expect_identical(sex$packed_enum,
+                   c(as.raw(c(6, 0, 0, 0)), charToRaw("Female"), as.raw(c(4, 0, 0, 0)),
+                     charToRaw("Male")))
+  codes <- hypercast_constraints("u8", enum = c("1", "20"))
+  expect_identical(length(codes$packed_enum), 32L)
+  expect_identical(c(word(codes$packed_enum, 0), word(codes$packed_enum, 16)), c(1L, 20L))
+  # An empty enum is declared, with nothing to pack.
+  none <- hypercast_constraints("i32", enum = character(0))
+  expect_identical(c(word(none$packed, 4), length(none$packed_enum)), c(256L, 0L))
+  # The bytes are the core's: the same layout the checked doors pass, so equal declarations
+  # carry equal bytes.
+  expect_identical(hypercast_constraints("i32", maximum = "10")$packed,
+                   hypercast_constraints("i32", maximum = 10L)$packed)
+
+  # Each decimal ends in two zero bytes, as the core packs one: no byte of either vector is
+  # left as memory had it.
+  every <- hypercast_constraints("decimal", minimum = "-1.5", exclusive_minimum = "-2",
+                                 maximum = "10", exclusive_maximum = "11", multiple_of = "0.5")
+  padding <- function(starts) as.vector(outer(c(14L, 15L), starts, `+`)) + 1L
+  expect_identical(every$packed[padding(24L + 16L * 0:4)], raw(10))
+  listed <- hypercast_constraints("decimal", enum = c("1", "-2.25", "3"))
+  expect_identical(length(listed$packed_enum), 48L)
+  expect_identical(listed$packed_enum[padding(16L * 0:2)], raw(6))
+  # The scale and the sign byte before them: 1 is scale 0, -2.25 scale 2 and negative.
+  expect_identical(c(listed$packed_enum[13:14], listed$packed_enum[29:30]), as.raw(c(0, 0, 2, 1)))
+})
+
 test_that("a declaration prints as the call that declares it", {
   sex <- hypercast_constraints("text", enum = c("Female", "Male"), trim = TRUE)
   expect_identical(capture.output(print(sex)),

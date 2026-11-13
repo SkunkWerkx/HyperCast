@@ -199,9 +199,9 @@ int main(void) {
   latitude.flags = HyperCastRawConstraints_HAS_MINIMUM | HyperCastRawConstraints_HAS_MAXIMUM |
                    HyperCastRawConstraints_HAS_MULTIPLE_OF;
   latitude.rounding = 1; // midpoint
-  latitude.lower.lo = 90;
-  latitude.lower.negative = true;
-  latitude.upper.lo = 90;
+  latitude.minimum.lo = 90;
+  latitude.minimum.negative = true;
+  latitude.maximum.lo = 90;
   latitude.multiple_of.lo = 1;
   latitude.multiple_of.scale = 6;
   CHECK(cast_constraints_check(11, 0, &latitude, NULL, 0) == 0);
@@ -231,8 +231,8 @@ int main(void) {
   both.size = HyperCastRawConstraints_SIZE;
   both.flags = HyperCastRawConstraints_HAS_MINIMUM | HyperCastRawConstraints_HAS_EXCLUSIVE_MINIMUM |
                HyperCastRawConstraints_HAS_MIN_LENGTH;
-  both.lower.lo = 0;
-  both.exclusive_lower.lo = 10;
+  both.minimum.lo = 0;
+  both.exclusive_minimum.lo = 10;
   both.min_length = 99;
   CHECK(cast_constraints_check(4, 0, &both, NULL, 0) == 0);
   CHECK(cast_checked(4, 0, NULL, &both, NULL, 0, UTF8("11"), &i32, &fault, &report) == 0 &&
@@ -249,7 +249,7 @@ int main(void) {
   memset(&below_one, 0, sizeof below_one);
   below_one.size = HyperCastRawConstraints_SIZE;
   below_one.flags = HyperCastRawConstraints_HAS_EXCLUSIVE_MAXIMUM;
-  below_one.exclusive_upper.lo = 1;
+  below_one.exclusive_maximum.lo = 1;
   CHECK(cast_checked(10, 0, NULL, &below_one, NULL, 0, UTF8("0.99999999999"), &f32, &fault,
                      &report) == 4);
   CHECK(f32 == 1.0f && report.keyword == 4 && fault.offset == 0 && fault.len == 13);
@@ -492,7 +492,7 @@ int main(void) {
   memset(&cap, 0, sizeof cap);
   cap.size = HyperCastRawConstraints_SIZE;
   cap.flags = HyperCastRawConstraints_HAS_MAXIMUM;
-  cap.upper.lo = 1000;
+  cap.maximum.lo = 1000;
   CHECK(cast_checked_detailed(4, 0, &western, &cap, NULL, 0, UTF8("12,34"), &i32, &detail,
                               &report) == 2 &&
         detail.detail == 11);

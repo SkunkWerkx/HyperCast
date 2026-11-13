@@ -50,7 +50,12 @@ declares one no value matches: every value is then an \code{enum} violation.}
 \item{...}{Ignored.}
 }
 \value{
-A \code{hypercast_constraints}: a list of the door and the declared keywords.
+A \code{hypercast_constraints}: a list of the door and the declared keywords, then
+\code{packed}, the 104 bytes the declaration crosses the C ABI as (\code{RawConstraints}), and
+\code{packed_enum}, its \code{enum} list in the core's packed format, each a raw vector in the
+machine's byte order, for a package that hands the declaration on (as \code{num_format()}'s
+\code{packed} is). They are what the keywords laid out as when declared: edit a keyword and
+declare it again rather than edit the list.
 }
 \description{
 \code{hypercast_constraints()} declares the rules a value must keep once it has been cast,

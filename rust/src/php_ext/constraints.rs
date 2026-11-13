@@ -348,10 +348,10 @@ fn lay_out(said: &Said<'_>) -> PhpResult<Result<Layout, Unlaid>> {
             None => return Err(contract_violation()),
         };
         match *flag {
-            RawConstraints::HAS_MINIMUM => raw.lower = decimal,
-            RawConstraints::HAS_EXCLUSIVE_MINIMUM => raw.exclusive_lower = decimal,
-            RawConstraints::HAS_MAXIMUM => raw.upper = decimal,
-            RawConstraints::HAS_EXCLUSIVE_MAXIMUM => raw.exclusive_upper = decimal,
+            RawConstraints::HAS_MINIMUM => raw.minimum = decimal,
+            RawConstraints::HAS_EXCLUSIVE_MINIMUM => raw.exclusive_minimum = decimal,
+            RawConstraints::HAS_MAXIMUM => raw.maximum = decimal,
+            RawConstraints::HAS_EXCLUSIVE_MAXIMUM => raw.exclusive_maximum = decimal,
             _ => raw.multiple_of = decimal,
         }
         raw.flags |= flag;
@@ -440,7 +440,8 @@ fn layout_bytes(raw: &RawConstraints) -> Vec<u8> {
     for word in [raw.size, raw.flags, raw.rounding, raw.min_length, raw.max_length, raw._reserved] {
         bytes.extend_from_slice(&word.to_ne_bytes());
     }
-    for decimal in [raw.lower, raw.upper, raw.multiple_of, raw.exclusive_lower, raw.exclusive_upper]
+    for decimal in
+        [raw.minimum, raw.maximum, raw.multiple_of, raw.exclusive_minimum, raw.exclusive_maximum]
     {
         bytes.extend_from_slice(&decimal.lo.to_ne_bytes());
         bytes.extend_from_slice(&decimal.hi.to_ne_bytes());

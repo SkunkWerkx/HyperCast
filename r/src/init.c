@@ -9,6 +9,7 @@ static const R_CallMethodDef CALL_ENTRIES[] = {
     {"cast_text", (DL_FUNC)&C_cast_text, 9},
     {"cast_double", (DL_FUNC)&C_cast_double, 3},
     {"constraints_check", (DL_FUNC)&C_constraints_check, 2},
+    {"constraints_packed", (DL_FUNC)&C_constraints_packed, 2},
     {"cast_checked", (DL_FUNC)&C_cast_checked, 5},
     {"cast_checked_double", (DL_FUNC)&C_cast_checked_double, 3},
     {"declared_decimal", (DL_FUNC)&C_declared_decimal, 2},

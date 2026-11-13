@@ -268,8 +268,8 @@ public sealed class InteropTests
 		((uint)Unsafe.SizeOf<RawSpan>()).ShouldBe(Define("HyperCastRawSpan_SIZE", 8));
 		((uint)Unsafe.SizeOf<RawNumFormat>()).ShouldBe(Define("HyperCastRawNumFormat_SIZE", 92));
 		((uint)Unsafe.SizeOf<RawDayPeriods>()).ShouldBe(Define("HyperCastRawDayPeriods_SIZE", 40));
-		string[] fields = ["Size", "Flags", "Rounding", "MinLength", "MaxLength", "Reserved", "Lower", "Upper", "MultipleOf",
-			"ExclusiveLower", "ExclusiveUpper"];
+		string[] fields = ["Size", "Flags", "Rounding", "MinLength", "MaxLength", "Reserved", "Minimum", "Maximum", "MultipleOf",
+			"ExclusiveMinimum", "ExclusiveMaximum"];
 		fields.Select(static f => (int)Marshal.OffsetOf<RawConstraints>(f)).ShouldBe([0, 4, 8, 12, 16, 20, 24, 40, 56, 72, 88]);
 		new[] { "Keyword", "Adjusted", "EnumIndex" }.Select(static f => (int)Marshal.OffsetOf<RawCheck>(f)).ShouldBe([0, 4, 8]);
 		new[] { "Offset", "Length" }.Select(static f => (int)Marshal.OffsetOf<RawSpan>(f)).ShouldBe([0, 4]);
@@ -309,7 +309,7 @@ public sealed class InteropTests
 
 		// All four bounds at once, each in its own slot.
 		var four = new Constraints<int>(minimum: 1, exclusiveMinimum: 2, maximum: 3, exclusiveMaximum: 4).ToRaw();
-		(four.Lower.ToDecimal(), four.ExclusiveLower.ToDecimal(), four.Upper.ToDecimal(), four.ExclusiveUpper.ToDecimal())
+		(four.Minimum.ToDecimal(), four.ExclusiveMinimum.ToDecimal(), four.Maximum.ToDecimal(), four.ExclusiveMaximum.ToDecimal())
 			.ShouldBe((1m, 2m, 3m, 4m));
 		four.Flags.ShouldBe(RawConstraints.HasMinimum | RawConstraints.HasExclusiveMinimum | RawConstraints.HasMaximum
 			| RawConstraints.HasExclusiveMaximum);

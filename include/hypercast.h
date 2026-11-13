@@ -453,11 +453,11 @@ typedef struct HyperCastDuration {
 // | 12 | `min_length`, read under [`HAS_MIN_LENGTH`](Self::HAS_MIN_LENGTH) | 4 |
 // | 16 | `max_length`, read under [`HAS_MAX_LENGTH`](Self::HAS_MAX_LENGTH) | 4 |
 // | 20 | `_reserved`, always `0` | 4 |
-// | 24 | `lower`: `minimum`, read under [`HAS_MINIMUM`](Self::HAS_MINIMUM) | 16 |
-// | 40 | `upper`: `maximum`, read under [`HAS_MAXIMUM`](Self::HAS_MAXIMUM) | 16 |
+// | 24 | `minimum`, read under [`HAS_MINIMUM`](Self::HAS_MINIMUM) | 16 |
+// | 40 | `maximum`, read under [`HAS_MAXIMUM`](Self::HAS_MAXIMUM) | 16 |
 // | 56 | `multiple_of`, read under [`HAS_MULTIPLE_OF`](Self::HAS_MULTIPLE_OF) | 16 |
-// | 72 | `exclusive_lower`: `exclusiveMinimum`, read under [`HAS_EXCLUSIVE_MINIMUM`](Self::HAS_EXCLUSIVE_MINIMUM) | 16 |
-// | 88 | `exclusive_upper`: `exclusiveMaximum`, read under [`HAS_EXCLUSIVE_MAXIMUM`](Self::HAS_EXCLUSIVE_MAXIMUM) | 16 |
+// | 72 | `exclusive_minimum`: `exclusiveMinimum`, read under [`HAS_EXCLUSIVE_MINIMUM`](Self::HAS_EXCLUSIVE_MINIMUM) | 16 |
+// | 88 | `exclusive_maximum`: `exclusiveMaximum`, read under [`HAS_EXCLUSIVE_MAXIMUM`](Self::HAS_EXCLUSIVE_MAXIMUM) | 16 |
 //
 // Each keyword has a field of its own, so all four bounds may be declared together, as
 // OpenAPI allows.
@@ -482,25 +482,25 @@ typedef struct HyperCastRawConstraints {
   // Always `0`.
   uint32_t _reserved;
   // `minimum`: the value may equal it.
-  struct HyperCastDecimal lower;
+  struct HyperCastDecimal minimum;
   // `maximum`: the value may equal it.
-  struct HyperCastDecimal upper;
+  struct HyperCastDecimal maximum;
   // The step every value must be a multiple of.
   struct HyperCastDecimal multiple_of;
   // `exclusiveMinimum`: the value must exceed it.
-  struct HyperCastDecimal exclusive_lower;
+  struct HyperCastDecimal exclusive_minimum;
   // `exclusiveMaximum`: the value must be below it.
-  struct HyperCastDecimal exclusive_upper;
+  struct HyperCastDecimal exclusive_maximum;
 } HyperCastRawConstraints;
 // The layout's size in bytes, which `size` carries.
 #define HyperCastRawConstraints_SIZE 104
-// `lower`, the `minimum`, is read.
+// `minimum` is read.
 #define HyperCastRawConstraints_HAS_MINIMUM 1
-// `exclusive_lower`, the `exclusiveMinimum`, is read.
+// `exclusive_minimum`, the `exclusiveMinimum`, is read.
 #define HyperCastRawConstraints_HAS_EXCLUSIVE_MINIMUM 2
-// `upper`, the `maximum`, is read.
+// `maximum` is read.
 #define HyperCastRawConstraints_HAS_MAXIMUM 4
-// `exclusive_upper`, the `exclusiveMaximum`, is read.
+// `exclusive_maximum`, the `exclusiveMaximum`, is read.
 #define HyperCastRawConstraints_HAS_EXCLUSIVE_MAXIMUM 8
 // `multiple_of` and `rounding` are read.
 #define HyperCastRawConstraints_HAS_MULTIPLE_OF 16
@@ -510,9 +510,9 @@ typedef struct HyperCastRawConstraints {
 #define HyperCastRawConstraints_HAS_MAX_LENGTH 64
 // Text is trimmed of Unicode `White_Space` before it is judged.
 #define HyperCastRawConstraints_TRIM 128
-// An `enum` list is declared and read: the list beside the layout, which may be empty
-// (a declaration [`check_constraints`](crate::check_constraints) refuses). Clear, no
-// list is read, and one passed anyway is a malformed layout.
+// An `enum` list is declared and read: the list beside the layout, which may be empty,
+// an `enum` every value violates, as OpenAPI allows. Clear, no list is read, and one
+// passed anyway is a malformed layout.
 #define HyperCastRawConstraints_HAS_ENUM 256
 // A text `enum` matches exactly, byte for byte, instead of under simple case folding,
 // for a vocabulary whose case carries meaning (`mm` and `Mm`). The text door only.

@@ -417,10 +417,10 @@ fn exported_declaration(vector: &Value) -> Option<(u32, RawConstraints, Vec<u8>,
         if let Some(value) = dec(field) {
             raw.flags |= flag;
             *(match slot {
-                0 => &mut raw.lower,
-                1 => &mut raw.exclusive_lower,
-                2 => &mut raw.upper,
-                _ => &mut raw.exclusive_upper,
+                0 => &mut raw.minimum,
+                1 => &mut raw.exclusive_minimum,
+                2 => &mut raw.maximum,
+                _ => &mut raw.exclusive_maximum,
             }) = value.unwrap();
         }
     }

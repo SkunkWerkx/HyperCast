@@ -174,7 +174,8 @@ invalid sequence, as at every plain door, which hands its bytes to the core unch
 a checked verdict as it takes a plain one: an `.empty` fault is `nil`, and every other rejection,
 a violation included, flows through. `Interop.rawConstraints(_:)` and `Interop.packedEnum(_:)` hand a declaration over in the
 core's own 104-byte layout and `enum` list, for a library judging values across a C ABI of its
-own.
+own. A declaration reads back through properties of its keyword names; `` `enum` `` is the list as
+passed, `nil` when none is declared and empty for an empty one, which every value violates.
 
 ## Why not `Int32("...")` / `ISO8601FormatStyle`?
 

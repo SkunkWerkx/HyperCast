@@ -149,9 +149,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   4 GiB, which a span can't carry, in the core itself so that no binding narrows it. Five C
   exports (`cast_checked`, `cast_checked_from_f64`, `cast_constraints_check`, `cast_text`,
   `cast_declared_decimal`), which with 1.0's 27 and the four detailed exports below make 36;
-  a checked export writes `out` on a violation as on a success. Every binding spells the API
-  in its own idiom (`docs/bindings.md`, "Constraints") and replays the same constraint and
-  declaration corpora. *(Rust, C#, Java, Swift, Go, Python, Ruby, PHP, TypeScript, R, C, C++)*
+  a checked export writes `out` on a violation as on a success. A declaration reads back
+  through its keyword names in every binding, its `enum` too: the entries as passed, in order,
+  duplicates kept, absent when none is declared and empty for an empty one, and names its door
+  where the type can't (Java's `door()`, since `Constraints<Integer>` serves `i32`, `u8` and
+  `u16`). A declaration also hands over the bytes it crosses the C ABI as, for a library that
+  passes it on (HyperTabular's plan columns): R's `hypercast_constraints()` carries them as
+  `packed` and `packed_enum`, as `num_format()` carries `packed`. The C ABI's
+  `RawConstraints` names each bound for its keyword (`minimum`, `maximum`, `multiple_of`,
+  `exclusive_minimum`, `exclusive_maximum`). Every binding spells the API in its own idiom
+  (`docs/bindings.md`, "Constraints") and replays the same constraint and declaration corpora. *(Rust, C#, Java, Swift, Go, Python, Ruby, PHP, TypeScript, R, C, C++)*
 - **Fault detail: what exactly failed, beside the reason.** Every failure can now say which
   rule it broke, from a fixed vocabulary of 32 codes (`group_size`, `digit_expected`,
   `invalid_utf8`, `not_finite`, `too_long`, `date_field_out_of_range`, …; the list and every

@@ -1093,11 +1093,11 @@ struct WireConstraints {
     min_length: u32,
     max_length: u32,
     reserved: u32,
-    lower: WireDecimal,
-    upper: WireDecimal,
+    minimum: WireDecimal,
+    maximum: WireDecimal,
     multiple_of: WireDecimal,
-    exclusive_lower: WireDecimal,
-    exclusive_upper: WireDecimal,
+    exclusive_minimum: WireDecimal,
+    exclusive_maximum: WireDecimal,
 }
 
 /// [`Decimal`]'s 16 bytes, its sign a byte.
@@ -1115,14 +1115,16 @@ const _: () = {
     use core::mem::offset_of;
     assert!(size_of::<WireConstraints>() == RawConstraints::SIZE as usize);
     assert!(size_of::<WireConstraints>() == size_of::<RawConstraints>());
-    assert!(offset_of!(WireConstraints, lower) == offset_of!(RawConstraints, lower));
-    assert!(offset_of!(WireConstraints, upper) == offset_of!(RawConstraints, upper));
+    assert!(offset_of!(WireConstraints, minimum) == offset_of!(RawConstraints, minimum));
+    assert!(offset_of!(WireConstraints, maximum) == offset_of!(RawConstraints, maximum));
     assert!(offset_of!(WireConstraints, multiple_of) == offset_of!(RawConstraints, multiple_of));
     assert!(
-        offset_of!(WireConstraints, exclusive_lower) == offset_of!(RawConstraints, exclusive_lower)
+        offset_of!(WireConstraints, exclusive_minimum)
+            == offset_of!(RawConstraints, exclusive_minimum)
     );
     assert!(
-        offset_of!(WireConstraints, exclusive_upper) == offset_of!(RawConstraints, exclusive_upper)
+        offset_of!(WireConstraints, exclusive_maximum)
+            == offset_of!(RawConstraints, exclusive_maximum)
     );
     assert!(size_of::<WireDecimal>() == size_of::<Decimal>());
     assert!(offset_of!(WireDecimal, scale) == offset_of!(Decimal, scale));
@@ -1145,11 +1147,11 @@ impl Layout for WireConstraints {
         min_length: 0,
         max_length: 0,
         reserved: 0,
-        lower: WIRE_DECIMAL_ZERO,
-        upper: WIRE_DECIMAL_ZERO,
+        minimum: WIRE_DECIMAL_ZERO,
+        maximum: WIRE_DECIMAL_ZERO,
         multiple_of: WIRE_DECIMAL_ZERO,
-        exclusive_lower: WIRE_DECIMAL_ZERO,
-        exclusive_upper: WIRE_DECIMAL_ZERO,
+        exclusive_minimum: WIRE_DECIMAL_ZERO,
+        exclusive_maximum: WIRE_DECIMAL_ZERO,
     };
 }
 
@@ -1176,11 +1178,11 @@ impl WireConstraints {
             min_length: self.min_length,
             max_length: self.max_length,
             _reserved: self.reserved,
-            lower: self.lower.decimal(),
-            upper: self.upper.decimal(),
+            minimum: self.minimum.decimal(),
+            maximum: self.maximum.decimal(),
             multiple_of: self.multiple_of.decimal(),
-            exclusive_lower: self.exclusive_lower.decimal(),
-            exclusive_upper: self.exclusive_upper.decimal(),
+            exclusive_minimum: self.exclusive_minimum.decimal(),
+            exclusive_maximum: self.exclusive_maximum.decimal(),
         }
     }
 }

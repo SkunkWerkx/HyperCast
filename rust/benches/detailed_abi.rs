@@ -29,20 +29,30 @@ struct RawCheck {
 }
 
 /// `RawConstraints` with `maximum` set and nothing else: the size, the flags, four zero words,
-/// then three 16-byte decimals.
+/// then the 16-byte decimals: `minimum`, `maximum`, `multiple_of`, `exclusive_minimum` and
+/// `exclusive_maximum`, all zero but `maximum`. The base tree's layout (`hypercast_bench_base`) is the 72-byte one it was built with: no
+/// `exclusive_minimum` or `exclusive_maximum`, each of which since has a field of its own.
 #[repr(C, align(8))]
 struct RawConstraints {
     words: [u32; 6],
-    lower: [u64; 2],
-    upper: [u64; 2],
+    minimum: [u64; 2],
+    maximum: [u64; 2],
     multiple_of: [u64; 2],
+    #[cfg(not(hypercast_bench_base))]
+    exclusive_minimum: [u64; 2],
+    #[cfg(not(hypercast_bench_base))]
+    exclusive_maximum: [u64; 2],
 }
 
 const MAXIMUM_100: RawConstraints = RawConstraints {
-    words: [72, 4, 0, 0, 0, 0],
-    lower: [0, 0],
-    upper: [100, 0],
+    words: [size_of::<RawConstraints>() as u32, 4, 0, 0, 0, 0],
+    minimum: [0, 0],
+    maximum: [100, 0],
     multiple_of: [0, 0],
+    #[cfg(not(hypercast_bench_base))]
+    exclusive_minimum: [0, 0],
+    #[cfg(not(hypercast_bench_base))]
+    exclusive_maximum: [0, 0],
 };
 
 unsafe extern "C" {

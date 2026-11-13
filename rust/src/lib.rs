@@ -304,8 +304,8 @@ pub use checked::{
     optional_checked,
 };
 pub use constraints::{
-    Constraints, Keyword, Numeric, NumericRules, Refusal, Rounding, Text, TextRules,
-    check_constraints, decimal_for_declaration,
+    Constraints, EnumNumbers, EnumTexts, Keyword, Numeric, NumericRules, Refusal, Rounding, Text,
+    TextRules, check_constraints, decimal_for_declaration,
 };
 pub use date_options::{DateOptions, MonthNames, MonthNamesFault, ValidDateOptions};
 pub use decimal::cast_decimal;

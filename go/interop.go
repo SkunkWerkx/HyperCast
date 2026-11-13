@@ -133,8 +133,8 @@ func (r RawCivil) CivilDateTime() CivilDateTime {
 // RawConstraints is a declaration of validation constraints as it crosses the ABI, which the
 // checked doors read in place: 104 bytes, 8-aligned, pointer-free, so the layout is the same
 // on 32-bit and 64-bit targets. Byte offsets: Size 0, Flags 4, Rounding 8, MinLength 12,
-// MaxLength 16, Reserved 20, Lower 24, Upper 40, MultipleOf 56, ExclusiveLower 72,
-// ExclusiveUpper 88, each decimal in Decimal's own layout. Each bound has a field of its own,
+// MaxLength 16, Reserved 20, Minimum 24, Maximum 40, MultipleOf 56, ExclusiveMinimum 72,
+// ExclusiveMaximum 88, each decimal in Decimal's own layout. Each bound has a field of its own,
 // so all four may be declared together, as OpenAPI allows. An enum list travels beside it
 // (Constraints.PackedEnum). A Size other than RawConstraintsSize, an unknown flag bit, an
 // unknown rounding code, a nonzero Reserved, a decimal sign byte other than 0 or 1, or a
@@ -154,16 +154,16 @@ type RawConstraints struct {
 	MaxLength uint32
 	// Reserved is always 0.
 	Reserved uint32
-	// Lower is minimum: the value may equal it.
-	Lower Decimal
-	// Upper is maximum: the value may equal it.
-	Upper Decimal
+	// Minimum is the minimum: the value may equal it.
+	Minimum Decimal
+	// Maximum is the maximum: the value may equal it.
+	Maximum Decimal
 	// MultipleOf is the step every value must be a multiple of.
 	MultipleOf Decimal
-	// ExclusiveLower is exclusiveMinimum: the value must exceed it.
-	ExclusiveLower Decimal
-	// ExclusiveUpper is exclusiveMaximum: the value must be below it.
-	ExclusiveUpper Decimal
+	// ExclusiveMinimum is the exclusiveMinimum: the value must exceed it.
+	ExclusiveMinimum Decimal
+	// ExclusiveMaximum is the exclusiveMaximum: the value must be below it.
+	ExclusiveMaximum Decimal
 }
 
 // RawConstraintsSize is the size word a RawConstraints carries: its own 104 bytes.
@@ -171,13 +171,13 @@ const RawConstraintsSize = uint32(unsafe.Sizeof(RawConstraints{}))
 
 // The flags of RawConstraints: which of its fields are read.
 const (
-	// RawConstraintsHasMinimum means Lower, the minimum, is read.
+	// RawConstraintsHasMinimum means Minimum is read.
 	RawConstraintsHasMinimum uint32 = 1 << iota
-	// RawConstraintsHasExclusiveMinimum means ExclusiveLower, the exclusiveMinimum, is read.
+	// RawConstraintsHasExclusiveMinimum means ExclusiveMinimum is read.
 	RawConstraintsHasExclusiveMinimum
-	// RawConstraintsHasMaximum means Upper, the maximum, is read.
+	// RawConstraintsHasMaximum means Maximum is read.
 	RawConstraintsHasMaximum
-	// RawConstraintsHasExclusiveMaximum means ExclusiveUpper, the exclusiveMaximum, is read.
+	// RawConstraintsHasExclusiveMaximum means ExclusiveMaximum is read.
 	RawConstraintsHasExclusiveMaximum
 	// RawConstraintsHasMultipleOf means MultipleOf and Rounding are read.
 	RawConstraintsHasMultipleOf
@@ -681,11 +681,11 @@ var (
 	_ [12]byte  = [unsafe.Offsetof(RawConstraints{}.MinLength)]byte{}
 	_ [16]byte  = [unsafe.Offsetof(RawConstraints{}.MaxLength)]byte{}
 	_ [20]byte  = [unsafe.Offsetof(RawConstraints{}.Reserved)]byte{}
-	_ [24]byte  = [unsafe.Offsetof(RawConstraints{}.Lower)]byte{}
-	_ [40]byte  = [unsafe.Offsetof(RawConstraints{}.Upper)]byte{}
+	_ [24]byte  = [unsafe.Offsetof(RawConstraints{}.Minimum)]byte{}
+	_ [40]byte  = [unsafe.Offsetof(RawConstraints{}.Maximum)]byte{}
 	_ [56]byte  = [unsafe.Offsetof(RawConstraints{}.MultipleOf)]byte{}
-	_ [72]byte  = [unsafe.Offsetof(RawConstraints{}.ExclusiveLower)]byte{}
-	_ [88]byte  = [unsafe.Offsetof(RawConstraints{}.ExclusiveUpper)]byte{}
+	_ [72]byte  = [unsafe.Offsetof(RawConstraints{}.ExclusiveMinimum)]byte{}
+	_ [88]byte  = [unsafe.Offsetof(RawConstraints{}.ExclusiveMaximum)]byte{}
 	_ [12]byte  = [unsafe.Sizeof(RawCheck{})]byte{}
 	_ [8]byte   = [unsafe.Sizeof(RawSpan{})]byte{}
 	_ [16]byte  = [unsafe.Sizeof(RawFaultDetail{})]byte{}

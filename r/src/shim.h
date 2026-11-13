@@ -12,6 +12,7 @@ SEXP C_cast_text(SEXP x, SEXP door, SEXP format, SEXP periods, SEXP code, SEXP n
                  SEXP options, SEXP vocab, SEXP raw);
 SEXP C_cast_double(SEXP x, SEXP door, SEXP code);
 SEXP C_constraints_check(SEXP layout, SEXP native_mode);
+SEXP C_constraints_packed(SEXP layout, SEXP native_mode);
 SEXP C_cast_checked(SEXP x, SEXP layout, SEXP format, SEXP native_mode, SEXP raw);
 SEXP C_cast_checked_double(SEXP x, SEXP layout, SEXP native_mode);
 SEXP C_declared_decimal(SEXP x, SEXP native_mode);

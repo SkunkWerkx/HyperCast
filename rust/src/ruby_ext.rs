@@ -963,11 +963,11 @@ fn raw_constraints(bytes: &[u8]) -> Option<core::RawConstraints> {
         min_length: word(12),
         max_length: word(16),
         _reserved: word(20),
-        lower: decimal(24),
-        upper: decimal(40),
+        minimum: decimal(24),
+        maximum: decimal(40),
         multiple_of: decimal(56),
-        exclusive_lower: decimal(72),
-        exclusive_upper: decimal(88),
+        exclusive_minimum: decimal(72),
+        exclusive_maximum: decimal(88),
     })
 }
 

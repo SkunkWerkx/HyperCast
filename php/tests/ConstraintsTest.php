@@ -645,8 +645,8 @@ final class ConstraintsTest extends TestCase
             ],
             $head
         );
-        $lower = unpack('Qlo/Lhi/Cscale/Cnegative', $packed, 24);
-        self::assertSame(['lo' => 5, 'hi' => 0, 'scale' => 0, 'negative' => 1], $lower);
+        $minimum = unpack('Qlo/Lhi/Cscale/Cnegative', $packed, 24);
+        self::assertSame(['lo' => 5, 'hi' => 0, 'scale' => 0, 'negative' => 1], $minimum);
         $decimals = static fn (string $packed): array => array_map(
             static fn (int $at): array => unpack('Qlo/Lhi/Cscale/Cnegative', $packed, $at),
             [24, 40, 56, 72, 88]

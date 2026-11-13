@@ -291,6 +291,10 @@ assert_eq!((male.value, male.enum_index), ("Male", Some(1))); // the declared sp
 `optional_checked` turns an `Empty` fault into `None` while every violation passes through.
 `Rejection::map` and `Violation::map` carry the value into an adapter's own type.
 
+`Constraints::enum_entries` reads the declared `enum` back, in order, duplicates kept, without
+allocating: the `Decimal`s of a numeric declaration, each entry's bytes at the text door, `None`
+when no `enum` is declared and an empty iterator for an empty one, which every value violates.
+
 A parser that carries declarations across its own C ABI holds them in that ABI's form:
 `Constraints::raw()` and the `enum` list packed beside it. `Constraints::from_raw` reads that
 form back for a door, refused exactly where `check_constraints` refuses, and

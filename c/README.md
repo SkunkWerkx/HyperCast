@@ -130,8 +130,8 @@ Five of them carry validation constraints, the OpenAPI Schema Object's keywords 
 door parses: an input that does not cast is a fault (1 to 3, not the type), and a value of the
 type that breaks a declared rule is a violation (4). `cast_constraints_check` judges a
 declaration once, a `HyperCastRawConstraints` (104 bytes, `size` first, each keyword in a field
-of its own: `lower` the minimum, `exclusive_lower` the exclusiveMinimum, `upper` the maximum,
-`exclusive_upper` the exclusiveMaximum, and `multiple_of`) and an `enum` list beside it, read
+of its own, named for its OpenAPI keyword: `minimum`, `exclusive_minimum`, `maximum`,
+`exclusive_maximum` and `multiple_of`) and an `enum` list beside it, read
 only when `flags` has `HyperCastRawConstraints_HAS_ENUM` (256) beside the `HAS_*` bits of the
 other keywords, `TRIM` and `CASE_SENSITIVE` (512: a text `enum` matched byte for byte instead of
 under simple case folding). Every valid OpenAPI 3.2 declaration is accepted: all four bounds
@@ -489,4 +489,8 @@ already decoded, judged on the shortest decimal that names it with an empty span
 on an `enum` match, of the declared entry in the caller's storage. `cast_text(text)` alone is
 the plain text door, a `Verdict<std::string_view>` of the untrimmed input. The plain names are
 overload sets, so taking a door's address needs a cast to its signature or a lambda.
-`raw()`, `enum_data()` and `enum_size()` hand a declaration to a C ABI of its own.
+`raw()`, `enum_data()` and `enum_size()` hand a declaration to a C ABI of its own, and
+`enum_entries()` reads the declared `enum` back, in order, duplicates kept: a view of `Decimal`s
+at a numeric door or `std::string_view`s at the text door over the caller's storage, so it lives
+no longer than that storage; `std::nullopt` when no `enum` is declared, and empty for an empty
+one, which every value violates.

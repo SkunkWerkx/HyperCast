@@ -1059,14 +1059,16 @@ SEXP C_cast_double(SEXP x, SEXP door_name, SEXP code) {
  */
 _Static_assert(sizeof(HyperCastRawConstraints) == HyperCastRawConstraints_SIZE, "RawConstraints");
 _Static_assert(offsetof(HyperCastRawConstraints, rounding) == 8, "rounding");
-_Static_assert(offsetof(HyperCastRawConstraints, lower) == 24, "lower");
-_Static_assert(offsetof(HyperCastRawConstraints, upper) == 40, "upper");
+_Static_assert(offsetof(HyperCastRawConstraints, minimum) == 24, "minimum");
+_Static_assert(offsetof(HyperCastRawConstraints, maximum) == 40, "maximum");
 _Static_assert(offsetof(HyperCastRawConstraints, multiple_of) == 56, "multiple_of");
-_Static_assert(offsetof(HyperCastRawConstraints, exclusive_lower) == 72, "exclusive_lower");
-_Static_assert(offsetof(HyperCastRawConstraints, exclusive_upper) == 88, "exclusive_upper");
+_Static_assert(offsetof(HyperCastRawConstraints, exclusive_minimum) == 72, "exclusive_minimum");
+_Static_assert(offsetof(HyperCastRawConstraints, exclusive_maximum) == 88, "exclusive_maximum");
 _Static_assert(sizeof(HyperCastRawCheck) == HyperCastRawCheck_SIZE, "RawCheck");
 _Static_assert(sizeof(HyperCastRawSpan) == HyperCastRawSpan_SIZE, "RawSpan");
 _Static_assert(sizeof(HyperCastDecimal) == 16, "Decimal");
+/* The sign byte last, at 13: put_decimal zeroes the two padding bytes after it. */
+_Static_assert(offsetof(HyperCastDecimal, negative) == 13, "Decimal negative");
 
 /* The core's door codes (rust/src/door.rs) for the doors a declaration binds to; 0 otherwise. */
 static uint32_t core_door(enum door door) {
@@ -1124,6 +1126,19 @@ struct declaration {
   uintptr_t enum_len;
   SEXP entries; /* the text door's entries as the caller declared them, or R_NilValue */
 };
+
+/*
+ * A decimal as the C ABI packs it, as the core's own packer does: lo, hi, the scale, the sign
+ * byte, then two zero bytes. Field by field, so the padding a struct copy carries never does.
+ */
+static void put_decimal(uint8_t *at, const HyperCastDecimal *v) {
+  memcpy(at + offsetof(HyperCastDecimal, lo), &v->lo, sizeof v->lo);
+  memcpy(at + offsetof(HyperCastDecimal, hi), &v->hi, sizeof v->hi);
+  at[offsetof(HyperCastDecimal, scale)] = v->scale;
+  at[offsetof(HyperCastDecimal, negative)] = v->negative ? 1 : 0;
+  at[14] = 0;
+  at[15] = 0;
+}
 
 /*
  * Element k of a bound, step or numeric enum list through cast_declared_decimal: a string's
@@ -1211,12 +1226,12 @@ static int32_t declaration_arg(SEXP layout, int native, struct declaration *d) {
     uint32_t flag;
     size_t field;
   } VALUES[] = {
-      {L_MINIMUM, HyperCastRawConstraints_HAS_MINIMUM, offsetof(HyperCastRawConstraints, lower)},
+      {L_MINIMUM, HyperCastRawConstraints_HAS_MINIMUM, offsetof(HyperCastRawConstraints, minimum)},
       {L_EXCLUSIVE_MINIMUM, HyperCastRawConstraints_HAS_EXCLUSIVE_MINIMUM,
-       offsetof(HyperCastRawConstraints, exclusive_lower)},
-      {L_MAXIMUM, HyperCastRawConstraints_HAS_MAXIMUM, offsetof(HyperCastRawConstraints, upper)},
+       offsetof(HyperCastRawConstraints, exclusive_minimum)},
+      {L_MAXIMUM, HyperCastRawConstraints_HAS_MAXIMUM, offsetof(HyperCastRawConstraints, maximum)},
       {L_EXCLUSIVE_MAXIMUM, HyperCastRawConstraints_HAS_EXCLUSIVE_MAXIMUM,
-       offsetof(HyperCastRawConstraints, exclusive_upper)},
+       offsetof(HyperCastRawConstraints, exclusive_maximum)},
       {L_MULTIPLE_OF, HyperCastRawConstraints_HAS_MULTIPLE_OF,
        offsetof(HyperCastRawConstraints, multiple_of)},
   };
@@ -1230,7 +1245,7 @@ static int32_t declaration_arg(SEXP layout, int native, struct declaration *d) {
     int32_t rc = declared_value(v, 0, native, &value);
     if (rc != 0)
       return rc;
-    memcpy((uint8_t *)r + VALUES[k].field, &value, sizeof value);
+    put_decimal((uint8_t *)r + VALUES[k].field, &value);
     r->flags |= VALUES[k].flag;
   }
   SEXP rounding = VECTOR_ELT(layout, L_ROUNDING);
@@ -1261,14 +1276,16 @@ static int32_t declaration_arg(SEXP layout, int native, struct declaration *d) {
     return 0;
   }
   R_xlen_t n = XLENGTH(e);
-  HyperCastDecimal *entries = (HyperCastDecimal *)R_alloc((size_t)n, sizeof *entries);
+  uint8_t *entries = (uint8_t *)R_alloc((size_t)n, sizeof(HyperCastDecimal));
   for (R_xlen_t k = 0; k < n; k++) {
-    int32_t rc = declared_value(e, k, native, &entries[k]);
+    HyperCastDecimal value;
+    int32_t rc = declared_value(e, k, native, &value);
     if (rc != 0)
       return rc;
+    put_decimal(entries + (size_t)k * sizeof value, &value);
   }
-  d->enum_ptr = (const uint8_t *)entries;
-  d->enum_len = (uintptr_t)n * sizeof *entries;
+  d->enum_ptr = entries;
+  d->enum_len = (uintptr_t)n * sizeof(HyperCastDecimal);
   return 0;
 }
 
@@ -1279,6 +1296,28 @@ SEXP C_constraints_check(SEXP layout, SEXP native_mode) {
   if (rc == 0)
     rc = cast_constraints_check(core_door(d.door), 0, &d.raw, d.enum_ptr, d.enum_len);
   return ScalarInteger(rc);
+}
+
+/*
+ * The declaration as it crosses the C ABI, for a package that hands it on (HyperTabular's
+ * plan columns): the RawConstraints bytes and the enum list in the core's packed format, each
+ * a raw vector, native-endian. Called once the core has judged it.
+ */
+SEXP C_constraints_packed(SEXP layout, SEXP native_mode) {
+  struct declaration d;
+  if (declaration_arg(layout, asInteger(native_mode), &d) != 0)
+    Rf_error("hypercast: these constraints no longer lay out (were they edited?); declare them "
+             "again");
+  SEXP out = PROTECT(Rf_allocVector(VECSXP, 2));
+  SEXP raw = Rf_allocVector(RAWSXP, (R_xlen_t)sizeof d.raw);
+  SET_VECTOR_ELT(out, 0, raw);
+  memcpy(RAW(raw), &d.raw, sizeof d.raw);
+  SEXP entries = Rf_allocVector(RAWSXP, (R_xlen_t)d.enum_len);
+  SET_VECTOR_ELT(out, 1, entries);
+  if (d.enum_len > 0)
+    memcpy(RAW(entries), d.enum_ptr, d.enum_len);
+  UNPROTECT(1);
+  return out;
 }
 
 /* A declaration hypercast_constraints() judged no longer lays out: it was edited since. */

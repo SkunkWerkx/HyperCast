@@ -72,6 +72,17 @@ class ConstraintsTest {
     }
 
     @Test
+    void aDeclarationNamesItsDoor() {
+        assertEquals("i32", Constraints.i32().build().door());
+        assertEquals("u8", Constraints.u8().build().door());
+        assertEquals("u16", Constraints.u16().build().door());
+        assertEquals("u32", Constraints.u32().build().door());
+        assertEquals("i64", Constraints.i64().build().door());
+        assertEquals("decimal", Constraints.decimal().build().door());
+        assertEquals("text", Constraints.text().build().door());
+    }
+
+    @Test
     void aMatchHandsBackTheCallersOwnEntry() {
         String male = "Male";
         Constraints<String> sex = Constraints.text().enumOf("Female", male).build();
@@ -515,5 +526,49 @@ class ConstraintsTest {
         assertThrows(IllegalArgumentException.class, () -> new Checked<>(1, false, null));
         assertThrows(IllegalArgumentException.class, () -> new Violation<Integer>(null, 1, 0, 0));
         assertThrows(IllegalArgumentException.class, () -> new Violation<Integer>(Keyword.MINIMUM, null, 0, 0));
+    }
+
+    @Test
+    void enumReadsBackAsDeclared() {
+        Constraints<Integer> sizes = Constraints.i32()
+                .enumOf(new BigDecimal("20"), new BigDecimal("10"), new BigDecimal("20"))
+                .build();
+        assertEquals(
+                Optional.of(List.of(new BigDecimal("20"), new BigDecimal("10"), new BigDecimal("20"))),
+                sizes.enumValues());
+        Constraints<Double> halfs = Constraints.f64().enumOf("1", "2.5", "2.50").build();
+        assertEquals(Optional.of(List.of("1", "2.5", "2.50")), halfs.enumValues());
+    }
+
+    @Test
+    void aNumberInATextEnumReadsBackAsDeclared() {
+        Constraints<String> code = Constraints.text().enumOf(BigDecimal.ONE).build();
+        assertEquals(Optional.of(List.of(BigDecimal.ONE)), code.enumValues());
+        Violation<?> violation = (Violation<?>) Cast.text("1", code);
+        assertEquals(Keyword.ENUM, violation.keyword());
+    }
+
+    @Test
+    void noEnumReadsAbsent() {
+        assertEquals(Optional.empty(), Constraints.i32().minimum("0").build().enumValues());
+        assertEquals(Optional.empty(), Constraints.text().trim(true).build().enumValues());
+    }
+
+    @Test
+    void anEmptyEnumReadsBackEmpty() {
+        Constraints<Integer> none = Constraints.i32().enumOf(new String[0]).build();
+        assertEquals(Optional.of(List.of()), none.enumValues());
+        Violation<?> violation = (Violation<?>) Cast.i32("7", NumFormat.INVARIANT, none);
+        assertEquals(Keyword.ENUM, violation.keyword());
+    }
+
+    @Test
+    void theEnumReaderCannotChangeTheDeclaration() {
+        String[] entries = {"Female", "Male"};
+        Constraints<String> sex = Constraints.text().enumOf(entries).build();
+        entries[0] = "Other";
+        List<Object> read = sex.enumValues().orElseThrow();
+        assertEquals(List.of("Female", "Male"), read);
+        assertThrows(UnsupportedOperationException.class, () -> read.set(0, "Other"));
     }
 }
