@@ -35,19 +35,19 @@
 // declaration, a HyperCastRawConstraints (8-byte aligned, `size` exactly
 // HyperCastRawConstraints_SIZE; any other size, or a null pointer, is -1) and an `enum`
 // list of `enum_len` bytes beside it, read only under HyperCastRawConstraints_HAS_ENUM
-// (set, an empty list is an enum with no entries, refused; clear, a list passed anyway is a
-// malformed layout): at an integer door, Decimals holding whole numbers (at any scale: 7.0
-// is 7) in their native-endian 16-byte layout; at the text door, entries each a
-// little-endian uint32_t byte length followed by that many UTF-8 bytes, unpadded. They add
-// return code 4, a violation of a declared rule, whose span covers the value and whose
-// keyword is written to the nullable `check`; at a float door the float written is judged
-// too, against each bound read as the door reads it. cast_constraints_check judges a
-// declaration once and returns 0 or the code of the rule it breaks, 1 to 13, never -1; its
-// duplicate search compares every pair of entries, so its time grows with the square of the
-// list's length (slow for a long list, never a fault). cast_declared_decimal converts a
-// bound, multipleOf or integer `enum` entry written in invariant notation into a
-// HyperCastDecimal, the one conversion every binding calls, and returns 0 or 8,
-// cast_constraints_check's code for a value no door can hold.
+// (set, an empty list is an enum with no entries, which every value violates; clear, a list
+// passed anyway is a malformed layout): at a numeric door, Decimals in their native-endian
+// 16-byte layout; at the text door, entries each a little-endian uint32_t byte length
+// followed by that many UTF-8 bytes, unpadded. They add return code 4, a violation of a
+// declared rule, whose span covers the value and whose keyword is written to the nullable
+// `check`; at a float door the float written is judged too, against each bound read as the
+// door reads it. cast_constraints_check judges a declaration once and returns 0 or the code
+// of the rule it breaks (1, 5, 6, 8, 9 or 11), never -1; its duplicate search compares every
+// pair of entries, so its time grows with the square of the list's length (slow for a long
+// list, never a fault). cast_declared_decimal converts a bound, multipleOf or numeric `enum`
+// entry written in invariant notation into a HyperCastDecimal, the one conversion every
+// binding calls, and returns 0 or 8, cast_constraints_check's code for a value no door can
+// hold.
 //
 // The four detailed exports come last: cast_detailed, cast_detailed_from_f64,
 // cast_checked_detailed and cast_checked_detailed_from_f64 reach the doors above by their

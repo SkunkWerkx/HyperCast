@@ -9,7 +9,7 @@ figure includes the binding's crossing and any transcode.
 
 Two machines. Every table is linux-x64 on an Intel Core i9-11900H unless it says otherwise; these
 were measured on an Apple M6 (Mac18,5) under macOS, each section dated: Go's current figures on
-2026-11-05 and R's on 2026-11-01 ([below](#go-and-r-on-an-apple-m6)), the checked doors from
+2026-11-05 and R's on 2026-11-13 ([below](#go-and-r-on-an-apple-m6)), the checked doors from
 2026-11-01 ([below](#the-checked-doors-on-an-apple-m6)), the Rust core's plain doors before and
 after the Unicode white-space change on 2026-11-03
 ([below](#the-plain-doors-and-unicode-white-space-on-an-apple-m6)), the grouping policies on
@@ -180,7 +180,7 @@ cgo binding, before the translated core, measured 141 vs 125 ns on linux-x64.
 
 ## Go and R, on an Apple M6
 
-Measured on an Apple M6 (Mac18,5, 12 cores) under macOS, Go on 2026-11-05 and R on 2026-11-01,
+Measured on an Apple M6 (Mac18,5, 12 cores) under macOS, Go on 2026-11-05 and R on 2026-11-13,
 a different machine and OS from every table above, so they are not comparable to the linux-x64
 numbers.
 
@@ -214,14 +214,17 @@ the call an R user reaches for today.
 
 | Comparison (median, 1000 strings) | hypercast | base R | Result |
 | --- | --- | --- | --- |
-| reals | 27.84 µs | 40.26 µs | hypercast 1.4x faster |
-| 32-bit integers | 25.58 µs | 30.95 µs | hypercast 1.2x faster |
-| booleans | 18.25 µs | 10.58 µs | **hypercast 1.7x slower** |
-| ISO dates | 19.93 µs | 2.29 ms | hypercast 115x faster |
-| ISO instants | 27.14 µs | 3.83 ms | hypercast 141x faster |
+| reals | 38.7 µs | 41.7 µs | hypercast 1.1x faster |
+| 32-bit integers | 32.6 µs | 30.6 µs | **hypercast 1.1x slower** |
+| booleans | 25.6 µs | 10.5 µs | **hypercast 2.4x slower** |
+| ISO dates | 25 µs | 2.4 ms | hypercast 96x faster |
+| ISO instants | 33.8 µs | 4 ms | hypercast 118x faster |
 
-Every door allocates more than its base R counterpart: the verdict's five columns (and a
-timestamp's two exact ones) are R vectors of the input's length.
+Every door allocates more than its base R counterpart: the verdict's seven columns (and a
+timestamp's two exact ones) are R vectors of the input's length. Measured 2026-11-13 on
+hypercast 1.1.0; 1.0.0's five-column verdict read 27.84, 25.58, 18.25, 19.93 and 27.14 µs on
+the same machine on 2026-11-01, so every door costs 5 to 11 µs more per 1000 strings
+in 1.1, and the 32-bit integers went from a win to a loss.
 
 ## The checked doors, on an Apple M6
 

@@ -25,8 +25,7 @@ Requirements that hold across every round, stated up front so no layer designs t
   `wasm32-wasip1`
   (`CARGO_TARGET_WASM32_WASIP1_RUNNER="wasmtime --dir <repo>" cargo test --target
   wasm32-wasip1`; the preopen is only so the conformance test can read `corpus/`), and the
-  browser targets run in headless Chrome in CI, each on a pull request that can reach it and
-  ruby.wasm in the weekly and release builds ([docs/platforms.md](platforms.md#webassembly)).
+  browser targets run in headless Chrome in CI, in the weekly and release builds ([docs/platforms.md](platforms.md#webassembly)).
   One binding carries an in-process wasm backend: TypeScript's fallback package, loaded where
   no native addon fits. Every other binding links the core, compiles it as Go source or loads
   a native library on every platform it ships for, so a fallback would have nothing to catch,
@@ -348,10 +347,13 @@ is declared (`12,34,567` reads under the Indian policy, [docs/grouping.md](group
 Go's standard libraries have no per-object locale to take, and Java's Native Image includes
 only the locales named at build time (`-H:IncludeLocales`), which is the consumer's choice.
 
-## Open follow-ups (as of 2026-11-05)
+## Open follow-ups (as of 2026-11-13)
 
+- OpenAPI's `pattern` (keyword 10, reserved in 1.1) is planned for 1.2, a fast follow as soon as
+  time can be committed to that release. It needs a regex engine that keeps the core's proofs
+  (`no_std`, no allocation, no panic), which is its own crate and comes first.
 - Benchmark tables were measured on the WSL2 i9-11900H box, except those taken on an Apple M6
-  (Go's current figures on 2026-11-05, R's on 2026-11-01, and the core sessions
+  (Go's current figures on 2026-11-05, R's on 2026-11-13, and the core sessions
   [docs/benchmarks.md](benchmarks.md) dates). Re-measure every harness on one machine before
   relabelling a table; never mix machines, and say which tables predate a change
   ([docs/benchmarks.md](benchmarks.md) labels them: the C# tables were measured in-process, PHP's

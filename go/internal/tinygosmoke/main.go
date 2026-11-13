@@ -9,7 +9,7 @@
 // TimeOfDay, Span), a numeric one with a format (I32, F64, Exact with a currency symbol,
 // and a format declaring every symbol the 92-byte layout carries), a discriminated one
 // (Unix, ExcelSerial, DateTime), the day periods beside the order (DateTimeWith), the text
-// door (String), and the 72-byte constraints layout with an integer and a text enum list
+// door (String), and the 104-byte constraints layout with an integer and a text enum list
 // beside it (Check, CheckFromFloat64, CheckString, NewConstraints's own judgement) — and so
 // do a fault and a violation with their spans, each copied into the translated core's memory and read back
 // out of it.

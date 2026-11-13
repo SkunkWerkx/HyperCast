@@ -17,3 +17,10 @@ path = "fuzz_targets/doors.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "declared"
+path = "fuzz_targets/declared.rs"
+test = false
+doc = false
+bench = false

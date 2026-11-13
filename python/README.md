@@ -121,8 +121,9 @@ def describe(verdict: hypercast.Verdict[int]) -> str:
 
 ### The doors
 
-Every door takes the text first — `str` or `bytes` — and returns `Success(value)` or
-`Fault(reason, offset, length)`:
+Every door takes the text first — `str` or `bytes` — or, for the four typed doors, a `float`,
+and returns `Success(value)` or `Fault(reason, offset, length)`; the checked doors are under
+[Validation constraints](#validation-constraints):
 
 | Door | Reads | `Success.value` |
 | --- | --- | --- |
@@ -602,7 +603,7 @@ constraints)` is the text door's.
 A declaration is judged once, by the core, when it is built, and the few that cannot mean
 anything at their door are the caller's bug: the constructor raises `ValueError`, its message
 the rule. Code 1 is a HyperCast extension where it means nothing (`trim` or `case_sensitive` at
-a numeric door, a `rounding` at `Door.TEXT`), 5 a `multiple_of` that is not positive, 6 a
+a numeric door, `multiple_of` with a `rounding` at `Door.TEXT`), 5 a `multiple_of` that is not positive, 6 a
 `rounding` without `multiple_of`, 8 a bound, step or entry no door can hold or a rounding with
 a fractional step at an integer door (`Constraints(Door.DECIMAL, maximum="1e-29")` raises
 "Constraints refused (code 8): a bound, step or enum entry the door cannot hold."), 9 an entry

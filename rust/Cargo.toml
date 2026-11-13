@@ -82,7 +82,7 @@ staticlib = ["exports"]
 # Rust's standard library: the `staticlib` panic handler plus what a no_std shared library
 # needs that a static library does not (lib.rs has what and why). The parse is the same
 # code either way; what std adds is its runtime — the unwinder, the backtrace symbolizer
-# and the allocator, ~265 KB of the 425 KB linux-x64 library (rust/README.md has the
+# and the allocator, ~263 KB of the 716 KB linux-x64 library (rust/README.md has the
 # measurement), none of it reachable from a C ABI export. Leaving std out also leaves every
 # import but the C library's `memcpy`, `memset` and `bcmp` out (the panic handler's `abort`
 # goes too, since no export can reach it), so on musl the library does not need libgcc_s. A

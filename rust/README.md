@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/SkunkWerkx/HyperCast/blob/master/LICENSE)
 
 **The core itself: allocation-free parsers for scalars from untrusted text — booleans, single
-characters, the full integer family, reals, UUIDs, and temporals — where every parse returns a
+characters, the full integer family, reals, exact decimals, UUIDs, temporals and text — where every parse returns a
 verdict (the value, or a closed reason plus the offending byte span), never a panic and never
 an allocation.**
 
@@ -154,9 +154,9 @@ The `std` feature is on by default for the crates.io consumer, the tests and the
 extensions. The artifacts this repository ships leave it out: the static libraries and the
 shared library the loading bindings open (`cargo cdylib`, below) are all `#![no_std]`, each
 bringing the abort-on-panic handler `std` would otherwise supply — which takes the linux-x64
-shared library from 425 KB to 160 KB with the same exports and the same code behind them
-(425,048 and 160,488 bytes, `cargo rustc --release --crate-type cdylib` against `cargo
-cdylib`, rustc 1.99.1 in `rust:latest`, at commit `0ee2caa` on 2026-10-25).
+shared library from 716 KB to 453 KB with the same exports and the same code behind them
+(716,472 and 453,152 bytes, `cargo rustc --release --crate-type cdylib` against `cargo
+cdylib`, rustc 1.100.0 in `rust:latest`, on the 1.1.0 sources on 2026-11-13).
 The shared library is not one of the manifest's crate types, so cargo never builds it for a
 consumer of the crate.
 
@@ -231,6 +231,47 @@ use hypercast::cast_char;
 cast_char("U+00E9"); // Ok('é')
 cast_char(" "); // Ok(' '), verbatim rather than Empty
 cast_char("U+D800"); // Err: OutOfRange, a surrogate
+```
+
+## Date options, month names and fault detail
+
+The plain date doors read what they always read. The shapes a source may also write are
+opt-in, declared as `DateOptions` and judged once by `validate`, and the doors of the
+`hypercast::detailed` module take the result: `COMPACT_DATE` (`20260107`) at `cast_date`,
+`SPACE_SEPARATOR` and `HOUR_OFFSET` (`2026-01-07 15:04:05+05`) at `cast_timestamp`, and a
+`pivot`, the last year of the 100-year window a two-digit year reads in, at the ordered date
+doors; there is no default pivot. `MonthNames` is a vocabulary the caller declares, never
+looked up, so the month field of an ordered date reads Excel's `07-Jan-26`; names match under
+simple case folding. A declaration the core cannot honour is a `DeclarationError` from
+`validate`, the caller's mistake, never a verdict on data.
+
+Every door has a twin in `hypercast::detailed` whose error is a `Failure`: the plain fault's
+reason and span, and a `Detail`, one of 32 published codes
+([`docs/fault-sites.md`](../docs/fault-sites.md)) naming what failed. The numeric ones take a
+`ValidNumFormat`, a `NumFormat` after its own `validate`. `Detail` is `#[non_exhaustive]`:
+codes keep their numbers, and a minor release may add one.
+
+```rust
+use hypercast::{DateOptions, DateOrder, Detail, MonthNames, NumFormat, Reason, detailed};
+
+// Declared once and judged once; the detailed date doors take the result.
+let months = MonthNames::from_entries(&[
+    (1, "Jan"), (2, "Feb"), (3, "Mar"), (4, "Apr"), (5, "May"), (6, "Jun"),
+    (7, "Jul"), (8, "Aug"), (9, "Sep"), (10, "Oct"), (11, "Nov"), (12, "Dec"),
+]);
+let options = DateOptions::COMMON_FORMS.with_pivot(2029).validate(Some(months))?;
+
+let date = detailed::cast_date_ordered("07-Jan-26", DateOrder::DayMonthYear, Some(&options)).unwrap();
+assert_eq!((date.year, date.month, date.day), (2026, 1, 7));
+assert!(detailed::cast_date("20260107", Some(&options)).is_ok());
+assert!(detailed::cast_timestamp("2026-01-07 15:04:05+05", Some(&options)).is_ok());
+assert!(detailed::cast_date("20260107", None).is_err()); // what the plain door reads
+
+// A failure names what failed, beside the reason and the span.
+let format = NumFormat::new('.', ',', NumFormat::ALL).validate()?;
+let failure = detailed::cast_i32("1,23,456", &format).unwrap_err();
+assert_eq!((failure.reason, failure.detail), (Reason::Malformed, Detail::GroupSize));
+assert_eq!((failure.offset, failure.len), (1, 3));
 ```
 
 ## Constraints: the checked doors
@@ -353,8 +394,7 @@ crate's own `.cargo/config.toml` supplies the `-undefined dynamic_lookup` link f
 extension module needs (the host runtime's symbols resolve at load time, not link time).
 
 **Local dev trap worth knowing:** a plain `--features` build of any of the three writes the
-*same* file as `cargo cdylib`, `target/release/libhypercast.so`, so a `--features python` build (or a `maturin build` in
-`python/`, which is one) silently replaces the plain cdylib that every other binding's dev
+*same* file as `cargo cdylib`, `target/release/libhypercast.so`, so a `--features python` build silently replaces the plain cdylib that every other binding's dev
 loop loads. The extension build still exports every `cast_*` symbol, but it also carries
 ~95 undefined `Py*` symbols that only resolve inside a CPython process, so the next
 `./gradlew test` or `dotnet test` fails at native load with something unhelpful about a
@@ -427,8 +467,8 @@ Every C export is checked at link time: the `no-panic` feature wraps each one in
 `.cargo/config.toml`) links a release build that fails, naming the export, if the optimizer
 left any panic path in it. The generic API no export reaches (`Constraints::from_raw` and
 `Constraints::pack_enum`) is linked into the same build through `#[no_panic]` wrappers that
-exist only under the feature. CI runs it on every pull request that touches the core or
-`.github/`, then runs it again with `--cfg hypercast_canary`, which compiles in one function
+exist only under the feature. CI runs it on every pull request that builds the core
+(`core-proofs`), then runs it again with `--cfg hypercast_canary`, which compiles in one function
 that can panic: that build must fail, naming the canary and nothing else, or the proof has
 stopped checking anything.
 
@@ -498,9 +538,9 @@ is in
 ## WebAssembly
 
 The full test suite — unit tests, the allocation proof, and every corpus replay —
-passes under `wasmtime` on `wasm32-wasip1`, in CI's `core-checks` on every pull request that touches the core or `.github/`:
+passes under `wasmtime` on `wasm32-wasip1`, in CI's `core-checks` on every run off a pull request (the release-mode board):
 no clock, no randomness, no dependencies to stub. CI also builds the `wasm32-unknown-emscripten` staticlib the C# binding's
-browser-wasm packaging consumes on the same pull requests — `RUSTC_BOOTSTRAP=1 cargo wasm-staticlib`, which
+browser-wasm packaging consumes on the same runs — `RUSTC_BOOTSTRAP=1 cargo wasm-staticlib`, which
 leaves Rust's standard library out of it (the `staticlib` feature supplies the panic handler in
 its place), so it can be linked into one Blazor app beside HyperUuid's. It is one of the two
 builds that use an unstable feature on stable (the other is the Windows PHP extension, above):
@@ -514,7 +554,7 @@ exception handling, and `RUSTC_BOOTSTRAP=1` lets stable cargo take it for that o
 backend to switch on and no time to hand in — `default-features = false` or not, it builds
 for the browser as it is. `rust/browser-test/` depends on it the way a browser consumer does
 and runs the boolean, integer, real, decimal, UUID, timestamp, date and duration doors plus
-the version export inside a real browser; CI runs it in headless Chrome on every pull request that touches the core or `.github/`
+the version export inside a real browser; CI runs it in headless Chrome on every run off a pull request
 (`wasm-pack test --headless --chrome` there).
 
 The `wasm32-wasip1` static archive that Swift's WebAssembly SDK links is the same
@@ -667,7 +707,7 @@ cargo add hypercast
 
 Requires Rust 1.89 or later (`rust-version` in the manifest), the floor the Hyper* crates
 share; the parsers themselves need 1.88, for `let` chains. CI checks the library and the
-`no_std` shared library on exactly that toolchain on every pull request that touches the core or `.github/`.
+`no_std` shared library on exactly that toolchain on every run off a pull request (`core-checks`).
 
 One runtime dependency, simdutf8 (MIT OR Apache-2.0), taken with its own `std` feature off
 whatever this crate's features are. `default-features = false` gives the `#![no_std]` rlib

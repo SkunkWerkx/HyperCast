@@ -13,7 +13,7 @@ is checked again before submission.
 * macOS 27.2 on Apple M6 (aarch64-apple-darwin27.0.0), R 4.6.2 (Homebrew build), rustc and
   cargo 1.99.1, TinyTeX, `checkbashisms`, `qpdf`, `pandoc`.
 * Debian forky/sid on x86-64 (the `rocker/r-devel` image), R Under development (unstable)
-  (2026-11-01 r90825), with the distribution's rustc and cargo 1.97.1.
+  (2026-11-08 r90859), with the distribution's rustc and cargo 1.97.1.
 * Ubuntu on aarch64 (the `rocker/r-ver:4.2.3` image), R 4.2.3, the package's declared floor, with
   rustc and cargo 1.89.0, the core crate's `rust-version`.
 * Ubuntu on aarch64 (the `rocker/r-ver:4.6.2` image), R 4.6.2, rustc and cargo 1.99.1: the
@@ -27,7 +27,7 @@ is checked again before submission.
 
 `R CMD check --as-cran hypercast_<version>.tar.gz`, with `_R_CHECK_CRAN_INCOMING_REMOTE_=TRUE`.
 
-macOS, R 4.6.2, with the PDF manual, on the tarball `R CMD build` made (524,288 bytes):
+macOS, R 4.6.2, with the PDF manual, on the tarball `R CMD build` made (536,890 bytes):
 
     Status: 1 NOTE
 
@@ -36,7 +36,7 @@ macOS, R 4.6.2, with the PDF manual, on the tarball `R CMD build` made (524,288 
 
     New submission
 
-R-devel on Debian and R 4.6.2 on Ubuntu, `--no-manual`: one NOTE each, the images' own hardening
+R-devel on Debian and R 4.6.2 on Ubuntu, `--no-manual`: that NOTE and one more each, the images' own hardening
 flags (`-Wdate-time -Werror=format-security -Wformat`, from `R CMD config CFLAGS`, not from this
 package's `Makevars`, which sets no compiler flags):
 
@@ -44,11 +44,12 @@ package's `Makevars`, which sets no compiler flags):
     Compilation used the following non-portable flag(s):
       '-Wdate-time' '-Werror=format-security' '-Wformat'
 
-R 4.2.3 on Ubuntu, `--no-manual`: that NOTE, and two from the image (it has no `pandoc` to check
-`NEWS.md` with, and no network to verify the time).
+R 4.2.3 on Ubuntu, `--no-manual`: those two NOTEs, and one more from the image (it has no network
+to verify the time).
 
-The testthat expectations pass on each (`[ FAIL 0 | WARN 0 | SKIP 1 | PASS 40181 ]`; the skip is
-a test that needs a 2 GiB string and runs only with `HYPERCAST_TEST_LARGE=1`), including the
+The testthat expectations pass on each (`[ FAIL 0 | WARN 0 | SKIP 1 | PASS 42085 ]` on macOS; the
+skip is a test that needs a 2 GiB string and runs only with `HYPERCAST_TEST_LARGE=1`; the Linux
+images have no EUC-JP locale, so one more test skips there, `SKIP 2 | PASS 42077`), including the
 replay of the nineteen bundled corpus files every binding of the project replays. They also pass
 in the C and ISO-8859-15 locales and with `_R_CHECK_DEPENDS_ONLY_=true` (noSuggests).
 `NEWS.md`'s heading carries the version number, which R's NEWS parser requires. If the incoming
@@ -65,7 +66,7 @@ precedes every submission of this package.
   aarch64 Linux): the tests and examples report `ERROR SUMMARY: 0 errors from 0 contexts` and
   `definitely lost: 0 bytes in 0 blocks`.
 * AddressSanitizer and UndefinedBehaviorSanitizer (R-devel built with ASan, the C shim with
-  `-fsanitize=address,undefined`): the tests (`[ FAIL 0 | SKIP 1 | PASS 40181 ]`) and examples
+  `-fsanitize=address,undefined`): the tests (none failing, the two skips above) and examples
   run with no report, both with the Rust archive built normally and with it built under
   `-Zsanitizer=address` too. A heap overread and a signed overflow put in on purpose are
   reported.
@@ -78,7 +79,7 @@ precedes every submission of this package.
 
 ## Check time
 
-R CMD check takes 49 s on the macOS machine above, and 103 s on R-devel under x86-64
+R CMD check takes 70 s on the macOS machine above, and 126 s on R-devel under x86-64
 emulation, against CRAN's ten-minute norm.
 
 ## Compiled code
@@ -128,13 +129,13 @@ to the binding and to R:
 * No panics. No input makes the core panic; every outcome is a return code over the C ABI,
   which the shim turns into one row of the verdict data frame each cast returns. No cast
   signals an error for its data; R errors are reserved for malformed arguments. The crate
-  proves it at link time: `cargo no-panic` links 75 functions under `#[no_panic]` in a
-  release build (all 36 C exports, and 39 that instantiate the public API no export
+  proves it at link time: `cargo no-panic` links 79 functions under `#[no_panic]` in a
+  release build (all 36 C exports, and 43 that instantiate the public API no export
   reaches), `simdutf8` included, and fails when one export that can panic is added on
-  purpose (rustc 1.99.1, on this release's crate sources). The proof covers the Rust core,
+  purpose (rustc 1.100.0, on this release's crate sources). The proof covers the Rust core,
   not the C shim, which calls only those exports and R's API. The archive is built with
   `panic = "abort"` behind a panic handler nothing reaches: the built `hypercast.so` exports
-  `R_init_hypercast`, its 9 registered routines and the core's C ABI and nothing else,
+  `R_init_hypercast`, its 10 registered routines and the core's C ABI and nothing else,
   imports no `abort`, `exit` or printing function, and no symbol in it names a panic or an
   unwind.
 

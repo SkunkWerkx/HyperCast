@@ -64,6 +64,11 @@ required in R and C++. No Swift door throws.
 | Window constants | `MIN_TIMESTAMP_SECONDS`, `MAX_TIMESTAMP_SECONDS`, `MAX_DURATION_SECONDS` | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] | — [^rust-only] |
 | Format as it crosses the ABI (92 bytes) [^layout] | `RawNumFormat` (`resolve()`, `to_le_bytes`) | `Interop.RawNumFormat` (`NumFormat.ToRaw()`) | `NativeValues.writeFormat` (`FORMAT_BYTES`) | `RawNumFormat` (`NumFormat.Raw()`) | `Interop.RawNumFormat` (`rawFormat(_:)`) | `NumFormat::packed()` | `NumFormat#packed` | `NumFormat.packed` | `NumFormat#packed` (`Uint8Array`) | `num_format()$packed` (`raw`) | `HyperCastRawNumFormat` (`NumFormat::raw()`) |
 | Day periods as they cross the ABI (40 bytes) [^layout] | `RawDayPeriods` (`resolve()`) | `Interop.RawDayPeriods` (`DateFormat.ToRaw()`) | `NativeValues.writeDayPeriods` (`DAY_PERIODS_BYTES`) | `RawDayPeriods` (`DateFormat.Raw()`) | `Interop.RawDayPeriods` (`rawDayPeriods(_:)`) | `DayPeriods::packed()` | — (Fiddle scratch) | — (calls the Rust API) | — (calls the Rust API) | — (packed inside `cast_datetime`) | `HyperCastRawDayPeriods` (`DateFormat::raw()`) |
+| Constraints as they cross the ABI (104 bytes, and the packed `enum` list beside them) [^layout] | `RawConstraints` (`Constraints::raw()`, `from_raw`; `pack_enum`) | `Interop.RawConstraints` (`Constraints<T>.ToRaw()`, `PackedEnum`) | `Constraints.toRaw()` (`NativeValues.CONSTRAINTS_BYTES`), `packedEnum()` | `RawConstraints` (`Constraints.Raw()`, `PackedEnum()`) | `Interop.RawConstraints` (`Interop.rawConstraints(_:)`, `Interop.packedEnum(_:)`) | `Constraints::packed()`, `packedEnum()` | `Constraints#packed`, `#packed_enum` | `Constraints.packed()`, `packed_enum()` | `Constraints#packed`, `#packedEnum` (`Uint8Array`) | `hypercast_constraints()$packed`, `$packed_enum` (`raw`) | `HyperCastRawConstraints` (`Constraints::raw()`, `enum_data()`, `enum_size()`) |
+| Date options as they cross the ABI (12 bytes) [^layout] | `RawDateOptions` | `Interop.RawDateOptions` (`DateOptions.TryToRaw(out raw)`) | `NativeValues.writeDateOptions` (`DATE_OPTIONS_BYTES`) | `RawDateOptions` (`DateOptions.Raw()`) | `Interop.RawDateOptions` (`Interop.rawDateOptionsSize`) | — (calls the Rust API) | `DateOptions#packed` | — (calls the Rust API) | `DateOptions#packed` (`Uint8Array`) | `date_options()$packed` (`raw`) | `HyperCastRawDateOptions` (`DateOptions::raw()`) |
+| Month names as they cross the ABI (packed entries) | `MonthNames::pack`, `MonthNames::from_packed` | `MonthNames.Packed`, `MonthNames.FromPacked` | `MonthNames.packed()`, `MonthNames.ofPacked` | `MonthNames.Packed()` | `MonthNames.packed` | `MonthNames::packed()`, `MonthNames::fromPacked` | `MonthNames#packed`, `MonthNames.from_packed` | `MonthNames.packed()`, `MonthNames.from_packed` | `MonthNames#packed`, `MonthNames.fromPacked` | `month_names()$packed` (`raw`) | — (packed into caller storage by `MonthNames`) |
+| Fault detail as it crosses the ABI (16 bytes) [^layout] | `RawFaultDetail` | `Interop.RawFaultDetail` | `NativeValues.FAULT_DETAIL_BYTES` | `RawFaultDetail` | `Interop.rawFaultDetailSize` | — (calls the Rust API) | — (Fiddle scratch) | — (calls the Rust API) | — (calls the Rust API) | — (read inside the C shim) | `HyperCastRawFaultDetail` |
+| Unicode `White_Space` test (what every door trims) | `is_white_space` | — (Rust API only) | — (Rust API only) | — (Rust API only) | — (Rust API only) | — (Rust API only) | — (Rust API only) | — (Rust API only) | — (Rust API only) | — (Rust API only) | — (Rust API only) |
 
 ## Inputs
 
@@ -335,7 +340,10 @@ when the absence is deliberate.
 
 [^layout]: The format crosses the C ABI as a size-tagged, 92-byte layout, the
     `#[repr(C)]` `NumFormat` itself behind a size word, read in place; day periods cross as a
-    40-byte `RawDayPeriods` after the date order, null for English only. `rust/src/abi.rs`
+    40-byte `RawDayPeriods` after the date order, null for English only. A declaration
+    crosses as the 104-byte `RawConstraints` with its packed `enum` list beside it, date
+    options as the size-tagged 12-byte `RawDateOptions`, and a detailed fault comes back in
+    the size-tagged 16-byte `RawFaultDetail`. `rust/src/abi.rs`
     has the offset table every binding restates and pins in its interop tests.
 
 [^symbol]: 1 to 8 UTF-8 bytes, containing no ASCII digit; the two

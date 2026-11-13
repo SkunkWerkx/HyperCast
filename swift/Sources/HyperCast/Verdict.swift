@@ -63,7 +63,7 @@ public struct Fault: Equatable, Sendable {
 /// needs a type checker — Swift's compiler refuses an unhandled disposition out of the box.
 ///
 /// ```swift
-/// switch try Cast.i32("(1,234)", format: .invariant) {
+/// switch Cast.i32("(1,234)", format: .invariant) {
 /// case .success(let value): print("got \(value)")          // -1234, accounting negative
 /// case .fault(let fault): print("\(fault.reason) at byte \(fault.offset)")
 /// }   // no third case exists, and the compiler knows it

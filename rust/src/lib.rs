@@ -165,7 +165,7 @@ macro_rules! personality_return {
 // unwinds, so nothing ever calls it — the definition only has to exist.
 //
 // Assembly rather than a `#[no_mangle]` function, for the visibility: a `#[no_mangle]`
-// item is exported from a cdylib whatever its Rust visibility, which would put a 33rd
+// item is exported from a cdylib whatever its Rust visibility, which would put a 37th
 // symbol beside the 36 C ABI exports, one any other library in the process could bind to.
 // Defined hidden instead, it satisfies the library's own reference and is seen by nothing
 // outside it. Never compiled for the static libraries: two Hyper* archives that each

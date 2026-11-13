@@ -136,8 +136,8 @@ public final class Main {
             System.out.println("FAIL version: " + version + " (expected major.minor.patch)");
             failures++;
         }
-        // All twenty-six doors: each text door through its String form, the four typed doors
-        // through a double.
+        // Twenty-six doors, every one but the plain text door (its checked form runs below): each
+        // text door through its String form, the four typed doors through a double.
         check("bool", Cast.bool("enabled"), true);
         check("character", Cast.character("U+00E9"), '\u00e9');
         check("i8", Cast.i8("-128", NumFormat.INVARIANT), (byte) -128);

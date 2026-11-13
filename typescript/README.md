@@ -212,7 +212,7 @@ reads as well as `3:04 PM`. Undeclared, `nachm.` is the first offending characte
 at either end (inside is fine, as in `a. m.`).
 
 White space is Unicode's `White_Space`, the 25 code points (ASCII, U+0085, U+00A0, U+2000 to
-U+200A, U+202F, U+3000 among them), and every door but the plain `castText` ignores it at both ends.
+U+200A, U+202F, U+3000 among them), and every door but `castText`, which trims only under `trim`, ignores it at both ends.
 The numeric doors also ignore it after a leading sign, before a trailing sign or a percent
 symbol, on either side of a currency symbol and inside accounting parentheses (`'- 12'`,
 `'( 12 )'`, `'12,5 %'`, the last under a declared comma decimal separator); between digits it is `malformed`, unless a space-like group
@@ -558,7 +558,7 @@ the suite is the same, and `isAvailable()` is `true`. What differs:
   That is Node's own warning about `node:wasi`, not this package's;
   `node --disable-warning=ExperimentalWarning` silences it.
 - The install carries the runtime's three dependencies (`@napi-rs/wasm-runtime`,
-  `@emnapi/core`, `@emnapi/runtime`) and what they pull in, beside the 376,730-byte module.
+  `@emnapi/core`, `@emnapi/runtime`) and what they pull in, beside the module (914,458 bytes in CI's build of 2026-11-13).
 - A Proxy whose prototype lookup throws (a `getPrototypeOf` trap that throws, or a revoked
   Proxy) makes a door or declaration throw under the fallback, a recorded loss: the runtime's
   handle lookup tests every argument `instanceof WeakRef`, which runs the trap, and its

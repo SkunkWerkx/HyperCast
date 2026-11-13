@@ -9,8 +9,8 @@
 closed reason plus the exact byte span that offended.**
 
 Allocation-lean scalar casts — booleans, characters, the full integer family, reals, exact
-decimals, UUIDs, temporals — calling directly into the native `hypercast` Rust core through
-`@convention(c)` function pointers, no shim layer. On every platform it supports — Linux
+decimals, UUIDs, temporals — calling directly into the native `hypercast` Rust core,
+no shim layer. On every platform it supports — Linux
 (glibc and musl), macOS, Windows, iOS, Mac Catalyst, Android and WebAssembly — the core is linked into your executable
 as a static library, so there is nothing to load at run time and nothing to deploy beside
 it.
@@ -71,8 +71,8 @@ fits `Unicode.Scalar`, so nothing narrows.
 
 ## Numbers a workbook already holds
 
-A spreadsheet stores a numeric cell as a `Double`, and four doors read one directly, with no
-text in between: `Cast.decimalFromDouble` (the shortest decimal that names the double, the
+A spreadsheet stores a numeric cell as a `Double`, and four plain doors read one directly, with no
+text in between (the checked `…FromDouble` doors are under [Validation constraints](#validation-constraints)): `Cast.decimalFromDouble` (the shortest decimal that names the double, the
 digits the file holds — `0.1` is one tenth), `Cast.excelSerialFromDouble(_:epoch:)` (the
 `DateComponents` `dateTime` returns, under a declared `ExcelEpoch`), `Cast.excelTime` (a
 serial's fraction, as `time` returns it) and `Cast.excelDuration` (days as a `Duration`). A
@@ -208,8 +208,7 @@ passed, `nil` when none is declared and empty for an empty one, which every valu
    **What makes the doors this cheap** is the carrier, not the parse: nothing is allocated
    around the call. The input crosses as a view of the string's own UTF-8 (`withUTF8`), the
    scratch is a tuple of fixed-width integers on the stack, and the call is a direct call to
-   a linked-in symbol through a table of function pointers held as a class reference, not a
-   struct copied per call.
+   a linked-in symbol.
 
    Two things to read straight: `Int(String)` at 7 ns is still faster than the invariant
    integer door, as it should be — a stdlib integer parse with no grouping, no parens and
@@ -263,7 +262,7 @@ format that declares nothing reads exactly what it always did. `NumFormat`, `Num
 same thing.
 
 White space is Unicode's `White_Space`, the 25 code points (ASCII, U+0085, U+00A0, U+2000 to
-U+200A, U+202F, U+3000 among them). Every door but plain `Cast.text` ignores it at both ends (`Cast.char` given exactly one character keeps it), and the
+U+200A, U+202F, U+3000 among them). Every door but `Cast.text`, which trims only under `trim: true`, ignores it at both ends (`Cast.char` given exactly one character keeps it), and the
 numeric doors also after a leading sign, before a trailing sign or a percent symbol, on either
 side of a currency symbol and inside accounting parentheses (`"- 12"`, `"( 12 )"`, `"12,5 %"`,
 `"1 234,56 €"`, the last two under a declared comma decimal separator, the last with a space group separator and `€` declared); between digits it is `.malformed`, unless a space-like group separator is
@@ -504,8 +503,8 @@ at run time, no resource bundle, and nothing to deploy beside the binary: a mult
 Dockerfile that
 copies only the executable works, so does a fully static build with
 `swift build --swift-sdk x86_64-swift-linux-musl`, and so does copying a macOS or Windows
-executable on its own. Each triple's archive is about 150–220 KB (the Windows `.lib`s are
-the largest), and the linker keeps only what your executable reaches.
+executable on its own. Each triple's archive is about 410–580 KB (the Windows `.lib`s are
+the largest; CI's build of 2026-11-13), and the linker keeps only what your executable reaches.
 
 No door throws: bad data is a `Verdict`'s `Fault` (or a checked door's `Violation`), and the core is linked in, so there is
 nothing to fail to load. `Cast.isAvailable` is always `true`; it keeps the availability
@@ -588,7 +587,7 @@ const exitCode = wasi.start(instance);
 ```
 
 CI builds the smoke executable for WebAssembly on Swift 6.4 and runs it this way in headless
-Chrome on every PR, failing unless it exits 0. An executable that imports Foundation is
+Chrome on every run off a pull request, failing unless it exits 0. An executable that imports Foundation is
 large (tens of MB, most of it ICU data); `-c release` and `wasm-opt` bring that down.
 
 The other direction — running the core as wasm *inside* a native Swift process — is not

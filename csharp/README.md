@@ -344,8 +344,8 @@ serves a format that is no culture's.
 
 ## Numbers a workbook already holds
 
-A spreadsheet stores a numeric cell as a `double`, and four doors read one directly, with no
-text in between: `Cast.DecimalFromDouble` (the shortest decimal that names the double, the
+A spreadsheet stores a numeric cell as a `double`, and four plain doors read one directly, with no
+text in between (the checked `…FromDouble` doors are under [Validation constraints](#validation-constraints)): `Cast.DecimalFromDouble` (the shortest decimal that names the double, the
 digits the file holds — `0.1 + 0.2` is `0.30000000000000004`, where `(decimal)double` rounds
 to 15 significant digits), `Cast.ExcelSerialFromDouble` (a `DateTime` of
 `DateTimeKind.Unspecified` under a declared `ExcelEpoch`), `Cast.ExcelTime` (a serial's
@@ -612,7 +612,7 @@ Last verified on `linux-x64` and, inside an Alpine container, `linux-musl-x64`: 
 `ILxxxx`/`AOTxxxx` trim or AOT diagnostics**, a 1.7 MB native binary with the core inside it
 and no shared library beside it, and `AOT smoke test passed.` with exit code 0. `TreatWarningsAsErrors` is on for the library
 project, so an analyzer warning is a build failure, not a line in a log nobody reads. CI
-re-proves it per platform on every PR (see
+re-proves it per platform on every run off a pull request (see
 [Native binary provenance](#native-binary-provenance)).
 
 **The core is linked into the executable.** A Native AOT publish does not load
@@ -632,7 +632,7 @@ times (`"hypercast"` for dlopen platforms, `"*"` for the statically-linked wasm 
 `"__Internal"` for iOS and Mac Catalyst; see [Platform support](#platform-support)), sharing
 the same `EntryPoint`, with `OperatingSystem.IsBrowser()` and `OperatingSystem.IsIOS()`
 picked at the call site and constant-folded by the linker. CI builds the `wasm32-unknown-emscripten` staticlib on every
-PR; the release pack stages it under `runtimes/browser-wasm/nativeassets/`, and
+run off a pull request; the release pack stages it under `runtimes/browser-wasm/nativeassets/`, and
 `build/net10.0/HyperCast.targets` ships inside the package to wire it up for a consumer with
 no configuration beyond the `wasm-tools` workload.
 
@@ -657,7 +657,7 @@ through the pinvoke table.
 (each framework, in Release and in an unstripped Debug build, where the SDK runs no `wasm-opt`
 after the link), loads each in headless Chromium and requires `PASS`; name legs
 (`net11-release net11-debug net10-release net10-debug`) to run fewer. CI runs the same script
-on every PR, in headless Chrome with the `wasm-tools` and `wasm-tools-net10` workloads, against the static library that run just built (`STATICLIB`
+on every run off a pull request, in headless Chrome with the `wasm-tools` and `wasm-tools-net10` workloads, against the static library that run just built (`STATICLIB`
 names it, so the script skips building its own); it is not part of the solution, so a plain
 `dotnet build` never needs the workload or a browser. By hand, the same steps are:
 
@@ -841,9 +841,9 @@ machine's RID, the project copies `rust/target/release/` straight to the output,
 `dotnet test` after a `cargo cdylib` just runs.
 
 **Reproducibility, stated honestly.** A rebuild is byte-identical only on the same toolchain
-*and* the same build image. Measured on 2026-10-25 for linux-x64 at `0ee2caa`, whose Rust
-sources are those of the library CI staged into `php/src/native/`: `cargo cdylib` in the
-`rust:latest` Docker image (rustc 1.99.1) gives 160,488 bytes against CI's 160,512, with the
+*and* the same build image. Measured on 2026-11-13 for linux-x64 against the `native-linux-x64` library of CI run
+43362273089, built from the same Rust sources: `cargo cdylib` in the
+`rust:latest` Docker image (rustc 1.100.0) gives 453,152 bytes against CI's 453,160, with the
 same exports and an identically sized `.text`. The difference is the C toolchain's version
 string in `.comment`, GCC on CI's Ubuntu runner against the image's Debian. So "rebuild it
 and compare hashes" verifies a binary only for someone who reproduces CI's runner image as
@@ -895,7 +895,7 @@ deliberately runs `gh attestation verify`. Attestation ties an artifact to a com
 build; an author signature ties it to an identity. If you want the automatic restore-time
 check, this is the gap.
 
-**Per-platform AOT receipts.** The same CI run publishes `HyperCast.AotSmokeTest` under
+**Per-platform AOT receipts.** A release-mode CI run publishes `HyperCast.AotSmokeTest` under
 Native AOT on five desktop RIDs (every one but `osx-x64`, which is cross-built and has no CI leg) and, in Alpine containers, on the two musl ones, fails the build on any `ILxxxx`/`AOTxxxx` trim diagnostic,
 executes the resulting binary, and requires exit 0. Each leg's log uploads as an
 `aot-report-{rid}` artifact.

@@ -386,7 +386,7 @@ The date doors read the shapes they always read unless the caller opts in. `opti
 (`DateOptions.new(pivot: 2029)` reads `26` as 2026), at `date` with an order and at
 `datetime`; there is no default. `months:` takes a `MonthNames`, a vocabulary the caller
 builds, from a Hash of name to month or an Array of `[month, name]` pairs, and never looked
-up: `HyperCast::MonthNames.new("Jan" => 1, …)` makes the month field of an ordered date read
+up: `HyperCast::MonthNames.new({ "Jan" => 1, … })` makes the month field of an ordered date read
 `07-Jan-26` (with a pivot) and `7-Jan-2026`, in the position the declared order selects.
 Names match under simple case folding, the longest followed by the separator winning;
 punctuation is part of a name, so with `janv.` declared and `.` as the separator `7.janv..26`

@@ -4,7 +4,7 @@
 [![Packagist](https://img.shields.io/packagist/v/skunkwerkx/hypercast.svg)](https://packagist.org/packages/skunkwerkx/hypercast)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/SkunkWerkx/HyperCast/blob/master/LICENSE)
 
-**A real `Success|Fault` union type on every door — the value, or a closed backed-enum
+**A real union type on every door (`Success|Fault` on the plain ones) — the value, or a closed backed-enum
 reason plus the exact byte span that offended — from `hypercast`, a PHP extension installed
 prebuilt by [PIE](https://github.com/php/pie): no compiler, no Composer dependency, no FFI.**
 
@@ -13,7 +13,7 @@ decimals, UUIDs, temporals — from the Rust core, built into a Zend extension w
 [ext-php-rs](https://ext-php.rs). The whole API is the extension's: the classes below exist
 once it is loaded, with no PHP code in your `vendor/`. PHP 8.3 is the floor, and every
 supported platform and PHP minor gets a prebuilt, attested zip (see [Install](#install)).
-Both verdict classes are `final` and every door's return type declares the union, which is
+Every verdict class is `final` and every door's return type declares its union, which is
 as closed as PHP's type system can state it.
 
 ```php
@@ -428,9 +428,9 @@ $ar = new \NumberFormatter('ar_EG', \NumberFormatter::DECIMAL);
 Cast::f64($ar->format(1234.5), $ar);     // Success(1234.5): Arabic-Indic digits and separators
 ```
 
-The formatter is read on every call: its ten symbols and two negative-pattern attributes,
+The formatter is read on every call: its nine symbols, two negative-pattern attributes, pattern and locale,
 because a formatter is mutable (`setSymbol()`, `setPattern()`) and a changed one is declared
-again. Those twelve intl calls are what the formatter path costs over a hoisted `NumFormat`
+again. Those thirteen intl calls (more the first time a locale is seen) are what the formatter path costs over a hoisted `NumFormat`
 — about four times the call in a run for 0.9.0, the FFI package (2.4 µs against 0.6 µs, with
 the grouped `Cast::i32` at 645 ns, separate from the Benchmarks table) — so derive the
 `NumFormat` once with `NumFormat::fromNumberFormatter()` on a hot path. Symbols the core cannot carry (a separator
@@ -539,7 +539,7 @@ winning. One that cannot mean anything at its door is the caller's bug: the cons
 `\InvalidArgumentException` whose code is the core's refusal code and whose message is the rule
 (`new Constraints(Door::I32, trim: true)` throws code 1, "Constraints refused (code 1): a
 constraint the door does not take."). The codes are 1 (`trim` or `caseSensitive` off the text
-door, a rounding at it), 5 (`multipleOf` not positive), 6 (a rounding without `multipleOf`), 8
+door, `multipleOf` with a rounding at it), 5 (`multipleOf` not positive), 6 (a rounding without `multipleOf`), 8
 (a bound, step or entry no door can hold, or a rounding to a fractional step at an integer door),
 9 (a text entry that is not UTF-8) and 11 (a malformed layout, which this binding never writes).
 An `enum` left `null` is none, while `enum: []` declares one no value matches. The door is the

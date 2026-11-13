@@ -1,0 +1,20 @@
+# Tokens for the `declared` target: `cargo +nightly fuzz run declared -- -dict=declared.dict`.
+# The shapes a coverage-guided search rarely composes byte by byte: a month name between
+# date separators, a two-digit year, the designators, and a packed `enum` entry.
+"Jan"
+"feb"
+"MAR"
+"Dec"
+"7-Jan-2026"
+"07-Jan-26"
+"Jan/7/2026"
+"2026-Jan-07"
+"20260107"
+" PM"
+"T15:04:05"
+"+05"
+"Z"
+"1,23,456"
+"1,234,567"
+"\x01\x00\x00\x00F"
+"\x04\x00\x00\x00Male"

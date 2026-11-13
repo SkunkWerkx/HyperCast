@@ -126,7 +126,7 @@ includes a sign or percent symbol, or a decimal separator (number or currency), 
 space in it, a currency symbol with white space at either edge, and a day-period designator
 with white space at either edge.
 
-Five of them carry validation constraints, the OpenAPI Schema Object's keywords judged after a
+Five of them, 1.1's, carry validation constraints, the OpenAPI Schema Object's keywords judged after a
 door parses: an input that does not cast is a fault (1 to 3, not the type), and a value of the
 type that breaks a declared rule is a violation (4). `cast_constraints_check` judges a
 declaration once, a `HyperCastRawConstraints` (104 bytes, `size` first, each keyword in a field
@@ -161,7 +161,7 @@ which a span cannot carry, is 3, out of range), and
 `cast_declared_decimal` converts a bound, step or numeric entry written in invariant notation
 into a `HyperCastDecimal`, exactly or not at all (8).
 
-Four more exports, 1.1's, reach the doors above by their door code (`cast_detailed`, with `param`
+Four more exports, also 1.1's, reach the doors above by their door code (`cast_detailed`, with `param`
 for the Unix precision, date order or Excel epoch a door declares, and `0` elsewhere) and report
 what failed. A failure writes a `HyperCastRawFaultDetail` (16 bytes, `size` first and set by the
 caller; a larger one from a later layout is accepted and its tail never written; null is allowed)
@@ -190,10 +190,10 @@ the window a two-digit year is read in at doors 20 and 21) and a month vocabular
 packed as each entry's month byte, a little-endian `uint32_t` length, and the UTF-8, which the core
 judges in full on every call.
 
-**A 1.0 core has none of this**: no detailed export, and it reads `1,23,456` as 123456 under any
+**A 1.0 core has none of this**: no detailed export, none of the five above, and it reads `1,23,456` as 123456 under any
 format. Check `hypercast_version()` before reading a grouped numeral or calling the exports, and refuse a core
 that cannot drive the headers you built against: another major version, or a minor older than
-theirs (1.1.0 is `0x010100`; the patch never matters). `c/smoke/main.c` is the example:
+theirs (1.1.0 is `0x010100`; the patch never matters). `c/smoke/main.c` makes the same check; in short:
 
 ```c
 #define BUILT_AGAINST 0x010100u /* the headers' version, major << 16 | minor << 8 | patch */

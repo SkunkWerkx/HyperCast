@@ -122,7 +122,7 @@ core reads the text through a slice whose length may not exceed the guest's `isi
 2^31 − 1 on wasm32, whatever the host's word size, so a door takes a text of at most
 `MaxText` bytes: the smaller of that limit and what the guest and host can address beside the
 module's own pages. On a 64-bit host that is 2,147,483,647. A longer text panics, as a caller
-bug, before anything is allocated. A checked door lays its declaration (84 bytes and its
+bug, before anything is allocated. A checked door lays its declaration (104 bytes and its
 `enum` list), and a detailed date door its month vocabulary, out past its text in the same
 scratch, so for them the text and what follows it together are what the base scratch must
 hold and what `MaxText` bounds.
@@ -658,8 +658,8 @@ if fault, ok := hypercast.FaultFromCode(2, 3, 1); ok {
 ## Platforms
 
 Every GOOS and GOARCH Go has, with `CGO_ENABLED=0`, because the core is Go source. CI
-cross-compiles and vets the package for these 23 pairs on every pull request that touches
-the Go binding, the core or the workflows, and on every release-mode run:
+cross-compiles and vets the package for these 23 pairs on every release-mode run (every run
+off a pull request):
 
 | GOOS | GOARCH |
 | --- | --- |
@@ -673,10 +673,10 @@ the Go binding, the core or the workflows, and on every release-mode run:
 
 and runs the whole suite natively on Linux and Windows on x64 and arm64, on macOS on arm64
 (Intel macOS is built by the sweep, not run), on Alpine (musl x64 and arm64), in an iOS
-simulator, in an Android emulator, and on the three WebAssembly hosts below. No big-endian
-host runs in CI; the suite, corpus replay included, passed on `linux/s390x` under emulation
-when the backend landed (2026-11-01), and failed there with the big-endian decoding turned
-off. A binary carries the core like any package, writes nothing to disk and starts without
+simulator, in an Android emulator, and on the three WebAssembly hosts below. The Alpine legs and a
+big-endian one, the suite with its corpus replay on `linux/s390x` under emulation, run in
+release mode; that suite failed there with the big-endian decoding turned off when the backend
+landed (2026-11-01). A binary carries the core like any package, writes nothing to disk and starts without
 touching the filesystem; glibc or musl makes no difference, since a cgo-free Go binary takes
 nothing from the C library, and a `scratch` image runs it as it is.
 
@@ -746,7 +746,8 @@ negative control), under stock Go on `js/wasm` under Node and on `wasip1/wasm` u
 wasmtime. It also builds [`internal/tinygosmoke`](internal/tinygosmoke) with TinyGo for the
 browser and runs it in headless Chrome: every ABI shape — plain, numeric with a format (a
 currency symbol, and every other symbol the layout carries), discriminated, the civil
-date-time door with declared day periods — a fault with its span, and the core's version
+date-time door with declared day periods, the text door, the constraints layout with its
+`enum` lists — a fault with its span, a violation, and the core's version
 against `rust/Cargo.toml`.
 
 ## Building and regenerating

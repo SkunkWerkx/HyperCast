@@ -15,8 +15,8 @@ public struct NumStyles: OptionSet, Hashable, Sendable {
     /// The bits the eight flags below define.
     static let definedBits: UInt32 = 0xFF
 
-    /// Permit the declared group separator between digits (sizes not validated — between
-    /// digits is the rule).
+    /// Permit the declared group separator between digits, in the group sizes the format's
+    /// ``Grouping`` declares.
     public static let grouping = NumStyles(rawValue: 1)
     /// Permit accounting parentheses as negation: `(1,234)` is -1234.
     public static let parentheses = NumStyles(rawValue: 1 << 1)

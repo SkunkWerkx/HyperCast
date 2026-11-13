@@ -605,9 +605,10 @@ choice.
 ## AOT
 
 The GraalVM Native Image smoke test (`./gradlew :aot-smoke-test:nativeRun`) builds and
-runs the `isAvailable()`/`nativeVersion()` probe, all twenty-six doors (the text doors
+runs the `isAvailable()`/`nativeVersion()` probe, twenty-six doors, every one but the plain text door, whose checked form runs with the
+constraints (the text doors
 through their `String` form, the four typed doors through a `double`; the date-time door
-with designators declared too, and a format with signs, percent and native digits declared), the `byte[]` and `MemorySegment` forms (heap slice and native segment)
+with designators declared too, and a format with signs and native digits declared), the `byte[]` and `MemorySegment` forms (heap slice and native segment)
 once per ABI shape, and the exhaustive union switch as a true native binary. Native Image
 needs two separate registrations
 and the jar ships both in its `reachability-metadata.json` under

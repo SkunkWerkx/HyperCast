@@ -1,4 +1,4 @@
-//! One dispatcher over every door, asserting the two invariants every binding silently
+//! One dispatcher over every plain text door, asserting the two invariants every binding silently
 //! relies on: a door NEVER panics on input (a panic in the core takes down the host
 //! process in eight languages — bad data must always come back as a verdict), and every
 //! fault span indexes the caller's own buffer (`offset + len <= input.len()`, which the
@@ -8,14 +8,16 @@
 //! order/precision; the rest is the input. Formats cycle through the invariant profile,
 //! eurozone declarations, NBSP grouping, structural detection, fully fuzzed flag bits,
 //! the documented-defined degenerate equal-separators case, and declared currency symbols.
+//! The doors that take a declaration (constraints, date options, month names), the detailed
+//! doors and the typed doors are `declared.rs`'s.
 
 #![no_main]
 
 use hypercast::{
     CurrencySymbol, DateOrder, ExcelEpoch, Fault, NumFormat, UnixPrecision, cast_bool, cast_char,
     cast_date, cast_date_ordered, cast_datetime, cast_decimal, cast_duration, cast_excel_serial,
-    cast_f32, cast_f64, cast_i8, cast_i16, cast_i32, cast_i64, cast_time, cast_timestamp, cast_u8,
-    cast_u16, cast_u32, cast_u64, cast_unix, cast_uuid,
+    cast_f32, cast_f64, cast_i8, cast_i16, cast_i32, cast_i64, cast_text, cast_time,
+    cast_timestamp, cast_u8, cast_u16, cast_u32, cast_u64, cast_unix, cast_uuid,
 };
 use libfuzzer_sys::fuzz_target;
 
@@ -64,7 +66,7 @@ fuzz_target!(|data: &[u8]| {
         _ => UnixPrecision::Nanos,
     };
 
-    match door % 22 {
+    match door % 23 {
         0 => check(input, cast_bool(input)),
         1 => check(input, cast_i8(input, &format)),
         2 => check(input, cast_i16(input, &format)),
@@ -86,6 +88,7 @@ fuzz_target!(|data: &[u8]| {
         18 => check(input, cast_excel_serial(input, epoch)),
         19 => check(input, cast_decimal(input, &format)),
         20 => check(input, cast_char(input)),
+        21 => check(input, cast_text(input)),
         _ => check(input, cast_duration(input)),
     }
 });

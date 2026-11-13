@@ -229,7 +229,7 @@ doors read Excel-style (`07-Jan-26`). Both are arguments of the date doors (`opt
 `months`), and both are checked when declared.
 
 White space is Unicode's `White_Space`, the 25 code points (ASCII, U+0085, U+00A0, U+2000 to
-U+200A, U+202F, U+3000 among them). Every door ignores it at both ends (`cast_char()` given exactly one character keeps it), and the
+U+200A, U+202F, U+3000 among them). Every door but `cast_text()`, which trims only under `trim`, ignores it at both ends (`cast_char()` given exactly one character keeps it), and the
 numeric doors also after a leading sign, before a trailing sign or a percent symbol, on either
 side of a currency symbol and inside accounting parentheses (`"- 12"`, `"( 12 )"`, `"12,5 %"`,
 `"1 234,56 €"`, the last two under a declared comma decimal separator, the last with a space group separator and `€` declared); between digits it is `malformed`, unless a space-like group separator is
@@ -321,7 +321,7 @@ declaration is judged once, when it is declared, and the door is part of it. One
 refuses is an error worded from the code it returns, such as
 `Constraints refused (code 5): multipleOf is not positive.` for
 `hypercast_constraints("i32", multiple_of = "0")`: a door that takes no constraints, `trim` or
-`case_sensitive` at a numeric door, a `rounding` at the text door (1), a step that is not
+`case_sensitive` at a numeric door, `multiple_of` with a `rounding` at the text door (1), a step that is not
 positive (5), a rounding without `multiple_of` (6), a bound, step or entry the door cannot hold
 (8), an entry that is not UTF-8 (9). A declaration handed to another door's cast is an error,
 and so is `cast_text(x, NULL)`: only `cast_text(x)`, with no constraints at all, is the plain
@@ -366,7 +366,7 @@ the answer.
 
 ## Benchmarks
 
-Apple M6 (Mac18,5), macOS, R 4.6.2 (Homebrew build), measured 2026-11-01, against base R's
+Apple M6 (Mac18,5), macOS, R 4.6.2 (Homebrew build), measured 2026-11-13, against base R's
 coercions with bench 1.1.4 (`R_LIBS=<lib> Rscript bench/bench.R` against an installed
 copy), 1000 strings per call. Base R returns `NA` where a door returns a fault and its span,
 so the two do different work; base R is the call an R user reaches for today. These were
@@ -374,32 +374,35 @@ measured on a different machine and OS from the other bindings' figures and are 
 comparable to them.
 
 ```text
-2026-11-01, R version 4.6.2 (2026-10-29), Apple M6 (Mac18,5)
-hypercast 1.0.0, bench 1.1.4
+2026-11-13, R version 4.6.2 (2026-10-29), Apple M6 (Mac18,5)
+hypercast 1.1.0, bench 1.1.4
 
- expression                                                median  itr/sec mem_alloc
- hypercast::cast_f64(x, num_format())                      27.84µs 35807    79.93KB
- as.numeric(x)                                             40.26µs 24729     7.86KB
- hypercast::cast_i32(x, num_format())                      25.58µs 38946    34.77KB
- as.integer(x)                                             30.95µs 32169     3.95KB
- hypercast::cast_bool(x)                                   18.25µs 54214    22.19KB
- as.logical(x)                                             10.58µs 93887     3.95KB
- hypercast::cast_date(x)                                   19.93µs 50212    29.16KB
- as.Date(x)                                                 2.29ms   434   138.23KB
- hypercast::cast_timestamp(x)                              27.14µs 36906    37.93KB
- as.POSIXct(x, tz = "UTC", format = "%Y-%m-%dT%H:%M:%OSZ")  3.83ms   258   126.36KB
+ expression                                                median itr/sec mem_alloc
+ hypercast::cast_f64(x, num_format())                      38.7µs 25541   160.69KB
+ as.numeric(x)                                             41.7µs 23783     7.86KB
+ hypercast::cast_i32(x, num_format())                      32.6µs 30476    67KB
+ as.integer(x)                                             30.6µs 32146     3.95KB
+ hypercast::cast_bool(x)                                   25.6µs 38779    54.41KB
+ as.logical(x)                                             10.5µs 94364     3.95KB
+ hypercast::cast_date(x)                                   25µs   39574    64.81KB
+ as.Date(x)                                                 2.4ms   416   138.23KB
+ hypercast::cast_timestamp(x)                              33.8µs 29143    70.59KB
+ as.POSIXct(x, tz = "UTC", format = "%Y-%m-%dT%H:%M:%OSZ")  4ms     248   126.36KB
 ```
 
 | Comparison (median, 1000 strings) | hypercast | base R | Result |
 | --- | --- | --- | --- |
-| reals | 27.84 µs | 40.26 µs | hypercast 1.4x faster |
-| 32-bit integers | 25.58 µs | 30.95 µs | hypercast 1.2x faster |
-| booleans | 18.25 µs | 10.58 µs | **hypercast 1.7x slower** |
-| ISO dates | 19.93 µs | 2.29 ms | hypercast 115x faster |
-| ISO instants | 27.14 µs | 3.83 ms | hypercast 141x faster |
+| reals | 38.7 µs | 41.7 µs | hypercast 1.1x faster |
+| 32-bit integers | 32.6 µs | 30.6 µs | **hypercast 1.1x slower** |
+| booleans | 25.6 µs | 10.5 µs | **hypercast 2.4x slower** |
+| ISO dates | 25 µs | 2.4 ms | hypercast 96x faster |
+| ISO instants | 33.8 µs | 4 ms | hypercast 118x faster |
 
 Every door allocates more than its base R counterpart: the verdict's seven columns (and a
-timestamp's two exact ones) are R vectors of the input's length.
+timestamp's two exact ones) are R vectors of the input's length. Two of them, the detail
+columns, are 1.1's: every door costs 5 to 11 µs more per 1000 strings and about twice the
+memory of 1.0.0's five-column verdict (27.84, 25.58, 18.25, 19.93 and 27.14 µs on this machine
+on 2026-11-01), and the 32-bit integers went from a win to a loss.
 
 ## Local loop
 

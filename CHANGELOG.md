@@ -139,7 +139,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   can be trimmed of Unicode white space first; and a text `enum` matches under Unicode 17's
   simple case folding unless declared `caseSensitive`, answering the declared spelling and its
   index (a number among its entries is valid and never matches, in every binding whose types
-  can say one). Lengths count code points. The checked verdict has two arms and two levels: the value,
+  can say one). Lengths count code points. `pattern` is not among the keywords yet: it is
+  planned for 1.2, a fast follow as soon as time can be committed to that release. The checked verdict has two arms and two levels: the value,
   or a rejection, which is the door's own fault (the input is not the type) or a `Violation`
   (it is, and breaks the schema) naming the keyword and the span and carrying the value exactly
   as cast, never rounded; a rounding past what the type holds is a `multipleOf` violation. Zero
@@ -223,6 +224,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   rejection)` for a checked one, each `(nil, nil)` when absent. *(Rust, C#, Java, Swift, Go, PHP)*
 
 ### Changed
+
+- **R: the benchmarks are re-measured for 1.1, and one win is now a loss.** The verdict gained
+  two detail columns, and every door costs 5 to 11 µs more per 1000 strings and about twice
+  the memory. On an
+  Apple M6 on 2026-11-13, with 2026-11-01's 1.0.0 figures in parentheses: reals 38.7 µs
+  (27.84), still ahead of `as.numeric` at 41.7; 32-bit integers 32.6 µs (25.58), now 1.1x
+  slower than `as.integer` at 30.6; booleans 25.6 µs (18.25), 2.4x slower than `as.logical`;
+  ISO dates 25 µs (19.93), 96x faster than `as.Date`; ISO instants 33.8 µs (27.14), 118x
+  faster than `as.POSIXct` (`r/README.md`, `docs/benchmarks.md`). *(R)*
 
 - **The text door checks UTF-8 with SIMD.** `cast_text`, its detailed and checked twins, and
   the text door of every binding built natively validate 64 bytes and more with simdutf8
@@ -486,7 +496,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   core built for `wasm32-wasip1` (the module imports nothing) is translated to one Go file by
   [wasm2go](https://github.com/ncruces/wasm2go) and committed as `go/internal/core/core.go`.
   `go generate` in `go/` regenerates it with a pinned rustc (1.99.1, a reproducibility
-  constraint) and a 64 KiB guest stack (16x the smallest that passes the suite). CI
+  constraint) and a 64 KiB guest stack (14x the smallest that passes the suite). CI
   regenerates and diffs it on every push, and `prepare-release.yml` regenerates it at the
   version. cgo, the thirteen committed archives under `go/staticlib/`, `backend_tinygo.go`, the
   `iossimulator`/`maccatalyst` and `hypercast_local` tags, `check_go_archives.sh` and the core
@@ -495,7 +505,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   cross-compile sweep in CI; iOS and `android/amd64` need a C linker only because Go's own
   ports link externally there). The whole suite now runs under TinyGo on wasip1 and under
   stock Go on `js/wasm` and `wasip1/wasm`, beside the TinyGo browser page. A door's text is
-  copied into the core's memory instead of crossing zero-copy. A text past 65,376 bytes runs on
+  copied into the core's memory instead of crossing zero-copy. A text past 65,360 bytes runs on
   a one-off instance, its one allocation, and the new `MaxText` (2,147,483,647 on a 64-bit
   host) bounds it: a longer text panics as a caller bug. Calls run on a primary instance when
   its lock is free, else on a pooled one. Every door stays at 0 allocations on success, now
