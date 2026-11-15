@@ -119,9 +119,10 @@ jobs:
 
       # From the root Package.swift, the one consumers resolve; its HyperCast target is the
       # same sources as swift/Package.swift's, now linking the core built above. The include path
-      # is spelled out because this image's SwiftPM (Xcode 26.6) declares the bundle and then
-      # leaves its module map off the compile ("no such module 'HyperCastCore'", 2026-11-13);
-      # Xcode 27's passes it itself. Compiling the target links nothing, so the path is enough.
+      # is spelled out because under CodeQL's tracer on this image SwiftPM took no variant from
+      # the one-triple bundle local-core.sh builds ("no such module 'HyperCastCore'", the 1.1.0
+      # preparation, 2026-11-13; the all-triple bundle of a CI run it did take). Compiling the
+      # target links nothing, so the path is enough.
       - name: Build the Swift library
         if: matrix.build-mode == 'manual'
         run: swift build --target HyperCast -Xswiftc -I"$PWD/swift/HyperCastCore.artifactbundle/include"
