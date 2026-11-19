@@ -39,10 +39,11 @@
 use hypercast as hc;
 use napi::bindgen_prelude::{
     BigInt, ClassInstance, Either, Either3, JavaScriptClassExt, JsObjectValue, Object, ToNapiValue,
-    Uint8Array, Unknown,
+    TypedArrayType, Uint8Array, Unknown,
 };
-use napi::{Env, JsString, JsValue, Result, ValueType};
+use napi::{Env, JsString, JsValue, Result, ValueType, sys};
 use napi_derive::napi;
+use std::ffi::{CStr, CString};
 
 /// The closed set of reasons a cast can fail.
 #[napi(string_enum)]
@@ -568,25 +569,139 @@ const ABSENT: hc::Fault = hc::Fault {
 // Building verdicts.
 // ---------------------------------------------------------------------------------------
 
+/// A value as JavaScript holds it.
+fn js<V: ToNapiValue>(env: &Env, value: V) -> Result<sys::napi_value> {
+    // SAFETY: `env` is the live environment of the call in progress.
+    unsafe { V::to_napi_value(env.raw(), value) }
+}
+
+/// A property an answer owns: a plain data property, as an object literal's is.
+fn own(name: &CStr, value: sys::napi_value) -> sys::napi_property_descriptor {
+    sys::napi_property_descriptor {
+        utf8name: name.as_ptr(),
+        name: std::ptr::null_mut(),
+        method: None,
+        getter: None,
+        setter: None,
+        value,
+        attributes: sys::PropertyAttributes::writable
+            | sys::PropertyAttributes::enumerable
+            | sys::PropertyAttributes::configurable,
+        data: std::ptr::null_mut(),
+    }
+}
+
+/// A plain object holding exactly these own properties, defined rather than assigned (as the
+/// `#[napi(object)]` structs are), so a setter on `Object.prototype` under a field's name
+/// neither runs nor keeps the field off the answer.
+fn record<'env, const N: usize>(
+    env: &'env Env,
+    fields: [(&CStr, sys::napi_value); N],
+) -> Result<Object<'env>> {
+    let properties = fields.map(|(name, value)| own(name, value));
+    // SAFETY: `env` is the live environment of the call in progress, each descriptor's name
+    // is a static C string and its value a handle made in it; `raw` is the object made.
+    unsafe {
+        let raw = napi::bindgen_prelude::create_object_with_properties(env.raw(), &properties)?;
+        Ok(Object::from_raw(env.raw(), raw))
+    }
+}
+
+/// The most elements `Array.of` is handed in one call: its arguments go on the engine's stack.
+const ARRAY_OF_MOST: usize = 4096;
+
+/// An array holding exactly these elements, defined rather than assigned, so a setter on
+/// `Object.prototype` or `Array.prototype` under an index neither runs nor keeps an element
+/// off the array. `Array.of` defines its elements and is one call for the lot; whatever it did
+/// not make (a list past what one call takes, or an `Array.of` that is no longer the engine's)
+/// is defined an element at a time. So is every element under the WebAssembly fallback, whose
+/// runtime assigns the arguments of a call out of the module into an array of its own.
+fn array<'env>(env: &'env Env, items: &[sys::napi_value]) -> Result<Unknown<'env>> {
+    let raw = env.raw();
+    let ok = sys::Status::napi_ok;
+    let mut list = std::ptr::null_mut();
+    // SAFETY: `env` is the live environment of the call in progress, every item a value made
+    // in it, each name outlives the call that reads it, and each handle is read only after
+    // the call that made it answered `napi_ok`.
+    unsafe {
+        let defined = if cfg!(target_family = "wasm") {
+            0
+        } else {
+            array_of(env, &items[..items.len().min(ARRAY_OF_MOST)], &mut list)
+        };
+        if defined == 0 && sys::napi_create_array(raw, &mut list) != ok {
+            return Err(napi::Error::from_reason("could not make an array"));
+        }
+        if defined < items.len() {
+            let names: Vec<CString> = (defined..items.len())
+                .map(|at| CString::new(at.to_string()).unwrap_or_default())
+                .collect();
+            let properties: Vec<sys::napi_property_descriptor> = names
+                .iter()
+                .zip(&items[defined..])
+                .map(|(name, value)| own(name, *value))
+                .collect();
+            if sys::napi_define_properties(raw, list, properties.len(), properties.as_ptr()) != ok {
+                return Err(napi::Error::from_reason("could not fill an array"));
+            }
+        }
+        Ok(Unknown::from_raw_unchecked(raw, list))
+    }
+}
+
+/// Makes `list` the array `Array.of` makes of `items` and answers how many it holds: all of
+/// them, or 0 when the engine's `Array.of` did not answer an array of exactly these (it was
+/// replaced, or threw), with nothing left pending.
+///
+/// # Safety
+/// `env` is the live environment of the call in progress and every item a value made in it.
+unsafe fn array_of(env: &Env, items: &[sys::napi_value], list: &mut sys::napi_value) -> usize {
+    let raw = env.raw();
+    let ok = sys::Status::napi_ok;
+    let mut global = std::ptr::null_mut();
+    let mut constructor = std::ptr::null_mut();
+    let mut of = std::ptr::null_mut();
+    let mut kind = sys::ValueType::napi_undefined;
+    let mut is_array = false;
+    let mut length = 0;
+    // SAFETY: per the function contract; each handle is read only after the call that made it
+    // answered `napi_ok`.
+    let made = unsafe {
+        sys::napi_get_global(raw, &mut global) == ok
+            && sys::napi_get_named_property(raw, global, c"Array".as_ptr(), &mut constructor) == ok
+            && sys::napi_get_named_property(raw, constructor, c"of".as_ptr(), &mut of) == ok
+            && sys::napi_typeof(raw, of, &mut kind) == ok
+            && kind == sys::ValueType::napi_function
+            && sys::napi_call_function(raw, constructor, of, items.len(), items.as_ptr(), list)
+                == ok
+            && sys::napi_is_array(raw, *list, &mut is_array) == ok
+            && is_array
+            && sys::napi_get_array_length(raw, *list, &mut length) == ok
+            && length as usize == items.len()
+    };
+    if made {
+        items.len()
+    } else {
+        clear_pending_exception(env);
+        0
+    }
+}
+
 fn success<'env, V: ToNapiValue>(env: &'env Env, value: V) -> Result<Object<'env>> {
-    let mut verdict = Object::new(env)?;
-    verdict.set("ok", true)?;
-    verdict.set("value", value)?;
-    Ok(verdict)
+    let value = js(env, value)?;
+    record(env, [(c"ok", js(env, true)?), (c"value", value)])
 }
 
 fn failure(env: &Env, fault: hc::Fault) -> Result<Object<'_>> {
-    let mut verdict = Object::new(env)?;
-    verdict.set("ok", false)?;
-    verdict.set(
-        "fault",
+    let fault = js(
+        env,
         Fault {
             reason: cast_failure(fault.reason),
             offset: fault.offset,
             length: fault.len,
         },
     )?;
-    Ok(verdict)
+    record(env, [(c"ok", js(env, false)?), (c"fault", fault)])
 }
 
 fn cast_failure(reason: hc::Reason) -> CastFailure {
@@ -677,10 +792,8 @@ fn detailed_failure(
     span: (u32, u32),
     detail: u32,
 ) -> Result<Object<'_>> {
-    let mut verdict = Object::new(env)?;
-    verdict.set("ok", false)?;
-    verdict.set("fault", detailed_fault(reason, span, detail))?;
-    Ok(verdict)
+    let fault = js(env, detailed_fault(reason, span, detail))?;
+    record(env, [(c"ok", js(env, false)?), (c"fault", fault)])
 }
 
 /// A failure's verdict in the family the door belongs to: with its detail at a detailed door,
@@ -930,18 +1043,13 @@ fn declared<'env, T: ToNapiValue>(
     env: &'env Env,
     outcome: std::result::Result<T, String>,
 ) -> Result<Object<'env>> {
-    let mut declaration = Object::new(env)?;
     match outcome {
-        Ok(value) => {
-            declaration.set("ok", true)?;
-            declaration.set("value", value)?;
-        }
+        Ok(value) => success(env, value),
         Err(message) => {
-            declaration.set("ok", false)?;
-            declaration.set("message", message)?;
+            let message = js(env, message)?;
+            record(env, [(c"ok", js(env, false)?), (c"message", message)])
         }
     }
-    Ok(declaration)
 }
 
 /// The `flags` bits a style mask may hold: the eight `NumStyles` members' (bits 8 and 9 are the
@@ -2366,8 +2474,10 @@ fn wtf8(units: &[u16]) -> Vec<u8> {
 /// another thread may write that memory while the door runs, and a door judges one text, so a
 /// success's span always holds what was judged.
 enum Bytes {
-    /// A view of an `ArrayBuffer`, read in place.
-    View(Uint8Array),
+    /// A view of an `ArrayBuffer`, read in place: where its bytes start and how many there
+    /// are. It lives no longer than the call whose argument it is, which holds the array; no
+    /// reference to the array is made, so none is released while the call answers.
+    View(std::ptr::NonNull<u8>, usize),
     /// A view of a `SharedArrayBuffer`, copied.
     Copied(Vec<u8>),
 }
@@ -2377,7 +2487,12 @@ impl std::ops::Deref for Bytes {
 
     fn deref(&self) -> &[u8] {
         match self {
-            Bytes::View(bytes) => bytes,
+            // SAFETY: napi reported `length` bytes at `data` for an argument of the call in
+            // progress, and nothing runs JavaScript (which alone could detach or resize the
+            // buffer) while a door reads them.
+            Bytes::View(data, length) => unsafe {
+                std::slice::from_raw_parts(data.as_ptr(), *length)
+            },
             Bytes::Copied(bytes) => bytes,
         }
     }
@@ -2386,40 +2501,55 @@ impl std::ops::Deref for Bytes {
 impl Bytes {
     /// The bytes of `value`, or `None` when it is no `Uint8Array`.
     fn read(env: &Env, value: &Unknown<'_>) -> Option<Bytes> {
-        // `cast` checks the typed array's kind and fails for every other one.
-        let view = unsafe { value.cast::<Uint8Array>() }.ok()?;
-        Some(shared_copy(env, value).map_or(Bytes::View(view), Bytes::Copied))
+        let ok = sys::Status::napi_ok;
+        let mut kind = 0;
+        let mut length = 0usize;
+        let mut data = std::ptr::null_mut();
+        let mut buffer = std::ptr::null_mut();
+        let mut offset = 0usize;
+        // SAFETY: `env` and `value` are the live call's; napi answers a status, not `napi_ok`,
+        // for a value that is no typed array.
+        let status = unsafe {
+            sys::napi_get_typedarray_info(
+                env.raw(),
+                value.raw(),
+                &mut kind,
+                &mut length,
+                &mut data,
+                &mut buffer,
+                &mut offset,
+            )
+        };
+        if status != ok || kind != TypedArrayType::Uint8 as i32 {
+            return None;
+        }
+        if let Some(copy) = shared_copy(env, buffer, data.cast(), length) {
+            return Some(Bytes::Copied(copy));
+        }
+        // napi may answer a null pointer for no bytes (a detached buffer's view among them).
+        Some(match std::ptr::NonNull::new(data.cast::<u8>()) {
+            Some(data) if length != 0 => Bytes::View(data, length),
+            _ => Bytes::View(std::ptr::NonNull::dangling(), 0),
+        })
     }
 }
 
-/// A copy of a `Uint8Array` that views a `SharedArrayBuffer`, or `None` for any other. Each byte
-/// is read as an atomic, the one sound read of memory another thread may be writing.
-fn shared_copy(env: &Env, value: &Unknown<'_>) -> Option<Vec<u8>> {
-    let ok = napi::sys::Status::napi_ok;
-    let mut kind = 0;
-    let mut length = 0usize;
-    let mut data = std::ptr::null_mut();
-    let mut buffer = std::ptr::null_mut();
-    let mut offset = 0usize;
-    // SAFETY: `env` and `value` are the live call's, and `value` is a typed array.
-    let status = unsafe {
-        napi::sys::napi_get_typedarray_info(
-            env.raw(),
-            value.raw(),
-            &mut kind,
-            &mut length,
-            &mut data,
-            &mut buffer,
-            &mut offset,
-        )
-    };
-    if status != ok || buffer.is_null() {
+/// A copy of the `length` bytes at `data` when `buffer`, the buffer a `Uint8Array` views, is a
+/// `SharedArrayBuffer`, or `None` for any other. Each byte is read as an atomic, the one sound
+/// read of memory another thread may be writing.
+fn shared_copy(
+    env: &Env,
+    buffer: sys::napi_value,
+    data: *const u8,
+    length: usize,
+) -> Option<Vec<u8>> {
+    if buffer.is_null() {
         return None;
     }
     let mut plain = true;
     // SAFETY: `buffer` is the live call's. `napi_is_arraybuffer` is false for a shared one.
-    let status = unsafe { napi::sys::napi_is_arraybuffer(env.raw(), buffer, &mut plain) };
-    if status != ok || plain {
+    let status = unsafe { sys::napi_is_arraybuffer(env.raw(), buffer, &mut plain) };
+    if status != sys::Status::napi_ok || plain {
         return None;
     }
     if data.is_null() || length == 0 {
@@ -2427,12 +2557,8 @@ fn shared_copy(env: &Env, value: &Unknown<'_>) -> Option<Vec<u8>> {
     }
     // SAFETY: napi reports `length` bytes at `data`, live for the call; `AtomicU8` has `u8`'s
     // layout, and only atomic loads touch them.
-    let cells = unsafe {
-        std::slice::from_raw_parts(
-            data.cast::<std::sync::atomic::AtomicU8>().cast_const(),
-            length,
-        )
-    };
+    let cells =
+        unsafe { std::slice::from_raw_parts(data.cast::<std::sync::atomic::AtomicU8>(), length) };
     Some(
         cells
             .iter()
@@ -2932,20 +3058,25 @@ impl Constraints {
     }
 
     /// The declared `enum` entries as the caller gave them (strings and `bigint`s), or `null`.
-    #[napi(getter, catch_unwind, js_name = "enum")]
-    pub fn entries(&self) -> Option<Vec<Either<String, BigInt>>> {
+    #[napi(
+        getter,
+        catch_unwind,
+        js_name = "enum",
+        ts_return_type = "Array<string | bigint> | null"
+    )]
+    pub fn entries<'env>(&self, env: &'env Env) -> Result<Option<Unknown<'env>>> {
         if self.raw.flags & hc::RawConstraints::HAS_ENUM == 0 {
-            return None;
+            return Ok(None);
         }
-        Some(
-            self.entries
-                .iter()
-                .map(|entry| match entry {
-                    Entry::Text(text) | Entry::Number(text) => Either::A(text.clone()),
-                    Entry::Big(value) => Either::B(BigInt::from(*value)),
-                })
-                .collect(),
-        )
+        let items = self
+            .entries
+            .iter()
+            .map(|entry| match entry {
+                Entry::Text(text) | Entry::Number(text) => js(env, text.as_str()),
+                Entry::Big(value) => js(env, BigInt::from(*value)),
+            })
+            .collect::<Result<Vec<_>>>()?;
+        array(env, &items).map(Some)
     }
 
     /// The 104 bytes this declaration crosses a C ABI as, in the native byte order the core
@@ -3038,15 +3169,17 @@ fn checked_success<'env, V: ToNapiValue>(
     value: V,
     check: &hc::RawCheck,
 ) -> Result<Object<'env>> {
-    let mut verdict = Object::new(env)?;
-    verdict.set("ok", true)?;
-    verdict.set("value", value)?;
-    verdict.set("adjusted", check.adjusted != 0)?;
-    verdict.set(
-        "enumIndex",
-        (check.enum_index != u32::MAX).then_some(check.enum_index),
-    )?;
-    Ok(verdict)
+    let value = js(env, value)?;
+    let index = (check.enum_index != u32::MAX).then_some(check.enum_index);
+    record(
+        env,
+        [
+            (c"ok", js(env, true)?),
+            (c"value", value),
+            (c"adjusted", js(env, check.adjusted != 0)?),
+            (c"enumIndex", js(env, index)?),
+        ],
+    )
 }
 
 /// A violation's verdict: the keyword, the value as the door cast it, and its span.
@@ -3056,15 +3189,20 @@ fn violated<'env, V: ToNapiValue>(
     value: V,
     (offset, length): (u32, u32),
 ) -> Result<Object<'env>> {
-    let mut violation = Object::new(env)?;
-    violation.set("keyword", keyword_name(keyword))?;
-    violation.set("value", value)?;
-    violation.set("offset", offset)?;
-    violation.set("length", length)?;
-    let mut verdict = Object::new(env)?;
-    verdict.set("ok", false)?;
-    verdict.set("violation", violation)?;
-    Ok(verdict)
+    let value = js(env, value)?;
+    let violation = record(
+        env,
+        [
+            (c"keyword", js(env, keyword_name(keyword))?),
+            (c"value", value),
+            (c"offset", js(env, offset)?),
+            (c"length", js(env, length)?),
+        ],
+    )?;
+    record(
+        env,
+        [(c"ok", js(env, false)?), (c"violation", violation.raw())],
+    )
 }
 
 /// A numeric checked door's violation: the value the door wrote, as JavaScript holds it.

@@ -111,10 +111,42 @@ module HyperCast
     # cached coderange — no scan), a byte-to-character remap otherwise. Character counts
     # survive transcoding, so a span mapped on the UTF-8 form indexes the caller's own String
     # whatever encoding it arrived in.
+    #
+    # The core's span can start or end inside a character (the time door's fields are two bytes
+    # wide, a year's four, and a byte no UTF-8 text has is spanned as long as it claims to be),
+    # so the answer is every character the bytes touch: it never passes the end of the String,
+    # and an empty span stays empty.
     def characters(bytes, offset, length)
       return [offset, length] if bytes.encoding == Encoding::ASCII_8BIT || bytes.ascii_only?
+      return touched(bytes, offset, length) unless bytes.encoding == Encoding::UTF_8 && bytes.valid_encoding?
 
-      [bytes.byteslice(0, offset).length, bytes.byteslice(offset, length).length]
+      # Well-formed UTF-8: a character starts at every byte that is not a continuation byte, so
+      # each end moves out to the nearest start, at most three bytes away.
+      finish = offset + length
+      offset -= 1 while continuation?(bytes, offset)
+      finish += 1 while length.positive? && continuation?(bytes, finish)
+      [bytes.byteslice(0, offset).length, length.zero? ? 0 : bytes.byteslice(offset, finish - offset).length]
+    end
+
+    # Whether the byte of +bytes+ at +index+ is a UTF-8 continuation byte, 10xxxxxx: false at
+    # the end of the String.
+    def continuation?(bytes, index)
+      byte = bytes.getbyte(index)
+      !byte.nil? && byte & 0xC0 == 0x80
+    end
+
+    # #characters for text that is not well-formed, by the String's own characters, where each
+    # byte that is no character counts as one: the characters that end at or before +offset+,
+    # then those the span touches.
+    def touched(bytes, offset, length)
+      before = within = at = 0
+      bytes.each_char do |char|
+        break if at >= offset + length
+
+        at += char.bytesize
+        at <= offset ? before += 1 : within += 1
+      end
+      [before, length.zero? ? 0 : within]
     end
 
     # A native library's packed version word — major << 16 | minor << 8 | patch, as a

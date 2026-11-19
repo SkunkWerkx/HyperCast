@@ -37,6 +37,23 @@ RSpec.describe HyperCast::Interop do
     expect(described_class.characters("é1x".b, 3, 1)).to eq([3, 1])
   end
 
+  it "maps a byte span that ends or starts inside a character to every character it touches" do
+    expect(described_class.characters("😀", 0, 2)).to eq([0, 1])
+    expect(described_class.characters("12:😀", 3, 2)).to eq([3, 1])
+    expect(described_class.characters("日本", 0, 4)).to eq([0, 2])
+    expect(described_class.characters("1é2", 2, 1)).to eq([1, 1])
+    expect(described_class.characters("1é2", 2, 2)).to eq([1, 2])
+    # An empty span is where it is, and never grows.
+    expect(described_class.characters("é1", 2, 0)).to eq([1, 0])
+    expect(described_class.characters("é1", 1, 0)).to eq([0, 0])
+    expect(described_class.characters("é1", 3, 0)).to eq([2, 0])
+    # Bytes that are no character are one character each, as String#[] counts them.
+    broken = "\xFF😀a\xF0\x9F日".dup.force_encoding(Encoding::UTF_8)
+    expect(described_class.characters(broken, 0, 4)).to eq([0, 2])
+    expect(described_class.characters(broken, 6, 4)).to eq([3, 3])
+    expect(broken.length).to eq(6)
+  end
+
   it "unpacks versions" do
     expect(described_class.version(0x00_06_02)).to eq("0.6.2")
   end

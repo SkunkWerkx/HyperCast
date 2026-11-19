@@ -532,6 +532,13 @@ hostile values (symbols, `bigint`s, detached buffers, Proxies whose traps throw,
 own prototypes) in every position and every pair, and every declaration with each as its spec
 and as each `Constraints` keyword.
 
+An answer is built of properties and elements that are defined, never assigned, so a setter
+someone put on `Object.prototype`, under a field's name (`ok`, `value`, `fault`) or an array
+index, neither runs, nor throws out of the call, nor keeps anything off the answer.
+`tests/prototype_setters.test.ts` plants one that throws under every field and index, around
+every kind of door and declaration. Under the WebAssembly fallback one case of an index is left,
+the runtime's own ([below](#when-no-native-addon-fits)).
+
 The one error the package throws is `ERR_HYPERCAST_UNAVAILABLE`, from any door when no addon
 and no fallback loaded: an installation problem, not an input ([below](#when-no-native-addon-fits)).
 `isAvailable()` says up front, and `isHyperCastError(error)` recognizes it. On the native
@@ -565,6 +572,13 @@ the suite is the same, and `isAvailable()` is `true`. What differs:
   exception unwinds through the module before any Rust runs. The module stays sound and the
   next call answers. The native addon never looks at an argument's prototype, so there these
   are verdicts like any other value.
+- A setter put on `Object.prototype` under an array index runs under the fallback in one
+  case, a recorded loss: the runtime keeps its handles, its references and its scopes in
+  arrays that grow by assignment, so the first call to need a slot no call before it has
+  filled (more values at once, more declarations alive, than the process has had so far)
+  assigns under that slot's number, and a setter there that throws makes the call throw. The
+  module stays sound and the next call answers. Nothing the binding does assigns under an
+  index, so a setter under a slot the runtime has filled, or under a field's name, never runs.
 - Panics abort. `wasm32-wasip1` has no unwinder, so the fallback is built with
   `panic = "abort"`: a panic surfaces as `RuntimeError: unreachable` thrown from the call.
 - Bun 1.4.4 cannot run it: its `node:wasi` has no reactor `initialize`, so Bun with no native

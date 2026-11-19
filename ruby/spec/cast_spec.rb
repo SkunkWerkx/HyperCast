@@ -39,6 +39,93 @@ RSpec.describe HyperCast do
                                invariant)).to eq(HyperCast::Fault.new(reason: :malformed, offset: 4, length: 1))
   end
 
+  # The core counts bytes, and a span of its can end inside a character: the time door's fields
+  # are two bytes wide and a year's four, and a byte no UTF-8 text has is spanned as long as it
+  # claims to be. A span in characters is then every character the bytes touch, so it stays
+  # inside the String and `text[offset, length]` is whole characters.
+  describe "a span that ends inside a character" do
+    constraints = HyperCast::Constraints
+    doors = {
+      bool: [->(text) { HyperCast.bool(text) }, %w[true no]],
+      char: [->(text) { HyperCast.char(text) }, %w[a ab]],
+      i32: [->(text) { HyperCast.i32(text, invariant) }, ["-1,234", "(12)"]],
+      u64: [->(text) { HyperCast.u64(text, invariant) }, ["1,234", "0x1F"]],
+      f32: [->(text) { HyperCast.f32(text, invariant) }, ["1.5"]],
+      f64: [->(text) { HyperCast.f64(text, invariant) }, ["-1,234.5e3", "12%"]],
+      decimal: [->(text) { HyperCast.decimal(text, invariant) }, ["-1,234.50", "$12.5"]],
+      uuid: [->(text) { HyperCast.uuid(text) }, ["123e4567-e89b-12d3-a456-426614174000"]],
+      timestamp: [->(text) { HyperCast.timestamp(text) }, ["2024-01-02T03:04:05.678Z", "2024-01-02T03:04:05+01:00"]],
+      unix: [->(text) { HyperCast.unix(text, :seconds) }, ["1700000000"]],
+      excel_serial: [->(text) { HyperCast.excel_serial(text, :y1900) }, ["45000.5"]],
+      date: [->(text) { HyperCast.date(text) }, ["2024-01-02"]],
+      date_ordered: [->(text) { HyperCast.date(text, :day_month_year) }, ["02/01/2024", "2 Jan 2024"]],
+      datetime: [->(text) { HyperCast.datetime(text, :month_day_year) },
+                 ["01/02/2024 03:04:05 PM", "01/02/2024 03:04:05.5"]],
+      time: [->(text) { HyperCast.time(text) }, ["12:34:56.789", "1:2"]],
+      duration: [->(text) { HyperCast.duration(text) }, ["PT1H2M3.5S", "P1DT2H"]],
+      text: [->(text) { HyperCast.text(text) }, ["ab c"]],
+      checked_text: [->(text) { HyperCast.text(text, constraints.new(door: :text, max_length: 2, trim: true)) },
+                     [" abc ", "ab"]],
+      checked_i32: [->(text) { HyperCast.checked(text, invariant, constraints.new(door: :i32, maximum: 4)) },
+                    ["12", " 3"]],
+      checked_decimal: [
+        ->(text) { HyperCast.checked(text, invariant, constraints.new(door: :decimal, multiple_of: "0.5")) },
+        ["1.25", "1.5"]
+      ]
+    }.freeze
+    # Characters of two, three and four bytes, then bytes that are no character: a byte no
+    # UTF-8 text has, a four-byte character cut short, a continuation byte alone, and each
+    # of the first two ahead of a whole character and behind one.
+    whole = ["é", "日", "😀"].freeze
+    stray = ["\xFF".b, "\xF0\x9F".b, "\x98".b].freeze
+    placed = (whole.map(&:b) + stray + stray.first(2).flat_map { |bytes| [bytes + "日".b, "😀".b + bytes] }).freeze
+
+    # The span of the characters of +text+ the bytes from +offset+ for +length+ touch, by the
+    # String's own characters: what String#[] slices by.
+    def touched(text, offset, length)
+      before = within = at = 0
+      text.each_char do |char|
+        break if at >= offset + length
+
+        at += char.bytesize
+        at <= offset ? before += 1 : within += 1
+      end
+      [before, length.zero? ? 0 : within]
+    end
+
+    doors.each do |name, (door, seeds)|
+      it "holds at the #{name} door, a multi-byte character at every position" do
+        rejected = 0
+        seeds.each do |seed|
+          placed.product((0..seed.bytesize).to_a) do |bytes, at|
+            text = seed.b.insert(at, bytes).force_encoding(Encoding::UTF_8)
+            verdict = door.call(text)
+            next unless verdict.respond_to?(:offset)
+
+            rejected += 1
+            # The same bytes as a binary String: the core's own span, in bytes.
+            binary = door.call(text.b)
+            span = [verdict.offset, verdict.length]
+            expect(span).to eq(touched(text, binary.offset, binary.length)), "#{text.inspect}: #{span}"
+            expect(span.sum).to be <= text.length, "#{text.inspect}: #{span} of #{text.length}"
+          end
+        end
+        expect(rejected).to be > 0
+      end
+    end
+
+    it "is the one character, on every backend" do
+      expect(HyperCast.time("😀")).to have_attributes(reason: :malformed, offset: 0, length: 1)
+      expect(HyperCast.time("12:😀")).to have_attributes(reason: :malformed, offset: 3, length: 1)
+      expect(HyperCast.time("日本")).to have_attributes(reason: :malformed, offset: 0, length: 1)
+      expect(HyperCast.time("😀".encode(Encoding::UTF_16LE))).to have_attributes(offset: 0, length: 1)
+      # Bytes that are no character each count as one, as String#length counts them.
+      broken = "-1,234\xF0\x9F日".dup.force_encoding(Encoding::UTF_8)
+      expect(HyperCast.i32(broken, invariant)).to have_attributes(reason: :malformed, offset: 6, length: 3)
+      expect(broken.length).to eq(9)
+    end
+  end
+
   it "casts a char verbatim or from a declared code point, as a one-character UTF-8 String" do
     expect(described_class.char(" ")).to eq(HyperCast::Success.new(value: " "))
     expect(described_class.char("6")).to eq(HyperCast::Success.new(value: "6"))

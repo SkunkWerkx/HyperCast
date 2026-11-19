@@ -392,9 +392,17 @@ RSpec.describe "conformance corpus" do
     end
   end
 
-  # A corpus byte span in the units String#[] slices by on `input`: characters, as a fault's.
+  # A corpus byte span in the units String#[] slices by on `input`: characters, as a fault's,
+  # and every character the bytes touch, counted by the String's own characters.
   def characters(input, offset, length)
-    [input.byteslice(0, offset).length, input.byteslice(offset, length).length]
+    before = within = at = 0
+    input.each_char do |char|
+      break if at >= offset + length
+
+      at += char.bytesize
+      at <= offset ? before += 1 : within += 1
+    end
+    [before, length.zero? ? 0 : within]
   end
 
   # Every row through the public constructor, so bounds, steps and entries cross this
