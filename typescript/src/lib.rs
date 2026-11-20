@@ -607,83 +607,45 @@ fn record<'env, const N: usize>(
     }
 }
 
-/// The most elements `Array.of` is handed in one call: its arguments go on the engine's stack.
-const ARRAY_OF_MOST: usize = 4096;
+/// How many index names are kept for the life of the module, so a short array allocates none.
+const INDEX_NAMES_KEPT: usize = 256;
 
-/// An array holding exactly these elements, defined rather than assigned, so a setter on
-/// `Object.prototype` or `Array.prototype` under an index neither runs nor keeps an element
-/// off the array. `Array.of` defines its elements and is one call for the lot; whatever it did
-/// not make (a list past what one call takes, or an `Array.of` that is no longer the engine's)
-/// is defined an element at a time. So is every element under the WebAssembly fallback, whose
-/// runtime assigns the arguments of a call out of the module into an array of its own.
+/// The names of the first `INDEX_NAMES_KEPT` indexes, made once.
+static INDEX_NAMES: std::sync::OnceLock<Vec<CString>> = std::sync::OnceLock::new();
+
+/// The property name of an array index.
+fn index_name(at: usize) -> CString {
+    CString::new(at.to_string()).unwrap_or_default()
+}
+
+/// An array holding exactly these elements, each defined under its index rather than assigned,
+/// so a setter on `Object.prototype` or `Array.prototype` under an index neither runs nor keeps
+/// an element off the array. Nothing of the page's is called to make it: `Array.of` defines its
+/// elements too, but it is a property anyone may replace, and what a replacement answers cannot
+/// be told from the engine's without reading every element back.
 fn array<'env>(env: &'env Env, items: &[sys::napi_value]) -> Result<Unknown<'env>> {
     let raw = env.raw();
     let ok = sys::Status::napi_ok;
     let mut list = std::ptr::null_mut();
+    let kept = INDEX_NAMES.get_or_init(|| (0..INDEX_NAMES_KEPT).map(index_name).collect());
+    let past: Vec<CString> = (kept.len()..items.len()).map(index_name).collect();
+    let properties: Vec<sys::napi_property_descriptor> = kept
+        .iter()
+        .chain(&past)
+        .zip(items)
+        .map(|(name, value)| own(name, *value))
+        .collect();
     // SAFETY: `env` is the live environment of the call in progress, every item a value made
-    // in it, each name outlives the call that reads it, and each handle is read only after
-    // the call that made it answered `napi_ok`.
+    // in it, each name outlives the call that reads it, and `list` is read only after the
+    // call that made it answered `napi_ok`.
     unsafe {
-        let defined = if cfg!(target_family = "wasm") {
-            0
-        } else {
-            array_of(env, &items[..items.len().min(ARRAY_OF_MOST)], &mut list)
-        };
-        if defined == 0 && sys::napi_create_array(raw, &mut list) != ok {
+        if sys::napi_create_array_with_length(raw, items.len(), &mut list) != ok {
             return Err(napi::Error::from_reason("could not make an array"));
         }
-        if defined < items.len() {
-            let names: Vec<CString> = (defined..items.len())
-                .map(|at| CString::new(at.to_string()).unwrap_or_default())
-                .collect();
-            let properties: Vec<sys::napi_property_descriptor> = names
-                .iter()
-                .zip(&items[defined..])
-                .map(|(name, value)| own(name, *value))
-                .collect();
-            if sys::napi_define_properties(raw, list, properties.len(), properties.as_ptr()) != ok {
-                return Err(napi::Error::from_reason("could not fill an array"));
-            }
+        if sys::napi_define_properties(raw, list, properties.len(), properties.as_ptr()) != ok {
+            return Err(napi::Error::from_reason("could not fill an array"));
         }
         Ok(Unknown::from_raw_unchecked(raw, list))
-    }
-}
-
-/// Makes `list` the array `Array.of` makes of `items` and answers how many it holds: all of
-/// them, or 0 when the engine's `Array.of` did not answer an array of exactly these (it was
-/// replaced, or threw), with nothing left pending.
-///
-/// # Safety
-/// `env` is the live environment of the call in progress and every item a value made in it.
-unsafe fn array_of(env: &Env, items: &[sys::napi_value], list: &mut sys::napi_value) -> usize {
-    let raw = env.raw();
-    let ok = sys::Status::napi_ok;
-    let mut global = std::ptr::null_mut();
-    let mut constructor = std::ptr::null_mut();
-    let mut of = std::ptr::null_mut();
-    let mut kind = sys::ValueType::napi_undefined;
-    let mut is_array = false;
-    let mut length = 0;
-    // SAFETY: per the function contract; each handle is read only after the call that made it
-    // answered `napi_ok`.
-    let made = unsafe {
-        sys::napi_get_global(raw, &mut global) == ok
-            && sys::napi_get_named_property(raw, global, c"Array".as_ptr(), &mut constructor) == ok
-            && sys::napi_get_named_property(raw, constructor, c"of".as_ptr(), &mut of) == ok
-            && sys::napi_typeof(raw, of, &mut kind) == ok
-            && kind == sys::ValueType::napi_function
-            && sys::napi_call_function(raw, constructor, of, items.len(), items.as_ptr(), list)
-                == ok
-            && sys::napi_is_array(raw, *list, &mut is_array) == ok
-            && is_array
-            && sys::napi_get_array_length(raw, *list, &mut length) == ok
-            && length as usize == items.len()
-    };
-    if made {
-        items.len()
-    } else {
-        clear_pending_exception(env);
-        0
     }
 }
 

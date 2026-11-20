@@ -237,9 +237,9 @@ test('no answer is assigned through a setter on Object.prototype', () => {
   assert.deepEqual(escapes, [])
 })
 
-// An array is made by `Array.of`, which defines its elements, up to what one call takes, and an
-// element at a time past that or where `Array.of` is no longer the engine's.
-test('a whole enum is whole past one call of Array.of, and without it', () => {
+// An array's elements are each defined under their index, and nothing of the page's is called to
+// make it: whatever `Array.of` has been replaced with, an enum reads as it was declared.
+test('a whole enum is as declared, whatever Array.of has become', () => {
   const ENTRIES = 5000
   const entries = Array.from({ length: ENTRIES }, (_, at) => `entry ${at}`)
   const many = declare({ door: Door.Text, enum: entries })
@@ -251,6 +251,10 @@ test('a whole enum is whole past one call of Array.of, and without it', () => {
     undefined,
     () => 'not an array',
     () => ['some', 'other', 'array'],
+    // As long as what was declared, so its length says nothing: of two entries, and of each.
+    () => ['wrong', 'wrong'],
+    (...items: unknown[]) => items.reverse(),
+    (...items: unknown[]) => items.map(() => 'wrong'),
     () => {
       throw new Error('of')
     },

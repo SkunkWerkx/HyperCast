@@ -22,14 +22,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **TypeScript — an answer is defined, never assigned.** A setter on `Object.prototype` under a
   name an answer carries (`ok`, `value`, `fault`, `violation`, `message`, an array index) ran
   while a door or a declaration answered, and one that threw made a data call throw. Every
-  verdict, declaration and `Constraints.enum` array is now built of defined properties, and a
+  verdict, declaration and `Constraints.enum` array is now built of defined properties, an
+  array's elements each under its own index with nothing of the page's called, so a replaced
+  `Array.of` changes no entry, and a
   `Uint8Array` argument is read without taking a reference, which under the WebAssembly
   fallback had the runtime assign into an array of its own. One case is left under the
   fallback and is the runtime's: its tables of handles, references and scopes grow by
   assignment, so a setter under the number of a slot no call has yet filled still runs. Doors
   answer faster for it
   (`castI32` of a string 249 to 175 ns on Node 26, Apple M6, 2026-11-15); the `Constraints.enum`
-  getter is slower, 320 to 391 ns for three entries. *(TypeScript)*
+  getter is level with 1.1.0 for three entries (300 ns each) and about 3% slower for a hundred
+  (4.45 to 4.6 µs; 2026-11-20). *(TypeScript)*
 
 ## [1.1.0] — 2026-11-13
 
