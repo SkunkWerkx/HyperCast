@@ -171,6 +171,10 @@ HyperCast.i32("1€", HyperCast::NumFormat::INVARIANT)     # => Fault(reason: :m
 HyperCast.i32("1€".b, HyperCast::NumFormat::INVARIANT)   # => Fault(reason: :malformed, offset: 1, length: 3)
 ```
 
+The core counts bytes, and where its span starts or ends inside a character (the time door
+reads a field as two bytes) the span is every character it touches, so it never passes the
+end of the String: `HyperCast.time("😀")` is a `:malformed` `Fault` at offset 0, length 1.
+
 The mapping happens only on the failure path, so a `Success` never pays for it.
 
 ### `decimal`: exact, never rounded
@@ -575,7 +579,7 @@ the two cannot drift. It is loaded on every backend.
   (`FAULT_BYTES`: the size word, then the span's offset and length and the detail code), the
   span mapped to characters over `bytes` when given.
 - `characters(bytes, offset, length)` — the core's byte span as the character span
-  `String#[]` slices by.
+  `String#[]` slices by: every character the bytes touch.
 - `version(word)` — a packed `*_version` word as `"major.minor.patch"`.
 - `library_path(library, native_dir, repo_root)` — the shared library to `dlopen`: the
   staged `native/{rid}/` build, else the in-repo cargo build, else `nil`.

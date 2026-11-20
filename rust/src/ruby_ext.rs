@@ -262,7 +262,7 @@ fn fault_value(
 /// Builds the Fault over `text` — the UTF-8 the core read — with its span in the units
 /// `String#[]` slices by (see `character_span`) and the core's detail.
 fn fault(ruby: &Ruby, text: RString, failed: core::Failure) -> Result<Value, Error> {
-    let span = character_span(text, failed.offset, failed.len);
+    let span = character_span(ruby, text, failed.offset, failed.len)?;
     fault_value(ruby, failed.reason, span, failed.detail)
 }
 
@@ -273,16 +273,48 @@ fn typed_fault(ruby: &Ruby, failed: core::Failure) -> Result<Value, Error> {
 }
 
 /// The core's byte span in the units `String#[]` slices by — the same rule as
-/// hypercast.rb's `characters`, through the routine Ruby itself uses to turn a byte
-/// position into a character position: an identity for a binary String and for 7-bit
-/// text (O(1) off the cached coderange), a character count otherwise. Failure path only.
-fn character_span(text: RString, offset: u32, len: u32) -> (i64, i64) {
-    let raw = text.as_raw();
-    // SAFETY: `text` is a live String; positions come from the core and never exceed its
-    // byte length (the fault-span invariant the core's own tests pin).
-    let start = unsafe { rb_sys::rb_str_sublen(raw, offset as std::ffi::c_long) };
-    let end = unsafe { rb_sys::rb_str_sublen(raw, (offset + len) as std::ffi::c_long) };
-    (start as i64, (end - start) as i64)
+/// hypercast.rb's `Interop.characters`: an identity for a binary String and for 7-bit text
+/// (O(1) off the cached coderange), a character count otherwise. Failure path only.
+///
+/// The core's span can start or end inside a character (the time door's fields are two bytes
+/// wide, a year's four, and a byte no UTF-8 text has is spanned as long as it claims to be), so
+/// the answer is every character the bytes touch: it never passes the end of the String. In
+/// well-formed UTF-8 a character starts at every byte that is not a continuation byte, so each
+/// end moves out to the nearest start and the routine Ruby itself uses turns the two byte
+/// positions into character positions. Text that is not well-formed goes to
+/// `Interop.characters`, which walks the String's own characters: one rule, in one place.
+fn character_span(ruby: &Ruby, text: RString, offset: u32, len: u32) -> Result<(i64, i64), Error> {
+    use magnus::encoding::Coderange;
+    let identity = (i64::from(offset), i64::from(len));
+    if text.enc_get() == ruby.ascii8bit_encindex() {
+        return Ok(identity);
+    }
+    match text.enc_coderange_scan() {
+        Coderange::SevenBit => Ok(identity),
+        Coderange::Valid => {
+            // SAFETY: nothing runs Ruby code, or anything else that could move or free the
+            // String's bytes, while this borrow of them is alive.
+            let bytes = unsafe { text.as_slice() };
+            let continues = |at: usize| bytes.get(at).is_some_and(|byte| byte & 0xC0 == 0x80);
+            let mut first = (offset as usize).min(bytes.len());
+            let mut last = (offset as usize).saturating_add(len as usize).min(bytes.len());
+            while first > 0 && continues(first) {
+                first -= 1;
+            }
+            while len != 0 && continues(last) {
+                last += 1;
+            }
+            let raw = text.as_raw();
+            // SAFETY: `text` is a live String, and both positions are within its bytes.
+            let start = unsafe { rb_sys::rb_str_sublen(raw, first as std::ffi::c_long) };
+            let end = unsafe { rb_sys::rb_str_sublen(raw, last as std::ffi::c_long) };
+            Ok((start as i64, if len == 0 { 0 } else { (end - start) as i64 }))
+        }
+        _ => {
+            let interop: Value = ruby.get_inner(cached().hypercast).const_get("Interop")?;
+            interop.funcall("characters", (text, offset, len))
+        }
+    }
 }
 
 /// Presents the input as the UTF-8 the core reads — hypercast.rb's `utf8` rule: UTF-8,
@@ -1037,7 +1069,7 @@ fn violation(
     value: Value,
 ) -> Result<Value, Error> {
     let (offset, length) = match text {
-        Some(text) => character_span(text, broken.offset, broken.len),
+        Some(text) => character_span(ruby, text, broken.offset, broken.len)?,
         None => (i64::from(broken.offset), i64::from(broken.len)),
     };
     let cache = cached();

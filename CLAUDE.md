@@ -125,7 +125,15 @@ its wins. Don't adjust numbers without re-running the harness, and don't drop a 
 - npm's ten packages: the root `@skunkwerkx/hypercast`, eight `@skunkwerkx/hypercast-<suffix>`,
   one per RID, mapped by `NODE_PLATFORMS` in the Forge's `hyper_config.py` and listed as
   `napi.targets` in `typescript/package.json`, and the WebAssembly fallback
-  `@skunkwerkx/hypercast-wasm32-wasip1` (the last `napi.targets` entry). The root's
+  `@skunkwerkx/hypercast-wasm32-wasip1` (the last `napi.targets` entry). The fallback is a plain dependency of
+  the root on purpose (decided 2026-11-15, when a review suggested `optionalDependencies`):
+  npm 10.9.2, the one Node 22 bundles, regenerates a lockfile beside a Mac's `node_modules`
+  naming only that platform (npm/cli#4828, the `mac-lockfile` scenario), and `--omit=optional`
+  drops every optional package; either way the root still loads, on the fallback, where one
+  with no plain fallback fails. Its cost is about 1.4 MB and the `@emnapi` betas in every
+  install. npm offers no floor a dependency can enforce (`engines.npm` only warns). Revisit
+  when Node 22 leaves the floor (2027-04-30); `--omit=optional` will still argue for plain.
+  The root's
   `optionalDependencies` are injected at pack time, never committed. The first publish of
   every package, a new platform's included, is the owner's, by hand with a granular token: npm
   Trusted Publishing attaches only to a package that exists, and `release.yml` is registered as
